@@ -183,9 +183,9 @@ describe("Thread", () => {
       agent: new Agent({
         name: "core",
         instructions: "Use tools when needed",
-        model: "gpt-4o-mini",
         tools: [new EchoTool()],
       }),
+      model: "gpt-4o-mini",
       messages: [stringToUserMessage("call the tool")],
       runtime,
       hooks: [new RecordingHook(events)],
@@ -229,16 +229,46 @@ describe("Thread", () => {
       agent: new Agent({
         name: "structured",
         instructions: "Return JSON",
-        model: "gpt-4o-mini",
         outputSchema: z.object({
           answer: z.string(),
         }),
       }),
+      model: "gpt-4o-mini",
       messages: [stringToUserMessage("What is the answer?")],
       runtime,
     });
 
     await expect(thread.runToCompletion()).resolves.toEqual({ answer: "42" });
+  });
+
+  it("uses thread execution settings for runtime requests", async () => {
+    const complete = vi.fn().mockResolvedValue(message("done"));
+    const runtime: LlmRuntime = {
+      complete,
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "runtime-config",
+        instructions: "Be helpful",
+      }),
+      model: "gpt-4o-mini",
+      temperature: 0.25,
+      thinking: "medium",
+      messages: [stringToUserMessage("hello")],
+      runtime,
+    });
+
+    await thread.runToCompletion();
+
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      model: "gpt-4o-mini",
+      temperature: 0.25,
+      thinking: "medium",
+    }));
   });
 
   it("streams tool progress events before the final tool result", async () => {
@@ -258,9 +288,9 @@ describe("Thread", () => {
       agent: new Agent({
         name: "progress-agent",
         instructions: "Use the progress tool",
-        model: "gpt-4o-mini",
         tools: [new ProgressTool()],
       }),
+      model: "gpt-4o-mini",
       messages: [stringToUserMessage("show progress")],
       runtime,
     });
@@ -300,9 +330,9 @@ describe("Thread", () => {
       agent: new Agent({
         name: "rich-output-agent",
         instructions: "Use the tool",
-        model: "gpt-4o-mini",
         tools: [new RichOutputTool()],
       }),
+      model: "gpt-4o-mini",
       messages: [stringToUserMessage("show me the image")],
       runtime,
     });

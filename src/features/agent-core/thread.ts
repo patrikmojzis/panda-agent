@@ -1,6 +1,7 @@
 import type {
   AssistantMessage,
   Message,
+  ThinkingLevel,
   ToolCall,
   ToolResultMessage,
 } from "@mariozechner/pi-ai";
@@ -22,7 +23,7 @@ import {
   collectAssistantToolCalls,
 } from "./pi/messages.js";
 import { PiAiRuntime } from "./pi/runtime.js";
-import { assertProviderName, type ProviderName } from "./provider.js";
+import { assertProviderName, getProviderConfig, type ProviderName } from "./provider.js";
 import { RunContext } from "./run-context.js";
 import type { LlmRuntime, LlmRuntimeRequest } from "./runtime.js";
 import type { RunPipeline } from "./run-pipeline.js";
@@ -47,6 +48,9 @@ export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   promptCacheKey?: string;
   runPipelines?: ReadonlyArray<RunPipeline<TContext>>;
   provider?: ProviderName;
+  model?: string;
+  temperature?: number;
+  thinking?: ThinkingLevel;
   runtime?: LlmRuntime;
   countTokens?: TokenCounter;
 }
@@ -115,6 +119,9 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   readonly promptCacheKey?: string;
   readonly runPipelines?: ReadonlyArray<RunPipeline<TContext>>;
   readonly systemPrompt?: string | ReadonlyArray<string>;
+  readonly model: string;
+  readonly temperature?: number;
+  readonly thinking?: ThinkingLevel;
 
   private readonly providerName: ProviderName;
   private readonly runtime: LlmRuntime;
@@ -133,6 +140,9 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     this.promptCacheKey = options.promptCacheKey;
     this.runPipelines = options.runPipelines;
     this.providerName = options.provider === undefined ? "openai" : assertProviderName(options.provider);
+    this.model = options.model ?? getProviderConfig(this.providerName).defaultModel;
+    this.temperature = options.temperature;
+    this.thinking = options.thinking;
     this.runtime = options.runtime ?? new PiAiRuntime();
     this.countTokens = options.countTokens ?? estimateTokensFromString;
   }
@@ -331,9 +341,9 @@ export class Thread<TContext = unknown, TOutput = unknown> {
 
     return {
       providerName: this.providerName,
-      model: this.agent.model,
-      temperature: this.agent.temperature,
-      thinking: this.agent.thinking,
+      model: this.model,
+      temperature: this.temperature,
+      thinking: this.thinking,
       promptCacheKey: this.promptCacheKey,
       context: buildConversationContext({
         agent: this.agent,

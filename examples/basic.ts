@@ -22,12 +22,12 @@ class CalculatorTool extends Tool<typeof CalculatorTool.schema> {
 const agent = new Agent({
   name: "math_agent",
   instructions: "You are a helpful math assistant. Use the calculator tool for calculations.",
-  model: "gpt-4o-mini",
   tools: [new CalculatorTool()],
 });
 
 const thread = new Thread({
   agent,
+  model: "gpt-4o-mini",
   messages: [stringToUserMessage("What is 15 + 27?")],
 });
 

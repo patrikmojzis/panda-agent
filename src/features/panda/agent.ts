@@ -30,10 +30,7 @@ export function createPandaAgent<TOutput = unknown>(
   return new Agent({
     name: options.name ?? "panda",
     instructions: options.instructions ?? buildPandaPrompt(options.promptAdditions),
-    model: options.model ?? "gpt-5.1",
     tools: [...builtInTools, ...(options.tools ?? [])],
     outputSchema: options.outputSchema,
-    temperature: options.temperature,
-    thinking: options.thinking,
   });
 }

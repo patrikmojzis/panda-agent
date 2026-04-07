@@ -18,7 +18,6 @@ function createAgent() {
   return new Agent({
     name: "test-agent",
     instructions: "Use tools",
-    model: "gpt-4o-mini",
   });
 }
 

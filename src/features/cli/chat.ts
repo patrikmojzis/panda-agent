@@ -311,8 +311,8 @@ export class PandaChatApp {
     return new Thread({
       agent: createPandaAgent({
         promptAdditions: this.instructions,
-        model: this.model,
       }),
+      model: this.model,
       messages: [...history],
       provider: this.providerName,
       context: {

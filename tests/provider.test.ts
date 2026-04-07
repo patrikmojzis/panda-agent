@@ -29,8 +29,8 @@ describe("provider guards", () => {
       agent: new Agent({
         name: "core",
         instructions: "Be helpful",
-        model: "gpt-5.1",
       }),
+      model: "gpt-5.1",
       provider: "open-ai" as never,
     })).toThrowError(ConfigurationError);
   });

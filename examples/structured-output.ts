@@ -8,12 +8,12 @@ const SummarySchema = z.object({
 const agent = new Agent({
   name: "summarizer",
   instructions: "Summarize the user's message and respond as JSON that matches the schema.",
-  model: "gpt-4o-mini",
   outputSchema: SummarySchema,
 });
 
 const thread = new Thread({
   agent,
+  model: "gpt-4o-mini",
   messages: [stringToUserMessage("TypeScript migration is underway and the TUI is intentionally out of scope.")],
 });
 
