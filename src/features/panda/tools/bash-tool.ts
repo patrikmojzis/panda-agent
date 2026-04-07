@@ -14,6 +14,7 @@ import { Tool, type ToolOutput } from "../../agent-core/tool.js";
 import { ToolError } from "../../agent-core/exceptions.js";
 import type { JsonObject, JsonValue } from "../../agent-core/types.js";
 import type { PandaSessionContext, PandaShellSession } from "../types.js";
+import { ensurePandaShellSession, readPandaBaseCwd } from "./context.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 8_000;
@@ -74,10 +75,6 @@ interface PersistedEnvEntry {
   value: string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -110,54 +107,6 @@ function tailString(value: string, maxChars: number): string {
   }
 
   return value.slice(-maxChars);
-}
-
-function ensureShellSession(context: unknown): PandaShellSession | null {
-  if (!isRecord(context)) {
-    return null;
-  }
-
-  const shell = context.shell;
-  if (isRecord(shell) && typeof shell.cwd === "string") {
-    const shellSession = shell as unknown as PandaShellSession;
-    shellSession.cwd = path.resolve(shellSession.cwd);
-
-    if (!isRecord(shellSession.env)) {
-      shellSession.env = {};
-    } else {
-      for (const [key, value] of Object.entries(shellSession.env)) {
-        if (typeof value !== "string") {
-          delete shellSession.env[key];
-        }
-      }
-    }
-
-    return shellSession;
-  }
-
-  const nextShell: PandaShellSession = {
-    cwd:
-      typeof context.cwd === "string" && context.cwd.trim()
-        ? path.resolve(context.cwd)
-        : process.cwd(),
-    env: {},
-  };
-
-  context.shell = nextShell;
-  return nextShell;
-}
-
-function resolveBaseCwd(context: unknown): string {
-  const shell = ensureShellSession(context);
-  if (shell) {
-    return path.resolve(shell.cwd);
-  }
-
-  if (isRecord(context) && typeof context.cwd === "string" && context.cwd.trim()) {
-    return path.resolve(context.cwd);
-  }
-
-  return process.cwd();
 }
 
 function resolveCommandCwd(commandCwd: string | undefined, baseCwd: string): string {
@@ -470,7 +419,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
 
   override formatResult(message: ToolResultMessage<JsonValue>): string {
     const details = message.details;
-    if (!isRecord(details)) {
+    if (!details || typeof details !== "object" || Array.isArray(details)) {
       return super.formatResult(message);
     }
 
@@ -489,8 +438,8 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     run: RunContext<TContext>,
   ): Promise<ToolOutput> {
     const startedAt = Date.now();
-    const shellSession = ensureShellSession(run.context);
-    const baseCwd = resolveBaseCwd(run.context);
+    const shellSession = ensurePandaShellSession(run.context);
+    const baseCwd = shellSession?.cwd ?? readPandaBaseCwd(run.context);
     const cwd = resolveCommandCwd(args.cwd, baseCwd);
     const shell = this.shell ?? process.env.SHELL ?? "/bin/zsh";
     const timeoutMs = args.timeoutMs ?? this.defaultTimeoutMs;
@@ -620,7 +569,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     if (success && shellSession) {
       shellSession.cwd = finalCwd;
 
-      if (isRecord(run.context)) {
+      if (run.context && typeof run.context === "object" && !Array.isArray(run.context)) {
         (run.context as Record<string, unknown>).cwd = finalCwd;
       }
     }

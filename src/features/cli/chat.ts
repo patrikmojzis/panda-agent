@@ -134,6 +134,11 @@ const PANDA_SPLASH = [
   "| |                            ",
   "|_|                            ",
 ] as const;
+const WELCOME_LINES = [
+  "Chat with Panda in this terminal.",
+  "Commands: /help, /provider <name>, /model <name>, /new, /clear, /exit.",
+  "Keys: Enter send, Ctrl-J newline, Tab slash completion, Ctrl-R history search, Ctrl-F transcript search, PgUp/PgDn scroll transcript.",
+] as const;
 
 export interface ChatCliOptions {
   provider?: PandaProviderName;
@@ -252,11 +257,7 @@ export class PandaChatApp {
     this.pushEntry(
       "meta",
       "welcome",
-      [
-        "Chat with Panda in this terminal.",
-        "Commands: /help, /provider <name>, /model <name>, /new, /clear, /exit.",
-        "Keys: Enter send, Ctrl-J newline, Tab slash completion, Ctrl-R history search, Ctrl-F transcript search, PgUp/PgDn scroll transcript.",
-      ].join("\n"),
+      WELCOME_LINES.join("\n"),
     );
     this.setNotice("Ctrl-F find · Ctrl-R history · Ctrl-J newline", "info", 5_000);
     this.render();
@@ -372,6 +373,18 @@ export class PandaChatApp {
     this.afterTranscriptChange();
   }
 
+  private setComposerState(next: ComposerState): void {
+    this.composer = next;
+    this.currentSlashContext();
+  }
+
+  private resetTranscriptView(): void {
+    this.transcript.length = 0;
+    this.followTranscript = true;
+    this.scrollTop = 0;
+    this.clearTranscriptSearch();
+  }
+
   private afterTranscriptChange(): void {
     const view = this.buildView();
     this.scrollTop = view.resolvedScrollTop;
@@ -446,11 +459,9 @@ export class PandaChatApp {
           rendered: "",
         });
 
-        for (const line of [
-          "Chat with Panda in this terminal.",
-          "Commands: /help, /provider <name>, /model <name>, /new, /clear, /exit.",
-          "Keys: Enter send, Ctrl-J newline, Tab slash completion, Ctrl-R history search, Ctrl-F transcript search, PgUp/PgDn scroll transcript.",
-        ].flatMap((line) => wrapPlainText(line, Math.max(20, width - TRANSCRIPT_GUTTER_WIDTH)))) {
+        for (const line of WELCOME_LINES.flatMap((welcomeLine) => {
+          return wrapPlainText(welcomeLine, Math.max(20, width - TRANSCRIPT_GUTTER_WIDTH));
+        })) {
           lines.push({
             plain: line,
             rendered: theme.dim(line),
@@ -539,60 +550,55 @@ export class PandaChatApp {
     };
   }
 
+  private buildPromptInfoLine(
+    width: number,
+    prompt: string,
+    summary: string,
+    preview: string | null = null,
+  ): InfoLine {
+    const visiblePrompt = truncatePlainText(prompt, width);
+    const remainingWidth = Math.max(0, width - visiblePrompt.length);
+    const suffix = remainingWidth > 0
+      ? truncatePlainText(
+          ` · ${summary}${preview ? ` · ${preview}` : ""}`,
+          remainingWidth,
+        )
+      : "";
+
+    return {
+      text: theme.gold(visiblePrompt) + theme.dim(suffix),
+      cursorColumn: Math.min(visiblePrompt.length + 1, width),
+    };
+  }
+
   private buildInfoLine(
     width: number,
+    transcriptLines: readonly TranscriptLine[],
     transcriptMatches: readonly number[],
     selectedTranscriptLine: number | null,
     scrollLabel: string,
   ): InfoLine {
     if (this.transcriptSearch.active) {
-      const prompt = `find> ${this.transcriptSearch.query}`;
       const summary = transcriptMatches.length === 0
         ? "no matches"
         : `${clamp(this.transcriptSearch.selected, 0, transcriptMatches.length - 1) + 1}/${transcriptMatches.length}`;
       const preview = selectedTranscriptLine === null
         ? null
-        : normalizeInlineText(
-            this.buildTranscriptLines(width)[selectedTranscriptLine]?.plain ?? "",
-          );
-      const visiblePrompt = truncatePlainText(prompt, width);
-      const remainingWidth = Math.max(0, width - visiblePrompt.length);
-      const suffix = remainingWidth > 0
-        ? truncatePlainText(
-            ` · ${summary}${preview ? ` · ${preview}` : ""}`,
-            remainingWidth,
-          )
-        : "";
+        : normalizeInlineText(transcriptLines[selectedTranscriptLine]?.plain ?? "");
 
-      return {
-        text: theme.gold(visiblePrompt) + theme.dim(suffix),
-        cursorColumn: Math.min(visiblePrompt.length + 1, width),
-      };
+      return this.buildPromptInfoLine(width, `find> ${this.transcriptSearch.query}`, summary, preview);
     }
 
     if (this.historySearch.active) {
-      const prompt = `history> ${this.historySearch.query}`;
       const matches = this.historyMatches();
       const summary = matches.length === 0
         ? "no matches"
         : `${clamp(this.historySearch.selected, 0, matches.length - 1) + 1}/${matches.length}`;
       const preview = normalizeInlineText(this.currentHistoryMatch() ?? "");
-      const visiblePrompt = truncatePlainText(prompt, width);
-      const remainingWidth = Math.max(0, width - visiblePrompt.length);
-      const suffix = remainingWidth > 0
-        ? truncatePlainText(
-            ` · ${summary}${preview ? ` · ${preview}` : ""}`,
-            remainingWidth,
-          )
-        : "";
 
-      return {
-        text: theme.gold(visiblePrompt) + theme.dim(suffix),
-        cursorColumn: Math.min(visiblePrompt.length + 1, width),
-      };
+      return this.buildPromptInfoLine(width, `history> ${this.historySearch.query}`, summary, preview);
     }
 
-    this.clearExpiredNotice();
     if (this.notice) {
       const text = truncatePlainText(this.notice.text, width);
       return {
@@ -719,7 +725,7 @@ export class PandaChatApp {
       statusLine: this.isRunning
         ? theme.mint(truncatePlainText(`${spinner}${statusText}`, width))
         : theme.dim(truncatePlainText(statusText, width)),
-      infoLine: this.buildInfoLine(width, transcriptMatches, selectedTranscriptLine, scrollLabel),
+      infoLine: this.buildInfoLine(width, transcriptLines, transcriptMatches, selectedTranscriptLine, scrollLabel),
     };
   }
 
@@ -844,8 +850,7 @@ export class PandaChatApp {
     }
 
     const next = applySlashCompletion(this.composer.value, context, command);
-    this.composer = setComposerValue(this.composer, next.value, next.cursor);
-    this.currentSlashContext();
+    this.setComposerState(setComposerValue(this.composer, next.value, next.cursor));
     return true;
   }
 
@@ -878,8 +883,7 @@ export class PandaChatApp {
     }
 
     this.recordHistory(message);
-    this.composer = createComposerState();
-    this.currentSlashContext();
+    this.setComposerState(createComposerState());
 
     if (message.startsWith("/")) {
       const shouldContinue = await this.handleCommand(message);
@@ -972,19 +976,13 @@ export class PandaChatApp {
 
       case "/new":
         this.thread = this.buildThread([]);
-        this.transcript.length = 0;
-        this.followTranscript = true;
-        this.scrollTop = 0;
-        this.clearTranscriptSearch();
+        this.resetTranscriptView();
         this.pushEntry("meta", "welcome", "Started a fresh chat.");
         this.setNotice("Started a fresh chat.", "info");
         return true;
 
       case "/clear":
-        this.transcript.length = 0;
-        this.followTranscript = true;
-        this.scrollTop = 0;
-        this.clearTranscriptSearch();
+        this.resetTranscriptView();
         this.pushEntry("meta", "view", "Cleared the visible transcript.");
         this.setNotice("Cleared the visible transcript.", "info");
         return true;
@@ -1142,60 +1140,25 @@ export class PandaChatApp {
       } else {
         this.close();
       }
-      this.render();
-      return;
-    }
-
-    const view = this.buildView();
-    if (key.name === "pageup") {
-      this.scrollTranscript(-(Math.max(1, view.transcriptHeight - 2)));
-      this.render();
-      return;
-    }
-
-    if (key.name === "pagedown") {
-      this.scrollTranscript(Math.max(1, view.transcriptHeight - 2));
-      this.render();
-      return;
-    }
-
-    if (key.meta && key.name === "up") {
+    } else if (key.name === "pageup" || key.name === "pagedown") {
+      const delta = Math.max(1, this.buildView().transcriptHeight - 2);
+      this.scrollTranscript(key.name === "pageup" ? -delta : delta);
+    } else if (key.meta && key.name === "up") {
       this.scrollTranscript(-1);
-      this.render();
-      return;
-    }
-
-    if (key.meta && key.name === "down") {
+    } else if (key.meta && key.name === "down") {
       this.scrollTranscript(1);
-      this.render();
-      return;
-    }
-
-    if (!this.historySearch.active && !this.transcriptSearch.active && key.ctrl && key.name === "r") {
+    } else if (!this.historySearch.active && !this.transcriptSearch.active && key.ctrl && key.name === "r") {
       this.startHistorySearch();
-      this.render();
-      return;
-    }
-
-    if (!this.historySearch.active && !this.transcriptSearch.active && key.ctrl && key.name === "f") {
+    } else if (!this.historySearch.active && !this.transcriptSearch.active && key.ctrl && key.name === "f") {
       this.startTranscriptSearch();
-      this.render();
-      return;
-    }
-
-    if (this.transcriptSearch.active) {
+    } else if (this.transcriptSearch.active) {
       this.handleTranscriptSearchKeypress(sequence, key);
-      this.render();
-      return;
-    }
-
-    if (this.historySearch.active) {
+    } else if (this.historySearch.active) {
       this.handleHistorySearchKeypress(sequence, key);
-      this.render();
-      return;
+    } else {
+      await this.handleComposerKeypress(sequence, key);
     }
 
-    await this.handleComposerKeypress(sequence, key);
     this.render();
   }
 
@@ -1243,8 +1206,7 @@ export class PandaChatApp {
     if (key.name === "return" || sequence === "\r") {
       const match = this.currentHistoryMatch();
       if (match) {
-        this.composer = setComposerValue(this.composer, match);
-        this.currentSlashContext();
+        this.setComposerState(setComposerValue(this.composer, match));
       } else {
         this.setNotice("No history match to load.", "info");
       }
@@ -1308,62 +1270,52 @@ export class PandaChatApp {
     }
 
     if (sequence === "\n") {
-      this.composer = insertText(this.composer, "\n");
-      this.currentSlashContext();
+      this.setComposerState(insertText(this.composer, "\n"));
       return;
     }
 
     if (key.name === "backspace") {
-      this.composer = backspace(this.composer);
-      this.currentSlashContext();
+      this.setComposerState(backspace(this.composer));
       return;
     }
 
     if (key.name === "delete") {
-      this.composer = deleteForward(this.composer);
-      this.currentSlashContext();
+      this.setComposerState(deleteForward(this.composer));
       return;
     }
 
     if (key.name === "left") {
-      this.composer = moveCursorLeft(this.composer);
-      this.currentSlashContext();
+      this.setComposerState(moveCursorLeft(this.composer));
       return;
     }
 
     if (key.name === "right") {
-      this.composer = moveCursorRight(this.composer);
-      this.currentSlashContext();
+      this.setComposerState(moveCursorRight(this.composer));
       return;
     }
 
     if (key.name === "up") {
-      this.composer = moveCursorUp(this.composer);
-      this.currentSlashContext();
+      this.setComposerState(moveCursorUp(this.composer));
       return;
     }
 
     if (key.name === "down") {
-      this.composer = moveCursorDown(this.composer);
-      this.currentSlashContext();
+      this.setComposerState(moveCursorDown(this.composer));
       return;
     }
 
     if (key.name === "home" || (key.ctrl && key.name === "a")) {
-      this.composer = moveCursorLineStart(this.composer);
-      this.currentSlashContext();
+      this.setComposerState(moveCursorLineStart(this.composer));
       return;
     }
 
     if (key.name === "end" || (key.ctrl && key.name === "e")) {
-      this.composer = moveCursorLineEnd(this.composer);
-      this.currentSlashContext();
+      this.setComposerState(moveCursorLineEnd(this.composer));
       return;
     }
 
     if (isPrintable(sequence, key)) {
-      this.composer = insertText(this.composer, sequence);
-      this.currentSlashContext();
+      this.setComposerState(insertText(this.composer, sequence));
     }
   }
 }

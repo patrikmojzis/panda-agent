@@ -155,12 +155,6 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     this.history.push(message);
   }
 
-  addMessages(messages: Iterable<Message>): void {
-    for (const message of messages) {
-      this.addMessage(message);
-    }
-  }
-
   createRunContext(runMessages: Message[]): RunContext<TContext> {
     return new RunContext({
       agent: this.agent,
@@ -169,6 +163,47 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       messages: runMessages,
       context: this.context,
     });
+  }
+
+  private async prepareTurn(): Promise<{
+    runMessages: Message[];
+    runContext: RunContext<TContext>;
+  }> {
+    this.verifyMaxTurns();
+
+    if (this.runPipelines?.length) {
+      await Promise.all(this.runPipelines.map((pipeline) => pipeline.preflight(this)));
+    }
+
+    const runMessages = await this.getRunInput();
+    const runContext = this.createRunContext([...runMessages]);
+
+    if (this.hooks?.length) {
+      await Promise.all(this.hooks.map((hook) => hook.onStart(runContext)));
+    }
+
+    return {
+      runMessages,
+      runContext,
+    };
+  }
+
+  private async finalizeAssistantTurn(
+    response: AssistantMessage,
+    runContext: RunContext<TContext>,
+  ): Promise<ToolCall[]> {
+    this.addMessage(response);
+    runContext.messages.push(response);
+
+    if (this.hooks?.length) {
+      await Promise.all(this.hooks.map((hook) => hook.onEnd(runContext, response)));
+    }
+
+    if (this.runPipelines?.length) {
+      await Promise.all(this.runPipelines.map((pipeline) => pipeline.postflight(this, response)));
+    }
+
+    return collectAssistantToolCalls(response);
   }
 
   async *executeToolCalls<TNextEvent>(
@@ -240,26 +275,29 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   }
 
   async getRunInput(): Promise<Message[]> {
-    let selectedMessages = [...this.history];
-
-    if (this.maxInputTokens) {
-      const trimmedMessages: Message[] = [];
-      let currentTokens = 0;
-
-      for (const message of [...this.history].reverse()) {
-        const messageTokens = this.countTokens(JSON.stringify(message));
-        if (currentTokens + messageTokens > this.maxInputTokens) {
-          break;
-        }
-
-        trimmedMessages.unshift(message);
-        currentTokens += messageTokens;
-      }
-
-      selectedMessages = trimmedMessages;
+    if (!this.maxInputTokens) {
+      return [...this.history];
     }
 
-    return selectedMessages;
+    const trimmedMessages: Message[] = [];
+    let currentTokens = 0;
+
+    for (let index = this.history.length - 1; index >= 0; index -= 1) {
+      const message = this.history[index];
+      if (!message) {
+        continue;
+      }
+
+      const messageTokens = this.countTokens(JSON.stringify(message));
+      if (currentTokens + messageTokens > this.maxInputTokens) {
+        break;
+      }
+
+      trimmedMessages.unshift(message);
+      currentTokens += messageTokens;
+    }
+
+    return trimmedMessages;
   }
 
   async parseStructuredOutput(output: AssistantMessage): Promise<TOutput> {
@@ -285,9 +323,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     toolCall: ToolCall,
     runContext: RunContext<TContext>,
   ): Promise<ToolResultMessage<JsonValue>> {
-    const tool = this.agent.tools.find((candidate): candidate is Tool => {
-      return candidate instanceof Tool && candidate.name === toolCall.name;
-    });
+    const tool = this.agent.tools.find((candidate) => candidate.name === toolCall.name);
 
     if (!tool) {
       return buildToolResultMessage({
@@ -354,58 +390,21 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     };
   }
 
-  private collectFunctionCalls(response: AssistantMessage): ToolCall[] {
-    return collectAssistantToolCalls(response);
-  }
-
   async *run(): AsyncGenerator<ThreadRunEvent> {
-    this.verifyMaxTurns();
-
-    if (this.runPipelines?.length) {
-      await Promise.all(this.runPipelines.map((pipeline) => pipeline.preflight(this)));
-    }
-
-    const runMessages = await this.getRunInput();
-    const runContext = this.createRunContext([...runMessages]);
-
-    if (this.hooks?.length) {
-      await Promise.all(this.hooks.map((hook) => hook.onStart(runContext)));
-    }
+    const { runMessages, runContext } = await this.prepareTurn();
 
     const response = await this.runtime.complete(await this.buildRuntimeRequest(runMessages));
 
     yield response;
 
-    this.addMessage(response);
-    runContext.messages.push(response);
-
-    if (this.hooks?.length) {
-      await Promise.all(this.hooks.map((hook) => hook.onEnd(runContext, response)));
-    }
-
-    if (this.runPipelines?.length) {
-      await Promise.all(this.runPipelines.map((pipeline) => pipeline.postflight(this, response)));
-    }
-
-    const functionCalls = this.collectFunctionCalls(response);
+    const functionCalls = await this.finalizeAssistantTurn(response, runContext);
     if (functionCalls.length > 0) {
       yield* this.executeToolCalls(functionCalls, runContext, () => this.run());
     }
   }
 
   async *stream(): AsyncGenerator<ThreadStreamEvent> {
-    this.verifyMaxTurns();
-
-    if (this.runPipelines?.length) {
-      await Promise.all(this.runPipelines.map((pipeline) => pipeline.preflight(this)));
-    }
-
-    const runMessages = await this.getRunInput();
-    const runContext = this.createRunContext([...runMessages]);
-
-    if (this.hooks?.length) {
-      await Promise.all(this.hooks.map((hook) => hook.onStart(runContext)));
-    }
+    const { runMessages, runContext } = await this.prepareTurn();
 
     const stream = this.runtime.stream(await this.buildRuntimeRequest(runMessages));
 
@@ -418,18 +417,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       throw new StreamingFailedError(response.errorMessage ?? "Streaming failed");
     }
 
-    this.addMessage(response);
-    runContext.messages.push(response);
-
-    if (this.hooks?.length) {
-      await Promise.all(this.hooks.map((hook) => hook.onEnd(runContext, response)));
-    }
-
-    if (this.runPipelines?.length) {
-      await Promise.all(this.runPipelines.map((pipeline) => pipeline.postflight(this, response)));
-    }
-
-    const functionCalls = this.collectFunctionCalls(response);
+    const functionCalls = await this.finalizeAssistantTurn(response, runContext);
     if (functionCalls.length > 0) {
       yield* this.executeToolCalls(functionCalls, runContext, () => this.stream());
     }

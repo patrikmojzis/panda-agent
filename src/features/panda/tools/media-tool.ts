@@ -12,6 +12,7 @@ import { ToolError } from "../../agent-core/exceptions.js";
 import type { RunContext } from "../../agent-core/run-context.js";
 import type { JsonObject, ToolResultPayload } from "../../agent-core/types.js";
 import type { PandaSessionContext } from "../types.js";
+import { resolvePandaPath } from "./context.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_PDF_PREVIEW_SIZE = 1600;
@@ -28,31 +29,6 @@ const IMAGE_EXTENSIONS = new Map<string, string>([
 
 export interface MediaToolOptions {
   pdfPreviewSize?: number;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function resolveBaseCwd(context: unknown): string {
-  if (isRecord(context)) {
-    const shell = context.shell;
-    if (isRecord(shell) && typeof shell.cwd === "string" && shell.cwd.trim()) {
-      return path.resolve(shell.cwd);
-    }
-
-    if (typeof context.cwd === "string" && context.cwd.trim()) {
-      return path.resolve(context.cwd);
-    }
-  }
-
-  return process.cwd();
-}
-
-function resolveMediaPath(rawPath: string, context: unknown): string {
-  return path.isAbsolute(rawPath)
-    ? path.resolve(rawPath)
-    : path.resolve(resolveBaseCwd(context), rawPath);
 }
 
 async function ensureReadableFile(filePath: string): Promise<void> {
@@ -207,7 +183,7 @@ export class MediaTool<TContext = PandaSessionContext> extends Tool<typeof Media
     args: z.output<typeof MediaTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
-    const resolvedPath = resolveMediaPath(args.path, run.context);
+    const resolvedPath = resolvePandaPath(args.path, run.context);
     await ensureReadableFile(resolvedPath);
 
     const extension = path.extname(resolvedPath).toLowerCase();
