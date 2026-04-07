@@ -13,6 +13,7 @@ export const theme = {
   white: (value: string) => wrap("\u001b[38;5;255m", value),
   dim: (value: string) => wrap("\u001b[2m", value),
   bold: (value: string) => wrap("\u001b[1m", value),
+  inverse: (value: string) => wrap("\u001b[7m", value),
 };
 
 export function stripAnsi(value: string): string {

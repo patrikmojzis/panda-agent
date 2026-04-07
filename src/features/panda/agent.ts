@@ -1,11 +1,11 @@
 import { Agent, type AgentOptions } from "../agent-core/agent.js";
-import type { NativeToolDefinition } from "../agent-core/types.js";
+import type { ToolDefinition } from "../agent-core/types.js";
 import type { Tool } from "../agent-core/tool.js";
 import { buildPandaPrompt } from "./prompts.js";
 import { BashTool, type BashToolOptions } from "./tools/bash-tool.js";
 
 export interface PandaAgentOptions<TOutput = unknown> extends Omit<AgentOptions<TOutput>, "tools"> {
-  tools?: Array<Tool | NativeToolDefinition>;
+  tools?: ReadonlyArray<Tool | ToolDefinition>;
   includeBashTool?: boolean;
   bashTool?: BashTool;
   bashToolOptions?: BashToolOptions;

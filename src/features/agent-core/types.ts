@@ -1,4 +1,10 @@
-import type { AssistantMessage, Message } from "@mariozechner/pi-ai";
+import type {
+  AssistantMessageEvent,
+  Message,
+  ThinkingLevel,
+} from "@mariozechner/pi-ai";
+
+export type { ProviderName } from "./provider.js";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -7,13 +13,53 @@ export interface JsonObject {
   [key: string]: JsonValue;
 }
 
-export type InputItem = Message | Record<string, unknown>;
-export type ResponseOutputItemLike = Record<string, unknown>;
-export type ResponseLike =
-  | AssistantMessage
-  | (Record<string, unknown> & {
-      output?: ResponseOutputItemLike[];
-    });
+export interface SystemMessage {
+  role: "system";
+  content: string;
+}
 
-export type NativeToolDefinition = Record<string, unknown>;
-export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+export interface ToolDefinition {
+  type?: "function";
+  name: string;
+  description: string;
+  parameters: JsonObject;
+}
+
+export interface MessageTextOutput {
+  type: "message";
+  role: "assistant";
+  content: Array<{
+    type: "output_text";
+    text: string;
+  }>;
+}
+
+export interface FunctionCallOutput {
+  type: "function_call";
+  name: string;
+  arguments: string;
+  call_id: string;
+}
+
+export interface FunctionCallResultOutput {
+  type: "function_call_output";
+  call_id: string;
+  output: string;
+}
+
+export interface ToolProgressOutput {
+  type: "tool_progress";
+  call_id: string;
+  name: string;
+  output: JsonObject;
+}
+
+export type InputItem = SystemMessage | Message;
+export type ResponseOutputItemLike =
+  | MessageTextOutput
+  | FunctionCallOutput
+  | FunctionCallResultOutput
+  | ToolProgressOutput;
+export type ThreadStreamEvent = AssistantMessageEvent | ResponseOutputItemLike;
+
+export type ReasoningEffort = ThinkingLevel;

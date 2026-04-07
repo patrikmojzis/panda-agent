@@ -1,4 +1,4 @@
-import { Agent, Thread, Tool, ToolResponse, stringToUserMessage, z } from "../src/index.js";
+import { Agent, Thread, Tool, ToolResponse, stringToUserMessage, z, type RunContext } from "../src/index.js";
 
 class CalculatorTool extends Tool<typeof CalculatorTool.schema> {
   name = "calculator";
@@ -10,7 +10,10 @@ class CalculatorTool extends Tool<typeof CalculatorTool.schema> {
   });
   schema = CalculatorTool.schema;
 
-  async handle(args: z.output<typeof CalculatorTool.schema>): Promise<ToolResponse> {
+  async handle(
+    args: z.output<typeof CalculatorTool.schema>,
+    _run: RunContext,
+  ): Promise<ToolResponse> {
     const result = args.operation === "add" ? args.a + args.b : args.a * args.b;
     return new ToolResponse({ output: { result } });
   }
@@ -25,7 +28,7 @@ const agent = new Agent({
 
 const thread = new Thread({
   agent,
-  input: [stringToUserMessage("What is 15 + 27?")],
+  messages: [stringToUserMessage("What is 15 + 27?")],
 });
 
 const result = await thread.runToCompletion();

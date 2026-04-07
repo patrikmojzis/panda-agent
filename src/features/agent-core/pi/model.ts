@@ -1,12 +1,12 @@
 import { getModel, type Api, type Model } from "@mariozechner/pi-ai";
 
-type PandaModelProvider = "openai" | "openai-codex" | "anthropic" | "anthropic-oauth";
+import { assertProviderName, type ProviderName } from "../provider.js";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 
-function resolvePiProviderName(providerName: string): "openai" | "openai-codex" | "anthropic" {
+function resolvePiProviderName(providerName: ProviderName): "openai" | "openai-codex" | "anthropic" {
   if (providerName === "openai-codex") {
     return "openai-codex";
   }
@@ -18,7 +18,7 @@ function resolvePiProviderName(providerName: string): "openai" | "openai-codex" 
   return "openai";
 }
 
-function buildFallbackModel(providerName: PandaModelProvider, modelId: string): Model<Api> {
+function buildFallbackModel(providerName: ProviderName, modelId: string): Model<Api> {
   if (providerName === "openai-codex") {
     return {
       id: modelId,
@@ -63,12 +63,13 @@ function buildFallbackModel(providerName: PandaModelProvider, modelId: string): 
   };
 }
 
-export function resolvePandaModel(providerName: string, modelId: string): Model<Api> {
-  const runtimeProvider = resolvePiProviderName(providerName);
+export function resolvePandaModel(providerName: ProviderName, modelId: string): Model<Api> {
+  const resolvedProviderName = assertProviderName(providerName);
+  const runtimeProvider = resolvePiProviderName(resolvedProviderName);
 
   try {
     return getModel(runtimeProvider, modelId as never) as Model<Api>;
   } catch {
-    return buildFallbackModel(providerName as PandaModelProvider, modelId);
+    return buildFallbackModel(resolvedProviderName, modelId);
   }
 }

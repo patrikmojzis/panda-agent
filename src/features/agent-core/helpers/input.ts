@@ -1,25 +1,7 @@
-import type { InputItem } from "../types.js";
+import type { SystemMessage } from "../types.js";
+import type { UserMessage } from "@mariozechner/pi-ai";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function responseToRecord(item: unknown): InputItem {
-  if (isRecord(item)) {
-    return { ...item };
-  }
-
-  if (item && typeof item === "object" && "model_dump" in item && typeof item.model_dump === "function") {
-    const dumped = item.model_dump();
-    if (isRecord(dumped)) {
-      return dumped;
-    }
-  }
-
-  throw new TypeError(`Cannot convert item to record: ${String(item)}`);
-}
-
-export function stringToUserMessage(message: string): InputItem {
+export function stringToUserMessage(message: string): UserMessage {
   return {
     role: "user",
     content: message,
@@ -27,6 +9,9 @@ export function stringToUserMessage(message: string): InputItem {
   };
 }
 
-export function toApiItems(items: InputItem[]): InputItem[] {
-  return items.map((item) => responseToRecord(item));
+export function stringToSystemMessage(message: string): SystemMessage {
+  return {
+    role: "system",
+    content: message,
+  };
 }

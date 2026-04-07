@@ -11,6 +11,13 @@ export {
 } from "./exceptions.js";
 export { Hook } from "./hook.js";
 export { LlmContext, gatherContexts } from "./llm-context.js";
+export {
+  PROVIDER_NAMES,
+  assertProviderName,
+  formatProviderNameList,
+  isProviderName,
+  parseProviderName,
+} from "./provider.js";
 export { PiAiRuntime } from "./pi/runtime.js";
 export type { LlmRuntime, LlmRuntimeRequest } from "./runtime.js";
 export {
@@ -27,7 +34,7 @@ export { RunPipeline } from "./run-pipeline.js";
 export { Thread, type ThreadOptions } from "./thread.js";
 export { Tool } from "./tool.js";
 export { ToolResponse, type ToolOutput, type ToolResponseOptions } from "./tool-response.js";
-export { responseToRecord, stringToUserMessage, toApiItems } from "./helpers/input.js";
+export { stringToSystemMessage, stringToUserMessage } from "./helpers/input.js";
 export { formatParameters } from "./helpers/schema.js";
 export { estimateTokensFromString, type TokenCounter } from "./helpers/token-count.js";
 export type {
@@ -35,8 +42,11 @@ export type {
   JsonObject,
   JsonPrimitive,
   JsonValue,
-  NativeToolDefinition,
+  ProviderName,
   ReasoningEffort,
-  ResponseLike,
   ResponseOutputItemLike,
+  SystemMessage,
+  ThreadStreamEvent,
+  ToolProgressOutput,
+  ToolDefinition,
 } from "./types.js";

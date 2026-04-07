@@ -15,6 +15,8 @@ const BASE_PROMPT_LINES = [
   "",
   "## Shell Usage",
   "When a shell tool is available, prefer short inspection commands first before making changes.",
+  "The shell working directory persists across bash calls.",
+  "Environment changes made with simple export/unset commands persist across bash calls.",
   "Avoid destructive or high-impact shell commands unless the user clearly asked for them.",
   "Summarize command results in plain language instead of dumping noisy output unless the output itself is the answer.",
 ];

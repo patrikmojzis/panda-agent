@@ -14,7 +14,7 @@ const agent = new Agent({
 
 const thread = new Thread({
   agent,
-  input: [stringToUserMessage("TypeScript migration is underway and the TUI is intentionally out of scope.")],
+  messages: [stringToUserMessage("TypeScript migration is underway and the TUI is intentionally out of scope.")],
 });
 
 const result = await thread.runToCompletion();

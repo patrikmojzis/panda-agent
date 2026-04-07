@@ -1,3 +1,5 @@
+import type { AssistantMessage, ToolCall } from "@mariozechner/pi-ai";
+
 import type { Agent } from "./agent.js";
 import {
   InvalidJSONResponseError,
@@ -8,36 +10,34 @@ import {
 import { estimateTokensFromString, type TokenCounter } from "./helpers/token-count.js";
 import { gatherContexts, type LlmContext } from "./llm-context.js";
 import type { Hook } from "./hook.js";
-import { buildToolResultMessage, buildConversationContext, collectAssistantToolCalls, assistantMessageToOutputItems } from "./pi/messages.js";
+import {
+  assistantMessageToOutputItems,
+  buildConversationContext,
+  buildToolResultMessage,
+  collectAssistantToolCalls,
+} from "./pi/messages.js";
 import { PiAiRuntime } from "./pi/runtime.js";
+import { assertProviderName, type ProviderName } from "./provider.js";
 import { RunContext } from "./run-context.js";
 import type { LlmRuntime, LlmRuntimeRequest } from "./runtime.js";
 import type { RunPipeline } from "./run-pipeline.js";
 import { Tool } from "./tool.js";
 import { ToolResponse } from "./tool-response.js";
-import type { InputItem, NativeToolDefinition, ResponseLike, ResponseOutputItemLike } from "./types.js";
-import type { ToolCall } from "@mariozechner/pi-ai";
+import type { InputItem, ResponseOutputItemLike, ThreadStreamEvent } from "./types.js";
 
 export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   agent: Agent<TOutput>;
-  input?: InputItem[];
+  messages?: ReadonlyArray<InputItem>;
   maxTurns?: number;
   context?: TContext;
-  llmContexts?: LlmContext[];
-  hooks?: Hook<TContext>[];
+  llmContexts?: ReadonlyArray<LlmContext>;
+  hooks?: ReadonlyArray<Hook<TContext>>;
   maxInputTokens?: number;
   promptCacheKey?: string;
-  runPipelines?: RunPipeline<TContext>[];
-  storeResponses?: boolean;
-  openaiStoreResponses?: boolean;
-  provider?: string;
-  providerName?: string;
+  runPipelines?: ReadonlyArray<RunPipeline<TContext>>;
+  provider?: ProviderName;
   runtime?: LlmRuntime;
   countTokens?: TokenCounter;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function stringifyUnknown(value: unknown): string {
@@ -53,21 +53,11 @@ function stringifyUnknown(value: unknown): string {
 }
 
 function extractMessageText(output: ResponseOutputItemLike): string {
-  if (!isRecord(output) || output.type !== "message") {
+  if (output.type !== "message") {
     throw new InvalidJSONResponseError("No textual content found in output item");
   }
 
-  const content = Array.isArray(output.content) ? output.content : [];
-  let text = "";
-
-  for (const part of content) {
-    if (!isRecord(part) || typeof part.text !== "string") {
-      continue;
-    }
-
-    text += part.text;
-  }
-
+  const text = output.content.map((part) => part.text).join("");
   if (!text) {
     throw new InvalidJSONResponseError("No textual content found in output item");
   }
@@ -83,61 +73,115 @@ type ThreadFunctionCall = {
 };
 
 export class Thread<TContext = unknown, TOutput = unknown> {
-  agent: Agent<TOutput>;
-  maxTurns: number;
-  input: InputItem[];
-  context?: TContext;
-  llmContexts?: LlmContext[];
-  hooks?: Hook<TContext>[];
+  readonly agent: Agent<TOutput>;
+  readonly maxTurns: number;
+  readonly context?: TContext;
+  readonly llmContexts?: ReadonlyArray<LlmContext>;
+  readonly hooks?: ReadonlyArray<Hook<TContext>>;
   turnCount = 0;
-  maxInputTokens?: number;
-  promptCacheKey?: string;
-  runPipelines?: RunPipeline<TContext>[];
-  openaiStoreResponses: boolean;
+  readonly maxInputTokens?: number;
+  readonly promptCacheKey?: string;
+  readonly runPipelines?: ReadonlyArray<RunPipeline<TContext>>;
 
-  private readonly providerName: string;
+  private readonly providerName: ProviderName;
   private readonly runtime: LlmRuntime;
   private readonly countTokens: TokenCounter;
+  private readonly history: InputItem[];
 
   constructor(options: ThreadOptions<TContext, TOutput>) {
     this.agent = options.agent;
-    this.maxTurns = options.maxTurns ?? 20;
-    this.input = [...(options.input ?? [])];
+    this.maxTurns = options.maxTurns ?? 100;
+    this.history = [...(options.messages ?? [])];
     this.context = options.context;
     this.llmContexts = options.llmContexts;
     this.hooks = options.hooks;
     this.maxInputTokens = options.maxInputTokens;
     this.promptCacheKey = options.promptCacheKey;
     this.runPipelines = options.runPipelines;
-    this.openaiStoreResponses = options.storeResponses ?? options.openaiStoreResponses ?? true;
-    this.providerName =
-      options.providerName ??
-      (typeof options.provider === "string" ? options.provider : "openai");
+    this.providerName = options.provider === undefined ? "openai" : assertProviderName(options.provider);
     this.runtime = options.runtime ?? new PiAiRuntime();
     this.countTokens = options.countTokens ?? estimateTokensFromString;
   }
 
-  createRunContext(runInput: InputItem[]): RunContext<TContext> {
+  get messages(): readonly InputItem[] {
+    return this.history;
+  }
+
+  addMessage(message: InputItem): void {
+    this.history.push(message);
+  }
+
+  addMessages(messages: Iterable<InputItem>): void {
+    for (const message of messages) {
+      this.addMessage(message);
+    }
+  }
+
+  createRunContext(runMessages: InputItem[]): RunContext<TContext> {
     return new RunContext({
       agent: this.agent,
       turn: this.turnCount,
       maxTurns: this.maxTurns,
-      input: runInput,
+      messages: runMessages,
       context: this.context,
     });
   }
 
-  async *executeToolCalls(
+  async *executeToolCalls<TNextEvent>(
     functionCalls: ThreadFunctionCall[],
     runContext: RunContext<TContext>,
-    nextTurn: () => AsyncGenerator<ResponseOutputItemLike>,
-  ): AsyncGenerator<ResponseOutputItemLike> {
-    const toolResponses = await Promise.all(
-      functionCalls.map((call) => this.callTool(call.name, call.arguments, runContext)),
-    );
+    nextTurn: () => AsyncGenerator<TNextEvent>,
+  ): AsyncGenerator<ResponseOutputItemLike | TNextEvent> {
+    for (const call of functionCalls) {
+      const progressQueue: ResponseOutputItemLike[] = [];
+      let wakeProgressWaiter: (() => void) | undefined;
 
-    for (const [index, call] of functionCalls.entries()) {
-      const response = toolResponses[index];
+      const toolRunContext = new RunContext({
+        agent: runContext.agent,
+        turn: runContext.turn,
+        maxTurns: runContext.maxTurns,
+        messages: runContext.messages,
+        context: runContext.context,
+        onToolProgress: (progress) => {
+          progressQueue.push({
+            type: "tool_progress",
+            call_id: call.callId,
+            name: call.name,
+            output: progress,
+          });
+
+          wakeProgressWaiter?.();
+          wakeProgressWaiter = undefined;
+        },
+      });
+
+      let response: ToolResponse | undefined;
+      let toolCompleted = false;
+
+      const toolPromise = this.callTool(call.name, call.arguments, toolRunContext)
+        .then((toolResponse) => {
+          response = toolResponse;
+          toolCompleted = true;
+          wakeProgressWaiter?.();
+          wakeProgressWaiter = undefined;
+        });
+
+      while (!toolCompleted || progressQueue.length > 0) {
+        if (progressQueue.length > 0) {
+          const progressEvent = progressQueue.shift();
+          if (progressEvent) {
+            yield progressEvent;
+          }
+          continue;
+        }
+
+        await new Promise<void>((resolve) => {
+          wakeProgressWaiter = resolve;
+        });
+      }
+
+      await toolPromise;
+
       if (!response) {
         continue;
       }
@@ -148,21 +192,20 @@ export class Thread<TContext = unknown, TOutput = unknown> {
         isError: response.isError,
       });
 
-      this.input.push(toolResultMessage);
-      runContext.input.push(toolResultMessage);
+      this.addMessage(toolResultMessage);
+      runContext.messages.push(toolResultMessage);
 
-      const functionOutput = {
+      const toolResultOutput: ResponseOutputItemLike = {
         type: "function_call_output",
         call_id: call.callId,
         output: response.outputString,
       };
 
-      yield functionOutput;
+      yield toolResultOutput;
 
-      for (const additionalInput of response.additionalInputs ?? []) {
-        this.input.push(additionalInput);
-        runContext.input.push(additionalInput);
-        yield additionalInput as ResponseOutputItemLike;
+      for (const additionalMessage of response.additionalMessages ?? []) {
+        this.addMessage(additionalMessage);
+        runContext.messages.push(additionalMessage);
       }
     }
 
@@ -170,32 +213,26 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   }
 
   async getRunInput(): Promise<InputItem[]> {
-    let selectedInputs = [...this.input];
+    let selectedMessages = [...this.history];
 
     if (this.maxInputTokens) {
-      const trimmedInputs: InputItem[] = [];
+      const trimmedMessages: InputItem[] = [];
       let currentTokens = 0;
 
-      for (const message of [...this.input].reverse()) {
+      for (const message of [...this.history].reverse()) {
         const messageTokens = this.countTokens(JSON.stringify(message));
         if (currentTokens + messageTokens > this.maxInputTokens) {
           break;
         }
 
-        trimmedInputs.unshift(message);
+        trimmedMessages.unshift(message);
         currentTokens += messageTokens;
       }
 
-      selectedInputs = trimmedInputs;
+      selectedMessages = trimmedMessages;
     }
 
-    return selectedInputs;
-  }
-
-  toolDefinitions(): Array<Record<string, unknown>> {
-    return this.agent.tools.map((tool) => {
-      return tool instanceof Tool ? tool.toolDefinition : (tool as NativeToolDefinition);
-    });
+    return selectedMessages;
   }
 
   async parseStructuredOutput(output: ResponseOutputItemLike): Promise<TOutput> {
@@ -244,8 +281,8 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     this.turnCount += 1;
   }
 
-  private async buildRuntimeRequest(runInput: InputItem[]): Promise<LlmRuntimeRequest> {
-    const llmContextDump = this.llmContexts?.length ? await gatherContexts(this.llmContexts) : undefined;
+  private async buildRuntimeRequest(runMessages: InputItem[]): Promise<LlmRuntimeRequest> {
+    const llmContextDump = this.llmContexts?.length ? await gatherContexts([...this.llmContexts]) : undefined;
 
     return {
       providerName: this.providerName,
@@ -255,18 +292,14 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       promptCacheKey: this.promptCacheKey,
       context: buildConversationContext({
         agent: this.agent,
-        input: runInput,
+        messages: runMessages,
         llmContextDump,
       }),
     };
   }
 
-  private collectFunctionCalls(response: ResponseLike): ThreadFunctionCall[] {
-    if (!isRecord(response) || response.role !== "assistant" || !Array.isArray(response.content)) {
-      return [];
-    }
-
-    return collectAssistantToolCalls(response as never).map((call) => ({
+  private collectFunctionCalls(response: AssistantMessage): ThreadFunctionCall[] {
+    return collectAssistantToolCalls(response).map((call) => ({
       name: call.name,
       arguments: JSON.stringify(call.arguments ?? {}),
       callId: call.id,
@@ -281,21 +314,21 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       await Promise.all(this.runPipelines.map((pipeline) => pipeline.preflight(this)));
     }
 
-    const runInput = await this.getRunInput();
-    const runContext = this.createRunContext([...runInput]);
+    const runMessages = await this.getRunInput();
+    const runContext = this.createRunContext([...runMessages]);
 
     if (this.hooks?.length) {
       await Promise.all(this.hooks.map((hook) => hook.onStart(runContext)));
     }
 
-    const response = await this.runtime.complete(await this.buildRuntimeRequest(runInput));
+    const response = await this.runtime.complete(await this.buildRuntimeRequest(runMessages));
 
     for (const output of assistantMessageToOutputItems(response)) {
       yield output;
     }
 
-    this.input.push(response);
-    runContext.input.push(response);
+    this.addMessage(response);
+    runContext.messages.push(response);
 
     if (this.hooks?.length) {
       await Promise.all(this.hooks.map((hook) => hook.onEnd(runContext, response)));
@@ -311,24 +344,24 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     }
   }
 
-  async *stream(): AsyncGenerator<ResponseOutputItemLike> {
+  async *stream(): AsyncGenerator<ThreadStreamEvent> {
     this.verifyMaxTurns();
 
     if (this.runPipelines?.length) {
       await Promise.all(this.runPipelines.map((pipeline) => pipeline.preflight(this)));
     }
 
-    const runInput = await this.getRunInput();
-    const runContext = this.createRunContext([...runInput]);
+    const runMessages = await this.getRunInput();
+    const runContext = this.createRunContext([...runMessages]);
 
     if (this.hooks?.length) {
       await Promise.all(this.hooks.map((hook) => hook.onStart(runContext)));
     }
 
-    const stream = this.runtime.stream(await this.buildRuntimeRequest(runInput));
+    const stream = this.runtime.stream(await this.buildRuntimeRequest(runMessages));
 
     for await (const event of stream) {
-      yield event as ResponseOutputItemLike;
+      yield event;
     }
 
     const response = await stream.result();
@@ -336,8 +369,8 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       throw new StreamingFailedError(response.errorMessage ?? "Streaming failed");
     }
 
-    this.input.push(response);
-    runContext.input.push(response);
+    this.addMessage(response);
+    runContext.messages.push(response);
 
     if (this.hooks?.length) {
       await Promise.all(this.hooks.map((hook) => hook.onEnd(runContext, response)));

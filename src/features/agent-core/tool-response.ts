@@ -1,24 +1,20 @@
-import type { InputItem } from "./types.js";
+import type { InputItem, JsonObject, JsonValue } from "./types.js";
 
 export type ToolOutput =
-  | Record<string, unknown>
-  | string
-  | number
-  | boolean
-  | null
-  | unknown[];
+  | JsonObject
+  | JsonValue;
 
 export interface ToolResponseOptions {
   output: ToolOutput;
   isError?: boolean;
-  additionalInputs?: InputItem[];
+  additionalMessages?: InputItem[];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeToolOutput(value: ToolOutput): Record<string, unknown> | null {
+function normalizeToolOutput(value: ToolOutput): JsonObject | null {
   if (value === null) {
     return null;
   }
@@ -27,18 +23,18 @@ function normalizeToolOutput(value: ToolOutput): Record<string, unknown> | null 
 }
 
 export class ToolResponse {
-  readonly output: Record<string, unknown> | null;
+  readonly output: JsonObject | null;
   readonly isError: boolean;
-  readonly additionalInputs?: InputItem[];
+  readonly additionalMessages?: InputItem[];
 
-  constructor({ output, isError = false, additionalInputs }: ToolResponseOptions) {
+  constructor({ output, isError = false, additionalMessages }: ToolResponseOptions) {
     this.output = normalizeToolOutput(output);
     this.isError = isError;
-    this.additionalInputs = additionalInputs;
+    this.additionalMessages = additionalMessages;
   }
 
-  static error(output: ToolOutput, additionalInputs?: InputItem[]): ToolResponse {
-    return new ToolResponse({ output, isError: true, additionalInputs });
+  static error(output: ToolOutput, additionalMessages?: InputItem[]): ToolResponse {
+    return new ToolResponse({ output, isError: true, additionalMessages });
   }
 
   get outputString(): string {

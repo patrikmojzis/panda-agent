@@ -1,26 +1,26 @@
 import type { ZodType } from "zod";
 
 import type { Tool } from "./tool.js";
-import type { NativeToolDefinition, ReasoningEffort } from "./types.js";
+import type { ReasoningEffort, ToolDefinition } from "./types.js";
 
 export interface AgentOptions<TOutput = unknown> {
   name?: string;
   instructions?: string;
   model?: string;
-  tools?: Array<Tool | NativeToolDefinition>;
+  tools?: ReadonlyArray<Tool | ToolDefinition>;
   outputSchema?: ZodType<TOutput>;
   temperature?: number;
   reasoningEffort?: ReasoningEffort;
 }
 
 export class Agent<TOutput = unknown> {
-  name: string;
-  instructions: string;
-  model: string;
-  tools: Array<Tool | NativeToolDefinition>;
-  outputSchema?: ZodType<TOutput>;
-  temperature?: number;
-  reasoningEffort?: ReasoningEffort;
+  readonly name: string;
+  readonly instructions: string;
+  readonly model: string;
+  readonly tools: ReadonlyArray<Tool | ToolDefinition>;
+  readonly outputSchema?: ZodType<TOutput>;
+  readonly temperature?: number;
+  readonly reasoningEffort?: ReasoningEffort;
 
   constructor(options: AgentOptions<TOutput> = {}) {
     this.name = options.name ?? "agent";

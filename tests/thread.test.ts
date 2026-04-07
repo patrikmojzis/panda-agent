@@ -11,7 +11,7 @@ import {
   stringToUserMessage,
   z,
   type LlmRuntime,
-  type ResponseLike,
+  type RunContext,
   type ResponseOutputItemLike,
 } from "../src/index.js";
 
@@ -23,11 +23,44 @@ class EchoTool extends Tool<typeof EchoTool.schema> {
   });
   schema = EchoTool.schema;
 
-  async handle(args: z.output<typeof EchoTool.schema>): Promise<ToolResponse> {
+  async handle(
+    args: z.output<typeof EchoTool.schema>,
+    run: RunContext,
+  ): Promise<ToolResponse> {
     return new ToolResponse({
       output: {
         echoed: args.message,
-        turn: this.runContext.turn,
+        turn: run.turn,
+      },
+    });
+  }
+}
+
+class ProgressTool extends Tool<typeof ProgressTool.schema> {
+  name = "progress";
+  description = "Emit tool progress";
+  static schema = z.object({
+    message: z.string(),
+  });
+  schema = ProgressTool.schema;
+
+  async handle(
+    args: z.output<typeof ProgressTool.schema>,
+    run: RunContext,
+  ): Promise<ToolResponse> {
+    run.emitToolProgress({
+      phase: "started",
+      message: args.message,
+    });
+
+    run.emitToolProgress({
+      phase: "finished",
+      message: args.message,
+    });
+
+    return new ToolResponse({
+      output: {
+        done: args.message,
       },
     });
   }
@@ -87,7 +120,7 @@ function createAssistantMessage(
   };
 }
 
-function createMockRuntime(...responses: ResponseLike[]): LlmRuntime {
+function createMockRuntime(...responses: AssistantMessage[]): LlmRuntime {
   return {
     complete: vi.fn().mockImplementation(async () => {
       const response = responses.shift();
@@ -129,7 +162,7 @@ describe("Thread", () => {
         model: "gpt-4o-mini",
         tools: [new EchoTool()],
       }),
-      input: [stringToUserMessage("call the tool")],
+      messages: [stringToUserMessage("call the tool")],
       runtime,
       hooks: [new RecordingHook(events)],
       runPipelines: [new RecordingPipeline(events)],
@@ -170,10 +203,52 @@ describe("Thread", () => {
           answer: z.string(),
         }),
       }),
-      input: [stringToUserMessage("What is the answer?")],
+      messages: [stringToUserMessage("What is the answer?")],
       runtime,
     });
 
     await expect(thread.runToCompletion()).resolves.toEqual({ answer: "42" });
+  });
+
+  it("streams tool progress events before the final tool result", async () => {
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call_1",
+          name: "progress",
+          arguments: { message: "working" },
+        },
+      ]),
+      message("done"),
+    );
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "progress-agent",
+        instructions: "Use the progress tool",
+        model: "gpt-4o-mini",
+        tools: [new ProgressTool()],
+      }),
+      messages: [stringToUserMessage("show progress")],
+      runtime,
+    });
+
+    const outputs: ResponseOutputItemLike[] = [];
+    for await (const output of thread.run()) {
+      outputs.push(output);
+    }
+
+    expect(outputs.map((item) => item.type)).toEqual([
+      "function_call",
+      "tool_progress",
+      "tool_progress",
+      "function_call_output",
+      "message",
+    ]);
+    expect(outputs[1]).toMatchObject({
+      type: "tool_progress",
+      name: "progress",
+    });
   });
 });

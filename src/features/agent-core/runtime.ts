@@ -1,9 +1,9 @@
 import type { AssistantMessage, AssistantMessageEventStream, Context } from "@mariozechner/pi-ai";
 
-import type { ReasoningEffort } from "./types.js";
+import type { ProviderName, ReasoningEffort } from "./types.js";
 
 export interface LlmRuntimeRequest {
-  providerName: string;
+  providerName: ProviderName;
   model: string;
   temperature?: number;
   reasoningEffort?: ReasoningEffort;

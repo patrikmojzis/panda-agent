@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
+import { formatProviderNameList, parseProviderName } from "./features/agent-core/index.js";
 import { runChatCli } from "./features/cli/index.js";
 
 const program = new Command();
+
+function parseCliProvider(value: string) {
+  const provider = parseProviderName(value);
+  if (provider) {
+    return provider;
+  }
+
+  throw new InvalidArgumentError(`Provider must be one of ${formatProviderNameList()}.`);
+}
 
 program
   .name("panda")
@@ -14,6 +24,7 @@ program
   .option(
     "-p, --provider <provider>",
     "LLM provider to use (`openai`, `openai-codex`, `anthropic`, or `anthropic-oauth`)",
+    parseCliProvider,
   )
   .option("-m, --model <model>", "Model name override")
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
@@ -33,6 +44,7 @@ program
   .option(
     "-p, --provider <provider>",
     "LLM provider to use (`openai`, `openai-codex`, `anthropic`, or `anthropic-oauth`)",
+    parseCliProvider,
   )
   .option("-m, --model <model>", "Model name override")
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")

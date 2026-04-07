@@ -2,6 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { assertProviderName, type ProviderName } from "../provider.js";
+
 function trimNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -100,25 +102,27 @@ export function hasAnthropicOauthToken(env: NodeJS.ProcessEnv = process.env): bo
 }
 
 export function resolveProviderApiKey(
-  providerName: string,
+  providerName: ProviderName,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  if (providerName === "openai-codex") {
+  const resolvedProviderName = assertProviderName(providerName);
+
+  if (resolvedProviderName === "openai-codex") {
     return resolveOpenAICodexOauthToken({ env }) ?? undefined;
   }
 
-  if (providerName === "anthropic-oauth") {
+  if (resolvedProviderName === "anthropic-oauth") {
     return resolveAnthropicAccessToken(env) ?? undefined;
   }
 
-  if (providerName === "anthropic") {
+  if (resolvedProviderName === "anthropic") {
     return (
       resolveAnthropicAccessToken(env) ??
       trimNonEmptyString(env.ANTHROPIC_API_KEY)
     );
   }
 
-  if (providerName === "openai") {
+  if (resolvedProviderName === "openai") {
     return trimNonEmptyString(env.OPENAI_API_KEY);
   }
 

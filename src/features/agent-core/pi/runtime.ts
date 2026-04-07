@@ -1,12 +1,12 @@
-import { completeSimple, streamSimple } from "@mariozechner/pi-ai";
+import { completeSimple, streamSimple, type SimpleStreamOptions } from "@mariozechner/pi-ai";
 
 import { resolveProviderApiKey } from "./auth.js";
 import { resolvePandaModel } from "./model.js";
 import type { LlmRuntime, LlmRuntimeRequest } from "../runtime.js";
 
-function buildRuntimeOptions(request: LlmRuntimeRequest): Record<string, unknown> {
+function buildRuntimeOptions(request: LlmRuntimeRequest): SimpleStreamOptions {
   const apiKey = resolveProviderApiKey(request.providerName);
-  const options: Record<string, unknown> = {};
+  const options: SimpleStreamOptions = {};
 
   if (request.temperature !== undefined) {
     options.temperature = request.temperature;
