@@ -12,6 +12,7 @@ const BASE_PROMPT_LINES = [
   "Tool names are case-sensitive. Call tools exactly as listed.",
   "Use tools when they materially improve correctness, speed, or confidence.",
   "Do not mention internal tool names, raw payloads, or implementation details unless the user explicitly asks.",
+  "When asked about local images or PDFs, prefer the media viewer tool over guessing from filenames.",
   "",
   "## Shell Usage",
   "When a shell tool is available, prefer short inspection commands first before making changes.",

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { assertProviderName, type ProviderName } from "../provider.js";
+import { getProviderConfig, type ProviderAuthKind, type ProviderName } from "../provider.js";
 
 function trimNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") {
@@ -101,30 +101,22 @@ export function hasAnthropicOauthToken(env: NodeJS.ProcessEnv = process.env): bo
   return resolveAnthropicAccessToken(env) !== null;
 }
 
-export function resolveProviderApiKey(
-  providerName: ProviderName,
-  env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
-  const resolvedProviderName = assertProviderName(providerName);
-
-  if (resolvedProviderName === "openai-codex") {
-    return resolveOpenAICodexOauthToken({ env }) ?? undefined;
-  }
-
-  if (resolvedProviderName === "anthropic-oauth") {
-    return resolveAnthropicAccessToken(env) ?? undefined;
-  }
-
-  if (resolvedProviderName === "anthropic") {
+const AUTH_RESOLVERS: Record<ProviderAuthKind, (env: NodeJS.ProcessEnv) => string | undefined> = {
+  "openai-api-key": (env) => trimNonEmptyString(env.OPENAI_API_KEY),
+  "openai-codex-oauth": (env) => resolveOpenAICodexOauthToken({ env }) ?? undefined,
+  "anthropic-api-key-or-oauth": (env) => {
     return (
       resolveAnthropicAccessToken(env) ??
       trimNonEmptyString(env.ANTHROPIC_API_KEY)
     );
-  }
+  },
+  "anthropic-oauth": (env) => resolveAnthropicAccessToken(env) ?? undefined,
+};
 
-  if (resolvedProviderName === "openai") {
-    return trimNonEmptyString(env.OPENAI_API_KEY);
-  }
-
-  return undefined;
+export function resolveProviderApiKey(
+  providerName: ProviderName,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const config = getProviderConfig(providerName);
+  return AUTH_RESOLVERS[config.authKind](env);
 }

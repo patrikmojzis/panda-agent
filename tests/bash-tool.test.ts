@@ -8,8 +8,10 @@ import {
   Agent,
   BashTool,
   RunContext,
+  ToolError,
   type JsonObject,
   type PandaSessionContext,
+  type ToolResultMessage,
 } from "../src/index.js";
 
 function createAgent() {
@@ -30,11 +32,32 @@ function createRunContext(context: PandaSessionContext): RunContext<PandaSession
   });
 }
 
-function asObject(value: JsonObject | null): Record<string, unknown> {
+function asObject(value: unknown): Record<string, unknown> {
   return (value ?? {}) as Record<string, unknown>;
 }
 
 describe("BashTool", () => {
+  it("formats tool calls and results through the tool instance", () => {
+    const tool = new BashTool();
+    const result: ToolResultMessage<JsonObject> = {
+      role: "toolResult",
+      toolCallId: "call_1",
+      toolName: "bash",
+      content: [{ type: "text", text: "{\"command\":\"pwd\"}" }],
+      details: {
+        stdout: "/tmp/workspace\n",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+      },
+      isError: false,
+      timestamp: Date.now(),
+    };
+
+    expect(tool.formatCall({ command: "pwd" })).toBe("pwd");
+    expect(tool.formatResult(result)).toBe("exit 0\n/tmp/workspace");
+  });
+
   it("persists cwd changes across calls in the same shell session", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-cwd-"));
     try {
@@ -56,9 +79,8 @@ describe("BashTool", () => {
         { command: "cd nested" },
         createRunContext(context),
       );
-      const changeDirOutput = asObject(changeDir.output);
+      const changeDirOutput = asObject(changeDir);
 
-      expect(changeDir.isError).toBe(false);
       expect(changeDirOutput.finalCwd).toBe(expectedNested);
       expect(changeDirOutput.cwdChanged).toBe(true);
       expect(context.shell?.cwd).toBe(expectedNested);
@@ -67,9 +89,8 @@ describe("BashTool", () => {
         { command: "pwd" },
         createRunContext(context),
       );
-      const pwdOutput = asObject(pwd.output);
+      const pwdOutput = asObject(pwd);
 
-      expect(pwd.isError).toBe(false);
       expect(String(pwdOutput.stdout).trim()).toBe(expectedNested);
     } finally {
       await rm(workspace, { recursive: true, force: true });
@@ -94,9 +115,8 @@ describe("BashTool", () => {
         { command: 'export PANDA_TEST_VAR="hello world"' },
         createRunContext(context),
       );
-      const exportOutput = asObject(exportResult.output);
+      const exportOutput = asObject(exportResult);
 
-      expect(exportResult.isError).toBe(false);
       expect(exportOutput.noOutput).toBe(true);
       expect(exportOutput.noOutputExpected).toBe(true);
       expect(context.shell?.env.PANDA_TEST_VAR).toBe("hello world");
@@ -105,9 +125,8 @@ describe("BashTool", () => {
         { command: 'printf %s "$PANDA_TEST_VAR"' },
         createRunContext(context),
       );
-      const readOutput = asObject(readResult.output);
+      const readOutput = asObject(readResult);
 
-      expect(readResult.isError).toBe(false);
       expect(String(readOutput.stdout)).toBe("hello world");
 
       const unsetResult = await tool.run(
@@ -115,7 +134,7 @@ describe("BashTool", () => {
         createRunContext(context),
       );
 
-      expect(unsetResult.isError).toBe(false);
+      expect(asObject(unsetResult).noOutput).toBe(true);
       expect(context.shell?.env.PANDA_TEST_VAR).toBeUndefined();
     } finally {
       await rm(workspace, { recursive: true, force: true });
@@ -142,9 +161,8 @@ describe("BashTool", () => {
         { command: "printf '0123456789ABCDEF'" },
         createRunContext(context),
       );
-      const output = asObject(result.output);
+      const output = asObject(result);
 
-      expect(result.isError).toBe(false);
       expect(output.stdoutTruncated).toBe(true);
       expect(output.stdoutPersisted).toBe(true);
       expect(typeof output.stdoutPath).toBe("string");
@@ -168,16 +186,23 @@ describe("BashTool", () => {
         outputDirectory: path.join(workspace, "tool-results"),
       });
 
-      const result = await tool.run(
+      await expect(tool.run(
         { command: "sleep 1", timeoutMs: 100 },
         createRunContext(context),
-      );
-      const output = asObject(result.output);
+      )).rejects.toBeInstanceOf(ToolError);
 
-      expect(result.isError).toBe(true);
-      expect(output.timedOut).toBe(true);
-      expect(output.interrupted).toBe(true);
-      expect(output.success).toBe(false);
+      try {
+        await tool.run(
+          { command: "sleep 1", timeoutMs: 100 },
+          createRunContext(context),
+        );
+      } catch (error) {
+        expect(error).toBeInstanceOf(ToolError);
+        const output = asObject((error as ToolError).details);
+        expect(output.timedOut).toBe(true);
+        expect(output.interrupted).toBe(true);
+        expect(output.success).toBe(false);
+      }
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

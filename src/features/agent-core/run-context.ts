@@ -1,11 +1,12 @@
 import type { Agent } from "./agent.js";
-import type { InputItem, JsonObject } from "./types.js";
+import type { Message } from "@mariozechner/pi-ai";
+import type { JsonObject } from "./types.js";
 
 export interface RunContextOptions<TContext = unknown> {
   agent: Agent;
   turn: number;
   maxTurns: number;
-  messages: InputItem[];
+  messages: Message[];
   context?: TContext;
   onToolProgress?: (progress: JsonObject) => void;
 }
@@ -14,7 +15,7 @@ export class RunContext<TContext = unknown> {
   readonly agent: Agent;
   readonly turn: number;
   readonly maxTurns: number;
-  readonly messages: InputItem[];
+  readonly messages: Message[];
   readonly context?: TContext;
   private readonly onToolProgress?: (progress: JsonObject) => void;
 

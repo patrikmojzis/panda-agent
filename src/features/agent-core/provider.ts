@@ -1,13 +1,94 @@
+import type { Api } from "@mariozechner/pi-ai";
+
 import { ConfigurationError } from "./exceptions.js";
 
-export const PROVIDER_NAMES = [
-  "openai",
-  "openai-codex",
-  "anthropic",
-  "anthropic-oauth",
-] as const;
+type RuntimeProviderName = "openai" | "openai-codex" | "anthropic";
+export type ProviderAuthKind =
+  | "openai-api-key"
+  | "openai-codex-oauth"
+  | "anthropic-api-key-or-oauth"
+  | "anthropic-oauth";
 
-export type ProviderName = (typeof PROVIDER_NAMES)[number];
+interface ProviderFallbackModelConfig {
+  api: Api;
+  provider: RuntimeProviderName;
+  baseUrl: string;
+  contextWindow: number;
+  maxTokens: number;
+}
+
+export interface ProviderConfig {
+  runtimeProvider: RuntimeProviderName;
+  authKind: ProviderAuthKind;
+  defaultModelEnvVar: string;
+  defaultModel: string;
+  missingApiKeyMessage: string;
+  fallbackModel: ProviderFallbackModelConfig;
+}
+
+export const PROVIDER_CONFIGS = {
+  openai: {
+    runtimeProvider: "openai",
+    authKind: "openai-api-key",
+    defaultModelEnvVar: "OPENAI_MODEL",
+    defaultModel: "gpt-5.1",
+    missingApiKeyMessage: "Missing OPENAI_API_KEY.",
+    fallbackModel: {
+      api: "openai-responses",
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      contextWindow: 400000,
+      maxTokens: 128000,
+    },
+  },
+  "openai-codex": {
+    runtimeProvider: "openai-codex",
+    authKind: "openai-codex-oauth",
+    defaultModelEnvVar: "OPENAI_CODEX_MODEL",
+    defaultModel: "gpt-5.4",
+    missingApiKeyMessage: "Missing OpenAI Codex OAuth token. Run `codex login` or set OPENAI_OAUTH_TOKEN.",
+    fallbackModel: {
+      api: "openai-codex-responses",
+      provider: "openai-codex",
+      baseUrl: "https://chatgpt.com/backend-api",
+      contextWindow: 400000,
+      maxTokens: 128000,
+    },
+  },
+  anthropic: {
+    runtimeProvider: "anthropic",
+    authKind: "anthropic-api-key-or-oauth",
+    defaultModelEnvVar: "ANTHROPIC_MODEL",
+    defaultModel: "claude-sonnet-4-5",
+    missingApiKeyMessage:
+      "Missing ANTHROPIC_API_KEY. You can also provide ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN.",
+    fallbackModel: {
+      api: "anthropic-messages",
+      provider: "anthropic",
+      baseUrl: "https://api.anthropic.com",
+      contextWindow: 200000,
+      maxTokens: 8192,
+    },
+  },
+  "anthropic-oauth": {
+    runtimeProvider: "anthropic",
+    authKind: "anthropic-oauth",
+    defaultModelEnvVar: "ANTHROPIC_MODEL",
+    defaultModel: "claude-sonnet-4-5",
+    missingApiKeyMessage:
+      "Missing Anthropic OAuth token. Add ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN.",
+    fallbackModel: {
+      api: "anthropic-messages",
+      provider: "anthropic",
+      baseUrl: "https://api.anthropic.com",
+      contextWindow: 200000,
+      maxTokens: 8192,
+    },
+  },
+} as const satisfies Record<string, ProviderConfig>;
+
+export type ProviderName = keyof typeof PROVIDER_CONFIGS;
+export const PROVIDER_NAMES = Object.keys(PROVIDER_CONFIGS) as ProviderName[];
 
 const PROVIDER_NAME_SET = new Set<string>(PROVIDER_NAMES);
 
@@ -52,4 +133,8 @@ export function assertProviderName(value: unknown): ProviderName {
   throw new ConfigurationError(
     `Unsupported provider ${formattedValue}. Expected one of ${formatProviderNameList()}.`,
   );
+}
+
+export function getProviderConfig(providerName: ProviderName): ProviderConfig {
+  return PROVIDER_CONFIGS[assertProviderName(providerName)];
 }

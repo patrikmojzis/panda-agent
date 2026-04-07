@@ -1,4 +1,4 @@
-import { Agent, Thread, Tool, ToolResponse, stringToUserMessage, z, type RunContext } from "../src/index.js";
+import { Agent, Thread, Tool, stringToUserMessage, z, type RunContext } from "../src/index.js";
 
 class CalculatorTool extends Tool<typeof CalculatorTool.schema> {
   name = "calculator";
@@ -13,9 +13,9 @@ class CalculatorTool extends Tool<typeof CalculatorTool.schema> {
   async handle(
     args: z.output<typeof CalculatorTool.schema>,
     _run: RunContext,
-  ): Promise<ToolResponse> {
+  ): Promise<{ result: number }> {
     const result = args.operation === "add" ? args.a + args.b : args.a * args.b;
-    return new ToolResponse({ output: { result } });
+    return { result };
   }
 }
 

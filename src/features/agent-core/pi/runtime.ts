@@ -12,8 +12,8 @@ function buildRuntimeOptions(request: LlmRuntimeRequest): SimpleStreamOptions {
     options.temperature = request.temperature;
   }
 
-  if (request.reasoningEffort) {
-    options.reasoning = request.reasoningEffort;
+  if (request.thinking) {
+    options.reasoning = request.thinking;
   }
 
   if (request.promptCacheKey) {

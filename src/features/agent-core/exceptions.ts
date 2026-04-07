@@ -1,3 +1,5 @@
+import type { JsonValue, ToolResultContent } from "./types.js";
+
 export class AgentError extends Error {
   constructor(message: string) {
     super(message);
@@ -22,4 +24,19 @@ export class StreamingFailedError extends AgentError {
 }
 
 export class ConfigurationError extends AgentError {}
-export class ToolError extends AgentError {}
+
+export interface ToolErrorOptions {
+  details?: JsonValue;
+  content?: ToolResultContent;
+}
+
+export class ToolError extends AgentError {
+  readonly details?: JsonValue;
+  readonly content?: ToolResultContent;
+
+  constructor(message: string, options: ToolErrorOptions = {}) {
+    super(message);
+    this.details = options.details;
+    this.content = options.content;
+  }
+}

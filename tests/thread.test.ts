@@ -7,12 +7,12 @@ import {
   RunPipeline,
   Thread,
   Tool,
-  ToolResponse,
   stringToUserMessage,
   z,
   type LlmRuntime,
   type RunContext,
-  type ResponseOutputItemLike,
+  type ThreadRunEvent,
+  type ToolResultPayload,
 } from "../src/index.js";
 
 class EchoTool extends Tool<typeof EchoTool.schema> {
@@ -26,13 +26,11 @@ class EchoTool extends Tool<typeof EchoTool.schema> {
   async handle(
     args: z.output<typeof EchoTool.schema>,
     run: RunContext,
-  ): Promise<ToolResponse> {
-    return new ToolResponse({
-      output: {
-        echoed: args.message,
-        turn: run.turn,
-      },
-    });
+  ): Promise<{ echoed: string; turn: number }> {
+    return {
+      echoed: args.message,
+      turn: run.turn,
+    };
   }
 }
 
@@ -47,7 +45,7 @@ class ProgressTool extends Tool<typeof ProgressTool.schema> {
   async handle(
     args: z.output<typeof ProgressTool.schema>,
     run: RunContext,
-  ): Promise<ToolResponse> {
+  ): Promise<{ done: string }> {
     run.emitToolProgress({
       phase: "started",
       message: args.message,
@@ -58,11 +56,33 @@ class ProgressTool extends Tool<typeof ProgressTool.schema> {
       message: args.message,
     });
 
-    return new ToolResponse({
-      output: {
-        done: args.message,
+    return {
+      done: args.message,
+    };
+  }
+}
+
+class RichOutputTool extends Tool<typeof RichOutputTool.schema> {
+  name = "rich-output";
+  description = "Return text and image content";
+  static schema = z.object({
+    caption: z.string(),
+  });
+  schema = RichOutputTool.schema;
+
+  async handle(
+    args: z.output<typeof RichOutputTool.schema>,
+    _run: RunContext,
+  ): Promise<ToolResultPayload> {
+    return {
+      content: [
+        { type: "text", text: args.caption },
+        { type: "image", data: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      ],
+      details: {
+        kind: "preview",
       },
-    });
+    };
   }
 }
 
@@ -140,6 +160,10 @@ function message(text: string): AssistantMessage {
   return createAssistantMessage([{ type: "text", text }]);
 }
 
+function eventKind(event: ThreadRunEvent): string {
+  return "type" in event ? event.type : event.role;
+}
+
 describe("Thread", () => {
   it("runs recursive tool calls and hook/pipeline callbacks", async () => {
     const events: string[] = [];
@@ -168,17 +192,24 @@ describe("Thread", () => {
       runPipelines: [new RecordingPipeline(events)],
     });
 
-    const outputs: ResponseOutputItemLike[] = [];
+    const outputs: ThreadRunEvent[] = [];
     for await (const output of thread.run()) {
       outputs.push(output);
     }
 
-    expect(outputs.map((item) => item.type)).toEqual([
-      "function_call",
-      "function_call_output",
-      "message",
+    expect(outputs.map(eventKind)).toEqual([
+      "assistant",
+      "toolResult",
+      "assistant",
     ]);
-    expect(outputs[1]?.output).toContain("\"echoed\":\"hi\"");
+    expect(outputs[1]).toMatchObject({
+      role: "toolResult",
+      toolName: "echo",
+      details: {
+        echoed: "hi",
+        turn: 1,
+      },
+    });
     expect(events).toEqual([
       "preflight",
       "start",
@@ -234,21 +265,63 @@ describe("Thread", () => {
       runtime,
     });
 
-    const outputs: ResponseOutputItemLike[] = [];
+    const outputs: ThreadRunEvent[] = [];
     for await (const output of thread.run()) {
       outputs.push(output);
     }
 
-    expect(outputs.map((item) => item.type)).toEqual([
-      "function_call",
+    expect(outputs.map(eventKind)).toEqual([
+      "assistant",
       "tool_progress",
       "tool_progress",
-      "function_call_output",
-      "message",
+      "toolResult",
+      "assistant",
     ]);
     expect(outputs[1]).toMatchObject({
       type: "tool_progress",
-      name: "progress",
+      toolName: "progress",
+    });
+  });
+
+  it("preserves rich tool result content for follow-up model turns", async () => {
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call_1",
+          name: "rich-output",
+          arguments: { caption: "Image attached" },
+        },
+      ]),
+      message("done"),
+    );
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "rich-output-agent",
+        instructions: "Use the tool",
+        model: "gpt-4o-mini",
+        tools: [new RichOutputTool()],
+      }),
+      messages: [stringToUserMessage("show me the image")],
+      runtime,
+    });
+
+    const outputs: ThreadRunEvent[] = [];
+    for await (const output of thread.run()) {
+      outputs.push(output);
+    }
+
+    expect(outputs[1]).toMatchObject({
+      role: "toolResult",
+      toolName: "rich-output",
+      content: [
+        { type: "text", text: "Image attached" },
+        { type: "image", data: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      ],
+      details: {
+        kind: "preview",
+      },
     });
   });
 });

@@ -1,42 +1,121 @@
+import type { Tool as PiTool, ToolResultMessage } from "@mariozechner/pi-ai";
 import { ZodError, type ZodTypeAny, type output } from "zod";
 
 import { ToolError } from "./exceptions.js";
 import { formatParameters } from "./helpers/schema.js";
 import type { RunContext } from "./run-context.js";
-import { ToolResponse, type ToolOutput } from "./tool-response.js";
-import type { ToolDefinition } from "./types.js";
+import type { JsonValue, ToolResultPayload } from "./types.js";
+
+export type ToolOutput = JsonValue | ToolResultPayload;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+export function formatToolCallFallback(args: Record<string, unknown>): string {
+  return stringifyUnknown(args);
+}
+
+function isToolResultContentItem(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.type !== "string") {
+    return false;
+  }
+
+  if (value.type === "text") {
+    return typeof value.text === "string";
+  }
+
+  if (value.type === "image") {
+    return typeof value.data === "string" && typeof value.mimeType === "string";
+  }
+
+  return false;
+}
+
+export function isToolResultPayload(value: ToolOutput): value is ToolResultPayload {
+  return isRecord(value)
+    && Array.isArray(value.content)
+    && value.content.every((item) => isToolResultContentItem(item));
+}
+
+export function formatToolResultFallback(message: ToolResultMessage<JsonValue>): string {
+  const contentParts = message.content.flatMap((part) => {
+    if (part.type === "text" && part.text.trim()) {
+      return [part.text.trim()];
+    }
+
+    if (part.type === "image") {
+      return ["[image attached]"];
+    }
+
+    return [];
+  });
+
+  if (contentParts.length > 0) {
+    return contentParts.join("\n\n");
+  }
+
+  if (message.details !== undefined) {
+    return stringifyUnknown(message.details);
+  }
+
+  return message.isError ? "Tool failed." : "Tool completed.";
+}
 
 export abstract class Tool<TSchema extends ZodTypeAny = ZodTypeAny, TContext = unknown> {
   abstract name: string;
   abstract description: string;
   abstract schema: TSchema;
 
-  get toolDefinition(): ToolDefinition {
+  get piTool(): PiTool {
     return {
-      type: "function",
       name: this.name,
       description: this.description,
-      parameters: formatParameters(this.schema),
+      parameters: formatParameters(this.schema) as PiTool["parameters"],
     };
   }
 
-  async run(rawArgs: unknown, runContext: RunContext<TContext>): Promise<ToolResponse> {
+  formatCall(args: Record<string, unknown>): string {
+    return formatToolCallFallback(args);
+  }
+
+  formatResult(message: ToolResultMessage<JsonValue>): string {
+    return formatToolResultFallback(message);
+  }
+
+  async run(rawArgs: unknown, runContext: RunContext<TContext>): Promise<ToolOutput> {
     try {
       const parsedArgs = await this.schema.parseAsync(rawArgs);
-      const result = await this.handle(parsedArgs as output<TSchema>, runContext);
-      return result instanceof ToolResponse ? result : new ToolResponse({ output: result as ToolOutput });
+      return await this.handle(parsedArgs as output<TSchema>, runContext);
     } catch (error) {
       if (error instanceof ZodError) {
-        return ToolResponse.error(error.issues.map((issue) => issue.message));
+        const issues = error.issues.map((issue) => issue.message);
+        const message =
+          issues.length === 1
+            ? issues[0] ?? "Invalid tool arguments"
+            : `Invalid tool arguments: ${issues.join("; ")}`;
+        throw new ToolError(message, { details: issues });
       }
 
       if (error instanceof ToolError) {
-        return ToolResponse.error(error.message);
+        throw error;
       }
 
       throw error;
     }
   }
 
-  abstract handle(args: output<TSchema>, run: RunContext<TContext>): Promise<ToolResponse | ToolOutput>;
+  abstract handle(args: output<TSchema>, run: RunContext<TContext>): Promise<ToolOutput>;
 }

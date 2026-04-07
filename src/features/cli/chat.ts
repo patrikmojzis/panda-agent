@@ -5,13 +5,17 @@ import { stdin as input, stdout as output } from "node:process";
 import {
   assertProviderName,
   formatProviderNameList,
+  getProviderConfig,
   hasAnthropicOauthToken,
   hasOpenAICodexOauthToken,
   parseProviderName,
   resolveProviderApiKey,
   Thread,
+  Tool,
+  formatToolCallFallback,
+  formatToolResultFallback,
   stringToUserMessage,
-  type InputItem,
+  type Message,
 } from "../agent-core/index.js";
 import { createPandaAgent } from "../panda/agent.js";
 import { createDefaultPandaContexts } from "../panda/contexts/index.js";
@@ -165,76 +169,12 @@ function defaultModel(provider: PandaProviderName): string {
     return process.env.PANDA_MODEL;
   }
 
-  if (provider === "openai-codex") {
-    return process.env.OPENAI_CODEX_MODEL ?? "gpt-5.4";
-  }
-
-  if (provider === "anthropic" || provider === "anthropic-oauth") {
-    return process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-5";
-  }
-
-  return process.env.OPENAI_MODEL ?? "gpt-5.1";
+  const config = getProviderConfig(provider);
+  return process.env[config.defaultModelEnvVar] ?? config.defaultModel;
 }
 
 function missingApiKeyMessage(provider: PandaProviderName): string | null {
-  if (provider === "openai-codex") {
-    return hasOpenAICodexOauthToken()
-      ? null
-      : "Missing OpenAI Codex OAuth token. Run `codex login` or set OPENAI_OAUTH_TOKEN.";
-  }
-
-  if (provider === "anthropic-oauth") {
-    return hasAnthropicOauthToken()
-      ? null
-      : "Missing Anthropic OAuth token. Add ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN.";
-  }
-
-  if (provider === "anthropic") {
-    return resolveProviderApiKey(provider)
-      ? null
-      : "Missing ANTHROPIC_API_KEY. You can also provide ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN.";
-  }
-
-  return resolveProviderApiKey(provider) ? null : "Missing OPENAI_API_KEY.";
-}
-
-function parseToolOutput(raw: string): string {
-  const isError = raw.startsWith("[Error] ");
-  const payload = isError ? raw.slice("[Error] ".length) : raw;
-
-  try {
-    const parsed = JSON.parse(payload) as { output?: Record<string, unknown> | null };
-    const outputPayload = parsed.output;
-
-    if (!outputPayload || typeof outputPayload !== "object") {
-      return raw;
-    }
-
-    const stdout = typeof outputPayload.stdout === "string" ? outputPayload.stdout.trim() : "";
-    const stderr = typeof outputPayload.stderr === "string" ? outputPayload.stderr.trim() : "";
-    const exitCode =
-      typeof outputPayload.exitCode === "number" ? outputPayload.exitCode : "unknown";
-    const timedOut = outputPayload.timedOut === true ? "timed out" : `exit ${String(exitCode)}`;
-    const shellSummary = [stdout, stderr].filter(Boolean).join("\n\n");
-    const summary = shellSummary || "Command completed with no output.";
-
-    return `${timedOut}\n${summary}`;
-  } catch {
-    return raw;
-  }
-}
-
-function parseToolCall(args: string): string {
-  try {
-    const parsed = JSON.parse(args) as Record<string, unknown>;
-    if (typeof parsed.command === "string") {
-      return parsed.command;
-    }
-
-    return JSON.stringify(parsed);
-  } catch {
-    return args;
-  }
+  return resolveProviderApiKey(provider) ? null : getProviderConfig(provider).missingApiKeyMessage;
 }
 
 function isPrintable(sequence: string, key: KeyLike): boolean {
@@ -363,7 +303,11 @@ export class PandaChatApp {
     }, TICK_MS);
   }
 
-  private buildThread(history: readonly InputItem[] = this.thread?.messages ?? []): Thread<PandaSessionContext> {
+  private findTool(name: string): Tool | undefined {
+    return this.thread.agent.tools.find((tool) => tool.name === name);
+  }
+
+  private buildThread(history: readonly Message[] = this.thread?.messages ?? []): Thread<PandaSessionContext> {
     return new Thread({
       agent: createPandaAgent({
         promptAdditions: this.instructions,
@@ -1082,46 +1026,49 @@ export class PandaChatApp {
     this.render();
 
     try {
-      for await (const outputItem of this.thread.run()) {
-        switch (outputItem.type) {
-          case "function_call": {
-            this.pendingToolCalls += 1;
-            this.runPhase = "tool";
-            this.activeToolSummary = normalizeInlineText(
-              parseToolCall(String(outputItem.arguments ?? "")),
-            );
-            this.pushEntry(
-              "tool",
-              String(outputItem.name ?? "tool"),
-              parseToolCall(String(outputItem.arguments ?? "")),
-            );
-            break;
+      for await (const event of this.thread.run()) {
+        if ("type" in event && event.type === "tool_progress") {
+          this.pushEntry("meta", "progress", JSON.stringify(event.details, null, 2));
+        } else if ("role" in event && event.role === "assistant") {
+          let text = "";
+
+          const flushText = (): void => {
+            if (!text) {
+              return;
+            }
+
+            this.pushEntry("assistant", "panda", text);
+            text = "";
+          };
+
+          for (const block of event.content) {
+            if (block.type === "text" && block.text) {
+              text += block.text;
+              continue;
+            }
+
+            if (block.type === "toolCall") {
+              const tool = this.findTool(block.name);
+              const callSummary = tool?.formatCall(block.arguments ?? {}) ?? formatToolCallFallback(block.arguments ?? {});
+              flushText();
+              this.pendingToolCalls += 1;
+              this.runPhase = "tool";
+              this.activeToolSummary = normalizeInlineText(callSummary);
+              this.pushEntry("tool", block.name, callSummary);
+            }
           }
 
-          case "function_call_output":
-            this.pendingToolCalls = Math.max(0, this.pendingToolCalls - 1);
-            if (this.pendingToolCalls === 0) {
-              this.runPhase = "thinking";
-              this.activeToolSummary = null;
-            }
-            this.pushEntry("tool", "result", parseToolOutput(String(outputItem.output ?? "")));
-            break;
-
-          case "message": {
-            const parts = Array.isArray(outputItem.content) ? outputItem.content : [];
-            const text = parts
-              .map((part) => (typeof part?.text === "string" ? part.text : ""))
-              .filter(Boolean)
-              .join("");
-            if (text) {
-              this.pushEntry("assistant", "panda", text);
-            }
-            break;
+          flushText();
+        } else if ("role" in event && event.role === "toolResult") {
+          const tool = this.findTool(event.toolName);
+          this.pendingToolCalls = Math.max(0, this.pendingToolCalls - 1);
+          if (this.pendingToolCalls === 0) {
+            this.runPhase = "thinking";
+            this.activeToolSummary = null;
           }
-
-          default:
-            this.pushEntry("meta", "event", JSON.stringify(outputItem, null, 2));
-            break;
+          this.pushEntry("tool", event.toolName, tool?.formatResult(event) ?? formatToolResultFallback(event));
+        } else {
+          this.pushEntry("meta", "event", JSON.stringify(event, null, 2));
         }
 
         this.render();

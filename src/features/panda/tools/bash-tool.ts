@@ -6,12 +6,13 @@ import { mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import type { ToolResultMessage } from "@mariozechner/pi-ai";
 import { z } from "zod";
 
 import type { RunContext } from "../../agent-core/run-context.js";
-import { Tool } from "../../agent-core/tool.js";
-import { ToolResponse } from "../../agent-core/tool-response.js";
-import type { JsonObject } from "../../agent-core/types.js";
+import { Tool, type ToolOutput } from "../../agent-core/tool.js";
+import { ToolError } from "../../agent-core/exceptions.js";
+import type { JsonObject, JsonValue } from "../../agent-core/types.js";
 import type { PandaSessionContext, PandaShellSession } from "../types.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -463,10 +464,30 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     this.env = options.env ?? process.env;
   }
 
+  override formatCall(args: Record<string, unknown>): string {
+    return typeof args.command === "string" ? args.command : super.formatCall(args);
+  }
+
+  override formatResult(message: ToolResultMessage<JsonValue>): string {
+    const details = message.details;
+    if (!isRecord(details)) {
+      return super.formatResult(message);
+    }
+
+    const stdout = typeof details.stdout === "string" ? details.stdout.trim() : "";
+    const stderr = typeof details.stderr === "string" ? details.stderr.trim() : "";
+    const exitCode = typeof details.exitCode === "number" ? details.exitCode : "unknown";
+    const status = details.timedOut === true ? "timed out" : `exit ${String(exitCode)}`;
+    const shellSummary = [stdout, stderr].filter(Boolean).join("\n\n");
+    const summary = shellSummary || "Command completed with no output.";
+
+    return `${status}\n${summary}`;
+  }
+
   async handle(
     args: z.output<typeof BashTool.schema>,
     run: RunContext<TContext>,
-  ): Promise<ToolResponse> {
+  ): Promise<ToolOutput> {
     const startedAt = Date.now();
     const shellSession = ensureShellSession(run.context);
     const baseCwd = resolveBaseCwd(run.context);
@@ -631,12 +652,14 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     }
 
     if (result.spawnError) {
-      return ToolResponse.error({
-        command: args.command,
-        cwd,
-        shell,
-        durationMs,
-        error: result.spawnError.message,
+      throw new ToolError(`Failed to spawn shell: ${result.spawnError.message}`, {
+        details: {
+          command: args.command,
+          cwd,
+          shell,
+          durationMs,
+          error: result.spawnError.message,
+        },
       });
     }
 
@@ -672,10 +695,17 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       ...(stderrPath ? { stderrPath } : {}),
     };
 
-    if (timedOut || result.exitCode !== 0) {
-      return ToolResponse.error(payload);
+    if (timedOut) {
+      throw new ToolError(`Command timed out after ${timeoutMs}ms`, { details: payload });
     }
 
-    return new ToolResponse({ output: payload });
+    if (result.exitCode !== 0 || result.signal !== null) {
+      const message = result.signal !== null
+        ? `Command exited with signal ${result.signal}`
+        : `Command exited with code ${String(result.exitCode)}`;
+      throw new ToolError(message, { details: payload });
+    }
+
+    return payload;
   }
 }

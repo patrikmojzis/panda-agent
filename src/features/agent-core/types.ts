@@ -1,7 +1,7 @@
 import type {
+  AssistantMessage,
   AssistantMessageEvent,
-  Message,
-  ThinkingLevel,
+  ToolResultMessage,
 } from "@mariozechner/pi-ai";
 
 export type { ProviderName } from "./provider.js";
@@ -13,53 +13,23 @@ export interface JsonObject {
   [key: string]: JsonValue;
 }
 
-export interface SystemMessage {
-  role: "system";
-  content: string;
-}
+export type ToolResultContent = ToolResultMessage<JsonValue>["content"];
+export type ToolResultPayload = Pick<ToolResultMessage<JsonValue>, "content" | "details">;
 
-export interface ToolDefinition {
-  type?: "function";
-  name: string;
-  description: string;
-  parameters: JsonObject;
-}
-
-export interface MessageTextOutput {
-  type: "message";
-  role: "assistant";
-  content: Array<{
-    type: "output_text";
-    text: string;
-  }>;
-}
-
-export interface FunctionCallOutput {
-  type: "function_call";
-  name: string;
-  arguments: string;
-  call_id: string;
-}
-
-export interface FunctionCallResultOutput {
-  type: "function_call_output";
-  call_id: string;
-  output: string;
-}
-
-export interface ToolProgressOutput {
+export interface ToolProgressEvent<TDetails extends JsonObject = JsonObject> {
   type: "tool_progress";
-  call_id: string;
-  name: string;
-  output: JsonObject;
+  toolCallId: string;
+  toolName: string;
+  details: TDetails;
+  timestamp: number;
 }
 
-export type InputItem = SystemMessage | Message;
-export type ResponseOutputItemLike =
-  | MessageTextOutput
-  | FunctionCallOutput
-  | FunctionCallResultOutput
-  | ToolProgressOutput;
-export type ThreadStreamEvent = AssistantMessageEvent | ResponseOutputItemLike;
+export type ThreadRunEvent =
+  | AssistantMessage
+  | ToolResultMessage<JsonValue>
+  | ToolProgressEvent;
 
-export type ReasoningEffort = ThinkingLevel;
+export type ThreadStreamEvent =
+  | AssistantMessageEvent
+  | ToolResultMessage<JsonValue>
+  | ToolProgressEvent;
