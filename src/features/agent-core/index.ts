@@ -32,6 +32,11 @@ export {
 } from "./pi/auth.js";
 export { RunContext, type RunContextOptions } from "./run-context.js";
 export { RunPipeline } from "./run-pipeline.js";
+export {
+  type ThreadCheckpoint,
+  type ThreadCheckpointDecision,
+  type ThreadCheckpointHandler,
+} from "./thread-checkpoint.js";
 export { Thread, type ThreadOptions } from "./thread.js";
 export { Tool, formatToolCallFallback, formatToolResultFallback, type ToolOutput } from "./tool.js";
 export { stringToUserMessage } from "./helpers/input.js";

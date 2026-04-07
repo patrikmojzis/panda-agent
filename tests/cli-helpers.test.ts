@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   applySlashCompletion,
   getSlashCompletionContext,
-} from "../src/features/cli/commands.js";
+} from "../src/features/tui/commands.js";
 import {
   createComposerState,
   insertText,
@@ -11,7 +11,7 @@ import {
   moveCursorLineEnd,
   moveCursorUp,
   setComposerValue,
-} from "../src/features/cli/composer.js";
+} from "../src/features/tui/composer.js";
 
 describe("composer helpers", () => {
   it("moves through multiline content while preserving the preferred column", () => {
@@ -42,9 +42,11 @@ describe("composer helpers", () => {
 describe("slash command helpers", () => {
   it("finds slash completion only on the first line around the cursor", () => {
     const context = getSlashCompletionContext("/pro", 4);
+    const thinkingContext = getSlashCompletionContext("/thi", 4);
 
     expect(context?.token).toBe("/pro");
     expect(context?.matches.map((command) => command.name)).toEqual(["/provider"]);
+    expect(thinkingContext?.matches.map((command) => command.name)).toEqual(["/thinking"]);
     expect(getSlashCompletionContext("hello\n/pro", 9)).toBeNull();
   });
 

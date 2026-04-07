@@ -8,6 +8,7 @@ export interface RunContextOptions<TContext = unknown> {
   maxTurns: number;
   messages: Message[];
   context?: TContext;
+  signal?: AbortSignal;
   onToolProgress?: (progress: JsonObject) => void;
 }
 
@@ -17,6 +18,7 @@ export class RunContext<TContext = unknown> {
   readonly maxTurns: number;
   readonly messages: Message[];
   readonly context?: TContext;
+  readonly signal?: AbortSignal;
   private readonly onToolProgress?: (progress: JsonObject) => void;
 
   constructor(options: RunContextOptions<TContext>) {
@@ -25,6 +27,7 @@ export class RunContext<TContext = unknown> {
     this.maxTurns = options.maxTurns;
     this.messages = options.messages;
     this.context = options.context;
+    this.signal = options.signal;
     this.onToolProgress = options.onToolProgress;
   }
 

@@ -15,8 +15,12 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "/help", summary: "Show command and keybinding help" },
   { name: "/provider", summary: "Switch providers", expectsValue: true },
   { name: "/model", summary: "Change the active model", expectsValue: true },
+  { name: "/thinking", summary: "Change the active thinking level", expectsValue: true },
   { name: "/new", summary: "Start a fresh chat" },
-  { name: "/clear", summary: "Clear the visible transcript" },
+  { name: "/resume", summary: "Resume a stored thread", expectsValue: true },
+  { name: "/thread", summary: "Show the current thread id" },
+  { name: "/threads", summary: "Open the recent-thread picker" },
+  { name: "/abort", summary: "Abort the active run" },
   { name: "/exit", summary: "Leave the TUI" },
   { name: "/quit", summary: "Leave the TUI" },
 ] as const;

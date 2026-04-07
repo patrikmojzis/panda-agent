@@ -461,6 +461,8 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     };
 
     let timedOut = false;
+    let aborted = false;
+    let abortReason: string | null = null;
     let progressTimer: NodeJS.Timeout | undefined;
     let lastProgressAt = startedAt;
     let lastProgressStdoutChars = 0;
@@ -504,16 +506,56 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
         cwd,
         env: childEnv,
         stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
       });
+      let abortKillTimer: NodeJS.Timeout | undefined;
+
+      const killChild = (signal: NodeJS.Signals): void => {
+        const pid = child.pid;
+        if (!pid || child.exitCode !== null || child.signalCode !== null || child.killed) {
+          return;
+        }
+
+        try {
+          if (process.platform !== "win32") {
+            process.kill(-pid, signal);
+          } else {
+            child.kill(signal);
+          }
+        } catch {
+          // Ignore kill races; close/error handlers settle the promise.
+        }
+      };
+
+      const abortHandler = (): void => {
+        aborted = true;
+        abortReason =
+          run.signal?.reason instanceof Error
+            ? run.signal.reason.message
+            : typeof run.signal?.reason === "string"
+              ? run.signal.reason
+              : "Command aborted.";
+        killChild("SIGTERM");
+        abortKillTimer = setTimeout(() => {
+          killChild("SIGKILL");
+        }, 250);
+        abortKillTimer.unref();
+      };
+
+      if (run.signal) {
+        if (run.signal.aborted) {
+          abortHandler();
+        } else {
+          run.signal.addEventListener("abort", abortHandler, { once: true });
+        }
+      }
 
       const timeout = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
+        killChild("SIGTERM");
 
         setTimeout(() => {
-          if (!child.killed) {
-            child.kill("SIGKILL");
-          }
+          killChild("SIGKILL");
         }, 250).unref();
       }, timeoutMs);
 
@@ -536,6 +578,8 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       });
 
       child.once("error", (error) => {
+        run.signal?.removeEventListener("abort", abortHandler);
+        clearTimeout(abortKillTimer);
         clearTimeout(timeout);
         clearInterval(progressTimer);
         resolve({
@@ -546,6 +590,8 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       });
 
       child.once("close", (exitCode, signal) => {
+        run.signal?.removeEventListener("abort", abortHandler);
+        clearTimeout(abortKillTimer);
         clearTimeout(timeout);
         clearInterval(progressTimer);
         resolve({
@@ -558,8 +604,8 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     clearInterval(progressTimer);
 
     const durationMs = Date.now() - startedAt;
-    const interrupted = timedOut || (result.signal !== null && result.exitCode === null);
-    const success = !timedOut && result.exitCode === 0;
+    const interrupted = timedOut || aborted || (result.signal !== null && result.exitCode === null);
+    const success = !timedOut && !aborted && result.exitCode === 0;
     const finalCwd = success
       ? await readPersistedCwd(invocationPaths.cwdStatePath, cwd)
       : cwd;
@@ -624,6 +670,8 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       exitCode: result.exitCode,
       signal: result.signal,
       timedOut,
+      aborted,
+      abortReason,
       interrupted,
       success,
       stdout: stdoutCapture.preview,
@@ -646,6 +694,10 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
 
     if (timedOut) {
       throw new ToolError(`Command timed out after ${timeoutMs}ms`, { details: payload });
+    }
+
+    if (aborted) {
+      throw new ToolError(abortReason ?? "Command aborted.", { details: payload });
     }
 
     if (result.exitCode !== 0 || result.signal !== null) {

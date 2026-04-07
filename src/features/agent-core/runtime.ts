@@ -13,6 +13,7 @@ export interface LlmRuntimeRequest {
   temperature?: number;
   thinking?: ThinkingLevel;
   promptCacheKey?: string;
+  signal?: AbortSignal;
   context: Context;
 }
 

@@ -27,6 +27,8 @@ import { assertProviderName, getProviderConfig, type ProviderName } from "./prov
 import { RunContext } from "./run-context.js";
 import type { LlmRuntime, LlmRuntimeRequest } from "./runtime.js";
 import type { RunPipeline } from "./run-pipeline.js";
+import { throwIfAborted } from "./abort.js";
+import type { ThreadCheckpointDecision, ThreadCheckpointHandler } from "./thread-checkpoint.js";
 import { Tool, isToolResultPayload } from "./tool.js";
 import type {
   JsonValue,
@@ -53,6 +55,8 @@ export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   thinking?: ThinkingLevel;
   runtime?: LlmRuntime;
   countTokens?: TokenCounter;
+  signal?: AbortSignal;
+  checkpoint?: ThreadCheckpointHandler;
 }
 
 function stringifyUnknown(value: unknown): string {
@@ -127,6 +131,8 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   private readonly runtime: LlmRuntime;
   private readonly countTokens: TokenCounter;
   private readonly history: Message[];
+  private readonly signal?: AbortSignal;
+  private readonly checkpoint?: ThreadCheckpointHandler;
 
   constructor(options: ThreadOptions<TContext, TOutput>) {
     this.agent = options.agent;
@@ -145,6 +151,8 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     this.thinking = options.thinking;
     this.runtime = options.runtime ?? new PiAiRuntime();
     this.countTokens = options.countTokens ?? estimateTokensFromString;
+    this.signal = options.signal;
+    this.checkpoint = options.checkpoint;
   }
 
   get messages(): readonly Message[] {
@@ -162,13 +170,46 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       maxTurns: this.maxTurns,
       messages: runMessages,
       context: this.context,
+      signal: this.signal,
     });
+  }
+
+  private resolveCheckpointDecision(
+    decision?: ThreadCheckpointDecision | void,
+  ): ThreadCheckpointDecision {
+    return decision ?? { action: "continue" };
+  }
+
+  private buildCancelledToolResultMessage(
+    toolCall: ToolCall,
+    reason?: string,
+  ): ToolResultMessage<JsonValue> {
+    return buildToolResultMessage({
+      toolCall,
+      content: textToolResultContent(reason ?? "Tool call cancelled before execution."),
+      isError: true,
+      details: reason ? { cancelled: true, reason } : { cancelled: true },
+    });
+  }
+
+  private async *emitCancelledToolResults(
+    toolCalls: readonly ToolCall[],
+    runContext: RunContext<TContext>,
+    reason?: string,
+  ): AsyncGenerator<ToolResultMessage<JsonValue>> {
+    for (const toolCall of toolCalls) {
+      const cancelledResult = this.buildCancelledToolResultMessage(toolCall, reason);
+      this.addMessage(cancelledResult);
+      runContext.messages.push(cancelledResult);
+      yield cancelledResult;
+    }
   }
 
   private async prepareTurn(): Promise<{
     runMessages: Message[];
     runContext: RunContext<TContext>;
   }> {
+    throwIfAborted(this.signal);
     this.verifyMaxTurns();
 
     if (this.runPipelines?.length) {
@@ -211,7 +252,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     runContext: RunContext<TContext>,
     nextTurn: () => AsyncGenerator<TNextEvent>,
   ): AsyncGenerator<ToolProgressEvent | ToolResultMessage<JsonValue> | TNextEvent> {
-    for (const call of functionCalls) {
+    for (const [index, call] of functionCalls.entries()) {
       const progressQueue: ToolProgressEvent[] = [];
       let wakeProgressWaiter: (() => void) | undefined;
 
@@ -221,6 +262,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
         maxTurns: runContext.maxTurns,
         messages: runContext.messages,
         context: runContext.context,
+        signal: this.signal,
         onToolProgress: (progress) => {
           progressQueue.push({
             type: "tool_progress",
@@ -235,12 +277,20 @@ export class Thread<TContext = unknown, TOutput = unknown> {
         },
       });
 
+      throwIfAborted(this.signal);
+
       let response: ToolResultMessage<JsonValue> | undefined;
+      let toolError: unknown;
       let toolCompleted = false;
 
       const toolPromise = this.callTool(call, toolRunContext)
         .then((toolResultMessage) => {
           response = toolResultMessage;
+        })
+        .catch((error) => {
+          toolError = error;
+        })
+        .finally(() => {
           toolCompleted = true;
           wakeProgressWaiter?.();
           wakeProgressWaiter = undefined;
@@ -261,6 +311,11 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       }
 
       await toolPromise;
+      throwIfAborted(this.signal);
+
+      if (toolError) {
+        throw toolError;
+      }
 
       if (!response) {
         continue;
@@ -269,6 +324,25 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       this.addMessage(response);
       runContext.messages.push(response);
       yield response;
+
+      if (this.checkpoint) {
+        const remainingToolCalls = functionCalls.slice(index + 1);
+        const decision = this.resolveCheckpointDecision(await this.checkpoint({
+          phase: "after_tool_result",
+          runContext,
+          toolCall: call,
+          toolResult: response,
+          remainingToolCalls,
+        }));
+
+        if (decision.action === "interrupt") {
+          if (decision.cancelPendingToolCalls !== false) {
+            yield* this.emitCancelledToolResults(remainingToolCalls, runContext, decision.reason);
+          }
+
+          return;
+        }
+      }
     }
 
     yield* nextTurn();
@@ -323,6 +397,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     toolCall: ToolCall,
     runContext: RunContext<TContext>,
   ): Promise<ToolResultMessage<JsonValue>> {
+    throwIfAborted(this.signal);
     const tool = this.agent.tools.find((candidate) => candidate.name === toolCall.name);
 
     if (!tool) {
@@ -381,6 +456,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       temperature: this.temperature,
       thinking: this.thinking,
       promptCacheKey: this.promptCacheKey,
+      signal: this.signal,
       context: buildConversationContext({
         agent: this.agent,
         messages: runMessages,
@@ -393,12 +469,31 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   async *run(): AsyncGenerator<ThreadRunEvent> {
     const { runMessages, runContext } = await this.prepareTurn();
 
+    throwIfAborted(this.signal);
     const response = await this.runtime.complete(await this.buildRuntimeRequest(runMessages));
+    throwIfAborted(this.signal);
 
     yield response;
 
     const functionCalls = await this.finalizeAssistantTurn(response, runContext);
     if (functionCalls.length > 0) {
+      if (this.checkpoint) {
+        const decision = this.resolveCheckpointDecision(await this.checkpoint({
+          phase: "after_assistant",
+          runContext,
+          assistantMessage: response,
+          toolCalls: functionCalls,
+        }));
+
+        if (decision.action === "interrupt") {
+          if (decision.cancelPendingToolCalls !== false) {
+            yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
+          }
+
+          return;
+        }
+      }
+
       yield* this.executeToolCalls(functionCalls, runContext, () => this.run());
     }
   }
@@ -406,6 +501,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   async *stream(): AsyncGenerator<ThreadStreamEvent> {
     const { runMessages, runContext } = await this.prepareTurn();
 
+    throwIfAborted(this.signal);
     const stream = this.runtime.stream(await this.buildRuntimeRequest(runMessages));
 
     for await (const event of stream) {
@@ -419,6 +515,23 @@ export class Thread<TContext = unknown, TOutput = unknown> {
 
     const functionCalls = await this.finalizeAssistantTurn(response, runContext);
     if (functionCalls.length > 0) {
+      if (this.checkpoint) {
+        const decision = this.resolveCheckpointDecision(await this.checkpoint({
+          phase: "after_assistant",
+          runContext,
+          assistantMessage: response,
+          toolCalls: functionCalls,
+        }));
+
+        if (decision.action === "interrupt") {
+          if (decision.cancelPendingToolCalls !== false) {
+            yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
+          }
+
+          return;
+        }
+      }
+
       yield* this.executeToolCalls(functionCalls, runContext, () => this.stream());
     }
   }

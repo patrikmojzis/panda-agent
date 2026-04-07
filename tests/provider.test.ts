@@ -34,4 +34,11 @@ describe("provider guards", () => {
       provider: "open-ai" as never,
     })).toThrowError(ConfigurationError);
   });
+
+  it("throws a configuration error for unknown model ids", () => {
+    expect(() => resolvePandaModel("openai", "gpt-not-real")).toThrowError(ConfigurationError);
+    expect(() => resolvePandaModel("openai", "gpt-not-real")).toThrowError(
+      'Unknown model "gpt-not-real" for provider "openai".',
+    );
+  });
 });

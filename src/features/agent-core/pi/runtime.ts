@@ -8,6 +8,10 @@ function buildRuntimeOptions(request: LlmRuntimeRequest): SimpleStreamOptions {
   const apiKey = resolveProviderApiKey(request.providerName);
   const options: SimpleStreamOptions = {};
 
+  if (request.signal) {
+    options.signal = request.signal;
+  }
+
   if (request.temperature !== undefined) {
     options.temperature = request.temperature;
   }

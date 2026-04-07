@@ -21,13 +21,17 @@ function createAgent() {
   });
 }
 
-function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
+function createRunContext(
+  context: PandaSessionContext,
+  options: { signal?: AbortSignal } = {},
+): RunContext<PandaSessionContext> {
   return new RunContext({
     agent: createAgent(),
     turn: 1,
     maxTurns: 5,
     messages: [],
     context,
+    signal: options.signal,
   });
 }
 
@@ -199,6 +203,45 @@ describe("BashTool", () => {
         expect(error).toBeInstanceOf(ToolError);
         const output = asObject((error as ToolError).details);
         expect(output.timedOut).toBe(true);
+        expect(output.interrupted).toBe(true);
+        expect(output.success).toBe(false);
+      }
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("aborts spawned commands when the run signal is cancelled", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-abort-"));
+    try {
+      const context: PandaSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+      });
+      const controller = new AbortController();
+      const promise = tool.run(
+        { command: "sleep 5" },
+        createRunContext(context, { signal: controller.signal }),
+      );
+
+      setTimeout(() => {
+        controller.abort(new Error("Stop now"));
+      }, 100).unref();
+
+      await expect(promise).rejects.toBeInstanceOf(ToolError);
+
+      try {
+        await promise;
+      } catch (error) {
+        expect(error).toBeInstanceOf(ToolError);
+        const output = asObject((error as ToolError).details);
+        expect(output.aborted).toBe(true);
         expect(output.interrupted).toBe(true);
         expect(output.success).toBe(false);
       }

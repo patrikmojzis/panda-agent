@@ -1,0 +1,803 @@
+import { describe, expect, it, vi } from "vitest";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
+
+import {
+  Agent,
+  InMemoryThreadRuntimeStore,
+  Thread,
+  ThreadDefinitionRegistry,
+  ThreadRuntimeCoordinator,
+  type ThreadMessageRecord,
+  Tool,
+  RunContext,
+  stringToUserMessage,
+  z,
+  type LlmRuntime,
+} from "../src/index.js";
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+
+  return {
+    promise,
+    resolve,
+    reject,
+  };
+}
+
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await predicate()) {
+      return;
+    }
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 10);
+    });
+  }
+
+  throw new Error(`Timed out after ${timeoutMs}ms waiting for condition.`);
+}
+
+function createAssistantMessage(
+  content: AssistantMessage["content"],
+  overrides: Partial<AssistantMessage> = {},
+): AssistantMessage {
+  const stopReason = content.some((block) => block.type === "toolCall") ? "toolUse" : "stop";
+
+  return {
+    role: "assistant",
+    content,
+    api: "openai-responses",
+    provider: "openai",
+    model: "gpt-5.1",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason,
+    timestamp: Date.now(),
+    ...overrides,
+  };
+}
+
+function message(text: string): AssistantMessage {
+  return createAssistantMessage([{ type: "text", text }]);
+}
+
+function createMockRuntime(...responses: AssistantMessage[]): LlmRuntime & {
+  complete: ReturnType<typeof vi.fn>;
+} {
+  return {
+    complete: vi.fn().mockImplementation(async () => {
+      const response = responses.shift();
+      if (!response) {
+        throw new Error("No more mock responses queued");
+      }
+
+      return response;
+    }),
+    stream: vi.fn(() => {
+      throw new Error("Streaming was not expected in this test");
+    }),
+  };
+}
+
+class EchoTool extends Tool<typeof EchoTool.schema> {
+  name = "echo";
+  description = "Echo a message";
+  static schema = z.object({
+    message: z.string(),
+  });
+  schema = EchoTool.schema;
+
+  async handle(args: z.output<typeof EchoTool.schema>): Promise<{ echoed: string }> {
+    return {
+      echoed: args.message,
+    };
+  }
+}
+
+class SlowTool extends Tool<typeof SlowTool.schema> {
+  name = "slow";
+  description = "Wait for a deferred result";
+  static schema = z.object({
+    message: z.string(),
+  });
+  schema = SlowTool.schema;
+
+  constructor(
+    private readonly started: ReturnType<typeof createDeferred<void>>,
+    private readonly release: ReturnType<typeof createDeferred<{ done: string }>>,
+  ) {
+    super();
+  }
+
+  async handle(): Promise<{ done: string }> {
+    this.started.resolve();
+    return this.release.promise;
+  }
+}
+
+class SignalAwareTool extends Tool<typeof SignalAwareTool.schema> {
+  name = "signal-aware";
+  description = "Expose whether a signal is present";
+  static schema = z.object({});
+  schema = SignalAwareTool.schema;
+
+  async handle(
+    _args: z.output<typeof SignalAwareTool.schema>,
+    run: RunContext,
+  ): Promise<{ hasSignal: boolean }> {
+    return {
+      hasSignal: run.signal instanceof AbortSignal,
+    };
+  }
+}
+
+class CrashTool extends Tool<typeof CrashTool.schema> {
+  name = "crash";
+  description = "Throw a plain error";
+  static schema = z.object({});
+  schema = CrashTool.schema;
+
+  async handle(): Promise<never> {
+    throw new Error("crash-tool boom");
+  }
+}
+
+class CompleteRunBlockingStore extends InMemoryThreadRuntimeStore {
+  constructor(
+    private readonly entered: ReturnType<typeof createDeferred<void>>,
+    private readonly release: ReturnType<typeof createDeferred<void>>,
+  ) {
+    super();
+  }
+
+  override async completeRun(runId: string) {
+    this.entered.resolve();
+    await this.release.promise;
+    return super.completeRun(runId);
+  }
+}
+
+class DeferredRuntime implements LlmRuntime {
+  readonly complete = vi.fn(async () => {
+    const next = this.responses.shift();
+    if (!next) {
+      throw new Error("No more runtime responses queued");
+    }
+
+    return next;
+  });
+  readonly stream = vi.fn(() => {
+    throw new Error("Streaming was not expected in this test");
+  });
+
+  private readonly responses: Promise<AssistantMessage>[] = [];
+
+  queue(response: AssistantMessage | Promise<AssistantMessage>): void {
+    this.responses.push(Promise.resolve(response));
+  }
+}
+
+class SelectiveLeaseManager {
+  private readonly blockedThreads: ReadonlySet<string>;
+
+  constructor(blockedThreads: readonly string[] = []) {
+    this.blockedThreads = new Set(blockedThreads);
+  }
+
+  async tryAcquire(threadId: string) {
+    if (this.blockedThreads.has(threadId)) {
+      return null;
+    }
+
+    return {
+      threadId,
+      release: async () => {},
+    };
+  }
+}
+
+describe("ThreadRuntimeCoordinator", () => {
+  it("clears thinking in the in-memory store when updated to null", async () => {
+    const store = new InMemoryThreadRuntimeStore();
+
+    await store.createThread({
+      id: "thread-thinking",
+      agentKey: "panda",
+      thinking: "medium",
+    });
+
+    const updated = await store.updateThread("thread-thinking", { thinking: null });
+
+    expect(updated.thinking).toBeUndefined();
+    expect((await store.getThread("thread-thinking")).thinking).toBeUndefined();
+  });
+
+  it("queues wakes until they are flushed", async () => {
+    const runtime = createMockRuntime(message("queued reply"));
+    const store = new InMemoryThreadRuntimeStore();
+    const registry = new ThreadDefinitionRegistry().register("queued-agent", {
+      agent: new Agent({
+        name: "queued-agent",
+        instructions: "Reply briefly",
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-queued",
+      agentKey: "queued-agent",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput(
+      "thread-queued",
+      {
+        message: stringToUserMessage("hello from telegram"),
+        source: "telegram",
+        channelId: "chat-1",
+      },
+      "queue",
+    );
+
+    expect(await store.listRuns("thread-queued")).toHaveLength(0);
+    expect(await store.listPendingInputs("thread-queued")).toHaveLength(1);
+
+    await coordinator.flushQueued("thread-queued");
+    await coordinator.waitForIdle("thread-queued");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(1);
+
+    const transcript = await store.loadTranscript("thread-queued");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "telegram",
+      "assistant",
+    ]);
+  });
+
+  it("keeps queued inputs pending until a flush or new wake cycle starts them", async () => {
+    const started = createDeferred<void>();
+    const release = createDeferred<{ done: string }>();
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call_slow",
+          name: "slow",
+          arguments: { message: "first" },
+        },
+      ]),
+      message("finished current plan"),
+      message("processed after flush"),
+    );
+
+    const store = new InMemoryThreadRuntimeStore();
+    const registry = new ThreadDefinitionRegistry().register("queued-during-run", {
+      agent: new Agent({
+        name: "queued-during-run",
+        instructions: "Use tools when needed",
+        tools: [new SlowTool(started, release)],
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-queued-during-run",
+      agentKey: "queued-during-run",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-queued-during-run", {
+      message: stringToUserMessage("start"),
+      source: "telegram",
+    });
+
+    await started.promise;
+
+    await coordinator.submitInput(
+      "thread-queued-during-run",
+      {
+        message: stringToUserMessage("save this for later"),
+        source: "tui",
+      },
+      "queue",
+    );
+
+    release.resolve({ done: "first" });
+    await coordinator.waitForIdle("thread-queued-during-run");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    expect(await store.hasPendingInputs("thread-queued-during-run")).toBe(true);
+    expect(await store.hasRunnableInputs("thread-queued-during-run")).toBe(false);
+
+    let transcript = await store.loadTranscript("thread-queued-during-run");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "telegram",
+      "assistant",
+      "tool:slow",
+      "assistant",
+    ]);
+
+    await coordinator.flushQueued("thread-queued-during-run");
+    await coordinator.waitForIdle("thread-queued-during-run");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
+    transcript = await store.loadTranscript("thread-queued-during-run");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "telegram",
+      "assistant",
+      "tool:slow",
+      "assistant",
+      "tui",
+      "assistant",
+    ]);
+  });
+
+  it("replans after a new input arrives during a tool run", async () => {
+    const started = createDeferred<void>();
+    const release = createDeferred<{ done: string }>();
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call_1",
+          name: "slow",
+          arguments: { message: "first" },
+        },
+        {
+          type: "toolCall",
+          id: "call_2",
+          name: "echo",
+          arguments: { message: "second" },
+        },
+      ]),
+      message("replanned"),
+    );
+
+    const store = new InMemoryThreadRuntimeStore();
+    const registry = new ThreadDefinitionRegistry().register("runtime-agent", {
+      agent: new Agent({
+        name: "runtime-agent",
+        instructions: "Use tools when needed",
+        tools: [new SlowTool(started, release), new EchoTool()],
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-replan",
+      agentKey: "runtime-agent",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    const firstWake = coordinator.submitInput(
+      "thread-replan",
+      {
+        message: stringToUserMessage("start the work"),
+        source: "telegram",
+        channelId: "chat-42",
+      },
+      "wake",
+    );
+
+    await started.promise;
+
+    const secondWake = coordinator.submitInput(
+      "thread-replan",
+      {
+        message: stringToUserMessage("actually, change the plan"),
+        source: "tui",
+      },
+      "wake",
+    );
+
+    release.resolve({ done: "first" });
+
+    await Promise.all([firstWake, secondWake]);
+    await coordinator.waitForIdle("thread-replan");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
+
+    const transcript = await store.loadTranscript("thread-replan");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "telegram",
+      "assistant",
+      "tool:slow",
+      "tool:echo",
+      "tui",
+      "assistant",
+    ]);
+
+    const cancelledResult = transcript[3];
+    expect(cancelledResult?.message).toMatchObject({
+      role: "toolResult",
+      toolName: "echo",
+      isError: true,
+      details: {
+        cancelled: true,
+        reason: "New external input arrived.",
+      },
+    });
+  });
+
+  it("interrupts before the first tool starts when new input arrives after the assistant reply", async () => {
+    const runtime = new DeferredRuntime();
+    const firstResponse = createDeferred<AssistantMessage>();
+    runtime.queue(firstResponse.promise);
+    runtime.queue(message("replanned after assistant"));
+    const slowHandle = vi.fn(async () => ({ echoed: "should not run" }));
+    class SpiedEchoTool extends Tool<typeof EchoTool.schema> {
+      name = "echo";
+      description = "Echo a message";
+      static schema = EchoTool.schema;
+      schema = EchoTool.schema;
+
+      async handle(args: z.output<typeof EchoTool.schema>) {
+        return slowHandle(args);
+      }
+    }
+
+    const store = new InMemoryThreadRuntimeStore();
+    const registry = new ThreadDefinitionRegistry().register("assistant-checkpoint", {
+      agent: new Agent({
+        name: "assistant-checkpoint",
+        instructions: "Use tools when needed",
+        tools: [new SpiedEchoTool()],
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-after-assistant",
+      agentKey: "assistant-checkpoint",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-after-assistant", {
+      message: stringToUserMessage("start"),
+      source: "telegram",
+    });
+
+    await waitFor(() => runtime.complete.mock.calls.length === 1);
+
+    await coordinator.submitInput("thread-after-assistant", {
+      message: stringToUserMessage("stop before tools"),
+      source: "tui",
+    });
+
+    firstResponse.resolve(createAssistantMessage([
+      {
+        type: "toolCall",
+        id: "call_echo",
+        name: "echo",
+        arguments: { message: "first" },
+      },
+    ]));
+
+    await coordinator.waitForIdle("thread-after-assistant");
+
+    expect(slowHandle).not.toHaveBeenCalled();
+
+    const transcript = await store.loadTranscript("thread-after-assistant");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "telegram",
+      "assistant",
+      "tool:echo",
+      "tui",
+      "assistant",
+    ]);
+    expect(transcript[2]?.message).toMatchObject({
+      role: "toolResult",
+      toolName: "echo",
+      details: {
+        cancelled: true,
+        reason: "New external input arrived.",
+      },
+    });
+  });
+
+  it("recovers only orphaned runs that are not currently leased", async () => {
+    const store = new InMemoryThreadRuntimeStore();
+    await store.createThread({ id: "thread-free", agentKey: "panda" });
+    await store.createThread({ id: "thread-held", agentKey: "panda" });
+    const freeRun = await store.createRun("thread-free");
+    const heldRun = await store.createRun("thread-held");
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      resolveDefinition: async () => {
+        throw new Error("Not used in this test");
+      },
+      leaseManager: new SelectiveLeaseManager(["thread-held"]),
+    });
+
+    const recovered = await coordinator.recoverOrphanedRuns("recover");
+
+    expect(recovered.map((run) => run.id)).toEqual([freeRun.id]);
+    expect((await store.getRun(freeRun.id)).status).toBe("failed");
+    expect((await store.getRun(heldRun.id)).status).toBe("running");
+  });
+
+  it("can abort an active run from another coordinator instance", async () => {
+    const started = createDeferred<void>();
+    const release = createDeferred<{ done: string }>();
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call_1",
+          name: "slow",
+          arguments: { message: "first" },
+        },
+      ]),
+    );
+
+    const store = new InMemoryThreadRuntimeStore();
+    const registry = new ThreadDefinitionRegistry().register("abort-agent", {
+      agent: new Agent({
+        name: "abort-agent",
+        instructions: "Use tools when needed",
+        tools: [new SlowTool(started, release)],
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-abort",
+      agentKey: "abort-agent",
+    });
+
+    const owner = new ThreadRuntimeCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+    const observer = new ThreadRuntimeCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await owner.submitInput("thread-abort", {
+      message: stringToUserMessage("start"),
+      source: "telegram",
+    });
+
+    await started.promise;
+
+    expect(await observer.abort("thread-abort", "Stop from observer")).toBe(true);
+    release.resolve({ done: "late" });
+
+    await waitFor(async () => (await store.getRun((await store.listRuns("thread-abort"))[0]!.id)).status === "failed");
+
+    const [run] = await store.listRuns("thread-abort");
+    expect(run?.status).toBe("failed");
+    expect(run?.error).toContain("Stop from observer");
+  });
+
+  it("restarts after a new wake arrives during run completion", async () => {
+    const enteredCompleteRun = createDeferred<void>();
+    const releaseCompleteRun = createDeferred<void>();
+    const runtime = createMockRuntime(
+      message("first"),
+      message("second"),
+    );
+
+    const store = new CompleteRunBlockingStore(enteredCompleteRun, releaseCompleteRun);
+    const registry = new ThreadDefinitionRegistry().register("completion-race", {
+      agent: new Agent({
+        name: "completion-race",
+        instructions: "Reply briefly",
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-completion-race",
+      agentKey: "completion-race",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-completion-race", {
+      message: stringToUserMessage("first input"),
+      source: "telegram",
+    });
+
+    await enteredCompleteRun.promise;
+
+    await coordinator.submitInput("thread-completion-race", {
+      message: stringToUserMessage("second input"),
+      source: "tui",
+    });
+
+    releaseCompleteRun.resolve();
+    await coordinator.waitForIdle("thread-completion-race");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    const transcript = await store.loadTranscript("thread-completion-race");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "telegram",
+      "assistant",
+      "tui",
+      "assistant",
+    ]);
+  });
+
+  it("fails the run instead of hanging when a tool throws a plain error", async () => {
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call_crash",
+          name: "crash",
+          arguments: {},
+        },
+      ]),
+    );
+
+    const store = new InMemoryThreadRuntimeStore();
+    const registry = new ThreadDefinitionRegistry().register("crash-agent", {
+      agent: new Agent({
+        name: "crash-agent",
+        instructions: "Use tools when needed",
+        tools: [new CrashTool()],
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-crash",
+      agentKey: "crash-agent",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-crash", {
+      message: stringToUserMessage("start"),
+      source: "telegram",
+    });
+
+    await expect(coordinator.waitForIdle("thread-crash")).rejects.toThrow("crash-tool boom");
+
+    const [run] = await store.listRuns("thread-crash");
+    expect(run?.status).toBe("failed");
+    expect(run?.error).toContain("crash-tool boom");
+  });
+});
+
+describe("Thread runtime stores", () => {
+  it("summarizes threads without loading transcripts per caller", async () => {
+    const store = new InMemoryThreadRuntimeStore();
+    await store.createThread({ id: "summary-a", agentKey: "panda" });
+    await store.createThread({ id: "summary-b", agentKey: "panda" });
+
+    await store.enqueueInput("summary-a", {
+      message: stringToUserMessage("hello"),
+      source: "telegram",
+    });
+    await store.applyPendingInputs("summary-a");
+    await store.appendRuntimeMessage("summary-a", {
+      message: message("reply"),
+      source: "assistant",
+    });
+
+    await store.enqueueInput("summary-b", {
+      message: stringToUserMessage("queued"),
+      source: "tui",
+    }, "queue");
+
+    const summaries = await store.listThreadSummaries();
+    const summaryA = summaries.find((summary) => summary.thread.id === "summary-a");
+    const summaryB = summaries.find((summary) => summary.thread.id === "summary-b");
+
+    expect(summaryA).toMatchObject({
+      messageCount: 2,
+      pendingInputCount: 0,
+      lastMessage: {
+        source: "assistant",
+      } satisfies Partial<ThreadMessageRecord>,
+    });
+    expect(summaryB).toMatchObject({
+      messageCount: 0,
+      pendingInputCount: 1,
+    });
+  });
+});
+
+describe("Thread abort handling", () => {
+  it("passes AbortSignal into runtime requests and tool contexts", async () => {
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call_signal",
+          name: "signal-aware",
+          arguments: {},
+        },
+      ]),
+      message("done"),
+    );
+    const controller = new AbortController();
+    const thread = new Thread({
+      agent: new Agent({
+        name: "signal-agent",
+        instructions: "Use the tool",
+        tools: [new SignalAwareTool()],
+      }),
+      messages: [stringToUserMessage("check the signal")],
+      runtime,
+      signal: controller.signal,
+    });
+
+    const outputs = [];
+    for await (const event of thread.run()) {
+      outputs.push(event);
+    }
+
+    expect(runtime.complete).toHaveBeenCalledWith(expect.objectContaining({
+      signal: controller.signal,
+    }));
+    expect(outputs[1]).toMatchObject({
+      role: "toolResult",
+      toolName: "signal-aware",
+      details: {
+        hasSignal: true,
+      },
+    });
+  });
+
+  it("stops before calling the model when the signal is already aborted", async () => {
+    const runtime = createMockRuntime(message("should not run"));
+    const controller = new AbortController();
+    controller.abort(new Error("stop-now"));
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "aborted-agent",
+        instructions: "This should never run",
+      }),
+      messages: [stringToUserMessage("hello")],
+      runtime,
+      signal: controller.signal,
+    });
+
+    await expect(thread.runToCompletion()).rejects.toThrow("stop-now");
+    expect(runtime.complete).not.toHaveBeenCalled();
+  });
+});
