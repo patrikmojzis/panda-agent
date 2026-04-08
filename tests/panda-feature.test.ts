@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { BashTool, DateTimeContext, EnvironmentContext, MediaTool, createPandaAgent } from "../src/index.js";
+import { BashTool, DateTimeContext, EnvironmentContext, MediaTool, buildPandaPrompt } from "../src/index.js";
+import { buildPandaTools } from "../src/features/panda/agent.js";
 
 describe("Panda feature surface", () => {
-  it("creates Panda agents with the bash tool enabled by default", () => {
-    const agent = createPandaAgent();
+  it("builds the Panda prompt and default tools", () => {
+    const tools = buildPandaTools();
 
-    expect(agent.instructions).toContain("You are Panda, a personal assistant operating inside Panda.");
-    expect(agent.tools[0]).toBeInstanceOf(BashTool);
-    expect(agent.tools[1]).toBeInstanceOf(MediaTool);
+    expect(buildPandaPrompt()).toContain("Your name is Panda.");
+    expect(tools[0]).toBeInstanceOf(BashTool);
+    expect(tools[1]).toBeInstanceOf(MediaTool);
   });
 
   it("renders the datetime context with the configured timezone", async () => {

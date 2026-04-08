@@ -78,6 +78,14 @@ describe("PostgresThreadRuntimeStore", () => {
     });
     expect(duplicateTelegramInput.inserted).toBe(false);
 
+    const secondChannelInput = await store.enqueueInput("pg-thread", {
+      message: stringToUserMessage("hello from another telegram chat"),
+      source: "telegram",
+      channelId: "chat-2",
+      externalMessageId: "telegram-1",
+    });
+    expect(secondChannelInput.inserted).toBe(true);
+
     await store.enqueueInput("pg-thread", {
       message: stringToUserMessage("hello from tui"),
       source: "tui",
@@ -87,9 +95,11 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(await store.hasRunnableInputs("pg-thread")).toBe(true);
     expect((await store.listPendingInputs("pg-thread")).map((input) => input.source)).toEqual([
       "telegram",
+      "telegram",
       "tui",
     ]);
     expect((await store.listPendingInputs("pg-thread")).map((input) => input.deliveryMode)).toEqual([
+      "wake",
       "wake",
       "queue",
     ]);
@@ -98,10 +108,12 @@ describe("PostgresThreadRuntimeStore", () => {
     expect((await store.listPendingInputs("pg-thread")).map((input) => input.deliveryMode)).toEqual([
       "wake",
       "wake",
+      "wake",
     ]);
 
     const applied = await store.applyPendingInputs("pg-thread");
     expect(applied.map((message) => message.source)).toEqual([
+      "telegram",
       "telegram",
       "tui",
     ]);
@@ -130,10 +142,11 @@ describe("PostgresThreadRuntimeStore", () => {
       source: "assistant",
       runId: run.id,
     });
-    const completedRun = await store.finishRun(run.id, "completed");
+    const completedRun = await store.completeRun(run.id);
 
     expect(completedRun.status).toBe("completed");
     expect((await store.loadTranscript("pg-thread")).map((entry) => entry.source)).toEqual([
+      "telegram",
       "telegram",
       "tui",
       "assistant",
@@ -148,7 +161,7 @@ describe("PostgresThreadRuntimeStore", () => {
       thread: {
         id: "pg-thread",
       },
-      messageCount: 3,
+      messageCount: 4,
       pendingInputCount: 0,
       lastMessage: {
         source: "assistant",

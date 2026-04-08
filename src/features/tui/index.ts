@@ -1,1 +1,1 @@
-export { runChatCli, type ChatCliOptions } from "./chat.js";
+export { runChatCli, type ChatCliOptions, type ChatCliResult } from "./chat.js";

@@ -3,6 +3,14 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
 import type { ThreadLease, ThreadLeaseManager } from "./coordinator.js";
+import {
+  buildThreadRuntimeTableNames,
+  quoteIdentifier,
+  toMillis,
+  toOrderNumber,
+  validateIdentifier,
+  type ThreadRuntimeTableNames,
+} from "./postgres-shared.js";
 import type { ThreadEnqueueResult, ThreadRuntimeStore } from "./store.js";
 import type {
   CreateThreadInput,
@@ -11,7 +19,6 @@ import type {
   ThreadInputRecord,
   ThreadMessageRecord,
   ThreadRunRecord,
-  ThreadRunStatus,
   ThreadRuntimeMessagePayload,
   ThreadRecord,
   ThreadSummaryRecord,
@@ -31,39 +38,8 @@ interface PostgresThreadRuntimeStoreOptions {
   tablePrefix?: string;
 }
 
-interface TableNames {
-  prefix: string;
-  threads: string;
-  messages: string;
-  inputs: string;
-  runs: string;
-}
-
 export interface ThreadRuntimeNotification {
   threadId: string;
-}
-
-function validateIdentifier(value: string): string {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
-    throw new Error(`Invalid SQL identifier ${value}`);
-  }
-
-  return value;
-}
-
-function quoteIdentifier(value: string): string {
-  return `"${value.replace(/"/g, "\"\"")}"`;
-}
-
-function buildTableNames(prefix: string): TableNames {
-  const safePrefix = validateIdentifier(prefix);
-  return {
-    prefix: safePrefix,
-    threads: quoteIdentifier(`${safePrefix}_threads`),
-    messages: quoteIdentifier(`${safePrefix}_messages`),
-    inputs: quoteIdentifier(`${safePrefix}_inputs`),
-    runs: quoteIdentifier(`${safePrefix}_runs`),
-  };
 }
 
 export function buildThreadRuntimeNotificationChannel(prefix = "thread_runtime"): string {
@@ -87,26 +63,6 @@ export function parseThreadRuntimeNotification(payload: string): ThreadRuntimeNo
 
 function toJson(value: unknown): string | null {
   return value === undefined ? null : JSON.stringify(value);
-}
-
-function toMillis(value: unknown): number {
-  if (typeof value === "number") {
-    return value;
-  }
-
-  if (value instanceof Date) {
-    return value.getTime();
-  }
-
-  return new Date(String(value)).getTime();
-}
-
-function toOrderNumber(value: unknown): number {
-  if (typeof value === "number") {
-    return value;
-  }
-
-  return Number(value);
 }
 
 function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
@@ -163,7 +119,7 @@ function parseRunRow(row: Record<string, unknown>): ThreadRunRecord {
   return {
     id: String(row.id),
     threadId: String(row.thread_id),
-    status: String(row.status) as ThreadRunStatus,
+    status: String(row.status) as ThreadRunRecord["status"],
     startedAt: toMillis(row.started_at),
     finishedAt: row.finished_at === null ? undefined : toMillis(row.finished_at),
     error: row.error === null ? undefined : String(row.error),
@@ -194,13 +150,13 @@ function missingThreadError(threadId: string): Error {
 
 export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   private readonly pool: PgPoolLike;
-  private readonly tables: TableNames;
+  private readonly tables: ThreadRuntimeTableNames;
   private readonly notificationChannel: string;
 
   constructor(options: PostgresThreadRuntimeStoreOptions) {
     this.pool = options.pool;
     const tablePrefix = options.tablePrefix ?? "thread_runtime";
-    this.tables = buildTableNames(tablePrefix);
+    this.tables = buildThreadRuntimeTableNames(tablePrefix);
     this.notificationChannel = buildThreadRuntimeNotificationChannel(tablePrefix);
   }
 
@@ -264,7 +220,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       ON ${this.tables.inputs} (thread_id, applied_at, input_order);
 
       CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_inputs_external_message_idx`)}
-      ON ${this.tables.inputs} (thread_id, source, external_message_id)
+      ON ${this.tables.inputs} (thread_id, source, COALESCE(channel_id, ''), external_message_id)
       WHERE external_message_id IS NOT NULL;
 
       CREATE TABLE IF NOT EXISTS ${this.tables.runs} (
@@ -280,15 +236,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
 
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_runs_thread_started_idx`)}
       ON ${this.tables.runs} (thread_id, started_at);
-
-      ALTER TABLE ${this.tables.runs}
-      ADD COLUMN IF NOT EXISTS abort_requested_at TIMESTAMPTZ;
-
-      ALTER TABLE ${this.tables.runs}
-      ADD COLUMN IF NOT EXISTS abort_reason TEXT;
-
-      ALTER TABLE ${this.tables.inputs}
-      ADD COLUMN IF NOT EXISTS delivery_mode TEXT NOT NULL DEFAULT 'wake';
     `);
   }
 
@@ -353,7 +300,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     return parseThreadRow(row as Record<string, unknown>);
   }
 
-  async listThreads(limit?: number): Promise<readonly ThreadRecord[]> {
+  async listThreadSummaries(limit?: number): Promise<readonly ThreadSummaryRecord[]> {
     const values: unknown[] = [];
     let sql = `SELECT * FROM ${this.tables.threads} ORDER BY updated_at DESC`;
 
@@ -362,12 +309,8 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       values.push(Math.max(0, limit));
     }
 
-    const result = await this.pool.query(sql, values);
-    return result.rows.map((row) => parseThreadRow(row as Record<string, unknown>));
-  }
-
-  async listThreadSummaries(limit?: number): Promise<readonly ThreadSummaryRecord[]> {
-    const threads = await this.listThreads(limit);
+    const threadResult = await this.pool.query(sql, values);
+    const threads = threadResult.rows.map((row) => parseThreadRow(row as Record<string, unknown>));
     if (threads.length === 0) {
       return [];
     }
@@ -526,12 +469,16 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       const existingResult = await this.pool.query(`
         SELECT *
         FROM ${this.tables.inputs}
-        WHERE thread_id = $1 AND source = $2 AND external_message_id = $3
+        WHERE thread_id = $1
+          AND source = $2
+          AND (($3::text IS NULL AND channel_id IS NULL) OR channel_id = $3::text)
+          AND external_message_id = $4
         ORDER BY input_order DESC
         LIMIT 1
       `, [
         threadId,
         payload.source,
+        payload.channelId ?? null,
         payload.externalMessageId,
       ]);
 
@@ -849,33 +796,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     `, [
       runId,
       new Date(),
-    ]);
-
-    const row = result.rows[0];
-    if (!row) {
-      throw new Error(`Unknown run ${runId}`);
-    }
-
-    const record = parseRunRow(row as Record<string, unknown>);
-    await this.notifyThreadChanged(record.threadId);
-    return record;
-  }
-
-  async finishRun(
-    runId: string,
-    status: Exclude<ThreadRunStatus, "running">,
-    error?: string,
-  ): Promise<ThreadRunRecord> {
-    const result = await this.pool.query(`
-      UPDATE ${this.tables.runs}
-      SET status = $2, finished_at = $3, error = $4
-      WHERE id = $1
-      RETURNING *
-    `, [
-      runId,
-      status,
-      new Date(),
-      error ?? null,
     ]);
 
     const row = result.rows[0];

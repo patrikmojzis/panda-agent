@@ -16,15 +16,18 @@ export {
   type ThreadRuntimeNotification,
 } from "./postgres.js";
 export {
+  ensureReadonlyChatQuerySchema,
+  readDatabaseUsername,
+} from "./postgres-readonly.js";
+export type { ReadonlyChatViewNames } from "./postgres-readonly.js";
+export {
   InMemoryThreadRuntimeStore,
   type ThreadEnqueueResult,
   type ThreadRuntimeStore,
 } from "./store.js";
 export {
-  ThreadDefinitionRegistry,
   type CreateThreadInput,
   type ResolvedThreadDefinition,
-  type ThreadDefinitionFactory,
   type ThreadDefinitionResolver,
   type ThreadInputPayload,
   type ThreadInputDeliveryMode,

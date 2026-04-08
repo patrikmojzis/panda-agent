@@ -14,18 +14,17 @@ import {
   Tool,
   stringToUserMessage,
   type ThinkingLevel,
-  type ThreadRunEvent,
+  type ToolProgressEvent,
 } from "../agent-core/index.js";
-import { createPandaAgent } from "../panda/agent.js";
-import type { PandaProviderName } from "../panda/types.js";
+import type { ProviderName } from "../agent-core/types.js";
+import { buildPandaTools } from "../panda/agent.js";
+import { summarizeMessageText } from "../panda/message-preview.js";
 import {
   createChatRuntime,
-  type ChatThreadSummary,
   type ChatRuntimeServices,
 } from "./runtime.js";
 import {
-  renderStoredTranscriptEntries,
-  summarizeMessageText,
+  renderTranscriptEntries,
   type TranscriptEntryView,
 } from "./transcript.js";
 import {
@@ -48,6 +47,7 @@ import {
   setComposerValue,
   type ComposerState,
 } from "./composer.js";
+import { renderMarkdownLines } from "./markdown.js";
 import {
   ALT_SCREEN_OFF,
   ALT_SCREEN_ON,
@@ -62,7 +62,13 @@ import {
   wrapPlainText,
 } from "./screen.js";
 import { stripAnsi, theme } from "./theme.js";
-import type { ThreadMessageRecord, ThreadRecord, ThreadRunRecord, ThreadRuntimeEvent } from "../thread-runtime/index.js";
+import type {
+  ThreadMessageRecord,
+  ThreadRecord,
+  ThreadRunRecord,
+  ThreadRuntimeEvent,
+  ThreadSummaryRecord,
+} from "../thread-runtime/index.js";
 
 type EntryRole = "assistant" | "user" | "tool" | "meta" | "error";
 type RunPhase = "idle" | "thinking";
@@ -96,7 +102,7 @@ interface ThreadPickerState {
   active: boolean;
   loading: boolean;
   selected: number;
-  summaries: readonly ChatThreadSummary[];
+  summaries: readonly ThreadSummaryRecord[];
   error: string | null;
 }
 
@@ -185,7 +191,7 @@ const WELCOME_KEYS = [
 ] as const;
 
 export interface ChatCliOptions {
-  provider?: PandaProviderName;
+  provider?: ProviderName;
   model?: string;
   thinking?: ThinkingLevel;
   cwd?: string;
@@ -193,9 +199,14 @@ export interface ChatCliOptions {
   resume?: string;
   threadId?: string;
   dbUrl?: string;
+  readOnlyDbUrl?: string;
 }
 
-function defaultProvider(): PandaProviderName {
+export interface ChatCliResult {
+  threadId?: string;
+}
+
+function defaultProvider(): ProviderName {
   const configured = process.env.PANDA_PROVIDER;
 
   if (configured) {
@@ -217,7 +228,7 @@ function defaultProvider(): PandaProviderName {
   return "openai";
 }
 
-function defaultModel(provider: PandaProviderName): string {
+function defaultModel(provider: ProviderName): string {
   if (process.env.PANDA_MODEL) {
     return process.env.PANDA_MODEL;
   }
@@ -254,7 +265,7 @@ function thinkingCommandValuesText(): string {
   return `${THINKING_LEVELS.join(", ")}, or off`;
 }
 
-function missingApiKeyMessage(provider: PandaProviderName): string | null {
+function missingApiKeyMessage(provider: ProviderName): string | null {
   return resolveProviderApiKey(provider) ? null : getProviderConfig(provider).missingApiKeyMessage;
 }
 
@@ -384,7 +395,7 @@ function renderTranscriptLine(rendered: string): TranscriptLine {
 }
 
 export class PandaChatApp {
-  private providerName: PandaProviderName;
+  private providerName: ProviderName;
   private model: string;
   private thinking?: ThinkingLevel;
   private readonly cwd: string;
@@ -392,6 +403,7 @@ export class PandaChatApp {
   private readonly resumeThreadId?: string;
   private readonly explicitThreadId?: string;
   private readonly dbUrl?: string;
+  private readonly readOnlyDbUrl?: string;
   private readonly locale: string;
   private readonly timezone: string;
   private readonly transcript: TranscriptEntry[] = [];
@@ -417,6 +429,7 @@ export class PandaChatApp {
   private runStartedAt = 0;
   private notice: NoticeState | null = null;
   private nextEntryId = 1;
+  private activeProgressEntryId: number | null = null;
   private followTranscript = true;
   private scrollTop = 0;
   private slashSelection = 0;
@@ -453,11 +466,12 @@ export class PandaChatApp {
     this.resumeThreadId = options.resume;
     this.explicitThreadId = options.threadId;
     this.dbUrl = options.dbUrl;
+    this.readOnlyDbUrl = options.readOnlyDbUrl;
     this.locale = Intl.DateTimeFormat().resolvedOptions().locale;
     this.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
   }
 
-  async run(): Promise<void> {
+  async run(): Promise<ChatCliResult> {
     if (!input.isTTY || !output.isTTY) {
       throw new Error("Panda chat requires an interactive terminal.");
     }
@@ -495,6 +509,10 @@ export class PandaChatApp {
     } finally {
       await this.cleanup();
     }
+
+    return {
+      threadId: this.currentThreadId || undefined,
+    };
   }
 
   private async cleanup(): Promise<void> {
@@ -512,6 +530,16 @@ export class PandaChatApp {
     input.pause();
     output.off("resize", this.resizeHandler);
     input.setRawMode?.(false);
+
+    if (this.runPhase === "thinking" && this.currentThreadId) {
+      try {
+        if (await this.services?.coordinator.abort(this.currentThreadId, "TUI closed.")) {
+          await this.services?.coordinator.waitForCurrentRun(this.currentThreadId);
+        }
+      } catch {
+        // Closing the TUI should still continue even if abort/wait cleanup fails.
+      }
+    }
     output.write(HIDE_CURSOR + CLEAR_SCREEN + SHOW_CURSOR + ALT_SCREEN_OFF);
     await this.services?.close();
   }
@@ -547,7 +575,7 @@ export class PandaChatApp {
         return;
       }
 
-      void coordinator.waitForIdle(threadId)
+      void coordinator.waitForCurrentRun(threadId)
         .catch(() => {
           // Ignore shutdown races and fall through to closing the TUI.
         })
@@ -591,11 +619,8 @@ export class PandaChatApp {
     return this.services;
   }
 
-  private refreshToolCatalog(agentKey?: string): void {
-    this.currentTools = createPandaAgent({
-      name: agentKey ?? this.currentThread?.agentKey ?? "panda",
-      promptAdditions: this.instructions,
-    }).tools;
+  private refreshToolCatalog(): void {
+    this.currentTools = buildPandaTools(this.services?.extraTools ?? []);
   }
 
   private async initializeRuntime(): Promise<void> {
@@ -607,6 +632,7 @@ export class PandaChatApp {
       provider: this.providerName,
       model: this.model,
       dbUrl: this.dbUrl,
+      readOnlyDbUrl: this.readOnlyDbUrl,
       onEvent: (event) => this.handleRuntimeEvent(event),
       onStoreNotification: (notification) => this.handleStoreNotification(notification.threadId),
     });
@@ -647,7 +673,7 @@ export class PandaChatApp {
     this.currentStorageMode = this.requireServices().mode;
     this.runPhase = "idle";
     this.lastObservedRunKey = null;
-    this.refreshToolCatalog(thread.agentKey);
+    this.refreshToolCatalog();
     await this.reloadVisibleTranscript();
     await this.syncStoredThreadState(true);
   }
@@ -666,7 +692,7 @@ export class PandaChatApp {
 
       this.visibleStoredMessageIds.add(record.id);
       this.reconcilePendingLocalInput(record);
-      this.appendRenderedEntries(renderStoredTranscriptEntries(record, this.currentTools));
+      this.appendRenderedEntries(renderTranscriptEntries(record.message, record, this.currentTools));
     }
   }
 
@@ -774,7 +800,7 @@ export class PandaChatApp {
       this.providerName = thread.provider ?? this.providerName;
       this.model = thread.model ?? this.model;
       this.thinking = thread.thinking;
-      this.refreshToolCatalog(thread.agentKey);
+      this.refreshToolCatalog();
       this.appendStoredMessages(transcript);
       this.observeLatestRun(runs);
       this.render();
@@ -792,6 +818,10 @@ export class PandaChatApp {
   }
 
   private async handleStoreNotification(threadId: string): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
     if (threadId === this.currentThreadId) {
       await this.syncStoredThreadState(true);
     }
@@ -983,13 +1013,11 @@ export class PandaChatApp {
     this.setNotice(`Resumed thread ${this.currentThreadId}.`, "info");
   }
 
-  private handleThreadEvent(event: ThreadRunEvent): void {
-    if ("type" in event && event.type === "tool_progress") {
-      this.pushEntry("meta", "progress", JSON.stringify(event.details, null, 2));
-    }
-  }
-
   private async handleRuntimeEvent(event: ThreadRuntimeEvent): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
     if (event.threadId !== this.currentThreadId) {
       return;
     }
@@ -1001,32 +1029,37 @@ export class PandaChatApp {
         break;
 
       case "inputs_applied":
-        if (this.currentStorageMode === "memory") {
-          await this.syncStoredThreadState(true);
-        }
+        this.clearProgressEntry();
+        await this.syncStoredThreadState(true);
         break;
 
       case "thread_event":
-        if ("type" in event.event && event.event.type === "tool_progress") {
-          this.handleThreadEvent(event.event);
-        } else if (this.currentStorageMode === "memory") {
+        if (this.isToolProgressEvent(event.event)) {
+          this.upsertProgressEntry(JSON.stringify(event.event.details, null, 2));
+        } else {
+          this.clearProgressEntry();
           await this.syncStoredThreadState(true);
         }
         break;
 
       case "run_finished":
+        this.clearProgressEntry();
         if (event.run.status === "failed" && event.run.error) {
           this.setNotice(event.run.error, "error", 6_000);
         }
         this.runPhase = "idle";
         this.scheduleCloseAfterRun();
-        if (this.currentStorageMode === "memory") {
-          await this.syncStoredThreadState(true);
-        }
+        await this.syncStoredThreadState(true);
         break;
     }
 
     this.render();
+  }
+
+  private isToolProgressEvent(
+    event: Extract<ThreadRuntimeEvent, { type: "thread_event" }>["event"],
+  ): event is ToolProgressEvent {
+    return "type" in event && event.type === "tool_progress";
   }
 
   private get modeLabel(): string {
@@ -1067,14 +1100,45 @@ export class PandaChatApp {
     }
   }
 
-  private pushEntry(role: EntryRole, title: string, body: string): void {
-    this.transcript.push({
+  private pushEntry(role: EntryRole, title: string, body: string): TranscriptEntry {
+    const entry = {
       id: this.nextEntryId,
       role,
       title,
       body,
-    });
+    };
+    this.transcript.push(entry);
     this.nextEntryId += 1;
+    this.afterTranscriptChange();
+    return entry;
+  }
+
+  private upsertProgressEntry(body: string): void {
+    if (this.activeProgressEntryId !== null) {
+      const existing = this.transcript.find((entry) => entry.id === this.activeProgressEntryId);
+      if (existing) {
+        existing.body = body;
+        this.afterTranscriptChange();
+        return;
+      }
+    }
+
+    const entry = this.pushEntry("meta", "progress", body);
+    this.activeProgressEntryId = entry.id;
+  }
+
+  private clearProgressEntry(): void {
+    if (this.activeProgressEntryId === null) {
+      return;
+    }
+
+    const index = this.transcript.findIndex((entry) => entry.id === this.activeProgressEntryId);
+    this.activeProgressEntryId = null;
+    if (index < 0) {
+      return;
+    }
+
+    this.transcript.splice(index, 1);
     this.afterTranscriptChange();
   }
 
@@ -1085,6 +1149,7 @@ export class PandaChatApp {
 
   private resetTranscriptView(options: { keepSeenMessages?: boolean } = {}): void {
     this.transcript.length = 0;
+    this.activeProgressEntryId = null;
     if (!options.keepSeenMessages) {
       this.visibleStoredMessageIds.clear();
     }
@@ -1171,12 +1236,17 @@ export class PandaChatApp {
                 : theme.slate;
       const labelText = truncatePlainText(entry.title, LABEL_WIDTH);
       const label = padAnsiEnd(theme.bold(labelColor(labelText)), LABEL_WIDTH);
-      const wrappedBody = wrapPlainText(entry.body, bodyWidth);
+      const wrappedBody = entry.role === "assistant"
+        ? renderMarkdownLines(entry.body, bodyWidth)
+        : wrapPlainText(entry.body, bodyWidth).map((line) => ({
+            plain: line,
+            rendered: line,
+          }));
 
       for (const [index, line] of wrappedBody.entries()) {
         lines.push({
-          plain: `${entry.title} ${line}`.trim(),
-          rendered: `${index === 0 ? label : " ".repeat(LABEL_WIDTH)}${line}`,
+          plain: `${entry.title} ${line.plain}`.trimEnd(),
+          rendered: `${index === 0 ? label : " ".repeat(LABEL_WIDTH)}${line.rendered}`,
         });
       }
     }
@@ -1781,12 +1851,19 @@ export class PandaChatApp {
           return true;
         }
 
-        this.model = value;
-        this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
-          model: value,
-        });
-        this.pushEntry("meta", "config", `Model set to ${value}.`);
-        this.setNotice(`Model ${value}`, "info");
+        try {
+          this.model = value;
+          this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
+            model: value,
+          });
+          this.pushEntry("meta", "config", `Model set to ${value}.`);
+          this.setNotice(`Model ${value}`, "info");
+        } catch (error) {
+          this.model = this.currentThread?.model ?? this.model;
+          const message = error instanceof Error ? error.message : String(error);
+          this.pushEntry("error", "config", message);
+          this.setNotice(message, "error");
+        }
         return true;
 
       case "/thinking": {
@@ -1810,16 +1887,22 @@ export class PandaChatApp {
           return true;
         }
 
-        this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
-          thinking: nextThinking === "off" ? null : nextThinking,
-        });
-        this.thinking = this.currentThread.thinking;
-        if (this.thinking) {
-          this.pushEntry("meta", "config", `Thinking set to ${this.thinking}.`);
-          this.setNotice(`Thinking ${this.thinking}`, "info");
-        } else {
-          this.pushEntry("meta", "config", "Thinking disabled.");
-          this.setNotice("Thinking off", "info");
+        try {
+          this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
+            thinking: nextThinking === "off" ? null : nextThinking,
+          });
+          this.thinking = this.currentThread.thinking;
+          if (this.thinking) {
+            this.pushEntry("meta", "config", `Thinking set to ${this.thinking}.`);
+            this.setNotice(`Thinking ${this.thinking}`, "info");
+          } else {
+            this.pushEntry("meta", "config", "Thinking disabled.");
+            this.setNotice("Thinking off", "info");
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.pushEntry("error", "config", message);
+          this.setNotice(message, "error");
         }
         return true;
       }
@@ -2216,7 +2299,7 @@ export class PandaChatApp {
   }
 }
 
-export async function runChatCli(options: ChatCliOptions = {}): Promise<void> {
+export async function runChatCli(options: ChatCliOptions = {}): Promise<ChatCliResult> {
   const app = new PandaChatApp(options);
-  await app.run();
+  return await app.run();
 }

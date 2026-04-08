@@ -53,15 +53,24 @@ export type ThreadDefinitionResolver = (
   thread: ThreadRecord,
 ) => Promise<ResolvedThreadDefinition> | ResolvedThreadDefinition;
 
-export type ThreadDefinitionFactory =
-  | ResolvedThreadDefinition
-  | ThreadDefinitionResolver;
-
 export interface ThreadMessageMetadata {
   source: string;
   channelId?: string;
   externalMessageId?: string;
   actorId?: string;
+}
+
+export function matchesThreadInputIdentity(
+  left: Pick<ThreadMessageMetadata, "source" | "channelId" | "externalMessageId">,
+  right: Pick<ThreadMessageMetadata, "source" | "channelId" | "externalMessageId">,
+): boolean {
+  if (!left.externalMessageId || !right.externalMessageId) {
+    return false;
+  }
+
+  return left.source === right.source
+    && left.externalMessageId === right.externalMessageId
+    && (left.channelId ?? null) === (right.channelId ?? null);
 }
 
 export type ThreadMessageOrigin = "input" | "runtime";
@@ -114,28 +123,4 @@ export interface ThreadRunRecord {
   error?: string;
   abortRequestedAt?: number;
   abortReason?: string;
-}
-
-export class ThreadDefinitionRegistry {
-  private readonly factories = new Map<string, ThreadDefinitionResolver>();
-
-  register(agentKey: string, definition: ThreadDefinitionFactory): this {
-    const resolver: ThreadDefinitionResolver =
-      typeof definition === "function" ? definition : async () => definition;
-    this.factories.set(agentKey, resolver);
-    return this;
-  }
-
-  unregister(agentKey: string): void {
-    this.factories.delete(agentKey);
-  }
-
-  async resolve(thread: ThreadRecord): Promise<ResolvedThreadDefinition> {
-    const resolver = this.factories.get(thread.agentKey);
-    if (!resolver) {
-      throw new Error(`No thread definition registered for agent key ${thread.agentKey}.`);
-    }
-
-    return resolver(thread);
-  }
 }

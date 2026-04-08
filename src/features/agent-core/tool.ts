@@ -3,6 +3,7 @@ import { ZodError, type ZodTypeAny, type output } from "zod";
 
 import { ToolError } from "./exceptions.js";
 import { formatParameters } from "./helpers/schema.js";
+import { stringifyUnknown } from "./helpers/stringify.js";
 import type { RunContext } from "./run-context.js";
 import type { JsonValue, ToolResultPayload } from "./types.js";
 
@@ -12,20 +13,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function stringifyUnknown(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
 export function formatToolCallFallback(args: Record<string, unknown>): string {
-  return stringifyUnknown(args);
+  return stringifyUnknown(args, { pretty: true });
 }
 
 function isToolResultContentItem(value: unknown): boolean {
@@ -68,7 +57,7 @@ export function formatToolResultFallback(message: ToolResultMessage<JsonValue>):
   }
 
   if (message.details !== undefined) {
-    return stringifyUnknown(message.details);
+    return stringifyUnknown(message.details, { pretty: true });
   }
 
   return message.isError ? "Tool failed." : "Tool completed.";

@@ -6,7 +6,8 @@ import {
   type Tool,
   type ToolResultMessage,
 } from "../agent-core/index.js";
-import type { ThreadMessageMetadata, ThreadMessageRecord } from "../thread-runtime/index.js";
+import { summarizeMessageText } from "../panda/message-preview.js";
+import type { ThreadMessageMetadata } from "../thread-runtime/index.js";
 
 export type TranscriptEntryRole = "assistant" | "user" | "tool" | "meta" | "error";
 
@@ -16,44 +17,12 @@ export interface TranscriptEntryView {
   body: string;
 }
 
-function normalizeInlineText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
 function sourceLabel(metadata: ThreadMessageMetadata): string {
   if (!metadata.channelId) {
     return metadata.source;
   }
 
   return `${metadata.source}:${metadata.channelId}`;
-}
-
-export function summarizeMessageText(message: Message): string {
-  switch (message.role) {
-    case "user":
-      if (typeof message.content === "string") {
-        return message.content.trim();
-      }
-
-      return message.content
-        .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
-        .map((block) => block.text)
-        .join("\n")
-        .trim();
-
-    case "assistant":
-      return message.content
-        .filter((block) => block.type === "text")
-        .map((block) => block.text)
-        .join("\n")
-        .trim();
-
-    case "toolResult":
-      return formatToolResultFallback(message);
-
-    default:
-      return JSON.stringify(message);
-  }
 }
 
 export function renderTranscriptEntries(
@@ -74,7 +43,7 @@ export function renderTranscriptEntries(
     let text = "";
 
     const flushText = (): void => {
-      const body = normalizeInlineText(text);
+      const body = text.trim();
       if (!body) {
         return;
       }
@@ -122,11 +91,4 @@ export function renderTranscriptEntries(
     title: metadata.source,
     body: JSON.stringify(message, null, 2),
   }];
-}
-
-export function renderStoredTranscriptEntries(
-  record: ThreadMessageRecord,
-  tools: readonly Tool[] = [],
-): TranscriptEntryView[] {
-  return renderTranscriptEntries(record.message, record, tools);
 }

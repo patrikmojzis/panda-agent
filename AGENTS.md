@@ -6,6 +6,11 @@
 - Prefer simple abstractions over framework-heavy architecture.
 - When adding provider support, keep provider-specific request/response shaping out of the core thread loop.
 - Avoid copying large chunks from other projects; use them for patterns and ideas, then adapt to Panda's smaller codebase.
+- Always verify each change with a live Panda agent test by sending `ping` and confirming the response is `pong` before considering the work complete.
+
+## Philosophy
+
+- Prefer negative code: the best code is often code removed. Favor simpler implementations, fewer files, fewer abstractions, and less moving parts when they solve the problem just as well. "The real hero of programming is the one who writes negative code."
 
 ## Local Inspiration Repos
 

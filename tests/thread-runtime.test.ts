@@ -5,11 +5,13 @@ import {
   Agent,
   InMemoryThreadRuntimeStore,
   Thread,
-  ThreadDefinitionRegistry,
   ThreadRuntimeCoordinator,
   type ThreadMessageRecord,
   Tool,
   RunContext,
+  type ResolvedThreadDefinition,
+  type ThreadDefinitionResolver,
+  type ThreadRecord,
   stringToUserMessage,
   z,
   type LlmRuntime,
@@ -212,6 +214,24 @@ class SelectiveLeaseManager {
   }
 }
 
+class TestThreadDefinitionRegistry {
+  private readonly resolvers = new Map<string, ThreadDefinitionResolver>();
+
+  register(agentKey: string, definition: ResolvedThreadDefinition | ThreadDefinitionResolver): this {
+    this.resolvers.set(agentKey, typeof definition === "function" ? definition : async () => definition);
+    return this;
+  }
+
+  resolve(thread: ThreadRecord): Promise<ResolvedThreadDefinition> {
+    const resolver = this.resolvers.get(thread.agentKey);
+    if (!resolver) {
+      throw new Error(`No thread definition registered for agent key ${thread.agentKey}.`);
+    }
+
+    return Promise.resolve(resolver(thread));
+  }
+}
+
 describe("ThreadRuntimeCoordinator", () => {
   it("clears thinking in the in-memory store when updated to null", async () => {
     const store = new InMemoryThreadRuntimeStore();
@@ -231,7 +251,7 @@ describe("ThreadRuntimeCoordinator", () => {
   it("queues wakes until they are flushed", async () => {
     const runtime = createMockRuntime(message("queued reply"));
     const store = new InMemoryThreadRuntimeStore();
-    const registry = new ThreadDefinitionRegistry().register("queued-agent", {
+    const registry = new TestThreadDefinitionRegistry().register("queued-agent", {
       agent: new Agent({
         name: "queued-agent",
         instructions: "Reply briefly",
@@ -291,7 +311,7 @@ describe("ThreadRuntimeCoordinator", () => {
     );
 
     const store = new InMemoryThreadRuntimeStore();
-    const registry = new ThreadDefinitionRegistry().register("queued-during-run", {
+    const registry = new TestThreadDefinitionRegistry().register("queued-during-run", {
       agent: new Agent({
         name: "queued-during-run",
         instructions: "Use tools when needed",
@@ -378,7 +398,7 @@ describe("ThreadRuntimeCoordinator", () => {
     );
 
     const store = new InMemoryThreadRuntimeStore();
-    const registry = new ThreadDefinitionRegistry().register("runtime-agent", {
+    const registry = new TestThreadDefinitionRegistry().register("runtime-agent", {
       agent: new Agent({
         name: "runtime-agent",
         instructions: "Use tools when needed",
@@ -465,7 +485,7 @@ describe("ThreadRuntimeCoordinator", () => {
     }
 
     const store = new InMemoryThreadRuntimeStore();
-    const registry = new ThreadDefinitionRegistry().register("assistant-checkpoint", {
+    const registry = new TestThreadDefinitionRegistry().register("assistant-checkpoint", {
       agent: new Agent({
         name: "assistant-checkpoint",
         instructions: "Use tools when needed",
@@ -564,7 +584,7 @@ describe("ThreadRuntimeCoordinator", () => {
     );
 
     const store = new InMemoryThreadRuntimeStore();
-    const registry = new ThreadDefinitionRegistry().register("abort-agent", {
+    const registry = new TestThreadDefinitionRegistry().register("abort-agent", {
       agent: new Agent({
         name: "abort-agent",
         instructions: "Use tools when needed",
@@ -613,7 +633,7 @@ describe("ThreadRuntimeCoordinator", () => {
     );
 
     const store = new CompleteRunBlockingStore(enteredCompleteRun, releaseCompleteRun);
-    const registry = new ThreadDefinitionRegistry().register("completion-race", {
+    const registry = new TestThreadDefinitionRegistry().register("completion-race", {
       agent: new Agent({
         name: "completion-race",
         instructions: "Reply briefly",
@@ -669,7 +689,7 @@ describe("ThreadRuntimeCoordinator", () => {
     );
 
     const store = new InMemoryThreadRuntimeStore();
-    const registry = new ThreadDefinitionRegistry().register("crash-agent", {
+    const registry = new TestThreadDefinitionRegistry().register("crash-agent", {
       agent: new Agent({
         name: "crash-agent",
         instructions: "Use tools when needed",
@@ -702,6 +722,37 @@ describe("ThreadRuntimeCoordinator", () => {
 });
 
 describe("Thread runtime stores", () => {
+  it("dedupes retries per source and channel, not just external message id", async () => {
+    const store = new InMemoryThreadRuntimeStore();
+    await store.createThread({ id: "identity", agentKey: "panda" });
+
+    await store.enqueueInput("identity", {
+      message: stringToUserMessage("hello"),
+      source: "telegram",
+      channelId: "chat-1",
+      externalMessageId: "message-1",
+    });
+    await store.enqueueInput("identity", {
+      message: stringToUserMessage("duplicate"),
+      source: "telegram",
+      channelId: "chat-1",
+      externalMessageId: "message-1",
+    });
+    await store.enqueueInput("identity", {
+      message: stringToUserMessage("other chat"),
+      source: "telegram",
+      channelId: "chat-2",
+      externalMessageId: "message-1",
+    });
+
+    const pending = await store.listPendingInputs("identity");
+    expect(pending).toHaveLength(2);
+    expect(pending.map((input) => input.channelId)).toEqual([
+      "chat-1",
+      "chat-2",
+    ]);
+  });
+
   it("summarizes threads without loading transcripts per caller", async () => {
     const store = new InMemoryThreadRuntimeStore();
     await store.createThread({ id: "summary-a", agentKey: "panda" });

@@ -3,15 +3,22 @@ import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
 
-import { createDefaultPandaContexts } from "../panda/contexts/index.js";
-import { createPandaAgent } from "../panda/agent.js";
-import type { PandaProviderName, PandaSessionContext } from "../panda/types.js";
+import { Agent } from "../agent-core/agent.js";
+import type { Tool } from "../agent-core/tool.js";
+import type { ProviderName } from "../agent-core/types.js";
+import { buildPandaTools } from "../panda/agent.js";
+import { DateTimeContext, EnvironmentContext } from "../panda/contexts/index.js";
+import { buildPandaPrompt } from "../panda/prompts.js";
+import { PostgresReadonlyQueryTool } from "../panda/tools/postgres-readonly-query-tool.js";
+import type { PandaSessionContext } from "../panda/types.js";
 import {
   buildThreadRuntimeNotificationChannel,
+  ensureReadonlyChatQuerySchema,
   InMemoryThreadRuntimeStore,
   parseThreadRuntimeNotification,
   PostgresThreadLeaseManager,
   PostgresThreadRuntimeStore,
+  readDatabaseUsername,
   ThreadRuntimeCoordinator,
   type ThreadRuntimeNotification,
   type ThreadRuntimeEvent,
@@ -28,9 +35,10 @@ export interface ChatRuntimeOptions {
   locale: string;
   timezone: string;
   instructions?: string;
-  provider?: PandaProviderName;
+  provider?: ProviderName;
   model?: string;
   dbUrl?: string;
+  readOnlyDbUrl?: string;
   tablePrefix?: string;
   defaultAgentKey?: string;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
@@ -40,20 +48,19 @@ export interface ChatRuntimeOptions {
 export interface CreateChatThreadOptions {
   id?: string;
   agentKey?: string;
-  provider?: PandaProviderName;
+  provider?: ProviderName;
   model?: string;
   thinking?: ThinkingLevel;
 }
-
-export type ChatThreadSummary = ThreadSummaryRecord;
 
 export interface ChatRuntimeServices {
   mode: StorageMode;
   store: ThreadRuntimeStore;
   coordinator: ThreadRuntimeCoordinator;
+  extraTools: readonly Tool[];
   createThread(options?: CreateChatThreadOptions): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
-  listThreadSummaries(limit?: number): Promise<readonly ChatThreadSummary[]>;
+  listThreadSummaries(limit?: number): Promise<readonly ThreadSummaryRecord[]>;
   recoverOrphanedRuns(reason?: string): Promise<readonly ThreadRunRecord[]>;
   close(): Promise<void>;
 }
@@ -83,12 +90,14 @@ function resolveStoredContext(
   };
 }
 
-export function resolveChatDatabaseUrl(env: NodeJS.ProcessEnv = process.env): string | null {
-  return trimNonEmptyString(env.PANDA_DATABASE_URL) ?? trimNonEmptyString(env.DATABASE_URL);
-}
-
 export async function createChatRuntime(options: ChatRuntimeOptions): Promise<ChatRuntimeServices> {
-  const dbUrl = trimNonEmptyString(options.dbUrl) ?? resolveChatDatabaseUrl();
+  const dbUrl =
+    trimNonEmptyString(options.dbUrl)
+    ?? trimNonEmptyString(process.env.PANDA_DATABASE_URL)
+    ?? trimNonEmptyString(process.env.DATABASE_URL);
+  const readOnlyDbUrl =
+    trimNonEmptyString(options.readOnlyDbUrl)
+    ?? trimNonEmptyString(process.env.PANDA_READONLY_DATABASE_URL);
   const defaultAgentKey = options.defaultAgentKey ?? "panda";
   const fallbackContext = {
     cwd: options.cwd,
@@ -99,6 +108,8 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
   let mode: StorageMode = "memory";
   let store: ThreadRuntimeStore;
   let postgresPool: Pool | null = null;
+  let readonlyPool: Pool | null = null;
+  let extraTools: readonly Tool[] = [];
   let close = async (): Promise<void> => {};
 
   if (dbUrl) {
@@ -114,6 +125,21 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
     mode = "postgres";
     store = postgresStore;
     postgresPool = pool;
+    if (readOnlyDbUrl) {
+      await ensureReadonlyChatQuerySchema({
+        queryable: pool,
+        tablePrefix: options.tablePrefix,
+        readonlyRole: readDatabaseUsername(readOnlyDbUrl),
+      });
+
+      readonlyPool = new Pool({
+        connectionString: readOnlyDbUrl,
+      });
+
+      extraTools = [new PostgresReadonlyQueryTool({
+        pool: readonlyPool,
+      })];
+    }
     if (options.onStoreNotification) {
       const channel = buildThreadRuntimeNotificationChannel(options.tablePrefix ?? "thread_runtime");
       const client = await pool.connect();
@@ -139,11 +165,17 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
           await client.query(`UNLISTEN ${channel}`);
         } finally {
           client.release();
+          if (readonlyPool) {
+            await readonlyPool.end();
+          }
           await pool.end();
         }
       };
     } else {
       close = async () => {
+        if (readonlyPool) {
+          await readonlyPool.end();
+        }
         await pool.end();
       };
     }
@@ -155,18 +187,27 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
     store,
     leaseManager: postgresPool ? new PostgresThreadLeaseManager(postgresPool) : undefined,
     resolveDefinition: (thread) => {
-      const context = resolveStoredContext(thread.context, fallbackContext);
+      const context: PandaSessionContext = {
+        ...resolveStoredContext(thread.context, fallbackContext),
+        threadId: thread.id,
+        agentKey: thread.agentKey,
+      };
       return {
-        agent: createPandaAgent({
+        agent: new Agent({
           name: thread.agentKey,
-          promptAdditions: options.instructions,
+          instructions: buildPandaPrompt(options.instructions),
+          tools: buildPandaTools(extraTools),
         }),
         context,
-        llmContexts: createDefaultPandaContexts({
-          cwd: context.cwd ?? options.cwd,
-          locale: context.locale ?? options.locale,
-          timeZone: context.timezone ?? options.timezone,
-        }),
+        llmContexts: [
+          new DateTimeContext({
+            locale: context.locale ?? options.locale,
+            timeZone: context.timezone ?? options.timezone,
+          }),
+          new EnvironmentContext({
+            cwd: context.cwd ?? options.cwd,
+          }),
+        ],
       };
     },
     onEvent: options.onEvent,
@@ -185,17 +226,14 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
     });
   };
 
-  const listThreadSummaries = async (limit = 20): Promise<readonly ChatThreadSummary[]> => {
-    return store.listThreadSummaries(limit);
-  };
-
   return {
     mode,
     store,
     coordinator,
+    extraTools,
     createThread,
     getThread: (threadId) => store.getThread(threadId),
-    listThreadSummaries,
+    listThreadSummaries: (limit = 20) => store.listThreadSummaries(limit),
     recoverOrphanedRuns: (reason) => coordinator.recoverOrphanedRuns(reason),
     close,
   };

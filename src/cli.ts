@@ -5,9 +5,10 @@ import path from "node:path";
 
 import { Command, InvalidArgumentError } from "commander";
 import { formatProviderNameList, parseProviderName } from "./features/agent-core/index.js";
+import { summarizeMessageText } from "./features/panda/message-preview.js";
 import { runChatCli, type ChatCliOptions } from "./features/tui/index.js";
+import { renderResumeHint } from "./features/tui/exit-hint.js";
 import { createChatRuntime } from "./features/tui/runtime.js";
-import { summarizeMessageText } from "./features/tui/transcript.js";
 
 (process as NodeJS.Process & { loadEnvFile?: (path?: string) => void }).loadEnvFile?.();
 
@@ -33,7 +34,7 @@ function parsePositiveInt(value: string): number {
 }
 
 async function runChatCommand(options: ChatCliOptions): Promise<void> {
-  await runChatCli({
+  const result = await runChatCli({
     provider: options.provider,
     model: options.model,
     cwd: options.cwd,
@@ -41,11 +42,16 @@ async function runChatCommand(options: ChatCliOptions): Promise<void> {
     resume: options.resume,
     threadId: options.threadId,
     dbUrl: options.dbUrl,
+    readOnlyDbUrl: options.readOnlyDbUrl,
   });
+
+  if (result.threadId) {
+    process.stdout.write(`\n${renderResumeHint(result.threadId, process.stdout.columns ?? 80)}\n`);
+  }
 }
 
 async function withCliRuntime<T>(
-  options: Pick<ChatCliOptions, "provider" | "model" | "cwd" | "instructions" | "dbUrl">,
+  options: Pick<ChatCliOptions, "provider" | "model" | "cwd" | "instructions" | "dbUrl" | "readOnlyDbUrl">,
   fn: (runtime: Awaited<ReturnType<typeof createChatRuntime>>) => Promise<T>,
 ): Promise<T> {
   const runtime = await createChatRuntime({
@@ -56,6 +62,7 @@ async function withCliRuntime<T>(
     provider: options.provider,
     model: options.model,
     dbUrl: options.dbUrl,
+    readOnlyDbUrl: options.readOnlyDbUrl,
   });
 
   try {
@@ -66,7 +73,7 @@ async function withCliRuntime<T>(
 }
 
 async function listThreadsCommand(
-  options: Pick<ChatCliOptions, "provider" | "model" | "cwd" | "instructions" | "dbUrl"> & { limit?: number },
+  options: Pick<ChatCliOptions, "provider" | "model" | "cwd" | "instructions" | "dbUrl" | "readOnlyDbUrl"> & { limit?: number },
 ): Promise<void> {
   await withCliRuntime(options, async (runtime) => {
     const summaries = await runtime.listThreadSummaries(options.limit ?? 20);
@@ -94,7 +101,7 @@ async function listThreadsCommand(
 
 async function inspectThreadCommand(
   threadId: string,
-  options: Pick<ChatCliOptions, "provider" | "model" | "cwd" | "instructions" | "dbUrl">,
+  options: Pick<ChatCliOptions, "provider" | "model" | "cwd" | "instructions" | "dbUrl" | "readOnlyDbUrl">,
 ): Promise<void> {
   await withCliRuntime(options, async (runtime) => {
     const thread = await runtime.getThread(threadId);
@@ -138,7 +145,8 @@ function configureChatOptions(command: Command): Command {
     .option("-i, --instructions <instructions>", "Append custom Panda instructions")
     .option("--resume <threadId>", "Resume an existing thread by id")
     .option("--thread-id <threadId>", "Use an explicit thread id for a new or existing chat")
-    .option("--db-url <url>", "Postgres connection string for thread persistence");
+    .option("--db-url <url>", "Postgres connection string for thread persistence")
+    .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool");
 }
 
 function configureChatCommand(command: Command): Command {
@@ -171,6 +179,7 @@ program
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
   .option("-i, --instructions <instructions>", "Append custom Panda instructions")
   .option("--db-url <url>", "Postgres connection string for thread persistence")
+  .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
   .action((options) => {
     return listThreadsCommand(options);
   });
@@ -184,6 +193,7 @@ program
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
   .option("-i, --instructions <instructions>", "Append custom Panda instructions")
   .option("--db-url <url>", "Postgres connection string for thread persistence")
+  .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
   .action((threadId: string, options) => {
     return inspectThreadCommand(threadId, options);
   });

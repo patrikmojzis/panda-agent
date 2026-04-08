@@ -2,6 +2,7 @@ import type { Message } from "@mariozechner/pi-ai";
 
 import { Thread } from "../agent-core/thread.js";
 import type { ThreadRunEvent } from "../agent-core/types.js";
+import { stringifyUnknown } from "../agent-core/helpers/stringify.js";
 import type {
   ResolvedThreadDefinition,
   ThreadDefinitionResolver,
@@ -54,22 +55,6 @@ export type ThreadRuntimeEvent =
     threadId: string;
     run: ThreadRunRecord;
   };
-
-function stringifyUnknown(value: unknown): string {
-  if (value instanceof Error) {
-    return value.message;
-  }
-
-  if (typeof value === "string") {
-    return value;
-  }
-
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
 
 function isPersistedThreadMessage(event: ThreadRunEvent): event is Extract<ThreadRunEvent, { role: string }> {
   return "role" in event && (event.role === "assistant" || event.role === "toolResult");
@@ -172,6 +157,15 @@ export class ThreadRuntimeCoordinator {
 
       this.ensureRunning(threadId);
     }
+  }
+
+  async waitForCurrentRun(threadId: string): Promise<void> {
+    const activeRun = this.activeRuns.get(threadId);
+    if (!activeRun) {
+      return;
+    }
+
+    await activeRun;
   }
 
   async recoverOrphanedRuns(
@@ -285,12 +279,12 @@ export class ThreadRuntimeCoordinator {
       countTokens: definition.countTokens,
       signal,
       checkpoint: async (checkpoint) => {
+        const pendingToolCalls = checkpoint.phase === "after_assistant"
+          ? checkpoint.toolCalls
+          : checkpoint.remainingToolCalls;
+
         const latestRun = await this.store.getRun(run.id);
         if (latestRun.abortRequestedAt) {
-          const pendingToolCalls = checkpoint.phase === "after_assistant"
-            ? checkpoint.toolCalls
-            : checkpoint.remainingToolCalls;
-
           return {
             action: "interrupt",
             reason: latestRun.abortReason ?? "Aborted by runtime request.",
@@ -301,10 +295,6 @@ export class ThreadRuntimeCoordinator {
         if (!(await this.store.hasRunnableInputs(thread.id))) {
           return { action: "continue" } as const;
         }
-
-        const pendingToolCalls = checkpoint.phase === "after_assistant"
-          ? checkpoint.toolCalls
-          : checkpoint.remainingToolCalls;
 
         return {
           action: "interrupt",
@@ -375,7 +365,7 @@ export class ThreadRuntimeCoordinator {
 
       finishedRun = await this.store.completeRun(run.id);
     } catch (error) {
-      finishedRun = await this.store.failRunIfRunning(run.id, stringifyUnknown(error))
+      finishedRun = await this.store.failRunIfRunning(run.id, stringifyUnknown(error, { preferErrorMessage: true }))
         ?? await this.store.getRun(run.id);
       throw error;
     } finally {

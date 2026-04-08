@@ -14,6 +14,7 @@ import {
   StreamingFailedError,
   ToolError,
 } from "./exceptions.js";
+import { stringifyUnknown } from "./helpers/stringify.js";
 import { estimateTokensFromString, type TokenCounter } from "./helpers/token-count.js";
 import { gatherContexts, type LlmContext } from "./llm-context.js";
 import type { Hook } from "./hook.js";
@@ -57,18 +58,6 @@ export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   countTokens?: TokenCounter;
   signal?: AbortSignal;
   checkpoint?: ThreadCheckpointHandler;
-}
-
-function stringifyUnknown(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
 }
 
 function stringifyJson(value: JsonValue): string {

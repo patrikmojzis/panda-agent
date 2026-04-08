@@ -25,10 +25,6 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "/quit", summary: "Leave the TUI" },
 ] as const;
 
-export function slashCommands(): readonly SlashCommand[] {
-  return SLASH_COMMANDS;
-}
-
 export function findSlashCommand(name: string): SlashCommand | undefined {
   return SLASH_COMMANDS.find((command) => command.name === name);
 }

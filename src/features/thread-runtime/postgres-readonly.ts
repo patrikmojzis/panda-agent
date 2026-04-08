@@ -1,0 +1,175 @@
+import type { Pool } from "pg";
+
+import {
+  buildThreadRuntimeRelationNames,
+  buildThreadRuntimeTableNames,
+  quoteIdentifier,
+} from "./postgres-shared.js";
+
+interface PgQueryable {
+  query: Pool["query"];
+}
+
+export interface ReadonlyChatViewNames {
+  threads: string;
+  messages: string;
+  inputs: string;
+  runs: string;
+}
+
+export interface EnsureReadonlyChatQuerySchemaOptions {
+  queryable: PgQueryable;
+  tablePrefix?: string;
+  readonlyRole?: string | null;
+  viewPrefix?: string;
+}
+
+export function readDatabaseUsername(databaseUrl: string): string | null {
+  try {
+    const parsed = new URL(databaseUrl);
+    return parsed.username ? decodeURIComponent(parsed.username) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function ensureReadonlyChatQuerySchema(
+  options: EnsureReadonlyChatQuerySchemaOptions,
+): Promise<ReadonlyChatViewNames> {
+  const tables = buildThreadRuntimeTableNames(options.tablePrefix ?? "thread_runtime");
+  const views = buildThreadRuntimeRelationNames(options.viewPrefix ?? "panda");
+
+  await options.queryable.query(`
+    CREATE OR REPLACE VIEW ${views.threads}
+    WITH (security_barrier = true) AS
+    SELECT
+      t.id,
+      t.agent_key,
+      t.system_prompt,
+      t.max_turns,
+      t.context,
+      t.max_input_tokens,
+      t.prompt_cache_key,
+      t.provider,
+      t.model,
+      t.temperature,
+      t.thinking,
+      t.created_at,
+      t.updated_at,
+      COALESCE((
+        SELECT COUNT(*)::INTEGER
+        FROM ${tables.messages} AS m
+        WHERE m.thread_id = t.id
+      ), 0) AS message_count,
+      COALESCE((
+        SELECT COUNT(*)::INTEGER
+        FROM ${tables.inputs} AS i
+        WHERE i.thread_id = t.id AND i.applied_at IS NULL
+      ), 0) AS pending_input_count,
+      (
+        SELECT MAX(m.created_at)
+        FROM ${tables.messages} AS m
+        WHERE m.thread_id = t.id
+      ) AS last_message_at
+    FROM ${tables.threads} AS t
+    WHERE t.agent_key = current_setting('panda.agent_key', true);
+
+    CREATE OR REPLACE VIEW ${views.messages}
+    WITH (security_barrier = true) AS
+    SELECT
+      m.id,
+      m.thread_id,
+      m.sequence,
+      m.origin,
+      m.source,
+      m.channel_id,
+      m.external_message_id,
+      m.actor_id,
+      m.run_id,
+      m.created_at,
+      m.message,
+      m.message->>'role' AS role,
+      COALESCE(m.message->>'toolName', NULL) AS tool_name,
+      CASE
+        WHEN jsonb_typeof(m.message->'content') = 'string' THEN m.message->>'content'
+        WHEN jsonb_typeof(m.message->'content') = 'array' THEN (
+          SELECT string_agg(block->>'text', E'\\n')
+          FROM jsonb_array_elements(m.message->'content') AS block
+          WHERE block->>'type' = 'text'
+        )
+        ELSE NULL
+      END AS text,
+      CASE
+        WHEN jsonb_typeof(m.message->'content') = 'array' THEN EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(m.message->'content') AS block
+          WHERE block->>'type' = 'image'
+        )
+        ELSE FALSE
+      END AS has_images
+    FROM ${tables.messages} AS m
+    INNER JOIN ${tables.threads} AS t ON t.id = m.thread_id
+    WHERE t.agent_key = current_setting('panda.agent_key', true);
+
+    CREATE OR REPLACE VIEW ${views.inputs}
+    WITH (security_barrier = true) AS
+    SELECT
+      i.id,
+      i.thread_id,
+      i.input_order,
+      i.delivery_mode,
+      i.source,
+      i.channel_id,
+      i.external_message_id,
+      i.actor_id,
+      i.created_at,
+      i.applied_at,
+      i.message,
+      i.message->>'role' AS role,
+      CASE
+        WHEN jsonb_typeof(i.message->'content') = 'string' THEN i.message->>'content'
+        WHEN jsonb_typeof(i.message->'content') = 'array' THEN (
+          SELECT string_agg(block->>'text', E'\\n')
+          FROM jsonb_array_elements(i.message->'content') AS block
+          WHERE block->>'type' = 'text'
+        )
+        ELSE NULL
+      END AS text,
+      CASE
+        WHEN jsonb_typeof(i.message->'content') = 'array' THEN EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(i.message->'content') AS block
+          WHERE block->>'type' = 'image'
+        )
+        ELSE FALSE
+      END AS has_images
+    FROM ${tables.inputs} AS i
+    INNER JOIN ${tables.threads} AS t ON t.id = i.thread_id
+    WHERE t.agent_key = current_setting('panda.agent_key', true);
+
+    CREATE OR REPLACE VIEW ${views.runs}
+    WITH (security_barrier = true) AS
+    SELECT
+      r.id,
+      r.thread_id,
+      r.status,
+      r.started_at,
+      r.finished_at,
+      r.abort_requested_at,
+      r.abort_reason,
+      r.error
+    FROM ${tables.runs} AS r
+    INNER JOIN ${tables.threads} AS t ON t.id = r.thread_id
+    WHERE t.agent_key = current_setting('panda.agent_key', true);
+  `);
+
+  if (options.readonlyRole) {
+    const readonlyRole = quoteIdentifier(options.readonlyRole);
+    await options.queryable.query(`
+      GRANT USAGE ON SCHEMA public TO ${readonlyRole};
+      GRANT SELECT ON ${views.threads}, ${views.messages}, ${views.inputs}, ${views.runs} TO ${readonlyRole};
+    `);
+  }
+
+  return views;
+}

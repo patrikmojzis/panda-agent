@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
 
-import type {
-  CreateThreadInput,
-  ThreadInputDeliveryMode,
-  ThreadInputPayload,
-  ThreadInputRecord,
-  ThreadMessageRecord,
-  ThreadRunRecord,
-  ThreadRunStatus,
-  ThreadRuntimeMessagePayload,
-  ThreadRecord,
-  ThreadSummaryRecord,
-  ThreadUpdate,
+import {
+  matchesThreadInputIdentity,
+  type CreateThreadInput,
+  type ThreadInputDeliveryMode,
+  type ThreadInputPayload,
+  type ThreadInputRecord,
+  type ThreadMessageRecord,
+  type ThreadRunRecord,
+  type ThreadRuntimeMessagePayload,
+  type ThreadRecord,
+  type ThreadSummaryRecord,
+  type ThreadUpdate,
 } from "./types.js";
 
 export interface ThreadEnqueueResult {
@@ -22,7 +22,6 @@ export interface ThreadEnqueueResult {
 export interface ThreadRuntimeStore {
   createThread(input: CreateThreadInput): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
-  listThreads(limit?: number): Promise<readonly ThreadRecord[]>;
   listThreadSummaries(limit?: number): Promise<readonly ThreadSummaryRecord[]>;
   updateThread(threadId: string, update: ThreadUpdate): Promise<ThreadRecord>;
   loadTranscript(threadId: string): Promise<readonly ThreadMessageRecord[]>;
@@ -42,11 +41,6 @@ export interface ThreadRuntimeStore {
   createRun(threadId: string): Promise<ThreadRunRecord>;
   getRun(runId: string): Promise<ThreadRunRecord>;
   completeRun(runId: string): Promise<ThreadRunRecord>;
-  finishRun(
-    runId: string,
-    status: Exclude<ThreadRunStatus, "running">,
-    error?: string,
-  ): Promise<ThreadRunRecord>;
   failRunIfRunning(runId: string, error?: string): Promise<ThreadRunRecord | null>;
   listRuns(threadId: string): Promise<readonly ThreadRunRecord[]>;
   listRunningRuns(): Promise<readonly ThreadRunRecord[]>;
@@ -62,25 +56,7 @@ interface InMemoryThreadState {
   pendingInputs: ThreadInputRecord[];
 }
 
-function cloneThreadRecord(record: ThreadRecord): ThreadRecord {
-  return {
-    ...record,
-  };
-}
-
-function cloneThreadMessageRecord(record: ThreadMessageRecord): ThreadMessageRecord {
-  return {
-    ...record,
-  };
-}
-
-function cloneThreadInputRecord(record: ThreadInputRecord): ThreadInputRecord {
-  return {
-    ...record,
-  };
-}
-
-function cloneRunRecord(record: ThreadRunRecord): ThreadRunRecord {
+function cloneRecord<T extends object>(record: T): T {
   return {
     ...record,
   };
@@ -118,7 +94,7 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
       pendingInputs: [],
     });
 
-    return cloneThreadRecord(thread);
+    return cloneRecord(thread);
   }
 
   async getThread(threadId: string): Promise<ThreadRecord> {
@@ -127,19 +103,7 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
       throw missingThreadError(threadId);
     }
 
-    return cloneThreadRecord(thread.thread);
-  }
-
-  async listThreads(limit?: number): Promise<readonly ThreadRecord[]> {
-    const records = [...this.threads.values()]
-      .map((state) => cloneThreadRecord(state.thread))
-      .sort((left, right) => right.updatedAt - left.updatedAt);
-
-    if (limit === undefined) {
-      return records;
-    }
-
-    return records.slice(0, Math.max(0, limit));
+    return cloneRecord(thread.thread);
   }
 
   async listThreadSummaries(limit?: number): Promise<readonly ThreadSummaryRecord[]> {
@@ -152,11 +116,11 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
     return visibleStates.map((state) => {
       const transcript = state.transcript;
       return {
-        thread: cloneThreadRecord(state.thread),
+        thread: cloneRecord(state.thread),
         messageCount: transcript.length,
         pendingInputCount: state.pendingInputs.length,
         lastMessage: transcript.length > 0
-          ? cloneThreadMessageRecord(transcript[transcript.length - 1]!)
+          ? cloneRecord(transcript[transcript.length - 1]!)
           : undefined,
       } satisfies ThreadSummaryRecord;
     });
@@ -179,7 +143,7 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
       updatedAt: Date.now(),
     };
 
-    return cloneThreadRecord(thread.thread);
+    return cloneRecord(thread.thread);
   }
 
   async loadTranscript(threadId: string): Promise<readonly ThreadMessageRecord[]> {
@@ -188,7 +152,7 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
       throw missingThreadError(threadId);
     }
 
-    return thread.transcript.map((record) => cloneThreadMessageRecord(record));
+    return thread.transcript.map((record) => cloneRecord(record));
   }
 
   async enqueueInput(
@@ -203,17 +167,15 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
 
     if (payload.externalMessageId) {
       const existing = thread.pendingInputs.find((input) => {
-        return input.source === payload.source
-          && input.externalMessageId === payload.externalMessageId;
+        return matchesThreadInputIdentity(input, payload);
       }) ?? thread.transcript.find((message) => {
         return message.origin === "input"
-          && message.source === payload.source
-          && message.externalMessageId === payload.externalMessageId;
+          && matchesThreadInputIdentity(message, payload);
       });
 
       if (existing) {
         const record = "order" in existing
-          ? cloneThreadInputRecord(existing)
+          ? cloneRecord(existing)
           : {
             id: existing.id,
             threadId: existing.threadId,
@@ -251,7 +213,7 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
     thread.thread.updatedAt = Date.now();
     thread.pendingInputs.push(input);
     return {
-      input: cloneThreadInputRecord(input),
+      input: cloneRecord(input),
       inserted: true,
     };
   }
@@ -283,7 +245,7 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
 
         thread.nextMessageSequence += 1;
         thread.transcript.push(messageRecord);
-        return cloneThreadMessageRecord(messageRecord);
+        return cloneRecord(messageRecord);
       });
 
     thread.pendingInputs = [];
@@ -369,7 +331,7 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
     thread.nextMessageSequence += 1;
     thread.thread.updatedAt = Date.now();
     thread.transcript.push(record);
-    return cloneThreadMessageRecord(record);
+    return cloneRecord(record);
   }
 
   async createRun(threadId: string): Promise<ThreadRunRecord> {
@@ -388,7 +350,7 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
     };
 
     this.runs.set(run.id, run);
-    return cloneRunRecord(run);
+    return cloneRecord(run);
   }
 
   async getRun(runId: string): Promise<ThreadRunRecord> {
@@ -397,7 +359,7 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
       throw missingRunError(runId);
     }
 
-    return cloneRunRecord(run);
+    return cloneRecord(run);
   }
 
   async completeRun(runId: string): Promise<ThreadRunRecord> {
@@ -415,23 +377,7 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
       run.error = undefined;
     }
 
-    return cloneRunRecord(run);
-  }
-
-  async finishRun(
-    runId: string,
-    status: Exclude<ThreadRunStatus, "running">,
-    error?: string,
-  ): Promise<ThreadRunRecord> {
-    const run = this.runs.get(runId);
-    if (!run) {
-      throw missingRunError(runId);
-    }
-
-    run.status = status;
-    run.finishedAt = Date.now();
-    run.error = error;
-    return cloneRunRecord(run);
+    return cloneRecord(run);
   }
 
   async failRunIfRunning(runId: string, error?: string): Promise<ThreadRunRecord | null> {
@@ -447,21 +393,21 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
     run.status = "failed";
     run.finishedAt = Date.now();
     run.error = error;
-    return cloneRunRecord(run);
+    return cloneRecord(run);
   }
 
   async listRuns(threadId: string): Promise<readonly ThreadRunRecord[]> {
     return [...this.runs.values()]
       .filter((run) => run.threadId === threadId)
       .sort((left, right) => left.startedAt - right.startedAt)
-      .map((run) => cloneRunRecord(run));
+      .map((run) => cloneRecord(run));
   }
 
   async listRunningRuns(): Promise<readonly ThreadRunRecord[]> {
     return [...this.runs.values()]
       .filter((run) => run.status === "running")
       .sort((left, right) => left.startedAt - right.startedAt)
-      .map((run) => cloneRunRecord(run));
+      .map((run) => cloneRecord(run));
   }
 
   async listPendingInputs(threadId: string): Promise<readonly ThreadInputRecord[]> {
@@ -472,7 +418,7 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
 
     return [...thread.pendingInputs]
       .sort((left, right) => left.order - right.order)
-      .map((input) => cloneThreadInputRecord(input));
+      .map((input) => cloneRecord(input));
   }
 
   async requestRunAbort(threadId: string, reason = "Aborted by runtime request."): Promise<ThreadRunRecord | null> {
@@ -487,6 +433,6 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
 
     run.abortRequestedAt = Date.now();
     run.abortReason = reason;
-    return cloneRunRecord(run);
+    return cloneRecord(run);
   }
 }

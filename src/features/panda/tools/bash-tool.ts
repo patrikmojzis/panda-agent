@@ -359,25 +359,6 @@ function applyPersistedEnv(shellSession: PandaShellSession | null, entries: Pers
   return changedKeys;
 }
 
-function buildProgressPayload(options: {
-  command: string;
-  cwd: string;
-  startedAt: number;
-  stdout: OutputCaptureState;
-  stderr: OutputCaptureState;
-  progressTailChars: number;
-}): JsonObject {
-  return {
-    command: options.command,
-    cwd: options.cwd,
-    elapsedMs: Date.now() - options.startedAt,
-    stdoutTail: tailString(options.stdout.preview, options.progressTailChars),
-    stderrTail: tailString(options.stderr.preview, options.progressTailChars),
-    stdoutChars: options.stdout.totalChars,
-    stderrChars: options.stderr.totalChars,
-  };
-}
-
 export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTool.schema, TContext> {
   static schema = z.object({
     command: z.string().trim().min(1),
@@ -460,8 +441,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       ...(args.env ?? {}),
     };
 
-    let timedOut = false;
-    let aborted = false;
+    let interruption: "timeout" | "abort" | null = null;
     let abortReason: string | null = null;
     let progressTimer: NodeJS.Timeout | undefined;
     let lastProgressAt = startedAt;
@@ -482,14 +462,15 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       }
 
       run.emitToolProgress(
-        buildProgressPayload({
+        {
           command: args.command,
           cwd,
-          startedAt,
-          stdout: stdoutCapture,
-          stderr: stderrCapture,
-          progressTailChars: this.progressTailChars,
-        }),
+          elapsedMs: Date.now() - startedAt,
+          stdoutTail: tailString(stdoutCapture.preview, this.progressTailChars),
+          stderrTail: tailString(stderrCapture.preview, this.progressTailChars),
+          stdoutChars: stdoutCapture.totalChars,
+          stderrChars: stderrCapture.totalChars,
+        },
       );
 
       lastProgressAt = now;
@@ -510,10 +491,10 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       });
       let abortKillTimer: NodeJS.Timeout | undefined;
 
-      const killChild = (signal: NodeJS.Signals): void => {
+      const killChild = (signal: NodeJS.Signals): boolean => {
         const pid = child.pid;
         if (!pid || child.exitCode !== null || child.signalCode !== null || child.killed) {
-          return;
+          return false;
         }
 
         try {
@@ -522,20 +503,25 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
           } else {
             child.kill(signal);
           }
+          return true;
         } catch {
           // Ignore kill races; close/error handlers settle the promise.
+          return false;
         }
       };
 
       const abortHandler = (): void => {
-        aborted = true;
         abortReason =
           run.signal?.reason instanceof Error
             ? run.signal.reason.message
             : typeof run.signal?.reason === "string"
               ? run.signal.reason
               : "Command aborted.";
-        killChild("SIGTERM");
+        if (!killChild("SIGTERM")) {
+          return;
+        }
+
+        interruption ??= "abort";
         abortKillTimer = setTimeout(() => {
           killChild("SIGKILL");
         }, 250);
@@ -551,8 +537,11 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       }
 
       const timeout = setTimeout(() => {
-        timedOut = true;
-        killChild("SIGTERM");
+        if (!killChild("SIGTERM")) {
+          return;
+        }
+
+        interruption ??= "timeout";
 
         setTimeout(() => {
           killChild("SIGKILL");
@@ -604,8 +593,10 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     clearInterval(progressTimer);
 
     const durationMs = Date.now() - startedAt;
+    const timedOut = interruption === "timeout";
+    const aborted = interruption === "abort";
     const interrupted = timedOut || aborted || (result.signal !== null && result.exitCode === null);
-    const success = !timedOut && !aborted && result.exitCode === 0;
+    const success = !interrupted && result.exitCode === 0;
     const finalCwd = success
       ? await readPersistedCwd(invocationPaths.cwdStatePath, cwd)
       : cwd;
