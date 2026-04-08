@@ -218,6 +218,7 @@ export interface ChatCliOptions {
   provider?: ProviderName;
   model?: string;
   thinking?: ThinkingLevel;
+  identity?: string;
   cwd?: string;
   instructions?: string;
   resume?: string;
@@ -424,6 +425,7 @@ export class PandaChatApp {
   private thinking?: ThinkingLevel;
   private readonly cwd: string;
   private readonly instructions?: string;
+  private readonly identity?: string;
   private readonly resumeThreadId?: string;
   private readonly explicitThreadId?: string;
   private readonly dbUrl?: string;
@@ -491,6 +493,7 @@ export class PandaChatApp {
       : assertProviderName(options.provider);
     this.model = options.model ?? defaultModel(this.providerName);
     this.thinking = options.thinking;
+    this.identity = options.identity;
     this.cwd = path.resolve(options.cwd ?? process.cwd());
     this.instructions = options.instructions;
     this.resumeThreadId = options.resume;
@@ -715,6 +718,7 @@ export class PandaChatApp {
       instructions: this.instructions,
       provider: this.providerName,
       model: this.model,
+      identity: this.identity,
       dbUrl: this.dbUrl,
       readOnlyDbUrl: this.readOnlyDbUrl,
       onEvent: (event) => this.handleRuntimeEvent(event),
@@ -2235,6 +2239,7 @@ export class PandaChatApp {
           "meta",
           "session",
           [
+            `identity ${this.requireServices().identity.handle}`,
             `thread ${this.currentThreadId}`,
             `storage ${this.currentStorageMode}`,
             `provider ${this.providerName}`,

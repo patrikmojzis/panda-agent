@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 
+import { buildIdentityTableNames } from "../identity/postgres-shared.js";
 import {
   buildThreadRuntimeTableNames,
   validateIdentifier,
@@ -51,6 +52,7 @@ export async function ensureReadonlyChatQuerySchema(
   options: EnsureReadonlyChatQuerySchemaOptions,
 ): Promise<ReadonlyChatViewNames> {
   const tables = buildThreadRuntimeTableNames(options.tablePrefix ?? "thread_runtime");
+  const identityTables = buildIdentityTableNames(options.tablePrefix ?? "thread_runtime");
   const views = buildReadonlyChatViewNames(options.viewPrefix ?? "panda");
   const messageTextSql = `
     CASE
@@ -87,6 +89,8 @@ export async function ensureReadonlyChatQuerySchema(
     WITH (security_barrier = true) AS
     SELECT
       t.id,
+      t.identity_id,
+      identity.handle AS identity_handle,
       t.agent_key,
       t.system_prompt,
       t.max_turns,
@@ -115,6 +119,7 @@ export async function ensureReadonlyChatQuerySchema(
         WHERE m.thread_id = t.id
       ) AS last_message_at
     FROM ${tables.threads} AS t
+    INNER JOIN ${identityTables.identities} AS identity ON identity.id = t.identity_id
     WHERE t.agent_key = current_setting('panda.agent_key', true);
 
     CREATE VIEW ${views.messagesRaw}

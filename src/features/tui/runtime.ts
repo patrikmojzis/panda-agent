@@ -12,6 +12,12 @@ import { buildPandaPrompt } from "../panda/prompts.js";
 import { PostgresReadonlyQueryTool } from "../panda/tools/postgres-readonly-query-tool.js";
 import type { PandaSessionContext } from "../panda/types.js";
 import {
+  createDefaultIdentityInput,
+  DEFAULT_IDENTITY_HANDLE,
+  type IdentityRecord,
+  type IdentityStore,
+} from "../identity/index.js";
+import {
   buildThreadRuntimeNotificationChannel,
   ensureReadonlyChatQuerySchema,
   InMemoryThreadRuntimeStore,
@@ -37,10 +43,10 @@ export interface ChatRuntimeOptions {
   instructions?: string;
   provider?: ProviderName;
   model?: string;
+  identity?: string;
   dbUrl?: string;
   readOnlyDbUrl?: string;
   tablePrefix?: string;
-  defaultAgentKey?: string;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
 }
@@ -55,6 +61,8 @@ export interface CreateChatThreadOptions {
 
 export interface ChatRuntimeServices {
   mode: StorageMode;
+  identity: IdentityRecord;
+  identityStore: IdentityStore;
   store: ThreadRuntimeStore;
   coordinator: ThreadRuntimeCoordinator;
   extraTools: readonly Tool[];
@@ -76,7 +84,7 @@ function trimNonEmptyString(value: string | null | undefined): string | null {
 
 function resolveStoredContext(
   value: ThreadRecord["context"],
-  fallback: Pick<PandaSessionContext, "cwd" | "locale" | "timezone">,
+  fallback: Pick<PandaSessionContext, "cwd" | "locale" | "timezone" | "identityId" | "identityHandle">,
 ): PandaSessionContext {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ...fallback };
@@ -87,7 +95,17 @@ function resolveStoredContext(
     cwd: typeof context.cwd === "string" ? context.cwd : fallback.cwd,
     locale: typeof context.locale === "string" ? context.locale : fallback.locale,
     timezone: typeof context.timezone === "string" ? context.timezone : fallback.timezone,
+    identityId: typeof context.identityId === "string" ? context.identityId : fallback.identityId,
+    identityHandle: typeof context.identityHandle === "string" ? context.identityHandle : fallback.identityHandle,
   };
+}
+
+function assertIdentityThreadAccess(thread: ThreadRecord, identity: IdentityRecord): ThreadRecord {
+  if (thread.identityId !== identity.id) {
+    throw new Error(`Thread ${thread.id} does not belong to identity ${identity.handle}.`);
+  }
+
+  return thread;
 }
 
 export async function createChatRuntime(options: ChatRuntimeOptions): Promise<ChatRuntimeServices> {
@@ -98,15 +116,16 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
   const readOnlyDbUrl =
     trimNonEmptyString(options.readOnlyDbUrl)
     ?? trimNonEmptyString(process.env.PANDA_READONLY_DATABASE_URL);
-  const defaultAgentKey = options.defaultAgentKey ?? "panda";
   const fallbackContext = {
     cwd: options.cwd,
     locale: options.locale,
     timezone: options.timezone,
   } as const;
+  const requestedIdentityHandle = trimNonEmptyString(options.identity) ?? DEFAULT_IDENTITY_HANDLE;
 
   let mode: StorageMode = "memory";
   let store: ThreadRuntimeStore;
+  let identityStore: IdentityStore;
   let postgresPool: Pool | null = null;
   let readonlyPool: Pool | null = null;
   let extraTools: readonly Tool[] = [];
@@ -124,6 +143,7 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
 
     mode = "postgres";
     store = postgresStore;
+    identityStore = postgresStore.identityStore;
     postgresPool = pool;
     await ensureReadonlyChatQuerySchema({
       queryable: pool,
@@ -179,17 +199,29 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
       };
     }
   } else {
-    store = new InMemoryThreadRuntimeStore();
+    const inMemoryStore = new InMemoryThreadRuntimeStore();
+    store = inMemoryStore;
+    identityStore = inMemoryStore.identityStore;
   }
+
+  const identity = requestedIdentityHandle === DEFAULT_IDENTITY_HANDLE
+    ? await identityStore.ensureIdentity(createDefaultIdentityInput())
+    : await identityStore.getIdentityByHandle(requestedIdentityHandle);
 
   const coordinator = new ThreadRuntimeCoordinator({
     store,
     leaseManager: postgresPool ? new PostgresThreadLeaseManager(postgresPool) : undefined,
     resolveDefinition: (thread) => {
       const context: PandaSessionContext = {
-        ...resolveStoredContext(thread.context, fallbackContext),
+        ...resolveStoredContext(thread.context, {
+          ...fallbackContext,
+          identityId: identity.id,
+          identityHandle: identity.handle,
+        }),
         threadId: thread.id,
         agentKey: thread.agentKey,
+        identityId: identity.id,
+        identityHandle: identity.handle,
       };
       return {
         agent: new Agent({
@@ -215,9 +247,12 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
   const createThread = async (createOptions: CreateChatThreadOptions = {}): Promise<ThreadRecord> => {
     return store.createThread({
       id: createOptions.id ?? randomUUID(),
-      agentKey: createOptions.agentKey ?? defaultAgentKey,
+      identityId: identity.id,
+      agentKey: createOptions.agentKey ?? "panda",
       context: {
         ...fallbackContext,
+        identityId: identity.id,
+        identityHandle: identity.handle,
       },
       provider: createOptions.provider ?? options.provider,
       model: createOptions.model ?? options.model,
@@ -227,12 +262,14 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
 
   return {
     mode,
+    identity,
+    identityStore,
     store,
     coordinator,
     extraTools,
     createThread,
-    getThread: (threadId) => store.getThread(threadId),
-    listThreadSummaries: (limit = 20) => store.listThreadSummaries(limit),
+    getThread: async (threadId) => assertIdentityThreadAccess(await store.getThread(threadId), identity),
+    listThreadSummaries: (limit = 20) => store.listThreadSummaries(limit, identity.id),
     recoverOrphanedRuns: (reason) => coordinator.recoverOrphanedRuns(reason),
     close,
   };

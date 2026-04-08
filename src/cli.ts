@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { Command, InvalidArgumentError } from "commander";
 import { formatProviderNameList, parseProviderName } from "./features/agent-core/index.js";
+import { parseIdentityHandle, registerIdentityCommands } from "./features/identity/cli.js";
 import { summarizeMessageText } from "./features/panda/message-preview.js";
 import { runChatCli, type ChatCliOptions } from "./features/tui/index.js";
 import { renderResumeHint } from "./features/tui/exit-hint.js";
@@ -37,6 +38,7 @@ async function runChatCommand(options: ChatCliOptions): Promise<void> {
   const result = await runChatCli({
     provider: options.provider,
     model: options.model,
+    identity: options.identity,
     cwd: options.cwd,
     instructions: options.instructions,
     resume: options.resume,
@@ -51,7 +53,7 @@ async function runChatCommand(options: ChatCliOptions): Promise<void> {
 }
 
 async function withCliRuntime<T>(
-  options: Pick<ChatCliOptions, "provider" | "model" | "cwd" | "instructions" | "dbUrl" | "readOnlyDbUrl">,
+  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "cwd" | "instructions" | "dbUrl" | "readOnlyDbUrl">,
   fn: (runtime: Awaited<ReturnType<typeof createChatRuntime>>) => Promise<T>,
 ): Promise<T> {
   const runtime = await createChatRuntime({
@@ -61,6 +63,7 @@ async function withCliRuntime<T>(
     instructions: options.instructions,
     provider: options.provider,
     model: options.model,
+    identity: options.identity,
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
   });
@@ -73,7 +76,7 @@ async function withCliRuntime<T>(
 }
 
 async function listThreadsCommand(
-  options: Pick<ChatCliOptions, "provider" | "model" | "cwd" | "instructions" | "dbUrl" | "readOnlyDbUrl"> & { limit?: number },
+  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "cwd" | "instructions" | "dbUrl" | "readOnlyDbUrl"> & { limit?: number },
 ): Promise<void> {
   await withCliRuntime(options, async (runtime) => {
     const summaries = await runtime.listThreadSummaries(options.limit ?? 20);
@@ -101,7 +104,7 @@ async function listThreadsCommand(
 
 async function inspectThreadCommand(
   threadId: string,
-  options: Pick<ChatCliOptions, "provider" | "model" | "cwd" | "instructions" | "dbUrl" | "readOnlyDbUrl">,
+  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "cwd" | "instructions" | "dbUrl" | "readOnlyDbUrl">,
 ): Promise<void> {
   await withCliRuntime(options, async (runtime) => {
     const thread = await runtime.getThread(threadId);
@@ -109,6 +112,7 @@ async function inspectThreadCommand(
 
     process.stdout.write(
       [
+        `identity ${runtime.identity.handle}`,
         `thread ${thread.id}`,
         `agent ${thread.agentKey}`,
         `provider ${thread.provider ?? "default"}`,
@@ -141,6 +145,7 @@ function configureChatOptions(command: Command): Command {
       parseCliProvider,
     )
     .option("-m, --model <model>", "Model name override")
+    .option("--identity <handle>", "Identity handle to use for thread ownership", parseIdentityHandle)
     .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
     .option("-i, --instructions <instructions>", "Append custom Panda instructions")
     .option("--resume <threadId>", "Resume an existing thread by id")
@@ -176,6 +181,7 @@ program
   .option("--limit <count>", "How many threads to show", parsePositiveInt)
   .option("-p, --provider <provider>", "LLM provider to use", parseCliProvider)
   .option("-m, --model <model>", "Model name override")
+  .option("--identity <handle>", "Identity handle to use", parseIdentityHandle)
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
   .option("-i, --instructions <instructions>", "Append custom Panda instructions")
   .option("--db-url <url>", "Postgres connection string for thread persistence")
@@ -190,6 +196,7 @@ program
   .argument("<threadId>", "Thread id to inspect")
   .option("-p, --provider <provider>", "LLM provider to use", parseCliProvider)
   .option("-m, --model <model>", "Model name override")
+  .option("--identity <handle>", "Identity handle to use", parseIdentityHandle)
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
   .option("-i, --instructions <instructions>", "Append custom Panda instructions")
   .option("--db-url <url>", "Postgres connection string for thread persistence")
@@ -197,5 +204,7 @@ program
   .action((threadId: string, options) => {
     return inspectThreadCommand(threadId, options);
   });
+
+registerIdentityCommands(program);
 
 await program.parseAsync(process.argv);

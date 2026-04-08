@@ -4,6 +4,8 @@ import type { AssistantMessage } from "@mariozechner/pi-ai";
 import {
   Agent,
   createCompactBoundaryMessage,
+  DEFAULT_IDENTITY_ID,
+  InMemoryIdentityStore,
   InMemoryThreadRuntimeStore,
   Thread,
   ThreadRuntimeCoordinator,
@@ -838,6 +840,35 @@ describe("ThreadRuntimeCoordinator", () => {
 });
 
 describe("Thread runtime stores", () => {
+  it("only exposes the built-in local identity in memory mode", async () => {
+    const identityStore = new InMemoryIdentityStore();
+    const store = new InMemoryThreadRuntimeStore({ identityStore });
+    const localIdentity = await identityStore.getIdentity(DEFAULT_IDENTITY_ID);
+
+    expect(localIdentity.handle).toBe("local");
+
+    await store.createThread({ id: "local-thread", agentKey: "panda" });
+
+    const localSummaries = await store.listThreadSummaries(undefined, DEFAULT_IDENTITY_ID);
+    expect(localSummaries).toHaveLength(1);
+    expect(localSummaries[0]?.thread.id).toBe("local-thread");
+    expect(localSummaries[0]?.thread.identityId).toBe(DEFAULT_IDENTITY_ID);
+
+    const listed = await identityStore.listIdentities();
+    expect(listed.map((identity) => identity.handle)).toEqual(["local"]);
+    await expect(identityStore.getIdentityByHandle("alice")).rejects.toThrow("Persisted identities require Postgres");
+  });
+
+  it("rejects threads created for missing identities", async () => {
+    const store = new InMemoryThreadRuntimeStore();
+
+    await expect(store.createThread({
+      id: "missing-identity-thread",
+      agentKey: "panda",
+      identityId: "ghost",
+    })).rejects.toThrow("Unknown identity ghost");
+  });
+
   it("dedupes retries per source and channel, not just external message id", async () => {
     const store = new InMemoryThreadRuntimeStore();
     await store.createThread({ id: "identity", agentKey: "panda" });

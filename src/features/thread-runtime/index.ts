@@ -22,6 +22,7 @@ export {
 export type { ReadonlyChatViewNames } from "./postgres-readonly.js";
 export {
   InMemoryThreadRuntimeStore,
+  type InMemoryThreadRuntimeStoreOptions,
   type ThreadEnqueueResult,
   type ThreadRuntimeStore,
 } from "./store.js";

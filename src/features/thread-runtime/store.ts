@@ -13,6 +13,9 @@ import {
   type ThreadSummaryRecord,
   type ThreadUpdate,
 } from "./types.js";
+import { InMemoryIdentityStore } from "../identity/in-memory.js";
+import { DEFAULT_IDENTITY_ID } from "../identity/types.js";
+import type { IdentityStore } from "../identity/store.js";
 
 export interface ThreadEnqueueResult {
   input: ThreadInputRecord;
@@ -22,7 +25,7 @@ export interface ThreadEnqueueResult {
 export interface ThreadRuntimeStore {
   createThread(input: CreateThreadInput): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
-  listThreadSummaries(limit?: number): Promise<readonly ThreadSummaryRecord[]>;
+  listThreadSummaries(limit?: number, identityId?: string): Promise<readonly ThreadSummaryRecord[]>;
   updateThread(threadId: string, update: ThreadUpdate): Promise<ThreadRecord>;
   loadTranscript(threadId: string): Promise<readonly ThreadMessageRecord[]>;
   enqueueInput(
@@ -70,18 +73,31 @@ function missingRunError(runId: string): Error {
   return new Error(`Unknown run ${runId}`);
 }
 
+export interface InMemoryThreadRuntimeStoreOptions {
+  identityStore?: IdentityStore;
+}
+
 export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
+  readonly identityStore: IdentityStore;
   private readonly threads = new Map<string, InMemoryThreadState>();
   private readonly runs = new Map<string, ThreadRunRecord>();
+
+  constructor(options: InMemoryThreadRuntimeStoreOptions = {}) {
+    this.identityStore = options.identityStore ?? new InMemoryIdentityStore();
+  }
 
   async createThread(input: CreateThreadInput): Promise<ThreadRecord> {
     if (this.threads.has(input.id)) {
       throw new Error(`Thread ${input.id} already exists.`);
     }
 
+    const identityId = input.identityId ?? DEFAULT_IDENTITY_ID;
+    await this.identityStore.getIdentity(identityId);
+
     const now = Date.now();
     const thread: ThreadRecord = {
       ...input,
+      identityId,
       createdAt: now,
       updatedAt: now,
     };
@@ -106,8 +122,9 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
     return cloneRecord(thread.thread);
   }
 
-  async listThreadSummaries(limit?: number): Promise<readonly ThreadSummaryRecord[]> {
+  async listThreadSummaries(limit?: number, identityId?: string): Promise<readonly ThreadSummaryRecord[]> {
     const states = [...this.threads.values()]
+      .filter((state) => identityId === undefined || state.thread.identityId === identityId)
       .sort((left, right) => right.thread.updatedAt - left.thread.updatedAt);
     const visibleStates = limit === undefined
       ? states

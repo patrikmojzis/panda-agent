@@ -24,6 +24,9 @@ import type {
   ThreadSummaryRecord,
   ThreadUpdate,
 } from "./types.js";
+import { PostgresIdentityStore, type PostgresIdentityStoreOptions } from "../identity/postgres.js";
+import { buildIdentityTableNames } from "../identity/postgres-shared.js";
+import { DEFAULT_IDENTITY_ID } from "../identity/types.js";
 
 interface PgQueryable {
   query: Pool["query"];
@@ -36,6 +39,7 @@ interface PgPoolLike extends PgQueryable {
 interface PostgresThreadRuntimeStoreOptions {
   pool: PgPoolLike;
   tablePrefix?: string;
+  identityStore?: PostgresIdentityStore;
 }
 
 export interface ThreadRuntimeNotification {
@@ -68,6 +72,7 @@ function toJson(value: unknown): string | null {
 function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
   return {
     id: String(row.id),
+    identityId: String(row.identity_id),
     agentKey: String(row.agent_key),
     systemPrompt: row.system_prompt === null ? undefined : (row.system_prompt as ThreadRecord["systemPrompt"]),
     maxTurns: row.max_turns === null ? undefined : Number(row.max_turns),
@@ -153,12 +158,20 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   private readonly pool: PgPoolLike;
   private readonly tables: ThreadRuntimeTableNames;
   private readonly notificationChannel: string;
+  private readonly identityTableName: string;
+  readonly identityStore: PostgresIdentityStore;
 
   constructor(options: PostgresThreadRuntimeStoreOptions) {
     this.pool = options.pool;
     const tablePrefix = options.tablePrefix ?? "thread_runtime";
+    const identityTables = buildIdentityTableNames(tablePrefix);
     this.tables = buildThreadRuntimeTableNames(tablePrefix);
     this.notificationChannel = buildThreadRuntimeNotificationChannel(tablePrefix);
+    this.identityStore = options.identityStore ?? new PostgresIdentityStore({
+      pool: options.pool,
+      tablePrefix,
+    } satisfies PostgresIdentityStoreOptions);
+    this.identityTableName = identityTables.identities;
   }
 
   private async notifyThreadChanged(threadId: string, queryable: PgQueryable = this.pool): Promise<void> {
@@ -169,9 +182,11 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   }
 
   async ensureSchema(): Promise<void> {
+    await this.identityStore.ensureSchema();
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.threads} (
         id TEXT PRIMARY KEY,
+        identity_id TEXT NOT NULL REFERENCES ${this.identityTableName}(id) ON DELETE RESTRICT,
         agent_key TEXT NOT NULL,
         system_prompt JSONB,
         max_turns INTEGER,
@@ -201,11 +216,11 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         message JSONB NOT NULL
       );
 
-      ALTER TABLE ${this.tables.messages}
-      ADD COLUMN IF NOT EXISTS metadata JSONB;
-
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_messages_thread_sequence_idx`)}
       ON ${this.tables.messages} (thread_id, sequence);
+
+      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_threads_identity_updated_idx`)}
+      ON ${this.tables.threads} (identity_id, updated_at DESC);
 
       CREATE TABLE IF NOT EXISTS ${this.tables.inputs} (
         id UUID PRIMARY KEY,
@@ -245,9 +260,13 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   }
 
   async createThread(input: CreateThreadInput): Promise<ThreadRecord> {
+    const identityId = input.identityId ?? DEFAULT_IDENTITY_ID;
+    await this.identityStore.getIdentity(identityId);
+
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.threads} (
         id,
+        identity_id,
         agent_key,
         system_prompt,
         max_turns,
@@ -261,19 +280,21 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       ) VALUES (
         $1,
         $2,
-        $3::jsonb,
-        $4,
-        $5::jsonb,
-        $6,
+        $3,
+        $4::jsonb,
+        $5,
+        $6::jsonb,
         $7,
         $8,
         $9,
         $10,
-        $11
+        $11,
+        $12
       )
       RETURNING *
     `, [
       input.id,
+      identityId,
       input.agentKey,
       toJson(input.systemPrompt),
       input.maxTurns ?? null,
@@ -305,13 +326,20 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     return parseThreadRow(row as Record<string, unknown>);
   }
 
-  async listThreadSummaries(limit?: number): Promise<readonly ThreadSummaryRecord[]> {
+  async listThreadSummaries(limit?: number, identityId?: string): Promise<readonly ThreadSummaryRecord[]> {
     const values: unknown[] = [];
-    let sql = `SELECT * FROM ${this.tables.threads} ORDER BY updated_at DESC`;
+    let sql = `SELECT * FROM ${this.tables.threads}`;
+
+    if (identityId !== undefined) {
+      values.push(identityId);
+      sql += ` WHERE identity_id = $${values.length}`;
+    }
+
+    sql += " ORDER BY updated_at DESC";
 
     if (limit !== undefined) {
-      sql += " LIMIT $1";
       values.push(Math.max(0, limit));
+      sql += ` LIMIT $${values.length}`;
     }
 
     const threadResult = await this.pool.query(sql, values);

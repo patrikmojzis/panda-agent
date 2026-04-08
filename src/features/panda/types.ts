@@ -8,6 +8,8 @@ export interface PandaSessionContext {
   shell?: PandaShellSession;
   locale?: string;
   timezone?: string;
+  identityId?: string;
+  identityHandle?: string;
   threadId?: string;
   agentKey?: string;
 }

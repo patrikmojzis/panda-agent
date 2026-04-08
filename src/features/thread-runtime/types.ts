@@ -10,6 +10,7 @@ import type { RunPipeline } from "../agent-core/run-pipeline.js";
 
 export interface CreateThreadInput {
   id: string;
+  identityId?: string;
   agentKey: string;
   systemPrompt?: string | ReadonlyArray<string>;
   maxTurns?: number;
@@ -22,11 +23,12 @@ export interface CreateThreadInput {
   thinking?: ThinkingLevel;
 }
 
-export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "thinking">> & {
+export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "identityId" | "thinking">> & {
   thinking?: ThinkingLevel | null;
 };
 
-export interface ThreadRecord extends CreateThreadInput {
+export interface ThreadRecord extends Omit<CreateThreadInput, "identityId"> {
+  identityId: string;
   createdAt: number;
   updatedAt: number;
 }

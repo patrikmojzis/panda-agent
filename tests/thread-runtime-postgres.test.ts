@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { DataType, newDb } from "pg-mem";
 
-import { PostgresThreadRuntimeStore, stringToUserMessage } from "../src/index.js";
+import { DEFAULT_IDENTITY_ID, PostgresThreadRuntimeStore, stringToUserMessage } from "../src/index.js";
 
 describe("PostgresThreadRuntimeStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -32,8 +32,25 @@ describe("PostgresThreadRuntimeStore", () => {
     const store = new PostgresThreadRuntimeStore({ pool });
     await store.ensureSchema();
 
+    await expect(store.identityStore.getIdentity(DEFAULT_IDENTITY_ID)).resolves.toMatchObject({
+      handle: "local",
+      displayName: "Local",
+      status: "active",
+    });
+
+    const alice = await store.identityStore.createIdentity({
+      id: "alice",
+      handle: "alice",
+      displayName: "Alice",
+    });
+    await expect(store.identityStore.getIdentityByHandle("alice")).resolves.toMatchObject({
+      id: "alice",
+      handle: "alice",
+    });
+
     const created = await store.createThread({
       id: "pg-thread",
+      identityId: alice.id,
       agentKey: "panda",
       systemPrompt: ["You are Panda."],
       context: {
@@ -46,8 +63,22 @@ describe("PostgresThreadRuntimeStore", () => {
     });
 
     expect(created.agentKey).toBe("panda");
+    expect(created.identityId).toBe("alice");
     expect(created.systemPrompt).toEqual(["You are Panda."]);
     expect(created.thinking).toBe("medium");
+
+    await store.createThread({
+      id: "pg-thread-local",
+      agentKey: "panda",
+    });
+
+    const aliceSummaries = await store.listThreadSummaries(undefined, alice.id);
+    expect(aliceSummaries).toHaveLength(1);
+    expect(aliceSummaries[0]?.thread.id).toBe("pg-thread");
+
+    const localSummaries = await store.listThreadSummaries(undefined, DEFAULT_IDENTITY_ID);
+    expect(localSummaries).toHaveLength(1);
+    expect(localSummaries[0]?.thread.id).toBe("pg-thread-local");
 
     const updated = await store.updateThread("pg-thread", {
       agentKey: "panda-debug",
@@ -162,10 +193,11 @@ describe("PostgresThreadRuntimeStore", () => {
     ]);
 
     const summaries = await store.listThreadSummaries();
-    expect(summaries).toHaveLength(1);
+    expect(summaries).toHaveLength(2);
     expect(summaries[0]).toMatchObject({
       thread: {
         id: "pg-thread",
+        identityId: "alice",
       },
       messageCount: 4,
       pendingInputCount: 0,
