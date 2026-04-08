@@ -9,13 +9,13 @@ import {
 import { summarizeMessageText } from "../panda/message-preview.js";
 import type { ThreadMessageMetadata } from "../thread-runtime/index.js";
 
-export type TranscriptEntryRole = "assistant" | "user" | "tool" | "meta" | "error";
-
-export interface TranscriptEntryView {
+interface TranscriptEntryView {
   role: TranscriptEntryRole;
   title: string;
   body: string;
 }
+
+type TranscriptEntryRole = "assistant" | "user" | "tool" | "meta" | "error";
 
 function sourceLabel(metadata: ThreadMessageMetadata): string {
   if (!metadata.channelId) {

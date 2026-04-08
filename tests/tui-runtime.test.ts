@@ -31,7 +31,6 @@ describe("createChatRuntime", () => {
           throw new Error("Identity alice not found.");
         }),
       },
-      mode: "memory",
       store: {},
     });
 

@@ -16,10 +16,6 @@ export {
 } from "./postgres-readonly.js";
 export type { ReadonlyChatViewNames } from "./postgres-readonly.js";
 export {
-  InMemoryThreadRuntimeStore,
-  type InMemoryThreadRuntimeStoreOptions,
-} from "./store.js";
-export {
   DEFAULT_COMPACT_PRESERVED_USER_TURNS,
   createCompactBoundaryMessage,
   estimateTranscriptTokens,

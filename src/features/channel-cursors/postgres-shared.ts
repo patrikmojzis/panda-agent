@@ -1,11 +1,8 @@
 import { buildPrefixedRelationNames } from "../thread-runtime/postgres-shared.js";
 
-export interface ChannelCursorRelationNames {
-  channelCursors: string;
-}
-
-export interface ChannelCursorTableNames extends ChannelCursorRelationNames {
+export interface ChannelCursorTableNames {
   prefix: string;
+  channelCursors: string;
 }
 
 export function buildChannelCursorTableNames(prefix: string): ChannelCursorTableNames {

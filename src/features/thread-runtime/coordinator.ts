@@ -29,7 +29,7 @@ export interface ThreadLeaseManager {
 export interface ThreadRuntimeCoordinatorOptions {
   store: ThreadRuntimeStore;
   resolveDefinition: ThreadDefinitionResolver;
-  leaseManager?: ThreadLeaseManager;
+  leaseManager: ThreadLeaseManager;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
 }
 
@@ -123,24 +123,6 @@ function buildRunContextValue(
   };
 }
 
-class InMemoryThreadLeaseManager implements ThreadLeaseManager {
-  private readonly held = new Set<string>();
-
-  async tryAcquire(threadId: string): Promise<ThreadLease | null> {
-    if (this.held.has(threadId)) {
-      return null;
-    }
-
-    this.held.add(threadId);
-    return {
-      threadId,
-      release: async () => {
-        this.held.delete(threadId);
-      },
-    };
-  }
-}
-
 export class ThreadRuntimeCoordinator {
   private readonly store: ThreadRuntimeStore;
   private readonly resolveDefinition: ThreadDefinitionResolver;
@@ -152,7 +134,7 @@ export class ThreadRuntimeCoordinator {
   constructor(options: ThreadRuntimeCoordinatorOptions) {
     this.store = options.store;
     this.resolveDefinition = options.resolveDefinition;
-    this.leaseManager = options.leaseManager ?? new InMemoryThreadLeaseManager();
+    this.leaseManager = options.leaseManager;
     this.onEvent = options.onEvent;
   }
 

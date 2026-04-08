@@ -164,15 +164,6 @@ If Panda is running without `--db-url`, `PANDA_DATABASE_URL`, or `DATABASE_URL`,
 
 ## Storage
 
-### In-Memory Store
-
-The in-memory runtime store only exposes the built-in `local` identity.
-
-It does not create or persist custom identities in RAM anymore.
-It also does not persist identity bindings in RAM.
-
-That keeps local chat working without a database, but avoids the fake-persistent identity path.
-
 ### Postgres Schema
 
 The Postgres runtime store now includes:
@@ -215,7 +206,6 @@ Unique lookup key:
 Current behavior:
 
 - Postgres stores and resolves bindings
-- in-memory binding writes fail loudly
 - runtime does not use bindings yet
 - bindings do not select the active thread
 
@@ -285,7 +275,6 @@ Identity-specific implementation now lives in:
 
 - [src/features/identity/types.ts](/Users/patrikmojzis/Projects/panda/src/features/identity/types.ts)
 - [src/features/identity/store.ts](/Users/patrikmojzis/Projects/panda/src/features/identity/store.ts)
-- [src/features/identity/in-memory.ts](/Users/patrikmojzis/Projects/panda/src/features/identity/in-memory.ts)
 - [src/features/identity/postgres.ts](/Users/patrikmojzis/Projects/panda/src/features/identity/postgres.ts)
 - [src/features/identity/runtime.ts](/Users/patrikmojzis/Projects/panda/src/features/identity/runtime.ts)
 - [src/features/identity/cli.ts](/Users/patrikmojzis/Projects/panda/src/features/identity/cli.ts)

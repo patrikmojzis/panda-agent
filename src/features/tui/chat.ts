@@ -179,7 +179,6 @@ export interface ChatCliOptions {
   thinking?: ThinkingLevel;
   identity?: string;
   cwd?: string;
-  instructions?: string;
   resume?: string;
   threadId?: string;
   dbUrl?: string;
@@ -235,7 +234,25 @@ function isShiftEnter(sequence: string, key: KeyLike): boolean {
     return true;
   }
 
-  return Boolean(key.shift && (key.name === "return" || key.name === "enter"));
+  // IDE terminals often fake Shift-Enter by sending Esc+Enter instead of a
+  // native shifted Return key event, which readline exposes as meta+enter.
+  return Boolean((key.shift || key.meta) && (key.name === "return" || key.name === "enter"));
+}
+
+function shouldInsertBackslashNewline(state: ComposerState, sequence: string, key: KeyLike): boolean {
+  if (!(key.name === "return" || key.name === "enter" || sequence === "\r")) {
+    return false;
+  }
+
+  return state.cursor > 0 && state.value[state.cursor - 1] === "\\";
+}
+
+function insertBackslashNewline(state: ComposerState): ComposerState {
+  return {
+    value: state.value.slice(0, state.cursor - 1) + "\n" + state.value.slice(state.cursor),
+    cursor: state.cursor,
+    preferredColumn: null,
+  };
 }
 
 function isExtendedKeySequence(sequence: string): boolean {
@@ -281,7 +298,6 @@ export class PandaChatApp {
   private model: string;
   private thinking?: ThinkingLevel;
   private readonly cwd: string;
-  private readonly instructions?: string;
   private readonly identity?: string;
   private readonly resumeThreadId?: string;
   private readonly explicitThreadId?: string;
@@ -305,7 +321,7 @@ export class PandaChatApp {
   private services: ChatRuntimeServices | null = null;
   private currentThreadId = "";
   private currentThread: ThreadRecord | null = null;
-  private currentStorageMode: "memory" | "postgres" = "memory";
+  private readonly storageMode = "postgres";
   private currentTools: readonly Tool[] = [];
   private readonly visibleStoredMessageIds = new Set<string>();
   private readonly transcriptLineCache = new Map<number, TranscriptLineCacheEntry>();
@@ -353,7 +369,6 @@ export class PandaChatApp {
     this.thinking = options.thinking;
     this.identity = options.identity;
     this.cwd = path.resolve(options.cwd ?? process.cwd());
-    this.instructions = options.instructions;
     this.resumeThreadId = options.resume;
     this.explicitThreadId = options.threadId;
     this.dbUrl = options.dbUrl;
@@ -392,7 +407,7 @@ export class PandaChatApp {
         `Resumed thread ${this.currentThreadId}. Loaded ${this.transcript.length} transcript entries.`,
       );
     }
-    this.setNotice("Ctrl-F find · Ctrl-R history · Shift-Enter newline · Ctrl-C exit", "info", 5_000);
+    this.setNotice("Ctrl-F find · Ctrl-R history · \\ + Enter newline · Ctrl-C exit", "info", 5_000);
     this.render();
 
     try {
@@ -502,15 +517,6 @@ export class PandaChatApp {
       }
     }, TICK_MS);
 
-    if (this.currentStorageMode === "memory") {
-      this.syncTicker = setInterval(() => {
-        if (this.closed) {
-          return;
-        }
-
-        void this.syncStoredThreadState();
-      }, STORED_SYNC_MS);
-    }
   }
 
   private requireServices(): ChatRuntimeServices {
@@ -575,7 +581,6 @@ export class PandaChatApp {
       cwd: this.cwd,
       locale: this.locale,
       timezone: this.timezone,
-      instructions: this.instructions,
       provider: this.providerName,
       model: this.model,
       identity: this.identity,
@@ -584,7 +589,6 @@ export class PandaChatApp {
       onEvent: (event) => this.handleRuntimeEvent(event),
       onStoreNotification: (notification) => this.handleStoreNotification(notification.threadId),
     });
-    this.currentStorageMode = this.services.mode;
     await this.services.recoverOrphanedRuns("Run marked failed before recovery.");
 
     await this.switchThread(await this.resolveInitialThread());
@@ -643,7 +647,6 @@ export class PandaChatApp {
     this.providerName = thread.provider ?? this.providerName;
     this.model = thread.model ?? this.model;
     this.thinking = thread.thinking;
-    this.currentStorageMode = this.requireServices().mode;
     this.runPhase = "idle";
     this.lastObservedRunStatusKey = null;
     this.refreshToolCatalog();
@@ -1404,7 +1407,7 @@ export class PandaChatApp {
           providerName: this.providerName,
           model: this.model,
           thinkingLabel: formatThinkingLevel(this.thinking),
-          storageMode: this.currentStorageMode,
+          storageMode: this.storageMode,
           cwd: this.cwd,
         }));
         continue;
@@ -1509,7 +1512,7 @@ export class PandaChatApp {
       providerName: this.providerName,
       model: this.model,
       thinkingLabel: formatThinkingLevel(this.thinking),
-      storageMode: this.currentStorageMode,
+      storageMode: this.storageMode,
       modeLabel: this.modeLabel,
       cwd: this.cwd,
     });
@@ -1818,7 +1821,7 @@ export class PandaChatApp {
       [
         `identity ${this.requireServices().identity.handle}`,
         `thread ${this.currentThreadId}`,
-        `storage ${this.currentStorageMode}`,
+        `storage ${this.storageMode}`,
         `provider ${this.providerName}`,
         `model ${this.model}`,
         `thinking ${formatThinkingLevel(this.thinking)}`,
@@ -2291,6 +2294,11 @@ export class PandaChatApp {
         this.slashCompletionIndex = (this.slashCompletionIndex + direction + context.matches.length) %
           context.matches.length;
       }
+      return;
+    }
+
+    if (shouldInsertBackslashNewline(this.composer, sequence, key)) {
+      this.setComposerState(insertBackslashNewline(this.composer));
       return;
     }
 

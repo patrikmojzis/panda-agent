@@ -41,7 +41,6 @@ async function runChatCommand(options: ChatCliOptions): Promise<void> {
     model: options.model,
     identity: options.identity,
     cwd: options.cwd,
-    instructions: options.instructions,
     resume: options.resume,
     threadId: options.threadId,
     dbUrl: options.dbUrl,
@@ -54,14 +53,13 @@ async function runChatCommand(options: ChatCliOptions): Promise<void> {
 }
 
 async function withCliRuntime<T>(
-  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "cwd" | "instructions" | "dbUrl" | "readOnlyDbUrl">,
+  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "cwd" | "dbUrl" | "readOnlyDbUrl">,
   fn: (runtime: Awaited<ReturnType<typeof createChatRuntime>>) => Promise<T>,
 ): Promise<T> {
   const runtime = await createChatRuntime({
     cwd: path.resolve(options.cwd ?? process.cwd()),
     locale: Intl.DateTimeFormat().resolvedOptions().locale,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
-    instructions: options.instructions,
     provider: options.provider,
     model: options.model,
     identity: options.identity,
@@ -77,7 +75,7 @@ async function withCliRuntime<T>(
 }
 
 async function listThreadsCommand(
-  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "cwd" | "instructions" | "dbUrl" | "readOnlyDbUrl"> & { limit?: number },
+  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "cwd" | "dbUrl" | "readOnlyDbUrl"> & { limit?: number },
 ): Promise<void> {
   await withCliRuntime(options, async (runtime) => {
     const summaries = await runtime.listThreadSummaries(options.limit ?? 20);
@@ -105,7 +103,7 @@ async function listThreadsCommand(
 
 async function inspectThreadCommand(
   threadId: string,
-  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "cwd" | "instructions" | "dbUrl" | "readOnlyDbUrl">,
+  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "cwd" | "dbUrl" | "readOnlyDbUrl">,
 ): Promise<void> {
   await withCliRuntime(options, async (runtime) => {
     const thread = await runtime.getThread(threadId);
@@ -148,7 +146,6 @@ function configureChatOptions(command: Command): Command {
     .option("-m, --model <model>", "Model name override")
     .option("--identity <handle>", "Identity handle to use for thread ownership", parseIdentityHandle)
     .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
-    .option("-i, --instructions <instructions>", "Append custom Panda instructions")
     .option("--resume <threadId>", "Resume an existing thread by id")
     .option("--thread-id <threadId>", "Use an explicit thread id for a new or existing chat")
     .option("--db-url <url>", "Postgres connection string for thread persistence")
@@ -184,7 +181,6 @@ program
   .option("-m, --model <model>", "Model name override")
   .option("--identity <handle>", "Identity handle to use", parseIdentityHandle)
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
-  .option("-i, --instructions <instructions>", "Append custom Panda instructions")
   .option("--db-url <url>", "Postgres connection string for thread persistence")
   .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
   .action((options) => {
@@ -199,7 +195,6 @@ program
   .option("-m, --model <model>", "Model name override")
   .option("--identity <handle>", "Identity handle to use", parseIdentityHandle)
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
-  .option("-i, --instructions <instructions>", "Append custom Panda instructions")
   .option("--db-url <url>", "Postgres connection string for thread persistence")
   .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
   .action((threadId: string, options) => {

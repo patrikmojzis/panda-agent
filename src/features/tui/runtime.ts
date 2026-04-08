@@ -7,12 +7,11 @@ import type { Tool } from "../agent-core/tool.js";
 import type { ProviderName } from "../agent-core/types.js";
 import { buildPandaTools } from "../panda/agent.js";
 import { DateTimeContext, EnvironmentContext } from "../panda/contexts/index.js";
-import { buildPandaPrompt } from "../panda/prompts.js";
+import { PANDA_PROMPT } from "../panda/prompts.js";
 import type { PandaSessionContext } from "../panda/types.js";
 import {
   createPandaRuntime,
   resolveStoredPandaContext,
-  type StorageMode,
 } from "../panda/runtime.js";
 import {
   createDefaultIdentityInput,
@@ -34,7 +33,6 @@ export interface ChatRuntimeOptions {
   cwd: string;
   locale: string;
   timezone: string;
-  instructions?: string;
   provider?: ProviderName;
   model?: string;
   identity?: string;
@@ -54,7 +52,6 @@ export interface CreateChatThreadOptions {
 }
 
 export interface ChatRuntimeServices {
-  mode: StorageMode;
   identity: IdentityRecord;
   identityStore: IdentityStore;
   store: ThreadRuntimeStore;
@@ -116,7 +113,7 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
       return {
         agent: new Agent({
           name: thread.agentKey,
-          instructions: buildPandaPrompt(options.instructions),
+          instructions: PANDA_PROMPT,
           tools: buildPandaTools(extraTools),
         }),
         context,
@@ -159,7 +156,6 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
   };
 
   return {
-    mode: runtime.mode,
     identity,
     identityStore: runtime.identityStore,
     store: runtime.store,

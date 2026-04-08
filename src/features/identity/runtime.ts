@@ -1,6 +1,5 @@
-import { Pool } from "pg";
-
 import { PostgresIdentityStore } from "./postgres.js";
+import { createPandaPool, resolvePandaDatabaseUrl } from "../panda/runtime.js";
 
 export interface IdentityRuntimeOptions {
   dbUrl?: string;
@@ -12,25 +11,8 @@ export interface IdentityRuntime {
   close(): Promise<void>;
 }
 
-function trimNonEmptyString(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
-function resolveIdentityDatabaseUrl(explicitDbUrl?: string): string | null {
-  return (
-    trimNonEmptyString(explicitDbUrl)
-    ?? trimNonEmptyString(process.env.PANDA_DATABASE_URL)
-    ?? trimNonEmptyString(process.env.DATABASE_URL)
-  );
-}
-
 export function requireIdentityDatabaseUrl(explicitDbUrl?: string): string {
-  const dbUrl = resolveIdentityDatabaseUrl(explicitDbUrl);
+  const dbUrl = resolvePandaDatabaseUrl(explicitDbUrl);
   if (dbUrl) {
     return dbUrl;
   }
@@ -39,9 +21,7 @@ export function requireIdentityDatabaseUrl(explicitDbUrl?: string): string {
 }
 
 export async function createIdentityRuntime(options: IdentityRuntimeOptions = {}): Promise<IdentityRuntime> {
-  const pool = new Pool({
-    connectionString: requireIdentityDatabaseUrl(options.dbUrl),
-  });
+  const pool = createPandaPool(requireIdentityDatabaseUrl(options.dbUrl));
   const store = new PostgresIdentityStore({
     pool,
     tablePrefix: options.tablePrefix,

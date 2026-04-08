@@ -13,10 +13,11 @@ interface TelegramBaseCliOptions {
   provider?: ProviderName;
   model?: string;
   cwd?: string;
-  instructions?: string;
+  dbUrl?: string;
+  readOnlyDbUrl?: string;
 }
 
-interface TelegramPairCliOptions {
+interface TelegramPairCliOptions extends TelegramBaseCliOptions {
   identity: string;
   actor: string;
 }
@@ -40,14 +41,15 @@ function createTelegramService(options: TelegramBaseCliOptions = {}): TelegramSe
     cwd: path.resolve(options.cwd ?? process.cwd()),
     locale: Intl.DateTimeFormat().resolvedOptions().locale,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
-    instructions: options.instructions,
+    dbUrl: options.dbUrl,
+    readOnlyDbUrl: options.readOnlyDbUrl,
     provider,
     model,
   });
 }
 
-export async function telegramWhoamiCommand(): Promise<void> {
-  const service = createTelegramService();
+export async function telegramWhoamiCommand(options: TelegramBaseCliOptions = {}): Promise<void> {
+  const service = createTelegramService(options);
 
   try {
     const me = await service.whoami();
@@ -64,7 +66,7 @@ export async function telegramWhoamiCommand(): Promise<void> {
 }
 
 export async function telegramPairCommand(options: TelegramPairCliOptions): Promise<void> {
-  const service = createTelegramService();
+  const service = createTelegramService(options);
 
   try {
     const binding = await service.pair(options.identity, options.actor);
@@ -113,8 +115,10 @@ export function registerTelegramCommands(program: Command, parseCliProvider: (va
   telegramProgram
     .command("whoami")
     .description("Show the Telegram bot identity and connector key")
-    .action(() => {
-      return telegramWhoamiCommand();
+    .option("--db-url <url>", "Postgres connection string for thread persistence")
+    .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
+    .action((options: TelegramBaseCliOptions) => {
+      return telegramWhoamiCommand(options);
     });
 
   telegramProgram
@@ -122,6 +126,8 @@ export function registerTelegramCommands(program: Command, parseCliProvider: (va
     .description("Pair a Telegram user id to a Panda identity")
     .requiredOption("--identity <handle>", "Identity handle to pair", parseIdentityHandle)
     .requiredOption("--actor <telegramUserId>", "Telegram user id to pair", parseTelegramActorId)
+    .option("--db-url <url>", "Postgres connection string for thread persistence")
+    .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
     .action((options: TelegramPairCliOptions) => {
       return telegramPairCommand(options);
     });
@@ -136,7 +142,8 @@ export function registerTelegramCommands(program: Command, parseCliProvider: (va
     )
     .option("-m, --model <model>", "Model name override")
     .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
-    .option("-i, --instructions <instructions>", "Append custom Panda instructions")
+    .option("--db-url <url>", "Postgres connection string for thread persistence")
+    .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
     .action((options: TelegramBaseCliOptions) => {
       return telegramRunCommand(options);
     });

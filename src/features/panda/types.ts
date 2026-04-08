@@ -6,14 +6,6 @@ export interface PandaShellSession {
   env: Record<string, string>;
 }
 
-export interface PandaCurrentInputContext {
-  source: string;
-  channelId?: string;
-  externalMessageId?: string;
-  actorId?: string;
-  metadata?: JsonValue;
-}
-
 export interface PandaSessionContext {
   cwd?: string;
   shell?: PandaShellSession;
@@ -23,6 +15,12 @@ export interface PandaSessionContext {
   identityHandle?: string;
   threadId?: string;
   agentKey?: string;
-  currentInput?: PandaCurrentInputContext;
+  currentInput?: {
+    source: string;
+    channelId?: string;
+    externalMessageId?: string;
+    actorId?: string;
+    metadata?: JsonValue;
+  };
   outboundDispatcher?: ChannelOutboundDispatcher;
 }

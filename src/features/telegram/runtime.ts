@@ -6,7 +6,7 @@ import { Agent } from "../agent-core/agent.js";
 import type { ProviderName, JsonValue } from "../agent-core/types.js";
 import { buildPandaTools } from "../panda/agent.js";
 import { DateTimeContext, EnvironmentContext } from "../panda/contexts/index.js";
-import { buildPandaPrompt } from "../panda/prompts.js";
+import { PANDA_PROMPT } from "../panda/prompts.js";
 import {
   createPandaRuntime,
   resolveStoredPandaContext,
@@ -21,7 +21,6 @@ import {
   DEFAULT_IDENTITY_HANDLE,
   type IdentityRecord,
 } from "../identity/types.js";
-import { requireIdentityDatabaseUrl } from "../identity/runtime.js";
 import type { IdentityStore } from "../identity/store.js";
 import { OutboundTool } from "../panda/tools/outbound-tool.js";
 import type { ThreadRuntimeCoordinator } from "../thread-runtime/coordinator.js";
@@ -34,7 +33,8 @@ export interface TelegramRuntimeOptions {
   locale: string;
   timezone: string;
   dataDir: string;
-  instructions?: string;
+  dbUrl?: string;
+  readOnlyDbUrl?: string;
   provider?: ProviderName;
   model?: string;
   tablePrefix?: string;
@@ -58,7 +58,7 @@ export interface TelegramRuntimeServices {
   conversationThreads: PostgresConversationThreadStore;
   channelCursors: PostgresChannelCursorStore;
   mediaStore: FileSystemMediaStore;
-  pool: NonNullable<PandaRuntimeServices["pool"]>;
+  pool: PandaRuntimeServices["pool"];
   createThread(options: CreateTelegramThreadOptions): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
   close(): Promise<void>;
@@ -68,13 +68,7 @@ function resolveDefaultIdentityHandle(identity: IdentityRecord): string {
   return identity.handle || DEFAULT_IDENTITY_HANDLE;
 }
 
-function buildTelegramRuntimeInstructions(instructions?: string): string[] {
-  return [instructions ?? ""].filter((part) => part.trim().length > 0);
-}
-
 export async function createTelegramRuntime(options: TelegramRuntimeOptions): Promise<TelegramRuntimeServices> {
-  requireIdentityDatabaseUrl();
-
   const fallbackContext = {
     cwd: options.cwd,
     locale: options.locale,
@@ -82,6 +76,8 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
   } as const;
 
   const pandaRuntime = await createPandaRuntime({
+    dbUrl: options.dbUrl,
+    readOnlyDbUrl: options.readOnlyDbUrl,
     tablePrefix: options.tablePrefix,
     resolveDefinition: async (thread, { identityStore, extraTools }) => {
       const identity = await identityStore.getIdentity(thread.identityId);
@@ -101,7 +97,7 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
       return {
         agent: new Agent({
           name: thread.agentKey,
-          instructions: buildPandaPrompt(buildTelegramRuntimeInstructions(options.instructions)),
+          instructions: PANDA_PROMPT,
           tools: buildPandaTools([
             ...extraTools,
             ...(options.outboundDispatcher ? [new OutboundTool<PandaSessionContext>()] : []),
@@ -120,11 +116,6 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
       };
     },
   });
-
-  if (!pandaRuntime.pool) {
-    await pandaRuntime.close();
-    throw new Error("Telegram requires Postgres. Set PANDA_DATABASE_URL or DATABASE_URL.");
-  }
 
   let conversationThreads: PostgresConversationThreadStore;
   let channelCursors: PostgresChannelCursorStore;

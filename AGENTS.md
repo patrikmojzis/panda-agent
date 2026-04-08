@@ -40,7 +40,7 @@
 - `Thread` is the inner agent loop. The outer wake-driven runtime lives on top of it and should stay separate from `agent-core`.
 - Panda chat is wake-driven, not a hot `while (true)` loop. New inputs, heartbeats, resumes, and manual pokes wake a thread and let it run until it becomes idle.
 - All inbound events should become durable history with source metadata. The model should be able to see where messages came from, but connector-specific metadata exposed to the model should stay minimal.
-- PostgreSQL is the source of truth for persisted chat state: threads, transcript messages, pending inputs, and runs. In-memory state should be treated as a cache or local convenience only.
+- Panda uses one shared PostgreSQL database, many processes, and no fake in-memory persistence.
 - `queue` and `wake` are distinct delivery modes. Queued inputs should persist and wait for the next active cycle or flush; wake inputs should make the thread runnable immediately.
 - The terminal UI is primarily a debug and introspection surface over persisted thread state. It should reflect cross-channel activity, support resuming threads, and avoid inventing terminal-only conversation semantics when the transcript already contains the answer.
 

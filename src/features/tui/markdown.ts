@@ -34,7 +34,7 @@ type MarkdownBlock =
     continuationPrefix: readonly StyledSegment[];
   };
 
-export interface MarkdownLine {
+interface MarkdownLine {
   plain: string;
   rendered: string;
 }

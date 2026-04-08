@@ -37,9 +37,6 @@ vi.mock("pg", () => ({
 }));
 
 vi.mock("../src/features/thread-runtime/index.js", () => ({
-  InMemoryThreadRuntimeStore: class {
-    identityStore = {};
-  },
   PostgresThreadLeaseManager: class {},
   PostgresThreadRuntimeStore: class {
     identityStore = {};

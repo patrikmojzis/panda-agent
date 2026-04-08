@@ -26,17 +26,16 @@ export interface IdentityBindingLookup {
   externalActorId: string;
 }
 
-export interface IdentityBindingInput extends IdentityBindingLookup {
+export interface CreateIdentityBindingInput extends IdentityBindingLookup {
+  id: string;
   identityId: string;
   metadata?: JsonValue;
 }
 
-export interface CreateIdentityBindingInput extends IdentityBindingInput {
-  id: string;
-}
-
-export interface EnsureIdentityBindingInput extends IdentityBindingInput {
+export interface EnsureIdentityBindingInput extends IdentityBindingLookup {
   id?: string;
+  identityId: string;
+  metadata?: JsonValue;
 }
 
 export interface IdentityBindingRecord extends CreateIdentityBindingInput {

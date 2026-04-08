@@ -44,22 +44,3 @@ Environment changes made with simple export/unset commands persist across bash c
 Avoid destructive or high-impact shell commands unless the user clearly asked for them.
 Summarize command results in plain language instead of dumping noisy output unless the output itself is the answer.
 `.trim();
-
-function normalizeSections(sections?: string | string[]): string[] {
-  if (!sections) {
-    return [];
-  }
-
-  return (Array.isArray(sections) ? sections : [sections])
-    .map((section) => section.trim())
-    .filter(Boolean);
-}
-
-export function buildPandaPrompt(additionalSections?: string | string[]): string {
-  const sections = normalizeSections(additionalSections);
-  if (sections.length === 0) {
-    return PANDA_PROMPT;
-  }
-
-  return `${PANDA_PROMPT}\n\n${sections.join("\n")}`;
-}

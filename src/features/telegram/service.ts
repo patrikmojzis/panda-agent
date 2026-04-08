@@ -32,7 +32,8 @@ export interface TelegramServiceOptions {
   cwd: string;
   locale: string;
   timezone: string;
-  instructions?: string;
+  dbUrl?: string;
+  readOnlyDbUrl?: string;
   provider?: ProviderName;
   model?: string;
   tablePrefix?: string;
@@ -97,7 +98,8 @@ export class TelegramService {
       cwd: options.cwd,
       locale: options.locale,
       timezone: options.timezone,
-      instructions: options.instructions,
+      dbUrl: options.dbUrl,
+      readOnlyDbUrl: options.readOnlyDbUrl,
       provider: options.provider,
       model: options.model,
       tablePrefix: options.tablePrefix,

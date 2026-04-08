@@ -6,7 +6,7 @@ import {
   DateTimeContext,
   EnvironmentContext,
   MediaTool,
-  buildPandaPrompt,
+  PANDA_PROMPT,
 } from "../src/index.js";
 import { buildPandaTools } from "../src/features/panda/agent.js";
 
@@ -19,9 +19,9 @@ describe("Panda feature surface", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     const tools = buildPandaTools();
 
-    expect(buildPandaPrompt()).toContain("Your name is Panda.");
-    expect(buildPandaPrompt()).toContain("## Channels & Inner Monologue");
-    expect(buildPandaPrompt()).toContain("No outbound call = no message delivered.");
+    expect(PANDA_PROMPT).toContain("Your name is Panda.");
+    expect(PANDA_PROMPT).toContain("## Channels & Inner Monologue");
+    expect(PANDA_PROMPT).toContain("No outbound call = no message delivered.");
     expect(tools).toHaveLength(2);
     expect(tools[0]).toBeInstanceOf(BashTool);
     expect(tools[1]).toBeInstanceOf(MediaTool);

@@ -259,6 +259,20 @@ describe("PandaChatApp bracketed paste", () => {
 });
 
 describe("PandaChatApp Shift+Enter", () => {
+  it("turns backslash-enter into a newline without sending", async () => {
+    const app = new PandaChatApp() as any;
+    const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
+
+    app.render = vi.fn();
+    app.composer = createComposerState("alpha\\");
+
+    await app.handleKeypress("\r", { name: "return" });
+
+    expect(submitComposer).not.toHaveBeenCalled();
+    expect(app.composer.value).toBe("alpha\n");
+    expect(app.composer.cursor).toBe("alpha\n".length);
+  });
+
   it("inserts a newline when shift is held on return", async () => {
     const app = new PandaChatApp() as any;
     const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
@@ -270,6 +284,20 @@ describe("PandaChatApp Shift+Enter", () => {
 
     expect(submitComposer).not.toHaveBeenCalled();
     expect(app.composer.value).toBe("alpha\n");
+  });
+
+  it("inserts a newline for meta-enter terminal keybindings", async () => {
+    const app = new PandaChatApp() as any;
+    const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
+
+    app.render = vi.fn();
+    app.composer = createComposerState("alpha");
+
+    await app.handleKeypress("\u001b\r", { meta: true, name: "return", sequence: "\u001b\r" });
+    await app.handleKeypress("\u001b\n", { meta: true, name: "enter", sequence: "\u001b\n" });
+
+    expect(submitComposer).not.toHaveBeenCalled();
+    expect(app.composer.value).toBe("alpha\n\n");
   });
 
   it("inserts a newline for kitty and modifyOtherKeys Shift+Enter sequences", async () => {
@@ -706,10 +734,11 @@ describe("PandaChatApp performance helpers", () => {
 });
 
 describe("buildChatHelpText", () => {
-  it("documents Shift-Enter for newlines", () => {
+  it("documents reliable newline fallbacks", () => {
     const helpText = buildChatHelpText("/thinking <minimal|low|medium|high|xhigh|off>");
 
-    expect(helpText).toContain("Shift-Enter inserts a newline.");
+    expect(helpText).toContain("\\ + Enter inserts a newline.");
+    expect(helpText).toContain("Shift-Enter or Meta-Enter also inserts a newline when your terminal exposes it.");
     expect(helpText).not.toContain("Ctrl-J inserts a newline.");
   });
 });
@@ -731,7 +760,6 @@ describe("runChatCli", () => {
 describe("PandaChatApp explicit thread id", () => {
   it("preserves identity access errors instead of trying to recreate the thread", async () => {
     const createChatRuntime = vi.spyOn(tuiRuntime, "createChatRuntime").mockResolvedValue({
-      mode: "postgres",
       identity: {
         id: "alice-id",
         handle: "alice",

@@ -26,7 +26,7 @@ export interface NoticeState {
   expiresAt: number;
 }
 
-export interface InfoLine {
+interface InfoLine {
   text: string;
   cursorColumn: number | null;
 }
@@ -94,14 +94,14 @@ const WELCOME_COMMANDS = [
 
 const WELCOME_KEYS = [
   ["Enter", "send your prompt"],
-  ["Shift-Enter", "insert a newline"],
+  ["Ctrl-J", "insert a newline"],
   ["Ctrl-C", "stop the active run and exit"],
   ["Tab", "complete slash commands"],
   ["Ctrl-R", "search input history"],
   ["Ctrl-F", "search the transcript"],
 ] as const;
 
-export interface BuildWelcomeTranscriptLinesOptions {
+interface BuildWelcomeTranscriptLinesOptions {
   width: number;
   providerName: string;
   model: string;
@@ -110,7 +110,7 @@ export interface BuildWelcomeTranscriptLinesOptions {
   cwd: string;
 }
 
-export interface BuildChatViewModelOptions {
+interface BuildChatViewModelOptions {
   terminalWidth: number;
   terminalRows: number;
   transcriptLines: TranscriptLine[];
@@ -462,7 +462,7 @@ function buildInfoLine(options: {
   return {
     text: theme.dim(
       truncatePlainText(
-        `${options.scrollLabel} · Enter send · Shift-Enter newline · Tab complete · Ctrl-R history · Ctrl-F find · PgUp/PgDn scroll`,
+        `${options.scrollLabel} · Enter send · \\ + Enter newline · Tab complete · Ctrl-R history · Ctrl-F find · PgUp/PgDn scroll`,
         options.width,
       ),
     ),

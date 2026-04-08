@@ -7,7 +7,7 @@ export type ProviderAuthKind =
   | "anthropic-api-key-or-oauth"
   | "anthropic-oauth";
 
-export interface ProviderConfig {
+interface ProviderConfig {
   runtimeProvider: RuntimeProviderName;
   authKind: ProviderAuthKind;
   defaultModelEnvVar: string;
@@ -15,7 +15,7 @@ export interface ProviderConfig {
   missingApiKeyMessage: string;
 }
 
-export const PROVIDER_CONFIGS = {
+const PROVIDER_CONFIGS = {
   openai: {
     runtimeProvider: "openai",
     authKind: "openai-api-key",

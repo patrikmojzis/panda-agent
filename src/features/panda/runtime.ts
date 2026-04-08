@@ -5,7 +5,6 @@ import type { IdentityStore } from "../identity/store.js";
 import { PostgresReadonlyQueryTool } from "./tools/postgres-readonly-query-tool.js";
 import type { PandaSessionContext } from "./types.js";
 import {
-  InMemoryThreadRuntimeStore,
   PostgresThreadLeaseManager,
   PostgresThreadRuntimeStore,
   ThreadRuntimeCoordinator,
@@ -26,8 +25,6 @@ import type {
 } from "../thread-runtime/types.js";
 import type { ThreadRuntimeEvent } from "../thread-runtime/coordinator.js";
 
-export type StorageMode = "memory" | "postgres";
-
 export interface PandaDefinitionResolverContext {
   identityStore: IdentityStore;
   store: ThreadRuntimeStore;
@@ -47,12 +44,11 @@ export interface PandaRuntimeOptions {
 }
 
 export interface PandaRuntimeServices {
-  mode: StorageMode;
   identityStore: IdentityStore;
   store: ThreadRuntimeStore;
   coordinator: ThreadRuntimeCoordinator;
   extraTools: readonly Tool[];
-  pool?: Pool;
+  pool: Pool;
   close(): Promise<void>;
 }
 
@@ -63,6 +59,29 @@ function trimNonEmptyString(value: string | null | undefined): string | null {
 
   const trimmed = value.trim();
   return trimmed || null;
+}
+
+export function resolvePandaDatabaseUrl(explicitDbUrl?: string): string | null {
+  return (
+    trimNonEmptyString(explicitDbUrl)
+    ?? trimNonEmptyString(process.env.PANDA_DATABASE_URL)
+    ?? trimNonEmptyString(process.env.DATABASE_URL)
+  );
+}
+
+export function requirePandaDatabaseUrl(explicitDbUrl?: string): string {
+  const dbUrl = resolvePandaDatabaseUrl(explicitDbUrl);
+  if (dbUrl) {
+    return dbUrl;
+  }
+
+  throw new Error("Panda requires Postgres. Pass --db-url or set PANDA_DATABASE_URL.");
+}
+
+export function createPandaPool(connectionString: string): Pool {
+  return new Pool({
+    connectionString,
+  });
 }
 
 export function resolveStoredPandaContext(
@@ -84,117 +103,102 @@ export function resolveStoredPandaContext(
 }
 
 export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<PandaRuntimeServices> {
-  const dbUrl =
-    trimNonEmptyString(options.dbUrl)
-    ?? trimNonEmptyString(process.env.PANDA_DATABASE_URL)
-    ?? trimNonEmptyString(process.env.DATABASE_URL);
+  const dbUrl = requirePandaDatabaseUrl(options.dbUrl);
   const readOnlyDbUrl =
     trimNonEmptyString(options.readOnlyDbUrl)
     ?? trimNonEmptyString(process.env.PANDA_READONLY_DATABASE_URL);
 
-  let mode: StorageMode = "memory";
   let store: ThreadRuntimeStore;
   let identityStore: IdentityStore;
-  let pool: Pool | undefined;
+  let pool: Pool;
   let readonlyPool: Pool | null = null;
   let extraTools: readonly Tool[] = [];
   let close = async (): Promise<void> => {};
 
-  if (dbUrl) {
-    const postgresPool = new Pool({
-      connectionString: dbUrl,
+  const postgresPool = createPandaPool(dbUrl);
+  let notificationClient: PoolClient | null = null;
+  let notificationHandler: ((message: { channel: string; payload?: string }) => void) | null = null;
+
+  try {
+    const postgresStore = new PostgresThreadRuntimeStore({
+      pool: postgresPool,
+      tablePrefix: options.tablePrefix,
     });
-    let notificationClient: PoolClient | null = null;
-    let notificationHandler: ((message: { channel: string; payload?: string }) => void) | null = null;
+    await postgresStore.ensureSchema();
 
-    try {
-      const postgresStore = new PostgresThreadRuntimeStore({
-        pool: postgresPool,
-        tablePrefix: options.tablePrefix,
-      });
-      await postgresStore.ensureSchema();
+    store = postgresStore;
+    identityStore = postgresStore.identityStore;
+    pool = postgresPool;
+    await ensureReadonlyChatQuerySchema({
+      queryable: postgresPool,
+      tablePrefix: options.tablePrefix,
+      readonlyRole: readOnlyDbUrl ? readDatabaseUsername(readOnlyDbUrl) : null,
+    });
 
-      mode = "postgres";
-      store = postgresStore;
-      identityStore = postgresStore.identityStore;
-      pool = postgresPool;
-      await ensureReadonlyChatQuerySchema({
-        queryable: postgresPool,
-        tablePrefix: options.tablePrefix,
-        readonlyRole: readOnlyDbUrl ? readDatabaseUsername(readOnlyDbUrl) : null,
-      });
+    if (readOnlyDbUrl) {
+      readonlyPool = createPandaPool(readOnlyDbUrl);
+    }
 
-      if (readOnlyDbUrl) {
-        readonlyPool = new Pool({
-          connectionString: readOnlyDbUrl,
-        });
-      }
+    extraTools = [new PostgresReadonlyQueryTool({
+      pool: readonlyPool ?? postgresPool,
+    })];
 
-      extraTools = [new PostgresReadonlyQueryTool({
-        pool: readonlyPool ?? postgresPool,
-      })];
+    if (options.onStoreNotification) {
+      const channel = buildThreadRuntimeNotificationChannel(options.tablePrefix ?? "thread_runtime");
+      const client = await postgresPool.connect();
+      const handleNotification = (message: { channel: string; payload?: string }) => {
+        if (message.channel !== channel || typeof message.payload !== "string") {
+          return;
+        }
 
-      if (options.onStoreNotification) {
-        const channel = buildThreadRuntimeNotificationChannel(options.tablePrefix ?? "thread_runtime");
-        const client = await postgresPool.connect();
-        const handleNotification = (message: { channel: string; payload?: string }) => {
-          if (message.channel !== channel || typeof message.payload !== "string") {
-            return;
-          }
+        const parsed = parseThreadRuntimeNotification(message.payload);
+        if (!parsed) {
+          return;
+        }
 
-          const parsed = parseThreadRuntimeNotification(message.payload);
-          if (!parsed) {
-            return;
-          }
+        void options.onStoreNotification?.(parsed);
+      };
 
-          void options.onStoreNotification?.(parsed);
-        };
+      notificationClient = client;
+      notificationHandler = handleNotification;
+      client.on("notification", handleNotification);
+      await client.query(`LISTEN ${channel}`);
 
-        notificationClient = client;
-        notificationHandler = handleNotification;
-        client.on("notification", handleNotification);
-        await client.query(`LISTEN ${channel}`);
-
-        close = async () => {
-          client.off("notification", handleNotification);
-          try {
-            await client.query(`UNLISTEN ${channel}`);
-          } finally {
-            client.release();
-            if (readonlyPool) {
-              await readonlyPool.end();
-            }
-            await postgresPool.end();
-          }
-        };
-      } else {
-        close = async () => {
+      close = async () => {
+        client.off("notification", handleNotification);
+        try {
+          await client.query(`UNLISTEN ${channel}`);
+        } finally {
+          client.release();
           if (readonlyPool) {
             await readonlyPool.end();
           }
           await postgresPool.end();
-        };
-      }
-    } catch (error) {
-      if (notificationClient && notificationHandler) {
-        notificationClient.off("notification", notificationHandler);
-      }
-      if (notificationClient) {
-        notificationClient.release();
-      }
-      try {
+        }
+      };
+    } else {
+      close = async () => {
         if (readonlyPool) {
           await readonlyPool.end();
         }
-      } finally {
         await postgresPool.end();
-      }
-      throw error;
+      };
     }
-  } else {
-    const inMemoryStore = new InMemoryThreadRuntimeStore();
-    store = inMemoryStore;
-    identityStore = inMemoryStore.identityStore;
+  } catch (error) {
+    if (notificationClient && notificationHandler) {
+      notificationClient.off("notification", notificationHandler);
+    }
+    if (notificationClient) {
+      notificationClient.release();
+    }
+    try {
+      if (readonlyPool) {
+        await readonlyPool.end();
+      }
+    } finally {
+      await postgresPool.end();
+    }
+    throw error;
   }
 
   const resolverContext: PandaDefinitionResolverContext = {
@@ -205,13 +209,12 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
 
   const coordinator = new ThreadRuntimeCoordinator({
     store,
-    leaseManager: pool ? new PostgresThreadLeaseManager(pool) : undefined,
+    leaseManager: new PostgresThreadLeaseManager(pool),
     resolveDefinition: (thread) => options.resolveDefinition(thread, resolverContext),
     onEvent: options.onEvent,
   });
 
   return {
-    mode,
     identityStore,
     store,
     coordinator,

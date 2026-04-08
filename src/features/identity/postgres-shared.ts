@@ -1,12 +1,9 @@
 import { buildPrefixedRelationNames } from "../thread-runtime/postgres-shared.js";
 
-export interface IdentityRelationNames {
+export interface IdentityTableNames {
+  prefix: string;
   identities: string;
   identityBindings: string;
-}
-
-export interface IdentityTableNames extends IdentityRelationNames {
-  prefix: string;
 }
 
 export function buildIdentityTableNames(prefix: string): IdentityTableNames {

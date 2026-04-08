@@ -1,12 +1,9 @@
-export interface ThreadRuntimeRelationNames {
+export interface ThreadRuntimeTableNames {
+  prefix: string;
   threads: string;
   messages: string;
   inputs: string;
   runs: string;
-}
-
-export interface ThreadRuntimeTableNames extends ThreadRuntimeRelationNames {
-  prefix: string;
 }
 
 type RelationSuffixMap = Record<string, string>;

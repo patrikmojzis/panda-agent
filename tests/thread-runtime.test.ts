@@ -5,8 +5,6 @@ import {
   Agent,
   createCompactBoundaryMessage,
   DEFAULT_IDENTITY_ID,
-  InMemoryIdentityStore,
-  InMemoryThreadRuntimeStore,
   Thread,
   ThreadRuntimeCoordinator,
   type ThreadMessageRecord,
@@ -19,6 +17,7 @@ import {
   z,
   type LlmRuntime,
 } from "../src/index.js";
+import { TestIdentityStore, TestThreadRuntimeStore } from "./helpers/test-runtime-store.js";
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -163,7 +162,7 @@ class CrashTool extends Tool<typeof CrashTool.schema> {
   }
 }
 
-class CompleteRunBlockingStore extends InMemoryThreadRuntimeStore {
+class CompleteRunBlockingStore extends TestThreadRuntimeStore {
   constructor(
     private readonly entered: ReturnType<typeof createDeferred<void>>,
     private readonly release: ReturnType<typeof createDeferred<void>>,
@@ -236,8 +235,8 @@ class TestThreadDefinitionRegistry {
 }
 
 describe("ThreadRuntimeCoordinator", () => {
-  it("clears thinking in the in-memory store when updated to null", async () => {
-    const store = new InMemoryThreadRuntimeStore();
+  it("clears thinking when updated to null", async () => {
+    const store = new TestThreadRuntimeStore();
 
     await store.createThread({
       id: "thread-thinking",
@@ -253,7 +252,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
   it("queues wakes until they are flushed", async () => {
     const runtime = createMockRuntime(message("queued reply"));
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("queued-agent", {
       agent: new Agent({
         name: "queued-agent",
@@ -269,6 +268,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     const coordinator = new ThreadRuntimeCoordinator({
       store,
+      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -313,7 +313,7 @@ describe("ThreadRuntimeCoordinator", () => {
       message("processed after flush"),
     );
 
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("queued-during-run", {
       agent: new Agent({
         name: "queued-during-run",
@@ -330,6 +330,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     const coordinator = new ThreadRuntimeCoordinator({
       store,
+      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -381,7 +382,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
   it("restarts wake inputs that arrive during exclusive work once the lease is released", async () => {
     const runtime = createMockRuntime(message("processed after exclusive work"));
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("exclusive-agent", {
       agent: new Agent({
         name: "exclusive-agent",
@@ -397,6 +398,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     const coordinator = new ThreadRuntimeCoordinator({
       store,
+      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -440,7 +442,7 @@ describe("ThreadRuntimeCoordinator", () => {
       message("replanned"),
     );
 
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("runtime-agent", {
       agent: new Agent({
         name: "runtime-agent",
@@ -457,6 +459,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     const coordinator = new ThreadRuntimeCoordinator({
       store,
+      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -527,7 +530,7 @@ describe("ThreadRuntimeCoordinator", () => {
       }
     }
 
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("assistant-checkpoint", {
       agent: new Agent({
         name: "assistant-checkpoint",
@@ -544,6 +547,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     const coordinator = new ThreadRuntimeCoordinator({
       store,
+      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -592,7 +596,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
   it("rebuilds model context from the latest compact boundary plus later messages", async () => {
     const runtime = createMockRuntime(message("after compact"));
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("compact-agent", {
       agent: new Agent({
         name: "compact-agent",
@@ -637,6 +641,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     const coordinator = new ThreadRuntimeCoordinator({
       store,
+      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -666,7 +671,7 @@ describe("ThreadRuntimeCoordinator", () => {
   });
 
   it("recovers only orphaned runs that are not currently leased", async () => {
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
     await store.createThread({ id: "thread-free", agentKey: "panda" });
     await store.createThread({ id: "thread-held", agentKey: "panda" });
     const freeRun = await store.createRun("thread-free");
@@ -701,7 +706,7 @@ describe("ThreadRuntimeCoordinator", () => {
       ]),
     );
 
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("abort-agent", {
       agent: new Agent({
         name: "abort-agent",
@@ -718,10 +723,12 @@ describe("ThreadRuntimeCoordinator", () => {
 
     const owner = new ThreadRuntimeCoordinator({
       store,
+      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
     const observer = new ThreadRuntimeCoordinator({
       store,
+      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -766,6 +773,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     const coordinator = new ThreadRuntimeCoordinator({
       store,
+      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -806,7 +814,7 @@ describe("ThreadRuntimeCoordinator", () => {
       ]),
     );
 
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("crash-agent", {
       agent: new Agent({
         name: "crash-agent",
@@ -823,6 +831,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     const coordinator = new ThreadRuntimeCoordinator({
       store,
+      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -840,9 +849,9 @@ describe("ThreadRuntimeCoordinator", () => {
 });
 
 describe("Thread runtime stores", () => {
-  it("only exposes the built-in local identity in memory mode", async () => {
-    const identityStore = new InMemoryIdentityStore();
-    const store = new InMemoryThreadRuntimeStore({ identityStore });
+  it("only exposes the built-in local identity in the local test store", async () => {
+    const identityStore = new TestIdentityStore();
+    const store = new TestThreadRuntimeStore({ identityStore });
     const localIdentity = await identityStore.getIdentity(DEFAULT_IDENTITY_ID);
 
     expect(localIdentity.handle).toBe("local");
@@ -860,7 +869,7 @@ describe("Thread runtime stores", () => {
   });
 
   it("rejects threads created for missing identities", async () => {
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
 
     await expect(store.createThread({
       id: "missing-identity-thread",
@@ -870,7 +879,7 @@ describe("Thread runtime stores", () => {
   });
 
   it("dedupes retries per source and channel, not just external message id", async () => {
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
     await store.createThread({ id: "identity", agentKey: "panda" });
 
     await store.enqueueInput("identity", {
@@ -901,7 +910,7 @@ describe("Thread runtime stores", () => {
   });
 
   it("persists input metadata from pending inputs into the transcript", async () => {
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
     await store.createThread({ id: "metadata-thread", agentKey: "panda" });
 
     await store.enqueueInput("metadata-thread", {
@@ -960,7 +969,7 @@ describe("Thread runtime stores", () => {
   });
 
   it("summarizes threads without loading transcripts per caller", async () => {
-    const store = new InMemoryThreadRuntimeStore();
+    const store = new TestThreadRuntimeStore();
     await store.createThread({ id: "summary-a", agentKey: "panda" });
     await store.createThread({ id: "summary-b", agentKey: "panda" });
 

@@ -1,6 +1,6 @@
 import { findSlashCommand } from "./commands.js";
 
-export interface ChatCommandHandlers {
+interface ChatCommandHandlers {
   help(): Promise<boolean> | boolean;
   provider(value: string): Promise<boolean> | boolean;
   model(value: string): Promise<boolean> | boolean;
@@ -32,7 +32,8 @@ export function buildChatHelpText(thinkingCommandUsage: string): string {
     "",
     "Keys:",
     "Enter sends the current prompt.",
-    "Shift-Enter inserts a newline.",
+    "\\ + Enter inserts a newline.",
+    "Shift-Enter or Meta-Enter also inserts a newline when your terminal exposes it.",
     "Ctrl-C stops the active run and exits Panda.",
     "Tab cycles slash command suggestions and Enter completes them.",
     "Ctrl-R opens reverse history search.",
