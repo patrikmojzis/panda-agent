@@ -31,7 +31,6 @@ import {
 } from "./chat-commands.js";
 import {
   renderTranscriptEntries,
-  type TranscriptEntryView,
 } from "./transcript.js";
 import {
   applySlashCompletion,
@@ -145,6 +144,7 @@ interface KeyLike {
   meta?: boolean;
   shift?: boolean;
   sequence?: string;
+  code?: string;
 }
 
 type ComposerMetaAction = "word-left" | "word-right" | "delete-word-backward";
@@ -158,9 +158,16 @@ const MAX_VISIBLE_PENDING_LOCAL_INPUTS = 3;
 const NOTICE_MS = 3_600;
 const BRACKETED_PASTE_ON = "\u001b[?2004h";
 const BRACKETED_PASTE_OFF = "\u001b[?2004l";
+const ENABLE_KITTY_KEYBOARD = "\u001b[>1u";
+const DISABLE_KITTY_KEYBOARD = "\u001b[<u";
+const ENABLE_MODIFY_OTHER_KEYS = "\u001b[>4;2m";
+const DISABLE_MODIFY_OTHER_KEYS = "\u001b[>4m";
 const META_WORD_LEFT_SEQUENCES = new Set(["\u001bb", "\u001b[1;3D", "\u001b[1;9D", "\u001b\u001b[D"]);
 const META_WORD_RIGHT_SEQUENCES = new Set(["\u001bf", "\u001b[1;3C", "\u001b[1;9C", "\u001b\u001b[C"]);
 const META_BACKSPACE_SEQUENCES = new Set(["\u001b\u007f", "\u001b\b"]);
+const SHIFT_ENTER_SEQUENCES = new Set(["\u001b[13;2u", "\u001b[27;2;13~"]);
+const CSI_U_SEQUENCE_RE = /^\u001b\[\d+(?:;\d+)?u$/;
+const MODIFY_OTHER_KEYS_SEQUENCE_RE = /^\u001b\[27;\d+;\d+~$/;
 const WELCOME_ENTRY_TEXT = [
   "Type your request and press Enter to start a run with Panda.",
   "Start with a code change, a debugging question, or a quick explanation of this repo.",
@@ -221,6 +228,22 @@ function isPrintable(sequence: string, key: KeyLike): boolean {
   }
 
   return sequence >= " " || sequence === "\n";
+}
+
+function isShiftEnter(sequence: string, key: KeyLike): boolean {
+  if (SHIFT_ENTER_SEQUENCES.has(sequence)) {
+    return true;
+  }
+
+  return Boolean(key.shift && (key.name === "return" || key.name === "enter"));
+}
+
+function isExtendedKeySequence(sequence: string): boolean {
+  return CSI_U_SEQUENCE_RE.test(sequence) || MODIFY_OTHER_KEYS_SEQUENCE_RE.test(sequence);
+}
+
+function isExtendedKeySequencePrefix(sequence: string): boolean {
+  return sequence.startsWith("\u001b[") && /^\u001b\[[\d;]+$/.test(sequence);
 }
 
 function resolveComposerMetaAction(sequence: string, key: KeyLike): ComposerMetaAction | null {
@@ -312,8 +335,9 @@ export class PandaChatApp {
   private lastSpinnerFrame = -1;
   private syncDebounceTimer: NodeJS.Timeout | null = null;
   private inBracketedPaste = false;
+  private pendingExtendedKeySequence = "";
 
-  private readonly keypressHandler = (sequence: string, key: KeyLike): void => {
+  private readonly keypressHandler = (sequence: string | undefined, key: KeyLike): void => {
     void this.handleKeypress(sequence, key);
   };
 
@@ -353,6 +377,7 @@ export class PandaChatApp {
     this.startTicker();
     this.enterScreen();
     this.setBracketedPasteMode(true);
+    this.setExtendedKeysMode(true);
 
     if (this.transcript.length === 0) {
       this.pushEntry(
@@ -367,7 +392,7 @@ export class PandaChatApp {
         `Resumed thread ${this.currentThreadId}. Loaded ${this.transcript.length} transcript entries.`,
       );
     }
-    this.setNotice("Ctrl-F find · Ctrl-R history · Ctrl-J newline · Ctrl-C exit", "info", 5_000);
+    this.setNotice("Ctrl-F find · Ctrl-R history · Shift-Enter newline · Ctrl-C exit", "info", 5_000);
     this.render();
 
     try {
@@ -400,6 +425,7 @@ export class PandaChatApp {
     }
 
     this.setBracketedPasteMode(false);
+    this.setExtendedKeysMode(false);
     input.off("keypress", this.keypressHandler);
     input.pause();
     output.off("resize", this.resizeHandler);
@@ -1612,7 +1638,7 @@ export class PandaChatApp {
     }
 
     const next = applySlashCompletion(this.composer.value, context, command);
-    this.setComposerState(setComposerValue(this.composer, next.value, next.cursor));
+    this.setComposerState(setComposerValue(next.value, next.cursor));
     return true;
   }
 
@@ -1919,6 +1945,15 @@ export class PandaChatApp {
     output.write(enabled ? BRACKETED_PASTE_ON : BRACKETED_PASTE_OFF);
   }
 
+  private setExtendedKeysMode(enabled: boolean): void {
+    // Shift-Enter needs extended key reporting; plain readline only sees Enter.
+    output.write(
+      enabled
+        ? ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS
+        : DISABLE_MODIFY_OTHER_KEYS + DISABLE_KITTY_KEYBOARD,
+    );
+  }
+
   private render(): void {
     if (this.closed) {
       return;
@@ -2023,6 +2058,37 @@ export class PandaChatApp {
     return false;
   }
 
+  private normalizeKeySequence(sequence: string | undefined, key: KeyLike): string | null {
+    const nextSequence = sequence || key.sequence || "";
+
+    if (!this.pendingExtendedKeySequence) {
+      if (isExtendedKeySequence(nextSequence)) {
+        return nextSequence;
+      }
+
+      if ((key.name === "undefined" && nextSequence.startsWith("\u001b[")) || isExtendedKeySequencePrefix(nextSequence)) {
+        this.pendingExtendedKeySequence = nextSequence;
+        return null;
+      }
+
+      return nextSequence;
+    }
+
+    const combinedSequence = this.pendingExtendedKeySequence + nextSequence;
+    if (isExtendedKeySequence(combinedSequence)) {
+      this.pendingExtendedKeySequence = "";
+      return combinedSequence;
+    }
+
+    if (isExtendedKeySequencePrefix(combinedSequence)) {
+      this.pendingExtendedKeySequence = combinedSequence;
+      return null;
+    }
+
+    this.pendingExtendedKeySequence = "";
+    return combinedSequence;
+  }
+
   private async handleModalKeypress(sequence: string, key: KeyLike): Promise<boolean> {
     if (this.threadPicker.active) {
       await this.handleThreadPickerKeypress(sequence, key);
@@ -2052,8 +2118,13 @@ export class PandaChatApp {
     return false;
   }
 
-  private async handleKeypress(sequence: string, key: KeyLike): Promise<void> {
+  private async handleKeypress(sequence: string | undefined, key: KeyLike): Promise<void> {
     if (this.closed) {
+      return;
+    }
+
+    const normalizedSequence = this.normalizeKeySequence(sequence, key);
+    if (normalizedSequence === null) {
       return;
     }
 
@@ -2065,13 +2136,13 @@ export class PandaChatApp {
     if (
       await this.handleInterruptKeypress(key) ||
       this.handleTranscriptNavigationKeypress(key) ||
-      await this.handleModalKeypress(sequence, key)
+      await this.handleModalKeypress(normalizedSequence, key)
     ) {
       this.render();
       return;
     }
 
-    await this.handleComposerKeypress(sequence, key);
+    await this.handleComposerKeypress(normalizedSequence, key);
     this.render();
   }
 
@@ -2141,7 +2212,7 @@ export class PandaChatApp {
     if (key.name === "return" || sequence === "\r") {
       const match = this.currentHistoryMatch();
       if (match) {
-        this.setComposerState(setComposerValue(this.composer, match));
+        this.setComposerState(setComposerValue(match));
       } else {
         this.setNotice("No history match to load.", "info");
       }
@@ -2223,13 +2294,13 @@ export class PandaChatApp {
       return;
     }
 
-    if (key.name === "return" || sequence === "\r") {
-      await this.submitComposer();
+    if (isShiftEnter(sequence, key) || sequence === "\n") {
+      this.setComposerState(insertText(this.composer, "\n"));
       return;
     }
 
-    if (sequence === "\n") {
-      this.setComposerState(insertText(this.composer, "\n"));
+    if (key.name === "return" || sequence === "\r") {
+      await this.submitComposer();
       return;
     }
 

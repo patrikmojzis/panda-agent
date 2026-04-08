@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import type { PandaSessionContext, PandaShellSession } from "../types.js";
+import type { PandaShellSession } from "../types.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

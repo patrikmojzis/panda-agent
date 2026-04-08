@@ -94,7 +94,7 @@ const WELCOME_COMMANDS = [
 
 const WELCOME_KEYS = [
   ["Enter", "send your prompt"],
-  ["Ctrl-J", "insert a newline"],
+  ["Shift-Enter", "insert a newline"],
   ["Ctrl-C", "stop the active run and exit"],
   ["Tab", "complete slash commands"],
   ["Ctrl-R", "search input history"],
@@ -462,7 +462,7 @@ function buildInfoLine(options: {
   return {
     text: theme.dim(
       truncatePlainText(
-        `${options.scrollLabel} · Enter send · Ctrl-J newline · Tab complete · Ctrl-R history · Ctrl-F find · PgUp/PgDn scroll`,
+        `${options.scrollLabel} · Enter send · Shift-Enter newline · Tab complete · Ctrl-R history · Ctrl-F find · PgUp/PgDn scroll`,
         options.width,
       ),
     ),

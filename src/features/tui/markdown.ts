@@ -1,4 +1,4 @@
-import { marked, type Token, type Tokens } from "marked";
+import { marked, type Token } from "marked";
 
 const RESET = "\u001b[0m";
 

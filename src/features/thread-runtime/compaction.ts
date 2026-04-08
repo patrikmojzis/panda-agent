@@ -252,7 +252,7 @@ export function parseCompactSummary(raw: string): string {
   return summary.trim();
 }
 
-export function estimateMessageTokens(message: Message): number {
+function estimateMessageTokens(message: Message): number {
   return estimateTokensFromString(JSON.stringify(message));
 }
 

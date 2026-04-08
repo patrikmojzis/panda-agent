@@ -31,7 +31,7 @@ import type { LlmRuntime, LlmRuntimeRequest } from "./runtime.js";
 import type { RunPipeline } from "./run-pipeline.js";
 import { throwIfAborted } from "./abort.js";
 import type { ThreadCheckpointDecision, ThreadCheckpointHandler } from "./thread-checkpoint.js";
-import { Tool, isToolResultPayload } from "./tool.js";
+import { isToolResultPayload } from "./tool.js";
 import type {
   JsonValue,
   ThreadRunEvent,

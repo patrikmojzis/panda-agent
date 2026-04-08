@@ -123,7 +123,7 @@ function buildRunContextValue(
   };
 }
 
-export class InMemoryThreadLeaseManager implements ThreadLeaseManager {
+class InMemoryThreadLeaseManager implements ThreadLeaseManager {
   private readonly held = new Set<string>();
 
   async tryAcquire(threadId: string): Promise<ThreadLease | null> {

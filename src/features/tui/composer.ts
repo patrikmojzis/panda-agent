@@ -44,7 +44,6 @@ function moveVertical(state: ComposerState, direction: -1 | 1): ComposerState {
   const starts = lineStarts(state.value);
   const currentLine = findLineIndex(starts, state.cursor);
   const currentStart = starts[currentLine] ?? 0;
-  const currentEnd = lineEnd(state.value, currentStart);
   const currentColumn = state.cursor - currentStart;
   const desiredColumn = state.preferredColumn ?? currentColumn;
   const targetLine = currentLine + direction;
@@ -115,7 +114,6 @@ export function createComposerState(value = ""): ComposerState {
 }
 
 export function setComposerValue(
-  state: ComposerState,
   value: string,
   cursor = value.length,
 ): ComposerState {

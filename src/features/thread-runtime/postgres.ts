@@ -631,7 +631,7 @@ export class PostgresThreadLeaseManager implements ThreadLeaseManager {
   }
 }
 
-export function hashThreadLeaseKey(threadId: string): readonly [number, number] {
+function hashThreadLeaseKey(threadId: string): readonly [number, number] {
   const digest = createHash("sha256").update(threadId).digest();
   return [
     digest.readInt32BE(0),

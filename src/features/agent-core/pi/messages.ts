@@ -20,11 +20,11 @@ function normalizeSystemPrompt(systemPrompt?: string | ReadonlyArray<string>): s
   return systemPrompt ? [...systemPrompt] : [];
 }
 
-export function buildPiTools(tools: ReadonlyArray<Tool>): PiTool[] {
+function buildPiTools(tools: ReadonlyArray<Tool>): PiTool[] {
   return tools.map((tool) => tool.piTool);
 }
 
-export function createStructuredOutputInstruction(agent: Agent): string | null {
+function createStructuredOutputInstruction(agent: Agent): string | null {
   if (!agent.outputSchema) {
     return null;
   }

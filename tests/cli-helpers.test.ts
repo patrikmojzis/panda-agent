@@ -20,7 +20,7 @@ describe("composer helpers", () => {
   it("moves through multiline content while preserving the preferred column", () => {
     let state = createComposerState("alpha\nbe\ncharlie");
 
-    state = setComposerValue(state, state.value, 4);
+    state = setComposerValue(state.value, 4);
     state = moveCursorDown(state);
     expect(state.cursor).toBe("alpha\nbe".length);
 
@@ -63,12 +63,12 @@ describe("composer helpers", () => {
 
   it("keeps word-wise movement and deletion as no-ops at the buffer edges", () => {
     let state = createComposerState("alpha");
-    state = setComposerValue(state, state.value, 0);
+    state = setComposerValue(state.value, 0);
 
     expect(moveCursorWordLeft(state)).toEqual(state);
     expect(deleteWordBackward(state)).toEqual(state);
 
-    state = setComposerValue(state, state.value, state.value.length);
+    state = setComposerValue(state.value, state.value.length);
     expect(moveCursorWordRight(state)).toEqual(state);
   });
 });

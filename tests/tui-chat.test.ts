@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PiAiRuntime, stringToUserMessage } from "../src/features/agent-core/index.js";
 import type { ThreadRunRecord } from "../src/features/thread-runtime/index.js";
 import * as markdown from "../src/features/tui/markdown.js";
+import { buildChatHelpText } from "../src/features/tui/chat-commands.js";
 import * as tuiRuntime from "../src/features/tui/runtime.js";
 import type { ChatRuntimeServices } from "../src/features/tui/runtime.js";
 import { createComposerState, setComposerValue } from "../src/features/tui/composer.js";
@@ -192,6 +193,7 @@ describe("PandaChatApp Ctrl-C handling", () => {
     expect(offStdin).toHaveBeenCalled();
     expect(offStdout).toHaveBeenCalled();
     expect(write).toHaveBeenCalledWith("\u001b[?2004l");
+    expect(write).toHaveBeenCalledWith("\u001b[>4m\u001b[<u");
     expect(close).toHaveBeenCalledTimes(1);
 
     pause.mockRestore();
@@ -256,6 +258,37 @@ describe("PandaChatApp bracketed paste", () => {
   });
 });
 
+describe("PandaChatApp Shift+Enter", () => {
+  it("inserts a newline when shift is held on return", async () => {
+    const app = new PandaChatApp() as any;
+    const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
+
+    app.render = vi.fn();
+    app.composer = createComposerState("alpha");
+
+    await app.handleKeypress("", { shift: true, name: "return" });
+
+    expect(submitComposer).not.toHaveBeenCalled();
+    expect(app.composer.value).toBe("alpha\n");
+  });
+
+  it("inserts a newline for kitty and modifyOtherKeys Shift+Enter sequences", async () => {
+    const app = new PandaChatApp() as any;
+    const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
+
+    app.render = vi.fn();
+
+    await app.handleKeypress(undefined, { name: "undefined", sequence: "\u001b[13;2u", code: "[13;2u" });
+    await app.handleKeypress(undefined, { name: "undefined", sequence: "\u001b[27;2;", code: "[27;2;" });
+    await app.handleKeypress("1", { name: "1", sequence: "1" });
+    await app.handleKeypress("3", { name: "3", sequence: "3" });
+    await app.handleKeypress("~", { sequence: "~" });
+
+    expect(submitComposer).not.toHaveBeenCalled();
+    expect(app.composer.value).toBe("\n\n");
+  });
+});
+
 describe("PandaChatApp composer word shortcuts", () => {
   it("supports meta-left and meta-b for moving backward by word", async () => {
     const app = new PandaChatApp() as any;
@@ -276,7 +309,7 @@ describe("PandaChatApp composer word shortcuts", () => {
     app.render = vi.fn();
 
     const value = "alpha beta gamma";
-    app.composer = setComposerValue(createComposerState(value), value, "alpha ".length);
+    app.composer = setComposerValue(value, "alpha ".length);
 
     await app.handleKeypress("\u001b[1;3C", { name: "right" });
     expect(app.composer.cursor).toBe("alpha beta".length);
@@ -284,7 +317,7 @@ describe("PandaChatApp composer word shortcuts", () => {
     await app.handleKeypress("\u001bf", { name: "f" });
     expect(app.composer.cursor).toBe(value.length);
 
-    app.composer = setComposerValue(createComposerState(value), value, 0);
+    app.composer = setComposerValue(value, 0);
     await app.handleKeypress("", { meta: true, name: "right" });
     expect(app.composer.cursor).toBe("alpha".length);
   });
@@ -669,6 +702,15 @@ describe("PandaChatApp performance helpers", () => {
     expect(loadTranscript).toHaveBeenCalledTimes(2);
     expect(getThread).toHaveBeenCalledTimes(2);
     expect(listRuns).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("buildChatHelpText", () => {
+  it("documents Shift-Enter for newlines", () => {
+    const helpText = buildChatHelpText("/thinking <minimal|low|medium|high|xhigh|off>");
+
+    expect(helpText).toContain("Shift-Enter inserts a newline.");
+    expect(helpText).not.toContain("Ctrl-J inserts a newline.");
   });
 });
 

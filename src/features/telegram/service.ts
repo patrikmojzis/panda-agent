@@ -24,6 +24,7 @@ import { createTelegramOutboundAdapter } from "./outbound.js";
 import { createTelegramRuntime, type TelegramRuntimeServices } from "./runtime.js";
 
 type TelegramContext = Context;
+const UPDATE_RETRY_DELAY_MS = 1_000;
 
 export interface TelegramServiceOptions {
   token: string;
@@ -274,22 +275,26 @@ export class TelegramService {
           }
 
           try {
+            // Only advance the Telegram cursor after the update finished end-to-end.
             await this.bot.handleUpdate(update);
+            await runtime.channelCursors.upsertChannelCursor({
+              source: TELEGRAM_SOURCE,
+              connectorKey,
+              cursorKey: TELEGRAM_UPDATES_CURSOR_KEY,
+              value: String(update.update_id),
+            });
           } catch (error) {
             this.log("update_error", {
               connectorKey,
               updateId: update.update_id,
               message: error instanceof Error ? error.message : String(error),
             });
-            throw error;
-          }
 
-          await runtime.channelCursors.upsertChannelCursor({
-            source: TELEGRAM_SOURCE,
-            connectorKey,
-            cursorKey: TELEGRAM_UPDATES_CURSOR_KEY,
-            value: String(update.update_id),
-          });
+            if (!this.stopping) {
+              await new Promise((resolve) => setTimeout(resolve, UPDATE_RETRY_DELAY_MS));
+            }
+            break;
+          }
         }
       }
     } finally {
@@ -452,20 +457,7 @@ export class TelegramService {
       return;
     }
 
-    let media: readonly MediaDescriptor[];
-    try {
-      media = await this.downloadSupportedMedia(message, runtime);
-    } catch (error) {
-      this.log("message_dropped", {
-        connectorKey,
-        externalActorId: actorId,
-        externalConversationId,
-        chatType,
-        reason: "media_download_failed",
-        message: error instanceof Error ? error.message : String(error),
-      });
-      return;
-    }
+    const media = await this.downloadSupportedMedia(message, runtime);
 
     const rawText = (message.text ?? message.caption)?.trim() ?? "";
     if (!rawText && media.length === 0) {

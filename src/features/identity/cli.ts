@@ -41,7 +41,7 @@ export function parseIdentityHandle(value: string): string {
   }
 }
 
-export async function listIdentitiesCommand(options: IdentityCliOptions): Promise<void> {
+async function listIdentitiesCommand(options: IdentityCliOptions): Promise<void> {
   await withIdentityRuntime(options, async (runtime) => {
     const identities = await runtime.store.listIdentities();
 
@@ -61,7 +61,7 @@ export async function listIdentitiesCommand(options: IdentityCliOptions): Promis
   });
 }
 
-export async function createIdentityCommand(
+async function createIdentityCommand(
   handle: string,
   options: CreateIdentityCliOptions,
 ): Promise<void> {
