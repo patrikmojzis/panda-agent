@@ -51,6 +51,17 @@ describe("PostgresIdentityStore", () => {
       displayName: "Alice",
     });
     await expect(store.listIdentities()).resolves.toHaveLength(2);
+    await expect(store.createIdentity({
+      id: "bad-empty",
+      handle: "   ",
+      displayName: "Bad Empty",
+    })).rejects.toThrow("Identity handle must not be empty.");
+    await expect(store.createIdentity({
+      id: "bad-symbols",
+      handle: "Alice!",
+      displayName: "Bad Symbols",
+    })).rejects.toThrow("Identity handle must use lowercase letters, numbers, hyphens, or underscores.");
+    await expect(store.getIdentityByHandle("   ")).rejects.toThrow("Identity handle must not be empty.");
   });
 
   it("manages actor-scoped identity bindings", async () => {

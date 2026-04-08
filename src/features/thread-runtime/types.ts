@@ -62,6 +62,22 @@ export interface ThreadMessageMetadata {
   actorId?: string;
 }
 
+export function missingThreadError(threadId: string): Error {
+  return new Error(`Unknown thread ${threadId}`);
+}
+
+export function isMissingThreadError(error: unknown, threadId?: string): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  if (threadId === undefined) {
+    return error.message.startsWith("Unknown thread ");
+  }
+
+  return error.message === `Unknown thread ${threadId}`;
+}
+
 export function matchesThreadInputIdentity(
   left: Pick<ThreadMessageMetadata, "source" | "channelId" | "externalMessageId">,
   right: Pick<ThreadMessageMetadata, "source" | "channelId" | "externalMessageId">,

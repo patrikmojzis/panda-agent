@@ -8,6 +8,7 @@ import {
   type IdentityBindingLookup,
   type IdentityBindingRecord,
   type IdentityRecord,
+  normalizeIdentityHandle,
 } from "./types.js";
 import type { IdentityStore } from "./store.js";
 
@@ -15,10 +16,6 @@ function cloneRecord<T extends object>(record: T): T {
   return {
     ...record,
   };
-}
-
-function normalizeHandle(value: string): string {
-  return value.trim().toLowerCase();
 }
 
 function missingIdentityError(identityId: string): Error {
@@ -38,14 +35,14 @@ export class InMemoryIdentityStore implements IdentityStore {
     this.localIdentity = {
       ...localIdentity,
       status: localIdentity.status ?? "active",
-      handle: normalizeHandle(localIdentity.handle),
+      handle: normalizeIdentityHandle(localIdentity.handle),
       createdAt: now,
       updatedAt: now,
     };
   }
 
   async createIdentity(input: CreateIdentityInput): Promise<IdentityRecord> {
-    if (input.id === DEFAULT_IDENTITY_ID || normalizeHandle(input.handle) === DEFAULT_IDENTITY_HANDLE) {
+    if (input.id === DEFAULT_IDENTITY_ID || normalizeIdentityHandle(input.handle) === DEFAULT_IDENTITY_HANDLE) {
       throw new Error(`Identity ${DEFAULT_IDENTITY_ID} already exists.`);
     }
 
@@ -53,7 +50,7 @@ export class InMemoryIdentityStore implements IdentityStore {
   }
 
   async ensureIdentity(input: CreateIdentityInput): Promise<IdentityRecord> {
-    if (input.id === DEFAULT_IDENTITY_ID || normalizeHandle(input.handle) === DEFAULT_IDENTITY_HANDLE) {
+    if (input.id === DEFAULT_IDENTITY_ID || normalizeIdentityHandle(input.handle) === DEFAULT_IDENTITY_HANDLE) {
       return cloneRecord(this.localIdentity);
     }
 
@@ -69,7 +66,7 @@ export class InMemoryIdentityStore implements IdentityStore {
   }
 
   async getIdentityByHandle(handle: string): Promise<IdentityRecord> {
-    const normalizedHandle = normalizeHandle(handle);
+    const normalizedHandle = normalizeIdentityHandle(handle);
     if (normalizedHandle !== DEFAULT_IDENTITY_HANDLE) {
       throw requiresPostgresError();
     }

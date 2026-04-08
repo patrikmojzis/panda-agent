@@ -5,6 +5,7 @@ import type { Pool, PoolClient } from "pg";
 import type { ThreadLease, ThreadLeaseManager } from "./coordinator.js";
 import {
   buildThreadRuntimeTableNames,
+  toJson,
   quoteIdentifier,
   toMillis,
   toOrderNumber,
@@ -12,17 +13,18 @@ import {
   type ThreadRuntimeTableNames,
 } from "./postgres-shared.js";
 import type { ThreadEnqueueResult, ThreadRuntimeStore } from "./store.js";
-import type {
-  CreateThreadInput,
-  ThreadInputDeliveryMode,
-  ThreadInputPayload,
-  ThreadInputRecord,
-  ThreadMessageRecord,
-  ThreadRunRecord,
-  ThreadRuntimeMessagePayload,
-  ThreadRecord,
-  ThreadSummaryRecord,
-  ThreadUpdate,
+import {
+  missingThreadError,
+  type CreateThreadInput,
+  type ThreadInputDeliveryMode,
+  type ThreadInputPayload,
+  type ThreadInputRecord,
+  type ThreadMessageRecord,
+  type ThreadRunRecord,
+  type ThreadRuntimeMessagePayload,
+  type ThreadRecord,
+  type ThreadSummaryRecord,
+  type ThreadUpdate,
 } from "./types.js";
 import { PostgresIdentityStore, type PostgresIdentityStoreOptions } from "../identity/postgres.js";
 import { buildIdentityTableNames } from "../identity/postgres-shared.js";
@@ -63,10 +65,6 @@ export function parseThreadRuntimeNotification(payload: string): ThreadRuntimeNo
   } catch {
     return null;
   }
-}
-
-function toJson(value: unknown): string | null {
-  return value === undefined ? null : JSON.stringify(value);
 }
 
 function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
@@ -148,10 +146,6 @@ async function withTransaction<T>(pool: PgPoolLike, fn: (client: PoolClient) => 
   } finally {
     client.release();
   }
-}
-
-function missingThreadError(threadId: string): Error {
-  return new Error(`Unknown thread ${threadId}`);
 }
 
 export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {

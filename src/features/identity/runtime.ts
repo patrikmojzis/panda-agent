@@ -21,7 +21,7 @@ function trimNonEmptyString(value: string | null | undefined): string | null {
   return trimmed || null;
 }
 
-export function resolveIdentityDatabaseUrl(explicitDbUrl?: string): string | null {
+function resolveIdentityDatabaseUrl(explicitDbUrl?: string): string | null {
   return (
     trimNonEmptyString(explicitDbUrl)
     ?? trimNonEmptyString(process.env.PANDA_DATABASE_URL)

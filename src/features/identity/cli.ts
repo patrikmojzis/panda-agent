@@ -4,6 +4,7 @@ import process from "node:process";
 import { Command, InvalidArgumentError } from "commander";
 
 import { createIdentityRuntime } from "./runtime.js";
+import { normalizeIdentityHandle } from "./types.js";
 
 interface IdentityCliOptions {
   dbUrl?: string;
@@ -29,16 +30,15 @@ async function withIdentityRuntime<T>(
 }
 
 export function parseIdentityHandle(value: string): string {
-  const trimmed = value.trim().toLowerCase();
-  if (!trimmed) {
-    throw new InvalidArgumentError("Identity handle must not be empty.");
-  }
+  try {
+    return normalizeIdentityHandle(value);
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new InvalidArgumentError(error.message);
+    }
 
-  if (!/^[a-z0-9][a-z0-9_-]*$/.test(trimmed)) {
-    throw new InvalidArgumentError("Identity handle must use lowercase letters, numbers, hyphens, or underscores.");
+    throw error;
   }
-
-  return trimmed;
 }
 
 export async function listIdentitiesCommand(options: IdentityCliOptions): Promise<void> {

@@ -16,10 +16,6 @@ function buildQuotedIdentityRelationNames(prefix: string): IdentityRelationNames
   };
 }
 
-export function buildIdentityRelationNames(prefix: string): IdentityRelationNames {
-  return buildQuotedIdentityRelationNames(validateIdentifier(prefix));
-}
-
 export function buildIdentityTableNames(prefix: string): IdentityTableNames {
   const safePrefix = validateIdentifier(prefix);
   return {

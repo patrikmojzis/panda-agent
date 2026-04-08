@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PiAiRuntime, stringToUserMessage } from "../src/features/agent-core/index.js";
 import type { ThreadRunRecord } from "../src/features/thread-runtime/index.js";
 import * as markdown from "../src/features/tui/markdown.js";
+import * as tuiRuntime from "../src/features/tui/runtime.js";
 import type { ChatRuntimeServices } from "../src/features/tui/runtime.js";
 import { PandaChatApp, runChatCli } from "../src/features/tui/chat.js";
 
@@ -631,5 +632,36 @@ describe("runChatCli", () => {
     });
 
     run.mockRestore();
+  });
+});
+
+describe("PandaChatApp explicit thread id", () => {
+  it("preserves identity access errors instead of trying to recreate the thread", async () => {
+    const createChatRuntime = vi.spyOn(tuiRuntime, "createChatRuntime").mockResolvedValue({
+      mode: "postgres",
+      identity: {
+        id: "alice-id",
+        handle: "alice",
+        displayName: "Alice",
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      recoverOrphanedRuns: vi.fn(async () => []),
+      getThread: vi.fn(async () => {
+        throw new Error("Thread thread-locked does not belong to identity alice.");
+      }),
+      createThread: vi.fn(async () => {
+        throw new Error("should not create");
+      }),
+    } as unknown as ChatRuntimeServices);
+
+    const app = new PandaChatApp({ threadId: "thread-locked" }) as any;
+    app.switchThread = vi.fn(async () => {});
+
+    await expect(app.initializeRuntime()).rejects.toThrow("Thread thread-locked does not belong to identity alice.");
+    expect(app.services.createThread).not.toHaveBeenCalled();
+
+    createChatRuntime.mockRestore();
   });
 });

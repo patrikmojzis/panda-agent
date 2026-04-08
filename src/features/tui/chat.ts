@@ -70,6 +70,7 @@ import {
   estimateTranscriptTokens,
   formatTranscriptForCompaction,
   getCompactPrompt,
+  isMissingThreadError,
   parseCompactSummary,
   projectTranscriptForRun,
   splitTranscriptForCompaction,
@@ -733,7 +734,11 @@ export class PandaChatApp {
     } else if (this.explicitThreadId) {
       try {
         thread = await this.services.getThread(this.explicitThreadId);
-      } catch {
+      } catch (error) {
+        if (!isMissingThreadError(error, this.explicitThreadId)) {
+          throw error;
+        }
+
         thread = await this.services.createThread({
           id: this.explicitThreadId,
           provider: this.providerName,

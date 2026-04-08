@@ -10,15 +10,15 @@ export {
   type IdentityBindingRecord,
   type IdentityRecord,
   type IdentityStatus,
+  normalizeIdentityHandle,
 } from "./types.js";
 export { type IdentityStore } from "./store.js";
 export { InMemoryIdentityStore } from "./in-memory.js";
-export { buildIdentityRelationNames, buildIdentityTableNames, type IdentityRelationNames, type IdentityTableNames } from "./postgres-shared.js";
+export { buildIdentityTableNames, type IdentityRelationNames, type IdentityTableNames } from "./postgres-shared.js";
 export { PostgresIdentityStore, type PostgresIdentityStoreOptions } from "./postgres.js";
 export {
   createIdentityRuntime,
   requireIdentityDatabaseUrl,
-  resolveIdentityDatabaseUrl,
   type IdentityRuntime,
   type IdentityRuntimeOptions,
 } from "./runtime.js";

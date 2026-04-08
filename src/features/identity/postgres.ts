@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { Pool, PoolClient } from "pg";
 
-import { quoteIdentifier, toMillis } from "../thread-runtime/postgres-shared.js";
+import { quoteIdentifier, toJson, toMillis } from "../thread-runtime/postgres-shared.js";
 import { buildIdentityTableNames, type IdentityTableNames } from "./postgres-shared.js";
 import {
   createDefaultIdentityInput,
@@ -12,6 +12,7 @@ import {
   type IdentityBindingLookup,
   type IdentityBindingRecord,
   type IdentityRecord,
+  normalizeIdentityHandle,
 } from "./types.js";
 import type { IdentityStore } from "./store.js";
 
@@ -26,14 +27,6 @@ interface PgPoolLike extends PgQueryable {
 export interface PostgresIdentityStoreOptions {
   pool: PgPoolLike;
   tablePrefix?: string;
-}
-
-function toJson(value: unknown): string | null {
-  return value === undefined ? null : JSON.stringify(value);
-}
-
-function normalizeHandle(value: string): string {
-  return value.trim().toLowerCase();
 }
 
 function requireTrimmedBindingKeyPart(field: string, value: string): string {
@@ -61,20 +54,12 @@ function normalizeIdentityBindingLookup(lookup: IdentityBindingLookup): Identity
   };
 }
 
-function normalizeCreateIdentityBindingInput(input: CreateIdentityBindingInput): CreateIdentityBindingInput {
+function normalizeIdentityBindingInput<T extends IdentityBindingLookup>(input: T): T {
   const lookup = normalizeIdentityBindingLookup(input);
   return {
     ...input,
     ...lookup,
-  };
-}
-
-function normalizeEnsureIdentityBindingInput(input: EnsureIdentityBindingInput): EnsureIdentityBindingInput {
-  const lookup = normalizeIdentityBindingLookup(input);
-  return {
-    ...input,
-    ...lookup,
-  };
+  } as T;
 }
 
 function parseIdentityRow(row: Record<string, unknown>): IdentityRecord {
@@ -137,6 +122,36 @@ export class PostgresIdentityStore implements IdentityStore {
     this.tables = buildIdentityTableNames(options.tablePrefix ?? "thread_runtime");
   }
 
+  private async insertIdentityBinding(input: CreateIdentityBindingInput): Promise<IdentityBindingRecord> {
+    const result = await this.pool.query(`
+      INSERT INTO ${this.tables.identityBindings} (
+        id,
+        identity_id,
+        source,
+        connector_key,
+        external_actor_id,
+        metadata
+      ) VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6::jsonb
+      )
+      RETURNING *
+    `, [
+      input.id,
+      input.identityId,
+      input.source,
+      input.connectorKey,
+      input.externalActorId,
+      toJson(input.metadata),
+    ]);
+
+    return parseIdentityBindingRow(result.rows[0] as Record<string, unknown>);
+  }
+
   async ensureSchema(): Promise<void> {
     const localIdentity = createDefaultIdentityInput();
     await this.pool.query(`
@@ -181,7 +196,7 @@ export class PostgresIdentityStore implements IdentityStore {
       ON CONFLICT (id) DO NOTHING;
     `, [
       localIdentity.id,
-      normalizeHandle(localIdentity.handle),
+      normalizeIdentityHandle(localIdentity.handle),
       localIdentity.displayName,
       localIdentity.status ?? "active",
     ]);
@@ -205,7 +220,7 @@ export class PostgresIdentityStore implements IdentityStore {
       RETURNING *
     `, [
       input.id,
-      normalizeHandle(input.handle),
+      normalizeIdentityHandle(input.handle),
       input.displayName,
       input.status ?? "active",
       toJson(input.metadata),
@@ -245,7 +260,7 @@ export class PostgresIdentityStore implements IdentityStore {
   async getIdentityByHandle(handle: string): Promise<IdentityRecord> {
     const result = await this.pool.query(
       `SELECT * FROM ${this.tables.identities} WHERE handle = $1`,
-      [normalizeHandle(handle)],
+      [normalizeIdentityHandle(handle)],
     );
 
     const row = result.rows[0];
@@ -265,40 +280,13 @@ export class PostgresIdentityStore implements IdentityStore {
   }
 
   async createIdentityBinding(input: CreateIdentityBindingInput): Promise<IdentityBindingRecord> {
-    const normalizedInput = normalizeCreateIdentityBindingInput(input);
+    const normalizedInput = normalizeIdentityBindingInput(input);
     await this.getIdentity(normalizedInput.identityId);
-
-    const result = await this.pool.query(`
-      INSERT INTO ${this.tables.identityBindings} (
-        id,
-        identity_id,
-        source,
-        connector_key,
-        external_actor_id,
-        metadata
-      ) VALUES (
-        $1,
-        $2,
-        $3,
-        $4,
-        $5,
-        $6::jsonb
-      )
-      RETURNING *
-    `, [
-      normalizedInput.id,
-      normalizedInput.identityId,
-      normalizedInput.source,
-      normalizedInput.connectorKey,
-      normalizedInput.externalActorId,
-      toJson(normalizedInput.metadata),
-    ]);
-
-    return parseIdentityBindingRow(result.rows[0] as Record<string, unknown>);
+    return this.insertIdentityBinding(normalizedInput);
   }
 
   async ensureIdentityBinding(input: EnsureIdentityBindingInput): Promise<IdentityBindingRecord> {
-    const normalizedInput = normalizeEnsureIdentityBindingInput(input);
+    const normalizedInput = normalizeIdentityBindingInput(input);
     await this.getIdentity(normalizedInput.identityId);
 
     const lookup = {
@@ -316,7 +304,7 @@ export class PostgresIdentityStore implements IdentityStore {
     }
 
     try {
-      return await this.createIdentityBinding({
+      return await this.insertIdentityBinding({
         ...normalizedInput,
         id: normalizedInput.id ?? randomUUID(),
       });

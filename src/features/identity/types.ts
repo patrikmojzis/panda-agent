@@ -44,6 +44,19 @@ export interface IdentityBindingRecord extends CreateIdentityBindingInput {
   updatedAt: number;
 }
 
+export function normalizeIdentityHandle(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    throw new Error("Identity handle must not be empty.");
+  }
+
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(normalized)) {
+    throw new Error("Identity handle must use lowercase letters, numbers, hyphens, or underscores.");
+  }
+
+  return normalized;
+}
+
 export function createDefaultIdentityInput(): CreateIdentityInput {
   return {
     id: DEFAULT_IDENTITY_ID,

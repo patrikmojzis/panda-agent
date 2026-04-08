@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  missingThreadError,
   matchesThreadInputIdentity,
   type CreateThreadInput,
   type ThreadInputDeliveryMode,
@@ -63,10 +64,6 @@ function cloneRecord<T extends object>(record: T): T {
   return {
     ...record,
   };
-}
-
-function missingThreadError(threadId: string): Error {
-  return new Error(`Unknown thread ${threadId}`);
 }
 
 function missingRunError(runId: string): Error {

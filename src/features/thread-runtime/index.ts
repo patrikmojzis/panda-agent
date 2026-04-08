@@ -42,6 +42,8 @@ export {
 } from "./compact.js";
 export {
   type CreateThreadInput,
+  isMissingThreadError,
+  missingThreadError,
   type ResolvedThreadDefinition,
   type ThreadDefinitionResolver,
   type ThreadInputPayload,

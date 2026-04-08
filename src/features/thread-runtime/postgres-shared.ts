@@ -30,10 +30,6 @@ function buildQuotedThreadRuntimeRelationNames(prefix: string): ThreadRuntimeRel
   };
 }
 
-export function buildThreadRuntimeRelationNames(prefix: string): ThreadRuntimeRelationNames {
-  return buildQuotedThreadRuntimeRelationNames(validateIdentifier(prefix));
-}
-
 export function buildThreadRuntimeTableNames(prefix: string): ThreadRuntimeTableNames {
   const safePrefix = validateIdentifier(prefix);
   return {
@@ -60,4 +56,8 @@ export function toOrderNumber(value: unknown): number {
   }
 
   return Number(value);
+}
+
+export function toJson(value: unknown): string | null {
+  return value === undefined ? null : JSON.stringify(value);
 }
