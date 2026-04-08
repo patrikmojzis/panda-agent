@@ -43,3 +43,6 @@
 - PostgreSQL is the source of truth for persisted chat state: threads, transcript messages, pending inputs, and runs. In-memory state should be treated as a cache or local convenience only.
 - `queue` and `wake` are distinct delivery modes. Queued inputs should persist and wait for the next active cycle or flush; wake inputs should make the thread runnable immediately.
 - The terminal UI is primarily a debug and introspection surface over persisted thread state. It should reflect cross-channel activity, support resuming threads, and avoid inventing terminal-only conversation semantics when the transcript already contains the answer.
+
+## What to avoid
+- Needless complexity that can spread

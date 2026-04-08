@@ -39,14 +39,15 @@ describe("PostgresThreadRuntimeStore", () => {
     });
 
     const alice = await store.identityStore.createIdentity({
-      id: "alice",
+      id: "alice-id",
       handle: "alice",
       displayName: "Alice",
     });
     await expect(store.identityStore.getIdentityByHandle("alice")).resolves.toMatchObject({
-      id: "alice",
+      id: "alice-id",
       handle: "alice",
     });
+    expect(alice.id).toBe("alice-id");
 
     const created = await store.createThread({
       id: "pg-thread",
@@ -63,7 +64,8 @@ describe("PostgresThreadRuntimeStore", () => {
     });
 
     expect(created.agentKey).toBe("panda");
-    expect(created.identityId).toBe("alice");
+    expect(created.identityId).toBe(alice.id);
+    expect(created.identityId).not.toBe(alice.handle);
     expect(created.systemPrompt).toEqual(["You are Panda."]);
     expect(created.thinking).toBe("medium");
 
@@ -197,7 +199,7 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(summaries[0]).toMatchObject({
       thread: {
         id: "pg-thread",
-        identityId: "alice",
+        identityId: alice.id,
       },
       messageCount: 4,
       pendingInputCount: 0,

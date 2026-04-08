@@ -34,6 +34,38 @@ Current status values:
 
 Right now, the app only creates and reads identities. There is no delete flow yet.
 
+For custom identities:
+
+- `id` is an opaque internal key
+- `handle` is the human-facing unique name used by CLI and runtime selection
+
+That means `id` and `handle` are not the same thing anymore.
+
+### Identity Binding
+
+An identity binding maps an external actor to a Panda identity.
+
+An identity binding has:
+
+- `id`
+- `identityId`
+- `source`
+- `connectorKey`
+- `externalActorId`
+- `metadata`
+- `createdAt`
+- `updatedAt`
+
+The binding key is:
+
+- `source`
+- `connectorKey`
+- `externalActorId`
+
+That means bindings are actor-scoped, not thread-scoped and not conversation-scoped.
+`source` and `connectorKey` are trimmed and must be non-empty.
+`externalActorId` stays opaque, but it must not be blank.
+
 ### Thread Ownership
 
 Each thread has:
@@ -124,6 +156,8 @@ panda identity create alice --name "Alice"
 panda identity list
 ```
 
+The CLI generates a new opaque `id` for each custom identity and keeps `handle` as the stable lookup key.
+
 These commands require Postgres.
 
 If Panda is running without `--db-url`, `PANDA_DATABASE_URL`, or `DATABASE_URL`, identity management commands now fail loudly instead of pretending a RAM-only write is durable.
@@ -135,6 +169,7 @@ If Panda is running without `--db-url`, `PANDA_DATABASE_URL`, or `DATABASE_URL`,
 The in-memory runtime store only exposes the built-in `local` identity.
 
 It does not create or persist custom identities in RAM anymore.
+It also does not persist identity bindings in RAM.
 
 That keeps local chat working without a database, but avoids the fake-persistent identity path.
 
@@ -161,15 +196,28 @@ Purpose:
 
 Purpose:
 
-- future connector mapping layer
+- maps an external actor to a Panda identity
 
-Current status:
+Columns:
 
-- schema exists
-- unique binding key exists
-- runtime does not use it yet
+- `identity_id`
+- `source`
+- `connector_key`
+- `external_actor_id`
+- `metadata`
 
-This is intentional. We wanted the identity model in place before wiring Telegram or any other connector-specific behavior.
+Unique lookup key:
+
+- `source`
+- `connector_key`
+- `external_actor_id`
+
+Current behavior:
+
+- Postgres stores and resolves bindings
+- in-memory binding writes fail loudly
+- runtime does not use bindings yet
+- bindings do not select the active thread
 
 ### `threads` Table
 
@@ -193,10 +241,10 @@ That makes identity-aware debugging and transcript inspection possible from the 
 These are the current rules the implementation assumes:
 
 - identity is the owner of threads
+- identity binding resolves an external actor to an identity
 - thread is still the durable chat unit
 - agent/provider/model selection stays on the thread runtime and thread records
 - identity isolation is enforced in the runtime surface
-- connector bindings belong above threads, not inside the agent loop
 
 ## Telegram Compatibility
 
@@ -207,16 +255,27 @@ The intended direction is:
 - connector event arrives
 - connector binding resolves to an identity
 - runtime runs as that identity
-- thread selection or creation happens under that identity
+- thread selection or creation happens under that identity after a separate conversation-to-thread mapping step
 
-That is why `identity_bindings` already exists even though no connector uses it yet.
+What exists now:
+
+- `identity_bindings` for external actor -> identity
+
+What still does not exist:
+
+- connector runtime integration
+- conversation -> active thread mapping
+- `/new` rotation semantics for connectors
+
+When that later mapping lands, the safer name is probably `external_conversation_id`, not `external_channel_id`.
 
 ## What Is Not Implemented Yet
 
 - identity switching inside the TUI
 - identity update commands
 - identity delete commands
-- binding commands
+- connector runtime integration
+- conversation-to-thread mapping
 - Telegram integration
 - auth / permissions between human operators
 

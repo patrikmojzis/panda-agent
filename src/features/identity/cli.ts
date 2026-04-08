@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import process from "node:process";
 
 import { Command, InvalidArgumentError } from "commander";
@@ -66,7 +67,7 @@ export async function createIdentityCommand(
 ): Promise<void> {
   await withIdentityRuntime(options, async (runtime) => {
     const identity = await runtime.store.createIdentity({
-      id: handle,
+      id: randomUUID(),
       handle,
       displayName: options.name?.trim() || handle,
     });

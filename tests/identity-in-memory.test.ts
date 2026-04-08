@@ -30,4 +30,34 @@ describe("InMemoryIdentityStore", () => {
     })).rejects.toThrow("Persisted identities require Postgres");
     await expect(store.getIdentityByHandle("alice")).rejects.toThrow("Persisted identities require Postgres");
   });
+
+  it("rejects binding writes without Postgres but keeps reads harmless", async () => {
+    const store = new InMemoryIdentityStore();
+
+    await expect(store.ensureIdentityBinding({
+      id: "00000000-0000-0000-0000-000000000001",
+      identityId: DEFAULT_IDENTITY_ID,
+      source: "telegram",
+      connectorKey: "bot-main",
+      externalActorId: "123",
+    })).rejects.toThrow("Persisted identities require Postgres");
+    await expect(store.createIdentityBinding({
+      id: "00000000-0000-0000-0000-000000000002",
+      identityId: DEFAULT_IDENTITY_ID,
+      source: "telegram",
+      connectorKey: "bot-main",
+      externalActorId: "123",
+    })).rejects.toThrow("Persisted identities require Postgres");
+    await expect(store.resolveIdentityBinding({
+      source: "telegram",
+      connectorKey: "bot-main",
+      externalActorId: "123",
+    })).resolves.toBeNull();
+    await expect(store.listIdentityBindings(DEFAULT_IDENTITY_ID)).resolves.toEqual([]);
+    await expect(store.deleteIdentityBinding({
+      source: "telegram",
+      connectorKey: "bot-main",
+      externalActorId: "123",
+    })).rejects.toThrow("Persisted identities require Postgres");
+  });
 });

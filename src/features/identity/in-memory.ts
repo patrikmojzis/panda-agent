@@ -1,8 +1,12 @@
 import {
+  type CreateIdentityBindingInput,
   createDefaultIdentityInput,
   DEFAULT_IDENTITY_HANDLE,
   DEFAULT_IDENTITY_ID,
   type CreateIdentityInput,
+  type EnsureIdentityBindingInput,
+  type IdentityBindingLookup,
+  type IdentityBindingRecord,
   type IdentityRecord,
 } from "./types.js";
 import type { IdentityStore } from "./store.js";
@@ -75,5 +79,26 @@ export class InMemoryIdentityStore implements IdentityStore {
 
   async listIdentities(): Promise<readonly IdentityRecord[]> {
     return [cloneRecord(this.localIdentity)];
+  }
+
+  async createIdentityBinding(_input: CreateIdentityBindingInput): Promise<IdentityBindingRecord> {
+    throw requiresPostgresError();
+  }
+
+  async ensureIdentityBinding(_input: EnsureIdentityBindingInput): Promise<IdentityBindingRecord> {
+    throw requiresPostgresError();
+  }
+
+  async resolveIdentityBinding(_lookup: IdentityBindingLookup): Promise<IdentityBindingRecord | null> {
+    return null;
+  }
+
+  async listIdentityBindings(identityId: string): Promise<readonly IdentityBindingRecord[]> {
+    await this.getIdentity(identityId);
+    return [];
+  }
+
+  async deleteIdentityBinding(_lookup: IdentityBindingLookup): Promise<boolean> {
+    throw requiresPostgresError();
   }
 }

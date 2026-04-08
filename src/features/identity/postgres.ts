@@ -1,8 +1,18 @@
+import { randomUUID } from "node:crypto";
+
 import type { Pool, PoolClient } from "pg";
 
 import { quoteIdentifier, toMillis } from "../thread-runtime/postgres-shared.js";
 import { buildIdentityTableNames, type IdentityTableNames } from "./postgres-shared.js";
-import { createDefaultIdentityInput, type CreateIdentityInput, type IdentityRecord } from "./types.js";
+import {
+  createDefaultIdentityInput,
+  type CreateIdentityBindingInput,
+  type CreateIdentityInput,
+  type EnsureIdentityBindingInput,
+  type IdentityBindingLookup,
+  type IdentityBindingRecord,
+  type IdentityRecord,
+} from "./types.js";
 import type { IdentityStore } from "./store.js";
 
 interface PgQueryable {
@@ -26,6 +36,47 @@ function normalizeHandle(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function requireTrimmedBindingKeyPart(field: string, value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(`Identity binding ${field} must not be empty.`);
+  }
+
+  return trimmed;
+}
+
+function requireOpaqueExternalActorId(value: string): string {
+  if (value.trim().length === 0) {
+    throw new Error("Identity binding external actor id must not be empty.");
+  }
+
+  return value;
+}
+
+function normalizeIdentityBindingLookup(lookup: IdentityBindingLookup): IdentityBindingLookup {
+  return {
+    source: requireTrimmedBindingKeyPart("source", lookup.source),
+    connectorKey: requireTrimmedBindingKeyPart("connector key", lookup.connectorKey),
+    externalActorId: requireOpaqueExternalActorId(lookup.externalActorId),
+  };
+}
+
+function normalizeCreateIdentityBindingInput(input: CreateIdentityBindingInput): CreateIdentityBindingInput {
+  const lookup = normalizeIdentityBindingLookup(input);
+  return {
+    ...input,
+    ...lookup,
+  };
+}
+
+function normalizeEnsureIdentityBindingInput(input: EnsureIdentityBindingInput): EnsureIdentityBindingInput {
+  const lookup = normalizeIdentityBindingLookup(input);
+  return {
+    ...input,
+    ...lookup,
+  };
+}
+
 function parseIdentityRow(row: Record<string, unknown>): IdentityRecord {
   return {
     id: String(row.id),
@@ -38,12 +89,43 @@ function parseIdentityRow(row: Record<string, unknown>): IdentityRecord {
   };
 }
 
+function parseIdentityBindingRow(row: Record<string, unknown>): IdentityBindingRecord {
+  return {
+    id: String(row.id),
+    identityId: String(row.identity_id),
+    source: String(row.source),
+    connectorKey: String(row.connector_key),
+    externalActorId: String(row.external_actor_id),
+    metadata: row.metadata === null ? undefined : (row.metadata as IdentityBindingRecord["metadata"]),
+    createdAt: toMillis(row.created_at),
+    updatedAt: toMillis(row.updated_at),
+  };
+}
+
 function missingIdentityError(identityId: string): Error {
   return new Error(`Unknown identity ${identityId}`);
 }
 
 function missingIdentityHandleError(handle: string): Error {
   return new Error(`Unknown identity handle ${handle}`);
+}
+
+function describeBindingKey(lookup: IdentityBindingLookup): string {
+  return `${lookup.source}/${lookup.connectorKey}/${lookup.externalActorId}`;
+}
+
+function bindingBelongsToDifferentIdentityError(
+  lookup: IdentityBindingLookup,
+  expectedIdentityId: string,
+  actualIdentityId: string,
+): Error {
+  return new Error(
+    `Identity binding ${describeBindingKey(lookup)} already belongs to identity ${actualIdentityId}, not ${expectedIdentityId}.`,
+  );
+}
+
+function isUniqueViolation(error: unknown): error is { code: string } {
+  return !!error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "23505";
 }
 
 export class PostgresIdentityStore implements IdentityStore {
@@ -73,22 +155,16 @@ export class PostgresIdentityStore implements IdentityStore {
         id UUID PRIMARY KEY,
         identity_id TEXT NOT NULL REFERENCES ${this.tables.identities}(id) ON DELETE CASCADE,
         source TEXT NOT NULL,
-        connector_key TEXT,
-        external_actor_id TEXT,
-        external_channel_id TEXT,
+        connector_key TEXT NOT NULL,
+        external_actor_id TEXT NOT NULL,
         metadata JSONB,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
     await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_identity_bindings_unique_idx`)}
-      ON ${this.tables.identityBindings} (
-        source,
-        COALESCE(connector_key, ''),
-        COALESCE(external_actor_id, ''),
-        COALESCE(external_channel_id, '')
-      )
+      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_identity_bindings_lookup_idx`)}
+      ON ${this.tables.identityBindings} (source, connector_key, external_actor_id)
     `);
     await this.pool.query(`
       INSERT INTO ${this.tables.identities} (
@@ -186,5 +262,127 @@ export class PostgresIdentityStore implements IdentityStore {
     );
 
     return result.rows.map((row) => parseIdentityRow(row as Record<string, unknown>));
+  }
+
+  async createIdentityBinding(input: CreateIdentityBindingInput): Promise<IdentityBindingRecord> {
+    const normalizedInput = normalizeCreateIdentityBindingInput(input);
+    await this.getIdentity(normalizedInput.identityId);
+
+    const result = await this.pool.query(`
+      INSERT INTO ${this.tables.identityBindings} (
+        id,
+        identity_id,
+        source,
+        connector_key,
+        external_actor_id,
+        metadata
+      ) VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6::jsonb
+      )
+      RETURNING *
+    `, [
+      normalizedInput.id,
+      normalizedInput.identityId,
+      normalizedInput.source,
+      normalizedInput.connectorKey,
+      normalizedInput.externalActorId,
+      toJson(normalizedInput.metadata),
+    ]);
+
+    return parseIdentityBindingRow(result.rows[0] as Record<string, unknown>);
+  }
+
+  async ensureIdentityBinding(input: EnsureIdentityBindingInput): Promise<IdentityBindingRecord> {
+    const normalizedInput = normalizeEnsureIdentityBindingInput(input);
+    await this.getIdentity(normalizedInput.identityId);
+
+    const lookup = {
+      source: normalizedInput.source,
+      connectorKey: normalizedInput.connectorKey,
+      externalActorId: normalizedInput.externalActorId,
+    } satisfies IdentityBindingLookup;
+    const existing = await this.resolveIdentityBinding(lookup);
+    if (existing) {
+      if (existing.identityId !== normalizedInput.identityId) {
+        throw bindingBelongsToDifferentIdentityError(lookup, normalizedInput.identityId, existing.identityId);
+      }
+
+      return existing;
+    }
+
+    try {
+      return await this.createIdentityBinding({
+        ...normalizedInput,
+        id: normalizedInput.id ?? randomUUID(),
+      });
+    } catch (error) {
+      if (!isUniqueViolation(error)) {
+        throw error;
+      }
+
+      const raced = await this.resolveIdentityBinding(lookup);
+      if (!raced) {
+        throw error;
+      }
+
+      if (raced.identityId !== normalizedInput.identityId) {
+        throw bindingBelongsToDifferentIdentityError(lookup, normalizedInput.identityId, raced.identityId);
+      }
+
+      return raced;
+    }
+  }
+
+  async resolveIdentityBinding(lookup: IdentityBindingLookup): Promise<IdentityBindingRecord | null> {
+    const normalizedLookup = normalizeIdentityBindingLookup(lookup);
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM ${this.tables.identityBindings}
+        WHERE source = $1
+          AND connector_key = $2
+          AND external_actor_id = $3
+      `,
+      [normalizedLookup.source, normalizedLookup.connectorKey, normalizedLookup.externalActorId],
+    );
+
+    const row = result.rows[0];
+    return row ? parseIdentityBindingRow(row as Record<string, unknown>) : null;
+  }
+
+  async listIdentityBindings(identityId: string): Promise<readonly IdentityBindingRecord[]> {
+    await this.getIdentity(identityId);
+
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM ${this.tables.identityBindings}
+        WHERE identity_id = $1
+        ORDER BY created_at ASC
+      `,
+      [identityId],
+    );
+
+    return result.rows.map((row) => parseIdentityBindingRow(row as Record<string, unknown>));
+  }
+
+  async deleteIdentityBinding(lookup: IdentityBindingLookup): Promise<boolean> {
+    const normalizedLookup = normalizeIdentityBindingLookup(lookup);
+    const result = await this.pool.query(
+      `
+        DELETE FROM ${this.tables.identityBindings}
+        WHERE source = $1
+          AND connector_key = $2
+          AND external_actor_id = $3
+      `,
+      [normalizedLookup.source, normalizedLookup.connectorKey, normalizedLookup.externalActorId],
+    );
+
+    return (result.rowCount ?? 0) > 0;
   }
 }
