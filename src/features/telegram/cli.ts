@@ -2,22 +2,28 @@ import process from "node:process";
 import path from "node:path";
 
 import { Command, InvalidArgumentError } from "commander";
+import { Bot } from "grammy";
 
 import type { ProviderName } from "../agent-core/types.js";
+import { PostgresIdentityStore, createDefaultIdentityInput } from "../identity/index.js";
 import { parseIdentityHandle } from "../identity/cli.js";
+import { createPandaPool, requirePandaDatabaseUrl } from "../panda/runtime.js";
 import { resolveDefaultPandaModel, resolveDefaultPandaProvider } from "../panda/provider-defaults.js";
-import { requireTelegramBotToken, resolveTelegramMediaDir } from "./config.js";
+import { requireTelegramBotToken, resolveTelegramMediaDir, TELEGRAM_SOURCE } from "./config.js";
 import { TelegramService } from "./service.js";
 
-interface TelegramBaseCliOptions {
+interface TelegramIdentityCliOptions {
+  dbUrl?: string;
+}
+
+interface TelegramRunCliOptions extends TelegramIdentityCliOptions {
   provider?: ProviderName;
   model?: string;
   cwd?: string;
-  dbUrl?: string;
   readOnlyDbUrl?: string;
 }
 
-interface TelegramPairCliOptions extends TelegramBaseCliOptions {
+interface TelegramPairCliOptions extends TelegramIdentityCliOptions {
   identity: string;
   actor: string;
 }
@@ -31,7 +37,39 @@ function parseTelegramActorId(value: string): string {
   return trimmed;
 }
 
-function createTelegramService(options: TelegramBaseCliOptions = {}): TelegramService {
+async function resolveTelegramBotIdentity(): Promise<{
+  connectorKey: string;
+  id: string;
+  username?: string;
+}> {
+  const bot = new Bot(requireTelegramBotToken());
+  const me = await bot.api.getMe();
+  const id = String(me.id);
+  return {
+    connectorKey: id,
+    id,
+    username: me.username ?? undefined,
+  };
+}
+
+async function withTelegramIdentityStore<T>(
+  options: TelegramIdentityCliOptions,
+  fn: (store: PostgresIdentityStore) => Promise<T>,
+): Promise<T> {
+  const pool = createPandaPool(requirePandaDatabaseUrl(options.dbUrl));
+  const store = new PostgresIdentityStore({
+    pool,
+  });
+
+  try {
+    await store.ensureSchema();
+    return await fn(store);
+  } finally {
+    await pool.end();
+  }
+}
+
+function createTelegramRunService(options: TelegramRunCliOptions = {}): TelegramService {
   const provider = options.provider ?? resolveDefaultPandaProvider();
   const model = options.model ?? resolveDefaultPandaModel(provider);
 
@@ -48,28 +86,35 @@ function createTelegramService(options: TelegramBaseCliOptions = {}): TelegramSe
   });
 }
 
-export async function telegramWhoamiCommand(options: TelegramBaseCliOptions = {}): Promise<void> {
-  const service = createTelegramService(options);
-
-  try {
-    const me = await service.whoami();
-    process.stdout.write(
-      [
-        `Telegram bot ${me.username ?? me.id}`,
-        `id ${me.id}`,
-        `connector ${me.connectorKey}`,
-      ].join("\n") + "\n",
-    );
-  } finally {
-    await service.stop();
-  }
+export async function telegramWhoamiCommand(): Promise<void> {
+  const me = await resolveTelegramBotIdentity();
+  process.stdout.write(
+    [
+      `Telegram bot ${me.username ?? me.id}`,
+      `id ${me.id}`,
+      `connector ${me.connectorKey}`,
+    ].join("\n") + "\n",
+  );
 }
 
 export async function telegramPairCommand(options: TelegramPairCliOptions): Promise<void> {
-  const service = createTelegramService(options);
+  const botIdentity = await resolveTelegramBotIdentity();
+  const defaultIdentity = createDefaultIdentityInput();
 
-  try {
-    const binding = await service.pair(options.identity, options.actor);
+  await withTelegramIdentityStore(options, async (store) => {
+    const identity = options.identity === defaultIdentity.handle
+      ? await store.ensureIdentity(defaultIdentity)
+      : await store.getIdentityByHandle(options.identity);
+    const binding = await store.ensureIdentityBinding({
+      source: TELEGRAM_SOURCE,
+      connectorKey: botIdentity.connectorKey,
+      externalActorId: options.actor,
+      identityId: identity.id,
+      metadata: {
+        pairedVia: "telegram-cli",
+      },
+    });
+
     process.stdout.write(
       [
         `Paired Telegram actor ${binding.externalActorId}.`,
@@ -77,13 +122,11 @@ export async function telegramPairCommand(options: TelegramPairCliOptions): Prom
         `connector ${binding.connectorKey}`,
       ].join("\n") + "\n",
     );
-  } finally {
-    await service.stop();
-  }
+  });
 }
 
-export async function telegramRunCommand(options: TelegramBaseCliOptions): Promise<void> {
-  const service = createTelegramService(options);
+export async function telegramRunCommand(options: TelegramRunCliOptions): Promise<void> {
+  const service = createTelegramRunService(options);
 
   const shutdown = async () => {
     await service.stop();
@@ -115,10 +158,8 @@ export function registerTelegramCommands(program: Command, parseCliProvider: (va
   telegramProgram
     .command("whoami")
     .description("Show the Telegram bot identity and connector key")
-    .option("--db-url <url>", "Postgres connection string for thread persistence")
-    .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
-    .action((options: TelegramBaseCliOptions) => {
-      return telegramWhoamiCommand(options);
+    .action(() => {
+      return telegramWhoamiCommand();
     });
 
   telegramProgram
@@ -127,7 +168,6 @@ export function registerTelegramCommands(program: Command, parseCliProvider: (va
     .requiredOption("--identity <handle>", "Identity handle to pair", parseIdentityHandle)
     .requiredOption("--actor <telegramUserId>", "Telegram user id to pair", parseTelegramActorId)
     .option("--db-url <url>", "Postgres connection string for thread persistence")
-    .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
     .action((options: TelegramPairCliOptions) => {
       return telegramPairCommand(options);
     });
@@ -144,7 +184,7 @@ export function registerTelegramCommands(program: Command, parseCliProvider: (va
     .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
     .option("--db-url <url>", "Postgres connection string for thread persistence")
     .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
-    .action((options: TelegramBaseCliOptions) => {
+    .action((options: TelegramRunCliOptions) => {
       return telegramRunCommand(options);
     });
 }

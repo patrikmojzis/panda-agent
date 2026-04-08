@@ -276,7 +276,6 @@ Identity-specific implementation now lives in:
 - [src/features/identity/types.ts](/Users/patrikmojzis/Projects/panda/src/features/identity/types.ts)
 - [src/features/identity/store.ts](/Users/patrikmojzis/Projects/panda/src/features/identity/store.ts)
 - [src/features/identity/postgres.ts](/Users/patrikmojzis/Projects/panda/src/features/identity/postgres.ts)
-- [src/features/identity/runtime.ts](/Users/patrikmojzis/Projects/panda/src/features/identity/runtime.ts)
 - [src/features/identity/cli.ts](/Users/patrikmojzis/Projects/panda/src/features/identity/cli.ts)
 
 Thread/runtime integration still lives in:

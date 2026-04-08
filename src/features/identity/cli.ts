@@ -3,7 +3,8 @@ import process from "node:process";
 
 import { Command, InvalidArgumentError } from "commander";
 
-import { createIdentityRuntime } from "./runtime.js";
+import { createPandaPool, requirePandaDatabaseUrl } from "../panda/runtime.js";
+import { PostgresIdentityStore } from "./postgres.js";
 import { normalizeIdentityHandle } from "./types.js";
 
 interface IdentityCliOptions {
@@ -14,18 +15,20 @@ interface CreateIdentityCliOptions extends IdentityCliOptions {
   name?: string;
 }
 
-async function withIdentityRuntime<T>(
+async function withIdentityStore<T>(
   options: IdentityCliOptions,
-  fn: (runtime: Awaited<ReturnType<typeof createIdentityRuntime>>) => Promise<T>,
+  fn: (store: PostgresIdentityStore) => Promise<T>,
 ): Promise<T> {
-  const runtime = await createIdentityRuntime({
-    dbUrl: options.dbUrl,
+  const pool = createPandaPool(requirePandaDatabaseUrl(options.dbUrl));
+  const store = new PostgresIdentityStore({
+    pool,
   });
 
   try {
-    return await fn(runtime);
+    await store.ensureSchema();
+    return await fn(store);
   } finally {
-    await runtime.close();
+    await pool.end();
   }
 }
 
@@ -42,8 +45,8 @@ export function parseIdentityHandle(value: string): string {
 }
 
 async function listIdentitiesCommand(options: IdentityCliOptions): Promise<void> {
-  await withIdentityRuntime(options, async (runtime) => {
-    const identities = await runtime.store.listIdentities();
+  await withIdentityStore(options, async (store) => {
+    const identities = await store.listIdentities();
 
     if (identities.length === 0) {
       process.stdout.write("No identities yet.\n");
@@ -65,8 +68,8 @@ async function createIdentityCommand(
   handle: string,
   options: CreateIdentityCliOptions,
 ): Promise<void> {
-  await withIdentityRuntime(options, async (runtime) => {
-    const identity = await runtime.store.createIdentity({
+  await withIdentityStore(options, async (store) => {
+    const identity = await store.createIdentity({
       id: randomUUID(),
       handle,
       displayName: options.name?.trim() || handle,

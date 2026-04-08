@@ -13,9 +13,3 @@ export {
   normalizeIdentityHandle,
 } from "./types.js";
 export { PostgresIdentityStore, type PostgresIdentityStoreOptions } from "./postgres.js";
-export {
-  createIdentityRuntime,
-  requireIdentityDatabaseUrl,
-  type IdentityRuntime,
-  type IdentityRuntimeOptions,
-} from "./runtime.js";

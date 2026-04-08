@@ -2,8 +2,8 @@ import type { Pool } from "pg";
 
 import { buildIdentityTableNames } from "../identity/postgres-shared.js";
 import {
+  buildPrefixedRelationNames,
   buildThreadRuntimeTableNames,
-  validateIdentifier,
   quoteIdentifier,
 } from "./postgres-shared.js";
 
@@ -36,24 +36,30 @@ export function readDatabaseUsername(databaseUrl: string): string | null {
   }
 }
 
-function buildReadonlyChatViewNames(prefix: string): ReadonlyChatViewNames {
-  const safePrefix = validateIdentifier(prefix);
-  return {
-    threads: quoteIdentifier(`${safePrefix}_threads`),
-    messages: quoteIdentifier(`${safePrefix}_messages`),
-    messagesRaw: quoteIdentifier(`${safePrefix}_messages_raw`),
-    toolResults: quoteIdentifier(`${safePrefix}_tool_results`),
-    inputs: quoteIdentifier(`${safePrefix}_inputs`),
-    runs: quoteIdentifier(`${safePrefix}_runs`),
-  };
-}
-
 export async function ensureReadonlyChatQuerySchema(
   options: EnsureReadonlyChatQuerySchemaOptions,
 ): Promise<ReadonlyChatViewNames> {
   const tables = buildThreadRuntimeTableNames(options.tablePrefix ?? "thread_runtime");
   const identityTables = buildIdentityTableNames(options.tablePrefix ?? "thread_runtime");
-  const views = buildReadonlyChatViewNames(options.viewPrefix ?? "panda");
+  const { threads, messages, messagesRaw, toolResults, inputs, runs } = buildPrefixedRelationNames(
+    options.viewPrefix ?? "panda",
+    {
+      threads: "threads",
+      messages: "messages",
+      messagesRaw: "messages_raw",
+      toolResults: "tool_results",
+      inputs: "inputs",
+      runs: "runs",
+    },
+  );
+  const views: ReadonlyChatViewNames = {
+    threads,
+    messages,
+    messagesRaw,
+    toolResults,
+    inputs,
+    runs,
+  };
   const messageTextSql = `
     CASE
       WHEN jsonb_typeof(m.message->'content') = 'string' THEN m.message->>'content'

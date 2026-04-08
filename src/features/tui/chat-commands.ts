@@ -1,4 +1,5 @@
 import { findSlashCommand } from "./commands.js";
+import { NEWLINE_HELP_LINES } from "./input.js";
 
 interface ChatCommandHandlers {
   help(): Promise<boolean> | boolean;
@@ -25,15 +26,14 @@ export function buildChatHelpText(thinkingCommandUsage: string): string {
     "/compact [instructions] summarizes older context and keeps recent turns verbatim.",
     "/new starts a fresh stored thread.",
     "/resume <thread-id> switches to another stored thread.",
-    "/thread shows the current thread id and storage mode.",
+    "/thread shows the current thread id and active session settings.",
     "/threads opens the recent-thread picker.",
     "/abort aborts the active run.",
     "/exit leaves the TUI.",
     "",
     "Keys:",
     "Enter sends the current prompt.",
-    "\\ + Enter inserts a newline.",
-    "Shift-Enter or Meta-Enter also inserts a newline when your terminal exposes it.",
+    ...NEWLINE_HELP_LINES,
     "Ctrl-C stops the active run and exits Panda.",
     "Tab cycles slash command suggestions and Enter completes them.",
     "Ctrl-R opens reverse history search.",

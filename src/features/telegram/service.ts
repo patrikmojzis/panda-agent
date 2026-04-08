@@ -7,7 +7,7 @@ import { stringToUserMessage, type ProviderName } from "../agent-core/index.js";
 import { ChannelOutboundDispatcher } from "../channels/core/index.js";
 import type { JsonObject } from "../agent-core/types.js";
 import type { MediaDescriptor } from "../channels/core/types.js";
-import { createDefaultIdentityInput, type IdentityBindingRecord } from "../identity/types.js";
+import type { IdentityBindingRecord } from "../identity/types.js";
 import type { ThreadRecord } from "../thread-runtime/types.js";
 import {
   TELEGRAM_POLL_TIMEOUT_SECONDS,
@@ -75,8 +75,6 @@ function serializeMediaDescriptor(descriptor: MediaDescriptor): JsonObject {
 export class TelegramService {
   private readonly bot: Bot<TelegramContext>;
   private readonly token: string;
-  private readonly provider?: ProviderName;
-  private readonly model?: string;
   private readonly defaultIdentityHandle: string;
   private readonly runtimeOptions: Omit<TelegramServiceOptions, "token" | "defaultIdentityHandle">;
   private runtimePromise: Promise<TelegramRuntimeServices> | null = null;
@@ -90,8 +88,6 @@ export class TelegramService {
 
   constructor(options: TelegramServiceOptions) {
     this.token = options.token;
-    this.provider = options.provider;
-    this.model = options.model;
     this.defaultIdentityHandle = options.defaultIdentityHandle ?? "local";
     this.runtimeOptions = {
       dataDir: options.dataDir,
@@ -197,24 +193,6 @@ export class TelegramService {
     };
   }
 
-  async pair(identityHandle: string, actorId: string): Promise<IdentityBindingRecord> {
-    const { runtime, connectorKey } = await this.ensureInitialized();
-    const defaultIdentity = createDefaultIdentityInput();
-    const identity = identityHandle === this.defaultIdentityHandle
-      ? await runtime.identityStore.ensureIdentity(defaultIdentity)
-      : await runtime.identityStore.getIdentityByHandle(identityHandle);
-
-    return runtime.identityStore.ensureIdentityBinding({
-      source: TELEGRAM_SOURCE,
-      connectorKey,
-      externalActorId: actorId,
-      identityId: identity.id,
-      metadata: {
-        pairedVia: "telegram-cli",
-      },
-    });
-  }
-
   async run(): Promise<void> {
     try {
       const { runtime, connectorKey, botUsername } = await this.ensureInitialized();
@@ -226,8 +204,8 @@ export class TelegramService {
       this.log("run_started", {
         connectorKey,
         botUsername,
-        provider: this.provider ?? null,
-        model: this.model ?? null,
+        provider: this.runtimeOptions.provider ?? null,
+        model: this.runtimeOptions.model ?? null,
         cwd: this.runtimeOptions.cwd,
         dataDir: this.runtimeOptions.dataDir,
       });
@@ -576,8 +554,8 @@ export class TelegramService {
 
     const thread = await runtime.createThread({
       identityId: latestBinding.identityId,
-      provider: this.provider,
-      model: this.model,
+      provider: this.runtimeOptions.provider,
+      model: this.runtimeOptions.model,
       context: {
         source: TELEGRAM_SOURCE,
       },
@@ -627,8 +605,8 @@ export class TelegramService {
 
     const thread = await runtime.createThread({
       identityId: binding.identityId,
-      provider: this.provider,
-      model: this.model,
+      provider: this.runtimeOptions.provider,
+      model: this.runtimeOptions.model,
       context: {
         source: TELEGRAM_SOURCE,
         chatId: String(chatId),

@@ -4,8 +4,10 @@ import { PiAiRuntime, stringToUserMessage } from "../src/features/agent-core/ind
 import type { ThreadRunRecord } from "../src/features/thread-runtime/index.js";
 import * as markdown from "../src/features/tui/markdown.js";
 import { buildChatHelpText } from "../src/features/tui/chat-commands.js";
+import { buildChatViewModel, buildWelcomeTranscriptLines } from "../src/features/tui/chat-view.js";
 import * as tuiRuntime from "../src/features/tui/runtime.js";
 import type { ChatRuntimeServices } from "../src/features/tui/runtime.js";
+import { stripAnsi } from "../src/features/tui/theme.js";
 import { createComposerState, setComposerValue } from "../src/features/tui/composer.js";
 import { PandaChatApp, runChatCli } from "../src/features/tui/chat.js";
 
@@ -737,9 +739,69 @@ describe("buildChatHelpText", () => {
   it("documents reliable newline fallbacks", () => {
     const helpText = buildChatHelpText("/thinking <minimal|low|medium|high|xhigh|off>");
 
+    expect(helpText).toContain("/thread shows the current thread id and active session settings.");
+    expect(helpText).not.toContain("/thread shows the current thread id and storage mode.");
     expect(helpText).toContain("\\ + Enter inserts a newline.");
     expect(helpText).toContain("Shift-Enter or Meta-Enter also inserts a newline when your terminal exposes it.");
     expect(helpText).not.toContain("Ctrl-J inserts a newline.");
+  });
+});
+
+describe("buildWelcomeTranscriptLines", () => {
+  it("keeps the welcome key hints aligned with the composer policy", () => {
+    const welcome = buildWelcomeTranscriptLines({
+      width: 120,
+      providerName: "openai",
+      model: "gpt-5.1",
+      thinkingLabel: "off",
+      cwd: "/tmp/panda",
+    });
+    const text = welcome.map((line) => line.plain).join("\n");
+
+    expect(text).toContain("\\ + Enter insert a newline");
+    expect(text).toContain("Shift-Enter insert a newline when supported");
+    expect(text).not.toContain("Ctrl-J");
+  });
+});
+
+describe("buildChatViewModel", () => {
+  it("shows the shared newline hint in the footer", () => {
+    const view = buildChatViewModel({
+      terminalWidth: 120,
+      terminalRows: 30,
+      transcriptLines: [],
+      transcriptSearchActive: false,
+      transcriptSearchQuery: "",
+      transcriptSearchSelection: 0,
+      threadPickerActive: false,
+      historySearchActive: false,
+      historySearchQuery: "",
+      historySearchSelection: 0,
+      historyMatchCount: 0,
+      historyPreview: null,
+      notice: null,
+      slashContext: null,
+      slashCompletionIndex: 0,
+      followTranscript: true,
+      scrollTop: 0,
+      pendingLocalInputLines: [],
+      composerLayout: {
+        lines: [""],
+        cursorRow: 0,
+        cursorColumn: 1,
+      },
+      isRunning: false,
+      runStartedAt: 0,
+      currentThreadId: "thread-test",
+      providerName: "openai",
+      model: "gpt-5.1",
+      thinkingLabel: "off",
+      modeLabel: "compose",
+      cwd: "/tmp/panda",
+    });
+
+    expect(stripAnsi(view.infoLine.text)).toContain("\\ + Enter newline");
+    expect(stripAnsi(view.infoLine.text)).not.toContain("Ctrl-J");
   });
 });
 

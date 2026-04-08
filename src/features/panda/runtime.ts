@@ -1,7 +1,11 @@
 import { Pool, type PoolClient } from "pg";
 
+import { Agent } from "../agent-core/agent.js";
 import type { Tool } from "../agent-core/tool.js";
 import type { IdentityStore } from "../identity/store.js";
+import { buildPandaTools } from "./agent.js";
+import { DateTimeContext, EnvironmentContext } from "./contexts/index.js";
+import { PANDA_PROMPT } from "./prompts.js";
 import { PostgresReadonlyQueryTool } from "./tools/postgres-readonly-query-tool.js";
 import type { PandaSessionContext } from "./types.js";
 import {
@@ -52,6 +56,16 @@ export interface PandaRuntimeServices {
   close(): Promise<void>;
 }
 
+export interface CreatePandaThreadDefinitionOptions {
+  thread: ThreadRecord;
+  fallbackContext: Pick<PandaSessionContext, "cwd" | "locale" | "timezone" | "identityId" | "identityHandle">;
+  extraTools?: readonly Tool[];
+  extraContext?: Omit<
+    PandaSessionContext,
+    "cwd" | "locale" | "timezone" | "identityId" | "identityHandle" | "threadId" | "agentKey"
+  >;
+}
+
 function trimNonEmptyString(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
     return null;
@@ -99,6 +113,37 @@ export function resolveStoredPandaContext(
     timezone: typeof context.timezone === "string" ? context.timezone : fallback.timezone,
     identityId: typeof context.identityId === "string" ? context.identityId : fallback.identityId,
     identityHandle: typeof context.identityHandle === "string" ? context.identityHandle : fallback.identityHandle,
+  };
+}
+
+export function createPandaThreadDefinition(
+  options: CreatePandaThreadDefinitionOptions,
+): ResolvedThreadDefinition {
+  const context: PandaSessionContext = {
+    ...resolveStoredPandaContext(options.thread.context, options.fallbackContext),
+    threadId: options.thread.id,
+    agentKey: options.thread.agentKey,
+    identityId: options.fallbackContext.identityId,
+    identityHandle: options.fallbackContext.identityHandle,
+    ...options.extraContext,
+  };
+
+  return {
+    agent: new Agent({
+      name: options.thread.agentKey,
+      instructions: PANDA_PROMPT,
+      tools: buildPandaTools(options.extraTools),
+    }),
+    context,
+    llmContexts: [
+      new DateTimeContext({
+        locale: context.locale,
+        timeZone: context.timezone,
+      }),
+      new EnvironmentContext({
+        cwd: context.cwd,
+      }),
+    ],
   };
 }
 

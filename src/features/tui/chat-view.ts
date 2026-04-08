@@ -2,6 +2,10 @@ import path from "node:path";
 
 import type { SlashCompletionContext } from "./commands.js";
 import {
+  COMPOSER_NEWLINE_HINT,
+  WELCOME_NEWLINE_KEYS,
+} from "./input.js";
+import {
   clamp,
   formatDuration,
   padAnsiEnd,
@@ -94,7 +98,7 @@ const WELCOME_COMMANDS = [
 
 const WELCOME_KEYS = [
   ["Enter", "send your prompt"],
-  ["Ctrl-J", "insert a newline"],
+  ...WELCOME_NEWLINE_KEYS,
   ["Ctrl-C", "stop the active run and exit"],
   ["Tab", "complete slash commands"],
   ["Ctrl-R", "search input history"],
@@ -106,7 +110,6 @@ interface BuildWelcomeTranscriptLinesOptions {
   providerName: string;
   model: string;
   thinkingLabel: string;
-  storageMode: string;
   cwd: string;
 }
 
@@ -136,7 +139,6 @@ interface BuildChatViewModelOptions {
   providerName: string;
   model: string;
   thinkingLabel: string;
-  storageMode: string;
   modeLabel: string;
   cwd: string;
   now?: number;
@@ -283,7 +285,6 @@ function buildWelcomeIdentityLines(options: BuildWelcomeTranscriptLinesOptions, 
     ...buildWelcomeDetailLines("Provider", options.providerName, width),
     ...buildWelcomeDetailLines("Model", options.model, width),
     ...buildWelcomeDetailLines("Thinking", options.thinkingLabel, width),
-    ...buildWelcomeDetailLines("Storage", options.storageMode, width),
     ...buildWelcomeDetailLines("Path", homeRelativePath(options.cwd), width),
   ];
 }
@@ -460,9 +461,9 @@ function buildInfoLine(options: {
   }
 
   return {
-    text: theme.dim(
-      truncatePlainText(
-        `${options.scrollLabel} · Enter send · \\ + Enter newline · Tab complete · Ctrl-R history · Ctrl-F find · PgUp/PgDn scroll`,
+      text: theme.dim(
+        truncatePlainText(
+        `${options.scrollLabel} · Enter send · ${COMPOSER_NEWLINE_HINT} · Tab complete · Ctrl-R history · Ctrl-F find · PgUp/PgDn scroll`,
         options.width,
       ),
     ),
@@ -526,7 +527,6 @@ export function buildChatViewModel(options: BuildChatViewModelOptions): ViewMode
     options.providerName,
     options.model,
     `think ${options.thinkingLabel}`,
-    options.storageMode,
     options.modeLabel,
     runLabel,
     elapsedLabel,

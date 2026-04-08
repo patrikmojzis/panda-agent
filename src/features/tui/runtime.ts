@@ -2,16 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
 
-import { Agent } from "../agent-core/agent.js";
 import type { Tool } from "../agent-core/tool.js";
 import type { ProviderName } from "../agent-core/types.js";
-import { buildPandaTools } from "../panda/agent.js";
-import { DateTimeContext, EnvironmentContext } from "../panda/contexts/index.js";
-import { PANDA_PROMPT } from "../panda/prompts.js";
-import type { PandaSessionContext } from "../panda/types.js";
 import {
+  createPandaThreadDefinition,
   createPandaRuntime,
-  resolveStoredPandaContext,
 } from "../panda/runtime.js";
 import {
   createDefaultIdentityInput,
@@ -99,34 +94,15 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
         throw new Error("Chat runtime identity has not been initialized yet.");
       }
 
-      const context: PandaSessionContext = {
-        ...resolveStoredPandaContext(thread.context, {
+      return createPandaThreadDefinition({
+        thread,
+        fallbackContext: {
           ...fallbackContext,
           identityId: identity.id,
           identityHandle: identity.handle,
-        }),
-        threadId: thread.id,
-        agentKey: thread.agentKey,
-        identityId: identity.id,
-        identityHandle: identity.handle,
-      };
-      return {
-        agent: new Agent({
-          name: thread.agentKey,
-          instructions: PANDA_PROMPT,
-          tools: buildPandaTools(extraTools),
-        }),
-        context,
-        llmContexts: [
-          new DateTimeContext({
-            locale: context.locale ?? options.locale,
-            timeZone: context.timezone ?? options.timezone,
-          }),
-          new EnvironmentContext({
-            cwd: context.cwd ?? options.cwd,
-          }),
-        ],
-      };
+        },
+        extraTools,
+      });
     },
   });
 

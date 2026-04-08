@@ -2,17 +2,12 @@ import { randomUUID } from "node:crypto";
 
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
 
-import { Agent } from "../agent-core/agent.js";
 import type { ProviderName, JsonValue } from "../agent-core/types.js";
-import { buildPandaTools } from "../panda/agent.js";
-import { DateTimeContext, EnvironmentContext } from "../panda/contexts/index.js";
-import { PANDA_PROMPT } from "../panda/prompts.js";
 import {
+  createPandaThreadDefinition,
   createPandaRuntime,
-  resolveStoredPandaContext,
   type PandaRuntimeServices,
 } from "../panda/runtime.js";
-import type { PandaSessionContext } from "../panda/types.js";
 import { PostgresChannelCursorStore } from "../channel-cursors/index.js";
 import { type ChannelOutboundDispatcher, FileSystemMediaStore } from "../channels/core/index.js";
 import { PostgresConversationThreadStore } from "../conversation-threads/index.js";
@@ -81,39 +76,20 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
     tablePrefix: options.tablePrefix,
     resolveDefinition: async (thread, { identityStore, extraTools }) => {
       const identity = await identityStore.getIdentity(thread.identityId);
-      const context: PandaSessionContext = {
-        ...resolveStoredPandaContext(thread.context, {
+      const identityHandle = resolveDefaultIdentityHandle(identity);
+
+      return createPandaThreadDefinition({
+        thread,
+        fallbackContext: {
           ...fallbackContext,
           identityId: identity.id,
-          identityHandle: resolveDefaultIdentityHandle(identity),
-        }),
-        threadId: thread.id,
-        agentKey: thread.agentKey,
-        identityId: identity.id,
-        identityHandle: resolveDefaultIdentityHandle(identity),
-        outboundDispatcher: options.outboundDispatcher,
-      };
-
-      return {
-        agent: new Agent({
-          name: thread.agentKey,
-          instructions: PANDA_PROMPT,
-          tools: buildPandaTools([
-            ...extraTools,
-            ...(options.outboundDispatcher ? [new OutboundTool<PandaSessionContext>()] : []),
-          ]),
-        }),
-        context,
-        llmContexts: [
-          new DateTimeContext({
-            locale: context.locale ?? options.locale,
-            timeZone: context.timezone ?? options.timezone,
-          }),
-          new EnvironmentContext({
-            cwd: context.cwd ?? options.cwd,
-          }),
-        ],
-      };
+          identityHandle,
+        },
+        extraTools: options.outboundDispatcher ? [...extraTools, new OutboundTool()] : extraTools,
+        extraContext: {
+          outboundDispatcher: options.outboundDispatcher,
+        },
+      });
     },
   });
 
@@ -143,8 +119,9 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
   }
 
   const createThread = async (createOptions: CreateTelegramThreadOptions): Promise<ThreadRecord> => {
-    const identity = createOptions.identityId === createDefaultIdentityInput().id
-      ? await pandaRuntime.identityStore.ensureIdentity(createDefaultIdentityInput())
+    const defaultIdentity = createDefaultIdentityInput();
+    const identity = createOptions.identityId === defaultIdentity.id
+      ? await pandaRuntime.identityStore.ensureIdentity(defaultIdentity)
       : await pandaRuntime.identityStore.getIdentity(createOptions.identityId);
 
     return pandaRuntime.store.createThread({
