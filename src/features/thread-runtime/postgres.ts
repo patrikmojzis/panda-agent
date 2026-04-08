@@ -110,6 +110,7 @@ function parseInputRow(row: Record<string, unknown>): ThreadInputRecord {
     order: toOrderNumber(row.input_order),
     deliveryMode: String(row.delivery_mode) as ThreadInputDeliveryMode,
     message: row.message as ThreadInputRecord["message"],
+    metadata: row.metadata === null ? undefined : (row.metadata as ThreadInputRecord["metadata"]),
     source: String(row.source),
     channelId: row.channel_id === null ? undefined : String(row.channel_id),
     externalMessageId: row.external_message_id === null ? undefined : String(row.external_message_id),
@@ -210,6 +211,9 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         message JSONB NOT NULL
       );
 
+      ALTER TABLE ${this.tables.messages}
+      ADD COLUMN IF NOT EXISTS metadata JSONB;
+
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_messages_thread_sequence_idx`)}
       ON ${this.tables.messages} (thread_id, sequence);
 
@@ -227,8 +231,12 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         actor_id TEXT,
         created_at TIMESTAMPTZ NOT NULL,
         applied_at TIMESTAMPTZ,
+        metadata JSONB,
         message JSONB NOT NULL
       );
+
+      ALTER TABLE ${this.tables.inputs}
+      ADD COLUMN IF NOT EXISTS metadata JSONB;
 
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_inputs_thread_order_idx`)}
       ON ${this.tables.inputs} (thread_id, applied_at, input_order);
@@ -555,6 +563,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
           external_message_id,
           actor_id,
           created_at,
+          metadata,
           message
         ) VALUES (
           $1,
@@ -565,7 +574,8 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
           $6,
           $7,
           $8,
-          $9::jsonb
+          $9::jsonb,
+          $10::jsonb
         )
         RETURNING *
       `, [
@@ -577,6 +587,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         payload.externalMessageId ?? null,
         payload.actorId ?? null,
         createdAt,
+        toJson(payload.metadata),
         toJson(payload.message),
       ]);
     } catch (error) {
@@ -640,6 +651,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
             external_message_id,
             actor_id,
             created_at,
+            metadata,
             message
           ) VALUES (
             $1,
@@ -650,7 +662,8 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
             $5,
             $6,
             $7,
-            $8::jsonb
+            $8::jsonb,
+            $9::jsonb
           )
           RETURNING *
         `, [
@@ -661,6 +674,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
           row.external_message_id ?? null,
           row.actor_id ?? null,
           row.created_at,
+          toJson(row.metadata ?? null),
           toJson(row.message),
         ]);
 

@@ -100,6 +100,14 @@ describe("PostgresThreadRuntimeStore", () => {
       source: "telegram",
       channelId: "chat-1",
       externalMessageId: "telegram-1",
+      metadata: {
+        media: [
+          {
+            id: "media-1",
+            localPath: "/tmp/panda/photo.jpg",
+          },
+        ],
+      },
     });
     expect(telegramInput.inserted).toBe(true);
 
@@ -131,6 +139,14 @@ describe("PostgresThreadRuntimeStore", () => {
       "telegram",
       "tui",
     ]);
+    expect((await store.listPendingInputs("pg-thread"))[0]?.metadata).toEqual({
+      media: [
+        {
+          id: "media-1",
+          localPath: "/tmp/panda/photo.jpg",
+        },
+      ],
+    });
     expect((await store.listPendingInputs("pg-thread")).map((input) => input.deliveryMode)).toEqual([
       "wake",
       "wake",
@@ -150,6 +166,14 @@ describe("PostgresThreadRuntimeStore", () => {
       "telegram",
       "tui",
     ]);
+    expect(applied[0]?.metadata).toEqual({
+      media: [
+        {
+          id: "media-1",
+          localPath: "/tmp/panda/photo.jpg",
+        },
+      ],
+    });
     expect(await store.hasPendingInputs("pg-thread")).toBe(false);
     expect(await store.listPendingInputs("pg-thread")).toHaveLength(0);
 
@@ -187,6 +211,14 @@ describe("PostgresThreadRuntimeStore", () => {
       "tui",
       "assistant",
     ]);
+    expect((await store.loadTranscript("pg-thread"))[0]?.metadata).toEqual({
+      media: [
+        {
+          id: "media-1",
+          localPath: "/tmp/panda/photo.jpg",
+        },
+      ],
+    });
     expect((await store.loadTranscript("pg-thread"))[3]?.metadata).toEqual({
       kind: "assistant-debug",
     });

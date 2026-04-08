@@ -900,6 +900,65 @@ describe("Thread runtime stores", () => {
     ]);
   });
 
+  it("persists input metadata from pending inputs into the transcript", async () => {
+    const store = new InMemoryThreadRuntimeStore();
+    await store.createThread({ id: "metadata-thread", agentKey: "panda" });
+
+    await store.enqueueInput("metadata-thread", {
+      message: stringToUserMessage("photo attached"),
+      source: "telegram",
+      channelId: "chat-1",
+      externalMessageId: "message-1",
+      metadata: {
+        media: [
+          {
+            id: "media-1",
+            localPath: "/tmp/panda/photo.jpg",
+          },
+        ],
+      },
+    });
+
+    await expect(store.listPendingInputs("metadata-thread")).resolves.toEqual([
+      expect.objectContaining({
+        metadata: {
+          media: [
+            {
+              id: "media-1",
+              localPath: "/tmp/panda/photo.jpg",
+            },
+          ],
+        },
+      }),
+    ]);
+
+    const applied = await store.applyPendingInputs("metadata-thread");
+    expect(applied).toEqual([
+      expect.objectContaining({
+        metadata: {
+          media: [
+            {
+              id: "media-1",
+              localPath: "/tmp/panda/photo.jpg",
+            },
+          ],
+        },
+      }),
+    ]);
+    await expect(store.loadTranscript("metadata-thread")).resolves.toEqual([
+      expect.objectContaining({
+        metadata: {
+          media: [
+            {
+              id: "media-1",
+              localPath: "/tmp/panda/photo.jpg",
+            },
+          ],
+        },
+      }),
+    ]);
+  });
+
   it("summarizes threads without loading transcripts per caller", async () => {
     const store = new InMemoryThreadRuntimeStore();
     await store.createThread({ id: "summary-a", agentKey: "panda" });

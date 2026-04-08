@@ -118,12 +118,14 @@ export interface ThreadInputRecord extends ThreadMessageMetadata {
   order: number;
   deliveryMode: ThreadInputDeliveryMode;
   message: Message;
+  metadata?: JsonValue;
   createdAt: number;
   appliedAt?: number;
 }
 
 export interface ThreadInputPayload extends ThreadMessageMetadata {
   message: Message;
+  metadata?: JsonValue;
 }
 
 export interface ThreadRuntimeMessagePayload extends ThreadMessageMetadata {
