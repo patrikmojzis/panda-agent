@@ -1,19 +1,42 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { BashTool, DateTimeContext, EnvironmentContext, MediaTool, buildPandaPrompt } from "../src/index.js";
+import {
+  BashTool,
+  BraveSearchTool,
+  DateTimeContext,
+  EnvironmentContext,
+  MediaTool,
+  buildPandaPrompt,
+} from "../src/index.js";
 import { buildPandaTools } from "../src/features/panda/agent.js";
 
 describe("Panda feature surface", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("builds the Panda prompt and default tools", () => {
+    vi.stubEnv("BRAVE_API_KEY", "");
     const tools = buildPandaTools();
 
     expect(buildPandaPrompt()).toContain("Your name is Panda.");
+    expect(buildPandaPrompt()).toContain("## Channels & Inner Monologue");
+    expect(buildPandaPrompt()).toContain("No outbound call = no message delivered.");
     expect(tools).toHaveLength(2);
     expect(tools[0]).toBeInstanceOf(BashTool);
     expect(tools[1]).toBeInstanceOf(MediaTool);
   });
 
+  it("adds Brave search when BRAVE_API_KEY is configured", () => {
+    vi.stubEnv("BRAVE_API_KEY", "BSA-test-key");
+    const tools = buildPandaTools();
+
+    expect(tools).toHaveLength(3);
+    expect(tools[2]).toBeInstanceOf(BraveSearchTool);
+  });
+
   it("appends extra tools without adding hidden defaults", () => {
+    vi.stubEnv("BRAVE_API_KEY", "");
     const extraTool = { name: "extra-tool" } as any;
     const tools = buildPandaTools([extraTool]);
 

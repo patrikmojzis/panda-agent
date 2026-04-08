@@ -74,6 +74,38 @@ function withCursor(state: ComposerState, cursor: number): ComposerState {
   };
 }
 
+function isWhitespace(value: string | undefined): boolean {
+  return value === undefined || /\s/.test(value);
+}
+
+function findPreviousWordStart(value: string, cursor: number): number {
+  let nextCursor = clamp(cursor, 0, value.length);
+
+  while (nextCursor > 0 && isWhitespace(value[nextCursor - 1])) {
+    nextCursor -= 1;
+  }
+
+  while (nextCursor > 0 && !isWhitespace(value[nextCursor - 1])) {
+    nextCursor -= 1;
+  }
+
+  return nextCursor;
+}
+
+function findNextWordEnd(value: string, cursor: number): number {
+  let nextCursor = clamp(cursor, 0, value.length);
+
+  while (nextCursor < value.length && isWhitespace(value[nextCursor])) {
+    nextCursor += 1;
+  }
+
+  while (nextCursor < value.length && !isWhitespace(value[nextCursor])) {
+    nextCursor += 1;
+  }
+
+  return nextCursor;
+}
+
 export function createComposerState(value = ""): ComposerState {
   return {
     value,
@@ -138,6 +170,14 @@ export function moveCursorRight(state: ComposerState): ComposerState {
   return withCursor(state, state.cursor + 1);
 }
 
+export function moveCursorWordLeft(state: ComposerState): ComposerState {
+  return withCursor(state, findPreviousWordStart(state.value, state.cursor));
+}
+
+export function moveCursorWordRight(state: ComposerState): ComposerState {
+  return withCursor(state, findNextWordEnd(state.value, state.cursor));
+}
+
 export function moveCursorLineStart(state: ComposerState): ComposerState {
   const starts = lineStarts(state.value);
   const currentLine = findLineIndex(starts, state.cursor);
@@ -157,4 +197,17 @@ export function moveCursorUp(state: ComposerState): ComposerState {
 
 export function moveCursorDown(state: ComposerState): ComposerState {
   return moveVertical(state, 1);
+}
+
+export function deleteWordBackward(state: ComposerState): ComposerState {
+  const nextCursor = findPreviousWordStart(state.value, state.cursor);
+  if (nextCursor === state.cursor) {
+    return state;
+  }
+
+  return {
+    value: state.value.slice(0, nextCursor) + state.value.slice(state.cursor),
+    cursor: nextCursor,
+    preferredColumn: null,
+  };
 }

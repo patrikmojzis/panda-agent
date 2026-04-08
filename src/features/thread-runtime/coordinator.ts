@@ -12,7 +12,7 @@ import type {
   ThreadRunRecord,
 } from "./types.js";
 import type { ThreadRuntimeStore } from "./store.js";
-import { projectTranscriptForRun } from "./compact.js";
+import { projectTranscriptForRun } from "./compaction.js";
 
 export type ThreadWakeMode = "wake" | "queue";
 const ABORT_POLL_MS = 250;
@@ -71,6 +71,56 @@ function runtimeSourceForMessage(message: Message): string {
   }
 
   return message.role;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function buildCurrentInputContext(
+  messages: readonly ThreadMessageRecord[],
+): {
+  source: string;
+  channelId?: string;
+  externalMessageId?: string;
+  actorId?: string;
+  metadata?: ThreadMessageRecord["metadata"];
+} | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const entry = messages[index];
+    if (!entry || entry.origin !== "input") {
+      continue;
+    }
+
+    return {
+      source: entry.source,
+      channelId: entry.channelId,
+      externalMessageId: entry.externalMessageId,
+      actorId: entry.actorId,
+      metadata: entry.metadata,
+    };
+  }
+
+  return undefined;
+}
+
+function buildRunContextValue(
+  baseContext: unknown,
+  messages: readonly ThreadMessageRecord[],
+): unknown {
+  const currentInput = buildCurrentInputContext(messages);
+  if (!currentInput) {
+    return baseContext;
+  }
+
+  if (!isRecord(baseContext)) {
+    return { currentInput };
+  }
+
+  return {
+    ...baseContext,
+    currentInput,
+  };
 }
 
 export class InMemoryThreadLeaseManager implements ThreadLeaseManager {
@@ -283,7 +333,7 @@ export class ThreadRuntimeCoordinator {
       messages: messages.map((entry) => entry.message),
       systemPrompt: definition.systemPrompt ?? thread.systemPrompt,
       maxTurns: definition.maxTurns ?? thread.maxTurns,
-      context: definition.context ?? thread.context,
+      context: buildRunContextValue(definition.context ?? thread.context, messages),
       llmContexts: definition.llmContexts,
       hooks: definition.hooks,
       maxInputTokens: definition.maxInputTokens ?? thread.maxInputTokens,

@@ -1,19 +1,13 @@
 import type { Message } from "@mariozechner/pi-ai";
 
-import {
-  buildCompactSummaryMessage,
-  COMPACT_SUMMARY_PREFIX,
-  estimateTokensFromString,
-  formatToolCallFallback,
-  formatToolResultFallback,
-  stringToUserMessage,
-  stripCompactSummaryPrefix,
-  type JsonObject,
-  type JsonValue,
-} from "../agent-core/index.js";
+import { formatToolCallFallback, formatToolResultFallback } from "../agent-core/index.js";
+import { buildCompactSummaryMessage } from "../agent-core/helpers/compact.js";
+import { estimateTokensFromString } from "../agent-core/helpers/token-count.js";
+import { stringToUserMessage } from "../agent-core/helpers/input.js";
+import { stripCompactSummaryPrefix } from "../agent-core/helpers/compact.js";
+import type { JsonObject, JsonValue } from "../agent-core/types.js";
 import type { ThreadMessageRecord } from "./types.js";
 
-export { COMPACT_SUMMARY_PREFIX };
 export const DEFAULT_COMPACT_PRESERVED_USER_TURNS = 3;
 const TOOL_TEXT_LIMIT = 4_000;
 

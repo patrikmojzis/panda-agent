@@ -6,6 +6,11 @@ export interface OutboundRoute {
   externalConversationId: string;
 }
 
+export interface OutboundTarget extends OutboundRoute {
+  externalActorId?: string;
+  replyToMessageId?: string;
+}
+
 export interface MediaDescriptor {
   id: string;
   source: string;
@@ -25,4 +30,46 @@ export interface InboundEnvelope extends OutboundRoute {
   media: readonly MediaDescriptor[];
   raw?: JsonValue;
   metadata?: JsonValue;
+}
+
+export interface OutboundTextItem {
+  type: "text";
+  text: string;
+}
+
+export interface OutboundImageItem {
+  type: "image";
+  path: string;
+  caption?: string;
+}
+
+export interface OutboundFileItem {
+  type: "file";
+  path: string;
+  filename?: string;
+  caption?: string;
+  mimeType?: string;
+}
+
+export type OutboundItem =
+  | OutboundTextItem
+  | OutboundImageItem
+  | OutboundFileItem;
+
+export interface OutboundRequest {
+  channel: string;
+  target: OutboundTarget;
+  items: readonly OutboundItem[];
+}
+
+export interface OutboundSentItem {
+  type: OutboundItem["type"];
+  externalMessageId: string;
+}
+
+export interface OutboundResult {
+  ok: true;
+  channel: string;
+  target: OutboundTarget;
+  sent: readonly OutboundSentItem[];
 }

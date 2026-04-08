@@ -9,6 +9,8 @@ export interface ThreadRuntimeTableNames extends ThreadRuntimeRelationNames {
   prefix: string;
 }
 
+type RelationSuffixMap = Record<string, string>;
+
 export function validateIdentifier(value: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
     throw new Error(`Invalid SQL identifier ${value}`);
@@ -21,21 +23,30 @@ export function quoteIdentifier(value: string): string {
   return `"${value.replace(/"/g, "\"\"")}"`;
 }
 
-function buildQuotedThreadRuntimeRelationNames(prefix: string): ThreadRuntimeRelationNames {
+export function buildPrefixedRelationNames<TRelations extends RelationSuffixMap>(
+  prefix: string,
+  relationSuffixes: TRelations,
+): { prefix: string } & { [TName in keyof TRelations]: string } {
+  const safePrefix = validateIdentifier(prefix);
+  const relationNames = Object.fromEntries(
+    Object.entries(relationSuffixes).map(([name, suffix]) => {
+      return [name, quoteIdentifier(`${safePrefix}_${suffix}`)];
+    }),
+  ) as { [TName in keyof TRelations]: string };
+
   return {
-    threads: quoteIdentifier(`${prefix}_threads`),
-    messages: quoteIdentifier(`${prefix}_messages`),
-    inputs: quoteIdentifier(`${prefix}_inputs`),
-    runs: quoteIdentifier(`${prefix}_runs`),
+    prefix: safePrefix,
+    ...relationNames,
   };
 }
 
 export function buildThreadRuntimeTableNames(prefix: string): ThreadRuntimeTableNames {
-  const safePrefix = validateIdentifier(prefix);
-  return {
-    prefix: safePrefix,
-    ...buildQuotedThreadRuntimeRelationNames(safePrefix),
-  };
+  return buildPrefixedRelationNames(prefix, {
+    threads: "threads",
+    messages: "messages",
+    inputs: "inputs",
+    runs: "runs",
+  });
 }
 
 export function toMillis(value: unknown): number {

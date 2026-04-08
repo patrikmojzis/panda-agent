@@ -12,9 +12,7 @@ export {
   type IdentityStatus,
   normalizeIdentityHandle,
 } from "./types.js";
-export { type IdentityStore } from "./store.js";
 export { InMemoryIdentityStore } from "./in-memory.js";
-export { buildIdentityTableNames, type IdentityRelationNames, type IdentityTableNames } from "./postgres-shared.js";
 export { PostgresIdentityStore, type PostgresIdentityStoreOptions } from "./postgres.js";
 export {
   createIdentityRuntime,

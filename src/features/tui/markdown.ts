@@ -18,6 +18,7 @@ type WrapToken =
   | { type: "break" }
   | { type: "text"; text: string; styles: readonly InlineStyle[]; breakable: boolean };
 
+// `flow` blocks are wrapped prose/list content. `pre` blocks preserve line breaks verbatim.
 type MarkdownBlock =
   | { type: "blank" }
   | {
@@ -253,7 +254,7 @@ function tokenChildren(token: Token): Token[] {
     : [];
 }
 
-function renderInlineTokens(tokens: readonly Token[]): InlinePiece[] {
+function buildInlinePieces(tokens: readonly Token[]): InlinePiece[] {
   const pieces: InlinePiece[] = [];
 
   for (const token of tokens) {
@@ -261,7 +262,7 @@ function renderInlineTokens(tokens: readonly Token[]): InlinePiece[] {
       case "text": {
         const children = tokenChildren(token);
         if (children.length > 0) {
-          pieces.push(...renderInlineTokens(children));
+          pieces.push(...buildInlinePieces(children));
         } else if ("text" in token && token.text) {
           pieces.push(createTextPiece(token.text));
         }
@@ -269,11 +270,11 @@ function renderInlineTokens(tokens: readonly Token[]): InlinePiece[] {
       }
 
       case "strong":
-        pieces.push(...applyStyleToPieces(renderInlineTokens(tokenChildren(token)), "bold"));
+        pieces.push(...applyStyleToPieces(buildInlinePieces(tokenChildren(token)), "bold"));
         break;
 
       case "em":
-        pieces.push(...applyStyleToPieces(renderInlineTokens(tokenChildren(token)), "italic"));
+        pieces.push(...applyStyleToPieces(buildInlinePieces(tokenChildren(token)), "italic"));
         break;
 
       case "codespan":
@@ -281,7 +282,7 @@ function renderInlineTokens(tokens: readonly Token[]): InlinePiece[] {
         break;
 
       case "link": {
-        const labelPieces = applyStyleToPieces(renderInlineTokens(tokenChildren(token)), "link");
+        const labelPieces = applyStyleToPieces(buildInlinePieces(tokenChildren(token)), "link");
         const labelText = labelPieces.flatMap((piece) => {
           return isBreakPiece(piece) ? [] : [piece.segment.text];
         }).join("");
@@ -319,13 +320,13 @@ function renderInlineTokens(tokens: readonly Token[]): InlinePiece[] {
         break;
 
       case "del":
-        pieces.push(...renderInlineTokens(tokenChildren(token)));
+        pieces.push(...buildInlinePieces(tokenChildren(token)));
         break;
 
       default: {
         const children = tokenChildren(token);
         if (children.length > 0) {
-          pieces.push(...renderInlineTokens(children));
+          pieces.push(...buildInlinePieces(children));
           break;
         }
 
@@ -344,7 +345,7 @@ function renderInlineTokens(tokens: readonly Token[]): InlinePiece[] {
   return pieces;
 }
 
-function renderBlocksFromTokens(tokens: readonly Token[]): MarkdownBlock[] {
+function buildMarkdownBlocks(tokens: readonly Token[]): MarkdownBlock[] {
   const blocks: MarkdownBlock[] = [];
 
   for (const token of tokens) {
@@ -354,14 +355,14 @@ function renderBlocksFromTokens(tokens: readonly Token[]): MarkdownBlock[] {
         break;
 
       case "paragraph":
-        blocks.push(createFlowBlock(renderInlineTokens(tokenChildren(token))));
+        blocks.push(createFlowBlock(buildInlinePieces(tokenChildren(token))));
         blocks.push({ type: "blank" });
         break;
 
       case "text": {
         const children = tokenChildren(token);
         if (children.length > 0) {
-          blocks.push(createFlowBlock(renderInlineTokens(children)));
+          blocks.push(createFlowBlock(buildInlinePieces(children)));
           blocks.push({ type: "blank" });
         } else if ("text" in token && token.text.trim()) {
           blocks.push(createFlowBlock([createTextPiece(token.text)]));
@@ -372,13 +373,13 @@ function renderBlocksFromTokens(tokens: readonly Token[]): MarkdownBlock[] {
 
       case "heading":
         blocks.push(createFlowBlock(
-          applyStyleToPieces(renderInlineTokens(tokenChildren(token)), "heading"),
+          applyStyleToPieces(buildInlinePieces(tokenChildren(token)), "heading"),
         ));
         blocks.push({ type: "blank" });
         break;
 
       case "blockquote": {
-        const children = normalizeBlocks(renderBlocksFromTokens(tokenChildren(token)));
+        const children = normalizeBlocks(buildMarkdownBlocks(tokenChildren(token)));
         const quoted = prefixBlocks(
           children,
           [createSegment("> ", ["quote"])],
@@ -392,7 +393,7 @@ function renderBlocksFromTokens(tokens: readonly Token[]): MarkdownBlock[] {
       case "list": {
         const start = token.start ?? 1;
         for (const [index, item] of token.items.entries()) {
-          const childBlocks = normalizeBlocks(renderBlocksFromTokens(item.tokens as Token[]));
+          const childBlocks = normalizeBlocks(buildMarkdownBlocks(item.tokens as Token[]));
           const itemBlocks = childBlocks.length > 0
             ? childBlocks
             : [createFlowBlock([createTextPiece(item.text ?? "")])];
@@ -438,7 +439,7 @@ function renderBlocksFromTokens(tokens: readonly Token[]): MarkdownBlock[] {
       default: {
         const children = tokenChildren(token);
         if (children.length > 0) {
-          blocks.push(...renderBlocksFromTokens(children));
+          blocks.push(...buildMarkdownBlocks(children));
           break;
         }
 
@@ -505,7 +506,7 @@ function tokenizeFlowPieces(pieces: readonly InlinePiece[]): WrapToken[] {
   return tokens;
 }
 
-function renderFlowBlock(block: Extract<MarkdownBlock, { type: "flow" }>, width: number): MarkdownLine[] {
+function renderWrappedBlock(block: Extract<MarkdownBlock, { type: "flow" }>, width: number): MarkdownLine[] {
   const tokens = tokenizeFlowPieces(block.pieces);
   if (tokens.length === 0) {
     return [];
@@ -609,7 +610,7 @@ function renderFlowBlock(block: Extract<MarkdownBlock, { type: "flow" }>, width:
   return lines;
 }
 
-function renderPreBlock(block: Extract<MarkdownBlock, { type: "pre" }>, width: number): MarkdownLine[] {
+function renderPreformattedBlock(block: Extract<MarkdownBlock, { type: "pre" }>, width: number): MarkdownLine[] {
   const lines: MarkdownLine[] = [];
   let firstRenderedLine = true;
 
@@ -645,8 +646,8 @@ function renderPlainLines(markdown: string, width: number): MarkdownLine[] {
     }
 
     return block.type === "flow"
-      ? renderFlowBlock(block, width)
-      : renderPreBlock(block, width);
+      ? renderWrappedBlock(block, width)
+      : renderPreformattedBlock(block, width);
   });
 }
 
@@ -660,7 +661,7 @@ export function renderMarkdownLines(markdown: string, width: number): MarkdownLi
   }
 
   const tokens = marked.lexer(markdown) as Token[];
-  const blocks = normalizeBlocks(renderBlocksFromTokens(tokens));
+  const blocks = normalizeBlocks(buildMarkdownBlocks(tokens));
   const lines: MarkdownLine[] = [];
 
   for (const block of blocks) {
@@ -670,11 +671,11 @@ export function renderMarkdownLines(markdown: string, width: number): MarkdownLi
     }
 
     if (block.type === "flow") {
-      lines.push(...renderFlowBlock(block, width));
+      lines.push(...renderWrappedBlock(block, width));
       continue;
     }
 
-    lines.push(...renderPreBlock(block, width));
+    lines.push(...renderPreformattedBlock(block, width));
   }
 
   return lines;

@@ -1,4 +1,4 @@
-import { quoteIdentifier, validateIdentifier } from "../thread-runtime/postgres-shared.js";
+import { buildPrefixedRelationNames } from "../thread-runtime/postgres-shared.js";
 
 export interface ConversationThreadRelationNames {
   conversationThreads: string;
@@ -8,16 +8,8 @@ export interface ConversationThreadTableNames extends ConversationThreadRelation
   prefix: string;
 }
 
-function buildQuotedConversationThreadRelationNames(prefix: string): ConversationThreadRelationNames {
-  return {
-    conversationThreads: quoteIdentifier(`${prefix}_conversation_threads`),
-  };
-}
-
 export function buildConversationThreadTableNames(prefix: string): ConversationThreadTableNames {
-  const safePrefix = validateIdentifier(prefix);
-  return {
-    prefix: safePrefix,
-    ...buildQuotedConversationThreadRelationNames(safePrefix),
-  };
+  return buildPrefixedRelationNames(prefix, {
+    conversationThreads: "conversation_threads",
+  });
 }

@@ -6,10 +6,13 @@ import {
 } from "../src/features/tui/commands.js";
 import {
   createComposerState,
+  deleteWordBackward,
   insertText,
   moveCursorDown,
   moveCursorLineEnd,
   moveCursorUp,
+  moveCursorWordLeft,
+  moveCursorWordRight,
   setComposerValue,
 } from "../src/features/tui/composer.js";
 
@@ -36,6 +39,37 @@ describe("composer helpers", () => {
     state = moveCursorLineEnd(state);
     expect(state.value).toBe("hello\nworld");
     expect(state.cursor).toBe(state.value.length);
+  });
+
+  it("moves and deletes by word across spaces and newlines", () => {
+    let state = createComposerState("alpha beta\ngamma");
+
+    state = moveCursorWordLeft(state);
+    expect(state.cursor).toBe("alpha beta\n".length);
+
+    state = moveCursorWordLeft(state);
+    expect(state.cursor).toBe("alpha ".length);
+
+    state = moveCursorWordRight(state);
+    expect(state.cursor).toBe("alpha beta".length);
+
+    state = moveCursorWordRight(state);
+    expect(state.cursor).toBe(state.value.length);
+
+    state = deleteWordBackward(state);
+    expect(state.value).toBe("alpha beta\n");
+    expect(state.cursor).toBe(state.value.length);
+  });
+
+  it("keeps word-wise movement and deletion as no-ops at the buffer edges", () => {
+    let state = createComposerState("alpha");
+    state = setComposerValue(state, state.value, 0);
+
+    expect(moveCursorWordLeft(state)).toEqual(state);
+    expect(deleteWordBackward(state)).toEqual(state);
+
+    state = setComposerValue(state, state.value, state.value.length);
+    expect(moveCursorWordRight(state)).toEqual(state);
   });
 });
 

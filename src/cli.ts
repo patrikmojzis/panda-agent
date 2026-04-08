@@ -7,6 +7,7 @@ import { Command, InvalidArgumentError } from "commander";
 import { formatProviderNameList, parseProviderName } from "./features/agent-core/index.js";
 import { parseIdentityHandle, registerIdentityCommands } from "./features/identity/cli.js";
 import { summarizeMessageText } from "./features/panda/message-preview.js";
+import { registerTelegramCommands } from "./features/telegram/cli.js";
 import { runChatCli, type ChatCliOptions } from "./features/tui/index.js";
 import { renderResumeHint } from "./features/tui/exit-hint.js";
 import { createChatRuntime } from "./features/tui/runtime.js";
@@ -206,5 +207,6 @@ program
   });
 
 registerIdentityCommands(program);
+registerTelegramCommands(program, parseCliProvider);
 
 await program.parseAsync(process.argv);

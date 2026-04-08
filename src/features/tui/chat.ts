@@ -8,8 +8,6 @@ import {
   estimateTokensFromString,
   formatProviderNameList,
   getProviderConfig,
-  hasAnthropicOauthToken,
-  hasOpenAICodexOauthToken,
   parseProviderName,
   PiAiRuntime,
   resolveProviderApiKey,
@@ -21,23 +19,29 @@ import {
 import type { ProviderName } from "../agent-core/types.js";
 import { buildPandaTools } from "../panda/agent.js";
 import { summarizeMessageText } from "../panda/message-preview.js";
+import { resolveDefaultPandaModel, resolveDefaultPandaProvider } from "../panda/provider-defaults.js";
 import {
   createChatRuntime,
   type ChatRuntimeServices,
 } from "./runtime.js";
+import {
+  buildChatHelpText,
+  describeUnknownCommand,
+  runChatCommandLine,
+} from "./chat-commands.js";
 import {
   renderTranscriptEntries,
   type TranscriptEntryView,
 } from "./transcript.js";
 import {
   applySlashCompletion,
-  findSlashCommand,
   getSlashCompletionContext,
   type SlashCompletionContext,
 } from "./commands.js";
 import {
   backspace,
   createComposerState,
+  deleteWordBackward,
   deleteForward,
   insertText,
   moveCursorDown,
@@ -46,9 +50,21 @@ import {
   moveCursorLineStart,
   moveCursorRight,
   moveCursorUp,
+  moveCursorWordLeft,
+  moveCursorWordRight,
   setComposerValue,
   type ComposerState,
 } from "./composer.js";
+import {
+  buildChatViewModel,
+  buildWelcomeTranscriptLines,
+  normalizeInlineText,
+  THREAD_PICKER_VISIBLE_COUNT,
+  type ComposerLayout,
+  type NoticeState,
+  type TranscriptLine,
+  type ViewModel,
+} from "./chat-view.js";
 import { renderMarkdownLines } from "./markdown.js";
 import {
   ALT_SCREEN_OFF,
@@ -86,7 +102,6 @@ import type {
 
 type EntryRole = "assistant" | "user" | "tool" | "meta" | "error";
 type RunPhase = "idle" | "thinking";
-type NoticeTone = "info" | "error";
 
 interface TranscriptEntry {
   id: number;
@@ -95,23 +110,12 @@ interface TranscriptEntry {
   body: string;
 }
 
-interface TranscriptLine {
-  plain: string;
-  rendered: string;
-}
-
 interface TranscriptLineCacheEntry {
   role: EntryRole;
   title: string;
   body: string;
   bodyWidth: number;
   lines: readonly TranscriptLine[];
-}
-
-interface NoticeState {
-  text: string;
-  tone: NoticeTone;
-  expiresAt: number;
 }
 
 interface SearchState {
@@ -143,77 +147,24 @@ interface KeyLike {
   sequence?: string;
 }
 
-interface ComposerLayout {
-  lines: string[];
-  cursorRow: number;
-  cursorColumn: number;
-}
+type ComposerMetaAction = "word-left" | "word-right" | "delete-word-backward";
 
-interface InfoLine {
-  text: string;
-  cursorColumn: number | null;
-}
-
-interface ViewModel {
-  width: number;
-  rows: number;
-  transcriptLines: TranscriptLine[];
-  transcriptMatches: number[];
-  selectedTranscriptLine: number | null;
-  transcriptHeight: number;
-  resolvedScrollTop: number;
-  maxScrollTop: number;
-  pendingLocalInputLines: string[];
-  composerVisibleLines: string[];
-  composerVisibleCursorRow: number;
-  composerCursorColumn: number;
-  headerLine: string;
-  statusLine: string;
-  infoLine: InfoLine;
-}
-
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const LABEL_WIDTH = 16;
 const TRANSCRIPT_GUTTER_WIDTH = 2;
 const TICK_MS = 100;
+const SPINNER_FRAME_COUNT = 10;
 const STORED_SYNC_MS = 750;
 const MAX_VISIBLE_PENDING_LOCAL_INPUTS = 3;
 const NOTICE_MS = 3_600;
-const WELCOME_TWO_COLUMN_MIN_WIDTH = 72;
-const WELCOME_MAX_WIDTH = 108;
 const BRACKETED_PASTE_ON = "\u001b[?2004h";
 const BRACKETED_PASTE_OFF = "\u001b[?2004l";
-const PANDA_SPLASH = [
-  "                       _       ",
-  "                      | |      ",
-  " _ __   __ _ _ __   __| | __ _ ",
-  "| '_ \\ / _` | '_ \\ / _` |/ _` |",
-  "| |_) | (_| | | | | (_| | (_| |",
-  "| .__/ \\__,_|_| |_|\\__,_|\\__,_|",
-  "| |                            ",
-  "|_|                            ",
-] as const;
-const WELCOME_TIPS = [
+const META_WORD_LEFT_SEQUENCES = new Set(["\u001bb", "\u001b[1;3D", "\u001b[1;9D", "\u001b\u001b[D"]);
+const META_WORD_RIGHT_SEQUENCES = new Set(["\u001bf", "\u001b[1;3C", "\u001b[1;9C", "\u001b\u001b[C"]);
+const META_BACKSPACE_SEQUENCES = new Set(["\u001b\u007f", "\u001b\b"]);
+const WELCOME_ENTRY_TEXT = [
   "Type your request and press Enter to start a run with Panda.",
   "Start with a code change, a debugging question, or a quick explanation of this repo.",
-] as const;
-const WELCOME_COMMANDS = [
-  ["/help", "show commands and keybindings"],
-  ["/provider <name>", "switch provider"],
-  ["/model <name>", "switch model"],
-  ["/thinking <level|off>", "set the thinking level"],
-  ["/compact [instructions]", "summarize older context and keep recent turns"],
-  ["/threads", "browse saved threads"],
-  ["/resume <id>", "reopen a saved thread"],
-] as const;
-const WELCOME_KEYS = [
-  ["Enter", "send your prompt"],
-  ["Ctrl-J", "insert a newline"],
-  ["Ctrl-C", "stop the active run and exit"],
-  ["Tab", "complete slash commands"],
-  ["Ctrl-R", "search input history"],
-  ["Ctrl-F", "search the transcript"],
-] as const;
+].join("\n");
 
 export interface ChatCliOptions {
   provider?: ProviderName;
@@ -230,37 +181,6 @@ export interface ChatCliOptions {
 
 export interface ChatCliResult {
   threadId?: string;
-}
-
-function defaultProvider(): ProviderName {
-  const configured = process.env.PANDA_PROVIDER;
-
-  if (configured) {
-    return assertProviderName(configured);
-  }
-
-  if (hasAnthropicOauthToken() && !process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
-    return "anthropic-oauth";
-  }
-
-  if (hasOpenAICodexOauthToken() && !process.env.OPENAI_API_KEY) {
-    return "openai-codex";
-  }
-
-  if (process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
-    return "anthropic";
-  }
-
-  return "openai";
-}
-
-function defaultModel(provider: ProviderName): string {
-  if (process.env.PANDA_MODEL) {
-    return process.env.PANDA_MODEL;
-  }
-
-  const config = getProviderConfig(provider);
-  return process.env[config.defaultModelEnvVar] ?? config.defaultModel;
 }
 
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
@@ -303,121 +223,34 @@ function isPrintable(sequence: string, key: KeyLike): boolean {
   return sequence >= " " || sequence === "\n";
 }
 
-function normalizeInlineText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function homeRelativePath(value: string): string {
-  const home = process.env.HOME;
-  if (!home) {
-    return value;
-  }
-
-  if (value === home) {
-    return "~";
-  }
-
-  if (value.startsWith(home + path.sep)) {
-    return `~${value.slice(home.length)}`;
-  }
-
-  return value;
-}
-
-function wrapWordText(text: string, width: number): string[] {
-  if (width <= 0) {
-    return [text];
-  }
-
-  const paragraphs = text.length === 0 ? [""] : text.split("\n");
-  const lines: string[] = [];
-
-  for (const paragraph of paragraphs) {
-    const trimmed = paragraph.trim();
-    if (trimmed.length === 0) {
-      lines.push("");
-      continue;
+function resolveComposerMetaAction(sequence: string, key: KeyLike): ComposerMetaAction | null {
+  if (key.meta) {
+    if (key.name === "left" || key.name === "b") {
+      return "word-left";
     }
 
-    let current = "";
-
-    const pushChunkedWord = (word: string): void => {
-      let remaining = word;
-      while (remaining.length > width) {
-        lines.push(remaining.slice(0, width));
-        remaining = remaining.slice(width);
-      }
-      current = remaining;
-    };
-
-    for (const word of trimmed.split(/\s+/)) {
-      if (word.length > width) {
-        if (current) {
-          lines.push(current);
-          current = "";
-        }
-        pushChunkedWord(word);
-        continue;
-      }
-
-      if (!current) {
-        current = word;
-        continue;
-      }
-
-      if (current.length + 1 + word.length <= width) {
-        current += ` ${word}`;
-        continue;
-      }
-
-      lines.push(current);
-      current = word;
+    if (key.name === "right" || key.name === "f") {
+      return "word-right";
     }
 
-    if (current) {
-      lines.push(current);
+    if (key.name === "backspace") {
+      return "delete-word-backward";
     }
   }
 
-  return lines;
-}
-
-function centerAnsiText(value: string, width: number): string {
-  const visibleLength = stripAnsi(value).length;
-  if (visibleLength >= width) {
-    return value;
+  if (META_WORD_LEFT_SEQUENCES.has(sequence)) {
+    return "word-left";
   }
 
-  const leftPadding = Math.floor((width - visibleLength) / 2);
-  const rightPadding = width - visibleLength - leftPadding;
-  return `${" ".repeat(leftPadding)}${value}${" ".repeat(rightPadding)}`;
-}
+  if (META_WORD_RIGHT_SEQUENCES.has(sequence)) {
+    return "word-right";
+  }
 
-function formatWelcomeItem(
-  labelText: string,
-  description: string,
-  width: number,
-  colorize: (value: string) => string = theme.gold,
-): string[] {
-  const label = colorize(labelText);
-  const labelWidth = labelText.length;
-  const descriptionWidth = Math.max(1, width - labelWidth - 1);
-  const descriptionLines = wrapWordText(description, descriptionWidth);
+  if (META_BACKSPACE_SEQUENCES.has(sequence)) {
+    return "delete-word-backward";
+  }
 
-  return descriptionLines.map((line, index) => {
-    if (index === 0) {
-      return `${label} ${theme.slate(line)}`;
-    }
-
-    return `${" ".repeat(labelWidth)} ${theme.slate(line)}`;
-  });
-}
-
-function renderTranscriptLine(rendered: string): TranscriptLine {
-  return {
-    plain: stripAnsi(rendered),
-    rendered,
-  };
+  return null;
 }
 
 export class PandaChatApp {
@@ -460,16 +293,16 @@ export class PandaChatApp {
   private activeProgressEntryId: number | null = null;
   private followTranscript = true;
   private scrollTop = 0;
-  private slashSelection = 0;
-  private slashToken = "";
+  private slashCompletionIndex = 0;
+  private lastSlashToken = "";
   private ticker: NodeJS.Timeout | null = null;
   private syncTicker: NodeJS.Timeout | null = null;
-  private resolveRun: (() => void) | null = null;
+  private mainLoopResolver: (() => void) | null = null;
   private closed = false;
   private syncInFlight = false;
   private syncRequestedWhileBusy = false;
   private lastStoredSyncAt = 0;
-  private lastObservedRunKey: string | null = null;
+  private lastObservedRunStatusKey: string | null = null;
   private threadPickerRefreshInFlight = false;
   private threadPickerRefreshRequested = false;
   private closeAfterRun = false;
@@ -490,9 +323,9 @@ export class PandaChatApp {
 
   constructor(options: ChatCliOptions = {}) {
     this.providerName = options.provider === undefined
-      ? defaultProvider()
+      ? resolveDefaultPandaProvider()
       : assertProviderName(options.provider);
-    this.model = options.model ?? defaultModel(this.providerName);
+    this.model = options.model ?? resolveDefaultPandaModel(this.providerName);
     this.thinking = options.thinking;
     this.identity = options.identity;
     this.cwd = path.resolve(options.cwd ?? process.cwd());
@@ -525,7 +358,7 @@ export class PandaChatApp {
       this.pushEntry(
         "meta",
         "welcome",
-        WELCOME_TIPS.join("\n"),
+        WELCOME_ENTRY_TEXT,
       );
     } else {
       this.pushEntry(
@@ -539,7 +372,7 @@ export class PandaChatApp {
 
     try {
       await new Promise<void>((resolve) => {
-        this.resolveRun = resolve;
+        this.mainLoopResolver = resolve;
       });
     } finally {
       await this.cleanup();
@@ -592,7 +425,7 @@ export class PandaChatApp {
 
     this.closeAfterRun = false;
     this.closed = true;
-    this.resolveRun?.();
+    this.mainLoopResolver?.();
   }
 
   private scheduleCloseAfterRun(): void {
@@ -689,7 +522,7 @@ export class PandaChatApp {
       return -1;
     }
 
-    return Math.floor(Date.now() / TICK_MS) % SPINNER_FRAMES.length;
+    return Math.floor(Date.now() / TICK_MS) % SPINNER_FRAME_COUNT;
   }
 
   private scheduleSyncStoredThreadState(delayMs = 150): void {
@@ -728,33 +561,54 @@ export class PandaChatApp {
     this.currentStorageMode = this.services.mode;
     await this.services.recoverOrphanedRuns("Run marked failed before recovery.");
 
-    let thread: ThreadRecord;
-    if (this.resumeThreadId) {
-      thread = await this.services.getThread(this.resumeThreadId);
-    } else if (this.explicitThreadId) {
-      try {
-        thread = await this.services.getThread(this.explicitThreadId);
-      } catch (error) {
-        if (!isMissingThreadError(error, this.explicitThreadId)) {
-          throw error;
-        }
+    await this.switchThread(await this.resolveInitialThread());
+  }
 
-        thread = await this.services.createThread({
-          id: this.explicitThreadId,
-          provider: this.providerName,
-          model: this.model,
-          thinking: this.thinking,
-        });
-      }
-    } else {
-      thread = await this.services.createThread({
-        provider: this.providerName,
-        model: this.model,
-        thinking: this.thinking,
-      });
+  private async resolveInitialThread(): Promise<ThreadRecord> {
+    const services = this.requireServices();
+
+    if (this.resumeThreadId) {
+      return await services.getThread(this.resumeThreadId);
     }
 
-    await this.switchThread(thread);
+    if (this.explicitThreadId) {
+      return await this.getOrCreateExplicitThread(this.explicitThreadId);
+    }
+
+    return await services.createThread(this.buildThreadDefaults());
+  }
+
+  private buildThreadDefaults(overrides: Partial<{
+    id: string;
+    provider: ProviderName;
+    model: string;
+    thinking: ThinkingLevel;
+  }> = {}): {
+    id?: string;
+    provider: ProviderName;
+    model: string;
+    thinking?: ThinkingLevel;
+  } {
+    return {
+      id: overrides.id,
+      provider: overrides.provider ?? this.providerName,
+      model: overrides.model ?? this.model,
+      thinking: overrides.thinking ?? this.thinking,
+    };
+  }
+
+  private async getOrCreateExplicitThread(threadId: string): Promise<ThreadRecord> {
+    const services = this.requireServices();
+
+    try {
+      return await services.getThread(threadId);
+    } catch (error) {
+      if (!isMissingThreadError(error, threadId)) {
+        throw error;
+      }
+
+      return await services.createThread(this.buildThreadDefaults({ id: threadId }));
+    }
   }
 
   private async switchThread(thread: ThreadRecord): Promise<void> {
@@ -765,7 +619,7 @@ export class PandaChatApp {
     this.thinking = thread.thinking;
     this.currentStorageMode = this.requireServices().mode;
     this.runPhase = "idle";
-    this.lastObservedRunKey = null;
+    this.lastObservedRunStatusKey = null;
     this.refreshToolCatalog();
     await this.reloadVisibleTranscript();
     await this.syncStoredThreadState(true);
@@ -967,11 +821,11 @@ export class PandaChatApp {
     const latestRun = runs.at(-1);
     const runKey = latestRun ? `${latestRun.id}:${latestRun.status}` : null;
 
-    if (runKey === this.lastObservedRunKey) {
+    if (runKey === this.lastObservedRunStatusKey) {
       return;
     }
 
-    this.lastObservedRunKey = runKey;
+    this.lastObservedRunStatusKey = runKey;
     this.markDirty();
 
     if (!latestRun) {
@@ -1195,14 +1049,13 @@ export class PandaChatApp {
     } else if (!this.threadPicker.loading && this.threadPicker.summaries.length === 0) {
       lines.push(theme.dim("No stored threads yet."));
     } else {
-      const visibleCount = 6;
-      const maxStart = Math.max(0, this.threadPicker.summaries.length - visibleCount);
+      const maxStart = Math.max(0, this.threadPicker.summaries.length - THREAD_PICKER_VISIBLE_COUNT);
       const start = clamp(
-        this.threadPicker.selected - Math.floor(visibleCount / 2),
+        this.threadPicker.selected - Math.floor(THREAD_PICKER_VISIBLE_COUNT / 2),
         0,
         maxStart,
       );
-      const visible = this.threadPicker.summaries.slice(start, start + visibleCount);
+      const visible = this.threadPicker.summaries.slice(start, start + THREAD_PICKER_VISIBLE_COUNT);
 
       for (const [offset, summary] of visible.entries()) {
         const absoluteIndex = start + offset;
@@ -1354,7 +1207,7 @@ export class PandaChatApp {
     return this.transcript.length === 1 && this.transcript[0]?.title === "welcome";
   }
 
-  private setNotice(text: string, tone: NoticeTone, durationMs = NOTICE_MS): void {
+  private setNotice(text: string, tone: NoticeState["tone"], durationMs = NOTICE_MS): void {
     this.notice = {
       text,
       tone,
@@ -1520,109 +1373,20 @@ export class PandaChatApp {
 
     for (const entry of visibleEntries) {
       if (entry.title === "welcome" && this.shouldShowSplash) {
-        lines.push(...this.buildWelcomeLines(width));
+        lines.push(...buildWelcomeTranscriptLines({
+          width,
+          providerName: this.providerName,
+          model: this.model,
+          thinkingLabel: formatThinkingLevel(this.thinking),
+          storageMode: this.currentStorageMode,
+          cwd: this.cwd,
+        }));
         continue;
       }
 
       lines.push(...this.buildCachedTranscriptLines(entry, bodyWidth));
     }
 
-    return lines;
-  }
-
-  private buildWelcomeLines(width: number): TranscriptLine[] {
-    const availableWidth = Math.max(20, width - TRANSCRIPT_GUTTER_WIDTH);
-    const panelWidth = Math.min(availableWidth, WELCOME_MAX_WIDTH);
-    return panelWidth >= WELCOME_TWO_COLUMN_MIN_WIDTH
-      ? this.buildTwoColumnWelcomeLines(panelWidth)
-      : this.buildStackedWelcomeLines(panelWidth);
-  }
-
-  private buildWelcomeIdentityLines(width: number): string[] {
-    const lines = [
-      centerAnsiText(theme.bold(theme.white("Welcome to Panda")), width),
-      "",
-      ...PANDA_SPLASH.map((line) => centerAnsiText(theme.mint(line), width)),
-      "",
-      theme.bold(theme.slate("Session")),
-      ...this.buildWelcomeDetailLines("Provider", this.providerName, width),
-      ...this.buildWelcomeDetailLines("Model", this.model, width),
-      ...this.buildWelcomeDetailLines("Thinking", formatThinkingLevel(this.thinking), width),
-      ...this.buildWelcomeDetailLines("Storage", this.currentStorageMode, width),
-      ...this.buildWelcomeDetailLines("Path", homeRelativePath(this.cwd), width),
-    ];
-
-    return lines;
-  }
-
-  private buildWelcomeDetailLines(label: string, value: string, width: number): string[] {
-    const prefixText = `${label.padEnd(8)}:`;
-    const prefixWidth = prefixText.length;
-    const wrappedValues = wrapWordText(value, Math.max(1, width - prefixWidth - 1));
-
-    return wrappedValues.map((line, index) => {
-      if (index === 0) {
-        return `${theme.dim(prefixText)} ${theme.white(line)}`;
-      }
-
-      return `${" ".repeat(prefixWidth)} ${theme.slate(line)}`;
-    });
-  }
-
-  private buildWelcomeGuideLines(width: number): string[] {
-    return [
-      theme.bold(theme.coral("Tips for getting started")),
-      ...wrapWordText(WELCOME_TIPS[0], width).map((line) => theme.white(line)),
-      ...wrapWordText(WELCOME_TIPS[1], width).map((line) => theme.slate(line)),
-      "",
-      theme.slate("─".repeat(width)),
-      theme.bold(theme.coral("Quick commands")),
-      ...WELCOME_COMMANDS.flatMap(([command, description]) => formatWelcomeItem(command, description, width)),
-      "",
-      theme.slate("─".repeat(width)),
-      theme.bold(theme.coral("Keys")),
-      ...WELCOME_KEYS.flatMap(([label, description]) => formatWelcomeItem(label, description, width, theme.cyan)),
-    ];
-  }
-
-  private buildTwoColumnWelcomeLines(panelWidth: number): TranscriptLine[] {
-    const innerContentWidth = Math.max(20, panelWidth - 8);
-    const leftWidth = Math.max(28, Math.min(innerContentWidth - 20, Math.min(34, Math.floor(innerContentWidth * 0.36))));
-    const rightWidth = Math.max(20, innerContentWidth - leftWidth);
-    const leftLines = this.buildWelcomeIdentityLines(leftWidth);
-    const rightLines = this.buildWelcomeGuideLines(rightWidth);
-    const rowCount = Math.max(leftLines.length, rightLines.length);
-    const lines = [renderTranscriptLine(theme.coral(`┌${"─".repeat(panelWidth - 2)}┐`))];
-
-    for (let index = 0; index < rowCount; index += 1) {
-      const rendered =
-        `${theme.coral("│")} ` +
-        `${padAnsiEnd(leftLines[index] ?? "", leftWidth)} ` +
-        `${theme.slate("│")} ` +
-        `${padAnsiEnd(rightLines[index] ?? "", rightWidth)} ` +
-        `${theme.coral("│")}`;
-      lines.push(renderTranscriptLine(rendered));
-    }
-
-    lines.push(renderTranscriptLine(theme.coral(`└${"─".repeat(panelWidth - 2)}┘`)));
-    return lines;
-  }
-
-  private buildStackedWelcomeLines(panelWidth: number): TranscriptLine[] {
-    const contentWidth = Math.max(20, panelWidth - 4);
-    const contentLines = [
-      ...this.buildWelcomeIdentityLines(contentWidth),
-      "",
-      theme.slate("─".repeat(contentWidth)),
-      ...this.buildWelcomeGuideLines(contentWidth),
-    ];
-    const lines = [renderTranscriptLine(theme.coral(`┌${"─".repeat(panelWidth - 2)}┐`))];
-
-    for (const line of contentLines) {
-      lines.push(renderTranscriptLine(`${theme.coral("│")} ${padAnsiEnd(line, contentWidth)} ${theme.coral("│")}`));
-    }
-
-    lines.push(renderTranscriptLine(theme.coral(`└${"─".repeat(panelWidth - 2)}┘`)));
     return lines;
   }
 
@@ -1684,211 +1448,62 @@ export class PandaChatApp {
     };
   }
 
-  private buildPromptInfoLine(
-    width: number,
-    prompt: string,
-    summary: string,
-    preview: string | null = null,
-  ): InfoLine {
-    const visiblePrompt = truncatePlainText(prompt, width);
-    const remainingWidth = Math.max(0, width - visiblePrompt.length);
-    const suffix = remainingWidth > 0
-      ? truncatePlainText(
-          ` · ${summary}${preview ? ` · ${preview}` : ""}`,
-          remainingWidth,
-        )
-      : "";
-
-    return {
-      text: theme.gold(visiblePrompt) + theme.dim(suffix),
-      cursorColumn: Math.min(visiblePrompt.length + 1, width),
-    };
-  }
-
-  private buildInfoLine(
-    width: number,
-    transcriptLines: readonly TranscriptLine[],
-    transcriptMatches: readonly number[],
-    selectedTranscriptLine: number | null,
-    scrollLabel: string,
-  ): InfoLine {
-    if (this.threadPicker.active) {
-      return {
-        text: theme.gold(truncatePlainText("threads · up/down select · enter resume · esc cancel", width)),
-        cursorColumn: null,
-      };
-    }
-
-    if (this.transcriptSearch.active) {
-      const summary = transcriptMatches.length === 0
-        ? "no matches"
-        : `${clamp(this.transcriptSearch.selected, 0, transcriptMatches.length - 1) + 1}/${transcriptMatches.length}`;
-      const preview = selectedTranscriptLine === null
-        ? null
-        : normalizeInlineText(transcriptLines[selectedTranscriptLine]?.plain ?? "");
-
-      return this.buildPromptInfoLine(width, `find> ${this.transcriptSearch.query}`, summary, preview);
-    }
-
-    if (this.historySearch.active) {
-      const matches = this.historyMatches();
-      const summary = matches.length === 0
-        ? "no matches"
-        : `${clamp(this.historySearch.selected, 0, matches.length - 1) + 1}/${matches.length}`;
-      const preview = normalizeInlineText(this.currentHistoryMatch() ?? "");
-
-      return this.buildPromptInfoLine(width, `history> ${this.historySearch.query}`, summary, preview);
-    }
-
-    if (this.notice) {
-      const text = truncatePlainText(this.notice.text, width);
-      return {
-        text: this.notice.tone === "error" ? theme.coral(text) : theme.gold(text),
-        cursorColumn: null,
-      };
-    }
-
-    const slashContext = this.currentSlashContext();
-    if (slashContext && slashContext.matches.length > 0) {
-      const selected = slashContext.matches[clamp(
-        this.slashSelection,
-        0,
-        slashContext.matches.length - 1,
-      )];
-      const summary = `tab cycles · enter completes ${selected?.name ?? ""}${selected?.expectsValue ? " <value>" : ""} · ${selected?.summary ?? ""}`;
-      return {
-        text: theme.gold(truncatePlainText(summary, width)),
-        cursorColumn: null,
-      };
-    }
-
-    if (this.transcriptSearch.query.trim()) {
-      const summary = transcriptMatches.length === 0
-        ? "search no matches"
-        : `search ${clamp(this.transcriptSearch.selected, 0, transcriptMatches.length - 1) + 1}/${transcriptMatches.length}`;
-      return {
-        text: theme.gold(truncatePlainText(`${summary} · ${scrollLabel}`, width)),
-        cursorColumn: null,
-      };
-    }
-
-    return {
-      text: theme.dim(
-        truncatePlainText(
-          `${scrollLabel} · Enter send · Ctrl-J newline · Tab complete · Ctrl-R history · Ctrl-F find · PgUp/PgDn scroll`,
-          width,
-        ),
-      ),
-      cursorColumn: null,
-    };
-  }
-
   private buildView(): ViewModel {
     this.clearExpiredNotice();
     const width = Math.max(72, Math.min(output.columns || 100, 140));
-    const rows = Math.max(18, output.rows || 32);
     const transcriptLines = this.buildTranscriptLines(width);
-    const transcriptMatches = this.transcriptSearch.query.trim().length === 0
-      ? []
-      : transcriptLines.flatMap((line, index) => {
-          return line.plain.toLowerCase().includes(this.transcriptSearch.query.toLowerCase())
-            ? [index]
-            : [];
-        });
-    const selectedTranscriptLine = transcriptMatches.length === 0
-      ? null
-      : transcriptMatches[clamp(this.transcriptSearch.selected, 0, transcriptMatches.length - 1)] ?? null;
     const composerLayout = this.buildComposerLayout(width);
     const pendingLocalInputLines = this.buildPendingLocalInputLines(width);
-    let maxComposerVisible = clamp(Math.floor(rows * 0.35), 3, 8);
-    let composerVisibleStart = Math.max(0, composerLayout.cursorRow - maxComposerVisible + 1);
-    let composerVisibleLines = composerLayout.lines.slice(
-      composerVisibleStart,
-      composerVisibleStart + maxComposerVisible,
-    );
+    const historyMatches = this.historyMatches();
+    const slashContext = this.currentSlashContext();
 
-    let transcriptHeight = rows - (1 + 1 + 2 + pendingLocalInputLines.length + Math.max(1, composerVisibleLines.length));
-    if (transcriptHeight < 4) {
-      maxComposerVisible = Math.max(1, maxComposerVisible - (4 - transcriptHeight));
-      composerVisibleStart = Math.max(0, composerLayout.cursorRow - maxComposerVisible + 1);
-      composerVisibleLines = composerLayout.lines.slice(
-        composerVisibleStart,
-        composerVisibleStart + maxComposerVisible,
-      );
-      transcriptHeight = Math.max(
-        1,
-        rows - (1 + 1 + 2 + pendingLocalInputLines.length + Math.max(1, composerVisibleLines.length)),
-      );
-    }
-
-    const maxScrollTop = Math.max(0, transcriptLines.length - transcriptHeight);
-    const resolvedScrollTop = clamp(
-      this.followTranscript ? maxScrollTop : this.scrollTop,
-      0,
-      maxScrollTop,
-    );
-    const spinner = this.isRunning
-      ? `${SPINNER_FRAMES[Math.floor(Date.now() / TICK_MS) % SPINNER_FRAMES.length]} `
-      : "";
-    const runLabel = this.isRunning ? "thinking" : "ready";
-    const elapsedLabel = this.isRunning ? formatDuration(Date.now() - this.runStartedAt) : null;
-    const statusText = [
-      truncatePlainText(`thread ${this.currentThreadId || "new"}`, 28),
-      this.providerName,
-      this.model,
-      `think ${formatThinkingLevel(this.thinking)}`,
-      this.currentStorageMode,
-      this.modeLabel,
-      runLabel,
-      elapsedLabel,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    const totalTranscriptLines = transcriptLines.length;
-    const scrollStart = totalTranscriptLines === 0 ? 0 : resolvedScrollTop + 1;
-    const scrollEnd = Math.min(totalTranscriptLines, resolvedScrollTop + transcriptHeight);
-    const scrollLabel = totalTranscriptLines === 0
-      ? "lines 0/0"
-      : `lines ${scrollStart}-${scrollEnd}/${totalTranscriptLines}${this.followTranscript ? " follow" : ""}`;
-
-    return {
-      width,
-      rows,
+    return buildChatViewModel({
+      terminalWidth: output.columns || 100,
+      terminalRows: output.rows || 32,
       transcriptLines,
-      transcriptMatches,
-      selectedTranscriptLine,
-      transcriptHeight,
-      resolvedScrollTop,
-      maxScrollTop,
+      transcriptSearchActive: this.transcriptSearch.active,
+      transcriptSearchQuery: this.transcriptSearch.query,
+      transcriptSearchSelection: this.transcriptSearch.selected,
+      threadPickerActive: this.threadPicker.active,
+      historySearchActive: this.historySearch.active,
+      historySearchQuery: this.historySearch.query,
+      historySearchSelection: this.historySearch.selected,
+      historyMatchCount: historyMatches.length,
+      historyPreview: this.currentHistoryMatch(),
+      notice: this.notice,
+      slashContext,
+      slashCompletionIndex: this.slashCompletionIndex,
+      followTranscript: this.followTranscript,
+      scrollTop: this.scrollTop,
       pendingLocalInputLines,
-      composerVisibleLines,
-      composerVisibleCursorRow: composerLayout.cursorRow - composerVisibleStart,
-      composerCursorColumn: composerLayout.cursorColumn,
-      headerLine:
-        theme.bold(theme.coral("Panda")) +
-        theme.dim(` · ${truncatePlainText(`cwd ${this.cwd} · ${this.currentThreadId || "no-thread"}`, Math.max(0, width - 8))}`),
-      statusLine: this.isRunning
-        ? theme.mint(truncatePlainText(`${spinner}${statusText}`, width))
-        : theme.dim(truncatePlainText(statusText, width)),
-      infoLine: this.buildInfoLine(width, transcriptLines, transcriptMatches, selectedTranscriptLine, scrollLabel),
-    };
+      composerLayout,
+      isRunning: this.isRunning,
+      runStartedAt: this.runStartedAt,
+      currentThreadId: this.currentThreadId,
+      providerName: this.providerName,
+      model: this.model,
+      thinkingLabel: formatThinkingLevel(this.thinking),
+      storageMode: this.currentStorageMode,
+      modeLabel: this.modeLabel,
+      cwd: this.cwd,
+    });
   }
 
   private currentSlashContext(): SlashCompletionContext | null {
     const context = getSlashCompletionContext(this.composer.value, this.composer.cursor);
     const token = context?.token ?? "";
 
-    if (token !== this.slashToken) {
-      this.slashToken = token;
-      this.slashSelection = 0;
+    if (token !== this.lastSlashToken) {
+      this.lastSlashToken = token;
+      this.slashCompletionIndex = 0;
     }
 
     if (!context || context.matches.length === 0) {
-      this.slashSelection = 0;
+      this.slashCompletionIndex = 0;
       return context;
     }
 
-    this.slashSelection = clamp(this.slashSelection, 0, context.matches.length - 1);
+    this.slashCompletionIndex = clamp(this.slashCompletionIndex, 0, context.matches.length - 1);
     return context;
   }
 
@@ -1984,7 +1599,7 @@ export class PandaChatApp {
       return false;
     }
 
-    const command = context.matches[this.slashSelection];
+    const command = context.matches[this.slashCompletionIndex];
     if (!command) {
       return false;
     }
@@ -2011,6 +1626,208 @@ export class PandaChatApp {
     }
 
     this.inputHistory.push(value);
+  }
+
+  private requireIdleRun(action: string): boolean {
+    if (!this.isRunning) {
+      return true;
+    }
+
+    this.setNotice(`Abort or wait for the current run before ${action}.`, "info");
+    return false;
+  }
+
+  private showCommandError(title: string, message: string): void {
+    this.pushEntry("error", title, message);
+    this.setNotice(message, "error");
+  }
+
+  private showHelp(): void {
+    this.pushEntry("meta", "help", buildChatHelpText(thinkingCommandUsage()));
+  }
+
+  private async handleProviderCommand(value: string): Promise<boolean> {
+    if (!this.requireIdleRun("switching providers")) {
+      return true;
+    }
+
+    const nextProvider = parseProviderName(value);
+    if (!nextProvider) {
+      this.showCommandError("config", `Provider must be one of ${formatProviderNameList()}.`);
+      return true;
+    }
+
+    const nextModel = resolveDefaultPandaModel(nextProvider);
+
+    try {
+      const previousProvider = this.providerName;
+      this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
+        provider: nextProvider,
+        model: nextModel,
+      });
+      this.providerName = nextProvider;
+      this.model = nextModel;
+      this.pushEntry(
+        "meta",
+        "config",
+        `Provider switched from ${previousProvider} to ${nextProvider}. Model reset to ${this.model}.`,
+      );
+      this.setNotice(`Provider ${nextProvider} · model ${this.model}`, "info");
+    } catch (error) {
+      this.showCommandError("config", error instanceof Error ? error.message : String(error));
+    }
+
+    return true;
+  }
+
+  private async handleModelCommand(value: string): Promise<boolean> {
+    if (!this.requireIdleRun("switching models")) {
+      return true;
+    }
+
+    if (!value) {
+      this.showCommandError("config", "Usage: /model <name>");
+      return true;
+    }
+
+    try {
+      this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
+        model: value,
+      });
+      this.model = value;
+      this.pushEntry("meta", "config", `Model set to ${value}.`);
+      this.setNotice(`Model ${value}`, "info");
+    } catch (error) {
+      this.showCommandError("config", error instanceof Error ? error.message : String(error));
+    }
+
+    return true;
+  }
+
+  private async handleThinkingCommand(value: string): Promise<boolean> {
+    if (!this.requireIdleRun("changing thinking")) {
+      return true;
+    }
+
+    if (!value) {
+      this.showCommandError("config", `Usage: ${thinkingCommandUsage()}`);
+      return true;
+    }
+
+    const nextThinking = parseThinkingCommandValue(value);
+    if (!nextThinking) {
+      this.showCommandError("config", `Thinking must be one of ${thinkingCommandValuesText()}.`);
+      return true;
+    }
+
+    try {
+      this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
+        thinking: nextThinking === "off" ? null : nextThinking,
+      });
+      this.thinking = this.currentThread.thinking;
+      if (this.thinking) {
+        this.pushEntry("meta", "config", `Thinking set to ${this.thinking}.`);
+        this.setNotice(`Thinking ${this.thinking}`, "info");
+      } else {
+        this.pushEntry("meta", "config", "Thinking disabled.");
+        this.setNotice("Thinking off", "info");
+      }
+    } catch (error) {
+      this.showCommandError("config", error instanceof Error ? error.message : String(error));
+    }
+
+    return true;
+  }
+
+  private async handleCompactCommand(value: string): Promise<boolean> {
+    if (!this.requireIdleRun("compacting")) {
+      return true;
+    }
+
+    try {
+      await this.compactCurrentThread(value);
+    } catch (error) {
+      this.showCommandError("compact", error instanceof Error ? error.message : String(error));
+    }
+
+    return true;
+  }
+
+  private async handleNewThreadCommand(): Promise<boolean> {
+    if (!this.requireIdleRun("creating a new thread")) {
+      return true;
+    }
+
+    await this.switchThread(await this.requireServices().createThread(this.buildThreadDefaults()));
+    this.pushEntry("meta", "session", `Started a fresh thread ${this.currentThreadId}.`);
+    this.setNotice(`Started thread ${this.currentThreadId}.`, "info");
+    return true;
+  }
+
+  private async handleResumeCommand(value: string): Promise<boolean> {
+    if (!this.requireIdleRun("resuming another thread")) {
+      return true;
+    }
+
+    if (!value) {
+      this.showCommandError("session", "Usage: /resume <thread-id>");
+      return true;
+    }
+
+    try {
+      await this.switchThread(await this.requireServices().getThread(value));
+      this.pushEntry("meta", "session", `Resumed thread ${this.currentThreadId}.`);
+      this.setNotice(`Resumed thread ${this.currentThreadId}.`, "info");
+    } catch (error) {
+      this.showCommandError("session", error instanceof Error ? error.message : String(error));
+    }
+
+    return true;
+  }
+
+  private showThreadSummary(): boolean {
+    this.pushEntry(
+      "meta",
+      "session",
+      [
+        `identity ${this.requireServices().identity.handle}`,
+        `thread ${this.currentThreadId}`,
+        `storage ${this.currentStorageMode}`,
+        `provider ${this.providerName}`,
+        `model ${this.model}`,
+        `thinking ${formatThinkingLevel(this.thinking)}`,
+      ].join("\n"),
+    );
+    return true;
+  }
+
+  private async handleAbortCommand(): Promise<boolean> {
+    if (!this.isRunning) {
+      this.setNotice("No active run to abort.", "info");
+      return true;
+    }
+
+    if (await this.requireServices().coordinator.abort(this.currentThreadId, "Aborted from the TUI.")) {
+      this.setNotice("Aborting the active run...", "info");
+    } else {
+      this.setNotice("No active run to abort.", "info");
+    }
+
+    return true;
+  }
+
+  private handleExitCommand(): boolean {
+    if (this.isRunning) {
+      this.setNotice("Wait for the current turn to finish before exiting.", "info");
+      return true;
+    }
+
+    return false;
+  }
+
+  private handleUnknownCommand(command: string): boolean {
+    this.showCommandError("command", describeUnknownCommand(command));
+    return true;
   }
 
   private async submitComposer(): Promise<void> {
@@ -2045,252 +1862,26 @@ export class PandaChatApp {
   }
 
   private async handleCommand(commandLine: string): Promise<boolean> {
-    const [command, ...rest] = commandLine.split(/\s+/);
-    const value = rest.join(" ").trim();
-
-    switch (command) {
-      case "/help":
-        this.pushEntry(
-          "meta",
-          "help",
-          [
-            "Commands:",
-            "/help shows command help.",
-            "/provider <openai|openai-codex|anthropic|anthropic-oauth> switches providers for this stored thread.",
-            "/model <name> changes the active model.",
-            `${thinkingCommandUsage()} changes the active thinking level.`,
-            "/compact [instructions] summarizes older context and keeps recent turns verbatim.",
-            "/new starts a fresh stored thread.",
-            "/resume <thread-id> switches to another stored thread.",
-            "/thread shows the current thread id and storage mode.",
-            "/threads opens the recent-thread picker.",
-            "/abort aborts the active run.",
-            "/exit leaves the TUI.",
-            "",
-            "Keys:",
-            "Enter sends the current prompt.",
-            "Ctrl-J inserts a newline.",
-            "Ctrl-C stops the active run and exits Panda.",
-            "Tab cycles slash command suggestions and Enter completes them.",
-            "Ctrl-R opens reverse history search.",
-            "Ctrl-F opens transcript search.",
-            "PgUp/PgDn or Alt-Up/Alt-Down scroll transcript history.",
-            "Esc clears active search or returns to the transcript bottom.",
-          ].join("\n"),
-        );
+    return await runChatCommandLine(commandLine, {
+      help: () => {
+        this.showHelp();
         return true;
-
-      case "/provider": {
-        if (this.isRunning) {
-          this.setNotice("Abort or wait for the current run before switching providers.", "info");
-          return true;
-        }
-
-        const nextProvider = parseProviderName(value);
-        if (!nextProvider) {
-          const message = `Provider must be one of ${formatProviderNameList()}.`;
-          this.pushEntry("error", "config", message);
-          this.setNotice(message, "error");
-          return true;
-        }
-
-        try {
-          const previousProvider = this.providerName;
-          this.providerName = nextProvider;
-          this.model = defaultModel(nextProvider);
-          this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
-            provider: nextProvider,
-            model: this.model,
-          });
-          this.pushEntry(
-            "meta",
-            "config",
-            `Provider switched from ${previousProvider} to ${nextProvider}. Model reset to ${this.model}.`,
-          );
-          this.setNotice(`Provider ${nextProvider} · model ${this.model}`, "info");
-        } catch (error) {
-          this.providerName = this.currentThread?.provider ?? this.providerName;
-          this.model = this.currentThread?.model ?? this.model;
-          const message = error instanceof Error ? error.message : String(error);
-          this.pushEntry("error", "config", message);
-          this.setNotice(message, "error");
-        }
-        return true;
-      }
-
-      case "/model":
-        if (this.isRunning) {
-          this.setNotice("Abort or wait for the current run before switching models.", "info");
-          return true;
-        }
-
-        if (!value) {
-          this.pushEntry("error", "config", "Usage: /model <name>");
-          this.setNotice("Usage: /model <name>", "error");
-          return true;
-        }
-
-        try {
-          this.model = value;
-          this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
-            model: value,
-          });
-          this.pushEntry("meta", "config", `Model set to ${value}.`);
-          this.setNotice(`Model ${value}`, "info");
-        } catch (error) {
-          this.model = this.currentThread?.model ?? this.model;
-          const message = error instanceof Error ? error.message : String(error);
-          this.pushEntry("error", "config", message);
-          this.setNotice(message, "error");
-        }
-        return true;
-
-      case "/thinking": {
-        if (this.isRunning) {
-          this.setNotice("Abort or wait for the current run before changing thinking.", "info");
-          return true;
-        }
-
-        if (!value) {
-          const usage = `Usage: ${thinkingCommandUsage()}`;
-          this.pushEntry("error", "config", usage);
-          this.setNotice(usage, "error");
-          return true;
-        }
-
-        const nextThinking = parseThinkingCommandValue(value);
-        if (!nextThinking) {
-          const message = `Thinking must be one of ${thinkingCommandValuesText()}.`;
-          this.pushEntry("error", "config", message);
-          this.setNotice(message, "error");
-          return true;
-        }
-
-        try {
-          this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
-            thinking: nextThinking === "off" ? null : nextThinking,
-          });
-          this.thinking = this.currentThread.thinking;
-          if (this.thinking) {
-            this.pushEntry("meta", "config", `Thinking set to ${this.thinking}.`);
-            this.setNotice(`Thinking ${this.thinking}`, "info");
-          } else {
-            this.pushEntry("meta", "config", "Thinking disabled.");
-            this.setNotice("Thinking off", "info");
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          this.pushEntry("error", "config", message);
-          this.setNotice(message, "error");
-        }
-        return true;
-      }
-
-      case "/compact":
-        if (this.isRunning) {
-          this.setNotice("Abort or wait for the current run before compacting.", "info");
-          return true;
-        }
-
-        try {
-          await this.compactCurrentThread(value);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          this.pushEntry("error", "compact", message);
-          this.setNotice(message, "error");
-        }
-        return true;
-
-      case "/new":
-        if (this.isRunning) {
-          this.setNotice("Abort or wait for the current run before creating a new thread.", "info");
-          return true;
-        }
-
-        await this.switchThread(await this.requireServices().createThread({
-          provider: this.providerName,
-          model: this.model,
-          thinking: this.thinking,
-        }));
-        this.pushEntry("meta", "session", `Started a fresh thread ${this.currentThreadId}.`);
-        this.setNotice(`Started thread ${this.currentThreadId}.`, "info");
-        return true;
-
-      case "/resume":
-        if (this.isRunning) {
-          this.setNotice("Abort or wait for the current run before resuming another thread.", "info");
-          return true;
-        }
-
-        if (!value) {
-          this.pushEntry("error", "session", "Usage: /resume <thread-id>");
-          this.setNotice("Usage: /resume <thread-id>", "error");
-          return true;
-        }
-
-        try {
-          await this.switchThread(await this.requireServices().getThread(value));
-          this.pushEntry("meta", "session", `Resumed thread ${this.currentThreadId}.`);
-          this.setNotice(`Resumed thread ${this.currentThreadId}.`, "info");
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          this.pushEntry("error", "session", message);
-          this.setNotice(message, "error");
-        }
-        return true;
-
-      case "/thread":
-        this.pushEntry(
-          "meta",
-          "session",
-          [
-            `identity ${this.requireServices().identity.handle}`,
-            `thread ${this.currentThreadId}`,
-            `storage ${this.currentStorageMode}`,
-            `provider ${this.providerName}`,
-            `model ${this.model}`,
-            `thinking ${formatThinkingLevel(this.thinking)}`,
-          ].join("\n"),
-        );
-        return true;
-
-      case "/threads": {
+      },
+      provider: (value) => this.handleProviderCommand(value),
+      model: (value) => this.handleModelCommand(value),
+      thinking: (value) => this.handleThinkingCommand(value),
+      compact: (value) => this.handleCompactCommand(value),
+      newThread: () => this.handleNewThreadCommand(),
+      resume: (value) => this.handleResumeCommand(value),
+      showThread: () => this.showThreadSummary(),
+      openThreadPicker: async () => {
         await this.openThreadPicker();
         return true;
-      }
-
-      case "/abort":
-        if (!this.isRunning) {
-          this.setNotice("No active run to abort.", "info");
-          return true;
-        }
-
-        if (await this.requireServices().coordinator.abort(this.currentThreadId, "Aborted from the TUI.")) {
-          this.setNotice("Aborting the active run...", "info");
-        } else {
-          this.setNotice("No active run to abort.", "info");
-        }
-        return true;
-
-      case "/exit":
-      case "/quit":
-        if (this.isRunning) {
-          this.setNotice("Wait for the current turn to finish before exiting.", "info");
-          return true;
-        }
-
-        return false;
-
-      default: {
-        const maybeCommand = findSlashCommand(command ?? "");
-        const message = maybeCommand
-          ? `${command} needs more input.`
-          : `Unknown command: ${command}`;
-        this.pushEntry("error", "command", message);
-        this.setNotice(message, "error");
-        return true;
-      }
-    }
+      },
+      abort: () => this.handleAbortCommand(),
+      exit: () => this.handleExitCommand(),
+      unknown: (command) => this.handleUnknownCommand(command),
+    });
   }
 
   private async submitUserMessage(message: string, externalMessageId: string): Promise<void> {
@@ -2373,62 +1964,114 @@ export class PandaChatApp {
     this.dirty = false;
   }
 
+  private handlePasteBoundaryKeypress(key: KeyLike): boolean {
+    if (key.name === "paste-start") {
+      this.inBracketedPaste = true;
+      return true;
+    }
+
+    if (key.name === "paste-end") {
+      this.inBracketedPaste = false;
+      return true;
+    }
+
+    return false;
+  }
+
+  private async handleInterruptKeypress(key: KeyLike): Promise<boolean> {
+    if (!(key.ctrl && key.name === "c")) {
+      return false;
+    }
+
+    if (!this.isRunning) {
+      this.close();
+      return true;
+    }
+
+    if (this.closeAfterRun) {
+      this.setNotice("Stopping the active run and closing Panda...", "info");
+      return true;
+    }
+
+    if (await this.requireServices().coordinator.abort(this.currentThreadId, "Aborted from Ctrl-C.")) {
+      this.closeAfterRun = true;
+      this.setNotice("Stopping the active run and closing Panda...", "info");
+      return true;
+    }
+
+    this.close();
+    return true;
+  }
+
+  private handleTranscriptNavigationKeypress(key: KeyLike): boolean {
+    if (key.name === "pageup" || key.name === "pagedown") {
+      const delta = Math.max(1, this.buildView().transcriptHeight - 2);
+      this.scrollTranscript(key.name === "pageup" ? -delta : delta);
+      return true;
+    }
+
+    if (key.meta && key.name === "up") {
+      this.scrollTranscript(-1);
+      return true;
+    }
+
+    if (key.meta && key.name === "down") {
+      this.scrollTranscript(1);
+      return true;
+    }
+
+    return false;
+  }
+
+  private async handleModalKeypress(sequence: string, key: KeyLike): Promise<boolean> {
+    if (this.threadPicker.active) {
+      await this.handleThreadPickerKeypress(sequence, key);
+      return true;
+    }
+
+    if (!this.historySearch.active && !this.transcriptSearch.active && key.ctrl && key.name === "r") {
+      this.startHistorySearch();
+      return true;
+    }
+
+    if (!this.historySearch.active && !this.transcriptSearch.active && key.ctrl && key.name === "f") {
+      this.startTranscriptSearch();
+      return true;
+    }
+
+    if (this.transcriptSearch.active) {
+      this.handleTranscriptSearchKeypress(sequence, key);
+      return true;
+    }
+
+    if (this.historySearch.active) {
+      this.handleHistorySearchKeypress(sequence, key);
+      return true;
+    }
+
+    return false;
+  }
+
   private async handleKeypress(sequence: string, key: KeyLike): Promise<void> {
     if (this.closed) {
       return;
     }
 
-    if (key.name === "paste-start") {
-      this.inBracketedPaste = true;
+    if (this.handlePasteBoundaryKeypress(key)) {
       this.render();
       return;
     }
 
-    if (key.name === "paste-end") {
-      this.inBracketedPaste = false;
+    if (
+      await this.handleInterruptKeypress(key) ||
+      this.handleTranscriptNavigationKeypress(key) ||
+      await this.handleModalKeypress(sequence, key)
+    ) {
       this.render();
       return;
     }
 
-    if (key.ctrl && key.name === "c") {
-      if (this.isRunning) {
-        if (this.closeAfterRun) {
-          this.setNotice("Stopping the active run and closing Panda...", "info");
-          return;
-        }
-
-        if (await this.requireServices().coordinator.abort(this.currentThreadId, "Aborted from Ctrl-C.")) {
-          this.closeAfterRun = true;
-          this.setNotice("Stopping the active run and closing Panda...", "info");
-        } else {
-          this.close();
-          return;
-        }
-      } else {
-        this.close();
-        return;
-      }
-    } else if (key.name === "pageup" || key.name === "pagedown") {
-      const delta = Math.max(1, this.buildView().transcriptHeight - 2);
-      this.scrollTranscript(key.name === "pageup" ? -delta : delta);
-    } else if (key.meta && key.name === "up") {
-      this.scrollTranscript(-1);
-    } else if (key.meta && key.name === "down") {
-      this.scrollTranscript(1);
-    } else if (this.threadPicker.active) {
-      await this.handleThreadPickerKeypress(sequence, key);
-    } else if (!this.historySearch.active && !this.transcriptSearch.active && key.ctrl && key.name === "r") {
-      this.startHistorySearch();
-    } else if (!this.historySearch.active && !this.transcriptSearch.active && key.ctrl && key.name === "f") {
-      this.startTranscriptSearch();
-    } else if (this.transcriptSearch.active) {
-      this.handleTranscriptSearchKeypress(sequence, key);
-    } else if (this.historySearch.active) {
-      this.handleHistorySearchKeypress(sequence, key);
-    } else {
-      await this.handleComposerKeypress(sequence, key);
-    }
-
+    await this.handleComposerKeypress(sequence, key);
     this.render();
   }
 
@@ -2537,6 +2180,22 @@ export class PandaChatApp {
       return;
     }
 
+    const metaAction = resolveComposerMetaAction(sequence, key);
+    if (metaAction === "word-left") {
+      this.setComposerState(moveCursorWordLeft(this.composer));
+      return;
+    }
+
+    if (metaAction === "word-right") {
+      this.setComposerState(moveCursorWordRight(this.composer));
+      return;
+    }
+
+    if (metaAction === "delete-word-backward") {
+      this.setComposerState(deleteWordBackward(this.composer));
+      return;
+    }
+
     if (key.name === "escape") {
       if (this.notice) {
         this.notice = null;
@@ -2558,7 +2217,7 @@ export class PandaChatApp {
       const context = this.currentSlashContext();
       if (context && context.matches.length > 0) {
         const direction = key.shift ? -1 : 1;
-        this.slashSelection = (this.slashSelection + direction + context.matches.length) %
+        this.slashCompletionIndex = (this.slashCompletionIndex + direction + context.matches.length) %
           context.matches.length;
       }
       return;

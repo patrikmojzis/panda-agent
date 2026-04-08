@@ -1,8 +1,4 @@
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { createWriteStream, type WriteStream } from "node:fs";
-import { finished } from "node:stream/promises";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -13,7 +9,22 @@ import type { RunContext } from "../../agent-core/run-context.js";
 import { Tool, type ToolOutput } from "../../agent-core/tool.js";
 import { ToolError } from "../../agent-core/exceptions.js";
 import type { JsonObject, JsonValue } from "../../agent-core/types.js";
-import type { PandaSessionContext, PandaShellSession } from "../types.js";
+import type { PandaSessionContext } from "../types.js";
+import { runWrappedBashCommand } from "./bash-process.js";
+import {
+  createOutputCapture,
+  finalizeOutputCapture,
+} from "./bash-output.js";
+import {
+  applyPersistedEnv,
+  buildWrappedCommand,
+  collectTrackedEnvKeys,
+  createInvocationPaths,
+  looksLikeSilentCommand,
+  readPersistedCwd,
+  readPersistedEnv,
+  resolveCommandCwd,
+} from "./bash-session.js";
 import { ensurePandaShellSession, readPandaBaseCwd } from "./context.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -21,21 +32,6 @@ const DEFAULT_MAX_OUTPUT_CHARS = 8_000;
 const DEFAULT_PROGRESS_INTERVAL_MS = 250;
 const DEFAULT_PROGRESS_TAIL_CHARS = 1_200;
 const DEFAULT_OUTPUT_DIRECTORY = path.join(tmpdir(), "panda-tool-results");
-
-const SILENT_COMMANDS = new Set([
-  "cd",
-  "cp",
-  "chmod",
-  "chown",
-  "export",
-  "ln",
-  "mkdir",
-  "mv",
-  "rm",
-  "rmdir",
-  "touch",
-  "unset",
-]);
 
 export interface BashToolOptions {
   shell?: string;
@@ -46,317 +42,6 @@ export interface BashToolOptions {
   progressTailChars?: number;
   outputDirectory?: string;
   env?: NodeJS.ProcessEnv;
-}
-
-interface CapturedOutput {
-  value: string;
-  truncated: boolean;
-}
-
-interface OutputCaptureState {
-  preview: string;
-  previewTruncated: boolean;
-  totalChars: number;
-  writer: WriteStream;
-  filePath: string;
-}
-
-interface InvocationPaths {
-  directory: string;
-  cwdStatePath: string;
-  envStatePath: string;
-  stdoutPath: string;
-  stderrPath: string;
-}
-
-interface PersistedEnvEntry {
-  key: string;
-  present: boolean;
-  value: string;
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function appendChunk(current: string, chunk: string, maxChars: number): CapturedOutput {
-  if (current.length >= maxChars) {
-    return {
-      value: current,
-      truncated: true,
-    };
-  }
-
-  const remaining = maxChars - current.length;
-  if (chunk.length <= remaining) {
-    return {
-      value: current + chunk,
-      truncated: false,
-    };
-  }
-
-  return {
-    value: current + chunk.slice(0, remaining),
-    truncated: true,
-  };
-}
-
-function tailString(value: string, maxChars: number): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-
-  return value.slice(-maxChars);
-}
-
-function resolveCommandCwd(commandCwd: string | undefined, baseCwd: string): string {
-  if (!commandCwd?.trim()) {
-    return baseCwd;
-  }
-
-  return path.isAbsolute(commandCwd)
-    ? path.resolve(commandCwd)
-    : path.resolve(baseCwd, commandCwd);
-}
-
-function looksLikeSilentCommand(command: string): boolean {
-  const match = command.trim().match(/^([A-Za-z0-9_.-]+)/);
-  return match ? SILENT_COMMANDS.has(match[1] ?? "") : false;
-}
-
-function splitCommandSegments(command: string): string[] {
-  return command
-    .split(/(?:&&|\|\||;|\n)/)
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-}
-
-function consumeLeadingAssignment(body: string, start: number): { name: string; end: number } | null {
-  const slice = body.slice(start);
-  const match = /^([A-Za-z_][A-Za-z0-9_]*)(?:\s*=(?:'(?:[^']*)'|"(?:\\.|[^"])*"|[^ \t]+))?/.exec(slice);
-  if (!match || !match[1]) {
-    return null;
-  }
-
-  return {
-    name: match[1],
-    end: start + match[0].length,
-  };
-}
-
-function parseExportNames(segment: string): string[] {
-  const body = segment.replace(/^export\s+/, "").trim();
-  if (!body || body.startsWith("-")) {
-    return [];
-  }
-
-  const names: string[] = [];
-  let index = 0;
-
-  while (index < body.length) {
-    while (index < body.length && /\s/.test(body[index] ?? "")) {
-      index += 1;
-    }
-
-    const parsed = consumeLeadingAssignment(body, index);
-    if (!parsed) {
-      break;
-    }
-
-    names.push(parsed.name);
-    index = parsed.end;
-  }
-
-  return names;
-}
-
-function parseUnsetNames(segment: string): string[] {
-  const body = segment.replace(/^unset\s+/, "").trim();
-  if (!body || body.startsWith("-")) {
-    return [];
-  }
-
-  const names: string[] = [];
-  let index = 0;
-
-  while (index < body.length) {
-    while (index < body.length && /\s/.test(body[index] ?? "")) {
-      index += 1;
-    }
-
-    const match = /^([A-Za-z_][A-Za-z0-9_]*)/.exec(body.slice(index));
-    if (!match || !match[1]) {
-      break;
-    }
-
-    names.push(match[1]);
-    index += match[0].length;
-  }
-
-  return names;
-}
-
-function collectTrackedEnvKeys(command: string): string[] {
-  const keys = new Set<string>();
-
-  for (const segment of splitCommandSegments(command)) {
-    if (segment.startsWith("export ")) {
-      for (const name of parseExportNames(segment)) {
-        keys.add(name);
-      }
-    }
-
-    if (segment.startsWith("unset ")) {
-      for (const name of parseUnsetNames(segment)) {
-        keys.add(name);
-      }
-    }
-  }
-
-  return [...keys];
-}
-
-function buildWrappedCommand(options: {
-  command: string;
-  cwdStatePath: string;
-  envStatePath: string;
-  trackedEnvKeys: string[];
-}): string {
-  const lines = [
-    options.command,
-    "__panda_status=$?",
-    'if [ "$__panda_status" -eq 0 ]; then',
-    `  pwd -P >| ${shellQuote(options.cwdStatePath)}`,
-  ];
-
-  if (options.trackedEnvKeys.length > 0) {
-    lines.push(`  : >| ${shellQuote(options.envStatePath)}`);
-
-    for (const key of options.trackedEnvKeys) {
-      const quotedKey = shellQuote(key);
-      lines.push(`  if printenv ${quotedKey} >/dev/null 2>&1; then`);
-      lines.push(
-        `    printf '%s\\0present\\0%s\\0' ${quotedKey} "$(printenv ${quotedKey})" >> ${shellQuote(options.envStatePath)}`,
-      );
-      lines.push("  else");
-      lines.push(
-        `    printf '%s\\0absent\\0\\0' ${quotedKey} >> ${shellQuote(options.envStatePath)}`,
-      );
-      lines.push("  fi");
-    }
-  }
-
-  lines.push("fi", 'exit "$__panda_status"');
-  return lines.join("\n");
-}
-
-async function createInvocationPaths(rootDirectory: string): Promise<InvocationPaths> {
-  const directory = path.join(rootDirectory, randomUUID());
-  await mkdir(directory, { recursive: true });
-
-  return {
-    directory,
-    cwdStatePath: path.join(directory, "cwd.txt"),
-    envStatePath: path.join(directory, "env.bin"),
-    stdoutPath: path.join(directory, "stdout.txt"),
-    stderrPath: path.join(directory, "stderr.txt"),
-  };
-}
-
-function createOutputCapture(filePath: string): OutputCaptureState {
-  return {
-    preview: "",
-    previewTruncated: false,
-    totalChars: 0,
-    writer: createWriteStream(filePath, { encoding: "utf8" }),
-    filePath,
-  };
-}
-
-function appendOutput(capture: OutputCaptureState, chunk: string, previewLimit: number): void {
-  capture.totalChars += chunk.length;
-  const next = appendChunk(capture.preview, chunk, previewLimit);
-  capture.preview = next.value;
-  capture.previewTruncated ||= next.truncated;
-  capture.writer.write(chunk);
-}
-
-async function finalizeOutputCapture(options: {
-  capture: OutputCaptureState;
-  keepFile: boolean;
-}): Promise<void> {
-  options.capture.writer.end();
-  await finished(options.capture.writer);
-
-  if (!options.keepFile) {
-    await rm(options.capture.filePath, { force: true });
-  }
-}
-
-async function readPersistedCwd(cwdStatePath: string, fallbackCwd: string): Promise<string> {
-  try {
-    const value = (await readFile(cwdStatePath, "utf8")).trim();
-    return value ? path.resolve(value) : fallbackCwd;
-  } catch {
-    return fallbackCwd;
-  }
-}
-
-function parsePersistedEnvDump(buffer: Buffer): PersistedEnvEntry[] {
-  if (buffer.length === 0) {
-    return [];
-  }
-
-  const parts = buffer.toString("utf8").split("\0");
-  const entries: PersistedEnvEntry[] = [];
-
-  for (let index = 0; index + 2 < parts.length; index += 3) {
-    const key = parts[index];
-    const state = parts[index + 1];
-    const value = parts[index + 2];
-    if (!key || !state) {
-      continue;
-    }
-
-    entries.push({
-      key,
-      present: state === "present",
-      value: value ?? "",
-    });
-  }
-
-  return entries;
-}
-
-async function readPersistedEnv(envStatePath: string): Promise<PersistedEnvEntry[]> {
-  try {
-    const buffer = await readFile(envStatePath);
-    return parsePersistedEnvDump(buffer);
-  } catch {
-    return [];
-  }
-}
-
-function applyPersistedEnv(shellSession: PandaShellSession | null, entries: PersistedEnvEntry[]): string[] {
-  if (!shellSession || entries.length === 0) {
-    return [];
-  }
-
-  const changedKeys: string[] = [];
-  for (const entry of entries) {
-    if (entry.present) {
-      shellSession.env[entry.key] = entry.value;
-      changedKeys.push(entry.key);
-      continue;
-    }
-
-    if (entry.key in shellSession.env) {
-      delete shellSession.env[entry.key];
-    }
-    changedKeys.push(entry.key);
-  }
-
-  return changedKeys;
 }
 
 export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTool.schema, TContext> {
@@ -418,7 +103,6 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     args: z.output<typeof BashTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolOutput> {
-    const startedAt = Date.now();
     const shellSession = ensurePandaShellSession(run.context);
     const baseCwd = shellSession?.cwd ?? readPandaBaseCwd(run.context);
     const cwd = resolveCommandCwd(args.cwd, baseCwd);
@@ -441,160 +125,23 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       ...(args.env ?? {}),
     };
 
-    let interruption: "timeout" | "abort" | null = null;
-    let abortReason: string | null = null;
-    let progressTimer: NodeJS.Timeout | undefined;
-    let lastProgressAt = startedAt;
-    let lastProgressStdoutChars = 0;
-    let lastProgressStderrChars = 0;
-
-    const emitProgress = (force = false): void => {
-      const now = Date.now();
-      const stdoutChanged = stdoutCapture.totalChars !== lastProgressStdoutChars;
-      const stderrChanged = stderrCapture.totalChars !== lastProgressStderrChars;
-
-      if (!force && !stdoutChanged && !stderrChanged && now - startedAt < this.progressIntervalMs * 2) {
-        return;
-      }
-
-      if (!force && now - lastProgressAt < this.progressIntervalMs) {
-        return;
-      }
-
-      run.emitToolProgress(
-        {
-          command: args.command,
-          cwd,
-          elapsedMs: Date.now() - startedAt,
-          stdoutTail: tailString(stdoutCapture.preview, this.progressTailChars),
-          stderrTail: tailString(stderrCapture.preview, this.progressTailChars),
-          stdoutChars: stdoutCapture.totalChars,
-          stderrChars: stderrCapture.totalChars,
-        },
-      );
-
-      lastProgressAt = now;
-      lastProgressStdoutChars = stdoutCapture.totalChars;
-      lastProgressStderrChars = stderrCapture.totalChars;
-    };
-
-    const result = await new Promise<{
-      exitCode: number | null;
-      signal: NodeJS.Signals | null;
-      spawnError?: Error;
-    }>((resolve) => {
-      const child = spawn(shell, ["-lc", wrappedCommand], {
-        cwd,
-        env: childEnv,
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: process.platform !== "win32",
-      });
-      let abortKillTimer: NodeJS.Timeout | undefined;
-
-      const killChild = (signal: NodeJS.Signals): boolean => {
-        const pid = child.pid;
-        if (!pid || child.exitCode !== null || child.signalCode !== null || child.killed) {
-          return false;
-        }
-
-        try {
-          if (process.platform !== "win32") {
-            process.kill(-pid, signal);
-          } else {
-            child.kill(signal);
-          }
-          return true;
-        } catch {
-          // Ignore kill races; close/error handlers settle the promise.
-          return false;
-        }
-      };
-
-      const abortHandler = (): void => {
-        abortReason =
-          run.signal?.reason instanceof Error
-            ? run.signal.reason.message
-            : typeof run.signal?.reason === "string"
-              ? run.signal.reason
-              : "Command aborted.";
-        if (!killChild("SIGTERM")) {
-          return;
-        }
-
-        interruption ??= "abort";
-        abortKillTimer = setTimeout(() => {
-          killChild("SIGKILL");
-        }, 250);
-        abortKillTimer.unref();
-      };
-
-      if (run.signal) {
-        if (run.signal.aborted) {
-          abortHandler();
-        } else {
-          run.signal.addEventListener("abort", abortHandler, { once: true });
-        }
-      }
-
-      const timeout = setTimeout(() => {
-        if (!killChild("SIGTERM")) {
-          return;
-        }
-
-        interruption ??= "timeout";
-
-        setTimeout(() => {
-          killChild("SIGKILL");
-        }, 250).unref();
-      }, timeoutMs);
-
-      progressTimer = setInterval(() => {
-        emitProgress();
-      }, this.progressIntervalMs);
-      progressTimer.unref();
-
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-
-      child.stdout.on("data", (chunk: string) => {
-        appendOutput(stdoutCapture, chunk, this.maxOutputChars);
-        emitProgress();
-      });
-
-      child.stderr.on("data", (chunk: string) => {
-        appendOutput(stderrCapture, chunk, this.maxOutputChars);
-        emitProgress();
-      });
-
-      child.once("error", (error) => {
-        run.signal?.removeEventListener("abort", abortHandler);
-        clearTimeout(abortKillTimer);
-        clearTimeout(timeout);
-        clearInterval(progressTimer);
-        resolve({
-          exitCode: null,
-          signal: null,
-          spawnError: error,
-        });
-      });
-
-      child.once("close", (exitCode, signal) => {
-        run.signal?.removeEventListener("abort", abortHandler);
-        clearTimeout(abortKillTimer);
-        clearTimeout(timeout);
-        clearInterval(progressTimer);
-        resolve({
-          exitCode,
-          signal,
-        });
-      });
+    const result = await runWrappedBashCommand({
+      command: args.command,
+      shell,
+      cwd,
+      childEnv,
+      wrappedCommand,
+      timeoutMs,
+      progressIntervalMs: this.progressIntervalMs,
+      progressTailChars: this.progressTailChars,
+      maxOutputChars: this.maxOutputChars,
+      stdoutCapture,
+      stderrCapture,
+      run,
     });
 
-    clearInterval(progressTimer);
-
-    const durationMs = Date.now() - startedAt;
-    const timedOut = interruption === "timeout";
-    const aborted = interruption === "abort";
+    const timedOut = result.interruption === "timeout";
+    const aborted = result.interruption === "abort";
     const interrupted = timedOut || aborted || (result.signal !== null && result.exitCode === null);
     const success = !interrupted && result.exitCode === 0;
     const finalCwd = success
@@ -643,7 +190,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
           command: args.command,
           cwd,
           shell,
-          durationMs,
+          durationMs: result.durationMs,
           error: result.spawnError.message,
         },
       });
@@ -656,13 +203,13 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       finalCwd,
       cwdChanged: finalCwd !== cwd,
       shell,
-      durationMs,
+      durationMs: result.durationMs,
       timeoutMs,
       exitCode: result.exitCode,
       signal: result.signal,
       timedOut,
       aborted,
-      abortReason,
+      abortReason: result.abortReason,
       interrupted,
       success,
       stdout: stdoutCapture.preview,
@@ -688,7 +235,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     }
 
     if (aborted) {
-      throw new ToolError(abortReason ?? "Command aborted.", { details: payload });
+      throw new ToolError(result.abortReason ?? "Command aborted.", { details: payload });
     }
 
     if (result.exitCode !== 0 || result.signal !== null) {

@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 
-import { Pool, type PoolClient } from "pg";
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
 
 import { Agent } from "../agent-core/agent.js";
@@ -9,32 +8,27 @@ import type { ProviderName } from "../agent-core/types.js";
 import { buildPandaTools } from "../panda/agent.js";
 import { DateTimeContext, EnvironmentContext } from "../panda/contexts/index.js";
 import { buildPandaPrompt } from "../panda/prompts.js";
-import { PostgresReadonlyQueryTool } from "../panda/tools/postgres-readonly-query-tool.js";
 import type { PandaSessionContext } from "../panda/types.js";
+import {
+  createPandaRuntime,
+  resolveStoredPandaContext,
+  type StorageMode,
+} from "../panda/runtime.js";
 import {
   createDefaultIdentityInput,
   DEFAULT_IDENTITY_HANDLE,
   type IdentityRecord,
-  type IdentityStore,
 } from "../identity/index.js";
+import type { IdentityStore } from "../identity/store.js";
 import {
-  buildThreadRuntimeNotificationChannel,
-  ensureReadonlyChatQuerySchema,
-  InMemoryThreadRuntimeStore,
-  parseThreadRuntimeNotification,
-  PostgresThreadLeaseManager,
-  PostgresThreadRuntimeStore,
-  readDatabaseUsername,
-  ThreadRuntimeCoordinator,
-  type ThreadRuntimeNotification,
+  type ThreadRuntimeCoordinator,
   type ThreadRuntimeEvent,
-  type ThreadRuntimeStore,
   type ThreadRunRecord,
   type ThreadRecord,
   type ThreadSummaryRecord,
 } from "../thread-runtime/index.js";
-
-type StorageMode = "memory" | "postgres";
+import type { ThreadRuntimeNotification } from "../thread-runtime/postgres.js";
+import type { ThreadRuntimeStore } from "../thread-runtime/store.js";
 
 export interface ChatRuntimeOptions {
   cwd: string;
@@ -81,25 +75,6 @@ function trimNonEmptyString(value: string | null | undefined): string | null {
   const trimmed = value.trim();
   return trimmed || null;
 }
-
-function resolveStoredContext(
-  value: ThreadRecord["context"],
-  fallback: Pick<PandaSessionContext, "cwd" | "locale" | "timezone" | "identityId" | "identityHandle">,
-): PandaSessionContext {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { ...fallback };
-  }
-
-  const context = value as Record<string, unknown>;
-  return {
-    cwd: typeof context.cwd === "string" ? context.cwd : fallback.cwd,
-    locale: typeof context.locale === "string" ? context.locale : fallback.locale,
-    timezone: typeof context.timezone === "string" ? context.timezone : fallback.timezone,
-    identityId: typeof context.identityId === "string" ? context.identityId : fallback.identityId,
-    identityHandle: typeof context.identityHandle === "string" ? context.identityHandle : fallback.identityHandle,
-  };
-}
-
 function assertIdentityThreadAccess(thread: ThreadRecord, identity: IdentityRecord): ThreadRecord {
   if (thread.identityId !== identity.id) {
     throw new Error(`Thread ${thread.id} does not belong to identity ${identity.handle}.`);
@@ -109,111 +84,26 @@ function assertIdentityThreadAccess(thread: ThreadRecord, identity: IdentityReco
 }
 
 export async function createChatRuntime(options: ChatRuntimeOptions): Promise<ChatRuntimeServices> {
-  const dbUrl =
-    trimNonEmptyString(options.dbUrl)
-    ?? trimNonEmptyString(process.env.PANDA_DATABASE_URL)
-    ?? trimNonEmptyString(process.env.DATABASE_URL);
-  const readOnlyDbUrl =
-    trimNonEmptyString(options.readOnlyDbUrl)
-    ?? trimNonEmptyString(process.env.PANDA_READONLY_DATABASE_URL);
   const fallbackContext = {
     cwd: options.cwd,
     locale: options.locale,
     timezone: options.timezone,
   } as const;
   const requestedIdentityHandle = trimNonEmptyString(options.identity) ?? DEFAULT_IDENTITY_HANDLE;
+  let identity: IdentityRecord | null = null;
+  const runtime = await createPandaRuntime({
+    dbUrl: options.dbUrl,
+    readOnlyDbUrl: options.readOnlyDbUrl,
+    tablePrefix: options.tablePrefix,
+    onEvent: options.onEvent,
+    onStoreNotification: options.onStoreNotification,
+    resolveDefinition: (thread, { extraTools }) => {
+      if (!identity) {
+        throw new Error("Chat runtime identity has not been initialized yet.");
+      }
 
-  let mode: StorageMode = "memory";
-  let store: ThreadRuntimeStore;
-  let identityStore: IdentityStore;
-  let postgresPool: Pool | null = null;
-  let readonlyPool: Pool | null = null;
-  let extraTools: readonly Tool[] = [];
-  let close = async (): Promise<void> => {};
-
-  if (dbUrl) {
-    const pool = new Pool({
-      connectionString: dbUrl,
-    });
-    const postgresStore = new PostgresThreadRuntimeStore({
-      pool,
-      tablePrefix: options.tablePrefix,
-    });
-    await postgresStore.ensureSchema();
-
-    mode = "postgres";
-    store = postgresStore;
-    identityStore = postgresStore.identityStore;
-    postgresPool = pool;
-    await ensureReadonlyChatQuerySchema({
-      queryable: pool,
-      tablePrefix: options.tablePrefix,
-      readonlyRole: readOnlyDbUrl ? readDatabaseUsername(readOnlyDbUrl) : null,
-    });
-
-    if (readOnlyDbUrl) {
-      readonlyPool = new Pool({
-        connectionString: readOnlyDbUrl,
-      });
-    }
-    extraTools = [new PostgresReadonlyQueryTool({
-      pool: readonlyPool ?? pool,
-    })];
-    if (options.onStoreNotification) {
-      const channel = buildThreadRuntimeNotificationChannel(options.tablePrefix ?? "thread_runtime");
-      const client = await pool.connect();
-      const handleNotification = (message: { channel: string; payload?: string }) => {
-        if (message.channel !== channel || typeof message.payload !== "string") {
-          return;
-        }
-
-        const parsed = parseThreadRuntimeNotification(message.payload);
-        if (!parsed) {
-          return;
-        }
-
-        void options.onStoreNotification?.(parsed);
-      };
-
-      client.on("notification", handleNotification);
-      await client.query(`LISTEN ${channel}`);
-
-      close = async () => {
-        client.off("notification", handleNotification);
-        try {
-          await client.query(`UNLISTEN ${channel}`);
-        } finally {
-          client.release();
-          if (readonlyPool) {
-            await readonlyPool.end();
-          }
-          await pool.end();
-        }
-      };
-    } else {
-      close = async () => {
-        if (readonlyPool) {
-          await readonlyPool.end();
-        }
-        await pool.end();
-      };
-    }
-  } else {
-    const inMemoryStore = new InMemoryThreadRuntimeStore();
-    store = inMemoryStore;
-    identityStore = inMemoryStore.identityStore;
-  }
-
-  const identity = requestedIdentityHandle === DEFAULT_IDENTITY_HANDLE
-    ? await identityStore.ensureIdentity(createDefaultIdentityInput())
-    : await identityStore.getIdentityByHandle(requestedIdentityHandle);
-
-  const coordinator = new ThreadRuntimeCoordinator({
-    store,
-    leaseManager: postgresPool ? new PostgresThreadLeaseManager(postgresPool) : undefined,
-    resolveDefinition: (thread) => {
       const context: PandaSessionContext = {
-        ...resolveStoredContext(thread.context, {
+        ...resolveStoredPandaContext(thread.context, {
           ...fallbackContext,
           identityId: identity.id,
           identityHandle: identity.handle,
@@ -241,11 +131,19 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
         ],
       };
     },
-    onEvent: options.onEvent,
   });
 
+  try {
+    identity = requestedIdentityHandle === DEFAULT_IDENTITY_HANDLE
+      ? await runtime.identityStore.ensureIdentity(createDefaultIdentityInput())
+      : await runtime.identityStore.getIdentityByHandle(requestedIdentityHandle);
+  } catch (error) {
+    await runtime.close();
+    throw error;
+  }
+
   const createThread = async (createOptions: CreateChatThreadOptions = {}): Promise<ThreadRecord> => {
-    return store.createThread({
+    return runtime.store.createThread({
       id: createOptions.id ?? randomUUID(),
       identityId: identity.id,
       agentKey: createOptions.agentKey ?? "panda",
@@ -261,16 +159,16 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
   };
 
   return {
-    mode,
+    mode: runtime.mode,
     identity,
-    identityStore,
-    store,
-    coordinator,
-    extraTools,
+    identityStore: runtime.identityStore,
+    store: runtime.store,
+    coordinator: runtime.coordinator,
+    extraTools: runtime.extraTools,
     createThread,
-    getThread: async (threadId) => assertIdentityThreadAccess(await store.getThread(threadId), identity),
-    listThreadSummaries: (limit = 20) => store.listThreadSummaries(limit, identity.id),
-    recoverOrphanedRuns: (reason) => coordinator.recoverOrphanedRuns(reason),
-    close,
+    getThread: async (threadId) => assertIdentityThreadAccess(await runtime.store.getThread(threadId), identity),
+    listThreadSummaries: (limit = 20) => runtime.store.listThreadSummaries(limit, identity.id),
+    recoverOrphanedRuns: (reason) => runtime.coordinator.recoverOrphanedRuns(reason),
+    close: runtime.close,
   };
 }

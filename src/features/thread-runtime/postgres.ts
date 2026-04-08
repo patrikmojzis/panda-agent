@@ -1,17 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type { Pool, PoolClient } from "pg";
-
 import type { ThreadLease, ThreadLeaseManager } from "./coordinator.js";
 import {
   buildThreadRuntimeTableNames,
-  toJson,
-  quoteIdentifier,
-  toMillis,
-  toOrderNumber,
   validateIdentifier,
+  toJson,
   type ThreadRuntimeTableNames,
 } from "./postgres-shared.js";
+import { buildThreadRuntimeSchemaSql } from "./postgres-schema.js";
+import { parseInputRow, parseMessageRow, parseRunRow, parseThreadRow } from "./postgres-rows.js";
+import { applyPendingThreadInputs, enqueueThreadInput, promoteQueuedThreadInputs } from "./postgres-inputs.js";
+import type { PgPoolLike, PgQueryable } from "./postgres-db.js";
 import type { ThreadEnqueueResult, ThreadRuntimeStore } from "./store.js";
 import {
   missingThreadError,
@@ -29,14 +28,6 @@ import {
 import { PostgresIdentityStore, type PostgresIdentityStoreOptions } from "../identity/postgres.js";
 import { buildIdentityTableNames } from "../identity/postgres-shared.js";
 import { DEFAULT_IDENTITY_ID } from "../identity/types.js";
-
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-interface PgPoolLike extends PgQueryable {
-  connect(): Promise<PoolClient>;
-}
 
 interface PostgresThreadRuntimeStoreOptions {
   pool: PgPoolLike;
@@ -67,88 +58,6 @@ export function parseThreadRuntimeNotification(payload: string): ThreadRuntimeNo
   }
 }
 
-function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
-  return {
-    id: String(row.id),
-    identityId: String(row.identity_id),
-    agentKey: String(row.agent_key),
-    systemPrompt: row.system_prompt === null ? undefined : (row.system_prompt as ThreadRecord["systemPrompt"]),
-    maxTurns: row.max_turns === null ? undefined : Number(row.max_turns),
-    context: row.context === null ? undefined : (row.context as ThreadRecord["context"]),
-    maxInputTokens: row.max_input_tokens === null ? undefined : Number(row.max_input_tokens),
-    promptCacheKey: row.prompt_cache_key === null ? undefined : String(row.prompt_cache_key),
-    provider: row.provider === null ? undefined : String(row.provider) as ThreadRecord["provider"],
-    model: row.model === null ? undefined : String(row.model),
-    temperature: row.temperature === null ? undefined : Number(row.temperature),
-    thinking: row.thinking === null ? undefined : String(row.thinking) as ThreadRecord["thinking"],
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
-  };
-}
-
-function parseMessageRow(row: Record<string, unknown>): ThreadMessageRecord {
-  return {
-    id: String(row.id),
-    threadId: String(row.thread_id),
-    sequence: toOrderNumber(row.sequence),
-    origin: String(row.origin) as ThreadMessageRecord["origin"],
-    message: row.message as ThreadMessageRecord["message"],
-    metadata: row.metadata === null ? undefined : (row.metadata as ThreadMessageRecord["metadata"]),
-    source: String(row.source),
-    channelId: row.channel_id === null ? undefined : String(row.channel_id),
-    externalMessageId: row.external_message_id === null ? undefined : String(row.external_message_id),
-    actorId: row.actor_id === null ? undefined : String(row.actor_id),
-    runId: row.run_id === null ? undefined : String(row.run_id),
-    createdAt: toMillis(row.created_at),
-  };
-}
-
-function parseInputRow(row: Record<string, unknown>): ThreadInputRecord {
-  return {
-    id: String(row.id),
-    threadId: String(row.thread_id),
-    order: toOrderNumber(row.input_order),
-    deliveryMode: String(row.delivery_mode) as ThreadInputDeliveryMode,
-    message: row.message as ThreadInputRecord["message"],
-    metadata: row.metadata === null ? undefined : (row.metadata as ThreadInputRecord["metadata"]),
-    source: String(row.source),
-    channelId: row.channel_id === null ? undefined : String(row.channel_id),
-    externalMessageId: row.external_message_id === null ? undefined : String(row.external_message_id),
-    actorId: row.actor_id === null ? undefined : String(row.actor_id),
-    createdAt: toMillis(row.created_at),
-    appliedAt: row.applied_at === null ? undefined : toMillis(row.applied_at),
-  };
-}
-
-function parseRunRow(row: Record<string, unknown>): ThreadRunRecord {
-  return {
-    id: String(row.id),
-    threadId: String(row.thread_id),
-    status: String(row.status) as ThreadRunRecord["status"],
-    startedAt: toMillis(row.started_at),
-    finishedAt: row.finished_at === null ? undefined : toMillis(row.finished_at),
-    error: row.error === null ? undefined : String(row.error),
-    abortRequestedAt: row.abort_requested_at === null ? undefined : toMillis(row.abort_requested_at),
-    abortReason: row.abort_reason === null ? undefined : String(row.abort_reason),
-  };
-}
-
-async function withTransaction<T>(pool: PgPoolLike, fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-    const result = await fn(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
 export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   private readonly pool: PgPoolLike;
   private readonly tables: ThreadRuntimeTableNames;
@@ -176,89 +85,16 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     ]);
   }
 
+  private async touchThread(threadId: string, queryable: PgQueryable = this.pool): Promise<void> {
+    await queryable.query(
+      `UPDATE ${this.tables.threads} SET updated_at = NOW() WHERE id = $1`,
+      [threadId],
+    );
+  }
+
   async ensureSchema(): Promise<void> {
     await this.identityStore.ensureSchema();
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.threads} (
-        id TEXT PRIMARY KEY,
-        identity_id TEXT NOT NULL REFERENCES ${this.identityTableName}(id) ON DELETE RESTRICT,
-        agent_key TEXT NOT NULL,
-        system_prompt JSONB,
-        max_turns INTEGER,
-        context JSONB,
-        max_input_tokens INTEGER,
-        prompt_cache_key TEXT,
-        provider TEXT,
-        model TEXT,
-        temperature DOUBLE PRECISION,
-        thinking TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-
-      CREATE TABLE IF NOT EXISTS ${this.tables.messages} (
-        id UUID PRIMARY KEY,
-        thread_id TEXT NOT NULL REFERENCES ${this.tables.threads}(id) ON DELETE CASCADE,
-        sequence BIGSERIAL NOT NULL,
-        origin TEXT NOT NULL,
-        source TEXT NOT NULL,
-        channel_id TEXT,
-        external_message_id TEXT,
-        actor_id TEXT,
-        run_id UUID,
-        created_at TIMESTAMPTZ NOT NULL,
-        metadata JSONB,
-        message JSONB NOT NULL
-      );
-
-      ALTER TABLE ${this.tables.messages}
-      ADD COLUMN IF NOT EXISTS metadata JSONB;
-
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_messages_thread_sequence_idx`)}
-      ON ${this.tables.messages} (thread_id, sequence);
-
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_threads_identity_updated_idx`)}
-      ON ${this.tables.threads} (identity_id, updated_at DESC);
-
-      CREATE TABLE IF NOT EXISTS ${this.tables.inputs} (
-        id UUID PRIMARY KEY,
-        thread_id TEXT NOT NULL REFERENCES ${this.tables.threads}(id) ON DELETE CASCADE,
-        input_order BIGSERIAL NOT NULL,
-        delivery_mode TEXT NOT NULL DEFAULT 'wake',
-        source TEXT NOT NULL,
-        channel_id TEXT,
-        external_message_id TEXT,
-        actor_id TEXT,
-        created_at TIMESTAMPTZ NOT NULL,
-        applied_at TIMESTAMPTZ,
-        metadata JSONB,
-        message JSONB NOT NULL
-      );
-
-      ALTER TABLE ${this.tables.inputs}
-      ADD COLUMN IF NOT EXISTS metadata JSONB;
-
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_inputs_thread_order_idx`)}
-      ON ${this.tables.inputs} (thread_id, applied_at, input_order);
-
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_inputs_external_message_idx`)}
-      ON ${this.tables.inputs} (thread_id, source, COALESCE(channel_id, ''), external_message_id)
-      WHERE external_message_id IS NOT NULL;
-
-      CREATE TABLE IF NOT EXISTS ${this.tables.runs} (
-        id UUID PRIMARY KEY,
-        thread_id TEXT NOT NULL REFERENCES ${this.tables.threads}(id) ON DELETE CASCADE,
-        status TEXT NOT NULL,
-        started_at TIMESTAMPTZ NOT NULL,
-        finished_at TIMESTAMPTZ,
-        abort_requested_at TIMESTAMPTZ,
-        abort_reason TEXT,
-        error TEXT
-      );
-
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_runs_thread_started_idx`)}
-      ON ${this.tables.runs} (thread_id, started_at);
-    `);
+    await this.pool.query(buildThreadRuntimeSchemaSql(this.tables, this.identityTableName));
   }
 
   async createThread(input: CreateThreadInput): Promise<ThreadRecord> {
@@ -500,189 +336,24 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     payload: ThreadInputPayload,
     deliveryMode: ThreadInputDeliveryMode = "wake",
   ): Promise<ThreadEnqueueResult> {
-    if (payload.externalMessageId) {
-      const existingResult = await this.pool.query(`
-        SELECT *
-        FROM ${this.tables.inputs}
-        WHERE thread_id = $1
-          AND source = $2
-          AND (($3::text IS NULL AND channel_id IS NULL) OR channel_id = $3::text)
-          AND external_message_id = $4
-        ORDER BY input_order DESC
-        LIMIT 1
-      `, [
-        threadId,
-        payload.source,
-        payload.channelId ?? null,
-        payload.externalMessageId,
-      ]);
-
-      const existingRow = existingResult.rows[0] as Record<string, unknown> | undefined;
-      if (existingRow) {
-        let record = parseInputRow(existingRow);
-        let promoted = false;
-
-        if (!record.appliedAt && record.deliveryMode === "queue" && deliveryMode === "wake") {
-          const promotedResult = await this.pool.query(`
-            UPDATE ${this.tables.inputs}
-            SET delivery_mode = 'wake'
-            WHERE id = $1
-            RETURNING *
-          `, [record.id]);
-
-          record = parseInputRow(promotedResult.rows[0] as Record<string, unknown>);
-          promoted = true;
-        }
-
-        if (promoted) {
-          await this.pool.query(
-            `UPDATE ${this.tables.threads} SET updated_at = NOW() WHERE id = $1`,
-            [threadId],
-          );
-          await this.notifyThreadChanged(threadId);
-        }
-
-        return {
-          input: record,
-          inserted: false,
-        };
-      }
-    }
-
-    const id = randomUUID();
-    const createdAt = new Date();
-    let result;
-    try {
-      result = await this.pool.query(`
-        INSERT INTO ${this.tables.inputs} (
-          id,
-          thread_id,
-          delivery_mode,
-          source,
-          channel_id,
-          external_message_id,
-          actor_id,
-          created_at,
-          metadata,
-          message
-        ) VALUES (
-          $1,
-          $2,
-          $3,
-          $4,
-          $5,
-          $6,
-          $7,
-          $8,
-          $9::jsonb,
-          $10::jsonb
-        )
-        RETURNING *
-      `, [
-        id,
-        threadId,
-        deliveryMode,
-        payload.source,
-        payload.channelId ?? null,
-        payload.externalMessageId ?? null,
-        payload.actorId ?? null,
-        createdAt,
-        toJson(payload.metadata),
-        toJson(payload.message),
-      ]);
-    } catch (error) {
-      const duplicateKey = error as { code?: string };
-      if (duplicateKey.code === "23505" && payload.externalMessageId) {
-        return this.enqueueInput(threadId, payload, deliveryMode);
-      }
-
-      throw error;
-    }
-
-    await this.pool.query(
-      `UPDATE ${this.tables.threads} SET updated_at = NOW() WHERE id = $1`,
-      [threadId],
-    );
-
-    const record = parseInputRow(result.rows[0] as Record<string, unknown>);
-    await this.notifyThreadChanged(threadId);
-    return {
-      input: record,
-      inserted: true,
-    };
+    return enqueueThreadInput({
+      pool: this.pool,
+      tables: this.tables,
+      threadId,
+      payload,
+      deliveryMode,
+      touchThread: (id, queryable) => this.touchThread(id, queryable),
+      notifyThreadChanged: (id, queryable) => this.notifyThreadChanged(id, queryable),
+    });
   }
 
   async applyPendingInputs(threadId: string): Promise<readonly ThreadMessageRecord[]> {
-    return withTransaction(this.pool, async (client) => {
-      const pendingResult = await client.query(`
-        SELECT *
-        FROM ${this.tables.inputs}
-        WHERE thread_id = $1 AND applied_at IS NULL
-        ORDER BY input_order ASC
-        FOR UPDATE
-      `, [threadId]);
-
-      if (pendingResult.rows.length === 0) {
-        return [];
-      }
-
-      await client.query(
-        `UPDATE ${this.tables.threads} SET updated_at = NOW() WHERE id = $1`,
-        [threadId],
-      );
-
-      const pendingRows = pendingResult.rows.map((row) => row as Record<string, unknown>);
-
-      const inserted: ThreadMessageRecord[] = [];
-
-      for (const row of pendingRows) {
-        await client.query(
-          `UPDATE ${this.tables.inputs} SET applied_at = NOW() WHERE id = $1`,
-          [String(row.id)],
-        );
-
-        const insertResult = await client.query(`
-          INSERT INTO ${this.tables.messages} (
-            id,
-            thread_id,
-            origin,
-            source,
-            channel_id,
-            external_message_id,
-            actor_id,
-            created_at,
-            metadata,
-            message
-          ) VALUES (
-            $1,
-            $2,
-            'input',
-            $3,
-            $4,
-            $5,
-            $6,
-            $7,
-            $8::jsonb,
-            $9::jsonb
-          )
-          RETURNING *
-        `, [
-          randomUUID(),
-          threadId,
-          row.source,
-          row.channel_id ?? null,
-          row.external_message_id ?? null,
-          row.actor_id ?? null,
-          row.created_at,
-          toJson(row.metadata ?? null),
-          toJson(row.message),
-        ]);
-
-        inserted.push(parseMessageRow(insertResult.rows[0] as Record<string, unknown>));
-      }
-
-      await this.notifyThreadChanged(threadId, client);
-      return inserted;
+    return applyPendingThreadInputs({
+      pool: this.pool,
+      tables: this.tables,
+      threadId,
+      touchThread: (id, queryable) => this.touchThread(id, queryable),
+      notifyThreadChanged: (id, queryable) => this.notifyThreadChanged(id, queryable),
     });
   }
 
@@ -707,24 +378,13 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   }
 
   async promoteQueuedInputs(threadId?: string): Promise<readonly string[]> {
-    const values: unknown[] = [];
-    let whereClause = "applied_at IS NULL AND delivery_mode = 'queue'";
-
-    if (threadId) {
-      values.push(threadId);
-      whereClause += " AND thread_id = $1";
-    }
-
-    const result = await this.pool.query(`
-      UPDATE ${this.tables.inputs}
-      SET delivery_mode = 'wake'
-      WHERE ${whereClause}
-      RETURNING thread_id
-    `, values);
-
-    const promotedThreadIds = [...new Set(result.rows.map((row) => String((row as Record<string, unknown>).thread_id)))];
-    await Promise.all(promotedThreadIds.map((id) => this.notifyThreadChanged(id)));
-    return promotedThreadIds;
+    return promoteQueuedThreadInputs({
+      pool: this.pool,
+      tables: this.tables,
+      threadId,
+      touchThread: (id, queryable) => this.touchThread(id, queryable),
+      notifyThreadChanged: (id, queryable) => this.notifyThreadChanged(id, queryable),
+    });
   }
 
   async appendRuntimeMessage(
@@ -771,10 +431,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       toJson(payload.message),
     ]);
 
-    await this.pool.query(
-      `UPDATE ${this.tables.threads} SET updated_at = NOW() WHERE id = $1`,
-      [threadId],
-    );
+    await this.touchThread(threadId);
 
     const record = parseMessageRow(result.rows[0] as Record<string, unknown>);
     await this.notifyThreadChanged(threadId);
@@ -801,10 +458,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       new Date(),
     ]);
 
-    await this.pool.query(
-      `UPDATE ${this.tables.threads} SET updated_at = NOW() WHERE id = $1`,
-      [threadId],
-    );
+    await this.touchThread(threadId);
 
     const record = parseRunRow(result.rows[0] as Record<string, unknown>);
     await this.notifyThreadChanged(threadId);

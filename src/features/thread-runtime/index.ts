@@ -1,5 +1,4 @@
 export {
-  InMemoryThreadLeaseManager,
   ThreadRuntimeCoordinator,
   type ThreadLease,
   type ThreadLeaseManager,
@@ -8,12 +7,8 @@ export {
   type ThreadWakeMode,
 } from "./coordinator.js";
 export {
-  buildThreadRuntimeNotificationChannel,
-  parseThreadRuntimeNotification,
   PostgresThreadLeaseManager,
   PostgresThreadRuntimeStore,
-  hashThreadLeaseKey,
-  type ThreadRuntimeNotification,
 } from "./postgres.js";
 export {
   ensureReadonlyChatQuerySchema,
@@ -23,11 +18,8 @@ export type { ReadonlyChatViewNames } from "./postgres-readonly.js";
 export {
   InMemoryThreadRuntimeStore,
   type InMemoryThreadRuntimeStoreOptions,
-  type ThreadEnqueueResult,
-  type ThreadRuntimeStore,
 } from "./store.js";
 export {
-  COMPACT_SUMMARY_PREFIX,
   DEFAULT_COMPACT_PRESERVED_USER_TURNS,
   createCompactBoundaryMessage,
   estimateTranscriptTokens,
@@ -39,7 +31,7 @@ export {
   splitTranscriptForCompaction,
   type CompactBoundaryMetadata,
   type CompactTranscriptSplit,
-} from "./compact.js";
+} from "./compaction.js";
 export {
   type CreateThreadInput,
   isMissingThreadError,

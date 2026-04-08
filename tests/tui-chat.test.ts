@@ -5,6 +5,7 @@ import type { ThreadRunRecord } from "../src/features/thread-runtime/index.js";
 import * as markdown from "../src/features/tui/markdown.js";
 import * as tuiRuntime from "../src/features/tui/runtime.js";
 import type { ChatRuntimeServices } from "../src/features/tui/runtime.js";
+import { createComposerState, setComposerValue } from "../src/features/tui/composer.js";
 import { PandaChatApp, runChatCli } from "../src/features/tui/chat.js";
 
 type AppHarness = {
@@ -14,7 +15,7 @@ type AppHarness = {
   services: ChatRuntimeServices | null;
   transcript: Array<{ title: string; body: string }>;
   render(): void;
-  handleKeypress(sequence: string, key: { ctrl?: boolean; name?: string }): Promise<void>;
+  handleKeypress(sequence: string, key: { ctrl?: boolean; meta?: boolean; shift?: boolean; name?: string }): Promise<void>;
   observeLatestRun(runs: readonly ThreadRunRecord[]): void;
   handleRuntimeEvent(event: unknown): Promise<void>;
   cleanup(): Promise<void>;
@@ -252,6 +253,56 @@ describe("PandaChatApp bracketed paste", () => {
     await app.handleKeypress("\r", { name: "return" });
 
     expect(submitComposer).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PandaChatApp composer word shortcuts", () => {
+  it("supports meta-left and meta-b for moving backward by word", async () => {
+    const app = new PandaChatApp() as any;
+    app.render = vi.fn();
+
+    const value = "alpha beta gamma";
+    app.composer = createComposerState(value);
+
+    await app.handleKeypress("", { meta: true, name: "left" });
+    expect(app.composer.cursor).toBe("alpha beta ".length);
+
+    await app.handleKeypress("\u001bb", { name: "b" });
+    expect(app.composer.cursor).toBe("alpha ".length);
+  });
+
+  it("supports raw alt-arrow sequences and meta-f/right for moving forward by word", async () => {
+    const app = new PandaChatApp() as any;
+    app.render = vi.fn();
+
+    const value = "alpha beta gamma";
+    app.composer = setComposerValue(createComposerState(value), value, "alpha ".length);
+
+    await app.handleKeypress("\u001b[1;3C", { name: "right" });
+    expect(app.composer.cursor).toBe("alpha beta".length);
+
+    await app.handleKeypress("\u001bf", { name: "f" });
+    expect(app.composer.cursor).toBe(value.length);
+
+    app.composer = setComposerValue(createComposerState(value), value, 0);
+    await app.handleKeypress("", { meta: true, name: "right" });
+    expect(app.composer.cursor).toBe("alpha".length);
+  });
+
+  it("supports meta-backspace for deleting the previous word", async () => {
+    const app = new PandaChatApp() as any;
+    app.render = vi.fn();
+
+    const value = "alpha beta gamma";
+    app.composer = createComposerState(value);
+
+    await app.handleKeypress("\u001b\u007f", { name: "backspace" });
+    expect(app.composer.value).toBe("alpha beta ");
+    expect(app.composer.cursor).toBe("alpha beta ".length);
+
+    await app.handleKeypress("", { meta: true, name: "backspace" });
+    expect(app.composer.value).toBe("alpha ");
+    expect(app.composer.cursor).toBe("alpha ".length);
   });
 });
 
