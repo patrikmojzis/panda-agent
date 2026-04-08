@@ -1,8 +1,8 @@
 import type { Pool } from "pg";
 
 import {
-  buildThreadRuntimeRelationNames,
   buildThreadRuntimeTableNames,
+  validateIdentifier,
   quoteIdentifier,
 } from "./postgres-shared.js";
 
@@ -13,6 +13,8 @@ interface PgQueryable {
 export interface ReadonlyChatViewNames {
   threads: string;
   messages: string;
+  messagesRaw: string;
+  toolResults: string;
   inputs: string;
   runs: string;
 }
@@ -33,14 +35,55 @@ export function readDatabaseUsername(databaseUrl: string): string | null {
   }
 }
 
+function buildReadonlyChatViewNames(prefix: string): ReadonlyChatViewNames {
+  const safePrefix = validateIdentifier(prefix);
+  return {
+    threads: quoteIdentifier(`${safePrefix}_threads`),
+    messages: quoteIdentifier(`${safePrefix}_messages`),
+    messagesRaw: quoteIdentifier(`${safePrefix}_messages_raw`),
+    toolResults: quoteIdentifier(`${safePrefix}_tool_results`),
+    inputs: quoteIdentifier(`${safePrefix}_inputs`),
+    runs: quoteIdentifier(`${safePrefix}_runs`),
+  };
+}
+
 export async function ensureReadonlyChatQuerySchema(
   options: EnsureReadonlyChatQuerySchemaOptions,
 ): Promise<ReadonlyChatViewNames> {
   const tables = buildThreadRuntimeTableNames(options.tablePrefix ?? "thread_runtime");
-  const views = buildThreadRuntimeRelationNames(options.viewPrefix ?? "panda");
+  const views = buildReadonlyChatViewNames(options.viewPrefix ?? "panda");
+  const messageTextSql = `
+    CASE
+      WHEN jsonb_typeof(m.message->'content') = 'string' THEN m.message->>'content'
+      WHEN jsonb_typeof(m.message->'content') = 'array' THEN (
+        SELECT string_agg(block->>'text', E'\\n')
+        FROM jsonb_array_elements(m.message->'content') AS block
+        WHERE block->>'type' = 'text'
+      )
+      ELSE NULL
+    END
+  `;
+  const inputTextSql = `
+    CASE
+      WHEN jsonb_typeof(i.message->'content') = 'string' THEN i.message->>'content'
+      WHEN jsonb_typeof(i.message->'content') = 'array' THEN (
+        SELECT string_agg(block->>'text', E'\\n')
+        FROM jsonb_array_elements(i.message->'content') AS block
+        WHERE block->>'type' = 'text'
+      )
+      ELSE NULL
+    END
+  `;
 
   await options.queryable.query(`
-    CREATE OR REPLACE VIEW ${views.threads}
+    DROP VIEW IF EXISTS ${views.toolResults};
+    DROP VIEW IF EXISTS ${views.messages};
+    DROP VIEW IF EXISTS ${views.messagesRaw};
+    DROP VIEW IF EXISTS ${views.inputs};
+    DROP VIEW IF EXISTS ${views.runs};
+    DROP VIEW IF EXISTS ${views.threads};
+
+    CREATE VIEW ${views.threads}
     WITH (security_barrier = true) AS
     SELECT
       t.id,
@@ -74,7 +117,7 @@ export async function ensureReadonlyChatQuerySchema(
     FROM ${tables.threads} AS t
     WHERE t.agent_key = current_setting('panda.agent_key', true);
 
-    CREATE OR REPLACE VIEW ${views.messages}
+    CREATE VIEW ${views.messagesRaw}
     WITH (security_barrier = true) AS
     SELECT
       m.id,
@@ -90,15 +133,7 @@ export async function ensureReadonlyChatQuerySchema(
       m.message,
       m.message->>'role' AS role,
       COALESCE(m.message->>'toolName', NULL) AS tool_name,
-      CASE
-        WHEN jsonb_typeof(m.message->'content') = 'string' THEN m.message->>'content'
-        WHEN jsonb_typeof(m.message->'content') = 'array' THEN (
-          SELECT string_agg(block->>'text', E'\\n')
-          FROM jsonb_array_elements(m.message->'content') AS block
-          WHERE block->>'type' = 'text'
-        )
-        ELSE NULL
-      END AS text,
+      ${messageTextSql} AS text,
       CASE
         WHEN jsonb_typeof(m.message->'content') = 'array' THEN EXISTS (
           SELECT 1
@@ -111,7 +146,54 @@ export async function ensureReadonlyChatQuerySchema(
     INNER JOIN ${tables.threads} AS t ON t.id = m.thread_id
     WHERE t.agent_key = current_setting('panda.agent_key', true);
 
-    CREATE OR REPLACE VIEW ${views.inputs}
+    CREATE VIEW ${views.messages}
+    WITH (security_barrier = true) AS
+    SELECT
+      raw.id,
+      raw.thread_id,
+      raw.sequence,
+      raw.origin,
+      raw.source,
+      raw.channel_id,
+      raw.external_message_id,
+      raw.actor_id,
+      raw.run_id,
+      raw.created_at,
+      raw.role,
+      CASE
+        WHEN raw.text IS NOT NULL THEN raw.text
+        WHEN raw.role = 'assistant' AND jsonb_typeof(raw.message->'content') = 'array' THEN (
+          SELECT string_agg('[tool call: ' || COALESCE(block->>'name', 'unknown') || ']', E'\\n')
+          FROM jsonb_array_elements(raw.message->'content') AS block
+          WHERE block->>'type' = 'toolCall'
+        )
+        ELSE NULL
+      END AS text,
+      raw.has_images
+    FROM ${views.messagesRaw} AS raw
+    WHERE raw.role IN ('user', 'assistant');
+
+    CREATE VIEW ${views.toolResults}
+    WITH (security_barrier = true) AS
+    SELECT
+      raw.id,
+      raw.thread_id,
+      raw.sequence,
+      raw.source,
+      raw.run_id,
+      raw.created_at,
+      COALESCE(raw.tool_name, 'unknown') AS tool_name,
+      COALESCE((raw.message->>'isError')::BOOLEAN, false) AS is_error,
+      CASE
+        WHEN raw.text IS NULL OR btrim(raw.text) = '' THEN '[tool result: ' || COALESCE(raw.tool_name, 'unknown') || ']'
+        ELSE left(raw.text, 500)
+      END AS result_preview,
+      octet_length(convert_to(COALESCE(raw.text, ''), 'utf8'))::INTEGER AS result_bytes,
+      raw.has_images
+    FROM ${views.messagesRaw} AS raw
+    WHERE raw.role = 'toolResult';
+
+    CREATE VIEW ${views.inputs}
     WITH (security_barrier = true) AS
     SELECT
       i.id,
@@ -126,15 +208,7 @@ export async function ensureReadonlyChatQuerySchema(
       i.applied_at,
       i.message,
       i.message->>'role' AS role,
-      CASE
-        WHEN jsonb_typeof(i.message->'content') = 'string' THEN i.message->>'content'
-        WHEN jsonb_typeof(i.message->'content') = 'array' THEN (
-          SELECT string_agg(block->>'text', E'\\n')
-          FROM jsonb_array_elements(i.message->'content') AS block
-          WHERE block->>'type' = 'text'
-        )
-        ELSE NULL
-      END AS text,
+      ${inputTextSql} AS text,
       CASE
         WHEN jsonb_typeof(i.message->'content') = 'array' THEN EXISTS (
           SELECT 1
@@ -147,7 +221,7 @@ export async function ensureReadonlyChatQuerySchema(
     INNER JOIN ${tables.threads} AS t ON t.id = i.thread_id
     WHERE t.agent_key = current_setting('panda.agent_key', true);
 
-    CREATE OR REPLACE VIEW ${views.runs}
+    CREATE VIEW ${views.runs}
     WITH (security_barrier = true) AS
     SELECT
       r.id,
@@ -167,7 +241,7 @@ export async function ensureReadonlyChatQuerySchema(
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA public TO ${readonlyRole};
-      GRANT SELECT ON ${views.threads}, ${views.messages}, ${views.inputs}, ${views.runs} TO ${readonlyRole};
+      GRANT SELECT ON ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs} TO ${readonlyRole};
     `);
   }
 

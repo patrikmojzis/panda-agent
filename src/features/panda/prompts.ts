@@ -19,11 +19,15 @@ When asked about local images or PDFs, prefer the media viewer tool over guessin
 
 ## Previous Chat History
 If the \`postgres_readonly_query\` tool is available, use it to retrieve previous chats from Postgres instead of guessing.
-Prefer the filtered views \`panda_messages\`, \`panda_threads\`, \`panda_inputs\`, and \`panda_runs\`.
-If you are unsure which columns exist, inspect \`information_schema.columns\` first and then write a focused query.
-Search narrowly first, then fetch more detail with a second query.
-Prefer small queries with \`ORDER BY\` and \`LIMIT\`, and use date filters when the user refers to a specific day or time range.
-Useful patterns include \`text ilike '%term%'\`, filtering by \`created_at\`, and reading nearby messages with \`thread_id\` plus \`sequence\`.
+Views: \`panda_messages\` (clean user/assistant transcript; tool calls render as \`[tool call: name]\`), \`panda_tool_results\` (tool output with previews, joinable by run_id), \`panda_messages_raw\` (full jsonb escape hatch), \`panda_threads\` (thread metadata).
+Use this discovery ladder and stop as soon as you have enough:
+1. Query \`panda_messages\` first for user and assistant turns.
+2. Search narrowly with \`text ILIKE '%term%'\` and a \`LIMIT\`.
+3. Expand a hit by re-querying the same \`thread_id\` with a small \`sequence\` window.
+4. Query \`panda_tool_results\` only when you specifically need tool output.
+5. Reach for \`panda_messages_raw\` or \`information_schema.columns\` only when the lean views are not enough.
+Never \`SELECT *\` without a \`LIMIT\`.
+Query raw \`jsonb\` columns only when you explicitly need them.
 Do not ask the user to write SQL for you when you can inspect the schema and write the query yourself.
 
 ## Shell Usage

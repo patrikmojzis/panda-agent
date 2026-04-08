@@ -1,15 +1,15 @@
-import type { Pool, PoolClient } from "pg";
+import type { PoolClient } from "pg";
 import { z } from "zod";
 
 import { Tool } from "../../agent-core/tool.js";
 import { ToolError } from "../../agent-core/exceptions.js";
 import type { RunContext } from "../../agent-core/run-context.js";
 import type { JsonObject, JsonValue, ToolResultPayload } from "../../agent-core/types.js";
-import type { ReadonlyChatViewNames } from "../../thread-runtime/postgres-readonly.js";
 import type { PandaSessionContext } from "../types.js";
 
-const MAX_ROWS = 100;
-const MAX_OUTPUT_BYTES = 64_000;
+const MAX_ROWS = 50;
+const MAX_OUTPUT_BYTES = 32_000;
+const MAX_CELL_BYTES = 4_000;
 const MAX_STRING_CHARS = 4_000;
 const STATEMENT_TIMEOUT_MS = 5_000;
 const LOCK_TIMEOUT_MS = 500;
@@ -21,7 +21,6 @@ interface PgPoolLike {
 
 export interface PostgresReadonlyQueryToolOptions {
   pool: PgPoolLike;
-  viewNames?: Partial<ReadonlyChatViewNames>;
   maxRows?: number;
   maxOutputBytes?: number;
   maxStringChars?: number;
@@ -60,12 +59,37 @@ function truncateText(value: string, maxChars: number): string {
   return `${value.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
-function sanitizeValue(value: unknown, maxStringChars: number): JsonValue {
+type TruncationReason = "row_cap" | "output_cap" | "cell_cap";
+
+interface SanitizeState {
+  readonly reasons: Set<TruncationReason>;
+}
+
+function markTruncation(state: SanitizeState, reason: TruncationReason): void {
+  state.reasons.add(reason);
+}
+
+function byteLengthOf(value: unknown): number | null {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function summarizeLargeValue(bytes: number): string {
+  return `<jsonb ${bytes}B omitted; query specific fields>`;
+}
+
+function sanitizeCell(value: unknown, maxStringChars: number, state: SanitizeState): JsonValue {
   if (value === null || value === undefined) {
     return null;
   }
 
   if (typeof value === "string") {
+    if (value.length > maxStringChars) {
+      markTruncation(state, "cell_cap");
+    }
     return truncateText(value, maxStringChars);
   }
 
@@ -78,29 +102,49 @@ function sanitizeValue(value: unknown, maxStringChars: number): JsonValue {
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeValue(item, maxStringChars));
+    const bytes = byteLengthOf(value);
+    if (bytes !== null && bytes > MAX_CELL_BYTES) {
+      markTruncation(state, "cell_cap");
+      return summarizeLargeValue(bytes);
+    }
+
+    return value.map((item) => sanitizeCell(item, maxStringChars, state));
   }
 
   if (isRecord(value)) {
     const looksLikeImageBlock = value.type === "image" && typeof value.data === "string";
+    const bytes = byteLengthOf(value);
+    if (bytes !== null && bytes > MAX_CELL_BYTES && !looksLikeImageBlock) {
+      markTruncation(state, "cell_cap");
+      return summarizeLargeValue(bytes);
+    }
+
     if (looksLikeImageBlock) {
       const omittedBytes = (value.data as string).length;
+      markTruncation(state, "cell_cap");
       return {
         ...Object.fromEntries(
           Object.entries(value)
             .filter(([key]) => key !== "data")
-            .map(([key, nested]) => [key, sanitizeValue(nested, maxStringChars)]),
+            .map(([key, nested]) => [key, sanitizeCell(nested, maxStringChars, state)]),
         ),
         data: `[omitted image data: ${omittedBytes} chars]`,
       } satisfies JsonObject;
     }
 
     return Object.fromEntries(
-      Object.entries(value).map(([key, nested]) => [key, sanitizeValue(nested, maxStringChars)]),
+      Object.entries(value).map(([key, nested]) => [key, sanitizeCell(nested, maxStringChars, state)]),
     ) as JsonObject;
   }
 
+  markTruncation(state, "cell_cap");
   return truncateText(String(value), maxStringChars);
+}
+
+function sanitizeRow(row: Record<string, unknown>, maxStringChars: number, state: SanitizeState): JsonObject {
+  return Object.fromEntries(
+    Object.entries(row).map(([key, value]) => [key, sanitizeCell(value, maxStringChars, state)]),
+  ) as JsonObject;
 }
 
 function fitRowsToByteBudget(
@@ -142,17 +186,16 @@ export class PostgresReadonlyQueryTool<TContext = PandaSessionContext>
   extends Tool<typeof PostgresReadonlyQueryTool.schema, TContext> {
   static schema = z.object({
     sql: z.string().trim().min(1).describe(
-      "A single read-only SELECT or WITH query. Prefer the filtered views panda_threads, panda_messages, panda_inputs, and panda_runs. If you need to inspect available columns first, query information_schema.columns.",
+      "A single read-only SELECT or WITH query. Prefer panda_messages for user and assistant chat turns, panda_tool_results for tool output, panda_threads for thread metadata, and panda_messages_raw only when you truly need raw JSONB. If you need schema help, query information_schema.columns.",
     ),
   });
 
   name = "postgres_readonly_query";
   description =
-    "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. Prefer querying the filtered views panda_threads, panda_messages, panda_inputs, and panda_runs; those views are already limited to the current agent key. If you need schema help, query information_schema.columns. Always prefer small queries with ORDER BY and LIMIT.";
+    "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. Prefer panda_messages for the human conversation, panda_tool_results for tool output, panda_threads for thread metadata, and panda_messages_raw only when you need raw JSONB. Query information_schema.columns if you need schema help. Always use LIMIT on exploratory queries.";
   schema = PostgresReadonlyQueryTool.schema;
 
   private readonly pool: PgPoolLike;
-  private readonly viewNames: ReadonlyChatViewNames;
   private readonly maxRows: number;
   private readonly maxOutputBytes: number;
   private readonly maxStringChars: number;
@@ -160,12 +203,6 @@ export class PostgresReadonlyQueryTool<TContext = PandaSessionContext>
   constructor(options: PostgresReadonlyQueryToolOptions) {
     super();
     this.pool = options.pool;
-    this.viewNames = {
-      threads: options.viewNames?.threads ?? "panda_threads",
-      messages: options.viewNames?.messages ?? "panda_messages",
-      inputs: options.viewNames?.inputs ?? "panda_inputs",
-      runs: options.viewNames?.runs ?? "panda_runs",
-    };
     this.maxRows = options.maxRows ?? MAX_ROWS;
     this.maxOutputBytes = options.maxOutputBytes ?? MAX_OUTPUT_BYTES;
     this.maxStringChars = options.maxStringChars ?? MAX_STRING_CHARS;
@@ -181,6 +218,7 @@ export class PostgresReadonlyQueryTool<TContext = PandaSessionContext>
   ): Promise<ToolResultPayload> {
     const { agentKey } = readScope(run.context);
     const sql = assertReadonlySql(args.sql);
+    const limitedSql = `SELECT * FROM (${sql}) AS panda_readonly_query LIMIT ${this.maxRows + 1}`;
     const client = await this.pool.connect();
     const startedAt = Date.now();
 
@@ -191,29 +229,29 @@ export class PostgresReadonlyQueryTool<TContext = PandaSessionContext>
       await client.query(`SET LOCAL idle_in_transaction_session_timeout = '${IDLE_TX_TIMEOUT_MS}ms'`);
       await client.query("SELECT set_config('panda.agent_key', $1, true)", [agentKey]);
 
-      const result = await client.query(sql);
+      const result = await client.query(limitedSql);
       await client.query("COMMIT");
 
-      const sanitizedRows = result.rows.map((row) => sanitizeValue(row, this.maxStringChars) as JsonObject);
+      const sanitizeState: SanitizeState = {
+        reasons: new Set<TruncationReason>(),
+      };
+      const sanitizedRows = result.rows.map((row) => sanitizeRow(row as Record<string, unknown>, this.maxStringChars, sanitizeState));
       const rowTruncated = sanitizedRows.length > this.maxRows;
       const cappedRows = sanitizedRows.slice(0, this.maxRows);
       const { rows, truncated: byteTruncated } = fitRowsToByteBudget(cappedRows, this.maxOutputBytes);
+      if (rowTruncated) {
+        markTruncation(sanitizeState, "row_cap");
+      }
+      if (byteTruncated) {
+        markTruncation(sanitizeState, "output_cap");
+      }
+      const truncationReasons = [...sanitizeState.reasons];
 
       const payload: JsonObject = {
-        sql,
-        rowCount: rows.length,
-        truncated: rowTruncated || byteTruncated,
-        truncationReasons: [
-          ...(rowTruncated ? ["row_cap"] : []),
-          ...(byteTruncated ? ["output_cap"] : []),
-        ],
+        rowCount: Math.min(result.rows.length, this.maxRows),
+        truncated: truncationReasons.length > 0,
+        truncationReasons,
         elapsedMs: Date.now() - startedAt,
-        views: {
-          threads: this.viewNames.threads,
-          messages: this.viewNames.messages,
-          inputs: this.viewNames.inputs,
-          runs: this.viewNames.runs,
-        },
         rows: [...rows],
       };
 

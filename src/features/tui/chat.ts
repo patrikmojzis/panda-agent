@@ -86,6 +86,14 @@ interface TranscriptLine {
   rendered: string;
 }
 
+interface TranscriptLineCacheEntry {
+  role: EntryRole;
+  title: string;
+  body: string;
+  bodyWidth: number;
+  lines: readonly TranscriptLine[];
+}
+
 interface NoticeState {
   text: string;
   tone: NoticeTone;
@@ -159,6 +167,8 @@ const MAX_VISIBLE_PENDING_LOCAL_INPUTS = 3;
 const NOTICE_MS = 3_600;
 const WELCOME_TWO_COLUMN_MIN_WIDTH = 72;
 const WELCOME_MAX_WIDTH = 108;
+const BRACKETED_PASTE_ON = "\u001b[?2004h";
+const BRACKETED_PASTE_OFF = "\u001b[?2004l";
 const PANDA_SPLASH = [
   "                       _       ",
   "                      | |      ",
@@ -425,6 +435,7 @@ export class PandaChatApp {
   private currentStorageMode: "memory" | "postgres" = "memory";
   private currentTools: readonly Tool[] = [];
   private readonly visibleStoredMessageIds = new Set<string>();
+  private readonly transcriptLineCache = new Map<number, TranscriptLineCacheEntry>();
   private runPhase: RunPhase = "idle";
   private runStartedAt = 0;
   private notice: NoticeState | null = null;
@@ -446,6 +457,11 @@ export class PandaChatApp {
   private threadPickerRefreshRequested = false;
   private closeAfterRun = false;
   private closeAfterRunWaitInFlight = false;
+  private dirty = false;
+  private renderQueued = false;
+  private lastSpinnerFrame = -1;
+  private syncDebounceTimer: NodeJS.Timeout | null = null;
+  private inBracketedPaste = false;
 
   private readonly keypressHandler = (sequence: string, key: KeyLike): void => {
     void this.handleKeypress(sequence, key);
@@ -485,6 +501,7 @@ export class PandaChatApp {
     output.on("resize", this.resizeHandler);
     this.startTicker();
     this.enterScreen();
+    this.setBracketedPasteMode(true);
 
     if (this.transcript.length === 0) {
       this.pushEntry(
@@ -526,6 +543,12 @@ export class PandaChatApp {
       this.syncTicker = null;
     }
 
+    if (this.syncDebounceTimer) {
+      clearTimeout(this.syncDebounceTimer);
+      this.syncDebounceTimer = null;
+    }
+
+    this.setBracketedPasteMode(false);
     input.off("keypress", this.keypressHandler);
     input.pause();
     output.off("resize", this.resizeHandler);
@@ -595,7 +618,9 @@ export class PandaChatApp {
         return;
       }
 
-      if (this.runPhase !== "idle" || this.notice) {
+      const nextSpinnerFrame = this.spinnerFrameIndex();
+      const noticeExpired = Boolean(this.notice && this.notice.expiresAt <= Date.now());
+      if (this.dirty || noticeExpired || nextSpinnerFrame !== this.lastSpinnerFrame) {
         this.render();
       }
     }, TICK_MS);
@@ -617,6 +642,51 @@ export class PandaChatApp {
     }
 
     return this.services;
+  }
+
+  private markDirty(): void {
+    this.dirty = true;
+  }
+
+  private requestRender(): void {
+    this.markDirty();
+
+    if (this.renderQueued || this.closed) {
+      return;
+    }
+
+    this.renderQueued = true;
+    queueMicrotask(() => {
+      this.renderQueued = false;
+      if (this.closed || !this.dirty) {
+        return;
+      }
+
+      this.render();
+    });
+  }
+
+  private spinnerFrameIndex(): number {
+    if (!this.isRunning) {
+      return -1;
+    }
+
+    return Math.floor(Date.now() / TICK_MS) % SPINNER_FRAMES.length;
+  }
+
+  private scheduleSyncStoredThreadState(delayMs = 150): void {
+    if (!this.currentThreadId || !this.services) {
+      return;
+    }
+
+    if (this.syncDebounceTimer) {
+      clearTimeout(this.syncDebounceTimer);
+    }
+
+    this.syncDebounceTimer = setTimeout(() => {
+      this.syncDebounceTimer = null;
+      void this.syncStoredThreadState(true);
+    }, delayMs);
   }
 
   private refreshToolCatalog(): void {
@@ -678,13 +748,20 @@ export class PandaChatApp {
     await this.syncStoredThreadState(true);
   }
 
-  private appendRenderedEntries(entries: readonly TranscriptEntryView[]): void {
-    for (const entry of entries) {
-      this.pushEntry(entry.role, entry.title, entry.body);
-    }
+  private createTranscriptEntry(role: EntryRole, title: string, body: string): TranscriptEntry {
+    const entry = {
+      id: this.nextEntryId,
+      role,
+      title,
+      body,
+    };
+    this.nextEntryId += 1;
+    return entry;
   }
 
   private appendStoredMessages(records: readonly ThreadMessageRecord[]): void {
+    const nextEntries: TranscriptEntry[] = [];
+
     for (const record of records) {
       if (this.visibleStoredMessageIds.has(record.id)) {
         continue;
@@ -692,8 +769,17 @@ export class PandaChatApp {
 
       this.visibleStoredMessageIds.add(record.id);
       this.reconcilePendingLocalInput(record);
-      this.appendRenderedEntries(renderTranscriptEntries(record.message, record, this.currentTools));
+      for (const entry of renderTranscriptEntries(record.message, record, this.currentTools)) {
+        nextEntries.push(this.createTranscriptEntry(entry.role, entry.title, entry.body));
+      }
     }
+
+    if (nextEntries.length === 0) {
+      return;
+    }
+
+    this.transcript.push(...nextEntries);
+    this.markDirty();
   }
 
   private async reloadVisibleTranscript(): Promise<void> {
@@ -715,6 +801,7 @@ export class PandaChatApp {
     }
 
     this.lastObservedRunKey = runKey;
+    this.markDirty();
 
     if (!latestRun) {
       this.runPhase = "idle";
@@ -743,12 +830,14 @@ export class PandaChatApp {
       text,
       createdAt: Date.now(),
     });
+    this.markDirty();
   }
 
   private removePendingLocalInput(id: string): void {
     const index = this.pendingLocalInputs.findIndex((entry) => entry.id === id);
     if (index >= 0) {
       this.pendingLocalInputs.splice(index, 1);
+      this.markDirty();
     }
   }
 
@@ -781,15 +870,21 @@ export class PandaChatApp {
       return;
     }
 
+    if (force && this.syncDebounceTimer) {
+      clearTimeout(this.syncDebounceTimer);
+      this.syncDebounceTimer = null;
+    }
+
     const threadId = this.currentThreadId;
     this.syncInFlight = true;
-    this.lastStoredSyncAt = now;
+    this.lastStoredSyncAt = Date.now();
 
     try {
+      const store = this.requireServices().store;
       const [thread, transcript, runs] = await Promise.all([
-        this.requireServices().store.getThread(threadId),
-        this.requireServices().store.loadTranscript(threadId),
-        this.requireServices().store.listRuns(threadId),
+        store.getThread(threadId),
+        store.loadTranscript(threadId),
+        store.listRuns(threadId),
       ]);
 
       if (threadId !== this.currentThreadId) {
@@ -801,9 +896,10 @@ export class PandaChatApp {
       this.model = thread.model ?? this.model;
       this.thinking = thread.thinking;
       this.refreshToolCatalog();
+      this.markDirty();
       this.appendStoredMessages(transcript);
       this.observeLatestRun(runs);
-      this.render();
+      this.requestRender();
     } catch {
       // Ignore background sync failures in the TUI; foreground actions still surface errors.
     } finally {
@@ -823,12 +919,12 @@ export class PandaChatApp {
     }
 
     if (threadId === this.currentThreadId) {
-      await this.syncStoredThreadState(true);
+      this.scheduleSyncStoredThreadState();
     }
 
     if (this.threadPicker.active) {
       await this.refreshThreadPicker();
-      this.render();
+      this.requestRender();
     }
   }
 
@@ -1026,19 +1122,21 @@ export class PandaChatApp {
       case "run_started":
         this.runPhase = "thinking";
         this.runStartedAt = event.run.startedAt;
+        this.requestRender();
         break;
 
       case "inputs_applied":
         this.clearProgressEntry();
-        await this.syncStoredThreadState(true);
+        this.scheduleSyncStoredThreadState();
         break;
 
       case "thread_event":
         if (this.isToolProgressEvent(event.event)) {
           this.upsertProgressEntry(JSON.stringify(event.event.details, null, 2));
+          this.requestRender();
         } else {
           this.clearProgressEntry();
-          await this.syncStoredThreadState(true);
+          this.scheduleSyncStoredThreadState();
         }
         break;
 
@@ -1049,11 +1147,10 @@ export class PandaChatApp {
         }
         this.runPhase = "idle";
         this.scheduleCloseAfterRun();
-        await this.syncStoredThreadState(true);
+        this.scheduleSyncStoredThreadState();
+        this.requestRender();
         break;
     }
-
-    this.render();
   }
 
   private isToolProgressEvent(
@@ -1092,24 +1189,20 @@ export class PandaChatApp {
       tone,
       expiresAt: Date.now() + durationMs,
     };
+    this.markDirty();
   }
 
   private clearExpiredNotice(): void {
     if (this.notice && this.notice.expiresAt <= Date.now()) {
       this.notice = null;
+      this.markDirty();
     }
   }
 
   private pushEntry(role: EntryRole, title: string, body: string): TranscriptEntry {
-    const entry = {
-      id: this.nextEntryId,
-      role,
-      title,
-      body,
-    };
+    const entry = this.createTranscriptEntry(role, title, body);
     this.transcript.push(entry);
-    this.nextEntryId += 1;
-    this.afterTranscriptChange();
+    this.markDirty();
     return entry;
   }
 
@@ -1118,7 +1211,8 @@ export class PandaChatApp {
       const existing = this.transcript.find((entry) => entry.id === this.activeProgressEntryId);
       if (existing) {
         existing.body = body;
-        this.afterTranscriptChange();
+        this.transcriptLineCache.delete(existing.id);
+        this.markDirty();
         return;
       }
     }
@@ -1132,50 +1226,35 @@ export class PandaChatApp {
       return;
     }
 
+    const activeProgressEntryId = this.activeProgressEntryId;
     const index = this.transcript.findIndex((entry) => entry.id === this.activeProgressEntryId);
     this.activeProgressEntryId = null;
     if (index < 0) {
       return;
     }
 
+    this.transcriptLineCache.delete(activeProgressEntryId);
     this.transcript.splice(index, 1);
-    this.afterTranscriptChange();
+    this.markDirty();
   }
 
   private setComposerState(next: ComposerState): void {
     this.composer = next;
+    this.markDirty();
     this.currentSlashContext();
   }
 
   private resetTranscriptView(options: { keepSeenMessages?: boolean } = {}): void {
     this.transcript.length = 0;
     this.activeProgressEntryId = null;
+    this.transcriptLineCache.clear();
     if (!options.keepSeenMessages) {
       this.visibleStoredMessageIds.clear();
     }
     this.followTranscript = true;
     this.scrollTop = 0;
     this.clearTranscriptSearch();
-  }
-
-  private afterTranscriptChange(): void {
-    const view = this.buildView();
-    this.scrollTop = view.resolvedScrollTop;
-
-    if (view.transcriptMatches.length === 0) {
-      this.transcriptSearch.selected = 0;
-      return;
-    }
-
-    this.transcriptSearch.selected = clamp(
-      this.transcriptSearch.selected,
-      0,
-      view.transcriptMatches.length - 1,
-    );
-
-    if (this.transcriptSearch.active) {
-      this.ensureSelectedTranscriptMatchVisible(view);
-    }
+    this.markDirty();
   }
 
   private historyMatches(): number[] {
@@ -1211,6 +1290,56 @@ export class PandaChatApp {
     return this.inputHistory[historyIndex] ?? null;
   }
 
+  private buildCachedTranscriptLines(
+    entry: TranscriptEntry,
+    bodyWidth: number,
+  ): readonly TranscriptLine[] {
+    const cached = this.transcriptLineCache.get(entry.id);
+    if (
+      cached
+      && cached.role === entry.role
+      && cached.title === entry.title
+      && cached.body === entry.body
+      && cached.bodyWidth === bodyWidth
+    ) {
+      return cached.lines;
+    }
+
+    const labelColor =
+      entry.role === "assistant"
+        ? theme.coral
+        : entry.role === "user"
+          ? theme.cyan
+          : entry.role === "tool"
+            ? theme.gold
+            : entry.role === "error"
+              ? theme.coral
+              : theme.slate;
+    const labelText = truncatePlainText(entry.title, LABEL_WIDTH);
+    const label = padAnsiEnd(theme.bold(labelColor(labelText)), LABEL_WIDTH);
+    const wrappedBody = entry.role === "assistant"
+      ? renderMarkdownLines(entry.body, bodyWidth)
+      : wrapPlainText(entry.body, bodyWidth).map((line) => ({
+          plain: line,
+          rendered: line,
+        }));
+    const lines = wrappedBody.map((line, index) => {
+      return {
+        plain: `${entry.title} ${line.plain}`.trimEnd(),
+        rendered: `${index === 0 ? label : " ".repeat(LABEL_WIDTH)}${line.rendered}`,
+      } satisfies TranscriptLine;
+    });
+
+    this.transcriptLineCache.set(entry.id, {
+      role: entry.role,
+      title: entry.title,
+      body: entry.body,
+      bodyWidth,
+      lines,
+    });
+    return lines;
+  }
+
   private buildTranscriptLines(width: number): TranscriptLine[] {
     const bodyWidth = Math.max(20, width - TRANSCRIPT_GUTTER_WIDTH - LABEL_WIDTH);
     const lines: TranscriptLine[] = [];
@@ -1224,31 +1353,7 @@ export class PandaChatApp {
         continue;
       }
 
-      const labelColor =
-        entry.role === "assistant"
-          ? theme.coral
-          : entry.role === "user"
-            ? theme.cyan
-            : entry.role === "tool"
-              ? theme.gold
-              : entry.role === "error"
-                ? theme.coral
-                : theme.slate;
-      const labelText = truncatePlainText(entry.title, LABEL_WIDTH);
-      const label = padAnsiEnd(theme.bold(labelColor(labelText)), LABEL_WIDTH);
-      const wrappedBody = entry.role === "assistant"
-        ? renderMarkdownLines(entry.body, bodyWidth)
-        : wrapPlainText(entry.body, bodyWidth).map((line) => ({
-            plain: line,
-            rendered: line,
-          }));
-
-      for (const [index, line] of wrappedBody.entries()) {
-        lines.push({
-          plain: `${entry.title} ${line.plain}`.trimEnd(),
-          rendered: `${index === 0 ? label : " ".repeat(LABEL_WIDTH)}${line.rendered}`,
-        });
-      }
+      lines.push(...this.buildCachedTranscriptLines(entry, bodyWidth));
     }
 
     return lines;
@@ -1616,7 +1721,7 @@ export class PandaChatApp {
     return context;
   }
 
-  private ensureSelectedTranscriptMatchVisible(view = this.buildView()): void {
+  private ensureSelectedTranscriptMatchVisible(view: ViewModel): void {
     if (view.selectedTranscriptLine === null) {
       return;
     }
@@ -1643,12 +1748,14 @@ export class PandaChatApp {
     if (this.scrollTop >= view.maxScrollTop) {
       this.followTranscript = true;
     }
+    this.markDirty();
   }
 
   private jumpTranscriptToBottom(): void {
     const view = this.buildView();
     this.followTranscript = true;
     this.scrollTop = view.maxScrollTop;
+    this.markDirty();
   }
 
   private startHistorySearch(): void {
@@ -2029,6 +2136,10 @@ export class PandaChatApp {
     output.write(ALT_SCREEN_ON + HIDE_CURSOR + CLEAR_SCREEN);
   }
 
+  private setBracketedPasteMode(enabled: boolean): void {
+    output.write(enabled ? BRACKETED_PASTE_ON : BRACKETED_PASTE_OFF);
+  }
+
   private render(): void {
     if (this.closed) {
       return;
@@ -2070,10 +2181,24 @@ export class PandaChatApp {
 
     output.write(HIDE_CURSOR + CLEAR_SCREEN + screenLines.join("\n"));
     output.write(cursorTo(cursorRow, cursorColumn) + SHOW_CURSOR);
+    this.lastSpinnerFrame = this.spinnerFrameIndex();
+    this.dirty = false;
   }
 
   private async handleKeypress(sequence: string, key: KeyLike): Promise<void> {
     if (this.closed) {
+      return;
+    }
+
+    if (key.name === "paste-start") {
+      this.inBracketedPaste = true;
+      this.render();
+      return;
+    }
+
+    if (key.name === "paste-end") {
+      this.inBracketedPaste = false;
+      this.render();
       return;
     }
 
@@ -2165,14 +2290,14 @@ export class PandaChatApp {
     if (key.name === "backspace") {
       this.transcriptSearch.query = this.transcriptSearch.query.slice(0, -1);
       this.transcriptSearch.selected = 0;
-      this.ensureSelectedTranscriptMatchVisible();
+      this.ensureSelectedTranscriptMatchVisible(this.buildView());
       return;
     }
 
     if (isPrintable(sequence, key) && sequence !== "\n") {
       this.transcriptSearch.query += sequence;
       this.transcriptSearch.selected = 0;
-      this.ensureSelectedTranscriptMatchVisible();
+      this.ensureSelectedTranscriptMatchVisible(this.buildView());
     }
   }
 
@@ -2216,6 +2341,14 @@ export class PandaChatApp {
   }
 
   private async handleComposerKeypress(sequence: string, key: KeyLike): Promise<void> {
+    if (
+      this.inBracketedPaste &&
+      (key.name === "return" || key.name === "enter" || sequence === "\r" || sequence === "\n")
+    ) {
+      this.setComposerState(insertText(this.composer, "\n"));
+      return;
+    }
+
     if (key.name === "escape") {
       if (this.notice) {
         this.notice = null;

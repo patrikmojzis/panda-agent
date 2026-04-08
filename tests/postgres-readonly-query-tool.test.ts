@@ -26,7 +26,7 @@ class FakeReadonlyClient {
   async query(text: string, values?: readonly unknown[]) {
     this.queries.push({ text, values });
 
-    if (text === this.failingSql) {
+    if (this.failingSql && text.includes(this.failingSql)) {
       throw new Error("boom");
     }
 
@@ -128,6 +128,10 @@ describe("PostgresReadonlyQueryTool", () => {
     expect(rows[0]?.created_at).toBe("2026-04-08T09:00:00.000Z");
     expect(JSON.stringify(rows[0])).toContain("[omitted image data:");
     expect(String(rows[0]?.long_text)).toContain("...");
+    expect(parsed.sql).toBeUndefined();
+    expect(parsed.views).toBeUndefined();
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.truncationReasons).toEqual(["cell_cap"]);
 
     expect(pool.client.queries.map((query) => query.text)).toEqual([
       "BEGIN READ ONLY",
@@ -135,7 +139,7 @@ describe("PostgresReadonlyQueryTool", () => {
       "SET LOCAL lock_timeout = '500ms'",
       "SET LOCAL idle_in_transaction_session_timeout = '5000ms'",
       "SELECT set_config('panda.agent_key', $1, true)",
-      "select * from panda_messages order by created_at desc limit 5",
+      "SELECT * FROM (select * from panda_messages order by created_at desc limit 5) AS panda_readonly_query LIMIT 51",
       "COMMIT",
     ]);
     expect(pool.client.queries[4]?.values).toEqual(["panda"]);
@@ -186,6 +190,34 @@ describe("PostgresReadonlyQueryTool", () => {
     expect(rows).toHaveLength(2);
     expect(parsed.truncated).toBe(true);
     expect(parsed.truncationReasons).toEqual(["row_cap"]);
+    expect(parsed.rowCount).toBe(2);
+  });
+
+  it("replaces oversized object values with placeholders", async () => {
+    const pool = new FakeReadonlyPool([{
+      message: {
+        nested: {
+          large: "x".repeat(10_000),
+        },
+      },
+    }]);
+    const tool = new PostgresReadonlyQueryTool({
+      pool,
+    });
+
+    const result = await tool.run(
+      { sql: "select * from panda_messages_raw limit 1" },
+      createRunContext({
+        threadId: "thread-1",
+        agentKey: "panda",
+      }),
+    ) as ToolResultPayload;
+
+    const parsed = parseToolResult(result);
+    const rows = parsed.rows as Array<Record<string, unknown>>;
+
+    expect(String(rows[0]?.message)).toMatch(/^<jsonb \d+B omitted; query specific fields>$/);
+    expect(parsed.truncationReasons).toEqual(["cell_cap"]);
   });
 
   it("rolls back and surfaces database errors", async () => {
