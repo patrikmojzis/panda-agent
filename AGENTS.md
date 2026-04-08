@@ -37,6 +37,7 @@
 ## Panda Chat Vision
 
 - The persistent unit is the `thread`, not the agent. A thread may switch agents between runs, but only one runtime may actively execute a thread at a time.
+- User-facing chat should feel like one brain (`home`), many windows, optional branches: TUI and channels attach to the same default relationship unless the user explicitly resets or branches on purpose.
 - `Thread` is the inner agent loop. The outer wake-driven runtime lives on top of it and should stay separate from `agent-core`.
 - Panda chat is wake-driven, not a hot `while (true)` loop. New inputs, heartbeats, resumes, and manual pokes wake a thread and let it run until it becomes idle.
 - All inbound events should become durable history with source metadata. The model should be able to see where messages came from, but connector-specific metadata exposed to the model should stay minimal.
