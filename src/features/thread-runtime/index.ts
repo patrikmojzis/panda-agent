@@ -26,6 +26,20 @@ export {
   type ThreadRuntimeStore,
 } from "./store.js";
 export {
+  COMPACT_SUMMARY_PREFIX,
+  DEFAULT_COMPACT_PRESERVED_USER_TURNS,
+  createCompactBoundaryMessage,
+  estimateTranscriptTokens,
+  formatTranscriptForCompaction,
+  getCompactPrompt,
+  isCompactBoundaryRecord,
+  parseCompactSummary,
+  projectTranscriptForRun,
+  splitTranscriptForCompaction,
+  type CompactBoundaryMetadata,
+  type CompactTranscriptSplit,
+} from "./compact.js";
+export {
   type CreateThreadInput,
   type ResolvedThreadDefinition,
   type ThreadDefinitionResolver,

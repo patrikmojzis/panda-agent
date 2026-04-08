@@ -90,6 +90,7 @@ function parseMessageRow(row: Record<string, unknown>): ThreadMessageRecord {
     sequence: toOrderNumber(row.sequence),
     origin: String(row.origin) as ThreadMessageRecord["origin"],
     message: row.message as ThreadMessageRecord["message"],
+    metadata: row.metadata === null ? undefined : (row.metadata as ThreadMessageRecord["metadata"]),
     source: String(row.source),
     channelId: row.channel_id === null ? undefined : String(row.channel_id),
     externalMessageId: row.external_message_id === null ? undefined : String(row.external_message_id),
@@ -196,8 +197,12 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         actor_id TEXT,
         run_id UUID,
         created_at TIMESTAMPTZ NOT NULL,
+        metadata JSONB,
         message JSONB NOT NULL
       );
+
+      ALTER TABLE ${this.tables.messages}
+      ADD COLUMN IF NOT EXISTS metadata JSONB;
 
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_messages_thread_sequence_idx`)}
       ON ${this.tables.messages} (thread_id, sequence);
@@ -701,6 +706,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         actor_id,
         run_id,
         created_at,
+        metadata,
         message
       ) VALUES (
         $1,
@@ -712,7 +718,8 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         $6,
         $7,
         $8,
-        $9::jsonb
+        $9::jsonb,
+        $10::jsonb
       )
       RETURNING *
     `, [
@@ -724,6 +731,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       payload.actorId ?? null,
       payload.runId ?? null,
       new Date(),
+      toJson(payload.metadata),
       toJson(payload.message),
     ]);
 

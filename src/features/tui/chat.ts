@@ -5,11 +5,13 @@ import { stdin as input, stdout as output } from "node:process";
 
 import {
   assertProviderName,
+  estimateTokensFromString,
   formatProviderNameList,
   getProviderConfig,
   hasAnthropicOauthToken,
   hasOpenAICodexOauthToken,
   parseProviderName,
+  PiAiRuntime,
   resolveProviderApiKey,
   Tool,
   stringToUserMessage,
@@ -62,7 +64,18 @@ import {
   wrapPlainText,
 } from "./screen.js";
 import { stripAnsi, theme } from "./theme.js";
+import {
+  DEFAULT_COMPACT_PRESERVED_USER_TURNS,
+  createCompactBoundaryMessage,
+  estimateTranscriptTokens,
+  formatTranscriptForCompaction,
+  getCompactPrompt,
+  parseCompactSummary,
+  projectTranscriptForRun,
+  splitTranscriptForCompaction,
+} from "../thread-runtime/index.js";
 import type {
+  CompactBoundaryMetadata,
   ThreadMessageRecord,
   ThreadRecord,
   ThreadRunRecord,
@@ -188,6 +201,7 @@ const WELCOME_COMMANDS = [
   ["/provider <name>", "switch provider"],
   ["/model <name>", "switch model"],
   ["/thinking <level|off>", "set the thinking level"],
+  ["/compact [instructions]", "summarize older context and keep recent turns"],
   ["/threads", "browse saved threads"],
   ["/resume <id>", "reopen a saved thread"],
 ] as const;
@@ -790,6 +804,154 @@ export class PandaChatApp {
 
     const transcript = await this.requireServices().store.loadTranscript(this.currentThreadId);
     this.appendStoredMessages(transcript);
+  }
+
+  private formatCompactTokenCount(tokens: number): string {
+    if (tokens >= 10_000) {
+      return `${(tokens / 1_000).toFixed(0)}k`;
+    }
+
+    if (tokens >= 1_000) {
+      return `${(tokens / 1_000).toFixed(1)}k`;
+    }
+
+    return String(tokens);
+  }
+
+  private async requestCompactSummary(options: {
+    providerName: ProviderName;
+    model: string;
+    thinking?: ThinkingLevel;
+    compactionInput: string;
+    customInstructions: string;
+    maxSummaryTokens?: number;
+  }): Promise<string> {
+    const runtime = new PiAiRuntime();
+    const response = await runtime.complete({
+      providerName: options.providerName,
+      model: options.model,
+      thinking: options.thinking,
+      context: {
+        systemPrompt: getCompactPrompt(options.customInstructions, options.maxSummaryTokens),
+        messages: [stringToUserMessage(options.compactionInput)],
+      },
+    });
+
+    const rawSummary = response.content.flatMap((part) => {
+      return part.type === "text" && part.text.trim() ? [part.text.trim()] : [];
+    }).join("\n\n");
+    const summary = parseCompactSummary(rawSummary);
+    if (!summary) {
+      throw new Error("Compaction returned an empty summary.");
+    }
+
+    return summary;
+  }
+
+  private async compactCurrentThread(customInstructions: string): Promise<void> {
+    if (!this.currentThreadId) {
+      throw new Error("No active thread to compact.");
+    }
+
+    const threadId = this.currentThreadId;
+    const services = this.requireServices();
+    const compacted = await services.coordinator.runExclusively(threadId, async () => {
+      const store = services.store;
+      const thread = await store.getThread(threadId);
+      const providerName = thread.provider ?? this.providerName;
+      const model = thread.model ?? this.model;
+      const thinking = thread.thinking;
+
+      const apiKeyMessage = missingApiKeyMessage(providerName);
+      if (apiKeyMessage) {
+        throw new Error(apiKeyMessage);
+      }
+
+      if (await store.hasRunnableInputs(threadId)) {
+        throw new Error("Wait for queued input to run before compacting.");
+      }
+
+      const runningRun = (await store.listRuns(threadId)).some((run) => run.status === "running");
+      if (runningRun) {
+        throw new Error("Thread is already active. Abort or wait before compacting.");
+      }
+
+      const transcript = await store.loadTranscript(threadId);
+      const activeTranscript = projectTranscriptForRun(transcript);
+      const split = splitTranscriptForCompaction(activeTranscript);
+
+      if (!split) {
+        return null;
+      }
+
+      const compactionInput = formatTranscriptForCompaction(split.summaryRecords).trim();
+      if (!compactionInput) {
+        return null;
+      }
+
+      const preservedTailTokens = estimateTranscriptTokens(split.preservedTail);
+      const summaryTokenBudget = thread.maxInputTokens === undefined
+        ? undefined
+        : thread.maxInputTokens - preservedTailTokens;
+      if (summaryTokenBudget !== undefined && summaryTokenBudget <= 0) {
+        throw new Error("Recent context already fills the input budget, so compact cannot preserve the recent turns verbatim.");
+      }
+
+      this.currentThread = thread;
+      this.providerName = providerName;
+      this.model = model;
+      this.thinking = thinking;
+      this.setNotice("Compacting conversation...", "info");
+      this.requestRender();
+
+      const summary = await this.requestCompactSummary({
+        providerName,
+        model,
+        thinking,
+        compactionInput,
+        customInstructions,
+        maxSummaryTokens: summaryTokenBudget,
+      });
+
+      const compactMessage = createCompactBoundaryMessage(summary);
+      const summaryTokens = estimateTokensFromString(JSON.stringify(compactMessage));
+      if (summaryTokenBudget !== undefined && summaryTokens > summaryTokenBudget) {
+        throw new Error("Compaction summary was too large to fit alongside the preserved recent turns. Try stricter instructions or raise maxInputTokens.");
+      }
+
+      const tokensBefore = estimateTranscriptTokens(activeTranscript);
+      const tokensAfter = summaryTokens + preservedTailTokens;
+      const metadata: CompactBoundaryMetadata = {
+        kind: "compact_boundary",
+        compactedUpToSequence: split.compactedUpToSequence,
+        preservedTailUserTurns: DEFAULT_COMPACT_PRESERVED_USER_TURNS,
+        trigger: "manual",
+        tokensBefore,
+        tokensAfter,
+      };
+
+      await store.appendRuntimeMessage(threadId, {
+        message: compactMessage,
+        source: "compact",
+        metadata,
+      });
+
+      return {
+        tokensBefore,
+        tokensAfter,
+      };
+    });
+
+    if (!compacted) {
+      this.setNotice("Not enough older context to compact yet.", "info");
+      return;
+    }
+
+    await this.syncStoredThreadState(true);
+    const compactLabel =
+      `Compacted older context (${this.formatCompactTokenCount(compacted.tokensBefore)} -> ${this.formatCompactTokenCount(compacted.tokensAfter)}).`;
+    this.pushEntry("meta", "compact", `${compactLabel} Preserved the most recent user turns verbatim.`);
+    this.setNotice(compactLabel, "info", 6_000);
   }
 
   private observeLatestRun(runs: readonly ThreadRunRecord[]): void {
@@ -1888,6 +2050,7 @@ export class PandaChatApp {
             "/provider <openai|openai-codex|anthropic|anthropic-oauth> switches providers for this stored thread.",
             "/model <name> changes the active model.",
             `${thinkingCommandUsage()} changes the active thinking level.`,
+            "/compact [instructions] summarizes older context and keeps recent turns verbatim.",
             "/new starts a fresh stored thread.",
             "/resume <thread-id> switches to another stored thread.",
             "/thread shows the current thread id and storage mode.",
@@ -2013,6 +2176,21 @@ export class PandaChatApp {
         }
         return true;
       }
+
+      case "/compact":
+        if (this.isRunning) {
+          this.setNotice("Abort or wait for the current run before compacting.", "info");
+          return true;
+        }
+
+        try {
+          await this.compactCurrentThread(value);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.pushEntry("error", "compact", message);
+          this.setNotice(message, "error");
+        }
+        return true;
 
       case "/new":
         if (this.isRunning) {

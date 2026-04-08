@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { stringToUserMessage } from "../src/features/agent-core/index.js";
+import { PiAiRuntime, stringToUserMessage } from "../src/features/agent-core/index.js";
 import type { ThreadRunRecord } from "../src/features/thread-runtime/index.js";
 import * as markdown from "../src/features/tui/markdown.js";
 import type { ChatRuntimeServices } from "../src/features/tui/runtime.js";
@@ -23,6 +23,107 @@ function flushTimers(): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, 0);
   });
+}
+
+function assistantText(text: string) {
+  return {
+    role: "assistant" as const,
+    content: [{ type: "text" as const, text }],
+    api: "openai-responses" as const,
+    provider: "openai" as const,
+    model: "gpt-5.1",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop" as const,
+    timestamp: Date.now(),
+  };
+}
+
+function buildCompactTranscript() {
+  return [
+    {
+      id: "1",
+      threadId: "thread-compact",
+      sequence: 1,
+      origin: "input" as const,
+      message: stringToUserMessage("old request"),
+      source: "tui",
+      actorId: "local-user",
+      createdAt: 1,
+    },
+    {
+      id: "2",
+      threadId: "thread-compact",
+      sequence: 2,
+      origin: "runtime" as const,
+      message: assistantText("old reply"),
+      source: "assistant",
+      createdAt: 2,
+    },
+    {
+      id: "3",
+      threadId: "thread-compact",
+      sequence: 3,
+      origin: "input" as const,
+      message: stringToUserMessage("recent one"),
+      source: "tui",
+      actorId: "local-user",
+      createdAt: 3,
+    },
+    {
+      id: "4",
+      threadId: "thread-compact",
+      sequence: 4,
+      origin: "runtime" as const,
+      message: assistantText("reply one"),
+      source: "assistant",
+      createdAt: 4,
+    },
+    {
+      id: "5",
+      threadId: "thread-compact",
+      sequence: 5,
+      origin: "input" as const,
+      message: stringToUserMessage("recent two"),
+      source: "tui",
+      actorId: "local-user",
+      createdAt: 5,
+    },
+    {
+      id: "6",
+      threadId: "thread-compact",
+      sequence: 6,
+      origin: "runtime" as const,
+      message: assistantText("reply two"),
+      source: "assistant",
+      createdAt: 6,
+    },
+    {
+      id: "7",
+      threadId: "thread-compact",
+      sequence: 7,
+      origin: "input" as const,
+      message: stringToUserMessage("recent three"),
+      source: "tui",
+      actorId: "local-user",
+      createdAt: 7,
+    },
+    {
+      id: "8",
+      threadId: "thread-compact",
+      sequence: 8,
+      origin: "runtime" as const,
+      message: assistantText("reply three"),
+      source: "assistant",
+      createdAt: 8,
+    },
+  ];
 }
 
 describe("PandaChatApp Ctrl-C handling", () => {
@@ -217,6 +318,128 @@ describe("PandaChatApp thinking command", () => {
       title: "config",
       body: "store unavailable",
     });
+  });
+});
+
+describe("PandaChatApp compact command", () => {
+  it("persists a compact boundary summary for the current thread", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+
+    const transcript: any[] = buildCompactTranscript();
+
+    const complete = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
+      assistantText("<summary>\nIntent:\n- continue the recent work\n</summary>"),
+    );
+    const runExclusively = vi.fn(async (_threadId: string, fn: () => Promise<unknown>) => fn());
+    const appendRuntimeMessage = vi.fn(async (_threadId: string, payload: any) => {
+      const record = {
+        id: "compact-1",
+        threadId: "thread-compact",
+        sequence: 9,
+        origin: "runtime",
+        message: payload.message,
+        metadata: payload.metadata,
+        source: payload.source,
+        createdAt: 9,
+      };
+      transcript.push(record);
+      return record;
+    });
+    const app = new PandaChatApp() as any;
+
+    app.currentThreadId = "thread-compact";
+    app.providerName = "openai";
+    app.model = "gpt-5.1";
+    app.currentThread = {
+      id: "thread-compact",
+      agentKey: "panda",
+      provider: "openai",
+      model: "gpt-5.1",
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    app.services = {
+      extraTools: [],
+      coordinator: {
+        runExclusively,
+      },
+      store: {
+        loadTranscript: vi.fn(async () => transcript),
+        appendRuntimeMessage,
+        getThread: vi.fn(async () => app.currentThread),
+        hasRunnableInputs: vi.fn(async () => false),
+        listRuns: vi.fn(async () => []),
+      },
+    } as ChatRuntimeServices;
+
+    await expect(app.handleCommand("/compact")).resolves.toBe(true);
+
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(appendRuntimeMessage).toHaveBeenCalledWith("thread-compact", expect.objectContaining({
+      source: "compact",
+      message: expect.objectContaining({
+        role: "user",
+        content: expect.stringContaining("Conversation compacted"),
+      }),
+      metadata: expect.objectContaining({
+        kind: "compact_boundary",
+        compactedUpToSequence: 2,
+        preservedTailUserTurns: 3,
+        trigger: "manual",
+      }),
+    }));
+
+    complete.mockRestore();
+    vi.unstubAllEnvs();
+  });
+
+  it("refuses to persist a compact summary that would evict the preserved tail", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+
+    const transcript: any[] = buildCompactTranscript();
+    const complete = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
+      assistantText(`<summary>\nIntent:\n- ${"x".repeat(8_000)}\n</summary>`),
+    );
+    const appendRuntimeMessage = vi.fn();
+    const app = new PandaChatApp() as any;
+
+    app.currentThreadId = "thread-compact";
+    app.providerName = "openai";
+    app.model = "gpt-5.1";
+    app.currentThread = {
+      id: "thread-compact",
+      agentKey: "panda",
+      provider: "openai",
+      model: "gpt-5.1",
+      maxInputTokens: 350,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    app.services = {
+      extraTools: [],
+      coordinator: {
+        runExclusively: vi.fn(async (_threadId: string, fn: () => Promise<unknown>) => fn()),
+      },
+      store: {
+        loadTranscript: vi.fn(async () => transcript),
+        appendRuntimeMessage,
+        getThread: vi.fn(async () => app.currentThread),
+        hasRunnableInputs: vi.fn(async () => false),
+        listRuns: vi.fn(async () => []),
+      },
+    } as ChatRuntimeServices;
+
+    await expect(app.handleCommand("/compact")).resolves.toBe(true);
+
+    expect(appendRuntimeMessage).not.toHaveBeenCalled();
+    expect(app.transcript.at(-1)).toMatchObject({
+      role: "error",
+      title: "compact",
+      body: expect.stringContaining("too large"),
+    });
+
+    complete.mockRestore();
+    vi.unstubAllEnvs();
   });
 });
 

@@ -40,6 +40,12 @@ export {
 export { Thread, type ThreadOptions } from "./thread.js";
 export { Tool, formatToolCallFallback, formatToolResultFallback, type ToolOutput } from "./tool.js";
 export { stringToUserMessage } from "./helpers/input.js";
+export {
+  COMPACT_SUMMARY_PREFIX,
+  buildCompactSummaryMessage,
+  isCompactSummaryMessage,
+  stripCompactSummaryPrefix,
+} from "./helpers/compact.js";
 export { formatParameters } from "./helpers/schema.js";
 export { estimateTokensFromString, type TokenCounter } from "./helpers/token-count.js";
 export type {

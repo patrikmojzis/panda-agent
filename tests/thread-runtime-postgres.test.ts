@@ -139,6 +139,9 @@ describe("PostgresThreadRuntimeStore", () => {
         stopReason: "stop",
         timestamp: Date.now(),
       },
+      metadata: {
+        kind: "assistant-debug",
+      },
       source: "assistant",
       runId: run.id,
     });
@@ -151,6 +154,9 @@ describe("PostgresThreadRuntimeStore", () => {
       "tui",
       "assistant",
     ]);
+    expect((await store.loadTranscript("pg-thread"))[3]?.metadata).toEqual({
+      kind: "assistant-debug",
+    });
     expect((await store.listRuns("pg-thread")).map((entry) => entry.status)).toEqual([
       "completed",
     ]);

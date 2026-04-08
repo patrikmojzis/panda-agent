@@ -320,6 +320,7 @@ export class InMemoryThreadRuntimeStore implements ThreadRuntimeStore {
       sequence: thread.nextMessageSequence,
       origin: "runtime",
       message: payload.message,
+      metadata: payload.metadata,
       source: payload.source,
       channelId: payload.channelId,
       externalMessageId: payload.externalMessageId,

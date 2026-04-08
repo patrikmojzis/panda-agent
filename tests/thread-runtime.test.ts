@@ -3,6 +3,7 @@ import type { AssistantMessage } from "@mariozechner/pi-ai";
 
 import {
   Agent,
+  createCompactBoundaryMessage,
   InMemoryThreadRuntimeStore,
   Thread,
   ThreadRuntimeCoordinator,
@@ -376,6 +377,46 @@ describe("ThreadRuntimeCoordinator", () => {
     ]);
   });
 
+  it("restarts wake inputs that arrive during exclusive work once the lease is released", async () => {
+    const runtime = createMockRuntime(message("processed after exclusive work"));
+    const store = new InMemoryThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("exclusive-agent", {
+      agent: new Agent({
+        name: "exclusive-agent",
+        instructions: "Reply briefly",
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-exclusive",
+      agentKey: "exclusive-agent",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.runExclusively("thread-exclusive", async () => {
+      await coordinator.submitInput("thread-exclusive", {
+        message: stringToUserMessage("hello after compact"),
+        source: "tui",
+      });
+
+      expect(runtime.complete).toHaveBeenCalledTimes(0);
+      expect(await store.hasRunnableInputs("thread-exclusive")).toBe(true);
+    });
+
+    await coordinator.waitForIdle("thread-exclusive");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(1);
+    expect((await store.loadTranscript("thread-exclusive")).map((entry) => entry.source)).toEqual([
+      "tui",
+      "assistant",
+    ]);
+  });
+
   it("replans after a new input arrives during a tool run", async () => {
     const started = createDeferred<void>();
     const release = createDeferred<{ done: string }>();
@@ -545,6 +586,81 @@ describe("ThreadRuntimeCoordinator", () => {
         reason: "New external input arrived.",
       },
     });
+  });
+
+  it("rebuilds model context from the latest compact boundary plus later messages", async () => {
+    const runtime = createMockRuntime(message("after compact"));
+    const store = new InMemoryThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("compact-agent", {
+      agent: new Agent({
+        name: "compact-agent",
+        instructions: "Reply briefly",
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-compact-context",
+      agentKey: "compact-agent",
+    });
+
+    await store.enqueueInput("thread-compact-context", {
+      message: stringToUserMessage("old request"),
+      source: "telegram",
+    });
+    await store.applyPendingInputs("thread-compact-context");
+    await store.appendRuntimeMessage("thread-compact-context", {
+      message: message("old reply"),
+      source: "assistant",
+    });
+    await store.enqueueInput("thread-compact-context", {
+      message: stringToUserMessage("recent request"),
+      source: "telegram",
+    });
+    await store.applyPendingInputs("thread-compact-context");
+    await store.appendRuntimeMessage("thread-compact-context", {
+      message: message("recent reply"),
+      source: "assistant",
+    });
+    await store.appendRuntimeMessage("thread-compact-context", {
+      message: createCompactBoundaryMessage("Intent:\n- continue the recent work"),
+      source: "compact",
+      metadata: {
+        kind: "compact_boundary",
+        compactedUpToSequence: 2,
+        preservedTailUserTurns: 3,
+        trigger: "manual",
+      },
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-compact-context", {
+      message: stringToUserMessage("new request"),
+      source: "tui",
+    });
+    await coordinator.waitForIdle("thread-compact-context");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(1);
+    const request = runtime.complete.mock.calls[0]?.[0];
+    const sentMessages = request?.context.messages;
+    expect(sentMessages).toHaveLength(4);
+    expect(sentMessages?.[0]).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("Conversation compacted"),
+    });
+    expect(sentMessages?.map((entry: { role: string; content?: unknown }) => {
+      return entry.role === "user" && typeof entry.content === "string" ? entry.content : "";
+    }).join("\n")).not.toContain("old request");
+    expect(sentMessages?.map((entry: { role: string; content?: unknown }) => {
+      return entry.role === "user" && typeof entry.content === "string" ? entry.content : "";
+    }).join("\n")).toContain("recent request");
+    expect(sentMessages?.map((entry: { role: string; content?: unknown }) => {
+      return entry.role === "user" && typeof entry.content === "string" ? entry.content : "";
+    }).join("\n")).toContain("new request");
   });
 
   it("recovers only orphaned runs that are not currently leased", async () => {

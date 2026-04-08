@@ -23,6 +23,7 @@ import {
   buildToolResultMessage,
   collectAssistantToolCalls,
 } from "./pi/messages.js";
+import { isCompactSummaryMessage } from "./helpers/compact.js";
 import { PiAiRuntime } from "./pi/runtime.js";
 import { assertProviderName, getProviderConfig, type ProviderName } from "./provider.js";
 import { RunContext } from "./run-context.js";
@@ -342,22 +343,40 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       return [...this.history];
     }
 
+    const firstMessage = this.history[0];
+    const pinnedMessage = firstMessage && isCompactSummaryMessage(firstMessage)
+      ? firstMessage
+      : null;
+    const pinnedTokens = pinnedMessage
+      ? this.countTokens(JSON.stringify(pinnedMessage))
+      : 0;
+
+    if (pinnedMessage && pinnedTokens >= this.maxInputTokens) {
+      return [pinnedMessage];
+    }
+
     const trimmedMessages: Message[] = [];
     let currentTokens = 0;
+    const budget = this.maxInputTokens - pinnedTokens;
+    const stopIndex = pinnedMessage ? 1 : 0;
 
-    for (let index = this.history.length - 1; index >= 0; index -= 1) {
+    for (let index = this.history.length - 1; index >= stopIndex; index -= 1) {
       const message = this.history[index];
       if (!message) {
         continue;
       }
 
       const messageTokens = this.countTokens(JSON.stringify(message));
-      if (currentTokens + messageTokens > this.maxInputTokens) {
+      if (currentTokens + messageTokens > budget) {
         break;
       }
 
       trimmedMessages.unshift(message);
       currentTokens += messageTokens;
+    }
+
+    if (pinnedMessage) {
+      trimmedMessages.unshift(pinnedMessage);
     }
 
     return trimmedMessages;

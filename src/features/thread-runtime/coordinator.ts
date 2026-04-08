@@ -12,6 +12,7 @@ import type {
   ThreadRunRecord,
 } from "./types.js";
 import type { ThreadRuntimeStore } from "./store.js";
+import { projectTranscriptForRun } from "./compact.js";
 
 export type ThreadWakeMode = "wake" | "queue";
 const ABORT_POLL_MS = 250;
@@ -166,6 +167,23 @@ export class ThreadRuntimeCoordinator {
     }
 
     await activeRun;
+  }
+
+  async runExclusively<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
+    const lease = await this.leaseManager.tryAcquire(threadId);
+    if (!lease) {
+      throw new Error("Thread is already active. Abort or wait before compacting.");
+    }
+
+    try {
+      return await fn();
+    } finally {
+      await lease.release();
+
+      if (await this.store.hasRunnableInputs(threadId)) {
+        this.ensureRunning(threadId);
+      }
+    }
   }
 
   async recoverOrphanedRuns(
@@ -338,7 +356,7 @@ export class ThreadRuntimeCoordinator {
 
         const thread = await this.store.getThread(threadId);
         const definition = await this.resolveDefinition(thread);
-        const transcript = await this.store.loadTranscript(threadId);
+        const transcript = projectTranscriptForRun(await this.store.loadTranscript(threadId));
         const executor = new Thread(this.buildThreadOptions(run, thread, definition, transcript, controller.signal));
 
         for await (const event of executor.run()) {

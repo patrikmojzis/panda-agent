@@ -82,6 +82,7 @@ export interface ThreadMessageRecord extends ThreadMessageMetadata {
   sequence: number;
   origin: ThreadMessageOrigin;
   message: Message;
+  metadata?: JsonValue;
   runId?: string;
   createdAt: number;
 }
@@ -109,6 +110,7 @@ export interface ThreadInputPayload extends ThreadMessageMetadata {
 
 export interface ThreadRuntimeMessagePayload extends ThreadMessageMetadata {
   message: Message;
+  metadata?: JsonValue;
   runId?: string;
 }
 

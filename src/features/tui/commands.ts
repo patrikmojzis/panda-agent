@@ -16,6 +16,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "/provider", summary: "Switch providers", expectsValue: true },
   { name: "/model", summary: "Change the active model", expectsValue: true },
   { name: "/thinking", summary: "Change the active thinking level", expectsValue: true },
+  { name: "/compact", summary: "Summarize older context", expectsValue: true },
   { name: "/new", summary: "Start a fresh chat" },
   { name: "/resume", summary: "Resume a stored thread", expectsValue: true },
   { name: "/thread", summary: "Show the current thread id" },
