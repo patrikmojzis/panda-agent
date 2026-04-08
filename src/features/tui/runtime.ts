@@ -125,21 +125,20 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
     mode = "postgres";
     store = postgresStore;
     postgresPool = pool;
-    if (readOnlyDbUrl) {
-      await ensureReadonlyChatQuerySchema({
-        queryable: pool,
-        tablePrefix: options.tablePrefix,
-        readonlyRole: readDatabaseUsername(readOnlyDbUrl),
-      });
+    await ensureReadonlyChatQuerySchema({
+      queryable: pool,
+      tablePrefix: options.tablePrefix,
+      readonlyRole: readOnlyDbUrl ? readDatabaseUsername(readOnlyDbUrl) : null,
+    });
 
+    if (readOnlyDbUrl) {
       readonlyPool = new Pool({
         connectionString: readOnlyDbUrl,
       });
-
-      extraTools = [new PostgresReadonlyQueryTool({
-        pool: readonlyPool,
-      })];
     }
+    extraTools = [new PostgresReadonlyQueryTool({
+      pool: readonlyPool ?? pool,
+    })];
     if (options.onStoreNotification) {
       const channel = buildThreadRuntimeNotificationChannel(options.tablePrefix ?? "thread_runtime");
       const client = await pool.connect();

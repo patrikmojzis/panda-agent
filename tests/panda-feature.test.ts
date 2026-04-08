@@ -8,8 +8,17 @@ describe("Panda feature surface", () => {
     const tools = buildPandaTools();
 
     expect(buildPandaPrompt()).toContain("Your name is Panda.");
+    expect(tools).toHaveLength(2);
     expect(tools[0]).toBeInstanceOf(BashTool);
     expect(tools[1]).toBeInstanceOf(MediaTool);
+  });
+
+  it("appends extra tools without adding hidden defaults", () => {
+    const extraTool = { name: "extra-tool" } as any;
+    const tools = buildPandaTools([extraTool]);
+
+    expect(tools).toHaveLength(3);
+    expect(tools[2]).toBe(extraTool);
   });
 
   it("renders the datetime context with the configured timezone", async () => {
