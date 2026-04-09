@@ -2,12 +2,13 @@
 
 ## Working Style
 
-- Keep Panda small, readable, and modular.
+- Keep Panda small, readable, and *modular*.
 - Prefer simple abstractions over framework-heavy architecture.
 - When adding provider support, keep provider-specific request/response shaping out of the core thread loop.
 - Avoid copying large chunks from other projects; use them for patterns and ideas, then adapt to Panda's smaller codebase.
 - Always verify each change with a live Panda agent - e.g. have u added a new tool? have Panda test it out. get a live feedback from her.
 - Use comment to write down nuance behind architecture decisions / deeper reasons why / or anything that might be unclear in the future. Use them when they matter.
+- Think ahead - if you know something will be extended in future - keep it modular.
 
 ## Philosophy
 

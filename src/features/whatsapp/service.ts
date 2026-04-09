@@ -1,0 +1,852 @@
+import { createHash } from "node:crypto";
+
+import type { Pool } from "pg";
+import {
+  addTransactionCapability,
+  Browsers,
+  type BaileysEventMap,
+  DisconnectReason,
+  isJidBroadcast,
+  isJidGroup,
+  isJidNewsletter,
+  isJidStatusBroadcast,
+  jidNormalizedUser,
+  makeCacheableSignalKeyStore,
+  makeWASocket,
+  type AuthenticationState,
+  type ConnectionState,
+  type WAMessage,
+  type WASocket,
+} from "baileys";
+import { downloadMediaMessage, normalizeMessageContent } from "baileys/lib/Utils/messages.js";
+
+import { stringToUserMessage, type ProviderName } from "../agent-core/index.js";
+import { ChannelOutboundDispatcher } from "../channels/core/index.js";
+import type { MediaDescriptor } from "../channels/core/types.js";
+import { PostgresIdentityStore } from "../identity/index.js";
+import { createPandaPool, requirePandaDatabaseUrl } from "../panda/runtime.js";
+import { WHATSAPP_SOURCE } from "./config.js";
+import { PostgresWhatsAppAuthStore } from "./auth-store.js";
+import {
+  buildWhatsAppInboundMetadata,
+  buildWhatsAppInboundText,
+  extractWhatsAppMessageText,
+  extractWhatsAppQuotedMessageId,
+} from "./helpers.js";
+import { createWhatsAppOutboundAdapter } from "./outbound.js";
+import { createWhatsAppRuntime, type WhatsAppRuntimeServices } from "./runtime.js";
+
+export interface WhatsAppServiceOptions {
+  connectorKey: string;
+  dataDir: string;
+  cwd: string;
+  locale: string;
+  timezone: string;
+  dbUrl?: string;
+  readOnlyDbUrl?: string;
+  provider?: ProviderName;
+  model?: string;
+  tablePrefix?: string;
+}
+
+interface WhatsAppLoggerLike {
+  level: string;
+  child(obj: Record<string, unknown>): WhatsAppLoggerLike;
+  trace(obj: unknown, msg?: string): void;
+  debug(obj: unknown, msg?: string): void;
+  info(obj: unknown, msg?: string): void;
+  warn(obj: unknown, msg?: string): void;
+  error(obj: unknown, msg?: string): void;
+}
+
+const WHATSAPP_LOGGER: WhatsAppLoggerLike = {
+  level: "silent",
+  child() {
+    return this;
+  },
+  trace() {},
+  debug() {},
+  info() {},
+  warn() {},
+  error() {},
+};
+
+const TRANSACTION_OPTIONS = {
+  maxCommitRetries: 5,
+  delayBetweenTriesMs: 200,
+} as const;
+const RECONNECT_DELAY_MS = 1_000;
+
+interface ConnectorLock {
+  release(): Promise<void>;
+}
+
+export interface WhatsAppWhoamiResult {
+  connectorKey: string;
+  registered: boolean;
+  accountId?: string;
+  phoneNumber?: string;
+  name?: string;
+}
+
+export interface WhatsAppPairResult extends WhatsAppWhoamiResult {
+  pairingCode?: string;
+  alreadyPaired: boolean;
+}
+
+function describeAccountId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function toWhoamiResult(connectorKey: string, creds: AuthenticationState["creds"]): WhatsAppWhoamiResult {
+  const accountId = describeAccountId(creds.me?.id);
+  return {
+    connectorKey,
+    registered: creds.registered,
+    accountId,
+    phoneNumber: creds.me?.phoneNumber?.trim() || undefined,
+    name: creds.me?.name?.trim() || creds.me?.notify?.trim() || undefined,
+  };
+}
+
+function hashConnectorLockKey(source: string, connectorKey: string): readonly [number, number] {
+  const digest = createHash("sha256").update(`${source}:${connectorKey}`).digest();
+  return [digest.readInt32BE(0), digest.readInt32BE(4)] as const;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractDisconnectStatusCode(error: unknown): number | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  if ("output" in error && error.output && typeof error.output === "object") {
+    const output = error.output as { statusCode?: unknown };
+    if (typeof output.statusCode === "number") {
+      return output.statusCode;
+    }
+  }
+
+  if ("statusCode" in error && typeof (error as { statusCode?: unknown }).statusCode === "number") {
+    return (error as { statusCode: number }).statusCode;
+  }
+
+  return null;
+}
+
+function shouldReconnect(statusCode: number | null): boolean {
+  switch (statusCode) {
+    case DisconnectReason.connectionClosed:
+    case DisconnectReason.connectionLost:
+    case DisconnectReason.timedOut:
+    case DisconnectReason.restartRequired:
+    case DisconnectReason.unavailableService:
+      return true;
+    default:
+      return false;
+  }
+}
+
+function describeDisconnectStatus(statusCode: number | null): string {
+  if (statusCode === null) {
+    return "unknown";
+  }
+
+  return DisconnectReason[statusCode] ?? String(statusCode);
+}
+
+function resolveChatType(remoteJid: string | undefined): "private" | "group" | "status" | "newsletter" | "broadcast" | "unknown" {
+  if (!remoteJid) {
+    return "unknown";
+  }
+
+  if (isJidStatusBroadcast(remoteJid)) {
+    return "status";
+  }
+  if (isJidGroup(remoteJid)) {
+    return "group";
+  }
+  if (isJidNewsletter(remoteJid)) {
+    return "newsletter";
+  }
+  if (isJidBroadcast(remoteJid)) {
+    return "broadcast";
+  }
+
+  return "private";
+}
+
+function extractMessageTextLength(message: WAMessage): number {
+  return extractWhatsAppMessageText(message).length;
+}
+
+function readMediaSizeBytes(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+
+  if (typeof value === "object" && value !== null && "toNumber" in value && typeof value.toNumber === "function") {
+    const numericValue = value.toNumber();
+    if (typeof numericValue === "number" && Number.isFinite(numericValue) && numericValue >= 0) {
+      return numericValue;
+    }
+  }
+
+  return undefined;
+}
+
+export class WhatsAppService {
+  private readonly options: WhatsAppServiceOptions;
+  private pool: Pool | null = null;
+  private authStore: PostgresWhatsAppAuthStore | null = null;
+  private identityStore: PostgresIdentityStore | null = null;
+  private runtime: WhatsAppRuntimeServices | null = null;
+  private runtimePromise: Promise<WhatsAppRuntimeServices> | null = null;
+  private socket: WASocket | null = null;
+  private lock: ConnectorLock | null = null;
+  private stopping = false;
+  private stopPromise: Promise<void> | null = null;
+  private socketWaiterResolve: (() => void) | null = null;
+
+  constructor(options: WhatsAppServiceOptions) {
+    this.options = options;
+  }
+
+  private log(event: string, payload: Record<string, unknown>): void {
+    process.stdout.write(`${JSON.stringify({
+      source: WHATSAPP_SOURCE,
+      event,
+      timestamp: new Date().toISOString(),
+      ...payload,
+    })}\n`);
+  }
+
+  private async ensureAuthStore(): Promise<PostgresWhatsAppAuthStore> {
+    if (this.authStore) {
+      return this.authStore;
+    }
+
+    const pool = createPandaPool(requirePandaDatabaseUrl(this.options.dbUrl));
+    const authStore = new PostgresWhatsAppAuthStore({
+      pool,
+      tablePrefix: this.options.tablePrefix,
+    });
+    await authStore.ensureSchema();
+
+    this.pool = pool;
+    this.authStore = authStore;
+    return authStore;
+  }
+
+  private async ensureIdentityStore(): Promise<PostgresIdentityStore> {
+    if (this.identityStore) {
+      return this.identityStore;
+    }
+
+    await this.ensureAuthStore();
+    if (!this.pool) {
+      throw new Error("WhatsApp identity store requires an initialized Postgres pool.");
+    }
+
+    const identityStore = new PostgresIdentityStore({
+      pool: this.pool,
+      tablePrefix: this.options.tablePrefix,
+    });
+    await identityStore.ensureSchema();
+
+    this.identityStore = identityStore;
+    return identityStore;
+  }
+
+  private async createSocket(): Promise<{
+    authHandle: Awaited<ReturnType<PostgresWhatsAppAuthStore["createAuthState"]>>;
+    socket: WASocket;
+  }> {
+    const authStore = await this.ensureAuthStore();
+    const authHandle = await authStore.createAuthState(this.options.connectorKey);
+    const socket = makeWASocket({
+      auth: {
+        creds: authHandle.state.creds,
+        keys: addTransactionCapability(
+          makeCacheableSignalKeyStore(authHandle.state.keys, WHATSAPP_LOGGER),
+          WHATSAPP_LOGGER,
+          TRANSACTION_OPTIONS,
+        ),
+      },
+      logger: WHATSAPP_LOGGER,
+      browser: Browsers.macOS("Panda"),
+      syncFullHistory: false,
+      shouldSyncHistoryMessage: () => false,
+      markOnlineOnConnect: false,
+      getMessage: async () => undefined,
+    });
+
+    this.socket = socket;
+    socket.ev.on("creds.update", async () => {
+      await authHandle.saveCreds();
+    });
+
+    return {
+      authHandle,
+      socket,
+    };
+  }
+
+  async whoami(): Promise<WhatsAppWhoamiResult> {
+    const authStore = await this.ensureAuthStore();
+    const creds = await authStore.loadCreds(this.options.connectorKey);
+    return toWhoamiResult(this.options.connectorKey, creds);
+  }
+
+  async pair(phoneNumber: string, onPairingCode?: (code: string) => void): Promise<WhatsAppPairResult> {
+    const authStore = await this.ensureAuthStore();
+    const existingCreds = await authStore.loadCreds(this.options.connectorKey);
+    const existingIdentity = toWhoamiResult(this.options.connectorKey, existingCreds);
+
+    if (existingIdentity.accountId) {
+      return {
+        ...existingIdentity,
+        alreadyPaired: true,
+      };
+    }
+
+    const { authHandle, socket } = await this.createSocket();
+    try {
+      const pairedIdentity = await new Promise<WhatsAppWhoamiResult>(async (resolve, reject) => {
+        const onConnectionUpdate = (update: Partial<ConnectionState>) => {
+          if (update.connection === "open") {
+            cleanup();
+            resolve(toWhoamiResult(this.options.connectorKey, authHandle.state.creds));
+            return;
+          }
+
+          if (update.connection === "close") {
+            cleanup();
+            reject(update.lastDisconnect?.error ?? new Error("WhatsApp pairing closed before login completed."));
+          }
+        };
+
+        const cleanup = () => {
+          socket.ev.off("connection.update", onConnectionUpdate);
+        };
+
+        socket.ev.on("connection.update", onConnectionUpdate);
+
+        try {
+          const pairingCode = await socket.requestPairingCode(phoneNumber);
+          onPairingCode?.(pairingCode);
+        } catch (error) {
+          cleanup();
+          reject(error);
+        }
+      });
+
+      await authHandle.saveCreds();
+
+      return {
+        ...pairedIdentity,
+        pairingCode: undefined,
+        alreadyPaired: false,
+      };
+    } finally {
+      await this.stopSocket();
+    }
+  }
+
+  async run(): Promise<void> {
+    this.stopping = false;
+
+    try {
+      const identity = await this.whoami();
+      if (!identity.accountId) {
+        throw new Error(
+          `WhatsApp connector ${this.options.connectorKey} is not paired yet. Run \`panda whatsapp pair --phone <number>\` first.`,
+        );
+      }
+
+      this.lock = await this.acquireConnectorLock(this.options.connectorKey);
+      this.log("run_started", {
+        connectorKey: this.options.connectorKey,
+        accountId: identity.accountId,
+        name: identity.name ?? null,
+        provider: this.options.provider ?? null,
+        model: this.options.model ?? null,
+        cwd: this.options.cwd,
+        dataDir: this.options.dataDir,
+      });
+
+      while (!this.stopping) {
+        const outcome = await this.runSocketCycle();
+        if (!outcome.reconnect || this.stopping) {
+          break;
+        }
+
+        this.log("reconnect_scheduled", {
+          connectorKey: this.options.connectorKey,
+          reason: outcome.reason,
+          delayMs: RECONNECT_DELAY_MS,
+        });
+        await sleep(RECONNECT_DELAY_MS);
+      }
+    } finally {
+      await this.stop();
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (this.stopPromise) {
+      return this.stopPromise;
+    }
+
+    this.stopping = true;
+    this.stopPromise = (async () => {
+      const runtime = this.runtime;
+      const runtimePromise = this.runtimePromise;
+      this.runtime = null;
+      this.runtimePromise = null;
+
+      this.socketWaiterResolve?.();
+      this.socketWaiterResolve = null;
+      await this.stopSocket();
+      if (runtime) {
+        await runtime.close();
+      } else if (runtimePromise) {
+        try {
+          const resolvedRuntime = await runtimePromise;
+          await resolvedRuntime.close();
+        } catch {
+          // Ignore runtime bootstrap failures during shutdown.
+        }
+      }
+      if (this.lock) {
+        await this.lock.release();
+        this.lock = null;
+      }
+      if (this.pool) {
+        await this.pool.end();
+        this.pool = null;
+        this.authStore = null;
+        this.identityStore = null;
+      }
+    })();
+
+    return this.stopPromise;
+  }
+
+  private async ensureRuntime(): Promise<WhatsAppRuntimeServices> {
+    if (this.runtime) {
+      return this.runtime;
+    }
+
+    if (!this.runtimePromise) {
+      this.runtimePromise = createWhatsAppRuntime({
+        cwd: this.options.cwd,
+        locale: this.options.locale,
+        timezone: this.options.timezone,
+        dataDir: this.options.dataDir,
+        dbUrl: this.options.dbUrl,
+        readOnlyDbUrl: this.options.readOnlyDbUrl,
+        provider: this.options.provider,
+        model: this.options.model,
+        tablePrefix: this.options.tablePrefix,
+        outboundDispatcher: new ChannelOutboundDispatcher([
+          createWhatsAppOutboundAdapter({
+            connectorKey: this.options.connectorKey,
+            getSocket: () => this.socket,
+          }),
+        ]),
+      });
+    }
+
+    this.runtime = await this.runtimePromise;
+    return this.runtime;
+  }
+
+  private async acquireConnectorLock(connectorKey: string): Promise<ConnectorLock> {
+    await this.ensureAuthStore();
+    const client = await this.pool?.connect();
+    if (!client) {
+      throw new Error("WhatsApp connector lock requires an initialized Postgres pool.");
+    }
+    const [keyA, keyB] = hashConnectorLockKey(WHATSAPP_SOURCE, connectorKey);
+
+    try {
+      const result = await client.query(
+        "SELECT pg_try_advisory_lock($1, $2) AS acquired",
+        [keyA, keyB],
+      );
+      const acquired = Boolean((result.rows[0] as Record<string, unknown> | undefined)?.acquired);
+      if (!acquired) {
+        throw new Error(`WhatsApp connector ${connectorKey} is already running.`);
+      }
+
+      let released = false;
+      return {
+        release: async () => {
+          if (released) {
+            return;
+          }
+
+          released = true;
+          try {
+            await client.query("SELECT pg_advisory_unlock($1, $2)", [keyA, keyB]);
+          } finally {
+            client.release();
+          }
+        },
+      };
+    } catch (error) {
+      client.release();
+      throw error;
+    }
+  }
+
+  private async runSocketCycle(): Promise<{ reconnect: boolean; reason?: string }> {
+    const { authHandle, socket } = await this.createSocket();
+
+    try {
+      return await new Promise<{ reconnect: boolean; reason?: string }>((resolve, reject) => {
+        let settled = false;
+
+        const finish = (outcome: { reconnect: boolean; reason?: string }) => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+          cleanup();
+          resolve(outcome);
+        };
+
+        const fail = (error: Error) => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+          cleanup();
+          reject(error);
+        };
+
+        const cleanup = () => {
+          socket.ev.off("connection.update", onConnectionUpdate);
+          socket.ev.off("messages.upsert", onMessagesUpsert);
+          socket.ev.off("messaging-history.set", onHistorySet);
+          this.socketWaiterResolve = null;
+        };
+
+        const onMessagesUpsert = (update: BaileysEventMap["messages.upsert"]) => {
+          void this.handleMessagesUpsert(update).catch((error) => {
+            this.log("upsert_error", {
+              connectorKey: this.options.connectorKey,
+              message: error instanceof Error ? error.message : String(error),
+            });
+            if (!this.stopping) {
+              finish({ reconnect: true, reason: "upsert_error" });
+            }
+          });
+        };
+
+        const onHistorySet = (update: BaileysEventMap["messaging-history.set"]) => {
+          this.log("history_sync_ignored", {
+            connectorKey: this.options.connectorKey,
+            chatCount: update.chats.length,
+            contactCount: update.contacts.length,
+            messageCount: update.messages.length,
+            syncType: update.syncType ?? null,
+            isLatest: update.isLatest ?? null,
+          });
+        };
+
+        const onConnectionUpdate = (update: Partial<ConnectionState>) => {
+          if (update.connection) {
+            this.log("connection_update", {
+              connectorKey: this.options.connectorKey,
+              connection: update.connection,
+              receivedPendingNotifications: update.receivedPendingNotifications ?? null,
+              isNewLogin: update.isNewLogin ?? null,
+            });
+          }
+
+          if (update.connection !== "close") {
+            return;
+          }
+
+          const statusCode = extractDisconnectStatusCode(update.lastDisconnect?.error);
+          const reason = describeDisconnectStatus(statusCode);
+
+          this.log("connection_closed", {
+            connectorKey: this.options.connectorKey,
+            reason,
+            statusCode,
+            message: update.lastDisconnect?.error instanceof Error
+              ? update.lastDisconnect.error.message
+              : String(update.lastDisconnect?.error ?? ""),
+          });
+
+          if (this.stopping) {
+            finish({ reconnect: false, reason: "stopped" });
+            return;
+          }
+
+          if (shouldReconnect(statusCode)) {
+            finish({ reconnect: true, reason });
+            return;
+          }
+
+          fail(new Error(`WhatsApp connection closed permanently (${reason}).`));
+        };
+
+        this.socketWaiterResolve = () => {
+          finish({ reconnect: false, reason: "stopped" });
+        };
+
+        socket.ev.on("connection.update", onConnectionUpdate);
+        socket.ev.on("messages.upsert", onMessagesUpsert);
+        socket.ev.on("messaging-history.set", onHistorySet);
+        authHandle.saveCreds().catch((error) => {
+          fail(error instanceof Error ? error : new Error(String(error)));
+        });
+      });
+    } finally {
+      await this.stopSocket();
+    }
+  }
+
+  private async stopSocket(): Promise<void> {
+    if (!this.socket) {
+      return;
+    }
+
+    const socket = this.socket;
+    this.socket = null;
+    socket.end(undefined);
+  }
+
+  private async handleMessagesUpsert(update: BaileysEventMap["messages.upsert"]): Promise<void> {
+    if (update.type !== "notify") {
+      this.log("message_ignored", {
+        connectorKey: this.options.connectorKey,
+        reason: "non_notify_upsert",
+        upsertType: update.type,
+        messageCount: update.messages.length,
+      });
+      return;
+    }
+
+    const identityStore = await this.ensureIdentityStore();
+
+    for (const message of update.messages) {
+      const remoteJid = message.key.remoteJid;
+      const chatType = resolveChatType(remoteJid ?? undefined);
+      const externalConversationId = remoteJid ? jidNormalizedUser(remoteJid) : null;
+      const externalActorId = message.key.participant
+        ? jidNormalizedUser(message.key.participant)
+        : externalConversationId;
+      const externalMessageId = message.key.id?.trim() || null;
+
+      if (message.key.fromMe) {
+        this.log("message_ignored", {
+          connectorKey: this.options.connectorKey,
+          externalConversationId,
+          externalActorId,
+          chatType,
+          reason: "own_message",
+        });
+        continue;
+      }
+
+      if (!remoteJid || !externalConversationId || !externalActorId || !externalMessageId) {
+        this.log("message_dropped", {
+          connectorKey: this.options.connectorKey,
+          externalConversationId,
+          externalActorId,
+          chatType,
+          reason: "missing_actor_conversation_or_message",
+        });
+        continue;
+      }
+
+      if (chatType !== "private") {
+        this.log("message_dropped", {
+          connectorKey: this.options.connectorKey,
+          externalConversationId,
+          externalActorId,
+          chatType,
+          reason: "group_support_not_enabled",
+        });
+        continue;
+      }
+
+      const binding = await identityStore.resolveIdentityBinding({
+        source: WHATSAPP_SOURCE,
+        connectorKey: this.options.connectorKey,
+        externalActorId,
+      });
+
+      if (!binding) {
+        this.log("message_dropped", {
+          connectorKey: this.options.connectorKey,
+          externalConversationId,
+          externalActorId,
+          chatType,
+          reason: "unpaired_actor",
+          messageLength: extractMessageTextLength(message),
+        });
+        continue;
+      }
+
+      const rawText = extractWhatsAppMessageText(message);
+      const runtime = await this.ensureRuntime();
+      const media = await this.downloadSupportedMedia(message, runtime);
+      if (!rawText && media.length === 0) {
+        this.log("message_dropped", {
+          connectorKey: this.options.connectorKey,
+          externalConversationId,
+          externalActorId,
+          chatType,
+          reason: "unsupported_message_shape",
+        });
+        continue;
+      }
+
+      const quotedMessageId = extractWhatsAppQuotedMessageId(message);
+      const text = buildWhatsAppInboundText({
+        connectorKey: this.options.connectorKey,
+        externalConversationId,
+        externalActorId,
+        externalMessageId,
+        remoteJid,
+        chatType,
+        text: rawText,
+        pushName: message.pushName ?? undefined,
+        quotedMessageId,
+        media,
+      });
+      const thread = await runtime.resolveOrCreateHomeThread({
+        identityId: binding.identityId,
+        provider: this.options.provider,
+        model: this.options.model,
+        context: {
+          source: WHATSAPP_SOURCE,
+          remoteJid,
+        },
+      });
+
+      await runtime.coordinator.submitInput(thread.id, {
+        source: WHATSAPP_SOURCE,
+        channelId: externalConversationId,
+        externalMessageId,
+        actorId: externalActorId,
+        message: stringToUserMessage(text),
+        metadata: buildWhatsAppInboundMetadata({
+          connectorKey: this.options.connectorKey,
+          externalConversationId,
+          externalActorId,
+          externalMessageId,
+          remoteJid,
+          chatType,
+          pushName: message.pushName ?? undefined,
+          quotedMessageId,
+          media,
+        }),
+      });
+      await runtime.homeThreads.rememberLastRoute({
+        identityId: thread.identityId,
+        agentKey: thread.agentKey,
+        route: {
+          source: WHATSAPP_SOURCE,
+          connectorKey: this.options.connectorKey,
+          externalConversationId,
+          externalActorId,
+          externalMessageId,
+          capturedAt: Date.now(),
+        },
+      });
+
+      this.log("message_allowed", {
+        connectorKey: this.options.connectorKey,
+        externalConversationId,
+        externalActorId,
+        chatType,
+        externalMessageId,
+        identityId: binding.identityId,
+      });
+      this.log("message_ingested", {
+        connectorKey: this.options.connectorKey,
+        externalConversationId,
+        externalActorId,
+        chatType,
+        externalMessageId,
+        threadId: thread.id,
+        mediaCount: media.length,
+        textLength: text.trim().length,
+      });
+    }
+  }
+
+  private async downloadSupportedMedia(
+    message: WAMessage,
+    runtime: WhatsAppRuntimeServices,
+  ): Promise<readonly MediaDescriptor[]> {
+    const content = normalizeMessageContent(message.message);
+    if (!content) {
+      return [];
+    }
+
+    const descriptors: MediaDescriptor[] = [];
+
+    if (content.imageMessage) {
+      descriptors.push(await this.downloadMedia(message, runtime, {
+        mimeType: content.imageMessage.mimetype ?? "image/jpeg",
+        sizeBytes: readMediaSizeBytes(content.imageMessage.fileLength),
+      }));
+    }
+
+    if (content.documentMessage) {
+      descriptors.push(await this.downloadMedia(message, runtime, {
+        mimeType: content.documentMessage.mimetype ?? "application/octet-stream",
+        sizeBytes: readMediaSizeBytes(content.documentMessage.fileLength),
+        hintFilename: content.documentMessage.fileName ?? undefined,
+      }));
+    }
+
+    return descriptors;
+  }
+
+  private async downloadMedia(
+    message: WAMessage,
+    runtime: WhatsAppRuntimeServices,
+    options: {
+      mimeType: string;
+      sizeBytes?: number;
+      hintFilename?: string;
+    },
+  ): Promise<MediaDescriptor> {
+    if (!this.socket) {
+      throw new Error("WhatsApp media download requires a live connector socket.");
+    }
+
+    const bytes = new Uint8Array(await downloadMediaMessage(message, "buffer", {}, {
+      reuploadRequest: this.socket.updateMediaMessage,
+      logger: WHATSAPP_LOGGER,
+    }));
+
+    return runtime.mediaStore.writeMedia({
+      bytes,
+      source: WHATSAPP_SOURCE,
+      connectorKey: this.options.connectorKey,
+      mimeType: options.mimeType,
+      sizeBytes: options.sizeBytes,
+      hintFilename: options.hintFilename,
+      metadata: {
+        whatsappMessageId: message.key.id ?? null,
+        whatsappRemoteJid: message.key.remoteJid ?? null,
+      },
+    });
+  }
+}

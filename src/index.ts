@@ -7,4 +7,5 @@ export * from "./features/identity/index.js";
 export * from "./features/panda/index.js";
 export * from "./features/telegram/index.js";
 export * from "./features/thread-runtime/index.js";
+export * from "./features/whatsapp/index.js";
 export { z } from "zod";

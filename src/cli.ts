@@ -11,6 +11,7 @@ import { registerTelegramCommands } from "./features/telegram/cli.js";
 import { runChatCli, type ChatCliOptions } from "./features/tui/index.js";
 import { renderResumeHint } from "./features/tui/exit-hint.js";
 import { createChatRuntime } from "./features/tui/runtime.js";
+import { registerWhatsAppCommands } from "./features/whatsapp/cli.js";
 
 (process as NodeJS.Process & { loadEnvFile?: (path?: string) => void }).loadEnvFile?.();
 
@@ -203,5 +204,6 @@ program
 
 registerIdentityCommands(program);
 registerTelegramCommands(program, parseCliProvider);
+registerWhatsAppCommands(program, parseCliProvider);
 
 await program.parseAsync(process.argv);
