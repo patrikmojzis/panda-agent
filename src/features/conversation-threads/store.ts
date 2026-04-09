@@ -8,4 +8,5 @@ import type {
 export interface ConversationThreadStore {
   resolveConversationThread(lookup: ConversationThreadLookup): Promise<ConversationThreadRecord | null>;
   bindConversationThread(input: ConversationThreadBindingInput): Promise<BindConversationThreadResult>;
+  deleteConversationThread(lookup: ConversationThreadLookup): Promise<boolean>;
 }

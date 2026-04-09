@@ -521,22 +521,25 @@ export class PandaChatApp {
       return await this.getOrCreateExplicitThread(this.explicitThreadId);
     }
 
-    return await services.createThread(this.buildThreadDefaults());
+    return await services.resolveOrCreateHomeThread(this.buildThreadDefaults());
   }
 
   private buildThreadDefaults(overrides: Partial<{
     id: string;
+    agentKey: string;
     provider: ProviderName;
     model: string;
     thinking: ThinkingLevel;
   }> = {}): {
     id?: string;
+    agentKey?: string;
     provider: ProviderName;
     model: string;
     thinking?: ThinkingLevel;
   } {
     return {
       id: overrides.id,
+      agentKey: overrides.agentKey ?? this.currentThread?.agentKey ?? "panda",
       provider: overrides.provider ?? this.providerName,
       model: overrides.model ?? this.model,
       thinking: overrides.thinking ?? this.thinking,
@@ -1707,6 +1710,24 @@ export class PandaChatApp {
     return true;
   }
 
+  private async handleResetThreadCommand(): Promise<boolean> {
+    if (!this.requireIdleRun("resetting Panda")) {
+      return true;
+    }
+
+    try {
+      const thread = await this.requireServices().createThread(this.buildThreadDefaults());
+      await this.requireServices().setHomeThread(thread.id, thread.agentKey);
+      await this.switchThread(thread);
+      this.pushEntry("meta", "session", `Reset Panda. New home thread ${this.currentThreadId}.`);
+      this.setNotice(`Reset Panda to ${this.currentThreadId}.`, "info");
+    } catch (error) {
+      this.showCommandError("session", error instanceof Error ? error.message : String(error));
+    }
+
+    return true;
+  }
+
   private async handleResumeCommand(value: string): Promise<boolean> {
     if (!this.requireIdleRun("resuming another thread")) {
       return true;
@@ -1814,6 +1835,7 @@ export class PandaChatApp {
       thinking: (value) => this.handleThinkingCommand(value),
       compact: (value) => this.handleCompactCommand(value),
       newThread: () => this.handleNewThreadCommand(),
+      resetThread: () => this.handleResetThreadCommand(),
       resume: (value) => this.handleResumeCommand(value),
       showThread: () => this.showThreadSummary(),
       openThreadPicker: async () => {

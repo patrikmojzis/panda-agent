@@ -207,6 +207,27 @@ export async function applyPendingThreadInputs(
   });
 }
 
+export async function discardPendingThreadInputs(
+  options: ThreadInputMutationOptions & { pool: PgPoolLike },
+): Promise<number> {
+  return withTransaction(options.pool, async (client) => {
+    const deletedResult = await client.query(`
+      DELETE FROM ${options.tables.inputs}
+      WHERE thread_id = $1 AND applied_at IS NULL
+      RETURNING id
+    `, [options.threadId]);
+
+    const deletedCount = deletedResult.rowCount ?? 0;
+    if (deletedCount === 0) {
+      return 0;
+    }
+
+    await options.touchThread(options.threadId, client);
+    await options.notifyThreadChanged(options.threadId, client);
+    return deletedCount;
+  });
+}
+
 export async function promoteQueuedThreadInputs(
   options: ThreadMutationCallbacks & {
     pool: PgQueryable;

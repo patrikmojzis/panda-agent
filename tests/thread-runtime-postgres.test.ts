@@ -247,4 +247,39 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(completedAfterAbort.status).toBe("failed");
     expect(completedAfterAbort.error).toBe("recover me");
   });
+
+  it("discards unapplied wake and queued inputs", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const store = new PostgresThreadRuntimeStore({ pool });
+    await store.ensureSchema();
+
+    await store.createThread({
+      id: "pg-thread-reset",
+      agentKey: "panda",
+    });
+
+    await store.enqueueInput("pg-thread-reset", {
+      message: stringToUserMessage("wake me"),
+      source: "telegram",
+    });
+    await store.enqueueInput("pg-thread-reset", {
+      message: stringToUserMessage("queue me"),
+      source: "tui",
+    }, "queue");
+
+    await expect(store.discardPendingInputs("pg-thread-reset")).resolves.toBe(2);
+    await expect(store.hasPendingInputs("pg-thread-reset")).resolves.toBe(false);
+    await expect(store.listPendingInputs("pg-thread-reset")).resolves.toEqual([]);
+    await expect(store.loadTranscript("pg-thread-reset")).resolves.toEqual([]);
+  });
 });

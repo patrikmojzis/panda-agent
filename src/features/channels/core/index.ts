@@ -19,4 +19,5 @@ export {
   type OutboundSentItem,
   type OutboundTarget,
   type OutboundTextItem,
+  type RememberedRoute,
 } from "./types.js";

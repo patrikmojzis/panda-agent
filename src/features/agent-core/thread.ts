@@ -102,6 +102,12 @@ function isAssistantMessage(event: ThreadRunEvent): event is AssistantMessage {
   return "role" in event && event.role === "assistant";
 }
 
+function throwIfAssistantResponseFailed(response: AssistantMessage): void {
+  if (response.stopReason === "error" || response.stopReason === "aborted") {
+    throw new StreamingFailedError(response.errorMessage ?? "Streaming failed");
+  }
+}
+
 export class Thread<TContext = unknown, TOutput = unknown> {
   readonly agent: Agent<TOutput>;
   readonly maxTurns: number;
@@ -480,6 +486,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     throwIfAborted(this.signal);
     const response = await this.runtime.complete(await this.buildRuntimeRequest(runMessages));
     throwIfAborted(this.signal);
+    throwIfAssistantResponseFailed(response);
 
     yield response;
 
@@ -517,9 +524,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     }
 
     const response = await stream.result();
-    if (response.stopReason === "error" || response.stopReason === "aborted") {
-      throw new StreamingFailedError(response.errorMessage ?? "Streaming failed");
-    }
+    throwIfAssistantResponseFailed(response);
 
     const functionCalls = await this.finalizeAssistantTurn(response, runContext);
     if (functionCalls.length > 0) {

@@ -17,6 +17,8 @@
 
 - The agent is free to inspect `/Users/patrikmojzis/Projects/openclaw` for inspiration around provider boundaries, replay/sanitization ideas, and transport adapters.
 - The agent is free to inspect `/Users/patrikmojzis/Projects/claude-code` for inspiration around Anthropic client setup, streaming patterns, and Claude-oriented API usage.
+- The agent is free to inspect `/Users/patrikmojzis/Projects/codex` for inspiration.
+- `/Users/patrikmojzis/Projects/hermes-agent`
 - These repos are reference material only. Panda should stay much lighter and easier to reason about than either of them.
 
 ## Provider Docs

@@ -14,6 +14,7 @@ import type {
   OutboundRequest,
   OutboundResult,
   OutboundTarget,
+  RememberedRoute,
 } from "../../channels/core/types.js";
 import type { PandaSessionContext } from "../types.js";
 import { resolvePandaPath } from "./context.js";
@@ -104,6 +105,36 @@ function readDefaultTarget(context: PandaSessionContext | undefined): {
       externalConversationId,
       externalActorId: readTrimmedString(route.externalActorId),
     },
+  };
+}
+
+async function readRememberedTarget(context: PandaSessionContext | undefined): Promise<{
+  channel: string;
+  target: OutboundTarget;
+} | null> {
+  const route = await context?.routeMemory?.getLastRoute();
+  if (!route) {
+    return null;
+  }
+
+  return {
+    channel: route.source,
+    target: {
+      source: route.source,
+      connectorKey: route.connectorKey,
+      externalConversationId: route.externalConversationId,
+      externalActorId: route.externalActorId,
+    },
+  };
+}
+
+function rememberRouteFromTarget(target: OutboundTarget): RememberedRoute {
+  return {
+    source: target.source,
+    connectorKey: target.connectorKey,
+    externalConversationId: target.externalConversationId,
+    externalActorId: target.externalActorId,
+    capturedAt: Date.now(),
   };
 }
 
@@ -234,7 +265,8 @@ export class OutboundTool<TContext = PandaSessionContext> extends Tool<typeof ou
   ): Promise<JsonObject> {
     const pandaContext = run.context as PandaSessionContext | undefined;
     const dispatcher = ensureDispatcher(pandaContext);
-    const defaultRoute = readDefaultTarget(pandaContext);
+    const defaultRoute = readDefaultTarget(pandaContext) ?? await readRememberedTarget(pandaContext);
+    const hasExplicitTarget = Boolean(args.target);
 
     const channel = args.channel ?? defaultRoute?.channel;
     if (!channel) {
@@ -253,6 +285,10 @@ export class OutboundTool<TContext = PandaSessionContext> extends Tool<typeof ou
       items,
     };
 
-    return serializeOutboundResult(await dispatcher.dispatch(request));
+    const result = await dispatcher.dispatch(request);
+    if (!hasExplicitTarget) {
+      await pandaContext?.routeMemory?.rememberLastRoute(rememberRouteFromTarget(result.target));
+    }
+    return serializeOutboundResult(result);
   }
 }

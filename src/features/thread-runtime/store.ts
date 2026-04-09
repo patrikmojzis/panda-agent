@@ -28,6 +28,7 @@ export interface ThreadRuntimeStore {
     deliveryMode?: ThreadInputDeliveryMode,
   ): Promise<ThreadEnqueueResult>;
   applyPendingInputs(threadId: string): Promise<readonly ThreadMessageRecord[]>;
+  discardPendingInputs(threadId: string): Promise<number>;
   hasPendingInputs(threadId: string): Promise<boolean>;
   hasRunnableInputs(threadId: string): Promise<boolean>;
   promoteQueuedInputs(threadId?: string): Promise<readonly string[]>;

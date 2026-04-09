@@ -846,6 +846,62 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(run?.status).toBe("failed");
     expect(run?.error).toContain("crash-tool boom");
   });
+
+  it("fails the run when the provider returns an error stop reason after a tool call", async () => {
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call_echo",
+          name: "echo",
+          arguments: { message: "hi" },
+        },
+      ]),
+      createAssistantMessage([], {
+        stopReason: "error",
+        errorMessage: "Overloaded",
+      }),
+    );
+
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("provider-error-agent", {
+      agent: new Agent({
+        name: "provider-error-agent",
+        instructions: "Use tools when needed",
+        tools: [new EchoTool()],
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-provider-error",
+      agentKey: "provider-error-agent",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-provider-error", {
+      message: stringToUserMessage("start"),
+      source: "telegram",
+    });
+
+    await expect(coordinator.waitForIdle("thread-provider-error")).rejects.toThrow("Overloaded");
+
+    const [run] = await store.listRuns("thread-provider-error");
+    expect(run?.status).toBe("failed");
+    expect(run?.error).toContain("Overloaded");
+
+    const transcript = await store.loadTranscript("thread-provider-error");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "telegram",
+      "assistant",
+      "tool:echo",
+    ]);
+  });
 });
 
 describe("Thread runtime stores", () => {

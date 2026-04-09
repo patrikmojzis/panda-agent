@@ -12,6 +12,7 @@ import type { PandaSessionContext } from "../src/features/panda/types.js";
 describe("OutboundTool", () => {
   it("defaults to the current inbound route", async () => {
     const requests: unknown[] = [];
+    const rememberedRoutes: unknown[] = [];
     const dispatcher = new ChannelOutboundDispatcher([{
       channel: "telegram",
       send: async (request) => {
@@ -36,6 +37,12 @@ describe("OutboundTool", () => {
       context: {
         cwd: process.cwd(),
         outboundDispatcher: dispatcher,
+        routeMemory: {
+          getLastRoute: async () => null,
+          rememberLastRoute: async (route) => {
+            rememberedRoutes.push(route);
+          },
+        },
         currentInput: {
           source: "telegram",
           channelId: "1615376408",
@@ -60,6 +67,13 @@ describe("OutboundTool", () => {
         externalActorId: "1615376408",
       },
       items: [{ type: "text", text: "hello back" }],
+    }]);
+    expect(rememberedRoutes).toEqual([{
+      source: "telegram",
+      connectorKey: "8669743878",
+      externalConversationId: "1615376408",
+      externalActorId: "1615376408",
+      capturedAt: expect.any(Number),
     }]);
     expect(result).toEqual({
       ok: true,
@@ -106,6 +120,10 @@ describe("OutboundTool", () => {
       context: {
         cwd: tempDir,
         outboundDispatcher: dispatcher,
+        routeMemory: {
+          getLastRoute: async () => null,
+          rememberLastRoute: async () => {},
+        },
         currentInput: {
           source: "telegram",
           metadata: {
@@ -128,5 +146,101 @@ describe("OutboundTool", () => {
       },
       items: [{ type: "file", path: absoluteFile, filename: "report.txt" }],
     }]);
+  });
+
+  it("falls back to the remembered route when there is no current inbound message", async () => {
+    const requests: unknown[] = [];
+    const dispatcher = new ChannelOutboundDispatcher([{
+      channel: "telegram",
+      send: async (request) => {
+        requests.push(request);
+        return {
+          ok: true as const,
+          channel: request.channel,
+          target: request.target,
+          sent: [{ type: "text" as const, externalMessageId: "303" }],
+        };
+      },
+    }]);
+    const tool = new OutboundTool<PandaSessionContext>();
+
+    await tool.run({
+      items: [{ type: "text", text: "scheduled hello" }],
+    }, new RunContext({
+      agent: new Agent(),
+      turn: 0,
+      maxTurns: 10,
+      messages: [],
+      context: {
+        cwd: process.cwd(),
+        outboundDispatcher: dispatcher,
+        routeMemory: {
+          getLastRoute: async () => ({
+            source: "telegram",
+            connectorKey: "8669743878",
+            externalConversationId: "1615376408",
+            externalActorId: "1615376408",
+            capturedAt: Date.now(),
+          }),
+          rememberLastRoute: async () => {},
+        },
+      },
+    }));
+
+    expect(requests).toEqual([{
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "8669743878",
+        externalConversationId: "1615376408",
+        externalActorId: "1615376408",
+      },
+      items: [{ type: "text", text: "scheduled hello" }],
+    }]);
+  });
+
+  it("does not rewrite the remembered route when an explicit target override is used", async () => {
+    const rememberedRoutes: unknown[] = [];
+    const dispatcher = new ChannelOutboundDispatcher([{
+      channel: "telegram",
+      send: async (request) => ({
+        ok: true as const,
+        channel: request.channel,
+        target: request.target,
+        sent: [{ type: "text" as const, externalMessageId: "404" }],
+      }),
+    }]);
+    const tool = new OutboundTool<PandaSessionContext>();
+
+    await tool.run({
+      channel: "telegram",
+      target: {
+        connectorKey: "override-bot",
+        conversationId: "override-chat",
+      },
+      items: [{ type: "text", text: "one-off" }],
+    }, new RunContext({
+      agent: new Agent(),
+      turn: 0,
+      maxTurns: 10,
+      messages: [],
+      context: {
+        cwd: process.cwd(),
+        outboundDispatcher: dispatcher,
+        routeMemory: {
+          getLastRoute: async () => ({
+            source: "telegram",
+            connectorKey: "8669743878",
+            externalConversationId: "1615376408",
+            capturedAt: Date.now(),
+          }),
+          rememberLastRoute: async (route) => {
+            rememberedRoutes.push(route);
+          },
+        },
+      },
+    }));
+
+    expect(rememberedRoutes).toEqual([]);
   });
 });

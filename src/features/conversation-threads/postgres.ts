@@ -225,4 +225,23 @@ export class PostgresConversationThreadStore implements ConversationThreadStore 
       client.release();
     }
   }
+
+  async deleteConversationThread(lookup: ConversationThreadLookup): Promise<boolean> {
+    const normalizedLookup = normalizeConversationThreadLookup(lookup);
+    const result = await this.pool.query(
+      `
+        DELETE FROM ${this.tables.conversationThreads}
+        WHERE source = $1
+          AND connector_key = $2
+          AND external_conversation_id = $3
+      `,
+      [
+        normalizedLookup.source,
+        normalizedLookup.connectorKey,
+        normalizedLookup.externalConversationId,
+      ],
+    );
+
+    return (result.rowCount ?? 0) > 0;
+  }
 }

@@ -7,8 +7,9 @@ import { stringToUserMessage, type ProviderName } from "../agent-core/index.js";
 import { ChannelOutboundDispatcher } from "../channels/core/index.js";
 import type { JsonObject } from "../agent-core/types.js";
 import type { MediaDescriptor } from "../channels/core/types.js";
+import type { ConversationThreadRecord } from "../conversation-threads/types.js";
 import type { IdentityBindingRecord } from "../identity/types.js";
-import type { ThreadRecord } from "../thread-runtime/types.js";
+import { isMissingThreadError, type ThreadRecord } from "../thread-runtime/types.js";
 import {
   TELEGRAM_POLL_TIMEOUT_SECONDS,
   TELEGRAM_SOURCE,
@@ -25,6 +26,37 @@ import { createTelegramRuntime, type TelegramRuntimeServices } from "./runtime.j
 
 type TelegramContext = Context;
 const UPDATE_RETRY_DELAY_MS = 1_000;
+
+interface TelegramResetReceiptMetadata extends JsonObject {
+  kind: "telegram_reset_receipt";
+  commandExternalMessageId: string;
+}
+
+function createTelegramResetReceiptMetadata(commandExternalMessageId: string): TelegramResetReceiptMetadata {
+  return {
+    kind: "telegram_reset_receipt",
+    commandExternalMessageId,
+  };
+}
+
+function parseTelegramResetReceiptMetadata(
+  value: ConversationThreadRecord["metadata"],
+): TelegramResetReceiptMetadata | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const kind = "kind" in value ? value.kind : undefined;
+  const commandExternalMessageId = "commandExternalMessageId" in value ? value.commandExternalMessageId : undefined;
+  if (kind !== "telegram_reset_receipt" || typeof commandExternalMessageId !== "string" || !commandExternalMessageId.trim()) {
+    return null;
+  }
+
+  return {
+    kind,
+    commandExternalMessageId,
+  };
+}
 
 export interface TelegramServiceOptions {
   token: string;
@@ -198,7 +230,7 @@ export class TelegramService {
       const { runtime, connectorKey, botUsername } = await this.ensureInitialized();
       await this.bot.api.setMyCommands([
         { command: "start", description: "Pair this Telegram account with Panda" },
-        { command: "new", description: "Start a fresh Panda thread" },
+        { command: "reset", description: "Reset Panda to a fresh empty home thread" },
       ]);
       this.lock = await this.acquireConnectorLock(connectorKey, runtime);
       this.log("run_started", {
@@ -433,7 +465,14 @@ export class TelegramService {
     }
 
     if (command === "new") {
-      await this.handleNewCommand(ctx, binding, externalConversationId);
+      await ctx.reply("<code>/new</code> is TUI-only. Use <code>/reset</code> here to start fresh.", {
+        parse_mode: "HTML",
+      });
+      return;
+    }
+
+    if (command === "reset") {
+      await this.handleResetCommand(ctx, binding, externalConversationId);
       return;
     }
 
@@ -505,6 +544,18 @@ export class TelegramService {
         },
       },
     });
+    await runtime.homeThreads.rememberLastRoute({
+      identityId: thread.identityId,
+      agentKey: thread.agentKey,
+      route: {
+        source: TELEGRAM_SOURCE,
+        connectorKey,
+        externalConversationId,
+        externalActorId: actorId,
+        externalMessageId: String(message.message_id),
+        capturedAt: Date.now(),
+      },
+    });
 
     this.log("message_ingested", {
       connectorKey,
@@ -518,22 +569,64 @@ export class TelegramService {
     });
   }
 
-  private async handleNewCommand(
+  private async handleResetCommand(
     ctx: TelegramContext,
     binding: IdentityBindingRecord,
     externalConversationId: string,
   ): Promise<void> {
     const { runtime, connectorKey } = await this.ensureInitialized();
-    const existing = await runtime.conversationThreads.resolveConversationThread({
-      source: TELEGRAM_SOURCE,
-      connectorKey,
-      externalConversationId,
-    });
-    const previousThreadId = existing?.threadId ?? null;
+    const chatId = ctx.chat?.id;
+    const commandExternalMessageId = ctx.msg?.message_id ? String(ctx.msg.message_id) : null;
+    if (chatId === undefined) {
+      this.log("message_dropped", {
+        connectorKey,
+        externalActorId: binding.externalActorId,
+        externalConversationId,
+        chatType: "private",
+        reason: "missing_chat_on_reset",
+      });
+      return;
+    }
+    if (!commandExternalMessageId) {
+      this.log("message_dropped", {
+        connectorKey,
+        externalActorId: binding.externalActorId,
+        externalConversationId,
+        chatType: "private",
+        reason: "missing_message_id_on_reset",
+      });
+      return;
+    }
 
-    if (existing) {
-      await runtime.coordinator.abort(existing.threadId, "Telegram /new requested.");
-      await runtime.coordinator.waitForCurrentRun(existing.threadId);
+    const replayedReset = await this.resolveRetriedResetThread({
+      runtime,
+      connectorKey,
+      identityId: binding.identityId,
+      externalConversationId,
+      commandExternalMessageId,
+    });
+    if (replayedReset) {
+      this.log("thread_reset_replayed", {
+        connectorKey,
+        externalActorId: binding.externalActorId,
+        externalConversationId,
+        commandExternalMessageId,
+        homeThreadId: replayedReset.id,
+      });
+      await ctx.reply("Reset Panda. Fresh home thread started.");
+      return;
+    }
+
+    const previousHome = await this.resolveExistingHomeThread(runtime, binding.identityId);
+    const threadsToAbort = previousHome ? [previousHome.id] : [];
+    for (const threadId of threadsToAbort) {
+      await runtime.coordinator.abort(threadId, "Telegram /reset requested.");
+    }
+    for (const threadId of threadsToAbort) {
+      await runtime.coordinator.waitForCurrentRun(threadId);
+    }
+    for (const threadId of threadsToAbort) {
+      await runtime.store.discardPendingInputs(threadId);
     }
 
     const latestBinding = await runtime.identityStore.resolveIdentityBinding({
@@ -558,52 +651,123 @@ export class TelegramService {
       model: this.runtimeOptions.model,
       context: {
         source: TELEGRAM_SOURCE,
+        chatId: String(chatId),
       },
     });
-
+    // Reset mutates state outside the usual deduped input path, so keep a
+    // receipt keyed by the Telegram command message before we reply.
     await runtime.conversationThreads.bindConversationThread({
       source: TELEGRAM_SOURCE,
       connectorKey,
       externalConversationId,
       threadId: thread.id,
-      metadata: {
-        chatType: "private",
+      metadata: createTelegramResetReceiptMetadata(commandExternalMessageId),
+    });
+    await runtime.setHomeThread(thread.id, thread.agentKey);
+    await runtime.homeThreads.rememberLastRoute({
+      identityId: thread.identityId,
+      agentKey: thread.agentKey,
+      route: {
+        source: TELEGRAM_SOURCE,
+        connectorKey,
+        externalConversationId,
+        externalActorId: binding.externalActorId,
+        externalMessageId: commandExternalMessageId,
+        capturedAt: Date.now(),
       },
     });
 
-    this.log("thread_rotated", {
+    this.log("thread_reset", {
       connectorKey,
       externalActorId: binding.externalActorId,
       externalConversationId,
-      previousThreadId,
-      threadId: thread.id,
+      commandExternalMessageId,
+      previousThreadId: previousHome?.id ?? null,
+      previousHomeThreadId: previousHome?.id ?? null,
+      homeThreadId: thread.id,
     });
 
-    await ctx.reply("Started a fresh Panda thread.");
+    await ctx.reply("Reset Panda. Fresh home thread started.");
+  }
+
+  private async resolveRetriedResetThread(options: {
+    runtime: TelegramRuntimeServices;
+    connectorKey: string;
+    identityId: string;
+    externalConversationId: string;
+    commandExternalMessageId: string;
+  }): Promise<ThreadRecord | null> {
+    const existing = await options.runtime.conversationThreads.resolveConversationThread({
+      source: TELEGRAM_SOURCE,
+      connectorKey: options.connectorKey,
+      externalConversationId: options.externalConversationId,
+    });
+    const receipt = parseTelegramResetReceiptMetadata(existing?.metadata);
+    if (!existing || !receipt || receipt.commandExternalMessageId !== options.commandExternalMessageId) {
+      return null;
+    }
+
+    const currentHome = await this.resolveExistingHomeThread(options.runtime, options.identityId);
+    if (!currentHome || currentHome.id !== existing.threadId) {
+      return null;
+    }
+
+    return currentHome;
+  }
+
+  private async resolveExistingHomeThread(
+    runtime: TelegramRuntimeServices,
+    identityId: string,
+    agentKey = "panda",
+  ): Promise<ThreadRecord | null> {
+    const existing = await runtime.homeThreads.resolveHomeThread({
+      identityId,
+      agentKey,
+    });
+    if (!existing) {
+      return null;
+    }
+
+    try {
+      const thread = await runtime.getThread(existing.threadId);
+      return thread.identityId === identityId ? thread : null;
+    } catch (error) {
+      if (isMissingThreadError(error, existing.threadId)) {
+        return null;
+      }
+
+      throw error;
+    }
   }
 
   private async resolveOrCreateThread(
     binding: IdentityBindingRecord,
-    externalConversationId: string,
+    _externalConversationId: string,
     chatId: number,
   ): Promise<ThreadRecord | null> {
-    const { runtime, connectorKey } = await this.ensureInitialized();
-    const existing = await runtime.conversationThreads.resolveConversationThread({
-      source: TELEGRAM_SOURCE,
-      connectorKey,
-      externalConversationId,
-    });
+    const { runtime } = await this.ensureInitialized();
 
-    if (existing) {
-      const thread = await runtime.getThread(existing.threadId);
-      if (thread.identityId !== binding.identityId) {
-        return null;
-      }
+    // Perf: private Telegram chats use the home-thread pointer now, so checking
+    // conversation_threads here is just an extra DB miss on every DM. Keep the
+    // old lookup commented for future group-chat support, where per-conversation
+    // routing will matter again.
+    // const { connectorKey } = await this.ensureInitialized();
+    // const existing = await runtime.conversationThreads.resolveConversationThread({
+    //   source: TELEGRAM_SOURCE,
+    //   connectorKey,
+    //   externalConversationId,
+    // });
+    //
+    // if (existing) {
+    //   const thread = await runtime.getThread(existing.threadId);
+    //   if (thread.identityId !== binding.identityId) {
+    //     return null;
+    //   }
+    //
+    //   return thread;
+    // }
 
-      return thread;
-    }
-
-    const thread = await runtime.createThread({
+    return await runtime.resolveOrCreateHomeThread({
       identityId: binding.identityId,
       provider: this.runtimeOptions.provider,
       model: this.runtimeOptions.model,
@@ -612,27 +776,6 @@ export class TelegramService {
         chatId: String(chatId),
       },
     });
-
-    await runtime.conversationThreads.bindConversationThread({
-      source: TELEGRAM_SOURCE,
-      connectorKey,
-      externalConversationId,
-      threadId: thread.id,
-      metadata: {
-        chatType: "private",
-        actorId: binding.externalActorId,
-      },
-    });
-
-    this.log("thread_bound", {
-      connectorKey,
-      externalActorId: binding.externalActorId,
-      externalConversationId,
-      threadId: thread.id,
-      created: true,
-    });
-
-    return thread;
   }
 
   private async downloadSupportedMedia(

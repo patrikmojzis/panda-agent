@@ -325,6 +325,22 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     return applied;
   }
 
+  async discardPendingInputs(threadId: string): Promise<number> {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      throw missingThreadError(threadId);
+    }
+
+    const discarded = thread.pendingInputs.length;
+    if (discarded === 0) {
+      return 0;
+    }
+
+    thread.pendingInputs = [];
+    thread.thread.updatedAt = Date.now();
+    return discarded;
+  }
+
   async hasPendingInputs(threadId: string): Promise<boolean> {
     const thread = this.threads.get(threadId);
     if (!thread) {

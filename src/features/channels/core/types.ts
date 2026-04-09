@@ -11,6 +11,12 @@ export interface OutboundTarget extends OutboundRoute {
   replyToMessageId?: string;
 }
 
+export interface RememberedRoute extends OutboundRoute {
+  externalActorId?: string;
+  externalMessageId?: string;
+  capturedAt: number;
+}
+
 export interface MediaDescriptor {
   id: string;
   source: string;

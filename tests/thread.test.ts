@@ -5,6 +5,7 @@ import {
   Agent,
   Hook,
   RunPipeline,
+  StreamingFailedError,
   Thread,
   Tool,
   stringToUserMessage,
@@ -165,6 +166,29 @@ function eventKind(event: ThreadRunEvent): string {
 }
 
 describe("Thread", () => {
+  it("throws when a non-streaming provider returns an error stop reason", async () => {
+    const runtime = createMockRuntime(createAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: "Overloaded",
+    }));
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "core",
+        instructions: "Reply briefly",
+      }),
+      model: "gpt-4o-mini",
+      messages: [stringToUserMessage("hi")],
+      runtime,
+    });
+
+    await expect(async () => {
+      for await (const _output of thread.run()) {
+        // Exhaust the generator.
+      }
+    }).rejects.toBeInstanceOf(StreamingFailedError);
+  });
+
   it("runs recursive tool calls and hook/pipeline callbacks", async () => {
     const events: string[] = [];
     const runtime = createMockRuntime(

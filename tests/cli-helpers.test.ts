@@ -77,10 +77,13 @@ describe("slash command helpers", () => {
   it("finds slash completion only on the first line around the cursor", () => {
     const context = getSlashCompletionContext("/pro", 4);
     const thinkingContext = getSlashCompletionContext("/thi", 4);
+    const resetContext = getSlashCompletionContext("/re", 3);
 
     expect(context?.token).toBe("/pro");
     expect(context?.matches.map((command) => command.name)).toEqual(["/provider"]);
     expect(thinkingContext?.matches.map((command) => command.name)).toEqual(["/thinking"]);
+    expect(resetContext?.matches.map((command) => command.name)).toContain("/reset");
+    expect(resetContext?.matches[0]?.name).toBe("/reset");
     expect(getSlashCompletionContext("hello\n/pro", 9)).toBeNull();
   });
 

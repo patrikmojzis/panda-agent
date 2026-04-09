@@ -11,6 +11,7 @@ import {
 import { PostgresChannelCursorStore } from "../channel-cursors/index.js";
 import { type ChannelOutboundDispatcher, FileSystemMediaStore } from "../channels/core/index.js";
 import { PostgresConversationThreadStore } from "../conversation-threads/index.js";
+import { PostgresHomeThreadStore } from "../home-threads/index.js";
 import {
   createDefaultIdentityInput,
   DEFAULT_IDENTITY_HANDLE,
@@ -20,7 +21,7 @@ import type { IdentityStore } from "../identity/store.js";
 import { OutboundTool } from "../panda/tools/outbound-tool.js";
 import type { ThreadRuntimeCoordinator } from "../thread-runtime/coordinator.js";
 import type { ThreadRuntimeStore } from "../thread-runtime/store.js";
-import type { ThreadRecord } from "../thread-runtime/types.js";
+import { isMissingThreadError, type ThreadRecord } from "../thread-runtime/types.js";
 import { TELEGRAM_SOURCE } from "./config.js";
 
 export interface TelegramRuntimeOptions {
@@ -51,10 +52,13 @@ export interface TelegramRuntimeServices {
   store: ThreadRuntimeStore;
   coordinator: ThreadRuntimeCoordinator;
   conversationThreads: PostgresConversationThreadStore;
+  homeThreads: PostgresHomeThreadStore;
   channelCursors: PostgresChannelCursorStore;
   mediaStore: FileSystemMediaStore;
   pool: PandaRuntimeServices["pool"];
   createThread(options: CreateTelegramThreadOptions): Promise<ThreadRecord>;
+  resolveOrCreateHomeThread(options: CreateTelegramThreadOptions): Promise<ThreadRecord>;
+  setHomeThread(threadId: string, agentKey?: string): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
   close(): Promise<void>;
 }
@@ -69,6 +73,11 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
     locale: options.locale,
     timezone: options.timezone,
   } as const;
+
+  let conversationThreads: PostgresConversationThreadStore;
+  let homeThreads: PostgresHomeThreadStore;
+  let channelCursors: PostgresChannelCursorStore;
+  let mediaStore: FileSystemMediaStore;
 
   const pandaRuntime = await createPandaRuntime({
     dbUrl: options.dbUrl,
@@ -88,14 +97,23 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
         extraTools: options.outboundDispatcher ? [...extraTools, new OutboundTool()] : extraTools,
         extraContext: {
           outboundDispatcher: options.outboundDispatcher,
+          routeMemory: {
+            getLastRoute: async () => homeThreads.resolveLastRoute({
+              identityId: thread.identityId,
+              agentKey: thread.agentKey,
+            }),
+            rememberLastRoute: async (route) => {
+              await homeThreads.rememberLastRoute({
+                identityId: thread.identityId,
+                agentKey: thread.agentKey,
+                route,
+              });
+            },
+          },
         },
       });
     },
   });
-
-  let conversationThreads: PostgresConversationThreadStore;
-  let channelCursors: PostgresChannelCursorStore;
-  let mediaStore: FileSystemMediaStore;
 
   try {
     conversationThreads = new PostgresConversationThreadStore({
@@ -103,6 +121,12 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
       tablePrefix: options.tablePrefix,
     });
     await conversationThreads.ensureSchema();
+
+    homeThreads = new PostgresHomeThreadStore({
+      pool: pandaRuntime.pool,
+      tablePrefix: options.tablePrefix,
+    });
+    await homeThreads.ensureSchema();
 
     channelCursors = new PostgresChannelCursorStore({
       pool: pandaRuntime.pool,
@@ -143,15 +167,60 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
     });
   };
 
+  const resolveOrCreateHomeThread = async (
+    createOptions: CreateTelegramThreadOptions,
+  ): Promise<ThreadRecord> => {
+    const agentKey = createOptions.agentKey ?? "panda";
+    const existing = await homeThreads.resolveHomeThread({
+      identityId: createOptions.identityId,
+      agentKey,
+    });
+
+    if (existing) {
+      try {
+        return await pandaRuntime.store.getThread(existing.threadId);
+      } catch (error) {
+        if (!isMissingThreadError(error, existing.threadId)) {
+          throw error;
+        }
+      }
+    }
+
+    // Missing home means "create a fresh home", not "promote whatever thread was touched last".
+    const thread = await createThread({
+      ...createOptions,
+      agentKey,
+    });
+    await homeThreads.bindHomeThread({
+      identityId: thread.identityId,
+      agentKey,
+      threadId: thread.id,
+    });
+    return thread;
+  };
+
+  const setHomeThread = async (threadId: string, agentKey?: string): Promise<ThreadRecord> => {
+    const thread = await pandaRuntime.store.getThread(threadId);
+    await homeThreads.bindHomeThread({
+      identityId: thread.identityId,
+      agentKey: agentKey ?? thread.agentKey,
+      threadId: thread.id,
+    });
+    return thread;
+  };
+
   return {
     identityStore: pandaRuntime.identityStore,
     store: pandaRuntime.store,
     coordinator: pandaRuntime.coordinator,
     conversationThreads,
+    homeThreads,
     channelCursors,
     mediaStore,
     pool: pandaRuntime.pool,
     createThread,
+    resolveOrCreateHomeThread,
+    setHomeThread,
     getThread: pandaRuntime.store.getThread.bind(pandaRuntime.store),
     close: pandaRuntime.close,
   };

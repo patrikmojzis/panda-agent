@@ -8,6 +8,7 @@ interface ChatCommandHandlers {
   thinking(value: string): Promise<boolean> | boolean;
   compact(value: string): Promise<boolean> | boolean;
   newThread(): Promise<boolean> | boolean;
+  resetThread(): Promise<boolean> | boolean;
   resume(value: string): Promise<boolean> | boolean;
   showThread(): Promise<boolean> | boolean;
   openThreadPicker(): Promise<boolean> | boolean;
@@ -24,7 +25,8 @@ export function buildChatHelpText(thinkingCommandUsage: string): string {
     "/model <name> changes the active model.",
     `${thinkingCommandUsage} changes the active thinking level.`,
     "/compact [instructions] summarizes older context and keeps recent turns verbatim.",
-    "/new starts a fresh stored thread.",
+    "/new starts a fresh stored thread without changing home.",
+    "/reset starts a fresh empty thread and makes it the new home.",
     "/resume <thread-id> switches to another stored thread.",
     "/thread shows the current thread id and active session settings.",
     "/threads opens the recent-thread picker.",
@@ -70,6 +72,8 @@ export async function runChatCommandLine(
       return await handlers.compact(value);
     case "/new":
       return await handlers.newThread();
+    case "/reset":
+      return await handlers.resetThread();
     case "/resume":
       return await handlers.resume(value);
     case "/thread":
