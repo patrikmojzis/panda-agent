@@ -73,7 +73,6 @@ class PgMemReadonlySchemaQueryable {
           FROM "thread_runtime_scheduled_tasks" AS scheduled_tasks
           LEFT JOIN "thread_runtime_home_threads" AS home_threads
             ON home_threads.identity_id = scheduled_tasks.identity_id
-           AND home_threads.agent_key = scheduled_tasks.agent_key
           WHERE scheduled_tasks.identity_id = current_setting('panda.identity_id', true)
             AND scheduled_tasks.agent_key = current_setting('panda.agent_key', true)
         `);

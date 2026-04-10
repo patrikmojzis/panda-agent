@@ -14,19 +14,29 @@ function createRunContext(context: PandaSessionContext): RunContext<PandaSession
   });
 }
 
+function createQueue() {
+  return {
+    enqueueAction: vi.fn(async () => ({
+      id: "action-1",
+      channel: "telegram",
+      connectorKey: "8669743878",
+      kind: "telegram_reaction",
+      payload: {},
+      createdAt: 1,
+      updatedAt: 1,
+    })),
+  };
+}
+
 describe("TelegramReactTool", () => {
   it("defaults messageId to the current Telegram message", async () => {
-    const api = {
-      setMessageReaction: vi.fn(async () => {}),
-    };
-    const tool = new TelegramReactTool({
-      api,
-      connectorKey: "8669743878",
-    });
+    const channelActionQueue = createQueue();
+    const tool = new TelegramReactTool();
 
     const result = await tool.run({
       emoji: "🔥",
     }, createRunContext({
+      channelActionQueue,
       currentInput: {
         source: "telegram",
         externalMessageId: "555",
@@ -39,30 +49,35 @@ describe("TelegramReactTool", () => {
       },
     }));
 
-    expect(api.setMessageReaction).toHaveBeenCalledWith("1615376408", 555, [
-      { type: "emoji", emoji: "🔥" },
-    ]);
+    expect(channelActionQueue.enqueueAction).toHaveBeenCalledWith({
+      channel: "telegram",
+      connectorKey: "8669743878",
+      kind: "telegram_reaction",
+      payload: {
+        conversationId: "1615376408",
+        messageId: "555",
+        emoji: "🔥",
+        remove: false,
+      },
+    });
     expect(result).toEqual({
       ok: true,
       connectorKey: "8669743878",
       conversationId: "1615376408",
       messageId: "555",
       added: "🔥",
+      queued: true,
     });
   });
 
   it("defaults messageId to the reaction target message when the current input is a reaction", async () => {
-    const api = {
-      setMessageReaction: vi.fn(async () => {}),
-    };
-    const tool = new TelegramReactTool({
-      api,
-      connectorKey: "8669743878",
-    });
+    const channelActionQueue = createQueue();
+    const tool = new TelegramReactTool();
 
     await tool.run({
       emoji: "👍",
     }, createRunContext({
+      channelActionQueue,
       currentInput: {
         source: "telegram",
         externalMessageId: "telegram-reaction:777001",
@@ -80,19 +95,17 @@ describe("TelegramReactTool", () => {
       },
     }));
 
-    expect(api.setMessageReaction).toHaveBeenCalledWith("1615376408", 777, [
-      { type: "emoji", emoji: "👍" },
-    ]);
+    expect(channelActionQueue.enqueueAction).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({
+        messageId: "777",
+        emoji: "👍",
+      }),
+    }));
   });
 
   it("supports an explicit target override", async () => {
-    const api = {
-      setMessageReaction: vi.fn(async () => {}),
-    };
-    const tool = new TelegramReactTool({
-      api,
-      connectorKey: "8669743878",
-    });
+    const channelActionQueue = createQueue();
+    const tool = new TelegramReactTool();
 
     const result = await tool.run({
       emoji: "👀",
@@ -101,28 +114,34 @@ describe("TelegramReactTool", () => {
         connectorKey: "8669743878",
         conversationId: "999999",
       },
-    }, createRunContext({}));
+    }, createRunContext({
+      channelActionQueue,
+    }));
 
-    expect(api.setMessageReaction).toHaveBeenCalledWith("999999", 888, [
-      { type: "emoji", emoji: "👀" },
-    ]);
+    expect(channelActionQueue.enqueueAction).toHaveBeenCalledWith({
+      channel: "telegram",
+      connectorKey: "8669743878",
+      kind: "telegram_reaction",
+      payload: {
+        conversationId: "999999",
+        messageId: "888",
+        emoji: "👀",
+        remove: false,
+      },
+    });
     expect(result).toEqual({
       ok: true,
       connectorKey: "8669743878",
       conversationId: "999999",
       messageId: "888",
       added: "👀",
+      queued: true,
     });
   });
 
   it("requires messageId when the current input is not Telegram", async () => {
-    const api = {
-      setMessageReaction: vi.fn(async () => {}),
-    };
-    const tool = new TelegramReactTool({
-      api,
-      connectorKey: "8669743878",
-    });
+    const channelActionQueue = createQueue();
+    const tool = new TelegramReactTool();
 
     await expect(tool.run({
       emoji: "👀",
@@ -131,26 +150,23 @@ describe("TelegramReactTool", () => {
         conversationId: "999999",
       },
     }, createRunContext({
+      channelActionQueue,
       currentInput: {
         source: "tui",
         externalMessageId: "555",
       },
     }))).rejects.toThrow("telegram_react requires a target message id.");
-    expect(api.setMessageReaction).not.toHaveBeenCalled();
+    expect(channelActionQueue.enqueueAction).not.toHaveBeenCalled();
   });
 
   it("clears reactions when remove=true", async () => {
-    const api = {
-      setMessageReaction: vi.fn(async () => {}),
-    };
-    const tool = new TelegramReactTool({
-      api,
-      connectorKey: "8669743878",
-    });
+    const channelActionQueue = createQueue();
+    const tool = new TelegramReactTool();
 
     const result = await tool.run({
       remove: true,
     }, createRunContext({
+      channelActionQueue,
       currentInput: {
         source: "telegram",
         externalMessageId: "555",
@@ -163,29 +179,32 @@ describe("TelegramReactTool", () => {
       },
     }));
 
-    expect(api.setMessageReaction).toHaveBeenCalledWith("1615376408", 555, []);
+    expect(channelActionQueue.enqueueAction).toHaveBeenCalledWith({
+      channel: "telegram",
+      connectorKey: "8669743878",
+      kind: "telegram_reaction",
+      payload: {
+        conversationId: "1615376408",
+        messageId: "555",
+        emoji: undefined,
+        remove: true,
+      },
+    });
     expect(result).toEqual({
       ok: true,
       connectorKey: "8669743878",
       conversationId: "1615376408",
       messageId: "555",
       removed: true,
+      queued: true,
     });
   });
 
-  it("returns structured invalid emoji failures", async () => {
-    const api = {
-      setMessageReaction: vi.fn(async () => {
-        throw new Error("400 Bad Request: REACTION_INVALID");
-      }),
-    };
-    const tool = new TelegramReactTool({
-      api,
-      connectorKey: "8669743878",
-    });
+  it("fails when the runtime does not expose a channel action queue", async () => {
+    const tool = new TelegramReactTool();
 
-    const result = await tool.run({
-      emoji: "not-a-real-reaction",
+    await expect(tool.run({
+      emoji: "🔥",
     }, createRunContext({
       currentInput: {
         source: "telegram",
@@ -197,16 +216,6 @@ describe("TelegramReactTool", () => {
           },
         },
       },
-    }));
-
-    expect(result).toEqual({
-      ok: false,
-      connectorKey: "8669743878",
-      conversationId: "1615376408",
-      messageId: "555",
-      reason: "invalid_emoji",
-      error: "400 Bad Request: REACTION_INVALID",
-      emoji: "not-a-real-reaction",
-    });
+    }))).rejects.toThrow("telegram_react is unavailable in this runtime.");
   });
 });

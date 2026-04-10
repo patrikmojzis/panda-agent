@@ -3,8 +3,21 @@ import {DataType, newDb} from "pg-mem";
 
 import {PostgresHomeThreadStore} from "../src/index.js";
 
+function createPool() {
+  const db = newDb();
+  db.public.registerFunction({
+    name: "pg_notify",
+    args: [DataType.text, DataType.text],
+    returns: DataType.text,
+    implementation: () => "",
+  });
+
+  const adapter = db.adapters.createPg();
+  return new adapter.Pool();
+}
+
 describe("PostgresHomeThreadStore", () => {
-  const pools: Array<{ end(): Promise<void> }> = [];
+  const pools: Array<{end(): Promise<void>}> = [];
 
   afterEach(async () => {
     while (pools.length > 0) {
@@ -17,269 +30,99 @@ describe("PostgresHomeThreadStore", () => {
     }
   });
 
-  it("binds and rebinds home thread pointers", async () => {
-    const db = newDb();
-    db.public.registerFunction({
-      name: "pg_notify",
-      args: [DataType.text, DataType.text],
-      returns: DataType.text,
-      implementation: () => "",
-    });
-    const adapter = db.adapters.createPg();
-    const pool = new adapter.Pool();
+  it("binds and rebinds the home thread pointer for an identity", async () => {
+    const pool = createPool();
     pools.push(pool);
 
-    const store = new PostgresHomeThreadStore({ pool });
+    const store = new PostgresHomeThreadStore({pool});
     await store.ensureSchema();
 
     await expect(store.resolveHomeThread({
       identityId: "identity-1",
-      agentKey: "panda",
     })).resolves.toBeNull();
 
     const firstBind = await store.bindHomeThread({
       identityId: " identity-1 ",
-      agentKey: " panda ",
-      threadId: "thread-a",
-      metadata: {
-        lastRoutes: {
-          telegram: {
-            source: "telegram",
-            connectorKey: "bot-1",
-            externalConversationId: "chat-1",
-            capturedAt: 123,
-          },
-        },
-      },
-    });
-    expect(firstBind.previousThreadId).toBeUndefined();
-    expect(firstBind.binding).toMatchObject({
-      identityId: "identity-1",
-      agentKey: "panda",
-      threadId: "thread-a",
-      metadata: {
-        lastRoutes: {
-          telegram: {
-            source: "telegram",
-            connectorKey: "bot-1",
-            externalConversationId: "chat-1",
-            capturedAt: 123,
-          },
-        },
-      },
-    });
-
-    const rebound = await store.bindHomeThread({
-      identityId: "identity-1",
-      agentKey: "panda",
-      threadId: "thread-b",
-    });
-    expect(rebound.previousThreadId).toBe("thread-a");
-    expect(rebound.binding.threadId).toBe("thread-b");
-    expect(rebound.binding.metadata).toEqual({
-      lastRoutes: {
-        telegram: {
-          source: "telegram",
-          connectorKey: "bot-1",
-          externalConversationId: "chat-1",
-          capturedAt: 123,
-        },
-      },
-    });
-    await expect(store.resolveLastRoute({
-      identityId: "identity-1",
-      agentKey: "panda",
-    })).resolves.toMatchObject({
-      source: "telegram",
-      externalConversationId: "chat-1",
-    });
-    await expect(store.resolveLastRoute({
-      identityId: "identity-1",
-      agentKey: "panda",
-    }, "telegram")).resolves.toMatchObject({
-      source: "telegram",
-      externalConversationId: "chat-1",
-    });
-  });
-
-  it("isolates homes by identity and agent key", async () => {
-    const db = newDb();
-    db.public.registerFunction({
-      name: "pg_notify",
-      args: [DataType.text, DataType.text],
-      returns: DataType.text,
-      implementation: () => "",
-    });
-    const adapter = db.adapters.createPg();
-    const pool = new adapter.Pool();
-    pools.push(pool);
-
-    const store = new PostgresHomeThreadStore({ pool });
-    await store.ensureSchema();
-
-    await store.bindHomeThread({
-      identityId: "identity-1",
-      agentKey: "panda",
-      threadId: "thread-a",
-    });
-    await store.bindHomeThread({
-      identityId: "identity-1",
-      agentKey: "ops",
-      threadId: "thread-b",
-    });
-    await store.bindHomeThread({
-      identityId: "identity-2",
-      agentKey: "panda",
-      threadId: "thread-c",
-    });
-
-    await expect(store.resolveHomeThread({
-      identityId: "identity-1",
-      agentKey: "panda",
-    })).resolves.toMatchObject({ threadId: "thread-a" });
-    await expect(store.resolveHomeThread({
-      identityId: "identity-1",
-      agentKey: "ops",
-    })).resolves.toMatchObject({ threadId: "thread-b" });
-    await expect(store.resolveHomeThread({
-      identityId: "identity-2",
-      agentKey: "panda",
-    })).resolves.toMatchObject({ threadId: "thread-c" });
-  });
-
-  it("validates required fields", async () => {
-    const db = newDb();
-    db.public.registerFunction({
-      name: "pg_notify",
-      args: [DataType.text, DataType.text],
-      returns: DataType.text,
-      implementation: () => "",
-    });
-    const adapter = db.adapters.createPg();
-    const pool = new adapter.Pool();
-    pools.push(pool);
-
-    const store = new PostgresHomeThreadStore({ pool });
-    await store.ensureSchema();
-
-    await expect(store.bindHomeThread({
-      identityId: "   ",
-      agentKey: "panda",
-      threadId: "thread-a",
-    })).rejects.toThrow("Home thread identity id must not be empty.");
-    await expect(store.resolveHomeThread({
-      identityId: "identity-1",
-      agentKey: "   ",
-    })).rejects.toThrow("Home thread agent key must not be empty.");
-  });
-
-  it("remembers the last route without replacing the home thread pointer", async () => {
-    const db = newDb();
-    db.public.registerFunction({
-      name: "pg_notify",
-      args: [DataType.text, DataType.text],
-      returns: DataType.text,
-      implementation: () => "",
-    });
-    const adapter = db.adapters.createPg();
-    const pool = new adapter.Pool();
-    pools.push(pool);
-
-    const store = new PostgresHomeThreadStore({ pool });
-    await store.ensureSchema();
-
-    await store.bindHomeThread({
-      identityId: "identity-1",
-      agentKey: "panda",
       threadId: "thread-a",
       metadata: {
         homeDir: "/tmp/panda",
       },
     });
 
-    const binding = await store.rememberLastRoute({
+    expect(firstBind.previousThreadId).toBeUndefined();
+    expect(firstBind.binding).toMatchObject({
       identityId: "identity-1",
-      agentKey: "panda",
-      route: {
-        source: "telegram",
-        connectorKey: "bot-1",
-        externalConversationId: "chat-1",
-        externalActorId: "actor-1",
-        externalMessageId: "msg-1",
-        capturedAt: 123,
+      threadId: "thread-a",
+      metadata: {
+        homeDir: "/tmp/panda",
       },
     });
 
-    expect(binding.threadId).toBe("thread-a");
-    expect(binding.metadata).toEqual({
-      homeDir: "/tmp/panda",
-      lastRoutes: {
-        telegram: {
-          source: "telegram",
-          connectorKey: "bot-1",
-          externalConversationId: "chat-1",
-          externalActorId: "actor-1",
-          externalMessageId: "msg-1",
-          capturedAt: 123,
-        },
+    const rebound = await store.bindHomeThread({
+      identityId: "identity-1",
+      threadId: "thread-b",
+    });
+
+    expect(rebound.previousThreadId).toBe("thread-a");
+    expect(rebound.binding).toMatchObject({
+      identityId: "identity-1",
+      threadId: "thread-b",
+      metadata: {
+        homeDir: "/tmp/panda",
+      },
+    });
+    await expect(store.resolveHomeThread({
+      identityId: "identity-1",
+    })).resolves.toMatchObject({
+      identityId: "identity-1",
+      threadId: "thread-b",
+      metadata: {
+        homeDir: "/tmp/panda",
       },
     });
   });
 
-  it("keeps independent remembered routes per channel and returns the newest by default", async () => {
-    const db = newDb();
-    db.public.registerFunction({
-      name: "pg_notify",
-      args: [DataType.text, DataType.text],
-      returns: DataType.text,
-      implementation: () => "",
-    });
-    const adapter = db.adapters.createPg();
-    const pool = new adapter.Pool();
+  it("keeps home thread bindings isolated by identity", async () => {
+    const pool = createPool();
     pools.push(pool);
 
-    const store = new PostgresHomeThreadStore({ pool });
+    const store = new PostgresHomeThreadStore({pool});
     await store.ensureSchema();
 
     await store.bindHomeThread({
       identityId: "identity-1",
-      agentKey: "panda",
       threadId: "thread-a",
     });
-    await store.rememberLastRoute({
-      identityId: "identity-1",
-      agentKey: "panda",
-      route: {
-        source: "telegram",
-        connectorKey: "bot-1",
-        externalConversationId: "chat-1",
-        capturedAt: 100,
-      },
-    });
-    await store.rememberLastRoute({
-      identityId: "identity-1",
-      agentKey: "panda",
-      route: {
-        source: "whatsapp",
-        connectorKey: "wa-1",
-        externalConversationId: "jid-1",
-        capturedAt: 200,
-      },
+    await store.bindHomeThread({
+      identityId: "identity-2",
+      threadId: "thread-b",
     });
 
-    await expect(store.resolveLastRoute({
+    await expect(store.resolveHomeThread({
       identityId: "identity-1",
-      agentKey: "panda",
-    })).resolves.toMatchObject({
-      source: "whatsapp",
-      externalConversationId: "jid-1",
-    });
-    await expect(store.resolveLastRoute({
+    })).resolves.toMatchObject({threadId: "thread-a"});
+    await expect(store.resolveHomeThread({
+      identityId: "identity-2",
+    })).resolves.toMatchObject({threadId: "thread-b"});
+  });
+
+  it("validates required fields", async () => {
+    const pool = createPool();
+    pools.push(pool);
+
+    const store = new PostgresHomeThreadStore({pool});
+    await store.ensureSchema();
+
+    await expect(store.bindHomeThread({
+      identityId: "   ",
+      threadId: "thread-a",
+    })).rejects.toThrow("Home thread identity id must not be empty.");
+    await expect(store.bindHomeThread({
       identityId: "identity-1",
-      agentKey: "panda",
-    }, "telegram")).resolves.toMatchObject({
-      source: "telegram",
-      externalConversationId: "chat-1",
-    });
+      threadId: "   ",
+    })).rejects.toThrow("Home thread thread id must not be empty.");
+    await expect(store.resolveHomeThread({
+      identityId: "   ",
+    })).rejects.toThrow("Home thread identity id must not be empty.");
   });
 });

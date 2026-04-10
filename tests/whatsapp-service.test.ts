@@ -1,277 +1,45 @@
-import {EventEmitter} from "node:events";
-
 import {afterEach, describe, expect, it, vi} from "vitest";
+
 import {WhatsAppService} from "../src/features/whatsapp/service.js";
 
 const whatsappServiceMocks = vi.hoisted(() => {
-  const pools: Array<{
-    end: ReturnType<typeof vi.fn>;
-    connect: ReturnType<typeof vi.fn>;
-    client: {
-      query: ReturnType<typeof vi.fn>;
-      release: ReturnType<typeof vi.fn>;
-    };
-  }> = [];
-  const authStores: MockPostgresWhatsAppAuthStore[] = [];
-  const identityStores: MockPostgresIdentityStore[] = [];
-  const runtimes: MockWhatsAppRuntimeServices[] = [];
-  const sockets: MockSocket[] = [];
-  const createOutboundWorker = vi.fn(() => ({
-    start: vi.fn(async () => {}),
-    stop: vi.fn(async () => {}),
-    triggerDrain: vi.fn(async () => {}),
-  }));
-  const downloadMediaMessage = vi.fn(async () => Buffer.from("downloaded-media"));
-  const normalizeMessageContent = vi.fn((content: unknown) => content);
-  let currentIdentityBinding: { identityId: string } | null = null;
-  let currentCreds = {
-    registered: false,
-    me: undefined as
-      | {
-        id: string;
-        phoneNumber?: string;
-        name?: string;
-        notify?: string;
-      }
-      | undefined,
+  const socket = {
+    ev: {
+      on: vi.fn(),
+      off: vi.fn(),
+    },
+    end: vi.fn(),
+    updateMediaMessage: vi.fn(),
+    requestPairingCode: vi.fn(async () => "123-456"),
   };
 
-  class MockSocket {
-    readonly ev = new EventEmitter();
-    readonly end = vi.fn((_error?: Error) => {});
-    readonly requestPairingCode = vi.fn(async (phoneNumber: string) => {
-      this.auth.creds.me = {
-        id: `${phoneNumber}:12@s.whatsapp.net`,
-        phoneNumber,
-        name: "Panda",
-      };
-      this.auth.creds.registered = true;
-      this.ev.emit("creds.update");
-      this.ev.emit("connection.update", {
-        connection: "open",
-      });
-      return "ABC-123";
-    });
-
-    constructor(readonly auth: MockAuthHandle["state"]) {
-      sockets.push(this);
-    }
-  }
-
-  interface MockAuthHandle {
-    state: {
-      creds: {
-        registered: boolean;
-        me?: {
-          id: string;
-          phoneNumber?: string;
-          name?: string;
-          notify?: string;
-        };
-      };
-      keys: {
-        get: ReturnType<typeof vi.fn>;
-        set: ReturnType<typeof vi.fn>;
-      };
-    };
-    saveCreds: ReturnType<typeof vi.fn>;
-  }
-
-  class MockPostgresWhatsAppAuthStore {
-    readonly ensureSchema = vi.fn(async () => {});
-    readonly loadCreds = vi.fn(async () => currentCreds);
-    readonly createAuthState = vi.fn(async () => {
-      const handle: MockAuthHandle = {
-        state: {
-          creds: {
-            registered: currentCreds.registered,
-            me: currentCreds.me,
-          },
-          keys: {
-            get: vi.fn(async () => ({})),
-            set: vi.fn(async () => {}),
-          },
-        },
-        saveCreds: vi.fn(async () => {}),
-      };
-      return handle;
-    });
-
-    constructor(_options: unknown) {
-      authStores.push(this);
-    }
-  }
-
-  class MockPostgresIdentityStore {
-    readonly ensureSchema = vi.fn(async () => {});
-    readonly resolveIdentityBinding = vi.fn(async () => currentIdentityBinding);
-
-    constructor(_options: unknown) {
-      identityStores.push(this);
-    }
-  }
-
-  interface MockWhatsAppRuntimeServices {
-    close: ReturnType<typeof vi.fn>;
-    resolveOrCreateHomeThread: ReturnType<typeof vi.fn>;
-    coordinator: {
-      submitInput: ReturnType<typeof vi.fn>;
-    };
-    homeThreads: {
-      rememberLastRoute: ReturnType<typeof vi.fn>;
-    };
-    mediaStore: {
-      writeMedia: ReturnType<typeof vi.fn>;
-    };
-  }
-
-  function createMockRuntime(): MockWhatsAppRuntimeServices {
-    const runtime: MockWhatsAppRuntimeServices = {
-      close: vi.fn(async () => {}),
-      resolveOrCreateHomeThread: vi.fn(async () => ({
-        id: "thread-home",
-        identityId: "identity-local",
-        agentKey: "panda",
-      })),
-      coordinator: {
-        submitInput: vi.fn(async () => {}),
-      },
-      homeThreads: {
-        rememberLastRoute: vi.fn(async () => {}),
-      },
-      mediaStore: {
-        writeMedia: vi.fn(async (input: {
-          source: string;
-          connectorKey: string;
-          mimeType: string;
-          sizeBytes?: number;
-          hintFilename?: string;
-          bytes: Uint8Array;
-        }) => ({
-          id: `media-${input.mimeType}`,
-          source: input.source,
-          connectorKey: input.connectorKey,
-          mimeType: input.mimeType,
-          sizeBytes: input.sizeBytes ?? input.bytes.byteLength,
-          localPath: `/tmp/${input.hintFilename ?? "media.bin"}`,
-          originalFilename: input.hintFilename,
-          createdAt: 0,
-        })),
-      },
-    };
-    runtimes.push(runtime);
-    return runtime;
-  }
-
   return {
-    pools,
-    authStores,
-    identityStores,
-    runtimes,
-    sockets,
-    setIdentityBinding: (value: typeof currentIdentityBinding) => {
-      currentIdentityBinding = value;
-    },
-    setCreds: (value: typeof currentCreds) => {
-      currentCreds = value;
-    },
-    createPandaPool: vi.fn(() => {
-      const client = {
-        query: vi.fn(async (sql: string) => {
-          if (sql.includes("pg_try_advisory_lock")) {
-            return { rows: [{ acquired: true }] };
-          }
-          if (sql.includes("pg_advisory_unlock")) {
-            return { rows: [{ pg_advisory_unlock: true }] };
-          }
-          return { rows: [] };
-        }),
-        release: vi.fn(() => {}),
-      };
-      const pool = {
-        end: vi.fn(async () => {}),
-        connect: vi.fn(async () => client),
-        client,
-      };
-      pools.push(pool);
-      return pool;
-    }),
-    requirePandaDatabaseUrl: vi.fn((dbUrl?: string) => dbUrl ?? "postgres://resolved-db"),
-    MockPostgresWhatsAppAuthStore,
-    MockPostgresIdentityStore,
-    createWhatsAppRuntime: vi.fn(async () => createMockRuntime()),
-    createOutboundWorker,
-    downloadMediaMessage,
-    normalizeMessageContent,
-    makeWASocket: vi.fn((config: { auth: MockAuthHandle["state"] }) => new MockSocket(config.auth as MockAuthHandle)),
-    makeCacheableSignalKeyStore: vi.fn((keys: unknown) => keys),
-    addTransactionCapability: vi.fn((keys: unknown) => keys),
-    isJidBroadcast: vi.fn((jid: string | undefined) => Boolean(jid?.endsWith("@broadcast"))),
-    isJidGroup: vi.fn((jid: string | undefined) => Boolean(jid?.endsWith("@g.us"))),
-    isJidNewsletter: vi.fn((jid: string | undefined) => Boolean(jid?.endsWith("@newsletter"))),
-    isJidStatusBroadcast: vi.fn((jid: string | undefined) => jid === "status@broadcast"),
-    jidNormalizedUser: vi.fn((jid: string | undefined) => jid ?? ""),
-    DisconnectReason: {
-      connectionClosed: 428,
-      connectionLost: 408,
-      connectionReplaced: 440,
-      timedOut: 408,
-      loggedOut: 401,
-      badSession: 500,
-      restartRequired: 515,
-      multideviceMismatch: 411,
-      forbidden: 403,
-      unavailableService: 503,
-      428: "connectionClosed",
-      408: "timedOut",
-      440: "connectionReplaced",
-      401: "loggedOut",
-      500: "badSession",
-      515: "restartRequired",
-      411: "multideviceMismatch",
-      403: "forbidden",
-      503: "unavailableService",
-    },
-    Browsers: {
-      macOS: vi.fn(() => ["Panda", "Safari", "1.0"]),
-    },
+    socket,
+    downloadMediaMessage: vi.fn(async () => Buffer.from("media")),
+    normalizeMessageContent: vi.fn((message) => message ?? undefined),
+    makeWASocket: vi.fn(() => socket),
   };
 });
 
-vi.mock("../src/features/panda/runtime.js", () => ({
-  createPandaPool: whatsappServiceMocks.createPandaPool,
-  requirePandaDatabaseUrl: whatsappServiceMocks.requirePandaDatabaseUrl,
-}));
-
-vi.mock("../src/features/whatsapp/auth-store.js", () => ({
-  PostgresWhatsAppAuthStore: whatsappServiceMocks.MockPostgresWhatsAppAuthStore,
-}));
-
-vi.mock("../src/features/identity/index.js", () => ({
-  PostgresIdentityStore: whatsappServiceMocks.MockPostgresIdentityStore,
-}));
-
-vi.mock("../src/features/whatsapp/runtime.js", () => ({
-  createWhatsAppRuntime: whatsappServiceMocks.createWhatsAppRuntime,
-}));
-
-vi.mock("../src/features/outbound-deliveries/index.js", () => ({
-  ChannelOutboundDeliveryWorker: vi.fn(function MockOutboundWorker() {
-    return whatsappServiceMocks.createOutboundWorker();
-  }),
-}));
-
 vi.mock("baileys", () => ({
+  addTransactionCapability: (value: unknown) => value,
+  Browsers: {
+    macOS: vi.fn(() => ["Panda"]),
+  },
+  DisconnectReason: {
+    connectionClosed: 428,
+    connectionLost: 408,
+    timedOut: 408,
+    restartRequired: 515,
+    unavailableService: 503,
+  },
+  isJidBroadcast: (jid?: string) => Boolean(jid?.endsWith("@broadcast")),
+  isJidGroup: (jid?: string) => Boolean(jid?.endsWith("@g.us")),
+  isJidNewsletter: (jid?: string) => Boolean(jid?.endsWith("@newsletter")),
+  isJidStatusBroadcast: (jid?: string) => jid === "status@broadcast",
+  jidNormalizedUser: (jid: string) => jid,
+  makeCacheableSignalKeyStore: (value: unknown) => value,
   makeWASocket: whatsappServiceMocks.makeWASocket,
-  makeCacheableSignalKeyStore: whatsappServiceMocks.makeCacheableSignalKeyStore,
-  addTransactionCapability: whatsappServiceMocks.addTransactionCapability,
-  isJidBroadcast: whatsappServiceMocks.isJidBroadcast,
-  isJidGroup: whatsappServiceMocks.isJidGroup,
-  isJidNewsletter: whatsappServiceMocks.isJidNewsletter,
-  isJidStatusBroadcast: whatsappServiceMocks.isJidStatusBroadcast,
-  jidNormalizedUser: whatsappServiceMocks.jidNormalizedUser,
-  DisconnectReason: whatsappServiceMocks.DisconnectReason,
-  Browsers: whatsappServiceMocks.Browsers,
 }));
 
 vi.mock("baileys/lib/Utils/messages.js", () => ({
@@ -279,858 +47,254 @@ vi.mock("baileys/lib/Utils/messages.js", () => ({
   normalizeMessageContent: whatsappServiceMocks.normalizeMessageContent,
 }));
 
-function latestAuthStore(): InstanceType<typeof whatsappServiceMocks.MockPostgresWhatsAppAuthStore> {
-  const store = whatsappServiceMocks.authStores.at(-1);
-  if (!store) {
-    throw new Error("Expected a mocked WhatsApp auth store.");
-  }
-
-  return store;
+function createStores() {
+  return {
+    authStore: {},
+    outboundDeliveries: {},
+    channelActions: {},
+    requests: {
+      enqueueRequest: vi.fn(async () => ({
+        id: "request-1",
+      })),
+    },
+    mediaStore: {
+      writeMedia: vi.fn(async (input: Record<string, unknown>) => ({
+        id: "media-1",
+        source: "whatsapp",
+        connectorKey: input.connectorKey,
+        mimeType: input.mimeType,
+        sizeBytes: input.sizeBytes,
+        localPath: "/tmp/media.bin",
+        originalFilename: input.hintFilename ?? null,
+        metadata: input.metadata,
+        createdAt: 1,
+      })),
+    },
+    pool: {
+      end: vi.fn(async () => {}),
+    },
+  } as const;
 }
 
-function latestIdentityStore(): InstanceType<typeof whatsappServiceMocks.MockPostgresIdentityStore> {
-  const store = whatsappServiceMocks.identityStores.at(-1);
-  if (!store) {
-    throw new Error("Expected a mocked WhatsApp identity store.");
-  }
-
-  return store;
-}
-
-function latestRuntime() {
-  const runtime = whatsappServiceMocks.runtimes.at(-1);
-  if (!runtime) {
-    throw new Error("Expected a mocked WhatsApp runtime.");
-  }
-
-  return runtime;
+function createPrivateMessage(overrides: Record<string, unknown> = {}) {
+  return {
+    key: {
+      remoteJid: "123@s.whatsapp.net",
+      participant: undefined,
+      id: "msg-1",
+      fromMe: false,
+    },
+    message: {
+      conversation: "hello from whatsapp",
+    },
+    pushName: "Alice",
+    ...overrides,
+  };
 }
 
 describe("WhatsAppService", () => {
   afterEach(() => {
-    whatsappServiceMocks.pools.length = 0;
-    whatsappServiceMocks.authStores.length = 0;
-    whatsappServiceMocks.identityStores.length = 0;
-    whatsappServiceMocks.runtimes.length = 0;
-    whatsappServiceMocks.sockets.length = 0;
-    whatsappServiceMocks.setCreds({
-      registered: false,
-      me: undefined,
-    });
-    whatsappServiceMocks.setIdentityBinding(null);
-    whatsappServiceMocks.createPandaPool.mockClear();
-    whatsappServiceMocks.requirePandaDatabaseUrl.mockClear();
-    whatsappServiceMocks.makeWASocket.mockClear();
-    whatsappServiceMocks.createWhatsAppRuntime.mockClear();
+    vi.restoreAllMocks();
+    whatsappServiceMocks.socket.ev.on.mockClear();
+    whatsappServiceMocks.socket.ev.off.mockClear();
+    whatsappServiceMocks.socket.end.mockClear();
+    whatsappServiceMocks.socket.updateMediaMessage.mockClear();
+    whatsappServiceMocks.socket.requestPairingCode.mockClear();
     whatsappServiceMocks.downloadMediaMessage.mockClear();
     whatsappServiceMocks.normalizeMessageContent.mockClear();
-    whatsappServiceMocks.makeCacheableSignalKeyStore.mockClear();
-    whatsappServiceMocks.addTransactionCapability.mockClear();
-    whatsappServiceMocks.createOutboundWorker.mockClear();
-    whatsappServiceMocks.isJidBroadcast.mockClear();
-    whatsappServiceMocks.isJidGroup.mockClear();
-    whatsappServiceMocks.isJidNewsletter.mockClear();
-    whatsappServiceMocks.isJidStatusBroadcast.mockClear();
-    whatsappServiceMocks.jidNormalizedUser.mockClear();
-    whatsappServiceMocks.Browsers.macOS.mockClear();
-    vi.useRealTimers();
-    vi.restoreAllMocks();
+    whatsappServiceMocks.makeWASocket.mockClear();
   });
 
-  it("reads linked account info from stored creds", async () => {
-    const service = new WhatsAppService({
-      connectorKey: "main",
-      dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
-    });
-
-    whatsappServiceMocks.setCreds({
-      registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
-    });
-
-    await expect(service.whoami()).resolves.toEqual({
-      connectorKey: "main",
-      registered: true,
-      accountId: "421900000000:12@s.whatsapp.net",
-      phoneNumber: undefined,
-      name: "Panda",
-    });
-
-    await service.stop();
-  });
-
-  it("requests a pairing code and waits for the linked account", async () => {
-    const service = new WhatsAppService({
-      connectorKey: "main",
-      dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
-    });
-
-    whatsappServiceMocks.setCreds({
-      registered: false,
-      me: undefined,
-    });
-
-    const seenCodes: string[] = [];
-    const result = await service.pair("421900000000", (code) => {
-      seenCodes.push(code);
-    });
-
-    expect(seenCodes).toEqual(["ABC-123"]);
-    expect(result).toEqual({
-      connectorKey: "main",
-      registered: true,
-      accountId: "421900000000:12@s.whatsapp.net",
-      phoneNumber: "421900000000",
-      name: "Panda",
-      pairingCode: undefined,
-      alreadyPaired: false,
-    });
-    expect(latestAuthStore().createAuthState).toHaveBeenCalledWith("main");
-    expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(1);
-
-    await service.stop();
-  });
-
-  it("short-circuits pair when the connector is already linked", async () => {
-    const service = new WhatsAppService({
-      connectorKey: "main",
-      dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
-    });
-
-    whatsappServiceMocks.setCreds({
-      registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
-    });
-
-    await expect(service.pair("421900000000")).resolves.toEqual({
-      connectorKey: "main",
-      registered: true,
-      accountId: "421900000000:12@s.whatsapp.net",
-      phoneNumber: undefined,
-      name: "Panda",
-      alreadyPaired: true,
-    });
-    expect(whatsappServiceMocks.makeWASocket).not.toHaveBeenCalled();
-
-    await service.stop();
-  });
-
-  it("fails fast when run is started before pairing", async () => {
-    const service = new WhatsAppService({
-      connectorKey: "main",
-      dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
-    });
-
-    whatsappServiceMocks.setCreds({
-      registered: false,
-      me: undefined,
-    });
-
-    await expect(service.run()).rejects.toThrow(
-      "WhatsApp connector main is not paired yet. Run `panda whatsapp pair --phone <number>` first.",
-    );
-  });
-
-  it("does not start the outbound worker before owning the WhatsApp connector lock", async () => {
-    const order: string[] = [];
+  it("starts workers only after acquiring the connector lock", async () => {
+    const stores = createStores();
     const release = vi.fn(async () => {});
-    const worker = {
-      start: vi.fn(async () => {
-        order.push("start");
-      }),
-      stop: vi.fn(async () => {}),
-      triggerDrain: vi.fn(async () => {}),
-    };
-    whatsappServiceMocks.createOutboundWorker.mockReturnValueOnce(worker);
-
+    const order: string[] = [];
     const service = new WhatsAppService({
       connectorKey: "main",
       dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
     });
 
-    whatsappServiceMocks.setCreds({
+    (service as {pool?: unknown}).pool = stores.pool;
+    vi.spyOn(service as never, "whoami").mockResolvedValue({
+      connectorKey: "main",
       registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
+      accountId: "acct-1",
     });
-
+    vi.spyOn(service as never, "ensureStores").mockResolvedValue(stores);
     vi.spyOn(service as never, "acquireConnectorLock").mockImplementation(async () => {
       order.push("lock");
-      return { release };
+      return {release};
     });
-    vi.spyOn(service as never, "runSocketCycle").mockImplementationOnce(async () => {
+    vi.spyOn(service as never, "ensureOutboundWorker").mockReturnValue({
+      start: vi.fn(async () => {
+        order.push("outbound");
+      }),
+      stop: vi.fn(async () => {}),
+    });
+    vi.spyOn(service as never, "ensureActionWorker").mockReturnValue({
+      start: vi.fn(async () => {
+        order.push("action");
+      }),
+      stop: vi.fn(async () => {}),
+    });
+    vi.spyOn(service as never, "runSocketCycle").mockImplementation(async () => {
       order.push("cycle");
-      return {
-        reconnect: false,
-        reason: "done",
-      };
+      return {reconnect: false};
     });
 
     await expect(service.run()).resolves.toBeUndefined();
 
-    expect(order).toEqual(["lock", "start", "cycle"]);
+    expect(order).toEqual(["lock", "outbound", "action", "cycle"]);
     expect(release).toHaveBeenCalledTimes(1);
+    expect(stores.pool.end).toHaveBeenCalledTimes(1);
   });
 
-  it("does not start the outbound worker when WhatsApp lock acquisition fails", async () => {
-    const worker = {
-      start: vi.fn(async () => {}),
-      stop: vi.fn(async () => {}),
-      triggerDrain: vi.fn(async () => {}),
-    };
-    whatsappServiceMocks.createOutboundWorker.mockReturnValueOnce(worker);
-
+  it("does not start workers when lock acquisition fails", async () => {
+    const stores = createStores();
     const service = new WhatsAppService({
       connectorKey: "main",
       dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
     });
 
-    whatsappServiceMocks.setCreds({
+    vi.spyOn(service as never, "whoami").mockResolvedValue({
+      connectorKey: "main",
       registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
+      accountId: "acct-1",
     });
-
+    vi.spyOn(service as never, "ensureStores").mockResolvedValue(stores);
     vi.spyOn(service as never, "acquireConnectorLock").mockRejectedValue(new Error("WhatsApp connector main is already running."));
+    const ensureOutboundWorker = vi.spyOn(service as never, "ensureOutboundWorker");
+    const ensureActionWorker = vi.spyOn(service as never, "ensureActionWorker");
 
     await expect(service.run()).rejects.toThrow("WhatsApp connector main is already running.");
 
-    expect(worker.start).not.toHaveBeenCalled();
-    expect(whatsappServiceMocks.createWhatsAppRuntime).not.toHaveBeenCalled();
+    expect(ensureOutboundWorker).not.toHaveBeenCalled();
+    expect(ensureActionWorker).not.toHaveBeenCalled();
   });
 
-  it("releases the WhatsApp connector lock when worker startup fails", async () => {
+  it("releases the connector lock when worker startup fails", async () => {
+    const stores = createStores();
     const release = vi.fn(async () => {});
-    const worker = {
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+
+    (service as {pool?: unknown}).pool = stores.pool;
+    vi.spyOn(service as never, "whoami").mockResolvedValue({
+      connectorKey: "main",
+      registered: true,
+      accountId: "acct-1",
+    });
+    vi.spyOn(service as never, "ensureStores").mockResolvedValue(stores);
+    vi.spyOn(service as never, "acquireConnectorLock").mockResolvedValue({release});
+    vi.spyOn(service as never, "ensureOutboundWorker").mockReturnValue({
       start: vi.fn(async () => {
         throw new Error("worker bootstrap failed");
       }),
       stop: vi.fn(async () => {}),
-      triggerDrain: vi.fn(async () => {}),
-    };
-    whatsappServiceMocks.createOutboundWorker.mockReturnValueOnce(worker);
-
-    const service = new WhatsAppService({
-      connectorKey: "main",
-      dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
     });
-
-    whatsappServiceMocks.setCreds({
-      registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
-    });
-
-    vi.spyOn(service as never, "acquireConnectorLock").mockResolvedValue({ release });
 
     await expect(service.run()).rejects.toThrow("worker bootstrap failed");
 
     expect(release).toHaveBeenCalledTimes(1);
-    expect(worker.stop).toHaveBeenCalledTimes(1);
+    expect(stores.pool.end).toHaveBeenCalledTimes(1);
   });
 
-  it("reconnects after a transient close and releases the connector lock on stop", async () => {
-    vi.useFakeTimers();
-
+  it("enqueues private notify messages for Panda", async () => {
+    const stores = createStores();
     const service = new WhatsAppService({
       connectorKey: "main",
       dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
     });
 
-    whatsappServiceMocks.setCreds({
-      registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
-    });
-
-    const runPromise = service.run();
-    await vi.waitFor(() => {
-      expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(1);
-    });
-
-    const firstSocket = whatsappServiceMocks.sockets[0];
-    firstSocket?.ev.emit("connection.update", {
-      connection: "close",
-      lastDisconnect: {
-        error: {
-          statusCode: whatsappServiceMocks.DisconnectReason.restartRequired,
-          message: "restart",
-        },
-        date: new Date(),
-      },
-    });
-
-    await vi.advanceTimersByTimeAsync(1_000);
-
-    await vi.waitFor(() => {
-      expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(2);
-    });
-
-    const pool = whatsappServiceMocks.pools[0];
-    await service.stop();
-    await runPromise;
-
-    expect(pool?.client.query).toHaveBeenCalledWith(
-      "SELECT pg_try_advisory_lock($1, $2) AS acquired",
-      expect.any(Array),
-    );
-    expect(pool?.client.query).toHaveBeenCalledWith(
-      "SELECT pg_advisory_unlock($1, $2)",
-      expect.any(Array),
-    );
-    expect(pool?.client.release).toHaveBeenCalledTimes(1);
-    expect(pool?.end).toHaveBeenCalledTimes(1);
-  });
-
-  it("drops unpaired private DMs before Panda sees them", async () => {
-    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    const service = new WhatsAppService({
-      connectorKey: "main",
-      dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
-    });
-
-    whatsappServiceMocks.setCreds({
-      registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
-    });
-
-    await (service as unknown as { handleMessagesUpsert(update: unknown): Promise<void> }).handleMessagesUpsert({
+    await (service as never).handleMessagesUpsert(stores, {
       type: "notify",
-      messages: [{
-        key: {
-          remoteJid: "421911111111@s.whatsapp.net",
-          id: "msg-1",
-          fromMe: false,
-        },
-        message: {
-          conversation: "hello",
-        },
-      }],
+      messages: [createPrivateMessage()],
     });
 
-    const lines = write.mock.calls.map((call) => String(call[0]).trim()).filter(Boolean);
-    expect(lines.some((line) => line.includes("\"event\":\"message_dropped\"") && line.includes("\"reason\":\"unpaired_actor\""))).toBe(true);
-    expect(latestIdentityStore().resolveIdentityBinding).toHaveBeenCalledWith({
-      source: "whatsapp",
-      connectorKey: "main",
-      externalActorId: "421911111111@s.whatsapp.net",
+    expect(stores.requests.enqueueRequest).toHaveBeenCalledWith({
+      kind: "whatsapp_message",
+      payload: {
+        connectorKey: "main",
+        externalConversationId: "123@s.whatsapp.net",
+        externalActorId: "123@s.whatsapp.net",
+        externalMessageId: "msg-1",
+        remoteJid: "123@s.whatsapp.net",
+        chatType: "private",
+        text: "hello from whatsapp",
+        pushName: "Alice",
+        quotedMessageId: undefined,
+        media: [],
+      },
     });
-    expect(whatsappServiceMocks.createWhatsAppRuntime).not.toHaveBeenCalled();
-
-    await service.stop();
   });
 
-  it("drops group messages even if the sender is paired", async () => {
-    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
+  it("drops group messages and ignores non-notify upserts", async () => {
+    const stores = createStores();
     const service = new WhatsAppService({
       connectorKey: "main",
       dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
     });
 
-    whatsappServiceMocks.setCreds({
-      registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
+    await (service as never).handleMessagesUpsert(stores, {
+      type: "append",
+      messages: [createPrivateMessage()],
     });
-
-    const runPromise = service.run();
-    await vi.waitFor(() => {
-      expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(1);
-    });
-
-    whatsappServiceMocks.setIdentityBinding({
-      identityId: "identity-local",
-    });
-
-    await (service as unknown as { handleMessagesUpsert(update: unknown): Promise<void> }).handleMessagesUpsert({
+    await (service as never).handleMessagesUpsert(stores, {
       type: "notify",
-      messages: [{
+      messages: [createPrivateMessage({
         key: {
-          remoteJid: "12345@g.us",
-          participant: "421911111111@s.whatsapp.net",
+          remoteJid: "group@g.us",
+          participant: "123@s.whatsapp.net",
           id: "msg-2",
           fromMe: false,
         },
-        message: {
-          conversation: "hello group",
-        },
-      }],
+      })],
     });
 
-    const lines = write.mock.calls.map((call) => String(call[0]).trim()).filter(Boolean);
-    expect(lines.some((line) => line.includes("\"event\":\"message_dropped\"") && line.includes("\"reason\":\"group_support_not_enabled\""))).toBe(true);
-    if (whatsappServiceMocks.identityStores.length > 0) {
-      expect(latestIdentityStore().resolveIdentityBinding).not.toHaveBeenCalled();
-    }
-    expect(whatsappServiceMocks.createWhatsAppRuntime).toHaveBeenCalledTimes(1);
-
-    await service.stop();
-    await runPromise;
+    expect(stores.requests.enqueueRequest).not.toHaveBeenCalled();
   });
 
-  it("routes paired private DMs into the relationship home thread", async () => {
-    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
+  it("downloads image messages and includes media metadata in the request", async () => {
+    const stores = createStores();
     const service = new WhatsAppService({
       connectorKey: "main",
       dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
     });
 
-    whatsappServiceMocks.setCreds({
-      registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
-    });
+    (service as {socket?: unknown}).socket = whatsappServiceMocks.socket;
 
-    const runPromise = service.run();
-    await vi.waitFor(() => {
-      expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(1);
-    });
-
-    whatsappServiceMocks.setIdentityBinding({
-      identityId: "identity-local",
-    });
-
-    await (service as unknown as { handleMessagesUpsert(update: unknown): Promise<void> }).handleMessagesUpsert({
+    await (service as never).handleMessagesUpsert(stores, {
       type: "notify",
-      messages: [{
-        key: {
-          remoteJid: "421911111111@s.whatsapp.net",
-          id: "msg-3",
-          fromMe: false,
-        },
-        message: {
-          extendedTextMessage: {
-            text: "hello panda",
-            contextInfo: {
-              stanzaId: "quoted-1",
-            },
-          },
-        },
-        pushName: "Patrik",
-      }],
-    });
-
-    const runtime = latestRuntime();
-    expect(runtime.resolveOrCreateHomeThread).toHaveBeenCalledWith({
-      identityId: "identity-local",
-      provider: undefined,
-      model: undefined,
-      context: {
-        source: "whatsapp",
-        remoteJid: "421911111111@s.whatsapp.net",
-      },
-    });
-    expect(runtime.coordinator.submitInput).toHaveBeenCalledWith(
-      "thread-home",
-      expect.objectContaining({
-        source: "whatsapp",
-        channelId: "421911111111@s.whatsapp.net",
-        externalMessageId: "msg-3",
-        actorId: "421911111111@s.whatsapp.net",
-        metadata: {
-          route: {
-            source: "whatsapp",
-            connectorKey: "main",
-            externalConversationId: "421911111111@s.whatsapp.net",
-            externalActorId: "421911111111@s.whatsapp.net",
-            externalMessageId: "msg-3",
-          },
-          whatsapp: {
-            remoteJid: "421911111111@s.whatsapp.net",
-            chatType: "private",
-            messageId: "msg-3",
-            pushName: "Patrik",
-            quotedMessageId: "quoted-1",
-            media: [],
-          },
-        },
-      }),
-    );
-    expect(runtime.homeThreads.rememberLastRoute).toHaveBeenCalledWith({
-      identityId: "identity-local",
-      agentKey: "panda",
-      route: {
-        source: "whatsapp",
-        connectorKey: "main",
-        externalConversationId: "421911111111@s.whatsapp.net",
-        externalActorId: "421911111111@s.whatsapp.net",
-        externalMessageId: "msg-3",
-        capturedAt: expect.any(Number),
-      },
-    });
-
-    const lines = write.mock.calls.map((call) => String(call[0]).trim()).filter(Boolean);
-    expect(lines.some((line) => line.includes("\"event\":\"message_allowed\"") && line.includes("\"identityId\":\"identity-local\""))).toBe(true);
-    expect(lines.some((line) => line.includes("\"event\":\"message_ingested\"") && line.includes("\"threadId\":\"thread-home\""))).toBe(true);
-
-    await service.stop();
-    await runPromise;
-  });
-
-  it("downloads image messages and ingests them with media metadata", async () => {
-    const service = new WhatsAppService({
-      connectorKey: "main",
-      dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
-    });
-
-    whatsappServiceMocks.setCreds({
-      registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
-    });
-    whatsappServiceMocks.setIdentityBinding({
-      identityId: "identity-local",
-    });
-
-    const runPromise = service.run();
-    await vi.waitFor(() => {
-      expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(1);
-    });
-
-    await (service as unknown as { handleMessagesUpsert(update: unknown): Promise<void> }).handleMessagesUpsert({
-      type: "notify",
-      messages: [{
-        key: {
-          remoteJid: "421911111111@s.whatsapp.net",
-          id: "msg-image",
-          fromMe: false,
-        },
+      messages: [createPrivateMessage({
         message: {
           imageMessage: {
+            caption: "see screenshot",
             mimetype: "image/jpeg",
-            fileLength: 16,
+            fileLength: 128,
           },
         },
-        pushName: "Patrik",
-      }],
+      })],
     });
 
-    const runtime = latestRuntime();
     expect(whatsappServiceMocks.downloadMediaMessage).toHaveBeenCalledTimes(1);
-    expect(runtime.mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({
+    expect(stores.mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({
       source: "whatsapp",
       connectorKey: "main",
       mimeType: "image/jpeg",
-      sizeBytes: 16,
+      sizeBytes: 128,
     }));
-
-    const submitPayload = runtime.coordinator.submitInput.mock.calls[0]?.[1];
-    expect(submitPayload?.metadata).toMatchObject({
-      whatsapp: {
-        media: [
-          expect.objectContaining({
-            mimeType: "image/jpeg",
-            localPath: "/tmp/media.bin",
-          }),
-        ],
-      },
-    });
-    expect(JSON.stringify(submitPayload?.message)).toContain("/tmp/media.bin");
-
-    await service.stop();
-    await runPromise;
-  });
-
-  it("downloads document messages and preserves filename metadata", async () => {
-    const service = new WhatsAppService({
-      connectorKey: "main",
-      dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
-    });
-
-    whatsappServiceMocks.setCreds({
-      registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
-    });
-    whatsappServiceMocks.setIdentityBinding({
-      identityId: "identity-local",
-    });
-
-    const runPromise = service.run();
-    await vi.waitFor(() => {
-      expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(1);
-    });
-
-    await (service as unknown as { handleMessagesUpsert(update: unknown): Promise<void> }).handleMessagesUpsert({
-      type: "notify",
-      messages: [{
-        key: {
-          remoteJid: "421911111111@s.whatsapp.net",
-          id: "msg-document",
-          fromMe: false,
-        },
-        message: {
-          documentMessage: {
-            mimetype: "application/pdf",
-            fileLength: 32,
-            fileName: "report.pdf",
-            caption: "check this",
-          },
-        },
-      }],
-    });
-
-    const runtime = latestRuntime();
-    expect(runtime.mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({
-      mimeType: "application/pdf",
-      sizeBytes: 32,
-      hintFilename: "report.pdf",
-    }));
-
-    const submitPayload = runtime.coordinator.submitInput.mock.calls[0]?.[1];
-    expect(submitPayload?.metadata).toMatchObject({
-      whatsapp: {
-        media: [
-          expect.objectContaining({
-            mimeType: "application/pdf",
-            originalFilename: "report.pdf",
-            localPath: "/tmp/report.pdf",
-          }),
-        ],
-      },
-    });
-    expect(JSON.stringify(submitPayload?.message)).toContain("/tmp/report.pdf");
-
-    await service.stop();
-    await runPromise;
-  });
-
-  it("ignores non-notify upserts and history sync", async () => {
-    vi.useFakeTimers();
-    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    const service = new WhatsAppService({
-      connectorKey: "main",
-      dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
-    });
-
-    whatsappServiceMocks.setCreds({
-      registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
-    });
-
-    const runPromise = service.run();
-    await vi.waitFor(() => {
-      expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(1);
-    });
-
-    const socket = whatsappServiceMocks.sockets[0];
-    await vi.waitFor(() => {
-      expect(socket?.ev.listenerCount("messages.upsert")).toBeGreaterThan(0);
-      expect(socket?.ev.listenerCount("messaging-history.set")).toBeGreaterThan(0);
-    });
-    socket?.ev.emit("messages.upsert", {
-      type: "append",
-      messages: [],
-    });
-    socket?.ev.emit("messaging-history.set", {
-      chats: [],
-      contacts: [],
-      messages: [],
-      isLatest: true,
-      syncType: null,
-    });
-
-    await vi.waitFor(() => {
-      const lines = write.mock.calls.map((call) => String(call[0]).trim()).filter(Boolean);
-      expect(lines.some((line) => line.includes("\"event\":\"message_ignored\"") && line.includes("\"reason\":\"non_notify_upsert\""))).toBe(true);
-      expect(lines.some((line) => line.includes("\"event\":\"history_sync_ignored\""))).toBe(true);
-    });
-
-    await service.stop();
-    await runPromise;
-  });
-
-  it("reconnects after an upsert processing failure instead of silently continuing", async () => {
-    vi.useFakeTimers();
-    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    const service = new WhatsAppService({
-      connectorKey: "main",
-      dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
-    });
-
-    whatsappServiceMocks.setCreds({
-      registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
-    });
-    whatsappServiceMocks.setIdentityBinding({
-      identityId: "identity-local",
-    });
-    whatsappServiceMocks.createWhatsAppRuntime.mockResolvedValueOnce({
-      close: vi.fn(async () => {}),
-      resolveOrCreateHomeThread: vi.fn(async () => ({
-        id: "thread-home",
-        identityId: "identity-local",
-        agentKey: "panda",
-      })),
-      coordinator: {
-        submitInput: vi.fn(async () => {
-          throw new Error("submit exploded");
-        }),
-      },
-      homeThreads: {
-        rememberLastRoute: vi.fn(async () => {}),
-      },
-      mediaStore: {
-        writeMedia: vi.fn(async () => ({
+    expect(stores.requests.enqueueRequest).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "whatsapp_message",
+      payload: expect.objectContaining({
+        text: "see screenshot",
+        media: [expect.objectContaining({
           id: "media-1",
-          source: "whatsapp",
-          connectorKey: "main",
           mimeType: "image/jpeg",
-          sizeBytes: 0,
-          localPath: "/tmp/media.bin",
-          createdAt: 0,
-        })),
-      },
-    });
-
-    const runPromise = service.run();
-    await vi.waitFor(() => {
-      expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(1);
-    });
-
-    const firstSocket = whatsappServiceMocks.sockets[0];
-    firstSocket?.ev.emit("messages.upsert", {
-      type: "notify",
-      messages: [{
-        key: {
-          remoteJid: "421911111111@s.whatsapp.net",
-          id: "msg-fail",
-          fromMe: false,
-        },
-        message: {
-          conversation: "hello panda",
-        },
-      }],
-    });
-
-    await vi.waitFor(() => {
-      expect(whatsappServiceMocks.createWhatsAppRuntime).toHaveBeenCalledTimes(1);
-      const lines = write.mock.calls.map((call) => String(call[0]).trim()).filter(Boolean);
-      expect(lines.some((line) => line.includes("\"event\":\"upsert_error\"") && line.includes("submit exploded"))).toBe(true);
-    });
-
-    await vi.advanceTimersByTimeAsync(1_000);
-    await vi.waitFor(() => {
-      expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(2);
-    });
-
-    await service.stop();
-    await runPromise;
-  });
-
-  it("passes typing support into the WhatsApp runtime", async () => {
-    whatsappServiceMocks.setCreds({
-      registered: true,
-      me: {
-        id: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-      },
-    });
-    whatsappServiceMocks.setIdentityBinding({
-      identityId: "identity-local",
-    });
-
-    const service = new WhatsAppService({
-      connectorKey: "main",
-      dataDir: "/tmp/panda",
-      cwd: "/tmp/panda",
-      dbUrl: "postgres://wa-db",
-    });
-    const runPromise = service.run();
-
-    await vi.waitFor(() => {
-      expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(1);
-    });
-
-    const socket = whatsappServiceMocks.sockets[0];
-    socket?.ev.emit("messages.upsert", {
-      type: "notify",
-      messages: [{
-        key: {
-          remoteJid: "421911111111@s.whatsapp.net",
-          id: "msg-typing",
-          fromMe: false,
-        },
-        message: {
-          conversation: "hello panda",
-        },
-      }],
-    });
-
-    await vi.waitFor(() => {
-      expect(whatsappServiceMocks.createWhatsAppRuntime).toHaveBeenCalledTimes(1);
-    });
-
-    const runtimeOptions = whatsappServiceMocks.createWhatsAppRuntime.mock.calls[0]?.[0];
-    expect(runtimeOptions?.typingDispatcher).toBeDefined();
-
-    await service.stop();
-    await runPromise;
+          sizeBytes: 128,
+        })],
+      }),
+    }));
   });
 });

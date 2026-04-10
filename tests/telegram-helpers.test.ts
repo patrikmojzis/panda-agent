@@ -4,7 +4,6 @@ import {
     buildTelegramConversationId,
     buildTelegramInboundText,
     buildTelegramPairCommand,
-    buildTelegramStartText,
     type MediaDescriptor,
     normalizeTelegramCommand,
 } from "../src/index.js";
@@ -40,8 +39,6 @@ describe("telegram helpers", () => {
     expect(buildTelegramPairCommand("123", "local")).toBe(
       "panda telegram pair --identity local --actor 123",
     );
-    expect(buildTelegramStartText({ actorId: "123" })).toContain("--actor 123");
-    expect(buildTelegramStartText({ actorId: "123" })).toContain("<pre><code>");
   });
 
   it("adds a media manifest to inbound text", () => {

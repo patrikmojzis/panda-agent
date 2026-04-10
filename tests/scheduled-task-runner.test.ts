@@ -11,6 +11,7 @@ import {
     ScheduledTaskRunner,
     ThreadRuntimeCoordinator,
 } from "../src/index.js";
+import {PostgresThreadRouteStore} from "../src/features/thread-routes/index.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
   return {
@@ -61,8 +62,6 @@ async function createHarness(options: {
   responseText: string;
   routeSource?: string;
   routeConnectorKey?: string;
-  supportedChannel: string;
-  supportedConnectorKey?: string;
 }) {
   const db = newDb();
   db.public.registerFunction({
@@ -80,6 +79,8 @@ async function createHarness(options: {
   await scheduledTasks.ensureSchema();
   const homeThreads = new PostgresHomeThreadStore({pool});
   await homeThreads.ensureSchema();
+  const threadRoutes = new PostgresThreadRouteStore({pool});
+  await threadRoutes.ensureSchema();
   const outboundDeliveries = new PostgresOutboundDeliveryStore({pool});
   await outboundDeliveries.ensureSchema();
 
@@ -95,14 +96,12 @@ async function createHarness(options: {
   });
   await homeThreads.bindHomeThread({
     identityId: alice.id,
-    agentKey: "panda",
     threadId: "home-thread",
   });
 
   if (options.routeSource) {
-    await homeThreads.rememberLastRoute({
-      identityId: alice.id,
-      agentKey: "panda",
+    await threadRoutes.rememberLastRoute({
+      threadId: "home-thread",
       route: {
         source: options.routeSource,
         connectorKey: options.routeConnectorKey ?? "connector-1",
@@ -129,11 +128,10 @@ async function createHarness(options: {
   const runner = new ScheduledTaskRunner({
     tasks: scheduledTasks,
     homeThreads,
+    threadRoutes,
     outboundDeliveries,
     threadStore,
     coordinator,
-    supportedChannel: options.supportedChannel,
-    supportedConnectorKey: options.supportedConnectorKey,
   });
 
   return {
@@ -142,6 +140,7 @@ async function createHarness(options: {
     threadStore,
     scheduledTasks,
     homeThreads,
+    threadRoutes,
     outboundDeliveries,
     coordinator,
     runner,
@@ -170,8 +169,6 @@ describe("ScheduledTaskRunner", () => {
       responseText: "Buy apples tomorrow.",
       routeSource: "telegram",
       routeConnectorKey: "bot-1",
-      supportedChannel: "telegram",
-      supportedConnectorKey: "bot-1",
     });
     pools.push(harness.pool);
 
@@ -214,8 +211,6 @@ describe("ScheduledTaskRunner", () => {
       responseText: "Here is your morning report.",
       routeSource: "telegram",
       routeConnectorKey: "bot-1",
-      supportedChannel: "telegram",
-      supportedConnectorKey: "bot-1",
     });
     pools.push(harness.pool);
 
@@ -249,8 +244,6 @@ describe("ScheduledTaskRunner", () => {
       responseText: "Bee research is ready.",
       routeSource: "telegram",
       routeConnectorKey: "bot-1",
-      supportedChannel: "telegram",
-      supportedConnectorKey: "bot-1",
     });
     pools.push(harness.pool);
     const deliverAt = new Date(Date.now() + 60_000).toISOString();
@@ -303,11 +296,9 @@ describe("ScheduledTaskRunner", () => {
     });
   });
 
-  it("leaves due tasks unclaimed when there is no remembered route", async () => {
+  it("still executes due tasks when there is no remembered route, but marks delivery unavailable", async () => {
     const harness = await createHarness({
-      responseText: "This should not run.",
-      supportedChannel: "telegram",
-      supportedConnectorKey: "bot-1",
+      responseText: "This should stay in the thread.",
     });
     pools.push(harness.pool);
 
@@ -315,7 +306,7 @@ describe("ScheduledTaskRunner", () => {
       identityId: harness.alice.id,
       agentKey: "panda",
       title: "No route",
-      instruction: "Do not claim me yet.",
+      instruction: "Do the work anyway.",
       schedule: {
         kind: "once",
         runAt: new Date(Date.now() - 60_000).toISOString(),
@@ -326,37 +317,16 @@ describe("ScheduledTaskRunner", () => {
     await harness.runner.stop();
 
     const updated = await harness.scheduledTasks.getTask(task.id);
-    expect(updated.claimedAt).toBeUndefined();
-    expect(updated.nextFireAt).toBeDefined();
-    expect(await harness.scheduledTasks.getLatestTaskRun(task.id)).toBeNull();
-  });
+    expect(updated.completedAt).toBeDefined();
 
-  it("does not claim tasks when the remembered route belongs to a different channel", async () => {
-    const harness = await createHarness({
-      responseText: "Wrong channel.",
-      routeSource: "whatsapp",
-      routeConnectorKey: "wa-1",
-      supportedChannel: "telegram",
-      supportedConnectorKey: "bot-1",
+    const run = await harness.scheduledTasks.getLatestTaskRun(task.id);
+    expect(run).toMatchObject({
+      status: "succeeded",
+      deliveryStatus: "unavailable",
     });
-    pools.push(harness.pool);
-
-    const task = await harness.scheduledTasks.createTask({
-      identityId: harness.alice.id,
-      agentKey: "panda",
-      title: "Wrong channel",
-      instruction: "Do not run me here.",
-      schedule: {
-        kind: "once",
-        runAt: new Date(Date.now() - 60_000).toISOString(),
-      },
-    });
-
-    await harness.runner.start();
-    await harness.runner.stop();
-
-    const updated = await harness.scheduledTasks.getTask(task.id);
-    expect(updated.claimedAt).toBeUndefined();
-    expect(await harness.scheduledTasks.getLatestTaskRun(task.id)).toBeNull();
+    expect(await harness.outboundDeliveries.claimNextPendingDelivery({
+      channel: "telegram",
+      connectorKey: "bot-1",
+    })).toBeNull();
   });
 });

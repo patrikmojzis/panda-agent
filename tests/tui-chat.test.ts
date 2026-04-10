@@ -1,6 +1,6 @@
 import {describe, expect, it, vi} from "vitest";
 
-import {PiAiRuntime, stringToUserMessage} from "../src/features/agent-core/index.js";
+import {stringToUserMessage} from "../src/features/agent-core/index.js";
 import type {ThreadRunRecord} from "../src/features/thread-runtime/index.js";
 import * as markdown from "../src/features/tui/markdown.js";
 import {buildChatHelpText} from "../src/features/tui/chat-commands.js";
@@ -20,7 +20,6 @@ type AppHarness = {
   render(): void;
   handleKeypress(sequence: string, key: { ctrl?: boolean; meta?: boolean; shift?: boolean; name?: string }): Promise<void>;
   observeLatestRun(runs: readonly ThreadRunRecord[]): void;
-  handleRuntimeEvent(event: unknown): Promise<void>;
   cleanup(): Promise<void>;
 };
 
@@ -30,126 +29,23 @@ function flushTimers(): Promise<void> {
   });
 }
 
-function assistantText(text: string) {
-  return {
-    role: "assistant" as const,
-    content: [{ type: "text" as const, text }],
-    api: "openai-responses" as const,
-    provider: "openai" as const,
-    model: "gpt-5.1",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "stop" as const,
-    timestamp: Date.now(),
-  };
-}
-
-function buildCompactTranscript() {
-  return [
-    {
-      id: "1",
-      threadId: "thread-compact",
-      sequence: 1,
-      origin: "input" as const,
-      message: stringToUserMessage("old request"),
-      source: "tui",
-      actorId: "local-user",
-      createdAt: 1,
-    },
-    {
-      id: "2",
-      threadId: "thread-compact",
-      sequence: 2,
-      origin: "runtime" as const,
-      message: assistantText("old reply"),
-      source: "assistant",
-      createdAt: 2,
-    },
-    {
-      id: "3",
-      threadId: "thread-compact",
-      sequence: 3,
-      origin: "input" as const,
-      message: stringToUserMessage("recent one"),
-      source: "tui",
-      actorId: "local-user",
-      createdAt: 3,
-    },
-    {
-      id: "4",
-      threadId: "thread-compact",
-      sequence: 4,
-      origin: "runtime" as const,
-      message: assistantText("reply one"),
-      source: "assistant",
-      createdAt: 4,
-    },
-    {
-      id: "5",
-      threadId: "thread-compact",
-      sequence: 5,
-      origin: "input" as const,
-      message: stringToUserMessage("recent two"),
-      source: "tui",
-      actorId: "local-user",
-      createdAt: 5,
-    },
-    {
-      id: "6",
-      threadId: "thread-compact",
-      sequence: 6,
-      origin: "runtime" as const,
-      message: assistantText("reply two"),
-      source: "assistant",
-      createdAt: 6,
-    },
-    {
-      id: "7",
-      threadId: "thread-compact",
-      sequence: 7,
-      origin: "input" as const,
-      message: stringToUserMessage("recent three"),
-      source: "tui",
-      actorId: "local-user",
-      createdAt: 7,
-    },
-    {
-      id: "8",
-      threadId: "thread-compact",
-      sequence: 8,
-      origin: "runtime" as const,
-      message: assistantText("reply three"),
-      source: "assistant",
-      createdAt: 8,
-    },
-  ];
-}
-
 describe("PandaChatApp Ctrl-C handling", () => {
   it("aborts once and closes after the active run settles", async () => {
-    const abort = vi.fn(async () => true);
+    const abortThread = vi.fn(async () => true);
     const waitForCurrentRun = vi.fn(async () => {});
     const app = new PandaChatApp() as unknown as AppHarness;
 
     app.currentThreadId = "thread-ctrl-c";
     app.runPhase = "thinking";
     app.services = {
-      coordinator: {
-        abort,
-        waitForCurrentRun,
-      },
+      abortThread,
+      waitForCurrentRun,
     } as unknown as ChatRuntimeServices;
     app.render = vi.fn();
 
     await app.handleKeypress("\u0003", { ctrl: true, name: "c" });
 
-    expect(abort).toHaveBeenCalledWith("thread-ctrl-c", "Aborted from Ctrl-C.");
+    expect(abortThread).toHaveBeenCalledWith("thread-ctrl-c", "Aborted from Ctrl-C.");
     expect(app.closed).toBe(false);
 
     app.observeLatestRun([{
@@ -168,7 +64,7 @@ describe("PandaChatApp Ctrl-C handling", () => {
   });
 
   it("pauses stdin during cleanup so the process can exit", async () => {
-    const abort = vi.fn(async () => true);
+    const abortThread = vi.fn(async () => true);
     const waitForCurrentRun = vi.fn(async () => {});
     const pause = vi.spyOn(process.stdin, "pause");
     const offStdin = vi.spyOn(process.stdin, "off");
@@ -180,16 +76,14 @@ describe("PandaChatApp Ctrl-C handling", () => {
     app.currentThreadId = "thread-cleanup";
     app.runPhase = "thinking";
     app.services = {
-      coordinator: {
-        abort,
-        waitForCurrentRun,
-      },
+      abortThread,
+      waitForCurrentRun,
       close,
     } as unknown as ChatRuntimeServices;
 
     await app.cleanup();
 
-    expect(abort).toHaveBeenCalledWith("thread-cleanup", "TUI closed.");
+    expect(abortThread).toHaveBeenCalledWith("thread-cleanup", "TUI closed.");
     expect(waitForCurrentRun).toHaveBeenCalledWith("thread-cleanup");
     expect(pause).toHaveBeenCalledTimes(1);
     expect(offStdin).toHaveBeenCalled();
@@ -204,37 +98,6 @@ describe("PandaChatApp Ctrl-C handling", () => {
     write.mockRestore();
   });
 
-  it("reuses a single progress transcript entry while a tool is running", async () => {
-    const app = new PandaChatApp() as unknown as AppHarness;
-    app.currentThreadId = "thread-progress";
-    app.render = vi.fn();
-
-    await app.handleRuntimeEvent({
-      type: "thread_event",
-      threadId: "thread-progress",
-      runId: "run-progress",
-      event: {
-        type: "tool_progress",
-        details: { step: 1 },
-      },
-    });
-
-    await app.handleRuntimeEvent({
-      type: "thread_event",
-      threadId: "thread-progress",
-      runId: "run-progress",
-      event: {
-        type: "tool_progress",
-        details: { step: 2 },
-      },
-    });
-
-    expect(app.transcript).toHaveLength(1);
-    expect(app.transcript[0]).toMatchObject({
-      title: "progress",
-      body: JSON.stringify({ step: 2 }, null, 2),
-    });
-  });
 });
 
 describe("PandaChatApp bracketed paste", () => {
@@ -384,9 +247,7 @@ describe("PandaChatApp thinking command", () => {
 
     app.currentThreadId = "thread-thinking";
     app.services = {
-      store: {
-        updateThread,
-      },
+      updateThread,
     } as ChatRuntimeServices;
 
     await app.handleCommand("/thinking high");
@@ -413,9 +274,7 @@ describe("PandaChatApp thinking command", () => {
       thinking: "medium",
     };
     app.services = {
-      store: {
-        updateThread,
-      },
+      updateThread,
     } as ChatRuntimeServices;
 
     await expect(app.handleCommand("/model gpt-5.2")).resolves.toBe(true);
@@ -437,34 +296,49 @@ describe("PandaChatApp thinking command", () => {
 });
 
 describe("PandaChatApp compact command", () => {
-  it("persists a compact boundary summary for the current thread", async () => {
-    vi.stubEnv("OPENAI_API_KEY", "test-key");
+  it("calls the runtime compact operation and records the result locally", async () => {
+    const compactThread = vi.fn(async () => ({
+      compacted: true,
+      tokensBefore: 1_200,
+      tokensAfter: 400,
+    }));
+    const app = new PandaChatApp() as any;
 
-    const transcript: any[] = buildCompactTranscript();
+    app.currentThreadId = "thread-compact";
+    app.currentThread = {
+      id: "thread-compact",
+      agentKey: "panda",
+      provider: "openai",
+      model: "gpt-5.1",
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    app.services = {
+      compactThread,
+      store: {
+        loadTranscript: vi.fn(async () => []),
+        getThread: vi.fn(async () => app.currentThread),
+        listRuns: vi.fn(async () => []),
+      },
+    } as ChatRuntimeServices;
 
-    const complete = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
-      assistantText("<summary>\nIntent:\n- continue the recent work\n</summary>"),
-    );
-    const runExclusively = vi.fn(async (_threadId: string, fn: () => Promise<unknown>) => fn());
-    const appendRuntimeMessage = vi.fn(async (_threadId: string, payload: any) => {
-      const record = {
-        id: "compact-1",
-        threadId: "thread-compact",
-        sequence: 9,
-        origin: "runtime",
-        message: payload.message,
-        metadata: payload.metadata,
-        source: payload.source,
-        createdAt: 9,
-      };
-      transcript.push(record);
-      return record;
+    await expect(app.handleCommand("/compact")).resolves.toBe(true);
+
+    expect(compactThread).toHaveBeenCalledWith("thread-compact", "");
+    expect(app.transcript.at(-1)).toMatchObject({
+      role: "meta",
+      title: "compact",
+      body: expect.stringContaining("Compacted older context"),
+    });
+  });
+
+  it("surfaces compaction failures", async () => {
+    const compactThread = vi.fn(async () => {
+      throw new Error("summary too large");
     });
     const app = new PandaChatApp() as any;
 
     app.currentThreadId = "thread-compact";
-    app.providerName = "openai";
-    app.model = "gpt-5.1";
     app.currentThread = {
       id: "thread-compact",
       agentKey: "panda",
@@ -474,87 +348,16 @@ describe("PandaChatApp compact command", () => {
       updatedAt: 2,
     };
     app.services = {
-      extraTools: [],
-      coordinator: {
-        runExclusively,
-      },
-      store: {
-        loadTranscript: vi.fn(async () => transcript),
-        appendRuntimeMessage,
-        getThread: vi.fn(async () => app.currentThread),
-        hasRunnableInputs: vi.fn(async () => false),
-        listRuns: vi.fn(async () => []),
-      },
+      compactThread,
     } as ChatRuntimeServices;
 
     await expect(app.handleCommand("/compact")).resolves.toBe(true);
 
-    expect(complete).toHaveBeenCalledTimes(1);
-    expect(appendRuntimeMessage).toHaveBeenCalledWith("thread-compact", expect.objectContaining({
-      source: "compact",
-      message: expect.objectContaining({
-        role: "user",
-        content: expect.stringContaining("Conversation compacted"),
-      }),
-      metadata: expect.objectContaining({
-        kind: "compact_boundary",
-        compactedUpToSequence: 2,
-        preservedTailUserTurns: 3,
-        trigger: "manual",
-      }),
-    }));
-
-    complete.mockRestore();
-    vi.unstubAllEnvs();
-  });
-
-  it("refuses to persist a compact summary that would evict the preserved tail", async () => {
-    vi.stubEnv("OPENAI_API_KEY", "test-key");
-
-    const transcript: any[] = buildCompactTranscript();
-    const complete = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
-      assistantText(`<summary>\nIntent:\n- ${"x".repeat(8_000)}\n</summary>`),
-    );
-    const appendRuntimeMessage = vi.fn();
-    const app = new PandaChatApp() as any;
-
-    app.currentThreadId = "thread-compact";
-    app.providerName = "openai";
-    app.model = "gpt-5.1";
-    app.currentThread = {
-      id: "thread-compact",
-      agentKey: "panda",
-      provider: "openai",
-      model: "gpt-5.1",
-      maxInputTokens: 350,
-      createdAt: 1,
-      updatedAt: 2,
-    };
-    app.services = {
-      extraTools: [],
-      coordinator: {
-        runExclusively: vi.fn(async (_threadId: string, fn: () => Promise<unknown>) => fn()),
-      },
-      store: {
-        loadTranscript: vi.fn(async () => transcript),
-        appendRuntimeMessage,
-        getThread: vi.fn(async () => app.currentThread),
-        hasRunnableInputs: vi.fn(async () => false),
-        listRuns: vi.fn(async () => []),
-      },
-    } as ChatRuntimeServices;
-
-    await expect(app.handleCommand("/compact")).resolves.toBe(true);
-
-    expect(appendRuntimeMessage).not.toHaveBeenCalled();
     expect(app.transcript.at(-1)).toMatchObject({
       role: "error",
       title: "compact",
-      body: expect.stringContaining("too large"),
+      body: "summary too large",
     });
-
-    complete.mockRestore();
-    vi.unstubAllEnvs();
   });
 });
 
