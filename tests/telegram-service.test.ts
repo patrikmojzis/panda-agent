@@ -42,6 +42,11 @@ const telegramServiceMocks = vi.hoisted(() => {
   return {
     MockBot,
     botInstances,
+    createOutboundWorker: vi.fn(() => ({
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+      triggerDrain: vi.fn(async () => {}),
+    })),
     createTelegramRuntime: vi.fn(),
   };
 });
@@ -52,6 +57,12 @@ vi.mock("grammy", () => ({
 
 vi.mock("../src/features/telegram/runtime.js", () => ({
   createTelegramRuntime: telegramServiceMocks.createTelegramRuntime,
+}));
+
+vi.mock("../src/features/outbound-deliveries/index.js", () => ({
+  ChannelOutboundDeliveryWorker: vi.fn(function MockOutboundWorker() {
+    return telegramServiceMocks.createOutboundWorker();
+  }),
 }));
 
 interface RuntimeMock {

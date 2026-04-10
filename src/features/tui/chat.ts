@@ -1,7 +1,7 @@
 import path from "node:path";
 import readline from "node:readline";
-import { randomUUID } from "node:crypto";
-import { stdin as input, stdout as output } from "node:process";
+import {randomUUID} from "node:crypto";
+import {stdin as input, stdout as output} from "node:process";
 
 import {
   assertProviderName,
@@ -9,37 +9,25 @@ import {
   getProviderConfig,
   parseProviderName,
   resolveProviderApiKey,
-  Tool,
   stringToUserMessage,
   type ThinkingLevel,
+  Tool,
   type ToolProgressEvent,
 } from "../agent-core/index.js";
-import type { ProviderName } from "../agent-core/types.js";
-import { buildPandaTools } from "../panda/agent.js";
-import { summarizeMessageText } from "../panda/message-preview.js";
-import { resolveDefaultPandaModel, resolveDefaultPandaProvider } from "../panda/provider-defaults.js";
-import {
-  createChatRuntime,
-  type ChatRuntimeServices,
-} from "./runtime.js";
-import {
-  buildChatHelpText,
-  describeUnknownCommand,
-  runChatCommandLine,
-} from "./chat-commands.js";
-import {
-  renderTranscriptEntries,
-} from "./transcript.js";
-import {
-  applySlashCompletion,
-  getSlashCompletionContext,
-  type SlashCompletionContext,
-} from "./commands.js";
+import type {ProviderName} from "../agent-core/types.js";
+import {buildPandaTools} from "../panda/agent.js";
+import {summarizeMessageText} from "../panda/message-preview.js";
+import {resolveDefaultPandaModel, resolveDefaultPandaProvider} from "../panda/provider-defaults.js";
+import {type ChatRuntimeServices, createChatRuntime,} from "./runtime.js";
+import {buildChatHelpText, describeUnknownCommand, runChatCommandLine,} from "./chat-commands.js";
+import {renderTranscriptEntries,} from "./transcript.js";
+import {applySlashCompletion, getSlashCompletionContext, type SlashCompletionContext,} from "./commands.js";
 import {
   backspace,
+  type ComposerState,
   createComposerState,
-  deleteWordBackward,
   deleteForward,
+  deleteWordBackward,
   insertText,
   moveCursorDown,
   moveCursorLeft,
@@ -50,47 +38,42 @@ import {
   moveCursorWordLeft,
   moveCursorWordRight,
   setComposerValue,
-  type ComposerState,
 } from "./composer.js";
 import {
   COMPOSER_NEWLINE_HINT,
   extendedKeysModeSequence,
   isPrintableKey,
+  type KeyLike,
   normalizeTerminalKeySequence,
   replaceTrailingBackslashWithNewline,
   resolveComposerEnterAction,
   resolveComposerMetaAction,
-  type KeyLike,
 } from "./input.js";
 import {
   buildChatViewModel,
   buildWelcomeTranscriptLines,
-  normalizeInlineText,
-  THREAD_PICKER_VISIBLE_COUNT,
   type ComposerLayout,
+  normalizeInlineText,
   type NoticeState,
+  THREAD_PICKER_VISIBLE_COUNT,
   type TranscriptLine,
   type ViewModel,
 } from "./chat-view.js";
-import { renderMarkdownLines } from "./markdown.js";
+import {renderMarkdownLines} from "./markdown.js";
 import {
   ALT_SCREEN_OFF,
   ALT_SCREEN_ON,
-  CLEAR_SCREEN,
-  HIDE_CURSOR,
-  SHOW_CURSOR,
   clamp,
+  CLEAR_SCREEN,
   cursorTo,
   formatDuration,
+  HIDE_CURSOR,
   padAnsiEnd,
+  SHOW_CURSOR,
   truncatePlainText,
   wrapPlainText,
 } from "./screen.js";
-import { stripAnsi, theme } from "./theme.js";
-import {
-  compactThread,
-  isMissingThreadError,
-} from "../thread-runtime/index.js";
+import {stripAnsi, theme} from "./theme.js";
 import type {
   ThreadMessageRecord,
   ThreadRecord,
@@ -98,6 +81,7 @@ import type {
   ThreadRuntimeEvent,
   ThreadSummaryRecord,
 } from "../thread-runtime/index.js";
+import {compactThread, isMissingThreadError,} from "../thread-runtime/index.js";
 
 type EntryRole = "assistant" | "user" | "tool" | "meta" | "error";
 type RunPhase = "idle" | "thinking";
@@ -157,6 +141,7 @@ export interface ChatCliOptions {
   model?: string;
   thinking?: ThinkingLevel;
   identity?: string;
+  agent?: string;
   cwd?: string;
   resume?: string;
   threadId?: string;
@@ -206,6 +191,7 @@ export class PandaChatApp {
   private thinking?: ThinkingLevel;
   private readonly cwd: string;
   private readonly identity?: string;
+  private readonly defaultAgentKey?: string;
   private readonly resumeThreadId?: string;
   private readonly explicitThreadId?: string;
   private readonly dbUrl?: string;
@@ -274,6 +260,7 @@ export class PandaChatApp {
     this.model = options.model ?? resolveDefaultPandaModel(this.providerName);
     this.thinking = options.thinking;
     this.identity = options.identity;
+    this.defaultAgentKey = options.agent;
     this.cwd = path.resolve(options.cwd ?? process.cwd());
     this.resumeThreadId = options.resume;
     this.explicitThreadId = options.threadId;
@@ -490,6 +477,7 @@ export class PandaChatApp {
       provider: this.providerName,
       model: this.model,
       identity: this.identity,
+      agent: this.defaultAgentKey,
       dbUrl: this.dbUrl,
       readOnlyDbUrl: this.readOnlyDbUrl,
       onEvent: (event) => this.handleRuntimeEvent(event),
@@ -529,7 +517,7 @@ export class PandaChatApp {
   } {
     return {
       id: overrides.id,
-      agentKey: overrides.agentKey ?? this.currentThread?.agentKey ?? "panda",
+      agentKey: overrides.agentKey ?? this.currentThread?.agentKey ?? this.defaultAgentKey ?? "panda",
       provider: overrides.provider ?? this.providerName,
       model: overrides.model ?? this.model,
       thinking: overrides.thinking ?? this.thinking,

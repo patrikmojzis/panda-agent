@@ -1,13 +1,13 @@
-import type { Message } from "@mariozechner/pi-ai";
+import type {Message} from "@mariozechner/pi-ai";
 
 import {
-  formatToolCallFallback,
-  formatToolResultFallback,
-  type Tool,
-  type ToolResultMessage,
+    formatToolCallFallback,
+    formatToolResultFallback,
+    type Tool,
+    type ToolResultMessage,
 } from "../agent-core/index.js";
-import { summarizeMessageText } from "../panda/message-preview.js";
-import type { ThreadMessageMetadata } from "../thread-runtime/index.js";
+import {summarizeMessageText} from "../panda/message-preview.js";
+import type {ThreadMessageMetadata} from "../thread-runtime/index.js";
 
 interface TranscriptEntryView {
   role: TranscriptEntryRole;
@@ -50,7 +50,7 @@ export function renderTranscriptEntries(
 
       entries.push({
         role: "assistant",
-        title: metadata.source === "assistant" ? "panda" : metadata.source,
+        title: metadata.source === "assistant" ? "Agent" : metadata.source,
         body,
       });
       text = "";

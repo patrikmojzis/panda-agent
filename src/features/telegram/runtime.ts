@@ -5,15 +5,12 @@ import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import type {JsonValue, ProviderName} from "../agent-core/types.js";
 import {createPandaRuntime, createPandaThreadDefinition, type PandaRuntimeServices,} from "../panda/runtime.js";
 import {PostgresChannelCursorStore} from "../channel-cursors/index.js";
-import {
-  type ChannelOutboundDispatcher,
-  type ChannelTypingDispatcher,
-  FileSystemMediaStore
-} from "../channels/core/index.js";
+import {type ChannelTypingDispatcher, FileSystemMediaStore} from "../channels/core/index.js";
 import {PostgresConversationThreadStore} from "../conversation-threads/index.js";
 import {PostgresHomeThreadStore} from "../home-threads/index.js";
 import {createDefaultIdentityInput, DEFAULT_IDENTITY_HANDLE, type IdentityRecord,} from "../identity/types.js";
 import type {IdentityStore} from "../identity/store.js";
+import {PostgresOutboundDeliveryStore} from "../outbound-deliveries/index.js";
 import {OutboundTool} from "../panda/tools/outbound-tool.js";
 import {createChannelTypingEventHandler} from "../thread-runtime/channel-typing.js";
 import {type TelegramReactionApi, TelegramReactTool} from "./telegram-react-tool.js";
@@ -31,8 +28,8 @@ export interface TelegramRuntimeOptions {
   readOnlyDbUrl?: string;
   provider?: ProviderName;
   model?: string;
+  agent?: string;
   tablePrefix?: string;
-  outboundDispatcher?: ChannelOutboundDispatcher;
   typingDispatcher?: ChannelTypingDispatcher;
   telegramConnectorKey?: string;
   telegramReactionApi?: TelegramReactionApi;
@@ -49,12 +46,14 @@ export interface CreateTelegramThreadOptions {
 }
 
 export interface TelegramRuntimeServices {
+  agentKey: string;
   identityStore: IdentityStore;
   store: ThreadRuntimeStore;
   coordinator: ThreadRuntimeCoordinator;
   conversationThreads: PostgresConversationThreadStore;
   homeThreads: PostgresHomeThreadStore;
   channelCursors: PostgresChannelCursorStore;
+  outboundDeliveries: PostgresOutboundDeliveryStore;
   mediaStore: FileSystemMediaStore;
   pool: PandaRuntimeServices["pool"];
   createThread(options: CreateTelegramThreadOptions): Promise<ThreadRecord>;
@@ -74,10 +73,12 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
     locale: options.locale,
     timezone: options.timezone,
   } as const;
+  const defaultAgentKey = options.agent?.trim() || "panda";
 
   let conversationThreads: PostgresConversationThreadStore;
   let homeThreads: PostgresHomeThreadStore;
   let channelCursors: PostgresChannelCursorStore;
+  let outboundDeliveries: PostgresOutboundDeliveryStore;
   let mediaStore: FileSystemMediaStore;
 
   const pandaRuntime = await createPandaRuntime({
@@ -85,11 +86,11 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
     readOnlyDbUrl: options.readOnlyDbUrl,
     tablePrefix: options.tablePrefix,
     onEvent: createChannelTypingEventHandler(options.typingDispatcher),
-    resolveDefinition: async (thread, { identityStore, extraTools }) => {
+    resolveDefinition: async (thread, { agentStore, identityStore, extraTools }) => {
       const identity = await identityStore.getIdentity(thread.identityId);
       const identityHandle = resolveDefaultIdentityHandle(identity);
       const channelTools = [
-        ...(options.outboundDispatcher ? [new OutboundTool()] : []),
+        new OutboundTool(),
         ...(
           options.telegramReactionApi && options.telegramConnectorKey
             ? [new TelegramReactTool({
@@ -107,14 +108,14 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
           identityId: identity.id,
           identityHandle,
         },
+        agentStore,
         extraTools: channelTools.length > 0 ? [...extraTools, ...channelTools] : extraTools,
         extraContext: {
-          outboundDispatcher: options.outboundDispatcher,
           routeMemory: {
-            getLastRoute: async () => homeThreads.resolveLastRoute({
+            getLastRoute: async (channel) => homeThreads.resolveLastRoute({
               identityId: thread.identityId,
               agentKey: thread.agentKey,
-            }),
+            }, channel),
             rememberLastRoute: async (route) => {
               await homeThreads.rememberLastRoute({
                 identityId: thread.identityId,
@@ -122,6 +123,9 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
                 route,
               });
             },
+          },
+          outboundQueue: {
+            enqueueDelivery: async (input) => outboundDeliveries.enqueueDelivery(input),
           },
         },
       });
@@ -140,12 +144,19 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
       tablePrefix: options.tablePrefix,
     });
     await homeThreads.ensureSchema();
+    await pandaRuntime.agentStore.getAgent(defaultAgentKey);
 
     channelCursors = new PostgresChannelCursorStore({
       pool: pandaRuntime.pool,
       tablePrefix: options.tablePrefix,
     });
     await channelCursors.ensureSchema();
+
+    outboundDeliveries = new PostgresOutboundDeliveryStore({
+      pool: pandaRuntime.pool,
+      tablePrefix: options.tablePrefix,
+    });
+    await outboundDeliveries.ensureSchema();
 
     mediaStore = new FileSystemMediaStore({
       rootDir: options.dataDir,
@@ -160,11 +171,13 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
     const identity = createOptions.identityId === defaultIdentity.id
       ? await pandaRuntime.identityStore.ensureIdentity(defaultIdentity)
       : await pandaRuntime.identityStore.getIdentity(createOptions.identityId);
+    const agentKey = createOptions.agentKey ?? defaultAgentKey;
+    await pandaRuntime.agentStore.getAgent(agentKey);
 
     return pandaRuntime.store.createThread({
       id: createOptions.id ?? randomUUID(),
       identityId: identity.id,
-      agentKey: createOptions.agentKey ?? "panda",
+      agentKey,
       context: {
         ...fallbackContext,
         identityId: identity.id,
@@ -183,7 +196,8 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
   const resolveOrCreateHomeThread = async (
     createOptions: CreateTelegramThreadOptions,
   ): Promise<ThreadRecord> => {
-    const agentKey = createOptions.agentKey ?? "panda";
+    const agentKey = createOptions.agentKey ?? defaultAgentKey;
+    await pandaRuntime.agentStore.getAgent(agentKey);
     const existing = await homeThreads.resolveHomeThread({
       identityId: createOptions.identityId,
       agentKey,
@@ -214,21 +228,30 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
 
   const setHomeThread = async (threadId: string, agentKey?: string): Promise<ThreadRecord> => {
     const thread = await pandaRuntime.store.getThread(threadId);
+    // Home bindings are keyed by (identity, agent). Rebinding a thread under a
+    // different agent would make that home slot resolve the wrong persona/memory.
+    if (agentKey && agentKey !== thread.agentKey) {
+      throw new Error(
+        `Cannot bind thread ${thread.id} with agent ${thread.agentKey} under home agent ${agentKey}.`,
+      );
+    }
     await homeThreads.bindHomeThread({
       identityId: thread.identityId,
-      agentKey: agentKey ?? thread.agentKey,
+      agentKey: thread.agentKey,
       threadId: thread.id,
     });
     return thread;
   };
 
   return {
+    agentKey: defaultAgentKey,
     identityStore: pandaRuntime.identityStore,
     store: pandaRuntime.store,
     coordinator: pandaRuntime.coordinator,
     conversationThreads,
     homeThreads,
     channelCursors,
+    outboundDeliveries,
     mediaStore,
     pool: pandaRuntime.pool,
     createThread,

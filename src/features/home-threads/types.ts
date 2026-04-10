@@ -1,7 +1,9 @@
-import type { RememberedRoute } from "../channels/core/types.js";
+import type {RememberedRoute} from "../channels/core/types.js";
+
+export type HomeThreadLastRoutes = Record<string, RememberedRoute>;
 
 export interface HomeThreadMetadata {
-  lastRoute?: RememberedRoute;
+  lastRoutes?: HomeThreadLastRoutes;
   homeDir?: string;
 }
 

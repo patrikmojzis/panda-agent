@@ -1,10 +1,14 @@
-import type { JsonValue } from "../agent-core/types.js";
-import type { ChannelOutboundDispatcher } from "../channels/core/outbound.js";
-import type { RememberedRoute } from "../channels/core/types.js";
+import type {JsonValue} from "../agent-core/types.js";
+import type {CreateOutboundDeliveryInput, OutboundDeliveryRecord} from "../outbound-deliveries/types.js";
+import type {RememberedRoute} from "../channels/core/types.js";
 
 export interface PandaRouteMemory {
-  getLastRoute(): Promise<RememberedRoute | null>;
+  getLastRoute(channel?: string): Promise<RememberedRoute | null>;
   rememberLastRoute(route: RememberedRoute): Promise<void>;
+}
+
+export interface PandaOutboundQueue {
+  enqueueDelivery(input: CreateOutboundDeliveryInput): Promise<OutboundDeliveryRecord>;
 }
 
 export interface PandaShellSession {
@@ -28,6 +32,6 @@ export interface PandaSessionContext {
     actorId?: string;
     metadata?: JsonValue;
   };
-  outboundDispatcher?: ChannelOutboundDispatcher;
   routeMemory?: PandaRouteMemory;
+  outboundQueue?: PandaOutboundQueue;
 }

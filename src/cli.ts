@@ -3,15 +3,16 @@
 import process from "node:process";
 import path from "node:path";
 
-import { Command, InvalidArgumentError } from "commander";
-import { formatProviderNameList, parseProviderName } from "./features/agent-core/index.js";
-import { parseIdentityHandle, registerIdentityCommands } from "./features/identity/cli.js";
-import { summarizeMessageText } from "./features/panda/message-preview.js";
-import { registerTelegramCommands } from "./features/telegram/cli.js";
-import { runChatCli, type ChatCliOptions } from "./features/tui/index.js";
-import { renderResumeHint } from "./features/tui/exit-hint.js";
-import { createChatRuntime } from "./features/tui/runtime.js";
-import { registerWhatsAppCommands } from "./features/whatsapp/cli.js";
+import {Command, InvalidArgumentError} from "commander";
+import {formatProviderNameList, parseProviderName} from "./features/agent-core/index.js";
+import {parseAgentKey, registerAgentCommands} from "./features/agents/cli.js";
+import {parseIdentityHandle, registerIdentityCommands} from "./features/identity/cli.js";
+import {summarizeMessageText} from "./features/panda/message-preview.js";
+import {registerTelegramCommands} from "./features/telegram/cli.js";
+import {type ChatCliOptions, runChatCli} from "./features/tui/index.js";
+import {renderResumeHint} from "./features/tui/exit-hint.js";
+import {createChatRuntime} from "./features/tui/runtime.js";
+import {registerWhatsAppCommands} from "./features/whatsapp/cli.js";
 
 (process as NodeJS.Process & { loadEnvFile?: (path?: string) => void }).loadEnvFile?.();
 
@@ -41,6 +42,7 @@ async function runChatCommand(options: ChatCliOptions): Promise<void> {
     provider: options.provider,
     model: options.model,
     identity: options.identity,
+    agent: options.agent,
     cwd: options.cwd,
     resume: options.resume,
     threadId: options.threadId,
@@ -54,7 +56,7 @@ async function runChatCommand(options: ChatCliOptions): Promise<void> {
 }
 
 async function withCliRuntime<T>(
-  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "cwd" | "dbUrl" | "readOnlyDbUrl">,
+  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "agent" | "cwd" | "dbUrl" | "readOnlyDbUrl">,
   fn: (runtime: Awaited<ReturnType<typeof createChatRuntime>>) => Promise<T>,
 ): Promise<T> {
   const runtime = await createChatRuntime({
@@ -64,6 +66,7 @@ async function withCliRuntime<T>(
     provider: options.provider,
     model: options.model,
     identity: options.identity,
+    agent: options.agent,
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
   });
@@ -76,7 +79,7 @@ async function withCliRuntime<T>(
 }
 
 async function listThreadsCommand(
-  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "cwd" | "dbUrl" | "readOnlyDbUrl"> & { limit?: number },
+  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "agent" | "cwd" | "dbUrl" | "readOnlyDbUrl"> & { limit?: number },
 ): Promise<void> {
   await withCliRuntime(options, async (runtime) => {
     const summaries = await runtime.listThreadSummaries(options.limit ?? 20);
@@ -104,7 +107,7 @@ async function listThreadsCommand(
 
 async function inspectThreadCommand(
   threadId: string,
-  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "cwd" | "dbUrl" | "readOnlyDbUrl">,
+  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "agent" | "cwd" | "dbUrl" | "readOnlyDbUrl">,
 ): Promise<void> {
   await withCliRuntime(options, async (runtime) => {
     const thread = await runtime.getThread(threadId);
@@ -146,6 +149,7 @@ function configureChatOptions(command: Command): Command {
     )
     .option("-m, --model <model>", "Model name override")
     .option("--identity <handle>", "Identity handle to use for thread ownership", parseIdentityHandle)
+    .option("--agent <agentKey>", "Agent key to use", parseAgentKey)
     .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
     .option("--resume <threadId>", "Resume an existing thread by id")
     .option("--thread-id <threadId>", "Use an explicit thread id for a new or existing chat")
@@ -181,6 +185,7 @@ program
   .option("-p, --provider <provider>", "LLM provider to use", parseCliProvider)
   .option("-m, --model <model>", "Model name override")
   .option("--identity <handle>", "Identity handle to use", parseIdentityHandle)
+  .option("--agent <agentKey>", "Agent key to use", parseAgentKey)
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
   .option("--db-url <url>", "Postgres connection string for thread persistence")
   .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
@@ -195,6 +200,7 @@ program
   .option("-p, --provider <provider>", "LLM provider to use", parseCliProvider)
   .option("-m, --model <model>", "Model name override")
   .option("--identity <handle>", "Identity handle to use", parseIdentityHandle)
+  .option("--agent <agentKey>", "Agent key to use", parseAgentKey)
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
   .option("--db-url <url>", "Postgres connection string for thread persistence")
   .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
@@ -202,6 +208,7 @@ program
     return inspectThreadCommand(threadId, options);
   });
 
+registerAgentCommands(program);
 registerIdentityCommands(program);
 registerTelegramCommands(program, parseCliProvider);
 registerWhatsAppCommands(program, parseCliProvider);

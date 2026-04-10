@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
+import {createChatRuntime} from "../src/features/tui/runtime.js";
 
 const tuiRuntimeMocks = vi.hoisted(() => ({
   createPandaRuntime: vi.fn(),
@@ -15,6 +16,12 @@ const tuiRuntimeMocks = vi.hoisted(() => ({
       },
     })),
   })),
+  createOutboundDeliveryStore: vi.fn(() => ({
+    ensureSchema: vi.fn(async () => {}),
+    enqueueDelivery: vi.fn(async () => ({
+      id: "delivery-1",
+    })),
+  })),
   resolveStoredPandaContext: vi.fn((_value: unknown, fallback: Record<string, unknown>) => ({ ...fallback })),
 }));
 
@@ -29,12 +36,17 @@ vi.mock("../src/features/home-threads/index.js", () => ({
   }),
 }));
 
-import { createChatRuntime } from "../src/features/tui/runtime.js";
+vi.mock("../src/features/outbound-deliveries/index.js", () => ({
+  PostgresOutboundDeliveryStore: vi.fn(function MockOutboundDeliveryStore() {
+    return tuiRuntimeMocks.createOutboundDeliveryStore();
+  }),
+}));
 
 describe("createChatRuntime", () => {
   afterEach(() => {
     tuiRuntimeMocks.createPandaRuntime.mockReset();
     tuiRuntimeMocks.createHomeThreadStore.mockClear();
+    tuiRuntimeMocks.createOutboundDeliveryStore.mockClear();
     tuiRuntimeMocks.resolveStoredPandaContext.mockClear();
   });
 
@@ -45,6 +57,11 @@ describe("createChatRuntime", () => {
       close,
       coordinator: {},
       extraTools: [],
+      agentStore: {
+        getAgent: vi.fn(async () => ({
+          agentKey: "panda",
+        })),
+      },
       identityStore: {
         ensureIdentity: vi.fn(),
         getIdentityByHandle: vi.fn(async () => {
@@ -91,6 +108,11 @@ describe("createChatRuntime", () => {
       close: vi.fn(async () => {}),
       coordinator: {},
       extraTools: [],
+      agentStore: {
+        getAgent: vi.fn(async () => ({
+          agentKey: "panda",
+        })),
+      },
       pool: {},
       identityStore: {
         ensureIdentity: vi.fn(async () => ({
@@ -117,5 +139,103 @@ describe("createChatRuntime", () => {
     expect(thread.id).toBe("thread-created");
     expect(createThread).toHaveBeenCalledTimes(1);
     expect(listThreadSummaries).not.toHaveBeenCalled();
+  });
+
+  it("uses the configured default agent for new home threads", async () => {
+    const createThread = vi.fn(async (input: { agentKey?: string }) => ({
+      id: "thread-created",
+      identityId: "local",
+      agentKey: input.agentKey ?? "panda",
+      context: {},
+      createdAt: 1,
+      updatedAt: 1,
+    }));
+    const getAgent = vi.fn(async (agentKey: string) => ({
+      agentKey,
+    }));
+
+    tuiRuntimeMocks.createPandaRuntime.mockResolvedValue({
+      close: vi.fn(async () => {}),
+      coordinator: {},
+      extraTools: [],
+      agentStore: {
+        getAgent,
+      },
+      pool: {},
+      identityStore: {
+        ensureIdentity: vi.fn(async () => ({
+          id: "local",
+          handle: "local",
+        })),
+        getIdentityByHandle: vi.fn(),
+      },
+      store: {
+        createThread,
+        getThread: vi.fn(),
+        listThreadSummaries: vi.fn(async () => []),
+      },
+    });
+
+    const runtime = await createChatRuntime({
+      cwd: "/workspace/panda",
+      locale: "en-US",
+      timezone: "UTC",
+      agent: "ops",
+    });
+
+    const thread = await runtime.resolveOrCreateHomeThread();
+
+    expect(getAgent).toHaveBeenCalledWith("ops");
+    expect(thread.agentKey).toBe("ops");
+    expect(createThread).toHaveBeenCalledWith(expect.objectContaining({
+      agentKey: "ops",
+    }));
+  });
+
+  it("rejects rebinding a thread under a different home agent", async () => {
+    tuiRuntimeMocks.createPandaRuntime.mockResolvedValue({
+      close: vi.fn(async () => {}),
+      coordinator: {},
+      extraTools: [],
+      agentStore: {
+        getAgent: vi.fn(async () => ({
+          agentKey: "panda",
+        })),
+      },
+      pool: {},
+      identityStore: {
+        ensureIdentity: vi.fn(async () => ({
+          id: "local",
+          handle: "local",
+        })),
+        getIdentityByHandle: vi.fn(),
+      },
+      store: {
+        createThread: vi.fn(),
+        getThread: vi.fn(async () => ({
+          id: "thread-created",
+          identityId: "local",
+          agentKey: "panda",
+          context: {},
+          createdAt: 1,
+          updatedAt: 1,
+        })),
+        listThreadSummaries: vi.fn(async () => []),
+      },
+    });
+
+    const runtime = await createChatRuntime({
+      cwd: "/workspace/panda",
+      locale: "en-US",
+      timezone: "UTC",
+    });
+
+    const homeThreads = tuiRuntimeMocks.createHomeThreadStore.mock.results.at(-1)?.value;
+    const bindHomeThread = homeThreads?.bindHomeThread;
+
+    await expect(runtime.setHomeThread("thread-created", "ops")).rejects.toThrow(
+      "Cannot bind thread thread-created with agent panda under home agent ops.",
+    );
+    expect(bindHomeThread).not.toHaveBeenCalled();
   });
 });

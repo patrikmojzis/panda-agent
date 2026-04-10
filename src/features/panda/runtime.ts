@@ -1,13 +1,16 @@
-import { Pool, type PoolClient } from "pg";
+import {Pool, type PoolClient} from "pg";
 
-import { Agent } from "../agent-core/agent.js";
-import type { Tool } from "../agent-core/tool.js";
-import type { IdentityStore } from "../identity/store.js";
-import { buildPandaTools } from "./agent.js";
-import { DateTimeContext, EnvironmentContext } from "./contexts/index.js";
-import { PANDA_PROMPT } from "./prompts.js";
-import { PostgresReadonlyQueryTool } from "./tools/postgres-readonly-query-tool.js";
-import type { PandaSessionContext } from "./types.js";
+import {Agent} from "../agent-core/agent.js";
+import type {LlmContext} from "../agent-core/llm-context.js";
+import {type AgentStore, PostgresAgentStore} from "../agents/index.js";
+import type {Tool} from "../agent-core/tool.js";
+import type {IdentityStore} from "../identity/store.js";
+import {buildPandaTools} from "./agent.js";
+import {AgentMemoryContext, DateTimeContext, EnvironmentContext} from "./contexts/index.js";
+import {PANDA_PROMPT} from "./prompts.js";
+import {AgentDocumentTool} from "./tools/agent-document-tool.js";
+import {PostgresReadonlyQueryTool} from "./tools/postgres-readonly-query-tool.js";
+import type {PandaSessionContext} from "./types.js";
 import {
   PostgresThreadLeaseManager,
   PostgresThreadRuntimeStore,
@@ -18,18 +21,13 @@ import {
   parseThreadRuntimeNotification,
   type ThreadRuntimeNotification,
 } from "../thread-runtime/postgres.js";
-import {
-  ensureReadonlyChatQuerySchema,
-  readDatabaseUsername,
-} from "../thread-runtime/postgres-readonly.js";
-import type { ThreadRuntimeStore } from "../thread-runtime/store.js";
-import type {
-  ResolvedThreadDefinition,
-  ThreadRecord,
-} from "../thread-runtime/types.js";
-import type { ThreadRuntimeEvent } from "../thread-runtime/coordinator.js";
+import {ensureReadonlyChatQuerySchema, readDatabaseUsername,} from "../thread-runtime/postgres-readonly.js";
+import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
+import type {ResolvedThreadDefinition, ThreadRecord,} from "../thread-runtime/types.js";
+import type {ThreadRuntimeEvent} from "../thread-runtime/coordinator.js";
 
 export interface PandaDefinitionResolverContext {
+  agentStore: AgentStore;
   identityStore: IdentityStore;
   store: ThreadRuntimeStore;
   extraTools: readonly Tool[];
@@ -48,6 +46,7 @@ export interface PandaRuntimeOptions {
 }
 
 export interface PandaRuntimeServices {
+  agentStore: AgentStore;
   identityStore: IdentityStore;
   store: ThreadRuntimeStore;
   coordinator: ThreadRuntimeCoordinator;
@@ -59,7 +58,9 @@ export interface PandaRuntimeServices {
 export interface CreatePandaThreadDefinitionOptions {
   thread: ThreadRecord;
   fallbackContext: Pick<PandaSessionContext, "cwd" | "locale" | "timezone" | "identityId" | "identityHandle">;
+  agentStore?: AgentStore;
   extraTools?: readonly Tool[];
+  extraLlmContexts?: readonly LlmContext[];
   extraContext?: Omit<
     PandaSessionContext,
     "cwd" | "locale" | "timezone" | "identityId" | "identityHandle" | "threadId" | "agentKey"
@@ -127,6 +128,30 @@ export function createPandaThreadDefinition(
     identityHandle: options.fallbackContext.identityHandle,
     ...options.extraContext,
   };
+  const resolvedIdentityId = context.identityId ?? options.fallbackContext.identityId;
+  if (!resolvedIdentityId) {
+    throw new Error(`Missing identityId for thread ${options.thread.id}.`);
+  }
+
+  const llmContexts: LlmContext[] = [
+    new DateTimeContext({
+      locale: context.locale,
+      timeZone: context.timezone,
+    }),
+    new EnvironmentContext({
+      cwd: context.cwd,
+    }),
+  ];
+  if (options.agentStore) {
+    llmContexts.push(new AgentMemoryContext({
+      store: options.agentStore,
+      agentKey: options.thread.agentKey,
+      identityId: resolvedIdentityId,
+    }));
+  }
+  if (options.extraLlmContexts?.length) {
+    llmContexts.push(...options.extraLlmContexts);
+  }
 
   return {
     agent: new Agent({
@@ -135,15 +160,7 @@ export function createPandaThreadDefinition(
       tools: buildPandaTools(options.extraTools),
     }),
     context,
-    llmContexts: [
-      new DateTimeContext({
-        locale: context.locale,
-        timeZone: context.timezone,
-      }),
-      new EnvironmentContext({
-        cwd: context.cwd,
-      }),
-    ],
+    llmContexts,
   };
 }
 
@@ -154,6 +171,7 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
     ?? trimNonEmptyString(process.env.PANDA_READONLY_DATABASE_URL);
 
   let store: ThreadRuntimeStore;
+  let agentStore: AgentStore;
   let identityStore: IdentityStore;
   let pool: Pool;
   let readonlyPool: Pool | null = null;
@@ -173,6 +191,11 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
 
     store = postgresStore;
     identityStore = postgresStore.identityStore;
+    agentStore = new PostgresAgentStore({
+      pool: postgresPool,
+      tablePrefix: options.tablePrefix,
+    });
+    await agentStore.ensureSchema();
     pool = postgresPool;
     await ensureReadonlyChatQuerySchema({
       queryable: postgresPool,
@@ -184,9 +207,14 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
       readonlyPool = createPandaPool(readOnlyDbUrl);
     }
 
-    extraTools = [new PostgresReadonlyQueryTool({
-      pool: readonlyPool ?? postgresPool,
-    })];
+    extraTools = [
+      new AgentDocumentTool({
+        store: agentStore,
+      }),
+      new PostgresReadonlyQueryTool({
+        pool: readonlyPool ?? postgresPool,
+      }),
+    ];
 
     if (options.onStoreNotification) {
       const channel = buildThreadRuntimeNotificationChannel(options.tablePrefix ?? "thread_runtime");
@@ -247,6 +275,7 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
   }
 
   const resolverContext: PandaDefinitionResolverContext = {
+    agentStore,
     identityStore,
     store,
     extraTools,
@@ -260,6 +289,7 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
   });
 
   return {
+    agentStore,
     identityStore,
     store,
     coordinator,

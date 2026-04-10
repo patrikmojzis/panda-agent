@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import {describe, expect, it} from "vitest";
 
-import { renderTranscriptEntries } from "../src/features/tui/transcript.js";
-import { renderMarkdownLines } from "../src/features/tui/markdown.js";
+import {renderTranscriptEntries} from "../src/features/tui/transcript.js";
+import {renderMarkdownLines} from "../src/features/tui/markdown.js";
 
 describe("renderTranscriptEntries assistant markdown", () => {
   it("preserves assistant markdown structure instead of flattening whitespace", () => {
@@ -18,7 +18,7 @@ describe("renderTranscriptEntries assistant markdown", () => {
 
     expect(entries).toEqual([{
       role: "assistant",
-      title: "panda",
+      title: "Agent",
       body: "## Plan\n\n- first\n- second",
     }]);
   });

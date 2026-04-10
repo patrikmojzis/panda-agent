@@ -21,7 +21,8 @@ import {
 import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
 import {type ProviderName, stringToUserMessage} from "../agent-core/index.js";
-import {ChannelOutboundDispatcher, ChannelTypingDispatcher} from "../channels/core/index.js";
+import {ChannelOutboundDeliveryWorker} from "../outbound-deliveries/index.js";
+import {ChannelTypingDispatcher} from "../channels/core/index.js";
 import type {MediaDescriptor} from "../channels/core/types.js";
 import {PostgresIdentityStore} from "../identity/index.js";
 import {createPandaPool, requirePandaDatabaseUrl} from "../panda/runtime.js";
@@ -47,6 +48,7 @@ export interface WhatsAppServiceOptions {
   readOnlyDbUrl?: string;
   provider?: ProviderName;
   model?: string;
+  agent?: string;
   tablePrefix?: string;
 }
 
@@ -209,6 +211,7 @@ export class WhatsAppService {
   private runtimePromise: Promise<WhatsAppRuntimeServices> | null = null;
   private socket: WASocket | null = null;
   private lock: ConnectorLock | null = null;
+  private outboundWorker: ChannelOutboundDeliveryWorker | null = null;
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
   private socketWaiterResolve: (() => void) | null = null;
@@ -360,6 +363,7 @@ export class WhatsAppService {
 
   async run(): Promise<void> {
     this.stopping = false;
+    this.stopPromise = null;
 
     try {
       const identity = await this.whoami();
@@ -369,6 +373,7 @@ export class WhatsAppService {
         );
       }
 
+      await this.ensureOutboundWorker(await this.ensureRuntime()).start();
       this.lock = await this.acquireConnectorLock(this.options.connectorKey);
       this.log("run_started", {
         connectorKey: this.options.connectorKey,
@@ -412,6 +417,10 @@ export class WhatsAppService {
 
       this.socketWaiterResolve?.();
       this.socketWaiterResolve = null;
+      if (this.outboundWorker) {
+        await this.outboundWorker.stop();
+        this.outboundWorker = null;
+      }
       await this.stopSocket();
       if (runtime) {
         await runtime.close();
@@ -453,13 +462,8 @@ export class WhatsAppService {
         readOnlyDbUrl: this.options.readOnlyDbUrl,
         provider: this.options.provider,
         model: this.options.model,
+        agent: this.options.agent,
         tablePrefix: this.options.tablePrefix,
-        outboundDispatcher: new ChannelOutboundDispatcher([
-          createWhatsAppOutboundAdapter({
-            connectorKey: this.options.connectorKey,
-            getSocket: () => this.socket,
-          }),
-        ]),
         typingDispatcher: new ChannelTypingDispatcher([
           createWhatsAppTypingAdapter({
             connectorKey: this.options.connectorKey,
@@ -471,6 +475,31 @@ export class WhatsAppService {
 
     this.runtime = await this.runtimePromise;
     return this.runtime;
+  }
+
+  private ensureOutboundWorker(runtime: WhatsAppRuntimeServices): ChannelOutboundDeliveryWorker {
+    if (this.outboundWorker) {
+      return this.outboundWorker;
+    }
+
+    this.outboundWorker = new ChannelOutboundDeliveryWorker({
+      store: runtime.outboundDeliveries,
+      adapter: createWhatsAppOutboundAdapter({
+        connectorKey: this.options.connectorKey,
+        getSocket: () => this.socket,
+      }),
+      connectorKey: this.options.connectorKey,
+      canSend: () => this.socket !== null,
+      onError: (error, deliveryId) => {
+        this.log("outbound_delivery_failed", {
+          connectorKey: this.options.connectorKey,
+          deliveryId: deliveryId ?? null,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+
+    return this.outboundWorker;
   }
 
   private async acquireConnectorLock(connectorKey: string): Promise<ConnectorLock> {
@@ -577,6 +606,10 @@ export class WhatsAppService {
               receivedPendingNotifications: update.receivedPendingNotifications ?? null,
               isNewLogin: update.isNewLogin ?? null,
             });
+          }
+
+          if (update.connection === "open") {
+            void this.outboundWorker?.triggerDrain();
           }
 
           if (update.connection !== "close") {
@@ -736,6 +769,7 @@ export class WhatsAppService {
       });
       const thread = await runtime.resolveOrCreateHomeThread({
         identityId: binding.identityId,
+        agentKey: runtime.agentKey,
         provider: this.options.provider,
         model: this.options.model,
         context: {

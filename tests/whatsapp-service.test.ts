@@ -16,6 +16,11 @@ const whatsappServiceMocks = vi.hoisted(() => {
   const identityStores: MockPostgresIdentityStore[] = [];
   const runtimes: MockWhatsAppRuntimeServices[] = [];
   const sockets: MockSocket[] = [];
+  const createOutboundWorker = vi.fn(() => ({
+    start: vi.fn(async () => {}),
+    stop: vi.fn(async () => {}),
+    triggerDrain: vi.fn(async () => {}),
+  }));
   const downloadMediaMessage = vi.fn(async () => Buffer.from("downloaded-media"));
   const normalizeMessageContent = vi.fn((content: unknown) => content);
   let currentIdentityBinding: { identityId: string } | null = null;
@@ -195,6 +200,7 @@ const whatsappServiceMocks = vi.hoisted(() => {
     MockPostgresWhatsAppAuthStore,
     MockPostgresIdentityStore,
     createWhatsAppRuntime: vi.fn(async () => createMockRuntime()),
+    createOutboundWorker,
     downloadMediaMessage,
     normalizeMessageContent,
     makeWASocket: vi.fn((config: { auth: MockAuthHandle["state"] }) => new MockSocket(config.auth as MockAuthHandle)),
@@ -247,6 +253,12 @@ vi.mock("../src/features/identity/index.js", () => ({
 
 vi.mock("../src/features/whatsapp/runtime.js", () => ({
   createWhatsAppRuntime: whatsappServiceMocks.createWhatsAppRuntime,
+}));
+
+vi.mock("../src/features/outbound-deliveries/index.js", () => ({
+  ChannelOutboundDeliveryWorker: vi.fn(function MockOutboundWorker() {
+    return whatsappServiceMocks.createOutboundWorker();
+  }),
 }));
 
 vi.mock("baileys", () => ({
@@ -593,7 +605,7 @@ describe("WhatsAppService", () => {
     if (whatsappServiceMocks.identityStores.length > 0) {
       expect(latestIdentityStore().resolveIdentityBinding).not.toHaveBeenCalled();
     }
-    expect(whatsappServiceMocks.createWhatsAppRuntime).not.toHaveBeenCalled();
+    expect(whatsappServiceMocks.createWhatsAppRuntime).toHaveBeenCalledTimes(1);
 
     await service.stop();
     await runPromise;

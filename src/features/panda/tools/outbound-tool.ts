@@ -12,8 +12,6 @@ import type {
   OutboundFileItem,
   OutboundImageItem,
   OutboundItem,
-  OutboundRequest,
-  OutboundResult,
   OutboundTarget,
   RememberedRoute,
 } from "../../channels/core/types.js";
@@ -84,6 +82,29 @@ async function readRememberedTarget(context: PandaSessionContext | undefined): P
   };
 }
 
+async function readRememberedTargetForChannel(
+  context: PandaSessionContext | undefined,
+  channel?: string,
+): Promise<{
+  channel: string;
+  target: OutboundTarget;
+} | null> {
+  const route = await context?.routeMemory?.getLastRoute(channel);
+  if (!route) {
+    return null;
+  }
+
+  return {
+    channel: route.source,
+    target: {
+      source: route.source,
+      connectorKey: route.connectorKey,
+      externalConversationId: route.externalConversationId,
+      externalActorId: route.externalActorId,
+    },
+  };
+}
+
 function rememberRouteFromTarget(target: OutboundTarget): RememberedRoute {
   return {
     source: target.source,
@@ -94,13 +115,22 @@ function rememberRouteFromTarget(target: OutboundTarget): RememberedRoute {
   };
 }
 
-function ensureDispatcher(context: PandaSessionContext | undefined): NonNullable<PandaSessionContext["outboundDispatcher"]> {
-  const dispatcher = context?.outboundDispatcher;
-  if (!dispatcher) {
+function ensureOutboundQueue(context: PandaSessionContext | undefined): NonNullable<PandaSessionContext["outboundQueue"]> {
+  const queue = context?.outboundQueue;
+  if (!queue) {
     throw new ToolError("Outbound is unavailable in this runtime.");
   }
 
-  return dispatcher;
+  return queue;
+}
+
+function requireThreadId(context: PandaSessionContext | undefined): string {
+  const threadId = context?.threadId?.trim();
+  if (!threadId) {
+    throw new ToolError("Outbound requires a thread id in the current runtime context.");
+  }
+
+  return threadId;
 }
 
 function buildExplicitTarget(
@@ -165,25 +195,23 @@ async function resolveOutboundItems(
   return resolved;
 }
 
-function formatSentItem(item: { type: string; externalMessageId: string }): string {
-  return `- ${item.type}: ${item.externalMessageId}`;
-}
-
-function serializeOutboundResult(result: OutboundResult): JsonObject {
+function serializeQueuedDelivery(delivery: {
+  id: string;
+  channel: string;
+  target: OutboundTarget;
+}): JsonObject {
   return {
     ok: true,
-    channel: result.channel,
+    status: "queued",
+    deliveryId: delivery.id,
+    channel: delivery.channel,
     target: {
-      source: result.target.source,
-      connectorKey: result.target.connectorKey,
-      externalConversationId: result.target.externalConversationId,
-      externalActorId: result.target.externalActorId ?? null,
-      replyToMessageId: result.target.replyToMessageId ?? null,
+      source: delivery.target.source,
+      connectorKey: delivery.target.connectorKey,
+      externalConversationId: delivery.target.externalConversationId,
+      externalActorId: delivery.target.externalActorId ?? null,
+      replyToMessageId: delivery.target.replyToMessageId ?? null,
     },
-    sent: result.sent.map((item) => ({
-      type: item.type,
-      externalMessageId: item.externalMessageId,
-    })),
   };
 }
 
@@ -203,16 +231,11 @@ export class OutboundTool<TContext = PandaSessionContext> extends Tool<typeof ou
 
   override formatResult(message: ToolResultMessage<JsonValue>): string {
     const details = message.details;
-    if (!isRecord(details) || !Array.isArray(details.sent)) {
+    if (!isRecord(details) || typeof details.deliveryId !== "string") {
       return super.formatResult(message);
     }
 
-    const sentLines = details.sent
-      .filter((item): item is { type: string; externalMessageId: string } =>
-        isRecord(item) && typeof item.type === "string" && typeof item.externalMessageId === "string")
-      .map((item) => formatSentItem(item));
-
-    return sentLines.length > 0 ? sentLines.join("\n") : "Outbound sent.";
+    return `Queued outbound delivery ${details.deliveryId}.`;
   }
 
   async handle(
@@ -220,11 +243,21 @@ export class OutboundTool<TContext = PandaSessionContext> extends Tool<typeof ou
     run: RunContext<TContext>,
   ): Promise<JsonObject> {
     const pandaContext = run.context as PandaSessionContext | undefined;
-    const dispatcher = ensureDispatcher(pandaContext);
-    const defaultRoute = resolveChannelRouteTarget(pandaContext?.currentInput) ?? await readRememberedTarget(pandaContext);
+    const queue = ensureOutboundQueue(pandaContext);
+    const currentRoute = resolveChannelRouteTarget(pandaContext?.currentInput);
     const hasExplicitTarget = Boolean(args.target);
+    const requestedChannel = args.channel;
 
-    const channel = args.channel ?? defaultRoute?.channel;
+    let defaultRoute = null;
+    if (currentRoute && (!requestedChannel || currentRoute.channel === requestedChannel)) {
+      defaultRoute = currentRoute;
+    } else if (requestedChannel) {
+      defaultRoute = await readRememberedTargetForChannel(pandaContext, requestedChannel);
+    } else {
+      defaultRoute = await readRememberedTarget(pandaContext);
+    }
+
+    const channel = requestedChannel ?? defaultRoute?.channel;
     if (!channel) {
       throw new ToolError("No outbound channel was provided and no current inbound route is available.");
     }
@@ -235,16 +268,20 @@ export class OutboundTool<TContext = PandaSessionContext> extends Tool<typeof ou
     }
 
     const items = await resolveOutboundItems(args.items, run as RunContext<PandaSessionContext>);
-    const request: OutboundRequest = {
+    const delivery = await queue.enqueueDelivery({
+      threadId: requireThreadId(pandaContext),
       channel,
       target,
       items,
-    };
-
-    const result = await dispatcher.dispatch(request);
+    });
     if (!hasExplicitTarget) {
-      await pandaContext?.routeMemory?.rememberLastRoute(rememberRouteFromTarget(result.target));
+      await pandaContext?.routeMemory?.rememberLastRoute(rememberRouteFromTarget(target));
     }
-    return serializeOutboundResult(result);
+
+    return serializeQueuedDelivery({
+      id: delivery.id,
+      channel: delivery.channel,
+      target: delivery.target,
+    });
   }
 }

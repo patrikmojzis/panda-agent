@@ -1,17 +1,18 @@
-import type { Pool, PoolClient } from "pg";
+import type {Pool, PoolClient} from "pg";
 
-import { quoteIdentifier, toJson, toMillis } from "../thread-runtime/postgres-shared.js";
-import { buildHomeThreadTableNames, type HomeThreadTableNames } from "./postgres-shared.js";
-import type { HomeThreadStore } from "./store.js";
+import {quoteIdentifier, toJson, toMillis} from "../thread-runtime/postgres-shared.js";
+import {buildHomeThreadTableNames, type HomeThreadTableNames} from "./postgres-shared.js";
+import type {HomeThreadStore} from "./store.js";
 import type {
   BindHomeThreadResult,
   HomeThreadBindingInput,
+  HomeThreadLastRoutes,
   HomeThreadLookup,
   HomeThreadMetadata,
   HomeThreadRecord,
   RememberHomeThreadRouteInput,
 } from "./types.js";
-import type { RememberedRoute } from "../channels/core/types.js";
+import type {RememberedRoute} from "../channels/core/types.js";
 
 interface PgQueryable {
   query: Pool["query"];
@@ -60,7 +61,17 @@ function parseHomeThreadMetadata(value: unknown): HomeThreadMetadata | undefined
     return undefined;
   }
 
-  return value as HomeThreadMetadata;
+  const metadata: HomeThreadMetadata = {};
+  if (typeof value.homeDir === "string") {
+    metadata.homeDir = value.homeDir;
+  }
+
+  const lastRoutes = parseRememberedRoutes(value.lastRoutes);
+  if (lastRoutes) {
+    metadata.lastRoutes = lastRoutes;
+  }
+
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
 function parseRememberedRoute(value: unknown): RememberedRoute | null {
@@ -85,6 +96,42 @@ function parseRememberedRoute(value: unknown): RememberedRoute | null {
     externalMessageId: typeof value.externalMessageId === "string" ? value.externalMessageId : undefined,
     capturedAt: value.capturedAt,
   };
+}
+
+function parseRememberedRoutes(value: unknown): HomeThreadLastRoutes | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const routes = Object.entries(value).flatMap(([channel, route]) => {
+    const parsed = parseRememberedRoute(route);
+    if (!parsed) {
+      return [];
+    }
+
+    return [[channel, parsed] as const];
+  });
+
+  if (routes.length === 0) {
+    return undefined;
+  }
+
+  return Object.fromEntries(routes);
+}
+
+function resolveLatestRememberedRoute(lastRoutes: HomeThreadLastRoutes | undefined): RememberedRoute | null {
+  if (!lastRoutes) {
+    return null;
+  }
+
+  let latestRoute: RememberedRoute | null = null;
+  for (const route of Object.values(lastRoutes)) {
+    if (!latestRoute || route.capturedAt > latestRoute.capturedAt) {
+      latestRoute = route;
+    }
+  }
+
+  return latestRoute;
 }
 
 function parseHomeThreadRow(row: Record<string, unknown>): HomeThreadRecord {
@@ -255,9 +302,14 @@ export class PostgresHomeThreadStore implements HomeThreadStore {
     }
   }
 
-  async resolveLastRoute(lookup: HomeThreadLookup): Promise<RememberedRoute | null> {
+  async resolveLastRoute(lookup: HomeThreadLookup, channel?: string): Promise<RememberedRoute | null> {
     const binding = await this.resolveHomeThread(lookup);
-    return parseRememberedRoute(binding?.metadata?.lastRoute);
+    const lastRoutes = binding?.metadata?.lastRoutes;
+    if (channel) {
+      return lastRoutes?.[channel] ?? null;
+    }
+
+    return resolveLatestRememberedRoute(lastRoutes);
   }
 
   async rememberLastRoute(input: RememberHomeThreadRouteInput): Promise<HomeThreadRecord> {
@@ -274,7 +326,10 @@ export class PostgresHomeThreadStore implements HomeThreadStore {
       threadId: existing.threadId,
       metadata: {
         ...(existing.metadata ?? {}),
-        lastRoute: input.route,
+        lastRoutes: {
+          ...(existing.metadata?.lastRoutes ?? {}),
+          [input.route.source]: input.route,
+        },
       },
     });
 

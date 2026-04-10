@@ -1,6 +1,7 @@
 export {
   type BindHomeThreadResult,
   type HomeThreadBindingInput,
+  type HomeThreadLastRoutes,
   type HomeThreadLookup,
   type HomeThreadMetadata,
   type HomeThreadRecord,

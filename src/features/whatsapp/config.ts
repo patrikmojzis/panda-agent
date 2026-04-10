@@ -1,5 +1,6 @@
-import os from "node:os";
-import path from "node:path";
+import {resolvePandaMediaDir} from "../panda/data-dir.js";
+
+export { resolvePandaDataDir } from "../panda/data-dir.js";
 
 function trimNonEmptyString(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
@@ -10,25 +11,8 @@ function trimNonEmptyString(value: string | null | undefined): string | null {
   return trimmed || null;
 }
 
-export function resolvePandaDataDir(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = trimNonEmptyString(env.PANDA_DATA_DIR);
-  if (!configured) {
-    return path.join(os.homedir(), ".panda");
-  }
-
-  if (configured === "~") {
-    return os.homedir();
-  }
-
-  if (configured.startsWith("~/")) {
-    return path.join(os.homedir(), configured.slice(2));
-  }
-
-  return path.resolve(configured);
-}
-
 export function resolveWhatsAppDataDir(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolvePandaDataDir(env), "media");
+  return resolvePandaMediaDir(env);
 }
 
 export function resolveWhatsAppConnectorKey(env: NodeJS.ProcessEnv = process.env): string {

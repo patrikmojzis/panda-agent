@@ -1,16 +1,17 @@
 import process from "node:process";
 import path from "node:path";
 
-import { Command, InvalidArgumentError } from "commander";
-import { Bot } from "grammy";
+import {Command, InvalidArgumentError} from "commander";
+import {Bot} from "grammy";
 
-import type { ProviderName } from "../agent-core/types.js";
-import { PostgresIdentityStore, createDefaultIdentityInput } from "../identity/index.js";
-import { parseIdentityHandle } from "../identity/cli.js";
-import { createPandaPool, requirePandaDatabaseUrl } from "../panda/runtime.js";
-import { resolveDefaultPandaModel, resolveDefaultPandaProvider } from "../panda/provider-defaults.js";
-import { requireTelegramBotToken, resolveTelegramMediaDir, TELEGRAM_SOURCE } from "./config.js";
-import { TelegramService } from "./service.js";
+import type {ProviderName} from "../agent-core/types.js";
+import {parseAgentKey} from "../agents/cli.js";
+import {createDefaultIdentityInput, PostgresIdentityStore} from "../identity/index.js";
+import {parseIdentityHandle} from "../identity/cli.js";
+import {createPandaPool, requirePandaDatabaseUrl} from "../panda/runtime.js";
+import {resolveDefaultPandaModel, resolveDefaultPandaProvider} from "../panda/provider-defaults.js";
+import {requireTelegramBotToken, resolveTelegramMediaDir, TELEGRAM_SOURCE} from "./config.js";
+import {TelegramService} from "./service.js";
 
 interface TelegramIdentityCliOptions {
   dbUrl?: string;
@@ -19,6 +20,7 @@ interface TelegramIdentityCliOptions {
 interface TelegramRunCliOptions extends TelegramIdentityCliOptions {
   provider?: ProviderName;
   model?: string;
+  agent?: string;
   cwd?: string;
   readOnlyDbUrl?: string;
 }
@@ -83,6 +85,7 @@ function createTelegramRunService(options: TelegramRunCliOptions = {}): Telegram
     readOnlyDbUrl: options.readOnlyDbUrl,
     provider,
     model,
+    agent: options.agent,
   });
 }
 
@@ -181,6 +184,7 @@ export function registerTelegramCommands(program: Command, parseCliProvider: (va
       parseCliProvider,
     )
     .option("-m, --model <model>", "Model name override")
+    .option("--agent <agentKey>", "Agent key to use", parseAgentKey)
     .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
     .option("--db-url <url>", "Postgres connection string for thread persistence")
     .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")

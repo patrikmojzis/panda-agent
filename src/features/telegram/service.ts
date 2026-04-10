@@ -5,7 +5,8 @@ import {Bot, type Context} from "grammy";
 
 import {type ProviderName, stringToUserMessage} from "../agent-core/index.js";
 import type {JsonObject} from "../agent-core/types.js";
-import {ChannelOutboundDispatcher, ChannelTypingDispatcher} from "../channels/core/index.js";
+import {ChannelOutboundDeliveryWorker} from "../outbound-deliveries/index.js";
+import {ChannelTypingDispatcher} from "../channels/core/index.js";
 import type {MediaDescriptor} from "../channels/core/types.js";
 import type {ConversationThreadRecord} from "../conversation-threads/types.js";
 import type {IdentityBindingRecord} from "../identity/types.js";
@@ -67,6 +68,7 @@ export interface TelegramServiceOptions {
   readOnlyDbUrl?: string;
   provider?: ProviderName;
   model?: string;
+  agent?: string;
   tablePrefix?: string;
   defaultIdentityHandle?: string;
 }
@@ -139,6 +141,7 @@ export class TelegramService {
   private botUsername: string | null = null;
   private lock: ConnectorLock | null = null;
   private pollAbortController: AbortController | null = null;
+  private outboundWorker: ChannelOutboundDeliveryWorker | null = null;
   private stopping = false;
 
   constructor(options: TelegramServiceOptions) {
@@ -153,6 +156,7 @@ export class TelegramService {
       readOnlyDbUrl: options.readOnlyDbUrl,
       provider: options.provider,
       model: options.model,
+      agent: options.agent,
       tablePrefix: options.tablePrefix,
     };
     this.bot = new Bot<TelegramContext>(options.token);
@@ -212,12 +216,6 @@ export class TelegramService {
         ...this.runtimeOptions,
         telegramConnectorKey: connectorKey,
         telegramReactionApi: this.bot.api,
-        outboundDispatcher: new ChannelOutboundDispatcher([
-          createTelegramOutboundAdapter({
-            api: this.bot.api,
-            connectorKey,
-          }),
-        ]),
         typingDispatcher: new ChannelTypingDispatcher([
           createTelegramTypingAdapter({
             api: this.bot.api,
@@ -229,6 +227,30 @@ export class TelegramService {
 
     this.runtime = await this.runtimePromise;
     return this.runtime;
+  }
+
+  private ensureOutboundWorker(runtime: TelegramRuntimeServices, connectorKey: string): ChannelOutboundDeliveryWorker {
+    if (this.outboundWorker) {
+      return this.outboundWorker;
+    }
+
+    this.outboundWorker = new ChannelOutboundDeliveryWorker({
+      store: runtime.outboundDeliveries,
+      adapter: createTelegramOutboundAdapter({
+        api: this.bot.api,
+        connectorKey,
+      }),
+      connectorKey,
+      onError: (error, deliveryId) => {
+        this.log("outbound_delivery_failed", {
+          connectorKey,
+          deliveryId: deliveryId ?? null,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+
+    return this.outboundWorker;
   }
 
   private async ensureInitialized(): Promise<{
@@ -260,8 +282,11 @@ export class TelegramService {
   }
 
   async run(): Promise<void> {
+    this.stopping = false;
+
     try {
       const { runtime, connectorKey, botUsername } = await this.ensureInitialized();
+      await this.ensureOutboundWorker(runtime, connectorKey).start();
       await this.bot.api.setMyCommands([
         { command: "start", description: "Pair this Telegram account with Panda" },
         { command: "reset", description: "Reset Panda to a fresh empty home thread" },
@@ -352,6 +377,11 @@ export class TelegramService {
     this.stopping = true;
     this.pollAbortController?.abort();
     this.pollAbortController = null;
+
+    if (this.outboundWorker) {
+      await this.outboundWorker.stop();
+      this.outboundWorker = null;
+    }
 
     if (this.lock) {
       await this.lock.release();
@@ -912,7 +942,7 @@ export class TelegramService {
   private async resolveExistingHomeThread(
     runtime: TelegramRuntimeServices,
     identityId: string,
-    agentKey = "panda",
+    agentKey = this.runtimeOptions.agent ?? "panda",
   ): Promise<ThreadRecord | null> {
     const existing = await runtime.homeThreads.resolveHomeThread({
       identityId,
@@ -963,6 +993,7 @@ export class TelegramService {
 
     return await runtime.resolveOrCreateHomeThread({
       identityId: binding.identityId,
+      agentKey: runtime.agentKey,
       provider: this.runtimeOptions.provider,
       model: this.runtimeOptions.model,
       context: {

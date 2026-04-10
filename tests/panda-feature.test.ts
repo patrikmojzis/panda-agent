@@ -1,14 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-  BashTool,
-  BraveSearchTool,
-  DateTimeContext,
-  EnvironmentContext,
-  MediaTool,
-  PANDA_PROMPT,
+    BashTool,
+    BraveSearchTool,
+    DateTimeContext,
+    EnvironmentContext,
+    MediaTool,
+    PANDA_PROMPT,
 } from "../src/index.js";
-import { buildPandaTools } from "../src/features/panda/agent.js";
+import {buildPandaTools} from "../src/features/panda/agent.js";
 
 describe("Panda feature surface", () => {
   afterEach(() => {
@@ -19,7 +19,7 @@ describe("Panda feature surface", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     const tools = buildPandaTools();
 
-    expect(PANDA_PROMPT).toContain("Your name is Panda.");
+    expect(PANDA_PROMPT).toContain("## Soul");
     expect(PANDA_PROMPT).toContain("## Channels & Inner Monologue");
     expect(PANDA_PROMPT).toContain("No outbound call = no message delivered.");
     expect(tools).toHaveLength(2);

@@ -1,32 +1,25 @@
-import { randomUUID } from "node:crypto";
+import {randomUUID} from "node:crypto";
 
-import type { ThinkingLevel } from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
-import type { Tool } from "../agent-core/tool.js";
-import type { ProviderName } from "../agent-core/types.js";
+import type {Tool} from "../agent-core/tool.js";
+import type {ProviderName} from "../agent-core/types.js";
+import {PostgresOutboundDeliveryStore} from "../outbound-deliveries/index.js";
+import {OutboundTool} from "../panda/tools/outbound-tool.js";
+import {createPandaRuntime, createPandaThreadDefinition,} from "../panda/runtime.js";
+import {createDefaultIdentityInput, DEFAULT_IDENTITY_HANDLE, type IdentityRecord,} from "../identity/index.js";
+import {PostgresHomeThreadStore,} from "../home-threads/index.js";
+import type {IdentityStore} from "../identity/store.js";
 import {
-  createPandaThreadDefinition,
-  createPandaRuntime,
-} from "../panda/runtime.js";
-import {
-  createDefaultIdentityInput,
-  DEFAULT_IDENTITY_HANDLE,
-  type IdentityRecord,
-} from "../identity/index.js";
-import {
-  PostgresHomeThreadStore,
-} from "../home-threads/index.js";
-import type { IdentityStore } from "../identity/store.js";
-import {
+  isMissingThreadError,
+  type ThreadRecord,
+  type ThreadRunRecord,
   type ThreadRuntimeCoordinator,
   type ThreadRuntimeEvent,
-  type ThreadRunRecord,
-  type ThreadRecord,
   type ThreadSummaryRecord,
-  isMissingThreadError,
 } from "../thread-runtime/index.js";
-import type { ThreadRuntimeNotification } from "../thread-runtime/postgres.js";
-import type { ThreadRuntimeStore } from "../thread-runtime/store.js";
+import type {ThreadRuntimeNotification} from "../thread-runtime/postgres.js";
+import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
 
 export interface ChatRuntimeOptions {
   cwd: string;
@@ -35,6 +28,7 @@ export interface ChatRuntimeOptions {
   provider?: ProviderName;
   model?: string;
   identity?: string;
+  agent?: string;
   dbUrl?: string;
   readOnlyDbUrl?: string;
   tablePrefix?: string;
@@ -52,8 +46,10 @@ export interface CreateChatThreadOptions {
 
 export interface ChatRuntimeServices {
   identity: IdentityRecord;
+  agentKey: string;
   identityStore: IdentityStore;
   homeThreads: PostgresHomeThreadStore;
+  outboundDeliveries: PostgresOutboundDeliveryStore;
   store: ThreadRuntimeStore;
   coordinator: ThreadRuntimeCoordinator;
   extraTools: readonly Tool[];
@@ -89,15 +85,17 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
     timezone: options.timezone,
   } as const;
   const requestedIdentityHandle = trimNonEmptyString(options.identity) ?? DEFAULT_IDENTITY_HANDLE;
+  const defaultAgentKey = trimNonEmptyString(options.agent) ?? "panda";
   let identity: IdentityRecord | null = null;
   let homeThreads: PostgresHomeThreadStore;
+  let outboundDeliveries: PostgresOutboundDeliveryStore;
   const runtime = await createPandaRuntime({
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
     tablePrefix: options.tablePrefix,
     onEvent: options.onEvent,
     onStoreNotification: options.onStoreNotification,
-    resolveDefinition: (thread, { extraTools }) => {
+    resolveDefinition: (thread, { agentStore, extraTools }) => {
       if (!identity) {
         throw new Error("Chat runtime identity has not been initialized yet.");
       }
@@ -109,13 +107,14 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
           identityId: identity.id,
           identityHandle: identity.handle,
         },
-        extraTools,
+        agentStore,
+        extraTools: [...extraTools, new OutboundTool()],
         extraContext: {
           routeMemory: {
-            getLastRoute: async () => homeThreads.resolveLastRoute({
+            getLastRoute: async (channel) => homeThreads.resolveLastRoute({
               identityId: thread.identityId,
               agentKey: thread.agentKey,
-            }),
+            }, channel),
             rememberLastRoute: async (route) => {
               await homeThreads.rememberLastRoute({
                 identityId: thread.identityId,
@@ -123,6 +122,9 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
                 route,
               });
             },
+          },
+          outboundQueue: {
+            enqueueDelivery: async (input) => outboundDeliveries.enqueueDelivery(input),
           },
         },
       });
@@ -144,16 +146,25 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
       tablePrefix: options.tablePrefix,
     });
     await homeThreads.ensureSchema();
+
+    outboundDeliveries = new PostgresOutboundDeliveryStore({
+      pool: runtime.pool,
+      tablePrefix: options.tablePrefix,
+    });
+    await outboundDeliveries.ensureSchema();
+    await runtime.agentStore.getAgent(defaultAgentKey);
   } catch (error) {
     await runtime.close();
     throw error;
   }
 
   const createThread = async (createOptions: CreateChatThreadOptions = {}): Promise<ThreadRecord> => {
+    const agentKey = createOptions.agentKey ?? defaultAgentKey;
+    await runtime.agentStore.getAgent(agentKey);
     return runtime.store.createThread({
       id: createOptions.id ?? randomUUID(),
       identityId: identity.id,
-      agentKey: createOptions.agentKey ?? "panda",
+      agentKey,
       context: {
         ...fallbackContext,
         identityId: identity.id,
@@ -168,7 +179,8 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
   const resolveOrCreateHomeThread = async (
     createOptions: CreateChatThreadOptions = {},
   ): Promise<ThreadRecord> => {
-    const agentKey = createOptions.agentKey ?? "panda";
+    const agentKey = createOptions.agentKey ?? defaultAgentKey;
+    await runtime.agentStore.getAgent(agentKey);
     const existing = await homeThreads.resolveHomeThread({
       identityId: identity.id,
       agentKey,
@@ -199,9 +211,16 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
 
   const setHomeThread = async (threadId: string, agentKey?: string): Promise<ThreadRecord> => {
     const thread = assertIdentityThreadAccess(await runtime.store.getThread(threadId), identity);
+    // Home bindings are keyed by (identity, agent). Rebinding a thread under a
+    // different agent would make that home slot resolve the wrong persona/memory.
+    if (agentKey && agentKey !== thread.agentKey) {
+      throw new Error(
+        `Cannot bind thread ${thread.id} with agent ${thread.agentKey} under home agent ${agentKey}.`,
+      );
+    }
     await homeThreads.bindHomeThread({
       identityId: identity.id,
-      agentKey: agentKey ?? thread.agentKey,
+      agentKey: thread.agentKey,
       threadId: thread.id,
     });
     return thread;
@@ -209,8 +228,10 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
 
   return {
     identity,
+    agentKey: defaultAgentKey,
     identityStore: runtime.identityStore,
     homeThreads,
+    outboundDeliveries,
     store: runtime.store,
     coordinator: runtime.coordinator,
     extraTools: runtime.extraTools,

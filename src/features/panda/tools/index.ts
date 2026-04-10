@@ -1,3 +1,4 @@
+export { AgentDocumentTool, type AgentDocumentToolOptions } from "./agent-document-tool.js";
 export { BashTool, type BashToolOptions } from "./bash-tool.js";
 export {
   BraveSearchTool,
