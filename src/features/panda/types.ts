@@ -1,5 +1,6 @@
 import type {JsonValue} from "../agent-core/types.js";
 import type {CreateOutboundDeliveryInput, OutboundDeliveryRecord} from "../outbound-deliveries/types.js";
+import type {ChannelActionRecord, CreateChannelActionInput} from "../channel-actions/types.js";
 import type {RememberedRoute} from "../channels/core/types.js";
 
 export interface PandaRouteMemory {
@@ -9,6 +10,10 @@ export interface PandaRouteMemory {
 
 export interface PandaOutboundQueue {
   enqueueDelivery(input: CreateOutboundDeliveryInput): Promise<OutboundDeliveryRecord>;
+}
+
+export interface PandaChannelActionQueue {
+  enqueueAction(input: CreateChannelActionInput): Promise<ChannelActionRecord>;
 }
 
 export interface PandaShellSession {
@@ -33,5 +38,6 @@ export interface PandaSessionContext {
   };
   routeMemory?: PandaRouteMemory;
   outboundQueue?: PandaOutboundQueue;
+  channelActionQueue?: PandaChannelActionQueue;
   subagentDepth?: number;
 }

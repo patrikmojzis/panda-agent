@@ -4,15 +4,13 @@ import {randomUUID} from "node:crypto";
 import {stdin as input, stdout as output} from "node:process";
 
 import {
-    assertProviderName,
-    formatProviderNameList,
-    getProviderConfig,
-    parseProviderName,
-    resolveProviderApiKey,
-    stringToUserMessage,
-    type ThinkingLevel,
-    Tool,
-    type ToolProgressEvent,
+  assertProviderName,
+  formatProviderNameList,
+  getProviderConfig,
+  parseProviderName,
+  resolveProviderApiKey,
+  type ThinkingLevel,
+  Tool,
 } from "../agent-core/index.js";
 import type {ProviderName} from "../agent-core/types.js";
 import {buildPandaTools} from "../panda/agent.js";
@@ -23,65 +21,64 @@ import {buildChatHelpText, describeUnknownCommand, runChatCommandLine,} from "./
 import {renderTranscriptEntries,} from "./transcript.js";
 import {applySlashCompletion, getSlashCompletionContext, type SlashCompletionContext,} from "./commands.js";
 import {
-    backspace,
-    type ComposerState,
-    createComposerState,
-    deleteForward,
-    deleteWordBackward,
-    insertText,
-    moveCursorDown,
-    moveCursorLeft,
-    moveCursorLineEnd,
-    moveCursorLineStart,
-    moveCursorRight,
-    moveCursorUp,
-    moveCursorWordLeft,
-    moveCursorWordRight,
-    setComposerValue,
+  backspace,
+  type ComposerState,
+  createComposerState,
+  deleteForward,
+  deleteWordBackward,
+  insertText,
+  moveCursorDown,
+  moveCursorLeft,
+  moveCursorLineEnd,
+  moveCursorLineStart,
+  moveCursorRight,
+  moveCursorUp,
+  moveCursorWordLeft,
+  moveCursorWordRight,
+  setComposerValue,
 } from "./composer.js";
 import {
-    COMPOSER_NEWLINE_HINT,
-    extendedKeysModeSequence,
-    isPrintableKey,
-    type KeyLike,
-    normalizeTerminalKeySequence,
-    replaceTrailingBackslashWithNewline,
-    resolveComposerEnterAction,
-    resolveComposerMetaAction,
+  COMPOSER_NEWLINE_HINT,
+  extendedKeysModeSequence,
+  isPrintableKey,
+  type KeyLike,
+  normalizeTerminalKeySequence,
+  replaceTrailingBackslashWithNewline,
+  resolveComposerEnterAction,
+  resolveComposerMetaAction,
 } from "./input.js";
 import {
-    buildChatViewModel,
-    buildWelcomeTranscriptLines,
-    type ComposerLayout,
-    normalizeInlineText,
-    type NoticeState,
-    THREAD_PICKER_VISIBLE_COUNT,
-    type TranscriptLine,
-    type ViewModel,
+  buildChatViewModel,
+  buildWelcomeTranscriptLines,
+  type ComposerLayout,
+  normalizeInlineText,
+  type NoticeState,
+  THREAD_PICKER_VISIBLE_COUNT,
+  type TranscriptLine,
+  type ViewModel,
 } from "./chat-view.js";
 import {renderMarkdownLines} from "./markdown.js";
 import {
-    ALT_SCREEN_OFF,
-    ALT_SCREEN_ON,
-    clamp,
-    CLEAR_SCREEN,
-    cursorTo,
-    formatDuration,
-    HIDE_CURSOR,
-    padAnsiEnd,
-    SHOW_CURSOR,
-    truncatePlainText,
-    wrapPlainText,
+  ALT_SCREEN_OFF,
+  ALT_SCREEN_ON,
+  clamp,
+  CLEAR_SCREEN,
+  cursorTo,
+  formatDuration,
+  HIDE_CURSOR,
+  padAnsiEnd,
+  SHOW_CURSOR,
+  truncatePlainText,
+  wrapPlainText,
 } from "./screen.js";
 import {stripAnsi, theme} from "./theme.js";
 import type {
-    ThreadMessageRecord,
-    ThreadRecord,
-    ThreadRunRecord,
-    ThreadRuntimeEvent,
-    ThreadSummaryRecord,
+  ThreadMessageRecord,
+  ThreadRecord,
+  ThreadRunRecord,
+  ThreadSummaryRecord,
 } from "../thread-runtime/index.js";
-import {compactThread, isMissingThreadError,} from "../thread-runtime/index.js";
+import {isMissingThreadError,} from "../thread-runtime/index.js";
 
 type EntryRole = "assistant" | "user" | "tool" | "meta" | "error";
 type RunPhase = "idle" | "thinking";
@@ -219,7 +216,6 @@ export class PandaChatApp {
   private runStartedAt = 0;
   private notice: NoticeState | null = null;
   private nextEntryId = 1;
-  private activeProgressEntryId: number | null = null;
   private followTranscript = true;
   private scrollTop = 0;
   private slashCompletionIndex = 0;
@@ -337,8 +333,8 @@ export class PandaChatApp {
 
     if (this.runPhase === "thinking" && this.currentThreadId) {
       try {
-        if (await this.services?.coordinator.abort(this.currentThreadId, "TUI closed.")) {
-          await this.services?.coordinator.waitForCurrentRun(this.currentThreadId);
+        if (await this.services?.abortThread(this.currentThreadId, "TUI closed.")) {
+          await this.services?.waitForCurrentRun(this.currentThreadId);
         }
       } catch {
         // Closing the TUI should still continue even if abort/wait cleanup fails.
@@ -363,7 +359,7 @@ export class PandaChatApp {
       return;
     }
 
-    const coordinator = this.services?.coordinator;
+    const services = this.services;
     const threadId = this.currentThreadId;
     this.closeAfterRunWaitInFlight = true;
 
@@ -373,13 +369,13 @@ export class PandaChatApp {
         return;
       }
 
-      if (!coordinator) {
+      if (!services) {
         this.closeAfterRunWaitInFlight = false;
         this.close();
         return;
       }
 
-      void coordinator.waitForCurrentRun(threadId)
+      void services.waitForCurrentRun(threadId)
         .catch(() => {
           // Ignore shutdown races and fall through to closing the TUI.
         })
@@ -474,10 +470,8 @@ export class PandaChatApp {
       agent: this.defaultAgentKey,
       dbUrl: this.dbUrl,
       readOnlyDbUrl: this.readOnlyDbUrl,
-      onEvent: (event) => this.handleRuntimeEvent(event),
       onStoreNotification: (notification) => this.handleStoreNotification(notification.threadId),
     });
-    await this.services.recoverOrphanedRuns("Run marked failed before recovery.");
 
     await this.switchThread(await this.resolveInitialThread());
   }
@@ -511,7 +505,7 @@ export class PandaChatApp {
   } {
     return {
       id: overrides.id,
-      agentKey: overrides.agentKey ?? this.currentThread?.agentKey ?? this.defaultAgentKey ?? "panda",
+      agentKey: overrides.agentKey ?? this.currentThread?.agentKey ?? this.defaultAgentKey,
       provider: overrides.provider ?? this.providerName,
       model: overrides.model ?? this.model,
       thinking: overrides.thinking ?? this.thinking,
@@ -608,61 +602,18 @@ export class PandaChatApp {
 
     const threadId = this.currentThreadId;
     const services = this.requireServices();
-    const compacted = await services.coordinator.runExclusively(threadId, async () => {
-      const store = services.store;
-      const thread = await store.getThread(threadId);
-      const providerName = thread.provider ?? this.providerName;
-      const model = thread.model ?? this.model;
-      const thinking = thread.thinking;
+    this.setNotice("Compacting conversation...", "info");
+    this.requestRender();
+    const compacted = await services.compactThread(threadId, customInstructions);
 
-      const apiKeyMessage = missingApiKeyMessage(providerName);
-      if (apiKeyMessage) {
-        throw new Error(apiKeyMessage);
-      }
-
-      if (await store.hasRunnableInputs(threadId)) {
-        throw new Error("Wait for queued input to run before compacting.");
-      }
-
-      const runningRun = (await store.listRuns(threadId)).some((run) => run.status === "running");
-      if (runningRun) {
-        throw new Error("Thread is already active. Abort or wait before compacting.");
-      }
-
-      this.currentThread = thread;
-      this.providerName = providerName;
-      this.model = model;
-      this.thinking = thinking;
-      this.setNotice("Compacting conversation...", "info");
-      this.requestRender();
-
-      const compacted = await compactThread({
-        store,
-        thread,
-        providerName,
-        model,
-        thinking,
-        customInstructions,
-        trigger: "manual",
-      });
-      if (!compacted) {
-        return null;
-      }
-
-      return {
-        tokensBefore: compacted.tokensBefore,
-        tokensAfter: compacted.tokensAfter,
-      };
-    });
-
-    if (!compacted) {
+    if (!compacted.compacted) {
       this.setNotice("Not enough older context to compact yet.", "info");
       return;
     }
 
     await this.syncStoredThreadState(true);
     const compactLabel =
-      `Compacted older context (${this.formatCompactTokenCount(compacted.tokensBefore)} -> ${this.formatCompactTokenCount(compacted.tokensAfter)}).`;
+      `Compacted older context (${this.formatCompactTokenCount(compacted.tokensBefore ?? 0)} -> ${this.formatCompactTokenCount(compacted.tokensAfter ?? 0)}).`;
     this.pushEntry("meta", "compact", `${compactLabel} Preserved the most recent user turns verbatim.`);
     this.setNotice(compactLabel, "info", 6_000);
   }
@@ -983,56 +934,6 @@ export class PandaChatApp {
     this.setNotice(`Resumed thread ${this.currentThreadId}.`, "info");
   }
 
-  private async handleRuntimeEvent(event: ThreadRuntimeEvent): Promise<void> {
-    if (this.closed) {
-      return;
-    }
-
-    if (event.threadId !== this.currentThreadId) {
-      return;
-    }
-
-    switch (event.type) {
-      case "run_started":
-        this.runPhase = "thinking";
-        this.runStartedAt = event.run.startedAt;
-        this.requestRender();
-        break;
-
-      case "inputs_applied":
-        this.clearProgressEntry();
-        this.scheduleSyncStoredThreadState();
-        break;
-
-      case "thread_event":
-        if (this.isToolProgressEvent(event.event)) {
-          this.upsertProgressEntry(JSON.stringify(event.event.details, null, 2));
-          this.requestRender();
-        } else {
-          this.clearProgressEntry();
-          this.scheduleSyncStoredThreadState();
-        }
-        break;
-
-      case "run_finished":
-        this.clearProgressEntry();
-        if (event.run.status === "failed" && event.run.error) {
-          this.setNotice(event.run.error, "error", 6_000);
-        }
-        this.runPhase = "idle";
-        this.scheduleCloseAfterRun();
-        this.scheduleSyncStoredThreadState();
-        this.requestRender();
-        break;
-    }
-  }
-
-  private isToolProgressEvent(
-    event: Extract<ThreadRuntimeEvent, { type: "thread_event" }>["event"],
-  ): event is ToolProgressEvent {
-    return "type" in event && event.type === "tool_progress";
-  }
-
   private get modeLabel(): string {
     if (this.threadPicker.active) {
       return "threads";
@@ -1080,38 +981,6 @@ export class PandaChatApp {
     return entry;
   }
 
-  private upsertProgressEntry(body: string): void {
-    if (this.activeProgressEntryId !== null) {
-      const existing = this.transcript.find((entry) => entry.id === this.activeProgressEntryId);
-      if (existing) {
-        existing.body = body;
-        this.transcriptLineCache.delete(existing.id);
-        this.markDirty();
-        return;
-      }
-    }
-
-    const entry = this.pushEntry("meta", "progress", body);
-    this.activeProgressEntryId = entry.id;
-  }
-
-  private clearProgressEntry(): void {
-    if (this.activeProgressEntryId === null) {
-      return;
-    }
-
-    const activeProgressEntryId = this.activeProgressEntryId;
-    const index = this.transcript.findIndex((entry) => entry.id === this.activeProgressEntryId);
-    this.activeProgressEntryId = null;
-    if (index < 0) {
-      return;
-    }
-
-    this.transcriptLineCache.delete(activeProgressEntryId);
-    this.transcript.splice(index, 1);
-    this.markDirty();
-  }
-
   private setComposerState(next: ComposerState): void {
     this.composer = next;
     this.markDirty();
@@ -1120,7 +989,6 @@ export class PandaChatApp {
 
   private resetTranscriptView(options: { keepSeenMessages?: boolean } = {}): void {
     this.transcript.length = 0;
-    this.activeProgressEntryId = null;
     this.transcriptLineCache.clear();
     if (!options.keepSeenMessages) {
       this.visibleStoredMessageIds.clear();
@@ -1509,7 +1377,7 @@ export class PandaChatApp {
 
     try {
       const previousProvider = this.providerName;
-      this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
+      this.currentThread = await this.requireServices().updateThread(this.currentThreadId, {
         provider: nextProvider,
         model: nextModel,
       });
@@ -1539,7 +1407,7 @@ export class PandaChatApp {
     }
 
     try {
-      this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
+      this.currentThread = await this.requireServices().updateThread(this.currentThreadId, {
         model: value,
       });
       this.model = value;
@@ -1569,7 +1437,7 @@ export class PandaChatApp {
     }
 
     try {
-      this.currentThread = await this.requireServices().store.updateThread(this.currentThreadId, {
+      this.currentThread = await this.requireServices().updateThread(this.currentThreadId, {
         thinking: nextThinking === "off" ? null : nextThinking,
       });
       this.thinking = this.currentThread.thinking;
@@ -1618,8 +1486,11 @@ export class PandaChatApp {
     }
 
     try {
-      const thread = await this.requireServices().createThread(this.buildThreadDefaults());
-      await this.requireServices().setHomeThread(thread.id, thread.agentKey);
+      const thread = await this.requireServices().resetHomeThread({
+        provider: this.providerName,
+        model: this.model,
+        thinking: this.thinking,
+      });
       await this.switchThread(thread);
       this.pushEntry("meta", "session", `Reset Panda. New home thread ${this.currentThreadId}.`);
       this.setNotice(`Reset Panda to ${this.currentThreadId}.`, "info");
@@ -1672,7 +1543,7 @@ export class PandaChatApp {
       return true;
     }
 
-    if (await this.requireServices().coordinator.abort(this.currentThreadId, "Aborted from the TUI.")) {
+    if (await this.requireServices().abortThread(this.currentThreadId, "Aborted from the TUI.")) {
       this.setNotice("Aborting the active run...", "info");
     } else {
       this.setNotice("No active run to abort.", "info");
@@ -1761,10 +1632,9 @@ export class PandaChatApp {
     }
 
     try {
-      await this.requireServices().coordinator.submitInput(this.currentThreadId, {
-        message: stringToUserMessage(message),
-        source: "tui",
-        channelId: "terminal",
+      await this.requireServices().submitTextInput({
+        threadId: this.currentThreadId,
+        text: message,
         externalMessageId,
         actorId: "local-user",
       });
@@ -1864,7 +1734,7 @@ export class PandaChatApp {
       return true;
     }
 
-    if (await this.requireServices().coordinator.abort(this.currentThreadId, "Aborted from Ctrl-C.")) {
+    if (await this.requireServices().abortThread(this.currentThreadId, "Aborted from Ctrl-C.")) {
       this.closeAfterRun = true;
       this.setNotice("Stopping the active run and closing Panda...", "info");
       return true;

@@ -14,7 +14,7 @@ export interface OutboundDeliveryWorkerLookup {
 }
 
 export interface CreateOutboundDeliveryInput {
-  threadId: string;
+  threadId?: string;
   channel: string;
   target: OutboundTarget;
   items: readonly OutboundItem[];

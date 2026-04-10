@@ -4,15 +4,12 @@ import {quoteIdentifier, toJson, toMillis} from "../thread-runtime/postgres-shar
 import {buildHomeThreadTableNames, type HomeThreadTableNames} from "./postgres-shared.js";
 import type {HomeThreadStore} from "./store.js";
 import type {
-  BindHomeThreadResult,
-  HomeThreadBindingInput,
-  HomeThreadLastRoutes,
-  HomeThreadLookup,
-  HomeThreadMetadata,
-  HomeThreadRecord,
-  RememberHomeThreadRouteInput,
+    BindHomeThreadResult,
+    HomeThreadBindingInput,
+    HomeThreadLookup,
+    HomeThreadMetadata,
+    HomeThreadRecord,
 } from "./types.js";
-import type {RememberedRoute} from "../channels/core/types.js";
 
 interface PgQueryable {
   query: Pool["query"];
@@ -39,7 +36,6 @@ function requireTrimmedHomeThreadKeyPart(field: string, value: string): string {
 function normalizeHomeThreadLookup(lookup: HomeThreadLookup): HomeThreadLookup {
   return {
     identityId: requireTrimmedHomeThreadKeyPart("identity id", lookup.identityId),
-    agentKey: requireTrimmedHomeThreadKeyPart("agent key", lookup.agentKey),
   };
 }
 
@@ -66,78 +62,12 @@ function parseHomeThreadMetadata(value: unknown): HomeThreadMetadata | undefined
     metadata.homeDir = value.homeDir;
   }
 
-  const lastRoutes = parseRememberedRoutes(value.lastRoutes);
-  if (lastRoutes) {
-    metadata.lastRoutes = lastRoutes;
-  }
-
   return Object.keys(metadata).length > 0 ? metadata : undefined;
-}
-
-function parseRememberedRoute(value: unknown): RememberedRoute | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  if (
-    typeof value.source !== "string"
-    || typeof value.connectorKey !== "string"
-    || typeof value.externalConversationId !== "string"
-    || typeof value.capturedAt !== "number"
-  ) {
-    return null;
-  }
-
-  return {
-    source: value.source,
-    connectorKey: value.connectorKey,
-    externalConversationId: value.externalConversationId,
-    externalActorId: typeof value.externalActorId === "string" ? value.externalActorId : undefined,
-    externalMessageId: typeof value.externalMessageId === "string" ? value.externalMessageId : undefined,
-    capturedAt: value.capturedAt,
-  };
-}
-
-function parseRememberedRoutes(value: unknown): HomeThreadLastRoutes | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
-  const routes = Object.entries(value).flatMap(([channel, route]) => {
-    const parsed = parseRememberedRoute(route);
-    if (!parsed) {
-      return [];
-    }
-
-    return [[channel, parsed] as const];
-  });
-
-  if (routes.length === 0) {
-    return undefined;
-  }
-
-  return Object.fromEntries(routes);
-}
-
-function resolveLatestRememberedRoute(lastRoutes: HomeThreadLastRoutes | undefined): RememberedRoute | null {
-  if (!lastRoutes) {
-    return null;
-  }
-
-  let latestRoute: RememberedRoute | null = null;
-  for (const route of Object.values(lastRoutes)) {
-    if (!latestRoute || route.capturedAt > latestRoute.capturedAt) {
-      latestRoute = route;
-    }
-  }
-
-  return latestRoute;
 }
 
 function parseHomeThreadRow(row: Record<string, unknown>): HomeThreadRecord {
   return {
     identityId: String(row.identity_id),
-    agentKey: String(row.agent_key),
     threadId: String(row.thread_id),
     metadata: parseHomeThreadMetadata(row.metadata),
     createdAt: toMillis(row.created_at),
@@ -162,12 +92,11 @@ export class PostgresHomeThreadStore implements HomeThreadStore {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.homeThreads} (
         identity_id TEXT NOT NULL,
-        agent_key TEXT NOT NULL,
         thread_id TEXT NOT NULL,
         metadata JSONB,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (identity_id, agent_key)
+        PRIMARY KEY (identity_id)
       )
     `);
     await this.pool.query(`
@@ -187,11 +116,9 @@ export class PostgresHomeThreadStore implements HomeThreadStore {
         SELECT *
         FROM ${this.tables.homeThreads}
         WHERE identity_id = $1
-          AND agent_key = $2
       `,
       [
         normalizedLookup.identityId,
-        normalizedLookup.agentKey,
       ],
     );
 
@@ -210,20 +137,17 @@ export class PostgresHomeThreadStore implements HomeThreadStore {
           `
             INSERT INTO ${this.tables.homeThreads} (
               identity_id,
-              agent_key,
               thread_id,
               metadata
             ) VALUES (
               $1,
               $2,
-              $3,
-              $4::jsonb
+              $3::jsonb
             )
             RETURNING *
           `,
           [
             normalizedInput.identityId,
-            normalizedInput.agentKey,
             normalizedInput.threadId,
             toJson(normalizedInput.metadata),
           ],
@@ -246,12 +170,10 @@ export class PostgresHomeThreadStore implements HomeThreadStore {
           SELECT *
           FROM ${this.tables.homeThreads}
           WHERE identity_id = $1
-            AND agent_key = $2
           FOR UPDATE
         `,
         [
           normalizedInput.identityId,
-          normalizedInput.agentKey,
         ],
       );
       const existingRow = existingResult.rows[0];
@@ -264,16 +186,14 @@ export class PostgresHomeThreadStore implements HomeThreadStore {
       const updateResult = await client.query(
         `
           UPDATE ${this.tables.homeThreads}
-          SET thread_id = $3,
-              metadata = COALESCE($4::jsonb, metadata),
+          SET thread_id = $2,
+              metadata = COALESCE($3::jsonb, metadata),
               updated_at = NOW()
           WHERE identity_id = $1
-            AND agent_key = $2
           RETURNING *
         `,
         [
           normalizedInput.identityId,
-          normalizedInput.agentKey,
           normalizedInput.threadId,
           toJson(normalizedInput.metadata),
         ],
@@ -300,39 +220,5 @@ export class PostgresHomeThreadStore implements HomeThreadStore {
     } finally {
       client.release();
     }
-  }
-
-  async resolveLastRoute(lookup: HomeThreadLookup, channel?: string): Promise<RememberedRoute | null> {
-    const binding = await this.resolveHomeThread(lookup);
-    const lastRoutes = binding?.metadata?.lastRoutes;
-    if (channel) {
-      return lastRoutes?.[channel] ?? null;
-    }
-
-    return resolveLatestRememberedRoute(lastRoutes);
-  }
-
-  async rememberLastRoute(input: RememberHomeThreadRouteInput): Promise<HomeThreadRecord> {
-    const existing = await this.resolveHomeThread(input);
-    if (!existing) {
-      throw new Error(
-        `Cannot remember last route without a home thread for identity ${input.identityId} and agent ${input.agentKey}.`,
-      );
-    }
-
-    const result = await this.bindHomeThread({
-      identityId: existing.identityId,
-      agentKey: existing.agentKey,
-      threadId: existing.threadId,
-      metadata: {
-        ...(existing.metadata ?? {}),
-        lastRoutes: {
-          ...(existing.metadata?.lastRoutes ?? {}),
-          [input.route.source]: input.route,
-        },
-      },
-    });
-
-    return result.binding;
   }
 }

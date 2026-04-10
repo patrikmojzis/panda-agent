@@ -6,17 +6,17 @@ import {quoteIdentifier, toJson, toMillis,} from "../thread-runtime/postgres-sha
 import type {OutboundItem, OutboundSentItem, OutboundTarget} from "../channels/core/types.js";
 import type {OutboundDeliveryStore} from "./store.js";
 import {
-    buildOutboundDeliveryNotificationChannel,
-    buildOutboundDeliveryTableNames,
-    type OutboundDeliveryTableNames,
+  buildOutboundDeliveryNotificationChannel,
+  buildOutboundDeliveryTableNames,
+  type OutboundDeliveryTableNames,
 } from "./postgres-shared.js";
 import type {
-    CompleteOutboundDeliveryInput,
-    CreateOutboundDeliveryInput,
-    FailOutboundDeliveryInput,
-    OutboundDeliveryNotification,
-    OutboundDeliveryRecord,
-    OutboundDeliveryWorkerLookup,
+  CompleteOutboundDeliveryInput,
+  CreateOutboundDeliveryInput,
+  FailOutboundDeliveryInput,
+  OutboundDeliveryNotification,
+  OutboundDeliveryRecord,
+  OutboundDeliveryWorkerLookup,
 } from "./types.js";
 
 interface PgQueryable {
@@ -70,7 +70,7 @@ function normalizeCreateInput(input: CreateOutboundDeliveryInput): CreateOutboun
   const channel = requireTrimmed("channel", input.channel);
   return {
     ...input,
-    threadId: requireTrimmed("thread id", input.threadId),
+    threadId: input.threadId?.trim() || undefined,
     channel,
     target: normalizeTarget(channel, input.target),
   };
@@ -114,7 +114,7 @@ function parseTarget(row: Record<string, unknown>): OutboundTarget {
 function parseOutboundDeliveryRow(row: Record<string, unknown>): OutboundDeliveryRecord {
   return {
     id: String(row.id),
-    threadId: String(row.thread_id),
+    threadId: typeof row.thread_id === "string" ? row.thread_id : undefined,
     channel: String(row.channel),
     target: parseTarget(row),
     items: parseItems(row.items),
@@ -172,7 +172,7 @@ export class PostgresOutboundDeliveryStore implements OutboundDeliveryStore {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.outboundDeliveries} (
         id UUID PRIMARY KEY,
-        thread_id TEXT NOT NULL,
+        thread_id TEXT,
         channel TEXT NOT NULL,
         connector_key TEXT NOT NULL,
         external_conversation_id TEXT NOT NULL,
@@ -231,7 +231,7 @@ export class PostgresOutboundDeliveryStore implements OutboundDeliveryStore {
       `,
       [
         randomUUID(),
-        normalizedInput.threadId,
+        normalizedInput.threadId ?? null,
         normalizedInput.channel,
         normalizedInput.target.connectorKey,
         normalizedInput.target.externalConversationId,

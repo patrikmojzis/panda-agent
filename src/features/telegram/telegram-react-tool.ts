@@ -8,19 +8,6 @@ import type {PandaSessionContext} from "../panda/types.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 import {parseTelegramConversationId} from "./conversation-id.js";
 
-export interface TelegramReactionApi {
-  setMessageReaction(
-    chatId: string | number,
-    messageId: number,
-    reaction: readonly unknown[],
-  ): Promise<unknown>;
-}
-
-export interface TelegramReactToolOptions {
-  api: TelegramReactionApi;
-  connectorKey: string;
-}
-
 const telegramReactToolSchema = z.object({
   emoji: z.string().trim().min(1).optional(),
   remove: z.boolean().optional(),
@@ -145,24 +132,6 @@ function resolveTelegramMessageId(
   );
 }
 
-function formatTelegramReactionFailure(error: unknown): {
-  reason: "invalid_emoji" | "error";
-  error: string;
-} {
-  const message = error instanceof Error ? error.message : String(error);
-  if (/REACTION_INVALID/iu.test(message)) {
-    return {
-      reason: "invalid_emoji",
-      error: message,
-    };
-  }
-
-  return {
-    reason: "error",
-    error: message,
-  };
-}
-
 export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, PandaSessionContext> {
   static schema = telegramReactToolSchema;
 
@@ -170,15 +139,6 @@ export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, Pand
   description =
     "Add or remove a reaction on a Telegram message. Defaults to the current Telegram conversation and message when possible.";
   schema = TelegramReactTool.schema;
-
-  private readonly api: TelegramReactionApi;
-  private readonly connectorKey: string;
-
-  constructor(options: TelegramReactToolOptions) {
-    super();
-    this.api = options.api;
-    this.connectorKey = options.connectorKey;
-  }
 
   override formatCall(args: Record<string, unknown>): string {
     if (args.remove === true) {
@@ -192,15 +152,14 @@ export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, Pand
     args: z.output<typeof TelegramReactTool.schema>,
     run: RunContext<PandaSessionContext>,
   ): Promise<JsonObject> {
+    const queue = run.context?.channelActionQueue;
+    if (!queue) {
+      throw new ToolError("telegram_react is unavailable in this runtime.");
+    }
+
     const target = args.target ?? readCurrentTelegramTarget(run.context);
     if (!target) {
       throw new ToolError("telegram_react requires a current Telegram input or an explicit target.");
-    }
-
-    if (target.connectorKey !== this.connectorKey) {
-      throw new ToolError(
-        `Telegram reaction connector mismatch. Expected ${this.connectorKey}, got ${target.connectorKey}.`,
-      );
     }
 
     const messageIdValue = resolveTelegramMessageId(args, run.context);
@@ -208,56 +167,40 @@ export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, Pand
       throw new ToolError("telegram_react requires a target message id.");
     }
 
-    const route = parseReactionConversationId(target.conversationId);
+    parseReactionConversationId(target.conversationId);
     const messageId = parseTelegramMessageId(messageIdValue);
     const remove = args.remove === true;
     const resolvedEmoji = remove ? "" : args.emoji!.trim();
-    const reaction = remove
-      ? []
-      : [{ type: "emoji" as const, emoji: resolvedEmoji }];
+    await queue.enqueueAction({
+      channel: TELEGRAM_SOURCE,
+      connectorKey: target.connectorKey,
+      kind: "telegram_reaction",
+      payload: {
+        conversationId: target.conversationId,
+        messageId: String(messageId),
+        emoji: remove ? undefined : resolvedEmoji,
+        remove,
+      },
+    });
 
-    try {
-      await this.api.setMessageReaction(route.chatId, messageId, reaction);
-      if (remove) {
-        return {
-          ok: true,
-          connectorKey: target.connectorKey,
-          conversationId: target.conversationId,
-          messageId: String(messageId),
-          removed: true,
-        };
-      }
-
+    if (remove) {
       return {
         ok: true,
         connectorKey: target.connectorKey,
         conversationId: target.conversationId,
         messageId: String(messageId),
-        added: resolvedEmoji,
-      };
-    } catch (error) {
-      const failure = formatTelegramReactionFailure(error);
-      if (remove) {
-        return {
-          ok: false,
-          connectorKey: target.connectorKey,
-          conversationId: target.conversationId,
-          messageId: String(messageId),
-          reason: failure.reason,
-          error: failure.error,
-          removed: true,
-        };
-      }
-
-      return {
-        ok: false,
-        connectorKey: target.connectorKey,
-        conversationId: target.conversationId,
-        messageId: String(messageId),
-        reason: failure.reason,
-        error: failure.error,
-        emoji: resolvedEmoji,
+        removed: true,
+        queued: true,
       };
     }
+
+    return {
+      ok: true,
+      connectorKey: target.connectorKey,
+      conversationId: target.conversationId,
+      messageId: String(messageId),
+      added: resolvedEmoji,
+      queued: true,
+    };
   }
 }

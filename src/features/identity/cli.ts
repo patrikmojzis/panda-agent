@@ -1,11 +1,13 @@
-import { randomUUID } from "node:crypto";
+import {randomUUID} from "node:crypto";
 import process from "node:process";
 
-import { Command, InvalidArgumentError } from "commander";
+import {Command, InvalidArgumentError} from "commander";
 
-import { createPandaPool, requirePandaDatabaseUrl } from "../panda/runtime.js";
-import { PostgresIdentityStore } from "./postgres.js";
-import { normalizeIdentityHandle } from "./types.js";
+import {parseAgentKey} from "../agents/cli.js";
+import {PostgresAgentStore} from "../agents/postgres.js";
+import {createPandaPool, requirePandaDatabaseUrl} from "../panda/runtime.js";
+import {PostgresIdentityStore} from "./postgres.js";
+import {DEFAULT_IDENTITY_HANDLE, normalizeIdentityHandle} from "./types.js";
 
 interface IdentityCliOptions {
   dbUrl?: string;
@@ -13,20 +15,23 @@ interface IdentityCliOptions {
 
 interface CreateIdentityCliOptions extends IdentityCliOptions {
   name?: string;
+  agent?: string;
 }
 
-async function withIdentityStore<T>(
+interface SetDefaultAgentCliOptions extends IdentityCliOptions {}
+
+async function withIdentityStores<T>(
   options: IdentityCliOptions,
-  fn: (store: PostgresIdentityStore) => Promise<T>,
+  fn: (stores: {identityStore: PostgresIdentityStore; agentStore: PostgresAgentStore}) => Promise<T>,
 ): Promise<T> {
   const pool = createPandaPool(requirePandaDatabaseUrl(options.dbUrl));
-  const store = new PostgresIdentityStore({
-    pool,
-  });
+  const identityStore = new PostgresIdentityStore({pool});
+  const agentStore = new PostgresAgentStore({pool});
 
   try {
-    await store.ensureSchema();
-    return await fn(store);
+    await identityStore.ensureSchema();
+    await agentStore.ensureSchema();
+    return await fn({identityStore, agentStore});
   } finally {
     await pool.end();
   }
@@ -45,8 +50,8 @@ export function parseIdentityHandle(value: string): string {
 }
 
 async function listIdentitiesCommand(options: IdentityCliOptions): Promise<void> {
-  await withIdentityStore(options, async (store) => {
-    const identities = await store.listIdentities();
+  await withIdentityStores(options, async ({identityStore}) => {
+    const identities = await identityStore.listIdentities();
 
     if (identities.length === 0) {
       process.stdout.write("No identities yet.\n");
@@ -57,7 +62,8 @@ async function listIdentitiesCommand(options: IdentityCliOptions): Promise<void>
       process.stdout.write(
         [
           identity.handle,
-          `  id ${identity.id} · status ${identity.status} · created ${new Date(identity.createdAt).toISOString()}`,
+          `  id ${identity.id} · status ${identity.status} · default agent ${identity.defaultAgentKey ?? "-"}`,
+          `  created ${new Date(identity.createdAt).toISOString()}`,
         ].join("\n") + "\n\n",
       );
     }
@@ -68,17 +74,48 @@ async function createIdentityCommand(
   handle: string,
   options: CreateIdentityCliOptions,
 ): Promise<void> {
-  await withIdentityStore(options, async (store) => {
-    const identity = await store.createIdentity({
+  await withIdentityStores(options, async ({identityStore, agentStore}) => {
+    const defaultAgentKey = options.agent?.trim() || undefined;
+    if (defaultAgentKey) {
+      await agentStore.getAgent(defaultAgentKey);
+    }
+
+    const identity = await identityStore.createIdentity({
       id: randomUUID(),
       handle,
       displayName: options.name?.trim() || handle,
+      defaultAgentKey,
     });
 
     process.stdout.write(
       [
         `Created identity ${identity.handle}.`,
         `id ${identity.id}`,
+        `default agent ${identity.defaultAgentKey ?? "-"}`,
+      ].join("\n") + "\n",
+    );
+  });
+}
+
+async function setDefaultAgentCommand(
+  handle: string,
+  agentKey: string,
+  options: SetDefaultAgentCliOptions,
+): Promise<void> {
+  await withIdentityStores(options, async ({identityStore, agentStore}) => {
+    await agentStore.getAgent(agentKey);
+    const identity = handle === DEFAULT_IDENTITY_HANDLE
+      ? await identityStore.getIdentity(DEFAULT_IDENTITY_HANDLE)
+      : await identityStore.getIdentityByHandle(handle);
+    const updated = await identityStore.updateIdentity({
+      identityId: identity.id,
+      defaultAgentKey: agentKey,
+    });
+
+    process.stdout.write(
+      [
+        `Updated identity ${updated.handle}.`,
+        `default agent ${updated.defaultAgentKey ?? "-"}`,
       ].join("\n") + "\n",
     );
   });
@@ -102,8 +139,19 @@ export function registerIdentityCommands(program: Command): void {
     .description("Create a Panda identity")
     .argument("<handle>", "Identity handle", parseIdentityHandle)
     .option("--name <displayName>", "Display name to show in UIs")
+    .option("--agent <agentKey>", "Default agent for new home threads", parseAgentKey)
     .option("--db-url <url>", "Postgres connection string for thread persistence")
     .action((handle: string, options: CreateIdentityCliOptions) => {
       return createIdentityCommand(handle, options);
+    });
+
+  identityProgram
+    .command("set-default-agent")
+    .description("Set the default agent for an identity")
+    .argument("<handle>", "Identity handle", parseIdentityHandle)
+    .argument("<agentKey>", "Agent key", parseAgentKey)
+    .option("--db-url <url>", "Postgres connection string for thread persistence")
+    .action((handle: string, agentKey: string, options: SetDefaultAgentCliOptions) => {
+      return setDefaultAgentCommand(handle, agentKey, options);
     });
 }

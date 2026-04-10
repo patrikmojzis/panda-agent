@@ -3,16 +3,17 @@ import type {RememberedRoute} from "../channels/core/types.js";
 import type {HomeThreadStore} from "../home-threads/store.js";
 import {summarizeMessageText} from "../panda/message-preview.js";
 import type {OutboundDeliveryStore} from "../outbound-deliveries/store.js";
+import type {ThreadRouteStore} from "../thread-routes/store.js";
 import type {ThreadRuntimeCoordinator} from "../thread-runtime/coordinator.js";
 import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
 import {computeClaimNextFireAt} from "./schedule.js";
 import type {ScheduledTaskStore} from "./store.js";
 import type {
-    ClaimScheduledTaskResult,
-    ScheduledTaskFireKind,
-    ScheduledTaskRecord,
-    ScheduledTaskRunRecord,
-    ScheduledTaskThreadInputMetadata,
+  ClaimScheduledTaskResult,
+  ScheduledTaskFireKind,
+  ScheduledTaskRecord,
+  ScheduledTaskRunRecord,
+  ScheduledTaskThreadInputMetadata,
 } from "./types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
@@ -23,11 +24,10 @@ const SCHEDULED_TASK_SOURCE = "scheduled_task";
 export interface ScheduledTaskRunnerOptions {
   tasks: ScheduledTaskStore;
   homeThreads: HomeThreadStore;
+  threadRoutes: ThreadRouteStore;
   outboundDeliveries: OutboundDeliveryStore;
   threadStore: ThreadRuntimeStore;
   coordinator: ThreadRuntimeCoordinator;
-  supportedChannel: string;
-  supportedConnectorKey?: string;
   pollIntervalMs?: number;
   claimTtlMs?: number;
   onError?: (error: unknown, taskId?: string) => Promise<void> | void;
@@ -39,15 +39,6 @@ interface ThreadRunSummary {
   error?: string;
   assistantText: string | null;
   outboundUsed: boolean;
-}
-
-function buildClaimOwner(source: string, connectorKey?: string): string {
-  return connectorKey ? `${source}:${connectorKey}` : source;
-}
-
-function routeMatchesRunner(route: RememberedRoute, channel: string, connectorKey?: string): boolean {
-  return route.source === channel
-    && (connectorKey === undefined || route.connectorKey === connectorKey);
 }
 
 function buildScheduledTaskMetadata(
@@ -99,7 +90,6 @@ async function resolveTargetThreadId(task: ScheduledTaskRecord, homeThreads: Hom
 
   const home = await homeThreads.resolveHomeThread({
     identityId: task.identityId,
-    agentKey: task.agentKey,
   });
   return home?.threadId;
 }
@@ -177,15 +167,14 @@ async function enqueueTextDelivery(options: {
 export class ScheduledTaskRunner {
   private readonly tasks: ScheduledTaskStore;
   private readonly homeThreads: HomeThreadStore;
+  private readonly threadRoutes: ThreadRouteStore;
   private readonly outboundDeliveries: OutboundDeliveryStore;
   private readonly threadStore: ThreadRuntimeStore;
   private readonly coordinator: ThreadRuntimeCoordinator;
-  private readonly supportedChannel: string;
-  private readonly supportedConnectorKey?: string;
   private readonly pollIntervalMs: number;
   private readonly claimTtlMs: number;
   private readonly onError?: (error: unknown, taskId?: string) => Promise<void> | void;
-  private readonly claimOwner: string;
+  private readonly claimOwner = "scheduled-task-runner";
 
   private timer: NodeJS.Timeout | null = null;
   private stopped = true;
@@ -195,15 +184,13 @@ export class ScheduledTaskRunner {
   constructor(options: ScheduledTaskRunnerOptions) {
     this.tasks = options.tasks;
     this.homeThreads = options.homeThreads;
+    this.threadRoutes = options.threadRoutes;
     this.outboundDeliveries = options.outboundDeliveries;
     this.threadStore = options.threadStore;
     this.coordinator = options.coordinator;
-    this.supportedChannel = options.supportedChannel;
-    this.supportedConnectorKey = options.supportedConnectorKey;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.claimTtlMs = options.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS;
     this.onError = options.onError;
-    this.claimOwner = buildClaimOwner(this.supportedChannel, this.supportedConnectorKey);
   }
 
   async start(): Promise<void> {
@@ -267,14 +254,6 @@ export class ScheduledTaskRunner {
           return;
         }
 
-        const route = await this.homeThreads.resolveLastRoute({
-          identityId: task.identityId,
-          agentKey: task.agentKey,
-        });
-        if (!route || !routeMatchesRunner(route, this.supportedChannel, this.supportedConnectorKey)) {
-          continue;
-        }
-
         const claim = await this.tasks.claimTask({
           taskId: task.id,
           claimedBy: this.claimOwner,
@@ -287,7 +266,7 @@ export class ScheduledTaskRunner {
 
         claimedAny = true;
         try {
-          await this.processClaim(claim, route);
+          await this.processClaim(claim);
         } catch (error) {
           await this.onError?.(error, claim.task.id);
         }
@@ -299,16 +278,16 @@ export class ScheduledTaskRunner {
     }
   }
 
-  private async processClaim(claim: ClaimScheduledTaskResult, route: RememberedRoute): Promise<void> {
+  private async processClaim(claim: ClaimScheduledTaskResult): Promise<void> {
     if (claim.run.fireKind === "deliver") {
-      await this.processDeliverPhase(claim, route);
+      await this.processDeliverPhase(claim);
       return;
     }
 
-    await this.processExecutePhase(claim, route);
+    await this.processExecutePhase(claim);
   }
 
-  private async processExecutePhase(claim: ClaimScheduledTaskResult, route: RememberedRoute): Promise<void> {
+  private async processExecutePhase(claim: ClaimScheduledTaskResult): Promise<void> {
     const resolvedThreadId = await resolveTargetThreadId(claim.task, this.homeThreads);
     if (!resolvedThreadId) {
       await this.tasks.failTaskRun({
@@ -322,6 +301,10 @@ export class ScheduledTaskRunner {
       }
       return;
     }
+
+    const route = await this.threadRoutes.resolveLastRoute({
+      threadId: resolvedThreadId,
+    });
 
     await this.tasks.startTaskRun({
       runId: claim.run.id,
@@ -366,6 +349,9 @@ export class ScheduledTaskRunner {
     if (threadRun.outboundUsed) {
       deliveryStatus = "sent";
     } else if (threadRun.assistantText) {
+      if (!route) {
+        deliveryStatus = "unavailable";
+      } else {
       try {
         await enqueueTextDelivery({
           outboundDeliveries: this.outboundDeliveries,
@@ -389,6 +375,7 @@ export class ScheduledTaskRunner {
         }
         throw error;
       }
+      }
     } else {
       deliveryStatus = "unavailable";
     }
@@ -406,7 +393,7 @@ export class ScheduledTaskRunner {
     }
   }
 
-  private async processDeliverPhase(claim: ClaimScheduledTaskResult, route: RememberedRoute): Promise<void> {
+  private async processDeliverPhase(claim: ClaimScheduledTaskResult): Promise<void> {
     const executeRun = await this.tasks.getLatestTaskRun(claim.task.id, "execute");
     const resolvedThreadId = executeRun?.resolvedThreadId;
     const threadRunId = executeRun?.threadRunId;
@@ -432,6 +419,21 @@ export class ScheduledTaskRunner {
         threadRunId,
         deliveryStatus: "unavailable",
         error: `Scheduled task ${claim.task.id} has no assistant output to deliver.`,
+      });
+      await this.tasks.markTaskCompleted(claim.task.id);
+      return;
+    }
+
+    const route = await this.threadRoutes.resolveLastRoute({
+      threadId: resolvedThreadId,
+    });
+    if (!route) {
+      await this.tasks.failTaskRun({
+        runId: claim.run.id,
+        resolvedThreadId,
+        threadRunId,
+        deliveryStatus: "unavailable",
+        error: `Scheduled task ${claim.task.id} has no remembered route to deliver to.`,
       });
       await this.tasks.markTaskCompleted(claim.task.id);
       return;

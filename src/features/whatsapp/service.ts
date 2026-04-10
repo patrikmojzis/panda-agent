@@ -20,22 +20,17 @@ import {
 } from "baileys";
 import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
-import {type ProviderName, stringToUserMessage} from "../agent-core/index.js";
-import {ChannelOutboundDeliveryWorker} from "../outbound-deliveries/index.js";
-import {ChannelTypingDispatcher} from "../channels/core/index.js";
-import type {MediaDescriptor} from "../channels/core/types.js";
-import {PostgresIdentityStore} from "../identity/index.js";
+import type {ProviderName} from "../agent-core/types.js";
+import {ChannelActionWorker} from "../channel-actions/index.js";
+import {FileSystemMediaStore, type MediaDescriptor} from "../channels/core/index.js";
 import {createPandaPool, requirePandaDatabaseUrl} from "../panda/runtime.js";
+import {PostgresPandaRuntimeRequestStore} from "../runtime-requests/index.js";
+import {PostgresChannelActionStore} from "../channel-actions/postgres.js";
+import {ChannelOutboundDeliveryWorker, PostgresOutboundDeliveryStore} from "../outbound-deliveries/index.js";
 import {WHATSAPP_SOURCE} from "./config.js";
 import {PostgresWhatsAppAuthStore} from "./auth-store.js";
-import {
-    buildWhatsAppInboundMetadata,
-    buildWhatsAppInboundText,
-    extractWhatsAppMessageText,
-    extractWhatsAppQuotedMessageId,
-} from "./helpers.js";
+import {extractWhatsAppMessageText, extractWhatsAppQuotedMessageId} from "./helpers.js";
 import {createWhatsAppOutboundAdapter} from "./outbound.js";
-import {createWhatsAppRuntime, type WhatsAppRuntimeServices} from "./runtime.js";
 import {createWhatsAppTypingAdapter} from "./typing.js";
 
 export interface WhatsAppServiceOptions {
@@ -46,7 +41,6 @@ export interface WhatsAppServiceOptions {
   readOnlyDbUrl?: string;
   provider?: ProviderName;
   model?: string;
-  agent?: string;
   tablePrefix?: string;
 }
 
@@ -80,6 +74,15 @@ const RECONNECT_DELAY_MS = 1_000;
 
 interface ConnectorLock {
   release(): Promise<void>;
+}
+
+interface WhatsAppWorkerStores {
+  pool: Pool;
+  authStore: PostgresWhatsAppAuthStore;
+  outboundDeliveries: PostgresOutboundDeliveryStore;
+  channelActions: PostgresChannelActionStore;
+  requests: PostgresPandaRuntimeRequestStore;
+  mediaStore: FileSystemMediaStore;
 }
 
 export interface WhatsAppWhoamiResult {
@@ -126,14 +129,14 @@ function extractDisconnectStatusCode(error: unknown): number | null {
   }
 
   if ("output" in error && error.output && typeof error.output === "object") {
-    const output = error.output as { statusCode?: unknown };
+    const output = error.output as {statusCode?: unknown};
     if (typeof output.statusCode === "number") {
       return output.statusCode;
     }
   }
 
-  if ("statusCode" in error && typeof (error as { statusCode?: unknown }).statusCode === "number") {
-    return (error as { statusCode: number }).statusCode;
+  if ("statusCode" in error && typeof (error as {statusCode?: unknown}).statusCode === "number") {
+    return (error as {statusCode: number}).statusCode;
   }
 
   return null;
@@ -204,12 +207,12 @@ export class WhatsAppService {
   private readonly options: WhatsAppServiceOptions;
   private pool: Pool | null = null;
   private authStore: PostgresWhatsAppAuthStore | null = null;
-  private identityStore: PostgresIdentityStore | null = null;
-  private runtime: WhatsAppRuntimeServices | null = null;
-  private runtimePromise: Promise<WhatsAppRuntimeServices> | null = null;
+  private storesPromise: Promise<WhatsAppWorkerStores> | null = null;
+  private stores: WhatsAppWorkerStores | null = null;
   private socket: WASocket | null = null;
   private lock: ConnectorLock | null = null;
   private outboundWorker: ChannelOutboundDeliveryWorker | null = null;
+  private actionWorker: ChannelActionWorker | null = null;
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
   private socketWaiterResolve: (() => void) | null = null;
@@ -244,24 +247,50 @@ export class WhatsAppService {
     return authStore;
   }
 
-  private async ensureIdentityStore(): Promise<PostgresIdentityStore> {
-    if (this.identityStore) {
-      return this.identityStore;
+  private async ensureStores(): Promise<WhatsAppWorkerStores> {
+    if (this.stores) {
+      return this.stores;
     }
 
-    await this.ensureAuthStore();
-    if (!this.pool) {
-      throw new Error("WhatsApp identity store requires an initialized Postgres pool.");
+    if (!this.storesPromise) {
+      this.storesPromise = (async () => {
+        const authStore = await this.ensureAuthStore();
+        if (!this.pool) {
+          throw new Error("WhatsApp worker stores require an initialized Postgres pool.");
+        }
+
+        const outboundDeliveries = new PostgresOutboundDeliveryStore({
+          pool: this.pool,
+          tablePrefix: this.options.tablePrefix,
+        });
+        const channelActions = new PostgresChannelActionStore({
+          pool: this.pool,
+          tablePrefix: this.options.tablePrefix,
+        });
+        const requests = new PostgresPandaRuntimeRequestStore({
+          pool: this.pool,
+          tablePrefix: this.options.tablePrefix,
+        });
+
+        await outboundDeliveries.ensureSchema();
+        await channelActions.ensureSchema();
+        await requests.ensureSchema();
+
+        return {
+          pool: this.pool,
+          authStore,
+          outboundDeliveries,
+          channelActions,
+          requests,
+          mediaStore: new FileSystemMediaStore({
+            rootDir: this.options.dataDir,
+          }),
+        };
+      })();
     }
 
-    const identityStore = new PostgresIdentityStore({
-      pool: this.pool,
-      tablePrefix: this.options.tablePrefix,
-    });
-    await identityStore.ensureSchema();
-
-    this.identityStore = identityStore;
-    return identityStore;
+    this.stores = await this.storesPromise;
+    return this.stores;
   }
 
   private async createSocket(): Promise<{
@@ -298,6 +327,68 @@ export class WhatsAppService {
     };
   }
 
+  private ensureOutboundWorker(stores: WhatsAppWorkerStores): ChannelOutboundDeliveryWorker {
+    if (this.outboundWorker) {
+      return this.outboundWorker;
+    }
+
+    this.outboundWorker = new ChannelOutboundDeliveryWorker({
+      store: stores.outboundDeliveries,
+      adapter: createWhatsAppOutboundAdapter({
+        connectorKey: this.options.connectorKey,
+        getSocket: () => this.socket,
+      }),
+      connectorKey: this.options.connectorKey,
+      canSend: () => this.socket !== null,
+      onError: (error, deliveryId) => {
+        this.log("outbound_delivery_failed", {
+          connectorKey: this.options.connectorKey,
+          deliveryId: deliveryId ?? null,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+
+    return this.outboundWorker;
+  }
+
+  private ensureActionWorker(stores: WhatsAppWorkerStores): ChannelActionWorker {
+    if (this.actionWorker) {
+      return this.actionWorker;
+    }
+
+    const typingAdapter = createWhatsAppTypingAdapter({
+      connectorKey: this.options.connectorKey,
+      getSocket: () => this.socket,
+    });
+
+    this.actionWorker = new ChannelActionWorker({
+      store: stores.channelActions,
+      lookup: {
+        channel: WHATSAPP_SOURCE,
+        connectorKey: this.options.connectorKey,
+      },
+      dispatch: async (action) => {
+        switch (action.kind) {
+          case "typing":
+            await typingAdapter.send(action.payload as Parameters<typeof typingAdapter.send>[0]);
+            return;
+          default:
+            throw new Error(`Unsupported WhatsApp channel action ${action.kind}.`);
+        }
+      },
+      onError: (error, actionId) => {
+        this.log("channel_action_failed", {
+          connectorKey: this.options.connectorKey,
+          actionId: actionId ?? null,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+
+    return this.actionWorker;
+  }
+
   async whoami(): Promise<WhatsAppWhoamiResult> {
     const authStore = await this.ensureAuthStore();
     const creds = await authStore.loadCreds(this.options.connectorKey);
@@ -316,7 +407,7 @@ export class WhatsAppService {
       };
     }
 
-    const { authHandle, socket } = await this.createSocket();
+    const {authHandle, socket} = await this.createSocket();
     try {
       const pairedIdentity = await new Promise<WhatsAppWhoamiResult>(async (resolve, reject) => {
         const onConnectionUpdate = (update: Partial<ConnectionState>) => {
@@ -371,8 +462,10 @@ export class WhatsAppService {
         );
       }
 
+      const stores = await this.ensureStores();
       this.lock = await this.acquireConnectorLock(this.options.connectorKey);
-      await this.ensureOutboundWorker(await this.ensureRuntime()).start();
+      await this.ensureOutboundWorker(stores).start();
+      await this.ensureActionWorker(stores).start();
       this.log("run_started", {
         connectorKey: this.options.connectorKey,
         accountId: identity.accountId,
@@ -384,7 +477,7 @@ export class WhatsAppService {
       });
 
       while (!this.stopping) {
-        const outcome = await this.runSocketCycle();
+        const outcome = await this.runSocketCycle(stores);
         if (!outcome.reconnect || this.stopping) {
           break;
         }
@@ -408,95 +501,35 @@ export class WhatsAppService {
 
     this.stopping = true;
     this.stopPromise = (async () => {
-      const runtime = this.runtime;
-      const runtimePromise = this.runtimePromise;
-      this.runtime = null;
-      this.runtimePromise = null;
-
       this.socketWaiterResolve?.();
       this.socketWaiterResolve = null;
+
+      if (this.actionWorker) {
+        await this.actionWorker.stop();
+        this.actionWorker = null;
+      }
       if (this.outboundWorker) {
         await this.outboundWorker.stop();
         this.outboundWorker = null;
       }
+
       await this.stopSocket();
-      if (runtime) {
-        await runtime.close();
-      } else if (runtimePromise) {
-        try {
-          const resolvedRuntime = await runtimePromise;
-          await resolvedRuntime.close();
-        } catch {
-          // Ignore runtime bootstrap failures during shutdown.
-        }
-      }
+
       if (this.lock) {
         await this.lock.release();
         this.lock = null;
       }
+
       if (this.pool) {
         await this.pool.end();
         this.pool = null;
         this.authStore = null;
-        this.identityStore = null;
+        this.stores = null;
+        this.storesPromise = null;
       }
     })();
 
     return this.stopPromise;
-  }
-
-  private async ensureRuntime(): Promise<WhatsAppRuntimeServices> {
-    if (this.runtime) {
-      return this.runtime;
-    }
-
-    if (!this.runtimePromise) {
-      this.runtimePromise = createWhatsAppRuntime({
-        cwd: this.options.cwd,
-        dataDir: this.options.dataDir,
-        dbUrl: this.options.dbUrl,
-        readOnlyDbUrl: this.options.readOnlyDbUrl,
-        provider: this.options.provider,
-        model: this.options.model,
-        agent: this.options.agent,
-        tablePrefix: this.options.tablePrefix,
-        connectorKey: this.options.connectorKey,
-        typingDispatcher: new ChannelTypingDispatcher([
-          createWhatsAppTypingAdapter({
-            connectorKey: this.options.connectorKey,
-            getSocket: () => this.socket,
-          }),
-        ]),
-      });
-    }
-
-    this.runtime = await this.runtimePromise;
-    return this.runtime;
-  }
-
-  private ensureOutboundWorker(runtime: WhatsAppRuntimeServices): ChannelOutboundDeliveryWorker {
-    if (this.outboundWorker) {
-      return this.outboundWorker;
-    }
-
-    this.outboundWorker = new ChannelOutboundDeliveryWorker({
-      store: runtime.outboundDeliveries,
-      adapter: createWhatsAppOutboundAdapter({
-        connectorKey: this.options.connectorKey,
-        getSocket: () => this.socket,
-      }),
-      connectorKey: this.options.connectorKey,
-      canSend: () => this.socket !== null,
-      onError: (error, deliveryId) => {
-        this.log("outbound_delivery_failed", {
-          connectorKey: this.options.connectorKey,
-          deliveryId: deliveryId ?? null,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      },
-    });
-
-    return this.outboundWorker;
   }
 
   private async acquireConnectorLock(connectorKey: string): Promise<ConnectorLock> {
@@ -538,14 +571,14 @@ export class WhatsAppService {
     }
   }
 
-  private async runSocketCycle(): Promise<{ reconnect: boolean; reason?: string }> {
-    const { authHandle, socket } = await this.createSocket();
+  private async runSocketCycle(stores: WhatsAppWorkerStores): Promise<{reconnect: boolean; reason?: string}> {
+    const {authHandle, socket} = await this.createSocket();
 
     try {
-      return await new Promise<{ reconnect: boolean; reason?: string }>((resolve, reject) => {
+      return await new Promise<{reconnect: boolean; reason?: string}>((resolve, reject) => {
         let settled = false;
 
-        const finish = (outcome: { reconnect: boolean; reason?: string }) => {
+        const finish = (outcome: {reconnect: boolean; reason?: string}) => {
           if (settled) {
             return;
           }
@@ -573,13 +606,13 @@ export class WhatsAppService {
         };
 
         const onMessagesUpsert = (update: BaileysEventMap["messages.upsert"]) => {
-          void this.handleMessagesUpsert(update).catch((error) => {
+          void this.handleMessagesUpsert(stores, update).catch((error) => {
             this.log("upsert_error", {
               connectorKey: this.options.connectorKey,
               message: error instanceof Error ? error.message : String(error),
             });
             if (!this.stopping) {
-              finish({ reconnect: true, reason: "upsert_error" });
+              finish({reconnect: true, reason: "upsert_error"});
             }
           });
         };
@@ -607,6 +640,7 @@ export class WhatsAppService {
 
           if (update.connection === "open") {
             void this.outboundWorker?.triggerDrain();
+            void this.actionWorker?.triggerDrain();
           }
 
           if (update.connection !== "close") {
@@ -626,12 +660,12 @@ export class WhatsAppService {
           });
 
           if (this.stopping) {
-            finish({ reconnect: false, reason: "stopped" });
+            finish({reconnect: false, reason: "stopped"});
             return;
           }
 
           if (shouldReconnect(statusCode)) {
-            finish({ reconnect: true, reason });
+            finish({reconnect: true, reason});
             return;
           }
 
@@ -639,7 +673,7 @@ export class WhatsAppService {
         };
 
         this.socketWaiterResolve = () => {
-          finish({ reconnect: false, reason: "stopped" });
+          finish({reconnect: false, reason: "stopped"});
         };
 
         socket.ev.on("connection.update", onConnectionUpdate);
@@ -664,7 +698,10 @@ export class WhatsAppService {
     socket.end(undefined);
   }
 
-  private async handleMessagesUpsert(update: BaileysEventMap["messages.upsert"]): Promise<void> {
+  private async handleMessagesUpsert(
+    stores: WhatsAppWorkerStores,
+    update: BaileysEventMap["messages.upsert"],
+  ): Promise<void> {
     if (update.type !== "notify") {
       this.log("message_ignored", {
         connectorKey: this.options.connectorKey,
@@ -674,8 +711,6 @@ export class WhatsAppService {
       });
       return;
     }
-
-    const identityStore = await this.ensureIdentityStore();
 
     for (const message of update.messages) {
       const remoteJid = message.key.remoteJid;
@@ -719,27 +754,8 @@ export class WhatsAppService {
         continue;
       }
 
-      const binding = await identityStore.resolveIdentityBinding({
-        source: WHATSAPP_SOURCE,
-        connectorKey: this.options.connectorKey,
-        externalActorId,
-      });
-
-      if (!binding) {
-        this.log("message_dropped", {
-          connectorKey: this.options.connectorKey,
-          externalConversationId,
-          externalActorId,
-          chatType,
-          reason: "unpaired_actor",
-          messageLength: extractMessageTextLength(message),
-        });
-        continue;
-      }
-
       const rawText = extractWhatsAppMessageText(message);
-      const runtime = await this.ensureRuntime();
-      const media = await this.downloadSupportedMedia(message, runtime);
+      const media = await this.downloadSupportedMedia(message, stores);
       if (!rawText && media.length === 0) {
         this.log("message_dropped", {
           connectorKey: this.options.connectorKey,
@@ -752,84 +768,40 @@ export class WhatsAppService {
       }
 
       const quotedMessageId = extractWhatsAppQuotedMessageId(message);
-      const text = buildWhatsAppInboundText({
-        connectorKey: this.options.connectorKey,
-        externalConversationId,
-        externalActorId,
-        externalMessageId,
-        remoteJid,
-        chatType,
-        text: rawText,
-        pushName: message.pushName ?? undefined,
-        quotedMessageId,
-        media,
-      });
-      const thread = await runtime.resolveOrCreateHomeThread({
-        identityId: binding.identityId,
-        agentKey: runtime.agentKey,
-        provider: this.options.provider,
-        model: this.options.model,
-        context: {
-          source: WHATSAPP_SOURCE,
-          remoteJid,
-        },
-      });
-
-      await runtime.coordinator.submitInput(thread.id, {
-        source: WHATSAPP_SOURCE,
-        channelId: externalConversationId,
-        externalMessageId,
-        actorId: externalActorId,
-        message: stringToUserMessage(text),
-        metadata: buildWhatsAppInboundMetadata({
+      const request = await stores.requests.enqueueRequest({
+        kind: "whatsapp_message",
+        payload: {
           connectorKey: this.options.connectorKey,
           externalConversationId,
           externalActorId,
           externalMessageId,
           remoteJid,
           chatType,
+          text: rawText,
           pushName: message.pushName ?? undefined,
           quotedMessageId,
           media,
-        }),
-      });
-      await runtime.homeThreads.rememberLastRoute({
-        identityId: thread.identityId,
-        agentKey: thread.agentKey,
-        route: {
-          source: WHATSAPP_SOURCE,
-          connectorKey: this.options.connectorKey,
-          externalConversationId,
-          externalActorId,
-          externalMessageId,
-          capturedAt: Date.now(),
+          provider: this.options.provider,
+          model: this.options.model,
         },
       });
 
-      this.log("message_allowed", {
-        connectorKey: this.options.connectorKey,
-        externalConversationId,
-        externalActorId,
-        chatType,
-        externalMessageId,
-        identityId: binding.identityId,
-      });
       this.log("message_ingested", {
         connectorKey: this.options.connectorKey,
         externalConversationId,
         externalActorId,
         chatType,
         externalMessageId,
-        threadId: thread.id,
         mediaCount: media.length,
-        textLength: text.trim().length,
+        textLength: extractMessageTextLength(message),
+        requestId: request.id,
       });
     }
   }
 
   private async downloadSupportedMedia(
     message: WAMessage,
-    runtime: WhatsAppRuntimeServices,
+    stores: WhatsAppWorkerStores,
   ): Promise<readonly MediaDescriptor[]> {
     const content = normalizeMessageContent(message.message);
     if (!content) {
@@ -839,14 +811,14 @@ export class WhatsAppService {
     const descriptors: MediaDescriptor[] = [];
 
     if (content.imageMessage) {
-      descriptors.push(await this.downloadMedia(message, runtime, {
+      descriptors.push(await this.downloadMedia(message, stores, {
         mimeType: content.imageMessage.mimetype ?? "image/jpeg",
         sizeBytes: readMediaSizeBytes(content.imageMessage.fileLength),
       }));
     }
 
     if (content.documentMessage) {
-      descriptors.push(await this.downloadMedia(message, runtime, {
+      descriptors.push(await this.downloadMedia(message, stores, {
         mimeType: content.documentMessage.mimetype ?? "application/octet-stream",
         sizeBytes: readMediaSizeBytes(content.documentMessage.fileLength),
         hintFilename: content.documentMessage.fileName ?? undefined,
@@ -858,7 +830,7 @@ export class WhatsAppService {
 
   private async downloadMedia(
     message: WAMessage,
-    runtime: WhatsAppRuntimeServices,
+    stores: WhatsAppWorkerStores,
     options: {
       mimeType: string;
       sizeBytes?: number;
@@ -874,7 +846,7 @@ export class WhatsAppService {
       logger: WHATSAPP_LOGGER,
     }));
 
-    return runtime.mediaStore.writeMedia({
+    return stores.mediaStore.writeMedia({
       bytes,
       source: WHATSAPP_SOURCE,
       connectorKey: this.options.connectorKey,

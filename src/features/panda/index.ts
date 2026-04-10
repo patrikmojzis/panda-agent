@@ -1,5 +1,21 @@
 export { PANDA_PROMPT } from "./prompts.js";
 export {
+  createPandaClient,
+  type PandaClient,
+  type PandaClientCompactResult,
+  type PandaClientOptions,
+  type PandaClientThreadOptions,
+} from "./client.js";
+export {
+  createPandaDaemon,
+  DEFAULT_PANDA_DAEMON_KEY,
+  PANDA_DAEMON_HEARTBEAT_INTERVAL_MS,
+  PANDA_DAEMON_REQUEST_TIMEOUT_MS,
+  PANDA_DAEMON_STALE_AFTER_MS,
+  type PandaDaemonOptions,
+  type PandaDaemonServices,
+} from "./daemon.js";
+export {
   createPandaRuntime,
   createPandaPool,
   requirePandaDatabaseUrl,
@@ -55,4 +71,4 @@ export {
   type PandaSubagentRunResult,
   type PandaSubagentServiceOptions,
 } from "./subagents/index.js";
-export type { PandaOutboundQueue, PandaSessionContext, PandaShellSession } from "./types.js";
+export type { PandaChannelActionQueue, PandaOutboundQueue, PandaSessionContext, PandaShellSession } from "./types.js";

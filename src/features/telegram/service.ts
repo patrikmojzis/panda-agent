@@ -2,61 +2,24 @@ import {createHash} from "node:crypto";
 
 import {AbortController} from "abort-controller";
 import {Bot, type Context} from "grammy";
+import type {Pool} from "pg";
 
-import {type ProviderName, stringToUserMessage} from "../agent-core/index.js";
-import type {JsonObject} from "../agent-core/types.js";
-import {ChannelOutboundDeliveryWorker} from "../outbound-deliveries/index.js";
-import {ChannelTypingDispatcher} from "../channels/core/index.js";
-import type {MediaDescriptor} from "../channels/core/types.js";
-import type {ConversationThreadRecord} from "../conversation-threads/types.js";
-import type {IdentityBindingRecord} from "../identity/types.js";
-import {isMissingThreadError, type ThreadRecord} from "../thread-runtime/types.js";
-import {TELEGRAM_POLL_TIMEOUT_SECONDS, TELEGRAM_SOURCE, TELEGRAM_UPDATES_CURSOR_KEY,} from "./config.js";
-import {
-    buildTelegramConversationId,
-    buildTelegramInboundPersistence,
-    buildTelegramInboundText,
-    buildTelegramReactionText,
-    buildTelegramStartText,
-    normalizeTelegramCommand,
-} from "./helpers.js";
+import type {ProviderName} from "../agent-core/types.js";
+import {ChannelActionWorker, type TelegramReactionActionPayload} from "../channel-actions/index.js";
+import {PostgresChannelCursorStore} from "../channel-cursors/index.js";
+import {FileSystemMediaStore, type MediaDescriptor} from "../channels/core/index.js";
+import {ChannelOutboundDeliveryWorker, PostgresOutboundDeliveryStore} from "../outbound-deliveries/index.js";
+import {createPandaPool, requirePandaDatabaseUrl} from "../panda/runtime.js";
+import {PostgresPandaRuntimeRequestStore} from "../runtime-requests/index.js";
+import {TELEGRAM_POLL_TIMEOUT_SECONDS, TELEGRAM_SOURCE, TELEGRAM_UPDATES_CURSOR_KEY} from "./config.js";
+import {buildTelegramConversationId} from "./helpers.js";
 import {createTelegramOutboundAdapter} from "./outbound.js";
+import {parseTelegramConversationId} from "./conversation-id.js";
 import {createTelegramTypingAdapter} from "./typing.js";
-import {createTelegramRuntime, type TelegramRuntimeServices} from "./runtime.js";
+import {PostgresChannelActionStore} from "../channel-actions/postgres.js";
 
 type TelegramContext = Context;
 const UPDATE_RETRY_DELAY_MS = 1_000;
-
-interface TelegramResetReceiptMetadata extends JsonObject {
-  kind: "telegram_reset_receipt";
-  commandExternalMessageId: string;
-}
-
-function createTelegramResetReceiptMetadata(commandExternalMessageId: string): TelegramResetReceiptMetadata {
-  return {
-    kind: "telegram_reset_receipt",
-    commandExternalMessageId,
-  };
-}
-
-function parseTelegramResetReceiptMetadata(
-  value: ConversationThreadRecord["metadata"],
-): TelegramResetReceiptMetadata | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  const kind = "kind" in value ? value.kind : undefined;
-  const commandExternalMessageId = "commandExternalMessageId" in value ? value.commandExternalMessageId : undefined;
-  if (kind !== "telegram_reset_receipt" || typeof commandExternalMessageId !== "string" || !commandExternalMessageId.trim()) {
-    return null;
-  }
-
-  return {
-    kind,
-    commandExternalMessageId,
-  };
-}
 
 export interface TelegramServiceOptions {
   token: string;
@@ -66,9 +29,7 @@ export interface TelegramServiceOptions {
   readOnlyDbUrl?: string;
   provider?: ProviderName;
   model?: string;
-  agent?: string;
   tablePrefix?: string;
-  defaultIdentityHandle?: string;
 }
 
 interface ConnectorLock {
@@ -104,6 +65,15 @@ interface TelegramReactionContextLike {
   };
 }
 
+interface TelegramWorkerStores {
+  pool: Pool;
+  channelCursors: PostgresChannelCursorStore;
+  outboundDeliveries: PostgresOutboundDeliveryStore;
+  channelActions: PostgresChannelActionStore;
+  requests: PostgresPandaRuntimeRequestStore;
+  mediaStore: FileSystemMediaStore;
+}
+
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
@@ -127,32 +97,39 @@ function isTelegramEmojiReaction(value: unknown): value is TelegramEmojiReaction
   return candidate.type === "emoji" && typeof candidate.emoji === "string" && candidate.emoji.trim().length > 0;
 }
 
+function parseTelegramMessageId(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid Telegram message id ${value}.`);
+  }
+
+  return parsed;
+}
+
 export class TelegramService {
   private readonly bot: Bot<TelegramContext>;
   private readonly token: string;
-  private readonly defaultIdentityHandle: string;
-  private readonly runtimeOptions: Omit<TelegramServiceOptions, "token" | "defaultIdentityHandle">;
-  private runtimePromise: Promise<TelegramRuntimeServices> | null = null;
-  private runtime: TelegramRuntimeServices | null = null;
+  private readonly options: Omit<TelegramServiceOptions, "token">;
+  private storesPromise: Promise<TelegramWorkerStores> | null = null;
+  private stores: TelegramWorkerStores | null = null;
   private botId: string | null = null;
   private connectorKey: string | null = null;
   private botUsername: string | null = null;
   private lock: ConnectorLock | null = null;
   private pollAbortController: AbortController | null = null;
   private outboundWorker: ChannelOutboundDeliveryWorker | null = null;
+  private actionWorker: ChannelActionWorker | null = null;
   private stopping = false;
 
   constructor(options: TelegramServiceOptions) {
     this.token = options.token;
-    this.defaultIdentityHandle = options.defaultIdentityHandle ?? "local";
-    this.runtimeOptions = {
+    this.options = {
       dataDir: options.dataDir,
       cwd: options.cwd,
       dbUrl: options.dbUrl,
       readOnlyDbUrl: options.readOnlyDbUrl,
       provider: options.provider,
       model: options.model,
-      agent: options.agent,
       tablePrefix: options.tablePrefix,
     };
     this.bot = new Bot<TelegramContext>(options.token);
@@ -201,37 +178,60 @@ export class TelegramService {
     };
   }
 
-  private async ensureRuntime(): Promise<TelegramRuntimeServices> {
-    if (this.runtime) {
-      return this.runtime;
+  private async ensureStores(): Promise<TelegramWorkerStores> {
+    if (this.stores) {
+      return this.stores;
     }
 
-    if (!this.runtimePromise) {
-      const { connectorKey } = await this.ensureBotIdentity();
-      this.runtimePromise = createTelegramRuntime({
-        ...this.runtimeOptions,
-        telegramConnectorKey: connectorKey,
-        telegramReactionApi: this.bot.api,
-        typingDispatcher: new ChannelTypingDispatcher([
-          createTelegramTypingAdapter({
-            api: this.bot.api,
-            connectorKey,
+    if (!this.storesPromise) {
+      this.storesPromise = (async () => {
+        const pool = createPandaPool(requirePandaDatabaseUrl(this.options.dbUrl));
+        const channelCursors = new PostgresChannelCursorStore({
+          pool,
+          tablePrefix: this.options.tablePrefix,
+        });
+        const outboundDeliveries = new PostgresOutboundDeliveryStore({
+          pool,
+          tablePrefix: this.options.tablePrefix,
+        });
+        const channelActions = new PostgresChannelActionStore({
+          pool,
+          tablePrefix: this.options.tablePrefix,
+        });
+        const requests = new PostgresPandaRuntimeRequestStore({
+          pool,
+          tablePrefix: this.options.tablePrefix,
+        });
+
+        await channelCursors.ensureSchema();
+        await outboundDeliveries.ensureSchema();
+        await channelActions.ensureSchema();
+        await requests.ensureSchema();
+
+        return {
+          pool,
+          channelCursors,
+          outboundDeliveries,
+          channelActions,
+          requests,
+          mediaStore: new FileSystemMediaStore({
+            rootDir: this.options.dataDir,
           }),
-        ]),
-      });
+        };
+      })();
     }
 
-    this.runtime = await this.runtimePromise;
-    return this.runtime;
+    this.stores = await this.storesPromise;
+    return this.stores;
   }
 
-  private ensureOutboundWorker(runtime: TelegramRuntimeServices, connectorKey: string): ChannelOutboundDeliveryWorker {
+  private ensureOutboundWorker(stores: TelegramWorkerStores, connectorKey: string): ChannelOutboundDeliveryWorker {
     if (this.outboundWorker) {
       return this.outboundWorker;
     }
 
     this.outboundWorker = new ChannelOutboundDeliveryWorker({
-      store: runtime.outboundDeliveries,
+      store: stores.outboundDeliveries,
       adapter: createTelegramOutboundAdapter({
         api: this.bot.api,
         connectorKey,
@@ -249,16 +249,55 @@ export class TelegramService {
     return this.outboundWorker;
   }
 
+  private ensureActionWorker(stores: TelegramWorkerStores, connectorKey: string): ChannelActionWorker {
+    if (this.actionWorker) {
+      return this.actionWorker;
+    }
+
+    const typingAdapter = createTelegramTypingAdapter({
+      api: this.bot.api,
+      connectorKey,
+    });
+
+    this.actionWorker = new ChannelActionWorker({
+      store: stores.channelActions,
+      lookup: {
+        channel: TELEGRAM_SOURCE,
+        connectorKey,
+      },
+      dispatch: async (action) => {
+        switch (action.kind) {
+          case "typing":
+            await typingAdapter.send(action.payload as Parameters<typeof typingAdapter.send>[0]);
+            return;
+          case "telegram_reaction":
+            await this.sendReactionAction(action.payload as TelegramReactionActionPayload);
+            return;
+          default:
+            throw new Error(`Unsupported Telegram channel action ${action.kind}.`);
+        }
+      },
+      onError: (error, actionId) => {
+        this.log("channel_action_failed", {
+          connectorKey,
+          actionId: actionId ?? null,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+
+    return this.actionWorker;
+  }
+
   private async ensureInitialized(): Promise<{
-    runtime: TelegramRuntimeServices;
+    stores: TelegramWorkerStores;
     connectorKey: string;
     botUsername: string | null;
   }> {
-    const { connectorKey, botUsername } = await this.ensureBotIdentity();
-    const runtime = await this.ensureRuntime();
-
+    const {connectorKey, botUsername} = await this.ensureBotIdentity();
+    const stores = await this.ensureStores();
     return {
-      runtime,
+      stores,
       connectorKey,
       botUsername,
     };
@@ -269,7 +308,7 @@ export class TelegramService {
     id: string;
     username?: string;
   }> {
-    const { connectorKey, id, botUsername } = await this.ensureBotIdentity();
+    const {connectorKey, id, botUsername} = await this.ensureBotIdentity();
     return {
       connectorKey,
       id,
@@ -281,24 +320,25 @@ export class TelegramService {
     this.stopping = false;
 
     try {
-      const { runtime, connectorKey, botUsername } = await this.ensureInitialized();
-      this.lock = await this.acquireConnectorLock(connectorKey, runtime);
-      await this.ensureOutboundWorker(runtime, connectorKey).start();
+      const {stores, connectorKey, botUsername} = await this.ensureInitialized();
+      this.lock = await this.acquireConnectorLock(connectorKey, stores.pool);
+      await this.ensureOutboundWorker(stores, connectorKey).start();
+      await this.ensureActionWorker(stores, connectorKey).start();
       await this.bot.api.setMyCommands([
-        { command: "start", description: "Pair this Telegram account with Panda" },
-        { command: "reset", description: "Reset Panda to a fresh empty home thread" },
+        {command: "start", description: "Pair this Telegram account with Panda"},
+        {command: "reset", description: "Reset Panda to a fresh empty home thread"},
       ]);
       this.log("run_started", {
         connectorKey,
         botUsername,
-        provider: this.runtimeOptions.provider ?? null,
-        model: this.runtimeOptions.model ?? null,
-        cwd: this.runtimeOptions.cwd,
-        dataDir: this.runtimeOptions.dataDir,
+        provider: this.options.provider ?? null,
+        model: this.options.model ?? null,
+        cwd: this.options.cwd,
+        dataDir: this.options.dataDir,
       });
 
       while (!this.stopping) {
-        const nextOffset = await this.readNextUpdateOffset(runtime, connectorKey);
+        const nextOffset = await this.readNextUpdateOffset(stores, connectorKey);
         this.pollAbortController = new AbortController();
 
         let updates;
@@ -342,9 +382,8 @@ export class TelegramService {
           }
 
           try {
-            // Only advance the Telegram cursor after the update finished end-to-end.
             await this.bot.handleUpdate(update);
-            await runtime.channelCursors.upsertChannelCursor({
+            await stores.channelCursors.upsertChannelCursor({
               source: TELEGRAM_SOURCE,
               connectorKey,
               cursorKey: TELEGRAM_UPDATES_CURSOR_KEY,
@@ -374,6 +413,11 @@ export class TelegramService {
     this.pollAbortController?.abort();
     this.pollAbortController = null;
 
+    if (this.actionWorker) {
+      await this.actionWorker.stop();
+      this.actionWorker = null;
+    }
+
     if (this.outboundWorker) {
       await this.outboundWorker.stop();
       this.outboundWorker = null;
@@ -384,31 +428,28 @@ export class TelegramService {
       this.lock = null;
     }
 
-    const runtime = this.runtime;
-    const runtimePromise = this.runtimePromise;
-    this.runtime = null;
-    this.runtimePromise = null;
+    const stores = this.stores;
+    const storesPromise = this.storesPromise;
+    this.stores = null;
+    this.storesPromise = null;
 
-    if (runtime) {
-      await runtime.close();
+    if (stores) {
+      await stores.pool.end();
       return;
     }
 
-    if (runtimePromise) {
+    if (storesPromise) {
       try {
-        const resolvedRuntime = await runtimePromise;
-        await resolvedRuntime.close();
+        const resolvedStores = await storesPromise;
+        await resolvedStores.pool.end();
       } catch {
         // Ignore bootstrap failures during shutdown.
       }
     }
   }
 
-  private async acquireConnectorLock(
-    connectorKey: string,
-    runtime: TelegramRuntimeServices,
-  ): Promise<ConnectorLock> {
-    const client = await runtime.pool.connect();
+  private async acquireConnectorLock(connectorKey: string, pool: Pool): Promise<ConnectorLock> {
+    const client = await pool.connect();
     const [keyA, keyB] = hashConnectorLockKey(TELEGRAM_SOURCE, connectorKey);
 
     try {
@@ -442,8 +483,8 @@ export class TelegramService {
     }
   }
 
-  private async readNextUpdateOffset(runtime: TelegramRuntimeServices, connectorKey: string): Promise<number | undefined> {
-    const cursor = await runtime.channelCursors.resolveChannelCursor({
+  private async readNextUpdateOffset(stores: TelegramWorkerStores, connectorKey: string): Promise<number | undefined> {
+    const cursor = await stores.channelCursors.resolveChannelCursor({
       source: TELEGRAM_SOURCE,
       connectorKey,
       cursorKey: TELEGRAM_UPDATES_CURSOR_KEY,
@@ -460,8 +501,20 @@ export class TelegramService {
     return parsed + 1;
   }
 
+  private async sendReactionAction(payload: TelegramReactionActionPayload): Promise<void> {
+    const route = parseTelegramConversationId(payload.conversationId);
+    const reactions = (payload.remove
+      ? []
+      : [{type: "emoji" as const, emoji: payload.emoji ?? ""}]) as Parameters<typeof this.bot.api.setMessageReaction>[2];
+    await this.bot.api.setMessageReaction(
+      route.chatId,
+      parseTelegramMessageId(payload.messageId),
+      reactions,
+    );
+  }
+
   private async handleMessageReaction(ctx: TelegramReactionContextLike): Promise<void> {
-    const { runtime, connectorKey } = await this.ensureInitialized();
+    const {stores, connectorKey} = await this.ensureInitialized();
     const reaction = ctx.messageReaction;
     const chatId = reaction?.chat.id;
     const chatType = reaction?.chat.type ?? null;
@@ -540,83 +593,23 @@ export class TelegramService {
       return;
     }
 
-    const binding = await runtime.identityStore.resolveIdentityBinding({
-      source: TELEGRAM_SOURCE,
-      connectorKey,
-      externalActorId: actorId,
-    });
-
-    if (!binding) {
-      this.log("reaction_dropped", {
+    const request = await stores.requests.enqueueRequest({
+      kind: "telegram_reaction",
+      payload: {
         connectorKey,
-        externalActorId: actorId,
         externalConversationId,
-        chatType,
-        reason: "unpaired_actor",
-      });
-      return;
-    }
-
-    const targetMessageId = String(reaction.message_id);
-    const syntheticExternalMessageId = `telegram-reaction:${updateId}`;
-    const text = buildTelegramReactionText({
-      connectorKey,
-      externalConversationId,
-      externalActorId: actorId,
-      externalMessageId: syntheticExternalMessageId,
-      chatId: String(chatId),
-      chatType,
-      username: reaction.user?.username,
-      firstName: reaction.user?.first_name,
-      lastName: reaction.user?.last_name,
-      targetMessageId,
-      addedEmojis,
-    });
-    const persistence = buildTelegramInboundPersistence({
-      connectorKey,
-      externalConversationId,
-      externalActorId: actorId,
-      externalMessageId: syntheticExternalMessageId,
-      chatId: String(chatId),
-      chatType,
-      messageId: null,
-      username: reaction.user?.username,
-      firstName: reaction.user?.first_name,
-      lastName: reaction.user?.last_name,
-      media: [],
-      reaction: {
+        chatId: String(chatId),
+        chatType: chatType ?? "private",
+        externalActorId: actorId,
         updateId,
-        targetMessageId,
+        targetMessageId: String(reaction.message_id),
         addedEmojis,
-        actorId,
         username: reaction.user?.username,
+        firstName: reaction.user?.first_name,
+        lastName: reaction.user?.last_name,
+        provider: this.options.provider,
+        model: this.options.model,
       },
-    });
-
-    const thread = await this.resolveOrCreateThread(binding, externalConversationId, chatId);
-    if (!thread) {
-      this.log("reaction_dropped", {
-        connectorKey,
-        externalActorId: actorId,
-        externalConversationId,
-        chatType,
-        reason: "conversation_identity_mismatch",
-      });
-      return;
-    }
-
-    await runtime.coordinator.submitInput(thread.id, {
-      source: TELEGRAM_SOURCE,
-      channelId: externalConversationId,
-      externalMessageId: syntheticExternalMessageId,
-      actorId,
-      message: stringToUserMessage(text),
-      metadata: persistence.metadata,
-    });
-    await runtime.homeThreads.rememberLastRoute({
-      identityId: thread.identityId,
-      agentKey: thread.agentKey,
-      route: persistence.rememberedRoute,
     });
 
     this.log("reaction_ingested", {
@@ -624,15 +617,15 @@ export class TelegramService {
       externalActorId: actorId,
       externalConversationId,
       chatType,
-      threadId: thread.id,
-      externalMessageId: syntheticExternalMessageId,
-      targetMessageId,
+      updateId,
+      requestId: request.id,
+      targetMessageId: String(reaction.message_id),
       addedEmojis,
     });
   }
 
   private async handleMessage(ctx: TelegramContext): Promise<void> {
-    const { runtime, connectorKey, botUsername } = await this.ensureInitialized();
+    const {stores, connectorKey, botUsername} = await this.ensureInitialized();
     const message = ctx.msg;
     const chatType = ctx.chat?.type ?? null;
     const actorId = ctx.from?.id ? String(ctx.from.id) : null;
@@ -665,50 +658,7 @@ export class TelegramService {
       return;
     }
 
-    const command = normalizeTelegramCommand(message.text, botUsername);
-    if (command === "start") {
-      await ctx.reply(
-        buildTelegramStartText({
-          actorId,
-          defaultIdentityHandle: this.defaultIdentityHandle,
-        }),
-        { parse_mode: "HTML" },
-      );
-      return;
-    }
-
-    const binding = await runtime.identityStore.resolveIdentityBinding({
-      source: TELEGRAM_SOURCE,
-      connectorKey,
-      externalActorId: actorId,
-    });
-
-    if (!binding) {
-      this.log("message_dropped", {
-        connectorKey,
-        externalActorId: actorId,
-        externalConversationId,
-        chatType,
-        reason: "unpaired_actor",
-        messageLength: messageTextLength(message),
-      });
-      return;
-    }
-
-    if (command === "new") {
-      await ctx.reply("<code>/new</code> is TUI-only. Use <code>/reset</code> here to start fresh.", {
-        parse_mode: "HTML",
-      });
-      return;
-    }
-
-    if (command === "reset") {
-      await this.handleResetCommand(ctx, binding, externalConversationId);
-      return;
-    }
-
-    const media = await this.downloadSupportedMedia(message, runtime);
-
+    const media = await this.downloadSupportedMedia(message, stores);
     const rawText = (message.text ?? message.caption)?.trim() ?? "";
     if (!rawText && media.length === 0) {
       this.log("message_dropped", {
@@ -721,60 +671,27 @@ export class TelegramService {
       return;
     }
 
-    const text = buildTelegramInboundText({
-      connectorKey,
-      externalConversationId,
-      externalActorId: actorId,
-      externalMessageId: String(message.message_id),
-      chatId: String(message.chat.id),
-      chatType,
-      text: rawText,
-      username: ctx.from?.username,
-      firstName: ctx.from?.first_name,
-      lastName: ctx.from?.last_name,
-      replyToMessageId: message.reply_to_message?.message_id
-        ? String(message.reply_to_message.message_id)
-      : undefined,
-      media,
-    });
-    const persistence = buildTelegramInboundPersistence({
-      connectorKey,
-      externalConversationId,
-      externalActorId: actorId,
-      externalMessageId: String(message.message_id),
-      chatId: String(message.chat.id),
-      chatType,
-      messageId: message.message_id,
-      username: ctx.from?.username,
-      firstName: ctx.from?.first_name,
-      lastName: ctx.from?.last_name,
-      media,
-    });
-
-    const thread = await this.resolveOrCreateThread(binding, externalConversationId, message.chat.id);
-    if (!thread) {
-      this.log("message_dropped", {
+    const request = await stores.requests.enqueueRequest({
+      kind: "telegram_message",
+      payload: {
         connectorKey,
-        externalActorId: actorId,
+        botUsername,
         externalConversationId,
-        chatType,
-        reason: "conversation_identity_mismatch",
-      });
-      return;
-    }
-
-    await runtime.coordinator.submitInput(thread.id, {
-      source: TELEGRAM_SOURCE,
-      channelId: externalConversationId,
-      externalMessageId: String(message.message_id),
-      actorId,
-      message: stringToUserMessage(text),
-      metadata: persistence.metadata,
-    });
-    await runtime.homeThreads.rememberLastRoute({
-      identityId: thread.identityId,
-      agentKey: thread.agentKey,
-      route: persistence.rememberedRoute,
+        chatId: String(message.chat.id),
+        chatType: chatType ?? "private",
+        externalActorId: actorId,
+        externalMessageId: String(message.message_id),
+        text: rawText,
+        username: ctx.from?.username,
+        firstName: ctx.from?.first_name,
+        lastName: ctx.from?.last_name,
+        replyToMessageId: message.reply_to_message?.message_id
+          ? String(message.reply_to_message.message_id)
+          : undefined,
+        media,
+        provider: this.options.provider,
+        model: this.options.model,
+      },
     });
 
     this.log("message_ingested", {
@@ -782,226 +699,16 @@ export class TelegramService {
       externalActorId: actorId,
       externalConversationId,
       chatType,
-      threadId: thread.id,
       externalMessageId: String(message.message_id),
       mediaCount: media.length,
-      textLength: text.trim().length,
-    });
-  }
-
-  private async handleResetCommand(
-    ctx: TelegramContext,
-    binding: IdentityBindingRecord,
-    externalConversationId: string,
-  ): Promise<void> {
-    const { runtime, connectorKey } = await this.ensureInitialized();
-    const chatId = ctx.chat?.id;
-    const commandExternalMessageId = ctx.msg?.message_id ? String(ctx.msg.message_id) : null;
-    if (chatId === undefined) {
-      this.log("message_dropped", {
-        connectorKey,
-        externalActorId: binding.externalActorId,
-        externalConversationId,
-        chatType: "private",
-        reason: "missing_chat_on_reset",
-      });
-      return;
-    }
-    if (!commandExternalMessageId) {
-      this.log("message_dropped", {
-        connectorKey,
-        externalActorId: binding.externalActorId,
-        externalConversationId,
-        chatType: "private",
-        reason: "missing_message_id_on_reset",
-      });
-      return;
-    }
-
-    const replayedReset = await this.resolveRetriedResetThread({
-      runtime,
-      connectorKey,
-      identityId: binding.identityId,
-      externalConversationId,
-      commandExternalMessageId,
-    });
-    if (replayedReset) {
-      this.log("thread_reset_replayed", {
-        connectorKey,
-        externalActorId: binding.externalActorId,
-        externalConversationId,
-        commandExternalMessageId,
-        homeThreadId: replayedReset.id,
-      });
-      await ctx.reply("Reset Panda. Fresh home thread started.");
-      return;
-    }
-
-    const previousHome = await this.resolveExistingHomeThread(runtime, binding.identityId);
-    const threadsToAbort = previousHome ? [previousHome.id] : [];
-    for (const threadId of threadsToAbort) {
-      await runtime.coordinator.abort(threadId, "Telegram /reset requested.");
-    }
-    for (const threadId of threadsToAbort) {
-      await runtime.coordinator.waitForCurrentRun(threadId);
-    }
-    for (const threadId of threadsToAbort) {
-      await runtime.store.discardPendingInputs(threadId);
-    }
-
-    const latestBinding = await runtime.identityStore.resolveIdentityBinding({
-      source: TELEGRAM_SOURCE,
-      connectorKey,
-      externalActorId: binding.externalActorId,
-    });
-    if (!latestBinding) {
-      this.log("message_dropped", {
-        connectorKey,
-        externalActorId: binding.externalActorId,
-        externalConversationId,
-        chatType: "private",
-        reason: "binding_missing_during_new",
-      });
-      return;
-    }
-
-    const thread = await runtime.createThread({
-      identityId: latestBinding.identityId,
-      provider: this.runtimeOptions.provider,
-      model: this.runtimeOptions.model,
-      context: {
-        source: TELEGRAM_SOURCE,
-        chatId: String(chatId),
-      },
-    });
-    // Reset mutates state outside the usual deduped input path, so keep a
-    // receipt keyed by the Telegram command message before we reply.
-    await runtime.conversationThreads.bindConversationThread({
-      source: TELEGRAM_SOURCE,
-      connectorKey,
-      externalConversationId,
-      threadId: thread.id,
-      metadata: createTelegramResetReceiptMetadata(commandExternalMessageId),
-    });
-    await runtime.setHomeThread(thread.id, thread.agentKey);
-    await runtime.homeThreads.rememberLastRoute({
-      identityId: thread.identityId,
-      agentKey: thread.agentKey,
-      route: {
-        source: TELEGRAM_SOURCE,
-        connectorKey,
-        externalConversationId,
-        externalActorId: binding.externalActorId,
-        externalMessageId: commandExternalMessageId,
-        capturedAt: Date.now(),
-      },
-    });
-
-    this.log("thread_reset", {
-      connectorKey,
-      externalActorId: binding.externalActorId,
-      externalConversationId,
-      commandExternalMessageId,
-      previousThreadId: previousHome?.id ?? null,
-      previousHomeThreadId: previousHome?.id ?? null,
-      homeThreadId: thread.id,
-    });
-
-    await ctx.reply("Reset Panda. Fresh home thread started.");
-  }
-
-  private async resolveRetriedResetThread(options: {
-    runtime: TelegramRuntimeServices;
-    connectorKey: string;
-    identityId: string;
-    externalConversationId: string;
-    commandExternalMessageId: string;
-  }): Promise<ThreadRecord | null> {
-    const existing = await options.runtime.conversationThreads.resolveConversationThread({
-      source: TELEGRAM_SOURCE,
-      connectorKey: options.connectorKey,
-      externalConversationId: options.externalConversationId,
-    });
-    const receipt = parseTelegramResetReceiptMetadata(existing?.metadata);
-    if (!existing || !receipt || receipt.commandExternalMessageId !== options.commandExternalMessageId) {
-      return null;
-    }
-
-    const currentHome = await this.resolveExistingHomeThread(options.runtime, options.identityId);
-    if (!currentHome || currentHome.id !== existing.threadId) {
-      return null;
-    }
-
-    return currentHome;
-  }
-
-  private async resolveExistingHomeThread(
-    runtime: TelegramRuntimeServices,
-    identityId: string,
-    agentKey = this.runtimeOptions.agent ?? "panda",
-  ): Promise<ThreadRecord | null> {
-    const existing = await runtime.homeThreads.resolveHomeThread({
-      identityId,
-      agentKey,
-    });
-    if (!existing) {
-      return null;
-    }
-
-    try {
-      const thread = await runtime.getThread(existing.threadId);
-      return thread.identityId === identityId ? thread : null;
-    } catch (error) {
-      if (isMissingThreadError(error, existing.threadId)) {
-        return null;
-      }
-
-      throw error;
-    }
-  }
-
-  private async resolveOrCreateThread(
-    binding: IdentityBindingRecord,
-    _externalConversationId: string,
-    chatId: number,
-  ): Promise<ThreadRecord | null> {
-    const { runtime } = await this.ensureInitialized();
-
-    // Perf: private Telegram chats use the home-thread pointer now, so checking
-    // conversation_threads here is just an extra DB miss on every DM. Keep the
-    // old lookup commented for future group-chat support, where per-conversation
-    // routing will matter again.
-    // const { connectorKey } = await this.ensureInitialized();
-    // const existing = await runtime.conversationThreads.resolveConversationThread({
-    //   source: TELEGRAM_SOURCE,
-    //   connectorKey,
-    //   externalConversationId,
-    // });
-    //
-    // if (existing) {
-    //   const thread = await runtime.getThread(existing.threadId);
-    //   if (thread.identityId !== binding.identityId) {
-    //     return null;
-    //   }
-    //
-    //   return thread;
-    // }
-
-    return await runtime.resolveOrCreateHomeThread({
-      identityId: binding.identityId,
-      agentKey: runtime.agentKey,
-      provider: this.runtimeOptions.provider,
-      model: this.runtimeOptions.model,
-      context: {
-        source: TELEGRAM_SOURCE,
-        chatId: String(chatId),
-      },
+      textLength: messageTextLength(message),
+      requestId: request.id,
     });
   }
 
   private async downloadSupportedMedia(
     message: TelegramContext["msg"],
-    runtime: TelegramRuntimeServices,
+    stores: TelegramWorkerStores,
   ): Promise<readonly MediaDescriptor[]> {
     if (!message) {
       return [];
@@ -1012,7 +719,7 @@ export class TelegramService {
     const photo = message.photo?.at(-1);
     if (photo) {
       descriptors.push(await this.downloadFile({
-        runtime,
+        stores,
         fileId: photo.file_id,
         mimeType: "image/jpeg",
         sizeBytes: photo.file_size,
@@ -1021,7 +728,7 @@ export class TelegramService {
 
     if (message.document) {
       descriptors.push(await this.downloadFile({
-        runtime,
+        stores,
         fileId: message.document.file_id,
         mimeType: message.document.mime_type ?? "application/octet-stream",
         sizeBytes: message.document.file_size,
@@ -1031,7 +738,7 @@ export class TelegramService {
 
     if (message.voice) {
       descriptors.push(await this.downloadFile({
-        runtime,
+        stores,
         fileId: message.voice.file_id,
         mimeType: message.voice.mime_type ?? "audio/ogg",
         sizeBytes: message.voice.file_size,
@@ -1042,7 +749,7 @@ export class TelegramService {
   }
 
   private async downloadFile(options: {
-    runtime: TelegramRuntimeServices;
+    stores: TelegramWorkerStores;
     fileId: string;
     mimeType: string;
     sizeBytes?: number;
@@ -1059,7 +766,7 @@ export class TelegramService {
     }
 
     const bytes = new Uint8Array(await response.arrayBuffer());
-    return options.runtime.mediaStore.writeMedia({
+    return options.stores.mediaStore.writeMedia({
       bytes,
       source: TELEGRAM_SOURCE,
       connectorKey: this.connectorKey ?? "unknown",

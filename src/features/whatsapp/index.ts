@@ -26,7 +26,6 @@ export {
   type CreateWhatsAppTypingAdapterOptions,
 } from "./typing.js";
 export { createWhatsAppOutboundAdapter, type CreateWhatsAppOutboundAdapterOptions } from "./outbound.js";
-export { createWhatsAppRuntime, type WhatsAppRuntimeOptions, type WhatsAppRuntimeServices } from "./runtime.js";
 export {
   WhatsAppService,
   type WhatsAppPairResult,

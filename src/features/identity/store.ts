@@ -5,11 +5,13 @@ import type {
   IdentityBindingLookup,
   IdentityBindingRecord,
   IdentityRecord,
+  UpdateIdentityInput,
 } from "./types.js";
 
 export interface IdentityStore {
   createIdentity(input: CreateIdentityInput): Promise<IdentityRecord>;
   ensureIdentity(input: CreateIdentityInput): Promise<IdentityRecord>;
+  updateIdentity(input: UpdateIdentityInput): Promise<IdentityRecord>;
   getIdentity(identityId: string): Promise<IdentityRecord>;
   getIdentityByHandle(handle: string): Promise<IdentityRecord>;
   listIdentities(): Promise<readonly IdentityRecord[]>;

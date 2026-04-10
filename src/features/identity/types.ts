@@ -1,4 +1,4 @@
-import type { JsonValue } from "../agent-core/types.js";
+import type {JsonValue} from "../agent-core/types.js";
 
 export const DEFAULT_IDENTITY_ID = "local";
 export const DEFAULT_IDENTITY_HANDLE = "local";
@@ -10,6 +10,7 @@ export interface CreateIdentityInput {
   id: string;
   handle: string;
   displayName: string;
+  defaultAgentKey?: string;
   status?: IdentityStatus;
   metadata?: JsonValue;
 }
@@ -18,6 +19,11 @@ export interface IdentityRecord extends CreateIdentityInput {
   status: IdentityStatus;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface UpdateIdentityInput {
+  identityId: string;
+  defaultAgentKey?: string | null;
 }
 
 export interface IdentityBindingLookup {
