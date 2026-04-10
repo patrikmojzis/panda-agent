@@ -172,12 +172,21 @@ function fitRowsToByteBudget(
   };
 }
 
-function readScope(context: unknown): { agentKey: string } {
-  if (!isRecord(context) || typeof context.agentKey !== "string" || !context.agentKey.trim()) {
-    throw new ToolError("The readonly Postgres tool is only available inside a persisted Panda thread.");
+function readScope(context: unknown): { identityId: string; agentKey: string } {
+  if (
+    !isRecord(context)
+    || typeof context.identityId !== "string"
+    || !context.identityId.trim()
+    || typeof context.agentKey !== "string"
+    || !context.agentKey.trim()
+  ) {
+    throw new ToolError(
+      "The readonly Postgres tool requires both identityId and agentKey in the persisted Panda thread context.",
+    );
   }
 
   return {
+    identityId: context.identityId,
     agentKey: context.agentKey,
   };
 }
@@ -216,7 +225,7 @@ export class PostgresReadonlyQueryTool<TContext = PandaSessionContext>
     args: z.output<typeof PostgresReadonlyQueryTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
-    const { agentKey } = readScope(run.context);
+    const { identityId, agentKey } = readScope(run.context);
     const sql = assertReadonlySql(args.sql);
     const limitedSql = `SELECT * FROM (${sql}) AS panda_readonly_query LIMIT ${this.maxRows + 1}`;
     const client = await this.pool.connect();
@@ -227,6 +236,7 @@ export class PostgresReadonlyQueryTool<TContext = PandaSessionContext>
       await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
       await client.query(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT_MS}ms'`);
       await client.query(`SET LOCAL idle_in_transaction_session_timeout = '${IDLE_TX_TIMEOUT_MS}ms'`);
+      await client.query("SELECT set_config('panda.identity_id', $1, true)", [identityId]);
       await client.query("SELECT set_config('panda.agent_key', $1, true)", [agentKey]);
 
       const result = await client.query(limitedSql);

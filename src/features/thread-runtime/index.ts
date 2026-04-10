@@ -16,7 +16,11 @@ export {
 } from "./postgres-readonly.js";
 export type { ReadonlyChatViewNames } from "./postgres-readonly.js";
 export {
+  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+  AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
+  AUTO_COMPACT_TRIGGER_BUFFER_TOKENS,
   DEFAULT_COMPACT_PRESERVED_USER_TURNS,
+  compactThread,
   createCompactBoundaryMessage,
   estimateTranscriptTokens,
   formatTranscriptForCompaction,
@@ -26,13 +30,17 @@ export {
   projectTranscriptForRun,
   splitTranscriptForCompaction,
   type CompactBoundaryMetadata,
+  type CompactThreadOptions,
+  type CompactThreadResult,
   type CompactTranscriptSplit,
 } from "./compaction.js";
 export {
+  type AutoCompactionRuntimeState,
   type CreateThreadInput,
   isMissingThreadError,
   missingThreadError,
   type ResolvedThreadDefinition,
+  type ThreadRuntimeState,
   type ThreadDefinitionResolver,
   type ThreadInputPayload,
   type ThreadInputDeliveryMode,

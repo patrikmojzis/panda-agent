@@ -8,6 +8,17 @@ import type { ProviderName, JsonValue } from "../agent-core/types.js";
 import type { LlmRuntime } from "../agent-core/runtime.js";
 import type { RunPipeline } from "../agent-core/run-pipeline.js";
 
+export interface AutoCompactionRuntimeState {
+  consecutiveFailures: number;
+  lastFailureReason?: string;
+  lastFailureAt?: number;
+  cooldownUntil?: number;
+}
+
+export interface ThreadRuntimeState {
+  autoCompaction?: AutoCompactionRuntimeState;
+}
+
 export interface CreateThreadInput {
   id: string;
   identityId?: string;
@@ -15,6 +26,7 @@ export interface CreateThreadInput {
   systemPrompt?: string | ReadonlyArray<string>;
   maxTurns?: number;
   context?: JsonValue;
+  runtimeState?: ThreadRuntimeState;
   maxInputTokens?: number;
   promptCacheKey?: string;
   provider?: ProviderName;
@@ -23,8 +35,9 @@ export interface CreateThreadInput {
   thinking?: ThinkingLevel;
 }
 
-export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "identityId" | "thinking">> & {
+export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "identityId" | "thinking" | "runtimeState">> & {
   thinking?: ThinkingLevel | null;
+  runtimeState?: ThreadRuntimeState | null;
 };
 
 export interface ThreadRecord extends Omit<CreateThreadInput, "identityId"> {

@@ -204,10 +204,14 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     const nextThinking = update.thinking === undefined
       ? thread.thread.thinking
       : update.thinking ?? undefined;
+    const nextRuntimeState = update.runtimeState === undefined
+      ? thread.thread.runtimeState
+      : update.runtimeState ?? undefined;
     thread.thread = {
       ...thread.thread,
       ...update,
       thinking: nextThinking,
+      runtimeState: nextRuntimeState,
       id: thread.thread.id,
       updatedAt: Date.now(),
     };

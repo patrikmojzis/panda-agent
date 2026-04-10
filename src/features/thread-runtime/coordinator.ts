@@ -1,9 +1,11 @@
 import type { Message } from "@mariozechner/pi-ai";
 
 import { Thread } from "../agent-core/thread.js";
+import { getProviderConfig, type ProviderName } from "../agent-core/provider.js";
 import type { ThreadRunEvent } from "../agent-core/types.js";
 import { stringifyUnknown } from "../agent-core/helpers/stringify.js";
 import type {
+  AutoCompactionRuntimeState,
   ResolvedThreadDefinition,
   ThreadDefinitionResolver,
   ThreadInputPayload,
@@ -12,7 +14,17 @@ import type {
   ThreadRunRecord,
 } from "./types.js";
 import type { ThreadRuntimeStore } from "./store.js";
-import { projectTranscriptForRun } from "./compaction.js";
+import {
+  appendCompactionFailureNotice,
+  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+  AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
+  compactThread,
+  estimateTranscriptTokens,
+  projectTranscriptForRun,
+  readAutoCompactionRuntimeState,
+  shouldAutoCompactThread,
+  updateAutoCompactionRuntimeState,
+} from "./compaction.js";
 
 export type ThreadWakeMode = "wake" | "queue";
 const ABORT_POLL_MS = 250;
@@ -122,6 +134,19 @@ function buildRunContextValue(
     currentInput,
   };
 }
+
+type AutoCompactionPreflightResult =
+  | {
+    action: "continue";
+    thread: ThreadRecord;
+  }
+  | {
+    action: "restart";
+  }
+  | {
+    action: "skip";
+    reason: string;
+  };
 
 export class ThreadRuntimeCoordinator {
   private readonly store: ThreadRuntimeStore;
@@ -355,6 +380,153 @@ export class ThreadRuntimeCoordinator {
     };
   }
 
+  private resolveModelConfig(
+    thread: ThreadRecord,
+    definition: ResolvedThreadDefinition,
+  ): {
+    providerName: ProviderName;
+    model: string;
+    thinking: ThreadRecord["thinking"];
+  } {
+    const providerName = (definition.provider ?? thread.provider ?? "openai") as ProviderName;
+    return {
+      providerName,
+      model: definition.model ?? thread.model ?? getProviderConfig(providerName).defaultModel,
+      thinking: definition.thinking ?? thread.thinking,
+    };
+  }
+
+  private async setAutoCompactionState(
+    thread: ThreadRecord,
+    next: AutoCompactionRuntimeState | null,
+  ): Promise<ThreadRecord> {
+    const runtimeState = updateAutoCompactionRuntimeState(thread, next);
+    return this.store.updateThread(thread.id, { runtimeState: runtimeState ?? null });
+  }
+
+  private async clearAutoCompactionState(thread: ThreadRecord): Promise<ThreadRecord> {
+    const state = readAutoCompactionRuntimeState(thread);
+    if (
+      state.consecutiveFailures === 0
+      && state.lastFailureReason === undefined
+      && state.lastFailureAt === undefined
+      && state.cooldownUntil === undefined
+    ) {
+      return thread;
+    }
+
+    return this.setAutoCompactionState(thread, null);
+  }
+
+  private async recordAutoCompactionFailure(options: {
+    thread: ThreadRecord;
+    run: ThreadRunRecord;
+    reason: string;
+    now: number;
+  }): Promise<ThreadRecord> {
+    const currentState = readAutoCompactionRuntimeState(options.thread);
+    const consecutiveFailures = currentState.consecutiveFailures + 1;
+    const cooldownUntil = consecutiveFailures >= AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD
+      ? options.now + AUTO_COMPACT_BREAKER_COOLDOWN_MS
+      : undefined;
+
+    const nextState: AutoCompactionRuntimeState = {
+      consecutiveFailures,
+      lastFailureReason: options.reason,
+      lastFailureAt: options.now,
+      cooldownUntil,
+    };
+
+    const updatedThread = await this.setAutoCompactionState(options.thread, nextState);
+    await appendCompactionFailureNotice({
+      store: this.store,
+      threadId: updatedThread.id,
+      reason: options.reason,
+      consecutiveFailures,
+      cooldownUntil,
+      runId: options.run.id,
+    });
+
+    return updatedThread;
+  }
+
+  private async handleAutoCompactionPreflight(options: {
+    run: ThreadRunRecord;
+    thread: ThreadRecord;
+    definition: ResolvedThreadDefinition;
+    transcript: readonly ThreadMessageRecord[];
+  }): Promise<AutoCompactionPreflightResult> {
+    let thread = options.thread;
+    const now = Date.now();
+    const currentState = readAutoCompactionRuntimeState(thread);
+    if (currentState.cooldownUntil !== undefined && currentState.cooldownUntil <= now) {
+      thread = await this.clearAutoCompactionState(thread);
+    }
+
+    const transcriptTokens = estimateTranscriptTokens(options.transcript);
+    const autoCompactCheck = shouldAutoCompactThread({
+      thread,
+      transcriptTokens,
+      now,
+    });
+    if (!autoCompactCheck.shouldCompact) {
+      if (autoCompactCheck.cooldownUntil === undefined) {
+        return { action: "continue", thread };
+      }
+
+      const failureState = readAutoCompactionRuntimeState(thread);
+      const reason = failureState.lastFailureReason ?? "Auto-compaction is cooling down after repeated failures.";
+      // The failure that opened cooldown already wrote a visible notice. Re-appending
+      // it on every wake just bloats the transcript that compaction is trying to save.
+      return {
+        action: "skip",
+        reason: `Auto-compaction is paused until ${new Date(autoCompactCheck.cooldownUntil).toISOString()}. ${reason}`,
+      };
+    }
+
+    const modelConfig = this.resolveModelConfig(thread, options.definition);
+
+    try {
+      const compacted = await compactThread({
+        store: this.store,
+        thread,
+        transcript: options.transcript,
+        providerName: modelConfig.providerName,
+        model: modelConfig.model,
+        thinking: modelConfig.thinking,
+        trigger: "auto",
+      });
+
+      if (!compacted) {
+        const updatedThread = await this.recordAutoCompactionFailure({
+          thread,
+          run: options.run,
+          reason: "Not enough older context to compact while preserving the recent turns.",
+          now,
+        });
+        return {
+          action: "skip",
+          reason: `Auto-compaction failed for thread ${updatedThread.id}: not enough older context to preserve the recent turns.`,
+        };
+      }
+
+      await this.clearAutoCompactionState(thread);
+      return { action: "restart" };
+    } catch (error) {
+      const reason = stringifyUnknown(error, { preferErrorMessage: true });
+      await this.recordAutoCompactionFailure({
+        thread,
+        run: options.run,
+        reason,
+        now,
+      });
+      return {
+        action: "skip",
+        reason: `Auto-compaction failed for thread ${thread.id}: ${reason}`,
+      };
+    }
+  }
+
   private async runUntilIdle(threadId: string): Promise<boolean> {
     const lease = await this.leaseManager.tryAcquire(threadId);
     if (!lease) {
@@ -373,6 +545,7 @@ export class ThreadRuntimeCoordinator {
 
     let finishedRun: ThreadRunRecord | null = null;
     let restartRequested = false;
+    let skippedRun = false;
 
     try {
       while (true) {
@@ -389,7 +562,26 @@ export class ThreadRuntimeCoordinator {
         const thread = await this.store.getThread(threadId);
         const definition = await this.resolveDefinition(thread);
         const transcript = projectTranscriptForRun(await this.store.loadTranscript(threadId));
-        const executor = new Thread(this.buildThreadOptions(run, thread, definition, transcript, controller.signal));
+        const preflight = await this.handleAutoCompactionPreflight({
+          run,
+          thread,
+          definition,
+          transcript,
+        });
+        if (preflight.action === "restart") {
+          continue;
+        }
+
+        if (preflight.action === "skip") {
+          finishedRun = await this.store.failRunIfRunning(run.id, preflight.reason)
+            ?? await this.store.getRun(run.id);
+          skippedRun = true;
+          break;
+        }
+
+        const executor = new Thread(
+          this.buildThreadOptions(run, preflight.thread, definition, transcript, controller.signal),
+        );
 
         for await (const event of executor.run()) {
           if (isPersistedThreadMessage(event)) {
@@ -413,7 +605,9 @@ export class ThreadRuntimeCoordinator {
         }
       }
 
-      finishedRun = await this.store.completeRun(run.id);
+      if (!skippedRun) {
+        finishedRun = await this.store.completeRun(run.id);
+      }
     } catch (error) {
       finishedRun = await this.store.failRunIfRunning(run.id, stringifyUnknown(error, { preferErrorMessage: true }))
         ?? await this.store.getRun(run.id);

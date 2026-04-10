@@ -5,11 +5,9 @@ import { stdin as input, stdout as output } from "node:process";
 
 import {
   assertProviderName,
-  estimateTokensFromString,
   formatProviderNameList,
   getProviderConfig,
   parseProviderName,
-  PiAiRuntime,
   resolveProviderApiKey,
   Tool,
   stringToUserMessage,
@@ -90,18 +88,10 @@ import {
 } from "./screen.js";
 import { stripAnsi, theme } from "./theme.js";
 import {
-  DEFAULT_COMPACT_PRESERVED_USER_TURNS,
-  createCompactBoundaryMessage,
-  estimateTranscriptTokens,
-  formatTranscriptForCompaction,
-  getCompactPrompt,
+  compactThread,
   isMissingThreadError,
-  parseCompactSummary,
-  projectTranscriptForRun,
-  splitTranscriptForCompaction,
 } from "../thread-runtime/index.js";
 import type {
-  CompactBoundaryMetadata,
   ThreadMessageRecord,
   ThreadRecord,
   ThreadRunRecord,
@@ -629,36 +619,6 @@ export class PandaChatApp {
     return String(tokens);
   }
 
-  private async requestCompactSummary(options: {
-    providerName: ProviderName;
-    model: string;
-    thinking?: ThinkingLevel;
-    compactionInput: string;
-    customInstructions: string;
-    maxSummaryTokens?: number;
-  }): Promise<string> {
-    const runtime = new PiAiRuntime();
-    const response = await runtime.complete({
-      providerName: options.providerName,
-      model: options.model,
-      thinking: options.thinking,
-      context: {
-        systemPrompt: getCompactPrompt(options.customInstructions, options.maxSummaryTokens),
-        messages: [stringToUserMessage(options.compactionInput)],
-      },
-    });
-
-    const rawSummary = response.content.flatMap((part) => {
-      return part.type === "text" && part.text.trim() ? [part.text.trim()] : [];
-    }).join("\n\n");
-    const summary = parseCompactSummary(rawSummary);
-    if (!summary) {
-      throw new Error("Compaction returned an empty summary.");
-    }
-
-    return summary;
-  }
-
   private async compactCurrentThread(customInstructions: string): Promise<void> {
     if (!this.currentThreadId) {
       throw new Error("No active thread to compact.");
@@ -687,27 +647,6 @@ export class PandaChatApp {
         throw new Error("Thread is already active. Abort or wait before compacting.");
       }
 
-      const transcript = await store.loadTranscript(threadId);
-      const activeTranscript = projectTranscriptForRun(transcript);
-      const split = splitTranscriptForCompaction(activeTranscript);
-
-      if (!split) {
-        return null;
-      }
-
-      const compactionInput = formatTranscriptForCompaction(split.summaryRecords).trim();
-      if (!compactionInput) {
-        return null;
-      }
-
-      const preservedTailTokens = estimateTranscriptTokens(split.preservedTail);
-      const summaryTokenBudget = thread.maxInputTokens === undefined
-        ? undefined
-        : thread.maxInputTokens - preservedTailTokens;
-      if (summaryTokenBudget !== undefined && summaryTokenBudget <= 0) {
-        throw new Error("Recent context already fills the input budget, so compact cannot preserve the recent turns verbatim.");
-      }
-
       this.currentThread = thread;
       this.providerName = providerName;
       this.model = model;
@@ -715,41 +654,22 @@ export class PandaChatApp {
       this.setNotice("Compacting conversation...", "info");
       this.requestRender();
 
-      const summary = await this.requestCompactSummary({
+      const compacted = await compactThread({
+        store,
+        thread,
         providerName,
         model,
         thinking,
-        compactionInput,
         customInstructions,
-        maxSummaryTokens: summaryTokenBudget,
+        trigger: "manual",
       });
-
-      const compactMessage = createCompactBoundaryMessage(summary);
-      const summaryTokens = estimateTokensFromString(JSON.stringify(compactMessage));
-      if (summaryTokenBudget !== undefined && summaryTokens > summaryTokenBudget) {
-        throw new Error("Compaction summary was too large to fit alongside the preserved recent turns. Try stricter instructions or raise maxInputTokens.");
+      if (!compacted) {
+        return null;
       }
 
-      const tokensBefore = estimateTranscriptTokens(activeTranscript);
-      const tokensAfter = summaryTokens + preservedTailTokens;
-      const metadata: CompactBoundaryMetadata = {
-        kind: "compact_boundary",
-        compactedUpToSequence: split.compactedUpToSequence,
-        preservedTailUserTurns: DEFAULT_COMPACT_PRESERVED_USER_TURNS,
-        trigger: "manual",
-        tokensBefore,
-        tokensAfter,
-      };
-
-      await store.appendRuntimeMessage(threadId, {
-        message: compactMessage,
-        source: "compact",
-        metadata,
-      });
-
       return {
-        tokensBefore,
-        tokensAfter,
+        tokensBefore: compacted.tokensBefore,
+        tokensAfter: compacted.tokensAfter,
       };
     });
 

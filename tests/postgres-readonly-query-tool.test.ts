@@ -46,12 +46,14 @@ class FakeReadonlyClient {
 
 class FakeReadonlyPool {
   readonly client: FakeReadonlyClient;
+  connectCalls = 0;
 
   constructor(rows: readonly Record<string, unknown>[] = [], failingSql?: string) {
     this.client = new FakeReadonlyClient(rows, failingSql);
   }
 
   async connect(): Promise<FakeReadonlyClient> {
+    this.connectCalls += 1;
     return this.client;
   }
 }
@@ -95,7 +97,7 @@ describe("PostgresReadonlyQueryTool", () => {
     });
   });
 
-  it("runs queries inside a read-only transaction and scopes them by agent key", async () => {
+  it("runs queries inside a read-only transaction and scopes them by identity and agent", async () => {
     const pool = new FakeReadonlyPool([{
       thread_id: "thread-1",
       created_at: new Date("2026-04-08T09:00:00.000Z"),
@@ -116,6 +118,7 @@ describe("PostgresReadonlyQueryTool", () => {
     const result = await tool.run(
       { sql: "select * from panda_messages order by created_at desc limit 5" },
       createRunContext({
+        identityId: "identity-alice",
         threadId: "thread-1",
         agentKey: "panda",
       }),
@@ -138,11 +141,13 @@ describe("PostgresReadonlyQueryTool", () => {
       "SET LOCAL statement_timeout = '5000ms'",
       "SET LOCAL lock_timeout = '500ms'",
       "SET LOCAL idle_in_transaction_session_timeout = '5000ms'",
+      "SELECT set_config('panda.identity_id', $1, true)",
       "SELECT set_config('panda.agent_key', $1, true)",
       "SELECT * FROM (select * from panda_messages order by created_at desc limit 5) AS panda_readonly_query LIMIT 51",
       "COMMIT",
     ]);
-    expect(pool.client.queries[4]?.values).toEqual(["panda"]);
+    expect(pool.client.queries[4]?.values).toEqual(["identity-alice"]);
+    expect(pool.client.queries[5]?.values).toEqual(["panda"]);
   });
 
   it("rejects non-read-only SQL and multiple statements", async () => {
@@ -150,6 +155,7 @@ describe("PostgresReadonlyQueryTool", () => {
       pool: new FakeReadonlyPool(),
     });
     const context = createRunContext({
+      identityId: "identity-alice",
       threadId: "thread-1",
       agentKey: "panda",
     });
@@ -179,6 +185,7 @@ describe("PostgresReadonlyQueryTool", () => {
     const result = await tool.run(
       { sql: "select * from panda_threads order by updated_at desc limit 10" },
       createRunContext({
+        identityId: "identity-alice",
         threadId: "thread-1",
         agentKey: "panda",
       }),
@@ -208,6 +215,7 @@ describe("PostgresReadonlyQueryTool", () => {
     const result = await tool.run(
       { sql: "select * from panda_messages_raw limit 1" },
       createRunContext({
+        identityId: "identity-alice",
         threadId: "thread-1",
         agentKey: "panda",
       }),
@@ -230,12 +238,33 @@ describe("PostgresReadonlyQueryTool", () => {
     await expect(tool.run(
       { sql },
       createRunContext({
+        identityId: "identity-alice",
         threadId: "thread-1",
         agentKey: "panda",
       }),
     )).rejects.toBeInstanceOf(ToolError);
 
     expect(pool.client.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("fails fast when identityId is missing from the thread context", async () => {
+    const pool = new FakeReadonlyPool();
+    const tool = new PostgresReadonlyQueryTool({
+      pool,
+    });
+
+    await expect(tool.run(
+      { sql: "select * from panda_threads limit 1" },
+      createRunContext({
+        threadId: "thread-1",
+        agentKey: "panda",
+      }),
+    )).rejects.toThrow(
+      "The readonly Postgres tool requires both identityId and agentKey in the persisted Panda thread context.",
+    );
+
+    expect(pool.connectCalls).toBe(0);
+    expect(pool.client.queries).toEqual([]);
   });
 
   it("reads usernames from postgres urls when present", () => {

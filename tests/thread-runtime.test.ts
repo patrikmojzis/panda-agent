@@ -1,10 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 
 import {
   Agent,
+  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
   createCompactBoundaryMessage,
   DEFAULT_IDENTITY_ID,
+  PiAiRuntime,
   Thread,
   ThreadRuntimeCoordinator,
   type ThreadMessageRecord,
@@ -34,6 +36,12 @@ function createDeferred<T>() {
     reject,
   };
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  vi.useRealTimers();
+});
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
   const startedAt = Date.now();
@@ -177,6 +185,21 @@ class CompleteRunBlockingStore extends TestThreadRuntimeStore {
   }
 }
 
+class FailRunBlockingStore extends TestThreadRuntimeStore {
+  constructor(
+    private readonly entered: ReturnType<typeof createDeferred<void>>,
+    private readonly release: ReturnType<typeof createDeferred<void>>,
+  ) {
+    super();
+  }
+
+  override async failRunIfRunning(runId: string, error?: string) {
+    this.entered.resolve();
+    await this.release.promise;
+    return super.failRunIfRunning(runId, error);
+  }
+}
+
 class DeferredRuntime implements LlmRuntime {
   readonly complete = vi.fn(async () => {
     const next = this.responses.shift();
@@ -232,6 +255,36 @@ class TestThreadDefinitionRegistry {
 
     return Promise.resolve(resolver(thread));
   }
+}
+
+async function seedAutoCompactionTranscript(store: TestThreadRuntimeStore, threadId: string): Promise<void> {
+  await store.enqueueInput(threadId, {
+    message: stringToUserMessage("old request " + "a".repeat(600)),
+    source: "telegram",
+  });
+  await store.applyPendingInputs(threadId);
+  await store.appendRuntimeMessage(threadId, {
+    message: message("old reply"),
+    source: "assistant",
+  });
+  await store.enqueueInput(threadId, {
+    message: stringToUserMessage("keep one"),
+    source: "telegram",
+  });
+  await store.applyPendingInputs(threadId);
+  await store.appendRuntimeMessage(threadId, {
+    message: message("reply one"),
+    source: "assistant",
+  });
+  await store.enqueueInput(threadId, {
+    message: stringToUserMessage("keep two"),
+    source: "telegram",
+  });
+  await store.applyPendingInputs(threadId);
+  await store.appendRuntimeMessage(threadId, {
+    message: message("reply two"),
+    source: "assistant",
+  });
 }
 
 describe("ThreadRuntimeCoordinator", () => {
@@ -668,6 +721,319 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(sentMessages?.map((entry: { role: string; content?: unknown }) => {
       return entry.role === "user" && typeof entry.content === "string" ? entry.content : "";
     }).join("\n")).toContain("new request");
+  });
+
+  it("does not auto-compact threads that are safely under budget", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+
+    const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
+      message("<summary>\nIntent:\n- should not run\n</summary>"),
+    );
+    const runtime = createMockRuntime(message("small thread reply"));
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("small-agent", {
+      agent: new Agent({
+        name: "small-agent",
+        instructions: "Reply briefly",
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-auto-compact-under",
+      agentKey: "small-agent",
+      maxInputTokens: 1_000,
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-auto-compact-under", {
+      message: stringToUserMessage("hello"),
+      source: "tui",
+    });
+    await coordinator.waitForIdle("thread-auto-compact-under");
+
+    expect(compactRuntime).not.toHaveBeenCalled();
+    expect(runtime.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-compacts risky threads before the model call", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+
+    const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
+      message("<summary>\nIntent:\n- continue the recent work\n</summary>"),
+    );
+    const runtime = createMockRuntime(message("after auto compact"));
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("auto-compact-agent", {
+      agent: new Agent({
+        name: "auto-compact-agent",
+        instructions: "Reply briefly",
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-auto-compact",
+      agentKey: "auto-compact-agent",
+      maxInputTokens: 350,
+    });
+    await seedAutoCompactionTranscript(store, "thread-auto-compact");
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-auto-compact", {
+      message: stringToUserMessage("new request"),
+      source: "tui",
+    });
+    await coordinator.waitForIdle("thread-auto-compact");
+
+    expect(compactRuntime).toHaveBeenCalledTimes(1);
+    expect(runtime.complete).toHaveBeenCalledTimes(1);
+
+    const request = runtime.complete.mock.calls[0]?.[0];
+    const sentMessages = request?.context.messages;
+    expect(sentMessages?.[0]).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("Conversation compacted"),
+    });
+    const combinedUserText = sentMessages?.map((entry: { role: string; content?: unknown }) => {
+      return entry.role === "user" && typeof entry.content === "string" ? entry.content : "";
+    }).join("\n") ?? "";
+    expect(combinedUserText).not.toContain("old request");
+    expect(combinedUserText).toContain("keep one");
+    expect(combinedUserText).toContain("new request");
+
+    const transcript = await store.loadTranscript("thread-auto-compact");
+    expect(transcript.some((entry) => entry.source === "compact")).toBe(true);
+    expect(transcript.findLast((entry) => entry.source === "compact")?.metadata).toMatchObject({
+      kind: "compact_boundary",
+      trigger: "auto",
+    });
+  });
+
+  it("skips the turn and records failure state when auto-compaction fails", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+
+    const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
+      message(`<summary>\nIntent:\n- ${"x".repeat(8_000)}\n</summary>`),
+    );
+    const runtime = createMockRuntime(message("should not run"));
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("auto-compact-fail-agent", {
+      agent: new Agent({
+        name: "auto-compact-fail-agent",
+        instructions: "Reply briefly",
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-auto-compact-fail",
+      agentKey: "auto-compact-fail-agent",
+      maxInputTokens: 350,
+    });
+    await seedAutoCompactionTranscript(store, "thread-auto-compact-fail");
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-auto-compact-fail", {
+      message: stringToUserMessage("new request"),
+      source: "tui",
+    });
+    await coordinator.waitForIdle("thread-auto-compact-fail");
+
+    expect(compactRuntime).toHaveBeenCalledTimes(1);
+    expect(runtime.complete).not.toHaveBeenCalled();
+
+    const [run] = await store.listRuns("thread-auto-compact-fail");
+    expect(run?.status).toBe("failed");
+    expect(run?.error).toContain("Auto-compaction failed");
+
+    const thread = await store.getThread("thread-auto-compact-fail");
+    expect(thread.runtimeState?.autoCompaction).toMatchObject({
+      consecutiveFailures: 1,
+    });
+
+    const transcript = await store.loadTranscript("thread-auto-compact-fail");
+    expect(transcript.at(-1)).toMatchObject({
+      source: "compact",
+      metadata: expect.objectContaining({
+        kind: "compact_failure_notice",
+        trigger: "auto",
+        consecutiveFailures: 1,
+      }),
+      message: expect.objectContaining({
+        role: "assistant",
+      }),
+    });
+  });
+
+  it("restarts after a new wake arrives during auto-compaction failure handling", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+
+    const enteredFailRun = createDeferred<void>();
+    const releaseFailRun = createDeferred<void>();
+    const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete")
+      .mockResolvedValueOnce(message(`<summary>\nIntent:\n- ${"x".repeat(8_000)}\n</summary>`));
+    const runtime = createMockRuntime(message("after retry"));
+    const store = new FailRunBlockingStore(enteredFailRun, releaseFailRun);
+    const registry = new TestThreadDefinitionRegistry().register("auto-compact-retry-agent", {
+      agent: new Agent({
+        name: "auto-compact-retry-agent",
+        instructions: "Reply briefly",
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-auto-compact-retry",
+      agentKey: "auto-compact-retry-agent",
+      maxInputTokens: 350,
+    });
+    await seedAutoCompactionTranscript(store, "thread-auto-compact-retry");
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-auto-compact-retry", {
+      message: stringToUserMessage("first risky request"),
+      source: "tui",
+    });
+
+    await enteredFailRun.promise;
+
+    await coordinator.submitInput("thread-auto-compact-retry", {
+      message: stringToUserMessage("second risky request"),
+      source: "telegram",
+    });
+
+    await store.updateThread("thread-auto-compact-retry", { maxInputTokens: 5_000 });
+    releaseFailRun.resolve();
+    await coordinator.waitForIdle("thread-auto-compact-retry");
+
+    expect(compactRuntime).toHaveBeenCalledTimes(1);
+    expect(runtime.complete).toHaveBeenCalledTimes(1);
+
+    const runs = await store.listRuns("thread-auto-compact-retry");
+    expect(runs.map((run) => run.status)).toEqual(["failed", "completed"]);
+
+    const transcript = await store.loadTranscript("thread-auto-compact-retry");
+    expect(transcript.some((entry) => entry.origin === "input" && entry.source === "telegram")).toBe(true);
+    expect(transcript.at(-1)?.message).toMatchObject({
+      role: "assistant",
+      content: [{ type: "text", text: "after retry" }],
+    });
+    expect(await store.hasRunnableInputs("thread-auto-compact-retry")).toBe(false);
+  });
+
+  it("opens a cooldown breaker after repeated auto-compaction failures and retries after cooldown", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-09T10:00:00.000Z"));
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+
+    const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
+      message(`<summary>\nIntent:\n- ${"x".repeat(8_000)}\n</summary>`),
+    );
+    const runtime = createMockRuntime(message("should not run"));
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("auto-compact-breaker-agent", {
+      agent: new Agent({
+        name: "auto-compact-breaker-agent",
+        instructions: "Reply briefly",
+      }),
+      runtime,
+    });
+
+    await store.createThread({
+      id: "thread-auto-compact-breaker",
+      agentKey: "auto-compact-breaker-agent",
+      maxInputTokens: 350,
+    });
+    await seedAutoCompactionTranscript(store, "thread-auto-compact-breaker");
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    const largeInput = (label: string) => stringToUserMessage(`${label} ` + "z".repeat(500));
+
+    await coordinator.submitInput("thread-auto-compact-breaker", {
+      message: largeInput("new request one"),
+      source: "tui",
+    });
+    await coordinator.waitForIdle("thread-auto-compact-breaker");
+    let thread = await store.getThread("thread-auto-compact-breaker");
+    expect(thread.runtimeState?.autoCompaction).toMatchObject({
+      consecutiveFailures: 1,
+    });
+
+    await coordinator.submitInput("thread-auto-compact-breaker", {
+      message: largeInput("new request two"),
+      source: "tui",
+    });
+    await coordinator.waitForIdle("thread-auto-compact-breaker");
+
+    thread = await store.getThread("thread-auto-compact-breaker");
+    expect(thread.runtimeState?.autoCompaction?.consecutiveFailures).toBe(2);
+    expect(thread.runtimeState?.autoCompaction?.cooldownUntil).toBeGreaterThan(Date.now());
+    let transcript = await store.loadTranscript("thread-auto-compact-breaker");
+    const failureNoticesBeforeCooldown = transcript.filter((entry) => {
+      return entry.metadata && typeof entry.metadata === "object" && entry.metadata !== null
+        && "kind" in entry.metadata && entry.metadata.kind === "compact_failure_notice";
+    });
+    expect(failureNoticesBeforeCooldown).toHaveLength(2);
+    const compactCallsBeforeCooldown = compactRuntime.mock.calls.length;
+    const failureAtBeforeCooldown = thread.runtimeState?.autoCompaction?.lastFailureAt;
+
+    await coordinator.submitInput("thread-auto-compact-breaker", {
+      message: largeInput("new request three"),
+      source: "tui",
+    });
+    await coordinator.waitForIdle("thread-auto-compact-breaker");
+
+    expect(compactRuntime).toHaveBeenCalledTimes(compactCallsBeforeCooldown);
+    const runsBeforeCooldown = await store.listRuns("thread-auto-compact-breaker");
+    expect(runsBeforeCooldown.at(-1)?.error).toContain("paused until");
+    thread = await store.getThread("thread-auto-compact-breaker");
+    expect(thread.runtimeState?.autoCompaction?.lastFailureAt).toBe(failureAtBeforeCooldown);
+    transcript = await store.loadTranscript("thread-auto-compact-breaker");
+    const failureNoticesDuringCooldown = transcript.filter((entry) => {
+      return entry.metadata && typeof entry.metadata === "object" && entry.metadata !== null
+        && "kind" in entry.metadata && entry.metadata.kind === "compact_failure_notice";
+    });
+    expect(failureNoticesDuringCooldown).toHaveLength(failureNoticesBeforeCooldown.length);
+
+    vi.setSystemTime(Date.now() + AUTO_COMPACT_BREAKER_COOLDOWN_MS + 1);
+
+    await coordinator.submitInput("thread-auto-compact-breaker", {
+      message: largeInput("new request four"),
+      source: "tui",
+    });
+    await coordinator.waitForIdle("thread-auto-compact-breaker");
+
+    thread = await store.getThread("thread-auto-compact-breaker");
+    expect(thread.runtimeState?.autoCompaction).toMatchObject({
+      consecutiveFailures: 1,
+    });
+    expect(thread.runtimeState?.autoCompaction?.lastFailureAt).toBeGreaterThan(failureAtBeforeCooldown ?? 0);
   });
 
   it("recovers only orphaned runs that are not currently leased", async () => {

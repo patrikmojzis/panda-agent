@@ -114,6 +114,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         system_prompt,
         max_turns,
         context,
+        runtime_state,
         max_input_tokens,
         prompt_cache_key,
         provider,
@@ -127,12 +128,13 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         $4::jsonb,
         $5,
         $6::jsonb,
-        $7,
+        $7::jsonb,
         $8,
         $9,
         $10,
         $11,
-        $12
+        $12,
+        $13
       )
       RETURNING *
     `, [
@@ -142,6 +144,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       toJson(input.systemPrompt),
       input.maxTurns ?? null,
       toJson(input.context),
+      toJson(input.runtimeState),
       input.maxInputTokens ?? null,
       input.promptCacheKey ?? null,
       input.provider ?? null,
@@ -280,6 +283,10 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
 
     if (update.context !== undefined) {
       push("context", toJson(update.context), "::jsonb");
+    }
+
+    if (update.runtimeState !== undefined) {
+      push("runtime_state", toJson(update.runtimeState ?? null), "::jsonb");
     }
 
     if (update.maxInputTokens !== undefined) {

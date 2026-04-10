@@ -12,6 +12,7 @@ export function buildThreadRuntimeSchemaSql(
       system_prompt JSONB,
       max_turns INTEGER,
       context JSONB,
+      runtime_state JSONB,
       max_input_tokens INTEGER,
       prompt_cache_key TEXT,
       provider TEXT,
@@ -21,6 +22,9 @@ export function buildThreadRuntimeSchemaSql(
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    ALTER TABLE ${tables.threads}
+    ADD COLUMN IF NOT EXISTS runtime_state JSONB;
 
     CREATE TABLE IF NOT EXISTS ${tables.messages} (
       id UUID PRIMARY KEY,

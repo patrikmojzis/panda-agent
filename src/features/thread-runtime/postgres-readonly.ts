@@ -82,6 +82,10 @@ export async function ensureReadonlyChatQuerySchema(
       ELSE NULL
     END
   `;
+  const threadScopeSql = `
+    t.identity_id = current_setting('panda.identity_id', true)
+    AND t.agent_key = current_setting('panda.agent_key', true)
+  `;
 
   await options.queryable.query(`
     DROP VIEW IF EXISTS ${views.toolResults};
@@ -126,7 +130,7 @@ export async function ensureReadonlyChatQuerySchema(
       ) AS last_message_at
     FROM ${tables.threads} AS t
     INNER JOIN ${identityTables.identities} AS identity ON identity.id = t.identity_id
-    WHERE t.agent_key = current_setting('panda.agent_key', true);
+    WHERE ${threadScopeSql};
 
     CREATE VIEW ${views.messagesRaw}
     WITH (security_barrier = true) AS
@@ -155,7 +159,7 @@ export async function ensureReadonlyChatQuerySchema(
       END AS has_images
     FROM ${tables.messages} AS m
     INNER JOIN ${tables.threads} AS t ON t.id = m.thread_id
-    WHERE t.agent_key = current_setting('panda.agent_key', true);
+    WHERE ${threadScopeSql};
 
     CREATE VIEW ${views.messages}
     WITH (security_barrier = true) AS
@@ -230,7 +234,7 @@ export async function ensureReadonlyChatQuerySchema(
       END AS has_images
     FROM ${tables.inputs} AS i
     INNER JOIN ${tables.threads} AS t ON t.id = i.thread_id
-    WHERE t.agent_key = current_setting('panda.agent_key', true);
+    WHERE ${threadScopeSql};
 
     CREATE VIEW ${views.runs}
     WITH (security_barrier = true) AS
@@ -245,7 +249,7 @@ export async function ensureReadonlyChatQuerySchema(
       r.error
     FROM ${tables.runs} AS r
     INNER JOIN ${tables.threads} AS t ON t.id = r.thread_id
-    WHERE t.agent_key = current_setting('panda.agent_key', true);
+    WHERE ${threadScopeSql};
   `);
 
   if (options.readonlyRole) {

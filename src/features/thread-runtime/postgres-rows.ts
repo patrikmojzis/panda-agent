@@ -15,6 +15,7 @@ export function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
     systemPrompt: row.system_prompt === null ? undefined : (row.system_prompt as ThreadRecord["systemPrompt"]),
     maxTurns: row.max_turns === null ? undefined : Number(row.max_turns),
     context: row.context === null ? undefined : (row.context as ThreadRecord["context"]),
+    runtimeState: row.runtime_state === null ? undefined : (row.runtime_state as ThreadRecord["runtimeState"]),
     maxInputTokens: row.max_input_tokens === null ? undefined : Number(row.max_input_tokens),
     promptCacheKey: row.prompt_cache_key === null ? undefined : String(row.prompt_cache_key),
     provider: row.provider === null ? undefined : String(row.provider) as ThreadRecord["provider"],
