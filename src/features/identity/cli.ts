@@ -4,6 +4,7 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 
 import {parseAgentKey} from "../agents/cli.js";
+import {createPandaClient} from "../panda/client.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {createPandaPool, requirePandaDatabaseUrl} from "../panda/runtime.js";
 import {PostgresIdentityStore} from "./postgres.js";
@@ -19,6 +20,7 @@ interface CreateIdentityCliOptions extends IdentityCliOptions {
 }
 
 interface SetDefaultAgentCliOptions extends IdentityCliOptions {}
+interface SwitchHomeAgentCliOptions extends IdentityCliOptions {}
 
 async function withIdentityStores<T>(
   options: IdentityCliOptions,
@@ -116,8 +118,40 @@ async function setDefaultAgentCommand(
       [
         `Updated identity ${updated.handle}.`,
         `default agent ${updated.defaultAgentKey ?? "-"}`,
+        "current home unchanged",
       ].join("\n") + "\n",
     );
+  });
+}
+
+async function switchHomeAgentCommand(
+  handle: string,
+  agentKey: string,
+  options: SwitchHomeAgentCliOptions,
+): Promise<void> {
+  await withIdentityStores(options, async ({identityStore, agentStore}) => {
+    await agentStore.getAgent(agentKey);
+    const identity = handle === DEFAULT_IDENTITY_HANDLE
+      ? await identityStore.getIdentity(DEFAULT_IDENTITY_HANDLE)
+      : await identityStore.getIdentityByHandle(handle);
+
+    const client = await createPandaClient({
+      identity: identity.handle,
+      dbUrl: options.dbUrl,
+    });
+
+    try {
+      const result = await client.switchHomeAgent(agentKey);
+      process.stdout.write(
+        [
+          `Switched identity ${identity.handle} to agent ${result.thread.agentKey}.`,
+          `new home ${result.thread.id}`,
+          `previous home ${result.previousThreadId ?? "-"}`,
+        ].join("\n") + "\n",
+      );
+    } finally {
+      await client.close();
+    }
   });
 }
 
@@ -147,11 +181,21 @@ export function registerIdentityCommands(program: Command): void {
 
   identityProgram
     .command("set-default-agent")
-    .description("Set the default agent for an identity")
+    .description("Set the default agent for future home threads without replacing the current home")
     .argument("<handle>", "Identity handle", parseIdentityHandle)
     .argument("<agentKey>", "Agent key", parseAgentKey)
     .option("--db-url <url>", "Postgres connection string for thread persistence")
     .action((handle: string, agentKey: string, options: SetDefaultAgentCliOptions) => {
       return setDefaultAgentCommand(handle, agentKey, options);
+    });
+
+  identityProgram
+    .command("switch-home-agent")
+    .description("Replace an identity's current home thread with a fresh home on another agent")
+    .argument("<handle>", "Identity handle", parseIdentityHandle)
+    .argument("<agentKey>", "Agent key", parseAgentKey)
+    .option("--db-url <url>", "Postgres connection string for thread persistence")
+    .action((handle: string, agentKey: string, options: SwitchHomeAgentCliOptions) => {
+      return switchHomeAgentCommand(handle, agentKey, options);
     });
 }

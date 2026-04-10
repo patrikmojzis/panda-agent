@@ -11,6 +11,7 @@ export type PandaRuntimeRequestKind =
   | "create_thread"
   | "resolve_home_thread"
   | "reset_home_thread"
+  | "switch_home_agent"
   | "abort_thread"
   | "compact_thread"
   | "update_thread";
@@ -92,8 +93,14 @@ export interface ResetHomeThreadRequestPayload extends BaseRuntimeRequestPayload
   externalConversationId?: string;
   externalActorId?: string;
   commandExternalMessageId?: string;
+  agentKey?: string;
   provider?: ProviderName;
   model?: string;
+  thinking?: ThinkingLevel;
+}
+
+export interface SwitchHomeAgentRequestPayload extends BaseRuntimeRequestPayload {
+  agentKey: string;
 }
 
 export interface AbortThreadRequestPayload extends BaseRuntimeRequestPayload {
@@ -119,6 +126,7 @@ export type PandaRuntimeRequestPayload =
   | CreateThreadRequestPayload
   | ResolveHomeThreadRequestPayload
   | ResetHomeThreadRequestPayload
+  | SwitchHomeAgentRequestPayload
   | AbortThreadRequestPayload
   | CompactThreadRequestPayload
   | UpdateThreadRequestPayload;

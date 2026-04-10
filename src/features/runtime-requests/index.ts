@@ -14,6 +14,7 @@ export type {
   PandaRuntimeRequestStatus,
   ResetHomeThreadRequestPayload,
   ResolveHomeThreadRequestPayload,
+  SwitchHomeAgentRequestPayload,
   TelegramMessageRequestPayload,
   TelegramReactionRequestPayload,
   TuiInputRequestPayload,

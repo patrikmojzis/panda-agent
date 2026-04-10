@@ -3,12 +3,8 @@ import type {ChannelTypingDispatcher, ChannelTypingTarget} from "../channels/cor
 import type {ThreadRuntimeEvent} from "./coordinator.js";
 import type {ThreadMessageRecord} from "./types.js";
 
-export const CHANNEL_TYPING_KEEPALIVE_MS = 4_000;
-
 interface ChannelTypingSession extends ResolvedChannelRouteTarget {
   runId: string;
-  timer: ReturnType<typeof setInterval>;
-  tickInFlight: boolean;
 }
 
 function sameTarget(left: ChannelTypingTarget, right: ChannelTypingTarget): boolean {
@@ -40,7 +36,7 @@ class ChannelTypingEventHandler {
         await this.handleInputsApplied(event.threadId, event.runId, event.messages);
         break;
       case "run_finished":
-        await this.stopSession(event.threadId, event.run.id);
+        await this.stopSession(event.threadId, event.run.id, false);
         break;
       default:
         break;
@@ -67,7 +63,7 @@ class ChannelTypingEventHandler {
       return;
     }
 
-    await this.stopSession(threadId);
+    await this.stopSession(threadId, undefined, false);
 
     const started = await this.dispatchSafely({
       channel: resolved.channel,
@@ -82,34 +78,18 @@ class ChannelTypingEventHandler {
       runId,
       channel: resolved.channel,
       target: resolved.target,
-      timer: setInterval(() => {
-        void this.keepAlive(threadId, runId);
-      }, CHANNEL_TYPING_KEEPALIVE_MS),
-      tickInFlight: false,
+      // Temporary one-shot typing policy: refreshing typing until run_finished creates
+      // a broken UX because outbound delivery can happen before the agent finishes
+      // its internal post-tool reasoning. Leave the old keepalive loop disabled until
+      // we replace it with a proper delivery-bound typing policy.
+      //
+      // timer: setInterval(() => {
+      //   void this.keepAlive(threadId, runId);
+      // }, CHANNEL_TYPING_KEEPALIVE_MS),
+      // tickInFlight: false,
     };
 
     this.sessions.set(threadId, session);
-  }
-
-  private async keepAlive(threadId: string, runId: string): Promise<void> {
-    const session = this.sessions.get(threadId);
-    if (!session || session.runId !== runId || session.tickInFlight) {
-      return;
-    }
-
-    session.tickInFlight = true;
-    try {
-      const ok = await this.dispatchSafely({
-        channel: session.channel,
-        target: session.target,
-        phase: "keepalive",
-      });
-      if (!ok) {
-        await this.stopSession(threadId, runId, false);
-      }
-    } finally {
-      session.tickInFlight = false;
-    }
   }
 
   private async stopSession(threadId: string, runId?: string, notifyChannel = true): Promise<void> {
@@ -122,7 +102,6 @@ class ChannelTypingEventHandler {
       return;
     }
 
-    clearInterval(session.timer);
     this.sessions.delete(threadId);
 
     if (!notifyChannel) {

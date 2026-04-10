@@ -2,10 +2,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {ChannelTypingDispatcher, stringToUserMessage, type ThreadMessageRecord} from "../src/index.js";
 import {resolveChannelRouteTarget} from "../src/features/channels/core/route-target.js";
-import {
-    CHANNEL_TYPING_KEEPALIVE_MS,
-    createChannelTypingEventHandler,
-} from "../src/features/thread-runtime/channel-typing.js";
+import {createChannelTypingEventHandler} from "../src/features/thread-runtime/channel-typing.js";
 
 function createInputRecord(
   overrides: Partial<ThreadMessageRecord> = {},
@@ -45,7 +42,7 @@ function createRunFinishedEvent(
       status,
       startedAt: 1,
       finishedAt: 2,
-      ...(status === "failed" ? { error: "boom" } : {}),
+      ...(status === "failed" ? {error: "boom"} : {}),
     },
   };
 }
@@ -131,9 +128,7 @@ describe("channel typing core", () => {
 });
 
 describe("createChannelTypingEventHandler", () => {
-  it("starts keepalive typing on inputs_applied and stops on run_finished", async () => {
-    vi.useFakeTimers();
-
+  it("starts typing once on inputs_applied and keeps run-finish cleanup local", async () => {
     const send = vi.fn(async () => {});
     const handler = createChannelTypingEventHandler(new ChannelTypingDispatcher([{
       channel: "telegram",
@@ -158,34 +153,12 @@ describe("createChannelTypingEventHandler", () => {
       phase: "start",
     });
 
-    await vi.advanceTimersByTimeAsync(CHANNEL_TYPING_KEEPALIVE_MS);
-
-    expect(send).toHaveBeenNthCalledWith(2, {
-      channel: "telegram",
-      target: {
-        source: "telegram",
-        connectorKey: "connector-1",
-        externalConversationId: "chat-1",
-        externalActorId: "user-1",
-      },
-      phase: "keepalive",
-    });
-
     await handler(createRunFinishedEvent());
 
-    expect(send).toHaveBeenNthCalledWith(3, {
-      channel: "telegram",
-      target: {
-        source: "telegram",
-        connectorKey: "connector-1",
-        externalConversationId: "chat-1",
-        externalActorId: "user-1",
-      },
-      phase: "stop",
-    });
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it("re-targets typing within the same run when a new route arrives", async () => {
+  it("re-targets typing within the same run without emitting a visible stop", async () => {
     const send = vi.fn(async () => {});
     const handler = createChannelTypingEventHandler(new ChannelTypingDispatcher([{
       channel: "telegram",
@@ -231,16 +204,6 @@ describe("createChannelTypingEventHandler", () => {
         target: {
           source: "telegram",
           connectorKey: "connector-1",
-          externalConversationId: "chat-1",
-          externalActorId: "user-1",
-        },
-        phase: "stop",
-      }],
-      [{
-        channel: "telegram",
-        target: {
-          source: "telegram",
-          connectorKey: "connector-1",
           externalConversationId: "chat-2",
           externalActorId: "user-2",
         },
@@ -260,57 +223,9 @@ describe("createChannelTypingEventHandler", () => {
       type: "inputs_applied",
       threadId: "thread-1",
       runId: "run-1",
-      messages: [createInputRecord({ metadata: undefined })],
+      messages: [createInputRecord({metadata: undefined})],
     });
 
     expect(send).not.toHaveBeenCalled();
-  });
-
-  it("disables a session after a keepalive failure without retrying it forever", async () => {
-    vi.useFakeTimers();
-
-    const send = vi.fn(async (request: { phase: string }) => {
-      if (request.phase === "keepalive") {
-        throw new Error("channel flaky");
-      }
-    });
-    const handler = createChannelTypingEventHandler(new ChannelTypingDispatcher([{
-      channel: "telegram",
-      send,
-    }]));
-
-    await handler({
-      type: "inputs_applied",
-      threadId: "thread-1",
-      runId: "run-1",
-      messages: [createInputRecord()],
-    });
-    await vi.advanceTimersByTimeAsync(CHANNEL_TYPING_KEEPALIVE_MS);
-    await vi.advanceTimersByTimeAsync(CHANNEL_TYPING_KEEPALIVE_MS);
-    await handler(createRunFinishedEvent("thread-1", "run-1", "failed"));
-
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(send.mock.calls).toEqual([
-      [{
-        channel: "telegram",
-        target: {
-          source: "telegram",
-          connectorKey: "connector-1",
-          externalConversationId: "chat-1",
-          externalActorId: "user-1",
-        },
-        phase: "start",
-      }],
-      [{
-        channel: "telegram",
-        target: {
-          source: "telegram",
-          connectorKey: "connector-1",
-          externalConversationId: "chat-1",
-          externalActorId: "user-1",
-        },
-        phase: "keepalive",
-      }],
-    ]);
   });
 });

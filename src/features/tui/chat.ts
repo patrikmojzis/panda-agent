@@ -1492,6 +1492,7 @@ export class PandaChatApp {
 
     try {
       const thread = await this.requireServices().resetHomeThread({
+        agentKey: this.currentThread?.agentKey ?? this.defaultAgentKey,
         provider: this.providerName,
         model: this.model,
         thinking: this.thinking,

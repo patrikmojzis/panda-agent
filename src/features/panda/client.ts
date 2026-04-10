@@ -60,7 +60,8 @@ export interface PandaClient {
   store: ThreadRuntimeStore;
   createThread(options?: PandaClientThreadOptions): Promise<ThreadRecord>;
   resolveOrCreateHomeThread(options?: PandaClientThreadOptions): Promise<ThreadRecord>;
-  resetHomeThread(options?: Omit<PandaClientThreadOptions, "id" | "agentKey">): Promise<ThreadRecord>;
+  resetHomeThread(options?: Omit<PandaClientThreadOptions, "id">): Promise<ThreadRecord>;
+  switchHomeAgent(agentKey: string): Promise<{thread: ThreadRecord; previousThreadId?: string | null}>;
   getThread(threadId: string): Promise<ThreadRecord>;
   listThreadSummaries(limit?: number): Promise<readonly ThreadSummaryRecord[]>;
   submitTextInput(input: {
@@ -215,7 +216,7 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
     };
 
     const resetHomeThread = async (
-      threadOptions: Omit<PandaClientThreadOptions, "id" | "agentKey"> = {},
+      threadOptions: Omit<PandaClientThreadOptions, "id"> = {},
     ): Promise<ThreadRecord> => {
       await assertDaemonActive();
       const request = await requests.enqueueRequest({
@@ -223,12 +224,34 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
         payload: {
           identityId: identity.id,
           source: "tui",
+          agentKey: trimNonEmptyString(threadOptions.agentKey) ?? undefined,
           provider: threadOptions.provider,
           model: threadOptions.model,
+          thinking: threadOptions.thinking,
         },
       });
       const result = await waitForRequestResult<{threadId: string}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
+    };
+
+    const switchHomeAgent = async (agentKey: string): Promise<{thread: ThreadRecord; previousThreadId?: string | null}> => {
+      await assertDaemonActive();
+      const request = await requests.enqueueRequest({
+        kind: "switch_home_agent",
+        payload: {
+          identityId: identity.id,
+          agentKey: trimNonEmptyString(agentKey) ?? agentKey,
+        },
+      });
+      const result = await waitForRequestResult<{threadId: string; previousThreadId?: string | null}>(
+        requests,
+        request.id,
+        PANDA_DAEMON_REQUEST_TIMEOUT_MS,
+      );
+      return {
+        thread: await store.getThread(result.threadId),
+        previousThreadId: result.previousThreadId,
+      };
     };
 
     const submitTextInput = async (input: {
@@ -312,6 +335,7 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
       createThread,
       resolveOrCreateHomeThread,
       resetHomeThread,
+      switchHomeAgent,
       getThread: (threadId) => store.getThread(threadId),
       listThreadSummaries: (limit = 20) => store.listThreadSummaries(limit, identity.id),
       submitTextInput,

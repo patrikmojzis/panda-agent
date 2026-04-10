@@ -81,6 +81,8 @@ export async function createAgentCommand(agentKey: string, options: CreateAgentC
         `Created agent ${created.agentKey}.`,
         `name ${created.displayName}`,
         `skills ${resolvePandaSkillsDir(created.agentKey)}`,
+        `next: panda identity create <handle> --agent ${created.agentKey}`,
+        `or:   panda identity switch-home-agent <handle> ${created.agentKey}`,
       ].join("\n") + "\n",
     );
   });

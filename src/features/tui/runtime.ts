@@ -30,7 +30,7 @@ export interface ChatRuntimeServices {
   store: ThreadRuntimeStore;
   createThread(options?: CreateChatThreadOptions): Promise<ThreadRecord>;
   resolveOrCreateHomeThread(options?: CreateChatThreadOptions): Promise<ThreadRecord>;
-  resetHomeThread(options?: Omit<CreateChatThreadOptions, "id" | "agentKey">): Promise<ThreadRecord>;
+  resetHomeThread(options?: Omit<CreateChatThreadOptions, "id">): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
   listThreadSummaries(limit?: number): Promise<readonly ThreadSummaryRecord[]>;
   submitTextInput(input: {
@@ -83,6 +83,7 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
     createThread: (threadOptions) => client.createThread(applyDefaults(threadOptions)),
     resolveOrCreateHomeThread: (threadOptions) => client.resolveOrCreateHomeThread(applyDefaults(threadOptions)),
     resetHomeThread: (threadOptions) => client.resetHomeThread({
+      agentKey: trimNonEmptyString(threadOptions?.agentKey) ?? trimNonEmptyString(options.agent),
       provider: threadOptions?.provider ?? options.provider,
       model: threadOptions?.model ?? options.model,
       thinking: threadOptions?.thinking,

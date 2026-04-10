@@ -18,6 +18,7 @@ import type {
   PandaRuntimeRequestRecord,
   ResetHomeThreadRequestPayload,
   ResolveHomeThreadRequestPayload,
+  SwitchHomeAgentRequestPayload,
   TelegramMessageRequestPayload,
   TelegramReactionRequestPayload,
   TuiInputRequestPayload,
@@ -98,6 +99,10 @@ function requireIdentityId(identityId: string | undefined, kind: string): string
   }
 
   return trimmed;
+}
+
+function buildHomeAgentMismatchMessage(identity: IdentityRecord, existingAgentKey: string, requestedAgentKey: string): string {
+  return `Identity ${identity.handle} already has a home thread on agent ${existingAgentKey}. Use 'panda identity switch-home-agent ${identity.handle} ${requestedAgentKey}' to replace it.`;
 }
 
 export async function createPandaDaemon(options: PandaDaemonOptions): Promise<PandaDaemonServices> {
@@ -261,6 +266,17 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     return agentKey;
   };
 
+  const updateIdentityDefaultAgent = async (identity: IdentityRecord, agentKey: string): Promise<IdentityRecord> => {
+    if (identity.defaultAgentKey === agentKey) {
+      return identity;
+    }
+
+    return runtime.identityStore.updateIdentity({
+      identityId: identity.id,
+      defaultAgentKey: agentKey,
+    });
+  };
+
   const createThread = async (input: {
     identity: IdentityRecord;
     id?: string;
@@ -314,18 +330,26 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
 
   const resolveOrCreateHomeThread = async (input: ResolveHomeThreadRequestPayload): Promise<ThreadRecord> => {
     const identity = await ensureIdentity(requireIdentityId(input.identityId, "resolve_home_thread"));
+    const requestedAgentKey = trimNonEmptyString(input.agentKey);
     const existing = await resolveExistingHomeThread(identity.id);
     if (existing) {
-      return existing;
+      if (!requestedAgentKey || existing.agentKey === requestedAgentKey) {
+        return existing;
+      }
+
+      throw new Error(buildHomeAgentMismatchMessage(identity, existing.agentKey, requestedAgentKey));
     }
 
     const thread = await createThread({
       identity,
-      agentKey: input.agentKey,
+      agentKey: requestedAgentKey,
       provider: input.provider,
       model: input.model,
       thinking: input.thinking,
     });
+    if (requestedAgentKey) {
+      await updateIdentityDefaultAgent(identity, thread.agentKey);
+    }
     await bindHomeThread(thread);
     return thread;
   };
@@ -400,32 +424,61 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     });
   };
 
-  const handleResetHomeThread = async (payload: ResetHomeThreadRequestPayload): Promise<Record<string, unknown>> => {
-    const identityId = requireIdentityId(payload.identityId, "reset_home_thread");
-    const previousHome = await resolveExistingHomeThread(identityId);
+  const replaceHomeThread = async (input: {
+    identity: IdentityRecord;
+    source: ResetHomeThreadRequestPayload["source"] | "identity";
+    agentKey?: string;
+    provider?: ProviderName;
+    model?: string;
+    thinking?: CreateThreadRequestPayload["thinking"];
+    context?: Record<string, unknown>;
+  }): Promise<{thread: ThreadRecord; previousThreadId?: string | null}> => {
+    const previousHome = await resolveExistingHomeThread(input.identity.id);
     if (previousHome) {
-      await runtime.coordinator.abort(previousHome.id, `Reset requested from ${payload.source}.`);
+      await runtime.coordinator.abort(previousHome.id, `Reset requested from ${input.source}.`);
       await runtime.coordinator.waitForCurrentRun(previousHome.id);
       await runtime.store.discardPendingInputs(previousHome.id);
     }
 
-    const identity = await ensureIdentity(identityId);
     const thread = await createThread({
+      identity: input.identity,
+      agentKey: input.agentKey,
+      provider: input.provider,
+      model: input.model,
+      thinking: input.thinking,
+      context: input.context,
+    });
+    if (trimNonEmptyString(input.agentKey)) {
+      await updateIdentityDefaultAgent(input.identity, thread.agentKey);
+    }
+    await bindHomeThread(thread);
+
+    return {
+      thread,
+      previousThreadId: previousHome?.id ?? null,
+    };
+  };
+
+  const handleResetHomeThread = async (payload: ResetHomeThreadRequestPayload): Promise<Record<string, unknown>> => {
+    const identity = await ensureIdentity(requireIdentityId(payload.identityId, "reset_home_thread"));
+    const result = await replaceHomeThread({
       identity,
+      source: payload.source,
+      agentKey: payload.agentKey,
       provider: payload.provider,
       model: payload.model,
+      thinking: payload.thinking,
       context: payload.source === TELEGRAM_SOURCE && payload.externalConversationId
         ? {source: TELEGRAM_SOURCE}
         : undefined,
     });
-    await bindHomeThread(thread);
 
     if (payload.source === TELEGRAM_SOURCE && payload.connectorKey && payload.externalConversationId) {
       await conversationThreads.bindConversationThread({
         source: TELEGRAM_SOURCE,
         connectorKey: payload.connectorKey,
         externalConversationId: payload.externalConversationId,
-        threadId: thread.id,
+        threadId: result.thread.id,
         metadata: payload.commandExternalMessageId
           ? {
             kind: "telegram_reset_receipt",
@@ -434,7 +487,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
           : undefined,
       });
       await threadRoutes.rememberLastRoute({
-        threadId: thread.id,
+        threadId: result.thread.id,
         route: {
           source: TELEGRAM_SOURCE,
           connectorKey: payload.connectorKey,
@@ -447,8 +500,29 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     }
 
     return {
-      threadId: thread.id,
-      previousThreadId: previousHome?.id ?? null,
+      threadId: result.thread.id,
+      previousThreadId: result.previousThreadId,
+    };
+  };
+
+  const handleSwitchHomeAgent = async (payload: SwitchHomeAgentRequestPayload): Promise<Record<string, unknown>> => {
+    const identity = await ensureIdentity(requireIdentityId(payload.identityId, "switch_home_agent"));
+    const requestedAgentKey = trimNonEmptyString(payload.agentKey);
+    if (!requestedAgentKey) {
+      throw new Error("Runtime request switch_home_agent is missing agentKey.");
+    }
+
+    await runtime.agentStore.getAgent(requestedAgentKey);
+    const updatedIdentity = await updateIdentityDefaultAgent(identity, requestedAgentKey);
+    const result = await replaceHomeThread({
+      identity: updatedIdentity,
+      source: "identity",
+      agentKey: requestedAgentKey,
+    });
+
+    return {
+      threadId: result.thread.id,
+      previousThreadId: result.previousThreadId,
     };
   };
 
@@ -810,6 +884,8 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       }
       case "reset_home_thread":
         return handleResetHomeThread(request.payload as ResetHomeThreadRequestPayload);
+      case "switch_home_agent":
+        return handleSwitchHomeAgent(request.payload as SwitchHomeAgentRequestPayload);
       case "abort_thread":
         return handleAbortThread(request.payload as AbortThreadRequestPayload);
       case "compact_thread":
