@@ -2,42 +2,43 @@ import {createHash, randomUUID} from "node:crypto";
 
 import type {PoolClient} from "pg";
 
-import {ChannelTypingDispatcher} from "../channels/core/index.js";
+import {ChannelTypingDispatcher, type MediaDescriptor, relocateMediaDescriptor} from "../channels/core/index.js";
 import {PostgresChannelActionStore} from "../channel-actions/index.js";
 import {PostgresConversationThreadStore} from "../conversation-threads/index.js";
 import {PostgresPandaDaemonStateStore} from "../daemon-state/index.js";
+import {HeartbeatRunner} from "../heartbeats/index.js";
 import {PostgresHomeThreadStore} from "../home-threads/index.js";
 import {createDefaultIdentityInput, DEFAULT_IDENTITY_HANDLE, type IdentityRecord} from "../identity/index.js";
 import {PostgresOutboundDeliveryStore} from "../outbound-deliveries/index.js";
 import {createPandaRuntime, createPandaThreadDefinition} from "./runtime.js";
-import {resolveDefaultPandaModel, resolveDefaultPandaProvider} from "./provider-defaults.js";
+import {resolveDefaultPandaModelSelector} from "./provider-defaults.js";
 import type {
-  AbortThreadRequestPayload,
-  CompactThreadRequestPayload,
-  CreateThreadRequestPayload,
-  PandaRuntimeRequestRecord,
-  ResetHomeThreadRequestPayload,
-  ResolveHomeThreadRequestPayload,
-  SwitchHomeAgentRequestPayload,
-  TelegramMessageRequestPayload,
-  TelegramReactionRequestPayload,
-  TuiInputRequestPayload,
-  UpdateThreadRequestPayload,
-  WhatsAppMessageRequestPayload,
+    AbortThreadRequestPayload,
+    CompactThreadRequestPayload,
+    CreateThreadRequestPayload,
+    PandaRuntimeRequestRecord,
+    ResetHomeThreadRequestPayload,
+    ResolveHomeThreadRequestPayload,
+    SwitchHomeAgentRequestPayload,
+    TelegramMessageRequestPayload,
+    TelegramReactionRequestPayload,
+    TuiInputRequestPayload,
+    UpdateThreadRequestPayload,
+    WhatsAppMessageRequestPayload,
 } from "../runtime-requests/index.js";
 import {PostgresPandaRuntimeRequestStore} from "../runtime-requests/index.js";
 import {ScheduledTaskRunner} from "../scheduled-tasks/index.js";
 import {createChannelTypingEventHandler} from "../thread-runtime/channel-typing.js";
 import {compactThread, isMissingThreadError, type ThreadRecord} from "../thread-runtime/index.js";
-import {type ProviderName, stringToUserMessage} from "../agent-core/index.js";
+import {resolveModelSelector, stringToUserMessage} from "../agent-core/index.js";
 import type {JsonValue} from "../agent-core/types.js";
 import {PostgresThreadRouteStore} from "../thread-routes/index.js";
 import {
-  buildTelegramInboundPersistence,
-  buildTelegramInboundText,
-  buildTelegramPairCommand,
-  buildTelegramReactionText,
-  normalizeTelegramCommand,
+    buildTelegramInboundPersistence,
+    buildTelegramInboundText,
+    buildTelegramPairCommand,
+    buildTelegramReactionText,
+    normalizeTelegramCommand,
 } from "../telegram/helpers.js";
 import {TELEGRAM_SOURCE} from "../telegram/config.js";
 import {TelegramReactTool} from "../telegram/telegram-react-tool.js";
@@ -46,6 +47,7 @@ import {WHATSAPP_SOURCE} from "../whatsapp/config.js";
 import {OutboundTool} from "./tools/outbound-tool.js";
 import {resolveProviderApiKey} from "../agent-core/pi/auth.js";
 import {getProviderConfig} from "../agent-core/provider.js";
+import {resolvePandaAgentMediaDir} from "./data-dir.js";
 
 export const DEFAULT_PANDA_DAEMON_KEY = "primary";
 export const PANDA_DAEMON_HEARTBEAT_INTERVAL_MS = 5_000;
@@ -88,8 +90,11 @@ function buildTelegramStartText(actorId: string, defaultIdentityHandle = DEFAULT
   ].join("\n");
 }
 
-function missingApiKeyMessage(provider: ProviderName): string | null {
-  return resolveProviderApiKey(provider) ? null : getProviderConfig(provider).missingApiKeyMessage;
+function missingApiKeyMessage(modelSelector: string): string | null {
+  const selection = resolveModelSelector(modelSelector);
+  return resolveProviderApiKey(selection.providerName)
+    ? null
+    : getProviderConfig(selection.providerName).missingApiKeyMessage;
 }
 
 function requireIdentityId(identityId: string | undefined, kind: string): string {
@@ -105,12 +110,27 @@ function buildHomeAgentMismatchMessage(identity: IdentityRecord, existingAgentKe
   return `Identity ${identity.handle} already has a home thread on agent ${existingAgentKey}. Use 'panda identity switch-home-agent ${identity.handle} ${requestedAgentKey}' to replace it.`;
 }
 
+export function resolveImplicitHomeThreadReplacementAgent(input: {
+  requestedAgentKey?: string;
+  existingAgentKey: string;
+  identityDefaultAgentKey?: string;
+}): string | undefined {
+  const requestedAgentKey = trimNonEmptyString(input.requestedAgentKey);
+  const defaultAgentKey = trimNonEmptyString(input.identityDefaultAgentKey);
+  if (requestedAgentKey || !defaultAgentKey || input.existingAgentKey === defaultAgentKey) {
+    return undefined;
+  }
+
+  // "Open chat without --agent" should follow the identity default now, not
+  // whatever agent happened to own the home thread some time in the past.
+  return defaultAgentKey;
+}
+
 export async function createPandaDaemon(options: PandaDaemonOptions): Promise<PandaDaemonServices> {
   const fallbackContext = {
     cwd: options.cwd,
   } as const;
-  const provider = resolveDefaultPandaProvider();
-  const model = resolveDefaultPandaModel(provider);
+  const model = resolveDefaultPandaModelSelector();
   const daemonKey = DEFAULT_PANDA_DAEMON_KEY;
 
   let conversationThreads: PostgresConversationThreadStore;
@@ -123,6 +143,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
   let requestUnsubscribe: (() => Promise<void>) | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
   let scheduledTaskRunner: ScheduledTaskRunner | null = null;
+  let relationshipHeartbeatRunner: HeartbeatRunner | null = null;
   let lockClient: PoolClient | null = null;
   let drainPromise: Promise<void> | null = null;
   let pendingDrain = false;
@@ -245,6 +266,21 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       threadStore: runtime.store,
       coordinator: runtime.coordinator,
     });
+    relationshipHeartbeatRunner = new HeartbeatRunner({
+      homeThreads,
+      coordinator: runtime.coordinator,
+      resolveInstructions: async (home) => {
+        const thread = await runtime.store.getThread(home.threadId);
+        const heartbeatDoc = await runtime.agentStore.readAgentDocument(thread.agentKey, "heartbeat");
+        return heartbeatDoc?.content?.trim() || null;
+      },
+      onError: (error, identityId) => {
+        console.error("Relationship heartbeat runner failed", {
+          identityId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
   } catch (error) {
     await runtime.close();
     throw error;
@@ -281,9 +317,9 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     identity: IdentityRecord;
     id?: string;
     agentKey?: string;
-    provider?: ProviderName;
     model?: string;
     thinking?: CreateThreadRequestPayload["thinking"];
+    inferenceProjection?: CreateThreadRequestPayload["inferenceProjection"];
     context?: Record<string, unknown>;
   }): Promise<ThreadRecord> => {
     const agentKey = await requireDefaultAgentKey(input.identity, input.agentKey);
@@ -293,14 +329,31 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       agentKey,
       context: {
         ...fallbackContext,
+        // Do not persist the runner's synthetic home cwd here. Threads survive
+        // restarts and deployment changes, so baking a container-only path into
+        // stored thread state breaks later local resumes and other path layouts.
         identityId: input.identity.id,
         identityHandle: input.identity.handle,
         ...(input.context ?? {}),
       },
-      provider: input.provider ?? provider,
       model: input.model ?? model,
       thinking: input.thinking,
+      inferenceProjection: input.inferenceProjection,
     });
+  };
+
+  const relocateThreadMedia = async (
+    thread: ThreadRecord,
+    media: readonly MediaDescriptor[],
+  ): Promise<readonly MediaDescriptor[]> => {
+    if (media.length === 0) {
+      return media;
+    }
+
+    // Move inbound channel media into the agent's home so that remote bash can
+    // reach the files through the agent's mounted home directory.
+    const rootDir = resolvePandaAgentMediaDir(thread.agentKey);
+    return Promise.all(media.map((descriptor) => relocateMediaDescriptor(descriptor, {rootDir})));
   };
 
   const bindHomeThread = async (thread: ThreadRecord): Promise<void> => {
@@ -334,6 +387,23 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     const existing = await resolveExistingHomeThread(identity.id);
     if (existing) {
       if (!requestedAgentKey || existing.agentKey === requestedAgentKey) {
+        const replacementAgentKey = resolveImplicitHomeThreadReplacementAgent({
+          requestedAgentKey,
+          existingAgentKey: existing.agentKey,
+          identityDefaultAgentKey: identity.defaultAgentKey,
+        });
+        if (replacementAgentKey) {
+          const result = await replaceHomeThread({
+            identity,
+            source: "identity",
+            agentKey: replacementAgentKey,
+            model: input.model,
+            thinking: input.thinking,
+            inferenceProjection: input.inferenceProjection,
+          });
+          return result.thread;
+        }
+
         return existing;
       }
 
@@ -343,9 +413,9 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     const thread = await createThread({
       identity,
       agentKey: requestedAgentKey,
-      provider: input.provider,
       model: input.model,
       thinking: input.thinking,
+      inferenceProjection: input.inferenceProjection,
     });
     if (requestedAgentKey) {
       await updateIdentityDefaultAgent(identity, thread.agentKey);
@@ -428,9 +498,9 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     identity: IdentityRecord;
     source: ResetHomeThreadRequestPayload["source"] | "identity";
     agentKey?: string;
-    provider?: ProviderName;
     model?: string;
     thinking?: CreateThreadRequestPayload["thinking"];
+    inferenceProjection?: CreateThreadRequestPayload["inferenceProjection"];
     context?: Record<string, unknown>;
   }): Promise<{thread: ThreadRecord; previousThreadId?: string | null}> => {
     const previousHome = await resolveExistingHomeThread(input.identity.id);
@@ -443,9 +513,9 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     const thread = await createThread({
       identity: input.identity,
       agentKey: input.agentKey,
-      provider: input.provider,
       model: input.model,
       thinking: input.thinking,
+      inferenceProjection: input.inferenceProjection,
       context: input.context,
     });
     if (trimNonEmptyString(input.agentKey)) {
@@ -465,9 +535,9 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       identity,
       source: payload.source,
       agentKey: payload.agentKey,
-      provider: payload.provider,
       model: payload.model,
       thinking: payload.thinking,
+      inferenceProjection: payload.inferenceProjection,
       context: payload.source === TELEGRAM_SOURCE && payload.externalConversationId
         ? {source: TELEGRAM_SOURCE}
         : undefined,
@@ -587,34 +657,6 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       return {status: "dropped", reason: "unsupported_message_shape"};
     }
 
-    const text = buildTelegramInboundText({
-      connectorKey: payload.connectorKey,
-      externalConversationId: payload.externalConversationId,
-      externalActorId: payload.externalActorId,
-      externalMessageId: payload.externalMessageId,
-      chatId: payload.chatId,
-      chatType: payload.chatType,
-      text: payload.text,
-      username: payload.username,
-      firstName: payload.firstName,
-      lastName: payload.lastName,
-      replyToMessageId: payload.replyToMessageId,
-      media: payload.media,
-    });
-    const persistence = buildTelegramInboundPersistence({
-      connectorKey: payload.connectorKey,
-      externalConversationId: payload.externalConversationId,
-      externalActorId: payload.externalActorId,
-      externalMessageId: payload.externalMessageId,
-      chatId: payload.chatId,
-      chatType: payload.chatType,
-      messageId: Number.parseInt(payload.externalMessageId, 10) || null,
-      username: payload.username,
-      firstName: payload.firstName,
-      lastName: payload.lastName,
-      media: payload.media,
-    });
-
     const thread = await resolveOrCreateConversationThread({
       identityId: binding.identityId,
       source: TELEGRAM_SOURCE,
@@ -628,6 +670,35 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     if (!thread) {
       return {status: "dropped", reason: "conversation_identity_mismatch"};
     }
+
+    const media = await relocateThreadMedia(thread, payload.media);
+    const text = buildTelegramInboundText({
+      connectorKey: payload.connectorKey,
+      externalConversationId: payload.externalConversationId,
+      externalActorId: payload.externalActorId,
+      externalMessageId: payload.externalMessageId,
+      chatId: payload.chatId,
+      chatType: payload.chatType,
+      text: payload.text,
+      username: payload.username,
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      replyToMessageId: payload.replyToMessageId,
+      media,
+    });
+    const persistence = buildTelegramInboundPersistence({
+      connectorKey: payload.connectorKey,
+      externalConversationId: payload.externalConversationId,
+      externalActorId: payload.externalActorId,
+      externalMessageId: payload.externalMessageId,
+      chatId: payload.chatId,
+      chatType: payload.chatType,
+      messageId: Number.parseInt(payload.externalMessageId, 10) || null,
+      username: payload.username,
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      media,
+    });
 
     await runtime.coordinator.submitInput(thread.id, {
       source: TELEGRAM_SOURCE,
@@ -732,19 +803,6 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       return {status: "dropped", reason: "unsupported_message_shape"};
     }
 
-    const text = buildWhatsAppInboundText({
-      connectorKey: payload.connectorKey,
-      externalConversationId: payload.externalConversationId,
-      externalActorId: payload.externalActorId,
-      externalMessageId: payload.externalMessageId,
-      remoteJid: payload.remoteJid,
-      chatType: payload.chatType,
-      text: payload.text,
-      pushName: payload.pushName,
-      quotedMessageId: payload.quotedMessageId,
-      media: payload.media,
-    });
-
     const thread = await resolveOrCreateConversationThread({
       identityId: binding.identityId,
       source: WHATSAPP_SOURCE,
@@ -758,6 +816,20 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     if (!thread) {
       return {status: "dropped", reason: "conversation_identity_mismatch"};
     }
+
+    const media = await relocateThreadMedia(thread, payload.media);
+    const text = buildWhatsAppInboundText({
+      connectorKey: payload.connectorKey,
+      externalConversationId: payload.externalConversationId,
+      externalActorId: payload.externalActorId,
+      externalMessageId: payload.externalMessageId,
+      remoteJid: payload.remoteJid,
+      chatType: payload.chatType,
+      text: payload.text,
+      pushName: payload.pushName,
+      quotedMessageId: payload.quotedMessageId,
+      media,
+    });
 
     await runtime.coordinator.submitInput(thread.id, {
       source: WHATSAPP_SOURCE,
@@ -774,7 +846,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
         chatType: payload.chatType,
         pushName: payload.pushName,
         quotedMessageId: payload.quotedMessageId,
-        media: payload.media,
+        media,
       }),
     });
     await threadRoutes.rememberLastRoute({
@@ -813,9 +885,9 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       identity,
       id: payload.id,
       agentKey: payload.agentKey,
-      provider: payload.provider,
       model: payload.model,
       thinking: payload.thinking,
+      inferenceProjection: payload.inferenceProjection,
     });
     return {threadId: thread.id};
   };
@@ -828,9 +900,8 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
   const handleCompactThread = async (payload: CompactThreadRequestPayload): Promise<Record<string, unknown>> => {
     const compacted = await runtime.coordinator.runExclusively(payload.threadId, async () => {
       const thread = await runtime.store.getThread(payload.threadId);
-      const providerName = thread.provider ?? provider;
       const modelName = thread.model ?? model;
-      const apiKeyMessage = missingApiKeyMessage(providerName);
+      const apiKeyMessage = missingApiKeyMessage(modelName);
       if (apiKeyMessage) {
         throw new Error(apiKeyMessage);
       }
@@ -842,7 +913,6 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       return compactThread({
         store: runtime.store,
         thread,
-        providerName,
         model: modelName,
         thinking: thread.thinking,
         customInstructions: payload.customInstructions,
@@ -981,6 +1051,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
         await triggerDrain();
       });
       await scheduledTaskRunner?.start();
+      await relationshipHeartbeatRunner?.start();
       await runtime.coordinator.recoverOrphanedRuns("Run marked failed before recovery.");
       await triggerDrain();
 
@@ -999,6 +1070,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
         requestUnsubscribe = null;
       }
       await scheduledTaskRunner?.stop();
+      await relationshipHeartbeatRunner?.stop();
       await releaseLock();
       await runtime.close();
     },

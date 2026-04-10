@@ -1,16 +1,16 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-  Agent,
-  compactThread,
-  Thread,
-  buildCompactSummaryMessage,
-  createCompactBoundaryMessage,
-  formatTranscriptForCompaction,
-  PiAiRuntime,
-  projectTranscriptForRun,
-  splitTranscriptForCompaction,
-  stringToUserMessage,
+    Agent,
+    buildCompactSummaryMessage,
+    compactThread,
+    createCompactBoundaryMessage,
+    formatTranscriptForCompaction,
+    PiAiRuntime,
+    projectTranscriptForRun,
+    splitTranscriptForCompaction,
+    stringToUserMessage,
+    Thread,
 } from "../src/index.js";
 
 function assistant(text: string) {
@@ -18,8 +18,7 @@ function assistant(text: string) {
     role: "assistant" as const,
     content: [{ type: "text" as const, text }],
     api: "openai-responses" as const,
-    provider: "openai" as const,
-    model: "gpt-5.1",
+    model: "openai/gpt-5.1",
     usage: {
       input: 0,
       output: 0,
@@ -317,8 +316,7 @@ describe("thread compaction helpers", () => {
         id: "thread-compact",
         maxInputTokens: 350,
       },
-      providerName: "openai",
-      model: "gpt-5.1",
+      model: "openai/gpt-5.1",
       trigger: "auto",
     });
 
@@ -368,8 +366,7 @@ describe("thread compaction helpers", () => {
         maxInputTokens: 350,
       },
       transcript,
-      providerName: "openai",
-      model: "gpt-5.1",
+      model: "openai/gpt-5.1",
       trigger: "auto",
     })).resolves.not.toBeNull();
 
@@ -418,8 +415,7 @@ describe("thread compaction helpers", () => {
         id: "thread-compact",
         maxInputTokens: 350,
       },
-      providerName: "openai",
-      model: "gpt-5.1",
+      model: "openai/gpt-5.1",
       trigger: "auto",
     })).rejects.toThrow("too large");
 

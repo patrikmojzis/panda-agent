@@ -4,11 +4,12 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 
 import {parseAgentKey} from "../agents/cli.js";
+import {type HomeThreadRecord, PostgresHomeThreadStore} from "../home-threads/index.js";
 import {createPandaClient} from "../panda/client.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {createPandaPool, requirePandaDatabaseUrl} from "../panda/runtime.js";
 import {PostgresIdentityStore} from "./postgres.js";
-import {DEFAULT_IDENTITY_HANDLE, normalizeIdentityHandle} from "./types.js";
+import {DEFAULT_IDENTITY_HANDLE, type IdentityRecord, normalizeIdentityHandle} from "./types.js";
 
 interface IdentityCliOptions {
   dbUrl?: string;
@@ -21,19 +22,30 @@ interface CreateIdentityCliOptions extends IdentityCliOptions {
 
 interface SetDefaultAgentCliOptions extends IdentityCliOptions {}
 interface SwitchHomeAgentCliOptions extends IdentityCliOptions {}
+interface HeartbeatCliOptions extends IdentityCliOptions {
+  enable?: boolean;
+  disable?: boolean;
+  every?: number;
+}
 
 async function withIdentityStores<T>(
   options: IdentityCliOptions,
-  fn: (stores: {identityStore: PostgresIdentityStore; agentStore: PostgresAgentStore}) => Promise<T>,
+  fn: (stores: {
+    identityStore: PostgresIdentityStore;
+    agentStore: PostgresAgentStore;
+    homeThreadStore: PostgresHomeThreadStore;
+  }) => Promise<T>,
 ): Promise<T> {
   const pool = createPandaPool(requirePandaDatabaseUrl(options.dbUrl));
   const identityStore = new PostgresIdentityStore({pool});
   const agentStore = new PostgresAgentStore({pool});
+  const homeThreadStore = new PostgresHomeThreadStore({pool});
 
   try {
     await identityStore.ensureSchema();
     await agentStore.ensureSchema();
-    return await fn({identityStore, agentStore});
+    await homeThreadStore.ensureSchema();
+    return await fn({identityStore, agentStore, homeThreadStore});
   } finally {
     await pool.end();
   }
@@ -49,6 +61,40 @@ export function parseIdentityHandle(value: string): string {
 
     throw error;
   }
+}
+
+function parseHeartbeatEveryMinutes(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new InvalidArgumentError("Heartbeat interval must be a positive integer number of minutes.");
+  }
+
+  return parsed;
+}
+
+async function resolveIdentity(
+  identityStore: PostgresIdentityStore,
+  handle: string,
+): Promise<IdentityRecord> {
+  return handle === DEFAULT_IDENTITY_HANDLE
+    ? identityStore.getIdentity(DEFAULT_IDENTITY_HANDLE)
+    : identityStore.getIdentityByHandle(handle);
+}
+
+function formatTimestamp(value: number | undefined): string {
+  return value === undefined ? "-" : new Date(value).toISOString();
+}
+
+function renderHeartbeatSummary(handle: string, home: HomeThreadRecord): string {
+  return [
+    `Heartbeat for ${handle}.`,
+    `home thread ${home.threadId}`,
+    `enabled ${home.heartbeat.enabled ? "yes" : "no"}`,
+    `every ${home.heartbeat.everyMinutes} minutes`,
+    `next fire ${home.heartbeat.enabled ? formatTimestamp(home.heartbeat.nextFireAt) : "-"}`,
+    `last fire ${formatTimestamp(home.heartbeat.lastFireAt)}`,
+    `last skip ${home.heartbeat.lastSkipReason ?? "-"}`,
+  ].join("\n");
 }
 
 async function listIdentitiesCommand(options: IdentityCliOptions): Promise<void> {
@@ -106,9 +152,7 @@ async function setDefaultAgentCommand(
 ): Promise<void> {
   await withIdentityStores(options, async ({identityStore, agentStore}) => {
     await agentStore.getAgent(agentKey);
-    const identity = handle === DEFAULT_IDENTITY_HANDLE
-      ? await identityStore.getIdentity(DEFAULT_IDENTITY_HANDLE)
-      : await identityStore.getIdentityByHandle(handle);
+    const identity = await resolveIdentity(identityStore, handle);
     const updated = await identityStore.updateIdentity({
       identityId: identity.id,
       defaultAgentKey: agentKey,
@@ -131,9 +175,7 @@ async function switchHomeAgentCommand(
 ): Promise<void> {
   await withIdentityStores(options, async ({identityStore, agentStore}) => {
     await agentStore.getAgent(agentKey);
-    const identity = handle === DEFAULT_IDENTITY_HANDLE
-      ? await identityStore.getIdentity(DEFAULT_IDENTITY_HANDLE)
-      : await identityStore.getIdentityByHandle(handle);
+    const identity = await resolveIdentity(identityStore, handle);
 
     const client = await createPandaClient({
       identity: identity.handle,
@@ -152,6 +194,41 @@ async function switchHomeAgentCommand(
     } finally {
       await client.close();
     }
+  });
+}
+
+async function heartbeatCommand(
+  handle: string,
+  options: HeartbeatCliOptions,
+): Promise<void> {
+  if (options.enable && options.disable) {
+    throw new Error("Pick one: --enable or --disable.");
+  }
+
+  await withIdentityStores(options, async ({identityStore, homeThreadStore}) => {
+    const identity = await resolveIdentity(identityStore, handle);
+    const home = await homeThreadStore.resolveHomeThread({
+      identityId: identity.id,
+    });
+    if (!home) {
+      throw new Error(`Identity ${identity.handle} has no home thread yet.`);
+    }
+
+    const shouldUpdate = options.enable || options.disable || options.every !== undefined;
+    const current = shouldUpdate
+      ? await homeThreadStore.updateHeartbeatConfig({
+        identityId: identity.id,
+        enabled: options.disable ? false : options.enable ? true : undefined,
+        everyMinutes: options.every,
+      })
+      : home;
+
+    const summary = renderHeartbeatSummary(identity.handle, current).split("\n");
+    if (shouldUpdate) {
+      summary[0] = `Updated heartbeat for ${identity.handle}.`;
+    }
+
+    process.stdout.write(summary.join("\n") + "\n");
   });
 }
 
@@ -197,5 +274,17 @@ export function registerIdentityCommands(program: Command): void {
     .option("--db-url <url>", "Postgres connection string for thread persistence")
     .action((handle: string, agentKey: string, options: SwitchHomeAgentCliOptions) => {
       return switchHomeAgentCommand(handle, agentKey, options);
+    });
+
+  identityProgram
+    .command("heartbeat")
+    .description("Inspect or update an identity's home-thread heartbeat")
+    .argument("<handle>", "Identity handle", parseIdentityHandle)
+    .option("--enable", "Enable heartbeat")
+    .option("--disable", "Disable heartbeat")
+    .option("--every <minutes>", "Set the heartbeat interval in minutes", parseHeartbeatEveryMinutes)
+    .option("--db-url <url>", "Postgres connection string for thread persistence")
+    .action((handle: string, options: HeartbeatCliOptions) => {
+      return heartbeatCommand(handle, options);
     });
 }

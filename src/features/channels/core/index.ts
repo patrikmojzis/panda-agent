@@ -1,6 +1,8 @@
 export {
   FileSystemMediaStore,
+  relocateMediaDescriptor,
   type FileSystemMediaStoreOptions,
+  type RelocateMediaDescriptorOptions,
   type WriteMediaInput,
 } from "./media-store.js";
 export {

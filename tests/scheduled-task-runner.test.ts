@@ -18,8 +18,7 @@ function createAssistantMessage(text: string): AssistantMessage {
     role: "assistant",
     content: [{type: "text", text}],
     api: "openai-responses",
-    provider: "openai",
-    model: "gpt-5.1",
+    model: "openai/gpt-5.1",
     usage: {
       input: 0,
       output: 0,

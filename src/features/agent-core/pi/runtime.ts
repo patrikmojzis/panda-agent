@@ -1,8 +1,8 @@
-import { completeSimple, streamSimple, type SimpleStreamOptions } from "@mariozechner/pi-ai";
+import {completeSimple, type SimpleStreamOptions, streamSimple} from "@mariozechner/pi-ai";
 
-import { resolveProviderApiKey } from "./auth.js";
-import { resolvePandaModel } from "./model.js";
-import type { LlmRuntime, LlmRuntimeRequest } from "../runtime.js";
+import {resolveProviderApiKey} from "./auth.js";
+import {resolvePandaModel} from "./model.js";
+import type {LlmRuntime, LlmRuntimeRequest} from "../runtime.js";
 
 function buildRuntimeOptions(request: LlmRuntimeRequest): SimpleStreamOptions {
   const apiKey = resolveProviderApiKey(request.providerName);
@@ -33,12 +33,12 @@ function buildRuntimeOptions(request: LlmRuntimeRequest): SimpleStreamOptions {
 
 export class PiAiRuntime implements LlmRuntime {
   async complete(request: LlmRuntimeRequest) {
-    const model = resolvePandaModel(request.providerName, request.model);
+    const model = resolvePandaModel(request.providerName, request.modelId);
     return completeSimple(model, request.context, buildRuntimeOptions(request));
   }
 
   stream(request: LlmRuntimeRequest) {
-    const model = resolvePandaModel(request.providerName, request.model);
+    const model = resolvePandaModel(request.providerName, request.modelId);
     return streamSimple(model, request.context, buildRuntimeOptions(request));
   }
 }

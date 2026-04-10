@@ -1,32 +1,32 @@
-import { randomUUID } from "node:crypto";
+import {randomUUID} from "node:crypto";
 
-import type { IdentityStore } from "../../src/features/identity/store.js";
+import type {IdentityStore} from "../../src/features/identity/store.js";
 import {
-  type CreateIdentityBindingInput,
-  createDefaultIdentityInput,
-  DEFAULT_IDENTITY_HANDLE,
-  DEFAULT_IDENTITY_ID,
-  type CreateIdentityInput,
-  type EnsureIdentityBindingInput,
-  type IdentityBindingLookup,
-  type IdentityBindingRecord,
-  type IdentityRecord,
-  normalizeIdentityHandle,
+    createDefaultIdentityInput,
+    type CreateIdentityBindingInput,
+    type CreateIdentityInput,
+    DEFAULT_IDENTITY_HANDLE,
+    DEFAULT_IDENTITY_ID,
+    type EnsureIdentityBindingInput,
+    type IdentityBindingLookup,
+    type IdentityBindingRecord,
+    type IdentityRecord,
+    normalizeIdentityHandle,
 } from "../../src/features/identity/types.js";
-import type { ThreadEnqueueResult, ThreadRuntimeStore } from "../../src/features/thread-runtime/store.js";
+import type {ThreadEnqueueResult, ThreadRuntimeStore} from "../../src/features/thread-runtime/store.js";
 import {
-  matchesThreadInputIdentity,
-  missingThreadError,
-  type CreateThreadInput,
-  type ThreadInputDeliveryMode,
-  type ThreadInputPayload,
-  type ThreadInputRecord,
-  type ThreadMessageRecord,
-  type ThreadRunRecord,
-  type ThreadRuntimeMessagePayload,
-  type ThreadRecord,
-  type ThreadSummaryRecord,
-  type ThreadUpdate,
+    type CreateThreadInput,
+    matchesThreadInputIdentity,
+    missingThreadError,
+    type ThreadInputDeliveryMode,
+    type ThreadInputPayload,
+    type ThreadInputRecord,
+    type ThreadMessageRecord,
+    type ThreadRecord,
+    type ThreadRunRecord,
+    type ThreadRuntimeMessagePayload,
+    type ThreadSummaryRecord,
+    type ThreadUpdate,
 } from "../../src/features/thread-runtime/types.js";
 
 function cloneRecord<T extends object>(record: T): T {
@@ -207,11 +207,15 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     const nextRuntimeState = update.runtimeState === undefined
       ? thread.thread.runtimeState
       : update.runtimeState ?? undefined;
+    const nextInferenceProjection = update.inferenceProjection === undefined
+      ? thread.thread.inferenceProjection
+      : update.inferenceProjection ?? undefined;
     thread.thread = {
       ...thread.thread,
       ...update,
       thinking: nextThinking,
       runtimeState: nextRuntimeState,
+      inferenceProjection: nextInferenceProjection,
       id: thread.thread.id,
       updatedAt: Date.now(),
     };

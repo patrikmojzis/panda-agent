@@ -50,7 +50,7 @@ export function renderTranscriptEntries(
 
       entries.push({
         role: "assistant",
-        title: metadata.source === "assistant" ? "Agent" : metadata.source,
+        title: metadata.source === "assistant" ? "agent" : metadata.source,
         body,
       });
       text = "";

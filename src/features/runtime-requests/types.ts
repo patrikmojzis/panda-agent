@@ -1,7 +1,7 @@
-import type {JsonValue, ProviderName} from "../agent-core/types.js";
+import type {JsonValue} from "../agent-core/types.js";
 import type {MediaDescriptor} from "../channels/core/types.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
-import type {ThreadUpdate} from "../thread-runtime/types.js";
+import type {InferenceProjection, ThreadUpdate} from "../thread-runtime/types.js";
 
 export type PandaRuntimeRequestKind =
   | "telegram_message"
@@ -75,16 +75,16 @@ export interface TuiInputRequestPayload extends BaseRuntimeRequestPayload {
 export interface CreateThreadRequestPayload extends BaseRuntimeRequestPayload {
   id?: string;
   agentKey?: string;
-  provider?: ProviderName;
   model?: string;
   thinking?: ThinkingLevel;
+  inferenceProjection?: InferenceProjection;
 }
 
 export interface ResolveHomeThreadRequestPayload extends BaseRuntimeRequestPayload {
   agentKey?: string;
-  provider?: ProviderName;
   model?: string;
   thinking?: ThinkingLevel;
+  inferenceProjection?: InferenceProjection;
 }
 
 export interface ResetHomeThreadRequestPayload extends BaseRuntimeRequestPayload {
@@ -94,9 +94,9 @@ export interface ResetHomeThreadRequestPayload extends BaseRuntimeRequestPayload
   externalActorId?: string;
   commandExternalMessageId?: string;
   agentKey?: string;
-  provider?: ProviderName;
   model?: string;
   thinking?: ThinkingLevel;
+  inferenceProjection?: InferenceProjection;
 }
 
 export interface SwitchHomeAgentRequestPayload extends BaseRuntimeRequestPayload {

@@ -1,44 +1,29 @@
-import type {
-  AssistantMessage,
-  Message,
-  ThinkingLevel,
-  ToolCall,
-  ToolResultMessage,
-} from "@mariozechner/pi-ai";
+import type {AssistantMessage, Message, ThinkingLevel, ToolCall, ToolResultMessage,} from "@mariozechner/pi-ai";
 
-import type { Agent } from "./agent.js";
+import type {Agent} from "./agent.js";
 import {
-  InvalidJSONResponseError,
-  InvalidSchemaResponseError,
-  MaxTurnsReachedError,
-  StreamingFailedError,
-  ToolError,
+    InvalidJSONResponseError,
+    InvalidSchemaResponseError,
+    MaxTurnsReachedError,
+    StreamingFailedError,
+    ToolError,
 } from "./exceptions.js";
-import { stringifyUnknown } from "./helpers/stringify.js";
-import { estimateTokensFromString, type TokenCounter } from "./helpers/token-count.js";
-import { gatherContexts, type LlmContext } from "./llm-context.js";
-import type { Hook } from "./hook.js";
-import {
-  buildConversationContext,
-  buildToolResultMessage,
-  collectAssistantToolCalls,
-} from "./pi/messages.js";
-import { isCompactSummaryMessage } from "./helpers/compact.js";
-import { PiAiRuntime } from "./pi/runtime.js";
-import { assertProviderName, getProviderConfig, type ProviderName } from "./provider.js";
-import { RunContext } from "./run-context.js";
-import type { LlmRuntime, LlmRuntimeRequest } from "./runtime.js";
-import type { RunPipeline } from "./run-pipeline.js";
-import { throwIfAborted } from "./abort.js";
-import type { ThreadCheckpointDecision, ThreadCheckpointHandler } from "./thread-checkpoint.js";
-import { isToolResultPayload } from "./tool.js";
-import type {
-  JsonValue,
-  ThreadRunEvent,
-  ThreadStreamEvent,
-  ToolResultContent,
-  ToolProgressEvent,
-} from "./types.js";
+import {stringifyUnknown} from "./helpers/stringify.js";
+import {estimateTokensFromString, type TokenCounter} from "./helpers/token-count.js";
+import {gatherContexts, type LlmContext} from "./llm-context.js";
+import type {Hook} from "./hook.js";
+import {buildConversationContext, buildToolResultMessage, collectAssistantToolCalls,} from "./pi/messages.js";
+import {isCompactSummaryMessage} from "./helpers/compact.js";
+import {PiAiRuntime} from "./pi/runtime.js";
+import {buildCanonicalModelSelector, type ResolvedModelSelector, resolveModelSelector,} from "./model-selector.js";
+import {getProviderConfig} from "./provider.js";
+import {RunContext} from "./run-context.js";
+import type {LlmRuntime, LlmRuntimeRequest} from "./runtime.js";
+import type {RunPipeline} from "./run-pipeline.js";
+import {throwIfAborted} from "./abort.js";
+import type {ThreadCheckpointDecision, ThreadCheckpointHandler} from "./thread-checkpoint.js";
+import {isToolResultPayload} from "./tool.js";
+import type {JsonValue, ThreadRunEvent, ThreadStreamEvent, ToolProgressEvent, ToolResultContent,} from "./types.js";
 
 export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   agent: Agent<TOutput>;
@@ -51,7 +36,6 @@ export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   maxInputTokens?: number;
   promptCacheKey?: string;
   runPipelines?: ReadonlyArray<RunPipeline<TContext>>;
-  provider?: ProviderName;
   model?: string;
   temperature?: number;
   thinking?: ThinkingLevel;
@@ -123,7 +107,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   readonly temperature?: number;
   readonly thinking?: ThinkingLevel;
 
-  private readonly providerName: ProviderName;
+  private readonly modelSelection: ResolvedModelSelector;
   private readonly runtime: LlmRuntime;
   private readonly countTokens: TokenCounter;
   private readonly history: Message[];
@@ -141,8 +125,9 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     this.maxInputTokens = options.maxInputTokens;
     this.promptCacheKey = options.promptCacheKey;
     this.runPipelines = options.runPipelines;
-    this.providerName = options.provider === undefined ? "openai" : assertProviderName(options.provider);
-    this.model = options.model ?? getProviderConfig(this.providerName).defaultModel;
+    const defaultModel = buildCanonicalModelSelector("openai", getProviderConfig("openai").defaultModel);
+    this.modelSelection = resolveModelSelector(options.model ?? defaultModel);
+    this.model = this.modelSelection.canonical;
     this.temperature = options.temperature;
     this.thinking = options.thinking;
     this.runtime = options.runtime ?? new PiAiRuntime();
@@ -465,8 +450,8 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     const llmContextDump = this.llmContexts?.length ? await gatherContexts([...this.llmContexts]) : undefined;
 
     return {
-      providerName: this.providerName,
-      model: this.model,
+      providerName: this.modelSelection.providerName,
+      modelId: this.modelSelection.modelId,
       temperature: this.temperature,
       thinking: this.thinking,
       promptCacheKey: this.promptCacheKey,

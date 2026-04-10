@@ -1,19 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import {describe, expect, it, vi} from "vitest";
+import type {AssistantMessage} from "@mariozechner/pi-ai";
 
 import {
-  Agent,
-  Hook,
-  RunPipeline,
-  StreamingFailedError,
-  Thread,
-  Tool,
-  stringToUserMessage,
-  z,
-  type LlmRuntime,
-  type RunContext,
-  type ThreadRunEvent,
-  type ToolResultPayload,
+    Agent,
+    Hook,
+    type LlmRuntime,
+    type RunContext,
+    RunPipeline,
+    StreamingFailedError,
+    stringToUserMessage,
+    Thread,
+    type ThreadRunEvent,
+    Tool,
+    type ToolResultPayload,
+    z,
 } from "../src/index.js";
 
 class EchoTool extends Tool<typeof EchoTool.schema> {
@@ -125,8 +125,7 @@ function createAssistantMessage(
     role: "assistant",
     content,
     api: "openai-responses",
-    provider: "openai",
-    model: "gpt-5.1",
+    model: "openai/gpt-5.1",
     usage: {
       input: 0,
       output: 0,
@@ -177,7 +176,7 @@ describe("Thread", () => {
         name: "core",
         instructions: "Reply briefly",
       }),
-      model: "gpt-4o-mini",
+      model: "openai/gpt-4o-mini",
       messages: [stringToUserMessage("hi")],
       runtime,
     });
@@ -209,7 +208,7 @@ describe("Thread", () => {
         instructions: "Use tools when needed",
         tools: [new EchoTool()],
       }),
-      model: "gpt-4o-mini",
+      model: "openai/gpt-4o-mini",
       messages: [stringToUserMessage("call the tool")],
       runtime,
       hooks: [new RecordingHook(events)],
@@ -257,7 +256,7 @@ describe("Thread", () => {
           answer: z.string(),
         }),
       }),
-      model: "gpt-4o-mini",
+      model: "openai/gpt-4o-mini",
       messages: [stringToUserMessage("What is the answer?")],
       runtime,
     });
@@ -279,7 +278,7 @@ describe("Thread", () => {
         name: "runtime-config",
         instructions: "Be helpful",
       }),
-      model: "gpt-4o-mini",
+      model: "openai/gpt-4o-mini",
       temperature: 0.25,
       thinking: "medium",
       messages: [stringToUserMessage("hello")],
@@ -289,7 +288,8 @@ describe("Thread", () => {
     await thread.runToCompletion();
 
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({
-      model: "gpt-4o-mini",
+      modelId: "gpt-4o-mini",
+      providerName: "openai",
       temperature: 0.25,
       thinking: "medium",
     }));
@@ -314,7 +314,7 @@ describe("Thread", () => {
         instructions: "Use the progress tool",
         tools: [new ProgressTool()],
       }),
-      model: "gpt-4o-mini",
+      model: "openai/gpt-4o-mini",
       messages: [stringToUserMessage("show progress")],
       runtime,
     });
@@ -356,7 +356,7 @@ describe("Thread", () => {
         instructions: "Use the tool",
         tools: [new RichOutputTool()],
       }),
-      model: "gpt-4o-mini",
+      model: "openai/gpt-4o-mini",
       messages: [stringToUserMessage("show me the image")],
       runtime,
     });

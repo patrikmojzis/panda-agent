@@ -3,6 +3,7 @@ export * from "./features/agents/index.js";
 export * from "./features/channel-cursors/index.js";
 export * from "./features/channels/core/index.js";
 export * from "./features/conversation-threads/index.js";
+export * from "./features/heartbeats/index.js";
 export * from "./features/home-threads/index.js";
 export * from "./features/identity/index.js";
 export * from "./features/outbound-deliveries/index.js";

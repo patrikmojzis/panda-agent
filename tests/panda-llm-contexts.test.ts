@@ -86,6 +86,7 @@ describe("buildPandaLlmContexts", () => {
     expect(dump).toContain("**Agent Workspace:**");
     expect(dump).toContain("Alice likes tea.");
     expect(dump).toContain("calendar\nUse this for calendar work.");
+    expect(dump).not.toContain(DEFAULT_AGENT_DOCUMENT_TEMPLATES.heartbeat);
   });
 
   it("can limit Panda contexts to datetime and environment only", async () => {

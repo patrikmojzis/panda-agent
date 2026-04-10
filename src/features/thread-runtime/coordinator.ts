@@ -1,30 +1,32 @@
-import type { Message } from "@mariozechner/pi-ai";
+import type {Message} from "@mariozechner/pi-ai";
 
-import { Thread } from "../agent-core/thread.js";
-import { getProviderConfig, type ProviderName } from "../agent-core/provider.js";
-import type { ThreadRunEvent } from "../agent-core/types.js";
-import { stringifyUnknown } from "../agent-core/helpers/stringify.js";
+import {Thread} from "../agent-core/thread.js";
+import {buildCanonicalModelSelector} from "../agent-core/model-selector.js";
+import {getProviderConfig} from "../agent-core/provider.js";
+import type {ThreadRunEvent} from "../agent-core/types.js";
+import {stringifyUnknown} from "../agent-core/helpers/stringify.js";
 import type {
-  AutoCompactionRuntimeState,
-  ResolvedThreadDefinition,
-  ThreadDefinitionResolver,
-  ThreadInputPayload,
-  ThreadMessageRecord,
-  ThreadRecord,
-  ThreadRunRecord,
+    AutoCompactionRuntimeState,
+    ResolvedThreadDefinition,
+    ThreadDefinitionResolver,
+    ThreadInputPayload,
+    ThreadMessageRecord,
+    ThreadRecord,
+    ThreadRunRecord,
 } from "./types.js";
-import type { ThreadRuntimeStore } from "./store.js";
+import type {ThreadRuntimeStore} from "./store.js";
 import {
-  appendCompactionFailureNotice,
-  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-  AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
-  compactThread,
-  estimateTranscriptTokens,
-  projectTranscriptForRun,
-  readAutoCompactionRuntimeState,
-  shouldAutoCompactThread,
-  updateAutoCompactionRuntimeState,
+    appendCompactionFailureNotice,
+    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+    AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
+    compactThread,
+    estimateTranscriptTokens,
+    projectTranscriptForRun,
+    readAutoCompactionRuntimeState,
+    shouldAutoCompactThread,
+    updateAutoCompactionRuntimeState,
 } from "./compaction.js";
+import {projectTranscriptForInference} from "./inference-projection.js";
 
 export type ThreadWakeMode = "wake" | "queue";
 const ABORT_POLL_MS = 250;
@@ -226,6 +228,14 @@ export class ThreadRuntimeCoordinator {
     await activeRun;
   }
 
+  async isThreadBusy(threadId: string): Promise<boolean> {
+    if (this.activeRuns.has(threadId)) {
+      return true;
+    }
+
+    return this.store.hasPendingInputs(threadId);
+  }
+
   async runExclusively<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
     const lease = await this.leaseManager.tryAcquire(threadId);
     if (!lease) {
@@ -346,7 +356,6 @@ export class ThreadRuntimeCoordinator {
       maxInputTokens: definition.maxInputTokens ?? thread.maxInputTokens,
       promptCacheKey: definition.promptCacheKey ?? thread.promptCacheKey,
       runPipelines: definition.runPipelines,
-      provider: definition.provider ?? thread.provider,
       model: definition.model ?? thread.model,
       temperature: definition.temperature ?? thread.temperature,
       thinking: definition.thinking ?? thread.thinking,
@@ -384,14 +393,12 @@ export class ThreadRuntimeCoordinator {
     thread: ThreadRecord,
     definition: ResolvedThreadDefinition,
   ): {
-    providerName: ProviderName;
     model: string;
     thinking: ThreadRecord["thinking"];
   } {
-    const providerName = (definition.provider ?? thread.provider ?? "openai") as ProviderName;
+    const defaultModel = buildCanonicalModelSelector("openai", getProviderConfig("openai").defaultModel);
     return {
-      providerName,
-      model: definition.model ?? thread.model ?? getProviderConfig(providerName).defaultModel,
+      model: definition.model ?? thread.model ?? defaultModel,
       thinking: definition.thinking ?? thread.thinking,
     };
   }
@@ -491,7 +498,6 @@ export class ThreadRuntimeCoordinator {
         store: this.store,
         thread,
         transcript: options.transcript,
-        providerName: modelConfig.providerName,
         model: modelConfig.model,
         thinking: modelConfig.thinking,
         trigger: "auto",
@@ -579,8 +585,12 @@ export class ThreadRuntimeCoordinator {
           break;
         }
 
+        const projectedTranscript = projectTranscriptForInference(
+          transcript,
+          definition.inferenceProjection ?? preflight.thread.inferenceProjection,
+        );
         const executor = new Thread(
-          this.buildThreadOptions(run, preflight.thread, definition, transcript, controller.signal),
+          this.buildThreadOptions(run, preflight.thread, definition, projectedTranscript, controller.signal),
         );
 
         for await (const event of executor.run()) {

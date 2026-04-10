@@ -1,19 +1,16 @@
-import { describe, expect, it } from "vitest";
+import {describe, expect, it} from "vitest";
 
+import {applySlashCompletion, getSlashCompletionContext,} from "../src/features/tui/commands.js";
 import {
-  applySlashCompletion,
-  getSlashCompletionContext,
-} from "../src/features/tui/commands.js";
-import {
-  createComposerState,
-  deleteWordBackward,
-  insertText,
-  moveCursorDown,
-  moveCursorLineEnd,
-  moveCursorUp,
-  moveCursorWordLeft,
-  moveCursorWordRight,
-  setComposerValue,
+    createComposerState,
+    deleteWordBackward,
+    insertText,
+    moveCursorDown,
+    moveCursorLineEnd,
+    moveCursorUp,
+    moveCursorWordLeft,
+    moveCursorWordRight,
+    setComposerValue,
 } from "../src/features/tui/composer.js";
 
 describe("composer helpers", () => {
@@ -75,12 +72,12 @@ describe("composer helpers", () => {
 
 describe("slash command helpers", () => {
   it("finds slash completion only on the first line around the cursor", () => {
-    const context = getSlashCompletionContext("/pro", 4);
+    const context = getSlashCompletionContext("/mo", 3);
     const thinkingContext = getSlashCompletionContext("/thi", 4);
     const resetContext = getSlashCompletionContext("/re", 3);
 
-    expect(context?.token).toBe("/pro");
-    expect(context?.matches.map((command) => command.name)).toEqual(["/provider"]);
+    expect(context?.token).toBe("/mo");
+    expect(context?.matches.map((command) => command.name)).toEqual(["/model"]);
     expect(thinkingContext?.matches.map((command) => command.name)).toEqual(["/thinking"]);
     expect(resetContext?.matches.map((command) => command.name)).toContain("/reset");
     expect(resetContext?.matches[0]?.name).toBe("/reset");

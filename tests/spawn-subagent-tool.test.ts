@@ -86,13 +86,14 @@ function createAssistantMessage(
 }
 
 function createThreadRecord(): ThreadRecord {
-  return {
-    id: "thread-1",
-    identityId: "alice-id",
-    agentKey: "panda",
-    context: {
-      cwd: "/workspace/panda",
+    return {
+      id: "thread-1",
       identityId: "alice-id",
+      agentKey: "panda",
+      model: "openai/gpt-5.1",
+      context: {
+        cwd: "/workspace/panda",
+        identityId: "alice-id",
       identityHandle: "alice",
     },
     createdAt: 1,
@@ -156,8 +157,7 @@ describe("SpawnSubagentTool", () => {
         }),
         systemPrompt: "Parent system prompt",
         runtime,
-        provider: "openai",
-        model: "gpt-parent",
+        model: "openai/gpt-parent",
       } satisfies ResolvedThreadDefinition)),
       maxSubagentDepth: 1,
     });
@@ -177,7 +177,7 @@ describe("SpawnSubagentTool", () => {
       role: "explore",
       task: "Inspect the codebase for subagent hooks.",
       context: "Focus on runtime wiring.",
-      model: "gpt-child",
+      model: "openai/gpt-child",
     }, createParentRunContext(agent));
 
     expect(result).toMatchObject({
@@ -188,7 +188,8 @@ describe("SpawnSubagentTool", () => {
       },
     });
     expect(requests).toHaveLength(2);
-    expect(requests[0]?.model).toBe("gpt-child");
+    expect(requests[0]?.providerName).toBe("openai");
+    expect(requests[0]?.modelId).toBe("gpt-child");
     expect(requests[0]?.context.messages).toHaveLength(1);
     expect(JSON.stringify(requests[0]?.context.messages)).toContain("Inspect the codebase for subagent hooks.");
     expect(JSON.stringify(requests[0]?.context.messages)).toContain("Focus on runtime wiring.");

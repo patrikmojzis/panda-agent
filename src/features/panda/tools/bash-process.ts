@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
+import {spawn} from "node:child_process";
 
-import type { RunContext } from "../../agent-core/run-context.js";
-import { appendOutput, tailString, type OutputCaptureState } from "./bash-output.js";
+import type {JsonObject} from "../../agent-core/types.js";
+import {appendOutput, type OutputCaptureState, tailString} from "./bash-output.js";
 
 export interface BashProcessResult {
   exitCode: number | null;
@@ -12,7 +12,7 @@ export interface BashProcessResult {
   durationMs: number;
 }
 
-export async function runWrappedBashCommand<TContext>(options: {
+export async function runWrappedBashCommand(options: {
   command: string;
   shell: string;
   cwd: string;
@@ -24,7 +24,8 @@ export async function runWrappedBashCommand<TContext>(options: {
   maxOutputChars: number;
   stdoutCapture: OutputCaptureState;
   stderrCapture: OutputCaptureState;
-  run: RunContext<TContext>;
+  signal?: AbortSignal;
+  onProgress?: (progress: JsonObject) => void;
 }): Promise<BashProcessResult> {
   const startedAt = Date.now();
   let interruption: "timeout" | "abort" | null = null;
@@ -47,7 +48,7 @@ export async function runWrappedBashCommand<TContext>(options: {
       return;
     }
 
-    options.run.emitToolProgress({
+    options.onProgress?.({
       command: options.command,
       cwd: options.cwd,
       elapsedMs: Date.now() - startedAt,
@@ -95,10 +96,10 @@ export async function runWrappedBashCommand<TContext>(options: {
 
     const abortHandler = (): void => {
       abortReason =
-        options.run.signal?.reason instanceof Error
-          ? options.run.signal.reason.message
-          : typeof options.run.signal?.reason === "string"
-            ? options.run.signal.reason
+        options.signal?.reason instanceof Error
+          ? options.signal.reason.message
+          : typeof options.signal?.reason === "string"
+            ? options.signal.reason
             : "Command aborted.";
       if (!killChild("SIGTERM")) {
         return;
@@ -111,11 +112,11 @@ export async function runWrappedBashCommand<TContext>(options: {
       abortKillTimer.unref();
     };
 
-    if (options.run.signal) {
-      if (options.run.signal.aborted) {
+    if (options.signal) {
+      if (options.signal.aborted) {
         abortHandler();
       } else {
-        options.run.signal.addEventListener("abort", abortHandler, { once: true });
+        options.signal.addEventListener("abort", abortHandler, { once: true });
       }
     }
 
@@ -149,7 +150,7 @@ export async function runWrappedBashCommand<TContext>(options: {
     });
 
     child.once("error", (error) => {
-      options.run.signal?.removeEventListener("abort", abortHandler);
+      options.signal?.removeEventListener("abort", abortHandler);
       clearTimeout(abortKillTimer);
       clearTimeout(timeout);
       clearInterval(progressTimer);
@@ -161,7 +162,7 @@ export async function runWrappedBashCommand<TContext>(options: {
     });
 
     child.once("close", (exitCode, signal) => {
-      options.run.signal?.removeEventListener("abort", abortHandler);
+      options.signal?.removeEventListener("abort", abortHandler);
       clearTimeout(abortKillTimer);
       clearTimeout(timeout);
       clearInterval(progressTimer);

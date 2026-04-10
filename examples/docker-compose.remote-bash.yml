@@ -1,0 +1,104 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: panda
+      POSTGRES_USER: panda_app
+      POSTGRES_PASSWORD: app_pw
+    networks:
+      - core_net
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U panda_app -d panda"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  panda-core:
+    build: ..
+    image: panda:latest
+    command: ["run"]
+    env_file:
+      - ../.env
+    environment:
+      PANDA_DATABASE_URL: postgres://panda_app:app_pw@db:5432/panda
+      PANDA_BASH_EXECUTION_MODE: remote
+      PANDA_RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
+    volumes:
+      - ${HOME}/.panda:/root/.panda
+      - ${PANDA_SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
+    depends_on:
+      db:
+        condition: service_healthy
+      panda-runner-panda:
+        condition: service_healthy
+      panda-runner-ops:
+        condition: service_healthy
+    networks:
+      - core_net
+      - runner_net
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - --input-type=module
+        - -e
+        - |
+          import { PostgresPandaDaemonStateStore } from "/app/dist/features/daemon-state/index.js";
+          import { createPandaPool } from "/app/dist/features/panda/runtime.js";
+          import { DEFAULT_PANDA_DAEMON_KEY, PANDA_DAEMON_STALE_AFTER_MS } from "/app/dist/features/panda/daemon.js";
+          const pool = createPandaPool(process.env.PANDA_DATABASE_URL);
+          const store = new PostgresPandaDaemonStateStore({ pool });
+          const state = await store.readState(DEFAULT_PANDA_DAEMON_KEY);
+          await pool.end();
+          if (!state || Date.now() - state.heartbeatAt > PANDA_DAEMON_STALE_AFTER_MS) {
+            process.exit(1);
+          }
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  panda-runner-panda:
+    build: ..
+    image: panda:latest
+    command: ["runner"]
+    environment:
+      PANDA_RUNNER_AGENT_KEY: panda
+      PANDA_RUNNER_PORT: 8080
+    volumes:
+      - ${HOME}/.panda/agents/panda:/root/.panda/agents/panda
+      - ${PANDA_SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
+    networks:
+      - runner_net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  panda-runner-ops:
+    build: ..
+    image: panda:latest
+    command: ["runner"]
+    environment:
+      PANDA_RUNNER_AGENT_KEY: ops
+      PANDA_RUNNER_PORT: 8080
+    volumes:
+      - ${HOME}/.panda/agents/ops:/root/.panda/agents/ops
+      - ${PANDA_SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
+    networks:
+      - runner_net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+networks:
+  core_net:
+  runner_net:

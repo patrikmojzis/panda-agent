@@ -12,6 +12,11 @@ export {
 export { Hook } from "./hook.js";
 export { LlmContext, gatherContexts } from "./llm-context.js";
 export {
+  buildCanonicalModelSelector,
+  resolveModelSelector,
+  type ResolvedModelSelector,
+} from "./model-selector.js";
+export {
   getProviderConfig,
   PROVIDER_NAMES,
   assertProviderName,

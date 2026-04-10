@@ -35,8 +35,13 @@ export {
   type CompactTranscriptSplit,
 } from "./compaction.js";
 export {
+  projectTranscriptForInference,
+} from "./inference-projection.js";
+export {
   type AutoCompactionRuntimeState,
   type CreateThreadInput,
+  type InferenceProjection,
+  type InferenceProjectionRule,
   isMissingThreadError,
   missingThreadError,
   type ResolvedThreadDefinition,

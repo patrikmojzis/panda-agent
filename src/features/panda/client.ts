@@ -1,23 +1,23 @@
 import type {PoolClient} from "pg";
 
-import type {ProviderName} from "../agent-core/types.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import {type AgentRecord, PostgresAgentStore} from "../agents/index.js";
 import {
-  createDefaultIdentityInput,
-  DEFAULT_IDENTITY_HANDLE,
-  type IdentityRecord,
-  PostgresIdentityStore,
+    createDefaultIdentityInput,
+    DEFAULT_IDENTITY_HANDLE,
+    type IdentityRecord,
+    PostgresIdentityStore,
 } from "../identity/index.js";
 import {PostgresPandaRuntimeRequestStore} from "../runtime-requests/index.js";
 import {PostgresPandaDaemonStateStore} from "../daemon-state/index.js";
 import {
-  buildThreadRuntimeNotificationChannel,
-  parseThreadRuntimeNotification,
-  PostgresThreadRuntimeStore,
-  type ThreadRuntimeNotification,
+    buildThreadRuntimeNotificationChannel,
+    parseThreadRuntimeNotification,
+    PostgresThreadRuntimeStore,
+    type ThreadRuntimeNotification,
 } from "../thread-runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
-import type {ThreadRecord, ThreadSummaryRecord, ThreadUpdate} from "../thread-runtime/types.js";
+import type {InferenceProjection, ThreadRecord, ThreadSummaryRecord, ThreadUpdate} from "../thread-runtime/types.js";
 import {DEFAULT_PANDA_DAEMON_KEY, PANDA_DAEMON_REQUEST_TIMEOUT_MS, PANDA_DAEMON_STALE_AFTER_MS,} from "./daemon.js";
 import {createPandaPool, requirePandaDatabaseUrl} from "./runtime.js";
 
@@ -44,9 +44,9 @@ export interface PandaClientOptions {
 export interface PandaClientThreadOptions {
   id?: string;
   agentKey?: string;
-  provider?: ProviderName;
   model?: string;
   thinking?: ThinkingLevel;
+  inferenceProjection?: InferenceProjection;
 }
 
 export interface PandaClientCompactResult {
@@ -58,6 +58,7 @@ export interface PandaClientCompactResult {
 export interface PandaClient {
   identity: IdentityRecord;
   store: ThreadRuntimeStore;
+  getAgent(agentKey: string): Promise<AgentRecord>;
   createThread(options?: PandaClientThreadOptions): Promise<ThreadRecord>;
   resolveOrCreateHomeThread(options?: PandaClientThreadOptions): Promise<ThreadRecord>;
   resetHomeThread(options?: Omit<PandaClientThreadOptions, "id">): Promise<ThreadRecord>;
@@ -141,6 +142,10 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
     pool,
     tablePrefix,
   });
+  const agentStore = new PostgresAgentStore({
+    pool,
+    tablePrefix,
+  });
   const store = new PostgresThreadRuntimeStore({
     pool,
     tablePrefix,
@@ -159,6 +164,7 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
 
   try {
     await store.ensureSchema();
+    await agentStore.ensureSchema();
     await requests.ensureSchema();
     await daemonState.ensureSchema();
 
@@ -190,9 +196,9 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
           identityId: identity.id,
           id: threadOptions.id,
           agentKey: trimNonEmptyString(threadOptions.agentKey) ?? undefined,
-          provider: threadOptions.provider,
           model: threadOptions.model,
           thinking: threadOptions.thinking,
+          ...(threadOptions.inferenceProjection ? {inferenceProjection: threadOptions.inferenceProjection} : {}),
         },
       });
       const result = await waitForRequestResult<{threadId: string}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
@@ -206,9 +212,9 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
         payload: {
           identityId: identity.id,
           agentKey: trimNonEmptyString(threadOptions.agentKey) ?? undefined,
-          provider: threadOptions.provider,
           model: threadOptions.model,
           thinking: threadOptions.thinking,
+          ...(threadOptions.inferenceProjection ? {inferenceProjection: threadOptions.inferenceProjection} : {}),
         },
       });
       const result = await waitForRequestResult<{threadId: string}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
@@ -225,9 +231,9 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
           identityId: identity.id,
           source: "tui",
           agentKey: trimNonEmptyString(threadOptions.agentKey) ?? undefined,
-          provider: threadOptions.provider,
           model: threadOptions.model,
           thinking: threadOptions.thinking,
+          ...(threadOptions.inferenceProjection ? {inferenceProjection: threadOptions.inferenceProjection} : {}),
         },
       });
       const result = await waitForRequestResult<{threadId: string}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
@@ -332,6 +338,7 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
     return {
       identity,
       store,
+      getAgent: (agentKey) => agentStore.getAgent(agentKey),
       createThread,
       resolveOrCreateHomeThread,
       resetHomeThread,

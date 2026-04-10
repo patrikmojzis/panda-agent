@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import {randomUUID} from "node:crypto";
+import {mkdir, readFile} from "node:fs/promises";
 import path from "node:path";
 
-import type { PandaShellSession } from "../types.js";
+import type {PandaShellSession} from "../types.js";
+import type {PersistedEnvEntry} from "./bash-protocol.js";
 
 export interface InvocationPaths {
   directory: string;
@@ -10,12 +11,6 @@ export interface InvocationPaths {
   envStatePath: string;
   stdoutPath: string;
   stderrPath: string;
-}
-
-interface PersistedEnvEntry {
-  key: string;
-  present: boolean;
-  value: string;
 }
 
 const SILENT_COMMANDS = new Set([

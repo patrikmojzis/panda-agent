@@ -187,6 +187,7 @@ describe("ensureReadonlyChatQuerySchema", () => {
     expect(queryable.queries[0]).toContain("CREATE VIEW \"panda_scheduled_task_runs\"");
     expect(queryable.queries[0]).toContain("FROM \"panda_messages_raw\" AS raw");
     expect(queryable.queries[0]).toContain("WHERE raw.role IN ('user', 'assistant')");
+    expect(queryable.queries[0]).toContain("t.inference_projection");
     expect(queryable.queries[0]).toContain("t.identity_id = current_setting('panda.identity_id', true)");
     expect(queryable.queries[0]).toContain("t.agent_key = current_setting('panda.agent_key', true)");
     expect(queryable.queries[1]).toContain("GRANT SELECT ON \"panda_threads\", \"panda_messages\", \"panda_messages_raw\", \"panda_tool_results\", \"panda_inputs\", \"panda_runs\", \"panda_scheduled_tasks\", \"panda_scheduled_task_runs\"");

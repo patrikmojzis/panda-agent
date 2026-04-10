@@ -237,8 +237,7 @@ describe("PandaChatApp thinking command", () => {
     const updateThread = vi.fn(async (_threadId: string, update: { thinking?: "high" | null }) => ({
       id: "thread-thinking",
       agentKey: "panda",
-      provider: "openai",
-      model: "gpt-5.1",
+      model: "openai/gpt-5.1",
       thinking: update.thinking ?? undefined,
       createdAt: 1,
       updatedAt: 2,
@@ -266,19 +265,19 @@ describe("PandaChatApp thinking command", () => {
     const app = new PandaChatApp() as any;
 
     app.currentThreadId = "thread-config";
-    app.model = "gpt-5.1";
+    app.model = "openai/gpt-5.1";
     app.thinking = "medium";
     app.currentThread = {
       id: "thread-config",
-      model: "gpt-5.1",
+      model: "openai/gpt-5.1",
       thinking: "medium",
     };
     app.services = {
       updateThread,
     } as ChatRuntimeServices;
 
-    await expect(app.handleCommand("/model gpt-5.2")).resolves.toBe(true);
-    expect(app.model).toBe("gpt-5.1");
+    await expect(app.handleCommand("/model openai/gpt-5.2")).resolves.toBe(true);
+    expect(app.model).toBe("openai/gpt-5.1");
     expect(app.transcript.at(-1)).toMatchObject({
       role: "error",
       title: "config",
@@ -291,6 +290,93 @@ describe("PandaChatApp thinking command", () => {
       role: "error",
       title: "config",
       body: "store unavailable",
+    });
+  });
+});
+
+describe("PandaChatApp fresh-thread agent selection", () => {
+  it("does not inherit the current thread agent for /new when no explicit chat agent is set", async () => {
+    const createThread = vi.fn(async () => ({
+      id: "thread-new",
+      identityId: "local",
+      agentKey: "jozef",
+      model: "openai/gpt-5.1",
+      context: {},
+      createdAt: 1,
+      updatedAt: 2,
+    }));
+    const app = new PandaChatApp() as any;
+    const expectedModel = app.model;
+
+    app.currentThreadId = "thread-current";
+    app.currentThread = {
+      id: "thread-current",
+      identityId: "local",
+      agentKey: "panda",
+      model: "openai/gpt-5.1",
+      context: {},
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    app.services = {
+      createThread,
+    } as ChatRuntimeServices;
+    app.switchThread = vi.fn(async (thread) => {
+      app.currentThread = thread;
+      app.currentThreadId = thread.id;
+    });
+    app.pushEntry = vi.fn();
+    app.setNotice = vi.fn();
+
+    await expect(app.handleCommand("/new")).resolves.toBe(true);
+
+    expect(createThread).toHaveBeenCalledWith({
+      id: undefined,
+      agentKey: undefined,
+      model: expectedModel,
+      thinking: undefined,
+    });
+  });
+
+  it("does not inherit the current thread agent for /reset when no explicit chat agent is set", async () => {
+    const resetHomeThread = vi.fn(async () => ({
+      id: "thread-reset",
+      identityId: "local",
+      agentKey: "jozef",
+      model: "openai/gpt-5.1",
+      context: {},
+      createdAt: 1,
+      updatedAt: 2,
+    }));
+    const app = new PandaChatApp() as any;
+    const expectedModel = app.model;
+
+    app.currentThreadId = "thread-current";
+    app.currentThread = {
+      id: "thread-current",
+      identityId: "local",
+      agentKey: "panda",
+      model: "openai/gpt-5.1",
+      context: {},
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    app.services = {
+      resetHomeThread,
+    } as ChatRuntimeServices;
+    app.switchThread = vi.fn(async (thread) => {
+      app.currentThread = thread;
+      app.currentThreadId = thread.id;
+    });
+    app.pushEntry = vi.fn();
+    app.setNotice = vi.fn();
+
+    await expect(app.handleCommand("/reset")).resolves.toBe(true);
+
+    expect(resetHomeThread).toHaveBeenCalledWith({
+      agentKey: undefined,
+      model: expectedModel,
+      thinking: undefined,
     });
   });
 });
@@ -308,8 +394,7 @@ describe("PandaChatApp compact command", () => {
     app.currentThread = {
       id: "thread-compact",
       agentKey: "panda",
-      provider: "openai",
-      model: "gpt-5.1",
+      model: "openai/gpt-5.1",
       createdAt: 1,
       updatedAt: 2,
     };
@@ -342,8 +427,7 @@ describe("PandaChatApp compact command", () => {
     app.currentThread = {
       id: "thread-compact",
       agentKey: "panda",
-      provider: "openai",
-      model: "gpt-5.1",
+      model: "openai/gpt-5.1",
       createdAt: 1,
       updatedAt: 2,
     };
@@ -369,7 +453,7 @@ describe("PandaChatApp performance helpers", () => {
     app.transcript.push({
       id: 1,
       role: "assistant",
-      title: "Agent",
+      title: "agent",
       body: "**hello**",
     });
     app.nextEntryId = 2;
@@ -418,8 +502,7 @@ describe("PandaChatApp performance helpers", () => {
     const getThread = vi.fn(async () => ({
       id: "thread-sync",
       agentKey: "panda",
-      provider: "openai",
-      model: "gpt-5.1",
+      model: "openai/gpt-5.1",
       createdAt: 1,
       updatedAt: 2,
     }));
@@ -451,8 +534,7 @@ describe("PandaChatApp performance helpers", () => {
       const getThread = vi.fn(async () => ({
         id: "thread-sync",
         agentKey: "panda",
-        provider: "openai",
-        model: "gpt-5.1",
+        model: "openai/gpt-5.1",
         createdAt: 1,
         updatedAt: 2,
       }));
@@ -500,8 +582,7 @@ describe("PandaChatApp performance helpers", () => {
     const getThread = vi.fn(async () => ({
       id: "thread-sync",
       agentKey: "panda",
-      provider: "openai",
-      model: "gpt-5.1",
+      model: "openai/gpt-5.1",
       createdAt: 1,
       updatedAt: 2,
     }));
@@ -554,8 +635,7 @@ describe("buildWelcomeTranscriptLines", () => {
   it("keeps the welcome key hints aligned with the composer policy", () => {
     const welcome = buildWelcomeTranscriptLines({
       width: 120,
-      providerName: "openai",
-      model: "gpt-5.1",
+      model: "openai/gpt-5.1",
       thinkingLabel: "off",
       cwd: "/tmp/panda",
     });
@@ -568,6 +648,45 @@ describe("buildWelcomeTranscriptLines", () => {
 });
 
 describe("buildChatViewModel", () => {
+  it("shows the active agent and identity in the header", () => {
+    const view = buildChatViewModel({
+      terminalWidth: 120,
+      terminalRows: 30,
+      transcriptLines: [],
+      transcriptSearchActive: false,
+      transcriptSearchQuery: "",
+      transcriptSearchSelection: 0,
+      threadPickerActive: false,
+      historySearchActive: false,
+      historySearchQuery: "",
+      historySearchSelection: 0,
+      historyMatchCount: 0,
+      historyPreview: null,
+      notice: null,
+      slashContext: null,
+      slashCompletionIndex: 0,
+      followTranscript: true,
+      scrollTop: 0,
+      pendingLocalInputLines: [],
+      composerLayout: {
+        lines: [""],
+        cursorRow: 0,
+        cursorColumn: 1,
+      },
+      isRunning: false,
+      runStartedAt: 0,
+      agentLabel: "Panda",
+      identityHandle: "alice",
+      currentThreadId: "thread-test",
+      model: "openai/gpt-5.1",
+      thinkingLabel: "off",
+      modeLabel: "compose",
+      cwd: "/tmp/panda",
+    });
+
+    expect(stripAnsi(view.headerLine)).toBe("Panda · @alice · cwd /tmp/panda");
+  });
+
   it("shows the shared newline hint in the footer", () => {
     const view = buildChatViewModel({
       terminalWidth: 120,
@@ -595,9 +714,10 @@ describe("buildChatViewModel", () => {
       },
       isRunning: false,
       runStartedAt: 0,
+      agentLabel: "Panda",
+      identityHandle: "alice",
       currentThreadId: "thread-test",
-      providerName: "openai",
-      model: "gpt-5.1",
+      model: "openai/gpt-5.1",
       thinkingLabel: "off",
       modeLabel: "compose",
       cwd: "/tmp/panda",
@@ -605,6 +725,85 @@ describe("buildChatViewModel", () => {
 
     expect(stripAnsi(view.infoLine.text)).toContain("\\ + Enter newline");
     expect(stripAnsi(view.infoLine.text)).not.toContain("Ctrl-J");
+  });
+});
+
+describe("PandaChatApp agent header", () => {
+  it("updates the header when switching to a thread with a different agent", async () => {
+    const app = new PandaChatApp() as any;
+
+    app.services = {
+      identity: {
+        id: "alice-id",
+        handle: "alice",
+        displayName: "Alice",
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      getAgent: vi.fn(async (agentKey: string) => ({
+        agentKey,
+        displayName: agentKey === "panda" ? "Panda" : "Ops",
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      })),
+    } as ChatRuntimeServices;
+    app.refreshToolCatalog = vi.fn();
+    app.reloadVisibleTranscript = vi.fn(async () => {});
+    app.syncStoredThreadState = vi.fn(async () => {});
+
+    await app.switchThread({
+      id: "thread-panda",
+      identityId: "alice-id",
+      agentKey: "panda",
+      context: {cwd: "/tmp/panda"},
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    expect(stripAnsi(app.buildView().headerLine)).toContain("Panda · @alice · cwd /tmp/panda");
+
+    await app.switchThread({
+      id: "thread-ops",
+      identityId: "alice-id",
+      agentKey: "ops",
+      context: {cwd: "/tmp/ops"},
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    expect(stripAnsi(app.buildView().headerLine)).toContain("Ops · @alice · cwd /tmp/ops");
+  });
+
+  it("falls back to the agent key when agent lookup fails", async () => {
+    const app = new PandaChatApp() as any;
+
+    app.services = {
+      identity: {
+        id: "alice-id",
+        handle: "alice",
+        displayName: "Alice",
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      getAgent: vi.fn(async () => {
+        throw new Error("boom");
+      }),
+    } as ChatRuntimeServices;
+    app.refreshToolCatalog = vi.fn();
+    app.reloadVisibleTranscript = vi.fn(async () => {});
+    app.syncStoredThreadState = vi.fn(async () => {});
+
+    await app.switchThread({
+      id: "thread-ops",
+      identityId: "alice-id",
+      agentKey: "ops",
+      context: {cwd: "/tmp/ops"},
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    expect(stripAnsi(app.buildView().headerLine)).toContain("ops · @alice · cwd /tmp/ops");
   });
 });
 

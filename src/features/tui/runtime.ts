@@ -1,14 +1,13 @@
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
-import type {ProviderName} from "../agent-core/types.js";
+import type {AgentRecord} from "../agents/index.js";
 import {createPandaClient} from "../panda/client.js";
-import type {ThreadRecord, ThreadSummaryRecord, ThreadUpdate} from "../thread-runtime/index.js";
+import type {InferenceProjection, ThreadRecord, ThreadSummaryRecord, ThreadUpdate} from "../thread-runtime/index.js";
 import type {ThreadRuntimeNotification} from "../thread-runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
 import type {IdentityRecord} from "../identity/index.js";
 
 export interface ChatRuntimeOptions {
-  provider?: ProviderName;
   model?: string;
   identity?: string;
   agent?: string;
@@ -20,14 +19,15 @@ export interface ChatRuntimeOptions {
 export interface CreateChatThreadOptions {
   id?: string;
   agentKey?: string;
-  provider?: ProviderName;
   model?: string;
   thinking?: ThinkingLevel;
+  inferenceProjection?: InferenceProjection;
 }
 
 export interface ChatRuntimeServices {
   identity: IdentityRecord;
   store: ThreadRuntimeStore;
+  getAgent(agentKey: string): Promise<AgentRecord>;
   createThread(options?: CreateChatThreadOptions): Promise<ThreadRecord>;
   resolveOrCreateHomeThread(options?: CreateChatThreadOptions): Promise<ThreadRecord>;
   resetHomeThread(options?: Omit<CreateChatThreadOptions, "id">): Promise<ThreadRecord>;
@@ -71,22 +71,23 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
     return {
       id: threadOptions.id,
       agentKey: trimNonEmptyString(threadOptions.agentKey) ?? trimNonEmptyString(options.agent),
-      provider: threadOptions.provider ?? options.provider,
       model: threadOptions.model ?? options.model,
       thinking: threadOptions.thinking,
+      ...(threadOptions.inferenceProjection ? {inferenceProjection: threadOptions.inferenceProjection} : {}),
     };
   };
 
   return {
     identity: client.identity,
     store: client.store,
+    getAgent: (agentKey) => client.getAgent(agentKey),
     createThread: (threadOptions) => client.createThread(applyDefaults(threadOptions)),
     resolveOrCreateHomeThread: (threadOptions) => client.resolveOrCreateHomeThread(applyDefaults(threadOptions)),
     resetHomeThread: (threadOptions) => client.resetHomeThread({
       agentKey: trimNonEmptyString(threadOptions?.agentKey) ?? trimNonEmptyString(options.agent),
-      provider: threadOptions?.provider ?? options.provider,
       model: threadOptions?.model ?? options.model,
       thinking: threadOptions?.thinking,
+      ...(threadOptions?.inferenceProjection ? {inferenceProjection: threadOptions.inferenceProjection} : {}),
     }),
     getThread: (threadId) => client.getThread(threadId),
     listThreadSummaries: (limit = 20) => client.listThreadSummaries(limit),

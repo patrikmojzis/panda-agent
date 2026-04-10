@@ -1,15 +1,10 @@
-import type {
-  AssistantMessage,
-  AssistantMessageEventStream,
-  Context,
-  ThinkingLevel,
-} from "@mariozechner/pi-ai";
+import type {AssistantMessage, AssistantMessageEventStream, Context, ThinkingLevel,} from "@mariozechner/pi-ai";
 
-import type { ProviderName } from "./types.js";
+import type {ProviderName} from "./types.js";
 
 export interface LlmRuntimeRequest {
   providerName: ProviderName;
-  model: string;
+  modelId: string;
   temperature?: number;
   thinking?: ThinkingLevel;
   promptCacheKey?: string;

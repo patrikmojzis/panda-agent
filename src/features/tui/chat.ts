@@ -3,79 +3,76 @@ import {randomUUID} from "node:crypto";
 import {stdin as input, stdout as output} from "node:process";
 
 import {
-  assertProviderName,
-  formatProviderNameList,
-  getProviderConfig,
-  parseProviderName,
-  resolveProviderApiKey,
-  type ThinkingLevel,
-  Tool,
+    getProviderConfig,
+    resolveModelSelector,
+    resolveProviderApiKey,
+    type ThinkingLevel,
+    Tool,
 } from "../agent-core/index.js";
-import type {ProviderName} from "../agent-core/types.js";
 import {buildPandaTools} from "../panda/agent.js";
 import {summarizeMessageText} from "../panda/message-preview.js";
-import {resolveDefaultPandaModel, resolveDefaultPandaProvider} from "../panda/provider-defaults.js";
+import {resolveDefaultPandaModelSelector} from "../panda/provider-defaults.js";
 import {type ChatRuntimeServices, createChatRuntime,} from "./runtime.js";
 import {buildChatHelpText, describeUnknownCommand, runChatCommandLine,} from "./chat-commands.js";
 import {renderTranscriptEntries,} from "./transcript.js";
 import {applySlashCompletion, getSlashCompletionContext, type SlashCompletionContext,} from "./commands.js";
 import {
-  backspace,
-  type ComposerState,
-  createComposerState,
-  deleteForward,
-  deleteWordBackward,
-  insertText,
-  moveCursorDown,
-  moveCursorLeft,
-  moveCursorLineEnd,
-  moveCursorLineStart,
-  moveCursorRight,
-  moveCursorUp,
-  moveCursorWordLeft,
-  moveCursorWordRight,
-  setComposerValue,
+    backspace,
+    type ComposerState,
+    createComposerState,
+    deleteForward,
+    deleteWordBackward,
+    insertText,
+    moveCursorDown,
+    moveCursorLeft,
+    moveCursorLineEnd,
+    moveCursorLineStart,
+    moveCursorRight,
+    moveCursorUp,
+    moveCursorWordLeft,
+    moveCursorWordRight,
+    setComposerValue,
 } from "./composer.js";
 import {
-  COMPOSER_NEWLINE_HINT,
-  extendedKeysModeSequence,
-  isPrintableKey,
-  type KeyLike,
-  normalizeTerminalKeySequence,
-  replaceTrailingBackslashWithNewline,
-  resolveComposerEnterAction,
-  resolveComposerMetaAction,
+    COMPOSER_NEWLINE_HINT,
+    extendedKeysModeSequence,
+    isPrintableKey,
+    type KeyLike,
+    normalizeTerminalKeySequence,
+    replaceTrailingBackslashWithNewline,
+    resolveComposerEnterAction,
+    resolveComposerMetaAction,
 } from "./input.js";
 import {
-  buildChatViewModel,
-  buildWelcomeTranscriptLines,
-  type ComposerLayout,
-  normalizeInlineText,
-  type NoticeState,
-  THREAD_PICKER_VISIBLE_COUNT,
-  type TranscriptLine,
-  type ViewModel,
+    buildChatViewModel,
+    buildWelcomeTranscriptLines,
+    type ComposerLayout,
+    normalizeInlineText,
+    type NoticeState,
+    THREAD_PICKER_VISIBLE_COUNT,
+    type TranscriptLine,
+    type ViewModel,
 } from "./chat-view.js";
 import {renderMarkdownLines} from "./markdown.js";
 import {
-  ALT_SCREEN_OFF,
-  ALT_SCREEN_ON,
-  clamp,
-  CLEAR_SCREEN,
-  cursorTo,
-  formatDuration,
-  HIDE_CURSOR,
-  padAnsiEnd,
-  SHOW_CURSOR,
-  truncatePlainText,
-  wrapPlainText,
+    ALT_SCREEN_OFF,
+    ALT_SCREEN_ON,
+    clamp,
+    CLEAR_SCREEN,
+    cursorTo,
+    formatDuration,
+    HIDE_CURSOR,
+    padAnsiEnd,
+    SHOW_CURSOR,
+    truncatePlainText,
+    wrapPlainText,
 } from "./screen.js";
 import {stripAnsi, theme} from "./theme.js";
 import type {
-  ThreadMessageRecord,
-  ThreadRecord,
-  ThreadRunRecord,
-  ThreadSummaryRecord,
+    ThreadMessageRecord,
+    ThreadRecord,
+    ThreadRunRecord,
+    ThreadSummaryRecord,
 } from "../thread-runtime/index.js";
 import {isMissingThreadError,} from "../thread-runtime/index.js";
 
@@ -133,7 +130,6 @@ const WELCOME_ENTRY_TEXT = [
 ].join("\n");
 
 export interface ChatCliOptions {
-  provider?: ProviderName;
   model?: string;
   thinking?: ThinkingLevel;
   identity?: string;
@@ -175,12 +171,14 @@ function thinkingCommandValuesText(): string {
   return `${THINKING_LEVELS.join(", ")}, or off`;
 }
 
-function missingApiKeyMessage(provider: ProviderName): string | null {
-  return resolveProviderApiKey(provider) ? null : getProviderConfig(provider).missingApiKeyMessage;
+function missingApiKeyMessage(modelSelector: string): string | null {
+  const selection = resolveModelSelector(modelSelector);
+  return resolveProviderApiKey(selection.providerName)
+    ? null
+    : getProviderConfig(selection.providerName).missingApiKeyMessage;
 }
 
 export class PandaChatApp {
-  private providerName: ProviderName;
   private model: string;
   private thinking?: ThinkingLevel;
   private readonly fallbackCwd: string;
@@ -205,6 +203,7 @@ export class PandaChatApp {
   private services: ChatRuntimeServices | null = null;
   private currentThreadId = "";
   private currentThread: ThreadRecord | null = null;
+  private currentAgentLabel = "Panda";
   private currentTools: readonly Tool[] = [];
   private readonly visibleStoredMessageIds = new Set<string>();
   private readonly transcriptLineCache = new Map<number, TranscriptLineCacheEntry>();
@@ -244,10 +243,9 @@ export class PandaChatApp {
   };
 
   constructor(options: ChatCliOptions = {}) {
-    this.providerName = options.provider === undefined
-      ? resolveDefaultPandaProvider()
-      : assertProviderName(options.provider);
-    this.model = options.model ?? resolveDefaultPandaModel(this.providerName);
+    this.model = options.model === undefined
+      ? resolveDefaultPandaModelSelector()
+      : resolveModelSelector(options.model).canonical;
     this.thinking = options.thinking;
     this.identity = options.identity;
     this.defaultAgentKey = options.agent;
@@ -470,7 +468,6 @@ export class PandaChatApp {
 
   private async initializeRuntime(): Promise<void> {
     this.services = await createChatRuntime({
-      provider: this.providerName,
       model: this.model,
       identity: this.identity,
       agent: this.defaultAgentKey,
@@ -498,20 +495,17 @@ export class PandaChatApp {
   private buildThreadDefaults(overrides: Partial<{
     id: string;
     agentKey: string;
-    provider: ProviderName;
     model: string;
     thinking: ThinkingLevel;
   }> = {}): {
     id?: string;
     agentKey?: string;
-    provider: ProviderName;
     model: string;
     thinking?: ThinkingLevel;
   } {
     return {
       id: overrides.id,
-      agentKey: overrides.agentKey ?? this.currentThread?.agentKey ?? this.defaultAgentKey,
-      provider: overrides.provider ?? this.providerName,
+      agentKey: overrides.agentKey ?? this.defaultAgentKey,
       model: overrides.model ?? this.model,
       thinking: overrides.thinking ?? this.thinking,
     };
@@ -531,10 +525,24 @@ export class PandaChatApp {
     }
   }
 
+  private async resolveAgentLabel(agentKey: string): Promise<string> {
+    const services = this.services;
+    if (!services || typeof services.getAgent !== "function") {
+      return agentKey;
+    }
+
+    try {
+      const agent = await services.getAgent(agentKey);
+      return agent.displayName.trim() || agent.agentKey;
+    } catch {
+      return agentKey;
+    }
+  }
+
   private async switchThread(thread: ThreadRecord): Promise<void> {
     this.currentThread = thread;
     this.currentThreadId = thread.id;
-    this.providerName = thread.provider ?? this.providerName;
+    this.currentAgentLabel = await this.resolveAgentLabel(thread.agentKey);
     this.model = thread.model ?? this.model;
     this.thinking = thread.thinking;
     this.runPhase = "idle";
@@ -723,7 +731,6 @@ export class PandaChatApp {
       }
 
       this.currentThread = thread;
-      this.providerName = thread.provider ?? this.providerName;
       this.model = thread.model ?? this.model;
       this.thinking = thread.thinking;
       this.refreshToolCatalog();
@@ -875,7 +882,7 @@ export class PandaChatApp {
           ? `${summary.thread.id.slice(0, 8)}…${summary.thread.id.slice(-4)}`
           : summary.thread.id;
         lines.push(prefix + truncatePlainText(
-          `${shortId}${current} · ${summary.thread.provider ?? this.providerName} · ${summary.messageCount} msgs · ${last}`,
+          `${shortId}${current} · ${summary.thread.model ?? this.model} · ${summary.messageCount} msgs · ${last}`,
           Math.max(1, width - stripAnsi(prefix).length),
         ));
       }
@@ -1098,7 +1105,6 @@ export class PandaChatApp {
       if (entry.title === "welcome" && this.shouldShowSplash) {
         lines.push(...buildWelcomeTranscriptLines({
           width,
-          providerName: this.providerName,
           model: this.model,
           thinkingLabel: formatThinkingLevel(this.thinking),
           cwd: this.resolveDisplayedCwd(),
@@ -1201,8 +1207,9 @@ export class PandaChatApp {
       composerLayout,
       isRunning: this.isRunning,
       runStartedAt: this.runStartedAt,
+      agentLabel: this.currentAgentLabel,
+      identityHandle: this.services?.identity?.handle ?? this.identity ?? "local",
       currentThreadId: this.currentThreadId,
-      providerName: this.providerName,
       model: this.model,
       thinkingLabel: formatThinkingLevel(this.thinking),
       modeLabel: this.modeLabel,
@@ -1367,57 +1374,24 @@ export class PandaChatApp {
     this.pushEntry("meta", "help", buildChatHelpText(thinkingCommandUsage()));
   }
 
-  private async handleProviderCommand(value: string): Promise<boolean> {
-    if (!this.requireIdleRun("switching providers")) {
-      return true;
-    }
-
-    const nextProvider = parseProviderName(value);
-    if (!nextProvider) {
-      this.showCommandError("config", `Provider must be one of ${formatProviderNameList()}.`);
-      return true;
-    }
-
-    const nextModel = resolveDefaultPandaModel(nextProvider);
-
-    try {
-      const previousProvider = this.providerName;
-      this.currentThread = await this.requireServices().updateThread(this.currentThreadId, {
-        provider: nextProvider,
-        model: nextModel,
-      });
-      this.providerName = nextProvider;
-      this.model = nextModel;
-      this.pushEntry(
-        "meta",
-        "config",
-        `Provider switched from ${previousProvider} to ${nextProvider}. Model reset to ${this.model}.`,
-      );
-      this.setNotice(`Provider ${nextProvider} · model ${this.model}`, "info");
-    } catch (error) {
-      this.showCommandError("config", error instanceof Error ? error.message : String(error));
-    }
-
-    return true;
-  }
-
   private async handleModelCommand(value: string): Promise<boolean> {
     if (!this.requireIdleRun("switching models")) {
       return true;
     }
 
     if (!value) {
-      this.showCommandError("config", "Usage: /model <name>");
+      this.showCommandError("config", "Usage: /model <selector-or-alias>");
       return true;
     }
 
     try {
+      const resolved = resolveModelSelector(value);
       this.currentThread = await this.requireServices().updateThread(this.currentThreadId, {
-        model: value,
+        model: resolved.canonical,
       });
-      this.model = value;
-      this.pushEntry("meta", "config", `Model set to ${value}.`);
-      this.setNotice(`Model ${value}`, "info");
+      this.model = resolved.canonical;
+      this.pushEntry("meta", "config", `Model set to ${resolved.canonical}.`);
+      this.setNotice(`Model ${resolved.canonical}`, "info");
     } catch (error) {
       this.showCommandError("config", error instanceof Error ? error.message : String(error));
     }
@@ -1492,8 +1466,7 @@ export class PandaChatApp {
 
     try {
       const thread = await this.requireServices().resetHomeThread({
-        agentKey: this.currentThread?.agentKey ?? this.defaultAgentKey,
-        provider: this.providerName,
+        agentKey: this.defaultAgentKey,
         model: this.model,
         thinking: this.thinking,
       });
@@ -1535,7 +1508,6 @@ export class PandaChatApp {
       [
         `identity ${this.requireServices().identity.handle}`,
         `thread ${this.currentThreadId}`,
-        `provider ${this.providerName}`,
         `model ${this.model}`,
         `thinking ${formatThinkingLevel(this.thinking)}`,
       ].join("\n"),
@@ -1609,7 +1581,6 @@ export class PandaChatApp {
         this.showHelp();
         return true;
       },
-      provider: (value) => this.handleProviderCommand(value),
       model: (value) => this.handleModelCommand(value),
       thinking: (value) => this.handleThinkingCommand(value),
       compact: (value) => this.handleCompactCommand(value),
@@ -1628,7 +1599,7 @@ export class PandaChatApp {
   }
 
   private async submitUserMessage(message: string, externalMessageId: string): Promise<void> {
-    const keyMessage = missingApiKeyMessage(this.providerName);
+    const keyMessage = missingApiKeyMessage(this.model);
     if (keyMessage) {
       this.removePendingLocalInput(externalMessageId);
       this.pushEntry("error", "auth", keyMessage);

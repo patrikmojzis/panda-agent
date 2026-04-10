@@ -1,20 +1,20 @@
-import type { Message, ThinkingLevel } from "@mariozechner/pi-ai";
+import type {Message, ThinkingLevel} from "@mariozechner/pi-ai";
 
-import { formatToolCallFallback, formatToolResultFallback, PiAiRuntime } from "../agent-core/index.js";
-import { buildCompactSummaryMessage } from "../agent-core/helpers/compact.js";
-import { estimateTokensFromString } from "../agent-core/helpers/token-count.js";
-import { stringToUserMessage } from "../agent-core/helpers/input.js";
-import { stripCompactSummaryPrefix } from "../agent-core/helpers/compact.js";
-import { getProviderConfig, type ProviderName } from "../agent-core/provider.js";
-import { resolveProviderApiKey } from "../agent-core/pi/auth.js";
-import type { JsonObject, JsonValue } from "../agent-core/types.js";
-import type { LlmRuntime } from "../agent-core/runtime.js";
+import {formatToolCallFallback, formatToolResultFallback, PiAiRuntime} from "../agent-core/index.js";
+import {buildCompactSummaryMessage, stripCompactSummaryPrefix} from "../agent-core/helpers/compact.js";
+import {estimateTokensFromString} from "../agent-core/helpers/token-count.js";
+import {stringToUserMessage} from "../agent-core/helpers/input.js";
+import {resolveModelSelector} from "../agent-core/model-selector.js";
+import {getProviderConfig, type ProviderName} from "../agent-core/provider.js";
+import {resolveProviderApiKey} from "../agent-core/pi/auth.js";
+import type {JsonObject, JsonValue} from "../agent-core/types.js";
+import type {LlmRuntime} from "../agent-core/runtime.js";
 import type {
-  AutoCompactionRuntimeState,
-  ThreadMessageRecord,
-  ThreadRecord,
-  ThreadRuntimeMessagePayload,
-  ThreadRuntimeState,
+    AutoCompactionRuntimeState,
+    ThreadMessageRecord,
+    ThreadRecord,
+    ThreadRuntimeMessagePayload,
+    ThreadRuntimeState,
 } from "./types.js";
 
 export const DEFAULT_COMPACT_PRESERVED_USER_TURNS = 3;
@@ -56,7 +56,6 @@ export interface CompactThreadOptions {
   }, "loadTranscript" | "appendRuntimeMessage">;
   thread: Pick<ThreadRecord, "id" | "maxInputTokens">;
   transcript?: readonly ThreadMessageRecord[];
-  providerName: ProviderName;
   model: string;
   thinking?: ThinkingLevel;
   customInstructions?: string;
@@ -340,7 +339,6 @@ function missingCompactionApiKeyMessage(providerName: ProviderName): string | nu
 }
 
 async function requestCompactSummary(options: {
-  providerName: ProviderName;
   model: string;
   thinking?: ThinkingLevel;
   compactionInput: string;
@@ -349,9 +347,10 @@ async function requestCompactSummary(options: {
   runtime?: Pick<LlmRuntime, "complete">;
 }): Promise<string> {
   const runtime = options.runtime ?? new PiAiRuntime();
+  const modelSelection = resolveModelSelector(options.model);
   const response = await runtime.complete({
-    providerName: options.providerName,
-    model: options.model,
+    providerName: modelSelection.providerName,
+    modelId: modelSelection.modelId,
     thinking: options.thinking,
     context: {
       systemPrompt: getCompactPrompt(options.customInstructions, options.maxSummaryTokens),
@@ -441,7 +440,8 @@ export function shouldAutoCompactThread(options: {
 }
 
 export async function compactThread(options: CompactThreadOptions): Promise<CompactThreadResult | null> {
-  const apiKeyMessage = missingCompactionApiKeyMessage(options.providerName);
+  const modelSelection = resolveModelSelector(options.model);
+  const apiKeyMessage = missingCompactionApiKeyMessage(modelSelection.providerName);
   if (apiKeyMessage) {
     throw new Error(apiKeyMessage);
   }
@@ -469,7 +469,6 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
   }
 
   const summary = await requestCompactSummary({
-    providerName: options.providerName,
     model: options.model,
     thinking: options.thinking,
     compactionInput,

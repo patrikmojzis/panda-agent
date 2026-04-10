@@ -1,9 +1,8 @@
-import { findSlashCommand } from "./commands.js";
-import { NEWLINE_HELP_LINES } from "./input.js";
+import {findSlashCommand} from "./commands.js";
+import {NEWLINE_HELP_LINES} from "./input.js";
 
 interface ChatCommandHandlers {
   help(): Promise<boolean> | boolean;
-  provider(value: string): Promise<boolean> | boolean;
   model(value: string): Promise<boolean> | boolean;
   thinking(value: string): Promise<boolean> | boolean;
   compact(value: string): Promise<boolean> | boolean;
@@ -21,8 +20,7 @@ export function buildChatHelpText(thinkingCommandUsage: string): string {
   return [
     "Commands:",
     "/help shows command help.",
-    "/provider <openai|openai-codex|anthropic|anthropic-oauth> switches providers for this stored thread.",
-    "/model <name> changes the active model.",
+    "/model <selector-or-alias> changes the active model.",
     `${thinkingCommandUsage} changes the active thinking level.`,
     "/compact [instructions] summarizes older context and keeps recent turns verbatim.",
     "/new starts a fresh stored thread without changing home.",
@@ -62,8 +60,6 @@ export async function runChatCommandLine(
   switch (command) {
     case "/help":
       return await handlers.help();
-    case "/provider":
-      return await handlers.provider(value);
     case "/model":
       return await handlers.model(value);
     case "/thinking":

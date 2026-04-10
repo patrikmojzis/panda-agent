@@ -1,38 +1,39 @@
-import { createHash, randomUUID } from "node:crypto";
+import {createHash, randomUUID} from "node:crypto";
 
-import type { ThreadLease, ThreadLeaseManager } from "./coordinator.js";
+import {resolveModelSelector} from "../agent-core/model-selector.js";
+import type {ThreadLease, ThreadLeaseManager} from "./coordinator.js";
 import {
-  buildThreadRuntimeTableNames,
-  validateIdentifier,
-  toJson,
-  type ThreadRuntimeTableNames,
+    buildThreadRuntimeTableNames,
+    type ThreadRuntimeTableNames,
+    toJson,
+    validateIdentifier,
 } from "./postgres-shared.js";
-import { buildThreadRuntimeSchemaSql } from "./postgres-schema.js";
-import { parseInputRow, parseMessageRow, parseRunRow, parseThreadRow } from "./postgres-rows.js";
+import {buildThreadRuntimeSchemaSql} from "./postgres-schema.js";
+import {parseInputRow, parseMessageRow, parseRunRow, parseThreadRow} from "./postgres-rows.js";
 import {
-  applyPendingThreadInputs,
-  discardPendingThreadInputs,
-  enqueueThreadInput,
-  promoteQueuedThreadInputs,
+    applyPendingThreadInputs,
+    discardPendingThreadInputs,
+    enqueueThreadInput,
+    promoteQueuedThreadInputs,
 } from "./postgres-inputs.js";
-import type { PgPoolLike, PgQueryable } from "./postgres-db.js";
-import type { ThreadEnqueueResult, ThreadRuntimeStore } from "./store.js";
+import type {PgPoolLike, PgQueryable} from "./postgres-db.js";
+import type {ThreadEnqueueResult, ThreadRuntimeStore} from "./store.js";
 import {
-  missingThreadError,
-  type CreateThreadInput,
-  type ThreadInputDeliveryMode,
-  type ThreadInputPayload,
-  type ThreadInputRecord,
-  type ThreadMessageRecord,
-  type ThreadRunRecord,
-  type ThreadRuntimeMessagePayload,
-  type ThreadRecord,
-  type ThreadSummaryRecord,
-  type ThreadUpdate,
+    type CreateThreadInput,
+    missingThreadError,
+    type ThreadInputDeliveryMode,
+    type ThreadInputPayload,
+    type ThreadInputRecord,
+    type ThreadMessageRecord,
+    type ThreadRecord,
+    type ThreadRunRecord,
+    type ThreadRuntimeMessagePayload,
+    type ThreadSummaryRecord,
+    type ThreadUpdate,
 } from "./types.js";
-import { PostgresIdentityStore, type PostgresIdentityStoreOptions } from "../identity/postgres.js";
-import { buildIdentityTableNames } from "../identity/postgres-shared.js";
-import { DEFAULT_IDENTITY_ID } from "../identity/types.js";
+import {PostgresIdentityStore, type PostgresIdentityStoreOptions} from "../identity/postgres.js";
+import {buildIdentityTableNames} from "../identity/postgres-shared.js";
+import {DEFAULT_IDENTITY_ID} from "../identity/types.js";
 
 interface PostgresThreadRuntimeStoreOptions {
   pool: PgPoolLike;
@@ -104,6 +105,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
 
   async createThread(input: CreateThreadInput): Promise<ThreadRecord> {
     const identityId = input.identityId ?? DEFAULT_IDENTITY_ID;
+    const model = input.model === undefined ? null : resolveModelSelector(input.model).canonical;
     await this.identityStore.getIdentity(identityId);
 
     const result = await this.pool.query(`
@@ -115,9 +117,9 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         max_turns,
         context,
         runtime_state,
+        inference_projection,
         max_input_tokens,
         prompt_cache_key,
-        provider,
         model,
         temperature,
         thinking
@@ -129,7 +131,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         $5,
         $6::jsonb,
         $7::jsonb,
-        $8,
+        $8::jsonb,
         $9,
         $10,
         $11,
@@ -145,10 +147,10 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       input.maxTurns ?? null,
       toJson(input.context),
       toJson(input.runtimeState),
+      toJson(input.inferenceProjection),
       input.maxInputTokens ?? null,
       input.promptCacheKey ?? null,
-      input.provider ?? null,
-      input.model ?? null,
+      model,
       input.temperature ?? null,
       input.thinking ?? null,
     ]);
@@ -289,6 +291,10 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       push("runtime_state", toJson(update.runtimeState ?? null), "::jsonb");
     }
 
+    if (update.inferenceProjection !== undefined) {
+      push("inference_projection", toJson(update.inferenceProjection ?? null), "::jsonb");
+    }
+
     if (update.maxInputTokens !== undefined) {
       push("max_input_tokens", update.maxInputTokens);
     }
@@ -297,12 +303,8 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       push("prompt_cache_key", update.promptCacheKey);
     }
 
-    if (update.provider !== undefined) {
-      push("provider", update.provider);
-    }
-
     if (update.model !== undefined) {
-      push("model", update.model);
+      push("model", resolveModelSelector(update.model).canonical);
     }
 
     if (update.temperature !== undefined) {

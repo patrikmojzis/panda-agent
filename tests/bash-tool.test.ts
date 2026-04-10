@@ -1,17 +1,17 @@
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import {mkdir, mkdtemp, readFile, realpath, rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import {describe, expect, it} from "vitest";
 
 import {
-  Agent,
-  BashTool,
-  RunContext,
-  ToolError,
-  type JsonObject,
-  type PandaSessionContext,
-  type ToolResultMessage,
+    Agent,
+    BashTool,
+    type JsonObject,
+    type PandaSessionContext,
+    RunContext,
+    ToolError,
+    type ToolResultMessage,
 } from "../src/index.js";
 
 function createAgent() {
@@ -58,7 +58,27 @@ describe("BashTool", () => {
     };
 
     expect(tool.formatCall({ command: "pwd" })).toBe("pwd");
+    expect(tool.formatCall({ command: "ls", cwd: "/workspace/shared" })).toBe("[cwd /workspace/shared] ls");
     expect(tool.formatResult(result)).toBe("exit 0\n/tmp/workspace");
+  });
+
+  it("formats bash failures honestly instead of pretending they succeeded", () => {
+    const tool = new BashTool();
+    const result: ToolResultMessage<JsonObject> = {
+      role: "toolResult",
+      toolCallId: "call_2",
+      toolName: "bash",
+      content: [{ type: "text", text: "permission denied" }],
+      details: {
+        stderr: "permission denied",
+        exitCode: 1,
+        timedOut: false,
+      },
+      isError: true,
+      timestamp: Date.now(),
+    };
+
+    expect(tool.formatResult(result)).toBe("exit 1\npermission denied");
   });
 
   it("persists cwd changes across calls in the same shell session", async () => {

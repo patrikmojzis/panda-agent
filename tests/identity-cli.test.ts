@@ -3,12 +3,15 @@ import {Command} from "commander";
 import {registerIdentityCommands} from "../src/features/identity/cli.js";
 
 const identityCliMocks = vi.hoisted(() => {
+  const HOME_NEXT_FIRE_AT = Date.UTC(2026, 3, 10, 12, 30, 0);
+  const UPDATED_NEXT_FIRE_AT = Date.UTC(2026, 3, 10, 13, 0, 0);
   const pool = {
     end: vi.fn(async () => {}),
   };
 
   const identityStoreInstances: MockPostgresIdentityStore[] = [];
   const agentStoreInstances: MockPostgresAgentStore[] = [];
+  const homeThreadStoreInstances: MockPostgresHomeThreadStore[] = [];
   const pandaClients: MockPandaClient[] = [];
 
   class MockPostgresIdentityStore {
@@ -61,6 +64,40 @@ const identityCliMocks = vi.hoisted(() => {
     }
   }
 
+  class MockPostgresHomeThreadStore {
+    readonly ensureSchema = vi.fn(async () => {});
+    readonly resolveHomeThread = vi.fn(async () => ({
+      identityId: "local",
+      threadId: "thread-home",
+      heartbeat: {
+        enabled: true,
+        everyMinutes: 30,
+        nextFireAt: HOME_NEXT_FIRE_AT,
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    }));
+    readonly updateHeartbeatConfig = vi.fn(async (input: {
+      identityId: string;
+      enabled?: boolean;
+      everyMinutes?: number;
+    }) => ({
+      identityId: input.identityId,
+      threadId: "thread-home",
+      heartbeat: {
+        enabled: input.enabled ?? true,
+        everyMinutes: input.everyMinutes ?? 30,
+        nextFireAt: UPDATED_NEXT_FIRE_AT,
+      },
+      createdAt: 1,
+      updatedAt: 2,
+    }));
+
+    constructor(_options: unknown) {
+      homeThreadStoreInstances.push(this);
+    }
+  }
+
   class MockPandaClient {
     readonly switchHomeAgent = vi.fn(async (agentKey: string) => ({
       thread: {
@@ -82,11 +119,15 @@ const identityCliMocks = vi.hoisted(() => {
 
   return {
     pool,
+    HOME_NEXT_FIRE_AT,
+    UPDATED_NEXT_FIRE_AT,
     identityStoreInstances,
     agentStoreInstances,
+    homeThreadStoreInstances,
     pandaClients,
     MockPostgresIdentityStore,
     MockPostgresAgentStore,
+    MockPostgresHomeThreadStore,
     MockPandaClient,
     createPandaPool: vi.fn(() => pool),
     requirePandaDatabaseUrl: vi.fn((dbUrl?: string) => dbUrl ?? "postgres://resolved-db"),
@@ -100,6 +141,10 @@ vi.mock("../src/features/identity/postgres.js", () => ({
 
 vi.mock("../src/features/agents/postgres.js", () => ({
   PostgresAgentStore: identityCliMocks.MockPostgresAgentStore,
+}));
+
+vi.mock("../src/features/home-threads/index.js", () => ({
+  PostgresHomeThreadStore: identityCliMocks.MockPostgresHomeThreadStore,
 }));
 
 vi.mock("../src/features/panda/runtime.js", () => ({
@@ -144,10 +189,20 @@ function latestPandaClient(): InstanceType<typeof identityCliMocks.MockPandaClie
   return client;
 }
 
+function latestHomeThreadStore(): InstanceType<typeof identityCliMocks.MockPostgresHomeThreadStore> {
+  const store = identityCliMocks.homeThreadStoreInstances.at(-1);
+  if (!store) {
+    throw new Error("Expected a mocked home thread store instance.");
+  }
+
+  return store;
+}
+
 describe("Identity CLI", () => {
   afterEach(() => {
     identityCliMocks.identityStoreInstances.length = 0;
     identityCliMocks.agentStoreInstances.length = 0;
+    identityCliMocks.homeThreadStoreInstances.length = 0;
     identityCliMocks.pandaClients.length = 0;
     identityCliMocks.pool.end.mockClear();
     identityCliMocks.createPandaPool.mockClear();
@@ -199,6 +254,59 @@ describe("Identity CLI", () => {
         "Switched identity local to agent luna.",
         "new home thread-luna",
         "previous home thread-jozef",
+      ].join("\n") + "\n",
+    );
+  });
+
+  it("inspects heartbeat config without waking the daemon", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await createProgram().parseAsync(
+      ["identity", "heartbeat", "local", "--db-url", "postgres://identity-db"],
+      {from: "user"},
+    );
+
+    expect(latestHomeThreadStore().resolveHomeThread).toHaveBeenCalledWith({
+      identityId: "local",
+    });
+    expect(latestHomeThreadStore().updateHeartbeatConfig).not.toHaveBeenCalled();
+    expect(identityCliMocks.createPandaClient).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith(
+      [
+        "Heartbeat for local.",
+        "home thread thread-home",
+        "enabled yes",
+        "every 30 minutes",
+        `next fire ${new Date(identityCliMocks.HOME_NEXT_FIRE_AT).toISOString()}`,
+        "last fire -",
+        "last skip -",
+      ].join("\n") + "\n",
+    );
+  });
+
+  it("updates heartbeat config directly in the home-thread store", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await createProgram().parseAsync(
+      ["identity", "heartbeat", "local", "--disable", "--every", "45", "--db-url", "postgres://identity-db"],
+      {from: "user"},
+    );
+
+    expect(latestHomeThreadStore().updateHeartbeatConfig).toHaveBeenCalledWith({
+      identityId: "local",
+      enabled: false,
+      everyMinutes: 45,
+    });
+    expect(identityCliMocks.createPandaClient).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith(
+      [
+        "Updated heartbeat for local.",
+        "home thread thread-home",
+        "enabled no",
+        "every 45 minutes",
+        "next fire -",
+        "last fire -",
+        "last skip -",
       ].join("\n") + "\n",
     );
   });

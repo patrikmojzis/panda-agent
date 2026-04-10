@@ -7,8 +7,11 @@ import {
     EnvironmentContext,
     MediaTool,
     PANDA_PROMPT,
+    WhisperTool,
 } from "../src/index.js";
 import {buildPandaTools} from "../src/features/panda/agent.js";
+import {resolveStoredPandaContext} from "../src/features/panda/runtime.js";
+import {resolveRemoteInitialCwd} from "../src/features/panda/tools/bash-executor.js";
 
 describe("Panda feature surface", () => {
   afterEach(() => {
@@ -17,6 +20,7 @@ describe("Panda feature surface", () => {
 
   it("builds the Panda prompt and default tools", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildPandaTools();
 
     expect(PANDA_PROMPT).toContain("## Soul");
@@ -29,14 +33,25 @@ describe("Panda feature surface", () => {
 
   it("adds Brave search when BRAVE_API_KEY is configured", () => {
     vi.stubEnv("BRAVE_API_KEY", "BSA-test-key");
+    vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildPandaTools();
 
     expect(tools).toHaveLength(3);
     expect(tools[2]).toBeInstanceOf(BraveSearchTool);
   });
 
+  it("adds Whisper when OPENAI_API_KEY is configured", () => {
+    vi.stubEnv("BRAVE_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
+    const tools = buildPandaTools();
+
+    expect(tools).toHaveLength(3);
+    expect(tools[2]).toBeInstanceOf(WhisperTool);
+  });
+
   it("appends extra tools without adding hidden defaults", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "");
     const extraTool = { name: "extra-tool" } as any;
     const tools = buildPandaTools([extraTool]);
 
@@ -78,5 +93,54 @@ describe("Panda feature surface", () => {
         "Workspace: /workspace/panda",
       ].join("\n"),
     );
+  });
+
+  it("resolves a remote initial cwd only in remote mode", () => {
+    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+
+    expect(resolveRemoteInitialCwd("jozef")).toBe("/root/.panda/agents/jozef");
+
+    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "local");
+
+    expect(resolveRemoteInitialCwd("jozef")).toBeNull();
+  });
+
+  it("prefers the configured remote initial cwd when stored cwd is still the daemon fallback", () => {
+    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+
+    expect(resolveStoredPandaContext(
+      {
+        cwd: "/Users/patrikmojzis/Projects/panda-agent",
+      } as any,
+      {
+        cwd: "/Users/patrikmojzis/Projects/panda-agent",
+        identityId: "identity-1",
+        identityHandle: "patrik",
+      },
+      "jozef",
+    )).toMatchObject({
+      cwd: "/root/.panda/agents/jozef",
+      identityId: "identity-1",
+      identityHandle: "patrik",
+    });
+  });
+
+  it("preserves an explicit stored cwd in remote mode", () => {
+    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+
+    expect(resolveStoredPandaContext(
+      {
+        cwd: "/workspace/shared/project",
+      } as any,
+      {
+        cwd: "/Users/patrikmojzis/Projects/panda-agent",
+        identityId: "identity-1",
+        identityHandle: "patrik",
+      },
+      "jozef",
+    ).cwd).toBe("/workspace/shared/project");
   });
 });

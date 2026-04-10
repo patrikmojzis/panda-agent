@@ -5,7 +5,8 @@ import {LlmContext} from "../../agent-core/llm-context.js";
 import type {AgentStore} from "../../agents/store.js";
 import {resolvePandaSkillsDir} from "../data-dir.js";
 
-const AGENT_DOC_SLUGS = ["agent", "soul", "heartbeat", "playbook"] as const;
+// Heartbeat guidance should only show up on heartbeat wakes, not in every normal run.
+const AGENT_DOC_SLUGS = ["agent", "soul", "playbook"] as const;
 const RELATIONSHIP_DOC_SLUG = "memory";
 const SKILL_FILENAMES = ["skill.md", "SKILL.md"] as const;
 

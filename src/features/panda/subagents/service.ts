@@ -135,7 +135,6 @@ export class PandaSubagentService {
       maxInputTokens: parentDefinition.maxInputTokens ?? threadRecord.maxInputTokens,
       promptCacheKey: parentDefinition.promptCacheKey ?? threadRecord.promptCacheKey,
       runPipelines: parentDefinition.runPipelines,
-      provider: parentDefinition.provider ?? threadRecord.provider,
       model: input.model ?? parentDefinition.model ?? threadRecord.model,
       temperature: parentDefinition.temperature ?? threadRecord.temperature,
       thinking: parentDefinition.thinking ?? threadRecord.thinking,

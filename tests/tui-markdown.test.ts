@@ -18,7 +18,7 @@ describe("renderTranscriptEntries assistant markdown", () => {
 
     expect(entries).toEqual([{
       role: "assistant",
-      title: "Agent",
+      title: "agent",
       body: "## Plan\n\n- first\n- second",
     }]);
   });

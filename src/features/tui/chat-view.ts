@@ -1,17 +1,9 @@
 import path from "node:path";
 
-import type { SlashCompletionContext } from "./commands.js";
-import {
-  COMPOSER_NEWLINE_HINT,
-  WELCOME_NEWLINE_KEYS,
-} from "./input.js";
-import {
-  clamp,
-  formatDuration,
-  padAnsiEnd,
-  truncatePlainText,
-} from "./screen.js";
-import { stripAnsi, theme } from "./theme.js";
+import type {SlashCompletionContext} from "./commands.js";
+import {COMPOSER_NEWLINE_HINT, WELCOME_NEWLINE_KEYS,} from "./input.js";
+import {clamp, formatDuration, padAnsiEnd, truncatePlainText,} from "./screen.js";
+import {stripAnsi, theme} from "./theme.js";
 
 export interface TranscriptLine {
   plain: string;
@@ -88,8 +80,7 @@ const WELCOME_TIPS = [
 
 const WELCOME_COMMANDS = [
   ["/help", "show commands and keybindings"],
-  ["/provider <name>", "switch provider"],
-  ["/model <name>", "switch model"],
+  ["/model <selector-or-alias>", "switch model"],
   ["/thinking <level|off>", "set the thinking level"],
   ["/compact [instructions]", "summarize older context and keep recent turns"],
   ["/threads", "browse saved threads"],
@@ -107,7 +98,6 @@ const WELCOME_KEYS = [
 
 interface BuildWelcomeTranscriptLinesOptions {
   width: number;
-  providerName: string;
   model: string;
   thinkingLabel: string;
   cwd: string;
@@ -135,8 +125,9 @@ interface BuildChatViewModelOptions {
   composerLayout: ComposerLayout;
   isRunning: boolean;
   runStartedAt: number;
+  agentLabel: string;
+  identityHandle: string;
   currentThreadId: string;
-  providerName: string;
   model: string;
   thinkingLabel: string;
   modeLabel: string;
@@ -282,7 +273,6 @@ function buildWelcomeIdentityLines(options: BuildWelcomeTranscriptLinesOptions, 
     ...PANDA_SPLASH.map((line) => centerAnsiText(theme.mint(line), width)),
     "",
     theme.bold(theme.slate("Session")),
-    ...buildWelcomeDetailLines("Provider", options.providerName, width),
     ...buildWelcomeDetailLines("Model", options.model, width),
     ...buildWelcomeDetailLines("Thinking", options.thinkingLabel, width),
     ...buildWelcomeDetailLines("Path", homeRelativePath(options.cwd), width),
@@ -524,7 +514,6 @@ export function buildChatViewModel(options: BuildChatViewModelOptions): ViewMode
   const elapsedLabel = options.isRunning ? formatDuration(now - options.runStartedAt) : null;
   const statusText = [
     truncatePlainText(`thread ${options.currentThreadId || "new"}`, 28),
-    options.providerName,
     options.model,
     `think ${options.thinkingLabel}`,
     options.modeLabel,
@@ -539,6 +528,10 @@ export function buildChatViewModel(options: BuildChatViewModelOptions): ViewMode
   const scrollLabel = totalTranscriptLines === 0
     ? "lines 0/0"
     : `lines ${scrollStart}-${scrollEnd}/${totalTranscriptLines}${options.followTranscript ? " follow" : ""}`;
+  const headerAgentLabel = truncatePlainText(options.agentLabel, width);
+  const headerSuffix = width > headerAgentLabel.length
+    ? truncatePlainText(` · @${options.identityHandle} · cwd ${options.cwd}`, width - headerAgentLabel.length)
+    : "";
 
   return {
     width,
@@ -553,9 +546,7 @@ export function buildChatViewModel(options: BuildChatViewModelOptions): ViewMode
     composerVisibleLines,
     composerVisibleCursorRow: options.composerLayout.cursorRow - composerVisibleStart,
     composerCursorColumn: options.composerLayout.cursorColumn,
-    headerLine:
-      theme.bold(theme.coral("Panda")) +
-      theme.dim(` · ${truncatePlainText(`cwd ${options.cwd} · ${options.currentThreadId || "no-thread"}`, Math.max(0, width - 8))}`),
+    headerLine: theme.bold(theme.coral(headerAgentLabel)) + theme.dim(headerSuffix),
     statusLine: options.isRunning
       ? theme.mint(truncatePlainText(`${spinner}${statusText}`, width))
       : theme.dim(truncatePlainText(statusText, width)),

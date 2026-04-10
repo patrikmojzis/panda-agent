@@ -40,6 +40,14 @@ export function resolvePandaMediaDir(env: NodeJS.ProcessEnv = process.env): stri
   return path.join(resolvePandaDataDir(env), "media");
 }
 
+export function resolvePandaAgentDir(agentKey: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolvePandaDataDir(env), "agents", requireSafeAgentPathKey(agentKey));
+}
+
+export function resolvePandaAgentMediaDir(agentKey: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolvePandaAgentDir(agentKey, env), "media");
+}
+
 export function resolvePandaSkillsDir(agentKey: string, env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolvePandaDataDir(env), "agents", requireSafeAgentPathKey(agentKey), "skills");
+  return path.join(resolvePandaAgentDir(agentKey, env), "skills");
 }

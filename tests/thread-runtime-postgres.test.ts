@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { DataType, newDb } from "pg-mem";
+import {afterEach, describe, expect, it} from "vitest";
+import {DataType, newDb} from "pg-mem";
 
-import { DEFAULT_IDENTITY_ID, PostgresThreadRuntimeStore, stringToUserMessage } from "../src/index.js";
+import {DEFAULT_IDENTITY_ID, PostgresThreadRuntimeStore, stringToUserMessage} from "../src/index.js";
 
 describe("PostgresThreadRuntimeStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -58,9 +58,13 @@ describe("PostgresThreadRuntimeStore", () => {
         source: "telegram",
       },
       maxTurns: 5,
-      provider: "openai",
-      model: "gpt-5.1",
+      model: "openai/gpt-5.1",
       thinking: "medium",
+      inferenceProjection: {
+        dropThinking: {
+          preserveRecentUserTurns: 2,
+        },
+      },
     });
 
     expect(created.agentKey).toBe("panda");
@@ -68,6 +72,11 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(created.identityId).not.toBe(alice.handle);
     expect(created.systemPrompt).toEqual(["You are Panda."]);
     expect(created.thinking).toBe("medium");
+    expect(created.inferenceProjection).toEqual({
+      dropThinking: {
+        preserveRecentUserTurns: 2,
+      },
+    });
 
     await store.createThread({
       id: "pg-thread-local",
@@ -85,15 +94,36 @@ describe("PostgresThreadRuntimeStore", () => {
     const updated = await store.updateThread("pg-thread", {
       agentKey: "panda-debug",
       promptCacheKey: "thread:pg-thread",
+      inferenceProjection: {
+        dropMessages: {
+          olderThanMs: 172_800_000,
+        },
+      },
     });
 
     expect(updated.agentKey).toBe("panda-debug");
     expect(updated.promptCacheKey).toBe("thread:pg-thread");
+    expect(updated.inferenceProjection).toEqual({
+      dropMessages: {
+        olderThanMs: 172_800_000,
+      },
+    });
+    expect((await store.getThread("pg-thread")).inferenceProjection).toEqual({
+      dropMessages: {
+        olderThanMs: 172_800_000,
+      },
+    });
 
     const clearedThinking = await store.updateThread("pg-thread", {
       thinking: null,
     });
     expect(clearedThinking.thinking).toBeUndefined();
+
+    const clearedProjection = await store.updateThread("pg-thread", {
+      inferenceProjection: null,
+    });
+    expect(clearedProjection.inferenceProjection).toBeUndefined();
+    expect((await store.getThread("pg-thread")).inferenceProjection).toBeUndefined();
 
     const telegramInput = await store.enqueueInput("pg-thread", {
       message: stringToUserMessage("hello from telegram"),
@@ -183,8 +213,7 @@ describe("PostgresThreadRuntimeStore", () => {
         role: "assistant",
         content: [{ type: "text", text: "done" }],
         api: "openai-responses",
-        provider: "openai",
-        model: "gpt-5.1",
+        model: "openai/gpt-5.1",
         usage: {
           input: 0,
           output: 0,

@@ -13,27 +13,49 @@ import {PostgresScheduledTaskStore, type ScheduledTaskStore} from "../scheduled-
 import {AgentDocumentTool} from "./tools/agent-document-tool.js";
 import {PostgresReadonlyQueryTool} from "./tools/postgres-readonly-query-tool.js";
 import {
-  ScheduledTaskCancelTool,
-  ScheduledTaskCreateTool,
-  ScheduledTaskUpdateTool,
+    ScheduledTaskCancelTool,
+    ScheduledTaskCreateTool,
+    ScheduledTaskUpdateTool,
 } from "./tools/scheduled-task-tools.js";
 import {SpawnSubagentTool} from "./tools/spawn-subagent-tool.js";
 import type {PandaSessionContext} from "./types.js";
 import {PandaSubagentService} from "./subagents/index.js";
 import {
-  PostgresThreadLeaseManager,
-  PostgresThreadRuntimeStore,
-  ThreadRuntimeCoordinator,
+    PostgresThreadLeaseManager,
+    PostgresThreadRuntimeStore,
+    ThreadRuntimeCoordinator,
 } from "../thread-runtime/index.js";
 import {
-  buildThreadRuntimeNotificationChannel,
-  parseThreadRuntimeNotification,
-  type ThreadRuntimeNotification,
+    buildThreadRuntimeNotificationChannel,
+    parseThreadRuntimeNotification,
+    type ThreadRuntimeNotification,
 } from "../thread-runtime/postgres.js";
 import {ensureReadonlyChatQuerySchema, readDatabaseUsername,} from "../thread-runtime/postgres-readonly.js";
 import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
-import type {ResolvedThreadDefinition, ThreadRecord,} from "../thread-runtime/types.js";
+import type {InferenceProjection, ResolvedThreadDefinition, ThreadRecord,} from "../thread-runtime/types.js";
 import type {ThreadRuntimeEvent} from "../thread-runtime/coordinator.js";
+import {mergeInferenceProjection} from "../thread-runtime/inference-projection.js";
+import {resolveRemoteInitialCwd} from "./tools/bash-executor.js";
+
+const HOUR_MS = 60 * 60 * 1_000;
+const DAY_MS = 24 * HOUR_MS;
+export const DEFAULT_PANDA_INFERENCE_PROJECTION: InferenceProjection = {
+  dropToolCalls: {
+    olderThanMs: 4 * HOUR_MS,
+    preserveRecentUserTurns: 13
+  },
+  dropThinking: {
+    olderThanMs: 4 * HOUR_MS,
+    preserveRecentUserTurns: 13
+  },
+  dropImages: {
+    olderThanMs: 4 * HOUR_MS,
+    preserveRecentUserTurns: 13
+  },
+  dropMessages: {
+    olderThanMs: 1 * DAY_MS,
+  },
+};
 
 export interface PandaDefinitionResolverContext {
   agentStore: AgentStore;
@@ -111,17 +133,40 @@ export function createPandaPool(connectionString: string): Pool {
   });
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasStoredShellCwd(value: Record<string, unknown>): boolean {
+  const shell = value.shell;
+  return isRecord(shell) && typeof shell.cwd === "string" && shell.cwd.trim().length > 0;
+}
+
 export function resolveStoredPandaContext(
   value: ThreadRecord["context"],
   fallback: Pick<PandaSessionContext, "cwd" | "identityId" | "identityHandle">,
+  agentKey?: string,
 ): PandaSessionContext {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { ...fallback };
+  const remoteInitialCwd = agentKey ? resolveRemoteInitialCwd(agentKey) : null;
+  if (!isRecord(value)) {
+    return {
+      ...fallback,
+      ...(remoteInitialCwd ? {cwd: remoteInitialCwd} : {}),
+    };
   }
 
-  const context = value as Record<string, unknown>;
+  const context = value;
+  const storedCwd = typeof context.cwd === "string" && context.cwd.trim().length > 0
+    ? context.cwd
+    : null;
+  const useRemoteInitialCwd = Boolean(
+    remoteInitialCwd
+    && !hasStoredShellCwd(context)
+    && (!storedCwd || storedCwd === fallback.cwd),
+  );
+
   return {
-    cwd: typeof context.cwd === "string" ? context.cwd : fallback.cwd,
+    cwd: useRemoteInitialCwd && remoteInitialCwd ? remoteInitialCwd : storedCwd ?? fallback.cwd,
     timezone: typeof context.timezone === "string" ? context.timezone : undefined,
     identityId: typeof context.identityId === "string" ? context.identityId : fallback.identityId,
     identityHandle: typeof context.identityHandle === "string" ? context.identityHandle : fallback.identityHandle,
@@ -132,7 +177,7 @@ export function createPandaThreadDefinition(
   options: CreatePandaThreadDefinitionOptions,
 ): ResolvedThreadDefinition {
   const context: PandaSessionContext = {
-    ...resolveStoredPandaContext(options.thread.context, options.fallbackContext),
+    ...resolveStoredPandaContext(options.thread.context, options.fallbackContext, options.thread.agentKey),
     threadId: options.thread.id,
     agentKey: options.thread.agentKey,
     identityId: options.fallbackContext.identityId,
@@ -162,6 +207,10 @@ export function createPandaThreadDefinition(
     }),
     context,
     llmContexts,
+    inferenceProjection: mergeInferenceProjection(
+      DEFAULT_PANDA_INFERENCE_PROJECTION,
+      options.thread.inferenceProjection,
+    ),
   };
 }
 

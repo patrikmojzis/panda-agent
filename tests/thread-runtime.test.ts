@@ -1,25 +1,25 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import {afterEach, describe, expect, it, vi} from "vitest";
+import type {AssistantMessage} from "@mariozechner/pi-ai";
 
 import {
-  Agent,
-  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-  createCompactBoundaryMessage,
-  DEFAULT_IDENTITY_ID,
-  PiAiRuntime,
-  Thread,
-  ThreadRuntimeCoordinator,
-  type ThreadMessageRecord,
-  Tool,
-  RunContext,
-  type ResolvedThreadDefinition,
-  type ThreadDefinitionResolver,
-  type ThreadRecord,
-  stringToUserMessage,
-  z,
-  type LlmRuntime,
+    Agent,
+    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+    createCompactBoundaryMessage,
+    DEFAULT_IDENTITY_ID,
+    type LlmRuntime,
+    PiAiRuntime,
+    type ResolvedThreadDefinition,
+    RunContext,
+    stringToUserMessage,
+    Thread,
+    type ThreadDefinitionResolver,
+    type ThreadMessageRecord,
+    type ThreadRecord,
+    ThreadRuntimeCoordinator,
+    Tool,
+    z,
 } from "../src/index.js";
-import { TestIdentityStore, TestThreadRuntimeStore } from "./helpers/test-runtime-store.js";
+import {TestIdentityStore, TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -69,8 +69,7 @@ function createAssistantMessage(
     role: "assistant",
     content,
     api: "openai-responses",
-    provider: "openai",
-    model: "gpt-5.1",
+    model: "openai/gpt-5.1",
     usage: {
       input: 0,
       output: 0,

@@ -1,4 +1,4 @@
-import { quoteIdentifier, type ThreadRuntimeTableNames } from "./postgres-shared.js";
+import {quoteIdentifier, type ThreadRuntimeTableNames} from "./postgres-shared.js";
 
 export function buildThreadRuntimeSchemaSql(
   tables: ThreadRuntimeTableNames,
@@ -13,9 +13,9 @@ export function buildThreadRuntimeSchemaSql(
       max_turns INTEGER,
       context JSONB,
       runtime_state JSONB,
+      inference_projection JSONB,
       max_input_tokens INTEGER,
       prompt_cache_key TEXT,
-      provider TEXT,
       model TEXT,
       temperature DOUBLE PRECISION,
       thinking TEXT,
@@ -25,6 +25,12 @@ export function buildThreadRuntimeSchemaSql(
 
     ALTER TABLE ${tables.threads}
     ADD COLUMN IF NOT EXISTS runtime_state JSONB;
+
+    ALTER TABLE ${tables.threads}
+    ADD COLUMN IF NOT EXISTS inference_projection JSONB;
+
+    ALTER TABLE ${tables.threads}
+    DROP COLUMN IF EXISTS provider;
 
     CREATE TABLE IF NOT EXISTS ${tables.messages} (
       id UUID PRIMARY KEY,

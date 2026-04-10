@@ -1,37 +1,57 @@
-import { rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import {tmpdir} from "node:os";
 import path from "node:path";
 
-import type { ToolResultMessage } from "@mariozechner/pi-ai";
-import { z } from "zod";
+import type {ToolResultMessage} from "@mariozechner/pi-ai";
+import {z} from "zod";
 
-import type { RunContext } from "../../agent-core/run-context.js";
-import { Tool, type ToolOutput } from "../../agent-core/tool.js";
-import { ToolError } from "../../agent-core/exceptions.js";
-import type { JsonObject, JsonValue } from "../../agent-core/types.js";
-import type { PandaSessionContext } from "../types.js";
-import { runWrappedBashCommand } from "./bash-process.js";
+import type {RunContext} from "../../agent-core/run-context.js";
+import {Tool, type ToolOutput} from "../../agent-core/tool.js";
+import {ToolError} from "../../agent-core/exceptions.js";
+import type {JsonObject, JsonValue} from "../../agent-core/types.js";
+import type {PandaSessionContext} from "../types.js";
+import {ensurePandaShellSession, readPandaBaseCwd} from "./context.js";
 import {
-  createOutputCapture,
-  finalizeOutputCapture,
-} from "./bash-output.js";
-import {
-  applyPersistedEnv,
-  buildWrappedCommand,
-  collectTrackedEnvKeys,
-  createInvocationPaths,
-  looksLikeSilentCommand,
-  readPersistedCwd,
-  readPersistedEnv,
-  resolveCommandCwd,
-} from "./bash-session.js";
-import { ensurePandaShellSession, readPandaBaseCwd } from "./context.js";
+    type BashExecutionMode,
+    type BashExecutor,
+    createDefaultBashExecutor,
+    resolveBashExecutionMode,
+} from "./bash-executor.js";
+import {listBlockedRemoteEnvKeys} from "./bash-remote-env.js";
+import {applyPersistedEnv, collectTrackedEnvKeys, looksLikeSilentCommand, resolveCommandCwd,} from "./bash-session.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 8_000;
 const DEFAULT_PROGRESS_INTERVAL_MS = 250;
 const DEFAULT_PROGRESS_TAIL_CHARS = 1_200;
 const DEFAULT_OUTPUT_DIRECTORY = path.join(tmpdir(), "panda-tool-results");
+
+function readToolResultText(message: ToolResultMessage<JsonValue>): string {
+  return message.content
+    .flatMap((part) => part.type === "text" && part.text.trim() ? [part.text.trim()] : [])
+    .join("\n\n")
+    .trim();
+}
+
+function formatBashStatus(details: Record<string, unknown>): string {
+  if (details.timedOut === true) {
+    return "timed out";
+  }
+
+  if (details.aborted === true) {
+    const reason = typeof details.abortReason === "string" ? details.abortReason.trim() : "";
+    return reason ? `aborted\n${reason}` : "aborted";
+  }
+
+  if (typeof details.signal === "string" && details.signal.trim()) {
+    return `signal ${details.signal}`;
+  }
+
+  if (typeof details.exitCode === "number") {
+    return `exit ${String(details.exitCode)}`;
+  }
+
+  return "command failed";
+}
 
 export interface BashToolOptions {
   shell?: string;
@@ -42,6 +62,8 @@ export interface BashToolOptions {
   progressTailChars?: number;
   outputDirectory?: string;
   env?: NodeJS.ProcessEnv;
+  executor?: BashExecutor;
+  fetchImpl?: typeof fetch;
 }
 
 export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTool.schema, TContext> {
@@ -54,21 +76,22 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
 
   name = "bash";
   description =
-    "Run a shell command in the local workspace. The working directory and simple export/unset environment changes persist across bash calls.";
+    "Run a shell command in the local workspace. The working directory persists across bash calls. In local mode, simple export/unset environment changes persist too.";
   schema = BashTool.schema;
 
-  private readonly shell?: string;
   private readonly defaultTimeoutMs: number;
   private readonly maxOutputChars: number;
   private readonly persistOutputThresholdChars: number;
   private readonly progressIntervalMs: number;
   private readonly progressTailChars: number;
   private readonly outputDirectory: string;
-  private readonly env: NodeJS.ProcessEnv;
+  private readonly executor: BashExecutor;
+  private readonly executionMode: BashExecutionMode;
 
   constructor(options: BashToolOptions = {}) {
     super();
-    this.shell = options.shell;
+    const env = options.env ?? process.env;
+    this.executionMode = resolveBashExecutionMode(env);
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxOutputChars = options.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
     this.persistOutputThresholdChars =
@@ -76,25 +99,43 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     this.progressIntervalMs = options.progressIntervalMs ?? DEFAULT_PROGRESS_INTERVAL_MS;
     this.progressTailChars = options.progressTailChars ?? DEFAULT_PROGRESS_TAIL_CHARS;
     this.outputDirectory = path.resolve(options.outputDirectory ?? DEFAULT_OUTPUT_DIRECTORY);
-    this.env = options.env ?? process.env;
+    this.executor = options.executor ?? createDefaultBashExecutor({
+      shell: options.shell,
+      env,
+      fetchImpl: options.fetchImpl,
+    });
   }
 
   override formatCall(args: Record<string, unknown>): string {
-    return typeof args.command === "string" ? args.command : super.formatCall(args);
+    if (typeof args.command !== "string") {
+      return super.formatCall(args);
+    }
+
+    const cwd = typeof args.cwd === "string" && args.cwd.trim()
+      ? args.cwd.trim()
+      : null;
+    return cwd ? `[cwd ${cwd}] ${args.command}` : args.command;
   }
 
   override formatResult(message: ToolResultMessage<JsonValue>): string {
     const details = message.details;
+    const text = readToolResultText(message);
     if (!details || typeof details !== "object" || Array.isArray(details)) {
-      return super.formatResult(message);
+      return text || super.formatResult(message);
     }
 
     const stdout = typeof details.stdout === "string" ? details.stdout.trim() : "";
     const stderr = typeof details.stderr === "string" ? details.stderr.trim() : "";
-    const exitCode = typeof details.exitCode === "number" ? details.exitCode : "unknown";
-    const status = details.timedOut === true ? "timed out" : `exit ${String(exitCode)}`;
+    if (message.isError) {
+      const status = formatBashStatus(details);
+      const shellSummary = [stderr, stdout].filter(Boolean).join("\n\n");
+      const summary = shellSummary || text;
+      return summary ? `${status}\n${summary}` : status;
+    }
+
+    const status = formatBashStatus(details);
     const shellSummary = [stdout, stderr].filter(Boolean).join("\n\n");
-    const summary = shellSummary || "Command completed with no output.";
+    const summary = shellSummary || text || "Command completed with no output.";
 
     return `${status}\n${summary}`;
   }
@@ -106,135 +147,83 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     const shellSession = ensurePandaShellSession(run.context);
     const baseCwd = shellSession?.cwd ?? readPandaBaseCwd(run.context);
     const cwd = resolveCommandCwd(args.cwd, baseCwd);
-    const shell = this.shell ?? process.env.SHELL ?? "/bin/zsh";
     const timeoutMs = args.timeoutMs ?? this.defaultTimeoutMs;
-    const trackedEnvKeys = collectTrackedEnvKeys(args.command);
-    const invocationPaths = await createInvocationPaths(this.outputDirectory);
-    const wrappedCommand = buildWrappedCommand({
-      command: args.command,
-      cwdStatePath: invocationPaths.cwdStatePath,
-      envStatePath: invocationPaths.envStatePath,
-      trackedEnvKeys,
-    });
+    if (this.executionMode === "remote") {
+      const blockedEnvKeys = listBlockedRemoteEnvKeys(args.env);
+      if (blockedEnvKeys.length > 0) {
+        throw new ToolError(`Remote bash blocks env keys: ${blockedEnvKeys.join(", ")}.`);
+      }
+    }
 
-    const stdoutCapture = createOutputCapture(invocationPaths.stdoutPath);
-    const stderrCapture = createOutputCapture(invocationPaths.stderrPath);
-    const childEnv = {
-      ...this.env,
-      ...(shellSession?.env ?? {}),
-      ...(args.env ?? {}),
-    };
-
-    const result = await runWrappedBashCommand({
+    const trackedEnvKeys = this.executionMode === "remote"
+      ? []
+      : collectTrackedEnvKeys(args.command);
+    const noOutputExpected = looksLikeSilentCommand(args.command);
+    const result = await this.executor.execute({
       command: args.command,
-      shell,
       cwd,
-      childEnv,
-      wrappedCommand,
       timeoutMs,
+      trackedEnvKeys,
+      noOutputExpected,
       progressIntervalMs: this.progressIntervalMs,
       progressTailChars: this.progressTailChars,
       maxOutputChars: this.maxOutputChars,
-      stdoutCapture,
-      stderrCapture,
-      run,
+      persistOutputThresholdChars: this.persistOutputThresholdChars,
+      outputDirectory: this.outputDirectory,
+      env: args.env,
+      run: run as RunContext<PandaSessionContext>,
     });
+    const appliedSessionEnvKeys = this.executionMode === "remote"
+      ? []
+      : applyPersistedEnv(shellSession, result.persistedEnvEntries);
 
-    const timedOut = result.interruption === "timeout";
-    const aborted = result.interruption === "abort";
-    const interrupted = timedOut || aborted || (result.signal !== null && result.exitCode === null);
-    const success = !interrupted && result.exitCode === 0;
-    const finalCwd = success
-      ? await readPersistedCwd(invocationPaths.cwdStatePath, cwd)
-      : cwd;
-    const persistedEnvEntries = success ? await readPersistedEnv(invocationPaths.envStatePath) : [];
-    const appliedSessionEnvKeys = applyPersistedEnv(shellSession, persistedEnvEntries);
-
-    if (success && shellSession) {
-      shellSession.cwd = finalCwd;
+    if (result.success && shellSession) {
+      shellSession.cwd = result.finalCwd;
 
       if (run.context && typeof run.context === "object" && !Array.isArray(run.context)) {
-        (run.context as Record<string, unknown>).cwd = finalCwd;
+        (run.context as Record<string, unknown>).cwd = result.finalCwd;
       }
-    }
-    const stdoutPath =
-      stdoutCapture.totalChars > this.persistOutputThresholdChars
-        ? stdoutCapture.filePath
-        : undefined;
-    const stderrPath =
-      stderrCapture.totalChars > this.persistOutputThresholdChars
-        ? stderrCapture.filePath
-        : undefined;
-
-    await Promise.all([
-      finalizeOutputCapture({
-        capture: stdoutCapture,
-        keepFile: stdoutPath !== undefined,
-      }),
-      finalizeOutputCapture({
-        capture: stderrCapture,
-        keepFile: stderrPath !== undefined,
-      }),
-    ]);
-
-    await rm(invocationPaths.cwdStatePath, { force: true });
-    await rm(invocationPaths.envStatePath, { force: true });
-
-    if (!stdoutPath && !stderrPath) {
-      await rm(invocationPaths.directory, { recursive: true, force: true });
-    }
-
-    if (result.spawnError) {
-      throw new ToolError(`Failed to spawn shell: ${result.spawnError.message}`, {
-        details: {
-          command: args.command,
-          cwd,
-          shell,
-          durationMs: result.durationMs,
-          error: result.spawnError.message,
-        },
-      });
     }
 
     const payload: JsonObject = {
       command: args.command,
       cwd,
       initialCwd: cwd,
-      finalCwd,
-      cwdChanged: finalCwd !== cwd,
-      shell,
+      finalCwd: result.finalCwd,
+      cwdChanged: result.finalCwd !== cwd,
+      shell: result.shell,
       durationMs: result.durationMs,
-      timeoutMs,
+      timeoutMs: result.timeoutMs,
       exitCode: result.exitCode,
       signal: result.signal,
-      timedOut,
-      aborted,
+      timedOut: result.timedOut,
+      aborted: result.aborted,
       abortReason: result.abortReason,
-      interrupted,
-      success,
-      stdout: stdoutCapture.preview,
-      stderr: stderrCapture.preview,
-      stdoutTruncated: stdoutCapture.previewTruncated,
-      stderrTruncated: stderrCapture.previewTruncated,
-      stdoutChars: stdoutCapture.totalChars,
-      stderrChars: stderrCapture.totalChars,
-      stdoutPersisted: stdoutPath !== undefined,
-      stderrPersisted: stderrPath !== undefined,
-      noOutput: stdoutCapture.totalChars === 0 && stderrCapture.totalChars === 0,
-      noOutputExpected: looksLikeSilentCommand(args.command),
+      interrupted: result.interrupted,
+      success: result.success,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      stdoutTruncated: result.stdoutTruncated,
+      stderrTruncated: result.stderrTruncated,
+      stdoutChars: result.stdoutChars,
+      stderrChars: result.stderrChars,
+      stdoutPersisted: result.stdoutPersisted,
+      stderrPersisted: result.stderrPersisted,
+      noOutput: result.noOutput,
+      noOutputExpected: result.noOutputExpected,
       sessionEnvKeys: appliedSessionEnvKeys,
       sessionEnvChanged: appliedSessionEnvKeys.length > 0,
       appliedEnvKeys: Object.keys(args.env ?? {}),
       trackedEnvKeys,
-      ...(stdoutPath ? { stdoutPath } : {}),
-      ...(stderrPath ? { stderrPath } : {}),
+      ...(result.stdoutPath ? { stdoutPath: result.stdoutPath } : {}),
+      ...(result.stderrPath ? { stderrPath: result.stderrPath } : {}),
     };
 
-    if (timedOut) {
+    if (result.timedOut) {
       throw new ToolError(`Command timed out after ${timeoutMs}ms`, { details: payload });
     }
 
-    if (aborted) {
+    if (result.aborted) {
       throw new ToolError(result.abortReason ?? "Command aborted.", { details: payload });
     }
 

@@ -26,7 +26,15 @@ export {
   type PandaRuntimeServices,
 } from "./runtime.js";
 export {
+  startPandaBashRunner,
+  resolvePandaBashRunnerOptions,
+  type PandaBashRunner,
+  type PandaBashRunnerOptions,
+} from "./bash-runner.js";
+export {
   resolvePandaMediaDir,
+  resolvePandaAgentDir,
+  resolvePandaAgentMediaDir,
   resolvePandaSkillsDir,
 } from "./data-dir.js";
 export {
@@ -44,21 +52,35 @@ export {
 export {
   AgentDocumentTool,
   BashTool,
+  buildRemoteShellEnv,
   BraveSearchTool,
+  createDefaultBashExecutor,
+  LocalShellExecutor,
   MediaTool,
   OutboundTool,
   PostgresReadonlyQueryTool,
+  RemoteShellExecutor,
+  resolveBashExecutionMode,
+  resolveRunnerUrl,
+  resolveRunnerUrlTemplate,
   ScheduledTaskCancelTool,
   ScheduledTaskCreateTool,
   ScheduledTaskUpdateTool,
   SpawnSubagentTool,
+  WhisperTool,
   type AgentDocumentToolOptions,
+  type BashExecutionMode,
+  type BashExecutor,
+  type BashExecutorOptions,
   type BashToolOptions,
   type BraveSearchToolOptions,
+  type LocalShellExecutorOptions,
   type MediaToolOptions,
   type PostgresReadonlyQueryToolOptions,
+  type RemoteShellExecutorOptions,
   type ScheduledTaskToolOptions,
   type SpawnSubagentToolOptions,
+  type WhisperToolOptions,
 } from "./tools/index.js";
 export {
   filterToolsForSubagentRole,

@@ -1,6 +1,20 @@
 export { AgentDocumentTool, type AgentDocumentToolOptions } from "./agent-document-tool.js";
 export { BashTool, type BashToolOptions } from "./bash-tool.js";
 export {
+  createDefaultBashExecutor,
+  LocalShellExecutor,
+  RemoteShellExecutor,
+  resolveBashExecutionMode,
+  resolveRunnerUrl,
+  resolveRunnerUrlTemplate,
+  buildRemoteShellEnv,
+  type BashExecutionMode,
+  type BashExecutor,
+  type BashExecutorOptions,
+  type LocalShellExecutorOptions,
+  type RemoteShellExecutorOptions,
+} from "./bash-executor.js";
+export {
   BraveSearchTool,
   hasBraveSearchApiKey,
   type BraveSearchToolOptions,
@@ -21,3 +35,8 @@ export {
   SpawnSubagentTool,
   type SpawnSubagentToolOptions,
 } from "./spawn-subagent-tool.js";
+export {
+  WhisperTool,
+  hasOpenAiApiKey,
+  type WhisperToolOptions,
+} from "./whisper-tool.js";

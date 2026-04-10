@@ -1,12 +1,12 @@
-import type { Message, ThinkingLevel } from "@mariozechner/pi-ai";
+import type {Message, ThinkingLevel} from "@mariozechner/pi-ai";
 
-import type { Agent } from "../agent-core/agent.js";
-import type { TokenCounter } from "../agent-core/helpers/token-count.js";
-import type { Hook } from "../agent-core/hook.js";
-import type { LlmContext } from "../agent-core/llm-context.js";
-import type { ProviderName, JsonValue } from "../agent-core/types.js";
-import type { LlmRuntime } from "../agent-core/runtime.js";
-import type { RunPipeline } from "../agent-core/run-pipeline.js";
+import type {Agent} from "../agent-core/agent.js";
+import type {TokenCounter} from "../agent-core/helpers/token-count.js";
+import type {Hook} from "../agent-core/hook.js";
+import type {LlmContext} from "../agent-core/llm-context.js";
+import type {JsonValue} from "../agent-core/types.js";
+import type {LlmRuntime} from "../agent-core/runtime.js";
+import type {RunPipeline} from "../agent-core/run-pipeline.js";
 
 export interface AutoCompactionRuntimeState {
   consecutiveFailures: number;
@@ -19,6 +19,19 @@ export interface ThreadRuntimeState {
   autoCompaction?: AutoCompactionRuntimeState;
 }
 
+export interface InferenceProjectionRule {
+  preserveRecentUserTurns?: number;
+  olderThanMs?: number;
+  preserveTailMessages?: number;
+}
+
+export interface InferenceProjection {
+  dropThinking?: InferenceProjectionRule;
+  dropToolCalls?: InferenceProjectionRule;
+  dropImages?: InferenceProjectionRule;
+  dropMessages?: InferenceProjectionRule;
+}
+
 export interface CreateThreadInput {
   id: string;
   identityId?: string;
@@ -29,15 +42,16 @@ export interface CreateThreadInput {
   runtimeState?: ThreadRuntimeState;
   maxInputTokens?: number;
   promptCacheKey?: string;
-  provider?: ProviderName;
   model?: string;
   temperature?: number;
   thinking?: ThinkingLevel;
+  inferenceProjection?: InferenceProjection;
 }
 
 export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "identityId" | "thinking" | "runtimeState">> & {
   thinking?: ThinkingLevel | null;
   runtimeState?: ThreadRuntimeState | null;
+  inferenceProjection?: InferenceProjection | null;
 };
 
 export interface ThreadRecord extends Omit<CreateThreadInput, "identityId"> {
@@ -56,10 +70,10 @@ export interface ResolvedThreadDefinition {
   maxInputTokens?: number;
   promptCacheKey?: string;
   runPipelines?: ReadonlyArray<RunPipeline>;
-  provider?: ProviderName;
   model?: string;
   temperature?: number;
   thinking?: ThinkingLevel;
+  inferenceProjection?: InferenceProjection;
   runtime?: LlmRuntime;
   countTokens?: TokenCounter;
 }

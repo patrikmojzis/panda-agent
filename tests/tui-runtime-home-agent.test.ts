@@ -36,6 +36,13 @@ const tuiRuntimeHomeAgentMocks = vi.hoisted(() => {
       createdAt: 1,
       updatedAt: 1,
     })),
+    getAgent: vi.fn(async (agentKey: string) => ({
+      agentKey,
+      displayName: agentKey,
+      status: "active" as const,
+      createdAt: 1,
+      updatedAt: 1,
+    })),
     getThread: vi.fn(),
     listThreadSummaries: vi.fn(async () => []),
     submitTextInput: vi.fn(),
@@ -70,8 +77,7 @@ describe("createChatRuntime home-agent wiring", () => {
     const runtime = await createChatRuntime({
       identity: "local",
       agent: "luna",
-      provider: "openai-codex",
-      model: "gpt-5.4",
+      model: "openai-codex/gpt-5.4",
     });
 
     await runtime.resolveOrCreateHomeThread();
@@ -79,8 +85,23 @@ describe("createChatRuntime home-agent wiring", () => {
     expect(tuiRuntimeHomeAgentMocks.client.resolveOrCreateHomeThread).toHaveBeenCalledWith({
       id: undefined,
       agentKey: "luna",
-      provider: "openai-codex",
-      model: "gpt-5.4",
+      model: "openai-codex/gpt-5.4",
+      thinking: undefined,
+    });
+  });
+
+  it("leaves agentKey unset when chat did not explicitly choose an agent", async () => {
+    const runtime = await createChatRuntime({
+      identity: "local",
+      model: "openai-codex/gpt-5.4",
+    });
+
+    await runtime.resolveOrCreateHomeThread();
+
+    expect(tuiRuntimeHomeAgentMocks.client.resolveOrCreateHomeThread).toHaveBeenCalledWith({
+      id: undefined,
+      agentKey: undefined,
+      model: "openai-codex/gpt-5.4",
       thinking: undefined,
     });
   });
@@ -89,20 +110,17 @@ describe("createChatRuntime home-agent wiring", () => {
     const runtime = await createChatRuntime({
       identity: "local",
       agent: "jozef",
-      provider: "openai-codex",
-      model: "gpt-5.4",
+      model: "openai-codex/gpt-5.4",
     });
 
     await runtime.resetHomeThread({
       agentKey: "luna",
-      provider: "openai-codex",
-      model: "gpt-5.4",
+      model: "openai-codex/gpt-5.4",
     });
 
     expect(tuiRuntimeHomeAgentMocks.client.resetHomeThread).toHaveBeenCalledWith({
       agentKey: "luna",
-      provider: "openai-codex",
-      model: "gpt-5.4",
+      model: "openai-codex/gpt-5.4",
       thinking: undefined,
     });
   });

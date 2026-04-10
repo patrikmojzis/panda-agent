@@ -13,8 +13,7 @@ export interface SlashCompletionContext {
 
 const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "/help", summary: "Show command and keybinding help" },
-  { name: "/provider", summary: "Switch providers", expectsValue: true },
-  { name: "/model", summary: "Change the active model", expectsValue: true },
+  { name: "/model", summary: "Change the active model selector", expectsValue: true },
   { name: "/thinking", summary: "Change the active thinking level", expectsValue: true },
   { name: "/compact", summary: "Summarize older context", expectsValue: true },
   { name: "/new", summary: "Start a fresh thread without changing home" },
