@@ -1,6 +1,5 @@
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
-import type {Tool} from "../agent-core/tool.js";
 import type {ProviderName} from "../agent-core/types.js";
 import {createPandaClient} from "../panda/client.js";
 import type {ThreadRecord, ThreadSummaryRecord, ThreadUpdate} from "../thread-runtime/index.js";
@@ -9,13 +8,11 @@ import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
 import type {IdentityRecord} from "../identity/index.js";
 
 export interface ChatRuntimeOptions {
-  cwd: string;
   provider?: ProviderName;
   model?: string;
   identity?: string;
   agent?: string;
   dbUrl?: string;
-  readOnlyDbUrl?: string;
   tablePrefix?: string;
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
 }
@@ -31,7 +28,6 @@ export interface CreateChatThreadOptions {
 export interface ChatRuntimeServices {
   identity: IdentityRecord;
   store: ThreadRuntimeStore;
-  extraTools: readonly Tool[];
   createThread(options?: CreateChatThreadOptions): Promise<ThreadRecord>;
   resolveOrCreateHomeThread(options?: CreateChatThreadOptions): Promise<ThreadRecord>;
   resetHomeThread(options?: Omit<CreateChatThreadOptions, "id" | "agentKey">): Promise<ThreadRecord>;
@@ -65,7 +61,6 @@ function trimNonEmptyString(value: string | null | undefined): string | undefine
 
 export async function createChatRuntime(options: ChatRuntimeOptions): Promise<ChatRuntimeServices> {
   const client = await createPandaClient({
-    cwd: options.cwd,
     identity: options.identity,
     dbUrl: options.dbUrl,
     tablePrefix: options.tablePrefix,
@@ -85,7 +80,6 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
   return {
     identity: client.identity,
     store: client.store,
-    extraTools: [],
     createThread: (threadOptions) => client.createThread(applyDefaults(threadOptions)),
     resolveOrCreateHomeThread: (threadOptions) => client.resolveOrCreateHomeThread(applyDefaults(threadOptions)),
     resetHomeThread: (threadOptions) => client.resetHomeThread({

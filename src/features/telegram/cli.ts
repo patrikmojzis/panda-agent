@@ -1,14 +1,11 @@
 import process from "node:process";
-import path from "node:path";
 
 import {Command, InvalidArgumentError} from "commander";
 import {Bot} from "grammy";
 
-import type {ProviderName} from "../agent-core/types.js";
 import {createDefaultIdentityInput, PostgresIdentityStore} from "../identity/index.js";
 import {parseIdentityHandle} from "../identity/cli.js";
 import {createPandaPool, requirePandaDatabaseUrl} from "../panda/runtime.js";
-import {resolveDefaultPandaModel, resolveDefaultPandaProvider} from "../panda/provider-defaults.js";
 import {requireTelegramBotToken, resolveTelegramMediaDir, TELEGRAM_SOURCE} from "./config.js";
 import {TelegramService} from "./service.js";
 
@@ -16,12 +13,7 @@ interface TelegramIdentityCliOptions {
   dbUrl?: string;
 }
 
-interface TelegramRunCliOptions extends TelegramIdentityCliOptions {
-  provider?: ProviderName;
-  model?: string;
-  cwd?: string;
-  readOnlyDbUrl?: string;
-}
+type TelegramRunCliOptions = TelegramIdentityCliOptions;
 
 interface TelegramPairCliOptions extends TelegramIdentityCliOptions {
   identity: string;
@@ -70,17 +62,10 @@ async function withTelegramIdentityStore<T>(
 }
 
 function createTelegramRunService(options: TelegramRunCliOptions = {}): TelegramService {
-  const provider = options.provider ?? resolveDefaultPandaProvider();
-  const model = options.model ?? resolveDefaultPandaModel(provider);
-
   return new TelegramService({
     token: requireTelegramBotToken(),
     dataDir: resolveTelegramMediaDir(),
-    cwd: path.resolve(options.cwd ?? process.cwd()),
     dbUrl: options.dbUrl,
-    readOnlyDbUrl: options.readOnlyDbUrl,
-    provider,
-    model,
   });
 }
 
@@ -148,7 +133,7 @@ export async function telegramRunCommand(options: TelegramRunCliOptions): Promis
   }
 }
 
-export function registerTelegramCommands(program: Command, parseCliProvider: (value: string) => ProviderName): void {
+export function registerTelegramCommands(program: Command): void {
   const telegramProgram = program
     .command("telegram")
     .description("Run and manage the Telegram channel");
@@ -173,15 +158,7 @@ export function registerTelegramCommands(program: Command, parseCliProvider: (va
   telegramProgram
     .command("run")
     .description("Run the Telegram ingress worker")
-    .option(
-      "-p, --provider <provider>",
-      "LLM provider to use (`openai`, `openai-codex`, `anthropic`, or `anthropic-oauth`)",
-      parseCliProvider,
-    )
-    .option("-m, --model <model>", "Model name override")
-    .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
     .option("--db-url <url>", "Postgres connection string for thread persistence")
-    .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
     .action((options: TelegramRunCliOptions) => {
       return telegramRunCommand(options);
     });

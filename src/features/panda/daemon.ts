@@ -9,20 +9,20 @@ import {PostgresPandaDaemonStateStore} from "../daemon-state/index.js";
 import {PostgresHomeThreadStore} from "../home-threads/index.js";
 import {createDefaultIdentityInput, DEFAULT_IDENTITY_HANDLE, type IdentityRecord} from "../identity/index.js";
 import {PostgresOutboundDeliveryStore} from "../outbound-deliveries/index.js";
-import {createPandaRuntime, createPandaThreadDefinition, type PandaRuntimeServices} from "./runtime.js";
+import {createPandaRuntime, createPandaThreadDefinition} from "./runtime.js";
 import {resolveDefaultPandaModel, resolveDefaultPandaProvider} from "./provider-defaults.js";
 import type {
-    AbortThreadRequestPayload,
-    CompactThreadRequestPayload,
-    CreateThreadRequestPayload,
-    PandaRuntimeRequestRecord,
-    ResetHomeThreadRequestPayload,
-    ResolveHomeThreadRequestPayload,
-    TelegramMessageRequestPayload,
-    TelegramReactionRequestPayload,
-    TuiInputRequestPayload,
-    UpdateThreadRequestPayload,
-    WhatsAppMessageRequestPayload,
+  AbortThreadRequestPayload,
+  CompactThreadRequestPayload,
+  CreateThreadRequestPayload,
+  PandaRuntimeRequestRecord,
+  ResetHomeThreadRequestPayload,
+  ResolveHomeThreadRequestPayload,
+  TelegramMessageRequestPayload,
+  TelegramReactionRequestPayload,
+  TuiInputRequestPayload,
+  UpdateThreadRequestPayload,
+  WhatsAppMessageRequestPayload,
 } from "../runtime-requests/index.js";
 import {PostgresPandaRuntimeRequestStore} from "../runtime-requests/index.js";
 import {ScheduledTaskRunner} from "../scheduled-tasks/index.js";
@@ -32,11 +32,11 @@ import {type ProviderName, stringToUserMessage} from "../agent-core/index.js";
 import type {JsonValue} from "../agent-core/types.js";
 import {PostgresThreadRouteStore} from "../thread-routes/index.js";
 import {
-    buildTelegramInboundPersistence,
-    buildTelegramInboundText,
-    buildTelegramPairCommand,
-    buildTelegramReactionText,
-    normalizeTelegramCommand,
+  buildTelegramInboundPersistence,
+  buildTelegramInboundText,
+  buildTelegramPairCommand,
+  buildTelegramReactionText,
+  normalizeTelegramCommand,
 } from "../telegram/helpers.js";
 import {TELEGRAM_SOURCE} from "../telegram/config.js";
 import {TelegramReactTool} from "../telegram/telegram-react-tool.js";
@@ -63,14 +63,6 @@ export interface PandaDaemonOptions {
 }
 
 export interface PandaDaemonServices {
-  runtime: PandaRuntimeServices;
-  conversationThreads: PostgresConversationThreadStore;
-  homeThreads: PostgresHomeThreadStore;
-  threadRoutes: PostgresThreadRouteStore;
-  outboundDeliveries: PostgresOutboundDeliveryStore;
-  channelActions: PostgresChannelActionStore;
-  requests: PostgresPandaRuntimeRequestStore;
-  daemonState: PostgresPandaDaemonStateStore;
   run(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -346,8 +338,6 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     source: string;
     connectorKey: string;
     externalConversationId: string;
-    provider?: ProviderName;
-    model?: string;
     context?: Record<string, unknown>;
     metadata?: JsonValue;
   }): Promise<ThreadRecord | null> => {
@@ -371,8 +361,6 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     const home = await resolveExistingHomeThread(identity.id);
     const thread = home ?? await createThread({
       identity,
-      provider: input.provider,
-      model: input.model,
       context: input.context,
     });
     if (!home) {
@@ -511,8 +499,6 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
         externalConversationId: payload.externalConversationId,
         externalActorId: payload.externalActorId,
         commandExternalMessageId: payload.externalMessageId,
-        provider: payload.provider,
-        model: payload.model,
       });
       await queueSystemReply({
         channel: TELEGRAM_SOURCE,
@@ -563,8 +549,6 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       source: TELEGRAM_SOURCE,
       connectorKey: payload.connectorKey,
       externalConversationId: payload.externalConversationId,
-      provider: payload.provider,
-      model: payload.model,
       context: {
         source: TELEGRAM_SOURCE,
         chatId: payload.chatId,
@@ -639,8 +623,6 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       source: TELEGRAM_SOURCE,
       connectorKey: payload.connectorKey,
       externalConversationId: payload.externalConversationId,
-      provider: payload.provider,
-      model: payload.model,
       context: {
         source: TELEGRAM_SOURCE,
         chatId: payload.chatId,
@@ -697,8 +679,6 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       source: WHATSAPP_SOURCE,
       connectorKey: payload.connectorKey,
       externalConversationId: payload.externalConversationId,
-      provider: payload.provider,
-      model: payload.model,
       context: {
         source: WHATSAPP_SOURCE,
         remoteJid: payload.remoteJid,
@@ -917,14 +897,6 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
   };
 
   return {
-    runtime,
-    conversationThreads,
-    homeThreads,
-    threadRoutes,
-    outboundDeliveries,
-    channelActions,
-    requests,
-    daemonState,
     run: async () => {
       stopped = false;
       await acquireLock();

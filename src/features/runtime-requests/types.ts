@@ -35,8 +35,6 @@ export interface TelegramMessageRequestPayload extends BaseRuntimeRequestPayload
   lastName?: string;
   replyToMessageId?: string;
   media: readonly MediaDescriptor[];
-  provider?: ProviderName;
-  model?: string;
 }
 
 export interface TelegramReactionRequestPayload extends BaseRuntimeRequestPayload {
@@ -51,8 +49,6 @@ export interface TelegramReactionRequestPayload extends BaseRuntimeRequestPayloa
   username?: string;
   firstName?: string;
   lastName?: string;
-  provider?: ProviderName;
-  model?: string;
 }
 
 export interface WhatsAppMessageRequestPayload extends BaseRuntimeRequestPayload {
@@ -66,8 +62,6 @@ export interface WhatsAppMessageRequestPayload extends BaseRuntimeRequestPayload
   pushName?: string;
   quotedMessageId?: string;
   media: readonly MediaDescriptor[];
-  provider?: ProviderName;
-  model?: string;
 }
 
 export interface TuiInputRequestPayload extends BaseRuntimeRequestPayload {

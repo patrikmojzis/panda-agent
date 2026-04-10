@@ -3,19 +3,18 @@ import type {PoolClient} from "pg";
 import type {ProviderName} from "../agent-core/types.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {
-    createDefaultIdentityInput,
-    DEFAULT_IDENTITY_HANDLE,
-    type IdentityRecord,
-    PostgresIdentityStore,
+  createDefaultIdentityInput,
+  DEFAULT_IDENTITY_HANDLE,
+  type IdentityRecord,
+  PostgresIdentityStore,
 } from "../identity/index.js";
-import {PostgresHomeThreadStore} from "../home-threads/index.js";
 import {PostgresPandaRuntimeRequestStore} from "../runtime-requests/index.js";
 import {PostgresPandaDaemonStateStore} from "../daemon-state/index.js";
 import {
-    buildThreadRuntimeNotificationChannel,
-    parseThreadRuntimeNotification,
-    PostgresThreadRuntimeStore,
-    type ThreadRuntimeNotification,
+  buildThreadRuntimeNotificationChannel,
+  parseThreadRuntimeNotification,
+  PostgresThreadRuntimeStore,
+  type ThreadRuntimeNotification,
 } from "../thread-runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
 import type {ThreadRecord, ThreadSummaryRecord, ThreadUpdate} from "../thread-runtime/types.js";
@@ -36,7 +35,6 @@ function sleep(ms: number): Promise<void> {
 }
 
 export interface PandaClientOptions {
-  cwd: string;
   identity?: string;
   dbUrl?: string;
   tablePrefix?: string;
@@ -60,7 +58,6 @@ export interface PandaClientCompactResult {
 
 export interface PandaClient {
   identity: IdentityRecord;
-  homeThreads: PostgresHomeThreadStore;
   store: ThreadRuntimeStore;
   createThread(options?: PandaClientThreadOptions): Promise<ThreadRecord>;
   resolveOrCreateHomeThread(options?: PandaClientThreadOptions): Promise<ThreadRecord>;
@@ -77,7 +74,6 @@ export interface PandaClient {
   waitForCurrentRun(threadId: string, timeoutMs?: number): Promise<void>;
   updateThread(threadId: string, update: ThreadUpdate): Promise<ThreadRecord>;
   compactThread(threadId: string, customInstructions: string): Promise<PandaClientCompactResult>;
-  assertDaemonActive(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -105,7 +101,6 @@ async function waitForRequestResult<T>(
 }
 
 async function listenThreadNotifications(options: {
-  store: PostgresThreadRuntimeStore;
   pool: { connect(): Promise<PoolClient> };
   tablePrefix?: string;
   listener: (notification: ThreadRuntimeNotification) => Promise<void> | void;
@@ -152,10 +147,6 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
     tablePrefix,
     identityStore,
   });
-  const homeThreads = new PostgresHomeThreadStore({
-    pool,
-    tablePrefix,
-  });
   const requests = new PostgresPandaRuntimeRequestStore({
     pool,
     tablePrefix,
@@ -169,7 +160,6 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
 
   try {
     await store.ensureSchema();
-    await homeThreads.ensureSchema();
     await requests.ensureSchema();
     await daemonState.ensureSchema();
 
@@ -180,7 +170,6 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
 
     if (options.onStoreNotification) {
       unsubscribe = await listenThreadNotifications({
-        store,
         pool,
         tablePrefix,
         listener: options.onStoreNotification,
@@ -321,7 +310,6 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
 
     return {
       identity,
-      homeThreads,
       store,
       createThread,
       resolveOrCreateHomeThread,
@@ -333,7 +321,6 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
       waitForCurrentRun,
       updateThread,
       compactThread,
-      assertDaemonActive,
       close: async () => {
         if (unsubscribe) {
           const current = unsubscribe;

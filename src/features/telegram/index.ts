@@ -16,7 +16,6 @@ export {
   buildTelegramConversationId,
   buildTelegramInboundText,
   buildTelegramPairCommand,
-  buildTelegramStartText,
   normalizeTelegramCommand,
 } from "./helpers.js";
 export {

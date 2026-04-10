@@ -53,11 +53,9 @@ async function runChatCommand(options: ChatCliOptions): Promise<void> {
     model: options.model,
     identity: options.identity,
     agent: options.agent,
-    cwd: options.cwd,
     resume: options.resume,
     threadId: options.threadId,
     dbUrl: options.dbUrl,
-    readOnlyDbUrl: options.readOnlyDbUrl,
   });
 
   if (result.threadId) {
@@ -99,17 +97,15 @@ async function runPandaCommand(options: PandaRunCliOptions): Promise<void> {
 }
 
 async function withCliRuntime<T>(
-  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "agent" | "cwd" | "dbUrl" | "readOnlyDbUrl">,
+  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "agent" | "dbUrl">,
   fn: (runtime: Awaited<ReturnType<typeof createChatRuntime>>) => Promise<T>,
 ): Promise<T> {
   const runtime = await createChatRuntime({
-    cwd: path.resolve(options.cwd ?? process.cwd()),
     provider: options.provider,
     model: options.model,
     identity: options.identity,
     agent: options.agent,
     dbUrl: options.dbUrl,
-    readOnlyDbUrl: options.readOnlyDbUrl,
   });
 
   try {
@@ -120,7 +116,7 @@ async function withCliRuntime<T>(
 }
 
 async function listThreadsCommand(
-  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "agent" | "cwd" | "dbUrl" | "readOnlyDbUrl"> & { limit?: number },
+  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "agent" | "dbUrl"> & { limit?: number },
 ): Promise<void> {
   await withCliRuntime(options, async (runtime) => {
     const summaries = await runtime.listThreadSummaries(options.limit ?? 20);
@@ -148,7 +144,7 @@ async function listThreadsCommand(
 
 async function inspectThreadCommand(
   threadId: string,
-  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "agent" | "cwd" | "dbUrl" | "readOnlyDbUrl">,
+  options: Pick<ChatCliOptions, "provider" | "model" | "identity" | "agent" | "dbUrl">,
 ): Promise<void> {
   await withCliRuntime(options, async (runtime) => {
     const thread = await runtime.getThread(threadId);
@@ -191,11 +187,9 @@ function configureChatOptions(command: Command): Command {
     .option("-m, --model <model>", "Model name override")
     .option("--identity <handle>", "Identity handle to use for thread ownership", parseIdentityHandle)
     .option("--agent <agentKey>", "Agent key to use", parseAgentKey)
-    .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
     .option("--resume <threadId>", "Resume an existing thread by id")
     .option("--thread-id <threadId>", "Use an explicit thread id for a new or existing chat")
-    .option("--db-url <url>", "Postgres connection string for thread persistence")
-    .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool");
+    .option("--db-url <url>", "Postgres connection string for thread persistence");
 }
 
 function configureChatCommand(command: Command): Command {
@@ -244,9 +238,7 @@ program
   .option("-m, --model <model>", "Model name override")
   .option("--identity <handle>", "Identity handle to use", parseIdentityHandle)
   .option("--agent <agentKey>", "Agent key to use", parseAgentKey)
-  .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
   .option("--db-url <url>", "Postgres connection string for thread persistence")
-  .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
   .action((options) => {
     return listThreadsCommand(options);
   });
@@ -259,16 +251,14 @@ program
   .option("-m, --model <model>", "Model name override")
   .option("--identity <handle>", "Identity handle to use", parseIdentityHandle)
   .option("--agent <agentKey>", "Agent key to use", parseAgentKey)
-  .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
   .option("--db-url <url>", "Postgres connection string for thread persistence")
-  .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
   .action((threadId: string, options) => {
     return inspectThreadCommand(threadId, options);
   });
 
 registerAgentCommands(program);
 registerIdentityCommands(program);
-registerTelegramCommands(program, parseCliProvider);
-registerWhatsAppCommands(program, parseCliProvider);
+registerTelegramCommands(program);
+registerWhatsAppCommands(program);
 
 await program.parseAsync(process.argv);

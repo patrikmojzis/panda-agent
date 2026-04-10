@@ -304,7 +304,6 @@ export async function ensureReadonlyChatQuerySchema(
     FROM ${scheduledTaskTables.scheduledTasks} AS st
     LEFT JOIN ${homeThreadTables.homeThreads} AS home
       ON home.identity_id = st.identity_id
-     AND home.agent_key = st.agent_key
     WHERE st.identity_id = current_setting('panda.identity_id', true)
       AND st.agent_key = current_setting('panda.agent_key', true);
 

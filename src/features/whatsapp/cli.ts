@@ -1,10 +1,7 @@
 import process from "node:process";
-import path from "node:path";
 
 import {Command, InvalidArgumentError} from "commander";
 
-import type {ProviderName} from "../agent-core/types.js";
-import {resolveDefaultPandaModel, resolveDefaultPandaProvider} from "../panda/provider-defaults.js";
 import {resolveWhatsAppConnectorKey, resolveWhatsAppDataDir} from "./config.js";
 import {WhatsAppService} from "./service.js";
 
@@ -13,12 +10,7 @@ interface WhatsAppCliOptions {
   dbUrl?: string;
 }
 
-interface WhatsAppRunCliOptions extends WhatsAppCliOptions {
-  provider?: ProviderName;
-  model?: string;
-  cwd?: string;
-  readOnlyDbUrl?: string;
-}
+type WhatsAppRunCliOptions = WhatsAppCliOptions;
 
 interface WhatsAppPairCliOptions extends WhatsAppCliOptions {
   phone: string;
@@ -43,17 +35,10 @@ function parseWhatsAppPhoneNumber(value: string): string {
 }
 
 function createWhatsAppService(options: WhatsAppRunCliOptions = {}): WhatsAppService {
-  const provider = options.provider ?? resolveDefaultPandaProvider();
-  const model = options.model ?? resolveDefaultPandaModel(provider);
-
   return new WhatsAppService({
     connectorKey: options.connector ?? resolveWhatsAppConnectorKey(),
     dataDir: resolveWhatsAppDataDir(),
-    cwd: path.resolve(options.cwd ?? process.cwd()),
     dbUrl: options.dbUrl,
-    readOnlyDbUrl: options.readOnlyDbUrl,
-    provider,
-    model,
   });
 }
 
@@ -138,7 +123,7 @@ export async function whatsappRunCommand(options: WhatsAppRunCliOptions): Promis
   }
 }
 
-export function registerWhatsAppCommands(program: Command, parseCliProvider: (value: string) => ProviderName): void {
+export function registerWhatsAppCommands(program: Command): void {
   const whatsappProgram = program
     .command("whatsapp")
     .description("Run and manage the WhatsApp channel");
@@ -166,15 +151,7 @@ export function registerWhatsAppCommands(program: Command, parseCliProvider: (va
     .command("run")
     .description("Run the WhatsApp ingress worker")
     .option("--connector <key>", "Connector key override", parseWhatsAppConnectorKey)
-    .option(
-      "-p, --provider <provider>",
-      "LLM provider to use (`openai`, `openai-codex`, `anthropic`, or `anthropic-oauth`)",
-      parseCliProvider,
-    )
-    .option("-m, --model <model>", "Model name override")
-    .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
     .option("--db-url <url>", "Postgres connection string for thread persistence")
-    .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
     .action((options: WhatsAppRunCliOptions) => {
       return whatsappRunCommand(options);
     });

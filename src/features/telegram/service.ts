@@ -4,7 +4,6 @@ import {AbortController} from "abort-controller";
 import {Bot, type Context} from "grammy";
 import type {Pool} from "pg";
 
-import type {ProviderName} from "../agent-core/types.js";
 import {ChannelActionWorker, type TelegramReactionActionPayload} from "../channel-actions/index.js";
 import {PostgresChannelCursorStore} from "../channel-cursors/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../channels/core/index.js";
@@ -24,11 +23,7 @@ const UPDATE_RETRY_DELAY_MS = 1_000;
 export interface TelegramServiceOptions {
   token: string;
   dataDir: string;
-  cwd: string;
   dbUrl?: string;
-  readOnlyDbUrl?: string;
-  provider?: ProviderName;
-  model?: string;
   tablePrefix?: string;
 }
 
@@ -125,11 +120,7 @@ export class TelegramService {
     this.token = options.token;
     this.options = {
       dataDir: options.dataDir,
-      cwd: options.cwd,
       dbUrl: options.dbUrl,
-      readOnlyDbUrl: options.readOnlyDbUrl,
-      provider: options.provider,
-      model: options.model,
       tablePrefix: options.tablePrefix,
     };
     this.bot = new Bot<TelegramContext>(options.token);
@@ -331,9 +322,6 @@ export class TelegramService {
       this.log("run_started", {
         connectorKey,
         botUsername,
-        provider: this.options.provider ?? null,
-        model: this.options.model ?? null,
-        cwd: this.options.cwd,
         dataDir: this.options.dataDir,
       });
 
@@ -607,8 +595,6 @@ export class TelegramService {
         username: reaction.user?.username,
         firstName: reaction.user?.first_name,
         lastName: reaction.user?.last_name,
-        provider: this.options.provider,
-        model: this.options.model,
       },
     });
 
@@ -689,8 +675,6 @@ export class TelegramService {
           ? String(message.reply_to_message.message_id)
           : undefined,
         media,
-        provider: this.options.provider,
-        model: this.options.model,
       },
     });
 

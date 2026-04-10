@@ -4,11 +4,6 @@ import type {JsonObject} from "../agent-core/types.js";
 import type {MediaDescriptor, RememberedRoute} from "../channels/core/types.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 
-export interface TelegramStartTextOptions {
-  actorId: string;
-  defaultIdentityHandle?: string;
-}
-
 export interface TelegramInboundTextOptions {
   connectorKey: string;
   externalConversationId: string;
@@ -94,25 +89,6 @@ export function buildTelegramPairCommand(
   identityHandle = "local",
 ): string {
   return `panda telegram pair --identity ${identityHandle} --actor ${actorId}`;
-}
-
-function escapeTelegramHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
-export function buildTelegramStartText(options: TelegramStartTextOptions): string {
-  const command = escapeTelegramHtml(
-    buildTelegramPairCommand(options.actorId, options.defaultIdentityHandle ?? "local"),
-  );
-  return [
-    "Pair this Telegram account with Panda by running:",
-    `<pre><code>${command}</code></pre>`,
-    "",
-    "Adjust the identity handle if you want a different Panda identity.",
-  ].join("\n");
 }
 
 function describeMediaDescriptor(descriptor: MediaDescriptor): string {

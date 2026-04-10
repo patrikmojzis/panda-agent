@@ -1,4 +1,3 @@
-import path from "node:path";
 import readline from "node:readline";
 import {randomUUID} from "node:crypto";
 import {stdin as input, stdout as output} from "node:process";
@@ -139,11 +138,9 @@ export interface ChatCliOptions {
   thinking?: ThinkingLevel;
   identity?: string;
   agent?: string;
-  cwd?: string;
   resume?: string;
   threadId?: string;
   dbUrl?: string;
-  readOnlyDbUrl?: string;
 }
 
 export interface ChatCliResult {
@@ -186,13 +183,12 @@ export class PandaChatApp {
   private providerName: ProviderName;
   private model: string;
   private thinking?: ThinkingLevel;
-  private readonly cwd: string;
+  private readonly fallbackCwd: string;
   private readonly identity?: string;
   private readonly defaultAgentKey?: string;
   private readonly resumeThreadId?: string;
   private readonly explicitThreadId?: string;
   private readonly dbUrl?: string;
-  private readonly readOnlyDbUrl?: string;
   private readonly transcript: TranscriptEntry[] = [];
   private readonly pendingLocalInputs: PendingLocalInput[] = [];
   private readonly inputHistory: string[] = [];
@@ -255,11 +251,10 @@ export class PandaChatApp {
     this.thinking = options.thinking;
     this.identity = options.identity;
     this.defaultAgentKey = options.agent;
-    this.cwd = path.resolve(options.cwd ?? process.cwd());
+    this.fallbackCwd = process.cwd();
     this.resumeThreadId = options.resume;
     this.explicitThreadId = options.threadId;
     this.dbUrl = options.dbUrl;
-    this.readOnlyDbUrl = options.readOnlyDbUrl;
   }
 
   async run(): Promise<ChatCliResult> {
@@ -458,18 +453,28 @@ export class PandaChatApp {
   }
 
   private refreshToolCatalog(): void {
-    this.currentTools = buildPandaTools(this.services?.extraTools ?? []);
+    this.currentTools = buildPandaTools();
+  }
+
+  private resolveDisplayedCwd(): string {
+    const context = this.currentThread?.context;
+    if (!context || typeof context !== "object" || Array.isArray(context)) {
+      return this.fallbackCwd;
+    }
+
+    const cwd = (context as {cwd?: unknown}).cwd;
+    return typeof cwd === "string" && cwd.trim().length > 0
+      ? cwd
+      : this.fallbackCwd;
   }
 
   private async initializeRuntime(): Promise<void> {
     this.services = await createChatRuntime({
-      cwd: this.cwd,
       provider: this.providerName,
       model: this.model,
       identity: this.identity,
       agent: this.defaultAgentKey,
       dbUrl: this.dbUrl,
-      readOnlyDbUrl: this.readOnlyDbUrl,
       onStoreNotification: (notification) => this.handleStoreNotification(notification.threadId),
     });
 
@@ -1096,7 +1101,7 @@ export class PandaChatApp {
           providerName: this.providerName,
           model: this.model,
           thinkingLabel: formatThinkingLevel(this.thinking),
-          cwd: this.cwd,
+          cwd: this.resolveDisplayedCwd(),
         }));
         continue;
       }
@@ -1201,7 +1206,7 @@ export class PandaChatApp {
       model: this.model,
       thinkingLabel: formatThinkingLevel(this.thinking),
       modeLabel: this.modeLabel,
-      cwd: this.cwd,
+      cwd: this.resolveDisplayedCwd(),
     });
   }
 

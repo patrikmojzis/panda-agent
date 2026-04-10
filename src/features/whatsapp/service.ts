@@ -2,25 +2,24 @@ import {createHash} from "node:crypto";
 
 import type {Pool} from "pg";
 import {
-    addTransactionCapability,
-    type AuthenticationState,
-    type BaileysEventMap,
-    Browsers,
-    type ConnectionState,
-    DisconnectReason,
-    isJidBroadcast,
-    isJidGroup,
-    isJidNewsletter,
-    isJidStatusBroadcast,
-    jidNormalizedUser,
-    makeCacheableSignalKeyStore,
-    makeWASocket,
-    type WAMessage,
-    type WASocket,
+  addTransactionCapability,
+  type AuthenticationState,
+  type BaileysEventMap,
+  Browsers,
+  type ConnectionState,
+  DisconnectReason,
+  isJidBroadcast,
+  isJidGroup,
+  isJidNewsletter,
+  isJidStatusBroadcast,
+  jidNormalizedUser,
+  makeCacheableSignalKeyStore,
+  makeWASocket,
+  type WAMessage,
+  type WASocket,
 } from "baileys";
 import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
-import type {ProviderName} from "../agent-core/types.js";
 import {ChannelActionWorker} from "../channel-actions/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../channels/core/index.js";
 import {createPandaPool, requirePandaDatabaseUrl} from "../panda/runtime.js";
@@ -36,11 +35,7 @@ import {createWhatsAppTypingAdapter} from "./typing.js";
 export interface WhatsAppServiceOptions {
   connectorKey: string;
   dataDir: string;
-  cwd: string;
   dbUrl?: string;
-  readOnlyDbUrl?: string;
-  provider?: ProviderName;
-  model?: string;
   tablePrefix?: string;
 }
 
@@ -470,9 +465,6 @@ export class WhatsAppService {
         connectorKey: this.options.connectorKey,
         accountId: identity.accountId,
         name: identity.name ?? null,
-        provider: this.options.provider ?? null,
-        model: this.options.model ?? null,
-        cwd: this.options.cwd,
         dataDir: this.options.dataDir,
       });
 
@@ -781,8 +773,6 @@ export class WhatsAppService {
           pushName: message.pushName ?? undefined,
           quotedMessageId,
           media,
-          provider: this.options.provider,
-          model: this.options.model,
         },
       });
 
