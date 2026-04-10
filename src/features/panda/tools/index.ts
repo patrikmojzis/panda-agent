@@ -11,3 +11,13 @@ export {
   PostgresReadonlyQueryTool,
   type PostgresReadonlyQueryToolOptions,
 } from "./postgres-readonly-query-tool.js";
+export {
+  ScheduledTaskCancelTool,
+  ScheduledTaskCreateTool,
+  ScheduledTaskUpdateTool,
+  type ScheduledTaskToolOptions,
+} from "./scheduled-task-tools.js";
+export {
+  SpawnSubagentTool,
+  type SpawnSubagentToolOptions,
+} from "./spawn-subagent-tool.js";

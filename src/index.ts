@@ -7,6 +7,7 @@ export * from "./features/home-threads/index.js";
 export * from "./features/identity/index.js";
 export * from "./features/outbound-deliveries/index.js";
 export * from "./features/panda/index.js";
+export * from "./features/scheduled-tasks/index.js";
 export * from "./features/telegram/index.js";
 export * from "./features/thread-runtime/index.js";
 export * from "./features/whatsapp/index.js";

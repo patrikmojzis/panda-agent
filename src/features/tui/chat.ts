@@ -4,15 +4,15 @@ import {randomUUID} from "node:crypto";
 import {stdin as input, stdout as output} from "node:process";
 
 import {
-  assertProviderName,
-  formatProviderNameList,
-  getProviderConfig,
-  parseProviderName,
-  resolveProviderApiKey,
-  stringToUserMessage,
-  type ThinkingLevel,
-  Tool,
-  type ToolProgressEvent,
+    assertProviderName,
+    formatProviderNameList,
+    getProviderConfig,
+    parseProviderName,
+    resolveProviderApiKey,
+    stringToUserMessage,
+    type ThinkingLevel,
+    Tool,
+    type ToolProgressEvent,
 } from "../agent-core/index.js";
 import type {ProviderName} from "../agent-core/types.js";
 import {buildPandaTools} from "../panda/agent.js";
@@ -23,63 +23,63 @@ import {buildChatHelpText, describeUnknownCommand, runChatCommandLine,} from "./
 import {renderTranscriptEntries,} from "./transcript.js";
 import {applySlashCompletion, getSlashCompletionContext, type SlashCompletionContext,} from "./commands.js";
 import {
-  backspace,
-  type ComposerState,
-  createComposerState,
-  deleteForward,
-  deleteWordBackward,
-  insertText,
-  moveCursorDown,
-  moveCursorLeft,
-  moveCursorLineEnd,
-  moveCursorLineStart,
-  moveCursorRight,
-  moveCursorUp,
-  moveCursorWordLeft,
-  moveCursorWordRight,
-  setComposerValue,
+    backspace,
+    type ComposerState,
+    createComposerState,
+    deleteForward,
+    deleteWordBackward,
+    insertText,
+    moveCursorDown,
+    moveCursorLeft,
+    moveCursorLineEnd,
+    moveCursorLineStart,
+    moveCursorRight,
+    moveCursorUp,
+    moveCursorWordLeft,
+    moveCursorWordRight,
+    setComposerValue,
 } from "./composer.js";
 import {
-  COMPOSER_NEWLINE_HINT,
-  extendedKeysModeSequence,
-  isPrintableKey,
-  type KeyLike,
-  normalizeTerminalKeySequence,
-  replaceTrailingBackslashWithNewline,
-  resolveComposerEnterAction,
-  resolveComposerMetaAction,
+    COMPOSER_NEWLINE_HINT,
+    extendedKeysModeSequence,
+    isPrintableKey,
+    type KeyLike,
+    normalizeTerminalKeySequence,
+    replaceTrailingBackslashWithNewline,
+    resolveComposerEnterAction,
+    resolveComposerMetaAction,
 } from "./input.js";
 import {
-  buildChatViewModel,
-  buildWelcomeTranscriptLines,
-  type ComposerLayout,
-  normalizeInlineText,
-  type NoticeState,
-  THREAD_PICKER_VISIBLE_COUNT,
-  type TranscriptLine,
-  type ViewModel,
+    buildChatViewModel,
+    buildWelcomeTranscriptLines,
+    type ComposerLayout,
+    normalizeInlineText,
+    type NoticeState,
+    THREAD_PICKER_VISIBLE_COUNT,
+    type TranscriptLine,
+    type ViewModel,
 } from "./chat-view.js";
 import {renderMarkdownLines} from "./markdown.js";
 import {
-  ALT_SCREEN_OFF,
-  ALT_SCREEN_ON,
-  clamp,
-  CLEAR_SCREEN,
-  cursorTo,
-  formatDuration,
-  HIDE_CURSOR,
-  padAnsiEnd,
-  SHOW_CURSOR,
-  truncatePlainText,
-  wrapPlainText,
+    ALT_SCREEN_OFF,
+    ALT_SCREEN_ON,
+    clamp,
+    CLEAR_SCREEN,
+    cursorTo,
+    formatDuration,
+    HIDE_CURSOR,
+    padAnsiEnd,
+    SHOW_CURSOR,
+    truncatePlainText,
+    wrapPlainText,
 } from "./screen.js";
 import {stripAnsi, theme} from "./theme.js";
 import type {
-  ThreadMessageRecord,
-  ThreadRecord,
-  ThreadRunRecord,
-  ThreadRuntimeEvent,
-  ThreadSummaryRecord,
+    ThreadMessageRecord,
+    ThreadRecord,
+    ThreadRunRecord,
+    ThreadRuntimeEvent,
+    ThreadSummaryRecord,
 } from "../thread-runtime/index.js";
 import {compactThread, isMissingThreadError,} from "../thread-runtime/index.js";
 
@@ -196,8 +196,6 @@ export class PandaChatApp {
   private readonly explicitThreadId?: string;
   private readonly dbUrl?: string;
   private readonly readOnlyDbUrl?: string;
-  private readonly locale: string;
-  private readonly timezone: string;
   private readonly transcript: TranscriptEntry[] = [];
   private readonly pendingLocalInputs: PendingLocalInput[] = [];
   private readonly inputHistory: string[] = [];
@@ -266,8 +264,6 @@ export class PandaChatApp {
     this.explicitThreadId = options.threadId;
     this.dbUrl = options.dbUrl;
     this.readOnlyDbUrl = options.readOnlyDbUrl;
-    this.locale = Intl.DateTimeFormat().resolvedOptions().locale;
-    this.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
   }
 
   async run(): Promise<ChatCliResult> {
@@ -472,8 +468,6 @@ export class PandaChatApp {
   private async initializeRuntime(): Promise<void> {
     this.services = await createChatRuntime({
       cwd: this.cwd,
-      locale: this.locale,
-      timezone: this.timezone,
       provider: this.providerName,
       model: this.model,
       identity: this.identity,

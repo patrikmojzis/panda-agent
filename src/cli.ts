@@ -61,8 +61,6 @@ async function withCliRuntime<T>(
 ): Promise<T> {
   const runtime = await createChatRuntime({
     cwd: path.resolve(options.cwd ?? process.cwd()),
-    locale: Intl.DateTimeFormat().resolvedOptions().locale,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
     provider: options.provider,
     model: options.model,
     identity: options.identity,

@@ -11,6 +11,7 @@ import type {IdentityStore} from "../identity/store.js";
 import {PostgresOutboundDeliveryStore} from "../outbound-deliveries/index.js";
 import {createPandaRuntime, createPandaThreadDefinition, type PandaRuntimeServices,} from "../panda/runtime.js";
 import {OutboundTool} from "../panda/tools/outbound-tool.js";
+import {ScheduledTaskRunner} from "../scheduled-tasks/index.js";
 import {createChannelTypingEventHandler} from "../thread-runtime/channel-typing.js";
 import type {ThreadRuntimeCoordinator} from "../thread-runtime/coordinator.js";
 import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
@@ -19,16 +20,16 @@ import {WHATSAPP_SOURCE} from "./config.js";
 
 export interface WhatsAppRuntimeOptions {
   cwd: string;
-  locale: string;
-  timezone: string;
   dataDir: string;
   dbUrl?: string;
   readOnlyDbUrl?: string;
   provider?: ProviderName;
   model?: string;
   agent?: string;
+  maxSubagentDepth?: number;
   tablePrefix?: string;
   typingDispatcher?: ChannelTypingDispatcher;
+  connectorKey?: string;
 }
 
 export interface CreateWhatsAppThreadOptions {
@@ -65,8 +66,6 @@ function resolveDefaultIdentityHandle(identity: IdentityRecord): string {
 export async function createWhatsAppRuntime(options: WhatsAppRuntimeOptions): Promise<WhatsAppRuntimeServices> {
   const fallbackContext = {
     cwd: options.cwd,
-    locale: options.locale,
-    timezone: options.timezone,
   } as const;
   const defaultAgentKey = options.agent?.trim() || "panda";
 
@@ -74,10 +73,12 @@ export async function createWhatsAppRuntime(options: WhatsAppRuntimeOptions): Pr
   let homeThreads: PostgresHomeThreadStore;
   let outboundDeliveries: PostgresOutboundDeliveryStore;
   let mediaStore: FileSystemMediaStore;
+  let scheduledTaskRunner: ScheduledTaskRunner | null = null;
 
   const pandaRuntime = await createPandaRuntime({
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
+    maxSubagentDepth: options.maxSubagentDepth,
     tablePrefix: options.tablePrefix,
     onEvent: createChannelTypingEventHandler(options.typingDispatcher),
     resolveDefinition: async (thread, { agentStore, identityStore, extraTools }) => {
@@ -138,7 +139,21 @@ export async function createWhatsAppRuntime(options: WhatsAppRuntimeOptions): Pr
     mediaStore = new FileSystemMediaStore({
       rootDir: options.dataDir,
     });
+
+    if (options.connectorKey) {
+      scheduledTaskRunner = new ScheduledTaskRunner({
+        tasks: pandaRuntime.scheduledTasks,
+        homeThreads,
+        outboundDeliveries,
+        threadStore: pandaRuntime.store,
+        coordinator: pandaRuntime.coordinator,
+        supportedChannel: WHATSAPP_SOURCE,
+        supportedConnectorKey: options.connectorKey,
+      });
+      await scheduledTaskRunner.start();
+    }
   } catch (error) {
+    await scheduledTaskRunner?.stop();
     await pandaRuntime.close();
     throw error;
   }
@@ -233,6 +248,9 @@ export async function createWhatsAppRuntime(options: WhatsAppRuntimeOptions): Pr
     resolveOrCreateHomeThread,
     setHomeThread,
     getThread: pandaRuntime.store.getThread.bind(pandaRuntime.store),
-    close: pandaRuntime.close,
+    close: async () => {
+      await scheduledTaskRunner?.stop();
+      await pandaRuntime.close();
+    },
   };
 }

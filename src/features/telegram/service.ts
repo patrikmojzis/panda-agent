@@ -13,12 +13,12 @@ import type {IdentityBindingRecord} from "../identity/types.js";
 import {isMissingThreadError, type ThreadRecord} from "../thread-runtime/types.js";
 import {TELEGRAM_POLL_TIMEOUT_SECONDS, TELEGRAM_SOURCE, TELEGRAM_UPDATES_CURSOR_KEY,} from "./config.js";
 import {
-  buildTelegramConversationId,
-  buildTelegramInboundPersistence,
-  buildTelegramInboundText,
-  buildTelegramReactionText,
-  buildTelegramStartText,
-  normalizeTelegramCommand,
+    buildTelegramConversationId,
+    buildTelegramInboundPersistence,
+    buildTelegramInboundText,
+    buildTelegramReactionText,
+    buildTelegramStartText,
+    normalizeTelegramCommand,
 } from "./helpers.js";
 import {createTelegramOutboundAdapter} from "./outbound.js";
 import {createTelegramTypingAdapter} from "./typing.js";
@@ -62,8 +62,6 @@ export interface TelegramServiceOptions {
   token: string;
   dataDir: string;
   cwd: string;
-  locale: string;
-  timezone: string;
   dbUrl?: string;
   readOnlyDbUrl?: string;
   provider?: ProviderName;
@@ -150,8 +148,6 @@ export class TelegramService {
     this.runtimeOptions = {
       dataDir: options.dataDir,
       cwd: options.cwd,
-      locale: options.locale,
-      timezone: options.timezone,
       dbUrl: options.dbUrl,
       readOnlyDbUrl: options.readOnlyDbUrl,
       provider: options.provider,
@@ -286,12 +282,12 @@ export class TelegramService {
 
     try {
       const { runtime, connectorKey, botUsername } = await this.ensureInitialized();
+      this.lock = await this.acquireConnectorLock(connectorKey, runtime);
       await this.ensureOutboundWorker(runtime, connectorKey).start();
       await this.bot.api.setMyCommands([
         { command: "start", description: "Pair this Telegram account with Panda" },
         { command: "reset", description: "Reset Panda to a fresh empty home thread" },
       ]);
-      this.lock = await this.acquireConnectorLock(connectorKey, runtime);
       this.log("run_started", {
         connectorKey,
         botUsername,

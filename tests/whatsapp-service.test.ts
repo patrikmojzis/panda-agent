@@ -326,6 +326,7 @@ describe("WhatsAppService", () => {
     whatsappServiceMocks.normalizeMessageContent.mockClear();
     whatsappServiceMocks.makeCacheableSignalKeyStore.mockClear();
     whatsappServiceMocks.addTransactionCapability.mockClear();
+    whatsappServiceMocks.createOutboundWorker.mockClear();
     whatsappServiceMocks.isJidBroadcast.mockClear();
     whatsappServiceMocks.isJidGroup.mockClear();
     whatsappServiceMocks.isJidNewsletter.mockClear();
@@ -333,6 +334,7 @@ describe("WhatsAppService", () => {
     whatsappServiceMocks.jidNormalizedUser.mockClear();
     whatsappServiceMocks.Browsers.macOS.mockClear();
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("reads linked account info from stored creds", async () => {
@@ -340,8 +342,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
 
@@ -369,8 +369,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
 
@@ -405,8 +403,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
 
@@ -436,8 +432,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
 
@@ -451,6 +445,116 @@ describe("WhatsAppService", () => {
     );
   });
 
+  it("does not start the outbound worker before owning the WhatsApp connector lock", async () => {
+    const order: string[] = [];
+    const release = vi.fn(async () => {});
+    const worker = {
+      start: vi.fn(async () => {
+        order.push("start");
+      }),
+      stop: vi.fn(async () => {}),
+      triggerDrain: vi.fn(async () => {}),
+    };
+    whatsappServiceMocks.createOutboundWorker.mockReturnValueOnce(worker);
+
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+      cwd: "/tmp/panda",
+      dbUrl: "postgres://wa-db",
+    });
+
+    whatsappServiceMocks.setCreds({
+      registered: true,
+      me: {
+        id: "421900000000:12@s.whatsapp.net",
+        name: "Panda",
+      },
+    });
+
+    vi.spyOn(service as never, "acquireConnectorLock").mockImplementation(async () => {
+      order.push("lock");
+      return { release };
+    });
+    vi.spyOn(service as never, "runSocketCycle").mockImplementationOnce(async () => {
+      order.push("cycle");
+      return {
+        reconnect: false,
+        reason: "done",
+      };
+    });
+
+    await expect(service.run()).resolves.toBeUndefined();
+
+    expect(order).toEqual(["lock", "start", "cycle"]);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start the outbound worker when WhatsApp lock acquisition fails", async () => {
+    const worker = {
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+      triggerDrain: vi.fn(async () => {}),
+    };
+    whatsappServiceMocks.createOutboundWorker.mockReturnValueOnce(worker);
+
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+      cwd: "/tmp/panda",
+      dbUrl: "postgres://wa-db",
+    });
+
+    whatsappServiceMocks.setCreds({
+      registered: true,
+      me: {
+        id: "421900000000:12@s.whatsapp.net",
+        name: "Panda",
+      },
+    });
+
+    vi.spyOn(service as never, "acquireConnectorLock").mockRejectedValue(new Error("WhatsApp connector main is already running."));
+
+    await expect(service.run()).rejects.toThrow("WhatsApp connector main is already running.");
+
+    expect(worker.start).not.toHaveBeenCalled();
+    expect(whatsappServiceMocks.createWhatsAppRuntime).not.toHaveBeenCalled();
+  });
+
+  it("releases the WhatsApp connector lock when worker startup fails", async () => {
+    const release = vi.fn(async () => {});
+    const worker = {
+      start: vi.fn(async () => {
+        throw new Error("worker bootstrap failed");
+      }),
+      stop: vi.fn(async () => {}),
+      triggerDrain: vi.fn(async () => {}),
+    };
+    whatsappServiceMocks.createOutboundWorker.mockReturnValueOnce(worker);
+
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+      cwd: "/tmp/panda",
+      dbUrl: "postgres://wa-db",
+    });
+
+    whatsappServiceMocks.setCreds({
+      registered: true,
+      me: {
+        id: "421900000000:12@s.whatsapp.net",
+        name: "Panda",
+      },
+    });
+
+    vi.spyOn(service as never, "acquireConnectorLock").mockResolvedValue({ release });
+
+    await expect(service.run()).rejects.toThrow("worker bootstrap failed");
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(worker.stop).toHaveBeenCalledTimes(1);
+  });
+
   it("reconnects after a transient close and releases the connector lock on stop", async () => {
     vi.useFakeTimers();
 
@@ -458,8 +562,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
 
@@ -517,8 +619,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
 
@@ -563,8 +663,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
 
@@ -618,8 +716,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
 
@@ -722,8 +818,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
 
@@ -792,8 +886,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
 
@@ -865,8 +957,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
 
@@ -918,8 +1008,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
 
@@ -1012,8 +1100,6 @@ describe("WhatsAppService", () => {
       connectorKey: "main",
       dataDir: "/tmp/panda",
       cwd: "/tmp/panda",
-      locale: "en-US",
-      timezone: "UTC",
       dbUrl: "postgres://wa-db",
     });
     const runPromise = service.run();

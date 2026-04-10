@@ -12,6 +12,7 @@ import {createDefaultIdentityInput, DEFAULT_IDENTITY_HANDLE, type IdentityRecord
 import type {IdentityStore} from "../identity/store.js";
 import {PostgresOutboundDeliveryStore} from "../outbound-deliveries/index.js";
 import {OutboundTool} from "../panda/tools/outbound-tool.js";
+import {ScheduledTaskRunner} from "../scheduled-tasks/index.js";
 import {createChannelTypingEventHandler} from "../thread-runtime/channel-typing.js";
 import {type TelegramReactionApi, TelegramReactTool} from "./telegram-react-tool.js";
 import type {ThreadRuntimeCoordinator} from "../thread-runtime/coordinator.js";
@@ -21,14 +22,13 @@ import {TELEGRAM_SOURCE} from "./config.js";
 
 export interface TelegramRuntimeOptions {
   cwd: string;
-  locale: string;
-  timezone: string;
   dataDir: string;
   dbUrl?: string;
   readOnlyDbUrl?: string;
   provider?: ProviderName;
   model?: string;
   agent?: string;
+  maxSubagentDepth?: number;
   tablePrefix?: string;
   typingDispatcher?: ChannelTypingDispatcher;
   telegramConnectorKey?: string;
@@ -70,8 +70,6 @@ function resolveDefaultIdentityHandle(identity: IdentityRecord): string {
 export async function createTelegramRuntime(options: TelegramRuntimeOptions): Promise<TelegramRuntimeServices> {
   const fallbackContext = {
     cwd: options.cwd,
-    locale: options.locale,
-    timezone: options.timezone,
   } as const;
   const defaultAgentKey = options.agent?.trim() || "panda";
 
@@ -80,10 +78,12 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
   let channelCursors: PostgresChannelCursorStore;
   let outboundDeliveries: PostgresOutboundDeliveryStore;
   let mediaStore: FileSystemMediaStore;
+  let scheduledTaskRunner: ScheduledTaskRunner | null = null;
 
   const pandaRuntime = await createPandaRuntime({
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
+    maxSubagentDepth: options.maxSubagentDepth,
     tablePrefix: options.tablePrefix,
     onEvent: createChannelTypingEventHandler(options.typingDispatcher),
     resolveDefinition: async (thread, { agentStore, identityStore, extraTools }) => {
@@ -161,7 +161,21 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
     mediaStore = new FileSystemMediaStore({
       rootDir: options.dataDir,
     });
+
+    if (options.telegramConnectorKey) {
+      scheduledTaskRunner = new ScheduledTaskRunner({
+        tasks: pandaRuntime.scheduledTasks,
+        homeThreads,
+        outboundDeliveries,
+        threadStore: pandaRuntime.store,
+        coordinator: pandaRuntime.coordinator,
+        supportedChannel: TELEGRAM_SOURCE,
+        supportedConnectorKey: options.telegramConnectorKey,
+      });
+      await scheduledTaskRunner.start();
+    }
   } catch (error) {
+    await scheduledTaskRunner?.stop();
     await pandaRuntime.close();
     throw error;
   }
@@ -258,6 +272,9 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
     resolveOrCreateHomeThread,
     setHomeThread,
     getThread: pandaRuntime.store.getThread.bind(pandaRuntime.store),
-    close: pandaRuntime.close,
+    close: async () => {
+      await scheduledTaskRunner?.stop();
+      await pandaRuntime.close();
+    },
   };
 }

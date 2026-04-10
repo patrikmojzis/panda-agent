@@ -52,6 +52,8 @@ export class ChannelOutboundDeliveryWorker {
 
   async start(): Promise<void> {
     this.stopped = false;
+    // Callers must already hold connector ownership before starting the worker.
+    // start() immediately recovers stale `sending` rows and may drain pending work.
     await this.store.failSendingDeliveries(this.lookup, "Delivery worker stopped before completion.");
     this.unsubscribe = await this.store.listenPendingDeliveries(async (notification) => {
       if (!isMatchingNotification(this.lookup, notification)) {

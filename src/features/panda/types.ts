@@ -19,7 +19,6 @@ export interface PandaShellSession {
 export interface PandaSessionContext {
   cwd?: string;
   shell?: PandaShellSession;
-  locale?: string;
   timezone?: string;
   identityId?: string;
   identityHandle?: string;
@@ -34,4 +33,5 @@ export interface PandaSessionContext {
   };
   routeMemory?: PandaRouteMemory;
   outboundQueue?: PandaOutboundQueue;
+  subagentDepth?: number;
 }

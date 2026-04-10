@@ -73,8 +73,6 @@ describe("createChatRuntime", () => {
 
     await expect(createChatRuntime({
       cwd: "/workspace/panda",
-      locale: "en-US",
-      timezone: "UTC",
       identity: "alice",
     })).rejects.toThrow("Identity alice not found.");
 
@@ -130,8 +128,6 @@ describe("createChatRuntime", () => {
 
     const runtime = await createChatRuntime({
       cwd: "/workspace/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
 
     const thread = await runtime.resolveOrCreateHomeThread();
@@ -178,8 +174,6 @@ describe("createChatRuntime", () => {
 
     const runtime = await createChatRuntime({
       cwd: "/workspace/panda",
-      locale: "en-US",
-      timezone: "UTC",
       agent: "ops",
     });
 
@@ -226,8 +220,6 @@ describe("createChatRuntime", () => {
 
     const runtime = await createChatRuntime({
       cwd: "/workspace/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
 
     const homeThreads = tuiRuntimeMocks.createHomeThreadStore.mock.results.at(-1)?.value;

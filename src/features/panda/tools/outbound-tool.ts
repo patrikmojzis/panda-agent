@@ -15,6 +15,7 @@ import type {
   OutboundTarget,
   RememberedRoute,
 } from "../../channels/core/types.js";
+import {parseScheduledTaskThreadInputMetadata} from "../../scheduled-tasks/index.js";
 import type {PandaSessionContext} from "../types.js";
 import {resolvePandaPath} from "./context.js";
 
@@ -243,6 +244,11 @@ export class OutboundTool<TContext = PandaSessionContext> extends Tool<typeof ou
     run: RunContext<TContext>,
   ): Promise<JsonObject> {
     const pandaContext = run.context as PandaSessionContext | undefined;
+    const scheduledTask = parseScheduledTaskThreadInputMetadata(pandaContext?.currentInput?.metadata)?.scheduledTask;
+    if (scheduledTask?.phase === "execute" && scheduledTask.deliveryMode === "deferred") {
+      throw new ToolError("Outbound is disabled during prepare-only scheduled task execution.");
+    }
+
     const queue = ensureOutboundQueue(pandaContext);
     const currentRoute = resolveChannelRouteTarget(pandaContext?.currentInput);
     const hasExplicitTarget = Boolean(args.target);

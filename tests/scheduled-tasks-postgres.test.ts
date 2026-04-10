@@ -1,4 +1,4 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {
@@ -7,15 +7,6 @@ import {
     PostgresScheduledTaskStore,
     PostgresThreadRuntimeStore,
 } from "../src/index.js";
-
-class RecordingQueryable {
-  readonly queries: string[] = [];
-
-  async query(text: string): Promise<{ rows: never[] }> {
-    this.queries.push(text);
-    return { rows: [] };
-  }
-}
 
 class PgMemReadonlySchemaQueryable {
   constructor(
@@ -87,7 +78,10 @@ class PgMemReadonlySchemaQueryable {
             scheduled_task_runs.id,
             scheduled_task_runs.task_id,
             scheduled_task_runs.identity_id,
-            scheduled_task_runs.agent_key
+            scheduled_task_runs.agent_key,
+            scheduled_task_runs.status,
+            scheduled_task_runs.delivery_status,
+            scheduled_task_runs.created_at
           FROM "thread_runtime_scheduled_task_runs" AS scheduled_task_runs
           WHERE scheduled_task_runs.identity_id = current_setting('panda.identity_id', true)
             AND scheduled_task_runs.agent_key = current_setting('panda.agent_key', true)
@@ -140,17 +134,19 @@ function createScopedPool() {
 
   return {
     pool,
-    setScope(next: { identityId?: string | null; agentKey?: string | null }) {
+    setScope(next: {identityId?: string | null; agentKey?: string | null}) {
       scope.set("panda.identity_id", next.identityId ?? null);
       scope.set("panda.agent_key", next.agentKey ?? null);
     },
   };
 }
 
-describe("ensureReadonlyChatQuerySchema", () => {
+describe("PostgresScheduledTaskStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
 
   afterEach(async () => {
+    vi.useRealTimers();
+
     while (pools.length > 0) {
       const pool = pools.pop();
       if (!pool) {
@@ -161,132 +157,195 @@ describe("ensureReadonlyChatQuerySchema", () => {
     }
   });
 
-  it("creates split chat views and grants access to them", async () => {
-    const queryable = new RecordingQueryable();
-
-    const views = await ensureReadonlyChatQuerySchema({
-      queryable,
-      readonlyRole: "readonly_user",
-    });
-
-    expect(views).toEqual({
-      threads: "\"panda_threads\"",
-      messages: "\"panda_messages\"",
-      messagesRaw: "\"panda_messages_raw\"",
-      toolResults: "\"panda_tool_results\"",
-      inputs: "\"panda_inputs\"",
-      runs: "\"panda_runs\"",
-      scheduledTasks: "\"panda_scheduled_tasks\"",
-      scheduledTaskRuns: "\"panda_scheduled_task_runs\"",
-    });
-
-    expect(queryable.queries).toHaveLength(2);
-    expect(queryable.queries[0]).toContain("CREATE VIEW \"panda_messages_raw\"");
-    expect(queryable.queries[0]).toContain("CREATE VIEW \"panda_messages\"");
-    expect(queryable.queries[0]).toContain("CREATE VIEW \"panda_tool_results\"");
-    expect(queryable.queries[0]).toContain("CREATE VIEW \"panda_scheduled_tasks\"");
-    expect(queryable.queries[0]).toContain("CREATE VIEW \"panda_scheduled_task_runs\"");
-    expect(queryable.queries[0]).toContain("FROM \"panda_messages_raw\" AS raw");
-    expect(queryable.queries[0]).toContain("WHERE raw.role IN ('user', 'assistant')");
-    expect(queryable.queries[0]).toContain("t.identity_id = current_setting('panda.identity_id', true)");
-    expect(queryable.queries[0]).toContain("t.agent_key = current_setting('panda.agent_key', true)");
-    expect(queryable.queries[1]).toContain("GRANT SELECT ON \"panda_threads\", \"panda_messages\", \"panda_messages_raw\", \"panda_tool_results\", \"panda_inputs\", \"panda_runs\", \"panda_scheduled_tasks\", \"panda_scheduled_task_runs\"");
-  });
-
-  it("filters readonly threads by identity when multiple identities share an agent key", async () => {
-    const { pool, setScope } = createScopedPool();
+  it("creates, updates, and cancels scheduled tasks", async () => {
+    const {pool} = createScopedPool();
     pools.push(pool);
 
-    const store = new PostgresThreadRuntimeStore({ pool });
-    await store.ensureSchema();
-    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
-    await new PostgresHomeThreadStore({ pool }).ensureSchema();
-
-    const alice = await store.identityStore.createIdentity({
+    const threadStore = new PostgresThreadRuntimeStore({pool});
+    await threadStore.ensureSchema();
+    const alice = await threadStore.identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
     });
-    const bob = await store.identityStore.createIdentity({
+
+    const scheduledTasks = new PostgresScheduledTaskStore({pool});
+    await scheduledTasks.ensureSchema();
+
+    const created = await scheduledTasks.createTask({
+      identityId: alice.id,
+      agentKey: "panda",
+      title: "Bee research",
+      instruction: "Research bees and summarize the result.",
+      schedule: {
+        kind: "once",
+        runAt: "2026-04-11T03:00:00+02:00",
+        deliverAt: "2026-04-11T08:00:00+02:00",
+      },
+      targetThreadId: "thread-branch",
+    });
+
+    expect(created).toMatchObject({
+      identityId: "alice-id",
+      agentKey: "panda",
+      title: "Bee research",
+      targetKind: "thread",
+      targetThreadId: "thread-branch",
+      schedule: {
+        kind: "once",
+        runAt: "2026-04-11T01:00:00.000Z",
+        deliverAt: "2026-04-11T06:00:00.000Z",
+      },
+      nextFireKind: "execute",
+    });
+
+    const updated = await scheduledTasks.updateTask({
+      taskId: created.id,
+      identityId: alice.id,
+      agentKey: "panda",
+      title: "Morning news",
+      schedule: {
+        kind: "recurring",
+        cron: "0 8 * * *",
+        timezone: "Europe/Bratislava",
+      },
+      targetThreadId: null,
+      enabled: false,
+    });
+
+    expect(updated).toMatchObject({
+      id: created.id,
+      title: "Morning news",
+      targetKind: "home",
+      targetThreadId: undefined,
+      enabled: false,
+      schedule: {
+        kind: "recurring",
+        cron: "0 8 * * *",
+        timezone: "Europe/Bratislava",
+      },
+    });
+    expect(updated.nextFireAt).toBeDefined();
+
+    const cancelled = await scheduledTasks.cancelTask({
+      taskId: created.id,
+      identityId: alice.id,
+      agentKey: "panda",
+      reason: "done already",
+    });
+
+    expect(cancelled.cancelledAt).toBeDefined();
+    expect(cancelled.nextFireAt).toBeUndefined();
+  });
+
+  it("exposes scoped readonly scheduled-task views and resolves home targets dynamically", async () => {
+    const {pool, setScope} = createScopedPool();
+    pools.push(pool);
+
+    const threadStore = new PostgresThreadRuntimeStore({pool});
+    await threadStore.ensureSchema();
+    const scheduledTasks = new PostgresScheduledTaskStore({pool});
+    await scheduledTasks.ensureSchema();
+    const homeThreads = new PostgresHomeThreadStore({pool});
+    await homeThreads.ensureSchema();
+
+    const alice = await threadStore.identityStore.createIdentity({
+      id: "alice-id",
+      handle: "alice",
+      displayName: "Alice",
+    });
+    const bob = await threadStore.identityStore.createIdentity({
       id: "bob-id",
       handle: "bob",
       displayName: "Bob",
     });
 
-    await store.createThread({
-      id: "alice-thread",
+    await homeThreads.bindHomeThread({
       identityId: alice.id,
       agentKey: "panda",
+      threadId: "home-a",
     });
-    await store.createThread({
-      id: "bob-thread",
+
+    const aliceTask = await scheduledTasks.createTask({
+      identityId: alice.id,
+      agentKey: "panda",
+      title: "Buy apples",
+      instruction: "Remind me to buy apples.",
+      schedule: {
+        kind: "once",
+        runAt: "2000-04-10T05:30:00.000Z",
+      },
+    });
+    await scheduledTasks.createTask({
       identityId: bob.id,
       agentKey: "panda",
+      title: "Bob task",
+      instruction: "Hidden from Alice.",
+      schedule: {
+        kind: "once",
+        runAt: "2000-04-10T05:30:00.000Z",
+      },
+    });
+
+    const claim = await scheduledTasks.claimTask({
+      taskId: aliceTask.id,
+      claimedBy: "runner:telegram",
+      claimExpiresAt: Date.now() + 60_000,
+    });
+    expect(claim).not.toBeNull();
+    await scheduledTasks.startTaskRun({
+      runId: claim!.run.id,
+      resolvedThreadId: "home-a",
+    });
+    await scheduledTasks.completeTaskRun({
+      runId: claim!.run.id,
+      resolvedThreadId: "home-a",
+      threadRunId: "thread-run-1",
+      deliveryStatus: "sent",
     });
 
     setScope({
       identityId: alice.id,
       agentKey: "panda",
     });
-    const queryable = new PgMemReadonlySchemaQueryable(pool);
-    await ensureReadonlyChatQuerySchema({ queryable });
-
-    const result = await pool.query(
-      "SELECT id, identity_id, agent_key FROM \"panda_threads\" ORDER BY id",
-    );
-
-    expect(result.rows).toEqual([
-      {
-        id: "alice-thread",
-        identity_id: "alice-id",
-        agent_key: "panda",
-      },
-    ]);
-  });
-
-  it("filters readonly threads by agent when one identity has multiple agents", async () => {
-    const { pool, setScope } = createScopedPool();
-    pools.push(pool);
-
-    const store = new PostgresThreadRuntimeStore({ pool });
-    await store.ensureSchema();
-    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
-    await new PostgresHomeThreadStore({ pool }).ensureSchema();
-
-    const alice = await store.identityStore.createIdentity({
-      id: "alice-id",
-      handle: "alice",
-      displayName: "Alice",
+    await ensureReadonlyChatQuerySchema({
+      queryable: new PgMemReadonlySchemaQueryable(pool),
     });
 
-    await store.createThread({
-      id: "alice-panda-thread",
+    let tasksResult = await pool.query(`
+      SELECT id, resolved_thread_id
+      FROM "panda_scheduled_tasks"
+      ORDER BY id
+    `);
+    expect(tasksResult.rows).toEqual([{
+      id: aliceTask.id,
+      resolved_thread_id: "home-a",
+    }]);
+
+    const runsResult = await pool.query(`
+      SELECT task_id, status, delivery_status
+      FROM "panda_scheduled_task_runs"
+      ORDER BY created_at
+    `);
+    expect(runsResult.rows).toEqual([{
+      task_id: aliceTask.id,
+      status: "succeeded",
+      delivery_status: "sent",
+    }]);
+
+    await homeThreads.bindHomeThread({
       identityId: alice.id,
       agentKey: "panda",
+      threadId: "home-b",
     });
-    await store.createThread({
-      id: "alice-ops-thread",
-      identityId: alice.id,
-      agentKey: "ops",
-    });
-
-    setScope({
-      identityId: alice.id,
-      agentKey: "panda",
-    });
-    const queryable = new PgMemReadonlySchemaQueryable(pool);
-    await ensureReadonlyChatQuerySchema({ queryable });
-
-    const result = await pool.query(
-      "SELECT id, identity_id, agent_key FROM \"panda_threads\" ORDER BY id",
-    );
-
-    expect(result.rows).toEqual([
-      {
-        id: "alice-panda-thread",
-        identity_id: "alice-id",
-        agent_key: "panda",
-      },
-    ]);
+    tasksResult = await pool.query(`
+      SELECT id, resolved_thread_id
+      FROM "panda_scheduled_tasks"
+      ORDER BY id
+    `);
+    expect(tasksResult.rows).toEqual([{
+      id: aliceTask.id,
+      resolved_thread_id: "home-b",
+    }]);
   });
 });

@@ -1,11 +1,11 @@
-import type { PoolClient } from "pg";
-import { z } from "zod";
+import type {PoolClient} from "pg";
+import {z} from "zod";
 
-import { Tool } from "../../agent-core/tool.js";
-import { ToolError } from "../../agent-core/exceptions.js";
-import type { RunContext } from "../../agent-core/run-context.js";
-import type { JsonObject, JsonValue, ToolResultPayload } from "../../agent-core/types.js";
-import type { PandaSessionContext } from "../types.js";
+import {Tool} from "../../agent-core/tool.js";
+import {ToolError} from "../../agent-core/exceptions.js";
+import type {RunContext} from "../../agent-core/run-context.js";
+import type {JsonObject, JsonValue, ToolResultPayload} from "../../agent-core/types.js";
+import type {PandaSessionContext} from "../types.js";
 
 const MAX_ROWS = 50;
 const MAX_OUTPUT_BYTES = 32_000;
@@ -195,13 +195,13 @@ export class PostgresReadonlyQueryTool<TContext = PandaSessionContext>
   extends Tool<typeof PostgresReadonlyQueryTool.schema, TContext> {
   static schema = z.object({
     sql: z.string().trim().min(1).describe(
-      "A single read-only SELECT or WITH query. Prefer panda_messages for user and assistant chat turns, panda_tool_results for tool output, panda_threads for thread metadata, and panda_messages_raw only when you truly need raw JSONB. If you need schema help, query information_schema.columns.",
+      "A single read-only SELECT or WITH query. Prefer panda_messages for user and assistant chat turns, panda_tool_results for tool output, panda_threads for thread metadata, panda_scheduled_tasks for scheduled jobs, panda_scheduled_task_runs for execution history, and panda_messages_raw only when you truly need raw JSONB. If you need schema help, query information_schema.columns.",
     ),
   });
 
   name = "postgres_readonly_query";
   description =
-    "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. Prefer panda_messages for the human conversation, panda_tool_results for tool output, panda_threads for thread metadata, and panda_messages_raw only when you need raw JSONB. Query information_schema.columns if you need schema help. Always use LIMIT on exploratory queries.";
+    "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. Prefer panda_messages for the human conversation, panda_tool_results for tool output, panda_threads for thread metadata, panda_scheduled_tasks for scheduled jobs, panda_scheduled_task_runs for execution history, and panda_messages_raw only when you need raw JSONB. Query information_schema.columns if you need schema help. Always use LIMIT on exploratory queries.";
   schema = PostgresReadonlyQueryTool.schema;
 
   private readonly pool: PgPoolLike;

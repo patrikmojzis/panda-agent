@@ -273,8 +273,102 @@ function latestBot(): InstanceType<typeof telegramServiceMocks.MockBot> {
 describe("TelegramService", () => {
   afterEach(() => {
     telegramServiceMocks.botInstances.length = 0;
+    telegramServiceMocks.createOutboundWorker.mockClear();
     telegramServiceMocks.createTelegramRuntime.mockReset();
     vi.restoreAllMocks();
+  });
+
+  it("does not start the outbound worker before owning the Telegram connector lock", async () => {
+    const runtime = createRuntimeMock();
+    telegramServiceMocks.createTelegramRuntime.mockResolvedValue(runtime);
+
+    const worker = {
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+      triggerDrain: vi.fn(async () => {}),
+    };
+    telegramServiceMocks.createOutboundWorker.mockReturnValueOnce(worker);
+
+    const order: string[] = [];
+    const release = vi.fn(async () => {});
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+      cwd: "/Users/patrikmojzis/Projects/panda",
+    });
+    vi.spyOn(service as never, "acquireConnectorLock").mockImplementation(async () => {
+      order.push("lock");
+      return { release };
+    });
+
+    const bot = latestBot();
+    bot.api.setMyCommands.mockImplementationOnce(async () => {
+      order.push("commands");
+    });
+    bot.api.getUpdates.mockImplementationOnce(async () => {
+      order.push("poll");
+      await service.stop();
+      return [];
+    });
+    worker.start.mockImplementationOnce(async () => {
+      order.push("start");
+    });
+
+    await expect(service.run()).resolves.toBeUndefined();
+
+    expect(order).toEqual(["lock", "start", "commands", "poll"]);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start the outbound worker when Telegram lock acquisition fails", async () => {
+    const runtime = createRuntimeMock();
+    telegramServiceMocks.createTelegramRuntime.mockResolvedValue(runtime);
+
+    const worker = {
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+      triggerDrain: vi.fn(async () => {}),
+    };
+    telegramServiceMocks.createOutboundWorker.mockReturnValueOnce(worker);
+
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+      cwd: "/Users/patrikmojzis/Projects/panda",
+    });
+    vi.spyOn(service as never, "acquireConnectorLock").mockRejectedValue(new Error("Telegram connector 42 is already running."));
+
+    await expect(service.run()).rejects.toThrow("Telegram connector 42 is already running.");
+
+    expect(worker.start).not.toHaveBeenCalled();
+    expect(latestBot().api.setMyCommands).not.toHaveBeenCalled();
+  });
+
+  it("releases the Telegram connector lock when worker startup fails", async () => {
+    const runtime = createRuntimeMock();
+    telegramServiceMocks.createTelegramRuntime.mockResolvedValue(runtime);
+
+    const worker = {
+      start: vi.fn(async () => {
+        throw new Error("worker bootstrap failed");
+      }),
+      stop: vi.fn(async () => {}),
+      triggerDrain: vi.fn(async () => {}),
+    };
+    telegramServiceMocks.createOutboundWorker.mockReturnValueOnce(worker);
+
+    const release = vi.fn(async () => {});
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+      cwd: "/Users/patrikmojzis/Projects/panda",
+    });
+    vi.spyOn(service as never, "acquireConnectorLock").mockResolvedValue({ release });
+
+    await expect(service.run()).rejects.toThrow("worker bootstrap failed");
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(worker.stop).toHaveBeenCalledTimes(1);
   });
 
   it("retries a failed update instead of crashing the worker", async () => {
@@ -286,8 +380,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
     vi.spyOn(service as never, "acquireConnectorLock").mockResolvedValue({
       release: vi.fn(async () => {}),
@@ -347,8 +439,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
     vi.spyOn(service as never, "acquireConnectorLock").mockResolvedValue({
       release: vi.fn(async () => {}),
@@ -417,8 +507,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
 
     const context = createTelegramContext();
@@ -455,8 +543,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
 
     const context = createTelegramContext();
@@ -558,8 +644,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
     vi.spyOn(service as never, "acquireConnectorLock").mockResolvedValue({
       release: vi.fn(async () => {}),
@@ -610,8 +694,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
 
     await (service as never).handleMessage(createTelegramContext());
@@ -667,8 +749,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
 
     await (service as never).handleMessageReaction(createTelegramReactionContext());
@@ -727,8 +807,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
 
     await (service as never).handleMessageReaction(createTelegramReactionContext({
@@ -759,8 +837,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
 
     await (service as never).handleMessageReaction(createTelegramReactionContext({
@@ -791,8 +867,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
 
     await (service as never).handleMessageReaction(createTelegramReactionContext({
@@ -824,8 +898,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
 
     await (service as never).handleMessageReaction(createTelegramReactionContext());
@@ -848,8 +920,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
     const context = createTelegramReactionContext();
 
@@ -870,8 +940,6 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       cwd: "/Users/patrikmojzis/Projects/panda",
-      locale: "en-US",
-      timezone: "UTC",
     });
     latestBot().api.getUpdates.mockImplementation(async (_args: unknown, signal?: AbortSignal) => new Promise((_, reject) => {
       signal?.addEventListener("abort", () => {

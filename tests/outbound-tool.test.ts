@@ -305,5 +305,30 @@ describe("OutboundTool", () => {
     }, createRunContext(context))).rejects.toThrow(
       "No outbound target was provided and no current inbound route is available.",
     );
+    });
   });
-});
+
+  it("rejects outbound during prepare-only scheduled execution", async () => {
+    const tool = new OutboundTool<PandaSessionContext>();
+    const context = createContext({
+      currentInput: {
+        source: "scheduled_task",
+        metadata: {
+          scheduledTask: {
+            taskId: "task-1",
+            title: "Bee research",
+            phase: "execute",
+            deliveryMode: "deferred",
+            runAt: "2026-04-10T03:00:00.000Z",
+            deliverAt: "2026-04-10T08:00:00.000Z",
+          },
+        },
+      },
+    });
+
+    await expect(tool.run({
+      items: [{ type: "text", text: "too early" }],
+    }, createRunContext(context))).rejects.toThrow(
+      "Outbound is disabled during prepare-only scheduled task execution.",
+    );
+  });

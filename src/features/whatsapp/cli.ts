@@ -52,8 +52,6 @@ function createWhatsAppService(options: WhatsAppRunCliOptions = {}): WhatsAppSer
     connectorKey: options.connector ?? resolveWhatsAppConnectorKey(),
     dataDir: resolveWhatsAppDataDir(),
     cwd: path.resolve(options.cwd ?? process.cwd()),
-    locale: Intl.DateTimeFormat().resolvedOptions().locale,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
     provider,

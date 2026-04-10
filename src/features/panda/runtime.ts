@@ -5,12 +5,21 @@ import type {LlmContext} from "../agent-core/llm-context.js";
 import {type AgentStore, PostgresAgentStore} from "../agents/index.js";
 import type {Tool} from "../agent-core/tool.js";
 import type {IdentityStore} from "../identity/store.js";
+import {PostgresHomeThreadStore} from "../home-threads/index.js";
 import {buildPandaTools} from "./agent.js";
-import {AgentMemoryContext, DateTimeContext, EnvironmentContext} from "./contexts/index.js";
+import {buildPandaLlmContexts, type PandaLlmContextSection} from "./contexts/index.js";
 import {PANDA_PROMPT} from "./prompts.js";
+import {PostgresScheduledTaskStore, type ScheduledTaskStore} from "../scheduled-tasks/index.js";
 import {AgentDocumentTool} from "./tools/agent-document-tool.js";
 import {PostgresReadonlyQueryTool} from "./tools/postgres-readonly-query-tool.js";
+import {
+  ScheduledTaskCancelTool,
+  ScheduledTaskCreateTool,
+  ScheduledTaskUpdateTool,
+} from "./tools/scheduled-task-tools.js";
+import {SpawnSubagentTool} from "./tools/spawn-subagent-tool.js";
 import type {PandaSessionContext} from "./types.js";
+import {PandaSubagentService} from "./subagents/index.js";
 import {
   PostgresThreadLeaseManager,
   PostgresThreadRuntimeStore,
@@ -36,6 +45,7 @@ export interface PandaDefinitionResolverContext {
 export interface PandaRuntimeOptions {
   dbUrl?: string;
   readOnlyDbUrl?: string;
+  maxSubagentDepth?: number;
   tablePrefix?: string;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
@@ -49,6 +59,7 @@ export interface PandaRuntimeServices {
   agentStore: AgentStore;
   identityStore: IdentityStore;
   store: ThreadRuntimeStore;
+  scheduledTasks: ScheduledTaskStore;
   coordinator: ThreadRuntimeCoordinator;
   extraTools: readonly Tool[];
   pool: Pool;
@@ -57,13 +68,14 @@ export interface PandaRuntimeServices {
 
 export interface CreatePandaThreadDefinitionOptions {
   thread: ThreadRecord;
-  fallbackContext: Pick<PandaSessionContext, "cwd" | "locale" | "timezone" | "identityId" | "identityHandle">;
+  fallbackContext: Pick<PandaSessionContext, "cwd" | "identityId" | "identityHandle">;
   agentStore?: AgentStore;
   extraTools?: readonly Tool[];
   extraLlmContexts?: readonly LlmContext[];
+  llmContextSections?: readonly PandaLlmContextSection[];
   extraContext?: Omit<
     PandaSessionContext,
-    "cwd" | "locale" | "timezone" | "identityId" | "identityHandle" | "threadId" | "agentKey"
+    "cwd" | "timezone" | "identityId" | "identityHandle" | "threadId" | "agentKey" | "subagentDepth"
   >;
 }
 
@@ -101,7 +113,7 @@ export function createPandaPool(connectionString: string): Pool {
 
 export function resolveStoredPandaContext(
   value: ThreadRecord["context"],
-  fallback: Pick<PandaSessionContext, "cwd" | "locale" | "timezone" | "identityId" | "identityHandle">,
+  fallback: Pick<PandaSessionContext, "cwd" | "identityId" | "identityHandle">,
 ): PandaSessionContext {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ...fallback };
@@ -110,8 +122,7 @@ export function resolveStoredPandaContext(
   const context = value as Record<string, unknown>;
   return {
     cwd: typeof context.cwd === "string" ? context.cwd : fallback.cwd,
-    locale: typeof context.locale === "string" ? context.locale : fallback.locale,
-    timezone: typeof context.timezone === "string" ? context.timezone : fallback.timezone,
+    timezone: typeof context.timezone === "string" ? context.timezone : undefined,
     identityId: typeof context.identityId === "string" ? context.identityId : fallback.identityId,
     identityHandle: typeof context.identityHandle === "string" ? context.identityHandle : fallback.identityHandle,
   };
@@ -126,6 +137,7 @@ export function createPandaThreadDefinition(
     agentKey: options.thread.agentKey,
     identityId: options.fallbackContext.identityId,
     identityHandle: options.fallbackContext.identityHandle,
+    subagentDepth: 0,
     ...options.extraContext,
   };
   const resolvedIdentityId = context.identityId ?? options.fallbackContext.identityId;
@@ -133,25 +145,14 @@ export function createPandaThreadDefinition(
     throw new Error(`Missing identityId for thread ${options.thread.id}.`);
   }
 
-  const llmContexts: LlmContext[] = [
-    new DateTimeContext({
-      locale: context.locale,
-      timeZone: context.timezone,
-    }),
-    new EnvironmentContext({
-      cwd: context.cwd,
-    }),
-  ];
-  if (options.agentStore) {
-    llmContexts.push(new AgentMemoryContext({
-      store: options.agentStore,
-      agentKey: options.thread.agentKey,
-      identityId: resolvedIdentityId,
-    }));
-  }
-  if (options.extraLlmContexts?.length) {
-    llmContexts.push(...options.extraLlmContexts);
-  }
+  const llmContexts: LlmContext[] = buildPandaLlmContexts({
+    context,
+    agentStore: options.agentStore,
+    agentKey: options.thread.agentKey,
+    identityId: resolvedIdentityId,
+    sections: options.llmContextSections,
+    extraLlmContexts: options.extraLlmContexts,
+  });
 
   return {
     agent: new Agent({
@@ -174,8 +175,10 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
   let agentStore: AgentStore;
   let identityStore: IdentityStore;
   let pool: Pool;
+  let scheduledTasks: ScheduledTaskStore;
   let readonlyPool: Pool | null = null;
   let extraTools: readonly Tool[] = [];
+  const maxSubagentDepth = options.maxSubagentDepth ?? 1;
   let close = async (): Promise<void> => {};
 
   const postgresPool = createPandaPool(dbUrl);
@@ -196,6 +199,15 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
       tablePrefix: options.tablePrefix,
     });
     await agentStore.ensureSchema();
+    scheduledTasks = new PostgresScheduledTaskStore({
+      pool: postgresPool,
+      tablePrefix: options.tablePrefix,
+    });
+    await scheduledTasks.ensureSchema();
+    await new PostgresHomeThreadStore({
+      pool: postgresPool,
+      tablePrefix: options.tablePrefix,
+    }).ensureSchema();
     pool = postgresPool;
     await ensureReadonlyChatQuerySchema({
       queryable: postgresPool,
@@ -207,12 +219,36 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
       readonlyPool = createPandaPool(readOnlyDbUrl);
     }
 
+    const subagentService = new PandaSubagentService({
+      store: postgresStore,
+      resolveDefinition: (thread) => options.resolveDefinition(thread, {
+        agentStore,
+        identityStore,
+        store: postgresStore,
+        extraTools,
+      }),
+      agentStore,
+      maxSubagentDepth,
+    });
+
     extraTools = [
+      new SpawnSubagentTool({
+        service: subagentService,
+      }),
       new AgentDocumentTool({
         store: agentStore,
       }),
       new PostgresReadonlyQueryTool({
         pool: readonlyPool ?? postgresPool,
+      }),
+      new ScheduledTaskCreateTool({
+        store: scheduledTasks,
+      }),
+      new ScheduledTaskUpdateTool({
+        store: scheduledTasks,
+      }),
+      new ScheduledTaskCancelTool({
+        store: scheduledTasks,
       }),
     ];
 
@@ -292,6 +328,7 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
     agentStore,
     identityStore,
     store,
+    scheduledTasks,
     coordinator,
     extraTools,
     pool,

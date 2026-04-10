@@ -2,21 +2,21 @@ import {createHash} from "node:crypto";
 
 import type {Pool} from "pg";
 import {
-  addTransactionCapability,
-  type AuthenticationState,
-  type BaileysEventMap,
-  Browsers,
-  type ConnectionState,
-  DisconnectReason,
-  isJidBroadcast,
-  isJidGroup,
-  isJidNewsletter,
-  isJidStatusBroadcast,
-  jidNormalizedUser,
-  makeCacheableSignalKeyStore,
-  makeWASocket,
-  type WAMessage,
-  type WASocket,
+    addTransactionCapability,
+    type AuthenticationState,
+    type BaileysEventMap,
+    Browsers,
+    type ConnectionState,
+    DisconnectReason,
+    isJidBroadcast,
+    isJidGroup,
+    isJidNewsletter,
+    isJidStatusBroadcast,
+    jidNormalizedUser,
+    makeCacheableSignalKeyStore,
+    makeWASocket,
+    type WAMessage,
+    type WASocket,
 } from "baileys";
 import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
@@ -29,10 +29,10 @@ import {createPandaPool, requirePandaDatabaseUrl} from "../panda/runtime.js";
 import {WHATSAPP_SOURCE} from "./config.js";
 import {PostgresWhatsAppAuthStore} from "./auth-store.js";
 import {
-  buildWhatsAppInboundMetadata,
-  buildWhatsAppInboundText,
-  extractWhatsAppMessageText,
-  extractWhatsAppQuotedMessageId,
+    buildWhatsAppInboundMetadata,
+    buildWhatsAppInboundText,
+    extractWhatsAppMessageText,
+    extractWhatsAppQuotedMessageId,
 } from "./helpers.js";
 import {createWhatsAppOutboundAdapter} from "./outbound.js";
 import {createWhatsAppRuntime, type WhatsAppRuntimeServices} from "./runtime.js";
@@ -42,8 +42,6 @@ export interface WhatsAppServiceOptions {
   connectorKey: string;
   dataDir: string;
   cwd: string;
-  locale: string;
-  timezone: string;
   dbUrl?: string;
   readOnlyDbUrl?: string;
   provider?: ProviderName;
@@ -373,8 +371,8 @@ export class WhatsAppService {
         );
       }
 
-      await this.ensureOutboundWorker(await this.ensureRuntime()).start();
       this.lock = await this.acquireConnectorLock(this.options.connectorKey);
+      await this.ensureOutboundWorker(await this.ensureRuntime()).start();
       this.log("run_started", {
         connectorKey: this.options.connectorKey,
         accountId: identity.accountId,
@@ -455,8 +453,6 @@ export class WhatsAppService {
     if (!this.runtimePromise) {
       this.runtimePromise = createWhatsAppRuntime({
         cwd: this.options.cwd,
-        locale: this.options.locale,
-        timezone: this.options.timezone,
         dataDir: this.options.dataDir,
         dbUrl: this.options.dbUrl,
         readOnlyDbUrl: this.options.readOnlyDbUrl,
@@ -464,6 +460,7 @@ export class WhatsAppService {
         model: this.options.model,
         agent: this.options.agent,
         tablePrefix: this.options.tablePrefix,
+        connectorKey: this.options.connectorKey,
         typingDispatcher: new ChannelTypingDispatcher([
           createWhatsAppTypingAdapter({
             connectorKey: this.options.connectorKey,

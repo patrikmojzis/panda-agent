@@ -9,11 +9,18 @@ const AGENT_DOC_SLUGS = ["agent", "soul", "heartbeat", "playbook"] as const;
 const RELATIONSHIP_DOC_SLUG = "memory";
 const SKILL_FILENAMES = ["skill.md", "SKILL.md"] as const;
 
+export type AgentMemoryContextSection =
+  | "agent_docs"
+  | "relationship_memory"
+  | "diary"
+  | "skills";
+
 export interface AgentMemoryContextOptions {
   store: AgentStore;
   agentKey: string;
   identityId: string;
   skillsDir?: string;
+  sections?: readonly AgentMemoryContextSection[];
 }
 
 async function readFirstExistingSkillFile(skillDir: string): Promise<string | null> {
@@ -69,50 +76,74 @@ export class AgentMemoryContext extends LlmContext {
   }
 
   async getContent(): Promise<string> {
-    const sharedDocs = await Promise.all(
-      AGENT_DOC_SLUGS.map(async (slug) => {
-        const record = await this.options.store.readAgentDocument(this.options.agentKey, slug);
-        return {
-          slug,
-          content: record?.content ?? "",
-        };
-      }),
+    const sections = new Set<AgentMemoryContextSection>(
+      this.options.sections ?? ["agent_docs", "relationship_memory", "diary", "skills"],
     );
-    const relationshipMemory = await this.options.store.readRelationshipDocument(
-      this.options.agentKey,
-      this.options.identityId,
-      RELATIONSHIP_DOC_SLUG,
-    );
-    const recentDiary = [...await this.options.store.listDiaryEntries(
-      this.options.agentKey,
-      this.options.identityId,
-      7,
-    )].reverse();
-    const skillEntries = await readSkillEntries(
-      this.options.skillsDir ?? resolvePandaSkillsDir(this.options.agentKey),
-    );
-
-    return [
+    const lines = [
       `Agent key: ${this.options.agentKey}`,
       `Relationship identity: ${this.options.identityId}`,
       "",
-      ...sharedDocs.flatMap((doc) => [
+    ];
+
+    if (sections.has("agent_docs")) {
+      const sharedDocs = await Promise.all(
+        AGENT_DOC_SLUGS.map(async (slug) => {
+          const record = await this.options.store.readAgentDocument(this.options.agentKey, slug);
+          return {
+            slug,
+            content: record?.content ?? "",
+          };
+        }),
+      );
+      lines.push(...sharedDocs.flatMap((doc) => [
         `[${doc.slug}]`,
         doc.content || "(empty)",
         "",
-      ]),
-      "[memory]",
-      relationshipMemory?.content || "(empty)",
-      "",
-      "[recent diary]",
-      recentDiary.length === 0
-        ? "(empty)"
-        : recentDiary.map((entry) => `${entry.entryDate}\n${entry.content || "(empty)"}`).join("\n\n"),
-      "",
-      "[skills]",
-      skillEntries.length === 0
-        ? "(none)"
-        : skillEntries.map((entry) => `${entry.name}\n${entry.content}`).join("\n\n"),
-    ].join("\n");
+      ]));
+    }
+
+    if (sections.has("relationship_memory")) {
+      const relationshipMemory = await this.options.store.readRelationshipDocument(
+        this.options.agentKey,
+        this.options.identityId,
+        RELATIONSHIP_DOC_SLUG,
+      );
+      lines.push(
+        "[memory]",
+        relationshipMemory?.content || "(empty)",
+        "",
+      );
+    }
+
+    if (sections.has("diary")) {
+      const recentDiary = [...await this.options.store.listDiaryEntries(
+        this.options.agentKey,
+        this.options.identityId,
+        7,
+      )].reverse();
+      lines.push(
+        "[recent diary]",
+        recentDiary.length === 0
+          ? "(empty)"
+          : recentDiary.map((entry) => `${entry.entryDate}\n${entry.content || "(empty)"}`).join("\n\n"),
+        "",
+      );
+    }
+
+    if (sections.has("skills")) {
+      const skillEntries = await readSkillEntries(
+        this.options.skillsDir ?? resolvePandaSkillsDir(this.options.agentKey),
+      );
+      lines.push(
+        "[skills]",
+        skillEntries.length === 0
+          ? "(none)"
+          : skillEntries.map((entry) => `${entry.name}\n${entry.content}`).join("\n\n"),
+      );
+    } else if (lines.at(-1) === "") {
+      lines.pop();
+    }
+
+    return lines.join("\n");
   }
 }

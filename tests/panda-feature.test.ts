@@ -48,7 +48,6 @@ describe("Panda feature surface", () => {
     const context = new DateTimeContext({
       now: new Date("2026-04-06T10:30:00.000Z"),
       timeZone: "UTC",
-      locale: "en-US",
     });
 
     await expect(context.getContent()).resolves.toContain("Timezone: UTC");

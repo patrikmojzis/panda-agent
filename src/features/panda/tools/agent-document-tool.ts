@@ -5,6 +5,7 @@ import {ToolError} from "../../agent-core/exceptions.js";
 import type {JsonObject, ToolResultPayload} from "../../agent-core/types.js";
 import type {RunContext} from "../../agent-core/run-context.js";
 import type {AgentStore} from "../../agents/store.js";
+import {resolveDateTimeContextOptions} from "../contexts/datetime-context.js";
 import type {
     AgentDiaryRecord,
     AgentDocumentRecord,
@@ -74,9 +75,11 @@ function readScope(context: unknown): Scope {
   return {
     identityId: context.identityId,
     agentKey: context.agentKey,
-    timezone: typeof context.timezone === "string" && context.timezone.trim()
-      ? context.timezone
-      : Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
+    timezone: resolveDateTimeContextOptions({
+      timeZone: typeof context.timezone === "string" && context.timezone.trim()
+        ? context.timezone
+        : undefined,
+    }).timeZone,
   };
 }
 

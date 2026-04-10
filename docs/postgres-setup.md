@@ -13,6 +13,17 @@ The preferred setup is:
 
 That gives you one shared database with clear boundaries instead of a pile of tiny databases and future regret.
 
+## Before You Start
+
+You need:
+
+- a running Postgres server
+- one database Panda already uses, or will use
+- one normal Panda app connection that already works
+
+If Panda cannot connect with `PANDA_DATABASE_URL` yet, fix that first.
+Do not try to debug the read-only role before the main app role works.
+
 ## Why
 
 The `postgres_readonly_query` tool is read-only.
@@ -50,6 +61,24 @@ That fallback is convenient, but it weakens the privacy story.
 
 ## Recommended Local Setup
 
+This is the shortest sane path for a local setup.
+
+### 1. Make sure the main app connection works
+
+Example:
+
+```bash
+PANDA_DATABASE_URL=postgres://panda_app:app_pw@localhost:5432/panda
+```
+
+Start Panda once with that if needed.
+If the main connection is broken, stop here and fix that first.
+
+### 2. Create the read-only role
+
+Create the role before starting Panda with `PANDA_READONLY_DATABASE_URL`.
+If the role does not exist yet, Panda cannot grant view access to it.
+
 Example main app URL:
 
 ```bash
@@ -61,6 +90,18 @@ Create a separate read-only role:
 ```sql
 CREATE ROLE panda_readonly LOGIN PASSWORD 'readonly_pw';
 ```
+
+### 3. Let that role connect to the database
+
+Without this, the URL exists but the user still cannot log in to the database.
+
+```sql
+GRANT CONNECT ON DATABASE panda TO panda_readonly;
+```
+
+If your database is not named `panda`, replace it with the real database name.
+
+### 4. Point Panda at the same database with the new role
 
 Point Panda at the same database with that separate role:
 
@@ -76,6 +117,13 @@ panda chat \
   --read-only-db-url postgres://panda_readonly:readonly_pw@localhost:5432/panda
 ```
 
+If you use `.env`, the simplest version is:
+
+```bash
+PANDA_DATABASE_URL=postgres://panda_app:app_pw@localhost:5432/panda
+PANDA_READONLY_DATABASE_URL=postgres://panda_readonly:readonly_pw@localhost:5432/panda
+```
+
 ## Lock Down The Read-only Role
 
 This part matters.
@@ -89,14 +137,42 @@ REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM panda_readonly;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM panda_readonly;
 ```
 
+### 5. Start Panda once with both URLs set
+
 Then start Panda with `PANDA_READONLY_DATABASE_URL` set.
 During startup Panda grants that role access to the scoped `panda_*` views.
+
+That startup step matters.
+The views and grants are created by Panda using the main app role.
 
 The intent is simple:
 
 - app role owns tables
 - read-only role reads views
 - SQL tool never gets raw table access
+
+## How To Verify It Worked
+
+Do not assume it worked.
+Check it.
+
+Try a scoped view as the read-only user:
+
+```bash
+psql postgresql://panda_readonly:readonly_pw@localhost:5432/panda -c 'SELECT * FROM panda_threads LIMIT 1;'
+```
+
+That should work after Panda has booted and created the views.
+
+Now try a raw table:
+
+```bash
+psql postgresql://panda_readonly:readonly_pw@localhost:5432/panda -c 'SELECT * FROM thread_runtime_threads LIMIT 1;'
+```
+
+That should fail with a permission error.
+
+If the raw table query works, the role is not actually restricted and the setup is wrong.
 
 ## Views The SQL Tool Should Use
 
@@ -120,6 +196,15 @@ Relationship memory, diary entries, and shared agent docs should stay behind the
 
 That is deliberate.
 The SQL tool should not become a skeleton key for every table in the database.
+
+## Common Mistakes
+
+- Using the same role for both `PANDA_DATABASE_URL` and `PANDA_READONLY_DATABASE_URL`.
+- Forgetting `GRANT CONNECT ON DATABASE ...`.
+- Setting `PANDA_READONLY_DATABASE_URL` before creating the `panda_readonly` role.
+- Forgetting to start Panda once so it can create the views and grant access.
+- Assuming "read-only" means "scoped." It does not.
+- Giving the read-only role direct table access and calling it secure anyway.
 
 ## Hard Rules
 

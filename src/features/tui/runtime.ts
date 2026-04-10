@@ -23,12 +23,11 @@ import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
 
 export interface ChatRuntimeOptions {
   cwd: string;
-  locale: string;
-  timezone: string;
   provider?: ProviderName;
   model?: string;
   identity?: string;
   agent?: string;
+  maxSubagentDepth?: number;
   dbUrl?: string;
   readOnlyDbUrl?: string;
   tablePrefix?: string;
@@ -81,8 +80,6 @@ function assertIdentityThreadAccess(thread: ThreadRecord, identity: IdentityReco
 export async function createChatRuntime(options: ChatRuntimeOptions): Promise<ChatRuntimeServices> {
   const fallbackContext = {
     cwd: options.cwd,
-    locale: options.locale,
-    timezone: options.timezone,
   } as const;
   const requestedIdentityHandle = trimNonEmptyString(options.identity) ?? DEFAULT_IDENTITY_HANDLE;
   const defaultAgentKey = trimNonEmptyString(options.agent) ?? "panda";
@@ -92,6 +89,7 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
   const runtime = await createPandaRuntime({
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
+    maxSubagentDepth: options.maxSubagentDepth,
     tablePrefix: options.tablePrefix,
     onEvent: options.onEvent,
     onStoreNotification: options.onStoreNotification,

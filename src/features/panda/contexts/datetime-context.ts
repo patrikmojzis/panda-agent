@@ -1,9 +1,13 @@
-import { LlmContext } from "../../agent-core/llm-context.js";
+import {LlmContext} from "../../agent-core/llm-context.js";
 
 export interface DateTimeContextOptions {
-  locale?: string;
   timeZone?: string;
   now?: Date | (() => Date);
+}
+
+export interface ResolvedDateTimeContextOptions {
+  locale: string;
+  timeZone: string;
 }
 
 function resolveNow(now?: Date | (() => Date)): Date {
@@ -14,28 +18,33 @@ function resolveNow(now?: Date | (() => Date)): Date {
   return now ?? new Date();
 }
 
-function resolveTimeZone(timeZone?: string): string {
-  return timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
+export function resolveDateTimeContextOptions(
+  options: Pick<DateTimeContextOptions, "timeZone"> = {},
+): ResolvedDateTimeContextOptions {
+  const resolved = Intl.DateTimeFormat().resolvedOptions();
+  return {
+    locale: resolved.locale,
+    timeZone: options.timeZone ?? resolved.timeZone ?? "UTC",
+  };
 }
 
 export class DateTimeContext extends LlmContext {
   override name = "Current DateTime";
 
-  private readonly locale?: string;
   private readonly timeZone?: string;
   private readonly now?: Date | (() => Date);
 
   constructor(options: DateTimeContextOptions = {}) {
     super();
-    this.locale = options.locale;
     this.timeZone = options.timeZone;
     this.now = options.now;
   }
 
   async getContent(): Promise<string> {
     const now = resolveNow(this.now);
-    const timeZone = resolveTimeZone(this.timeZone);
-    const locale = this.locale;
+    const { locale, timeZone } = resolveDateTimeContextOptions({
+      timeZone: this.timeZone,
+    });
     const dateTime = new Intl.DateTimeFormat(locale, {
       dateStyle: "full",
       timeStyle: "short",

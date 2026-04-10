@@ -1,11 +1,9 @@
-import type { Pool } from "pg";
+import type {Pool} from "pg";
 
-import { buildIdentityTableNames } from "../identity/postgres-shared.js";
-import {
-  buildPrefixedRelationNames,
-  buildThreadRuntimeTableNames,
-  quoteIdentifier,
-} from "./postgres-shared.js";
+import {buildHomeThreadTableNames} from "../home-threads/postgres-shared.js";
+import {buildIdentityTableNames} from "../identity/postgres-shared.js";
+import {buildScheduledTaskTableNames} from "../scheduled-tasks/postgres-shared.js";
+import {buildPrefixedRelationNames, buildThreadRuntimeTableNames, quoteIdentifier,} from "./postgres-shared.js";
 
 interface PgQueryable {
   query: Pool["query"];
@@ -18,6 +16,8 @@ export interface ReadonlyChatViewNames {
   toolResults: string;
   inputs: string;
   runs: string;
+  scheduledTasks: string;
+  scheduledTaskRuns: string;
 }
 
 export interface EnsureReadonlyChatQuerySchemaOptions {
@@ -41,7 +41,9 @@ export async function ensureReadonlyChatQuerySchema(
 ): Promise<ReadonlyChatViewNames> {
   const tables = buildThreadRuntimeTableNames(options.tablePrefix ?? "thread_runtime");
   const identityTables = buildIdentityTableNames(options.tablePrefix ?? "thread_runtime");
-  const { threads, messages, messagesRaw, toolResults, inputs, runs } = buildPrefixedRelationNames(
+  const homeThreadTables = buildHomeThreadTableNames(options.tablePrefix ?? "thread_runtime");
+  const scheduledTaskTables = buildScheduledTaskTableNames(options.tablePrefix ?? "thread_runtime");
+  const { threads, messages, messagesRaw, toolResults, inputs, runs, scheduledTasks, scheduledTaskRuns } = buildPrefixedRelationNames(
     options.viewPrefix ?? "panda",
     {
       threads: "threads",
@@ -50,6 +52,8 @@ export async function ensureReadonlyChatQuerySchema(
       toolResults: "tool_results",
       inputs: "inputs",
       runs: "runs",
+      scheduledTasks: "scheduled_tasks",
+      scheduledTaskRuns: "scheduled_task_runs",
     },
   );
   const views: ReadonlyChatViewNames = {
@@ -59,6 +63,8 @@ export async function ensureReadonlyChatQuerySchema(
     toolResults,
     inputs,
     runs,
+    scheduledTasks,
+    scheduledTaskRuns,
   };
   const messageTextSql = `
     CASE
@@ -88,6 +94,8 @@ export async function ensureReadonlyChatQuerySchema(
   `;
 
   await options.queryable.query(`
+    DROP VIEW IF EXISTS ${views.scheduledTaskRuns};
+    DROP VIEW IF EXISTS ${views.scheduledTasks};
     DROP VIEW IF EXISTS ${views.toolResults};
     DROP VIEW IF EXISTS ${views.messages};
     DROP VIEW IF EXISTS ${views.messagesRaw};
@@ -250,13 +258,83 @@ export async function ensureReadonlyChatQuerySchema(
     FROM ${tables.runs} AS r
     INNER JOIN ${tables.threads} AS t ON t.id = r.thread_id
     WHERE ${threadScopeSql};
+
+    CREATE VIEW ${views.scheduledTasks}
+    WITH (security_barrier = true) AS
+    SELECT
+      st.id,
+      st.identity_id,
+      st.agent_key,
+      st.title,
+      st.instruction,
+      st.schedule_kind,
+      st.run_at,
+      st.deliver_at,
+      st.cron_expr,
+      st.timezone,
+      st.target_kind,
+      st.target_thread_id,
+      CASE
+        WHEN st.target_kind = 'thread' THEN st.target_thread_id
+        ELSE home.thread_id
+      END AS resolved_thread_id,
+      st.enabled,
+      CASE
+        WHEN st.cancelled_at IS NOT NULL THEN 'cancelled'
+        WHEN st.claimed_at IS NOT NULL AND (st.claim_expires_at IS NULL OR st.claim_expires_at > NOW()) THEN 'running'
+        WHEN st.completed_at IS NOT NULL AND (
+          SELECT task_run.status
+          FROM ${scheduledTaskTables.scheduledTaskRuns} AS task_run
+          WHERE task_run.task_id = st.id
+          ORDER BY task_run.created_at DESC
+          LIMIT 1
+        ) = 'failed' THEN 'failed'
+        WHEN st.completed_at IS NOT NULL THEN 'completed'
+        ELSE 'scheduled'
+      END AS status,
+      st.next_fire_at,
+      st.next_fire_kind,
+      st.claimed_at,
+      st.claimed_by,
+      st.claim_expires_at,
+      st.completed_at,
+      st.cancelled_at,
+      st.created_at,
+      st.updated_at
+    FROM ${scheduledTaskTables.scheduledTasks} AS st
+    LEFT JOIN ${homeThreadTables.homeThreads} AS home
+      ON home.identity_id = st.identity_id
+     AND home.agent_key = st.agent_key
+    WHERE st.identity_id = current_setting('panda.identity_id', true)
+      AND st.agent_key = current_setting('panda.agent_key', true);
+
+    CREATE VIEW ${views.scheduledTaskRuns}
+    WITH (security_barrier = true) AS
+    SELECT
+      run.id,
+      run.task_id,
+      run.identity_id,
+      run.agent_key,
+      run.resolved_thread_id,
+      run.fire_kind,
+      run.scheduled_for,
+      run.status,
+      run.thread_run_id,
+      run.delivery_status,
+      run.error,
+      run.created_at,
+      run.started_at,
+      run.finished_at
+    FROM ${scheduledTaskTables.scheduledTaskRuns} AS run
+    WHERE run.identity_id = current_setting('panda.identity_id', true)
+      AND run.agent_key = current_setting('panda.agent_key', true);
   `);
 
   if (options.readonlyRole) {
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA public TO ${readonlyRole};
-      GRANT SELECT ON ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs} TO ${readonlyRole};
+      GRANT SELECT ON ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.scheduledTasks}, ${views.scheduledTaskRuns} TO ${readonlyRole};
     `);
   }
 
