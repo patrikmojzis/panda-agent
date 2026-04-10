@@ -1,6 +1,8 @@
 import path from "node:path";
 
-import type { MediaDescriptor } from "../channels/core/types.js";
+import type {JsonObject} from "../agent-core/types.js";
+import type {MediaDescriptor, RememberedRoute} from "../channels/core/types.js";
+import {TELEGRAM_SOURCE} from "./config.js";
 
 export interface TelegramStartTextOptions {
   actorId: string;
@@ -20,6 +22,43 @@ export interface TelegramInboundTextOptions {
   lastName?: string;
   replyToMessageId?: string;
   media: readonly MediaDescriptor[];
+}
+
+export interface TelegramReactionTextOptions {
+  connectorKey: string;
+  externalConversationId: string;
+  externalActorId: string;
+  externalMessageId: string;
+  chatId: string;
+  chatType: string;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+  targetMessageId: string;
+  addedEmojis: readonly string[];
+}
+
+export interface TelegramReactionMetadataOptions {
+  updateId: number;
+  targetMessageId: string;
+  addedEmojis: readonly string[];
+  actorId: string;
+  username?: string | null;
+}
+
+export interface TelegramInboundPersistenceOptions {
+  connectorKey: string;
+  externalConversationId: string;
+  externalActorId: string;
+  externalMessageId: string;
+  chatId: string;
+  chatType: string;
+  messageId: number | null;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+  media: readonly MediaDescriptor[];
+  reaction?: TelegramReactionMetadataOptions;
 }
 
 export function buildTelegramConversationId(chatId: string | number, messageThreadId?: string | number): string {
@@ -91,9 +130,81 @@ function formatMaybeValue(value: string | undefined): string {
   return value?.trim() || "null";
 }
 
-export function buildTelegramInboundText(options: TelegramInboundTextOptions): string {
-  const trimmedText = options.text?.trim() ?? "";
-  const headerLines = [
+function serializeMediaDescriptor(descriptor: MediaDescriptor): JsonObject {
+  return {
+    id: descriptor.id,
+    source: descriptor.source,
+    connectorKey: descriptor.connectorKey,
+    mimeType: descriptor.mimeType,
+    sizeBytes: descriptor.sizeBytes,
+    localPath: descriptor.localPath,
+    originalFilename: descriptor.originalFilename ?? null,
+    metadata: descriptor.metadata ?? null,
+    createdAt: descriptor.createdAt,
+  };
+}
+
+export function buildTelegramInboundPersistence(
+  options: TelegramInboundPersistenceOptions,
+): {
+  metadata: JsonObject;
+  rememberedRoute: RememberedRoute;
+} {
+  return {
+    metadata: {
+      route: {
+        source: TELEGRAM_SOURCE,
+        connectorKey: options.connectorKey,
+        externalConversationId: options.externalConversationId,
+        externalActorId: options.externalActorId,
+        externalMessageId: options.externalMessageId,
+      },
+      telegram: {
+        chatId: options.chatId,
+        chatType: options.chatType,
+        messageId: options.messageId,
+        username: options.username ?? null,
+        firstName: options.firstName ?? null,
+        lastName: options.lastName ?? null,
+        media: options.media.map((descriptor) => serializeMediaDescriptor(descriptor)),
+        ...(options.reaction
+          ? {
+            reaction: {
+              updateId: options.reaction.updateId,
+              targetMessageId: options.reaction.targetMessageId,
+              addedEmojis: [...options.reaction.addedEmojis],
+              actorId: options.reaction.actorId,
+              username: options.reaction.username ?? null,
+            },
+          }
+          : {}),
+      },
+    },
+    rememberedRoute: {
+      source: TELEGRAM_SOURCE,
+      connectorKey: options.connectorKey,
+      externalConversationId: options.externalConversationId,
+      externalActorId: options.externalActorId,
+      externalMessageId: options.externalMessageId,
+      capturedAt: Date.now(),
+    },
+  };
+}
+
+function buildTelegramHeaderLines(options: {
+  connectorKey: string;
+  externalConversationId: string;
+  externalActorId: string;
+  externalMessageId: string;
+  chatId: string;
+  chatType: string;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+  extraLines?: readonly string[];
+  media: readonly MediaDescriptor[];
+}): readonly string[] {
+  return [
     "<panda-channel-context>",
     `channel: telegram`,
     `connector_key: ${options.connectorKey}`,
@@ -105,17 +216,64 @@ export function buildTelegramInboundText(options: TelegramInboundTextOptions): s
     `username: ${formatMaybeValue(options.username)}`,
     `first_name: ${formatMaybeValue(options.firstName)}`,
     `last_name: ${formatMaybeValue(options.lastName)}`,
-    `reply_to_message_id: ${formatMaybeValue(options.replyToMessageId)}`,
+    ...(options.extraLines ?? []),
     "attachments:",
     ...(options.media.length === 0
       ? ["- none"]
       : options.media.map((descriptor) => describeMediaDescriptor(descriptor))),
     "</panda-channel-context>",
   ];
+}
+
+export function buildTelegramInboundText(options: TelegramInboundTextOptions): string {
+  const trimmedText = options.text?.trim() ?? "";
+  const headerLines = buildTelegramHeaderLines({
+    connectorKey: options.connectorKey,
+    externalConversationId: options.externalConversationId,
+    externalActorId: options.externalActorId,
+    externalMessageId: options.externalMessageId,
+    chatId: options.chatId,
+    chatType: options.chatType,
+    username: options.username,
+    firstName: options.firstName,
+    lastName: options.lastName,
+    extraLines: [
+      `reply_to_message_id: ${formatMaybeValue(options.replyToMessageId)}`,
+    ],
+    media: options.media,
+  });
 
   return [
     ...headerLines,
     "",
     trimmedText || "[Telegram message]",
+  ].join("\n");
+}
+
+export function buildTelegramReactionText(options: TelegramReactionTextOptions): string {
+  const headerLines = buildTelegramHeaderLines({
+    connectorKey: options.connectorKey,
+    externalConversationId: options.externalConversationId,
+    externalActorId: options.externalActorId,
+    externalMessageId: options.externalMessageId,
+    chatId: options.chatId,
+    chatType: options.chatType,
+    username: options.username,
+    firstName: options.firstName,
+    lastName: options.lastName,
+    extraLines: [
+      "reply_to_message_id: null",
+      `reaction_target_message_id: ${options.targetMessageId}`,
+      `reaction_added_emojis: ${options.addedEmojis.join(", ")}`,
+      `reaction_actor_id: ${options.externalActorId}`,
+      `reaction_actor_username: ${formatMaybeValue(options.username)}`,
+    ],
+    media: [],
+  });
+
+  return [
+    ...headerLines,
+    "",
+    `Added reaction${options.addedEmojis.length === 1 ? "" : "s"}: ${options.addedEmojis.join(", ")}`,
   ].join("\n");
 }

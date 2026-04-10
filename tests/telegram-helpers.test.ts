@@ -1,13 +1,14 @@
-import { describe, expect, it } from "vitest";
+import {describe, expect, it} from "vitest";
 
 import {
-  buildTelegramConversationId,
-  buildTelegramInboundText,
-  buildTelegramPairCommand,
-  buildTelegramStartText,
-  normalizeTelegramCommand,
-  type MediaDescriptor,
+    buildTelegramConversationId,
+    buildTelegramInboundText,
+    buildTelegramPairCommand,
+    buildTelegramStartText,
+    type MediaDescriptor,
+    normalizeTelegramCommand,
 } from "../src/index.js";
+import {buildTelegramReactionText} from "../src/features/telegram/helpers.js";
 
 function mediaDescriptor(overrides: Partial<MediaDescriptor> = {}): MediaDescriptor {
   return {
@@ -77,5 +78,27 @@ describe("telegram helpers", () => {
         }),
       ],
     })).toContain("photo.jpg");
+  });
+
+  it("builds reaction text with reaction-specific context fields", () => {
+    const text = buildTelegramReactionText({
+      connectorKey: "bot-main",
+      externalConversationId: "123",
+      externalActorId: "456",
+      externalMessageId: "telegram-reaction:789",
+      chatId: "123",
+      chatType: "private",
+      username: "alice",
+      firstName: "Alice",
+      lastName: "Liddell",
+      targetMessageId: "777",
+      addedEmojis: ["🔥", "👍"],
+    });
+
+    expect(text).toContain("reaction_target_message_id: 777");
+    expect(text).toContain("reaction_added_emojis: 🔥, 👍");
+    expect(text).toContain("reaction_actor_id: 456");
+    expect(text).toContain("reaction_actor_username: alice");
+    expect(text).toContain("Added reactions: 🔥, 👍");
   });
 });

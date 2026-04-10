@@ -1,28 +1,26 @@
-import { createHash } from "node:crypto";
+import {createHash} from "node:crypto";
 
-import { AbortController } from "abort-controller";
-import { Bot, type Context } from "grammy";
+import {AbortController} from "abort-controller";
+import {Bot, type Context} from "grammy";
 
-import { stringToUserMessage, type ProviderName } from "../agent-core/index.js";
-import { ChannelOutboundDispatcher } from "../channels/core/index.js";
-import type { JsonObject } from "../agent-core/types.js";
-import type { MediaDescriptor } from "../channels/core/types.js";
-import type { ConversationThreadRecord } from "../conversation-threads/types.js";
-import type { IdentityBindingRecord } from "../identity/types.js";
-import { isMissingThreadError, type ThreadRecord } from "../thread-runtime/types.js";
-import {
-  TELEGRAM_POLL_TIMEOUT_SECONDS,
-  TELEGRAM_SOURCE,
-  TELEGRAM_UPDATES_CURSOR_KEY,
-} from "./config.js";
+import {type ProviderName, stringToUserMessage} from "../agent-core/index.js";
+import type {JsonObject} from "../agent-core/types.js";
+import {ChannelOutboundDispatcher} from "../channels/core/index.js";
+import type {MediaDescriptor} from "../channels/core/types.js";
+import type {ConversationThreadRecord} from "../conversation-threads/types.js";
+import type {IdentityBindingRecord} from "../identity/types.js";
+import {isMissingThreadError, type ThreadRecord} from "../thread-runtime/types.js";
+import {TELEGRAM_POLL_TIMEOUT_SECONDS, TELEGRAM_SOURCE, TELEGRAM_UPDATES_CURSOR_KEY,} from "./config.js";
 import {
   buildTelegramConversationId,
+  buildTelegramInboundPersistence,
   buildTelegramInboundText,
+  buildTelegramReactionText,
   buildTelegramStartText,
   normalizeTelegramCommand,
 } from "./helpers.js";
-import { createTelegramOutboundAdapter } from "./outbound.js";
-import { createTelegramRuntime, type TelegramRuntimeServices } from "./runtime.js";
+import {createTelegramOutboundAdapter} from "./outbound.js";
+import {createTelegramRuntime, type TelegramRuntimeServices} from "./runtime.js";
 
 type TelegramContext = Context;
 const UPDATE_RETRY_DELAY_MS = 1_000;
@@ -76,6 +74,35 @@ interface ConnectorLock {
   release(): Promise<void>;
 }
 
+interface TelegramReactionUpdateUser {
+  id?: number;
+  username?: string;
+  first_name?: string;
+  last_name?: string;
+  is_bot?: boolean;
+}
+
+interface TelegramEmojiReaction {
+  type: "emoji";
+  emoji: string;
+}
+
+interface TelegramReactionContextLike {
+  update?: {
+    update_id?: number;
+  };
+  messageReaction?: {
+    chat: {
+      id: number;
+      type?: string;
+    };
+    message_id: number;
+    user?: TelegramReactionUpdateUser;
+    old_reaction: readonly unknown[];
+    new_reaction: readonly unknown[];
+  };
+}
+
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
@@ -90,18 +117,13 @@ function messageTextLength(message: TelegramContext["msg"] | undefined): number 
   return text.trim().length;
 }
 
-function serializeMediaDescriptor(descriptor: MediaDescriptor): JsonObject {
-  return {
-    id: descriptor.id,
-    source: descriptor.source,
-    connectorKey: descriptor.connectorKey,
-    mimeType: descriptor.mimeType,
-    sizeBytes: descriptor.sizeBytes,
-    localPath: descriptor.localPath,
-    originalFilename: descriptor.originalFilename ?? null,
-    metadata: descriptor.metadata ?? null,
-    createdAt: descriptor.createdAt,
-  };
+function isTelegramEmojiReaction(value: unknown): value is TelegramEmojiReaction {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return candidate.type === "emoji" && typeof candidate.emoji === "string" && candidate.emoji.trim().length > 0;
 }
 
 export class TelegramService {
@@ -136,6 +158,9 @@ export class TelegramService {
 
     this.bot.on("message", async (ctx) => {
       await this.handleMessage(ctx);
+    });
+    this.bot.on("message_reaction", async (ctx) => {
+      await this.handleMessageReaction(ctx as TelegramReactionContextLike);
     });
   }
 
@@ -184,6 +209,8 @@ export class TelegramService {
       const { connectorKey } = await this.ensureBotIdentity();
       this.runtimePromise = createTelegramRuntime({
         ...this.runtimeOptions,
+        telegramConnectorKey: connectorKey,
+        telegramReactionApi: this.bot.api,
         outboundDispatcher: new ChannelOutboundDispatcher([
           createTelegramOutboundAdapter({
             api: this.bot.api,
@@ -251,7 +278,7 @@ export class TelegramService {
           updates = await this.bot.api.getUpdates({
             offset: nextOffset,
             timeout: TELEGRAM_POLL_TIMEOUT_SECONDS,
-            allowed_updates: ["message"],
+            allowed_updates: ["message", "message_reaction"],
           }, this.pollAbortController.signal);
         } catch (error) {
           if (this.stopping && isAbortError(error)) {
@@ -400,6 +427,177 @@ export class TelegramService {
     return parsed + 1;
   }
 
+  private async handleMessageReaction(ctx: TelegramReactionContextLike): Promise<void> {
+    const { runtime, connectorKey } = await this.ensureInitialized();
+    const reaction = ctx.messageReaction;
+    const chatId = reaction?.chat.id;
+    const chatType = reaction?.chat.type ?? null;
+    const updateId = ctx.update?.update_id;
+    const actorId = reaction?.user?.id != null ? String(reaction.user.id) : null;
+    const externalConversationId = buildTelegramConversationId(
+      String(chatId ?? "unknown"),
+    );
+
+    if (!reaction || typeof chatId !== "number") {
+      this.log("reaction_dropped", {
+        connectorKey,
+        externalActorId: actorId,
+        externalConversationId,
+        chatType,
+        reason: "missing_reaction_payload",
+      });
+      return;
+    }
+
+    if (chatType !== "private") {
+      this.log("reaction_dropped", {
+        connectorKey,
+        externalActorId: actorId,
+        externalConversationId,
+        chatType,
+        reason: "group_support_not_enabled",
+      });
+      return;
+    }
+
+    if (typeof updateId !== "number" || !Number.isInteger(updateId)) {
+      this.log("reaction_dropped", {
+        connectorKey,
+        externalActorId: actorId,
+        externalConversationId,
+        chatType,
+        reason: "missing_update_id",
+      });
+      return;
+    }
+
+    if (!actorId) {
+      this.log("reaction_dropped", {
+        connectorKey,
+        externalActorId: actorId,
+        externalConversationId,
+        chatType,
+        reason: "missing_actor",
+      });
+      return;
+    }
+
+    if (reaction.user?.is_bot) {
+      this.log("reaction_dropped", {
+        connectorKey,
+        externalActorId: actorId,
+        externalConversationId,
+        chatType,
+        reason: "bot_actor",
+      });
+      return;
+    }
+
+    const oldEmojis = new Set(
+      reaction.old_reaction
+        .filter(isTelegramEmojiReaction)
+        .map((entry) => entry.emoji.trim()),
+    );
+    const addedEmojis = reaction.new_reaction
+      .filter(isTelegramEmojiReaction)
+      .map((entry) => entry.emoji.trim())
+      .filter((emoji) => emoji && !oldEmojis.has(emoji));
+
+    if (addedEmojis.length === 0) {
+      return;
+    }
+
+    const binding = await runtime.identityStore.resolveIdentityBinding({
+      source: TELEGRAM_SOURCE,
+      connectorKey,
+      externalActorId: actorId,
+    });
+
+    if (!binding) {
+      this.log("reaction_dropped", {
+        connectorKey,
+        externalActorId: actorId,
+        externalConversationId,
+        chatType,
+        reason: "unpaired_actor",
+      });
+      return;
+    }
+
+    const targetMessageId = String(reaction.message_id);
+    const syntheticExternalMessageId = `telegram-reaction:${updateId}`;
+    const text = buildTelegramReactionText({
+      connectorKey,
+      externalConversationId,
+      externalActorId: actorId,
+      externalMessageId: syntheticExternalMessageId,
+      chatId: String(chatId),
+      chatType,
+      username: reaction.user?.username,
+      firstName: reaction.user?.first_name,
+      lastName: reaction.user?.last_name,
+      targetMessageId,
+      addedEmojis,
+    });
+    const persistence = buildTelegramInboundPersistence({
+      connectorKey,
+      externalConversationId,
+      externalActorId: actorId,
+      externalMessageId: syntheticExternalMessageId,
+      chatId: String(chatId),
+      chatType,
+      messageId: null,
+      username: reaction.user?.username,
+      firstName: reaction.user?.first_name,
+      lastName: reaction.user?.last_name,
+      media: [],
+      reaction: {
+        updateId,
+        targetMessageId,
+        addedEmojis,
+        actorId,
+        username: reaction.user?.username,
+      },
+    });
+
+    const thread = await this.resolveOrCreateThread(binding, externalConversationId, chatId);
+    if (!thread) {
+      this.log("reaction_dropped", {
+        connectorKey,
+        externalActorId: actorId,
+        externalConversationId,
+        chatType,
+        reason: "conversation_identity_mismatch",
+      });
+      return;
+    }
+
+    await runtime.coordinator.submitInput(thread.id, {
+      source: TELEGRAM_SOURCE,
+      channelId: externalConversationId,
+      externalMessageId: syntheticExternalMessageId,
+      actorId,
+      message: stringToUserMessage(text),
+      metadata: persistence.metadata,
+    });
+    await runtime.homeThreads.rememberLastRoute({
+      identityId: thread.identityId,
+      agentKey: thread.agentKey,
+      route: persistence.rememberedRoute,
+    });
+
+    this.log("reaction_ingested", {
+      connectorKey,
+      externalActorId: actorId,
+      externalConversationId,
+      chatType,
+      threadId: thread.id,
+      externalMessageId: syntheticExternalMessageId,
+      targetMessageId,
+      addedEmojis,
+    });
+  }
+
   private async handleMessage(ctx: TelegramContext): Promise<void> {
     const { runtime, connectorKey, botUsername } = await this.ensureInitialized();
     const message = ctx.msg;
@@ -506,6 +704,19 @@ export class TelegramService {
       : undefined,
       media,
     });
+    const persistence = buildTelegramInboundPersistence({
+      connectorKey,
+      externalConversationId,
+      externalActorId: actorId,
+      externalMessageId: String(message.message_id),
+      chatId: String(message.chat.id),
+      chatType,
+      messageId: message.message_id,
+      username: ctx.from?.username,
+      firstName: ctx.from?.first_name,
+      lastName: ctx.from?.last_name,
+      media,
+    });
 
     const thread = await this.resolveOrCreateThread(binding, externalConversationId, message.chat.id);
     if (!thread) {
@@ -525,36 +736,12 @@ export class TelegramService {
       externalMessageId: String(message.message_id),
       actorId,
       message: stringToUserMessage(text),
-      metadata: {
-        route: {
-          source: TELEGRAM_SOURCE,
-          connectorKey,
-          externalConversationId,
-          externalActorId: actorId,
-          externalMessageId: String(message.message_id),
-        },
-        telegram: {
-          chatId: String(message.chat.id),
-          chatType,
-          messageId: message.message_id,
-          username: ctx.from?.username ?? null,
-          firstName: ctx.from?.first_name ?? null,
-          lastName: ctx.from?.last_name ?? null,
-          media: media.map((descriptor) => serializeMediaDescriptor(descriptor)),
-        },
-      },
+      metadata: persistence.metadata,
     });
     await runtime.homeThreads.rememberLastRoute({
       identityId: thread.identityId,
       agentKey: thread.agentKey,
-      route: {
-        source: TELEGRAM_SOURCE,
-        connectorKey,
-        externalConversationId,
-        externalActorId: actorId,
-        externalMessageId: String(message.message_id),
-        capturedAt: Date.now(),
-      },
+      route: persistence.rememberedRoute,
     });
 
     this.log("message_ingested", {

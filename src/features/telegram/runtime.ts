@@ -1,28 +1,21 @@
-import { randomUUID } from "node:crypto";
+import {randomUUID} from "node:crypto";
 
-import type { ThinkingLevel } from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
-import type { ProviderName, JsonValue } from "../agent-core/types.js";
-import {
-  createPandaThreadDefinition,
-  createPandaRuntime,
-  type PandaRuntimeServices,
-} from "../panda/runtime.js";
-import { PostgresChannelCursorStore } from "../channel-cursors/index.js";
-import { type ChannelOutboundDispatcher, FileSystemMediaStore } from "../channels/core/index.js";
-import { PostgresConversationThreadStore } from "../conversation-threads/index.js";
-import { PostgresHomeThreadStore } from "../home-threads/index.js";
-import {
-  createDefaultIdentityInput,
-  DEFAULT_IDENTITY_HANDLE,
-  type IdentityRecord,
-} from "../identity/types.js";
-import type { IdentityStore } from "../identity/store.js";
-import { OutboundTool } from "../panda/tools/outbound-tool.js";
-import type { ThreadRuntimeCoordinator } from "../thread-runtime/coordinator.js";
-import type { ThreadRuntimeStore } from "../thread-runtime/store.js";
-import { isMissingThreadError, type ThreadRecord } from "../thread-runtime/types.js";
-import { TELEGRAM_SOURCE } from "./config.js";
+import type {JsonValue, ProviderName} from "../agent-core/types.js";
+import {createPandaRuntime, createPandaThreadDefinition, type PandaRuntimeServices,} from "../panda/runtime.js";
+import {PostgresChannelCursorStore} from "../channel-cursors/index.js";
+import {type ChannelOutboundDispatcher, FileSystemMediaStore} from "../channels/core/index.js";
+import {PostgresConversationThreadStore} from "../conversation-threads/index.js";
+import {PostgresHomeThreadStore} from "../home-threads/index.js";
+import {createDefaultIdentityInput, DEFAULT_IDENTITY_HANDLE, type IdentityRecord,} from "../identity/types.js";
+import type {IdentityStore} from "../identity/store.js";
+import {OutboundTool} from "../panda/tools/outbound-tool.js";
+import {type TelegramReactionApi, TelegramReactTool} from "./telegram-react-tool.js";
+import type {ThreadRuntimeCoordinator} from "../thread-runtime/coordinator.js";
+import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
+import {isMissingThreadError, type ThreadRecord} from "../thread-runtime/types.js";
+import {TELEGRAM_SOURCE} from "./config.js";
 
 export interface TelegramRuntimeOptions {
   cwd: string;
@@ -35,6 +28,8 @@ export interface TelegramRuntimeOptions {
   model?: string;
   tablePrefix?: string;
   outboundDispatcher?: ChannelOutboundDispatcher;
+  telegramConnectorKey?: string;
+  telegramReactionApi?: TelegramReactionApi;
 }
 
 export interface CreateTelegramThreadOptions {
@@ -86,6 +81,17 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
     resolveDefinition: async (thread, { identityStore, extraTools }) => {
       const identity = await identityStore.getIdentity(thread.identityId);
       const identityHandle = resolveDefaultIdentityHandle(identity);
+      const channelTools = [
+        ...(options.outboundDispatcher ? [new OutboundTool()] : []),
+        ...(
+          options.telegramReactionApi && options.telegramConnectorKey
+            ? [new TelegramReactTool({
+              api: options.telegramReactionApi,
+              connectorKey: options.telegramConnectorKey,
+            })]
+            : []
+        ),
+      ];
 
       return createPandaThreadDefinition({
         thread,
@@ -94,7 +100,7 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
           identityId: identity.id,
           identityHandle,
         },
-        extraTools: options.outboundDispatcher ? [...extraTools, new OutboundTool()] : extraTools,
+        extraTools: channelTools.length > 0 ? [...extraTools, ...channelTools] : extraTools,
         extraContext: {
           outboundDispatcher: options.outboundDispatcher,
           routeMemory: {

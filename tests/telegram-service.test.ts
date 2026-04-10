@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
+import {TELEGRAM_SOURCE, TELEGRAM_UPDATES_CURSOR_KEY} from "../src/features/telegram/config.js";
+import {TelegramService} from "../src/features/telegram/service.js";
 
 const telegramServiceMocks = vi.hoisted(() => {
   const botInstances: MockBot[] = [];
@@ -11,18 +13,23 @@ const telegramServiceMocks = vi.hoisted(() => {
       })),
       setMyCommands: vi.fn(async () => {}),
       getUpdates: vi.fn(async () => []),
+      setMessageReaction: vi.fn(async () => {}),
     };
     readonly on = vi.fn((event: string, handler: (ctx: unknown) => Promise<void> | void) => {
       this.handlers.set(event, handler);
       return this;
     });
     readonly handleUpdate = vi.fn(async (update: { context?: unknown }) => {
-      const handler = this.handlers.get("message");
+      const context = update.context;
+      const event = context && typeof context === "object" && "messageReaction" in context
+        ? "message_reaction"
+        : "message";
+      const handler = this.handlers.get(event);
       if (!handler) {
         return;
       }
 
-      await handler(update.context);
+      await handler(context);
     });
     botInfo?: unknown;
     private readonly handlers = new Map<string, (ctx: unknown) => Promise<void> | void>();
@@ -46,9 +53,6 @@ vi.mock("grammy", () => ({
 vi.mock("../src/features/telegram/runtime.js", () => ({
   createTelegramRuntime: telegramServiceMocks.createTelegramRuntime,
 }));
-
-import { TELEGRAM_SOURCE, TELEGRAM_UPDATES_CURSOR_KEY } from "../src/features/telegram/config.js";
-import { TelegramService } from "../src/features/telegram/service.js";
 
 interface RuntimeMock {
   channelCursors: {
@@ -202,6 +206,31 @@ function createTelegramContext() {
   };
 }
 
+function createTelegramReactionContext(overrides: Record<string, unknown> = {}) {
+  return {
+    update: {
+      update_id: 777001,
+    },
+    messageReaction: {
+      chat: {
+        id: 777,
+        type: "private",
+      },
+      message_id: 555,
+      user: {
+        id: 123,
+        username: "alice",
+        first_name: "Alice",
+        last_name: "Liddell",
+        is_bot: false,
+      },
+      old_reaction: [],
+      new_reaction: [{ type: "emoji", emoji: "🔥" }],
+    },
+    ...overrides,
+  };
+}
+
 function latestBot(): InstanceType<typeof telegramServiceMocks.MockBot> {
   const bot = telegramServiceMocks.botInstances.at(-1);
   if (!bot) {
@@ -258,6 +287,9 @@ describe("TelegramService", () => {
     await expect(service.run()).resolves.toBeUndefined();
 
     expect(bot.api.getUpdates).toHaveBeenCalledTimes(2);
+    expect(bot.api.getUpdates).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      allowed_updates: ["message", "message_reaction"],
+    }), expect.any(Object));
     expect(runtime.channelCursors.upsertChannelCursor).toHaveBeenCalledTimes(1);
     expect(runtime.channelCursors.upsertChannelCursor).toHaveBeenCalledWith({
       source: TELEGRAM_SOURCE,
@@ -538,5 +570,265 @@ describe("TelegramService", () => {
     expect(context.reply).toHaveBeenCalledTimes(2);
     expect(runtime.channelCursors.upsertChannelCursor).toHaveBeenCalledTimes(1);
     write.mockRestore();
+  });
+
+  it("ingests direct messages with the expected Telegram route metadata", async () => {
+    const runtime = createRuntimeMock();
+    telegramServiceMocks.createTelegramRuntime.mockResolvedValue(runtime);
+
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+      cwd: "/Users/patrikmojzis/Projects/panda",
+      locale: "en-US",
+      timezone: "UTC",
+    });
+
+    await (service as never).handleMessage(createTelegramContext());
+
+    expect(runtime.coordinator.submitInput).toHaveBeenCalledTimes(1);
+    expect(runtime.coordinator.submitInput).toHaveBeenCalledWith("thread-1", expect.objectContaining({
+      source: TELEGRAM_SOURCE,
+      channelId: "777",
+      externalMessageId: "555",
+      actorId: "123",
+    }));
+    expect(runtime.homeThreads.rememberLastRoute).toHaveBeenCalledWith({
+      identityId: "identity-1",
+      agentKey: "panda",
+      route: {
+        source: TELEGRAM_SOURCE,
+        connectorKey: "42",
+        externalConversationId: "777",
+        externalActorId: "123",
+        externalMessageId: "555",
+        capturedAt: expect.any(Number),
+      },
+    });
+
+    const payload = runtime.coordinator.submitInput.mock.calls[0]?.[1];
+    expect(payload).toEqual(expect.objectContaining({
+      metadata: expect.objectContaining({
+        route: {
+          source: TELEGRAM_SOURCE,
+          connectorKey: "42",
+          externalConversationId: "777",
+          externalActorId: "123",
+          externalMessageId: "555",
+        },
+        telegram: {
+          chatId: "777",
+          chatType: "private",
+          messageId: 555,
+          username: "alice",
+          firstName: "Alice",
+          lastName: "Liddell",
+          media: [],
+        },
+      }),
+    }));
+  });
+
+  it("ingests added emoji reactions as synthetic inputs", async () => {
+    const runtime = createRuntimeMock();
+    telegramServiceMocks.createTelegramRuntime.mockResolvedValue(runtime);
+
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+      cwd: "/Users/patrikmojzis/Projects/panda",
+      locale: "en-US",
+      timezone: "UTC",
+    });
+
+    await (service as never).handleMessageReaction(createTelegramReactionContext());
+
+    expect(runtime.coordinator.submitInput).toHaveBeenCalledTimes(1);
+    expect(runtime.coordinator.submitInput).toHaveBeenCalledWith("thread-1", expect.objectContaining({
+      source: TELEGRAM_SOURCE,
+      channelId: "777",
+      externalMessageId: "telegram-reaction:777001",
+      actorId: "123",
+    }));
+    expect(runtime.homeThreads.rememberLastRoute).toHaveBeenCalledWith({
+      identityId: "identity-1",
+      agentKey: "panda",
+      route: {
+        source: TELEGRAM_SOURCE,
+        connectorKey: "42",
+        externalConversationId: "777",
+        externalActorId: "123",
+        externalMessageId: "telegram-reaction:777001",
+        capturedAt: expect.any(Number),
+      },
+    });
+
+    const payload = runtime.coordinator.submitInput.mock.calls[0]?.[1];
+    expect(payload).toEqual(expect.objectContaining({
+      metadata: expect.objectContaining({
+        route: {
+          source: TELEGRAM_SOURCE,
+          connectorKey: "42",
+          externalConversationId: "777",
+          externalActorId: "123",
+          externalMessageId: "telegram-reaction:777001",
+        },
+        telegram: expect.objectContaining({
+          chatId: "777",
+          chatType: "private",
+          messageId: null,
+          reaction: {
+            updateId: 777001,
+            targetMessageId: "555",
+            addedEmojis: ["🔥"],
+            actorId: "123",
+            username: "alice",
+          },
+        }),
+      }),
+    }));
+  });
+
+  it("ignores reaction removals and unchanged emoji sets", async () => {
+    const runtime = createRuntimeMock();
+    telegramServiceMocks.createTelegramRuntime.mockResolvedValue(runtime);
+
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+      cwd: "/Users/patrikmojzis/Projects/panda",
+      locale: "en-US",
+      timezone: "UTC",
+    });
+
+    await (service as never).handleMessageReaction(createTelegramReactionContext({
+      messageReaction: {
+        chat: {
+          id: 777,
+          type: "private",
+        },
+        message_id: 555,
+        user: {
+          id: 123,
+          username: "alice",
+          is_bot: false,
+        },
+        old_reaction: [{ type: "emoji", emoji: "🔥" }],
+        new_reaction: [{ type: "emoji", emoji: "🔥" }],
+      },
+    }));
+
+    expect(runtime.coordinator.submitInput).not.toHaveBeenCalled();
+  });
+
+  it("ignores reactions from bot actors", async () => {
+    const runtime = createRuntimeMock();
+    telegramServiceMocks.createTelegramRuntime.mockResolvedValue(runtime);
+
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+      cwd: "/Users/patrikmojzis/Projects/panda",
+      locale: "en-US",
+      timezone: "UTC",
+    });
+
+    await (service as never).handleMessageReaction(createTelegramReactionContext({
+      messageReaction: {
+        chat: {
+          id: 777,
+          type: "private",
+        },
+        message_id: 555,
+        user: {
+          id: 123,
+          username: "alice",
+          is_bot: true,
+        },
+        old_reaction: [],
+        new_reaction: [{ type: "emoji", emoji: "🔥" }],
+      },
+    }));
+
+    expect(runtime.coordinator.submitInput).not.toHaveBeenCalled();
+  });
+
+  it("drops non-private reaction updates", async () => {
+    const runtime = createRuntimeMock();
+    telegramServiceMocks.createTelegramRuntime.mockResolvedValue(runtime);
+
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+      cwd: "/Users/patrikmojzis/Projects/panda",
+      locale: "en-US",
+      timezone: "UTC",
+    });
+
+    await (service as never).handleMessageReaction(createTelegramReactionContext({
+      messageReaction: {
+        chat: {
+          id: -100123,
+          type: "group",
+        },
+        message_id: 555,
+        user: {
+          id: 123,
+          username: "alice",
+          is_bot: false,
+        },
+        old_reaction: [],
+        new_reaction: [{ type: "emoji", emoji: "🔥" }],
+      },
+    }));
+
+    expect(runtime.coordinator.submitInput).not.toHaveBeenCalled();
+  });
+
+  it("drops reactions from unpaired actors", async () => {
+    const runtime = createRuntimeMock();
+    runtime.identityStore.resolveIdentityBinding.mockResolvedValue(null);
+    telegramServiceMocks.createTelegramRuntime.mockResolvedValue(runtime);
+
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+      cwd: "/Users/patrikmojzis/Projects/panda",
+      locale: "en-US",
+      timezone: "UTC",
+    });
+
+    await (service as never).handleMessageReaction(createTelegramReactionContext());
+
+    expect(runtime.coordinator.submitInput).not.toHaveBeenCalled();
+  });
+
+  it("uses a stable synthetic external message id for retried reaction updates", async () => {
+    const runtime = createRuntimeMock();
+    telegramServiceMocks.createTelegramRuntime.mockResolvedValue(runtime);
+
+    const seenExternalMessageIds = new Set<string>();
+    runtime.coordinator.submitInput.mockImplementation(async (_threadId: string, payload: { externalMessageId?: string }) => {
+      if (payload.externalMessageId) {
+        seenExternalMessageIds.add(payload.externalMessageId);
+      }
+    });
+
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+      cwd: "/Users/patrikmojzis/Projects/panda",
+      locale: "en-US",
+      timezone: "UTC",
+    });
+    const context = createTelegramReactionContext();
+
+    await (service as never).handleMessageReaction(context);
+    await (service as never).handleMessageReaction(context);
+
+    expect(runtime.coordinator.submitInput).toHaveBeenCalledTimes(2);
+    expect(runtime.coordinator.submitInput.mock.calls[0]?.[1]?.externalMessageId).toBe("telegram-reaction:777001");
+    expect(runtime.coordinator.submitInput.mock.calls[1]?.[1]?.externalMessageId).toBe("telegram-reaction:777001");
+    expect(seenExternalMessageIds).toEqual(new Set(["telegram-reaction:777001"]));
   });
 });

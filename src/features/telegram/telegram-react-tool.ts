@@ -1,0 +1,270 @@
+import {z} from "zod";
+
+import type {RunContext} from "../agent-core/run-context.js";
+import {Tool} from "../agent-core/tool.js";
+import {ToolError} from "../agent-core/exceptions.js";
+import type {JsonObject} from "../agent-core/types.js";
+import type {PandaSessionContext} from "../panda/types.js";
+import {TELEGRAM_SOURCE} from "./config.js";
+
+export interface TelegramReactionApi {
+  setMessageReaction(
+    chatId: string | number,
+    messageId: number,
+    reaction: readonly unknown[],
+  ): Promise<unknown>;
+}
+
+export interface TelegramReactToolOptions {
+  api: TelegramReactionApi;
+  connectorKey: string;
+}
+
+const telegramReactToolSchema = z.object({
+  emoji: z.string().trim().min(1).optional(),
+  remove: z.boolean().optional(),
+  messageId: z.string().trim().min(1).optional(),
+  target: z.object({
+    connectorKey: z.string().trim().min(1),
+    conversationId: z.string().trim().min(1),
+  }).optional(),
+}).superRefine((value, ctx) => {
+  if (value.remove !== true && !value.emoji) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["emoji"],
+      message: "emoji is required unless remove=true",
+    });
+  }
+});
+
+interface TelegramReactionTarget {
+  connectorKey: string;
+  conversationId: string;
+}
+
+interface ParsedTelegramConversationId {
+  chatId: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function parseTelegramConversationId(value: string): ParsedTelegramConversationId {
+  const trimmed = value.trim();
+  const match = /^(-?\d+)(?::\d+)?$/u.exec(trimmed);
+  if (!match?.[1]) {
+    throw new ToolError(`Invalid Telegram conversation id ${value}.`);
+  }
+
+  return {
+    chatId: match[1],
+  };
+}
+
+function parseTelegramMessageId(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new ToolError(`Invalid Telegram message id ${value}.`);
+  }
+
+  return parsed;
+}
+
+function readCurrentTelegramTarget(context: PandaSessionContext | undefined): TelegramReactionTarget | null {
+  if (context?.currentInput?.source !== TELEGRAM_SOURCE) {
+    return null;
+  }
+
+  const metadata = context.currentInput.metadata;
+  if (!isRecord(metadata)) {
+    return null;
+  }
+
+  const route = metadata.route;
+  if (!isRecord(route)) {
+    return null;
+  }
+
+  const connectorKey = readTrimmedString(route.connectorKey);
+  const conversationId =
+    readTrimmedString(route.externalConversationId)
+    ?? readTrimmedString(context.currentInput.channelId);
+  if (!connectorKey || !conversationId) {
+    return null;
+  }
+
+  return {
+    connectorKey,
+    conversationId,
+  };
+}
+
+function readCurrentTelegramExternalMessageId(context: PandaSessionContext | undefined): string | undefined {
+  if (context?.currentInput?.source !== TELEGRAM_SOURCE) {
+    return undefined;
+  }
+
+  return readTrimmedString(context.currentInput.externalMessageId);
+}
+
+function readReactionTargetMessageId(context: PandaSessionContext | undefined): string | undefined {
+  if (context?.currentInput?.source !== TELEGRAM_SOURCE) {
+    return undefined;
+  }
+
+  const metadata = context?.currentInput?.metadata;
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+
+  const telegram = metadata.telegram;
+  if (!isRecord(telegram)) {
+    return undefined;
+  }
+
+  const reaction = telegram.reaction;
+  if (!isRecord(reaction)) {
+    return undefined;
+  }
+
+  return readTrimmedString(reaction.targetMessageId);
+}
+
+function resolveTelegramMessageId(
+  args: z.output<typeof telegramReactToolSchema>,
+  context: PandaSessionContext | undefined,
+): string | undefined {
+  return (
+    readTrimmedString(args.messageId)
+    ?? readReactionTargetMessageId(context)
+    ?? readCurrentTelegramExternalMessageId(context)
+  );
+}
+
+function formatTelegramReactionFailure(error: unknown): {
+  reason: "invalid_emoji" | "error";
+  error: string;
+} {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/REACTION_INVALID/iu.test(message)) {
+    return {
+      reason: "invalid_emoji",
+      error: message,
+    };
+  }
+
+  return {
+    reason: "error",
+    error: message,
+  };
+}
+
+export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, PandaSessionContext> {
+  static schema = telegramReactToolSchema;
+
+  name = "telegram_react";
+  description =
+    "Add or remove a reaction on a Telegram message. Defaults to the current Telegram conversation and message when possible.";
+  schema = TelegramReactTool.schema;
+
+  private readonly api: TelegramReactionApi;
+  private readonly connectorKey: string;
+
+  constructor(options: TelegramReactToolOptions) {
+    super();
+    this.api = options.api;
+    this.connectorKey = options.connectorKey;
+  }
+
+  override formatCall(args: Record<string, unknown>): string {
+    if (args.remove === true) {
+      return "remove";
+    }
+
+    return typeof args.emoji === "string" ? args.emoji : "react";
+  }
+
+  async handle(
+    args: z.output<typeof TelegramReactTool.schema>,
+    run: RunContext<PandaSessionContext>,
+  ): Promise<JsonObject> {
+    const target = args.target ?? readCurrentTelegramTarget(run.context);
+    if (!target) {
+      throw new ToolError("telegram_react requires a current Telegram input or an explicit target.");
+    }
+
+    if (target.connectorKey !== this.connectorKey) {
+      throw new ToolError(
+        `Telegram reaction connector mismatch. Expected ${this.connectorKey}, got ${target.connectorKey}.`,
+      );
+    }
+
+    const messageIdValue = resolveTelegramMessageId(args, run.context);
+    if (!messageIdValue) {
+      throw new ToolError("telegram_react requires a target message id.");
+    }
+
+    const route = parseTelegramConversationId(target.conversationId);
+    const messageId = parseTelegramMessageId(messageIdValue);
+    const remove = args.remove === true;
+    const resolvedEmoji = remove ? "" : args.emoji!.trim();
+    const reaction = remove
+      ? []
+      : [{ type: "emoji" as const, emoji: resolvedEmoji }];
+
+    try {
+      await this.api.setMessageReaction(route.chatId, messageId, reaction);
+      if (remove) {
+        return {
+          ok: true,
+          connectorKey: target.connectorKey,
+          conversationId: target.conversationId,
+          messageId: String(messageId),
+          removed: true,
+        };
+      }
+
+      return {
+        ok: true,
+        connectorKey: target.connectorKey,
+        conversationId: target.conversationId,
+        messageId: String(messageId),
+        added: resolvedEmoji,
+      };
+    } catch (error) {
+      const failure = formatTelegramReactionFailure(error);
+      if (remove) {
+        return {
+          ok: false,
+          connectorKey: target.connectorKey,
+          conversationId: target.conversationId,
+          messageId: String(messageId),
+          reason: failure.reason,
+          error: failure.error,
+          removed: true,
+        };
+      }
+
+      return {
+        ok: false,
+        connectorKey: target.connectorKey,
+        conversationId: target.conversationId,
+        messageId: String(messageId),
+        reason: failure.reason,
+        error: failure.error,
+        emoji: resolvedEmoji,
+      };
+    }
+  }
+}

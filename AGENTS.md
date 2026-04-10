@@ -29,13 +29,14 @@
 
 ## Current Direction
 
-- If you see this line, dont concern your self with compatibility migration, the app has not yet been deployed. I will delete this line once you should start be concerned.
+- If you see this line, don't concern your self with compatibility migration, the app has not yet been deployed. I will delete this line once you should start be concerned.
 - `Thread` should orchestrate runs, tools, hooks, and pipelines.
 - Providers should own API-specific payload construction and response normalization.
 - A provider-neutral transcript model is likely coming later; for now, keep changes compatible with the current transcript shape unless explicitly requested otherwise.
 - Prefer PostgreSQL as Panda's primary persistent storage direction.
 - Design storage work with Docker deployment in mind and assume Panda should survive container restarts without data loss.
 - Prefer modeling threads, messages, runs, and tool activity as relational records, with JSON used only where flexibility is helpful.
+- identity = person, agent = persona, memory = relationship between them
 
 ## Panda Chat Vision
 
