@@ -55,11 +55,8 @@ export interface PandaDaemonOptions {
   cwd: string;
   dbUrl?: string;
   readOnlyDbUrl?: string;
-  provider?: ProviderName;
-  model?: string;
   maxSubagentDepth?: number;
   tablePrefix?: string;
-  daemonKey?: string;
 }
 
 export interface PandaDaemonServices {
@@ -107,9 +104,9 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
   const fallbackContext = {
     cwd: options.cwd,
   } as const;
-  const provider = options.provider ?? resolveDefaultPandaProvider();
-  const model = options.model ?? resolveDefaultPandaModel(provider);
-  const daemonKey = trimNonEmptyString(options.daemonKey) ?? DEFAULT_PANDA_DAEMON_KEY;
+  const provider = resolveDefaultPandaProvider();
+  const model = resolveDefaultPandaModel(provider);
+  const daemonKey = DEFAULT_PANDA_DAEMON_KEY;
 
   let conversationThreads: PostgresConversationThreadStore;
   let homeThreads: PostgresHomeThreadStore;

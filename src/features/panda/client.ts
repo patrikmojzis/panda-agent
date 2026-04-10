@@ -38,7 +38,6 @@ export interface PandaClientOptions {
   identity?: string;
   dbUrl?: string;
   tablePrefix?: string;
-  daemonKey?: string;
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
 }
 
@@ -136,7 +135,6 @@ async function listenThreadNotifications(options: {
 export async function createPandaClient(options: PandaClientOptions): Promise<PandaClient> {
   const pool = createPandaPool(requirePandaDatabaseUrl(options.dbUrl));
   const tablePrefix = options.tablePrefix;
-  const daemonKey = trimNonEmptyString(options.daemonKey) ?? DEFAULT_PANDA_DAEMON_KEY;
 
   const identityStore = new PostgresIdentityStore({
     pool,
@@ -177,9 +175,9 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
     }
 
     const assertDaemonActive = async (): Promise<void> => {
-      const state = await daemonState.readState(daemonKey);
+      const state = await daemonState.readState(DEFAULT_PANDA_DAEMON_KEY);
       if (!state || Date.now() - state.heartbeatAt > PANDA_DAEMON_STALE_AFTER_MS) {
-        throw new Error(`panda run (${daemonKey}) is offline.`);
+        throw new Error(`panda run (${DEFAULT_PANDA_DAEMON_KEY}) is offline.`);
       }
     };
 
