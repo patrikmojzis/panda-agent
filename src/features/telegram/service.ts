@@ -5,7 +5,7 @@ import {Bot, type Context} from "grammy";
 
 import {type ProviderName, stringToUserMessage} from "../agent-core/index.js";
 import type {JsonObject} from "../agent-core/types.js";
-import {ChannelOutboundDispatcher} from "../channels/core/index.js";
+import {ChannelOutboundDispatcher, ChannelTypingDispatcher} from "../channels/core/index.js";
 import type {MediaDescriptor} from "../channels/core/types.js";
 import type {ConversationThreadRecord} from "../conversation-threads/types.js";
 import type {IdentityBindingRecord} from "../identity/types.js";
@@ -20,6 +20,7 @@ import {
   normalizeTelegramCommand,
 } from "./helpers.js";
 import {createTelegramOutboundAdapter} from "./outbound.js";
+import {createTelegramTypingAdapter} from "./typing.js";
 import {createTelegramRuntime, type TelegramRuntimeServices} from "./runtime.js";
 
 type TelegramContext = Context;
@@ -213,6 +214,12 @@ export class TelegramService {
         telegramReactionApi: this.bot.api,
         outboundDispatcher: new ChannelOutboundDispatcher([
           createTelegramOutboundAdapter({
+            api: this.bot.api,
+            connectorKey,
+          }),
+        ]),
+        typingDispatcher: new ChannelTypingDispatcher([
+          createTelegramTypingAdapter({
             api: this.bot.api,
             connectorKey,
           }),

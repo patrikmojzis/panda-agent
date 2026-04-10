@@ -19,6 +19,10 @@ export {
   buildTelegramStartText,
   normalizeTelegramCommand,
 } from "./helpers.js";
+export {
+  createTelegramTypingAdapter,
+  type TelegramTypingAdapterOptions,
+} from "./typing.js";
 export { createTelegramOutboundAdapter } from "./outbound.js";
 export { createTelegramRuntime, type TelegramRuntimeServices, type TelegramRuntimeOptions } from "./runtime.js";
 export { TelegramService, type TelegramServiceOptions } from "./service.js";

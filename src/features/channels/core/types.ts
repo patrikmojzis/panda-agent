@@ -1,4 +1,4 @@
-import type { JsonValue } from "../../agent-core/types.js";
+import type {JsonValue} from "../../agent-core/types.js";
 
 export interface OutboundRoute {
   source: string;
@@ -9,6 +9,10 @@ export interface OutboundRoute {
 export interface OutboundTarget extends OutboundRoute {
   externalActorId?: string;
   replyToMessageId?: string;
+}
+
+export interface ChannelTypingTarget extends OutboundRoute {
+  externalActorId?: string;
 }
 
 export interface RememberedRoute extends OutboundRoute {
@@ -66,6 +70,14 @@ export interface OutboundRequest {
   channel: string;
   target: OutboundTarget;
   items: readonly OutboundItem[];
+}
+
+export type ChannelTypingPhase = "start" | "keepalive" | "stop";
+
+export interface ChannelTypingRequest {
+  channel: string;
+  target: ChannelTypingTarget;
+  phase: ChannelTypingPhase;
 }
 
 export interface OutboundSentItem {

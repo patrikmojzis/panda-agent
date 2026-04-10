@@ -6,6 +6,7 @@ import {ToolError} from "../agent-core/exceptions.js";
 import type {JsonObject} from "../agent-core/types.js";
 import type {PandaSessionContext} from "../panda/types.js";
 import {TELEGRAM_SOURCE} from "./config.js";
+import {parseTelegramConversationId} from "./conversation-id.js";
 
 export interface TelegramReactionApi {
   setMessageReaction(
@@ -43,10 +44,6 @@ interface TelegramReactionTarget {
   conversationId: string;
 }
 
-interface ParsedTelegramConversationId {
-  chatId: string;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -60,18 +57,6 @@ function readTrimmedString(value: unknown): string | undefined {
   return trimmed || undefined;
 }
 
-function parseTelegramConversationId(value: string): ParsedTelegramConversationId {
-  const trimmed = value.trim();
-  const match = /^(-?\d+)(?::\d+)?$/u.exec(trimmed);
-  if (!match?.[1]) {
-    throw new ToolError(`Invalid Telegram conversation id ${value}.`);
-  }
-
-  return {
-    chatId: match[1],
-  };
-}
-
 function parseTelegramMessageId(value: string): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -79,6 +64,14 @@ function parseTelegramMessageId(value: string): number {
   }
 
   return parsed;
+}
+
+function parseReactionConversationId(value: string) {
+  try {
+    return parseTelegramConversationId(value);
+  } catch (error) {
+    throw new ToolError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function readCurrentTelegramTarget(context: PandaSessionContext | undefined): TelegramReactionTarget | null {
@@ -215,7 +208,7 @@ export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, Pand
       throw new ToolError("telegram_react requires a target message id.");
     }
 
-    const route = parseTelegramConversationId(target.conversationId);
+    const route = parseReactionConversationId(target.conversationId);
     const messageId = parseTelegramMessageId(messageIdValue);
     const remove = args.remove === true;
     const resolvedEmoji = remove ? "" : args.emoji!.trim();

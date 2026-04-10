@@ -89,9 +89,25 @@ interface RuntimeMock {
   store: {
     discardPendingInputs: ReturnType<typeof vi.fn>;
   };
+  pool: {
+    connect: ReturnType<typeof vi.fn>;
+  };
 }
 
 function createRuntimeMock(): RuntimeMock {
+  const client = {
+    query: vi.fn(async (sql: string) => {
+      if (sql.includes("pg_try_advisory_lock")) {
+        return { rows: [{ acquired: true }] };
+      }
+      if (sql.includes("pg_advisory_unlock")) {
+        return { rows: [{ pg_advisory_unlock: true }] };
+      }
+      return { rows: [] };
+    }),
+    release: vi.fn(() => {}),
+  };
+
   return {
     channelCursors: {
       resolveChannelCursor: vi.fn(async () => null),
@@ -179,6 +195,9 @@ function createRuntimeMock(): RuntimeMock {
     })),
     store: {
       discardPendingInputs: vi.fn(async () => 0),
+    },
+    pool: {
+      connect: vi.fn(async () => client),
     },
   };
 }
@@ -830,5 +849,37 @@ describe("TelegramService", () => {
     expect(runtime.coordinator.submitInput.mock.calls[0]?.[1]?.externalMessageId).toBe("telegram-reaction:777001");
     expect(runtime.coordinator.submitInput.mock.calls[1]?.[1]?.externalMessageId).toBe("telegram-reaction:777001");
     expect(seenExternalMessageIds).toEqual(new Set(["telegram-reaction:777001"]));
+  });
+
+  it("passes typing support into the Telegram runtime", async () => {
+    const runtime = createRuntimeMock();
+    telegramServiceMocks.createTelegramRuntime.mockResolvedValue(runtime);
+
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+      cwd: "/Users/patrikmojzis/Projects/panda",
+      locale: "en-US",
+      timezone: "UTC",
+    });
+    latestBot().api.getUpdates.mockImplementation(async (_args: unknown, signal?: AbortSignal) => new Promise((_, reject) => {
+      signal?.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true });
+    }));
+
+    const runPromise = service.run();
+
+    await vi.waitFor(() => {
+      expect(telegramServiceMocks.createTelegramRuntime).toHaveBeenCalledTimes(1);
+    });
+
+    const runtimeOptions = telegramServiceMocks.createTelegramRuntime.mock.calls[0]?.[0];
+    expect(runtimeOptions?.typingDispatcher).toBeDefined();
+
+    await service.stop();
+    await runPromise;
   });
 });

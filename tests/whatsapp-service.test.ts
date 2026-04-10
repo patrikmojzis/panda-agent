@@ -1,6 +1,7 @@
-import { EventEmitter } from "node:events";
+import {EventEmitter} from "node:events";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
+import {WhatsAppService} from "../src/features/whatsapp/service.js";
 
 const whatsappServiceMocks = vi.hoisted(() => {
   const pools: Array<{
@@ -265,8 +266,6 @@ vi.mock("baileys/lib/Utils/messages.js", () => ({
   downloadMediaMessage: whatsappServiceMocks.downloadMediaMessage,
   normalizeMessageContent: whatsappServiceMocks.normalizeMessageContent,
 }));
-
-import { WhatsAppService } from "../src/features/whatsapp/service.js";
 
 function latestAuthStore(): InstanceType<typeof whatsappServiceMocks.MockPostgresWhatsAppAuthStore> {
   const store = whatsappServiceMocks.authStores.at(-1);
@@ -980,6 +979,58 @@ describe("WhatsAppService", () => {
     await vi.waitFor(() => {
       expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(2);
     });
+
+    await service.stop();
+    await runPromise;
+  });
+
+  it("passes typing support into the WhatsApp runtime", async () => {
+    whatsappServiceMocks.setCreds({
+      registered: true,
+      me: {
+        id: "421900000000:12@s.whatsapp.net",
+        name: "Panda",
+      },
+    });
+    whatsappServiceMocks.setIdentityBinding({
+      identityId: "identity-local",
+    });
+
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+      cwd: "/tmp/panda",
+      locale: "en-US",
+      timezone: "UTC",
+      dbUrl: "postgres://wa-db",
+    });
+    const runPromise = service.run();
+
+    await vi.waitFor(() => {
+      expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledTimes(1);
+    });
+
+    const socket = whatsappServiceMocks.sockets[0];
+    socket?.ev.emit("messages.upsert", {
+      type: "notify",
+      messages: [{
+        key: {
+          remoteJid: "421911111111@s.whatsapp.net",
+          id: "msg-typing",
+          fromMe: false,
+        },
+        message: {
+          conversation: "hello panda",
+        },
+      }],
+    });
+
+    await vi.waitFor(() => {
+      expect(whatsappServiceMocks.createWhatsAppRuntime).toHaveBeenCalledTimes(1);
+    });
+
+    const runtimeOptions = whatsappServiceMocks.createWhatsAppRuntime.mock.calls[0]?.[0];
+    expect(runtimeOptions?.typingDispatcher).toBeDefined();
 
     await service.stop();
     await runPromise;

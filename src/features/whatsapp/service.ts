@@ -1,10 +1,12 @@
-import { createHash } from "node:crypto";
+import {createHash} from "node:crypto";
 
-import type { Pool } from "pg";
+import type {Pool} from "pg";
 import {
   addTransactionCapability,
-  Browsers,
+  type AuthenticationState,
   type BaileysEventMap,
+  Browsers,
+  type ConnectionState,
   DisconnectReason,
   isJidBroadcast,
   isJidGroup,
@@ -13,28 +15,27 @@ import {
   jidNormalizedUser,
   makeCacheableSignalKeyStore,
   makeWASocket,
-  type AuthenticationState,
-  type ConnectionState,
   type WAMessage,
   type WASocket,
 } from "baileys";
-import { downloadMediaMessage, normalizeMessageContent } from "baileys/lib/Utils/messages.js";
+import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
-import { stringToUserMessage, type ProviderName } from "../agent-core/index.js";
-import { ChannelOutboundDispatcher } from "../channels/core/index.js";
-import type { MediaDescriptor } from "../channels/core/types.js";
-import { PostgresIdentityStore } from "../identity/index.js";
-import { createPandaPool, requirePandaDatabaseUrl } from "../panda/runtime.js";
-import { WHATSAPP_SOURCE } from "./config.js";
-import { PostgresWhatsAppAuthStore } from "./auth-store.js";
+import {type ProviderName, stringToUserMessage} from "../agent-core/index.js";
+import {ChannelOutboundDispatcher, ChannelTypingDispatcher} from "../channels/core/index.js";
+import type {MediaDescriptor} from "../channels/core/types.js";
+import {PostgresIdentityStore} from "../identity/index.js";
+import {createPandaPool, requirePandaDatabaseUrl} from "../panda/runtime.js";
+import {WHATSAPP_SOURCE} from "./config.js";
+import {PostgresWhatsAppAuthStore} from "./auth-store.js";
 import {
   buildWhatsAppInboundMetadata,
   buildWhatsAppInboundText,
   extractWhatsAppMessageText,
   extractWhatsAppQuotedMessageId,
 } from "./helpers.js";
-import { createWhatsAppOutboundAdapter } from "./outbound.js";
-import { createWhatsAppRuntime, type WhatsAppRuntimeServices } from "./runtime.js";
+import {createWhatsAppOutboundAdapter} from "./outbound.js";
+import {createWhatsAppRuntime, type WhatsAppRuntimeServices} from "./runtime.js";
+import {createWhatsAppTypingAdapter} from "./typing.js";
 
 export interface WhatsAppServiceOptions {
   connectorKey: string;
@@ -455,6 +456,12 @@ export class WhatsAppService {
         tablePrefix: this.options.tablePrefix,
         outboundDispatcher: new ChannelOutboundDispatcher([
           createWhatsAppOutboundAdapter({
+            connectorKey: this.options.connectorKey,
+            getSocket: () => this.socket,
+          }),
+        ]),
+        typingDispatcher: new ChannelTypingDispatcher([
+          createWhatsAppTypingAdapter({
             connectorKey: this.options.connectorKey,
             getSocket: () => this.socket,
           }),

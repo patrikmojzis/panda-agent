@@ -1,31 +1,20 @@
 import path from "node:path";
 
-import { InputFile, type Api } from "grammy";
+import {type Api, InputFile} from "grammy";
 
-import type { ChannelOutboundAdapter, OutboundRequest, OutboundResult, OutboundSentItem } from "../channels/core/index.js";
-import { TELEGRAM_SOURCE } from "./config.js";
+import type {
+  ChannelOutboundAdapter,
+  OutboundRequest,
+  OutboundResult,
+  OutboundSentItem
+} from "../channels/core/index.js";
+import {TELEGRAM_SOURCE} from "./config.js";
+import {type ParsedTelegramConversationId, parseTelegramConversationId} from "./conversation-id.js";
+import {assertTelegramConnectorKey} from "./transport.js";
 
 export interface TelegramOutboundAdapterOptions {
   api: Api;
   connectorKey: string;
-}
-
-interface ParsedTelegramConversationId {
-  chatId: string;
-  messageThreadId?: number;
-}
-
-function parseTelegramConversationId(value: string): ParsedTelegramConversationId {
-  const trimmed = value.trim();
-  const match = /^(-?\d+)(?::(\d+))?$/.exec(trimmed);
-  if (!match?.[1]) {
-    throw new Error(`Invalid Telegram conversation id ${value}.`);
-  }
-
-  return {
-    chatId: match[1],
-    messageThreadId: match[2] ? Number.parseInt(match[2], 10) : undefined,
-  };
 }
 
 function buildTelegramSendOptions(route: ParsedTelegramConversationId, replyToMessageId?: string): Record<string, unknown> {
@@ -45,14 +34,6 @@ function buildTelegramSendOptions(route: ParsedTelegramConversationId, replyToMe
   return options;
 }
 
-function assertMatchingConnectorKey(expected: string, actual: string): void {
-  if (expected === actual) {
-    return;
-  }
-
-  throw new Error(`Telegram outbound connector mismatch. Expected ${expected}, got ${actual}.`);
-}
-
 function sentItem(type: OutboundSentItem["type"], externalMessageId: number): OutboundSentItem {
   return {
     type,
@@ -66,7 +47,7 @@ export function createTelegramOutboundAdapter(
   return {
     channel: TELEGRAM_SOURCE,
     async send(request: OutboundRequest): Promise<OutboundResult> {
-      assertMatchingConnectorKey(options.connectorKey, request.target.connectorKey);
+      assertTelegramConnectorKey(options.connectorKey, request.target.connectorKey, "outbound");
       const route = parseTelegramConversationId(request.target.externalConversationId);
       const telegramOptions = buildTelegramSendOptions(route, request.target.replyToMessageId);
       const sent: OutboundSentItem[] = [];

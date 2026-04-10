@@ -1,12 +1,13 @@
-import { access } from "node:fs/promises";
+import {access} from "node:fs/promises";
 
-import type { ToolResultMessage } from "@mariozechner/pi-ai";
-import { z } from "zod";
+import type {ToolResultMessage} from "@mariozechner/pi-ai";
+import {z} from "zod";
 
-import type { RunContext } from "../../agent-core/run-context.js";
-import { Tool } from "../../agent-core/tool.js";
-import { ToolError } from "../../agent-core/exceptions.js";
-import type { JsonObject, JsonValue } from "../../agent-core/types.js";
+import type {RunContext} from "../../agent-core/run-context.js";
+import {Tool} from "../../agent-core/tool.js";
+import {ToolError} from "../../agent-core/exceptions.js";
+import type {JsonObject, JsonValue} from "../../agent-core/types.js";
+import {resolveChannelRouteTarget} from "../../channels/core/route-target.js";
 import type {
   OutboundFileItem,
   OutboundImageItem,
@@ -16,8 +17,8 @@ import type {
   OutboundTarget,
   RememberedRoute,
 } from "../../channels/core/types.js";
-import type { PandaSessionContext } from "../types.js";
-import { resolvePandaPath } from "./context.js";
+import type {PandaSessionContext} from "../types.js";
+import {resolvePandaPath} from "./context.js";
 
 const outboundItemSchema = z.discriminatedUnion("type", [
   z.object({
@@ -61,51 +62,6 @@ const outboundToolSchema = z.object({
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readTrimmedString(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
-function readDefaultTarget(context: PandaSessionContext | undefined): {
-  channel: string;
-  target: OutboundTarget;
-} | null {
-  const source = readTrimmedString(context?.currentInput?.source);
-  if (!source) {
-    return null;
-  }
-
-  const metadata = context?.currentInput?.metadata;
-  if (!isRecord(metadata)) {
-    return null;
-  }
-
-  const route = metadata.route;
-  if (!isRecord(route)) {
-    return null;
-  }
-
-  const connectorKey = readTrimmedString(route.connectorKey);
-  const externalConversationId = readTrimmedString(route.externalConversationId);
-  if (!connectorKey || !externalConversationId) {
-    return null;
-  }
-
-  return {
-    channel: source,
-    target: {
-      source,
-      connectorKey,
-      externalConversationId,
-      externalActorId: readTrimmedString(route.externalActorId),
-    },
-  };
 }
 
 async function readRememberedTarget(context: PandaSessionContext | undefined): Promise<{
@@ -265,7 +221,7 @@ export class OutboundTool<TContext = PandaSessionContext> extends Tool<typeof ou
   ): Promise<JsonObject> {
     const pandaContext = run.context as PandaSessionContext | undefined;
     const dispatcher = ensureDispatcher(pandaContext);
-    const defaultRoute = readDefaultTarget(pandaContext) ?? await readRememberedTarget(pandaContext);
+    const defaultRoute = resolveChannelRouteTarget(pandaContext?.currentInput) ?? await readRememberedTarget(pandaContext);
     const hasExplicitTarget = Boolean(args.target);
 
     const channel = args.channel ?? defaultRoute?.channel;

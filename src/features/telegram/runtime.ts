@@ -5,12 +5,17 @@ import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import type {JsonValue, ProviderName} from "../agent-core/types.js";
 import {createPandaRuntime, createPandaThreadDefinition, type PandaRuntimeServices,} from "../panda/runtime.js";
 import {PostgresChannelCursorStore} from "../channel-cursors/index.js";
-import {type ChannelOutboundDispatcher, FileSystemMediaStore} from "../channels/core/index.js";
+import {
+  type ChannelOutboundDispatcher,
+  type ChannelTypingDispatcher,
+  FileSystemMediaStore
+} from "../channels/core/index.js";
 import {PostgresConversationThreadStore} from "../conversation-threads/index.js";
 import {PostgresHomeThreadStore} from "../home-threads/index.js";
 import {createDefaultIdentityInput, DEFAULT_IDENTITY_HANDLE, type IdentityRecord,} from "../identity/types.js";
 import type {IdentityStore} from "../identity/store.js";
 import {OutboundTool} from "../panda/tools/outbound-tool.js";
+import {createChannelTypingEventHandler} from "../thread-runtime/channel-typing.js";
 import {type TelegramReactionApi, TelegramReactTool} from "./telegram-react-tool.js";
 import type {ThreadRuntimeCoordinator} from "../thread-runtime/coordinator.js";
 import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
@@ -28,6 +33,7 @@ export interface TelegramRuntimeOptions {
   model?: string;
   tablePrefix?: string;
   outboundDispatcher?: ChannelOutboundDispatcher;
+  typingDispatcher?: ChannelTypingDispatcher;
   telegramConnectorKey?: string;
   telegramReactionApi?: TelegramReactionApi;
 }
@@ -78,6 +84,7 @@ export async function createTelegramRuntime(options: TelegramRuntimeOptions): Pr
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
     tablePrefix: options.tablePrefix,
+    onEvent: createChannelTypingEventHandler(options.typingDispatcher),
     resolveDefinition: async (thread, { identityStore, extraTools }) => {
       const identity = await identityStore.getIdentity(thread.identityId);
       const identityHandle = resolveDefaultIdentityHandle(identity);

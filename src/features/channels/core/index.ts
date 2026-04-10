@@ -8,6 +8,13 @@ export {
   type ChannelOutboundAdapter,
 } from "./outbound.js";
 export {
+  ChannelTypingDispatcher,
+  type ChannelTypingAdapter,
+} from "./typing.js";
+export {
+  type ChannelTypingPhase,
+  type ChannelTypingRequest,
+  type ChannelTypingTarget,
   type InboundEnvelope,
   type MediaDescriptor,
   type OutboundFileItem,

@@ -1,31 +1,20 @@
-import { readFile } from "node:fs/promises";
+import {readFile} from "node:fs/promises";
 import path from "node:path";
 
-import type { WASocket } from "baileys";
+import type {WASocket} from "baileys";
 
-import type { ChannelOutboundAdapter, OutboundRequest, OutboundResult, OutboundSentItem } from "../channels/core/index.js";
-import { WHATSAPP_SOURCE } from "./config.js";
+import type {
+  ChannelOutboundAdapter,
+  OutboundRequest,
+  OutboundResult,
+  OutboundSentItem
+} from "../channels/core/index.js";
+import {WHATSAPP_SOURCE} from "./config.js";
+import {assertWhatsAppConnectorKey, requireWhatsAppSocket} from "./transport.js";
 
 export interface CreateWhatsAppOutboundAdapterOptions {
   connectorKey: string;
   getSocket(): WASocket | null;
-}
-
-function assertMatchingConnectorKey(expected: string, actual: string): void {
-  if (expected === actual) {
-    return;
-  }
-
-  throw new Error(`WhatsApp outbound connector mismatch. Expected ${expected}, got ${actual}.`);
-}
-
-function requireSocket(getSocket: () => WASocket | null): WASocket {
-  const socket = getSocket();
-  if (!socket) {
-    throw new Error("WhatsApp outbound is unavailable because the connector socket is not connected.");
-  }
-
-  return socket;
 }
 
 function requireSentItemId(itemType: OutboundSentItem["type"], sent: Awaited<ReturnType<WASocket["sendMessage"]>>): OutboundSentItem {
@@ -46,8 +35,8 @@ export function createWhatsAppOutboundAdapter(
   return {
     channel: WHATSAPP_SOURCE,
     async send(request: OutboundRequest): Promise<OutboundResult> {
-      assertMatchingConnectorKey(options.connectorKey, request.target.connectorKey);
-      const socket = requireSocket(options.getSocket);
+      assertWhatsAppConnectorKey(options.connectorKey, request.target.connectorKey, "outbound");
+      const socket = requireWhatsAppSocket(options.getSocket, "outbound");
       const jid = request.target.externalConversationId;
       const sent: OutboundSentItem[] = [];
 

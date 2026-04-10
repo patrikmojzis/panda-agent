@@ -1,27 +1,24 @@
-import { randomUUID } from "node:crypto";
+import {randomUUID} from "node:crypto";
 
-import type { ThinkingLevel } from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
-import type { JsonValue, ProviderName } from "../agent-core/types.js";
-import { PostgresConversationThreadStore } from "../conversation-threads/index.js";
-import { FileSystemMediaStore, type ChannelOutboundDispatcher } from "../channels/core/index.js";
-import { PostgresHomeThreadStore } from "../home-threads/index.js";
+import type {JsonValue, ProviderName} from "../agent-core/types.js";
+import {PostgresConversationThreadStore} from "../conversation-threads/index.js";
 import {
-  createDefaultIdentityInput,
-  DEFAULT_IDENTITY_HANDLE,
-  type IdentityRecord,
-} from "../identity/types.js";
-import type { IdentityStore } from "../identity/store.js";
-import {
-  createPandaRuntime,
-  createPandaThreadDefinition,
-  type PandaRuntimeServices,
-} from "../panda/runtime.js";
-import { OutboundTool } from "../panda/tools/outbound-tool.js";
-import type { ThreadRuntimeCoordinator } from "../thread-runtime/coordinator.js";
-import type { ThreadRuntimeStore } from "../thread-runtime/store.js";
-import { isMissingThreadError, type ThreadRecord } from "../thread-runtime/types.js";
-import { WHATSAPP_SOURCE } from "./config.js";
+  type ChannelOutboundDispatcher,
+  type ChannelTypingDispatcher,
+  FileSystemMediaStore
+} from "../channels/core/index.js";
+import {PostgresHomeThreadStore} from "../home-threads/index.js";
+import {createDefaultIdentityInput, DEFAULT_IDENTITY_HANDLE, type IdentityRecord,} from "../identity/types.js";
+import type {IdentityStore} from "../identity/store.js";
+import {createPandaRuntime, createPandaThreadDefinition, type PandaRuntimeServices,} from "../panda/runtime.js";
+import {OutboundTool} from "../panda/tools/outbound-tool.js";
+import {createChannelTypingEventHandler} from "../thread-runtime/channel-typing.js";
+import type {ThreadRuntimeCoordinator} from "../thread-runtime/coordinator.js";
+import type {ThreadRuntimeStore} from "../thread-runtime/store.js";
+import {isMissingThreadError, type ThreadRecord} from "../thread-runtime/types.js";
+import {WHATSAPP_SOURCE} from "./config.js";
 
 export interface WhatsAppRuntimeOptions {
   cwd: string;
@@ -34,6 +31,7 @@ export interface WhatsAppRuntimeOptions {
   model?: string;
   tablePrefix?: string;
   outboundDispatcher?: ChannelOutboundDispatcher;
+  typingDispatcher?: ChannelTypingDispatcher;
 }
 
 export interface CreateWhatsAppThreadOptions {
@@ -80,6 +78,7 @@ export async function createWhatsAppRuntime(options: WhatsAppRuntimeOptions): Pr
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
     tablePrefix: options.tablePrefix,
+    onEvent: createChannelTypingEventHandler(options.typingDispatcher),
     resolveDefinition: async (thread, { identityStore, extraTools }) => {
       const identity = await identityStore.getIdentity(thread.identityId);
       const identityHandle = resolveDefaultIdentityHandle(identity);
