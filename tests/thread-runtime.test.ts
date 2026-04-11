@@ -1,24 +1,17 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 
+import {Agent, type LlmRuntime, PiAiRuntime, RunContext, stringToUserMessage, Thread, Tool, z,} from "../src/index.js";
+import {DEFAULT_IDENTITY_ID} from "../src/domain/identity/index.js";
 import {
-    Agent,
     AUTO_COMPACT_BREAKER_COOLDOWN_MS,
     createCompactBoundaryMessage,
-    DEFAULT_IDENTITY_ID,
-    type LlmRuntime,
-    PiAiRuntime,
     type ResolvedThreadDefinition,
-    RunContext,
-    stringToUserMessage,
-    Thread,
     type ThreadDefinitionResolver,
     type ThreadMessageRecord,
     type ThreadRecord,
     ThreadRuntimeCoordinator,
-    Tool,
-    z,
-} from "../src/index.js";
+} from "../src/domain/threads/runtime/index.js";
 import {TestIdentityStore, TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createDeferred<T>() {

@@ -51,3 +51,12 @@
 
 ## What to avoid
 - Needless complexity that can spread
+
+## Optimal project structure
+- `app`: entrypoints, process lifecycle, runtime assembly, CLI wiring
+- `kernel`: the inner agent loop and provider-neutral execution primitives
+- `personas`: persona packs like Panda prompt, tools, contexts, and subagent policy
+- `domain`: business concepts like agents, identity, threads, scheduling, and channel records
+- `integrations`: external systems like providers, Telegram, WhatsApp, Postgres, shell
+- `ui`: terminal and other human-facing surfaces
+- `lib`: small pure helpers

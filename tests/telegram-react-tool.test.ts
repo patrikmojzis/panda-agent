@@ -1,8 +1,8 @@
 import {describe, expect, it, vi} from "vitest";
 
-import {Agent, RunContext} from "../src/features/agent-core/index.js";
-import type {PandaSessionContext} from "../src/features/panda/types.js";
-import {TelegramReactTool} from "../src/features/telegram/telegram-react-tool.js";
+import {Agent, RunContext} from "../src/kernel/agent/index.js";
+import type {PandaSessionContext} from "../src/personas/panda/types.js";
+import {TelegramReactTool} from "../src/integrations/channels/telegram/telegram-react-tool.js";
 
 function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
   return new RunContext({

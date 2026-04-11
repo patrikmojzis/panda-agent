@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { newDb } from "pg-mem";
-import { initAuthCreds, proto } from "baileys";
+import {afterEach, describe, expect, it} from "vitest";
+import {newDb} from "pg-mem";
+import {initAuthCreds, proto} from "baileys";
 
-import { PostgresWhatsAppAuthStore } from "../src/features/whatsapp/auth-store.js";
+import {PostgresWhatsAppAuthStore} from "../src/integrations/channels/whatsapp/auth-store.js";
 
 describe("PostgresWhatsAppAuthStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];

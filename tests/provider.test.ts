@@ -8,8 +8,8 @@ import {
     resolveModelSelector,
     Thread,
 } from "../src/index.js";
-import {resolvePandaModel} from "../src/features/agent-core/pi/model.js";
-import {resolveDefaultPandaModelSelector} from "../src/features/panda/provider-defaults.js";
+import {resolvePandaModel} from "../src/integrations/providers/shared/model.js";
+import {resolveDefaultPandaModelSelector} from "../src/personas/panda/defaults.js";
 
 describe("model selector", () => {
   it("parses supported provider names", () => {

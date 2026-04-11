@@ -4,12 +4,9 @@ import {mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import {
-    AgentMemoryContext,
-    DEFAULT_AGENT_DOCUMENT_TEMPLATES,
-    PostgresAgentStore,
-    PostgresIdentityStore,
-} from "../src/index.js";
+import {AgentMemoryContext} from "../src/index.js";
+import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 
 describe("AgentMemoryContext", () => {
   const pools: Array<{ end(): Promise<void> }> = [];

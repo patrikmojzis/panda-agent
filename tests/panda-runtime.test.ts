@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
+import {createPandaRuntime} from "../src/app/runtime/create-runtime.js";
 
 const runtimeMocks = vi.hoisted(() => {
   const poolInstances: Array<{
@@ -36,7 +37,7 @@ vi.mock("pg", () => ({
   Pool: runtimeMocks.MockPool,
 }));
 
-vi.mock("../src/features/thread-runtime/index.js", () => ({
+vi.mock("../src/domain/threads/runtime/index.js", () => ({
   PostgresThreadLeaseManager: class {},
   PostgresThreadRuntimeStore: class {
     identityStore = {};
@@ -48,21 +49,19 @@ vi.mock("../src/features/thread-runtime/index.js", () => ({
   ThreadRuntimeCoordinator: class {},
 }));
 
-vi.mock("../src/features/thread-runtime/postgres-readonly.js", () => ({
+vi.mock("../src/domain/threads/runtime/postgres-readonly.js", () => ({
   ensureReadonlyChatQuerySchema: runtimeMocks.ensureReadonlyChatQuerySchema,
   readDatabaseUsername: runtimeMocks.readDatabaseUsername,
 }));
 
-vi.mock("../src/features/thread-runtime/postgres.js", () => ({
+vi.mock("../src/domain/threads/runtime/postgres.js", () => ({
   buildThreadRuntimeNotificationChannel: vi.fn(() => "thread_runtime_notifications"),
   parseThreadRuntimeNotification: vi.fn(() => null),
 }));
 
-vi.mock("../src/features/panda/tools/postgres-readonly-query-tool.js", () => ({
+vi.mock("../src/personas/panda/tools/postgres-readonly-query-tool.js", () => ({
   PostgresReadonlyQueryTool: class {},
 }));
-
-import { createPandaRuntime } from "../src/features/panda/runtime.js";
 
 describe("createPandaRuntime", () => {
   afterEach(() => {

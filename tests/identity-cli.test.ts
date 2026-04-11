@@ -1,6 +1,6 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {Command} from "commander";
-import {registerIdentityCommands} from "../src/features/identity/cli.js";
+import {registerIdentityCommands} from "../src/domain/identity/cli.js";
 
 const identityCliMocks = vi.hoisted(() => {
   const HOME_NEXT_FIRE_AT = Date.UTC(2026, 3, 10, 12, 30, 0);
@@ -135,24 +135,24 @@ const identityCliMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../src/features/identity/postgres.js", () => ({
+vi.mock("../src/domain/identity/postgres.js", () => ({
   PostgresIdentityStore: identityCliMocks.MockPostgresIdentityStore,
 }));
 
-vi.mock("../src/features/agents/postgres.js", () => ({
+vi.mock("../src/domain/agents/postgres.js", () => ({
   PostgresAgentStore: identityCliMocks.MockPostgresAgentStore,
 }));
 
-vi.mock("../src/features/home-threads/index.js", () => ({
+vi.mock("../src/domain/threads/home/index.js", () => ({
   PostgresHomeThreadStore: identityCliMocks.MockPostgresHomeThreadStore,
 }));
 
-vi.mock("../src/features/panda/runtime.js", () => ({
+vi.mock("../src/app/runtime/create-runtime.js", () => ({
   createPandaPool: identityCliMocks.createPandaPool,
   requirePandaDatabaseUrl: identityCliMocks.requirePandaDatabaseUrl,
 }));
 
-vi.mock("../src/features/panda/client.js", () => ({
+vi.mock("../src/app/runtime/client.js", () => ({
   createPandaClient: identityCliMocks.createPandaClient,
 }));
 

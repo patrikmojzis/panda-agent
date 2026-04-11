@@ -1,16 +1,14 @@
 import {describe, expect, it, vi} from "vitest";
 import type {AssistantMessage, ToolResultMessage} from "@mariozechner/pi-ai";
 
+import {Agent, type LlmRuntime, stringToUserMessage,} from "../src/index.js";
 import {
-    Agent,
     createCompactBoundaryMessage,
-    type LlmRuntime,
     projectTranscriptForInference,
     type ResolvedThreadDefinition,
-    stringToUserMessage,
     type ThreadMessageRecord,
     ThreadRuntimeCoordinator,
-} from "../src/index.js";
+} from "../src/domain/threads/runtime/index.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createAssistantMessage(

@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 
-import {resolveImplicitHomeThreadReplacementAgent} from "../src/features/panda/daemon.js";
+import {resolveImplicitHomeThreadReplacementAgent} from "../src/app/runtime/daemon.js";
 
 describe("resolveImplicitHomeThreadReplacementAgent", () => {
   it("replaces a stale home thread when chat did not explicitly choose an agent", () => {

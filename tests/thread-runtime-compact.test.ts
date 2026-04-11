@@ -1,17 +1,13 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
+import {Agent, buildCompactSummaryMessage, PiAiRuntime, stringToUserMessage, Thread,} from "../src/index.js";
 import {
-    Agent,
-    buildCompactSummaryMessage,
     compactThread,
     createCompactBoundaryMessage,
     formatTranscriptForCompaction,
-    PiAiRuntime,
     projectTranscriptForRun,
     splitTranscriptForCompaction,
-    stringToUserMessage,
-    Thread,
-} from "../src/index.js";
+} from "../src/domain/threads/runtime/index.js";
 
 function assistant(text: string) {
   return {

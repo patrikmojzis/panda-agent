@@ -4,13 +4,9 @@ import {mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import {
-    buildPandaLlmContexts,
-    DEFAULT_AGENT_DOCUMENT_TEMPLATES,
-    gatherContexts,
-    PostgresAgentStore,
-    PostgresIdentityStore,
-} from "../src/index.js";
+import {buildPandaLlmContexts, gatherContexts,} from "../src/index.js";
+import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 
 describe("buildPandaLlmContexts", () => {
   const pools: Array<{ end(): Promise<void> }> = [];

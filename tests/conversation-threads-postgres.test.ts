@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { DataType, newDb } from "pg-mem";
+import {afterEach, describe, expect, it} from "vitest";
+import {DataType, newDb} from "pg-mem";
 
-import { PostgresConversationThreadStore } from "../src/index.js";
+import {ConversationThreadRepo} from "../src/domain/threads/conversations/repo.js";
 
-describe("PostgresConversationThreadStore", () => {
+describe("ConversationThreadRepo", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
 
   afterEach(async () => {
@@ -29,7 +29,7 @@ describe("PostgresConversationThreadStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresConversationThreadStore({ pool });
+    const store = new ConversationThreadRepo({ pool });
     await store.ensureSchema();
 
     await expect(store.resolveConversationThread({
@@ -97,7 +97,7 @@ describe("PostgresConversationThreadStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresConversationThreadStore({ pool });
+    const store = new ConversationThreadRepo({ pool });
     await store.ensureSchema();
 
     await store.bindConversationThread({
@@ -138,7 +138,7 @@ describe("PostgresConversationThreadStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresConversationThreadStore({ pool });
+    const store = new ConversationThreadRepo({ pool });
     await store.ensureSchema();
 
     await store.bindConversationThread({
@@ -195,7 +195,7 @@ describe("PostgresConversationThreadStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresConversationThreadStore({ pool });
+    const store = new ConversationThreadRepo({ pool });
     await store.ensureSchema();
 
     await expect(store.bindConversationThread({

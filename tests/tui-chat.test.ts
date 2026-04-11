@@ -1,15 +1,15 @@
 import {describe, expect, it, vi} from "vitest";
 
-import {stringToUserMessage} from "../src/features/agent-core/index.js";
-import type {ThreadRunRecord} from "../src/features/thread-runtime/index.js";
-import * as markdown from "../src/features/tui/markdown.js";
-import {buildChatHelpText} from "../src/features/tui/chat-commands.js";
-import {buildChatViewModel, buildWelcomeTranscriptLines} from "../src/features/tui/chat-view.js";
-import type {ChatRuntimeServices} from "../src/features/tui/runtime.js";
-import * as tuiRuntime from "../src/features/tui/runtime.js";
-import {stripAnsi} from "../src/features/tui/theme.js";
-import {createComposerState, setComposerValue} from "../src/features/tui/composer.js";
-import {PandaChatApp, runChatCli} from "../src/features/tui/chat.js";
+import {stringToUserMessage} from "../src/kernel/agent/index.js";
+import type {ThreadRunRecord} from "../src/domain/threads/runtime/index.js";
+import * as markdown from "../src/ui/tui/markdown.js";
+import {buildChatHelpText} from "../src/ui/tui/chat-commands.js";
+import {buildChatViewModel, buildWelcomeTranscriptLines} from "../src/ui/tui/chat-view.js";
+import type {ChatRuntimeServices} from "../src/ui/tui/runtime.js";
+import * as tuiRuntime from "../src/ui/tui/runtime.js";
+import {stripAnsi} from "../src/ui/tui/theme.js";
+import {createComposerState, setComposerValue} from "../src/ui/tui/composer.js";
+import {PandaChatApp, runChatCli} from "../src/ui/tui/chat.js";
 
 type AppHarness = {
   closed: boolean;

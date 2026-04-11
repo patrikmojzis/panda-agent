@@ -1,7 +1,9 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_IDENTITY_ID, PostgresThreadRuntimeStore, stringToUserMessage} from "../src/index.js";
+import {stringToUserMessage} from "../src/index.js";
+import {DEFAULT_IDENTITY_ID,} from "../src/domain/identity/index.js";
+import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
 
 describe("PostgresThreadRuntimeStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];

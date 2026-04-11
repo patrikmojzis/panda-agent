@@ -105,10 +105,10 @@ Not in this slice:
 
 ## Code Map
 
-- [src/features/whatsapp/config.ts](../../src/features/whatsapp/config.ts)
-- [src/features/whatsapp/cli.ts](../../src/features/whatsapp/cli.ts)
-- [src/features/whatsapp/auth-store.ts](../../src/features/whatsapp/auth-store.ts)
-- [src/features/whatsapp/service.ts](../../src/features/whatsapp/service.ts)
-- [src/features/whatsapp/outbound.ts](../../src/features/whatsapp/outbound.ts)
+- [src/integrations/channels/whatsapp/config.ts](../../src/integrations/channels/whatsapp/config.ts)
+- [src/integrations/channels/whatsapp/cli.ts](../../src/integrations/channels/whatsapp/cli.ts)
+- [src/integrations/channels/whatsapp/auth-store.ts](../../src/integrations/channels/whatsapp/auth-store.ts)
+- [src/integrations/channels/whatsapp/service.ts](../../src/integrations/channels/whatsapp/service.ts)
+- [src/integrations/channels/whatsapp/outbound.ts](../../src/integrations/channels/whatsapp/outbound.ts)
 - [tests/whatsapp-service.test.ts](../../tests/whatsapp-service.test.ts)
 - [tests/whatsapp-outbound.test.ts](../../tests/whatsapp-outbound.test.ts)

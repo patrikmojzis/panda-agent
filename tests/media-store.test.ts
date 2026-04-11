@@ -4,8 +4,7 @@ import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {FileSystemMediaStore, relocateMediaDescriptor} from "../src/index.js";
-import {moveMediaFile} from "../src/features/channels/core/media-store.js";
+import {FileSystemMediaStore, moveMediaFile, relocateMediaDescriptor,} from "../src/domain/channels/media-store.js";
 
 describe("FileSystemMediaStore", () => {
   const directories = new Set<string>();

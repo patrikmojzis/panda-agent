@@ -1,14 +1,14 @@
-import { describe, expect, it } from "vitest";
+import {describe, expect, it} from "vitest";
 
 import {
-  Agent,
-  PostgresReadonlyQueryTool,
-  RunContext,
-  ToolError,
-  readDatabaseUsername,
-  type PandaSessionContext,
-  type ToolResultPayload,
+    Agent,
+    type PandaSessionContext,
+    PostgresReadonlyQueryTool,
+    RunContext,
+    ToolError,
+    type ToolResultPayload,
 } from "../src/index.js";
+import {readDatabaseUsername} from "../src/domain/threads/runtime/index.js";
 
 interface RecordedQuery {
   text: string;

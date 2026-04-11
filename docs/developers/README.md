@@ -4,6 +4,8 @@ This folder is for contributors changing Panda internals.
 
 Start here:
 
+- [Architecture](./architecture.md)
+- [Current Structure](./restructure-plan.md)
 - [Chat Vision](./chat-vision.md)
 - [Identity](./identity.md)
 - [Heartbeat](./heartbeat.md)

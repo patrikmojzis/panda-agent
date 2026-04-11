@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
+import {whatsappPairCommand, whatsappWhoamiCommand} from "../src/integrations/channels/whatsapp/cli.js";
 
 const whatsappCliMocks = vi.hoisted(() => {
   const serviceInstances: MockWhatsAppService[] = [];
@@ -34,11 +35,9 @@ const whatsappCliMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../src/features/whatsapp/service.js", () => ({
+vi.mock("../src/integrations/channels/whatsapp/service.js", () => ({
   WhatsAppService: whatsappCliMocks.MockWhatsAppService,
 }));
-
-import { whatsappPairCommand, whatsappWhoamiCommand } from "../src/features/whatsapp/cli.js";
 
 function latestService(): InstanceType<typeof whatsappCliMocks.MockWhatsAppService> {
   const service = whatsappCliMocks.serviceInstances.at(-1);

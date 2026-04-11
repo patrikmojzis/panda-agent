@@ -1,13 +1,13 @@
 import {describe, expect, it} from "vitest";
 
+import type {MediaDescriptor} from "../src/domain/channels/index.js";
 import {
     buildTelegramConversationId,
     buildTelegramInboundText,
     buildTelegramPairCommand,
-    type MediaDescriptor,
+    buildTelegramReactionText,
     normalizeTelegramCommand,
-} from "../src/index.js";
-import {buildTelegramReactionText} from "../src/features/telegram/helpers.js";
+} from "../src/integrations/channels/telegram/helpers.js";
 
 function mediaDescriptor(overrides: Partial<MediaDescriptor> = {}): MediaDescriptor {
   return {

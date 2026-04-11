@@ -1,7 +1,7 @@
 import {describe, expect, it} from "vitest";
 
-import {createPandaThreadDefinition, DEFAULT_PANDA_INFERENCE_PROJECTION,} from "../src/features/panda/runtime.js";
-import type {ThreadRecord} from "../src/features/thread-runtime/types.js";
+import {createPandaThreadDefinition, DEFAULT_PANDA_INFERENCE_PROJECTION,} from "../src/app/runtime/create-runtime.js";
+import type {ThreadRecord} from "../src/domain/threads/runtime/types.js";
 
 function createThread(
   overrides: Partial<ThreadRecord> = {},

@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
+import {TELEGRAM_SOURCE} from "../src/integrations/channels/telegram/config.js";
+import {telegramPairCommand, telegramWhoamiCommand} from "../src/integrations/channels/telegram/cli.js";
 
 const telegramCliMocks = vi.hoisted(() => {
   const botInstances: MockBot[] = [];
@@ -71,11 +73,11 @@ vi.mock("grammy", () => ({
   Bot: telegramCliMocks.MockBot,
 }));
 
-vi.mock("../src/features/telegram/service.js", () => ({
+vi.mock("../src/integrations/channels/telegram/service.js", () => ({
   TelegramService: telegramCliMocks.MockTelegramService,
 }));
 
-vi.mock("../src/features/identity/index.js", () => ({
+vi.mock("../src/domain/identity/index.js", () => ({
   PostgresIdentityStore: telegramCliMocks.MockPostgresIdentityStore,
   createDefaultIdentityInput: () => ({
     id: "local-id",
@@ -85,13 +87,10 @@ vi.mock("../src/features/identity/index.js", () => ({
   }),
 }));
 
-vi.mock("../src/features/panda/runtime.js", () => ({
+vi.mock("../src/app/runtime/create-runtime.js", () => ({
   createPandaPool: telegramCliMocks.createPandaPool,
   requirePandaDatabaseUrl: telegramCliMocks.requirePandaDatabaseUrl,
 }));
-
-import { TELEGRAM_SOURCE } from "../src/features/telegram/config.js";
-import { telegramPairCommand, telegramWhoamiCommand } from "../src/features/telegram/cli.js";
 
 function latestBot(): InstanceType<typeof telegramCliMocks.MockBot> {
   const bot = telegramCliMocks.botInstances.at(-1);

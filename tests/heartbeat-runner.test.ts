@@ -2,16 +2,14 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {DataType, newDb} from "pg-mem";
 
+import {Agent, stringToUserMessage,} from "../src/index.js";
+import {HeartbeatRunner} from "../src/domain/scheduling/heartbeats/runner.js";
 import {
-    Agent,
-    HeartbeatRunner,
+    type HomeThreadRecord,
+    type HomeThreadStore,
     PostgresHomeThreadStore,
-    PostgresThreadRuntimeStore,
-    stringToUserMessage,
-    ThreadRuntimeCoordinator,
-} from "../src/index.js";
-import type {HomeThreadRecord, HomeThreadStore} from "../src/features/home-threads/index.js";
-import type {ThreadRuntimeCoordinator} from "../src/features/thread-runtime/coordinator.js";
+} from "../src/domain/threads/home/index.js";
+import {PostgresThreadRuntimeStore, ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
   return {

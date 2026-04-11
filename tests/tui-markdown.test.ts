@@ -1,7 +1,7 @@
 import {describe, expect, it} from "vitest";
 
-import {renderTranscriptEntries} from "../src/features/tui/transcript.js";
-import {renderMarkdownLines} from "../src/features/tui/markdown.js";
+import {renderTranscriptEntries} from "../src/ui/tui/transcript.js";
+import {renderMarkdownLines} from "../src/ui/tui/markdown.js";
 
 describe("renderTranscriptEntries assistant markdown", () => {
   it("preserves assistant markdown structure instead of flattening whitespace", () => {

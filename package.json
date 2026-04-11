@@ -6,18 +6,78 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "panda": "./dist/cli.js"
+    "panda": "./dist/app/cli.js"
   },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./app/runtime": {
+      "types": "./dist/app/runtime/index.d.ts",
+      "import": "./dist/app/runtime/index.js"
+    },
+    "./kernel/agent": {
+      "types": "./dist/kernel/agent/index.d.ts",
+      "import": "./dist/kernel/agent/index.js"
+    },
+    "./personas/panda": {
+      "types": "./dist/personas/panda/index.d.ts",
+      "import": "./dist/personas/panda/index.js"
+    },
+    "./domain/agents": {
+      "types": "./dist/domain/agents/index.d.ts",
+      "import": "./dist/domain/agents/index.js"
+    },
+    "./domain/identity": {
+      "types": "./dist/domain/identity/index.d.ts",
+      "import": "./dist/domain/identity/index.js"
+    },
+    "./domain/channels": {
+      "types": "./dist/domain/channels/index.d.ts",
+      "import": "./dist/domain/channels/index.js"
+    },
+    "./domain/channels/actions": {
+      "types": "./dist/domain/channels/actions/index.d.ts",
+      "import": "./dist/domain/channels/actions/index.js"
+    },
+    "./domain/channels/deliveries": {
+      "types": "./dist/domain/channels/deliveries/index.d.ts",
+      "import": "./dist/domain/channels/deliveries/index.js"
+    },
+    "./domain/threads": {
+      "types": "./dist/domain/threads/index.d.ts",
+      "import": "./dist/domain/threads/index.js"
+    },
+    "./domain/threads/home": {
+      "types": "./dist/domain/threads/home/index.d.ts",
+      "import": "./dist/domain/threads/home/index.js"
+    },
+    "./domain/threads/requests": {
+      "types": "./dist/domain/threads/requests/index.d.ts",
+      "import": "./dist/domain/threads/requests/index.js"
+    },
+    "./domain/threads/runtime": {
+      "types": "./dist/domain/threads/runtime/index.d.ts",
+      "import": "./dist/domain/threads/runtime/index.js"
+    },
+    "./domain/scheduling": {
+      "types": "./dist/domain/scheduling/index.d.ts",
+      "import": "./dist/domain/scheduling/index.js"
+    },
+    "./domain/scheduling/tasks": {
+      "types": "./dist/domain/scheduling/tasks/index.d.ts",
+      "import": "./dist/domain/scheduling/tasks/index.js"
+    },
+    "./integrations/shell": {
+      "types": "./dist/integrations/shell/index.d.ts",
+      "import": "./dist/integrations/shell/index.js"
     }
   },
   "scripts": {
-    "dev": "tsx src/cli.ts",
+    "dev": "tsx src/app/cli.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/cli.js",
+    "start": "node dist/app/cli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "example:basic": "tsx examples/basic.ts",

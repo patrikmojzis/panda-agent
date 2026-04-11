@@ -141,7 +141,6 @@ describe("BashTool", () => {
       const exportOutput = asObject(exportResult);
 
       expect(exportOutput.noOutput).toBe(true);
-      expect(exportOutput.noOutputExpected).toBe(true);
       expect(context.shell?.env.PANDA_TEST_VAR).toBe("hello world");
 
       const readResult = await tool.run(

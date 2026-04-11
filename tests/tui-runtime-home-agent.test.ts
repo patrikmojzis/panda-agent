@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {createChatRuntime} from "../src/features/tui/runtime.js";
+import {createChatRuntime} from "../src/ui/tui/runtime.js";
 
 const tuiRuntimeHomeAgentMocks = vi.hoisted(() => {
   const client = {
@@ -60,7 +60,7 @@ const tuiRuntimeHomeAgentMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../src/features/panda/client.js", () => ({
+vi.mock("../src/app/runtime/client.js", () => ({
   createPandaClient: tuiRuntimeHomeAgentMocks.createPandaClient,
 }));
 

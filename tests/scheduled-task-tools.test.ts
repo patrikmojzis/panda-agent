@@ -6,10 +6,10 @@ import {
     RunContext,
     ScheduledTaskCancelTool,
     ScheduledTaskCreateTool,
-    type ScheduledTaskStore,
     ScheduledTaskUpdateTool,
     ToolError,
 } from "../src/index.js";
+import type {ScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
 
 function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
   return new RunContext({

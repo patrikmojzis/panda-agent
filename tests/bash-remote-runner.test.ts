@@ -4,22 +4,14 @@ import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {
-    Agent,
-    BashTool,
-    type PandaBashRunner,
-    type PandaSessionContext,
-    RemoteShellExecutor,
-    resolveRunnerUrl,
-    RunContext,
-    startPandaBashRunner,
-    ToolError,
-} from "../src/index.js";
+import {Agent, BashTool, type PandaSessionContext, RunContext, ToolError,} from "../src/index.js";
+import {RemoteShellExecutor, resolveRunnerUrl,} from "../src/integrations/shell/bash-executor.js";
+import {type PandaBashRunner, startPandaBashRunner,} from "../src/integrations/shell/bash-runner.js";
 import {
     PANDA_RUNNER_AGENT_KEY_HEADER,
     PANDA_RUNNER_EXPECTED_PATH_HEADER,
     PANDA_RUNNER_PATH_SCOPED_HEADER,
-} from "../src/features/panda/tools/bash-protocol.js";
+} from "../src/integrations/shell/bash-protocol.js";
 
 function createAgent() {
   return new Agent({
@@ -78,16 +70,12 @@ describe("remote bash runner", () => {
   }
 
   it("persists cwd changes across remote calls", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
     const projectRoot = await createWorkspace("panda-remote-project-");
     await mkdir(path.join(projectRoot, "nested"));
     const runner = await createRunner("panda");
     const expectedNested = await realpath(path.join(projectRoot, "nested"));
     const tool = new BashTool({
       env: {
-        PATH: process.env.PATH ?? "",
-        SHELL: process.env.SHELL ?? "/bin/zsh",
-        HOME: agentHome,
         PANDA_BASH_EXECUTION_MODE: "remote",
         PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
@@ -115,17 +103,15 @@ describe("remote bash runner", () => {
     expect(String(asObject(pwd).stdout).trim()).toBe(expectedNested);
   });
 
-  it("does not forward core secrets into remote bash", async () => {
+  it("does not inherit host or session env in remote bash", async () => {
     const agentHome = await createWorkspace("panda-agent-home-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
       env: {
         PANDA_BASH_EXECUTION_MODE: "remote",
         PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
-        PANDA_DATABASE_URL: "postgres://write-secret",
-        PANDA_READONLY_DATABASE_URL: "postgres://read-secret",
         OPENAI_API_KEY: "sk-secret",
-        TELEGRAM_BOT_TOKEN: "tg-secret",
+        HOST_MARKER: "host",
       },
     });
     const context: PandaSessionContext = {
@@ -133,38 +119,32 @@ describe("remote bash runner", () => {
       cwd: agentHome,
       shell: {
         cwd: agentHome,
-        env: {},
+        env: {
+          SESSION_MARKER: "session",
+        },
       },
     };
 
     const result = await tool.run(
       {
-        command: 'printf "%s|%s|%s|%s|%s" "${PANDA_DATABASE_URL:-missing}" "${PANDA_READONLY_DATABASE_URL:-missing}" "${OPENAI_API_KEY:-missing}" "${TELEGRAM_BOT_TOKEN:-missing}" "$REMOTE_MARKER"',
-        env: {
-          REMOTE_MARKER: "hello",
-        },
+        command: 'printf "%s|%s|%s|%s" "${HOST_MARKER:-missing}" "${SESSION_MARKER:-missing}" "${CALL_MARKER:-missing}" "${OPENAI_API_KEY:-missing}"',
       },
       createRunContext(context),
     );
 
-    expect(String(asObject(result).stdout)).toBe("missing|missing|missing|missing|hello");
+    expect(String(asObject(result).stdout)).toBe("missing|missing|missing|missing");
   });
 
-  it("uses the runner env instead of forwarded core env", async () => {
+  it("does not inherit runner process env in remote bash", async () => {
     const agentHome = await createWorkspace("panda-agent-home-");
     const runner = await createRunner("panda", {
       env: {
         ...process.env,
-        HOME: "/runner-home",
-        PATH: "/runner/bin",
         RUNNER_MARKER: "runner",
       },
     });
     const tool = new BashTool({
       env: {
-        PATH: "/host/bin",
-        HOME: "/host-home",
-        RUNNER_MARKER: "host",
         PANDA_BASH_EXECUTION_MODE: "remote",
         PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
@@ -172,30 +152,22 @@ describe("remote bash runner", () => {
 
     const result = await tool.run(
       {
-        command: 'printf "%s|%s|%s" "$HOME" "$PATH" "$RUNNER_MARKER"',
+        command: 'printf "%s" "${RUNNER_MARKER:-missing}"',
       },
       createRunContext({
         agentKey: "panda",
         cwd: agentHome,
         shell: {
           cwd: agentHome,
-          env: {
-            HOME: "/session-home",
-            PATH: "/session/bin",
-            RUNNER_MARKER: "session",
-          },
+          env: {},
         },
       }),
     );
 
-    const [home, runtimePath, marker] = String(asObject(result).stdout).split("|");
-    expect(home).toBe("/runner-home");
-    expect(runtimePath).toContain("/runner/bin");
-    expect(runtimePath).not.toContain("/host/bin");
-    expect(marker).toBe("runner");
+    expect(String(asObject(result).stdout)).toBe("missing");
   });
 
-  it("rejects blocked args.env keys in remote mode", async () => {
+  it("rejects env overrides in remote mode", async () => {
     const agentHome = await createWorkspace("panda-agent-home-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
@@ -220,10 +192,10 @@ describe("remote bash runner", () => {
           env: {},
         },
       }),
-    )).rejects.toThrow("Remote bash blocks env keys: OPENAI_API_KEY.");
+    )).rejects.toThrow("Remote bash does not accept env overrides.");
   });
 
-  it("strips blocked env keys at the runner even if core sends them anyway", async () => {
+  it("rejects env payloads at the runner", async () => {
     const agentHome = await createWorkspace("panda-agent-home-");
     const runner = await createRunner("panda");
 
@@ -241,19 +213,17 @@ describe("remote bash runner", () => {
         cwd: agentHome,
         timeoutMs: 1_000,
         trackedEnvKeys: [],
-        noOutputExpected: false,
         maxOutputChars: 8_000,
         env: {
-          OPENAI_API_KEY: "sk-should-not-pass",
           SAFE_MARKER: "hello",
         },
       }),
     });
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({
-      ok: true,
-      stdout: "missing|hello",
+      ok: false,
+      error: "Runner env overrides are not supported.",
     });
   });
 
@@ -290,14 +260,10 @@ describe("remote bash runner", () => {
   });
 
   it("accepts any cwd that exists inside the runner container", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
     const outsider = await createWorkspace("panda-outsider-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
       env: {
-        PATH: process.env.PATH ?? "",
-        SHELL: process.env.SHELL ?? "/bin/zsh",
-        HOME: agentHome,
         PANDA_BASH_EXECUTION_MODE: "remote",
         PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
@@ -343,7 +309,6 @@ describe("remote bash runner", () => {
       stdoutPersisted: false,
       stderrPersisted: false,
       noOutput: true,
-      noOutputExpected: true,
       trackedEnvKeys: [],
       persistedEnvEntries: [],
     }), {
@@ -362,12 +327,14 @@ describe("remote bash runner", () => {
       cwd: "/workspace",
       timeoutMs: 1_000,
       trackedEnvKeys: [],
-      noOutputExpected: true,
       progressIntervalMs: 250,
       progressTailChars: 1_200,
       maxOutputChars: 8_000,
       persistOutputThresholdChars: 8_000,
       outputDirectory: "/tmp",
+      env: {
+        CALL_MARKER: "hello",
+      },
       run: createRunContext({
         agentKey: "work",
         cwd: "/workspace",
@@ -381,6 +348,7 @@ describe("remote bash runner", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("http://runner-work:8080/base/work/exec");
     expect(resolveRunnerUrl("http://runner-{agentKey}:8080/base", "work")).toBe("http://runner-work:8080/base");
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).not.toHaveProperty("env");
   });
 
   it("supports a single runner url without an agent key placeholder", async () => {
@@ -474,9 +442,7 @@ describe("remote bash runner", () => {
         cwd: agentHome,
         timeoutMs: 1_000,
         trackedEnvKeys: [],
-        noOutputExpected: false,
         maxOutputChars: 8_000,
-        env: {},
       }),
     });
 
@@ -537,9 +503,6 @@ describe("remote bash runner", () => {
     const runner = await createRunner("panda");
     const tool = new BashTool({
       env: {
-        PATH: process.env.PATH ?? "",
-        SHELL: process.env.SHELL ?? "/bin/zsh",
-        HOME: agentHome,
         PANDA_BASH_EXECUTION_MODE: "remote",
         PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },

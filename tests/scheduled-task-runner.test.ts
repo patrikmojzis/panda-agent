@@ -2,16 +2,12 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {DataType, newDb} from "pg-mem";
 
-import {
-    Agent,
-    PostgresHomeThreadStore,
-    PostgresOutboundDeliveryStore,
-    PostgresScheduledTaskStore,
-    PostgresThreadRuntimeStore,
-    ScheduledTaskRunner,
-    ThreadRuntimeCoordinator,
-} from "../src/index.js";
-import {PostgresThreadRouteStore} from "../src/features/thread-routes/index.js";
+import {Agent,} from "../src/index.js";
+import {PostgresScheduledTaskStore, ScheduledTaskRunner,} from "../src/domain/scheduling/tasks/index.js";
+import {PostgresHomeThreadStore,} from "../src/domain/threads/home/index.js";
+import {PostgresThreadRuntimeStore, ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
+import {PostgresOutboundDeliveryStore,} from "../src/domain/channels/deliveries/index.js";
+import {PostgresThreadRouteRepo} from "../src/domain/threads/routes/repo.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
   return {
@@ -78,7 +74,7 @@ async function createHarness(options: {
   await scheduledTasks.ensureSchema();
   const homeThreads = new PostgresHomeThreadStore({pool});
   await homeThreads.ensureSchema();
-  const threadRoutes = new PostgresThreadRouteStore({pool});
+  const threadRoutes = new PostgresThreadRouteRepo({pool});
   await threadRoutes.ensureSchema();
   const outboundDeliveries = new PostgresOutboundDeliveryStore({pool});
   await outboundDeliveries.ensureSchema();

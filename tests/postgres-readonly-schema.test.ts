@@ -1,12 +1,9 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {
-    ensureReadonlyChatQuerySchema,
-    PostgresHomeThreadStore,
-    PostgresScheduledTaskStore,
-    PostgresThreadRuntimeStore,
-} from "../src/index.js";
+import {ensureReadonlyChatQuerySchema, PostgresThreadRuntimeStore,} from "../src/domain/threads/runtime/index.js";
+import {PostgresHomeThreadStore} from "../src/domain/threads/home/index.js";
+import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
 
 class RecordingQueryable {
   readonly queries: string[] = [];

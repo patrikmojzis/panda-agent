@@ -1,8 +1,10 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {ChannelTypingDispatcher, stringToUserMessage, type ThreadMessageRecord} from "../src/index.js";
-import {resolveChannelRouteTarget} from "../src/features/channels/core/route-target.js";
-import {createChannelTypingEventHandler} from "../src/features/thread-runtime/channel-typing.js";
+import {stringToUserMessage} from "../src/index.js";
+import {ChannelTypingDispatcher} from "../src/domain/channels/typing.js";
+import {resolveChannelRouteTarget} from "../src/domain/channels/route-target.js";
+import type {ThreadMessageRecord} from "../src/domain/threads/runtime/index.js";
+import {createChannelTypingEventHandler} from "../src/domain/threads/runtime/channel-typing.js";
 
 function createInputRecord(
   overrides: Partial<ThreadMessageRecord> = {},

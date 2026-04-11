@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {PostgresThreadRouteStore} from "../src/features/thread-routes/index.js";
+import {PostgresThreadRouteRepo} from "../src/domain/threads/routes/repo.js";
 
 function createPool() {
   const db = newDb();
@@ -16,7 +16,7 @@ function createPool() {
   return new adapter.Pool();
 }
 
-describe("PostgresThreadRouteStore", () => {
+describe("PostgresThreadRouteRepo", () => {
   const pools: Array<{end(): Promise<void>}> = [];
 
   afterEach(async () => {
@@ -34,7 +34,7 @@ describe("PostgresThreadRouteStore", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const store = new PostgresThreadRouteStore({pool});
+    const store = new PostgresThreadRouteRepo({pool});
     await store.ensureSchema();
 
     await store.rememberLastRoute({
@@ -77,7 +77,7 @@ describe("PostgresThreadRouteStore", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const store = new PostgresThreadRouteStore({pool});
+    const store = new PostgresThreadRouteRepo({pool});
     await store.ensureSchema();
 
     await store.rememberLastRoute({
@@ -118,7 +118,7 @@ describe("PostgresThreadRouteStore", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const store = new PostgresThreadRouteStore({pool});
+    const store = new PostgresThreadRouteRepo({pool});
     await store.ensureSchema();
 
     await expect(store.rememberLastRoute({

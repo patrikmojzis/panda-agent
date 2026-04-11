@@ -15,7 +15,7 @@ import {
     ToolError,
     z,
 } from "../src/index.js";
-import {PandaSubagentService} from "../src/features/panda/subagents/service.js";
+import {PandaSubagentService} from "../src/personas/panda/subagents/service.js";
 
 class FakeBashTool extends Tool<typeof FakeBashTool.schema, PandaSessionContext> {
   static schema = z.object({

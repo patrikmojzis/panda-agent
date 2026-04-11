@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {PostgresHomeThreadStore} from "../src/index.js";
+import {PostgresHomeThreadStore} from "../src/domain/threads/home/index.js";
 
 function createPool() {
   const db = newDb();

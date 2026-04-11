@@ -1,7 +1,8 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore, PostgresIdentityStore,} from "../src/index.js";
+import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 
 describe("PostgresAgentStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];

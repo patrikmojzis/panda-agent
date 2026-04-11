@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
 
-import type {IdentityStore} from "../../src/features/identity/store.js";
+import type {IdentityStore} from "../../src/domain/identity/store.js";
 import {
     createDefaultIdentityInput,
     type CreateIdentityBindingInput,
@@ -12,8 +12,8 @@ import {
     type IdentityBindingRecord,
     type IdentityRecord,
     normalizeIdentityHandle,
-} from "../../src/features/identity/types.js";
-import type {ThreadEnqueueResult, ThreadRuntimeStore} from "../../src/features/thread-runtime/store.js";
+} from "../../src/domain/identity/types.js";
+import type {ThreadEnqueueResult, ThreadRuntimeStore} from "../../src/domain/threads/runtime/store.js";
 import {
     type CreateThreadInput,
     matchesThreadInputIdentity,
@@ -27,7 +27,7 @@ import {
     type ThreadRuntimeMessagePayload,
     type ThreadSummaryRecord,
     type ThreadUpdate,
-} from "../../src/features/thread-runtime/types.js";
+} from "../../src/domain/threads/runtime/types.js";
 
 function cloneRecord<T extends object>(record: T): T {
   return {

@@ -163,16 +163,16 @@ When that mapping lands, the safer name is probably `external_conversation_id`, 
 
 Identity-specific implementation:
 
-- [src/features/identity/types.ts](../../src/features/identity/types.ts)
-- [src/features/identity/store.ts](../../src/features/identity/store.ts)
-- [src/features/identity/postgres.ts](../../src/features/identity/postgres.ts)
-- [src/features/identity/cli.ts](../../src/features/identity/cli.ts)
+- [src/domain/identity/types.ts](../../src/domain/identity/types.ts)
+- [src/domain/identity/store.ts](../../src/domain/identity/store.ts)
+- [src/domain/identity/postgres.ts](../../src/domain/identity/postgres.ts)
+- [src/domain/identity/cli.ts](../../src/domain/identity/cli.ts)
 
 Thread and runtime integration:
 
-- [src/features/thread-runtime/types.ts](../../src/features/thread-runtime/types.ts)
-- [src/features/thread-runtime/store.ts](../../src/features/thread-runtime/store.ts)
-- [src/features/thread-runtime/postgres.ts](../../src/features/thread-runtime/postgres.ts)
-- [src/features/thread-runtime/postgres-readonly.ts](../../src/features/thread-runtime/postgres-readonly.ts)
-- [src/features/tui/runtime.ts](../../src/features/tui/runtime.ts)
-- [src/cli.ts](../../src/cli.ts)
+- [src/domain/threads/runtime/types.ts](../../src/domain/threads/runtime/types.ts)
+- [src/domain/threads/runtime/store.ts](../../src/domain/threads/runtime/store.ts)
+- [src/domain/threads/runtime/postgres.ts](../../src/domain/threads/runtime/postgres.ts)
+- [src/domain/threads/runtime/postgres-readonly.ts](../../src/domain/threads/runtime/postgres-readonly.ts)
+- [src/ui/tui/runtime.ts](../../src/ui/tui/runtime.ts)
+- [src/app/cli.ts](../../src/app/cli.ts)

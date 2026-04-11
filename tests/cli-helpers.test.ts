@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 
-import {applySlashCompletion, getSlashCompletionContext,} from "../src/features/tui/commands.js";
+import {applySlashCompletion, getSlashCompletionContext,} from "../src/ui/tui/commands.js";
 import {
     createComposerState,
     deleteWordBackward,
@@ -11,7 +11,7 @@ import {
     moveCursorWordLeft,
     moveCursorWordRight,
     setComposerValue,
-} from "../src/features/tui/composer.js";
+} from "../src/ui/tui/composer.js";
 
 describe("composer helpers", () => {
   it("moves through multiline content while preserving the preferred column", () => {

@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { DataType, newDb } from "pg-mem";
+import {afterEach, describe, expect, it} from "vitest";
+import {DataType, newDb} from "pg-mem";
 
-import { PostgresChannelCursorStore } from "../src/index.js";
+import {ChannelCursorRepo} from "../src/domain/channels/cursors/repo.js";
 
-describe("PostgresChannelCursorStore", () => {
+describe("ChannelCursorRepo", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
 
   afterEach(async () => {
@@ -29,7 +29,7 @@ describe("PostgresChannelCursorStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresChannelCursorStore({ pool });
+    const store = new ChannelCursorRepo({ pool });
     await store.ensureSchema();
 
     await expect(store.resolveChannelCursor({
@@ -94,7 +94,7 @@ describe("PostgresChannelCursorStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresChannelCursorStore({ pool });
+    const store = new ChannelCursorRepo({ pool });
     await store.ensureSchema();
 
     await store.upsertChannelCursor({
@@ -156,7 +156,7 @@ describe("PostgresChannelCursorStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresChannelCursorStore({ pool });
+    const store = new ChannelCursorRepo({ pool });
     await store.ensureSchema();
 
     await expect(store.upsertChannelCursor({

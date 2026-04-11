@@ -1,6 +1,6 @@
 import {describe, expect, it, vi} from "vitest";
 
-import {createTelegramTypingAdapter} from "../src/index.js";
+import {createTelegramTypingAdapter} from "../src/integrations/channels/telegram/typing.js";
 
 describe("createTelegramTypingAdapter", () => {
   it("sends typing actions and preserves the message thread id", async () => {

@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import {describe, expect, it} from "vitest";
 
-import { renderResumeHint } from "../src/features/tui/exit-hint.js";
+import {renderResumeHint} from "../src/ui/tui/exit-hint.js";
 
 describe("renderResumeHint", () => {
   it("renders a full-width resume footer", () => {

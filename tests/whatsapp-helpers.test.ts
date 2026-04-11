@@ -1,14 +1,14 @@
-import { describe, expect, it } from "vitest";
+import {describe, expect, it} from "vitest";
 
-import type { WAMessage } from "baileys";
+import type {WAMessage} from "baileys";
+import type {MediaDescriptor} from "../src/domain/channels/index.js";
 
 import {
-  buildWhatsAppInboundMetadata,
-  buildWhatsAppInboundText,
-  extractWhatsAppMessageText,
-  extractWhatsAppQuotedMessageId,
-  type MediaDescriptor,
-} from "../src/index.js";
+    buildWhatsAppInboundMetadata,
+    buildWhatsAppInboundText,
+    extractWhatsAppMessageText,
+    extractWhatsAppQuotedMessageId,
+} from "../src/integrations/channels/whatsapp/helpers.js";
 
 function mediaDescriptor(overrides: Partial<MediaDescriptor> = {}): MediaDescriptor {
   return {

@@ -1,6 +1,6 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {WhatsAppService} from "../src/features/whatsapp/service.js";
+import {WhatsAppService} from "../src/integrations/channels/whatsapp/service.js";
 
 const whatsappServiceMocks = vi.hoisted(() => {
   const socket = {

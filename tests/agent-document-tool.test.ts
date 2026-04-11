@@ -4,15 +4,14 @@ import {DataType, newDb} from "pg-mem";
 import {
     Agent,
     AgentDocumentTool,
-    DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     type PandaSessionContext,
-    PostgresAgentStore,
-    PostgresIdentityStore,
     RunContext,
     ToolError,
     type ToolResultPayload,
 } from "../src/index.js";
-import type {AgentStore} from "../src/features/agents/store.js";
+import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import type {AgentStore} from "../src/domain/agents/store.js";
 
 function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
   return new RunContext({

@@ -9,9 +9,9 @@ import {
     PANDA_PROMPT,
     WhisperTool,
 } from "../src/index.js";
-import {buildPandaTools} from "../src/features/panda/agent.js";
-import {resolveStoredPandaContext} from "../src/features/panda/runtime.js";
-import {resolveRemoteInitialCwd} from "../src/features/panda/tools/bash-executor.js";
+import {buildPandaTools} from "../src/personas/panda/definition.js";
+import {resolveStoredPandaContext} from "../src/app/runtime/create-runtime.js";
+import {resolveRemoteInitialCwd} from "../src/integrations/shell/bash-executor.js";
 
 describe("Panda feature surface", () => {
   afterEach(() => {

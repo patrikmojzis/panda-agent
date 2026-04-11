@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { DataType, newDb } from "pg-mem";
+import {afterEach, describe, expect, it} from "vitest";
+import {DataType, newDb} from "pg-mem";
 
-import { DEFAULT_IDENTITY_ID, PostgresIdentityStore } from "../src/index.js";
+import {DEFAULT_IDENTITY_ID, PostgresIdentityStore,} from "../src/domain/identity/index.js";
 
 describe("PostgresIdentityStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];

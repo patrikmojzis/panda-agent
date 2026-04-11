@@ -1,6 +1,6 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {TelegramService} from "../src/features/telegram/service.js";
+import {TelegramService} from "../src/integrations/channels/telegram/service.js";
 
 const telegramServiceMocks = vi.hoisted(() => {
   const botInstances: MockBot[] = [];

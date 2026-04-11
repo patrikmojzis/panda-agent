@@ -1,9 +1,12 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {ChannelOutboundDeliveryWorker, PostgresOutboundDeliveryStore} from "../src/index.js";
-import type {ChannelOutboundAdapter, OutboundRequest, OutboundResult} from "../src/features/channels/core/index.js";
-import type {OutboundDeliveryStore} from "../src/features/outbound-deliveries/store.js";
+import type {ChannelOutboundAdapter, OutboundRequest, OutboundResult} from "../src/domain/channels/index.js";
+import {
+  ChannelOutboundDeliveryWorker,
+  PostgresOutboundDeliveryStore,
+} from "../src/domain/channels/deliveries/index.js";
+import type {OutboundDeliveryStore} from "../src/domain/channels/deliveries/store.js";
 import type {
     CompleteOutboundDeliveryInput,
     CreateOutboundDeliveryInput,
@@ -11,7 +14,7 @@ import type {
     OutboundDeliveryNotification,
     OutboundDeliveryRecord,
     OutboundDeliveryWorkerLookup,
-} from "../src/features/outbound-deliveries/types.js";
+} from "../src/domain/channels/deliveries/types.js";
 
 describe("PostgresOutboundDeliveryStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
