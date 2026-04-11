@@ -42,6 +42,7 @@ export interface BashExecutorRequest {
   cwd: string;
   timeoutMs: number;
   trackedEnvKeys: string[];
+  env?: Record<string, string>;
 }
 
 export interface BashRunnerExecRequest extends BashExecutorRequest {

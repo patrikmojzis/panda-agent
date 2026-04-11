@@ -281,7 +281,7 @@ export class OutboundTool<TContext = PandaSessionContext> extends Tool<typeof ou
       items,
     });
     if (!hasExplicitTarget) {
-      await pandaContext?.routeMemory?.rememberLastRoute(rememberRouteFromTarget(target));
+      await pandaContext?.routeMemory?.saveLastRoute(rememberRouteFromTarget(target));
     }
 
     return serializeQueuedDelivery({

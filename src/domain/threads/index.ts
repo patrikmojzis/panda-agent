@@ -1,23 +1,22 @@
 export {
-  ConversationThreadRepo,
-  type ConversationThreadRepoOptions,
+  ConversationRepo,
+  type ConversationRepoOptions,
 } from "./conversations/repo.js";
 export type {
-  BindConversationThreadResult,
-  ConversationThreadBindingInput,
-  ConversationThreadLookup,
-  ConversationThreadRecord,
+  BindConversationInput,
+  BindConversationResult,
+  ConversationBinding,
+  ConversationLookup,
 } from "./conversations/types.js";
 export * from "./home/index.js";
 export * from "./requests/index.js";
 export {
-  PostgresThreadRouteRepo,
-  type PostgresThreadRouteRepoOptions,
+  ThreadRouteRepo,
+  type ThreadRouteRepoOptions,
 } from "./routes/repo.js";
 export type {
-  RememberThreadRouteInput,
+  ThreadRouteInput,
   ThreadRouteLookup,
   ThreadRouteRecord,
 } from "./routes/types.js";
-export type {ThreadRouteRepo} from "./routes/repo.js";
 export * from "./runtime/index.js";

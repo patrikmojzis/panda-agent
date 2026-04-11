@@ -18,6 +18,12 @@ src/
     models/
     transcript/
 
+  prompts/
+    channels/
+    contexts/
+    runtime/
+    templates/
+
   personas/
     panda/
       contexts/
@@ -59,7 +65,8 @@ src/
 
 - `app`: CLI entrypoint and runtime assembly
 - `kernel`: the inner agent loop and provider-neutral execution pieces
-- `personas`: Panda prompt, tools, contexts, and subagent policy
+- `prompts`: editable model-facing text, wrappers, and default templates
+- `personas`: Panda tool policy, contexts, subagents, and persona wiring
 - `domain`: Panda concepts like identities, agents, threads, scheduling, and channel records
 - `integrations`: Telegram, WhatsApp, provider adapters, and shell glue
 - `ui`: terminal-facing chat surface
@@ -107,6 +114,14 @@ The package entrypoints mirror those real boundaries:
 Everything else should prefer direct file imports.
 We already deleted the bounce-only barrels. Do not bring them back.
 
+Internal on purpose:
+
+- `domain/credentials` is runtime plumbing for Panda itself, not a package surface
+- `domain/threads/conversations` and `domain/threads/routes` stay behind `domain/threads`
+- `prompts/**` is editable source-of-truth for model text, but still internal repo structure, not package surface
+- persona leaf files like `tools/bash-tool.ts`, `tools/env-value-tools.ts`, and `tools/web-fetch.ts` stay behind `personas/panda`
+- persona helpers like `subagents/service.ts` and `message-preview.ts` stay internal even though the `personas/panda` barrel stays public
+
 ## Repo Vs Store
 
 `store.ts` now means a real behavior contract.
@@ -127,9 +142,9 @@ These are repos:
 
 - `PandaDaemonStateRepo`
 - `ChannelCursorRepo`
-- `ConversationThreadRepo`
+- `ConversationRepo`
 - `PandaRuntimeRequestRepo`
-- `PostgresThreadRouteRepo`
+- `ThreadRouteRepo`
 
 If a second implementation becomes real later, earn the abstraction then.
 Not before.
@@ -140,12 +155,14 @@ Not before.
 - Use a barrel only when it is a real boundary or package surface.
 - Do not add nested `index.ts` files for `tools`, `contexts`, `subagents`, or tiny leaf folders.
 - Do not hide concrete Postgres code behind interface theater if nothing else implements it.
+- If you are editing wording, go to `src/prompts`, not a runner or service file.
 
 ## Direction That Won
 
 - `thread` is the durable unit
 - `identity` is the person
 - `agent` is the persona
+- editable prompt text lives in `prompts`
 - providers shape provider payloads
 - `Thread` owns the inner loop
 - runtime wiring stays in `app`

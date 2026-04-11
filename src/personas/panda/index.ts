@@ -1,7 +1,6 @@
 export {PANDA_PROMPT} from "./prompt.js";
 export {buildPandaTools} from "./definition.js";
 export {resolveDefaultPandaModelSelector} from "./defaults.js";
-export {summarizeMessageText} from "./message-preview.js";
 export {
   AgentMemoryContext,
   type AgentMemoryContextOptions,
@@ -24,6 +23,11 @@ export {
   BraveSearchTool,
   type BraveSearchToolOptions,
 } from "./tools/brave-search-tool.js";
+export {
+  ClearEnvValueTool,
+  SetEnvValueTool,
+  type EnvValueToolOptions,
+} from "./tools/env-value-tools.js";
 export {MediaTool, type MediaToolOptions} from "./tools/media-tool.js";
 export {OutboundTool} from "./tools/outbound-tool.js";
 export {
@@ -45,18 +49,16 @@ export {
   type WhisperToolOptions,
 } from "./tools/whisper-tool.js";
 export {
+  WebFetchTool,
+  type WebFetchToolOptions,
+} from "./tools/web-fetch-tool.js";
+export {
   filterToolsForSubagentRole,
   getPandaSubagentRolePolicy,
   PANDA_SUBAGENT_ROLE_POLICIES,
   type PandaSubagentRole,
   type PandaSubagentRolePolicy,
 } from "./subagents/policy.js";
-export {
-  PandaSubagentService,
-  type PandaSubagentRunInput,
-  type PandaSubagentRunResult,
-  type PandaSubagentServiceOptions,
-} from "./subagents/service.js";
 export type {
   PandaChannelActionQueue,
   PandaOutboundQueue,

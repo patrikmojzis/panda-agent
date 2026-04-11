@@ -2,18 +2,19 @@ export {
   PostgresChannelActionStore,
   type PostgresChannelActionStoreOptions,
 } from "./postgres.js";
+export {buildActionNotificationChannel} from "./postgres-shared.js";
 export type {ChannelActionStore} from "./store.js";
 export {
   ChannelActionWorker,
   type ChannelActionWorkerOptions,
 } from "./worker.js";
 export type {
+  ActionNotification,
+  ActionWorkerLookup,
   ChannelActionKind,
-  ChannelActionNotification,
   ChannelActionPayload,
+  ChannelActionInput,
   ChannelActionRecord,
   ChannelActionStatus,
-  ChannelActionWorkerLookup,
-  CreateChannelActionInput,
   TelegramReactionActionPayload,
 } from "./types.js";

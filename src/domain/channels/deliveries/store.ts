@@ -1,21 +1,21 @@
 import type {
-    CompleteOutboundDeliveryInput,
-    CreateOutboundDeliveryInput,
-    FailOutboundDeliveryInput,
-    OutboundDeliveryNotification,
+    CompleteDeliveryInput,
+    DeliveryNotification,
+    DeliveryWorkerLookup,
+    FailDeliveryInput,
+    OutboundDeliveryInput,
     OutboundDeliveryRecord,
-    OutboundDeliveryWorkerLookup,
 } from "./types.js";
 
 export interface OutboundDeliveryStore {
   ensureSchema(): Promise<void>;
-  enqueueDelivery(input: CreateOutboundDeliveryInput): Promise<OutboundDeliveryRecord>;
+  enqueueDelivery(input: OutboundDeliveryInput): Promise<OutboundDeliveryRecord>;
   getDelivery(id: string): Promise<OutboundDeliveryRecord>;
-  claimNextPendingDelivery(lookup: OutboundDeliveryWorkerLookup): Promise<OutboundDeliveryRecord | null>;
-  markDeliverySent(input: CompleteOutboundDeliveryInput): Promise<OutboundDeliveryRecord>;
-  markDeliveryFailed(input: FailOutboundDeliveryInput): Promise<OutboundDeliveryRecord>;
-  failSendingDeliveries(lookup: OutboundDeliveryWorkerLookup, error: string): Promise<number>;
+  claimNextPendingDelivery(lookup: DeliveryWorkerLookup): Promise<OutboundDeliveryRecord | null>;
+  markDeliverySent(input: CompleteDeliveryInput): Promise<OutboundDeliveryRecord>;
+  markDeliveryFailed(input: FailDeliveryInput): Promise<OutboundDeliveryRecord>;
+  failSendingDeliveries(lookup: DeliveryWorkerLookup, error: string): Promise<number>;
   listenPendingDeliveries(
-    listener: (notification: OutboundDeliveryNotification) => Promise<void> | void,
+    listener: (notification: DeliveryNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>>;
 }

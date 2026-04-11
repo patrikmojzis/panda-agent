@@ -3,17 +3,17 @@ import type {OutboundItem, OutboundSentItem, OutboundTarget,} from "../types.js"
 
 export type OutboundDeliveryStatus = "pending" | "sending" | "sent" | "failed";
 
-export interface OutboundDeliveryNotification {
+export interface DeliveryNotification {
   channel: string;
   connectorKey: string;
 }
 
-export interface OutboundDeliveryWorkerLookup {
+export interface DeliveryWorkerLookup {
   channel: string;
   connectorKey: string;
 }
 
-export interface CreateOutboundDeliveryInput {
+export interface OutboundDeliveryInput {
   threadId?: string;
   channel: string;
   target: OutboundTarget;
@@ -21,7 +21,7 @@ export interface CreateOutboundDeliveryInput {
   metadata?: JsonValue;
 }
 
-export interface OutboundDeliveryRecord extends CreateOutboundDeliveryInput {
+export interface OutboundDeliveryRecord extends OutboundDeliveryInput {
   id: string;
   status: OutboundDeliveryStatus;
   attemptCount: number;
@@ -33,12 +33,12 @@ export interface OutboundDeliveryRecord extends CreateOutboundDeliveryInput {
   updatedAt: number;
 }
 
-export interface CompleteOutboundDeliveryInput {
+export interface CompleteDeliveryInput {
   id: string;
   sent: readonly OutboundSentItem[];
 }
 
-export interface FailOutboundDeliveryInput {
+export interface FailDeliveryInput {
   id: string;
   error: string;
 }

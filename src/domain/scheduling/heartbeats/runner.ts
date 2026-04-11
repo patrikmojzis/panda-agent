@@ -1,4 +1,5 @@
 import {stringToUserMessage} from "../../../kernel/agent/index.js";
+import {renderHeartbeatPrompt} from "../../../prompts/runtime/heartbeat.js";
 import type {HomeThreadStore} from "../../threads/home/store.js";
 import type {HomeThreadRecord} from "../../threads/home/types.js";
 import type {ThreadRuntimeCoordinator} from "../../threads/runtime/coordinator.js";
@@ -10,20 +11,10 @@ const HEARTBEAT_SOURCE = "heartbeat";
 const HEARTBEAT_CLAIM_OWNER = "heartbeat-runner";
 
 function buildHeartbeatPrompt(scheduledFor: number, guidance?: string | null): string {
-  const heartbeatGuidance = guidance?.trim();
-  return [
-    "[Heartbeat]",
-    "This is a periodic wake from Panda.",
-    "Review pending promises, reminders, and unfinished follow-ups.",
-    ...(heartbeatGuidance
-      ? ["", "[Heartbeat Guidance]", heartbeatGuidance]
-      : []),
-    "",
-    "Do not invent stale work.",
-    "Only use outbound if you intentionally want to reach the user.",
-    "If nothing needs attention, keep it quiet and move on.",
-    `Scheduled fire time: ${new Date(scheduledFor).toISOString()}`,
-  ].join("\n");
+  return renderHeartbeatPrompt({
+    scheduledIso: new Date(scheduledFor).toISOString(),
+    guidance,
+  });
 }
 
 function computeNextHeartbeatFireAt(home: HomeThreadRecord, now: number): number {

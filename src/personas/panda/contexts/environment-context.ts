@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {LlmContext} from "../../../kernel/agent/llm-context.js";
+import {renderEnvironmentContext} from "../../../prompts/contexts/environment.js";
 
 export interface EnvironmentContextOptions {
   cwd?: string;
@@ -114,12 +115,13 @@ export class EnvironmentContext extends LlmContext {
     const terminalProgram = firstNonEmpty(this.options.terminalProgram, process.env.TERM_PROGRAM);
     const nodeVersion = firstNonEmpty(this.options.nodeVersion, process.version) ?? "unknown";
 
-    return [
-      `User: ${username} @ ${hostname}`,
-      `OS: ${formatOperatingSystem(platform, release, arch)}`,
-      `Hardware: ${joinCompact([cpuModel, `${cpuCount} cores`, formatMemory(totalMemoryBytes)])}`,
-      `Runtime: ${joinCompact([`Node ${nodeVersion}`, shell, terminalProgram])}`,
-      `Workspace: ${cwd}`,
-    ].join("\n");
+    return renderEnvironmentContext({
+      username,
+      hostname,
+      osLabel: formatOperatingSystem(platform, release, arch),
+      hardware: joinCompact([cpuModel, `${cpuCount} cores`, formatMemory(totalMemoryBytes)]),
+      runtime: joinCompact([`Node ${nodeVersion}`, shell, terminalProgram]),
+      workspace: cwd,
+    });
   }
 }

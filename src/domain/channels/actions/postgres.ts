@@ -4,17 +4,12 @@ import type {Pool, PoolClient} from "pg";
 
 import {quoteIdentifier, toMillis} from "../../threads/runtime/postgres-shared.js";
 import {
-    buildChannelActionNotificationChannel,
+    buildActionNotificationChannel,
     buildChannelActionTableNames,
     type ChannelActionTableNames,
 } from "./postgres-shared.js";
 import type {ChannelActionStore} from "./store.js";
-import type {
-    ChannelActionNotification,
-    ChannelActionRecord,
-    ChannelActionWorkerLookup,
-    CreateChannelActionInput,
-} from "./types.js";
+import type {ActionNotification, ActionWorkerLookup, ChannelActionInput, ChannelActionRecord,} from "./types.js";
 
 interface PgQueryable {
   query: Pool["query"];
@@ -38,16 +33,16 @@ function requireTrimmed(field: string, value: string): string {
   return trimmed;
 }
 
-function normalizeLookup(lookup: ChannelActionWorkerLookup): ChannelActionWorkerLookup {
+function normalizeLookup(lookup: ActionWorkerLookup): ActionWorkerLookup {
   return {
     channel: requireTrimmed("channel", lookup.channel),
     connectorKey: requireTrimmed("connector key", lookup.connectorKey),
   };
 }
 
-function parseNotification(payload: string): ChannelActionNotification | null {
+function parseNotification(payload: string): ActionNotification | null {
   try {
-    const parsed = JSON.parse(payload) as Partial<ChannelActionNotification>;
+    const parsed = JSON.parse(payload) as Partial<ActionNotification>;
     if (!parsed || typeof parsed.channel !== "string" || typeof parsed.connectorKey !== "string") {
       return null;
     }
@@ -87,10 +82,10 @@ export class PostgresChannelActionStore implements ChannelActionStore {
     this.pool = options.pool;
     const prefix = options.tablePrefix ?? "thread_runtime";
     this.tables = buildChannelActionTableNames(prefix);
-    this.notificationChannel = buildChannelActionNotificationChannel(prefix);
+    this.notificationChannel = buildActionNotificationChannel(prefix);
   }
 
-  private async notify(input: ChannelActionNotification): Promise<void> {
+  private async notify(input: ActionNotification): Promise<void> {
     await this.pool.query("SELECT pg_notify($1, $2)", [
       this.notificationChannel,
       JSON.stringify(input),
@@ -120,7 +115,7 @@ export class PostgresChannelActionStore implements ChannelActionStore {
     `);
   }
 
-  async enqueueAction(input: CreateChannelActionInput): Promise<ChannelActionRecord> {
+  async enqueueAction(input: ChannelActionInput): Promise<ChannelActionRecord> {
     const channel = requireTrimmed("channel", input.channel);
     const connectorKey = requireTrimmed("connector key", input.connectorKey);
     const result = await this.pool.query(`
@@ -155,7 +150,7 @@ export class PostgresChannelActionStore implements ChannelActionStore {
     return record;
   }
 
-  async claimNextPendingAction(lookup: ChannelActionWorkerLookup): Promise<ChannelActionRecord | null> {
+  async claimNextPendingAction(lookup: ActionWorkerLookup): Promise<ChannelActionRecord | null> {
     const normalized = normalizeLookup(lookup);
     const client = await this.pool.connect();
 
@@ -224,7 +219,7 @@ export class PostgresChannelActionStore implements ChannelActionStore {
     return parseRecord(result.rows[0] as Record<string, unknown>);
   }
 
-  async failSendingActions(lookup: ChannelActionWorkerLookup, error: string): Promise<number> {
+  async failSendingActions(lookup: ActionWorkerLookup, error: string): Promise<number> {
     const normalized = normalizeLookup(lookup);
     const result = await this.pool.query(`
       UPDATE ${this.tables.channelActions}
@@ -244,7 +239,7 @@ export class PostgresChannelActionStore implements ChannelActionStore {
   }
 
   async listenPendingActions(
-    listener: (notification: ChannelActionNotification) => Promise<void> | void,
+    listener: (notification: ActionNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>> {
     const client = await this.pool.connect();
     const handleNotification = (message: { channel: string; payload?: string }) => {

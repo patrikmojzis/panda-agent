@@ -1,4 +1,5 @@
 import type {Tool} from "../../../kernel/agent/tool.js";
+import {EXPLORE_SUBAGENT_PROMPT} from "../../../prompts/runtime/subagents.js";
 import type {PandaLlmContextSection} from "../contexts/builder.js";
 
 export type PandaSubagentRole = "explore";
@@ -14,6 +15,7 @@ export interface PandaSubagentRolePolicy {
 const exploreAllowedToolNames = new Set([
   "bash",
   "view_media",
+  "web_fetch",
   "brave_search",
   "postgres_readonly_query",
 ]);
@@ -21,13 +23,7 @@ const exploreAllowedToolNames = new Set([
 export const PANDA_SUBAGENT_ROLE_POLICIES: Record<PandaSubagentRole, PandaSubagentRolePolicy> = {
   explore: {
     role: "explore",
-    prompt: [
-      "You are Panda's explore subagent.",
-      "You are running synchronously for the parent agent, not the end user.",
-      "Investigate the assigned task, inspect the workspace, and return concise findings.",
-      "Do not use outbound messaging, do not update memory, and do not spawn more subagents.",
-      "If you cannot answer fully, say what you checked and what remains unknown.",
-    ].join("\n"),
+    prompt: EXPLORE_SUBAGENT_PROMPT,
     allowedToolNames: exploreAllowedToolNames,
     visibleContextSections: ["datetime", "environment"],
     maySpawnSubagents: false,

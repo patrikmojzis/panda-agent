@@ -7,7 +7,7 @@ import {PostgresScheduledTaskStore, ScheduledTaskRunner,} from "../src/domain/sc
 import {PostgresHomeThreadStore,} from "../src/domain/threads/home/index.js";
 import {PostgresThreadRuntimeStore, ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
 import {PostgresOutboundDeliveryStore,} from "../src/domain/channels/deliveries/index.js";
-import {PostgresThreadRouteRepo} from "../src/domain/threads/routes/repo.js";
+import {ThreadRouteRepo} from "../src/domain/threads/routes/repo.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
   return {
@@ -74,7 +74,7 @@ async function createHarness(options: {
   await scheduledTasks.ensureSchema();
   const homeThreads = new PostgresHomeThreadStore({pool});
   await homeThreads.ensureSchema();
-  const threadRoutes = new PostgresThreadRouteRepo({pool});
+  const threadRoutes = new ThreadRouteRepo({pool});
   await threadRoutes.ensureSchema();
   const outboundDeliveries = new PostgresOutboundDeliveryStore({pool});
   await outboundDeliveries.ensureSchema();
@@ -95,7 +95,7 @@ async function createHarness(options: {
   });
 
   if (options.routeSource) {
-    await threadRoutes.rememberLastRoute({
+    await threadRoutes.saveLastRoute({
       threadId: "home-thread",
       route: {
         source: options.routeSource,

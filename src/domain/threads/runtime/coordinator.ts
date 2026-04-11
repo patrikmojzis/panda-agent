@@ -137,6 +137,38 @@ function buildRunContextValue(
   };
 }
 
+function sanitizePersistedMessage(message: Message, tools: Thread["agent"]["tools"]): Message {
+  if (message.role === "assistant") {
+    const content = message.content.map((block) => {
+      if (block.type !== "toolCall") {
+        return block;
+      }
+
+      const tool = tools.find((candidate) => candidate.name === block.name);
+      if (!tool || typeof block.arguments !== "object" || block.arguments === null || Array.isArray(block.arguments)) {
+        return block;
+      }
+
+      return {
+        ...block,
+        arguments: tool.redactCallArguments(block.arguments as Record<string, unknown>),
+      };
+    });
+
+    return {
+      ...message,
+      content,
+    };
+  }
+
+  if (message.role === "toolResult") {
+    const tool = tools.find((candidate) => candidate.name === message.toolName);
+    return tool ? tool.redactResultMessage(message) : message;
+  }
+
+  return message;
+}
+
 type AutoCompactionPreflightResult =
   | {
     action: "continue";
@@ -596,7 +628,7 @@ export class ThreadRuntimeCoordinator {
         for await (const event of executor.run()) {
           if (isPersistedThreadMessage(event)) {
             await this.store.appendRuntimeMessage(threadId, {
-              message: event,
+              message: sanitizePersistedMessage(event, definition.agent.tools),
               source: runtimeSourceForMessage(event),
               runId: run.id,
             });

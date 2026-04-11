@@ -2,6 +2,12 @@ import {readdir, readFile} from "node:fs/promises";
 import path from "node:path";
 
 import {LlmContext} from "../../../kernel/agent/llm-context.js";
+import {
+    type AgentWorkspaceDiaryEntry,
+    type AgentWorkspaceDocSection,
+    type AgentWorkspaceSkillEntry,
+    renderAgentWorkspaceContext,
+} from "../../../prompts/contexts/agent-workspace.js";
 import type {AgentStore} from "../../../domain/agents/store.js";
 import {resolvePandaSkillsDir} from "../../../app/runtime/data-dir.js";
 
@@ -80,14 +86,13 @@ export class AgentMemoryContext extends LlmContext {
     const sections = new Set<AgentMemoryContextSection>(
       this.options.sections ?? ["agent_docs", "relationship_memory", "diary", "skills"],
     );
-    const lines = [
-      `Agent key: ${this.options.agentKey}`,
-      `Relationship identity: ${this.options.identityId}`,
-      "",
-    ];
+    let agentDocs: AgentWorkspaceDocSection[] | undefined;
+    let relationshipMemory: string | undefined;
+    let recentDiary: AgentWorkspaceDiaryEntry[] | undefined;
+    let skills: AgentWorkspaceSkillEntry[] | undefined;
 
     if (sections.has("agent_docs")) {
-      const sharedDocs = await Promise.all(
+      agentDocs = await Promise.all(
         AGENT_DOC_SLUGS.map(async (slug) => {
           const record = await this.options.store.readAgentDocument(this.options.agentKey, slug);
           return {
@@ -96,55 +101,41 @@ export class AgentMemoryContext extends LlmContext {
           };
         }),
       );
-      lines.push(...sharedDocs.flatMap((doc) => [
-        `[${doc.slug}]`,
-        doc.content || "(empty)",
-        "",
-      ]));
     }
 
     if (sections.has("relationship_memory")) {
-      const relationshipMemory = await this.options.store.readRelationshipDocument(
+      const record = await this.options.store.readRelationshipDocument(
         this.options.agentKey,
         this.options.identityId,
         RELATIONSHIP_DOC_SLUG,
       );
-      lines.push(
-        "[memory]",
-        relationshipMemory?.content || "(empty)",
-        "",
-      );
+      relationshipMemory = record?.content ?? "";
     }
 
     if (sections.has("diary")) {
-      const recentDiary = [...await this.options.store.listDiaryEntries(
+      recentDiary = [...await this.options.store.listDiaryEntries(
         this.options.agentKey,
         this.options.identityId,
         7,
-      )].reverse();
-      lines.push(
-        "[recent diary]",
-        recentDiary.length === 0
-          ? "(empty)"
-          : recentDiary.map((entry) => `${entry.entryDate}\n${entry.content || "(empty)"}`).join("\n\n"),
-        "",
-      );
+      )].reverse().map((entry) => ({
+        entryDate: entry.entryDate,
+        content: entry.content || "",
+      }));
     }
 
     if (sections.has("skills")) {
-      const skillEntries = await readSkillEntries(
+      skills = await readSkillEntries(
         this.options.skillsDir ?? resolvePandaSkillsDir(this.options.agentKey),
       );
-      lines.push(
-        "[skills]",
-        skillEntries.length === 0
-          ? "(none)"
-          : skillEntries.map((entry) => `${entry.name}\n${entry.content}`).join("\n\n"),
-      );
-    } else if (lines.at(-1) === "") {
-      lines.pop();
     }
 
-    return lines.join("\n");
+    return renderAgentWorkspaceContext({
+      agentKey: this.options.agentKey,
+      identityId: this.options.identityId,
+      agentDocs,
+      relationshipMemory,
+      recentDiary,
+      skills,
+    });
   }
 }

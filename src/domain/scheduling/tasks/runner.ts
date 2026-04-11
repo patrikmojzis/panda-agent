@@ -1,4 +1,5 @@
 import {stringToUserMessage} from "../../../kernel/agent/index.js";
+import {renderScheduledTaskPrompt} from "../../../prompts/runtime/scheduled-tasks.js";
 import type {RememberedRoute} from "../../channels/types.js";
 import type {HomeThreadStore} from "../../threads/home/store.js";
 import {summarizeMessageText} from "../../../personas/panda/message-preview.js";
@@ -59,28 +60,12 @@ function buildScheduledTaskMetadata(
 }
 
 function buildScheduledTaskPrompt(task: ScheduledTaskRecord, scheduledFor: number): string {
-  const deliveryInstruction = task.schedule.kind === "once" && task.schedule.deliverAt
-    ? [
-      "This is a scheduled task in prepare-only mode.",
-      "The user is not actively watching.",
-      "Do the work now and leave the final result in the thread transcript.",
-      "Do not use outbound yet. Delivery is scheduled later.",
-    ].join(" ")
-    : [
-      "This is scheduled work triggered by Panda.",
-      "The user is not actively watching this thread right now.",
-      "Write the final response you want delivered.",
-      "If outbound is available you can use it, but a plain final assistant reply is still useful.",
-    ].join(" ");
-
-  return [
-    `[Scheduled Task] ${task.title}`,
-    deliveryInstruction,
-    `Scheduled fire time: ${new Date(scheduledFor).toISOString()}`,
-    "",
-    "Instruction:",
-    task.instruction,
-  ].join("\n");
+  return renderScheduledTaskPrompt({
+    title: task.title,
+    instruction: task.instruction,
+    scheduledIso: new Date(scheduledFor).toISOString(),
+    prepareOnly: task.schedule.kind === "once" && Boolean(task.schedule.deliverAt),
+  });
 }
 
 async function resolveTargetThreadId(task: ScheduledTaskRecord, homeThreads: HomeThreadStore): Promise<string | undefined> {
@@ -302,7 +287,7 @@ export class ScheduledTaskRunner {
       return;
     }
 
-    const route = await this.threadRoutes.resolveLastRoute({
+    const route = await this.threadRoutes.getLastRoute({
       threadId: resolvedThreadId,
     });
 
@@ -424,7 +409,7 @@ export class ScheduledTaskRunner {
       return;
     }
 
-    const route = await this.threadRoutes.resolveLastRoute({
+    const route = await this.threadRoutes.getLastRoute({
       threadId: resolvedThreadId,
     });
     if (!route) {

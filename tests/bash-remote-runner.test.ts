@@ -103,7 +103,7 @@ describe("remote bash runner", () => {
     expect(String(asObject(pwd).stdout).trim()).toBe(expectedNested);
   });
 
-  it("does not inherit host or session env in remote bash", async () => {
+  it("does not inherit tool env, but keeps session env in remote bash", async () => {
     const agentHome = await createWorkspace("panda-agent-home-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
@@ -132,7 +132,7 @@ describe("remote bash runner", () => {
       createRunContext(context),
     );
 
-    expect(String(asObject(result).stdout)).toBe("missing|missing|missing|missing");
+    expect(String(asObject(result).stdout)).toBe("missing|session|missing|missing");
   });
 
   it("does not inherit runner process env in remote bash", async () => {
@@ -167,7 +167,7 @@ describe("remote bash runner", () => {
     expect(String(asObject(result).stdout)).toBe("missing");
   });
 
-  it("rejects env overrides in remote mode", async () => {
+  it("accepts env overrides in remote mode", async () => {
     const agentHome = await createWorkspace("panda-agent-home-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
@@ -177,9 +177,9 @@ describe("remote bash runner", () => {
       },
     });
 
-    await expect(tool.run(
+    const result = await tool.run(
       {
-        command: "pwd",
+        command: 'test "${OPENAI_API_KEY:-missing}" = "sk-test" && printf ok',
         env: {
           OPENAI_API_KEY: "sk-test",
         },
@@ -192,10 +192,51 @@ describe("remote bash runner", () => {
           env: {},
         },
       }),
-    )).rejects.toThrow("Remote bash does not accept env overrides.");
+    );
+
+    expect(String(asObject(result).stdout)).toBe("ok");
   });
 
-  it("rejects env payloads at the runner", async () => {
+  it("injects resolved credentials into remote bash without giving the runner static host env", async () => {
+    const agentHome = await createWorkspace("panda-agent-home-");
+    const runner = await createRunner("panda");
+    const tool = new BashTool({
+      env: {
+        PANDA_BASH_EXECUTION_MODE: "remote",
+        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        OPENAI_API_KEY: "host-secret",
+      },
+      credentialResolver: {
+        resolveEnvironment: async () => ({
+          OPENAI_API_KEY: "stored-secret",
+          NOTION_API_KEY: "notion-secret",
+        }),
+      } as any,
+    });
+
+    const result = await tool.run(
+      {
+        command: [
+          'test "${OPENAI_API_KEY:-missing}" = "stored-secret"',
+          'test "${NOTION_API_KEY:-missing}" = "notion-secret"',
+          "printf ok",
+        ].join(" && "),
+      },
+      createRunContext({
+        agentKey: "panda",
+        identityId: "alice-id",
+        cwd: agentHome,
+        shell: {
+          cwd: agentHome,
+          env: {},
+        },
+      }),
+    );
+
+    expect(String(asObject(result).stdout)).toBe("ok");
+  });
+
+  it("accepts env payloads at the runner", async () => {
     const agentHome = await createWorkspace("panda-agent-home-");
     const runner = await createRunner("panda");
 
@@ -220,14 +261,14 @@ describe("remote bash runner", () => {
       }),
     });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      ok: false,
-      error: "Runner env overrides are not supported.",
+      ok: true,
+      stdout: "missing|hello",
     });
   });
 
-  it("does not persist exported env across remote calls", async () => {
+  it("persists exported env across remote calls", async () => {
     const agentHome = await createWorkspace("panda-agent-home-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
@@ -255,8 +296,10 @@ describe("remote bash runner", () => {
       createRunContext(context),
     );
 
-    expect(String(asObject(result).stdout)).toBe("missing");
-    expect(context.shell?.env).toEqual({});
+    expect(String(asObject(result).stdout)).toBe("sk-ephemeral");
+    expect(context.shell?.env).toEqual({
+      OPENAI_API_KEY: "sk-ephemeral",
+    });
   });
 
   it("accepts any cwd that exists inside the runner container", async () => {
@@ -348,7 +391,11 @@ describe("remote bash runner", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("http://runner-work:8080/base/work/exec");
     expect(resolveRunnerUrl("http://runner-{agentKey}:8080/base", "work")).toBe("http://runner-work:8080/base");
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).not.toHaveProperty("env");
+    await expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
+      env: {
+        CALL_MARKER: "hello",
+      },
+    });
   });
 
   it("supports a single runner url without an agent key placeholder", async () => {

@@ -2,6 +2,7 @@ import path from "node:path";
 
 import type {JsonObject} from "../../../kernel/agent/types.js";
 import type {MediaDescriptor, RememberedRoute} from "../../../domain/channels/types.js";
+import {renderTelegramInboundText, renderTelegramReactionText,} from "../../../prompts/channels/telegram.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 
 export interface TelegramInboundTextOptions {
@@ -102,10 +103,6 @@ function describeMediaDescriptor(descriptor: MediaDescriptor): string {
   ].join("\n");
 }
 
-function formatMaybeValue(value: string | undefined): string {
-  return value?.trim() || "null";
-}
-
 function serializeMediaDescriptor(descriptor: MediaDescriptor): JsonObject {
   return {
     id: descriptor.id,
@@ -167,89 +164,35 @@ export function buildTelegramInboundPersistence(
   };
 }
 
-function buildTelegramHeaderLines(options: {
-  connectorKey: string;
-  externalConversationId: string;
-  externalActorId: string;
-  externalMessageId: string;
-  chatId: string;
-  chatType: string;
-  username?: string;
-  firstName?: string;
-  lastName?: string;
-  extraLines?: readonly string[];
-  media: readonly MediaDescriptor[];
-}): readonly string[] {
-  return [
-    "<panda-channel-context>",
-    `channel: telegram`,
-    `connector_key: ${options.connectorKey}`,
-    `conversation_id: ${options.externalConversationId}`,
-    `actor_id: ${options.externalActorId}`,
-    `external_message_id: ${options.externalMessageId}`,
-    `chat_id: ${options.chatId}`,
-    `chat_type: ${options.chatType}`,
-    `username: ${formatMaybeValue(options.username)}`,
-    `first_name: ${formatMaybeValue(options.firstName)}`,
-    `last_name: ${formatMaybeValue(options.lastName)}`,
-    ...(options.extraLines ?? []),
-    "attachments:",
-    ...(options.media.length === 0
-      ? ["- none"]
-      : options.media.map((descriptor) => describeMediaDescriptor(descriptor))),
-    "</panda-channel-context>",
-  ];
-}
-
 export function buildTelegramInboundText(options: TelegramInboundTextOptions): string {
-  const trimmedText = options.text?.trim() ?? "";
-  const headerLines = buildTelegramHeaderLines({
+  return renderTelegramInboundText({
     connectorKey: options.connectorKey,
-    externalConversationId: options.externalConversationId,
-    externalActorId: options.externalActorId,
+    conversationId: options.externalConversationId,
+    actorId: options.externalActorId,
     externalMessageId: options.externalMessageId,
     chatId: options.chatId,
     chatType: options.chatType,
     username: options.username,
     firstName: options.firstName,
     lastName: options.lastName,
-    extraLines: [
-      `reply_to_message_id: ${formatMaybeValue(options.replyToMessageId)}`,
-    ],
-    media: options.media,
+    replyToMessageId: options.replyToMessageId,
+    attachments: options.media.map((descriptor) => describeMediaDescriptor(descriptor)),
+    body: options.text,
   });
-
-  return [
-    ...headerLines,
-    "",
-    trimmedText || "[Telegram message]",
-  ].join("\n");
 }
 
 export function buildTelegramReactionText(options: TelegramReactionTextOptions): string {
-  const headerLines = buildTelegramHeaderLines({
+  return renderTelegramReactionText({
     connectorKey: options.connectorKey,
-    externalConversationId: options.externalConversationId,
-    externalActorId: options.externalActorId,
+    conversationId: options.externalConversationId,
+    actorId: options.externalActorId,
     externalMessageId: options.externalMessageId,
     chatId: options.chatId,
     chatType: options.chatType,
     username: options.username,
     firstName: options.firstName,
     lastName: options.lastName,
-    extraLines: [
-      "reply_to_message_id: null",
-      `reaction_target_message_id: ${options.targetMessageId}`,
-      `reaction_added_emojis: ${options.addedEmojis.join(", ")}`,
-      `reaction_actor_id: ${options.externalActorId}`,
-      `reaction_actor_username: ${formatMaybeValue(options.username)}`,
-    ],
-    media: [],
+    targetMessageId: options.targetMessageId,
+    addedEmojis: options.addedEmojis,
   });
-
-  return [
-    ...headerLines,
-    "",
-    `Added reaction${options.addedEmojis.length === 1 ? "" : "s"}: ${options.addedEmojis.join(", ")}`,
-  ].join("\n");
 }

@@ -5,12 +5,12 @@ export interface ThreadRouteLookup {
   channel?: string;
 }
 
-export interface RememberThreadRouteInput {
+export interface ThreadRouteInput {
   threadId: string;
   route: RememberedRoute;
 }
 
-export interface ThreadRouteRecord extends RememberThreadRouteInput {
+export interface ThreadRouteRecord extends ThreadRouteInput {
   channel: string;
   createdAt: number;
   updatedAt: number;

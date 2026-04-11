@@ -1,18 +1,13 @@
-import type {
-    ChannelActionNotification,
-    ChannelActionRecord,
-    ChannelActionWorkerLookup,
-    CreateChannelActionInput,
-} from "./types.js";
+import type {ActionNotification, ActionWorkerLookup, ChannelActionInput, ChannelActionRecord,} from "./types.js";
 
 export interface ChannelActionStore {
   ensureSchema(): Promise<void>;
-  enqueueAction(input: CreateChannelActionInput): Promise<ChannelActionRecord>;
-  claimNextPendingAction(lookup: ChannelActionWorkerLookup): Promise<ChannelActionRecord | null>;
+  enqueueAction(input: ChannelActionInput): Promise<ChannelActionRecord>;
+  claimNextPendingAction(lookup: ActionWorkerLookup): Promise<ChannelActionRecord | null>;
   markActionSent(id: string): Promise<ChannelActionRecord>;
   markActionFailed(id: string, error: string): Promise<ChannelActionRecord>;
-  failSendingActions(lookup: ChannelActionWorkerLookup, error: string): Promise<number>;
+  failSendingActions(lookup: ActionWorkerLookup, error: string): Promise<number>;
   listenPendingActions(
-    listener: (notification: ChannelActionNotification) => Promise<void> | void,
+    listener: (notification: ActionNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>>;
 }

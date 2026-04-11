@@ -84,6 +84,14 @@ export abstract class Tool<TSchema extends ZodTypeAny = ZodTypeAny, TContext = u
     return formatToolResultFallback(message);
   }
 
+  redactCallArguments(args: Record<string, unknown>): Record<string, unknown> {
+    return args;
+  }
+
+  redactResultMessage(message: ToolResultMessage<JsonValue>): ToolResultMessage<JsonValue> {
+    return message;
+  }
+
   async run(rawArgs: unknown, runContext: RunContext<TContext>): Promise<ToolOutput> {
     try {
       const parsedArgs = await this.schema.parseAsync(rawArgs);

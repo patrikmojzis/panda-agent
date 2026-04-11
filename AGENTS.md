@@ -4,6 +4,7 @@
 
 - Keep Panda small, readable, and *modular*.
 - Prefer simple abstractions over framework-heavy architecture.
+- Keep model-facing prompt text in `src/prompts`, not buried in runtime code.
 - When adding provider support, keep provider-specific request/response shaping out of the core thread loop.
 - Avoid copying large chunks from other projects; use them for patterns and ideas, then adapt to Panda's smaller codebase.
 - Always verify each change with a live Panda agent - e.g. have u added a new tool? have Panda test it out. get a live feedback from her.
@@ -55,7 +56,8 @@
 ## Optimal project structure
 - `app`: entrypoints, process lifecycle, runtime assembly, CLI wiring
 - `kernel`: the inner agent loop and provider-neutral execution primitives
-- `personas`: persona packs like Panda prompt, tools, contexts, and subagent policy
+- `prompts`: editable model-facing prompt text, wrappers, and default templates
+- `personas`: persona packs like Panda tool policy, contexts, and subagent policy
 - `domain`: business concepts like agents, identity, threads, scheduling, and channel records
 - `integrations`: external systems like providers, Telegram, WhatsApp, Postgres, shell
 - `ui`: terminal and other human-facing surfaces

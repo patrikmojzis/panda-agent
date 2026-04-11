@@ -7,6 +7,7 @@ import {
     EnvironmentContext,
     MediaTool,
     PANDA_PROMPT,
+    WebFetchTool,
     WhisperTool,
 } from "../src/index.js";
 import {buildPandaTools} from "../src/personas/panda/definition.js";
@@ -26,9 +27,10 @@ describe("Panda feature surface", () => {
     expect(PANDA_PROMPT).toContain("## Soul");
     expect(PANDA_PROMPT).toContain("## Channels & Inner Monologue");
     expect(PANDA_PROMPT).toContain("No outbound call = no message delivered.");
-    expect(tools).toHaveLength(2);
+    expect(tools).toHaveLength(3);
     expect(tools[0]).toBeInstanceOf(BashTool);
     expect(tools[1]).toBeInstanceOf(MediaTool);
+    expect(tools[2]).toBeInstanceOf(WebFetchTool);
   });
 
   it("adds Brave search when BRAVE_API_KEY is configured", () => {
@@ -36,8 +38,8 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildPandaTools();
 
-    expect(tools).toHaveLength(3);
-    expect(tools[2]).toBeInstanceOf(BraveSearchTool);
+    expect(tools).toHaveLength(4);
+    expect(tools[3]).toBeInstanceOf(BraveSearchTool);
   });
 
   it("adds Whisper when OPENAI_API_KEY is configured", () => {
@@ -45,8 +47,8 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     const tools = buildPandaTools();
 
-    expect(tools).toHaveLength(3);
-    expect(tools[2]).toBeInstanceOf(WhisperTool);
+    expect(tools).toHaveLength(4);
+    expect(tools[3]).toBeInstanceOf(WhisperTool);
   });
 
   it("appends extra tools without adding hidden defaults", () => {
@@ -55,8 +57,8 @@ describe("Panda feature surface", () => {
     const extraTool = { name: "extra-tool" } as any;
     const tools = buildPandaTools([extraTool]);
 
-    expect(tools).toHaveLength(3);
-    expect(tools[2]).toBe(extraTool);
+    expect(tools).toHaveLength(4);
+    expect(tools[3]).toBe(extraTool);
   });
 
   it("renders the datetime context with the configured timezone", async () => {

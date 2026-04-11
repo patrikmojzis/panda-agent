@@ -80,8 +80,15 @@ describe("package exports", () => {
     expect(packageJson.exports).toEqual(EXPECTED_EXPORTS);
   });
 
-  it("does not expose channel connector implementation subpaths", () => {
+  it("does not expose internal implementation subpaths", () => {
+    expect(packageJson.exports).not.toHaveProperty("./domain/credentials");
+    expect(packageJson.exports).not.toHaveProperty("./domain/threads/conversations");
+    expect(packageJson.exports).not.toHaveProperty("./domain/threads/routes");
     expect(packageJson.exports).not.toHaveProperty("./integrations/channels/telegram");
     expect(packageJson.exports).not.toHaveProperty("./integrations/channels/whatsapp");
+    expect(packageJson.exports).not.toHaveProperty("./personas/panda/tools/bash-tool");
+    expect(packageJson.exports).not.toHaveProperty("./personas/panda/tools/env-value-tools");
+    expect(packageJson.exports).not.toHaveProperty("./personas/panda/tools/web-fetch");
+    expect(packageJson.exports).not.toHaveProperty("./personas/panda/tools/web-fetch-tool");
   });
 });

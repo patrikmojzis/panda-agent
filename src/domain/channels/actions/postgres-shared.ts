@@ -11,6 +11,6 @@ export function buildChannelActionTableNames(prefix: string): ChannelActionTable
   });
 }
 
-export function buildChannelActionNotificationChannel(prefix = "thread_runtime"): string {
+export function buildActionNotificationChannel(prefix = "thread_runtime"): string {
   return validateIdentifier(`${prefix}_channel_action_events`);
 }

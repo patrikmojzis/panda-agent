@@ -83,6 +83,13 @@ function validateExecRequest(value: unknown): BashRunnerExecRequest {
   const trackedEnvKeys = Array.isArray(value.trackedEnvKeys)
     ? value.trackedEnvKeys.filter((entry): entry is string => typeof entry === "string")
     : null;
+  const env = value.env === undefined
+    ? undefined
+    : typeof value.env === "object" && value.env !== null && !Array.isArray(value.env)
+      ? Object.fromEntries(
+        Object.entries(value.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      )
+      : null;
 
   if (!requestId) {
     throw new ToolError("Runner requestId must not be empty.");
@@ -102,8 +109,8 @@ function validateExecRequest(value: unknown): BashRunnerExecRequest {
   if (trackedEnvKeys === null) {
     throw new ToolError("Runner trackedEnvKeys must be an array of strings.");
   }
-  if (value.env !== undefined) {
-    throw new ToolError("Runner env overrides are not supported.");
+  if (env === null) {
+    throw new ToolError("Runner env must be an object of string values.");
   }
 
   return {
@@ -113,6 +120,7 @@ function validateExecRequest(value: unknown): BashRunnerExecRequest {
     timeoutMs,
     trackedEnvKeys,
     maxOutputChars,
+    ...(env ? { env } : {}),
   };
 }
 
@@ -383,7 +391,7 @@ export async function startPandaBashRunner(options: PandaBashRunnerOptions): Pro
           const outcome = await executeBashCommand({
             command: parsed.command,
             cwd: resolvedCwd,
-            childEnv: {},
+            childEnv: parsed.env ?? {},
             shell,
             timeoutMs: parsed.timeoutMs,
             trackedEnvKeys: parsed.trackedEnvKeys,

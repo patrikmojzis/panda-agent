@@ -1,22 +1,22 @@
 import type {JsonValue} from "../../../kernel/agent/types.js";
 
-export interface ConversationThreadLookup {
+export interface ConversationLookup {
   source: string;
   connectorKey: string;
   externalConversationId: string;
 }
 
-export interface ConversationThreadBindingInput extends ConversationThreadLookup {
+export interface BindConversationInput extends ConversationLookup {
   threadId: string;
   metadata?: JsonValue;
 }
 
-export interface ConversationThreadRecord extends ConversationThreadBindingInput {
+export interface ConversationBinding extends BindConversationInput {
   createdAt: number;
   updatedAt: number;
 }
 
-export interface BindConversationThreadResult {
-  binding: ConversationThreadRecord;
+export interface BindConversationResult {
+  binding: ConversationBinding;
   previousThreadId?: string;
 }

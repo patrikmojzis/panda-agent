@@ -14,14 +14,14 @@ export type ChannelActionPayload =
   | ChannelTypingRequest
   | TelegramReactionActionPayload;
 
-export interface CreateChannelActionInput {
+export interface ChannelActionInput {
   channel: string;
   connectorKey: string;
   kind: ChannelActionKind;
   payload: ChannelActionPayload;
 }
 
-export interface ChannelActionRecord extends CreateChannelActionInput {
+export interface ChannelActionRecord extends ChannelActionInput {
   id: string;
   status: ChannelActionStatus;
   attemptCount: number;
@@ -32,12 +32,12 @@ export interface ChannelActionRecord extends CreateChannelActionInput {
   updatedAt: number;
 }
 
-export interface ChannelActionWorkerLookup {
+export interface ActionWorkerLookup {
   channel: string;
   connectorKey: string;
 }
 
-export interface ChannelActionNotification {
+export interface ActionNotification {
   channel: string;
   connectorKey: string;
 }

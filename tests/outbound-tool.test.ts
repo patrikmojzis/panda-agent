@@ -31,7 +31,7 @@ function createContext(
         routeLookups.push(channel);
         return null;
       },
-      rememberLastRoute: async (route) => {
+      saveLastRoute: async (route) => {
         rememberedRoutes.push(route);
       },
     },
@@ -183,7 +183,7 @@ describe("OutboundTool", () => {
 
           return null;
         },
-        rememberLastRoute: async (route) => {
+        saveLastRoute: async (route) => {
           context.rememberedRoutes.push(route);
         },
       },
@@ -230,7 +230,7 @@ describe("OutboundTool", () => {
             capturedAt: Date.now(),
           };
         },
-        rememberLastRoute: async (route) => {
+        saveLastRoute: async (route) => {
           context.rememberedRoutes.push(route);
         },
       },
@@ -267,7 +267,7 @@ describe("OutboundTool", () => {
             capturedAt: Date.now(),
           };
         },
-        rememberLastRoute: async (route) => {
+        saveLastRoute: async (route) => {
           context.rememberedRoutes.push(route);
         },
       },

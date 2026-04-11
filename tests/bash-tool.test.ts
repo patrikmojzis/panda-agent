@@ -163,6 +163,96 @@ describe("BashTool", () => {
     }
   });
 
+  it("injects resolved credentials before session env and per-call env", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-credentials-"));
+    try {
+      const context: PandaSessionContext = {
+        agentKey: "panda",
+        identityId: "alice-id",
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {
+            SHARED_KEY: "session",
+            SESSION_ONLY: "session-only",
+          },
+        },
+      };
+      const tool = new BashTool({
+        env: {
+          HOST_ONLY: "host-only",
+          SHARED_KEY: "host",
+        },
+        outputDirectory: path.join(workspace, "tool-results"),
+        credentialResolver: {
+          resolveEnvironment: async () => ({
+            CREDENTIAL_ONLY: "credential-only",
+            SHARED_KEY: "credential",
+          }),
+        } as any,
+      });
+
+      const result = await tool.run(
+        {
+          command: [
+            'test "${HOST_ONLY:-missing}" = "host-only"',
+            'test "${CREDENTIAL_ONLY:-missing}" = "credential-only"',
+            'test "${SESSION_ONLY:-missing}" = "session-only"',
+            'test "${SHARED_KEY:-missing}" = "call"',
+            "printf ok",
+          ].join(" && "),
+          env: {
+            SHARED_KEY: "call",
+          },
+        },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+
+      expect(String(output.stdout)).toBe("ok");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts credential and per-call env values from bash output", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-redaction-"));
+    try {
+      const context: PandaSessionContext = {
+        agentKey: "panda",
+        identityId: "alice-id",
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        credentialResolver: {
+          resolveEnvironment: async () => ({
+            OPENAI_API_KEY: "stored-secret",
+          }),
+        } as any,
+      });
+
+      const result = await tool.run(
+        {
+          command: 'printf "%s|%s" "${OPENAI_API_KEY:-missing}" "${CALL_SECRET:-missing}"',
+          env: {
+            CALL_SECRET: "call-secret",
+          },
+        },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+
+      expect(String(output.stdout)).toBe("[redacted]|[redacted]");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("persists large stdout to disk while returning a truncated preview", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-output-"));
     try {

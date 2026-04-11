@@ -8,5 +8,6 @@ Start here:
 - [Current Structure](./restructure-plan.md)
 - [Chat Vision](./chat-vision.md)
 - [Identity](./identity.md)
+- [Credentials](./credentials.md)
 - [Heartbeat](./heartbeat.md)
 - [WhatsApp](./whatsapp.md)

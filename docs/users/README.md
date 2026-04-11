@@ -7,5 +7,6 @@ Start here:
 - [Getting Started](./getting-started.md)
 - [Postgres](./postgres.md)
 - [Identity](./identity.md)
+- [Credentials](./credentials.md)
 - [Heartbeat](./heartbeat.md)
 - [Remote Bash](./remote-bash.md)

@@ -1,12 +1,10 @@
 import type {Message} from "@mariozechner/pi-ai";
+import {COMPACT_SUMMARY_PREFIX, renderCompactSummaryMessage,} from "../../../prompts/runtime/compaction.js";
 
-export const COMPACT_SUMMARY_PREFIX = "[Conversation compacted. Summary of earlier context follows.]";
+export {COMPACT_SUMMARY_PREFIX} from "../../../prompts/runtime/compaction.js";
 
 export function buildCompactSummaryMessage(summary: string): string {
-  const trimmed = summary.trim();
-  return trimmed
-    ? `${COMPACT_SUMMARY_PREFIX}\n\n${trimmed}`
-    : COMPACT_SUMMARY_PREFIX;
+  return renderCompactSummaryMessage(summary);
 }
 
 export function stripCompactSummaryPrefix(text: string): string {

@@ -33,6 +33,7 @@ export interface BashExecutorOptions {
   persistOutputThresholdChars: number;
   outputDirectory: string;
   env?: Record<string, string>;
+  resolvedEnv?: Record<string, string>;
   run: RunContext<ShellExecutionContext>;
 }
 
@@ -204,6 +205,7 @@ export class LocalShellExecutor implements BashExecutor {
     const shell = this.shell ?? this.env.SHELL ?? "/bin/zsh";
     const childEnv = {
       ...this.env,
+      ...(options.resolvedEnv ?? {}),
       ...(options.run.context?.shell?.env ?? {}),
       ...(options.env ?? {}),
     };
@@ -279,8 +281,13 @@ export class RemoteShellExecutor implements BashExecutor {
         command: options.command,
         cwd,
         timeoutMs: options.timeoutMs,
-        trackedEnvKeys: [],
+        trackedEnvKeys: options.trackedEnvKeys,
         maxOutputChars: options.maxOutputChars,
+        env: {
+          ...(options.resolvedEnv ?? {}),
+          ...(options.run.context?.shell?.env ?? {}),
+          ...(options.env ?? {}),
+        },
       } satisfies BashRunnerExecRequest),
       signal: makeNetworkTimeoutSignal(options.timeoutMs + DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS),
     });

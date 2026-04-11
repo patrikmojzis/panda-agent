@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {PostgresThreadRouteRepo} from "../src/domain/threads/routes/repo.js";
+import {ThreadRouteRepo} from "../src/domain/threads/routes/repo.js";
 
 function createPool() {
   const db = newDb();
@@ -16,7 +16,7 @@ function createPool() {
   return new adapter.Pool();
 }
 
-describe("PostgresThreadRouteRepo", () => {
+describe("ThreadRouteRepo", () => {
   const pools: Array<{end(): Promise<void>}> = [];
 
   afterEach(async () => {
@@ -34,10 +34,10 @@ describe("PostgresThreadRouteRepo", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const store = new PostgresThreadRouteRepo({pool});
+    const store = new ThreadRouteRepo({pool});
     await store.ensureSchema();
 
-    await store.rememberLastRoute({
+    await store.saveLastRoute({
       threadId: "thread-a",
       route: {
         source: "telegram",
@@ -48,7 +48,7 @@ describe("PostgresThreadRouteRepo", () => {
         capturedAt: 100,
       },
     });
-    await store.rememberLastRoute({
+    await store.saveLastRoute({
       threadId: "thread-a",
       route: {
         source: "whatsapp",
@@ -58,13 +58,13 @@ describe("PostgresThreadRouteRepo", () => {
       },
     });
 
-    await expect(store.resolveLastRoute({
+    await expect(store.getLastRoute({
       threadId: "thread-a",
     })).resolves.toMatchObject({
       source: "whatsapp",
       externalConversationId: "jid-1",
     });
-    await expect(store.resolveLastRoute({
+    await expect(store.getLastRoute({
       threadId: "thread-a",
       channel: "telegram",
     })).resolves.toMatchObject({
@@ -77,10 +77,10 @@ describe("PostgresThreadRouteRepo", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const store = new PostgresThreadRouteRepo({pool});
+    const store = new ThreadRouteRepo({pool});
     await store.ensureSchema();
 
-    await store.rememberLastRoute({
+    await store.saveLastRoute({
       threadId: "thread-a",
       route: {
         source: "telegram",
@@ -90,7 +90,7 @@ describe("PostgresThreadRouteRepo", () => {
       },
     });
 
-    const updated = await store.rememberLastRoute({
+    const updated = await store.saveLastRoute({
       threadId: "thread-a",
       route: {
         source: "telegram",
@@ -118,10 +118,10 @@ describe("PostgresThreadRouteRepo", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const store = new PostgresThreadRouteRepo({pool});
+    const store = new ThreadRouteRepo({pool});
     await store.ensureSchema();
 
-    await expect(store.rememberLastRoute({
+    await expect(store.saveLastRoute({
       threadId: "   ",
       route: {
         source: "telegram",
@@ -130,7 +130,7 @@ describe("PostgresThreadRouteRepo", () => {
         capturedAt: 100,
       },
     })).rejects.toThrow("Thread route thread id must not be empty.");
-    await expect(store.rememberLastRoute({
+    await expect(store.saveLastRoute({
       threadId: "thread-a",
       route: {
         source: "   ",
@@ -139,7 +139,7 @@ describe("PostgresThreadRouteRepo", () => {
         capturedAt: 100,
       },
     })).rejects.toThrow("Thread route source must not be empty.");
-    await expect(store.resolveLastRoute({
+    await expect(store.getLastRoute({
       threadId: "   ",
     })).rejects.toThrow("Thread route thread id must not be empty.");
   });

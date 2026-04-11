@@ -1,4 +1,5 @@
 import {LlmContext} from "../../../kernel/agent/llm-context.js";
+import {renderDateTimeContext} from "../../../prompts/contexts/datetime.js";
 
 export interface DateTimeContextOptions {
   timeZone?: string;
@@ -59,11 +60,11 @@ export class DateTimeContext extends LlmContext {
       timeZone,
     }).format(now);
 
-    return [
-      `Current local date and time: ${dateTime}`,
-      `Timezone: ${timeZone}`,
-      `Weekday: ${weekday}`,
-      `Month: ${month}`,
-    ].join("\n");
+    return renderDateTimeContext({
+      formattedDateTime: dateTime,
+      timeZone,
+      weekday,
+      month,
+    });
   }
 }

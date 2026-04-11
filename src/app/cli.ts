@@ -6,6 +6,7 @@ import path from "node:path";
 import {Command, InvalidArgumentError} from "commander";
 import {createPandaDaemon} from "./runtime/index.js";
 import {parseAgentKey, registerAgentCommands} from "../domain/agents/cli.js";
+import {registerCredentialCommands} from "../domain/credentials/cli.js";
 import {parseIdentityHandle, registerIdentityCommands} from "../domain/identity/cli.js";
 import {registerTelegramCommands} from "../integrations/channels/telegram/cli.js";
 import {type ChatCliOptions, runChatCli} from "../ui/tui/chat.js";
@@ -188,6 +189,7 @@ program
   });
 
 registerAgentCommands(program);
+registerCredentialCommands(program);
 registerIdentityCommands(program);
 registerTelegramCommands(program);
 registerWhatsAppCommands(program);

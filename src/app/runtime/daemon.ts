@@ -4,7 +4,7 @@ import type {PoolClient} from "pg";
 
 import {ChannelTypingDispatcher, type MediaDescriptor, relocateMediaDescriptor,} from "../../domain/channels/index.js";
 import {PostgresChannelActionStore} from "../../domain/channels/actions/index.js";
-import {ConversationThreadRepo} from "../../domain/threads/conversations/repo.js";
+import {ConversationRepo} from "../../domain/threads/conversations/repo.js";
 import {PandaDaemonStateRepo} from "./state/repo.js";
 import {HeartbeatRunner} from "../../domain/scheduling/heartbeats/runner.js";
 import {PostgresHomeThreadStore} from "../../domain/threads/home/index.js";
@@ -36,7 +36,7 @@ import {createChannelTypingEventHandler} from "../../domain/threads/runtime/chan
 import {compactThread, isMissingThreadError, type ThreadRecord,} from "../../domain/threads/runtime/index.js";
 import {resolveModelSelector, stringToUserMessage} from "../../kernel/agent/index.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
-import {PostgresThreadRouteRepo} from "../../domain/threads/routes/repo.js";
+import {ThreadRouteRepo} from "../../domain/threads/routes/repo.js";
 import {
     buildTelegramInboundPersistence,
     buildTelegramInboundText,
@@ -137,9 +137,9 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
   const model = resolveDefaultPandaModelSelector();
   const daemonKey = DEFAULT_PANDA_DAEMON_KEY;
 
-  let conversationThreads: ConversationThreadRepo;
+  let conversationBindings: ConversationRepo;
   let homeThreads: PostgresHomeThreadStore;
-  let threadRoutes: PostgresThreadRouteRepo;
+  let threadRoutes: ThreadRouteRepo;
   let outboundDeliveries: PostgresOutboundDeliveryStore;
   let channelActions: PostgresChannelActionStore;
   let requests: PandaRuntimeRequestRepo;
@@ -184,7 +184,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     maxSubagentDepth: options.maxSubagentDepth,
     tablePrefix: options.tablePrefix,
     onEvent: createChannelTypingEventHandler(typingDispatcher),
-    resolveDefinition: async (thread, {agentStore, identityStore, extraTools}) => {
+    resolveDefinition: async (thread, {agentStore, credentialResolver, identityStore, extraTools}) => {
       const identity = await identityStore.getIdentity(thread.identityId);
       return createPandaThreadDefinition({
         thread,
@@ -194,15 +194,18 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
           identityHandle: identity.handle,
         },
         agentStore,
+        bashToolOptions: {
+          credentialResolver,
+        },
         extraTools: [...extraTools, new OutboundTool(), new TelegramReactTool()],
         extraContext: {
           routeMemory: {
-            getLastRoute: (channel) => threadRoutes.resolveLastRoute({
+            getLastRoute: (channel) => threadRoutes.getLastRoute({
               threadId: thread.id,
               channel,
             }),
-            rememberLastRoute: async (route) => {
-              await threadRoutes.rememberLastRoute({
+            saveLastRoute: async (route) => {
+              await threadRoutes.saveLastRoute({
                 threadId: thread.id,
                 route,
               });
@@ -220,11 +223,11 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
   });
 
   try {
-    conversationThreads = new ConversationThreadRepo({
+    conversationBindings = new ConversationRepo({
       pool: runtime.pool,
       tablePrefix: options.tablePrefix,
     });
-    await conversationThreads.ensureSchema();
+    await conversationBindings.ensureSchema();
 
     homeThreads = new PostgresHomeThreadStore({
       pool: runtime.pool,
@@ -232,7 +235,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     });
     await homeThreads.ensureSchema();
 
-    threadRoutes = new PostgresThreadRouteRepo({
+    threadRoutes = new ThreadRouteRepo({
       pool: runtime.pool,
       tablePrefix: options.tablePrefix,
     });
@@ -436,7 +439,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     context?: Record<string, unknown>;
     metadata?: JsonValue;
   }): Promise<ThreadRecord | null> => {
-    const existing = await conversationThreads.resolveConversationThread({
+    const existing = await conversationBindings.getConversationBinding({
       source: input.source,
       connectorKey: input.connectorKey,
       externalConversationId: input.externalConversationId,
@@ -462,7 +465,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       await bindHomeThread(thread);
     }
 
-    await conversationThreads.bindConversationThread({
+    await conversationBindings.bindConversation({
       source: input.source,
       connectorKey: input.connectorKey,
       externalConversationId: input.externalConversationId,
@@ -548,7 +551,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
     });
 
     if (payload.source === TELEGRAM_SOURCE && payload.connectorKey && payload.externalConversationId) {
-      await conversationThreads.bindConversationThread({
+      await conversationBindings.bindConversation({
         source: TELEGRAM_SOURCE,
         connectorKey: payload.connectorKey,
         externalConversationId: payload.externalConversationId,
@@ -560,7 +563,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
           }
           : undefined,
       });
-      await threadRoutes.rememberLastRoute({
+      await threadRoutes.saveLastRoute({
         threadId: result.thread.id,
         route: {
           source: TELEGRAM_SOURCE,
@@ -712,7 +715,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       message: stringToUserMessage(text),
       metadata: persistence.metadata,
     });
-    await threadRoutes.rememberLastRoute({
+    await threadRoutes.saveLastRoute({
       threadId: thread.id,
       route: persistence.rememberedRoute,
     });
@@ -786,7 +789,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
       message: stringToUserMessage(text),
       metadata: persistence.metadata,
     });
-    await threadRoutes.rememberLastRoute({
+    await threadRoutes.saveLastRoute({
       threadId: thread.id,
       route: persistence.rememberedRoute,
     });
@@ -853,7 +856,7 @@ export async function createPandaDaemon(options: PandaDaemonOptions): Promise<Pa
         media,
       }),
     });
-    await threadRoutes.rememberLastRoute({
+    await threadRoutes.saveLastRoute({
       threadId: thread.id,
       route: {
         source: WHATSAPP_SOURCE,

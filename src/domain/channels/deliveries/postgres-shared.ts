@@ -11,6 +11,6 @@ export function buildOutboundDeliveryTableNames(prefix: string): OutboundDeliver
   });
 }
 
-export function buildOutboundDeliveryNotificationChannel(prefix = "thread_runtime"): string {
+export function buildDeliveryNotificationChannel(prefix = "thread_runtime"): string {
   return validateIdentifier(`${prefix}_outbound_delivery_events`);
 }

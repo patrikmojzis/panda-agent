@@ -1,8 +1,8 @@
 export {
-  buildOutboundDeliveryNotificationChannel,
+  buildDeliveryNotificationChannel,
 } from "./postgres-shared.js";
 export {
-  parseOutboundDeliveryNotification,
+  parseDeliveryNotification,
   PostgresOutboundDeliveryStore,
   type PostgresOutboundDeliveryStoreOptions,
 } from "./postgres.js";
@@ -12,11 +12,11 @@ export {
   type ChannelOutboundDeliveryWorkerOptions,
 } from "./worker.js";
 export type {
-  CompleteOutboundDeliveryInput,
-  CreateOutboundDeliveryInput,
-  FailOutboundDeliveryInput,
-  OutboundDeliveryNotification,
+  CompleteDeliveryInput,
+  DeliveryNotification,
+  DeliveryWorkerLookup,
+  FailDeliveryInput,
+  OutboundDeliveryInput,
   OutboundDeliveryRecord,
   OutboundDeliveryStatus,
-  OutboundDeliveryWorkerLookup,
 } from "./types.js";

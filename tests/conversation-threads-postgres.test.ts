@@ -1,9 +1,9 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {ConversationThreadRepo} from "../src/domain/threads/conversations/repo.js";
+import {ConversationRepo} from "../src/domain/threads/conversations/repo.js";
 
-describe("ConversationThreadRepo", () => {
+describe("ConversationRepo", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
 
   afterEach(async () => {
@@ -29,16 +29,16 @@ describe("ConversationThreadRepo", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new ConversationThreadRepo({ pool });
+    const store = new ConversationRepo({ pool });
     await store.ensureSchema();
 
-    await expect(store.resolveConversationThread({
+    await expect(store.getConversationBinding({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-1",
     })).resolves.toBeNull();
 
-    const firstBind = await store.bindConversationThread({
+    const firstBind = await store.bindConversation({
       source: " telegram ",
       connectorKey: " bot-main ",
       externalConversationId: " chat-1 ",
@@ -58,7 +58,7 @@ describe("ConversationThreadRepo", () => {
       },
     });
 
-    await expect(store.resolveConversationThread({
+    await expect(store.getConversationBinding({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-1",
@@ -66,7 +66,7 @@ describe("ConversationThreadRepo", () => {
       threadId: "thread-a",
     });
 
-    const rebound = await store.bindConversationThread({
+    const rebound = await store.bindConversation({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-1",
@@ -75,7 +75,7 @@ describe("ConversationThreadRepo", () => {
     expect(rebound.previousThreadId).toBe("thread-a");
     expect(rebound.binding.threadId).toBe("thread-b");
 
-    const sameThread = await store.bindConversationThread({
+    const sameThread = await store.bindConversation({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-1",
@@ -97,10 +97,10 @@ describe("ConversationThreadRepo", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new ConversationThreadRepo({ pool });
+    const store = new ConversationRepo({ pool });
     await store.ensureSchema();
 
-    await store.bindConversationThread({
+    await store.bindConversation({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-keep-meta",
@@ -110,7 +110,7 @@ describe("ConversationThreadRepo", () => {
       },
     });
 
-    const rebound = await store.bindConversationThread({
+    const rebound = await store.bindConversation({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-keep-meta",
@@ -138,43 +138,43 @@ describe("ConversationThreadRepo", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new ConversationThreadRepo({ pool });
+    const store = new ConversationRepo({ pool });
     await store.ensureSchema();
 
-    await store.bindConversationThread({
+    await store.bindConversation({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "42",
       threadId: "thread-telegram",
     });
-    await store.bindConversationThread({
+    await store.bindConversation({
       source: "telegram",
       connectorKey: "bot-sidecar",
       externalConversationId: "42",
       threadId: "thread-sidecar",
     });
-    await store.bindConversationThread({
+    await store.bindConversation({
       source: "whatsapp",
       connectorKey: "session-main",
       externalConversationId: "42",
       threadId: "thread-whatsapp",
     });
 
-    await expect(store.resolveConversationThread({
+    await expect(store.getConversationBinding({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "42",
     })).resolves.toMatchObject({
       threadId: "thread-telegram",
     });
-    await expect(store.resolveConversationThread({
+    await expect(store.getConversationBinding({
       source: "telegram",
       connectorKey: "bot-sidecar",
       externalConversationId: "42",
     })).resolves.toMatchObject({
       threadId: "thread-sidecar",
     });
-    await expect(store.resolveConversationThread({
+    await expect(store.getConversationBinding({
       source: "whatsapp",
       connectorKey: "session-main",
       externalConversationId: "42",
@@ -195,21 +195,21 @@ describe("ConversationThreadRepo", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new ConversationThreadRepo({ pool });
+    const store = new ConversationRepo({ pool });
     await store.ensureSchema();
 
-    await expect(store.bindConversationThread({
+    await expect(store.bindConversation({
       source: "   ",
       connectorKey: "bot-main",
       externalConversationId: "chat-1",
       threadId: "thread-a",
     })).rejects.toThrow("Conversation thread source must not be empty.");
-    await expect(store.resolveConversationThread({
+    await expect(store.getConversationBinding({
       source: "telegram",
       connectorKey: "   ",
       externalConversationId: "chat-1",
     })).rejects.toThrow("Conversation thread connector key must not be empty.");
-    await expect(store.bindConversationThread({
+    await expect(store.bindConversation({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-1",

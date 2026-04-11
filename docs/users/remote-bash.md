@@ -20,6 +20,20 @@ The core is for:
 
 The runner is for bash. Nothing more.
 
+## Credentials And Secret Env
+
+Remote runners do not own static secrets.
+
+In credentials v1, `panda-core` may still send short-lived env values with a single `/exec` request:
+
+- stored credentials resolved for the current thread
+- persisted shell session env
+- explicit `bash.env` values for that call
+
+Those values exist only for that process execution. The runner does not store them in Postgres, files, or long-lived process env.
+
+That also means the core-to-runner link is sensitive. Keep it private.
+
 ## Mental Model
 
 In v1:
@@ -201,6 +215,7 @@ If that is not exactly `remote`, Panda falls back to local in-process bash.
 - do not put provider API keys in runner env
 - do not mount the Docker socket into runners
 - do not let runners reach Postgres over the network
+- do not expose the core-to-runner HTTP hop on a public network
 - do not mount a giant shared parent directory unless you really want the runner to see all of it
 - shared workspaces are opt-in and collisions are expected if multiple agents use them at the same time
 

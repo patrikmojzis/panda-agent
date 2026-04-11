@@ -5,6 +5,7 @@ import type {RunContext} from "../../../kernel/agent/run-context.js";
 import type {AgentStore} from "../../../domain/agents/store.js";
 import type {ThreadRuntimeStore} from "../../../domain/threads/runtime/store.js";
 import type {ThreadDefinitionResolver} from "../../../domain/threads/runtime/types.js";
+import {renderSubagentHandoff} from "../../../prompts/runtime/subagents.js";
 import {buildPandaLlmContexts} from "../contexts/builder.js";
 import type {PandaSessionContext} from "../types.js";
 import {filterToolsForSubagentRole, getPandaSubagentRolePolicy, type PandaSubagentRole,} from "./policy.js";
@@ -61,14 +62,6 @@ function buildSubagentContext(
     agentKey: parentContext?.agentKey,
     subagentDepth: depth,
   };
-}
-
-function renderSubagentHandoff(task: string, context?: string): string {
-  return [
-    "Task:",
-    task.trim(),
-    ...(context?.trim() ? ["", "Additional context:", context.trim()] : []),
-  ].join("\n");
 }
 
 function extractAssistantText(message: AssistantMessage | null): string {

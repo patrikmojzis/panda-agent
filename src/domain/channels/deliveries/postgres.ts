@@ -6,17 +6,17 @@ import {quoteIdentifier, toJson, toMillis,} from "../../threads/runtime/postgres
 import type {OutboundItem, OutboundSentItem, OutboundTarget} from "../types.js";
 import type {OutboundDeliveryStore} from "./store.js";
 import {
-    buildOutboundDeliveryNotificationChannel,
+    buildDeliveryNotificationChannel,
     buildOutboundDeliveryTableNames,
     type OutboundDeliveryTableNames,
 } from "./postgres-shared.js";
 import type {
-    CompleteOutboundDeliveryInput,
-    CreateOutboundDeliveryInput,
-    FailOutboundDeliveryInput,
-    OutboundDeliveryNotification,
+    CompleteDeliveryInput,
+    DeliveryNotification,
+    DeliveryWorkerLookup,
+    FailDeliveryInput,
+    OutboundDeliveryInput,
     OutboundDeliveryRecord,
-    OutboundDeliveryWorkerLookup,
 } from "./types.js";
 
 interface PgQueryable {
@@ -49,7 +49,7 @@ function requireTrimmed(field: string, value: string): string {
   return trimmed;
 }
 
-function normalizeWorkerLookup(lookup: OutboundDeliveryWorkerLookup): OutboundDeliveryWorkerLookup {
+function normalizeWorkerLookup(lookup: DeliveryWorkerLookup): DeliveryWorkerLookup {
   return {
     channel: requireTrimmed("channel", lookup.channel),
     connectorKey: requireTrimmed("connector key", lookup.connectorKey),
@@ -66,7 +66,7 @@ function normalizeTarget(channel: string, target: OutboundTarget): OutboundTarge
   };
 }
 
-function normalizeCreateInput(input: CreateOutboundDeliveryInput): CreateOutboundDeliveryInput {
+function normalizeDeliveryInput(input: OutboundDeliveryInput): OutboundDeliveryInput {
   const channel = requireTrimmed("channel", input.channel);
   return {
     ...input,
@@ -130,9 +130,9 @@ function parseOutboundDeliveryRow(row: Record<string, unknown>): OutboundDeliver
   };
 }
 
-export function parseOutboundDeliveryNotification(payload: string): OutboundDeliveryNotification | null {
+export function parseDeliveryNotification(payload: string): DeliveryNotification | null {
   try {
-    const parsed = JSON.parse(payload) as Partial<OutboundDeliveryNotification>;
+    const parsed = JSON.parse(payload) as Partial<DeliveryNotification>;
     if (!parsed || typeof parsed.channel !== "string" || typeof parsed.connectorKey !== "string") {
       return null;
     }
@@ -155,7 +155,7 @@ export class PostgresOutboundDeliveryStore implements OutboundDeliveryStore {
     this.pool = options.pool;
     const prefix = options.tablePrefix ?? "thread_runtime";
     this.tables = buildOutboundDeliveryTableNames(prefix);
-    this.notificationChannel = buildOutboundDeliveryNotificationChannel(prefix);
+    this.notificationChannel = buildDeliveryNotificationChannel(prefix);
   }
 
   private async notifyPendingDelivery(target: Pick<OutboundTarget, "connectorKey"> & { source: string }): Promise<void> {
@@ -164,7 +164,7 @@ export class PostgresOutboundDeliveryStore implements OutboundDeliveryStore {
       JSON.stringify({
         channel: target.source,
         connectorKey: target.connectorKey,
-      } satisfies OutboundDeliveryNotification),
+      } satisfies DeliveryNotification),
     ]);
   }
 
@@ -200,8 +200,8 @@ export class PostgresOutboundDeliveryStore implements OutboundDeliveryStore {
     `);
   }
 
-  async enqueueDelivery(input: CreateOutboundDeliveryInput): Promise<OutboundDeliveryRecord> {
-    const normalizedInput = normalizeCreateInput(input);
+  async enqueueDelivery(input: OutboundDeliveryInput): Promise<OutboundDeliveryRecord> {
+    const normalizedInput = normalizeDeliveryInput(input);
     const result = await this.pool.query(
       `
         INSERT INTO ${this.tables.outboundDeliveries} (
@@ -264,7 +264,7 @@ export class PostgresOutboundDeliveryStore implements OutboundDeliveryStore {
     return parseOutboundDeliveryRow(row as Record<string, unknown>);
   }
 
-  async claimNextPendingDelivery(lookup: OutboundDeliveryWorkerLookup): Promise<OutboundDeliveryRecord | null> {
+  async claimNextPendingDelivery(lookup: DeliveryWorkerLookup): Promise<OutboundDeliveryRecord | null> {
     const normalizedLookup = normalizeWorkerLookup(lookup);
     const client = await this.pool.connect();
     let inTransaction = false;
@@ -321,7 +321,7 @@ export class PostgresOutboundDeliveryStore implements OutboundDeliveryStore {
     }
   }
 
-  async markDeliverySent(input: CompleteOutboundDeliveryInput): Promise<OutboundDeliveryRecord> {
+  async markDeliverySent(input: CompleteDeliveryInput): Promise<OutboundDeliveryRecord> {
     const result = await this.pool.query(
       `
         UPDATE ${this.tables.outboundDeliveries}
@@ -347,7 +347,7 @@ export class PostgresOutboundDeliveryStore implements OutboundDeliveryStore {
     return parseOutboundDeliveryRow(row as Record<string, unknown>);
   }
 
-  async markDeliveryFailed(input: FailOutboundDeliveryInput): Promise<OutboundDeliveryRecord> {
+  async markDeliveryFailed(input: FailDeliveryInput): Promise<OutboundDeliveryRecord> {
     const result = await this.pool.query(
       `
         UPDATE ${this.tables.outboundDeliveries}
@@ -371,7 +371,7 @@ export class PostgresOutboundDeliveryStore implements OutboundDeliveryStore {
     return parseOutboundDeliveryRow(row as Record<string, unknown>);
   }
 
-  async failSendingDeliveries(lookup: OutboundDeliveryWorkerLookup, error: string): Promise<number> {
+  async failSendingDeliveries(lookup: DeliveryWorkerLookup, error: string): Promise<number> {
     const normalizedLookup = normalizeWorkerLookup(lookup);
     const result = await this.pool.query(
       `
@@ -395,7 +395,7 @@ export class PostgresOutboundDeliveryStore implements OutboundDeliveryStore {
   }
 
   async listenPendingDeliveries(
-    listener: (notification: OutboundDeliveryNotification) => Promise<void> | void,
+    listener: (notification: DeliveryNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>> {
     const client = await this.pool.connect();
 
@@ -404,7 +404,7 @@ export class PostgresOutboundDeliveryStore implements OutboundDeliveryStore {
         return;
       }
 
-      const parsed = parseOutboundDeliveryNotification(message.payload);
+      const parsed = parseDeliveryNotification(message.payload);
       if (!parsed) {
         return;
       }

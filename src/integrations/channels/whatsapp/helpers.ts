@@ -5,6 +5,7 @@ import {normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
 import type {JsonObject} from "../../../kernel/agent/types.js";
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
+import {renderWhatsAppInboundText} from "../../../prompts/channels/whatsapp.js";
 import {WHATSAPP_SOURCE} from "./config.js";
 
 export interface WhatsAppInboundTextOptions {
@@ -41,10 +42,6 @@ function describeMediaDescriptor(descriptor: MediaDescriptor): string {
     `  size_bytes: ${descriptor.sizeBytes}`,
     `  path: ${descriptor.localPath}`,
   ].join("\n");
-}
-
-function formatMaybeValue(value: string | undefined): string {
-  return value?.trim() || "null";
 }
 
 function trimMaybeValue(value: string | undefined | null): string | undefined {
@@ -90,30 +87,19 @@ export function extractWhatsAppQuotedMessageId(message: WAMessage): string | und
 }
 
 export function buildWhatsAppInboundText(options: WhatsAppInboundTextOptions): string {
-  const trimmedText = options.text?.trim() ?? "";
-  const headerLines = [
-    "<panda-channel-context>",
-    `channel: ${WHATSAPP_SOURCE}`,
-    `connector_key: ${options.connectorKey}`,
-    `conversation_id: ${options.externalConversationId}`,
-    `actor_id: ${options.externalActorId}`,
-    `external_message_id: ${options.externalMessageId}`,
-    `remote_jid: ${options.remoteJid}`,
-    `chat_type: ${options.chatType}`,
-    `push_name: ${formatMaybeValue(options.pushName)}`,
-    `quoted_message_id: ${formatMaybeValue(options.quotedMessageId)}`,
-    "attachments:",
-    ...(options.media.length === 0
-      ? ["- none"]
-      : options.media.map((descriptor) => describeMediaDescriptor(descriptor))),
-    "</panda-channel-context>",
-  ];
-
-  return [
-    ...headerLines,
-    "",
-    trimmedText || "[WhatsApp message]",
-  ].join("\n");
+  return renderWhatsAppInboundText({
+    channel: WHATSAPP_SOURCE,
+    connectorKey: options.connectorKey,
+    conversationId: options.externalConversationId,
+    actorId: options.externalActorId,
+    externalMessageId: options.externalMessageId,
+    remoteJid: options.remoteJid,
+    chatType: options.chatType,
+    pushName: options.pushName,
+    quotedMessageId: options.quotedMessageId,
+    attachments: options.media.map((descriptor) => describeMediaDescriptor(descriptor)),
+    body: options.text,
+  });
 }
 
 export function buildWhatsAppInboundMetadata(options: WhatsAppInboundMetadataOptions): JsonObject {

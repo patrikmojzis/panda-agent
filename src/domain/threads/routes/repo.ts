@@ -3,7 +3,7 @@ import type {Pool, PoolClient} from "pg";
 import type {RememberedRoute} from "../../../domain/channels/types.js";
 import {quoteIdentifier, toJson, toMillis} from "../runtime/postgres-shared.js";
 import {buildThreadRouteTableNames, type ThreadRouteTableNames} from "./postgres-shared.js";
-import type {RememberThreadRouteInput, ThreadRouteLookup, ThreadRouteRecord} from "./types.js";
+import type {ThreadRouteInput, ThreadRouteLookup, ThreadRouteRecord} from "./types.js";
 
 interface PgQueryable {
   query: Pool["query"];
@@ -13,13 +13,7 @@ interface PgPoolLike extends PgQueryable {
   connect(): Promise<PoolClient>;
 }
 
-export interface ThreadRouteRepo {
-  ensureSchema(): Promise<void>;
-  resolveLastRoute(lookup: ThreadRouteLookup): Promise<RememberedRoute | null>;
-  rememberLastRoute(input: RememberThreadRouteInput): Promise<ThreadRouteRecord>;
-}
-
-export interface PostgresThreadRouteRepoOptions {
+export interface ThreadRouteRepoOptions {
   pool: PgPoolLike;
   tablePrefix?: string;
 }
@@ -51,7 +45,7 @@ function normalizeRoute(route: RememberedRoute): RememberedRoute {
   };
 }
 
-function normalizeInput(input: RememberThreadRouteInput): RememberThreadRouteInput {
+function normalizeInput(input: ThreadRouteInput): ThreadRouteInput {
   return {
     threadId: requireTrimmed("thread id", input.threadId),
     route: normalizeRoute(input.route),
@@ -80,11 +74,11 @@ function parseRecord(row: Record<string, unknown>): ThreadRouteRecord {
   };
 }
 
-export class PostgresThreadRouteRepo implements ThreadRouteRepo {
+export class ThreadRouteRepo {
   private readonly pool: PgPoolLike;
   private readonly tables: ThreadRouteTableNames;
 
-  constructor(options: PostgresThreadRouteRepoOptions) {
+  constructor(options: ThreadRouteRepoOptions) {
     this.pool = options.pool;
     this.tables = buildThreadRouteTableNames(options.tablePrefix ?? "thread_runtime");
   }
@@ -111,7 +105,7 @@ export class PostgresThreadRouteRepo implements ThreadRouteRepo {
     `);
   }
 
-  async resolveLastRoute(lookup: ThreadRouteLookup): Promise<RememberedRoute | null> {
+  async getLastRoute(lookup: ThreadRouteLookup): Promise<RememberedRoute | null> {
     const normalized = normalizeLookup(lookup);
     const values: unknown[] = [normalized.threadId];
     let sql = `
@@ -131,7 +125,7 @@ export class PostgresThreadRouteRepo implements ThreadRouteRepo {
     return row ? parseRoute(row as Record<string, unknown>) : null;
   }
 
-  async rememberLastRoute(input: RememberThreadRouteInput): Promise<ThreadRouteRecord> {
+  async saveLastRoute(input: ThreadRouteInput): Promise<ThreadRouteRecord> {
     const normalized = normalizeInput(input);
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.threadRoutes} (

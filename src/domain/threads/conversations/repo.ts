@@ -2,12 +2,7 @@ import type {Pool, PoolClient} from "pg";
 
 import {quoteIdentifier, toJson, toMillis} from "../runtime/postgres-shared.js";
 import {buildConversationThreadTableNames, type ConversationThreadTableNames} from "./postgres-shared.js";
-import type {
-    BindConversationThreadResult,
-    ConversationThreadBindingInput,
-    ConversationThreadLookup,
-    ConversationThreadRecord,
-} from "./types.js";
+import type {BindConversationInput, BindConversationResult, ConversationBinding, ConversationLookup,} from "./types.js";
 
 interface PgQueryable {
   query: Pool["query"];
@@ -17,7 +12,7 @@ interface PgPoolLike extends PgQueryable {
   connect(): Promise<PoolClient>;
 }
 
-export interface ConversationThreadRepoOptions {
+export interface ConversationRepoOptions {
   pool: PgPoolLike;
   tablePrefix?: string;
 }
@@ -31,7 +26,7 @@ function requireTrimmedConversationKeyPart(field: string, value: string): string
   return trimmed;
 }
 
-function normalizeConversationThreadLookup(lookup: ConversationThreadLookup): ConversationThreadLookup {
+function normalizeConversationLookup(lookup: ConversationLookup): ConversationLookup {
   return {
     source: requireTrimmedConversationKeyPart("source", lookup.source),
     connectorKey: requireTrimmedConversationKeyPart("connector key", lookup.connectorKey),
@@ -39,10 +34,10 @@ function normalizeConversationThreadLookup(lookup: ConversationThreadLookup): Co
   };
 }
 
-function normalizeConversationThreadBindingInput(
-  input: ConversationThreadBindingInput,
-): ConversationThreadBindingInput {
-  const lookup = normalizeConversationThreadLookup(input);
+function normalizeBindConversationInput(
+  input: BindConversationInput,
+): BindConversationInput {
+  const lookup = normalizeConversationLookup(input);
   return {
     ...input,
     ...lookup,
@@ -50,13 +45,13 @@ function normalizeConversationThreadBindingInput(
   };
 }
 
-function parseConversationThreadRow(row: Record<string, unknown>): ConversationThreadRecord {
+function parseConversationBinding(row: Record<string, unknown>): ConversationBinding {
   return {
     source: String(row.source),
     connectorKey: String(row.connector_key),
     externalConversationId: String(row.external_conversation_id),
     threadId: String(row.thread_id),
-    metadata: row.metadata === null ? undefined : (row.metadata as ConversationThreadRecord["metadata"]),
+    metadata: row.metadata === null ? undefined : (row.metadata as ConversationBinding["metadata"]),
     createdAt: toMillis(row.created_at),
     updatedAt: toMillis(row.updated_at),
   };
@@ -66,11 +61,11 @@ function isUniqueViolation(error: unknown): error is { code: string } {
   return !!error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "23505";
 }
 
-export class ConversationThreadRepo {
+export class ConversationRepo {
   private readonly pool: PgPoolLike;
   private readonly tables: ConversationThreadTableNames;
 
-  constructor(options: ConversationThreadRepoOptions) {
+  constructor(options: ConversationRepoOptions) {
     this.pool = options.pool;
     this.tables = buildConversationThreadTableNames(options.tablePrefix ?? "thread_runtime");
   }
@@ -94,8 +89,8 @@ export class ConversationThreadRepo {
     `);
   }
 
-  async resolveConversationThread(lookup: ConversationThreadLookup): Promise<ConversationThreadRecord | null> {
-    const normalizedLookup = normalizeConversationThreadLookup(lookup);
+  async getConversationBinding(lookup: ConversationLookup): Promise<ConversationBinding | null> {
+    const normalizedLookup = normalizeConversationLookup(lookup);
     const result = await this.pool.query(
       `
         SELECT *
@@ -112,11 +107,11 @@ export class ConversationThreadRepo {
     );
 
     const row = result.rows[0];
-    return row ? parseConversationThreadRow(row as Record<string, unknown>) : null;
+    return row ? parseConversationBinding(row as Record<string, unknown>) : null;
   }
 
-  async bindConversationThread(input: ConversationThreadBindingInput): Promise<BindConversationThreadResult> {
-    const normalizedInput = normalizeConversationThreadBindingInput(input);
+  async bindConversation(input: BindConversationInput): Promise<BindConversationResult> {
+    const normalizedInput = normalizeBindConversationInput(input);
     const client = await this.pool.connect();
     let inTransaction = false;
 
@@ -149,7 +144,7 @@ export class ConversationThreadRepo {
         );
 
         return {
-          binding: parseConversationThreadRow(insertedResult.rows[0] as Record<string, unknown>),
+          binding: parseConversationBinding(insertedResult.rows[0] as Record<string, unknown>),
         };
       } catch (error) {
         if (!isUniqueViolation(error)) {
@@ -210,7 +205,7 @@ export class ConversationThreadRepo {
       inTransaction = false;
 
       return {
-        binding: parseConversationThreadRow(updatedRow as Record<string, unknown>),
+        binding: parseConversationBinding(updatedRow as Record<string, unknown>),
         previousThreadId: previousThreadId !== normalizedInput.threadId
           ? previousThreadId
           : undefined,
@@ -225,8 +220,8 @@ export class ConversationThreadRepo {
     }
   }
 
-  async deleteConversationThread(lookup: ConversationThreadLookup): Promise<boolean> {
-    const normalizedLookup = normalizeConversationThreadLookup(lookup);
+  async deleteConversationBinding(lookup: ConversationLookup): Promise<boolean> {
+    const normalizedLookup = normalizeConversationLookup(lookup);
     const result = await this.pool.query(
       `
         DELETE FROM ${this.tables.conversationThreads}

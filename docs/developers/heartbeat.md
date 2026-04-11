@@ -55,6 +55,7 @@ Example:
 ## Agent Behavior
 
 The heartbeat prompt is intentionally simple.
+Its synthetic wake text lives in `src/prompts/runtime/heartbeat.ts`.
 
 It tells Panda:
 
@@ -104,7 +105,7 @@ Panda keeps a shared agent doc slug named `heartbeat`.
 
 That doc is heartbeat-only.
 It is not loaded into the normal shared agent workspace anymore.
-Instead, the heartbeat runner reads it and injects it only into the synthetic heartbeat wake prompt.
+Instead, the heartbeat runner reads it and injects it only into the synthetic heartbeat wake prompt rendered from `src/prompts/runtime/heartbeat.ts`.
 
 That keeps normal runs cleaner and makes the heartbeat doc actually mean what its name says.
 

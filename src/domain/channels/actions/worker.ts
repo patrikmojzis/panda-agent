@@ -1,16 +1,16 @@
 import type {ChannelActionStore} from "./store.js";
-import type {ChannelActionNotification, ChannelActionRecord, ChannelActionWorkerLookup} from "./types.js";
+import type {ActionNotification, ActionWorkerLookup, ChannelActionRecord} from "./types.js";
 
 export interface ChannelActionWorkerOptions {
   store: ChannelActionStore;
-  lookup: ChannelActionWorkerLookup;
+  lookup: ActionWorkerLookup;
   dispatch(action: ChannelActionRecord): Promise<void>;
   onError?: (error: unknown, actionId?: string) => Promise<void> | void;
 }
 
 function isMatchingNotification(
-  lookup: ChannelActionWorkerLookup,
-  notification: ChannelActionNotification,
+  lookup: ActionWorkerLookup,
+  notification: ActionNotification,
 ): boolean {
   return notification.channel === lookup.channel
     && notification.connectorKey === lookup.connectorKey;
@@ -18,7 +18,7 @@ function isMatchingNotification(
 
 export class ChannelActionWorker {
   private readonly store: ChannelActionStore;
-  private readonly lookup: ChannelActionWorkerLookup;
+  private readonly lookup: ActionWorkerLookup;
   private readonly dispatchAction: (action: ChannelActionRecord) => Promise<void>;
   private readonly onError?: (error: unknown, actionId?: string) => Promise<void> | void;
   private unsubscribe: (() => Promise<void>) | null = null;

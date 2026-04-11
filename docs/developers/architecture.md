@@ -6,7 +6,8 @@ The target buckets are:
 
 - `app`: entrypoints, process lifecycle, runtime assembly, CLI wiring
 - `kernel`: the inner agent loop and provider-neutral execution primitives
-- `personas`: persona packs like Panda prompt, tools, contexts, and subagent policy
+- `prompts`: editable model-facing text, wrappers, and default templates
+- `personas`: persona packs like Panda tool policy, contexts, and subagent wiring
 - `domain`: business concepts like agents, identity, threads, scheduling, and channel records
 - `integrations`: external systems like providers, Telegram, WhatsApp, Postgres, shell
 - `ui`: terminal and other human-facing surfaces
@@ -17,10 +18,11 @@ The target buckets are:
 Keep the dependency direction boring.
 
 - `lib` imports nothing project-specific
-- `kernel` may import `lib`
-- `domain` may import `kernel` and `lib`
-- `integrations` may import `domain`, `kernel`, and `lib`
-- `personas` may import `domain`, `kernel`, `integrations`, and `lib`
+- `prompts` should stay mostly strings-in, strings-out; `lib` imports are fine, and tiny type-only `domain` imports are acceptable when they keep contracts honest
+- `kernel` may import `prompts` and `lib`
+- `domain` may import `kernel`, `prompts`, and `lib`
+- `integrations` may import `domain`, `kernel`, `prompts`, and `lib`
+- `personas` may import `domain`, `kernel`, `integrations`, `prompts`, and `lib`
 - `ui` may import `app`, `personas`, `domain`, `kernel`, and `lib`
 - `app` may import anything
 
@@ -38,6 +40,12 @@ Put startup and orchestration here.
 - process shutdown handling
 
 Do not hide core logic here. `app` should wire parts together, not become the product.
+For Panda runtime assembly, keep the public facade thin:
+
+- `create-runtime.ts` is the public entry
+- `database.ts` owns DB URL/pool helpers
+- `thread-definition.ts` owns stored-context recovery and Panda thread definition shaping
+- `runtime-bootstrap.ts` is internal wiring glue, not package API
 
 ### `kernel`
 
@@ -52,16 +60,35 @@ This is the engine room.
 
 Keep `kernel` boring and reusable. No Postgres. No Telegram. No Panda persona details. No process env policy.
 
+### `prompts`
+
+This is the editable text layer.
+
+Put here:
+
+- system prompt text
+- synthetic wake and scheduled-task prompt renderers
+- channel wrapper text
+- context dump wrappers
+- default agent-doc templates
+
+Keep it dumb.
+Data in, string out.
+No DB reads. No env probing. No shell calls. No side effects.
+
 ### `personas`
 
 A persona is a configured brain, not the runtime.
 
 Put here:
 
-- prompt and persona defaults
+- prompt composition and persona defaults
 - tool selection and policy
 - persona contexts
 - subagent policy
+
+Do not bury giant prompt literals here.
+If the wording itself is what you are editing, it probably belongs in `src/prompts`.
 
 Do not put daemon wiring, DB pool setup, or connector boot code here.
 
@@ -123,6 +150,7 @@ These are not "maybe later" ideas. They are structure rules.
 - Kill `pi` as a folder name. It says nothing.
 - Keep barrel files only at real public boundaries.
 - Do not promote code to shared/global just because two files use it.
+- Do not hide long prompt text inside runners, helpers, or services.
 - Prefer fewer files when an abstraction is fake.
 
 ## Supported Entry Points
@@ -164,6 +192,15 @@ The supported package entrypoints are:
 Use the root for the normal public API.
 Use the subpath exports only when you intentionally need a secondary boundary.
 
+Internal stays internal.
+
+- `src/domain/credentials` is runtime plumbing, not package API
+- `src/domain/threads/conversations` and `src/domain/threads/routes` stay behind `domain/threads`
+- `src/prompts/**` is source-of-truth for editable model text, but it is not package API
+- `src/personas/panda/tools/*.ts` leaf files are implementation detail; use `panda` or `panda/personas/panda` instead
+- `src/personas/panda/subagents/service.ts` and `src/personas/panda/message-preview.ts` are internal helpers, not public persona API
+- helper files like `web-fetch.ts` may back a public tool, but the helper itself is not a supported import target
+
 Leaf-folder barrels are gone on purpose.
 If you feel tempted to add `tools/index.ts` or `contexts/index.ts` again, don't.
 
@@ -190,6 +227,7 @@ Stop and rethink if you see one of these:
 - `personas` importing `app`
 - `kernel` importing provider or channel code
 - `domain` importing Telegram or WhatsApp code
+- giant inline prompt literals living inside runtime files
 - folders named `common`, `shared`, or `utils` filling with mixed junk
 - one-implementation interfaces surviving out of habit
 - barrel files forcing readers to play import roulette

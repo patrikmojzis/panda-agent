@@ -11,6 +11,7 @@ import type {Agent} from "../../../kernel/agent/agent.js";
 import {formatParameters} from "../../../kernel/agent/helpers/schema.js";
 import type {JsonValue, ToolResultContent} from "../../../kernel/agent/types.js";
 import {Tool} from "../../../kernel/agent/tool.js";
+import {renderStructuredOutputInstruction} from "../../../prompts/runtime/structured-output.js";
 
 function normalizeSystemPrompt(systemPrompt?: string | ReadonlyArray<string>): string[] {
   if (typeof systemPrompt === "string") {
@@ -30,14 +31,7 @@ function createStructuredOutputInstruction(agent: Agent): string | null {
   }
 
   const schema = JSON.stringify(formatParameters(agent.outputSchema), null, 2);
-  return [
-    "Return only valid JSON.",
-    "Do not wrap the JSON in Markdown fences.",
-    "The JSON must match this schema exactly:",
-    "```json",
-    schema,
-    "```",
-  ].join("\n");
+  return renderStructuredOutputInstruction(schema);
 }
 
 export function buildConversationContext(options: {

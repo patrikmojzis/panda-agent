@@ -5,6 +5,7 @@ import {buildCompactSummaryMessage, stripCompactSummaryPrefix} from "../agent/he
 import {estimateTokensFromString} from "../agent/helpers/token-count.js";
 import {stringToUserMessage} from "../agent/helpers/input.js";
 import {resolveModelSelector} from "../models/model-selector.js";
+import {renderCompactionPrompt} from "../../prompts/runtime/compaction.js";
 import {getProviderConfig, type ProviderName} from "../../integrations/providers/shared/provider.js";
 import {resolveProviderApiKey} from "../../integrations/providers/shared/auth.js";
 import type {JsonObject, JsonValue} from "../agent/types.js";
@@ -261,58 +262,10 @@ export function formatTranscriptForCompaction(
 }
 
 export function getCompactPrompt(customInstructions?: string, maxSummaryTokens?: number): string {
-  let prompt = [
-    "CRITICAL: Respond with plain text only. Do not call tools.",
-    "You are compacting an earlier portion of a coding-assistant conversation so the session can continue in the same repository.",
-    "The most recent messages will be kept verbatim after this summary. Summarize only the older messages you were given.",
-    "Optimize for continuity, not elegance. Preserve exact details that are likely to matter for continuing the work:",
-    "- exact file paths",
-    "- exact function, class, type, variable, and command names",
-    "- exact error messages and test failures when important",
-    "- user instructions, preferences, and prohibitions",
-    "- key tool results and environment assumptions",
-    "- current status, unfinished work, and next steps",
-    "Compress aggressively:",
-    "- omit small talk",
-    "- merge repeated exploration",
-    "- summarize bulky logs unless exact text matters",
-    "- do not repeat information that is already obvious",
-    ...(maxSummaryTokens
-      ? [`- keep the final summary under roughly ${maxSummaryTokens} tokens`]
-      : []),
-    "Output exactly this format:",
-    "<summary>",
-    "Intent:",
-    "- ...",
-    "",
-    "Key context:",
-    "- ...",
-    "",
-    "Files and code:",
-    "- /abs/path/to/file.ts - why it matters; exact symbols touched",
-    "",
-    "Commands and outputs:",
-    "- `...` - key result",
-    "",
-    "Failures and fixes:",
-    "- ...",
-    "",
-    "User guidance:",
-    "- ...",
-    "",
-    "Pending work:",
-    "- ...",
-    "",
-    "Open questions:",
-    "- ...",
-    "</summary>",
-  ].join("\n");
-
-  if (customInstructions?.trim()) {
-    prompt += `\n\nAdditional instructions:\n${customInstructions.trim()}`;
-  }
-
-  return prompt;
+  return renderCompactionPrompt({
+    customInstructions,
+    maxSummaryTokens,
+  });
 }
 
 export function parseCompactSummary(raw: string): string {

@@ -1,7 +1,7 @@
 import type {ChannelOutboundAdapter} from "../outbound.js";
 import type {OutboundRequest} from "../types.js";
 import type {OutboundDeliveryStore} from "./store.js";
-import type {OutboundDeliveryNotification, OutboundDeliveryWorkerLookup} from "./types.js";
+import type {DeliveryNotification, DeliveryWorkerLookup} from "./types.js";
 
 export interface ChannelOutboundDeliveryWorkerOptions {
   store: OutboundDeliveryStore;
@@ -12,8 +12,8 @@ export interface ChannelOutboundDeliveryWorkerOptions {
 }
 
 function isMatchingNotification(
-  lookup: OutboundDeliveryWorkerLookup,
-  notification: OutboundDeliveryNotification,
+  lookup: DeliveryWorkerLookup,
+  notification: DeliveryNotification,
 ): boolean {
   return notification.channel === lookup.channel
     && notification.connectorKey === lookup.connectorKey;
@@ -32,7 +32,7 @@ function toRequest(delivery: Awaited<ReturnType<OutboundDeliveryStore["claimNext
 export class ChannelOutboundDeliveryWorker {
   private readonly store: OutboundDeliveryStore;
   private readonly adapter: ChannelOutboundAdapter;
-  private readonly lookup: OutboundDeliveryWorkerLookup;
+  private readonly lookup: DeliveryWorkerLookup;
   private readonly canSend?: () => boolean;
   private readonly onError?: (error: unknown, deliveryId?: string) => Promise<void> | void;
   private unsubscribe: (() => Promise<void>) | null = null;

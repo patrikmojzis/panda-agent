@@ -3,19 +3,23 @@ import path from "node:path";
 import {type Api, InputFile} from "grammy";
 
 import type {
-  ChannelOutboundAdapter,
-  OutboundRequest,
-  OutboundResult,
-  OutboundSentItem
+    ChannelOutboundAdapter,
+    OutboundRequest,
+    OutboundResult,
+    OutboundSentItem
 } from "../../../domain/channels/index.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 import {type ParsedTelegramConversationId, parseTelegramConversationId} from "./conversation-id.js";
+import {markdownToTelegramHtml} from "./format.js";
 import {assertTelegramConnectorKey} from "./transport.js";
 
 export interface TelegramOutboundAdapterOptions {
   api: Api;
   connectorKey: string;
 }
+
+const TELEGRAM_PARSE_ERROR_RE =
+  /can't parse entities|parse entities|find end of the entity|find end tag|unsupported start tag|unclosed start tag/i;
 
 function buildTelegramSendOptions(route: ParsedTelegramConversationId, replyToMessageId?: string): Record<string, unknown> {
   const options: Record<string, unknown> = {};
@@ -41,6 +45,34 @@ function sentItem(type: OutboundSentItem["type"], externalMessageId: number): Ou
   };
 }
 
+function isTelegramParseError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return TELEGRAM_PARSE_ERROR_RE.test(message);
+}
+
+// Telegram HTML is much less brittle than MarkdownV2, so we render once here
+// and only fall back to plain text when Telegram rejects the formatted payload.
+async function sendWithTelegramHtmlFallback<T>(params: {
+  rawText: string;
+  sendFormatted(htmlText: string): Promise<T>;
+  sendPlain(plainText: string): Promise<T>;
+}): Promise<T> {
+  const htmlText = markdownToTelegramHtml(params.rawText);
+  if (!htmlText.trim()) {
+    return await params.sendPlain(params.rawText);
+  }
+
+  try {
+    return await params.sendFormatted(htmlText);
+  } catch (error) {
+    if (!isTelegramParseError(error)) {
+      throw error;
+    }
+
+    return await params.sendPlain(params.rawText);
+  }
+}
+
 export function createTelegramOutboundAdapter(
   options: TelegramOutboundAdapterOptions,
 ): ChannelOutboundAdapter {
@@ -55,26 +87,53 @@ export function createTelegramOutboundAdapter(
       for (const item of request.items) {
         switch (item.type) {
           case "text": {
-            const message = await options.api.sendMessage(route.chatId, item.text, telegramOptions);
+            const message = await sendWithTelegramHtmlFallback({
+              rawText: item.text,
+              sendFormatted: async (htmlText) => await options.api.sendMessage(route.chatId, htmlText, {
+                ...telegramOptions,
+                parse_mode: "HTML",
+              }),
+              sendPlain: async (plainText) => await options.api.sendMessage(route.chatId, plainText, telegramOptions),
+            });
             sent.push(sentItem("text", message.message_id));
             break;
           }
           case "image": {
-            const image = new InputFile(item.path, path.basename(item.path));
-            const message = await options.api.sendPhoto(route.chatId, image, {
-              ...telegramOptions,
-              ...(item.caption ? { caption: item.caption } : {}),
-            });
+            const createImage = () => new InputFile(item.path, path.basename(item.path));
+            const message = item.caption
+              ? await sendWithTelegramHtmlFallback({
+                rawText: item.caption,
+                sendFormatted: async (htmlText) => await options.api.sendPhoto(route.chatId, createImage(), {
+                  ...telegramOptions,
+                  caption: htmlText,
+                  parse_mode: "HTML",
+                }),
+                sendPlain: async (plainText) => await options.api.sendPhoto(route.chatId, createImage(), {
+                  ...telegramOptions,
+                  caption: plainText,
+                }),
+              })
+              : await options.api.sendPhoto(route.chatId, createImage(), telegramOptions);
             sent.push(sentItem("image", message.message_id));
             break;
           }
           case "file": {
             const filename = item.filename?.trim() || path.basename(item.path);
-            const document = new InputFile(item.path, filename);
-            const message = await options.api.sendDocument(route.chatId, document, {
-              ...telegramOptions,
-              ...(item.caption ? { caption: item.caption } : {}),
-            });
+            const createDocument = () => new InputFile(item.path, filename);
+            const message = item.caption
+              ? await sendWithTelegramHtmlFallback({
+                rawText: item.caption,
+                sendFormatted: async (htmlText) => await options.api.sendDocument(route.chatId, createDocument(), {
+                  ...telegramOptions,
+                  caption: htmlText,
+                  parse_mode: "HTML",
+                }),
+                sendPlain: async (plainText) => await options.api.sendDocument(route.chatId, createDocument(), {
+                  ...telegramOptions,
+                  caption: plainText,
+                }),
+              })
+              : await options.api.sendDocument(route.chatId, createDocument(), telegramOptions);
             sent.push(sentItem("file", message.message_id));
             break;
           }

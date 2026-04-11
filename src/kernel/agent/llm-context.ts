@@ -1,10 +1,12 @@
+import {renderLlmContextDump} from "../../prompts/contexts/llm-context.js";
+
 export abstract class LlmContext {
   name = this.constructor.name;
 
   abstract getContent(): Promise<string>;
 
   async dumps(): Promise<string> {
-    return `**${this.name}:**\n\`\`\`${await this.getContent()}\`\`\``;
+    return renderLlmContextDump(this.name, await this.getContent());
   }
 }
 

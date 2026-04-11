@@ -3,17 +3,17 @@ import {DataType, newDb} from "pg-mem";
 
 import type {ChannelOutboundAdapter, OutboundRequest, OutboundResult} from "../src/domain/channels/index.js";
 import {
-  ChannelOutboundDeliveryWorker,
-  PostgresOutboundDeliveryStore,
+    ChannelOutboundDeliveryWorker,
+    PostgresOutboundDeliveryStore,
 } from "../src/domain/channels/deliveries/index.js";
 import type {OutboundDeliveryStore} from "../src/domain/channels/deliveries/store.js";
 import type {
-    CompleteOutboundDeliveryInput,
-    CreateOutboundDeliveryInput,
-    FailOutboundDeliveryInput,
-    OutboundDeliveryNotification,
+    CompleteDeliveryInput,
+    DeliveryNotification,
+    DeliveryWorkerLookup,
+    FailDeliveryInput,
+    OutboundDeliveryInput,
     OutboundDeliveryRecord,
-    OutboundDeliveryWorkerLookup,
 } from "../src/domain/channels/deliveries/types.js";
 
 describe("PostgresOutboundDeliveryStore", () => {
@@ -123,12 +123,12 @@ describe("PostgresOutboundDeliveryStore", () => {
 
 class MemoryDeliveryStore implements OutboundDeliveryStore {
   deliveries: OutboundDeliveryRecord[] = [];
-  listener: ((notification: OutboundDeliveryNotification) => Promise<void> | void) | null = null;
+  listener: ((notification: DeliveryNotification) => Promise<void> | void) | null = null;
   counter = 0;
 
   async ensureSchema(): Promise<void> {}
 
-  async enqueueDelivery(input: CreateOutboundDeliveryInput): Promise<OutboundDeliveryRecord> {
+  async enqueueDelivery(input: OutboundDeliveryInput): Promise<OutboundDeliveryRecord> {
     this.counter += 1;
     const delivery: OutboundDeliveryRecord = {
       id: `delivery-${this.counter}`,
@@ -155,7 +155,7 @@ class MemoryDeliveryStore implements OutboundDeliveryStore {
     return delivery;
   }
 
-  async claimNextPendingDelivery(lookup: OutboundDeliveryWorkerLookup): Promise<OutboundDeliveryRecord | null> {
+  async claimNextPendingDelivery(lookup: DeliveryWorkerLookup): Promise<OutboundDeliveryRecord | null> {
     const delivery = this.deliveries.find((candidate) =>
       candidate.status === "pending"
       && candidate.channel === lookup.channel
@@ -169,21 +169,21 @@ class MemoryDeliveryStore implements OutboundDeliveryStore {
     return delivery;
   }
 
-  async markDeliverySent(input: CompleteOutboundDeliveryInput): Promise<OutboundDeliveryRecord> {
+  async markDeliverySent(input: CompleteDeliveryInput): Promise<OutboundDeliveryRecord> {
     const delivery = await this.getDelivery(input.id);
     delivery.status = "sent";
     delivery.sent = input.sent;
     return delivery;
   }
 
-  async markDeliveryFailed(input: FailOutboundDeliveryInput): Promise<OutboundDeliveryRecord> {
+  async markDeliveryFailed(input: FailDeliveryInput): Promise<OutboundDeliveryRecord> {
     const delivery = await this.getDelivery(input.id);
     delivery.status = "failed";
     delivery.lastError = input.error;
     return delivery;
   }
 
-  async failSendingDeliveries(lookup: OutboundDeliveryWorkerLookup, error: string): Promise<number> {
+  async failSendingDeliveries(lookup: DeliveryWorkerLookup, error: string): Promise<number> {
     let count = 0;
     for (const delivery of this.deliveries) {
       if (
@@ -201,7 +201,7 @@ class MemoryDeliveryStore implements OutboundDeliveryStore {
   }
 
   async listenPendingDeliveries(
-    listener: (notification: OutboundDeliveryNotification) => Promise<void> | void,
+    listener: (notification: DeliveryNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>> {
     this.listener = listener;
     return async () => {

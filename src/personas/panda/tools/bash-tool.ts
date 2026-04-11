@@ -8,14 +8,10 @@ import type {RunContext} from "../../../kernel/agent/run-context.js";
 import {Tool, type ToolOutput} from "../../../kernel/agent/tool.js";
 import {ToolError} from "../../../kernel/agent/exceptions.js";
 import type {JsonObject, JsonValue} from "../../../kernel/agent/types.js";
+import type {CredentialResolver} from "../../../domain/credentials/index.js";
 import type {PandaSessionContext} from "../types.js";
 import {ensurePandaShellSession, readPandaBaseCwd} from "./context.js";
-import {
-  type BashExecutionMode,
-  type BashExecutor,
-  createDefaultBashExecutor,
-  resolveBashExecutionMode,
-} from "../../../integrations/shell/bash-executor.js";
+import {type BashExecutor, createDefaultBashExecutor,} from "../../../integrations/shell/bash-executor.js";
 import {
   applyPersistedEnv,
   collectTrackedEnvKeys,
@@ -56,6 +52,47 @@ function formatBashStatus(details: Record<string, unknown>): string {
   return "command failed";
 }
 
+function redactSecretsInString(value: string, secrets: readonly string[]): string {
+  let redacted = value;
+  for (const secret of secrets) {
+    if (!secret) {
+      continue;
+    }
+
+    redacted = redacted.split(secret).join("[redacted]");
+  }
+
+  return redacted;
+}
+
+function redactSecretsInJson(value: JsonValue, secrets: readonly string[]): JsonValue {
+  if (typeof value === "string") {
+    return redactSecretsInString(value, secrets);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactSecretsInJson(entry, secrets));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, redactSecretsInJson(entry as JsonValue, secrets)]),
+    ) as JsonObject;
+  }
+
+  return value;
+}
+
+function collectSecretValues(...envSets: Array<Record<string, string> | undefined>): string[] {
+  return [...new Set(
+    envSets
+      .flatMap((envSet) => envSet ? Object.values(envSet) : [])
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+      .sort((left, right) => right.length - left.length),
+  )];
+}
+
 export interface BashToolOptions {
   shell?: string;
   defaultTimeoutMs?: number;
@@ -67,6 +104,7 @@ export interface BashToolOptions {
   env?: NodeJS.ProcessEnv;
   executor?: BashExecutor;
   fetchImpl?: typeof fetch;
+  credentialResolver?: CredentialResolver;
 }
 
 export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTool.schema, TContext> {
@@ -79,7 +117,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
 
   name = "bash";
   description =
-    "Run a shell command in the local workspace. The working directory persists across bash calls. In local mode, simple export/unset environment changes persist too. Remote mode does not accept env overrides.";
+    "Run a shell command in the local workspace. The working directory persists across bash calls. Simple export/unset environment changes persist across calls, including remote runner sessions.";
   schema = BashTool.schema;
 
   private readonly defaultTimeoutMs: number;
@@ -89,12 +127,11 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
   private readonly progressTailChars: number;
   private readonly outputDirectory: string;
   private readonly executor: BashExecutor;
-  private readonly executionMode: BashExecutionMode;
+  private readonly credentialResolver?: CredentialResolver;
 
   constructor(options: BashToolOptions = {}) {
     super();
     const env = options.env ?? process.env;
-    this.executionMode = resolveBashExecutionMode(env);
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxOutputChars = options.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
     this.persistOutputThresholdChars =
@@ -102,6 +139,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     this.progressIntervalMs = options.progressIntervalMs ?? DEFAULT_PROGRESS_INTERVAL_MS;
     this.progressTailChars = options.progressTailChars ?? DEFAULT_PROGRESS_TAIL_CHARS;
     this.outputDirectory = path.resolve(options.outputDirectory ?? DEFAULT_OUTPUT_DIRECTORY);
+    this.credentialResolver = options.credentialResolver;
     this.executor = options.executor ?? createDefaultBashExecutor({
       shell: options.shell,
       env,
@@ -143,6 +181,21 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     return `${status}\n${summary}`;
   }
 
+  override redactCallArguments(args: Record<string, unknown>): Record<string, unknown> {
+    if (!args.env || typeof args.env !== "object" || Array.isArray(args.env)) {
+      return args;
+    }
+
+    const redactedEnv = Object.fromEntries(
+      Object.keys(args.env).map((key) => [key, "[redacted]"]),
+    );
+
+    return {
+      ...args,
+      env: redactedEnv,
+    };
+  }
+
   async handle(
     args: z.output<typeof BashTool.schema>,
     run: RunContext<TContext>,
@@ -151,13 +204,17 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     const baseCwd = shellSession?.cwd ?? readPandaBaseCwd(run.context);
     const cwd = resolveCommandCwd(args.cwd, baseCwd);
     const timeoutMs = args.timeoutMs ?? this.defaultTimeoutMs;
-    if (this.executionMode === "remote" && args.env && Object.keys(args.env).length > 0) {
-      throw new ToolError("Remote bash does not accept env overrides.");
-    }
-
-    const trackedEnvKeys = this.executionMode === "remote"
-      ? []
-      : collectTrackedEnvKeys(args.command);
+    const resolvedCredentialEnv = this.credentialResolver
+      ? await this.credentialResolver.resolveEnvironment({
+        agentKey: typeof run.context === "object" && run.context !== null && "agentKey" in run.context
+          ? (run.context as {agentKey?: string}).agentKey
+          : undefined,
+        identityId: typeof run.context === "object" && run.context !== null && "identityId" in run.context
+          ? (run.context as {identityId?: string}).identityId
+          : undefined,
+      })
+      : {};
+    const trackedEnvKeys = collectTrackedEnvKeys(args.command);
     const result = await this.executor.execute({
       command: args.command,
       cwd,
@@ -169,11 +226,11 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       persistOutputThresholdChars: this.persistOutputThresholdChars,
       outputDirectory: this.outputDirectory,
       env: args.env,
+      resolvedEnv: resolvedCredentialEnv,
       run: run as RunContext<PandaSessionContext>,
     });
-    const appliedSessionEnvKeys = this.executionMode === "remote"
-      ? []
-      : applyPersistedEnv(shellSession, result.persistedEnvEntries);
+    const appliedSessionEnvKeys = applyPersistedEnv(shellSession, result.persistedEnvEntries);
+    const redactedSecrets = collectSecretValues(resolvedCredentialEnv, args.env);
 
     if (result.success && shellSession) {
       shellSession.cwd = result.finalCwd;
@@ -215,22 +272,25 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       ...(result.stdoutPath ? { stdoutPath: result.stdoutPath } : {}),
       ...(result.stderrPath ? { stderrPath: result.stderrPath } : {}),
     };
+    const sanitizedPayload = redactedSecrets.length > 0
+      ? redactSecretsInJson(payload, redactedSecrets) as JsonObject
+      : payload;
 
     if (result.timedOut) {
-      throw new ToolError(`Command timed out after ${timeoutMs}ms`, { details: payload });
+      throw new ToolError(`Command timed out after ${timeoutMs}ms`, { details: sanitizedPayload });
     }
 
     if (result.aborted) {
-      throw new ToolError(result.abortReason ?? "Command aborted.", { details: payload });
+      throw new ToolError(result.abortReason ?? "Command aborted.", { details: sanitizedPayload });
     }
 
     if (result.exitCode !== 0 || result.signal !== null) {
       const message = result.signal !== null
         ? `Command exited with signal ${result.signal}`
         : `Command exited with code ${String(result.exitCode)}`;
-      throw new ToolError(message, { details: payload });
+      throw new ToolError(message, { details: sanitizedPayload });
     }
 
-    return payload;
+    return sanitizedPayload;
   }
 }
