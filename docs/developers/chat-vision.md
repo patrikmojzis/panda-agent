@@ -134,29 +134,9 @@ If a reminder was explicitly created in a branch or bound to a specific route, i
 
 The important point is that scheduled work should feel like it came from the same Panda the user already knows.
 
-## Why This Model
-
-This model keeps the product understandable:
-
-- one Panda
-- many windows into it
-- optional side branches when needed
-
-It also keeps the architecture sane:
-
-- stable default thread
-- explicit branch threads
-- channel bindings as routing surfaces, not as the source of truth
-
 ## What To Avoid
 
 - treating every channel as a separate default brain
 - making Telegram or WhatsApp own the truth
 - exposing hidden backend thread routing as a normal user concept
 - making `/new` silently rewrite channel routing in places where the user cannot inspect thread state
-
-## Product Summary
-
-If we get this right, the user experience should feel like this:
-
-"I have one Panda. I can talk to it from different places. If I really need a side lane, I can make one on purpose. Otherwise it is the same brain."

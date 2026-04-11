@@ -1,0 +1,207 @@
+# Remote Bash
+
+Panda can run `bash` in two modes:
+
+- `local`: in-process shell execution inside `panda-core`
+- `remote`: `panda-core` calls a runner over HTTP
+
+Use remote mode when you want Docker or another sandbox boundary between the core runtime and shell execution.
+
+## Rule Zero
+
+Keep secrets in `panda-core`, not in the runner.
+
+The core is for:
+
+- model and provider credentials
+- Postgres credentials
+- connector credentials
+- everything else you would hate arbitrary shell to see
+
+The runner is for bash. Nothing more.
+
+## Mental Model
+
+In v1:
+
+- `agentKey` is the filesystem boundary
+- one runner serves one agent
+- each runner mounts that agent home
+- shared workspaces are explicit extra mounts
+
+That means:
+
+- `panda-core` keeps DB creds, provider tokens, and connector secrets
+- `panda-runner-<agent>` executes shell commands
+- the runner should not have DB creds or a network path to Postgres
+
+## Core Env
+
+Set this in `panda-core`:
+
+```bash
+PANDA_BASH_EXECUTION_MODE=remote
+PANDA_RUNNER_URL_TEMPLATE=http://panda-runner-{agentKey}:8080
+PANDA_RUNNER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
+```
+
+`PANDA_RUNNER_URL_TEMPLATE` can be:
+
+- a per-agent template with `{agentKey}`
+- a plain URL if every agent should hit the same runner endpoint
+
+Examples:
+
+- `http://panda-runner-{agentKey}:8080`
+- `http://runner-gateway/{agentKey}`
+- `http://127.0.0.1:8080`
+
+`PANDA_RUNNER_CWD_TEMPLATE` tells `panda-core` what starting directory exists inside the runner.
+Use it whenever remote bash is on, especially when the core runs on your host but the runner lives in Docker.
+
+## Runner Env
+
+Each runner gets its own agent key:
+
+```bash
+PANDA_RUNNER_AGENT_KEY=panda
+PANDA_RUNNER_PORT=8080
+```
+
+The runner serves one agent. Container mounts and sandboxing decide what files it can touch.
+
+## Setup A: Local Core, Docker Runner
+
+This is the nicest day-to-day dev setup:
+
+- `panda run` on your host
+- `panda chat` on your host
+- Postgres on your host or external
+- bash runner in Docker
+
+Easy path:
+
+```bash
+./scripts/run-docker-runner.sh panda
+```
+
+Manual path:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e PANDA_RUNNER_AGENT_KEY=panda \
+  -v "$HOME/.panda/agents/panda:/root/.panda/agents/panda" \
+  -v "$HOME/.panda/shared:/workspace/shared" \
+  panda:latest runner
+```
+
+Then start Panda locally against that runner:
+
+```bash
+export PANDA_BASH_EXECUTION_MODE=remote
+export PANDA_RUNNER_URL_TEMPLATE=http://127.0.0.1:8080
+export PANDA_RUNNER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
+
+pnpm dev run --db-url postgresql://localhost:5432/panda
+pnpm dev chat --db-url postgresql://localhost:5432/panda --agent panda
+```
+
+## Setup B: Docker Core, Per-Agent Runners
+
+This is the cleaner deployment shape:
+
+- `panda-core` in Docker
+- one `panda-runner-<agentKey>` container per agent boundary
+- external Postgres
+- provider tokens only on `panda-core`
+
+Example:
+
+```yaml
+services:
+  panda-core:
+    image: panda:latest
+    command: ["run"]
+    env_file:
+      - ../.env
+    environment:
+      PANDA_DATABASE_URL: postgres://panda_app:app_pw@db.example.com:5432/panda
+      PANDA_BASH_EXECUTION_MODE: remote
+      PANDA_RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
+      PANDA_RUNNER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
+    volumes:
+      - ${HOME}/.panda:/root/.panda
+      - ${PANDA_SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
+    depends_on:
+      - panda-runner-panda
+    networks:
+      - runner_net
+
+  panda-runner-panda:
+    image: panda:latest
+    command: ["runner"]
+    environment:
+      PANDA_RUNNER_AGENT_KEY: panda
+      PANDA_RUNNER_PORT: 8080
+    volumes:
+      - ${HOME}/.panda/agents/panda:/root/.panda/agents/panda
+      - ${PANDA_SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
+    networks:
+      - runner_net
+
+networks:
+  runner_net:
+```
+
+There is also a ready-made example in [examples/docker-compose.remote-bash.external-db.yml](../../examples/docker-compose.remote-bash.external-db.yml).
+
+## External Postgres
+
+You do not need a local `db` container if you already have a real Postgres somewhere else.
+
+Point `panda-core` at that database:
+
+```yaml
+services:
+  panda-core:
+    environment:
+      PANDA_DATABASE_URL: postgres://panda_app:app_pw@db.example.com:5432/panda
+      PANDA_READONLY_DATABASE_URL: postgres://panda_readonly:readonly_pw@db.example.com:5432/panda
+```
+
+If `panda chat` runs on your host, point it at the same DB:
+
+```bash
+pnpm dev chat \
+  --db-url postgres://user:pass@db.example.com:5432/panda \
+  --agent panda
+```
+
+## Verify It
+
+Health check:
+
+```bash
+curl http://panda-runner-panda:8080/health
+```
+
+It should return the runner agent key.
+
+Then verify the core is actually using remote mode:
+
+```bash
+echo "$PANDA_BASH_EXECUTION_MODE"
+```
+
+If that is not exactly `remote`, Panda falls back to local in-process bash.
+
+## Hard Rules
+
+- do not put DB creds in runner env
+- do not put provider API keys in runner env
+- do not mount the Docker socket into runners
+- do not let runners reach Postgres over the network
+- do not mount a giant shared parent directory unless you really want the runner to see all of it
+- shared workspaces are opt-in and collisions are expected if multiple agents use them at the same time
+
+That split is the whole point. If the runner knows secrets, the boundary is fake.
