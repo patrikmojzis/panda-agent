@@ -381,6 +381,100 @@ describe("PandaChatApp fresh-thread agent selection", () => {
   });
 });
 
+describe("PandaChatApp history search", () => {
+  it("filters history matches and loads the selected prompt into the composer", async () => {
+    const app = new PandaChatApp() as any;
+    app.render = vi.fn();
+    app.inputHistory.push("deploy alpha", "fix bug", "deploy beta");
+
+    await app.handleKeypress("\u0012", { ctrl: true, name: "r" });
+    await app.handleKeypress("d", { name: "d" });
+    await app.handleKeypress("e", { name: "e" });
+    await app.handleKeypress("p", { name: "p" });
+    await app.handleKeypress("l", { name: "l" });
+    await app.handleKeypress("o", { name: "o" });
+    await app.handleKeypress("y", { name: "y" });
+    await app.handleKeypress("\u0012", { ctrl: true, name: "r" });
+    await app.handleKeypress("\r", { name: "return" });
+
+    expect(app.historySearch.active).toBe(false);
+    expect(app.composer.value).toBe("deploy alpha");
+  });
+});
+
+describe("PandaChatApp thread picker", () => {
+  it("preselects the current thread and resumes the chosen entry", async () => {
+    const summaries = [
+      {
+        thread: {
+          id: "thread-a",
+          identityId: "local",
+          agentKey: "panda",
+          model: "openai/gpt-5.1",
+          context: {},
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        messageCount: 1,
+        pendingInputCount: 0,
+      },
+      {
+        thread: {
+          id: "thread-b",
+          identityId: "local",
+          agentKey: "panda",
+          model: "openai/gpt-5.1",
+          context: {},
+          createdAt: 2,
+          updatedAt: 2,
+        },
+        messageCount: 2,
+        pendingInputCount: 0,
+      },
+      {
+        thread: {
+          id: "thread-c",
+          identityId: "local",
+          agentKey: "ops",
+          model: "openai/gpt-5.1",
+          context: {},
+          createdAt: 3,
+          updatedAt: 3,
+        },
+        messageCount: 3,
+        pendingInputCount: 0,
+      },
+    ];
+    const listThreadSummaries = vi.fn(async () => summaries);
+    const app = new PandaChatApp() as any;
+
+    app.currentThreadId = "thread-b";
+    app.currentThread = summaries[1]?.thread;
+    app.render = vi.fn();
+    app.services = {
+      listThreadSummaries,
+    } as ChatRuntimeServices;
+    app.switchThread = vi.fn(async (thread) => {
+      app.currentThread = thread;
+      app.currentThreadId = thread.id;
+    });
+    app.setNotice = vi.fn();
+
+    await app.openThreadPicker();
+
+    expect(listThreadSummaries).toHaveBeenCalledWith(16);
+    expect(app.threadPicker.active).toBe(true);
+    expect(app.threadPicker.selected).toBe(1);
+
+    app.cycleThreadPicker(1);
+    await app.selectThreadPickerEntry();
+
+    expect(app.switchThread).toHaveBeenCalledWith(summaries[2]?.thread);
+    expect(app.threadPicker.active).toBe(false);
+    expect(app.setNotice).toHaveBeenCalledWith("Resumed thread thread-c.", "info");
+  });
+});
+
 describe("PandaChatApp compact command", () => {
   it("calls the runtime compact operation and records the result locally", async () => {
     const compactThread = vi.fn(async () => ({

@@ -8,6 +8,7 @@ import {
     MediaTool,
     PANDA_PROMPT,
     WebFetchTool,
+    WebResearchTool,
     WhisperTool,
 } from "../src/index.js";
 import {buildPandaTools} from "../src/personas/panda/definition.js";
@@ -27,6 +28,9 @@ describe("Panda feature surface", () => {
     expect(PANDA_PROMPT).toContain("## Soul");
     expect(PANDA_PROMPT).toContain("## Channels & Inner Monologue");
     expect(PANDA_PROMPT).toContain("No outbound call = no message delivered.");
+    expect(PANDA_PROMPT).toContain(
+      "In both local and remote mode, simple export/unset environment changes persist across bash calls, along with the working directory.",
+    );
     expect(tools).toHaveLength(3);
     expect(tools[0]).toBeInstanceOf(BashTool);
     expect(tools[1]).toBeInstanceOf(MediaTool);
@@ -47,8 +51,9 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     const tools = buildPandaTools();
 
-    expect(tools).toHaveLength(4);
-    expect(tools[3]).toBeInstanceOf(WhisperTool);
+    expect(tools).toHaveLength(5);
+    expect(tools[3]).toBeInstanceOf(WebResearchTool);
+    expect(tools[4]).toBeInstanceOf(WhisperTool);
   });
 
   it("appends extra tools without adding hidden defaults", () => {

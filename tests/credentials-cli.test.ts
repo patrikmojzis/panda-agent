@@ -7,6 +7,31 @@ const credentialCliMocks = vi.hoisted(() => {
   const pool = {
     end: vi.fn(async () => {}),
   };
+  const resolveCredentialResult = {
+    current: {
+      id: "credential-2",
+      envKey: "NOTION_API_KEY",
+      value: "secret-notion",
+      valuePreview: "secr...tion",
+      scope: "agent" as const,
+      agentKey: "panda",
+      identityId: undefined,
+      keyVersion: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    } as {
+      id: string;
+      envKey: string;
+      value: string;
+      valuePreview: string;
+      scope: "agent";
+      agentKey: string;
+      identityId: undefined;
+      keyVersion: number;
+      createdAt: number;
+      updatedAt: number;
+    } | null,
+  };
 
   const identityStoreInstances: MockPostgresIdentityStore[] = [];
   const agentStoreInstances: MockPostgresAgentStore[] = [];
@@ -89,18 +114,7 @@ const credentialCliMocks = vi.hoisted(() => {
         updatedAt: 2,
       },
     ]));
-    readonly resolveCredential = vi.fn(async () => ({
-      id: "credential-2",
-      envKey: "NOTION_API_KEY",
-      value: "secret-notion",
-      valuePreview: "secr...tion",
-      scope: "agent" as const,
-      agentKey: "panda",
-      identityId: undefined,
-      keyVersion: 1,
-      createdAt: 1,
-      updatedAt: 2,
-    }));
+    readonly resolveCredential = vi.fn(async () => resolveCredentialResult.current);
 
     constructor(_options: unknown) {
       credentialServiceInstances.push(this);
@@ -114,6 +128,7 @@ const credentialCliMocks = vi.hoisted(() => {
     createPandaPool: vi.fn(() => pool),
     identityStoreInstances,
     pool,
+    resolveCredentialResult,
     requirePandaDatabaseUrl: vi.fn((dbUrl?: string) => dbUrl ?? "postgres://resolved-db"),
     resolveCredentialCrypto: vi.fn(() => ({kind: "crypto"})),
     MockCredentialService,
@@ -182,6 +197,18 @@ describe("Credential CLI", () => {
     credentialCliMocks.createPandaPool.mockClear();
     credentialCliMocks.requirePandaDatabaseUrl.mockClear();
     credentialCliMocks.resolveCredentialCrypto.mockClear();
+    credentialCliMocks.resolveCredentialResult.current = {
+      id: "credential-2",
+      envKey: "NOTION_API_KEY",
+      value: "secret-notion",
+      valuePreview: "secr...tion",
+      scope: "agent",
+      agentKey: "panda",
+      identityId: undefined,
+      keyVersion: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    };
     vi.restoreAllMocks();
   });
 
@@ -326,10 +353,38 @@ describe("Credential CLI", () => {
     );
     expect(write).toHaveBeenCalledWith(
       [
-        "Resolved NOTION_API_KEY.",
+        "Stored winner for NOTION_API_KEY.",
         "scope agent",
         "agent panda",
         "value secr...tion",
+        "Note: this inspects stored credentials only.",
+      ].join("\n") + "\n",
+    );
+  });
+
+  it("makes the no-stored-match case explicit about local process env fallback", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    credentialCliMocks.resolveCredentialResult.current = null;
+
+    await createProgram().parseAsync(
+      [
+        "credentials",
+        "resolve",
+        "OPENAI_API_KEY",
+        "--agent",
+        "panda",
+        "--identity",
+        "local",
+        "--db-url",
+        "postgres://credentials-db",
+      ],
+      {from: "user"},
+    );
+
+    expect(write).toHaveBeenCalledWith(
+      [
+        "No stored credential matched OPENAI_API_KEY.",
+        "Note: local bash may still fall back to Panda process env.",
       ].join("\n") + "\n",
     );
   });

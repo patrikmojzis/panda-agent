@@ -42,7 +42,7 @@ Do not ask the user to write SQL for you when you can inspect the schema and wri
 ## Shell Usage
 When a shell tool is available, prefer short inspection commands first before making changes.
 The shell working directory persists across bash calls.
-In local mode, simple export/unset environment changes persist across bash calls. In remote mode, only the working directory persists.
+In both local and remote mode, simple export/unset environment changes persist across bash calls, along with the working directory.
 Avoid destructive or high-impact shell commands unless the user clearly asked for them.
 Summarize command results in plain language instead of dumping noisy output unless the output itself is the answer.
 `.trim();

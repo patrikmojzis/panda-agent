@@ -44,6 +44,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "Tool",
   "ToolError",
   "WebFetchTool",
+  "WebResearchTool",
   "WhisperTool",
   "assertProviderName",
   "buildCanonicalModelSelector",

@@ -53,6 +53,10 @@ export {
   type WebFetchToolOptions,
 } from "./tools/web-fetch-tool.js";
 export {
+  WebResearchTool,
+  type WebResearchToolOptions,
+} from "./tools/web-research-tool.js";
+export {
   filterToolsForSubagentRole,
   getPandaSubagentRolePolicy,
   PANDA_SUBAGENT_ROLE_POLICIES,

@@ -253,6 +253,49 @@ describe("BashTool", () => {
     }
   });
 
+  it("redacts secret values persisted into the shell session across later calls", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-session-secret-"));
+    try {
+      const context: PandaSessionContext = {
+        agentKey: "panda",
+        identityId: "alice-id",
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+      });
+
+      await tool.run(
+        {
+          command: 'export SAVED_SECRET="$CALL_SECRET"',
+          env: {
+            CALL_SECRET: "call-secret",
+          },
+        },
+        createRunContext(context),
+      );
+
+      expect(context.shell?.env.SAVED_SECRET).toBe("call-secret");
+      expect(context.shell?.secretEnvKeys).toEqual(["SAVED_SECRET"]);
+
+      const result = await tool.run(
+        {
+          command: 'printf %s "$SAVED_SECRET"',
+        },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+
+      expect(String(output.stdout)).toBe("[redacted]");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("persists large stdout to disk while returning a truncated preview", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-output-"));
     try {
@@ -279,6 +322,43 @@ describe("BashTool", () => {
       expect(output.stdoutPersisted).toBe(true);
       expect(typeof output.stdoutPath).toBe("string");
       await expect(readFile(String(output.stdoutPath), "utf8")).resolves.toBe("0123456789ABCDEF");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not persist large output files for secret-bearing bash calls", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-secret-output-"));
+    try {
+      const context: PandaSessionContext = {
+        agentKey: "panda",
+        identityId: "alice-id",
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        maxOutputChars: 8,
+        persistOutputThresholdChars: 8,
+      });
+
+      const result = await tool.run(
+        {
+          command: 'printf "%s%s%s%s" "$CALL_SECRET" "$CALL_SECRET" "$CALL_SECRET" "$CALL_SECRET"',
+          env: {
+            CALL_SECRET: "secret",
+          },
+        },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+
+      expect(output.stdoutTruncated).toBe(true);
+      expect(output.stdoutPersisted).toBe(false);
+      expect(output).not.toHaveProperty("stdoutPath");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

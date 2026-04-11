@@ -22,6 +22,7 @@ const EXPECTED_PERSONA_EXPORTS = [
   "SetEnvValueTool",
   "SpawnSubagentTool",
   "WebFetchTool",
+  "WebResearchTool",
   "WhisperTool",
   "buildPandaLlmContexts",
   "buildPandaTools",

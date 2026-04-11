@@ -17,6 +17,8 @@ import {
   collectTrackedEnvKeys,
   resolveCommandCwd,
 } from "../../../integrations/shell/bash-session.js";
+import type {PersistedEnvEntry} from "../../../integrations/shell/bash-protocol.js";
+import type {ShellSession} from "../../../integrations/shell/types.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 8_000;
@@ -91,6 +93,48 @@ function collectSecretValues(...envSets: Array<Record<string, string> | undefine
       .filter((value) => value.length > 0)
       .sort((left, right) => right.length - left.length),
   )];
+}
+
+function readSecretSessionEnv(shellSession: ShellSession | null): Record<string, string> {
+  if (!shellSession || !Array.isArray(shellSession.secretEnvKeys) || shellSession.secretEnvKeys.length === 0) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    shellSession.secretEnvKeys.flatMap((key) => {
+      const value = shellSession.env[key];
+      return typeof value === "string" && value.length > 0 ? [[key, value]] : [];
+    }),
+  );
+}
+
+function updateSecretSessionKeys(
+  shellSession: ShellSession | null,
+  entries: readonly PersistedEnvEntry[],
+  knownSecretValues: readonly string[],
+): void {
+  if (!shellSession) {
+    return;
+  }
+
+  const secretValues = new Set(knownSecretValues.filter((value) => value.length > 0));
+  const nextSecretKeys = new Set(shellSession.secretEnvKeys ?? []);
+
+  for (const entry of entries) {
+    if (!entry.present) {
+      nextSecretKeys.delete(entry.key);
+      continue;
+    }
+
+    if (secretValues.has(entry.value)) {
+      nextSecretKeys.add(entry.key);
+      continue;
+    }
+
+    nextSecretKeys.delete(entry.key);
+  }
+
+  shellSession.secretEnvKeys = [...nextSecretKeys];
 }
 
 export interface BashToolOptions {
@@ -204,6 +248,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     const baseCwd = shellSession?.cwd ?? readPandaBaseCwd(run.context);
     const cwd = resolveCommandCwd(args.cwd, baseCwd);
     const timeoutMs = args.timeoutMs ?? this.defaultTimeoutMs;
+    const priorSecretSessionEnv = readSecretSessionEnv(shellSession);
     const resolvedCredentialEnv = this.credentialResolver
       ? await this.credentialResolver.resolveEnvironment({
         agentKey: typeof run.context === "object" && run.context !== null && "agentKey" in run.context
@@ -214,6 +259,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
           : undefined,
       })
       : {};
+    const knownSecretValues = collectSecretValues(resolvedCredentialEnv, args.env, priorSecretSessionEnv);
     const trackedEnvKeys = collectTrackedEnvKeys(args.command);
     const result = await this.executor.execute({
       command: args.command,
@@ -224,13 +270,20 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       progressTailChars: this.progressTailChars,
       maxOutputChars: this.maxOutputChars,
       persistOutputThresholdChars: this.persistOutputThresholdChars,
+      persistOutputFiles: knownSecretValues.length === 0,
       outputDirectory: this.outputDirectory,
       env: args.env,
       resolvedEnv: resolvedCredentialEnv,
       run: run as RunContext<PandaSessionContext>,
     });
     const appliedSessionEnvKeys = applyPersistedEnv(shellSession, result.persistedEnvEntries);
-    const redactedSecrets = collectSecretValues(resolvedCredentialEnv, args.env);
+    updateSecretSessionKeys(shellSession, result.persistedEnvEntries, knownSecretValues);
+    const redactedSecrets = collectSecretValues(
+      resolvedCredentialEnv,
+      args.env,
+      priorSecretSessionEnv,
+      readSecretSessionEnv(shellSession),
+    );
 
     if (result.success && shellSession) {
       shellSession.cwd = result.finalCwd;

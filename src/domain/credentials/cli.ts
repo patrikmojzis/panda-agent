@@ -295,17 +295,23 @@ export async function resolveCredentialCommand(
     });
 
     if (!resolved) {
-      process.stdout.write(`No stored credential matched ${envKey}.\n`);
+      process.stdout.write(
+        [
+          `No stored credential matched ${envKey}.`,
+          "Note: local bash may still fall back to Panda process env.",
+        ].join("\n") + "\n",
+      );
       return;
     }
 
     process.stdout.write(
       [
-        `Resolved ${resolved.envKey}.`,
+        `Stored winner for ${resolved.envKey}.`,
         `scope ${resolved.scope}`,
         ...(resolved.agentKey ? [`agent ${resolved.agentKey}`] : []),
         ...(resolved.identityId ? [`identity ${(await identityStore.getIdentity(resolved.identityId)).handle}`] : []),
         `value ${resolved.valuePreview}`,
+        "Note: this inspects stored credentials only.",
       ].join("\n") + "\n",
     );
   });
@@ -352,7 +358,7 @@ export function registerCredentialCommands(program: Command): void {
 
   credentialProgram
     .command("resolve")
-    .description("Show which stored credential wins for a given scope context")
+    .description("Show which stored credential wins in the credentials store")
     .argument("<envKey>", "Shell env key")
     .option("--agent <agentKey>", "Persona context", parseAgentKey)
     .option("--identity <handle>", "Owner context", parseIdentityHandle)

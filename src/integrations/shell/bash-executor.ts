@@ -4,17 +4,17 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {executeBashCommand} from "./bash-execution.js";
 import type {
-  BashExecutionResult,
-  BashRunnerAbortRequest,
-  BashRunnerAbortResponse,
-  BashRunnerErrorResponse,
-  BashRunnerExecRequest,
-  BashRunnerResponse,
+    BashExecutionResult,
+    BashRunnerAbortRequest,
+    BashRunnerAbortResponse,
+    BashRunnerErrorResponse,
+    BashRunnerExecRequest,
+    BashRunnerResponse,
 } from "./bash-protocol.js";
 import {
-  PANDA_RUNNER_AGENT_KEY_HEADER,
-  PANDA_RUNNER_EXPECTED_PATH_HEADER,
-  PANDA_RUNNER_PATH_SCOPED_HEADER,
+    PANDA_RUNNER_AGENT_KEY_HEADER,
+    PANDA_RUNNER_EXPECTED_PATH_HEADER,
+    PANDA_RUNNER_PATH_SCOPED_HEADER,
 } from "./bash-protocol.js";
 import type {ShellExecutionContext} from "./types.js";
 
@@ -31,6 +31,7 @@ export interface BashExecutorOptions {
   progressTailChars: number;
   maxOutputChars: number;
   persistOutputThresholdChars: number;
+  persistOutputFiles?: boolean;
   outputDirectory: string;
   env?: Record<string, string>;
   resolvedEnv?: Record<string, string>;
@@ -219,6 +220,7 @@ export class LocalShellExecutor implements BashExecutor {
       trackedEnvKeys: options.trackedEnvKeys,
       maxOutputChars: options.maxOutputChars,
       persistOutputThresholdChars: options.persistOutputThresholdChars,
+      persistOutputFiles: options.persistOutputFiles,
       progressIntervalMs: options.progressIntervalMs,
       progressTailChars: options.progressTailChars,
       outputDirectory: options.outputDirectory,

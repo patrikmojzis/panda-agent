@@ -50,6 +50,22 @@ panda credentials resolve NOTION_API_KEY --agent panda --identity patrik
 panda credentials clear NOTION_API_KEY --agent panda --identity patrik
 ```
 
+## Resolve Command
+
+`panda credentials resolve` inspects the credentials store only.
+
+It does not inspect:
+
+- active shell-session env from a running thread
+- per-call `bash.env`
+- the full runtime env merge inside a real bash invocation
+
+That means:
+
+- if it finds a winner, that is the stored winner only
+- if it finds nothing, local bash may still fall back to Panda process env
+- remote bash does not fall back to runner host env
+
 ## Precedence
 
 Stored credential precedence is:

@@ -11,13 +11,20 @@ function normalizeShellSession(shellSession: ShellSession): ShellSession {
 
   if (!isRecord(shellSession.env)) {
     shellSession.env = {};
-    return shellSession;
+  } else {
+    for (const [key, value] of Object.entries(shellSession.env)) {
+      if (typeof value !== "string") {
+        delete shellSession.env[key];
+      }
+    }
   }
 
-  for (const [key, value] of Object.entries(shellSession.env)) {
-    if (typeof value !== "string") {
-      delete shellSession.env[key];
-    }
+  if (!Array.isArray(shellSession.secretEnvKeys)) {
+    shellSession.secretEnvKeys = [];
+  } else {
+    shellSession.secretEnvKeys = [...new Set(
+      shellSession.secretEnvKeys.filter((key): key is string => typeof key === "string" && key in shellSession.env),
+    )];
   }
 
   return shellSession;
