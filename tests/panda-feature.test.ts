@@ -3,6 +3,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {
     BashTool,
     BraveSearchTool,
+    BrowserTool,
     DateTimeContext,
     EnvironmentContext,
     MediaTool,
@@ -29,12 +30,16 @@ describe("Panda feature surface", () => {
     expect(PANDA_PROMPT).toContain("## Channels & Inner Monologue");
     expect(PANDA_PROMPT).toContain("No outbound call = no message delivered.");
     expect(PANDA_PROMPT).toContain(
-      "In both local and remote mode, simple export/unset environment changes persist across bash calls, along with the working directory.",
+      "Foreground bash mutates the shared shell session. The working directory persists across foreground bash calls, and simple export/unset environment changes persist across foreground bash calls in both local and remote mode.",
     );
-    expect(tools).toHaveLength(3);
+    expect(PANDA_PROMPT).toContain("Background bash is isolated.");
+    expect(PANDA_PROMPT).toContain("Running background bash jobs may appear in context");
+    expect(PANDA_PROMPT).toContain("Panda may receive a runtime note about it");
+    expect(tools).toHaveLength(4);
     expect(tools[0]).toBeInstanceOf(BashTool);
     expect(tools[1]).toBeInstanceOf(MediaTool);
     expect(tools[2]).toBeInstanceOf(WebFetchTool);
+    expect(tools[3]).toBeInstanceOf(BrowserTool);
   });
 
   it("adds Brave search when BRAVE_API_KEY is configured", () => {
@@ -42,8 +47,8 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildPandaTools();
 
-    expect(tools).toHaveLength(4);
-    expect(tools[3]).toBeInstanceOf(BraveSearchTool);
+    expect(tools).toHaveLength(5);
+    expect(tools[4]).toBeInstanceOf(BraveSearchTool);
   });
 
   it("adds Whisper when OPENAI_API_KEY is configured", () => {
@@ -51,9 +56,9 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     const tools = buildPandaTools();
 
-    expect(tools).toHaveLength(5);
-    expect(tools[3]).toBeInstanceOf(WebResearchTool);
-    expect(tools[4]).toBeInstanceOf(WhisperTool);
+    expect(tools).toHaveLength(6);
+    expect(tools[4]).toBeInstanceOf(WebResearchTool);
+    expect(tools[5]).toBeInstanceOf(WhisperTool);
   });
 
   it("appends extra tools without adding hidden defaults", () => {
@@ -62,8 +67,8 @@ describe("Panda feature surface", () => {
     const extraTool = { name: "extra-tool" } as any;
     const tools = buildPandaTools([extraTool]);
 
-    expect(tools).toHaveLength(4);
-    expect(tools[3]).toBe(extraTool);
+    expect(tools).toHaveLength(5);
+    expect(tools[4]).toBe(extraTool);
   });
 
   it("renders the datetime context with the configured timezone", async () => {
@@ -104,13 +109,19 @@ describe("Panda feature surface", () => {
 
   it("resolves a remote initial cwd only in remote mode", () => {
     vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
 
     expect(resolveRemoteInitialCwd("jozef")).toBe("/root/.panda/agents/jozef");
 
     vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "local");
 
     expect(resolveRemoteInitialCwd("jozef")).toBeNull();
+  });
+
+  it("lets remote setups override the default runner cwd template", () => {
+    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/workspace/agents/{agentKey}");
+
+    expect(resolveRemoteInitialCwd("jozef")).toBe("/workspace/agents/jozef");
   });
 
   it("prefers the configured remote initial cwd when stored cwd is still the daemon fallback", () => {

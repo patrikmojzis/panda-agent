@@ -1,4 +1,3 @@
-import readline from "node:readline";
 import {stdin as input, stdout as output} from "node:process";
 
 import {resolveModelSelector, type ThinkingLevel, Tool,} from "../../kernel/agent/index.js";
@@ -33,10 +32,14 @@ import {
 } from "./chat-input.js";
 import {
   applySelectedChatSlashCompletion,
+  clearExpiredChatNotice,
+  createChatNotice,
   cycleChatHistorySelection,
   cycleChatTranscriptSelection,
   findChatHistoryMatches,
   recordChatHistory,
+  resetChatTranscriptState,
+  resolveChatModeLabel,
   resolveChatSlashContext,
   resolveCurrentChatHistoryMatch,
   resolveScrolledTranscript,
@@ -44,6 +47,15 @@ import {
   resolveTranscriptBottom,
   startChatHistorySearch,
 } from "./chat-state.js";
+import {
+  attachChatTerminal,
+  type ChatCleanupHost,
+  type ChatCloseAfterRunHost,
+  type ChatRenderTickerHost,
+  cleanupChatTerminal,
+  scheduleChatCloseAfterRun,
+  startChatRenderTicker,
+} from "./chat-lifecycle.js";
 import {
   closeChatThreadPicker,
   cycleChatThreadPicker,
@@ -57,12 +69,10 @@ import {
   scheduleChatStoredThreadSync,
   syncChatStoredThreadState,
 } from "./chat-sync.js";
-import {COMPOSER_NEWLINE_HINT, extendedKeysModeSequence, type KeyLike, normalizeTerminalKeySequence,} from "./input.js";
+import {COMPOSER_NEWLINE_HINT, type KeyLike, normalizeTerminalKeySequence,} from "./input.js";
 import {type NoticeState, type ViewModel,} from "./chat-view.js";
-import {ALT_SCREEN_OFF, ALT_SCREEN_ON, CLEAR_SCREEN, cursorTo, HIDE_CURSOR, SHOW_CURSOR,} from "./screen.js";
+import {CLEAR_SCREEN, cursorTo, HIDE_CURSOR, SHOW_CURSOR,} from "./screen.js";
 import {
-  BRACKETED_PASTE_OFF,
-  BRACKETED_PASTE_ON,
   type ChatCliOptions,
   type ChatCliResult,
   type EntryRole,
@@ -119,7 +129,6 @@ export class PandaChatApp {
   private slashCompletionIndex = 0;
   private lastSlashToken = "";
   private ticker: NodeJS.Timeout | null = null;
-  private syncTicker: NodeJS.Timeout | null = null;
   private mainLoopResolver: (() => void) | null = null;
   private closed = false;
   private syncInFlight = false;
@@ -165,15 +174,13 @@ export class PandaChatApp {
 
     await this.initializeRuntime();
 
-    readline.emitKeypressEvents(input);
-    input.setRawMode?.(true);
-    input.resume();
-    input.on("keypress", this.keypressHandler);
-    output.on("resize", this.resizeHandler);
-    this.startTicker();
-    this.enterScreen();
-    this.setBracketedPasteMode(true);
-    this.setExtendedKeysMode(true);
+    attachChatTerminal({
+      input,
+      output,
+      keypressHandler: this.keypressHandler,
+      resizeHandler: this.resizeHandler,
+    });
+    this.ticker = startChatRenderTicker(this.buildRenderTickerHost(), TICK_MS);
 
     if (this.transcript.length === 0) {
       this.pushEntry(
@@ -205,39 +212,13 @@ export class PandaChatApp {
   }
 
   private async cleanup(): Promise<void> {
-    if (this.ticker) {
-      clearInterval(this.ticker);
-      this.ticker = null;
-    }
-
-    if (this.syncTicker) {
-      clearInterval(this.syncTicker);
-      this.syncTicker = null;
-    }
-
-    if (this.syncDebounceTimer) {
-      clearTimeout(this.syncDebounceTimer);
-      this.syncDebounceTimer = null;
-    }
-
-    this.setBracketedPasteMode(false);
-    this.setExtendedKeysMode(false);
-    input.off("keypress", this.keypressHandler);
-    input.pause();
-    output.off("resize", this.resizeHandler);
-    input.setRawMode?.(false);
-
-    if (this.runPhase === "thinking" && this.currentThreadId) {
-      try {
-        if (await this.services?.abortThread(this.currentThreadId, "TUI closed.")) {
-          await this.services?.waitForCurrentRun(this.currentThreadId);
-        }
-      } catch {
-        // Closing the TUI should still continue even if abort/wait cleanup fails.
-      }
-    }
-    output.write(HIDE_CURSOR + CLEAR_SCREEN + SHOW_CURSOR + ALT_SCREEN_OFF);
-    await this.services?.close();
+    await cleanupChatTerminal({
+      input,
+      output,
+      keypressHandler: this.keypressHandler,
+      resizeHandler: this.resizeHandler,
+      host: this.buildCleanupHost(),
+    });
   }
 
   private close(): void {
@@ -251,53 +232,7 @@ export class PandaChatApp {
   }
 
   private scheduleCloseAfterRun(): void {
-    if (!this.closeAfterRun || this.closed || this.isRunning || this.closeAfterRunWaitInFlight) {
-      return;
-    }
-
-    const services = this.services;
-    const threadId = this.currentThreadId;
-    this.closeAfterRunWaitInFlight = true;
-
-    setTimeout(() => {
-      if (!this.closeAfterRun || this.closed) {
-        this.closeAfterRunWaitInFlight = false;
-        return;
-      }
-
-      if (!services) {
-        this.closeAfterRunWaitInFlight = false;
-        this.close();
-        return;
-      }
-
-      void services.waitForCurrentRun(threadId)
-        .catch(() => {
-          // Ignore shutdown races and fall through to closing the TUI.
-        })
-        .finally(() => {
-          this.closeAfterRunWaitInFlight = false;
-
-          if (this.closeAfterRun && !this.closed) {
-            this.close();
-          }
-        });
-    }, 0);
-  }
-
-  private startTicker(): void {
-    this.ticker = setInterval(() => {
-      if (this.closed) {
-        return;
-      }
-
-      const nextSpinnerFrame = this.spinnerFrameIndex();
-      const noticeExpired = Boolean(this.notice && this.notice.expiresAt <= Date.now());
-      if (this.dirty || noticeExpired || nextSpinnerFrame !== this.lastSpinnerFrame) {
-        this.render();
-      }
-    }, TICK_MS);
-
+    scheduleChatCloseAfterRun(this.buildCloseAfterRunHost());
   }
 
   private requireServices(): ChatRuntimeServices {
@@ -336,6 +271,48 @@ export class PandaChatApp {
     }
 
     return Math.floor(Date.now() / TICK_MS) % SPINNER_FRAME_COUNT;
+  }
+
+  private buildRenderTickerHost(): ChatRenderTickerHost {
+    return {
+      isClosed: () => this.closed,
+      isDirty: () => this.dirty,
+      getNotice: () => this.notice,
+      getLastSpinnerFrame: () => this.lastSpinnerFrame,
+      spinnerFrameIndex: () => this.spinnerFrameIndex(),
+      render: () => this.render(),
+    };
+  }
+
+  private buildCloseAfterRunHost(): ChatCloseAfterRunHost {
+    return {
+      shouldCloseAfterRun: () => this.closeAfterRun,
+      isClosed: () => this.closed,
+      isRunning: () => this.isRunning,
+      isWaitingForCloseAfterRun: () => this.closeAfterRunWaitInFlight,
+      setWaitingForCloseAfterRun: (enabled) => {
+        this.closeAfterRunWaitInFlight = enabled;
+      },
+      getServices: () => this.services,
+      getCurrentThreadId: () => this.currentThreadId,
+      close: () => this.close(),
+    };
+  }
+
+  private buildCleanupHost(): ChatCleanupHost {
+    return {
+      getTicker: () => this.ticker,
+      setTicker: (timer) => {
+        this.ticker = timer;
+      },
+      getSyncDebounceTimer: () => this.syncDebounceTimer,
+      setSyncDebounceTimer: (timer) => {
+        this.syncDebounceTimer = timer;
+      },
+      getRunPhase: () => this.runPhase,
+      getCurrentThreadId: () => this.currentThreadId,
+      getServices: () => this.services,
+    };
   }
 
   private buildSyncHost(): ChatSyncHost {
@@ -644,19 +621,11 @@ export class PandaChatApp {
   }
 
   private get modeLabel(): string {
-    if (this.threadPicker.active) {
-      return "threads";
-    }
-
-    if (this.historySearch.active) {
-      return "history";
-    }
-
-    if (this.transcriptSearch.active) {
-      return "find";
-    }
-
-    return "compose";
+    return resolveChatModeLabel({
+      threadPickerActive: this.threadPicker.active,
+      historySearchActive: this.historySearch.active,
+      transcriptSearchActive: this.transcriptSearch.active,
+    });
   }
 
   private get isRunning(): boolean {
@@ -668,11 +637,7 @@ export class PandaChatApp {
   }
 
   private setNotice(text: string, tone: NoticeState["tone"], durationMs = NOTICE_MS): void {
-    this.notice = {
-      text,
-      tone,
-      expiresAt: Date.now() + durationMs,
-    };
+    this.notice = createChatNotice(text, tone, durationMs);
     this.markDirty();
   }
 
@@ -686,8 +651,9 @@ export class PandaChatApp {
   }
 
   private clearExpiredNotice(): void {
-    if (this.notice && this.notice.expiresAt <= Date.now()) {
-      this.notice = null;
+    const nextNotice = clearExpiredChatNotice(this.notice);
+    if (nextNotice !== this.notice) {
+      this.notice = nextNotice;
       this.markDirty();
     }
   }
@@ -706,14 +672,15 @@ export class PandaChatApp {
   }
 
   private resetTranscriptView(options: { keepSeenMessages?: boolean } = {}): void {
-    this.transcript.length = 0;
-    this.transcriptLineCache.clear();
-    if (!options.keepSeenMessages) {
-      this.visibleStoredMessageIds.clear();
-    }
-    this.followTranscript = true;
-    this.scrollTop = 0;
-    this.clearTranscriptSearch();
+    const reset = resetChatTranscriptState({
+      transcript: this.transcript,
+      transcriptLineCache: this.transcriptLineCache,
+      visibleStoredMessageIds: this.visibleStoredMessageIds,
+      transcriptSearch: this.transcriptSearch,
+      keepSeenMessages: options.keepSeenMessages,
+    });
+    this.followTranscript = reset.followTranscript;
+    this.scrollTop = reset.scrollTop;
     this.markDirty();
   }
 
@@ -929,19 +896,6 @@ export class PandaChatApp {
       setNotice: (text, tone, durationMs) => this.relayNotice(text, tone, durationMs),
       render: () => this.render(),
     }, message, externalMessageId);
-  }
-
-  private enterScreen(): void {
-    output.write(ALT_SCREEN_ON + HIDE_CURSOR + CLEAR_SCREEN);
-  }
-
-  private setBracketedPasteMode(enabled: boolean): void {
-    output.write(enabled ? BRACKETED_PASTE_ON : BRACKETED_PASTE_OFF);
-  }
-
-  private setExtendedKeysMode(enabled: boolean): void {
-    // Shift-Enter needs extended key reporting; plain readline only sees Enter.
-    output.write(extendedKeysModeSequence(enabled));
   }
 
   private render(): void {

@@ -94,5 +94,40 @@ export function buildThreadRuntimeSchemaSql(
 
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_runs_thread_started_idx`)}
     ON ${tables.runs} (thread_id, started_at);
+
+    CREATE TABLE IF NOT EXISTS ${tables.bashJobs} (
+      id UUID PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES ${tables.threads}(id) ON DELETE CASCADE,
+      run_id UUID REFERENCES ${tables.runs}(id) ON DELETE SET NULL,
+      status TEXT NOT NULL,
+      command TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      initial_cwd TEXT NOT NULL,
+      final_cwd TEXT,
+      started_at TIMESTAMPTZ NOT NULL,
+      finished_at TIMESTAMPTZ,
+      duration_ms BIGINT,
+      exit_code INTEGER,
+      signal TEXT,
+      timed_out BOOLEAN NOT NULL DEFAULT FALSE,
+      stdout TEXT NOT NULL DEFAULT '',
+      stderr TEXT NOT NULL DEFAULT '',
+      stdout_chars BIGINT NOT NULL DEFAULT 0,
+      stderr_chars BIGINT NOT NULL DEFAULT 0,
+      stdout_truncated BOOLEAN NOT NULL DEFAULT FALSE,
+      stderr_truncated BOOLEAN NOT NULL DEFAULT FALSE,
+      stdout_persisted BOOLEAN NOT NULL DEFAULT FALSE,
+      stderr_persisted BOOLEAN NOT NULL DEFAULT FALSE,
+      stdout_path TEXT,
+      stderr_path TEXT,
+      tracked_env_keys JSONB NOT NULL DEFAULT '[]'::jsonb,
+      status_reason TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_bash_jobs_thread_started_idx`)}
+    ON ${tables.bashJobs} (thread_id, started_at);
+
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_bash_jobs_status_idx`)}
+    ON ${tables.bashJobs} (status, started_at);
   `;
 }

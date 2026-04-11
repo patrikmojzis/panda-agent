@@ -37,7 +37,7 @@ describe("PostgresAgentStore", () => {
     };
   }
 
-  it("bootstraps schema with repeatable CREATE IF NOT EXISTS statements", async () => {
+  it("bootstraps schema with repeatable DDL statements", async () => {
     const queries: string[] = [];
     const store = new PostgresAgentStore({
       pool: {
@@ -55,8 +55,10 @@ describe("PostgresAgentStore", () => {
     await store.ensureSchema();
     await store.ensureSchema();
 
-    expect(queries).toHaveLength(12);
-    expect(queries.every((query) => query.includes("IF NOT EXISTS"))).toBe(true);
+    expect(queries).toHaveLength(18);
+    expect(queries.filter((query) => query.includes("IF NOT EXISTS"))).toHaveLength(14);
+    expect(queries.filter((query) => query.includes("ALTER COLUMN description DROP DEFAULT"))).toHaveLength(2);
+    expect(queries.filter((query) => query.includes("ALTER COLUMN content DROP DEFAULT"))).toHaveLength(2);
   });
 
   it("bootstraps agents with shared documents and lists them", async () => {
@@ -130,5 +132,108 @@ describe("PostgresAgentStore", () => {
 
     const countResult = await pool.query("SELECT COUNT(*)::int AS count FROM thread_runtime_agent_diary");
     expect(countResult.rows[0]?.count).toBe(1);
+  });
+
+  it("stores agent skills by agent key and cascades them on agent delete", async () => {
+    const { pool, agentStore } = await createStores();
+
+    await agentStore.bootstrapAgent({
+      agentKey: "panda",
+      displayName: "Panda",
+      documents: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+    });
+    await agentStore.bootstrapAgent({
+      agentKey: "ops",
+      displayName: "Ops",
+      documents: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+    });
+
+    const created = await agentStore.setAgentSkill(
+      "panda",
+      "calendar",
+      "Use this for calendar work.",
+      "# Calendar\nFull skill body.",
+    );
+    const updated = await agentStore.setAgentSkill(
+      "panda",
+      "calendar",
+      "Updated description.",
+      "# Calendar\nUpdated skill body.",
+    );
+    await agentStore.setAgentSkill(
+      "ops",
+      "calendar",
+      "Ops-only description.",
+      "# Ops Calendar\nOther skill body.",
+    );
+
+    expect(created.skillKey).toBe("calendar");
+    expect(updated.updatedAt).toBeGreaterThanOrEqual(created.updatedAt);
+    await expect(agentStore.readAgentSkill("panda", "calendar")).resolves.toMatchObject({
+      skillKey: "calendar",
+      description: "Updated description.",
+      content: "# Calendar\nUpdated skill body.",
+    });
+    await expect(agentStore.listAgentSkills("panda")).resolves.toEqual([
+      expect.objectContaining({
+        skillKey: "calendar",
+        description: "Updated description.",
+      }),
+    ]);
+    await expect(agentStore.listAgentSkills("ops")).resolves.toEqual([
+      expect.objectContaining({
+        skillKey: "calendar",
+        description: "Ops-only description.",
+      }),
+    ]);
+
+    expect(await agentStore.deleteAgentSkill("panda", "calendar")).toBe(true);
+    expect(await agentStore.deleteAgentSkill("panda", "calendar")).toBe(false);
+    await expect(agentStore.readAgentSkill("panda", "calendar")).resolves.toBeNull();
+
+    await agentStore.setAgentSkill(
+      "panda",
+      "travel",
+      "Travel planning skill.",
+      "# Travel\nBody.",
+    );
+    await pool.query("DELETE FROM thread_runtime_agents WHERE agent_key = 'panda'");
+
+    const countResult = await pool.query("SELECT COUNT(*)::int AS count FROM thread_runtime_agent_skills");
+    expect(countResult.rows[0]?.count).toBe(1);
+    await expect(agentStore.readAgentSkill("ops", "calendar")).resolves.toMatchObject({
+      description: "Ops-only description.",
+    });
+  });
+
+  it("rejects blank content and oversized descriptions when storing agent skills", async () => {
+    const { agentStore } = await createStores();
+
+    await agentStore.bootstrapAgent({
+      agentKey: "panda",
+      displayName: "Panda",
+      documents: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+    });
+
+    await expect(agentStore.setAgentSkill(
+      "panda",
+      "calendar",
+      "   ",
+      "# Calendar",
+    )).rejects.toThrow("Skill description must not be empty.");
+
+    await expect(agentStore.setAgentSkill(
+      "panda",
+      "calendar",
+      "Calendar helper.",
+      "   ",
+    )).rejects.toThrow("Skill content must not be empty.");
+
+    await expect(agentStore.setAgentSkill(
+      "panda",
+      "calendar",
+      "x".repeat(8_001),
+      "# Calendar",
+    )).rejects.toThrow("Skill description must be at most 8000 characters.");
   });
 });

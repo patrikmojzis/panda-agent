@@ -269,6 +269,8 @@ describe("PostgresReadonlyQueryTool", () => {
 
   it("reads usernames from postgres urls when present", () => {
     expect(readDatabaseUsername("postgresql://readonly@example.com/panda")).toBe("readonly");
+    expect(readDatabaseUsername("postgresql://localhost/panda?user=readonly_user")).toBe("readonly_user");
+    expect(readDatabaseUsername("postgresql://localhost/panda?username=readonly_name")).toBe("readonly_name");
     expect(readDatabaseUsername("postgresql:///panda_dev")).toBeNull();
   });
 });

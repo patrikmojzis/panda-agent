@@ -12,6 +12,7 @@ import type {CredentialResolver} from "../../../domain/credentials/index.js";
 import type {PandaSessionContext} from "../types.js";
 import {ensurePandaShellSession, readPandaBaseCwd} from "./context.js";
 import {type BashExecutor, createDefaultBashExecutor,} from "../../../integrations/shell/bash-executor.js";
+import type {BashJobService} from "../../../integrations/shell/bash-job-service.js";
 import {
   applyPersistedEnv,
   collectTrackedEnvKeys,
@@ -19,6 +20,7 @@ import {
 } from "../../../integrations/shell/bash-session.js";
 import type {PersistedEnvEntry} from "../../../integrations/shell/bash-protocol.js";
 import type {ShellSession} from "../../../integrations/shell/types.js";
+import {buildBashJobPayload, formatBashJobResult} from "./bash-job-tools.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 8_000;
@@ -149,6 +151,7 @@ export interface BashToolOptions {
   executor?: BashExecutor;
   fetchImpl?: typeof fetch;
   credentialResolver?: CredentialResolver;
+  jobService?: BashJobService;
 }
 
 export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTool.schema, TContext> {
@@ -157,11 +160,12 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     cwd: z.string().trim().min(1).optional(),
     timeoutMs: z.number().int().min(100).max(300_000).optional(),
     env: z.record(z.string(), z.string()).optional(),
+    background: z.boolean().optional(),
   });
 
   name = "bash";
   description =
-    "Run a shell command in the local workspace. The working directory persists across bash calls. Simple export/unset environment changes persist across calls, including remote runner sessions.";
+    "Run a shell command. Foreground bash mutates the shared shell cwd and simple export/unset env state across calls. Background bash starts an isolated snapshot job, returns immediately, never mutates the shared shell session, and may later surface as a runtime note; use bash_job_status, bash_job_wait, and bash_job_cancel for follow-up.";
   schema = BashTool.schema;
 
   private readonly defaultTimeoutMs: number;
@@ -172,6 +176,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
   private readonly outputDirectory: string;
   private readonly executor: BashExecutor;
   private readonly credentialResolver?: CredentialResolver;
+  private readonly jobService?: BashJobService;
 
   constructor(options: BashToolOptions = {}) {
     super();
@@ -184,6 +189,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     this.progressTailChars = options.progressTailChars ?? DEFAULT_PROGRESS_TAIL_CHARS;
     this.outputDirectory = path.resolve(options.outputDirectory ?? DEFAULT_OUTPUT_DIRECTORY);
     this.credentialResolver = options.credentialResolver;
+    this.jobService = options.jobService;
     this.executor = options.executor ?? createDefaultBashExecutor({
       shell: options.shell,
       env,
@@ -199,7 +205,8 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     const cwd = typeof args.cwd === "string" && args.cwd.trim()
       ? args.cwd.trim()
       : null;
-    return cwd ? `[cwd ${cwd}] ${args.command}` : args.command;
+    const scope = args.background === true ? "[background] " : "";
+    return cwd ? `${scope}[cwd ${cwd}] ${args.command}` : `${scope}${args.command}`;
   }
 
   override formatResult(message: ToolResultMessage<JsonValue>): string {
@@ -207,6 +214,10 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     const text = readToolResultText(message);
     if (!details || typeof details !== "object" || Array.isArray(details)) {
       return text || super.formatResult(message);
+    }
+
+    if (details.sessionStateIsolated === true && typeof details.status === "string") {
+      return formatBashJobResult(message);
     }
 
     const stdout = typeof details.stdout === "string" ? details.stdout.trim() : "";
@@ -261,6 +272,27 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       : {};
     const knownSecretValues = collectSecretValues(resolvedCredentialEnv, args.env, priorSecretSessionEnv);
     const trackedEnvKeys = collectTrackedEnvKeys(args.command);
+    if (args.background === true) {
+      if (!this.jobService) {
+        throw new ToolError("Background bash is not available in this Panda runtime.");
+      }
+
+      const job = await this.jobService.start({
+        command: args.command,
+        cwd,
+        timeoutMs,
+        trackedEnvKeys,
+        maxOutputChars: this.maxOutputChars,
+        persistOutputThresholdChars: this.persistOutputThresholdChars,
+        outputDirectory: this.outputDirectory,
+        env: args.env,
+        resolvedEnv: resolvedCredentialEnv,
+        secretValues: knownSecretValues,
+        run: run as RunContext<PandaSessionContext>,
+      });
+
+      return buildBashJobPayload(job);
+    }
     const result = await this.executor.execute({
       command: args.command,
       cwd,

@@ -9,11 +9,17 @@ import type {
   AgentDocumentRecord,
   AgentDocumentSlug,
   AgentRecord,
+  AgentSkillRecord,
   BootstrapAgentInput,
   RelationshipDocumentRecord,
   RelationshipDocumentSlug,
 } from "./types.js";
-import {normalizeAgentKey} from "./types.js";
+import {
+  normalizeAgentKey,
+  normalizeAgentSkillContent,
+  normalizeAgentSkillDescription,
+  normalizeSkillKey,
+} from "./types.js";
 
 interface PgQueryable {
   query: Pool["query"];
@@ -43,6 +49,17 @@ function parseAgentDocumentRow(row: Record<string, unknown>): AgentDocumentRecor
   return {
     agentKey: String(row.agent_key),
     slug: String(row.slug) as AgentDocumentSlug,
+    content: String(row.content),
+    createdAt: toMillis(row.created_at),
+    updatedAt: toMillis(row.updated_at),
+  };
+}
+
+function parseAgentSkillRow(row: Record<string, unknown>): AgentSkillRecord {
+  return {
+    agentKey: String(row.agent_key),
+    skillKey: String(row.skill_key),
+    description: String(row.description),
     content: String(row.content),
     createdAt: toMillis(row.created_at),
     updatedAt: toMillis(row.updated_at),
@@ -118,6 +135,25 @@ export class PostgresAgentStore implements AgentStore {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
+    `);
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS ${this.tables.agentSkills} (
+        agent_key TEXT NOT NULL REFERENCES ${this.tables.agents}(agent_key) ON DELETE CASCADE,
+        skill_key TEXT NOT NULL,
+        description TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (agent_key, skill_key)
+      )
+    `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.agentSkills}
+      ALTER COLUMN description DROP DEFAULT
+    `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.agentSkills}
+      ALTER COLUMN content DROP DEFAULT
     `);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.agentDocuments} (
@@ -237,6 +273,85 @@ export class PostgresAgentStore implements AgentStore {
     `);
 
     return result.rows.map((row) => parseAgentRow(row as Record<string, unknown>));
+  }
+
+  async listAgentSkills(agentKey: string): Promise<readonly AgentSkillRecord[]> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.agentSkills}
+      WHERE agent_key = $1
+      ORDER BY skill_key ASC
+    `, [
+      normalizeAgentKey(agentKey),
+    ]);
+
+    return result.rows.map((row) => parseAgentSkillRow(row as Record<string, unknown>));
+  }
+
+  async readAgentSkill(agentKey: string, skillKey: string): Promise<AgentSkillRecord | null> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.agentSkills}
+      WHERE agent_key = $1
+        AND skill_key = $2
+    `, [
+      normalizeAgentKey(agentKey),
+      normalizeSkillKey(skillKey),
+    ]);
+
+    const row = result.rows[0];
+    return row ? parseAgentSkillRow(row as Record<string, unknown>) : null;
+  }
+
+  async setAgentSkill(
+    agentKey: string,
+    skillKey: string,
+    description: string,
+    content: string,
+  ): Promise<AgentSkillRecord> {
+    const normalizedAgentKey = normalizeAgentKey(agentKey);
+    const normalizedSkillKey = normalizeSkillKey(skillKey);
+    const normalizedDescription = normalizeAgentSkillDescription(description);
+    const normalizedContent = normalizeAgentSkillContent(content);
+    const result = await this.pool.query(`
+      INSERT INTO ${this.tables.agentSkills} (
+        agent_key,
+        skill_key,
+        description,
+        content
+      ) VALUES (
+        $1,
+        $2,
+        $3,
+        $4
+      )
+      ON CONFLICT (agent_key, skill_key)
+      DO UPDATE SET
+        description = EXCLUDED.description,
+        content = EXCLUDED.content,
+        updated_at = NOW()
+      RETURNING *
+    `, [
+      normalizedAgentKey,
+      normalizedSkillKey,
+      normalizedDescription,
+      normalizedContent,
+    ]);
+
+    return parseAgentSkillRow(result.rows[0] as Record<string, unknown>);
+  }
+
+  async deleteAgentSkill(agentKey: string, skillKey: string): Promise<boolean> {
+    const result = await this.pool.query(`
+      DELETE FROM ${this.tables.agentSkills}
+      WHERE agent_key = $1
+        AND skill_key = $2
+    `, [
+      normalizeAgentKey(agentKey),
+      normalizeSkillKey(skillKey),
+    ]);
+
+    return result.rowCount !== null && result.rowCount > 0;
   }
 
   async readAgentDocument(agentKey: string, slug: AgentDocumentSlug): Promise<AgentDocumentRecord | null> {

@@ -144,9 +144,18 @@ Treat these views as the public interface:
 - `panda_tool_results`
 - `panda_inputs`
 - `panda_runs`
+- `panda_agent_skills`
+- `panda_scheduled_tasks`
+- `panda_scheduled_task_runs`
+- `panda_watches`
+- `panda_watch_runs`
+- `panda_watch_events`
 
 If the agent needs more safe query surface later, add another scoped view.
 Do not solve that by handing the SQL tool raw table access.
+
+`panda_agent_skills` exposes stored skill bodies.
+Use `description` or `substring(content from ... for ...)` for large skills instead of yanking the whole blob every time.
 
 ## Hard Rules
 

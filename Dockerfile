@@ -7,16 +7,31 @@ WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
+    bc \
     build-essential \
     ca-certificates \
     curl \
+    dnsutils \
+    ffmpeg \
+    file \
     git \
     gnupg \
+    jq \
+    less \
+    netcat-openbsd \
+    poppler-utils \
     python3 \
     python-is-python3 \
     python3-pip \
     python3-venv \
+    ripgrep \
+    sqlite3 \
+    tree \
+    unzip \
+    wget \
+    whois \
     xz-utils \
+    zip \
   && mkdir -p /etc/apt/keyrings \
   && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
@@ -43,8 +58,8 @@ COPY package.json pnpm-lock.yaml ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 
-RUN ln -sf /app/dist/cli.js /usr/local/bin/panda \
-  && chmod +x /app/dist/cli.js
+RUN ln -sf /app/dist/app/cli.js /usr/local/bin/panda \
+  && chmod +x /app/dist/app/cli.js
 
 EXPOSE 8080
 

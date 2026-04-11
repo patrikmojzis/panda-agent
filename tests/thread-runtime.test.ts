@@ -1,7 +1,24 @@
+import {mkdtemp, rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import path from "node:path";
+
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 
-import {Agent, type LlmRuntime, PiAiRuntime, RunContext, stringToUserMessage, Thread, Tool, z,} from "../src/index.js";
+import {
+    Agent,
+    BashJobStatusTool,
+    BashJobWaitTool,
+    BashTool,
+    type LlmRuntime,
+    PiAiRuntime,
+    RunContext,
+    stringToUserMessage,
+    Thread,
+    Tool,
+    z,
+} from "../src/index.js";
+import {buildBackgroundBashRuntimeMessage} from "../src/app/runtime/background-bash-runtime-note.js";
 import {DEFAULT_IDENTITY_ID} from "../src/domain/identity/index.js";
 import {
     AUTO_COMPACT_BREAKER_COOLDOWN_MS,
@@ -12,6 +29,7 @@ import {
     type ThreadRecord,
     ThreadRuntimeCoordinator,
 } from "../src/domain/threads/runtime/index.js";
+import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
 import {TestIdentityStore, TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createDeferred<T>() {
@@ -293,6 +311,217 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(updated.thinking).toBeUndefined();
     expect((await store.getThread("thread-thinking")).thinking).toBeUndefined();
+  });
+
+  it("keeps background bash records across later runs in the same thread and marks unfinished jobs lost on startup", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-thread-runtime-bg-"));
+    try {
+      const store = new TestThreadRuntimeStore();
+      await store.createThread({
+        id: "thread-bg-runtime",
+        agentKey: "panda",
+      });
+      const service = new BashJobService({ store });
+      const bash = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        jobService: service,
+      });
+      const wait = new BashJobWaitTool({ service });
+      const status = new BashJobStatusTool({ service });
+
+      const runContext = (context: Record<string, unknown>) => new RunContext({
+        agent: new Agent({
+          name: "bg-runtime-agent",
+          instructions: "Use tools.",
+        }),
+        turn: 1,
+        maxTurns: 5,
+        messages: [],
+        context,
+      });
+
+      const firstRunContext = {
+        threadId: "thread-bg-runtime",
+        runId: "run-1",
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+
+      const started = await bash.run(
+        { command: "sleep 0.15 && printf hello", background: true },
+        runContext(firstRunContext),
+      );
+      const jobId = String((started as {jobId: string}).jobId);
+
+      const finished = await wait.run(
+        { jobId, timeoutMs: 1_000 },
+        runContext(firstRunContext),
+      );
+      expect((finished as {status: string; stdout: string}).status).toBe("completed");
+
+      const secondRunContext = {
+        ...firstRunContext,
+        runId: "run-2",
+      };
+      const completedLater = await status.run(
+        { jobId },
+        runContext(secondRunContext),
+      );
+
+      expect((completedLater as {status: string; stdout: string}).status).toBe("completed");
+      expect((completedLater as {stdout: string}).stdout).toBe("hello");
+      expect(await store.listBashJobs("thread-bg-runtime")).toHaveLength(1);
+      expect((await store.getBashJob(jobId)).runId).toBe("run-1");
+
+      const orphan = await bash.run(
+        { command: "sleep 10", background: true },
+        runContext(secondRunContext),
+      );
+      const orphanJobId = String((orphan as {jobId: string}).jobId);
+
+      expect(await store.markRunningBashJobsLost("runtime restarted")).toBe(1);
+
+      const lost = await status.run(
+        { jobId: orphanJobId },
+        runContext(secondRunContext),
+      );
+      expect((lost as {status: string; reason?: string}).status).toBe("lost");
+      expect((lost as {reason?: string}).reason).toBe("runtime restarted");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-wakes once when watcher-owned background jobs finish during an active run", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-thread-runtime-autowake-"));
+    try {
+      const started = createDeferred<void>();
+      const release = createDeferred<{ done: string }>();
+      const store = new TestThreadRuntimeStore();
+      await store.createThread({
+        id: "thread-bg-autowake",
+        agentKey: "bg-autowake-agent",
+      });
+
+      const service = new BashJobService({ store });
+      const bash = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        jobService: service,
+      });
+      const slow = new SlowTool(started, release);
+
+      const runtime: LlmRuntime = {
+        complete: vi.fn().mockImplementation(async (request) => {
+          const callCount = (runtime.complete as ReturnType<typeof vi.fn>).mock.calls.length;
+
+          if (callCount === 1) {
+            return createAssistantMessage([{
+              type: "toolCall",
+              id: "call_bg_1",
+              name: "bash",
+              arguments: {
+                command: "sleep 0.05 && printf one",
+                background: true,
+              },
+            }]);
+          }
+
+          if (callCount === 2) {
+            return createAssistantMessage([{
+              type: "toolCall",
+              id: "call_bg_2",
+              name: "bash",
+              arguments: {
+                command: "sleep 0.05 && printf two",
+                background: true,
+              },
+            }]);
+          }
+
+          if (callCount === 3) {
+            return createAssistantMessage([{
+              type: "toolCall",
+              id: "call_slow",
+              name: "slow",
+              arguments: {
+                message: "hold the run open",
+              },
+            }]);
+          }
+
+          if (callCount === 4) {
+            return message("finished the current run");
+          }
+
+          if (callCount === 5) {
+            expect(request.context.messages.some((entry) => {
+              return entry.role === "assistant"
+                && entry.content.some((block) => block.type === "text" && block.text.includes("Background bash job update."));
+            })).toBe(true);
+            return message("noticed the background completion");
+          }
+
+          throw new Error(`Unexpected runtime call ${callCount}.`);
+        }),
+        stream: vi.fn(() => {
+          throw new Error("Streaming was not expected in this test");
+        }),
+      };
+
+      const registry = new TestThreadDefinitionRegistry().register("bg-autowake-agent", {
+        agent: new Agent({
+          name: "bg-autowake-agent",
+          instructions: "Use tools.",
+          tools: [bash, slow],
+        }),
+        runtime,
+        context: {
+          threadId: "thread-bg-autowake",
+          cwd: workspace,
+          shell: {
+            cwd: workspace,
+            env: {},
+          },
+        },
+      });
+
+      const coordinator = new ThreadRuntimeCoordinator({
+        store,
+        leaseManager: new SelectiveLeaseManager(),
+        resolveDefinition: (thread) => registry.resolve(thread),
+      });
+      service.setBackgroundCompletionHandler(async (record) => {
+        await store.appendRuntimeMessage(record.threadId, buildBackgroundBashRuntimeMessage(record));
+        await coordinator.wake(record.threadId);
+      });
+
+      await coordinator.submitInput("thread-bg-autowake", {
+        message: stringToUserMessage("start two background jobs and keep working"),
+        source: "tui",
+      });
+
+      await started.promise;
+      await waitFor(async () => {
+        const transcript = await store.loadTranscript("thread-bg-autowake");
+        return transcript.filter((entry) => entry.source === "background_bash").length === 2;
+      });
+
+      release.resolve({ done: "released" });
+      await coordinator.waitForIdle("thread-bg-autowake");
+
+      const transcript = await store.loadTranscript("thread-bg-autowake");
+      expect(transcript.filter((entry) => entry.source === "background_bash")).toHaveLength(2);
+      expect(runtime.complete).toHaveBeenCalledTimes(5);
+      expect(transcript.at(-1)?.message).toMatchObject({
+        role: "assistant",
+        content: [{ type: "text", text: "noticed the background completion" }],
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 
   it("queues wakes until they are flushed", async () => {

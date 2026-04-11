@@ -1,6 +1,8 @@
 import type {LlmContext} from "../../../kernel/agent/llm-context.js";
 import type {AgentStore} from "../../../domain/agents/store.js";
+import type {ThreadRuntimeStore} from "../../../domain/threads/runtime/store.js";
 import {AgentMemoryContext, type AgentMemoryContextSection} from "./agent-memory-context.js";
+import {BackgroundJobsContext} from "./background-jobs-context.js";
 import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
 import type {PandaSessionContext} from "../types.js";
@@ -8,6 +10,7 @@ import type {PandaSessionContext} from "../types.js";
 export type PandaLlmContextSection =
   | "datetime"
   | "environment"
+  | "background_jobs"
   | AgentMemoryContextSection;
 
 const MEMORY_SECTIONS = new Set<AgentMemoryContextSection>([
@@ -20,6 +23,7 @@ const MEMORY_SECTIONS = new Set<AgentMemoryContextSection>([
 export const DEFAULT_PANDA_LLM_CONTEXT_SECTIONS: readonly PandaLlmContextSection[] = [
   "datetime",
   "environment",
+  "background_jobs",
   "agent_docs",
   "relationship_memory",
   "diary",
@@ -29,9 +33,10 @@ export const DEFAULT_PANDA_LLM_CONTEXT_SECTIONS: readonly PandaLlmContextSection
 export interface BuildPandaLlmContextsOptions {
   context?: PandaSessionContext;
   agentStore?: AgentStore;
+  threadStore?: Pick<ThreadRuntimeStore, "listBashJobs">;
   agentKey?: string;
   identityId?: string;
-  skillsDir?: string;
+  threadId?: string;
   sections?: readonly PandaLlmContextSection[];
   extraLlmContexts?: readonly LlmContext[];
 }
@@ -65,6 +70,13 @@ export function buildPandaLlmContexts(
     }));
   }
 
+  if (uniqueSections.has("background_jobs") && options.threadStore && options.threadId) {
+    llmContexts.push(new BackgroundJobsContext({
+      store: options.threadStore,
+      threadId: options.threadId,
+    }));
+  }
+
   const memorySections = [...uniqueSections]
     .filter((section): section is AgentMemoryContextSection => MEMORY_SECTIONS.has(section as AgentMemoryContextSection));
   if (
@@ -77,7 +89,6 @@ export function buildPandaLlmContexts(
       store: options.agentStore,
       agentKey: options.agentKey,
       identityId: options.identityId,
-      skillsDir: options.skillsDir,
       sections: memorySections,
     }));
   }

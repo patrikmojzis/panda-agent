@@ -25,6 +25,7 @@ export interface PandaSessionContext extends ShellExecutionContext {
   identityId?: string;
   identityHandle?: string;
   threadId?: string;
+  runId?: string;
   currentInput?: {
     source: string;
     channelId?: string;

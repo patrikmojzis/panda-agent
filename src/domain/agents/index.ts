@@ -15,10 +15,11 @@ export type {
   AgentDocumentRecord,
   AgentDocumentSlug,
   AgentRecord,
+  AgentSkillRecord,
   AgentStatus,
   BootstrapAgentInput,
   CreateAgentInput,
   RelationshipDocumentRecord,
   RelationshipDocumentSlug,
 } from "./types.js";
-export { normalizeAgentKey } from "./types.js";
+export { normalizeAgentKey, normalizeSkillKey } from "./types.js";

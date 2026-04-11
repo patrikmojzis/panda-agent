@@ -8,6 +8,13 @@ You need:
 
 - a working Postgres connection
 - an LLM API key for the provider you want to use
+- Docker if you want the built-in browser tool
+
+Current reality:
+
+- browser v1 is a default built-in
+- `panda run` talks to Docker during startup cleanup
+- if Docker is missing or dead, runtime startup fails before chat even starts
 
 If Postgres is not ready yet, fix that first:
 
@@ -16,6 +23,10 @@ If Postgres is not ready yet, fix that first:
 If you plan to run bash in Docker or another isolated runner, read this too:
 
 - [Remote Bash](./remote-bash.md)
+
+If you want Panda to drive Chromium, read this too:
+
+- [Browser](./browser.md)
 
 ## The Model
 
@@ -123,6 +134,7 @@ Channel workers do I/O. `panda run` still owns threads and inference.
 
 ## Read Next
 
+- [Browser](./browser.md) for the Dockerized Chromium lane
 - [Identity](./identity.md) for home-thread behavior and operator flows
 - [Heartbeat](./heartbeat.md) for periodic wake behavior
 - [Remote Bash](./remote-bash.md) for Docker runner setups

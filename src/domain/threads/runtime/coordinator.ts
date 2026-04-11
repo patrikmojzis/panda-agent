@@ -121,19 +121,24 @@ function buildCurrentInputContext(
 function buildRunContextValue(
   baseContext: unknown,
   messages: readonly ThreadMessageRecord[],
+  runId?: string,
 ): unknown {
   const currentInput = buildCurrentInputContext(messages);
-  if (!currentInput) {
+  if (!currentInput && runId === undefined) {
     return baseContext;
   }
 
   if (!isRecord(baseContext)) {
-    return { currentInput };
+    return {
+      ...(currentInput ? { currentInput } : {}),
+      ...(runId ? { runId } : {}),
+    };
   }
 
   return {
     ...baseContext,
-    currentInput,
+    ...(currentInput ? { currentInput } : {}),
+    ...(runId ? { runId } : {}),
   };
 }
 
@@ -189,6 +194,7 @@ export class ThreadRuntimeCoordinator {
   private readonly onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   private readonly activeRuns = new Map<string, Promise<void>>();
   private readonly activeSignals = new Map<string, AbortController>();
+  private readonly wakeLatches = new Set<string>();
 
   constructor(options: ThreadRuntimeCoordinatorOptions) {
     this.store = options.store;
@@ -207,11 +213,24 @@ export class ThreadRuntimeCoordinator {
       return;
     }
 
-    await this.wake(threadId, mode);
+    if (mode === "queue") {
+      return;
+    }
+
+    if (this.activeRuns.has(threadId)) {
+      return;
+    }
+
+    this.ensureRunning(threadId);
   }
 
   async wake(threadId: string, mode: ThreadWakeMode = "wake"): Promise<void> {
     if (mode === "queue") {
+      return;
+    }
+
+    if (this.activeRuns.has(threadId)) {
+      this.wakeLatches.add(threadId);
       return;
     }
 
@@ -279,7 +298,7 @@ export class ThreadRuntimeCoordinator {
     } finally {
       await lease.release();
 
-      if (await this.store.hasRunnableInputs(threadId)) {
+      if ((await this.store.hasRunnableInputs(threadId)) || this.consumeWakeLatch(threadId)) {
         this.ensureRunning(threadId);
       }
     }
@@ -322,7 +341,7 @@ export class ThreadRuntimeCoordinator {
     const promise = this.runUntilIdle(threadId)
       .then((restartRequested) => {
         this.activeRuns.delete(threadId);
-        if (restartRequested) {
+        if (restartRequested || this.consumeWakeLatch(threadId)) {
           this.ensureRunning(threadId);
         }
       })
@@ -335,6 +354,15 @@ export class ThreadRuntimeCoordinator {
     void promise.catch(() => {
       // The run already persisted failure state and emitted run_finished; avoid unhandled rejections.
     });
+  }
+
+  private consumeWakeLatch(threadId: string): boolean {
+    if (!this.wakeLatches.has(threadId)) {
+      return false;
+    }
+
+    this.wakeLatches.delete(threadId);
+    return true;
   }
 
   private startAbortWatcher(run: ThreadRunRecord, controller: AbortController): () => void {
@@ -382,7 +410,7 @@ export class ThreadRuntimeCoordinator {
       messages: messages.map((entry) => entry.message),
       systemPrompt: definition.systemPrompt ?? thread.systemPrompt,
       maxTurns: definition.maxTurns ?? thread.maxTurns,
-      context: buildRunContextValue(definition.context ?? thread.context, messages),
+      context: buildRunContextValue(definition.context ?? thread.context, messages, run.id),
       llmContexts: definition.llmContexts,
       hooks: definition.hooks,
       maxInputTokens: definition.maxInputTokens ?? thread.maxInputTokens,
@@ -642,7 +670,7 @@ export class ThreadRuntimeCoordinator {
           });
         }
 
-        if (!(await this.store.hasRunnableInputs(threadId))) {
+        if (!(await this.store.hasRunnableInputs(threadId)) && !this.consumeWakeLatch(threadId)) {
           break;
         }
       }
@@ -667,7 +695,7 @@ export class ThreadRuntimeCoordinator {
 
       this.activeSignals.delete(threadId);
       await lease.release();
-      restartRequested = await this.store.hasRunnableInputs(threadId);
+      restartRequested = (await this.store.hasRunnableInputs(threadId)) || this.consumeWakeLatch(threadId);
     }
 
     return restartRequested;

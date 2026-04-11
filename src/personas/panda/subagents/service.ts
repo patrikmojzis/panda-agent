@@ -105,6 +105,7 @@ export class PandaSubagentService {
     const childContext = buildSubagentContext(parentContext, currentDepth + 1);
     const childMessages: Message[] = [stringToUserMessage(renderSubagentHandoff(input.task, input.context))];
     const childTools = filterToolsForSubagentRole(input.run.agent.tools, input.role);
+    const threadStore = typeof this.store.listBashJobs === "function" ? this.store : undefined;
     const childThread = new Thread<PandaSessionContext>({
       agent: new Agent({
         name: `${threadRecord.agentKey}-${input.role}`,
@@ -121,8 +122,10 @@ export class PandaSubagentService {
       llmContexts: buildPandaLlmContexts({
         context: childContext,
         agentStore: this.agentStore,
+        threadStore,
         agentKey: threadRecord.agentKey,
         identityId: threadRecord.identityId,
+        threadId,
         sections: policy.visibleContextSections,
       }),
       maxInputTokens: parentDefinition.maxInputTokens ?? threadRecord.maxInputTokens,

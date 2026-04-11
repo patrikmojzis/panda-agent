@@ -6,6 +6,9 @@ import {describe, expect, it} from "vitest";
 
 import {
     Agent,
+    BashJobCancelTool,
+    BashJobStatusTool,
+    BashJobWaitTool,
     BashTool,
     type JsonObject,
     type PandaSessionContext,
@@ -13,6 +16,8 @@ import {
     ToolError,
     type ToolResultMessage,
 } from "../src/index.js";
+import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
+import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createAgent() {
   return new Agent({
@@ -37,6 +42,48 @@ function createRunContext(
 
 function asObject(value: unknown): Record<string, unknown> {
   return (value ?? {}) as Record<string, unknown>;
+}
+
+async function createBackgroundHarness(workspace: string) {
+  const store = new TestThreadRuntimeStore();
+  await store.createThread({
+    id: "thread-bg",
+    agentKey: "panda",
+  });
+  const service = new BashJobService({
+    store,
+  });
+  const bash = new BashTool({
+    outputDirectory: path.join(workspace, "tool-results"),
+    jobService: service,
+  });
+  const status = new BashJobStatusTool({
+    service,
+  });
+  const wait = new BashJobWaitTool({
+    service,
+  });
+  const cancel = new BashJobCancelTool({
+    service,
+  });
+  const context: PandaSessionContext = {
+    threadId: "thread-bg",
+    cwd: workspace,
+    shell: {
+      cwd: workspace,
+      env: {},
+    },
+  };
+
+  return {
+    store,
+    service,
+    bash,
+    status,
+    wait,
+    cancel,
+    context,
+  };
 }
 
 describe("BashTool", () => {
@@ -79,6 +126,27 @@ describe("BashTool", () => {
     };
 
     expect(tool.formatResult(result)).toBe("exit 1\npermission denied");
+  });
+
+  it("formats background bash spawns as job updates instead of failures", () => {
+    const tool = new BashTool();
+    const result: ToolResultMessage<JsonObject> = {
+      role: "toolResult",
+      toolCallId: "call_3",
+      toolName: "bash",
+      content: [{ type: "text", text: "{\"jobId\":\"job-1\"}" }],
+      details: {
+        jobId: "job-1",
+        status: "running",
+        stdout: "",
+        stderr: "",
+        sessionStateIsolated: true,
+      },
+      isError: false,
+      timestamp: Date.now(),
+    };
+
+    expect(tool.formatResult(result)).toBe("running\njob job-1");
   });
 
   it("persists cwd changes across calls in the same shell session", async () => {
@@ -359,6 +427,259 @@ describe("BashTool", () => {
       expect(output.stdoutTruncated).toBe(true);
       expect(output.stdoutPersisted).toBe(false);
       expect(output).not.toHaveProperty("stdoutPath");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("starts a background bash job and returns a running handle immediately", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-bg-start-"));
+    try {
+      const {bash, wait, context, store} = await createBackgroundHarness(workspace);
+
+      const started = await bash.run(
+        { command: "sleep 0.2 && printf hello", background: true },
+        createRunContext(context),
+      );
+      const startedOutput = asObject(started);
+
+      expect(startedOutput.status).toBe("running");
+      expect(typeof startedOutput.jobId).toBe("string");
+      expect(startedOutput.sessionStateIsolated).toBe(true);
+      expect(startedOutput.mode).toBe("local");
+      expect(context.shell?.cwd).toBe(workspace);
+
+      const jobId = String(startedOutput.jobId);
+      expect((await store.getBashJob(jobId)).status).toBe("running");
+
+      const finished = await wait.run(
+        { jobId, timeoutMs: 1_000 },
+        createRunContext(context),
+      );
+      const finishedOutput = asObject(finished);
+
+      expect(finishedOutput.status).toBe("completed");
+      expect(String(finishedOutput.stdout)).toBe("hello");
+      expect(finishedOutput.sessionStateIsolated).toBe(true);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not leave a durable job behind when local background spawn fails", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-bg-start-fail-"));
+    try {
+      const store = new TestThreadRuntimeStore();
+      await store.createThread({
+        id: "thread-bg",
+        agentKey: "panda",
+      });
+      const service = new BashJobService({
+        store,
+        shell: path.join(workspace, "missing-shell"),
+      });
+      const bash = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        jobService: service,
+      });
+      const context: PandaSessionContext = {
+        threadId: "thread-bg",
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+
+      await expect(bash.run(
+        { command: "printf nope", background: true },
+        createRunContext(context),
+      )).rejects.toBeInstanceOf(Error);
+
+      await expect(store.listBashJobs("thread-bg")).resolves.toHaveLength(0);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps background cwd and env isolated from the shared shell session", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-bg-isolated-"));
+    try {
+      await mkdir(path.join(workspace, "nested"));
+      const expectedNested = await realpath(path.join(workspace, "nested"));
+      const {bash, wait, context} = await createBackgroundHarness(workspace);
+
+      const started = await bash.run(
+        {
+          command: 'cd nested && export BG_ONLY="$CALL_SECRET" && printf done',
+          env: {
+            CALL_SECRET: "call-secret",
+          },
+          background: true,
+        },
+        createRunContext(context),
+      );
+      const jobId = String(asObject(started).jobId);
+
+      expect(context.shell?.cwd).toBe(workspace);
+      expect(context.shell?.env.BG_ONLY).toBeUndefined();
+
+      const finished = await wait.run(
+        { jobId, timeoutMs: 1_000 },
+        createRunContext(context),
+      );
+      const output = asObject(finished);
+
+      expect(output.status).toBe("completed");
+      expect(output.finalCwd).toBe(expectedNested);
+      expect(output.trackedEnvKeys).toEqual(["BG_ONLY"]);
+      expect(context.shell?.cwd).toBe(workspace);
+      expect(context.shell?.env.BG_ONLY).toBeUndefined();
+      expect(JSON.stringify(output)).not.toContain("call-secret");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("runs multiple background jobs concurrently while foreground bash keeps mutating the shared session", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-bg-concurrent-"));
+    try {
+      await mkdir(path.join(workspace, "nested"));
+      const expectedNested = await realpath(path.join(workspace, "nested"));
+      const {bash, status, wait, context} = await createBackgroundHarness(workspace);
+
+      const startedAt = Date.now();
+      const first = await bash.run(
+        { command: "sleep 0.25 && printf first", background: true },
+        createRunContext(context),
+      );
+      const second = await bash.run(
+        { command: "sleep 0.25 && printf second", background: true },
+        createRunContext(context),
+      );
+
+      const firstJobId = String(asObject(first).jobId);
+      const secondJobId = String(asObject(second).jobId);
+
+      const stillRunning = await status.run(
+        { jobId: firstJobId },
+        createRunContext(context),
+      );
+      expect(asObject(stillRunning).status).toBe("running");
+
+      await bash.run(
+        { command: 'cd nested && export FG_ONLY="ok"' },
+        createRunContext(context),
+      );
+      expect(context.shell?.cwd).toBe(expectedNested);
+      expect(context.shell?.env.FG_ONLY).toBe("ok");
+
+      const firstFinished = await wait.run(
+        { jobId: firstJobId, timeoutMs: 1_000 },
+        createRunContext(context),
+      );
+      const secondFinished = await wait.run(
+        { jobId: secondJobId, timeoutMs: 1_000 },
+        createRunContext(context),
+      );
+
+      expect(asObject(firstFinished).stdout).toBe("first");
+      expect(asObject(secondFinished).stdout).toBe("second");
+      expect(Date.now() - startedAt).toBeLessThan(450);
+      expect(context.shell?.cwd).toBe(expectedNested);
+      expect(context.shell?.env.FG_ONLY).toBe("ok");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels background jobs explicitly", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-bg-cancel-"));
+    try {
+      const {bash, cancel, status, context} = await createBackgroundHarness(workspace);
+
+      const started = await bash.run(
+        { command: "sleep 10", background: true },
+        createRunContext(context),
+      );
+      const jobId = String(asObject(started).jobId);
+
+      const cancelled = await cancel.run(
+        { jobId },
+        createRunContext(context),
+      );
+      const cancelledOutput = asObject(cancelled);
+
+      expect(cancelledOutput.status).toBe("cancelled");
+
+      const finalStatus = await status.run(
+        { jobId },
+        createRunContext(context),
+      );
+      expect(asObject(finalStatus).status).toBe("cancelled");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("persists large non-secret background output and avoids persisted files for secret-bearing jobs", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-bg-output-"));
+    try {
+      const store = new TestThreadRuntimeStore();
+      await store.createThread({
+        id: "thread-bg",
+        agentKey: "panda",
+      });
+      const service = new BashJobService({ store });
+      const bash = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        maxOutputChars: 8,
+        persistOutputThresholdChars: 8,
+        jobService: service,
+      });
+      const wait = new BashJobWaitTool({ service });
+      const context: PandaSessionContext = {
+        threadId: "thread-bg",
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+
+      const large = await bash.run(
+        { command: "printf '0123456789ABCDEF'", background: true },
+        createRunContext(context),
+      );
+      const largeOutput = asObject(await wait.run(
+        { jobId: String(asObject(large).jobId), timeoutMs: 1_000 },
+        createRunContext(context),
+      ));
+
+      expect(largeOutput.stdoutTruncated).toBe(true);
+      expect(largeOutput.stdoutPersisted).toBe(true);
+      await expect(readFile(String(largeOutput.stdoutPath), "utf8")).resolves.toBe("0123456789ABCDEF");
+
+      const secret = await bash.run(
+        {
+          command: 'printf "%s%s%s%s" "$CALL_SECRET" "$CALL_SECRET" "$CALL_SECRET" "$CALL_SECRET"',
+          env: {
+            CALL_SECRET: "secret",
+          },
+          background: true,
+        },
+        createRunContext(context),
+      );
+      const secretOutput = asObject(await wait.run(
+        { jobId: String(asObject(secret).jobId), timeoutMs: 1_000 },
+        createRunContext(context),
+      ));
+
+      expect(secretOutput.stdoutTruncated).toBe(true);
+      expect(secretOutput.stdoutPersisted).toBe(false);
+      expect(secretOutput.stdoutPath).toBeUndefined();
+      expect(String(secretOutput.stdout)).toContain("[redacted]");
+      expect(String(secretOutput.stdout)).not.toContain("secret");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

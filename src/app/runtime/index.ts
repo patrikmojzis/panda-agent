@@ -28,5 +28,4 @@ export {
   resolvePandaMediaDir,
   resolvePandaAgentDir,
   resolvePandaAgentMediaDir,
-  resolvePandaSkillsDir,
 } from "./data-dir.js";

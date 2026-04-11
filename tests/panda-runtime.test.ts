@@ -33,6 +33,32 @@ const runtimeMocks = vi.hoisted(() => {
   };
 });
 
+const browserMocks = vi.hoisted(() => {
+  const instances: unknown[] = [];
+  const start = vi.fn(async () => {});
+  const close = vi.fn(async () => {});
+  class MockBrowserSessionService {
+    constructor(_options: unknown) {
+      instances.push(this);
+    }
+
+    async start(): Promise<void> {
+      await start();
+    }
+
+    async close(): Promise<void> {
+      await close();
+    }
+  }
+
+  return {
+    close,
+    instances,
+    MockBrowserSessionService,
+    start,
+  };
+});
+
 vi.mock("pg", () => ({
   Pool: runtimeMocks.MockPool,
 }));
@@ -44,6 +70,10 @@ vi.mock("../src/domain/threads/runtime/index.js", () => ({
 
     async ensureSchema(): Promise<void> {
       await runtimeMocks.ensureSchema();
+    }
+
+    async markRunningBashJobsLost(): Promise<number> {
+      return 0;
     }
   },
   ThreadRuntimeCoordinator: class {},
@@ -63,6 +93,10 @@ vi.mock("../src/personas/panda/tools/postgres-readonly-query-tool.js", () => ({
   PostgresReadonlyQueryTool: class {},
 }));
 
+vi.mock("../src/personas/panda/tools/browser-service.js", () => ({
+  BrowserSessionService: browserMocks.MockBrowserSessionService,
+}));
+
 describe("createPandaRuntime", () => {
   afterEach(() => {
     runtimeMocks.ensureSchema.mockReset();
@@ -73,6 +107,9 @@ describe("createPandaRuntime", () => {
     runtimeMocks.client.query.mockReset();
     runtimeMocks.client.release.mockClear();
     runtimeMocks.poolInstances.length = 0;
+    browserMocks.start.mockClear();
+    browserMocks.close.mockClear();
+    browserMocks.instances.length = 0;
   });
 
   it("ends the pool when schema bootstrap fails", async () => {
@@ -100,5 +137,19 @@ describe("createPandaRuntime", () => {
     expect(runtimeMocks.client.release).toHaveBeenCalledTimes(1);
     expect(runtimeMocks.poolInstances).toHaveLength(1);
     expect(runtimeMocks.poolInstances[0]?.end).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not eagerly start the browser service during runtime bootstrap", async () => {
+    const runtime = await createPandaRuntime({
+      dbUrl: "postgres://panda:test@localhost:5432/panda",
+      resolveDefinition: vi.fn(),
+    });
+
+    expect(browserMocks.instances).toHaveLength(1);
+    expect(browserMocks.start).not.toHaveBeenCalled();
+
+    await runtime.close();
+
+    expect(browserMocks.close).toHaveBeenCalledTimes(1);
   });
 });

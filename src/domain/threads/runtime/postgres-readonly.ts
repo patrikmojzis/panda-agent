@@ -1,8 +1,10 @@
 import type {Pool} from "pg";
 
+import {buildAgentTableNames} from "../../agents/postgres-shared.js";
 import {buildHomeThreadTableNames} from "../home/postgres-shared.js";
 import {buildIdentityTableNames} from "../../../domain/identity/postgres-shared.js";
 import {buildScheduledTaskTableNames} from "../../../domain/scheduling/tasks/postgres-shared.js";
+import {buildWatchTableNames} from "../../../domain/watches/postgres-shared.js";
 import {buildPrefixedRelationNames, buildThreadRuntimeTableNames, quoteIdentifier,} from "./postgres-shared.js";
 
 interface PgQueryable {
@@ -16,8 +18,12 @@ export interface ReadonlyChatViewNames {
   toolResults: string;
   inputs: string;
   runs: string;
+  agentSkills: string;
   scheduledTasks: string;
   scheduledTaskRuns: string;
+  watches: string;
+  watchRuns: string;
+  watchEvents: string;
 }
 
 export interface EnsureReadonlyChatQuerySchemaOptions {
@@ -30,7 +36,12 @@ export interface EnsureReadonlyChatQuerySchemaOptions {
 export function readDatabaseUsername(databaseUrl: string): string | null {
   try {
     const parsed = new URL(databaseUrl);
-    return parsed.username ? decodeURIComponent(parsed.username) : null;
+    if (parsed.username) {
+      return decodeURIComponent(parsed.username);
+    }
+
+    const queryUser = parsed.searchParams.get("user") ?? parsed.searchParams.get("username");
+    return queryUser ? decodeURIComponent(queryUser) : null;
   } catch {
     return null;
   }
@@ -40,10 +51,12 @@ export async function ensureReadonlyChatQuerySchema(
   options: EnsureReadonlyChatQuerySchemaOptions,
 ): Promise<ReadonlyChatViewNames> {
   const tables = buildThreadRuntimeTableNames(options.tablePrefix ?? "thread_runtime");
+  const agentTables = buildAgentTableNames(options.tablePrefix ?? "thread_runtime");
   const identityTables = buildIdentityTableNames(options.tablePrefix ?? "thread_runtime");
   const homeThreadTables = buildHomeThreadTableNames(options.tablePrefix ?? "thread_runtime");
   const scheduledTaskTables = buildScheduledTaskTableNames(options.tablePrefix ?? "thread_runtime");
-  const { threads, messages, messagesRaw, toolResults, inputs, runs, scheduledTasks, scheduledTaskRuns } = buildPrefixedRelationNames(
+  const watchTables = buildWatchTableNames(options.tablePrefix ?? "thread_runtime");
+  const { threads, messages, messagesRaw, toolResults, inputs, runs, agentSkills, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents } = buildPrefixedRelationNames(
     options.viewPrefix ?? "panda",
     {
       threads: "threads",
@@ -52,8 +65,12 @@ export async function ensureReadonlyChatQuerySchema(
       toolResults: "tool_results",
       inputs: "inputs",
       runs: "runs",
+      agentSkills: "agent_skills",
       scheduledTasks: "scheduled_tasks",
       scheduledTaskRuns: "scheduled_task_runs",
+      watches: "watches",
+      watchRuns: "watch_runs",
+      watchEvents: "watch_events",
     },
   );
   const views: ReadonlyChatViewNames = {
@@ -63,8 +80,12 @@ export async function ensureReadonlyChatQuerySchema(
     toolResults,
     inputs,
     runs,
+    agentSkills,
     scheduledTasks,
     scheduledTaskRuns,
+    watches,
+    watchRuns,
+    watchEvents,
   };
   const messageTextSql = `
     CASE
@@ -94,6 +115,10 @@ export async function ensureReadonlyChatQuerySchema(
   `;
 
   await options.queryable.query(`
+    DROP VIEW IF EXISTS ${views.watchEvents};
+    DROP VIEW IF EXISTS ${views.watchRuns};
+    DROP VIEW IF EXISTS ${views.watches};
+    DROP VIEW IF EXISTS ${views.agentSkills};
     DROP VIEW IF EXISTS ${views.scheduledTaskRuns};
     DROP VIEW IF EXISTS ${views.scheduledTasks};
     DROP VIEW IF EXISTS ${views.toolResults};
@@ -259,6 +284,19 @@ export async function ensureReadonlyChatQuerySchema(
     INNER JOIN ${tables.threads} AS t ON t.id = r.thread_id
     WHERE ${threadScopeSql};
 
+    CREATE VIEW ${views.agentSkills}
+    WITH (security_barrier = true) AS
+    SELECT
+      skill.agent_key,
+      skill.skill_key,
+      skill.description,
+      skill.content,
+      octet_length(convert_to(skill.content, 'utf8'))::INTEGER AS content_bytes,
+      skill.created_at,
+      skill.updated_at
+    FROM ${agentTables.agentSkills} AS skill
+    WHERE skill.agent_key = current_setting('panda.agent_key', true);
+
     CREATE VIEW ${views.scheduledTasks}
     WITH (security_barrier = true) AS
     SELECT
@@ -327,13 +365,82 @@ export async function ensureReadonlyChatQuerySchema(
     FROM ${scheduledTaskTables.scheduledTaskRuns} AS run
     WHERE run.identity_id = current_setting('panda.identity_id', true)
       AND run.agent_key = current_setting('panda.agent_key', true);
+
+    CREATE VIEW ${views.watches}
+    WITH (security_barrier = true) AS
+    SELECT
+      watch.id,
+      watch.identity_id,
+      watch.agent_key,
+      watch.title,
+      watch.interval_minutes,
+      watch.target_kind,
+      watch.target_thread_id,
+      CASE
+        WHEN watch.target_kind = 'thread' THEN watch.target_thread_id
+        ELSE home.thread_id
+      END AS resolved_thread_id,
+      watch.source_config,
+      watch.detector_config,
+      watch.enabled,
+      watch.next_poll_at,
+      watch.claimed_at,
+      watch.claimed_by,
+      watch.claim_expires_at,
+      watch.cooldown_until,
+      watch.last_error,
+      watch.state,
+      watch.disabled_at,
+      watch.created_at,
+      watch.updated_at
+    FROM ${watchTables.watches} AS watch
+    LEFT JOIN ${homeThreadTables.homeThreads} AS home
+      ON home.identity_id = watch.identity_id
+    WHERE watch.identity_id = current_setting('panda.identity_id', true)
+      AND watch.agent_key = current_setting('panda.agent_key', true);
+
+    CREATE VIEW ${views.watchRuns}
+    WITH (security_barrier = true) AS
+    SELECT
+      run.id,
+      run.watch_id,
+      run.identity_id,
+      run.agent_key,
+      run.scheduled_for,
+      run.status,
+      run.resolved_thread_id,
+      run.emitted_event_id,
+      run.error,
+      run.created_at,
+      run.started_at,
+      run.finished_at
+    FROM ${watchTables.watchRuns} AS run
+    WHERE run.identity_id = current_setting('panda.identity_id', true)
+      AND run.agent_key = current_setting('panda.agent_key', true);
+
+    CREATE VIEW ${views.watchEvents}
+    WITH (security_barrier = true) AS
+    SELECT
+      event.id,
+      event.watch_id,
+      event.identity_id,
+      event.agent_key,
+      event.resolved_thread_id,
+      event.event_kind,
+      event.summary,
+      event.dedupe_key,
+      event.payload,
+      event.created_at
+    FROM ${watchTables.watchEvents} AS event
+    WHERE event.identity_id = current_setting('panda.identity_id', true)
+      AND event.agent_key = current_setting('panda.agent_key', true);
   `);
 
   if (options.readonlyRole) {
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA public TO ${readonlyRole};
-      GRANT SELECT ON ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.scheduledTasks}, ${views.scheduledTaskRuns} TO ${readonlyRole};
+      GRANT SELECT ON ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentSkills}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents} TO ${readonlyRole};
     `);
   }
 

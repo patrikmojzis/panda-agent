@@ -1,6 +1,6 @@
 import {clamp} from "./screen.js";
-import type {SearchState} from "./chat-shared.js";
-import type {ViewModel} from "./chat-view.js";
+import type {SearchState, TranscriptEntry, TranscriptLineCacheEntry,} from "./chat-shared.js";
+import {type NoticeState, type ViewModel} from "./chat-view.js";
 import {applySlashCompletion, getSlashCompletionContext, type SlashCompletionContext} from "./commands.js";
 
 export function findChatHistoryMatches(
@@ -40,6 +40,46 @@ export function resolveCurrentChatHistoryMatch(
   }
 
   return inputHistory[historyIndex] ?? null;
+}
+
+export function resolveChatModeLabel(input: {
+  threadPickerActive: boolean;
+  historySearchActive: boolean;
+  transcriptSearchActive: boolean;
+}): string {
+  if (input.threadPickerActive) {
+    return "threads";
+  }
+
+  if (input.historySearchActive) {
+    return "history";
+  }
+
+  if (input.transcriptSearchActive) {
+    return "find";
+  }
+
+  return "compose";
+}
+
+export function createChatNotice(
+  text: string,
+  tone: NoticeState["tone"],
+  durationMs: number,
+): NoticeState {
+  return {
+    text,
+    tone,
+    expiresAt: Date.now() + durationMs,
+  };
+}
+
+export function clearExpiredChatNotice(notice: NoticeState | null): NoticeState | null {
+  if (!notice || notice.expiresAt > Date.now()) {
+    return notice;
+  }
+
+  return null;
 }
 
 export function resolveChatSlashContext(input: {
@@ -129,6 +169,27 @@ export function resolveTranscriptBottom(view: ViewModel): {followTranscript: tru
   return {
     followTranscript: true,
     scrollTop: view.maxScrollTop,
+  };
+}
+
+export function resetChatTranscriptState(input: {
+  transcript: TranscriptEntry[];
+  transcriptLineCache: Map<number, TranscriptLineCacheEntry>;
+  visibleStoredMessageIds: Set<string>;
+  transcriptSearch: SearchState;
+  keepSeenMessages?: boolean;
+}): {followTranscript: true; scrollTop: 0} {
+  input.transcript.length = 0;
+  input.transcriptLineCache.clear();
+  if (!input.keepSeenMessages) {
+    input.visibleStoredMessageIds.clear();
+  }
+  input.transcriptSearch.active = false;
+  input.transcriptSearch.query = "";
+  input.transcriptSearch.selected = 0;
+  return {
+    followTranscript: true,
+    scrollTop: 0,
   };
 }
 

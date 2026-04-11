@@ -40,6 +40,7 @@ export {
 export {
   type AutoCompactionRuntimeState,
   type CreateThreadInput,
+  type CreateThreadBashJobInput,
   type InferenceProjection,
   type InferenceProjectionRule,
   isMissingThreadError,
@@ -57,6 +58,10 @@ export {
   type ThreadSummaryRecord,
   type ThreadRunRecord,
   type ThreadRunStatus,
+  type ThreadBashJobMode,
+  type ThreadBashJobRecord,
+  type ThreadBashJobStatus,
+  type ThreadBashJobUpdate,
   type ThreadRuntimeMessagePayload,
   type ThreadUpdate,
 } from "./types.js";

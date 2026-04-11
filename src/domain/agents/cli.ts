@@ -5,7 +5,7 @@ import {Command, InvalidArgumentError} from "commander";
 
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {createPandaPool, requirePandaDatabaseUrl} from "../../app/runtime/create-runtime.js";
-import {resolvePandaSkillsDir} from "../../app/runtime/data-dir.js";
+import {resolvePandaAgentDir} from "../../app/runtime/data-dir.js";
 import {PostgresAgentStore} from "./postgres.js";
 import {DEFAULT_AGENT_DOCUMENT_TEMPLATES} from "./templates.js";
 import {normalizeAgentKey} from "./types.js";
@@ -74,13 +74,13 @@ export async function createAgentCommand(agentKey: string, options: CreateAgentC
       displayName: options.name?.trim() || agentKey,
       documents: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
-    await mkdir(resolvePandaSkillsDir(created.agentKey), { recursive: true });
+    await mkdir(resolvePandaAgentDir(created.agentKey), { recursive: true });
 
     process.stdout.write(
       [
         `Created agent ${created.agentKey}.`,
         `name ${created.displayName}`,
-        `skills ${resolvePandaSkillsDir(created.agentKey)}`,
+        `home ${resolvePandaAgentDir(created.agentKey)}`,
         `next: panda identity create <handle> --agent ${created.agentKey}`,
         `or:   panda identity switch-home-agent <handle> ${created.agentKey}`,
       ].join("\n") + "\n",

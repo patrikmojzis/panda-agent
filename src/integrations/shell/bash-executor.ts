@@ -16,9 +16,11 @@ import {
     PANDA_RUNNER_EXPECTED_PATH_HEADER,
     PANDA_RUNNER_PATH_SCOPED_HEADER,
 } from "./bash-protocol.js";
+import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import type {ShellExecutionContext} from "./types.js";
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
+const DEFAULT_RUNNER_CWD_TEMPLATE = "/root/.panda/agents/{agentKey}";
 
 export type BashExecutionMode = "local" | "remote";
 
@@ -86,7 +88,8 @@ export function resolveRunnerUrlTemplate(env: NodeJS.ProcessEnv = process.env): 
 }
 
 export function resolveRunnerCwdTemplate(env: NodeJS.ProcessEnv = process.env): string | null {
-  return firstNonEmpty(env.PANDA_RUNNER_CWD_TEMPLATE);
+  return firstNonEmpty(env.PANDA_RUNNER_CWD_TEMPLATE)
+    ?? (resolveBashExecutionMode(env) === "remote" ? DEFAULT_RUNNER_CWD_TEMPLATE : null);
 }
 
 function resolveAgentTemplateValue(template: string, agentKey: string): string {
@@ -129,7 +132,7 @@ function isPathScopedRunnerTemplate(template: string): boolean {
   return url.pathname.includes(marker);
 }
 
-function buildRunnerRequestHeaders(
+export function buildRunnerRequestHeaders(
   agentKey: string,
   runnerUrlTemplate: string,
   runnerUrl: string,
@@ -150,7 +153,7 @@ function buildRunnerRequestHeaders(
   return headers;
 }
 
-function makeNetworkTimeoutSignal(timeoutMs: number): AbortSignal {
+export function makeNetworkTimeoutSignal(timeoutMs: number): AbortSignal {
   const controller = new AbortController();
   setTimeout(() => {
     controller.abort(new Error(`Remote bash runner did not respond within ${timeoutMs}ms.`));
@@ -158,7 +161,10 @@ function makeNetworkTimeoutSignal(timeoutMs: number): AbortSignal {
   return controller.signal;
 }
 
-function buildRunnerEndpoint(runnerUrl: string, endpoint: "exec" | "abort"): URL {
+export function buildRunnerEndpoint(
+  runnerUrl: string,
+  endpoint: "exec" | "abort" | "jobs/start" | "jobs/status" | "jobs/wait" | "jobs/cancel",
+): URL {
   const url = new URL(runnerUrl);
   const basePath = url.pathname.replace(/\/+$/, "");
   url.pathname = `${basePath}/${endpoint}`.replace(/\/{2,}/g, "/");
@@ -167,7 +173,7 @@ function buildRunnerEndpoint(runnerUrl: string, endpoint: "exec" | "abort"): URL
   return url;
 }
 
-async function parseRunnerResponse(response: Response): Promise<BashRunnerResponse> {
+export async function parseRunnerResponse(response: Response): Promise<BashRunnerResponse> {
   const payload = await response.json();
   if (!isRecord(payload) || typeof payload.ok !== "boolean") {
     throw new ToolError("Remote bash runner returned an invalid response.");
@@ -176,7 +182,7 @@ async function parseRunnerResponse(response: Response): Promise<BashRunnerRespon
   return payload as unknown as BashRunnerResponse;
 }
 
-async function readRunnerError(response: Response): Promise<never> {
+export async function readRunnerError(response: Response): Promise<never> {
   let payload: BashRunnerErrorResponse | null = null;
   try {
     payload = await parseRunnerResponse(response) as BashRunnerErrorResponse;
@@ -204,6 +210,15 @@ export class LocalShellExecutor implements BashExecutor {
     options: BashExecutorOptions & {run: RunContext<TContext>},
   ): Promise<BashExecutionResult> {
     const shell = this.shell ?? this.env.SHELL ?? "/bin/zsh";
+    const spawnFailure = await readBashSpawnPreflightFailure({
+      cwd: options.cwd,
+      shell,
+      scope: "local",
+    });
+    if (spawnFailure) {
+      throw new ToolError(spawnFailure.message, { details: spawnFailure.details });
+    }
+
     const childEnv = {
       ...this.env,
       ...(options.resolvedEnv ?? {}),
@@ -302,8 +317,11 @@ export class RemoteShellExecutor implements BashExecutor {
     if (!payload.ok) {
       throw new ToolError(payload.error, { details: payload.details });
     }
+    if (!("shell" in payload)) {
+      throw new ToolError("Remote bash runner returned an invalid foreground response.");
+    }
 
-    return payload;
+    return payload as BashExecutionResult;
   }
 
   async execute<TContext extends ShellExecutionContext>(

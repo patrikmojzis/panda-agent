@@ -4,6 +4,7 @@ export interface ThreadRuntimeTableNames {
   messages: string;
   inputs: string;
   runs: string;
+  bashJobs: string;
 }
 
 type RelationSuffixMap = Record<string, string>;
@@ -43,6 +44,7 @@ export function buildThreadRuntimeTableNames(prefix: string): ThreadRuntimeTable
     messages: "messages",
     inputs: "inputs",
     runs: "runs",
+    bashJobs: "bash_jobs",
   });
 }
 

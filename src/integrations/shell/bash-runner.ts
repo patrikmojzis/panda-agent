@@ -6,18 +6,25 @@ import {normalizeAgentKey} from "../../domain/agents/types.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject} from "../../kernel/agent/types.js";
 import type {
-  BashExecutionResult,
-  BashRunnerAbortRequest,
-  BashRunnerAbortResponse,
-  BashRunnerErrorResponse,
-  BashRunnerExecRequest,
-  BashRunnerExecResponse,
+    BashExecutionResult,
+    BashRunnerAbortRequest,
+    BashRunnerAbortResponse,
+    BashRunnerErrorResponse,
+    BashRunnerExecRequest,
+    BashRunnerExecResponse,
+    BashRunnerJobCancelRequest,
+    BashRunnerJobQueryRequest,
+    BashRunnerJobResponse,
+    BashRunnerJobStartRequest,
+    BashRunnerJobWaitRequest,
 } from "./bash-protocol.js";
 import {
-  PANDA_RUNNER_AGENT_KEY_HEADER,
-  PANDA_RUNNER_EXPECTED_PATH_HEADER,
-  PANDA_RUNNER_PATH_SCOPED_HEADER,
+    PANDA_RUNNER_AGENT_KEY_HEADER,
+    PANDA_RUNNER_EXPECTED_PATH_HEADER,
+    PANDA_RUNNER_PATH_SCOPED_HEADER,
 } from "./bash-protocol.js";
+import {ManagedBashJob} from "./bash-background-job.js";
+import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import {executeBashCommand} from "./bash-execution.js";
 
 const DEFAULT_RUNNER_PORT = 8080;
@@ -137,6 +144,111 @@ function validateAbortRequest(value: unknown): BashRunnerAbortRequest {
   return { requestId };
 }
 
+function validateJobStartRequest(value: unknown): BashRunnerJobStartRequest {
+  if (!isRecord(value)) {
+    throw new ToolError("Background job start body must be an object.");
+  }
+
+  const jobId = firstNonEmpty(typeof value.jobId === "string" ? value.jobId : null);
+  const command = firstNonEmpty(typeof value.command === "string" ? value.command : null);
+  const cwd = firstNonEmpty(typeof value.cwd === "string" ? value.cwd : null);
+  const timeoutMs = typeof value.timeoutMs === "number" ? value.timeoutMs : NaN;
+  const maxOutputChars = typeof value.maxOutputChars === "number" ? value.maxOutputChars : NaN;
+  const trackedEnvKeys = Array.isArray(value.trackedEnvKeys)
+    ? value.trackedEnvKeys.filter((entry): entry is string => typeof entry === "string")
+    : null;
+  const env = value.env === undefined
+    ? undefined
+    : typeof value.env === "object" && value.env !== null && !Array.isArray(value.env)
+      ? Object.fromEntries(
+        Object.entries(value.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      )
+      : null;
+  const persistOutputThresholdChars = typeof value.persistOutputThresholdChars === "number"
+    ? value.persistOutputThresholdChars
+    : NaN;
+  const persistOutputFiles = value.persistOutputFiles === undefined
+    ? undefined
+    : typeof value.persistOutputFiles === "boolean"
+      ? value.persistOutputFiles
+      : null;
+
+  if (!jobId) {
+    throw new ToolError("Background job jobId must not be empty.");
+  }
+  if (!command) {
+    throw new ToolError("Background job command must not be empty.");
+  }
+  if (!cwd) {
+    throw new ToolError("Background job cwd must not be empty.");
+  }
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300_000) {
+    throw new ToolError("Background job timeoutMs must be an integer between 100 and 300000.");
+  }
+  if (!Number.isInteger(maxOutputChars) || maxOutputChars < 1) {
+    throw new ToolError("Background job maxOutputChars must be a positive integer.");
+  }
+  if (trackedEnvKeys === null) {
+    throw new ToolError("Background job trackedEnvKeys must be an array of strings.");
+  }
+  if (env === null) {
+    throw new ToolError("Background job env must be an object of string values.");
+  }
+  if (!Number.isInteger(persistOutputThresholdChars) || persistOutputThresholdChars < 1) {
+    throw new ToolError("Background job persistOutputThresholdChars must be a positive integer.");
+  }
+  if (persistOutputFiles === null) {
+    throw new ToolError("Background job persistOutputFiles must be a boolean.");
+  }
+
+  return {
+    jobId,
+    command,
+    cwd,
+    timeoutMs,
+    trackedEnvKeys,
+    maxOutputChars,
+    persistOutputThresholdChars,
+    ...(env ? { env } : {}),
+    ...(persistOutputFiles === undefined ? {} : { persistOutputFiles }),
+  };
+}
+
+function validateJobQueryRequest(value: unknown): BashRunnerJobQueryRequest {
+  if (!isRecord(value)) {
+    throw new ToolError("Background job request body must be an object.");
+  }
+
+  const jobId = firstNonEmpty(typeof value.jobId === "string" ? value.jobId : null);
+  if (!jobId) {
+    throw new ToolError("Background job jobId must not be empty.");
+  }
+
+  return { jobId };
+}
+
+function validateJobWaitRequest(value: unknown): BashRunnerJobWaitRequest {
+  const base = validateJobQueryRequest(value);
+  const timeoutMs = isRecord(value) && value.timeoutMs !== undefined
+    ? typeof value.timeoutMs === "number"
+      ? value.timeoutMs
+      : NaN
+    : undefined;
+
+  if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 300_000)) {
+    throw new ToolError("Background job timeoutMs must be an integer between 0 and 300000.");
+  }
+
+  return {
+    ...base,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  };
+}
+
+function validateJobCancelRequest(value: unknown): BashRunnerJobCancelRequest {
+  return validateJobWaitRequest(value);
+}
+
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -155,13 +267,20 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-function writeJson(response: ServerResponse, statusCode: number, payload: BashRunnerExecResponse | BashRunnerAbortResponse | BashRunnerErrorResponse): void {
+function writeJson(
+  response: ServerResponse,
+  statusCode: number,
+  payload: BashRunnerExecResponse | BashRunnerAbortResponse | BashRunnerJobResponse | BashRunnerErrorResponse,
+): void {
   response.statusCode = statusCode;
   response.setHeader("content-type", "application/json");
   response.end(JSON.stringify(payload));
 }
 
-function matchesEndpoint(rawUrl: string | undefined, endpoint: "health" | "exec" | "abort"): boolean {
+function matchesEndpoint(
+  rawUrl: string | undefined,
+  endpoint: "health" | "exec" | "abort" | "jobs/start" | "jobs/status" | "jobs/wait" | "jobs/cancel",
+): boolean {
   if (!rawUrl) {
     return false;
   }
@@ -201,7 +320,7 @@ function normalizeRequestPathname(rawUrl: string | undefined): string {
 function validateRunnerRequestTarget(
   request: IncomingMessage,
   agentKey: string,
-  endpoint: "exec" | "abort",
+  endpoint: "exec" | "abort" | "jobs/start" | "jobs/status" | "jobs/wait" | "jobs/cancel",
 ): void {
   const requestedAgentKey = readHeaderValue(request.headers[PANDA_RUNNER_AGENT_KEY_HEADER]);
   if (!requestedAgentKey) {
@@ -304,7 +423,26 @@ export async function startPandaBashRunner(options: PandaBashRunnerOptions): Pro
   const shell = options.shell ?? env.SHELL ?? "/bin/zsh";
   const outputDirectory = path.resolve(options.outputDirectory ?? path.join(os.tmpdir(), "panda-runner-results"));
   const activeRequests = new Map<string, ActiveRunnerRequest>();
+  const backgroundJobs = new Map<string, ManagedBashJob>();
   const pendingAborts = new Map<string, NodeJS.Timeout>();
+
+  const evictTerminalJob = (jobId: string, snapshot: { status: string }): void => {
+    if (snapshot.status !== "running") {
+      backgroundJobs.delete(jobId);
+    }
+  };
+
+  const watchBackgroundJob = (jobId: string, job: ManagedBashJob): void => {
+    void job.wait(2_147_000_000).then((snapshot) => {
+      if (backgroundJobs.get(jobId) === job) {
+        evictTerminalJob(jobId, snapshot);
+      }
+    }).catch(() => {
+      if (backgroundJobs.get(jobId) === job) {
+        backgroundJobs.delete(jobId);
+      }
+    });
+  };
 
   const consumePendingAbort = (requestId: string): boolean => {
     const timer = pendingAborts.get(requestId);
@@ -367,6 +505,14 @@ export async function startPandaBashRunner(options: PandaBashRunnerOptions): Pro
         validateRunnerRequestTarget(request, agentKey, "exec");
         const parsed = validateExecRequest(await readJsonBody(request));
         const resolvedCwd = path.resolve(parsed.cwd);
+        const spawnFailure = await readBashSpawnPreflightFailure({
+          cwd: resolvedCwd,
+          shell,
+          scope: "remote",
+        });
+        if (spawnFailure) {
+          throw new ToolError(spawnFailure.message, { details: spawnFailure.details });
+        }
 
         if (consumePendingAbort(parsed.requestId)) {
           writeJson(response, 200, {
@@ -423,6 +569,114 @@ export async function startPandaBashRunner(options: PandaBashRunnerOptions): Pro
         }
       }
 
+      if (request.method === "POST" && matchesEndpoint(request.url, "jobs/start")) {
+        validateRunnerRequestTarget(request, agentKey, "jobs/start");
+        const parsed = validateJobStartRequest(await readJsonBody(request));
+        if (backgroundJobs.has(parsed.jobId)) {
+          throw new ToolError(`Background job ${parsed.jobId} already exists.`);
+        }
+
+        const resolvedCwd = path.resolve(parsed.cwd);
+        const spawnFailure = await readBashSpawnPreflightFailure({
+          cwd: resolvedCwd,
+          shell,
+          scope: "remote",
+        });
+        if (spawnFailure) {
+          throw new ToolError(spawnFailure.message, { details: spawnFailure.details });
+        }
+
+        const job = await ManagedBashJob.start({
+          jobId: parsed.jobId,
+          command: parsed.command,
+          cwd: resolvedCwd,
+          childEnv: parsed.env ?? {},
+          shell,
+          timeoutMs: parsed.timeoutMs,
+          trackedEnvKeys: parsed.trackedEnvKeys,
+          maxOutputChars: parsed.maxOutputChars,
+          persistOutputThresholdChars: parsed.persistOutputThresholdChars,
+          persistOutputFiles: parsed.persistOutputFiles,
+          outputDirectory,
+        });
+        backgroundJobs.set(parsed.jobId, job);
+        watchBackgroundJob(parsed.jobId, job);
+        const snapshot = job.snapshot();
+        evictTerminalJob(parsed.jobId, snapshot);
+
+        writeJson(response, 200, {
+          ok: true,
+          ...snapshot,
+        });
+        return;
+      }
+
+      if (request.method === "POST" && matchesEndpoint(request.url, "jobs/status")) {
+        validateRunnerRequestTarget(request, agentKey, "jobs/status");
+        const parsed = validateJobQueryRequest(await readJsonBody(request));
+        const job = backgroundJobs.get(parsed.jobId);
+        if (!job) {
+          writeJson(response, 404, {
+            ok: false,
+            error: `Unknown background job ${parsed.jobId}.`,
+          });
+          return;
+        }
+
+        const snapshot = job.snapshot();
+        evictTerminalJob(parsed.jobId, snapshot);
+
+        writeJson(response, 200, {
+          ok: true,
+          ...snapshot,
+        });
+        return;
+      }
+
+      if (request.method === "POST" && matchesEndpoint(request.url, "jobs/wait")) {
+        validateRunnerRequestTarget(request, agentKey, "jobs/wait");
+        const parsed = validateJobWaitRequest(await readJsonBody(request));
+        const job = backgroundJobs.get(parsed.jobId);
+        if (!job) {
+          writeJson(response, 404, {
+            ok: false,
+            error: `Unknown background job ${parsed.jobId}.`,
+          });
+          return;
+        }
+
+        const snapshot = await job.wait(parsed.timeoutMs ?? 15_000);
+        evictTerminalJob(parsed.jobId, snapshot);
+
+        writeJson(response, 200, {
+          ok: true,
+          ...snapshot,
+        });
+        return;
+      }
+
+      if (request.method === "POST" && matchesEndpoint(request.url, "jobs/cancel")) {
+        validateRunnerRequestTarget(request, agentKey, "jobs/cancel");
+        const parsed = validateJobCancelRequest(await readJsonBody(request));
+        const job = backgroundJobs.get(parsed.jobId);
+        if (!job) {
+          writeJson(response, 404, {
+            ok: false,
+            error: `Unknown background job ${parsed.jobId}.`,
+          });
+          return;
+        }
+
+        const snapshot = await job.cancel(parsed.timeoutMs ?? 1_000);
+        evictTerminalJob(parsed.jobId, snapshot);
+
+        writeJson(response, 200, {
+          ok: true,
+          ...snapshot,
+        });
+        return;
+      }
+
       writeJson(response, 404, {
         ok: false,
         error: "Not found.",
@@ -469,6 +723,10 @@ export async function startPandaBashRunner(options: PandaBashRunnerOptions): Pro
         clearTimeout(timer);
       }
       pendingAborts.clear();
+      await Promise.all(
+        [...backgroundJobs.values()].map((job) => job.cancel(100).catch(() => undefined)),
+      );
+      backgroundJobs.clear();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {
           if (error) {

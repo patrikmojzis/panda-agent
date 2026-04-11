@@ -2,6 +2,7 @@ import {Pool} from "pg";
 
 import {type AgentStore} from "../../domain/agents/index.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/index.js";
+import type {WatchStore} from "../../domain/watches/index.js";
 import {PostgresThreadLeaseManager, ThreadRuntimeCoordinator,} from "../../domain/threads/runtime/index.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
@@ -10,8 +11,11 @@ import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postg
 import type {IdentityStore} from "../../domain/identity/store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {CredentialResolver} from "../../domain/credentials/index.js";
+import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
+import type {BrowserSessionService} from "../../personas/panda/tools/browser-service.js";
 import {createPandaPool, requirePandaDatabaseUrl, resolvePandaDatabaseUrl,} from "./database.js";
 import {bootstrapPandaRuntime,} from "./runtime-bootstrap.js";
+import {buildBackgroundBashRuntimeMessage} from "./background-bash-runtime-note.js";
 import {
     createPandaThreadDefinition,
     type CreatePandaThreadDefinitionOptions,
@@ -32,6 +36,8 @@ export type {CreatePandaThreadDefinitionOptions};
 
 export interface PandaDefinitionResolverContext {
   agentStore: AgentStore;
+  bashJobService: BashJobService;
+  browserService: BrowserSessionService;
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
   store: ThreadRuntimeStore;
@@ -53,9 +59,13 @@ export interface PandaRuntimeOptions {
 
 export interface PandaRuntimeServices {
   agentStore: AgentStore;
+  bashJobService: BashJobService;
+  browserService: BrowserSessionService;
+  credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
+  watches: WatchStore;
   coordinator: ThreadRuntimeCoordinator;
   extraTools: readonly Tool[];
   pool: Pool;
@@ -71,6 +81,8 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
 
   const resolverContext: PandaDefinitionResolverContext = {
     agentStore: runtime.agentStore,
+    bashJobService: runtime.bashJobService,
+    browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,
     identityStore: runtime.identityStore,
     store: runtime.store,
@@ -83,12 +95,20 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
     resolveDefinition: (thread) => options.resolveDefinition(thread, resolverContext),
     onEvent: options.onEvent,
   });
+  runtime.bashJobService.setBackgroundCompletionHandler(async (record) => {
+    await runtime.store.appendRuntimeMessage(record.threadId, buildBackgroundBashRuntimeMessage(record));
+    await coordinator.wake(record.threadId);
+  });
 
   return {
     agentStore: runtime.agentStore,
+    bashJobService: runtime.bashJobService,
+    browserService: runtime.browserService,
+    credentialResolver: runtime.credentialResolver,
     identityStore: runtime.identityStore,
     store: runtime.store,
     scheduledTasks: runtime.scheduledTasks,
+    watches: runtime.watches,
     coordinator,
     extraTools: runtime.extraTools,
     pool: runtime.pool,

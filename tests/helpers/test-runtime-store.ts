@@ -15,9 +15,12 @@ import {
 } from "../../src/domain/identity/types.js";
 import type {ThreadEnqueueResult, ThreadRuntimeStore} from "../../src/domain/threads/runtime/store.js";
 import {
+    type CreateThreadBashJobInput,
     type CreateThreadInput,
     matchesThreadInputIdentity,
     missingThreadError,
+    type ThreadBashJobRecord,
+    type ThreadBashJobUpdate,
     type ThreadInputDeliveryMode,
     type ThreadInputPayload,
     type ThreadInputRecord,
@@ -133,6 +136,7 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
   readonly identityStore: IdentityStore;
   private readonly threads = new Map<string, TestThreadState>();
   private readonly runs = new Map<string, ThreadRunRecord>();
+  private readonly bashJobs = new Map<string, ThreadBashJobRecord>();
 
   constructor(options: TestThreadRuntimeStoreOptions = {}) {
     this.identityStore = options.identityStore ?? new TestIdentityStore();
@@ -504,6 +508,118 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       .filter((run) => run.status === "running")
       .sort((left, right) => left.startedAt - right.startedAt)
       .map((run) => cloneRecord(run));
+  }
+
+  async createBashJob(input: CreateThreadBashJobInput): Promise<ThreadBashJobRecord> {
+    const thread = this.threads.get(input.threadId);
+    if (!thread) {
+      throw missingThreadError(input.threadId);
+    }
+
+    if (this.bashJobs.has(input.id)) {
+      throw new Error(`Bash job ${input.id} already exists.`);
+    }
+
+    const record: ThreadBashJobRecord = {
+      id: input.id,
+      threadId: input.threadId,
+      runId: input.runId,
+      status: input.status ?? "running",
+      command: input.command,
+      mode: input.mode,
+      initialCwd: input.initialCwd,
+      startedAt: input.startedAt ?? Date.now(),
+      timedOut: input.timedOut ?? false,
+      stdout: input.stdout ?? "",
+      stderr: input.stderr ?? "",
+      stdoutChars: input.stdoutChars ?? 0,
+      stderrChars: input.stderrChars ?? 0,
+      stdoutTruncated: input.stdoutTruncated ?? false,
+      stderrTruncated: input.stderrTruncated ?? false,
+      stdoutPersisted: input.stdoutPersisted ?? false,
+      stderrPersisted: input.stderrPersisted ?? false,
+      stdoutPath: input.stdoutPath,
+      stderrPath: input.stderrPath,
+      trackedEnvKeys: [...(input.trackedEnvKeys ?? [])],
+      statusReason: input.statusReason,
+    };
+
+    thread.thread.updatedAt = Date.now();
+    this.bashJobs.set(record.id, record);
+    return cloneRecord(record);
+  }
+
+  async getBashJob(jobId: string): Promise<ThreadBashJobRecord> {
+    const record = this.bashJobs.get(jobId);
+    if (!record) {
+      throw new Error(`Unknown bash job ${jobId}`);
+    }
+
+    return cloneRecord(record);
+  }
+
+  async listBashJobs(threadId: string): Promise<readonly ThreadBashJobRecord[]> {
+    if (!this.threads.has(threadId)) {
+      throw missingThreadError(threadId);
+    }
+
+    return [...this.bashJobs.values()]
+      .filter((job) => job.threadId === threadId)
+      .sort((left, right) => left.startedAt - right.startedAt)
+      .map((job) => cloneRecord(job));
+  }
+
+  async updateBashJob(jobId: string, update: ThreadBashJobUpdate): Promise<ThreadBashJobRecord> {
+    const record = this.bashJobs.get(jobId);
+    if (!record) {
+      throw new Error(`Unknown bash job ${jobId}`);
+    }
+
+    const next: ThreadBashJobRecord = {
+      ...record,
+      ...update,
+      finalCwd: update.finalCwd === undefined ? record.finalCwd : update.finalCwd ?? undefined,
+      finishedAt: update.finishedAt === undefined ? record.finishedAt : update.finishedAt ?? undefined,
+      durationMs: update.durationMs === undefined ? record.durationMs : update.durationMs ?? undefined,
+      exitCode: update.exitCode === undefined ? record.exitCode : update.exitCode ?? undefined,
+      signal: update.signal === undefined ? record.signal : update.signal ?? undefined,
+      stdoutPath: update.stdoutPath === undefined ? record.stdoutPath : update.stdoutPath ?? undefined,
+      stderrPath: update.stderrPath === undefined ? record.stderrPath : update.stderrPath ?? undefined,
+      trackedEnvKeys: update.trackedEnvKeys === undefined
+        ? record.trackedEnvKeys
+        : [...(update.trackedEnvKeys ?? [])],
+      statusReason: update.statusReason === undefined ? record.statusReason : update.statusReason ?? undefined,
+    };
+
+    this.bashJobs.set(jobId, next);
+    const thread = this.threads.get(record.threadId);
+    if (thread) {
+      thread.thread.updatedAt = Date.now();
+    }
+    return cloneRecord(next);
+  }
+
+  async markRunningBashJobsLost(reason = "Panda runtime restarted before the background bash job finished."): Promise<number> {
+    let count = 0;
+    const finishedAt = Date.now();
+
+    for (const record of this.bashJobs.values()) {
+      if (record.status !== "running") {
+        continue;
+      }
+
+      record.status = "lost";
+      record.finishedAt = finishedAt;
+      record.durationMs = Math.max(0, finishedAt - record.startedAt);
+      record.statusReason = record.statusReason ?? reason;
+      const thread = this.threads.get(record.threadId);
+      if (thread) {
+        thread.thread.updatedAt = finishedAt;
+      }
+      count += 1;
+    }
+
+    return count;
   }
 
   async listPendingInputs(threadId: string): Promise<readonly ThreadInputRecord[]> {

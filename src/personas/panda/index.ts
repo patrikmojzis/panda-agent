@@ -18,11 +18,26 @@ export {
   AgentDocumentTool,
   type AgentDocumentToolOptions,
 } from "./tools/agent-document-tool.js";
+export {
+  AgentSkillTool,
+  type AgentSkillToolOptions,
+} from "./tools/agent-skill-tool.js";
 export {BashTool, type BashToolOptions} from "./tools/bash-tool.js";
+export {
+  BashJobCancelTool,
+  BashJobStatusTool,
+  BashJobWaitTool,
+  buildBashJobPayload,
+  type BashJobToolOptions,
+} from "./tools/bash-job-tools.js";
 export {
   BraveSearchTool,
   type BraveSearchToolOptions,
 } from "./tools/brave-search-tool.js";
+export {
+  BrowserTool,
+  type BrowserToolOptions,
+} from "./tools/browser-tool.js";
 export {
   ClearEnvValueTool,
   SetEnvValueTool,
@@ -40,6 +55,12 @@ export {
   ScheduledTaskUpdateTool,
   type ScheduledTaskToolOptions,
 } from "./tools/scheduled-task-tools.js";
+export {
+  WatchCreateTool,
+  WatchDisableTool,
+  WatchUpdateTool,
+  type WatchToolOptions,
+} from "./tools/watch-tools.js";
 export {
   SpawnSubagentTool,
   type SpawnSubagentToolOptions,

@@ -14,6 +14,9 @@ export interface PandaSubagentRolePolicy {
 
 const exploreAllowedToolNames = new Set([
   "bash",
+  "bash_job_status",
+  "bash_job_wait",
+  "bash_job_cancel",
   "view_media",
   "web_fetch",
   "brave_search",
@@ -25,7 +28,7 @@ export const PANDA_SUBAGENT_ROLE_POLICIES: Record<PandaSubagentRole, PandaSubage
     role: "explore",
     prompt: EXPLORE_SUBAGENT_PROMPT,
     allowedToolNames: exploreAllowedToolNames,
-    visibleContextSections: ["datetime", "environment"],
+    visibleContextSections: ["datetime", "environment", "background_jobs"],
     maySpawnSubagents: false,
   },
 };

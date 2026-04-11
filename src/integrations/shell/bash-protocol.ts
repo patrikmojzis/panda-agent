@@ -63,10 +63,60 @@ export interface BashRunnerExecResponse extends BashExecutionResult {
   ok: true;
 }
 
+export type BashRunnerJobStatus = "running" | "completed" | "failed" | "cancelled";
+
+export interface BashJobSnapshot {
+  jobId: string;
+  status: BashRunnerJobStatus;
+  command: string;
+  initialCwd: string;
+  finalCwd?: string;
+  startedAt: number;
+  finishedAt?: number;
+  durationMs?: number;
+  exitCode?: number | null;
+  signal?: NodeJS.Signals | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  stdoutChars: number;
+  stderrChars: number;
+  stdoutPersisted: boolean;
+  stderrPersisted: boolean;
+  trackedEnvKeys: string[];
+  stdoutPath?: string;
+  stderrPath?: string;
+}
+
+export interface BashRunnerJobStartRequest extends BashExecutorRequest {
+  jobId: string;
+  maxOutputChars: number;
+  persistOutputThresholdChars: number;
+  persistOutputFiles?: boolean;
+}
+
+export interface BashRunnerJobQueryRequest {
+  jobId: string;
+}
+
+export interface BashRunnerJobWaitRequest extends BashRunnerJobQueryRequest {
+  timeoutMs?: number;
+}
+
+export interface BashRunnerJobCancelRequest extends BashRunnerJobQueryRequest {
+  timeoutMs?: number;
+}
+
+export interface BashRunnerJobResponse extends BashJobSnapshot {
+  ok: true;
+}
+
 export interface BashRunnerErrorResponse {
   ok: false;
   error: string;
   details?: JsonObject;
 }
 
-export type BashRunnerResponse = BashRunnerExecResponse | BashRunnerErrorResponse;
+export type BashRunnerResponse = BashRunnerExecResponse | BashRunnerJobResponse | BashRunnerErrorResponse;

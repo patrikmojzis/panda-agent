@@ -174,6 +174,7 @@ export function createDaemonThreadHelpers(
     if (previousHome) {
       await context.runtime.coordinator.abort(previousHome.id, `Reset requested from ${input.source}.`);
       await context.runtime.coordinator.waitForCurrentRun(previousHome.id);
+      await context.runtime.bashJobService.cancelThreadJobs(previousHome.id);
       await context.runtime.store.discardPendingInputs(previousHome.id);
     }
 

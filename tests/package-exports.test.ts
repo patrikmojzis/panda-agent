@@ -69,6 +69,10 @@ const EXPECTED_EXPORTS = {
     types: "./dist/domain/scheduling/tasks/index.d.ts",
     import: "./dist/domain/scheduling/tasks/index.js",
   },
+  "./domain/watches": {
+    types: "./dist/domain/watches/index.d.ts",
+    import: "./dist/domain/watches/index.js",
+  },
   "./integrations/shell": {
     types: "./dist/integrations/shell/index.d.ts",
     import: "./dist/integrations/shell/index.js",

@@ -3,11 +3,13 @@ import {Agent} from "../../kernel/agent/agent.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
 import type {AgentStore} from "../../domain/agents/index.js";
 import type {InferenceProjection, ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
+import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {buildPandaLlmContexts, type PandaLlmContextSection,} from "../../personas/panda/contexts/builder.js";
 import {buildPandaTools} from "../../personas/panda/definition.js";
 import {PANDA_PROMPT} from "../../personas/panda/prompt.js";
 import type {PandaSessionContext} from "../../personas/panda/types.js";
 import type {BashToolOptions} from "../../personas/panda/tools/bash-tool.js";
+import type {BrowserToolOptions} from "../../personas/panda/tools/browser-tool.js";
 import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 
@@ -36,7 +38,9 @@ export interface CreatePandaThreadDefinitionOptions {
   thread: ThreadRecord;
   fallbackContext: Pick<PandaSessionContext, "cwd" | "identityId" | "identityHandle">;
   agentStore?: AgentStore;
+  threadStore?: Pick<ThreadRuntimeStore, "listBashJobs">;
   bashToolOptions?: BashToolOptions;
+  browserToolOptions?: BrowserToolOptions;
   extraTools?: readonly Tool[];
   extraLlmContexts?: readonly LlmContext[];
   llmContextSections?: readonly PandaLlmContextSection[];
@@ -106,8 +110,10 @@ export function createPandaThreadDefinition(
   const llmContexts: LlmContext[] = buildPandaLlmContexts({
     context,
     agentStore: options.agentStore,
+    threadStore: options.threadStore,
     agentKey: options.thread.agentKey,
     identityId: resolvedIdentityId,
+    threadId: options.thread.id,
     sections: options.llmContextSections,
     extraLlmContexts: options.extraLlmContexts,
   });
@@ -118,6 +124,7 @@ export function createPandaThreadDefinition(
       instructions: PANDA_PROMPT,
       tools: buildPandaTools(options.extraTools, {
         bash: options.bashToolOptions,
+        browser: options.browserToolOptions,
       }),
     }),
     context,

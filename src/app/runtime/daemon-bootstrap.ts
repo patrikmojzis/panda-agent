@@ -3,6 +3,7 @@ import {PostgresChannelActionStore} from "../../domain/channels/actions/index.js
 import {PostgresOutboundDeliveryStore} from "../../domain/channels/deliveries/index.js";
 import {HeartbeatRunner} from "../../domain/scheduling/heartbeats/runner.js";
 import {ScheduledTaskRunner} from "../../domain/scheduling/tasks/index.js";
+import {WatchRunner} from "../../domain/watches/index.js";
 import {ConversationRepo} from "../../domain/threads/conversations/repo.js";
 import {PostgresHomeThreadStore} from "../../domain/threads/home/index.js";
 import {PandaRuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
@@ -31,6 +32,7 @@ export interface PandaDaemonContext {
   requests: PandaRuntimeRequestRepo;
   daemonState: PandaDaemonStateRepo;
   scheduledTaskRunner: ScheduledTaskRunner;
+  watchRunner: WatchRunner;
   relationshipHeartbeatRunner: HeartbeatRunner;
 }
 
@@ -78,7 +80,7 @@ export async function bootstrapPandaDaemonContext(
     maxSubagentDepth: options.maxSubagentDepth,
     tablePrefix: options.tablePrefix,
     onEvent: createChannelTypingEventHandler(typingDispatcher),
-    resolveDefinition: async (thread, {agentStore, credentialResolver, identityStore, extraTools}) => {
+    resolveDefinition: async (thread, {agentStore, bashJobService, browserService, credentialResolver, identityStore, store, extraTools}) => {
       const identity = await identityStore.getIdentity(thread.identityId);
       return createPandaThreadDefinition({
         thread,
@@ -88,8 +90,13 @@ export async function bootstrapPandaDaemonContext(
           identityHandle: identity.handle,
         },
         agentStore,
+        threadStore: store,
         bashToolOptions: {
+          jobService: bashJobService,
           credentialResolver,
+        },
+        browserToolOptions: {
+          service: browserService,
         },
         extraTools: [...extraTools, new OutboundTool(), new TelegramReactTool()],
         extraContext: {
@@ -167,6 +174,12 @@ export async function bootstrapPandaDaemonContext(
       threadStore: runtime.store,
       coordinator: runtime.coordinator,
     });
+    const watchRunner = new WatchRunner({
+      watches: runtime.watches,
+      homeThreads,
+      coordinator: runtime.coordinator,
+      credentialResolver: runtime.credentialResolver,
+    });
     const relationshipHeartbeatRunner = new HeartbeatRunner({
       homeThreads,
       coordinator: runtime.coordinator,
@@ -196,6 +209,7 @@ export async function bootstrapPandaDaemonContext(
       requests,
       daemonState,
       scheduledTaskRunner,
+      watchRunner,
       relationshipHeartbeatRunner,
     };
   } catch (error) {

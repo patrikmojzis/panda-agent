@@ -103,6 +103,7 @@ export function createPandaDaemonLifecycle(input: {
         await triggerDrain();
       });
       await input.context.scheduledTaskRunner.start();
+      await input.context.watchRunner.start();
       await input.context.relationshipHeartbeatRunner.start();
       await input.context.runtime.coordinator.recoverOrphanedRuns("Run marked failed before recovery.");
       await triggerDrain();
@@ -122,6 +123,7 @@ export function createPandaDaemonLifecycle(input: {
         requestUnsubscribe = null;
       }
       await input.context.scheduledTaskRunner.stop();
+      await input.context.watchRunner.stop();
       await input.context.relationshipHeartbeatRunner.stop();
       await releaseLock();
       await input.context.runtime.close();

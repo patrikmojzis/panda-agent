@@ -5,6 +5,8 @@ Panda can run `bash` in two modes:
 - `local`: in-process shell execution inside `panda-core`
 - `remote`: `panda-core` calls a runner over HTTP
 
+In both modes, foreground bash mutates the shared shell session and background bash is isolated.
+
 Use remote mode when you want Docker or another sandbox boundary between the core runtime and shell execution.
 
 ## Rule Zero
@@ -30,6 +32,12 @@ In credentials v1, `panda-core` may still send short-lived env values with a sin
 - persisted shell session env
 - explicit `bash.env` values for that call
 
+For remote background jobs, `panda-core` sends the same snapshot precedence at spawn time:
+
+- resolved credentials
+- current foreground shell session env
+- explicit `bash.env` values for that call
+
 Those values exist only for that process execution. The runner does not store them in Postgres, files, or long-lived process env.
 
 That also means the core-to-runner link is sensitive. Keep it private.
@@ -48,6 +56,14 @@ That means:
 - `panda-core` keeps DB creds, provider tokens, and connector secrets
 - `panda-runner-<agent>` executes shell commands
 - the runner should not have DB creds or a network path to Postgres
+
+Background jobs follow the same split:
+
+- Panda starts them explicitly
+- the runner owns the live process
+- Panda stores durable job metadata
+- active jobs can show up in Panda context while they run
+- watcher-owned completions may wake Panda with a runtime note, while `bash_job_status` / `bash_job_wait` remain the explicit control tools
 
 ## Core Env
 
@@ -208,6 +224,39 @@ echo "$PANDA_BASH_EXECUTION_MODE"
 ```
 
 If that is not exactly `remote`, Panda falls back to local in-process bash.
+
+## Remote Background Jobs
+
+Remote mode supports the same background bash interface as local mode:
+
+- start with `bash(background=true)`
+- inspect with `bash_job_status`
+- wait with `bash_job_wait`
+- stop with `bash_job_cancel`
+
+The important rule stays the same:
+
+- remote foreground bash mutates the shared shell session
+- remote background bash does not
+- resetting or replacing the home thread cancels that thread's remote background jobs
+
+Background jobs snapshot cwd and env at spawn time and never merge anything back into the shared shell state.
+
+## Runner Endpoints
+
+Foreground execution still uses:
+
+- `POST /exec`
+- `POST /abort`
+
+Remote background jobs add:
+
+- `POST /jobs/start`
+- `POST /jobs/status`
+- `POST /jobs/wait`
+- `POST /jobs/cancel`
+
+Those endpoints are runner-internal plumbing for Panda core. They are not meant as a public API contract for random clients.
 
 ## Hard Rules
 

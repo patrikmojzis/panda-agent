@@ -9,8 +9,8 @@ export interface AgentWorkspaceDiaryEntry {
 }
 
 export interface AgentWorkspaceSkillEntry {
-  name: string;
-  content: string;
+  skillKey: string;
+  description: string;
 }
 
 export function renderAgentWorkspaceContext(options: {
@@ -52,9 +52,10 @@ ${options.recentDiary.length === 0
   if (options.skills !== undefined) {
     blocks.push(`
 [skills]
+Summaries only. Query \`panda_agent_skills\` for full skill bodies when you need the exact content.
 ${options.skills.length === 0
     ? "(none)"
-    : options.skills.map((entry) => `${entry.name}\n${entry.content}`).join("\n\n")}
+    : options.skills.map((entry) => `${entry.skillKey}\n${entry.description}`).join("\n\n")}
 `.trim());
   }
 

@@ -3,6 +3,7 @@ import type {
     AgentDocumentRecord,
     AgentDocumentSlug,
     AgentRecord,
+    AgentSkillRecord,
     BootstrapAgentInput,
     RelationshipDocumentRecord,
     RelationshipDocumentSlug,
@@ -13,6 +14,10 @@ export interface AgentStore {
   bootstrapAgent(input: BootstrapAgentInput): Promise<AgentRecord>;
   getAgent(agentKey: string): Promise<AgentRecord>;
   listAgents(): Promise<readonly AgentRecord[]>;
+  listAgentSkills(agentKey: string): Promise<readonly AgentSkillRecord[]>;
+  readAgentSkill(agentKey: string, skillKey: string): Promise<AgentSkillRecord | null>;
+  setAgentSkill(agentKey: string, skillKey: string, description: string, content: string): Promise<AgentSkillRecord>;
+  deleteAgentSkill(agentKey: string, skillKey: string): Promise<boolean>;
   readAgentDocument(agentKey: string, slug: AgentDocumentSlug): Promise<AgentDocumentRecord | null>;
   setAgentDocument(agentKey: string, slug: AgentDocumentSlug, content: string): Promise<AgentDocumentRecord>;
   transformAgentDocument(agentKey: string, slug: AgentDocumentSlug, expression: string): Promise<AgentDocumentRecord>;

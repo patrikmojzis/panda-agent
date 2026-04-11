@@ -9,6 +9,7 @@ import {
 } from "../../domain/credentials/index.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import {PostgresScheduledTaskStore, type ScheduledTaskStore,} from "../../domain/scheduling/tasks/index.js";
+import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.js";
 import {PostgresHomeThreadStore} from "../../domain/threads/home/index.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/index.js";
 import {
@@ -19,6 +20,8 @@ import {ensureReadonlyChatQuerySchema, readDatabaseUsername,} from "../../domain
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import {AgentDocumentTool} from "../../personas/panda/tools/agent-document-tool.js";
+import {AgentSkillTool} from "../../personas/panda/tools/agent-skill-tool.js";
+import {BrowserSessionService} from "../../personas/panda/tools/browser-service.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../personas/panda/tools/env-value-tools.js";
 import {PostgresReadonlyQueryTool} from "../../personas/panda/tools/postgres-readonly-query-tool.js";
 import {
@@ -26,8 +29,10 @@ import {
     ScheduledTaskCreateTool,
     ScheduledTaskUpdateTool,
 } from "../../personas/panda/tools/scheduled-task-tools.js";
+import {WatchCreateTool, WatchDisableTool, WatchUpdateTool,} from "../../personas/panda/tools/watch-tools.js";
 import {SpawnSubagentTool} from "../../personas/panda/tools/spawn-subagent-tool.js";
 import {PandaSubagentService} from "../../personas/panda/subagents/service.js";
+import {BashJobService} from "../../integrations/shell/bash-job-service.js";
 import {createPandaPool} from "./database.js";
 import type {PandaRuntimeOptions} from "./create-runtime.js";
 
@@ -46,16 +51,21 @@ export interface RuntimeBootstrapOptions extends Omit<PandaRuntimeOptions, "dbUr
 
 export interface RuntimeBootstrapResult {
   agentStore: AgentStore;
+  bashJobService: BashJobService;
+  browserService: BrowserSessionService;
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
+  watches: WatchStore;
   extraTools: readonly Tool[];
   pool: Pool;
   close(): Promise<void>;
 }
 
 function createCloseRuntime(options: {
+  bashJobService: BashJobService | null;
+  browserService: BrowserSessionService | null;
   postgresPool: Pool;
   readonlyPool: Pool | null;
   notificationClient: PoolClient | null;
@@ -63,6 +73,9 @@ function createCloseRuntime(options: {
   notificationHandler: ((message: { channel: string; payload?: string }) => void) | null;
 }): () => Promise<void> {
   return async () => {
+    await options.browserService?.close().catch(() => undefined);
+    await options.bashJobService?.close().catch(() => undefined);
+
     if (options.notificationClient && options.notificationHandler && options.notificationChannel) {
       options.notificationClient.off("notification", options.notificationHandler);
       try {
@@ -90,6 +103,7 @@ export async function bootstrapPandaRuntime(
   let notificationClient: PoolClient | null = null;
   let notificationHandler: ((message: { channel: string; payload?: string }) => void) | null = null;
   let notificationChannel: string | null = null;
+  let browserService: BrowserSessionService | null = null;
   const maxSubagentDepth = options.maxSubagentDepth ?? 1;
 
   const postgresPool = createPandaPool(options.dbUrl);
@@ -100,6 +114,14 @@ export async function bootstrapPandaRuntime(
       tablePrefix: options.tablePrefix,
     });
     await store.ensureSchema();
+    await store.markRunningBashJobsLost();
+    const bashJobService = new BashJobService({
+      store,
+    });
+    browserService = new BrowserSessionService({
+      env: process.env,
+    });
+    const resolvedBrowserService = browserService;
 
     const identityStore = store.identityStore;
     const agentStore = new PostgresAgentStore({
@@ -132,6 +154,12 @@ export async function bootstrapPandaRuntime(
     });
     await scheduledTasks.ensureSchema();
 
+    const watches = new PostgresWatchStore({
+      pool: postgresPool,
+      tablePrefix: options.tablePrefix,
+    });
+    await watches.ensureSchema();
+
     await new PostgresHomeThreadStore({
       pool: postgresPool,
       tablePrefix: options.tablePrefix,
@@ -152,6 +180,8 @@ export async function bootstrapPandaRuntime(
       store,
       resolveDefinition: (thread) => options.resolveDefinition(thread, {
         agentStore,
+        bashJobService,
+        browserService: resolvedBrowserService,
         credentialResolver,
         identityStore,
         store,
@@ -166,6 +196,9 @@ export async function bootstrapPandaRuntime(
         service: subagentService,
       }),
       new AgentDocumentTool({
+        store: agentStore,
+      }),
+      new AgentSkillTool({
         store: agentStore,
       }),
       ...(credentialService
@@ -189,6 +222,15 @@ export async function bootstrapPandaRuntime(
       }),
       new ScheduledTaskCancelTool({
         store: scheduledTasks,
+      }),
+      new WatchCreateTool({
+        store: watches,
+      }),
+      new WatchUpdateTool({
+        store: watches,
+      }),
+      new WatchDisableTool({
+        store: watches,
       }),
     ];
 
@@ -214,13 +256,18 @@ export async function bootstrapPandaRuntime(
 
     return {
       agentStore,
+      bashJobService,
+      browserService: resolvedBrowserService,
       credentialResolver,
       identityStore,
       store,
       scheduledTasks,
+      watches,
       extraTools,
       pool: postgresPool,
       close: createCloseRuntime({
+        bashJobService,
+        browserService: resolvedBrowserService,
         postgresPool,
         readonlyPool,
         notificationClient,
@@ -230,6 +277,8 @@ export async function bootstrapPandaRuntime(
     };
   } catch (error) {
     await createCloseRuntime({
+      bashJobService: null,
+      browserService,
       postgresPool,
       readonlyPool,
       notificationClient,

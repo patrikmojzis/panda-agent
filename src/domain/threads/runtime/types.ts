@@ -173,3 +173,73 @@ export interface ThreadRunRecord {
   abortRequestedAt?: number;
   abortReason?: string;
 }
+
+export type ThreadBashJobStatus = "running" | "completed" | "failed" | "cancelled" | "lost";
+export type ThreadBashJobMode = "local" | "remote";
+
+export interface ThreadBashJobRecord {
+  id: string;
+  threadId: string;
+  runId?: string;
+  status: ThreadBashJobStatus;
+  command: string;
+  mode: ThreadBashJobMode;
+  initialCwd: string;
+  finalCwd?: string;
+  startedAt: number;
+  finishedAt?: number;
+  durationMs?: number;
+  exitCode?: number | null;
+  signal?: NodeJS.Signals | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+  stdoutChars: number;
+  stderrChars: number;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  stdoutPersisted: boolean;
+  stderrPersisted: boolean;
+  stdoutPath?: string;
+  stderrPath?: string;
+  trackedEnvKeys: string[];
+  statusReason?: string;
+}
+
+export interface CreateThreadBashJobInput {
+  id: string;
+  threadId: string;
+  runId?: string;
+  status?: ThreadBashJobStatus;
+  command: string;
+  mode: ThreadBashJobMode;
+  initialCwd: string;
+  startedAt?: number;
+  timedOut?: boolean;
+  stdout?: string;
+  stderr?: string;
+  stdoutChars?: number;
+  stderrChars?: number;
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
+  stdoutPersisted?: boolean;
+  stderrPersisted?: boolean;
+  stdoutPath?: string;
+  stderrPath?: string;
+  trackedEnvKeys?: string[];
+  statusReason?: string;
+}
+
+export type ThreadBashJobUpdate = Partial<
+  Omit<CreateThreadBashJobInput, "id" | "threadId" | "command" | "mode" | "stdoutPath" | "stderrPath" | "trackedEnvKeys" | "statusReason">
+> & {
+  finalCwd?: string | null;
+  finishedAt?: number | null;
+  durationMs?: number | null;
+  exitCode?: number | null;
+  signal?: NodeJS.Signals | null;
+  stdoutPath?: string | null;
+  stderrPath?: string | null;
+  trackedEnvKeys?: string[] | null;
+  statusReason?: string | null;
+};

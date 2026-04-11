@@ -1,8 +1,14 @@
+import {mkdtemp, rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import path from "node:path";
+
 import {describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 
 import {
     Agent,
+    BashJobWaitTool,
+    BashTool,
     Hook,
     type LlmRuntime,
     type RunContext,
@@ -15,6 +21,8 @@ import {
     type ToolResultPayload,
     z,
 } from "../src/index.js";
+import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
+import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 class EchoTool extends Tool<typeof EchoTool.schema> {
   name = "echo";
@@ -243,6 +251,133 @@ describe("Thread", () => {
       "end",
       "postflight",
     ]);
+  });
+
+  it("can start background bash, do more work, then wait on it", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "panda-thread-bg-"));
+    try {
+      const store = new TestThreadRuntimeStore();
+      await store.createThread({
+        id: "thread-bg",
+        agentKey: "panda",
+      });
+      const service = new BashJobService({ store });
+      let turn = 0;
+      const runtime: LlmRuntime = {
+        complete: vi.fn().mockImplementation(async (request) => {
+          turn += 1;
+          if (turn === 1) {
+            return createAssistantMessage([
+              {
+                type: "toolCall",
+                id: "call_bg",
+                name: "bash",
+                arguments: {
+                  command: "sleep 0.2 && printf hello",
+                  background: true,
+                },
+              },
+            ]);
+          }
+
+          if (turn === 2) {
+            return createAssistantMessage([
+              {
+                type: "toolCall",
+                id: "call_echo",
+                name: "echo",
+                arguments: { message: "other work" },
+              },
+            ]);
+          }
+
+          if (turn === 3) {
+            const jobId = (await store.listBashJobs("thread-bg"))[0]?.id ?? "";
+
+            return createAssistantMessage([
+              {
+                type: "toolCall",
+                id: "call_wait",
+                name: "bash_job_wait",
+                arguments: {
+                  jobId,
+                  timeoutMs: 1_000,
+                },
+              },
+            ]);
+          }
+
+          return message("done");
+        }),
+        stream: vi.fn(() => {
+          throw new Error("Streaming was not expected in this test");
+        }),
+      };
+
+      const thread = new Thread({
+        agent: new Agent({
+          name: "bg-thread-agent",
+          instructions: "Use the tools.",
+          tools: [
+            new BashTool({
+              outputDirectory: path.join(workspace, "tool-results"),
+              jobService: service,
+            }),
+            new BashJobWaitTool({ service }),
+            new EchoTool(),
+          ],
+        }),
+        messages: [stringToUserMessage("do the job")],
+        runtime,
+        context: {
+          threadId: "thread-bg",
+          cwd: workspace,
+          shell: {
+            cwd: workspace,
+            env: {},
+          },
+        },
+      });
+
+      const outputs: ThreadRunEvent[] = [];
+      for await (const output of thread.run()) {
+        outputs.push(output);
+      }
+
+      expect(outputs.map(eventKind)).toEqual([
+        "assistant",
+        "toolResult",
+        "assistant",
+        "toolResult",
+        "assistant",
+        "toolResult",
+        "assistant",
+      ]);
+      expect(outputs[1]).toMatchObject({
+        role: "toolResult",
+        toolName: "bash",
+        details: {
+          status: "running",
+        },
+      });
+      expect(outputs[3]).toMatchObject({
+        role: "toolResult",
+        toolName: "echo",
+        details: {
+          echoed: "other work",
+        },
+      });
+      expect(outputs[5]).toMatchObject({
+        role: "toolResult",
+        toolName: "bash_job_wait",
+        details: {
+          status: "completed",
+          stdout: "hello",
+        },
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 
   it("parses structured output with zod", async () => {

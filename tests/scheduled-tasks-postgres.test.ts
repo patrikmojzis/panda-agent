@@ -4,6 +4,7 @@ import {DataType, newDb} from "pg-mem";
 import {ensureReadonlyChatQuerySchema, PostgresThreadRuntimeStore,} from "../src/domain/threads/runtime/index.js";
 import {PostgresHomeThreadStore} from "../src/domain/threads/home/index.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
+import {PostgresWatchStore} from "../src/domain/watches/index.js";
 
 class PgMemReadonlySchemaQueryable {
   constructor(
@@ -43,7 +44,7 @@ class PgMemReadonlySchemaQueryable {
         continue;
       }
 
-      if (/^CREATE VIEW "panda_(messages_raw|messages|tool_results|inputs|runs)"/i.test(statement)) {
+      if (/^CREATE VIEW "panda_(messages_raw|messages|tool_results|inputs|runs|agent_skills)"/i.test(statement)) {
         continue;
       }
 
@@ -81,6 +82,59 @@ class PgMemReadonlySchemaQueryable {
           FROM "thread_runtime_scheduled_task_runs" AS scheduled_task_runs
           WHERE scheduled_task_runs.identity_id = current_setting('panda.identity_id', true)
             AND scheduled_task_runs.agent_key = current_setting('panda.agent_key', true)
+        `);
+        continue;
+      }
+
+      if (/^CREATE VIEW "panda_watches"/i.test(statement)) {
+        await this.pool.query(`
+          CREATE VIEW "panda_watches" AS
+          SELECT
+            watch.id,
+            watch.identity_id,
+            watch.agent_key,
+            CASE
+              WHEN watch.target_kind = 'thread' THEN watch.target_thread_id
+              ELSE home_threads.thread_id
+            END AS resolved_thread_id
+          FROM "thread_runtime_watches" AS watch
+          LEFT JOIN "thread_runtime_home_threads" AS home_threads
+            ON home_threads.identity_id = watch.identity_id
+          WHERE watch.identity_id = current_setting('panda.identity_id', true)
+            AND watch.agent_key = current_setting('panda.agent_key', true)
+        `);
+        continue;
+      }
+
+      if (/^CREATE VIEW "panda_watch_runs"/i.test(statement)) {
+        await this.pool.query(`
+          CREATE VIEW "panda_watch_runs" AS
+          SELECT
+            watch_runs.id,
+            watch_runs.watch_id,
+            watch_runs.identity_id,
+            watch_runs.agent_key,
+            watch_runs.status,
+            watch_runs.created_at
+          FROM "thread_runtime_watch_runs" AS watch_runs
+          WHERE watch_runs.identity_id = current_setting('panda.identity_id', true)
+            AND watch_runs.agent_key = current_setting('panda.agent_key', true)
+        `);
+        continue;
+      }
+
+      if (/^CREATE VIEW "panda_watch_events"/i.test(statement)) {
+        await this.pool.query(`
+          CREATE VIEW "panda_watch_events" AS
+          SELECT
+            watch_events.id,
+            watch_events.watch_id,
+            watch_events.identity_id,
+            watch_events.agent_key,
+            watch_events.created_at
+          FROM "thread_runtime_watch_events" AS watch_events
+          WHERE watch_events.identity_id = current_setting('panda.identity_id', true)
+            AND watch_events.agent_key = current_setting('panda.agent_key', true)
         `);
         continue;
       }
@@ -242,6 +296,7 @@ describe("PostgresScheduledTaskStore", () => {
     await threadStore.ensureSchema();
     const scheduledTasks = new PostgresScheduledTaskStore({pool});
     await scheduledTasks.ensureSchema();
+    await new PostgresWatchStore({pool}).ensureSchema();
     const homeThreads = new PostgresHomeThreadStore({pool});
     await homeThreads.ensureSchema();
 

@@ -1,6 +1,3 @@
-import {readdir, readFile} from "node:fs/promises";
-import path from "node:path";
-
 import {LlmContext} from "../../../kernel/agent/llm-context.js";
 import {
     type AgentWorkspaceDiaryEntry,
@@ -9,12 +6,10 @@ import {
     renderAgentWorkspaceContext,
 } from "../../../prompts/contexts/agent-workspace.js";
 import type {AgentStore} from "../../../domain/agents/store.js";
-import {resolvePandaSkillsDir} from "../../../app/runtime/data-dir.js";
 
 // Heartbeat guidance should only show up on heartbeat wakes, not in every normal run.
 const AGENT_DOC_SLUGS = ["agent", "soul", "playbook"] as const;
 const RELATIONSHIP_DOC_SLUG = "memory";
-const SKILL_FILENAMES = ["skill.md", "SKILL.md"] as const;
 
 export type AgentMemoryContextSection =
   | "agent_docs"
@@ -26,50 +21,7 @@ export interface AgentMemoryContextOptions {
   store: AgentStore;
   agentKey: string;
   identityId: string;
-  skillsDir?: string;
   sections?: readonly AgentMemoryContextSection[];
-}
-
-async function readFirstExistingSkillFile(skillDir: string): Promise<string | null> {
-  for (const fileName of SKILL_FILENAMES) {
-    try {
-      return await readFile(path.join(skillDir, fileName), "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
-        throw error;
-      }
-    }
-  }
-
-  return null;
-}
-
-async function readSkillEntries(skillsDir: string): Promise<Array<{ name: string; content: string }>> {
-  try {
-    const entries = await readdir(skillsDir, { withFileTypes: true });
-    const loaded = await Promise.all(entries
-      .filter((entry) => entry.isDirectory())
-      .map(async (entry) => {
-        const content = await readFirstExistingSkillFile(path.join(skillsDir, entry.name));
-        if (content === null) {
-          return null;
-        }
-
-        return {
-          name: entry.name,
-          content,
-        };
-      }));
-
-    return loaded.filter((entry): entry is { name: string; content: string } => entry !== null)
-      .sort((left, right) => left.name.localeCompare(right.name));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
-      return [];
-    }
-
-    throw error;
-  }
 }
 
 export class AgentMemoryContext extends LlmContext {
@@ -124,9 +76,10 @@ export class AgentMemoryContext extends LlmContext {
     }
 
     if (sections.has("skills")) {
-      skills = await readSkillEntries(
-        this.options.skillsDir ?? resolvePandaSkillsDir(this.options.agentKey),
-      );
+      skills = (await this.options.store.listAgentSkills(this.options.agentKey)).map((record) => ({
+        skillKey: record.skillKey,
+        description: record.description,
+      }));
     }
 
     return renderAgentWorkspaceContext({
