@@ -1,7 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {stringToUserMessage} from "../src/kernel/agent/index.js";
-import type {ThreadRunRecord} from "../src/domain/threads/runtime/index.js";
+import {createCompactBoundaryMessage, type ThreadRunRecord} from "../src/domain/threads/runtime/index.js";
 import * as markdown from "../src/ui/tui/markdown.js";
 import {buildChatHelpText} from "../src/ui/tui/chat-commands.js";
 import {buildChatViewModel, buildWelcomeTranscriptLines} from "../src/ui/tui/chat-view.js";
@@ -10,6 +10,7 @@ import * as tuiRuntime from "../src/ui/tui/runtime.js";
 import {stripAnsi} from "../src/ui/tui/theme.js";
 import {createComposerState, setComposerValue} from "../src/ui/tui/composer.js";
 import {PandaChatApp, runChatCli} from "../src/ui/tui/chat.js";
+import {collectThreadUsageSnapshot, formatThreadUsageSnapshot,} from "../src/ui/tui/usage-summary.js";
 
 type AppHarness = {
   closed: boolean;
@@ -27,6 +28,66 @@ function flushTimers(): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, 0);
   });
+}
+
+function assistantWithUsage(
+  text: string,
+  overrides: Partial<{
+    provider: string;
+    model: string;
+    usage: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+      totalTokens: number;
+      cost: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+        total: number;
+      };
+    };
+  }> = {},
+) {
+  return {
+    role: "assistant" as const,
+    content: [{type: "text" as const, text}],
+    api: "openai-responses" as const,
+    provider: overrides.provider ?? "anthropic",
+    model: overrides.model ?? "claude-opus-4-6",
+    usage: overrides.usage ?? {
+      input: 3,
+      output: 42,
+      cacheRead: 120,
+      cacheWrite: 180,
+      totalTokens: 345,
+      cost: {
+        input: 0.001,
+        output: 0.010,
+        cacheRead: 0.005,
+        cacheWrite: 0.007,
+        total: 0.023,
+      },
+    },
+    stopReason: "stop" as const,
+    timestamp: Date.now(),
+  };
+}
+
+function imageToolResult(data = "abcd".repeat(200)) {
+  return {
+    role: "toolResult" as const,
+    toolCallId: "tool-call-1",
+    toolName: "browser",
+    content: [
+      {type: "text" as const, text: "Stored screenshot"},
+      {type: "image" as const, data, mimeType: "image/png"},
+    ],
+    isError: false,
+    timestamp: Date.now(),
+  };
 }
 
 describe("PandaChatApp Ctrl-C handling", () => {
@@ -539,6 +600,184 @@ describe("PandaChatApp compact command", () => {
   });
 });
 
+describe("thread usage snapshots", () => {
+  it("separates stored transcript bloat from the current model-visible context", () => {
+    const compactBoundary = createCompactBoundaryMessage("Intent:\n- keep going");
+    const thread = {
+      id: "thread-usage",
+      identityId: "local",
+      agentKey: "panda",
+      model: "anthropic/claude-opus-4-6",
+      thinking: "high" as const,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const transcript = [
+      {
+        id: "message-1",
+        threadId: "thread-usage",
+        sequence: 1,
+        origin: "input" as const,
+        source: "tui",
+        message: stringToUserMessage("old request"),
+        createdAt: 1,
+      },
+      {
+        id: "message-2",
+        threadId: "thread-usage",
+        sequence: 2,
+        origin: "runtime" as const,
+        source: "tool:browser",
+        message: imageToolResult(),
+        createdAt: 2,
+      },
+      {
+        id: "message-3",
+        threadId: "thread-usage",
+        sequence: 3,
+        origin: "runtime" as const,
+        source: "assistant",
+        message: assistantWithUsage("old reply"),
+        createdAt: 3,
+      },
+      {
+        id: "message-4",
+        threadId: "thread-usage",
+        sequence: 4,
+        origin: "runtime" as const,
+        source: "compact",
+        message: compactBoundary,
+        metadata: {
+          kind: "compact_boundary",
+          compactedUpToSequence: 3,
+          preservedTailUserTurns: 2,
+          trigger: "manual",
+          tokensBefore: 1_200,
+          tokensAfter: 400,
+        },
+        createdAt: 4,
+      },
+      {
+        id: "message-5",
+        threadId: "thread-usage",
+        sequence: 5,
+        origin: "input" as const,
+        source: "tui",
+        message: stringToUserMessage("recent request"),
+        createdAt: 5,
+      },
+      {
+        id: "message-6",
+        threadId: "thread-usage",
+        sequence: 6,
+        origin: "runtime" as const,
+        source: "assistant",
+        message: assistantWithUsage("recent reply", {
+          usage: {
+            input: 4,
+            output: 21,
+            cacheRead: 80,
+            cacheWrite: 90,
+            totalTokens: 195,
+            cost: {
+              input: 0.001,
+              output: 0.005,
+              cacheRead: 0.002,
+              cacheWrite: 0.003,
+              total: 0.011,
+            },
+          },
+        }),
+        createdAt: 6,
+      },
+    ];
+
+    const snapshot = collectThreadUsageSnapshot({
+      thread,
+      transcript,
+      model: thread.model,
+      thinking: thread.thinking,
+      isRunning: false,
+      now: 10,
+    });
+    const formatted = formatThreadUsageSnapshot(snapshot);
+
+    expect(snapshot.storedMessages).toBe(6);
+    expect(snapshot.runMessages).toBe(3);
+    expect(snapshot.visibleMessages).toBe(3);
+    expect(snapshot.storedImages.count).toBe(1);
+    expect(snapshot.visibleImages.count).toBe(0);
+    expect(snapshot.totalUsage.responses).toBe(2);
+    expect(snapshot.totalUsage.totalTokens).toBe(540);
+    expect(snapshot.latestCompaction).toMatchObject({
+      trigger: "manual",
+      tokensBefore: 1_200,
+      tokensAfter: 400,
+    });
+    expect(formatted).toContain("## Context");
+    expect(formatted).toContain("**Stored thread:** 6 msgs");
+    expect(formatted).toContain("**Inline images:** stored 1");
+    expect(formatted).toContain("**Last compaction:** manual");
+    expect(formatted).toContain("**Thread total:** 2 responses");
+  });
+});
+
+describe("PandaChatApp usage command", () => {
+  it("shows a usage snapshot for the current thread", async () => {
+    const thread = {
+      id: "thread-usage",
+      identityId: "local",
+      agentKey: "panda",
+      model: "anthropic/claude-opus-4-6",
+      thinking: "high" as const,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const getThread = vi.fn(async () => thread);
+    const loadTranscript = vi.fn(async () => [
+      {
+        id: "message-1",
+        threadId: "thread-usage",
+        sequence: 1,
+        origin: "input" as const,
+        source: "tui",
+        message: stringToUserMessage("hello"),
+        createdAt: 1,
+      },
+      {
+        id: "message-2",
+        threadId: "thread-usage",
+        sequence: 2,
+        origin: "runtime" as const,
+        source: "assistant",
+        message: assistantWithUsage("hi"),
+        createdAt: 2,
+      },
+    ]);
+    const app = new PandaChatApp() as any;
+
+    app.currentThreadId = "thread-usage";
+    app.currentThread = thread;
+    app.model = thread.model;
+    app.thinking = thread.thinking;
+    app.services = {
+      getThread,
+      store: {
+        loadTranscript,
+      },
+    } as ChatRuntimeServices;
+
+    await expect(app.handleCommand("/usage")).resolves.toBe(true);
+    expect(getThread).toHaveBeenCalledWith("thread-usage");
+    expect(loadTranscript).toHaveBeenCalledWith("thread-usage");
+    expect(app.transcript.at(-1)).toMatchObject({
+      role: "meta",
+      title: "usage",
+      body: expect.stringContaining("## Provider Usage"),
+    });
+  });
+});
+
 describe("PandaChatApp performance helpers", () => {
   it("reuses cached transcript lines for unchanged assistant entries", () => {
     const renderMarkdownLines = vi.spyOn(markdown, "renderMarkdownLines");
@@ -559,6 +798,32 @@ describe("PandaChatApp performance helpers", () => {
     app.transcript[0].body = "**updated**";
     app.buildView();
     expect(renderMarkdownLines).toHaveBeenCalledTimes(2);
+
+    renderMarkdownLines.mockRestore();
+  });
+
+  it("renders usage meta entries through the markdown renderer", () => {
+    const renderMarkdownLines = vi.spyOn(markdown, "renderMarkdownLines");
+    const app = new PandaChatApp() as any;
+
+    app.transcript.push({
+      id: 1,
+      role: "meta",
+      title: "usage",
+      body: "## Context\n- **Visible now:** 26 msgs",
+    });
+    app.transcript.push({
+      id: 2,
+      role: "meta",
+      title: "session",
+      body: "Resumed thread thread-123.",
+    });
+    app.nextEntryId = 3;
+
+    const view = app.buildView();
+
+    expect(renderMarkdownLines).toHaveBeenCalledTimes(1);
+    expect(view.transcriptLines.some((line: { plain: string }) => line.plain.includes("**Visible now:**"))).toBe(false);
 
     renderMarkdownLines.mockRestore();
   });
@@ -718,6 +983,7 @@ describe("buildChatHelpText", () => {
     const helpText = buildChatHelpText("/thinking <minimal|low|medium|high|xhigh|off>");
 
     expect(helpText).toContain("/thread shows the current thread id and active session settings.");
+    expect(helpText).toContain("/usage shows current context estimates, provider token usage, and cost.");
     expect(helpText).not.toContain("/thread shows the current thread id and storage mode.");
     expect(helpText).toContain("\\ + Enter inserts a newline.");
     expect(helpText).toContain("Shift-Enter or Meta-Enter also inserts a newline when your terminal exposes it.");

@@ -34,7 +34,10 @@ export interface ThreadRuntimeStore {
   discardPendingInputs(threadId: string): Promise<number>;
   hasPendingInputs(threadId: string): Promise<boolean>;
   hasRunnableInputs(threadId: string): Promise<boolean>;
+  hasPendingWake(threadId: string): Promise<boolean>;
   promoteQueuedInputs(threadId?: string): Promise<readonly string[]>;
+  requestWake(threadId: string): Promise<void>;
+  consumePendingWake(threadId: string): Promise<boolean>;
   appendRuntimeMessage(
     threadId: string,
     payload: ThreadRuntimeMessagePayload,

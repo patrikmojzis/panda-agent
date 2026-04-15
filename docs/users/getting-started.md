@@ -12,9 +12,9 @@ You need:
 
 Current reality:
 
-- browser v1 is a default built-in
-- `panda run` talks to Docker during startup cleanup
-- if Docker is missing or dead, runtime startup fails before chat even starts
+- browser is a default built-in
+- Docker is only needed when you actually use the browser tool
+- the first browser action starts the Playwright container lazily
 
 If Postgres is not ready yet, fix that first:
 

@@ -110,7 +110,7 @@ describe("Panda feature surface", () => {
   it("resolves a remote initial cwd only in remote mode", () => {
     vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
 
-    expect(resolveRemoteInitialCwd("jozef")).toBe("/root/.panda/agents/jozef");
+    expect(resolveRemoteInitialCwd("jozef")).toBeNull();
 
     vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "local");
 

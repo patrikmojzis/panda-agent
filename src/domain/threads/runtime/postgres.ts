@@ -404,6 +404,17 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     return result.rows.length > 0;
   }
 
+  async hasPendingWake(threadId: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `SELECT 1 FROM ${this.tables.threads}
+       WHERE id = $1 AND pending_wake_at IS NOT NULL
+       LIMIT 1`,
+      [threadId],
+    );
+
+    return result.rows.length > 0;
+  }
+
   async promoteQueuedInputs(threadId?: string): Promise<readonly string[]> {
     return promoteQueuedThreadInputs({
       pool: this.pool,
@@ -412,6 +423,37 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       touchThread: (id, queryable) => this.touchThread(id, queryable),
       notifyThreadChanged: (id, queryable) => this.notifyThreadChanged(id, queryable),
     });
+  }
+
+  async requestWake(threadId: string): Promise<void> {
+    const result = await this.pool.query(
+      `UPDATE ${this.tables.threads}
+       SET pending_wake_at = COALESCE(pending_wake_at, NOW())
+       WHERE id = $1
+       RETURNING id`,
+      [threadId],
+    );
+    if (result.rows.length === 0) {
+      throw missingThreadError(threadId);
+    }
+
+    await this.notifyThreadChanged(threadId);
+  }
+
+  async consumePendingWake(threadId: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE ${this.tables.threads}
+       SET pending_wake_at = NULL
+       WHERE id = $1 AND pending_wake_at IS NOT NULL
+       RETURNING id`,
+      [threadId],
+    );
+    if (result.rows.length > 0) {
+      return true;
+    }
+
+    await this.getThread(threadId);
+    return false;
   }
 
   async appendRuntimeMessage(

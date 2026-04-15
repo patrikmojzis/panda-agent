@@ -114,7 +114,9 @@ export function hasOpenAiApiKey(env: NodeJS.ProcessEnv = process.env): boolean {
 
 export class WhisperTool<TContext = PandaSessionContext> extends Tool<typeof WhisperTool.schema, TContext> {
   static schema = z.object({
-    path: z.string().trim().min(1).describe("Absolute path or path relative to the current working directory."),
+    path: z.string().trim().min(1).describe(
+      "Absolute path or path relative to the current working directory. In remote bash mode, agent-home runner paths are translated automatically.",
+    ),
     language: z.string().trim().min(1).optional().describe("Optional ISO language code like 'en' or 'sk'."),
     prompt: z.string().trim().min(1).optional().describe("Optional prompt to bias tricky names, slang, or jargon."),
   });

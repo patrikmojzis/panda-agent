@@ -2,9 +2,9 @@ import type {Message} from "@mariozechner/pi-ai";
 
 import {isCompactBoundaryRecord} from "./compaction.js";
 import type {
-  InferenceProjection,
-  InferenceProjectionRule,
-  ThreadMessageRecord,
+    InferenceProjection,
+    InferenceProjectionRule,
+    ThreadMessageRecord,
 } from "../../domain/threads/runtime/types.js";
 
 interface RuleWindow {
@@ -363,4 +363,16 @@ export function projectTranscriptForInference(
   }
 
   return hasActiveRule ? pruneDanglingToolResults(projected) : projected;
+}
+
+export function applyImageProjectionForInference(
+  transcript: readonly ThreadMessageRecord[],
+  rule?: InferenceProjectionRule,
+  now = Date.now(),
+): readonly ThreadMessageRecord[] {
+  if (!rule) {
+    return transcript;
+  }
+
+  return applyDropImages(transcript, rule, now);
 }

@@ -2,11 +2,12 @@ import type {ToolResultMessage} from "@mariozechner/pi-ai";
 import {z} from "zod";
 
 import type {RunContext} from "../../../kernel/agent/run-context.js";
+import {stripToolArtifactInlineImages} from "../../../kernel/agent/tool-artifacts.js";
 import {formatToolResultFallback, Tool} from "../../../kernel/agent/tool.js";
 import type {JsonValue, ToolResultPayload} from "../../../kernel/agent/types.js";
 import type {PandaSessionContext} from "../types.js";
 import {BrowserSessionService, getDefaultBrowserSessionService} from "./browser-service.js";
-import type {BrowserAction, BrowserLoadState} from "./browser-types.js";
+import type {BrowserAction, BrowserLoadState, BrowserSnapshotMode} from "./browser-types.js";
 
 function httpUrlSchema(fieldName = "url"): z.ZodString {
   return z.string().trim().url().superRefine((value, ctx) => {
@@ -45,6 +46,7 @@ function requireRefOrSelector(
 }
 
 const browserLoadStateSchema = z.enum(["load", "domcontentloaded", "networkidle"]) satisfies z.ZodType<BrowserLoadState>;
+const browserSnapshotModeSchema = z.enum(["compact", "full"]) satisfies z.ZodType<BrowserSnapshotMode>;
 
 export interface BrowserToolService<TContext = PandaSessionContext> {
   handle(action: BrowserAction, run: RunContext<TContext>): Promise<ToolResultPayload>;
@@ -100,6 +102,8 @@ export class BrowserTool<TContext = PandaSessionContext>
     script: z.string().trim().min(1).optional(),
     arg: z.unknown().optional(),
     fullPage: z.boolean().optional(),
+    labels: z.boolean().optional(),
+    snapshotMode: browserSnapshotModeSchema.optional(),
     timeoutMs: optionalTimeoutSchema(),
   }).superRefine((value, ctx) => {
     switch (value.action) {
@@ -169,6 +173,12 @@ export class BrowserTool<TContext = PandaSessionContext>
         }
         return;
       case "screenshot":
+        if (value.labels && (value.ref?.trim() || value.selector?.trim())) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "labels is only supported for whole-page screenshots.",
+          });
+        }
         return;
     }
   });
@@ -264,6 +274,14 @@ export class BrowserTool<TContext = PandaSessionContext>
       return `${action} · ${url}`;
     }
     return action;
+  }
+
+  override redactResultMessage(message: ToolResultMessage<JsonValue>): ToolResultMessage<JsonValue> {
+    if (message.toolName !== this.name) {
+      return message;
+    }
+
+    return stripToolArtifactInlineImages(message);
   }
 
   async handle(

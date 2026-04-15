@@ -314,6 +314,36 @@ describe("PostgresThreadRuntimeStore", () => {
     await expect(store.loadTranscript("pg-thread-reset")).resolves.toEqual([]);
   });
 
+  it("round-trips durable pending wakes", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const store = new PostgresThreadRuntimeStore({ pool });
+    await store.ensureSchema();
+
+    await store.createThread({
+      id: "pg-thread-pending-wake",
+      agentKey: "panda",
+    });
+
+    await expect(store.hasPendingWake("pg-thread-pending-wake")).resolves.toBe(false);
+
+    await store.requestWake("pg-thread-pending-wake");
+
+    await expect(store.hasPendingWake("pg-thread-pending-wake")).resolves.toBe(true);
+    await expect(store.consumePendingWake("pg-thread-pending-wake")).resolves.toBe(true);
+    await expect(store.hasPendingWake("pg-thread-pending-wake")).resolves.toBe(false);
+    await expect(store.consumePendingWake("pg-thread-pending-wake")).resolves.toBe(false);
+  });
+
   it("round-trips background bash job metadata", async () => {
     const db = newDb();
     db.public.registerFunction({

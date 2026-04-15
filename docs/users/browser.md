@@ -1,8 +1,8 @@
 # Browser
 
-Panda now ships with a built-in `browser` tool.
+Panda ships with a built-in `browser` tool.
 
-It drives a real headless Chromium session through Dockerized Playwright Server. This is the heavy lane for pages where `web_fetch` is not enough.
+It drives real headless Chromium through Dockerized Playwright Server. Use it when `web_fetch` is too dumb for the job.
 
 ## What It Does
 
@@ -20,51 +20,100 @@ The tool supports:
 - `pdf`
 - `close`
 
-The important bit is state.
-
-Inside a normal thread, Panda keeps one browser session alive and reuses it across calls until you close it or it expires.
+The browser is stateful inside a normal thread. Panda keeps one session alive, reuses it across calls, and restores stored auth state when that thread opens a fresh browser session later.
 
 ## Requirements
 
 You need:
 
-- Docker installed on the machine running `panda run`
+- Docker installed on the machine running Panda
 - a working Docker daemon
 - permission for the Panda process to run `docker`
-- enough RAM for Chromium to not be miserable
+- enough RAM for Chromium to not suck
 
 You do not need to start Playwright manually.
 
-Panda starts the container on first browser use.
+Panda starts the browser container lazily on the first real browser action.
 
-## Current Reality
-
-Right now the browser service starts with the runtime, not lazily behind a feature flag.
-
-That means:
-
-- `panda run` expects Docker to be available
-- the first real browser action may still take longer if the Playwright image needs to be pulled
-- this works fine on a VPS as long as Docker works there too
-
-No GUI is required. Headless Chromium is the point.
-
-## How Sessions Work
+## Sessions And Persistence
 
 - one browser session per Panda thread
 - one active page in that session
-- popups/new tabs switch the session to the newest page automatically
+- popups/new tabs switch to the newest page automatically
 - idle sessions expire after 10 minutes by default
 - hard max session age is 60 minutes by default
 - `browser close` kills the session immediately
 
-If Panda has no thread id in context, the browser falls back to an ephemeral one-call session.
+Thread-scoped sessions also persist Playwright storage state under the browser artifact directory.
+
+That means cookies and local storage usually survive:
+
+- `browser close`
+- idle expiry
+- max-age recycling
+- runtime restarts that reuse the same Panda data directory
+
+If Panda has no `threadId`, the browser falls back to an ephemeral one-call session with no persistence.
+
+## Snapshot UX
+
+These actions already return a fresh page snapshot:
+
+- `navigate`
+- `click`
+- `type`
+- `press`
+- `select`
+- `wait`
+- `snapshot`
+
+They accept `snapshotMode`:
+
+- `compact`: default, good for normal driving
+- `full`: longer visible-text dump when the compact view is not enough
+
+Snapshots now include:
+
+- page title
+- URL
+- page signals like `dialog`, `login`, `validation_error`, `captcha`
+- a `Changes:` summary after state-changing actions
+- richer interactive element state like values, checked/selected state, invalid, required, readonly, and href
+
+## Untrusted Browser Content
+
+Browser-derived page text is wrapped like this:
+
+```text
+<<<EXTERNAL_UNTRUSTED_CONTENT source="browser" kind="snapshot">>>
+...
+<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>
+```
+
+That is deliberate.
+
+Web pages are untrusted input. Panda should read them, not obey them.
+
+## Screenshots And PDFs
+
+Screenshots and PDFs are saved under Panda's media storage.
+
+Typical paths:
+
+- `~/.panda/media/browser/<thread-id>/...`
+- `~/.panda/agents/<agentKey>/media/browser/<thread-id>/...`
+
+If `PANDA_DATA_DIR` is set, the same structure lives there instead.
+
+`screenshot` returns an image payload immediately.
+
+Whole-page screenshots also support `labels: true`, which overlays the current `e1`, `e2`, ... refs onto the page before capture. That is useful when you want visual proof plus a text snapshot that lines up with the same refs.
+
+`labels: true` is page-only. It does not work for element screenshots.
 
 ## Safety Boundaries
 
-Browser v1 is not a free-for-all.
-
-It blocks:
+Browser v2 still blocks:
 
 - non-HTTP(S) URLs
 - embedded credentials in URLs
@@ -77,23 +126,10 @@ It blocks:
 Those checks happen:
 
 - before navigation
-- after redirects
+- after redirects settle
 - on routed in-page subrequests
 
-That is useful SSRF protection. It is not full internet safety. Prompt injection and broader network policy are still future work.
-
-## Artifacts
-
-Screenshots and PDFs are saved under Panda's media storage.
-
-Typical paths:
-
-- `~/.panda/media/browser/<thread-id>/...`
-- `~/.panda/agents/<agentKey>/media/browser/<thread-id>/...`
-
-If `PANDA_DATA_DIR` is set, the same structure lives under that root instead.
-
-`screenshot` also returns an image payload to the UI immediately.
+That is decent SSRF protection. It is not full browsing isolation.
 
 ## Quick Smoke Test
 
@@ -103,22 +139,23 @@ Start Panda:
 panda run
 ```
 
-Open chat and ask for something blunt:
+Then ask for something blunt:
 
 ```text
-Open https://example.com in the browser, tell me the page title, take a screenshot, then close the browser session.
+Open https://example.com in the browser, tell me the page title, take a labeled screenshot, then close the browser session.
 ```
 
-That should prove:
+That proves:
 
 - Docker works
-- the Playwright container starts
+- the Playwright image starts
 - Chromium can reach the internet
-- artifacts land in media storage
+- screenshots land in media storage
+- the labeled screenshot flow works
 
 ## Troubleshooting
 
-If startup fails with a Docker error:
+If browser startup fails:
 
 - run `docker info`
 - make sure the Panda process can call `docker`

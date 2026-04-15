@@ -1,7 +1,11 @@
+import {mkdtemp, rm, writeFile} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import {describe, expect, it, vi} from "vitest";
 import type {AssistantMessage, ToolResultMessage} from "@mariozechner/pi-ai";
 
-import {Agent, type LlmRuntime, stringToUserMessage,} from "../src/index.js";
+import {Agent, BrowserTool, type LlmRuntime, stringToUserMessage} from "../src/index.js";
 import {
     createCompactBoundaryMessage,
     projectTranscriptForInference,
@@ -353,6 +357,285 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
     expect(storedTranscript[1]?.message).toMatchObject({
       role: "assistant",
       content: [{type: "text", text: "old reply"}],
+    });
+  });
+
+  it("redacts browser screenshot image blocks before persisting the transcript", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "panda-browser-artifact-runtime-"));
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call-browser-1",
+          name: "browser",
+          arguments: {action: "screenshot"},
+        },
+      ]),
+      createAssistantMessage([
+        {type: "text", text: "saved it"},
+      ]),
+      createAssistantMessage([
+        {type: "text", text: "looked at the saved screenshot again"},
+      ]),
+    );
+    const store = new TestThreadRuntimeStore();
+    const screenshotPath = path.join(directory, "shot.png");
+    await writeFile(
+      screenshotPath,
+      Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6p6WQAAAAASUVORK5CYII=", "base64"),
+    );
+
+    try {
+      await store.createThread({
+        id: "thread-browser-redaction",
+        agentKey: "projection-agent",
+      });
+
+      const browserTool = new BrowserTool({
+        service: {
+          handle: vi.fn(async () => ({
+            content: [
+              {type: "text" as const, text: `Browser screenshot saved to ${screenshotPath}`},
+              {type: "image" as const, data: "A".repeat(4096), mimeType: "image/png"},
+            ],
+            details: {
+              action: "screenshot",
+              path: screenshotPath,
+              mimeType: "image/png",
+              artifact: {
+                kind: "image",
+                source: "browser",
+                path: screenshotPath,
+                mimeType: "image/png",
+              },
+            },
+          })),
+        },
+      });
+
+      const definition: ResolvedThreadDefinition = {
+        agent: new Agent({
+          name: "projection-agent",
+          instructions: "Reply briefly",
+          tools: [browserTool],
+        }),
+        runtime,
+      };
+      const coordinator = new ThreadRuntimeCoordinator({
+        store,
+        leaseManager: new SelectiveLeaseManager(),
+        resolveDefinition: async () => definition,
+      });
+
+      await coordinator.submitInput("thread-browser-redaction", {
+        message: stringToUserMessage("take a screenshot"),
+        source: "tui",
+      });
+      await coordinator.waitForIdle("thread-browser-redaction");
+
+      const storedTranscript = await store.loadTranscript("thread-browser-redaction");
+      const persistedToolResult = storedTranscript.find((record) => record.message.role === "toolResult");
+
+      expect(persistedToolResult?.message).toMatchObject({
+        role: "toolResult",
+        toolName: "browser",
+        content: [
+          {type: "text", text: `Browser screenshot saved to ${screenshotPath}`},
+        ],
+        details: {
+          action: "screenshot",
+          path: screenshotPath,
+          artifact: {
+            kind: "image",
+            source: "browser",
+            path: screenshotPath,
+            mimeType: "image/png",
+          },
+        },
+      });
+
+      await coordinator.submitInput("thread-browser-redaction", {
+        message: stringToUserMessage("what did you save?"),
+        source: "tui",
+      });
+      await coordinator.waitForIdle("thread-browser-redaction");
+
+      const replayRequest = runtime.complete.mock.calls.at(-1)?.[0];
+      const replayedToolResult = replayRequest?.context.messages.find((message: {role?: string}) => message.role === "toolResult");
+
+      expect(replayedToolResult).toMatchObject({
+        role: "toolResult",
+        toolName: "browser",
+        content: [
+          {type: "text", text: `Browser screenshot saved to ${screenshotPath}`},
+          {type: "image", mimeType: "image/png"},
+        ],
+      });
+    } finally {
+      await rm(directory, {recursive: true, force: true});
+    }
+  });
+
+  it("keeps replayed artifacts text-only when dropImages would strip them", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "panda-browser-artifact-drop-images-"));
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call-browser-1",
+          name: "browser",
+          arguments: {action: "screenshot"},
+        },
+      ]),
+      createAssistantMessage([
+        {type: "text", text: "saved it"},
+      ]),
+      createAssistantMessage([
+        {type: "text", text: "image stayed dropped"},
+      ]),
+    );
+    const store = new TestThreadRuntimeStore();
+    const screenshotPath = path.join(directory, "shot.png");
+    await writeFile(
+      screenshotPath,
+      Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6p6WQAAAAASUVORK5CYII=", "base64"),
+    );
+
+    try {
+      await store.createThread({
+        id: "thread-browser-drop-images",
+        agentKey: "projection-agent",
+        inferenceProjection: {
+          dropImages: {
+            olderThanMs: 0,
+          },
+        },
+      });
+
+      const browserTool = new BrowserTool({
+        service: {
+          handle: vi.fn(async () => ({
+            content: [
+              {type: "text" as const, text: `Browser screenshot saved to ${screenshotPath}`},
+              {type: "image" as const, data: "A".repeat(4096), mimeType: "image/png"},
+            ],
+            details: {
+              action: "screenshot",
+              path: screenshotPath,
+              mimeType: "image/png",
+              artifact: {
+                kind: "image",
+                source: "browser",
+                path: screenshotPath,
+                mimeType: "image/png",
+              },
+            },
+          })),
+        },
+      });
+
+      const definition: ResolvedThreadDefinition = {
+        agent: new Agent({
+          name: "projection-agent",
+          instructions: "Reply briefly",
+          tools: [browserTool],
+        }),
+        runtime,
+      };
+      const coordinator = new ThreadRuntimeCoordinator({
+        store,
+        leaseManager: new SelectiveLeaseManager(),
+        resolveDefinition: async () => definition,
+      });
+
+      await coordinator.submitInput("thread-browser-drop-images", {
+        message: stringToUserMessage("take a screenshot"),
+        source: "tui",
+      });
+      await coordinator.waitForIdle("thread-browser-drop-images");
+
+      await coordinator.submitInput("thread-browser-drop-images", {
+        message: stringToUserMessage("what did you save?"),
+        source: "tui",
+      });
+      await coordinator.waitForIdle("thread-browser-drop-images");
+
+      const replayRequest = runtime.complete.mock.calls.at(-1)?.[0];
+      const replayedToolResult = replayRequest?.context.messages.find((message: {role?: string}) => message.role === "toolResult");
+
+      expect(replayedToolResult).toMatchObject({
+        role: "toolResult",
+        toolName: "browser",
+        content: [
+          {type: "text", text: `Browser screenshot saved to ${screenshotPath}`},
+        ],
+      });
+      expect((replayedToolResult?.content as Array<{type: string}>).some((part) => part.type === "image")).toBe(false);
+    } finally {
+      await rm(directory, {recursive: true, force: true});
+    }
+  });
+
+  it("fails soft when a persisted artifact path is missing", async () => {
+    const runtime = createMockRuntime(createAssistantMessage([
+      {type: "text", text: "still fine"},
+    ]));
+    const store = new TestThreadRuntimeStore();
+
+    await store.createThread({
+      id: "thread-missing-artifact",
+      agentKey: "projection-agent",
+    });
+    await store.enqueueInput("thread-missing-artifact", {
+      message: stringToUserMessage("previous request"),
+      source: "tui",
+    });
+    await store.applyPendingInputs("thread-missing-artifact");
+    await store.appendRuntimeMessage("thread-missing-artifact", {
+      message: createToolResultMessage("call-1", [
+        {type: "text", text: "Artifact was stored on disk"},
+      ], {
+        toolName: "view_media",
+        details: {
+          artifact: {
+            kind: "image",
+            source: "view_media",
+            path: "/definitely/missing/image.png",
+            mimeType: "image/png",
+          },
+        },
+      }),
+      source: "tool:view_media",
+    });
+
+    const definition: ResolvedThreadDefinition = {
+      agent: new Agent({
+        name: "projection-agent",
+        instructions: "Reply briefly",
+      }),
+      runtime,
+    };
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: async () => definition,
+    });
+
+    await coordinator.submitInput("thread-missing-artifact", {
+      message: stringToUserMessage("new request"),
+      source: "tui",
+    });
+    await coordinator.waitForIdle("thread-missing-artifact");
+
+    const request = runtime.complete.mock.calls[0]?.[0];
+    const toolResult = request?.context.messages.find((message: {role?: string}) => message.role === "toolResult");
+
+    expect(toolResult).toMatchObject({
+      role: "toolResult",
+      toolName: "view_media",
+      content: [
+        {type: "text", text: "Artifact was stored on disk"},
+      ],
     });
   });
 });

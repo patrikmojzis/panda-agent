@@ -38,6 +38,14 @@ export {
   BrowserTool,
   type BrowserToolOptions,
 } from "./tools/browser-tool.js";
+export type {
+  BrowserLoadState,
+  BrowserPageSignal,
+  BrowserSnapshot,
+  BrowserSnapshotChanges,
+  BrowserSnapshotElement,
+  BrowserSnapshotMode,
+} from "./tools/browser-types.js";
 export {
   ClearEnvValueTool,
   SetEnvValueTool,

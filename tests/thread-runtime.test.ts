@@ -249,6 +249,24 @@ class SelectiveLeaseManager {
   }
 }
 
+class SharedLeaseManager {
+  private readonly activeThreads = new Set<string>();
+
+  async tryAcquire(threadId: string) {
+    if (this.activeThreads.has(threadId)) {
+      return null;
+    }
+
+    this.activeThreads.add(threadId);
+    return {
+      threadId,
+      release: async () => {
+        this.activeThreads.delete(threadId);
+      },
+    };
+  }
+}
+
 class TestThreadDefinitionRegistry {
   private readonly resolvers = new Map<string, ThreadDefinitionResolver>();
 
@@ -522,6 +540,199 @@ describe("ThreadRuntimeCoordinator", () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  it("preserves durable non-input wakes when another coordinator owns the thread lease", async () => {
+    const started = createDeferred<void>();
+    const release = createDeferred<{ done: string }>();
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-cross-process-wake",
+      agentKey: "cross-wake-agent",
+    });
+
+    const runtime: LlmRuntime = {
+      complete: vi.fn().mockImplementation(async (request) => {
+        const callCount = (runtime.complete as ReturnType<typeof vi.fn>).mock.calls.length;
+
+        if (callCount === 1) {
+          return createAssistantMessage([{
+            type: "toolCall",
+            id: "call_slow",
+            name: "slow",
+            arguments: {
+              message: "hold the lease",
+            },
+          }]);
+        }
+
+        if (callCount === 2) {
+          return message("finished current run");
+        }
+
+        if (callCount === 3) {
+          expect(request.context.messages.some((entry) => {
+            return entry.role === "assistant"
+              && entry.content.some((block) => block.type === "text" && block.text.includes("Background bash job update."));
+          })).toBe(true);
+          return message("noticed wake from another coordinator");
+        }
+
+        throw new Error(`Unexpected runtime call ${callCount}.`);
+      }),
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
+
+    const registry = new TestThreadDefinitionRegistry().register("cross-wake-agent", {
+      agent: new Agent({
+        name: "cross-wake-agent",
+        instructions: "Use tools.",
+        tools: [new SlowTool(started, release)],
+      }),
+      runtime,
+    });
+    const leaseManager = new SharedLeaseManager();
+    const ownerCoordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+    const otherCoordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await ownerCoordinator.submitInput("thread-cross-process-wake", {
+      message: stringToUserMessage("start a slow task"),
+      source: "tui",
+    });
+
+    await started.promise;
+    await store.appendRuntimeMessage(
+      "thread-cross-process-wake",
+      buildBackgroundBashRuntimeMessage({
+        id: "job-cross-wake",
+        threadId: "thread-cross-process-wake",
+        status: "completed",
+        command: "printf done",
+        mode: "local",
+        initialCwd: "/workspace",
+        startedAt: Date.now() - 50,
+        finishedAt: Date.now(),
+        durationMs: 50,
+        timedOut: false,
+        stdout: "done",
+        stderr: "",
+        stdoutChars: 4,
+        stderrChars: 0,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        stdoutPersisted: false,
+        stderrPersisted: false,
+        trackedEnvKeys: [],
+      }),
+    );
+    await otherCoordinator.wake("thread-cross-process-wake");
+
+    release.resolve({ done: "released" });
+    await ownerCoordinator.waitForIdle("thread-cross-process-wake");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
+    const transcript = await store.loadTranscript("thread-cross-process-wake");
+    expect(transcript.at(-1)?.message).toMatchObject({
+      role: "assistant",
+      content: [{ type: "text", text: "noticed wake from another coordinator" }],
+    });
+  });
+
+  it("waits for pending durable wakes before reporting idle", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-pending-wake-idle",
+      agentKey: "pending-wake-agent",
+    });
+
+    const runtime = createMockRuntime(
+      message("processed pending wake"),
+      message("settled after pending wake"),
+    );
+    const registry = new TestThreadDefinitionRegistry().register("pending-wake-agent", {
+      agent: new Agent({
+        name: "pending-wake-agent",
+        instructions: "React to runtime notes.",
+        tools: [],
+      }),
+      runtime,
+    });
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await store.appendRuntimeMessage(
+      "thread-pending-wake-idle",
+      buildBackgroundBashRuntimeMessage({
+        id: "job-pending-wake-idle",
+        threadId: "thread-pending-wake-idle",
+        status: "completed",
+        command: "printf done",
+        mode: "local",
+        initialCwd: "/workspace",
+        startedAt: Date.now() - 25,
+        finishedAt: Date.now(),
+        durationMs: 25,
+        timedOut: false,
+        stdout: "done",
+        stderr: "",
+        stdoutChars: 4,
+        stderrChars: 0,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        stdoutPersisted: false,
+        stderrPersisted: false,
+        trackedEnvKeys: [],
+      }),
+    );
+    await store.requestWake("thread-pending-wake-idle");
+
+    await coordinator.waitForIdle("thread-pending-wake-idle");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    const transcript = await store.loadTranscript("thread-pending-wake-idle");
+    expect(transcript.some((entry) => {
+      return entry.message.role === "assistant"
+        && entry.message.content.some((block) => block.type === "text" && block.text === "processed pending wake");
+    })).toBe(true);
+    expect(transcript.at(-1)?.message).toMatchObject({
+      role: "assistant",
+      content: [{ type: "text", text: "settled after pending wake" }],
+    });
+  });
+
+  it("treats pending durable wakes as busy", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-pending-wake-busy",
+      agentKey: "busy-agent",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: async () => {
+        throw new Error("resolveDefinition should not be called");
+      },
+    });
+
+    expect(await coordinator.isThreadBusy("thread-pending-wake-busy")).toBe(false);
+
+    await store.requestWake("thread-pending-wake-busy");
+
+    expect(await coordinator.isThreadBusy("thread-pending-wake-busy")).toBe(true);
   });
 
   it("queues wakes until they are flushed", async () => {

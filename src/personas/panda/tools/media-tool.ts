@@ -1,16 +1,19 @@
 import {execFile} from "node:child_process";
-import {randomUUID} from "node:crypto";
-import {access, mkdtemp, readdir, readFile, rm} from "node:fs/promises";
+import {createHash, randomUUID} from "node:crypto";
+import {access, mkdir, mkdtemp, readdir, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {promisify} from "node:util";
 
+import type {ToolResultMessage} from "@mariozechner/pi-ai";
 import {z} from "zod";
 
+import {resolvePandaAgentMediaDir, resolvePandaMediaDir} from "../../../app/runtime/data-dir.js";
 import {Tool} from "../../../kernel/agent/tool.js";
 import {ToolError} from "../../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../../kernel/agent/run-context.js";
-import type {JsonObject, ToolResultPayload} from "../../../kernel/agent/types.js";
+import {stripToolArtifactInlineImages, withArtifactDetails} from "../../../kernel/agent/tool-artifacts.js";
+import type {JsonValue, ToolResultPayload} from "../../../kernel/agent/types.js";
 import type {PandaSessionContext} from "../types.js";
 import {resolvePandaPath} from "./context.js";
 
@@ -29,6 +32,50 @@ const IMAGE_EXTENSIONS = new Map<string, string>([
 
 export interface MediaToolOptions {
   pdfPreviewSize?: number;
+}
+
+function trimNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function resolveMediaArtifactRoot(context: PandaSessionContext | undefined, env: NodeJS.ProcessEnv): string {
+  const agentKey = trimNonEmptyString(context?.agentKey);
+  if (agentKey) {
+    return resolvePandaAgentMediaDir(agentKey, env);
+  }
+
+  return resolvePandaMediaDir(env);
+}
+
+async function writeDurablePdfPreview(
+  previewPath: string,
+  sourcePath: string,
+  previewSize: number,
+  context: PandaSessionContext | undefined,
+  env: NodeJS.ProcessEnv,
+): Promise<{path: string; bytes: Buffer}> {
+  const root = resolveMediaArtifactRoot(context, env);
+  const artifactDir = path.join(root, "view_media", "previews");
+  await mkdir(artifactDir, {recursive: true});
+
+  const cacheKey = createHash("sha256")
+    .update(sourcePath)
+    .update("\0")
+    .update(String(previewSize))
+    .digest("hex");
+  const destination = path.join(artifactDir, `${cacheKey}.png`);
+  const bytes = await readFile(previewPath);
+  await writeFile(destination, bytes);
+
+  return {
+    path: destination,
+    bytes,
+  };
 }
 
 async function ensureReadableFile(filePath: string): Promise<void> {
@@ -61,7 +108,7 @@ async function imagePayload(filePath: string, originalPath: string, mimeType: st
   const bytes = await readFile(filePath);
   const metadata = await readImageMetadata(filePath);
 
-  const details: JsonObject = {
+  const details = withArtifactDetails({
     kind: "image",
     path: filePath,
     originalPath,
@@ -69,7 +116,14 @@ async function imagePayload(filePath: string, originalPath: string, mimeType: st
     bytes: bytes.length,
     ...(metadata.width !== undefined ? { width: metadata.width } : {}),
     ...(metadata.height !== undefined ? { height: metadata.height } : {}),
-  };
+  }, {
+    kind: "image",
+    source: "view_media",
+    path: filePath,
+    mimeType,
+    bytes: bytes.length,
+    originalPath,
+  });
 
   return {
     content: [
@@ -97,6 +151,8 @@ async function pdfPayload(
   filePath: string,
   originalPath: string,
   previewSize: number,
+  context: PandaSessionContext | undefined,
+  env: NodeJS.ProcessEnv,
 ): Promise<ToolResultPayload> {
   const tempDirectory = await mkdtemp(path.join(tmpdir(), `panda-pdf-preview-${randomUUID()}-`));
 
@@ -114,19 +170,31 @@ async function pdfPayload(
       throw new ToolError(`Unable to render a preview for ${filePath}`);
     }
 
-    const previewBytes = await readFile(previewPath);
-    const metadata = await readImageMetadata(previewPath);
+    const durablePreview = await writeDurablePdfPreview(previewPath, filePath, previewSize, context, env);
+    const metadata = await readImageMetadata(durablePreview.path);
 
-    const details: JsonObject = {
+    const details = withArtifactDetails({
       kind: "pdf",
       path: filePath,
       originalPath,
-      previewPath,
+      previewPath: durablePreview.path,
       previewMimeType: "image/png",
-      previewBytes: previewBytes.length,
+      previewBytes: durablePreview.bytes.length,
       ...(metadata.width !== undefined ? { previewWidth: metadata.width } : {}),
       ...(metadata.height !== undefined ? { previewHeight: metadata.height } : {}),
-    };
+    }, {
+      kind: "pdf",
+      source: "view_media",
+      path: filePath,
+      mimeType: "application/pdf",
+      originalPath,
+      preview: {
+        kind: "image",
+        path: durablePreview.path,
+        mimeType: "image/png",
+        bytes: durablePreview.bytes.length,
+      },
+    });
 
     return {
       content: [
@@ -140,7 +208,7 @@ async function pdfPayload(
         },
         {
           type: "image",
-          data: previewBytes.toString("base64"),
+          data: durablePreview.bytes.toString("base64"),
           mimeType: "image/png",
         },
       ],
@@ -160,12 +228,14 @@ async function pdfPayload(
 
 export class MediaTool<TContext = PandaSessionContext> extends Tool<typeof MediaTool.schema, TContext> {
   static schema = z.object({
-    path: z.string().trim().min(1).describe("Absolute path or path relative to the current working directory."),
+    path: z.string().trim().min(1).describe(
+      "Absolute path or path relative to the current working directory. In remote bash mode, agent-home runner paths are translated automatically.",
+    ),
   });
 
   name = "view_media";
   description =
-    "Read a local image or PDF file. Images are attached directly. PDFs are attached as preview images generated from the file.";
+    "Read an image or PDF file. Images are attached directly. PDFs are attached as preview images generated from the file.";
   schema = MediaTool.schema;
 
   private readonly pdfPreviewSize: number;
@@ -177,6 +247,14 @@ export class MediaTool<TContext = PandaSessionContext> extends Tool<typeof Media
 
   override formatCall(args: Record<string, unknown>): string {
     return typeof args.path === "string" ? args.path : super.formatCall(args);
+  }
+
+  override redactResultMessage(message: ToolResultMessage<JsonValue>): ToolResultMessage<JsonValue> {
+    if (message.toolName !== this.name) {
+      return message;
+    }
+
+    return stripToolArtifactInlineImages(message);
   }
 
   async handle(
@@ -193,7 +271,13 @@ export class MediaTool<TContext = PandaSessionContext> extends Tool<typeof Media
     }
 
     if (extension === ".pdf") {
-      return pdfPayload(resolvedPath, args.path, this.pdfPreviewSize);
+      return pdfPayload(
+        resolvedPath,
+        args.path,
+        this.pdfPreviewSize,
+        run.context as PandaSessionContext | undefined,
+        process.env,
+      );
     }
 
     throw new ToolError(

@@ -19,6 +19,7 @@ export function buildThreadRuntimeSchemaSql(
       model TEXT,
       temperature DOUBLE PRECISION,
       thinking TEXT,
+      pending_wake_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -28,6 +29,9 @@ export function buildThreadRuntimeSchemaSql(
 
     ALTER TABLE ${tables.threads}
     ADD COLUMN IF NOT EXISTS inference_projection JSONB;
+
+    ALTER TABLE ${tables.threads}
+    ADD COLUMN IF NOT EXISTS pending_wake_at TIMESTAMPTZ;
 
     ALTER TABLE ${tables.threads}
     DROP COLUMN IF EXISTS provider;

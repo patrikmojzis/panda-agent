@@ -52,6 +52,7 @@ interface TestThreadState {
   nextInputOrder: number;
   transcript: ThreadMessageRecord[];
   pendingInputs: ThreadInputRecord[];
+  pendingWakeAt?: number;
 }
 
 export class TestIdentityStore implements IdentityStore {
@@ -371,6 +372,15 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     return thread.pendingInputs.some((input) => input.deliveryMode === "wake");
   }
 
+  async hasPendingWake(threadId: string): Promise<boolean> {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      throw missingThreadError(threadId);
+    }
+
+    return thread.pendingWakeAt !== undefined;
+  }
+
   async promoteQueuedInputs(threadId?: string): Promise<readonly string[]> {
     const promoted = new Set<string>();
     const states = threadId
@@ -402,6 +412,26 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     }
 
     return [...promoted];
+  }
+
+  async requestWake(threadId: string): Promise<void> {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      throw missingThreadError(threadId);
+    }
+
+    thread.pendingWakeAt ??= Date.now();
+  }
+
+  async consumePendingWake(threadId: string): Promise<boolean> {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      throw missingThreadError(threadId);
+    }
+
+    const hadPendingWake = thread.pendingWakeAt !== undefined;
+    thread.pendingWakeAt = undefined;
+    return hadPendingWake;
   }
 
   async appendRuntimeMessage(

@@ -1,22 +1,23 @@
 # Browser
 
-This is the Chromium lane for Panda.
+This is Panda's heavyweight web lane.
 
-The design is opinionated on purpose:
+The design is still opinionated on purpose:
 
 - one compact `browser` tool
 - stateful per thread
 - official Playwright Docker image
 - no host browser install
-- no sub-tool explosion
+- no tool explosion
 
 ## File Map
 
-The core files are:
+Core files:
 
 - `src/personas/panda/tools/browser-tool.ts`
 - `src/personas/panda/tools/browser-service.ts`
 - `src/personas/panda/tools/browser-snapshot.ts`
+- `src/personas/panda/tools/browser-output.ts`
 - `src/personas/panda/tools/browser-types.ts`
 - `src/personas/panda/tools/safe-web-target.ts`
 - `assets/playwright-seccomp-profile.json`
@@ -24,17 +25,20 @@ The core files are:
 Split of responsibility:
 
 - `browser-tool.ts`: schema, public tool surface, short formatting
-- `browser-service.ts`: Docker lifecycle, Playwright connection, session reuse, cleanup, artifacts
-- `browser-snapshot.ts`: snapshot script, ref generation, snapshot rendering
-- `safe-web-target.ts`: shared SSRF/private-network guard used by both browser and `web_fetch`
+- `browser-service.ts`: Docker lifecycle, Playwright connection, session reuse, auth-state persistence, cleanup, artifacts
+- `browser-snapshot.ts`: page snapshot script, ref generation, rendering, change-summary text
+- `browser-output.ts`: tiny wrapper for untrusted browser-derived content
+- `safe-web-target.ts`: shared SSRF/private-network guard reused by `browser` and `web_fetch`
 
 ## Runtime Shape
 
-The browser service is created in runtime bootstrap and started immediately.
+The browser service is created in runtime bootstrap, but Docker startup is lazy.
 
-Today that means Docker is a runtime dependency, not an optional extra.
+That means:
 
-That is a little rude, but it is the current truth.
+- Panda can boot without immediately touching Docker
+- the first real browser action starts the container
+- Docker is still required if you actually use the tool
 
 Relevant wiring:
 
@@ -42,7 +46,7 @@ Relevant wiring:
 - `src/app/runtime/thread-definition.ts`
 - `src/personas/panda/definition.ts`
 
-The tool order is:
+Tool order:
 
 - `bash`
 - `view_media`
@@ -51,7 +55,7 @@ The tool order is:
 - OpenAI-backed extras when configured
 - Brave search when configured
 
-`browser` stays excluded from the `explore` subagent allowlist in v1.
+`browser` still stays out of the `explore` subagent allowlist.
 
 ## Session Model
 
@@ -63,16 +67,71 @@ The tool order is:
 - max session age: 60 minutes by default
 - `close()` kills the session container immediately
 
-Lifecycle protection:
+Thread-scoped sessions now persist Playwright storage state in the browser artifact directory. That gives us boring, useful auth persistence across:
 
-- startup orphan sweep removes stale labeled containers
-- failed bootstrap removes the just-started container
-- runtime shutdown closes all sessions and removes their containers
-- idle/max-age expiry is enforced both by the reaper and on access
+- `close()`
+- idle expiry
+- max-age recycle
+- process restarts that reuse the same data dir
+
+The implementation is intentionally small: Playwright `storageState` restore on context creation, then best-effort save on action completion and close.
+
+## Safety Model
+
+The browser reuses the shared guarded-target checks from `web_fetch`.
+
+It blocks:
+
+- non-HTTP(S)
+- embedded credentials
+- loopback/private/link-local/metadata-ish targets
+- `.local` hosts
+
+Checks happen:
+
+- before initial navigation
+- after navigation settles, on the final URL
+- in a Playwright route handler for page subrequests
+
+That is SSRF protection, not full browsing isolation.
+
+## Output Shape
+
+Snapshot-returning actions:
+
+- `navigate`
+- `snapshot`
+- `click`
+- `type`
+- `press`
+- `select`
+- `wait`
+
+They accept `snapshotMode: "compact" | "full"` and return:
+
+- title
+- URL
+- signals
+- `Changes:` summary after state-changing actions
+- visible dialog/page text
+- interactive elements with stable `e1`, `e2`, ... refs
+- richer state like `value`, `checked`, `selected`, `required`, `invalid`, `readonly`, `href`
+
+Browser-derived text is wrapped in:
+
+```text
+<<<EXTERNAL_UNTRUSTED_CONTENT source="browser" kind="snapshot">>>
+...
+<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>
+```
+
+`evaluate` uses the same wrapping when it returns content. If the script yields nothing, the tool answers with the explicit `return` hint instead of fake `null` sludge.
+
+`screenshot(labels=true)` is page-only. It injects temporary ref overlays that line up with the current snapshot refs, captures the image, then cleans the overlays up.
 
 ## Docker Contract
 
-We use the official Playwright image and derive the tag from the installed `playwright-core` version:
+We derive the container image tag from the installed `playwright-core` version:
 
 - host dependency: `playwright-core@X`
 - image: `mcr.microsoft.com/playwright:vX-noble`
@@ -87,66 +146,11 @@ Container launch uses:
 - loopback-only port publish `127.0.0.1::3000`
 - labels for browser ownership, thread id, and start time
 
-Inside the container we run:
+Inside the container:
 
 ```bash
 npx -y playwright@X run-server --port 3000 --host 0.0.0.0
 ```
-
-The host talks to that server over the mapped loopback websocket endpoint.
-
-## Safety Model
-
-Browser v1 reuses the shared guarded-target checks from `web_fetch`.
-
-It blocks:
-
-- non-HTTP(S)
-- embedded credentials
-- loopback/private/link-local/metadata-ish targets
-- `.local` hosts
-
-Checks happen in three places:
-
-- before initial navigation
-- after navigation settles, on the final URL
-- in a Playwright route handler for page subrequests
-
-The route guard intentionally re-checks DNS every time. We do not cache allow decisions forever because stale safety decisions are how you end up browsing somewhere stupid later.
-
-This is SSRF protection, not full browsing isolation. We still do not solve prompt injection, broad egress policy, or subagent scoping here.
-
-## Output Shape
-
-State-changing actions return a fresh compact snapshot:
-
-- `navigate`
-- `click`
-- `type`
-- `press`
-- `select`
-- `wait`
-
-Snapshot output includes:
-
-- page title
-- page URL
-- visible text
-- interactive elements with stable `e1`, `e2`, ... refs
-
-`snapshot` is just the explicit version of that.
-
-Other actions:
-
-- `evaluate`: caller-supplied page JS, JSON-serializable result preferred, capped to 20k chars
-- `screenshot`: image payload plus saved `.png` path
-- `pdf`: saved `.pdf` path
-- `close`: closes the persistent thread session
-
-One boring but important detail:
-
-The tool schema is a flat top-level object, not a discriminated union that emits top-level `oneOf`.
-That is deliberate. Some tool consumers get weird about `oneOf`, and we already hit that wall.
 
 ## Artifacts
 
@@ -155,7 +159,7 @@ Artifacts land under Panda media storage in a browser subtree:
 - `~/.panda/media/browser/<thread-or-ephemeral>/...`
 - agent-scoped equivalent when `agentKey` exists
 
-The service reuses Panda's normal media-dir logic instead of inventing a parallel artifact system.
+The same subtree also holds the thread-scoped `storage-state.json` file used for browser auth persistence.
 
 ## Testing
 
@@ -164,29 +168,27 @@ Fast checks:
 - `pnpm typecheck`
 - `pnpm exec vitest run tests/browser-tool.test.ts`
 
-Relevant coverage includes:
+Useful coverage now includes:
 
 - Docker command construction
 - session reuse and isolation
-- startup orphan cleanup
-- startup-failure cleanup
+- startup cleanup
 - SSRF blocking on navigation, redirects, and subrequests
-- popup page switching
-- snapshot refs
-- screenshot/pdf artifacts
-- close behavior
+- richer snapshot rendering
+- post-action change summaries
+- labeled screenshots
+- evaluate no-value hint
+- storage-state persistence across close/reopen
 
-Real smoke matters here.
-
-Use an actual Panda run or a small direct tool smoke against a public page. Browser code without a live check is how you get fake confidence and a broken Docker story.
+Still do a live smoke. Browser code without a real run is fake confidence with better branding.
 
 ## Next Work
 
-If you extend this, the next sane steps are:
+The next sane steps are:
 
-- move browser access behind explicit subagent isolation
-- add tighter outbound network policy
-- make browser startup optional instead of a runtime hard dependency
-- add a dedicated smoke command so operators are not hand-rolling sanity checks
+- isolate browser access behind a less-trusted subagent lane
+- tighten outbound network policy beyond SSRF checks
+- optionally persist more than Playwright storage state if a real auth case needs it
+- add a dedicated browser smoke command
 
-Do not turn this into fifteen tiny browser tools. That path sucks.
+Do not turn this into fifteen tiny browser tools. That still sucks.

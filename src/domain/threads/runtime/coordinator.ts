@@ -26,7 +26,11 @@ import {
     shouldAutoCompactThread,
     updateAutoCompactionRuntimeState,
 } from "../../../kernel/transcript/compaction.js";
-import {projectTranscriptForInference} from "../../../kernel/transcript/inference-projection.js";
+import {
+    applyImageProjectionForInference,
+    projectTranscriptForInference,
+} from "../../../kernel/transcript/inference-projection.js";
+import {rehydrateProjectedToolArtifacts} from "./tool-artifact-replay.js";
 
 export type ThreadWakeMode = "wake" | "queue";
 const ABORT_POLL_MS = 250;
@@ -194,7 +198,6 @@ export class ThreadRuntimeCoordinator {
   private readonly onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   private readonly activeRuns = new Map<string, Promise<void>>();
   private readonly activeSignals = new Map<string, AbortController>();
-  private readonly wakeLatches = new Set<string>();
 
   constructor(options: ThreadRuntimeCoordinatorOptions) {
     this.store = options.store;
@@ -229,12 +232,11 @@ export class ThreadRuntimeCoordinator {
       return;
     }
 
-    if (this.activeRuns.has(threadId)) {
-      this.wakeLatches.add(threadId);
-      return;
-    }
+    await this.store.requestWake(threadId);
 
-    this.ensureRunning(threadId);
+    if (!this.activeRuns.has(threadId)) {
+      this.ensureRunning(threadId);
+    }
   }
 
   async flushQueued(threadId?: string): Promise<void> {
@@ -262,7 +264,7 @@ export class ThreadRuntimeCoordinator {
         continue;
       }
 
-      if (!(await this.store.hasRunnableInputs(threadId))) {
+      if (!(await this.store.hasRunnableInputs(threadId)) && !(await this.store.hasPendingWake(threadId))) {
         return;
       }
 
@@ -284,7 +286,7 @@ export class ThreadRuntimeCoordinator {
       return true;
     }
 
-    return this.store.hasPendingInputs(threadId);
+    return (await this.store.hasPendingInputs(threadId)) || (await this.store.hasPendingWake(threadId));
   }
 
   async runExclusively<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
@@ -298,7 +300,7 @@ export class ThreadRuntimeCoordinator {
     } finally {
       await lease.release();
 
-      if ((await this.store.hasRunnableInputs(threadId)) || this.consumeWakeLatch(threadId)) {
+      if ((await this.store.hasRunnableInputs(threadId)) || (await this.store.consumePendingWake(threadId))) {
         this.ensureRunning(threadId);
       }
     }
@@ -339,9 +341,9 @@ export class ThreadRuntimeCoordinator {
     }
 
     const promise = this.runUntilIdle(threadId)
-      .then((restartRequested) => {
+      .then(async ({restartRequested, acquiredLease}) => {
         this.activeRuns.delete(threadId);
-        if (restartRequested || this.consumeWakeLatch(threadId)) {
+        if (acquiredLease && (restartRequested || (await this.store.consumePendingWake(threadId)))) {
           this.ensureRunning(threadId);
         }
       })
@@ -354,15 +356,6 @@ export class ThreadRuntimeCoordinator {
     void promise.catch(() => {
       // The run already persisted failure state and emitted run_finished; avoid unhandled rejections.
     });
-  }
-
-  private consumeWakeLatch(threadId: string): boolean {
-    if (!this.wakeLatches.has(threadId)) {
-      return false;
-    }
-
-    this.wakeLatches.delete(threadId);
-    return true;
   }
 
   private startAbortWatcher(run: ThreadRunRecord, controller: AbortController): () => void {
@@ -593,10 +586,13 @@ export class ThreadRuntimeCoordinator {
     }
   }
 
-  private async runUntilIdle(threadId: string): Promise<boolean> {
+  private async runUntilIdle(threadId: string): Promise<{ restartRequested: boolean; acquiredLease: boolean }> {
     const lease = await this.leaseManager.tryAcquire(threadId);
     if (!lease) {
-      return false;
+      return {
+        restartRequested: false,
+        acquiredLease: false,
+      };
     }
 
     const controller = new AbortController();
@@ -645,12 +641,23 @@ export class ThreadRuntimeCoordinator {
           break;
         }
 
+        const inferenceProjection = definition.inferenceProjection ?? preflight.thread.inferenceProjection;
         const projectedTranscript = projectTranscriptForInference(
           transcript,
-          definition.inferenceProjection ?? preflight.thread.inferenceProjection,
+          inferenceProjection
+            ? {
+                ...inferenceProjection,
+                dropImages: undefined,
+              }
+            : undefined,
+        );
+        const replayedTranscript = await rehydrateProjectedToolArtifacts(projectedTranscript);
+        const finalTranscript = applyImageProjectionForInference(
+          replayedTranscript,
+          inferenceProjection?.dropImages,
         );
         const executor = new Thread(
-          this.buildThreadOptions(run, preflight.thread, definition, projectedTranscript, controller.signal),
+          this.buildThreadOptions(run, preflight.thread, definition, finalTranscript, controller.signal),
         );
 
         for await (const event of executor.run()) {
@@ -670,7 +677,7 @@ export class ThreadRuntimeCoordinator {
           });
         }
 
-        if (!(await this.store.hasRunnableInputs(threadId)) && !this.consumeWakeLatch(threadId)) {
+        if (!(await this.store.hasRunnableInputs(threadId)) && !(await this.store.consumePendingWake(threadId))) {
           break;
         }
       }
@@ -695,9 +702,12 @@ export class ThreadRuntimeCoordinator {
 
       this.activeSignals.delete(threadId);
       await lease.release();
-      restartRequested = (await this.store.hasRunnableInputs(threadId)) || this.consumeWakeLatch(threadId);
+      restartRequested = (await this.store.hasRunnableInputs(threadId)) || (await this.store.consumePendingWake(threadId));
     }
 
-    return restartRequested;
+    return {
+      restartRequested,
+      acquiredLease: true,
+    };
   }
 }

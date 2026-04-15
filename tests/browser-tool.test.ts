@@ -1,4 +1,4 @@
-import {mkdtemp, readFile, rm, stat} from "node:fs/promises";
+import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -37,6 +37,9 @@ type SnapshotResult = {
   url: string;
   title: string;
   text: string;
+  pageText: string;
+  dialogText: string;
+  signals: string[];
   elements: Array<{
     ref: string;
     tag: string;
@@ -44,11 +47,29 @@ type SnapshotResult = {
     text: string;
     type?: string;
     disabled?: boolean;
+    value?: string;
+    checked?: boolean;
+    selected?: boolean;
+    expanded?: boolean;
+    pressed?: boolean;
+    required?: boolean;
+    invalid?: boolean;
+    readonly?: boolean;
+    href?: string;
+    section?: "page" | "dialog";
   }>;
 };
 
 class FakeLocator {
   constructor(private readonly page: FakePage, private readonly selector: string) {}
+
+  private findSnapshotElement() {
+    const match = this.selector.match(/data-panda-ref="(e\d+)"/);
+    if (!match) {
+      return undefined;
+    }
+    return this.page.snapshot.elements.find((element) => element.ref === match[1]);
+  }
 
   first(): FakeLocator {
     return this;
@@ -63,6 +84,10 @@ class FakeLocator {
 
   async fill(value: string): Promise<void> {
     this.page.filledValues.push({selector: this.selector, value});
+    const element = this.findSnapshotElement();
+    if (element) {
+      element.value = value;
+    }
   }
 
   async press(key: string): Promise<void> {
@@ -71,6 +96,15 @@ class FakeLocator {
 
   async selectOption(values: unknown): Promise<string[]> {
     this.page.selectedValues.push({selector: this.selector, values});
+    const element = this.findSnapshotElement();
+    if (element) {
+      element.selected = true;
+      const nextValues = Array.isArray(values) ? values : [];
+      const firstValue = nextValues[0];
+      if (firstValue && typeof firstValue === "object" && "value" in firstValue) {
+        element.value = String((firstValue as {value: unknown}).value ?? "");
+      }
+    }
     return [];
   }
 
@@ -86,6 +120,9 @@ class FakePage {
     url: "https://example.com/",
     title: "Example",
     text: "Readable body text",
+    pageText: "Readable body text",
+    dialogText: "",
+    signals: [],
     elements: [{ref: "e1", tag: "a", role: "link", text: "Docs"}],
   };
   nextGotoUrl: string | null = null;
@@ -97,6 +134,8 @@ class FakePage {
   locatorSelectors: string[] = [];
   keyboardPressed: string[] = [];
   keyboardInsertedText: string[] = [];
+  labelOverlaysInstalled = 0;
+  labelOverlaysRemoved = 0;
   onLocatorClick?: (selector: string) => Promise<void> | void;
 
   readonly keyboard = {
@@ -136,6 +175,15 @@ class FakePage {
       return this.snapshot;
     }
     if (typeof pageFunction === "function") {
+      const source = String(pageFunction);
+      if (source.includes("panda-browser-ref-overlays")) {
+        if (arg && typeof arg === "object" && "refAttribute" in arg) {
+          this.labelOverlaysInstalled += 1;
+        } else {
+          this.labelOverlaysRemoved += 1;
+        }
+        return undefined;
+      }
       return await (pageFunction as (value: unknown) => unknown)(arg);
     }
     throw new Error("Unexpected evaluate call in test.");
@@ -172,6 +220,8 @@ class FakeBrowserContext {
     continue(): Promise<void>;
   }) => Promise<void>) | null = null;
   private pageListener: ((page: FakePage) => void) | null = null;
+  storageStateInput: unknown = undefined;
+  storageStatePaths: string[] = [];
 
   constructor(initialPage: FakePage) {
     this.pageQueue = [initialPage];
@@ -200,6 +250,20 @@ class FakeBrowserContext {
 
   async close(): Promise<void> {}
 
+  async storageState(options?: {path?: string}): Promise<Record<string, unknown>> {
+    if (options?.path) {
+      this.storageStatePaths.push(options.path);
+      await writeFile(options.path, JSON.stringify({
+        cookies: [{name: "session", value: "persisted"}],
+        origins: [],
+      }), "utf8");
+    }
+    return {
+      cookies: [{name: "session", value: "persisted"}],
+      origins: [],
+    };
+  }
+
   on(event: "page", listener: (page: FakePage) => void): void {
     if (event === "page") {
       this.pageListener = listener;
@@ -217,7 +281,8 @@ class FakeBrowser {
 
   constructor(readonly context: FakeBrowserContext) {}
 
-  async newContext(): Promise<FakeBrowserContext> {
+  async newContext(options?: {storageState?: unknown}): Promise<FakeBrowserContext> {
+    this.context.storageStateInput = options?.storageState;
     return this.context;
   }
 
@@ -316,6 +381,7 @@ describe("BrowserTool", () => {
     expect(() => BrowserTool.schema.parse({
       action: "navigate",
       url: "https://example.com",
+      snapshotMode: "full",
     })).not.toThrow();
 
     expect(() => BrowserTool.schema.parse({
@@ -332,6 +398,12 @@ describe("BrowserTool", () => {
       action: "select",
       selector: "select",
     })).toThrow("value or values is required.");
+
+    expect(() => BrowserTool.schema.parse({
+      action: "screenshot",
+      ref: "e1",
+      labels: true,
+    })).toThrow("labels is only supported for whole-page screenshots.");
   });
 
   it("delegates to the injected service and formats calls cleanly", async () => {
@@ -351,6 +423,52 @@ describe("BrowserTool", () => {
 
     expect(handle).toHaveBeenCalledOnce();
     expect(result.details).toMatchObject({action: "navigate", title: "Example"});
+  });
+
+  it("keeps live screenshot previews but redacts inline image data for persistence", () => {
+    const tool = new BrowserTool({
+      service: {
+        handle: vi.fn(),
+      },
+    });
+    const message = {
+      role: "toolResult" as const,
+      toolCallId: "call-1",
+      toolName: "browser",
+      isError: false,
+      timestamp: Date.now(),
+      content: [
+        {type: "text" as const, text: "Browser screenshot saved to /tmp/shot.png"},
+        {type: "image" as const, data: "ZmFrZQ==", mimeType: "image/png"},
+      ],
+      details: {
+        action: "screenshot",
+        path: "/tmp/shot.png",
+        artifact: {
+          kind: "image",
+          source: "browser",
+          path: "/tmp/shot.png",
+          mimeType: "image/png",
+        },
+      },
+    };
+
+    const redacted = tool.redactResultMessage(message);
+
+    expect(message.content).toHaveLength(2);
+    expect(redacted.content).toEqual([
+      {type: "text", text: "Browser screenshot saved to /tmp/shot.png"},
+    ]);
+    expect(redacted.details).toMatchObject({
+      action: "screenshot",
+      path: "/tmp/shot.png",
+      artifact: {
+        kind: "image",
+        source: "browser",
+        path: "/tmp/shot.png",
+        mimeType: "image/png",
+      },
+    });
   });
 
   it("builds the Docker command with pwuser, seccomp, labels, and loopback port mapping", () => {
@@ -645,6 +763,9 @@ describe("BrowserTool", () => {
       url: "https://example.com/docs",
       title: "Docs",
       text: "Hello from the docs page",
+      pageText: "Hello from the docs page",
+      dialogText: "",
+      signals: [],
       elements: [{ref: "e1", tag: "button", role: "button", text: "Continue"}],
     };
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
@@ -684,6 +805,9 @@ describe("BrowserTool", () => {
       url: popup.currentUrl,
       title: popup.currentTitle,
       text: "Popup body",
+      pageText: "Popup body",
+      dialogText: "",
+      signals: [],
       elements: [],
     };
     page.onLocatorClick = async () => {
@@ -706,7 +830,11 @@ describe("BrowserTool", () => {
     expect(result.details).toMatchObject({
       url: "https://example.com/popup",
       title: "Popup",
+      changes: {
+        pageSwitched: true,
+      },
     });
+    expect((result.content[0] as {type: string; text: string}).text).toContain("Switched to a new page");
     expect(page.closed).toBe(true);
   });
 
@@ -740,17 +868,228 @@ describe("BrowserTool", () => {
       action: "evaluate",
       truncated: true,
     });
-    expect((evaluate.content[0] as {type: string; text: string}).text.length).toBeLessThanOrEqual(12);
+    expect((evaluate.details as Record<string, unknown>).result).toBe("\"abcdefghijk");
+    expect((evaluate.content[0] as {type: string; text: string}).text).toContain("<<<EXTERNAL_UNTRUSTED_CONTENT");
 
     expect(screenshot.content[1]).toMatchObject({
       type: "image",
       mimeType: "image/png",
+    });
+    expect(screenshot.details).toMatchObject({
+      action: "screenshot",
+      artifact: {
+        kind: "image",
+        source: "browser",
+        mimeType: "image/png",
+      },
+    });
+    expect(pdf.details).toMatchObject({
+      action: "pdf",
+      artifact: {
+        kind: "pdf",
+        source: "browser",
+        mimeType: "application/pdf",
+      },
     });
     const screenshotPath = String((screenshot.details as Record<string, unknown>).path);
     const pdfPath = String((pdf.details as Record<string, unknown>).path);
     await expect(stat(screenshotPath)).resolves.toBeTruthy();
     await expect(stat(pdfPath)).resolves.toBeTruthy();
     await expect(readFile(pdfPath, "utf8")).resolves.toContain("%PDF-test");
+  });
+
+  it("returns the explicit evaluate hint when the page script yields nothing", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    tempDirs.push(tempDir);
+    const docker = createDockerExecMock();
+    const service = new BrowserSessionService({
+      execFileImpl: docker.execFileImpl as any,
+      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(new FakePage())) as any),
+      dataDir: tempDir,
+    });
+    services.push(service);
+
+    const result = await service.handle(
+      {action: "evaluate", script: "const x = 1;"},
+      createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
+    );
+
+    expect(result.details).toMatchObject({
+      action: "evaluate",
+      result: null,
+      truncated: false,
+    });
+    expect((result.content[0] as {type: string; text: string}).text).toContain("add an explicit `return`");
+  });
+
+  it("renders full snapshots with state badges, signals, and wrapped external content", async () => {
+    const docker = createDockerExecMock();
+    const page = new FakePage();
+    page.snapshot = {
+      url: "https://example.com/form",
+      title: "Checkout",
+      text: "Dialog warning Name field is invalid Continue browsing",
+      pageText: "Continue browsing",
+      dialogText: "Dialog warning Name field is invalid",
+      signals: ["dialog", "validation_error"],
+      elements: [
+        {
+          ref: "e1",
+          tag: "input",
+          role: "textbox",
+          text: "Name",
+          value: "x",
+          required: true,
+          invalid: true,
+          section: "dialog",
+        },
+        {
+          ref: "e2",
+          tag: "input",
+          role: "checkbox",
+          text: "Accept terms",
+          checked: true,
+        },
+      ],
+    };
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    tempDirs.push(tempDir);
+    const service = new BrowserSessionService({
+      execFileImpl: docker.execFileImpl as any,
+      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      dataDir: tempDir,
+    });
+    services.push(service);
+
+    const result = await service.handle(
+      {action: "snapshot", snapshotMode: "full"},
+      createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
+    );
+
+    const text = (result.content[0] as {type: string; text: string}).text;
+    expect(text).toContain("Signals: dialog, validation_error");
+    expect(text).toContain("<<<EXTERNAL_UNTRUSTED_CONTENT source=\"browser\" kind=\"snapshot\">>>");
+    expect(text).toContain("Dialog / overlay text:");
+    expect(text).toContain("- [e1] textbox [dialog] \"Name\" value=\"x\" [required] [invalid]");
+    expect(text).toContain("- [e2] checkbox \"Accept terms\" [checked]");
+    expect(result.details).toMatchObject({
+      action: "snapshot",
+      snapshotMode: "full",
+      signals: ["dialog", "validation_error"],
+      externalContent: {
+        source: "browser",
+        kind: "snapshot",
+      },
+    });
+  });
+
+  it("surfaces target changes after typing and keeps snapshot refs fresh", async () => {
+    const docker = createDockerExecMock();
+    const page = new FakePage();
+    page.snapshot = {
+      url: "https://example.com/form",
+      title: "Form",
+      text: "Email",
+      pageText: "Email",
+      dialogText: "",
+      signals: [],
+      elements: [
+        {
+          ref: "e1",
+          tag: "input",
+          role: "textbox",
+          text: "Email",
+          value: "",
+        },
+      ],
+    };
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    tempDirs.push(tempDir);
+    const service = new BrowserSessionService({
+      execFileImpl: docker.execFileImpl as any,
+      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      dataDir: tempDir,
+    });
+    services.push(service);
+
+    const result = await service.handle(
+      {action: "type", ref: "e1", text: "hello@example.com"},
+      createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
+    );
+
+    expect(result.details).toMatchObject({
+      action: "type",
+      changes: {
+        target: {
+          ref: "e1",
+          changed: ["value"],
+        },
+      },
+    });
+    expect((result.content[0] as {type: string; text: string}).text).toContain("Target e1 changed: value");
+    expect((result.content[0] as {type: string; text: string}).text).toContain("hello@example.com");
+  });
+
+  it("returns labeled screenshots with companion snapshot text and cleans overlays up", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    tempDirs.push(tempDir);
+    const docker = createDockerExecMock();
+    const page = new FakePage();
+    const service = new BrowserSessionService({
+      execFileImpl: docker.execFileImpl as any,
+      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      dataDir: tempDir,
+    });
+    services.push(service);
+
+    const result = await service.handle(
+      {action: "screenshot", labels: true},
+      createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
+    );
+
+    expect(result.content[1]).toMatchObject({
+      type: "image",
+      mimeType: "image/png",
+    });
+    expect((result.content[0] as {type: string; text: string}).text).toContain("<<<EXTERNAL_UNTRUSTED_CONTENT");
+    expect(result.details).toMatchObject({
+      action: "screenshot",
+      labels: true,
+      snapshotMode: "compact",
+      externalContent: {
+        source: "browser",
+        kind: "snapshot",
+      },
+    });
+    expect(page.labelOverlaysInstalled).toBe(1);
+    expect(page.labelOverlaysRemoved).toBe(1);
+  });
+
+  it("persists thread-scoped browser storage state across close and reopen", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    tempDirs.push(tempDir);
+    const docker = createDockerExecMock();
+    const firstContext = new FakeBrowserContext(new FakePage());
+    const secondContext = new FakeBrowserContext(new FakePage());
+    const connectBrowserImpl = vi.fn()
+      .mockResolvedValueOnce(new FakeBrowser(firstContext) as any)
+      .mockResolvedValueOnce(new FakeBrowser(secondContext) as any);
+    const service = new BrowserSessionService({
+      execFileImpl: docker.execFileImpl as any,
+      connectBrowserImpl: connectBrowserImpl as any,
+      dataDir: tempDir,
+    });
+    services.push(service);
+
+    const run = createRunContext({cwd: "/workspace/panda", threadId: "thread-1"});
+    await service.handle({action: "snapshot"}, run);
+    await service.handle({action: "close"}, run);
+    await service.handle({action: "snapshot"}, run);
+
+    expect(firstContext.storageStatePaths).toHaveLength(2);
+    expect(secondContext.storageStateInput).toBeTruthy();
+    expect(String(secondContext.storageStateInput)).toContain("storage-state.json");
+    await expect(stat(String(secondContext.storageStateInput))).resolves.toBeTruthy();
   });
 
   it("closes the persistent session and removes the container", async () => {

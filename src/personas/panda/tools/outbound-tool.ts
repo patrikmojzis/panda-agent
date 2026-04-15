@@ -26,12 +26,16 @@ const outboundItemSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("image"),
-    path: z.string().trim().min(1),
+    path: z.string().trim().min(1).describe(
+      "Absolute path or path relative to the current working directory. In remote bash mode, agent-home runner paths are translated automatically.",
+    ),
     caption: z.string().trim().min(1).optional(),
   }),
   z.object({
     type: z.literal("file"),
-    path: z.string().trim().min(1),
+    path: z.string().trim().min(1).describe(
+      "Absolute path or path relative to the current working directory. In remote bash mode, agent-home runner paths are translated automatically.",
+    ),
     filename: z.string().trim().min(1).optional(),
     caption: z.string().trim().min(1).optional(),
     mimeType: z.string().trim().min(1).optional(),

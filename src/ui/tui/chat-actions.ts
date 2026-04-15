@@ -4,6 +4,7 @@ import {resolveModelSelector, type ThinkingLevel,} from "../../kernel/agent/inde
 import type {ThreadRecord} from "../../domain/threads/runtime/index.js";
 import type {ChatRuntimeServices} from "./runtime.js";
 import {buildChatHelpText, describeUnknownCommand, runChatCommandLine} from "./chat-commands.js";
+import {collectThreadUsageSnapshot, formatThreadUsageSnapshot,} from "./usage-summary.js";
 import {
     type EntryRole,
     formatThinkingLevel,
@@ -133,6 +134,31 @@ async function handleThinkingCommand(host: ChatCommandHost, value: string): Prom
   return true;
 }
 
+async function handleUsageCommand(host: ChatCommandHost): Promise<boolean> {
+  try {
+    const services = host.requireServices();
+    const threadId = host.getCurrentThreadId();
+    const [thread, transcript] = await Promise.all([
+      services.getThread(threadId),
+      services.store.loadTranscript(threadId),
+    ]);
+    const summary = formatThreadUsageSnapshot(collectThreadUsageSnapshot({
+      thread,
+      transcript,
+      model: host.getModel(),
+      thinking: host.getThinking(),
+      isRunning: host.isRunning(),
+    }));
+
+    host.pushEntry("meta", "usage", summary);
+    host.setNotice("Added a usage snapshot.", "info");
+  } catch (error) {
+    host.showCommandError("usage", error instanceof Error ? error.message : String(error));
+  }
+
+  return true;
+}
+
 async function handleCompactCommand(host: ChatCommandHost, value: string): Promise<boolean> {
   if (!host.requireIdleRun("compacting")) {
     return true;
@@ -250,6 +276,7 @@ export async function runChatActionsCommandLine(
 ): Promise<boolean> {
   return await runChatCommandLine(commandLine, {
     help: () => showHelp(host),
+    usage: () => handleUsageCommand(host),
     model: (value) => handleModelCommand(host, value),
     thinking: (value) => handleThinkingCommand(host, value),
     compact: (value) => handleCompactCommand(host, value),

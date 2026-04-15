@@ -3,6 +3,7 @@ import {NEWLINE_HELP_LINES} from "./input.js";
 
 interface ChatCommandHandlers {
   help(): Promise<boolean> | boolean;
+  usage(): Promise<boolean> | boolean;
   model(value: string): Promise<boolean> | boolean;
   thinking(value: string): Promise<boolean> | boolean;
   compact(value: string): Promise<boolean> | boolean;
@@ -20,6 +21,7 @@ export function buildChatHelpText(thinkingCommandUsage: string): string {
   return [
     "Commands:",
     "/help shows command help.",
+    "/usage shows current context estimates, provider token usage, and cost.",
     "/model <selector-or-alias> changes the active model.",
     `${thinkingCommandUsage} changes the active thinking level.`,
     "/compact [instructions] summarizes older context and keeps recent turns verbatim.",
@@ -60,6 +62,8 @@ export async function runChatCommandLine(
   switch (command) {
     case "/help":
       return await handlers.help();
+    case "/usage":
+      return await handlers.usage();
     case "/model":
       return await handlers.model(value);
     case "/thinking":

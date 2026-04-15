@@ -1,9 +1,67 @@
 import path from "node:path";
 
+import {resolvePandaAgentDir} from "../../../app/runtime/data-dir.js";
+import {
+    resolveBashExecutionMode,
+    resolveRunnerCwd,
+    resolveRunnerCwdTemplate,
+} from "../../../integrations/shell/bash-executor.js";
 import type {ShellSession} from "../../../integrations/shell/types.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function trimNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function readContextAgentKey(context: unknown): string | null {
+  if (!isRecord(context)) {
+    return null;
+  }
+
+  return trimNonEmptyString(context.agentKey);
+}
+
+function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function resolveMountedAgentPath(
+  resolvedPath: string,
+  context: unknown,
+  env: NodeJS.ProcessEnv,
+): string {
+  if (resolveBashExecutionMode(env) !== "remote") {
+    return resolvedPath;
+  }
+
+  const agentKey = readContextAgentKey(context);
+  if (!agentKey) {
+    return resolvedPath;
+  }
+
+  const runnerCwdTemplate = resolveRunnerCwdTemplate(env);
+  if (!runnerCwdTemplate) {
+    return resolvedPath;
+  }
+
+  const runnerAgentRoot = path.resolve(resolveRunnerCwd(runnerCwdTemplate, agentKey));
+  if (!isPathWithinRoot(runnerAgentRoot, resolvedPath)) {
+    return resolvedPath;
+  }
+
+  // Remote bash sees the agent home through the runner mount, but file tools
+  // still run in panda-core and need the host-visible mirror path.
+  const relativePath = path.relative(runnerAgentRoot, resolvedPath);
+  return path.join(resolvePandaAgentDir(agentKey, env), relativePath);
 }
 
 function normalizeShellSession(shellSession: ShellSession): ShellSession {
@@ -64,8 +122,14 @@ export function ensurePandaShellSession(context: unknown): ShellSession | null {
   return nextShell;
 }
 
-export function resolvePandaPath(rawPath: string, context: unknown): string {
-  return path.isAbsolute(rawPath)
+export function resolvePandaPath(
+  rawPath: string,
+  context: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const resolvedPath = path.isAbsolute(rawPath)
     ? path.resolve(rawPath)
     : path.resolve(readPandaBaseCwd(context), rawPath);
+
+  return resolveMountedAgentPath(resolvedPath, context, env);
 }

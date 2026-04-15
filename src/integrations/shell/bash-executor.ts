@@ -20,7 +20,6 @@ import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import type {ShellExecutionContext} from "./types.js";
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
-const DEFAULT_RUNNER_CWD_TEMPLATE = "/root/.panda/agents/{agentKey}";
 
 export type BashExecutionMode = "local" | "remote";
 
@@ -88,8 +87,7 @@ export function resolveRunnerUrlTemplate(env: NodeJS.ProcessEnv = process.env): 
 }
 
 export function resolveRunnerCwdTemplate(env: NodeJS.ProcessEnv = process.env): string | null {
-  return firstNonEmpty(env.PANDA_RUNNER_CWD_TEMPLATE)
-    ?? (resolveBashExecutionMode(env) === "remote" ? DEFAULT_RUNNER_CWD_TEMPLATE : null);
+  return firstNonEmpty(env.PANDA_RUNNER_CWD_TEMPLATE);
 }
 
 function resolveAgentTemplateValue(template: string, agentKey: string): string {

@@ -180,7 +180,9 @@ function buildCachedTranscriptLines(input: {
             : theme.slate;
   const labelText = truncatePlainText(input.entry.title, LABEL_WIDTH);
   const label = padAnsiEnd(theme.bold(labelColor(labelText)), LABEL_WIDTH);
-  const wrappedBody = input.entry.role === "assistant"
+  const shouldRenderMarkdown = input.entry.role === "assistant"
+    || (input.entry.role === "meta" && input.entry.title === "usage");
+  const wrappedBody = shouldRenderMarkdown
     ? renderMarkdownLines(input.entry.body, input.bodyWidth)
     : wrapPlainText(input.entry.body, input.bodyWidth).map((line) => ({
         plain: line,
