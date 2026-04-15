@@ -4,11 +4,7 @@ import {DataType, newDb} from "pg-mem";
 
 import {Agent, stringToUserMessage,} from "../src/index.js";
 import {HeartbeatRunner} from "../src/domain/scheduling/heartbeats/runner.js";
-import {
-    type HomeThreadRecord,
-    type HomeThreadStore,
-    PostgresHomeThreadStore,
-} from "../src/domain/threads/home/index.js";
+import {PostgresSessionStore, type SessionHeartbeatRecord, type SessionStore} from "../src/domain/sessions/index.js";
 import {PostgresThreadRuntimeStore, ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
@@ -71,22 +67,23 @@ async function createHarness(options: {
 
   const threadStore = new PostgresThreadRuntimeStore({pool});
   await threadStore.ensureSchema();
-  const homeThreads = new PostgresHomeThreadStore({pool});
-  await homeThreads.ensureSchema();
+  const sessionStore = new PostgresSessionStore({pool});
 
   const alice = await threadStore.identityStore.createIdentity({
     id: "alice-id",
     handle: "alice",
     displayName: "Alice",
   });
-  await threadStore.createThread({
-    id: "home-thread",
-    identityId: alice.id,
+  await sessionStore.createSession({
+    id: "session-main",
     agentKey: "panda",
+    kind: "main",
+    currentThreadId: "session-thread",
+    createdByIdentityId: alice.id,
   });
-  await homeThreads.bindHomeThread({
-    identityId: alice.id,
-    threadId: "home-thread",
+  await threadStore.createThread({
+    id: "session-thread",
+    sessionId: "session-main",
   });
 
   const runtime = createMockRuntime(createAssistantMessage(options.responseText ?? "Heartbeat handled."));
@@ -103,7 +100,7 @@ async function createHarness(options: {
   });
 
   const runner = new HeartbeatRunner({
-    homeThreads,
+    sessions: sessionStore,
     coordinator,
     resolveInstructions: async () => options.heartbeatInstructions ?? null,
   });
@@ -112,7 +109,7 @@ async function createHarness(options: {
     alice,
     pool,
     threadStore,
-    homeThreads,
+    sessionStore,
     coordinator,
     runner,
     runtime,
@@ -133,54 +130,56 @@ describe("HeartbeatRunner", () => {
     }
   });
 
-  it("fires due heartbeats into the current home thread", async () => {
+  it("fires due heartbeats into the current session thread", async () => {
     const harness = await createHarness({
       heartbeatInstructions: "Always check unfinished promises before going quiet.",
     });
     pools.push(harness.pool);
 
     await harness.pool.query(
-      `UPDATE "thread_runtime_home_threads" SET heartbeat_next_fire_at = $2 WHERE identity_id = $1`,
-      [harness.alice.id, new Date(Date.now() - 1_000)],
+      `UPDATE "thread_runtime_session_heartbeats" SET next_fire_at = $2 WHERE session_id = $1`,
+      ["session-main", new Date(Date.now() - 1_000)],
     );
 
     await harness.runner.start();
-    await harness.coordinator.waitForIdle("home-thread");
+    await harness.coordinator.waitForIdle("session-thread");
     await harness.runner.stop();
 
-    const transcript = await harness.threadStore.loadTranscript("home-thread");
+    const transcript = await harness.threadStore.loadTranscript("session-thread");
     const heartbeatInput = transcript.find((entry) => entry.origin === "input" && entry.source === "heartbeat");
     expect(heartbeatInput?.metadata).toMatchObject({
       heartbeat: {
         kind: "interval",
-        identityId: harness.alice.id,
+        sessionId: "session-main",
       },
     });
     expect(heartbeatInput?.message).toMatchObject({
       role: "user",
       content: expect.stringContaining("Always check unfinished promises before going quiet."),
     });
+    expect(heartbeatInput?.message).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("the `panda_*` views are already scoped to this session."),
+    });
     expect(harness.runtime.complete).toHaveBeenCalledTimes(1);
 
-    const home = await harness.homeThreads.resolveHomeThread({
-      identityId: harness.alice.id,
-    });
-    expect(home?.heartbeat.lastFireAt).toBeDefined();
-    expect(home?.heartbeat.lastSkipReason).toBeUndefined();
-    expect(home?.heartbeat.nextFireAt).toBeGreaterThan(Date.now());
+    const heartbeat = await harness.sessionStore.getHeartbeat("session-main");
+    expect(heartbeat?.lastFireAt).toBeDefined();
+    expect(heartbeat?.lastSkipReason).toBeUndefined();
+    expect(heartbeat?.nextFireAt).toBeGreaterThan(Date.now());
   });
 
-  it("skips busy home threads instead of queueing stale heartbeats", async () => {
+  it("skips busy session threads instead of queueing stale heartbeats", async () => {
     const harness = await createHarness();
     pools.push(harness.pool);
 
-    await harness.coordinator.submitInput("home-thread", {
+    await harness.coordinator.submitInput("session-thread", {
       message: stringToUserMessage("queued work"),
       source: "tui",
     }, "queue");
     await harness.pool.query(
-      `UPDATE "thread_runtime_home_threads" SET heartbeat_next_fire_at = $2 WHERE identity_id = $1`,
-      [harness.alice.id, new Date(Date.now() - 1_000)],
+      `UPDATE "thread_runtime_session_heartbeats" SET next_fire_at = $2 WHERE session_id = $1`,
+      ["session-main", new Date(Date.now() - 1_000)],
     );
 
     await harness.runner.start();
@@ -188,54 +187,54 @@ describe("HeartbeatRunner", () => {
 
     const heartbeatInputs = await harness.pool.query(
       `SELECT id FROM "thread_runtime_inputs" WHERE thread_id = $1 AND source = 'heartbeat'`,
-      ["home-thread"],
+      ["session-thread"],
     );
     expect(heartbeatInputs.rows).toHaveLength(0);
     expect(harness.runtime.complete).not.toHaveBeenCalled();
 
-    const home = await harness.homeThreads.resolveHomeThread({
-      identityId: harness.alice.id,
-    });
-    expect(home?.heartbeat.lastFireAt).toBeUndefined();
-    expect(home?.heartbeat.lastSkipReason).toBe("busy");
-    expect(home?.heartbeat.nextFireAt).toBeGreaterThan(Date.now());
+    const heartbeat = await harness.sessionStore.getHeartbeat("session-main");
+    expect(heartbeat?.lastFireAt).toBeUndefined();
+    expect(heartbeat?.lastSkipReason).toBe("busy");
+    expect(heartbeat?.nextFireAt).toBeGreaterThan(Date.now());
   });
 
-  it("re-resolves home after claim so a switched home gets the heartbeat", async () => {
-    const oldHome: HomeThreadRecord = {
-      identityId: "alice-id",
-      threadId: "old-home",
-      heartbeat: {
-        enabled: true,
-        everyMinutes: 30,
-        nextFireAt: Date.now() - 1_000,
-      },
+  it("re-resolves the session after claim so a reset thread gets the heartbeat", async () => {
+    const oldHeartbeat: SessionHeartbeatRecord = {
+      sessionId: "session-main",
+      enabled: true,
+      everyMinutes: 30,
+      nextFireAt: Date.now() - 1_000,
       createdAt: 1,
       updatedAt: 1,
     };
-    const newHome: HomeThreadRecord = {
-      ...oldHome,
-      threadId: "new-home",
-      updatedAt: 2,
-    };
 
     let listed = false;
-    const homeThreads: HomeThreadStore = {
-      resolveHomeThread: vi.fn(async () => newHome),
-      bindHomeThread: vi.fn(async () => {
-        throw new Error("bindHomeThread should not be called in this test.");
-      }),
+    const sessions: SessionStore = {
+      ensureSchema: async () => {},
+      createSession: async () => { throw new Error("not needed"); },
+      getSession: vi.fn(async () => ({
+        id: "session-main",
+        agentKey: "panda",
+        kind: "main",
+        currentThreadId: "new-home",
+        createdAt: 1,
+        updatedAt: 2,
+      })),
+      getMainSession: async () => null,
+      listAgentSessions: async () => [],
+      updateCurrentThread: async () => { throw new Error("not needed"); },
+      getHeartbeat: async () => oldHeartbeat,
       listDueHeartbeats: vi.fn(async () => {
         if (listed) {
           return [];
         }
 
         listed = true;
-        return [oldHome];
+        return [oldHeartbeat];
       }),
-      claimHeartbeat: vi.fn(async () => oldHome),
-      recordHeartbeatResult: vi.fn(async () => newHome),
-      updateHeartbeatConfig: vi.fn(async () => newHome),
+      claimHeartbeat: vi.fn(async () => oldHeartbeat),
+      recordHeartbeatResult: vi.fn(async () => oldHeartbeat),
+      updateHeartbeatConfig: vi.fn(async () => oldHeartbeat),
     };
     const coordinator = {
       isThreadBusy: vi.fn(async (threadId: string) => {
@@ -248,15 +247,13 @@ describe("HeartbeatRunner", () => {
     } as unknown as ThreadRuntimeCoordinator;
 
     const runner = new HeartbeatRunner({
-      homeThreads,
+      sessions,
       coordinator,
     });
 
     await runner.start();
     await runner.stop();
 
-    expect(homeThreads.resolveHomeThread).toHaveBeenCalledWith({
-      identityId: "alice-id",
-    });
+    expect(sessions.getSession).toHaveBeenCalledWith("session-main");
   });
 });

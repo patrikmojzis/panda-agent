@@ -12,6 +12,15 @@ import {
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
 import {formatThinkingLevel} from "./chat-shared.js";
 
+function readAgentKeyFromThreadContext(thread: ThreadRecord): string {
+  if (typeof thread.context !== "object" || thread.context === null || Array.isArray(thread.context)) {
+    return "unknown";
+  }
+
+  const agentKey = (thread.context as Record<string, unknown>).agentKey;
+  return typeof agentKey === "string" && agentKey.trim() ? agentKey : "unknown";
+}
+
 interface UsageCost {
   input: number;
   output: number;
@@ -272,7 +281,7 @@ export function collectThreadUsageSnapshot(options: {
 
   return {
     threadId: options.thread.id,
-    agentKey: options.thread.agentKey,
+    agentKey: readAgentKeyFromThreadContext(options.thread),
     model: options.thread.model ?? options.model,
     thinking: options.thread.thinking ?? options.thinking,
     runState: options.isRunning ? "thinking" : "idle",

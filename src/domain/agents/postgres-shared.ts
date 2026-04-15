@@ -4,8 +4,9 @@ export interface AgentTableNames {
   prefix: string;
   agents: string;
   agentSkills: string;
+  agentPrompts: string;
   agentDocuments: string;
-  relationshipDocuments: string;
+  agentPairings: string;
   agentDiary: string;
 }
 
@@ -13,8 +14,9 @@ export function buildAgentTableNames(prefix: string): AgentTableNames {
   return buildPrefixedRelationNames(prefix, {
     agents: "agents",
     agentSkills: "agent_skills",
+    agentPrompts: "agent_prompts",
     agentDocuments: "agent_documents",
-    relationshipDocuments: "relationship_documents",
+    agentPairings: "agent_pairings",
     agentDiary: "agent_diary",
   });
 }

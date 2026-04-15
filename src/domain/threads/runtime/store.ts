@@ -22,7 +22,7 @@ export interface ThreadEnqueueResult {
 export interface ThreadRuntimeStore {
   createThread(input: CreateThreadInput): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
-  listThreadSummaries(limit?: number, identityId?: string): Promise<readonly ThreadSummaryRecord[]>;
+  listThreadSummaries(limit?: number, sessionId?: string): Promise<readonly ThreadSummaryRecord[]>;
   updateThread(threadId: string, update: ThreadUpdate): Promise<ThreadRecord>;
   loadTranscript(threadId: string): Promise<readonly ThreadMessageRecord[]>;
   enqueueInput(

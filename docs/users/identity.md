@@ -6,38 +6,46 @@ Panda keeps these separate on purpose:
 
 - `agent` = persona
 - `identity` = person
-- `thread` = conversation
+- `session` = durable agent lane
+- `thread` = replaceable backing history
 
-The durable owner is the identity.
-Threads belong to identities. Agents do not own threads by themselves.
+Identity is not the runtime owner anymore.
+It is the participant and access principal.
 
-## Home Thread Behavior
+## What Identity Does
 
-Panda chat is built around a `home` thread for the `(identity, agent)` relationship.
+Identity is responsible for:
+
+- who is allowed to talk to an agent
+- which external actor maps to which person
+- optional identity-scoped memory and diary access
+- speaker provenance in transcript history
+
+Identity does not own:
+
+- sessions
+- threads
+- heartbeat
+- watches
+- scheduled tasks
+
+## Pairing
+
+Access is granted through global `identity <-> agent` pairings.
 
 That means:
 
-- one identity can have multiple Pandas
-- each Panda can have its own home thread
-- the same Panda can be reached from TUI and channels
-
-When you open chat:
-
-- if the home thread does not exist yet, Panda creates it
-- if it already exists on the requested agent, Panda opens it
-- if it exists on another agent, Panda fails loudly
-
-That last rule is deliberate. Silent switching is bullshit.
+- one identity can pair with many agents
+- one agent can pair with many identities
+- once paired, that identity can access all sessions for that agent
 
 ## Create An Identity
 
 Fresh setup:
 
 ```bash
-panda identity create local --agent luna
+panda identity create local
 ```
-
-That creates the identity and sets the default agent for future home creation.
 
 List identities:
 
@@ -45,21 +53,23 @@ List identities:
 panda identity list
 ```
 
-## Change The Agent The Right Way
-
-If you only want future home creation to prefer a different agent:
+Pair the identity to an agent:
 
 ```bash
-panda identity set-default-agent local luna
+panda agent pair luna local
 ```
 
-If you want to replace the current home thread's agent:
+Remove the pairing:
 
 ```bash
-panda identity switch-home-agent local luna
+panda agent unpair luna local
 ```
 
-Do not mix those up.
+List pairings for an agent:
+
+```bash
+panda agent pairings luna
+```
 
 ## Common Flows
 
@@ -67,42 +77,41 @@ Fresh local setup:
 
 ```bash
 panda agent create luna
-panda identity create local --agent luna
+panda identity create local
+panda agent pair luna local
 panda run
-panda chat --identity local
+panda chat --identity local --agent luna
 ```
 
-Switch an existing identity to a new agent:
+Open chat when the identity is already paired:
 
 ```bash
-panda agent create luna
-panda identity switch-home-agent local luna
-panda chat --identity local
+panda chat --identity local --agent luna
 ```
 
-Keep the current home, change only the default:
+If the identity is paired to exactly one agent, Panda can infer the agent:
 
 ```bash
-panda identity set-default-agent local luna
+panda chat --identity local
 ```
 
 ## Channels
 
 Channel workers resolve people to identities.
-They do not choose the agent.
+They do not own sessions.
 
 That means:
 
 - pair Telegram or WhatsApp to an identity
-- let `panda run` own thread execution
-- do not expect channel workers to silently rewrite the home persona
+- pair that identity to the right agent
+- let `panda run` resolve session bindings and thread execution
 
 ## Hard Rules
 
-- do not expect `panda agent create` to create a home thread
-- do not use `set-default-agent` when you mean "replace my current home"
+- do not expect identity to own threads anymore
+- do not look for `set-default-agent` or `switch-home-agent`; they are gone
 - always start `panda run` before chat or channel workers
-- treat identity as the durable owner and the agent as the persona layered on top
+- treat identity as the participant and agent as the durable brain
 
 If you are changing the identity model itself, use the developer doc:
 

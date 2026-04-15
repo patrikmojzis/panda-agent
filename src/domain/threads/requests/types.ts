@@ -8,10 +8,9 @@ export type PandaRuntimeRequestKind =
   | "telegram_reaction"
   | "whatsapp_message"
   | "tui_input"
-  | "create_thread"
-  | "resolve_home_thread"
-  | "reset_home_thread"
-  | "switch_home_agent"
+  | "create_branch_session"
+  | "resolve_main_session_thread"
+  | "reset_session"
   | "abort_thread"
   | "compact_thread"
   | "update_thread";
@@ -69,26 +68,29 @@ export interface TuiInputRequestPayload extends BaseRuntimeRequestPayload {
   threadId?: string;
   actorId: string;
   externalMessageId: string;
+  identityHandle?: string;
   text: string;
 }
 
-export interface CreateThreadRequestPayload extends BaseRuntimeRequestPayload {
-  id?: string;
+export interface CreateBranchSessionRequestPayload extends BaseRuntimeRequestPayload {
+  sessionId?: string;
   agentKey?: string;
   model?: string;
   thinking?: ThinkingLevel;
   inferenceProjection?: InferenceProjection;
 }
 
-export interface ResolveHomeThreadRequestPayload extends BaseRuntimeRequestPayload {
+export interface ResolveMainSessionThreadRequestPayload extends BaseRuntimeRequestPayload {
   agentKey?: string;
   model?: string;
   thinking?: ThinkingLevel;
   inferenceProjection?: InferenceProjection;
 }
 
-export interface ResetHomeThreadRequestPayload extends BaseRuntimeRequestPayload {
-  source: "telegram" | "tui";
+export interface ResetSessionRequestPayload extends BaseRuntimeRequestPayload {
+  source: "telegram" | "tui" | "operator";
+  sessionId?: string;
+  threadId?: string;
   connectorKey?: string;
   externalConversationId?: string;
   externalActorId?: string;
@@ -97,10 +99,6 @@ export interface ResetHomeThreadRequestPayload extends BaseRuntimeRequestPayload
   model?: string;
   thinking?: ThinkingLevel;
   inferenceProjection?: InferenceProjection;
-}
-
-export interface SwitchHomeAgentRequestPayload extends BaseRuntimeRequestPayload {
-  agentKey: string;
 }
 
 export interface AbortThreadRequestPayload extends BaseRuntimeRequestPayload {
@@ -123,10 +121,9 @@ export type PandaRuntimeRequestPayload =
   | TelegramReactionRequestPayload
   | WhatsAppMessageRequestPayload
   | TuiInputRequestPayload
-  | CreateThreadRequestPayload
-  | ResolveHomeThreadRequestPayload
-  | ResetHomeThreadRequestPayload
-  | SwitchHomeAgentRequestPayload
+  | CreateBranchSessionRequestPayload
+  | ResolveMainSessionThreadRequestPayload
+  | ResetSessionRequestPayload
   | AbortThreadRequestPayload
   | CompactThreadRequestPayload
   | UpdateThreadRequestPayload;

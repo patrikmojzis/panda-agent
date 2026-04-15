@@ -38,7 +38,7 @@ describe("AgentMemoryContext", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      documents: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
     await agentStore.setAgentDocument("panda", "soul", "Be kind.");
     await agentStore.setRelationshipDocument("panda", "alice-id", "memory", "Alice likes tea.");
@@ -63,5 +63,6 @@ describe("AgentMemoryContext", () => {
     expect(content).toContain("Summaries only. Query `panda_agent_skills` for full skill bodies when you need the exact content.");
     expect(content).toContain("calendar\nUse this for calendar work.");
     expect(content).not.toContain("Long skill body.");
+    expect(content).not.toContain("Relationship identity:");
   });
 });

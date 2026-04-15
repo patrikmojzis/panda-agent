@@ -11,6 +11,9 @@ Review pending promises, reminders, and unfinished follow-ups.${heartbeatGuidanc
 [Heartbeat Guidance]
 ${heartbeatGuidance}` : ""}
 
+If you inspect tasks or watches with readonly SQL, the \`panda_*\` views are already scoped to this session.
+Use direct session-scoped queries like \`SELECT id, title, enabled FROM panda_scheduled_tasks ORDER BY created_at DESC LIMIT 20\` or \`SELECT id, watch_key, status FROM panda_watches ORDER BY updated_at DESC LIMIT 20\`.
+Do not add \`thread_id\` filters, \`is_active\` flags, or extra \`session_id\` subqueries unless you are deliberately joining raw tables outside the \`panda_*\` views.
 Do not invent stale work.
 Only use outbound if you intentionally want to reach the user.
 If nothing needs attention, keep it quiet and move on.

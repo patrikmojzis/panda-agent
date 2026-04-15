@@ -1,10 +1,9 @@
 import {stringToUserMessage} from "../../../kernel/agent/index.js";
 import {renderScheduledTaskPrompt} from "../../../prompts/runtime/scheduled-tasks.js";
 import type {RememberedRoute} from "../../channels/types.js";
-import type {HomeThreadStore} from "../../threads/home/store.js";
+import type {SessionRouteRepo, SessionStore} from "../../sessions/index.js";
 import {summarizeMessageText} from "../../../personas/panda/message-preview.js";
 import type {OutboundDeliveryStore} from "../../channels/deliveries/store.js";
-import type {ThreadRouteRepo} from "../../threads/routes/repo.js";
 import type {ThreadRuntimeCoordinator} from "../../threads/runtime/coordinator.js";
 import type {ThreadRuntimeStore} from "../../threads/runtime/store.js";
 import {computeClaimNextFireAt} from "./schedule.js";
@@ -24,8 +23,8 @@ const SCHEDULED_TASK_SOURCE = "scheduled_task";
 
 export interface ScheduledTaskRunnerOptions {
   tasks: ScheduledTaskStore;
-  homeThreads: HomeThreadStore;
-  threadRoutes: ThreadRouteRepo;
+  sessions: SessionStore;
+  sessionRoutes: SessionRouteRepo;
   outboundDeliveries: OutboundDeliveryStore;
   threadStore: ThreadRuntimeStore;
   coordinator: ThreadRuntimeCoordinator;
@@ -68,15 +67,9 @@ function buildScheduledTaskPrompt(task: ScheduledTaskRecord, scheduledFor: numbe
   });
 }
 
-async function resolveTargetThreadId(task: ScheduledTaskRecord, homeThreads: HomeThreadStore): Promise<string | undefined> {
-  if (task.targetKind === "thread") {
-    return task.targetThreadId;
-  }
-
-  const home = await homeThreads.resolveHomeThread({
-    identityId: task.identityId,
-  });
-  return home?.threadId;
+async function resolveTargetThreadId(task: ScheduledTaskRecord, sessions: SessionStore): Promise<string | undefined> {
+  const session = await sessions.getSession(task.sessionId);
+  return session.currentThreadId;
 }
 
 async function readLatestThreadRunSummary(
@@ -151,8 +144,8 @@ async function enqueueTextDelivery(options: {
 
 export class ScheduledTaskRunner {
   private readonly tasks: ScheduledTaskStore;
-  private readonly homeThreads: HomeThreadStore;
-  private readonly threadRoutes: ThreadRouteRepo;
+  private readonly sessions: SessionStore;
+  private readonly sessionRoutes: SessionRouteRepo;
   private readonly outboundDeliveries: OutboundDeliveryStore;
   private readonly threadStore: ThreadRuntimeStore;
   private readonly coordinator: ThreadRuntimeCoordinator;
@@ -168,8 +161,8 @@ export class ScheduledTaskRunner {
 
   constructor(options: ScheduledTaskRunnerOptions) {
     this.tasks = options.tasks;
-    this.homeThreads = options.homeThreads;
-    this.threadRoutes = options.threadRoutes;
+    this.sessions = options.sessions;
+    this.sessionRoutes = options.sessionRoutes;
     this.outboundDeliveries = options.outboundDeliveries;
     this.threadStore = options.threadStore;
     this.coordinator = options.coordinator;
@@ -273,7 +266,7 @@ export class ScheduledTaskRunner {
   }
 
   private async processExecutePhase(claim: ClaimScheduledTaskResult): Promise<void> {
-    const resolvedThreadId = await resolveTargetThreadId(claim.task, this.homeThreads);
+    const resolvedThreadId = await resolveTargetThreadId(claim.task, this.sessions);
     if (!resolvedThreadId) {
       await this.tasks.failTaskRun({
         runId: claim.run.id,
@@ -287,8 +280,9 @@ export class ScheduledTaskRunner {
       return;
     }
 
-    const route = await this.threadRoutes.getLastRoute({
-      threadId: resolvedThreadId,
+    const route = await this.sessionRoutes.getLastRoute({
+      sessionId: claim.task.sessionId,
+      identityId: claim.task.createdByIdentityId,
     });
 
     await this.tasks.startTaskRun({
@@ -380,9 +374,9 @@ export class ScheduledTaskRunner {
 
   private async processDeliverPhase(claim: ClaimScheduledTaskResult): Promise<void> {
     const executeRun = await this.tasks.getLatestTaskRun(claim.task.id, "execute");
-    const resolvedThreadId = executeRun?.resolvedThreadId;
+    const sourceThreadId = executeRun?.resolvedThreadId;
     const threadRunId = executeRun?.threadRunId;
-    if (!executeRun || !resolvedThreadId || !threadRunId) {
+    if (!executeRun || !sourceThreadId || !threadRunId) {
       await this.tasks.failTaskRun({
         runId: claim.run.id,
         error: `Scheduled task ${claim.task.id} has no prepared output to deliver.`,
@@ -392,7 +386,7 @@ export class ScheduledTaskRunner {
       return;
     }
 
-    const transcript = await this.threadStore.loadTranscript(resolvedThreadId);
+    const transcript = await this.threadStore.loadTranscript(sourceThreadId);
     const assistantMessage = [...transcript].reverse().find((entry) => {
       return entry.runId === threadRunId && entry.message.role === "assistant";
     });
@@ -400,7 +394,7 @@ export class ScheduledTaskRunner {
     if (!assistantText) {
       await this.tasks.failTaskRun({
         runId: claim.run.id,
-        resolvedThreadId,
+        resolvedThreadId: sourceThreadId,
         threadRunId,
         deliveryStatus: "unavailable",
         error: `Scheduled task ${claim.task.id} has no assistant output to deliver.`,
@@ -409,8 +403,22 @@ export class ScheduledTaskRunner {
       return;
     }
 
-    const route = await this.threadRoutes.getLastRoute({
-      threadId: resolvedThreadId,
+    const resolvedThreadId = await resolveTargetThreadId(claim.task, this.sessions);
+    if (!resolvedThreadId) {
+      await this.tasks.failTaskRun({
+        runId: claim.run.id,
+        resolvedThreadId: sourceThreadId,
+        threadRunId,
+        deliveryStatus: "unavailable",
+        error: `Scheduled task ${claim.task.id} has no resolved session thread to deliver through.`,
+      });
+      await this.tasks.markTaskCompleted(claim.task.id);
+      return;
+    }
+
+    const route = await this.sessionRoutes.getLastRoute({
+      sessionId: claim.task.sessionId,
+      identityId: claim.task.createdByIdentityId,
     });
     if (!route) {
       await this.tasks.failTaskRun({

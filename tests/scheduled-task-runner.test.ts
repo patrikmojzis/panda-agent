@@ -4,10 +4,9 @@ import {DataType, newDb} from "pg-mem";
 
 import {Agent,} from "../src/index.js";
 import {PostgresScheduledTaskStore, ScheduledTaskRunner,} from "../src/domain/scheduling/tasks/index.js";
-import {PostgresHomeThreadStore,} from "../src/domain/threads/home/index.js";
+import {PostgresSessionStore, SessionRouteRepo} from "../src/domain/sessions/index.js";
 import {PostgresThreadRuntimeStore, ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
 import {PostgresOutboundDeliveryStore,} from "../src/domain/channels/deliveries/index.js";
-import {ThreadRouteRepo} from "../src/domain/threads/routes/repo.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
   return {
@@ -70,12 +69,11 @@ async function createHarness(options: {
 
   const threadStore = new PostgresThreadRuntimeStore({pool});
   await threadStore.ensureSchema();
+  const sessionStore = new PostgresSessionStore({pool});
   const scheduledTasks = new PostgresScheduledTaskStore({pool});
   await scheduledTasks.ensureSchema();
-  const homeThreads = new PostgresHomeThreadStore({pool});
-  await homeThreads.ensureSchema();
-  const threadRoutes = new ThreadRouteRepo({pool});
-  await threadRoutes.ensureSchema();
+  const sessionRoutes = new SessionRouteRepo({pool});
+  await sessionRoutes.ensureSchema();
   const outboundDeliveries = new PostgresOutboundDeliveryStore({pool});
   await outboundDeliveries.ensureSchema();
 
@@ -84,19 +82,22 @@ async function createHarness(options: {
     handle: "alice",
     displayName: "Alice",
   });
-  await threadStore.createThread({
-    id: "home-thread",
-    identityId: alice.id,
+  await sessionStore.createSession({
+    id: "session-main",
     agentKey: "panda",
+    kind: "main",
+    currentThreadId: "session-thread",
+    createdByIdentityId: alice.id,
   });
-  await homeThreads.bindHomeThread({
-    identityId: alice.id,
-    threadId: "home-thread",
+  await threadStore.createThread({
+    id: "session-thread",
+    sessionId: "session-main",
   });
 
   if (options.routeSource) {
-    await threadRoutes.saveLastRoute({
-      threadId: "home-thread",
+    await sessionRoutes.saveLastRoute({
+      sessionId: "session-main",
+      identityId: alice.id,
       route: {
         source: options.routeSource,
         connectorKey: options.routeConnectorKey ?? "connector-1",
@@ -122,8 +123,8 @@ async function createHarness(options: {
 
   const runner = new ScheduledTaskRunner({
     tasks: scheduledTasks,
-    homeThreads,
-    threadRoutes,
+    sessions: sessionStore,
+    sessionRoutes,
     outboundDeliveries,
     threadStore,
     coordinator,
@@ -133,9 +134,9 @@ async function createHarness(options: {
     alice,
     pool,
     threadStore,
+    sessionStore,
     scheduledTasks,
-    homeThreads,
-    threadRoutes,
+    sessionRoutes,
     outboundDeliveries,
     coordinator,
     runner,
@@ -168,8 +169,8 @@ describe("ScheduledTaskRunner", () => {
     pools.push(harness.pool);
 
     const task = await harness.scheduledTasks.createTask({
-      identityId: harness.alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
+      createdByIdentityId: harness.alice.id,
       title: "Buy apples",
       instruction: "Remind me to buy apples.",
       schedule: {
@@ -191,6 +192,10 @@ describe("ScheduledTaskRunner", () => {
       deliveryStatus: "sent",
     });
 
+    const transcript = await harness.threadStore.loadTranscript("session-thread");
+    const input = transcript.find((entry) => entry.origin === "input" && entry.source === "scheduled_task");
+    expect(JSON.stringify(input?.message)).toContain("The user is not actively watching this session right now.");
+
     const delivery = await harness.outboundDeliveries.claimNextPendingDelivery({
       channel: "telegram",
       connectorKey: "bot-1",
@@ -210,13 +215,13 @@ describe("ScheduledTaskRunner", () => {
     pools.push(harness.pool);
 
     const task = await harness.scheduledTasks.createTask({
-      identityId: harness.alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
+      createdByIdentityId: harness.alice.id,
       title: "Morning report",
       instruction: "Deliver the report.",
       schedule: {
         kind: "recurring",
-        cron: "* * * * *",
+        cron: "0 0 1 1 *",
         timezone: "UTC",
       },
     });
@@ -244,8 +249,8 @@ describe("ScheduledTaskRunner", () => {
     const deliverAt = new Date(Date.now() + 60_000).toISOString();
 
     const task = await harness.scheduledTasks.createTask({
-      identityId: harness.alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
+      createdByIdentityId: harness.alice.id,
       title: "Bee research",
       instruction: "Research bees and prepare a report.",
       schedule: {
@@ -261,6 +266,9 @@ describe("ScheduledTaskRunner", () => {
     let updated = await harness.scheduledTasks.getTask(task.id);
     expect(updated.nextFireKind).toBe("deliver");
     expect(updated.nextFireAt).toBe(Date.parse(deliverAt));
+    const executeTranscript = await harness.threadStore.loadTranscript("session-thread");
+    const executeInput = executeTranscript.find((entry) => entry.origin === "input" && entry.source === "scheduled_task");
+    expect(JSON.stringify(executeInput?.message)).toContain("leave the final result in the current session history");
     expect(await harness.outboundDeliveries.claimNextPendingDelivery({
       channel: "telegram",
       connectorKey: "bot-1",
@@ -298,8 +306,8 @@ describe("ScheduledTaskRunner", () => {
     pools.push(harness.pool);
 
     const task = await harness.scheduledTasks.createTask({
-      identityId: harness.alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
+      createdByIdentityId: harness.alice.id,
       title: "No route",
       instruction: "Do the work anyway.",
       schedule: {

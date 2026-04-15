@@ -3,7 +3,7 @@ export {
   type PandaClient,
   type PandaClientCompactResult,
   type PandaClientOptions,
-  type PandaClientThreadOptions,
+  type PandaClientSessionOptions,
 } from "./client.js";
 export {
   createPandaDaemon,

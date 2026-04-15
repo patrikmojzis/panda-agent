@@ -2,8 +2,8 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {ensureReadonlyChatQuerySchema, PostgresThreadRuntimeStore,} from "../src/domain/threads/runtime/index.js";
-import {PostgresHomeThreadStore} from "../src/domain/threads/home/index.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
+import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
 
 class PgMemReadonlySchemaQueryable {
@@ -36,8 +36,7 @@ class PgMemReadonlySchemaQueryable {
           CREATE VIEW "panda_threads" AS
           SELECT
             t.id,
-            t.identity_id,
-            t.agent_key
+            t.session_id
           FROM "thread_runtime_threads" AS t
           WHERE ${whereClause}
         `);
@@ -53,17 +52,13 @@ class PgMemReadonlySchemaQueryable {
           CREATE VIEW "panda_scheduled_tasks" AS
           SELECT
             scheduled_tasks.id,
-            scheduled_tasks.identity_id,
-            scheduled_tasks.agent_key,
-            CASE
-              WHEN scheduled_tasks.target_kind = 'thread' THEN scheduled_tasks.target_thread_id
-              ELSE home_threads.thread_id
-            END AS resolved_thread_id
+            scheduled_tasks.session_id,
+            scheduled_tasks.created_by_identity_id,
+            session.current_thread_id AS resolved_thread_id
           FROM "thread_runtime_scheduled_tasks" AS scheduled_tasks
-          LEFT JOIN "thread_runtime_home_threads" AS home_threads
-            ON home_threads.identity_id = scheduled_tasks.identity_id
-          WHERE scheduled_tasks.identity_id = current_setting('panda.identity_id', true)
-            AND scheduled_tasks.agent_key = current_setting('panda.agent_key', true)
+          INNER JOIN "thread_runtime_agent_sessions" AS session
+            ON session.id = scheduled_tasks.session_id
+          WHERE scheduled_tasks.session_id = current_setting('panda.session_id', true)
         `);
         continue;
       }
@@ -74,14 +69,12 @@ class PgMemReadonlySchemaQueryable {
           SELECT
             scheduled_task_runs.id,
             scheduled_task_runs.task_id,
-            scheduled_task_runs.identity_id,
-            scheduled_task_runs.agent_key,
+            scheduled_task_runs.session_id,
             scheduled_task_runs.status,
             scheduled_task_runs.delivery_status,
             scheduled_task_runs.created_at
           FROM "thread_runtime_scheduled_task_runs" AS scheduled_task_runs
-          WHERE scheduled_task_runs.identity_id = current_setting('panda.identity_id', true)
-            AND scheduled_task_runs.agent_key = current_setting('panda.agent_key', true)
+          WHERE scheduled_task_runs.session_id = current_setting('panda.session_id', true)
         `);
         continue;
       }
@@ -91,17 +84,13 @@ class PgMemReadonlySchemaQueryable {
           CREATE VIEW "panda_watches" AS
           SELECT
             watch.id,
-            watch.identity_id,
-            watch.agent_key,
-            CASE
-              WHEN watch.target_kind = 'thread' THEN watch.target_thread_id
-              ELSE home_threads.thread_id
-            END AS resolved_thread_id
+            watch.session_id,
+            watch.created_by_identity_id,
+            session.current_thread_id AS resolved_thread_id
           FROM "thread_runtime_watches" AS watch
-          LEFT JOIN "thread_runtime_home_threads" AS home_threads
-            ON home_threads.identity_id = watch.identity_id
-          WHERE watch.identity_id = current_setting('panda.identity_id', true)
-            AND watch.agent_key = current_setting('panda.agent_key', true)
+          INNER JOIN "thread_runtime_agent_sessions" AS session
+            ON session.id = watch.session_id
+          WHERE watch.session_id = current_setting('panda.session_id', true)
         `);
         continue;
       }
@@ -112,13 +101,11 @@ class PgMemReadonlySchemaQueryable {
           SELECT
             watch_runs.id,
             watch_runs.watch_id,
-            watch_runs.identity_id,
-            watch_runs.agent_key,
+            watch_runs.session_id,
             watch_runs.status,
             watch_runs.created_at
           FROM "thread_runtime_watch_runs" AS watch_runs
-          WHERE watch_runs.identity_id = current_setting('panda.identity_id', true)
-            AND watch_runs.agent_key = current_setting('panda.agent_key', true)
+          WHERE watch_runs.session_id = current_setting('panda.session_id', true)
         `);
         continue;
       }
@@ -129,12 +116,11 @@ class PgMemReadonlySchemaQueryable {
           SELECT
             watch_events.id,
             watch_events.watch_id,
-            watch_events.identity_id,
-            watch_events.agent_key,
+            watch_events.session_id,
+            watch_events.created_by_identity_id,
             watch_events.created_at
           FROM "thread_runtime_watch_events" AS watch_events
-          WHERE watch_events.identity_id = current_setting('panda.identity_id', true)
-            AND watch_events.agent_key = current_setting('panda.agent_key', true)
+          WHERE watch_events.session_id = current_setting('panda.session_id', true)
         `);
         continue;
       }
@@ -184,8 +170,8 @@ function createScopedPool() {
 
   return {
     pool,
-    setScope(next: {identityId?: string | null; agentKey?: string | null}) {
-      scope.set("panda.identity_id", next.identityId ?? null);
+    setScope(next: {sessionId?: string | null; agentKey?: string | null}) {
+      scope.set("panda.session_id", next.sessionId ?? null);
       scope.set("panda.agent_key", next.agentKey ?? null);
     },
   };
@@ -213,18 +199,26 @@ describe("PostgresScheduledTaskStore", () => {
 
     const threadStore = new PostgresThreadRuntimeStore({pool});
     await threadStore.ensureSchema();
+    const sessionStore = new PostgresSessionStore({pool});
     const alice = await threadStore.identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
+    });
+    await sessionStore.createSession({
+      id: "session-main",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "session-thread",
+      createdByIdentityId: alice.id,
     });
 
     const scheduledTasks = new PostgresScheduledTaskStore({pool});
     await scheduledTasks.ensureSchema();
 
     const created = await scheduledTasks.createTask({
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
+      createdByIdentityId: alice.id,
       title: "Bee research",
       instruction: "Research bees and summarize the result.",
       schedule: {
@@ -232,15 +226,12 @@ describe("PostgresScheduledTaskStore", () => {
         runAt: "2026-04-11T03:00:00+02:00",
         deliverAt: "2026-04-11T08:00:00+02:00",
       },
-      targetThreadId: "thread-branch",
     });
 
     expect(created).toMatchObject({
-      identityId: "alice-id",
-      agentKey: "panda",
+      sessionId: "session-main",
+      createdByIdentityId: "alice-id",
       title: "Bee research",
-      targetKind: "thread",
-      targetThreadId: "thread-branch",
       schedule: {
         kind: "once",
         runAt: "2026-04-11T01:00:00.000Z",
@@ -251,23 +242,19 @@ describe("PostgresScheduledTaskStore", () => {
 
     const updated = await scheduledTasks.updateTask({
       taskId: created.id,
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
       title: "Morning news",
       schedule: {
         kind: "recurring",
         cron: "0 8 * * *",
         timezone: "Europe/Bratislava",
       },
-      targetThreadId: null,
       enabled: false,
     });
 
     expect(updated).toMatchObject({
       id: created.id,
       title: "Morning news",
-      targetKind: "home",
-      targetThreadId: undefined,
       enabled: false,
       schedule: {
         kind: "recurring",
@@ -279,8 +266,7 @@ describe("PostgresScheduledTaskStore", () => {
 
     const cancelled = await scheduledTasks.cancelTask({
       taskId: created.id,
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
       reason: "done already",
     });
 
@@ -294,11 +280,10 @@ describe("PostgresScheduledTaskStore", () => {
 
     const threadStore = new PostgresThreadRuntimeStore({pool});
     await threadStore.ensureSchema();
+    const sessionStore = new PostgresSessionStore({pool});
     const scheduledTasks = new PostgresScheduledTaskStore({pool});
     await scheduledTasks.ensureSchema();
     await new PostgresWatchStore({pool}).ensureSchema();
-    const homeThreads = new PostgresHomeThreadStore({pool});
-    await homeThreads.ensureSchema();
 
     const alice = await threadStore.identityStore.createIdentity({
       id: "alice-id",
@@ -311,14 +296,24 @@ describe("PostgresScheduledTaskStore", () => {
       displayName: "Bob",
     });
 
-    await homeThreads.bindHomeThread({
-      identityId: alice.id,
-      threadId: "home-a",
+    await sessionStore.createSession({
+      id: "session-alice",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "home-a",
+      createdByIdentityId: alice.id,
+    });
+    await sessionStore.createSession({
+      id: "session-bob",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "home-bob",
+      createdByIdentityId: bob.id,
     });
 
     const aliceTask = await scheduledTasks.createTask({
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-alice",
+      createdByIdentityId: alice.id,
       title: "Buy apples",
       instruction: "Remind me to buy apples.",
       schedule: {
@@ -327,8 +322,8 @@ describe("PostgresScheduledTaskStore", () => {
       },
     });
     await scheduledTasks.createTask({
-      identityId: bob.id,
-      agentKey: "panda",
+      sessionId: "session-bob",
+      createdByIdentityId: bob.id,
       title: "Bob task",
       instruction: "Hidden from Alice.",
       schedule: {
@@ -355,7 +350,7 @@ describe("PostgresScheduledTaskStore", () => {
     });
 
     setScope({
-      identityId: alice.id,
+      sessionId: "session-alice",
       agentKey: "panda",
     });
     await ensureReadonlyChatQuerySchema({
@@ -383,9 +378,9 @@ describe("PostgresScheduledTaskStore", () => {
       delivery_status: "sent",
     }]);
 
-    await homeThreads.bindHomeThread({
-      identityId: alice.id,
-      threadId: "home-b",
+    await sessionStore.updateCurrentThread({
+      sessionId: "session-alice",
+      currentThreadId: "home-b",
     });
     tasksResult = await pool.query(`
       SELECT id, resolved_thread_id

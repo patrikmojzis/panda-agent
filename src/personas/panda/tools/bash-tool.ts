@@ -10,13 +10,13 @@ import {ToolError} from "../../../kernel/agent/exceptions.js";
 import type {JsonObject, JsonValue} from "../../../kernel/agent/types.js";
 import type {CredentialResolver} from "../../../domain/credentials/index.js";
 import type {PandaSessionContext} from "../types.js";
-import {ensurePandaShellSession, readPandaBaseCwd} from "./context.js";
+import {ensurePandaShellSession, readPandaBaseCwd, readPandaCurrentInputIdentityId,} from "./context.js";
 import {type BashExecutor, createDefaultBashExecutor,} from "../../../integrations/shell/bash-executor.js";
 import type {BashJobService} from "../../../integrations/shell/bash-job-service.js";
 import {
-  applyPersistedEnv,
-  collectTrackedEnvKeys,
-  resolveCommandCwd,
+    applyPersistedEnv,
+    collectTrackedEnvKeys,
+    resolveCommandCwd,
 } from "../../../integrations/shell/bash-session.js";
 import type {PersistedEnvEntry} from "../../../integrations/shell/bash-protocol.js";
 import type {ShellSession} from "../../../integrations/shell/types.js";
@@ -265,9 +265,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
         agentKey: typeof run.context === "object" && run.context !== null && "agentKey" in run.context
           ? (run.context as {agentKey?: string}).agentKey
           : undefined,
-        identityId: typeof run.context === "object" && run.context !== null && "identityId" in run.context
-          ? (run.context as {identityId?: string}).identityId
-          : undefined,
+        identityId: readPandaCurrentInputIdentityId(run.context),
       })
       : {};
     const knownSecretValues = collectSecretValues(resolvedCredentialEnv, args.env, priorSecretSessionEnv);

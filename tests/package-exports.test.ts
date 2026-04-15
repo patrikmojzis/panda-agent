@@ -49,10 +49,6 @@ const EXPECTED_EXPORTS = {
     types: "./dist/domain/threads/index.d.ts",
     import: "./dist/domain/threads/index.js",
   },
-  "./domain/threads/home": {
-    types: "./dist/domain/threads/home/index.d.ts",
-    import: "./dist/domain/threads/home/index.js",
-  },
   "./domain/threads/requests": {
     types: "./dist/domain/threads/requests/index.d.ts",
     import: "./dist/domain/threads/requests/index.js",
@@ -86,6 +82,7 @@ describe("package exports", () => {
 
   it("does not expose internal implementation subpaths", () => {
     expect(packageJson.exports).not.toHaveProperty("./domain/credentials");
+    expect(packageJson.exports).not.toHaveProperty("./domain/sessions/conversations");
     expect(packageJson.exports).not.toHaveProperty("./domain/threads/conversations");
     expect(packageJson.exports).not.toHaveProperty("./domain/threads/routes");
     expect(packageJson.exports).not.toHaveProperty("./integrations/channels/telegram");

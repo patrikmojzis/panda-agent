@@ -46,18 +46,18 @@ describe("AgentSkillTool", () => {
     await store.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      documents: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
     await store.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      documents: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
 
     return store;
   }
 
-  it("upserts a skill on the current thread agent", async () => {
+  it("upserts a skill on the current session agent", async () => {
     const store = await createStore();
     const tool = new AgentSkillTool({ store });
 
@@ -83,7 +83,7 @@ describe("AgentSkillTool", () => {
     });
   });
 
-  it("deletes only the current thread agent's skill", async () => {
+  it("deletes only the current session agent's skill", async () => {
     const store = await createStore();
     await store.setAgentSkill("panda", "calendar", "Panda skill.", "# Panda");
     await store.setAgentSkill("ops", "calendar", "Ops skill.", "# Ops");

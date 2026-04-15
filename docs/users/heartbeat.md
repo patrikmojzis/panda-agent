@@ -1,6 +1,6 @@
 # Heartbeat
 
-Heartbeat is a periodic wake for the current `home` thread.
+Heartbeat is a periodic wake for a session.
 
 That is it.
 
@@ -12,8 +12,8 @@ It is not a mini protocol waiting for `HEARTBEAT_OK`.
 
 When heartbeat is due:
 
-- Panda checks the current `home` thread for the identity
-- if the thread is idle, Panda injects a synthetic heartbeat input
+- Panda checks the session's current thread
+- if that thread is idle, Panda injects a synthetic heartbeat input
 - the agent can think, use tools, send outbound, or stay quiet
 
 If the thread is busy, Panda skips that tick and schedules the next one.
@@ -25,8 +25,10 @@ Silence is a valid outcome.
 Today heartbeat works like this:
 
 - default cadence is every `30` minutes
-- heartbeat belongs to the current `home` thread
-- if `home` is reset or rebound, heartbeat follows the new `home`
+- heartbeat belongs to a session
+- main sessions start enabled by default
+- branch sessions start disabled by default
+- if the session is reset, heartbeat follows the new current thread automatically
 - Panda does not wait for the run to finish before moving on
 
 Busy means either:
@@ -38,48 +40,52 @@ That second rule matters. Heartbeat should not pile stale nudges behind real use
 
 ## CLI
 
-Inspect the current heartbeat config:
+List sessions for an agent:
 
 ```bash
-panda identity heartbeat local
+panda session list luna
+```
+
+Inspect one session:
+
+```bash
+panda session inspect 2c8d0a1e-...
 ```
 
 Disable heartbeat:
 
 ```bash
-panda identity heartbeat local --disable
+panda session heartbeat 2c8d0a1e-... --disable
 ```
 
 Enable heartbeat again:
 
 ```bash
-panda identity heartbeat local --enable
+panda session heartbeat 2c8d0a1e-... --enable
 ```
 
 Change cadence to every 45 minutes:
 
 ```bash
-panda identity heartbeat local --every 45
+panda session heartbeat 2c8d0a1e-... --every 45
 ```
 
 Do both in one shot:
 
 ```bash
-panda identity heartbeat local --enable --every 45
+panda session heartbeat 2c8d0a1e-... --enable --every 45
 ```
 
-The inspect command prints:
+`panda session inspect` prints:
 
-- current home thread id
+- current thread id
 - whether heartbeat is enabled
 - interval in minutes
-- next fire time
-- last fire time
-- last skip reason
+- thread model
 
 ## Important Behavior
 
-- the identity must already have a `home` thread
+- the session must already exist
 - `--every` keeps the current enabled or disabled state unless you also pass `--enable` or `--disable`
 - `--enable` and `--disable` together is an error
 - config updates reschedule the next fire time from now
@@ -88,7 +94,7 @@ That last rule is intentional. If you change the interval, Panda restarts the cl
 
 ## What Heartbeat Is Good For
 
-Use it for soft periodic work on the main relationship thread:
+Use it for soft periodic work on the main session:
 
 - checking unfinished follow-ups
 - nudging the agent to review reminders
@@ -102,7 +108,7 @@ Do not use it for:
 - exact scheduling
 - isolated jobs
 - delayed delivery workflows
-- anything that must run even if the main thread is busy
+- anything that must run even if the session thread is busy
 
 If you are changing heartbeat internals, use the developer doc:
 

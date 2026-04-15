@@ -100,6 +100,7 @@ Put here:
 
 - agents
 - identity
+- sessions
 - threads
 - scheduling
 - channel records and queue semantics
@@ -163,6 +164,7 @@ These are the source barrels that still deserve to exist:
 - `src/personas/panda/index.ts`
 - `src/domain/agents/index.ts`
 - `src/domain/identity/index.ts`
+- `src/domain/sessions/index.ts`
 - `src/domain/channels/index.ts`
 - `src/domain/threads/index.ts`
 - `src/domain/scheduling/index.ts`
@@ -182,7 +184,6 @@ The supported package entrypoints are:
 - `panda/domain/channels/actions`
 - `panda/domain/channels/deliveries`
 - `panda/domain/threads`
-- `panda/domain/threads/home`
 - `panda/domain/threads/requests`
 - `panda/domain/threads/runtime`
 - `panda/domain/scheduling`
@@ -195,6 +196,7 @@ Use the subpath exports only when you intentionally need a secondary boundary.
 Internal stays internal.
 
 - `src/domain/credentials` is runtime plumbing, not package API
+- `src/domain/sessions/**` is internal for now; it is a real domain boundary, but not a supported package export yet
 - `src/domain/threads/conversations` and `src/domain/threads/routes` stay behind `domain/threads`
 - `src/prompts/**` is source-of-truth for editable model text, but it is not package API
 - `src/personas/panda/tools/*.ts` leaf files are implementation detail; use `panda` or `panda/personas/panda` instead

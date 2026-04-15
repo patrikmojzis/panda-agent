@@ -52,7 +52,7 @@ describe("Env value tools", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      documents: {},
+      prompts: {},
     });
 
     const crypto = new CredentialCrypto("tool-test-master-key");
@@ -72,14 +72,18 @@ describe("Env value tools", () => {
     };
   }
 
-  function createContext(): PandaSessionContext {
+  function createContext(overrides: Partial<PandaSessionContext> = {}): PandaSessionContext {
     return {
       agentKey: "panda",
-      identityId: "alice-id",
+      currentInput: {
+        source: "tui",
+        identityId: "alice-id",
+      },
       shell: {
         cwd: process.cwd(),
         env: {},
       },
+      ...overrides,
     };
   }
 
@@ -209,6 +213,78 @@ describe("Env value tools", () => {
     )).rejects.toBeInstanceOf(ToolError);
   });
 
+  it("allows agent-scoped credential writes with no active identity", async () => {
+    const {credentialStore, service} = await createHarness();
+    const setTool = new SetEnvValueTool({service});
+    const clearTool = new ClearEnvValueTool({service});
+    const agent = new Agent({
+      name: "tool-agent",
+      instructions: "Use tools.",
+      tools: [setTool, clearTool],
+    });
+
+    await setTool.run(
+      {
+        key: "OPENAI_API_KEY",
+        value: "agent-secret",
+        scope: "agent",
+      },
+      createRunContext(createContext({currentInput: undefined}), agent),
+    );
+    await clearTool.run(
+      {
+        key: "OPENAI_API_KEY",
+        scope: "agent",
+      },
+      createRunContext(createContext({currentInput: undefined}), agent),
+    );
+
+    await expect(credentialStore.getCredentialExact("OPENAI_API_KEY", {
+      scope: "agent",
+      agentKey: "panda",
+    })).resolves.toBeNull();
+  });
+
+  it("uses currentInput.identityId for relationship scope and fails clearly when none is active", async () => {
+    const {credentialStore, service} = await createHarness();
+    const setTool = new SetEnvValueTool({service});
+    const agent = new Agent({
+      name: "tool-agent",
+      instructions: "Use tools.",
+      tools: [setTool],
+    });
+
+    await setTool.run(
+      {
+        key: "NOTION_API_KEY",
+        value: "relationship-secret",
+      },
+      createRunContext(createContext({
+        currentInput: {
+          source: "tui",
+          identityId: "alice-id",
+        },
+      }), agent),
+    );
+
+    await expect(credentialStore.getCredentialExact("NOTION_API_KEY", {
+      scope: "relationship",
+      agentKey: "panda",
+      identityId: "alice-id",
+    })).resolves.toMatchObject({
+      scope: "relationship",
+      identityId: "alice-id",
+    });
+
+    await expect(setTool.run(
+      {
+        key: "MISSING_IDENTITY_SECRET",
+        value: "oops",
+      },
+      createRunContext(createContext({currentInput: undefined}), agent),
+    )).rejects.toThrow("Relationship-scoped credentials need an active identity.");
+  });
+
   it("redacts secret tool call arguments before they hit the transcript", async () => {
     const {service} = await createHarness();
     const runtime = createMockRuntime(
@@ -226,7 +302,11 @@ describe("Env value tools", () => {
     const store = new TestThreadRuntimeStore();
     await store.createThread({
       id: "thread-credentials-redaction",
-      agentKey: "panda",
+      sessionId: "session-credentials-redaction",
+      context: {
+        sessionId: "session-credentials-redaction",
+        agentKey: "panda",
+      },
     });
 
     const coordinator = new ThreadRuntimeCoordinator({
@@ -240,7 +320,6 @@ describe("Env value tools", () => {
         }),
         context: {
           ...createContext(),
-          identityId: "local",
         },
         runtime,
       }),
@@ -249,6 +328,7 @@ describe("Env value tools", () => {
     await coordinator.submitInput("thread-credentials-redaction", {
       message: stringToUserMessage("Save my key"),
       source: "tui",
+      identityId: "local",
     });
     await coordinator.waitForIdle("thread-credentials-redaction");
 

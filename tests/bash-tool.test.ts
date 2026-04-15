@@ -46,9 +46,14 @@ function asObject(value: unknown): Record<string, unknown> {
 
 async function createBackgroundHarness(workspace: string) {
   const store = new TestThreadRuntimeStore();
+  const sessionId = "session-bg";
   await store.createThread({
     id: "thread-bg",
-    agentKey: "panda",
+    sessionId,
+    context: {
+      sessionId,
+      agentKey: "panda",
+    },
   });
   const service = new BashJobService({
     store,
@@ -67,6 +72,8 @@ async function createBackgroundHarness(workspace: string) {
     service,
   });
   const context: PandaSessionContext = {
+    sessionId,
+    agentKey: "panda",
     threadId: "thread-bg",
     cwd: workspace,
     shell: {
@@ -236,8 +243,11 @@ describe("BashTool", () => {
     try {
       const context: PandaSessionContext = {
         agentKey: "panda",
-        identityId: "alice-id",
         cwd: workspace,
+        currentInput: {
+          source: "tui",
+          identityId: "alice-id",
+        },
         shell: {
           cwd: workspace,
           env: {
@@ -288,8 +298,11 @@ describe("BashTool", () => {
     try {
       const context: PandaSessionContext = {
         agentKey: "panda",
-        identityId: "alice-id",
         cwd: workspace,
+        currentInput: {
+          source: "tui",
+          identityId: "alice-id",
+        },
         shell: {
           cwd: workspace,
           env: {},
@@ -326,8 +339,11 @@ describe("BashTool", () => {
     try {
       const context: PandaSessionContext = {
         agentKey: "panda",
-        identityId: "alice-id",
         cwd: workspace,
+        currentInput: {
+          source: "tui",
+          identityId: "alice-id",
+        },
         shell: {
           cwd: workspace,
           env: {},
@@ -400,8 +416,11 @@ describe("BashTool", () => {
     try {
       const context: PandaSessionContext = {
         agentKey: "panda",
-        identityId: "alice-id",
         cwd: workspace,
+        currentInput: {
+          source: "tui",
+          identityId: "alice-id",
+        },
         shell: {
           cwd: workspace,
           env: {},
@@ -472,7 +491,11 @@ describe("BashTool", () => {
       const store = new TestThreadRuntimeStore();
       await store.createThread({
         id: "thread-bg",
-        agentKey: "panda",
+        sessionId: "session-bg",
+        context: {
+          sessionId: "session-bg",
+          agentKey: "panda",
+        },
       });
       const service = new BashJobService({
         store,
@@ -483,6 +506,8 @@ describe("BashTool", () => {
         jobService: service,
       });
       const context: PandaSessionContext = {
+        sessionId: "session-bg",
+        agentKey: "panda",
         threadId: "thread-bg",
         cwd: workspace,
         shell: {
@@ -628,7 +653,11 @@ describe("BashTool", () => {
       const store = new TestThreadRuntimeStore();
       await store.createThread({
         id: "thread-bg",
-        agentKey: "panda",
+        sessionId: "session-bg",
+        context: {
+          sessionId: "session-bg",
+          agentKey: "panda",
+        },
       });
       const service = new BashJobService({ store });
       const bash = new BashTool({
@@ -639,6 +668,8 @@ describe("BashTool", () => {
       });
       const wait = new BashJobWaitTool({ service });
       const context: PandaSessionContext = {
+        sessionId: "session-bg",
+        agentKey: "panda",
         threadId: "thread-bg",
         cwd: workspace,
         shell: {

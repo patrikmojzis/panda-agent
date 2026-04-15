@@ -6,10 +6,7 @@ import type {JsonObject, ToolResultPayload} from "../../../kernel/agent/types.js
 import type {RunContext} from "../../../kernel/agent/run-context.js";
 import {CredentialService} from "../../../domain/credentials/index.js";
 import type {PandaSessionContext} from "../types.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+import {readPandaCurrentInputIdentityId} from "./context.js";
 
 function buildPayload(details: JsonObject): ToolResultPayload {
   return {
@@ -21,22 +18,24 @@ function buildPayload(details: JsonObject): ToolResultPayload {
   };
 }
 
-function readScope(context: unknown): { agentKey: string; identityId: string } {
-  if (
-    !isRecord(context)
-    || typeof context.agentKey !== "string"
-    || !context.agentKey.trim()
-    || typeof context.identityId !== "string"
-    || !context.identityId.trim()
-  ) {
+function readScope(context: unknown): { agentKey: string; identityId?: string } {
+  if (typeof context !== "object" || context === null || Array.isArray(context)) {
     throw new ToolError(
-      "Credential tools require both agentKey and identityId in the current Panda thread context.",
+      "Credential tools require agentKey in the current Panda session context.",
+    );
+  }
+
+  const record = context as Record<string, unknown>;
+  const agentKey = typeof record.agentKey === "string" ? record.agentKey.trim() : "";
+  if (!agentKey) {
+    throw new ToolError(
+      "Credential tools require agentKey in the current Panda session context.",
     );
   }
 
   return {
-    agentKey: context.agentKey,
-    identityId: context.identityId,
+    agentKey,
+    identityId: readPandaCurrentInputIdentityId(context),
   };
 }
 
@@ -91,6 +90,12 @@ export class SetEnvValueTool<TContext = PandaSessionContext> extends Tool<typeof
   ): Promise<ToolResultPayload> {
     const {agentKey, identityId} = readScope(run.context);
     const scope = args.scope ?? "relationship";
+    if (scope === "relationship" && !identityId) {
+      throw new ToolError(
+        "Relationship-scoped credentials need an active identity. Use scope=agent or run this from an identity-bearing input.",
+      );
+    }
+
     const record = await this.service.setCredential({
       envKey: args.key,
       value: args.value,
@@ -146,6 +151,12 @@ export class ClearEnvValueTool<TContext = PandaSessionContext> extends Tool<type
   ): Promise<ToolResultPayload> {
     const {agentKey, identityId} = readScope(run.context);
     const scope = args.scope ?? "relationship";
+    if (scope === "relationship" && !identityId) {
+      throw new ToolError(
+        "Relationship-scoped credentials need an active identity. Use scope=agent or run this from an identity-bearing input.",
+      );
+    }
+
     const deleted = await this.service.clearCredential({
       envKey: args.key,
       scope,

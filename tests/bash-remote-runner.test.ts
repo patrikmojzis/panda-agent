@@ -98,9 +98,14 @@ describe("remote bash runner", () => {
 
   async function createRemoteBackgroundHarness(workspace: string, runner: PandaBashRunner) {
     const store = new TestThreadRuntimeStore();
+    const sessionId = "session-bg-remote";
     await store.createThread({
       id: "thread-bg-remote",
-      agentKey: "panda",
+      sessionId,
+      context: {
+        sessionId,
+        agentKey: "panda",
+      },
     });
     const service = new BashJobService({
       store,
@@ -122,6 +127,7 @@ describe("remote bash runner", () => {
     const wait = new BashJobWaitTool({ service });
     const cancel = new BashJobCancelTool({ service });
     const context: PandaSessionContext = {
+      sessionId,
       threadId: "thread-bg-remote",
       agentKey: "panda",
       cwd: workspace,
@@ -297,8 +303,11 @@ describe("remote bash runner", () => {
       },
       createRunContext({
         agentKey: "panda",
-        identityId: "alice-id",
         cwd: agentHome,
+        currentInput: {
+          source: "tui",
+          identityId: "alice-id",
+        },
         shell: {
           cwd: agentHome,
           env: {},
@@ -606,7 +615,11 @@ describe("remote bash runner", () => {
     const store = new TestThreadRuntimeStore();
     await store.createThread({
       id: "thread-bg-remote",
-      agentKey: "panda",
+      sessionId: "session-bg-remote",
+      context: {
+        sessionId: "session-bg-remote",
+        agentKey: "panda",
+      },
     });
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       ok: false,

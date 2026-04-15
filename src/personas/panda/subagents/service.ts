@@ -55,11 +55,15 @@ function buildSubagentContext(
   parentContext: PandaSessionContext | undefined,
   depth: number,
 ): PandaSessionContext {
+  if (!parentContext?.agentKey || !parentContext?.sessionId || !parentContext?.threadId) {
+    throw new ToolError("Subagents require agentKey, sessionId, and threadId in the current Panda session context.");
+  }
+
   return {
     cwd: parentContext?.cwd,
-    identityId: parentContext?.identityId,
-    identityHandle: parentContext?.identityHandle,
-    agentKey: parentContext?.agentKey,
+    agentKey: parentContext.agentKey,
+    sessionId: parentContext.sessionId,
+    threadId: parentContext.threadId,
     subagentDepth: depth,
   };
 }
@@ -108,7 +112,7 @@ export class PandaSubagentService {
     const threadStore = typeof this.store.listBashJobs === "function" ? this.store : undefined;
     const childThread = new Thread<PandaSessionContext>({
       agent: new Agent({
-        name: `${threadRecord.agentKey}-${input.role}`,
+        name: `${childContext.agentKey}-${input.role}`,
         instructions: input.run.agent.instructions,
         tools: childTools,
       }),
@@ -118,16 +122,15 @@ export class PandaSubagentService {
         policy.prompt,
       ),
       maxTurns: parentDefinition.maxTurns ?? threadRecord.maxTurns,
-      context: childContext,
-      llmContexts: buildPandaLlmContexts({
         context: childContext,
-        agentStore: this.agentStore,
-        threadStore,
-        agentKey: threadRecord.agentKey,
-        identityId: threadRecord.identityId,
-        threadId,
-        sections: policy.visibleContextSections,
-      }),
+        llmContexts: buildPandaLlmContexts({
+          context: childContext,
+          agentStore: this.agentStore,
+          threadStore,
+          agentKey: childContext.agentKey,
+          threadId,
+          sections: policy.visibleContextSections,
+        }),
       maxInputTokens: parentDefinition.maxInputTokens ?? threadRecord.maxInputTokens,
       promptCacheKey: parentDefinition.promptCacheKey ?? threadRecord.promptCacheKey,
       runPipelines: parentDefinition.runPipelines,

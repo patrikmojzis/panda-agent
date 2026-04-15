@@ -111,7 +111,7 @@ Expected:
 
 6. Verify reset cleanup.
 
-Start a long background job, then reset or replace the home thread.
+Start a long background job, then reset the current session.
 
 Expected:
 

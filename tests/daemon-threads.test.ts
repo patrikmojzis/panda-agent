@@ -33,15 +33,151 @@ describe("createDaemonThreadHelpers", () => {
     vi.restoreAllMocks();
   });
 
-  it("cancels old-thread background jobs during home-thread reset", async () => {
+  function createIdentity() {
+    return {
+      id: DEFAULT_IDENTITY_ID,
+      handle: "home",
+      displayName: "Home",
+      status: "active" as const,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+  }
+
+  function createHelpers(options: {
+    store?: TestThreadRuntimeStore;
+    workspace?: string;
+    pairings?: readonly {agentKey: string}[];
+    currentThreadId?: string;
+    createdByIdentityId?: string;
+    bashJobService?: { cancelThreadJobs(threadId: string): Promise<void> };
+    coordinator?: {
+      abort(threadId: string, reason?: string): Promise<boolean>;
+      waitForCurrentRun(threadId: string): Promise<void>;
+    };
+  } = {}) {
+    const store = options.store ?? new TestThreadRuntimeStore();
+    let boundThreadId = options.currentThreadId ?? "thread-old-home";
+    const identity = createIdentity();
+
+    return {
+      store,
+      identity,
+      helpers: createDaemonThreadHelpers({
+        fallbackContext: { cwd: options.workspace ?? process.cwd() },
+        model: "openai/gpt-5.1",
+        daemonKey: "panda-daemon",
+        runtime: {
+          store,
+          bashJobService: options.bashJobService ?? {
+            cancelThreadJobs: vi.fn(async () => undefined),
+          },
+          coordinator: options.coordinator ?? {
+            abort: vi.fn(async () => true),
+            waitForCurrentRun: vi.fn(async () => undefined),
+          },
+          agentStore: {
+            getAgent: vi.fn(async (agentKey: string) => ({ agentKey })),
+            listIdentityPairings: vi.fn(async () => options.pairings ?? []),
+          },
+          identityStore: {
+            ensureIdentity: vi.fn(async () => identity),
+            getIdentity: vi.fn(async () => identity),
+          },
+          sessionStore: {
+            getMainSession: vi.fn(async () => null),
+            createSession: vi.fn(async ({id, agentKey, currentThreadId}: {id: string; agentKey: string; currentThreadId: string}) => ({
+              id,
+              agentKey,
+              kind: "main" as const,
+              currentThreadId,
+              createdByIdentityId: options.createdByIdentityId,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            })),
+            getSession: vi.fn(async () => ({
+              id: "session-main",
+              agentKey: "panda",
+              kind: "main" as const,
+              currentThreadId: boundThreadId,
+              createdByIdentityId: options.createdByIdentityId,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            })),
+            updateCurrentThread: vi.fn(async ({currentThreadId}: {currentThreadId: string}) => {
+              boundThreadId = currentThreadId;
+              return {
+                id: "session-main",
+                agentKey: "panda",
+                kind: "main" as const,
+                currentThreadId,
+                createdByIdentityId: options.createdByIdentityId,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              };
+            }),
+          },
+        } as any,
+        conversationBindings: {
+          bindConversation: vi.fn(async () => undefined),
+          getConversationBinding: vi.fn(async () => null),
+        } as any,
+        sessionRoutes: {
+          saveLastRoute: vi.fn(async () => undefined),
+          getLastRoute: vi.fn(async () => null),
+        } as any,
+        outboundDeliveries: {
+          enqueueDelivery: vi.fn(async () => undefined),
+        } as any,
+        channelActions: {
+          enqueueAction: vi.fn(async () => undefined),
+        } as any,
+        requests: {} as any,
+        daemonState: {} as any,
+        scheduledTaskRunner: {} as any,
+        watchRunner: {} as any,
+        relationshipHeartbeatRunner: {} as any,
+      }),
+    };
+  }
+
+  it("rejects explicit agent access when the identity has no pairings", async () => {
+    const {helpers, identity} = createHelpers({
+      pairings: [],
+    });
+
+    await expect(helpers.openMainSession({
+      identityId: identity.id,
+      agentKey: "panda",
+    })).rejects.toThrow("Identity home is not paired to agent panda.");
+
+    await expect(helpers.createBranchSession({
+      identity,
+      agentKey: "panda",
+    })).rejects.toThrow("Identity home is not paired to agent panda.");
+
+    await expect(helpers.handleResetSession({
+      identityId: identity.id,
+      source: "tui",
+      agentKey: "panda",
+    })).rejects.toThrow("Identity home is not paired to agent panda.");
+  });
+
+  it("cancels old-thread background jobs during session reset", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "panda-daemon-reset-bg-"));
     directories.push(workspace);
 
     const store = new TestThreadRuntimeStore();
     await store.createThread({
       id: "thread-old-home",
-      agentKey: "panda",
-    });
+      sessionId: "session-main",
+      context: {
+        agentKey: "panda",
+        sessionId: "session-main",
+        identityId: DEFAULT_IDENTITY_ID,
+        identityHandle: "home",
+      },
+    } as any);
 
     const bashJobService = new BashJobService({ store });
     const bash = new BashTool({
@@ -63,68 +199,19 @@ describe("createDaemonThreadHelpers", () => {
 
     const onTerminalJob = vi.fn();
     bashJobService.setBackgroundCompletionHandler(onTerminalJob);
-
-    let boundThreadId = "thread-old-home";
-    const identity = {
-      id: DEFAULT_IDENTITY_ID,
-      handle: "home",
-      displayName: "Home",
-      status: "active" as const,
-      defaultAgentKey: "panda",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-
-    const helpers = createDaemonThreadHelpers({
-      fallbackContext: { cwd: workspace },
-      model: "openai/gpt-5.1",
-      daemonKey: "panda-daemon",
-      runtime: {
-        store,
-        bashJobService,
-        coordinator: {
-          abort: vi.fn(async () => true),
-          waitForCurrentRun: vi.fn(async () => undefined),
-        },
-        agentStore: {
-          getAgent: vi.fn(async () => ({ agentKey: "panda" })),
-        },
-        identityStore: {
-          ensureIdentity: vi.fn(async () => identity),
-          getIdentity: vi.fn(async () => identity),
-          updateIdentity: vi.fn(async () => identity),
-        },
-      } as any,
-      conversationBindings: {
-        bindConversation: vi.fn(async () => undefined),
-        getConversationBinding: vi.fn(async () => null),
-      } as any,
-      homeThreads: {
-        resolveHomeThread: vi.fn(async () => ({ threadId: boundThreadId })),
-        bindHomeThread: vi.fn(async ({threadId}: {threadId: string}) => {
-          boundThreadId = threadId;
-        }),
-      } as any,
-      threadRoutes: {
-        saveLastRoute: vi.fn(async () => undefined),
-        getLastRoute: vi.fn(async () => null),
-      } as any,
-      outboundDeliveries: {
-        enqueueDelivery: vi.fn(async () => undefined),
-      } as any,
-      channelActions: {
-        enqueueAction: vi.fn(async () => undefined),
-      } as any,
-      requests: {} as any,
-      daemonState: {} as any,
-      scheduledTaskRunner: {} as any,
-      watchRunner: {} as any,
-      relationshipHeartbeatRunner: {} as any,
+    const {helpers, identity} = createHelpers({
+      store,
+      workspace,
+      pairings: [{agentKey: "panda"}],
+      currentThreadId: "thread-old-home",
+      createdByIdentityId: DEFAULT_IDENTITY_ID,
+      bashJobService,
     });
 
-    const result = await helpers.handleResetHomeThread({
+    const result = await helpers.handleResetSession({
       identityId: DEFAULT_IDENTITY_ID,
       source: "tui",
+      threadId: "thread-old-home",
     });
 
     expect(result.previousThreadId).toBe("thread-old-home");
@@ -133,5 +220,42 @@ describe("createDaemonThreadHelpers", () => {
       status: "cancelled",
     });
     expect(onTerminalJob).not.toHaveBeenCalled();
+    const thread = await store.getThread(String(result.threadId));
+    expect(thread.context).toMatchObject({
+      agentKey: "panda",
+      sessionId: "session-main",
+      cwd: workspace,
+    });
+    expect((thread.context as Record<string, unknown>).identityId).toBeUndefined();
+    expect((thread.context as Record<string, unknown>).identityHandle).toBeUndefined();
+  });
+
+  it("allows operator reset for an ownerless session", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-ownerless",
+      sessionId: "session-main",
+      context: {
+        agentKey: "panda",
+        sessionId: "session-main",
+      },
+    } as any);
+
+    const {helpers} = createHelpers({
+      store,
+      currentThreadId: "thread-ownerless",
+      createdByIdentityId: undefined,
+    });
+
+    const result = await helpers.handleResetSession({
+      source: "operator",
+      sessionId: "session-main",
+    });
+
+    expect(result.previousThreadId).toBe("thread-ownerless");
+    expect(result.threadId).not.toBe("thread-ownerless");
+    await expect(store.getThread(String(result.threadId))).resolves.toMatchObject({
+      sessionId: "session-main",
+    });
   });
 });

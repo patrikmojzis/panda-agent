@@ -29,12 +29,10 @@ function createStoreMock(): WatchStore {
     ensureSchema: vi.fn(async () => {}),
     createWatch: vi.fn(async (input) => ({
       id: "watch-1",
-      identityId: input.identityId,
-      agentKey: input.agentKey,
+      sessionId: input.sessionId,
+      createdByIdentityId: input.createdByIdentityId,
       title: input.title,
       intervalMinutes: input.intervalMinutes,
-      targetKind: input.targetThreadId ? "thread" : "home",
-      targetThreadId: input.targetThreadId,
       source: input.source,
       detector: input.detector,
       enabled: input.enabled ?? true,
@@ -44,12 +42,9 @@ function createStoreMock(): WatchStore {
     })),
     updateWatch: vi.fn(async (input) => ({
       id: input.watchId,
-      identityId: input.identityId,
-      agentKey: input.agentKey,
+      sessionId: input.sessionId,
       title: input.title ?? "watch",
       intervalMinutes: input.intervalMinutes ?? 5,
-      targetKind: input.targetThreadId ? "thread" : "home",
-      targetThreadId: typeof input.targetThreadId === "string" ? input.targetThreadId : undefined,
       source: input.source ?? {
         kind: "http_json",
         url: "https://example.com/btc",
@@ -69,11 +64,9 @@ function createStoreMock(): WatchStore {
     })),
     disableWatch: vi.fn(async (input) => ({
       id: input.watchId,
-      identityId: input.identityId,
-      agentKey: input.agentKey,
+      sessionId: input.sessionId,
       title: "watch",
       intervalMinutes: 5,
-      targetKind: "home",
       source: {
         kind: "http_json",
         url: "https://example.com/btc",
@@ -106,9 +99,13 @@ function createStoreMock(): WatchStore {
 
 describe("watch Panda tools", () => {
   const context: PandaSessionContext = {
-    identityId: "identity-1",
     agentKey: "panda",
+    sessionId: "session-main",
     threadId: "thread-home",
+    currentInput: {
+      source: "tui",
+      identityId: "identity-1",
+    },
   };
 
   it("creates a watch with Panda scope", async () => {
@@ -139,13 +136,13 @@ describe("watch Panda tools", () => {
       watchId: "watch-1",
     });
     expect(store.createWatch).toHaveBeenCalledWith(expect.objectContaining({
-      identityId: "identity-1",
-      agentKey: "panda",
+      sessionId: "session-main",
+      createdByIdentityId: "identity-1",
       title: "BTC 10% move",
     }));
   });
 
-  it("passes null targetThreadId through update so home-following can be restored", async () => {
+  it("updates a watch within the current session", async () => {
     const store = createStoreMock();
     const tool = new WatchUpdateTool({
       store,
@@ -153,7 +150,7 @@ describe("watch Panda tools", () => {
 
     const result = await tool.run({
       watchId: "watch-1",
-      targetThreadId: null,
+      enabled: false,
     }, createRunContext(context));
 
     expect(result).toEqual({
@@ -162,7 +159,8 @@ describe("watch Panda tools", () => {
     });
     expect(store.updateWatch).toHaveBeenCalledWith(expect.objectContaining({
       watchId: "watch-1",
-      targetThreadId: null,
+      sessionId: "session-main",
+      enabled: false,
     }));
   });
 
@@ -187,7 +185,7 @@ describe("watch Panda tools", () => {
     }));
   });
 
-  it("requires identityId and agentKey in Panda context", async () => {
+  it("requires sessionId in Panda context", async () => {
     const tool = new WatchCreateTool({
       store: createStoreMock(),
     });

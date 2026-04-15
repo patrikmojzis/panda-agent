@@ -20,7 +20,7 @@ function readAgentSkillScope(context: unknown): { agentKey: string } {
     || typeof (context as {agentKey?: unknown}).agentKey !== "string"
     || !(context as {agentKey: string}).agentKey.trim()
   ) {
-    throw new ToolError("The agent skill tool requires agentKey in the persisted Panda thread context.");
+    throw new ToolError("The agent skill tool requires agentKey in the Panda session context.");
   }
 
   return {

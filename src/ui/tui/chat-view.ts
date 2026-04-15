@@ -45,7 +45,7 @@ export interface ViewModel {
   infoLine: InfoLine;
 }
 
-export const THREAD_PICKER_VISIBLE_COUNT = 6;
+export const SESSION_PICKER_VISIBLE_COUNT = 6;
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const WELCOME_TWO_COLUMN_MIN_WIDTH = 72;
@@ -83,8 +83,8 @@ const WELCOME_COMMANDS = [
   ["/model <selector-or-alias>", "switch model"],
   ["/thinking <level|off>", "set the thinking level"],
   ["/compact [instructions]", "summarize older context and keep recent turns"],
-  ["/threads", "browse saved threads"],
-  ["/resume <id>", "reopen a saved thread"],
+  ["/sessions", "browse sessions on this agent"],
+  ["/resume <session-id>", "open a saved session"],
 ] as const;
 
 const WELCOME_KEYS = [
@@ -110,7 +110,7 @@ interface BuildChatViewModelOptions {
   transcriptSearchActive: boolean;
   transcriptSearchQuery: string;
   transcriptSearchSelection: number;
-  threadPickerActive: boolean;
+  sessionPickerActive: boolean;
   historySearchActive: boolean;
   historySearchQuery: string;
   historySearchSelection: number;
@@ -127,6 +127,7 @@ interface BuildChatViewModelOptions {
   runStartedAt: number;
   agentLabel: string;
   identityHandle: string;
+  currentSessionId: string;
   currentThreadId: string;
   model: string;
   thinkingLabel: string;
@@ -373,7 +374,7 @@ function buildPromptInfoLine(
 
 function buildInfoLine(options: {
   width: number;
-  threadPickerActive: boolean;
+  sessionPickerActive: boolean;
   transcriptSearchActive: boolean;
   transcriptSearchQuery: string;
   transcriptSearchSelection: number;
@@ -390,9 +391,9 @@ function buildInfoLine(options: {
   slashCompletionIndex: number;
   scrollLabel: string;
 }): InfoLine {
-  if (options.threadPickerActive) {
+  if (options.sessionPickerActive) {
     return {
-      text: theme.gold(truncatePlainText("threads · up/down select · enter resume · esc cancel", options.width)),
+      text: theme.gold(truncatePlainText("sessions · up/down select · enter open · esc cancel", options.width)),
       cursorColumn: null,
     };
   }
@@ -513,6 +514,7 @@ export function buildChatViewModel(options: BuildChatViewModelOptions): ViewMode
   const runLabel = options.isRunning ? "thinking" : "ready";
   const elapsedLabel = options.isRunning ? formatDuration(now - options.runStartedAt) : null;
   const statusText = [
+    truncatePlainText(`session ${options.currentSessionId || "new"}`, 28),
     truncatePlainText(`thread ${options.currentThreadId || "new"}`, 28),
     options.model,
     `think ${options.thinkingLabel}`,
@@ -552,7 +554,7 @@ export function buildChatViewModel(options: BuildChatViewModelOptions): ViewMode
       : theme.dim(truncatePlainText(statusText, width)),
     infoLine: buildInfoLine({
       width,
-      threadPickerActive: options.threadPickerActive,
+      sessionPickerActive: options.sessionPickerActive,
       transcriptSearchActive: options.transcriptSearchActive,
       transcriptSearchQuery: options.transcriptSearchQuery,
       transcriptSearchSelection: options.transcriptSearchSelection,

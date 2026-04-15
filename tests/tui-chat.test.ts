@@ -355,14 +355,17 @@ describe("PandaChatApp thinking command", () => {
   });
 });
 
-describe("PandaChatApp fresh-thread agent selection", () => {
-  it("does not inherit the current thread agent for /new when no explicit chat agent is set", async () => {
-    const createThread = vi.fn(async () => ({
+describe("PandaChatApp fresh-session agent selection", () => {
+  it("does not inherit the current session agent for /new when no explicit chat agent is set", async () => {
+    const createBranchSession = vi.fn(async () => ({
       id: "thread-new",
-      identityId: "local",
-      agentKey: "jozef",
+      sessionId: "session-branch",
       model: "openai/gpt-5.1",
-      context: {},
+      context: {
+        agentKey: "jozef",
+        sessionId: "session-branch",
+        identityId: "local",
+      },
       createdAt: 1,
       updatedAt: 2,
     }));
@@ -372,15 +375,18 @@ describe("PandaChatApp fresh-thread agent selection", () => {
     app.currentThreadId = "thread-current";
     app.currentThread = {
       id: "thread-current",
-      identityId: "local",
-      agentKey: "panda",
+      sessionId: "session-main",
       model: "openai/gpt-5.1",
-      context: {},
+      context: {
+        agentKey: "panda",
+        sessionId: "session-main",
+        identityId: "local",
+      },
       createdAt: 1,
       updatedAt: 1,
     };
     app.services = {
-      createThread,
+      createBranchSession,
     } as ChatRuntimeServices;
     app.switchThread = vi.fn(async (thread) => {
       app.currentThread = thread;
@@ -391,21 +397,24 @@ describe("PandaChatApp fresh-thread agent selection", () => {
 
     await expect(app.handleCommand("/new")).resolves.toBe(true);
 
-    expect(createThread).toHaveBeenCalledWith({
-      id: undefined,
+    expect(createBranchSession).toHaveBeenCalledWith({
+      sessionId: undefined,
       agentKey: undefined,
       model: expectedModel,
       thinking: undefined,
     });
   });
 
-  it("does not inherit the current thread agent for /reset when no explicit chat agent is set", async () => {
-    const resetHomeThread = vi.fn(async () => ({
+  it("does not inherit the current session agent for /reset when no explicit chat agent is set", async () => {
+    const resetSession = vi.fn(async () => ({
       id: "thread-reset",
-      identityId: "local",
-      agentKey: "jozef",
+      sessionId: "session-main",
       model: "openai/gpt-5.1",
-      context: {},
+      context: {
+        agentKey: "jozef",
+        sessionId: "session-main",
+        identityId: "local",
+      },
       createdAt: 1,
       updatedAt: 2,
     }));
@@ -415,15 +424,18 @@ describe("PandaChatApp fresh-thread agent selection", () => {
     app.currentThreadId = "thread-current";
     app.currentThread = {
       id: "thread-current",
-      identityId: "local",
-      agentKey: "panda",
+      sessionId: "session-main",
       model: "openai/gpt-5.1",
-      context: {},
+      context: {
+        agentKey: "panda",
+        sessionId: "session-main",
+        identityId: "local",
+      },
       createdAt: 1,
       updatedAt: 1,
     };
     app.services = {
-      resetHomeThread,
+      resetSession,
     } as ChatRuntimeServices;
     app.switchThread = vi.fn(async (thread) => {
       app.currentThread = thread;
@@ -434,9 +446,10 @@ describe("PandaChatApp fresh-thread agent selection", () => {
 
     await expect(app.handleCommand("/reset")).resolves.toBe(true);
 
-    expect(resetHomeThread).toHaveBeenCalledWith({
+    expect(resetSession).toHaveBeenCalledWith({
       agentKey: undefined,
       model: expectedModel,
+      sessionId: "session-main",
       thinking: undefined,
     });
   });
@@ -463,57 +476,57 @@ describe("PandaChatApp history search", () => {
   });
 });
 
-describe("PandaChatApp thread picker", () => {
-  it("preselects the current thread and resumes the chosen entry", async () => {
-    const summaries = [
+describe("PandaChatApp session picker", () => {
+  it("preselects the current session and opens the chosen entry", async () => {
+    const sessions = [
       {
-        thread: {
-          id: "thread-a",
-          identityId: "local",
-          agentKey: "panda",
-          model: "openai/gpt-5.1",
-          context: {},
-          createdAt: 1,
-          updatedAt: 1,
-        },
-        messageCount: 1,
-        pendingInputCount: 0,
+        id: "session-a",
+        agentKey: "panda",
+        kind: "main" as const,
+        currentThreadId: "thread-a",
+        createdAt: 1,
+        updatedAt: 1,
       },
       {
-        thread: {
-          id: "thread-b",
-          identityId: "local",
-          agentKey: "panda",
-          model: "openai/gpt-5.1",
-          context: {},
-          createdAt: 2,
-          updatedAt: 2,
-        },
-        messageCount: 2,
-        pendingInputCount: 0,
+        id: "session-b",
+        agentKey: "panda",
+        kind: "branch" as const,
+        currentThreadId: "thread-b",
+        createdAt: 2,
+        updatedAt: 2,
       },
       {
-        thread: {
-          id: "thread-c",
-          identityId: "local",
-          agentKey: "ops",
-          model: "openai/gpt-5.1",
-          context: {},
-          createdAt: 3,
-          updatedAt: 3,
-        },
-        messageCount: 3,
-        pendingInputCount: 0,
+        id: "session-c",
+        agentKey: "panda",
+        kind: "branch" as const,
+        currentThreadId: "thread-c",
+        createdAt: 3,
+        updatedAt: 3,
       },
     ];
-    const listThreadSummaries = vi.fn(async () => summaries);
+    const selectedThread = {
+      id: "thread-c",
+      sessionId: "session-c",
+      context: {agentKey: "panda", sessionId: "session-c"},
+      createdAt: 3,
+      updatedAt: 3,
+    };
+    const listAgentSessions = vi.fn(async () => sessions);
+    const openSession = vi.fn(async () => selectedThread);
     const app = new PandaChatApp() as any;
 
     app.currentThreadId = "thread-b";
-    app.currentThread = summaries[1]?.thread;
+    app.currentThread = {
+      id: "thread-b",
+      sessionId: "session-b",
+      context: {agentKey: "panda", sessionId: "session-b"},
+      createdAt: 2,
+      updatedAt: 2,
+    };
     app.render = vi.fn();
     app.services = {
-      listThreadSummaries,
+      listAgentSessions,
+      openSession,
     } as ChatRuntimeServices;
     app.switchThread = vi.fn(async (thread) => {
       app.currentThread = thread;
@@ -521,18 +534,88 @@ describe("PandaChatApp thread picker", () => {
     });
     app.setNotice = vi.fn();
 
-    await app.openThreadPicker();
+    await app.openSessionPicker();
 
-    expect(listThreadSummaries).toHaveBeenCalledWith(16);
-    expect(app.threadPicker.active).toBe(true);
-    expect(app.threadPicker.selected).toBe(1);
+    expect(listAgentSessions).toHaveBeenCalledWith("panda");
+    expect(app.sessionPicker.active).toBe(true);
+    expect(app.sessionPicker.selected).toBe(1);
 
-    app.cycleThreadPicker(1);
-    await app.selectThreadPickerEntry();
+    app.cycleSessionPicker(1);
+    await app.selectSessionPickerEntry();
 
-    expect(app.switchThread).toHaveBeenCalledWith(summaries[2]?.thread);
-    expect(app.threadPicker.active).toBe(false);
-    expect(app.setNotice).toHaveBeenCalledWith("Resumed thread thread-c.", "info");
+    expect(openSession).toHaveBeenCalledWith("session-c");
+    expect(app.switchThread).toHaveBeenCalledWith(selectedThread);
+    expect(app.sessionPicker.active).toBe(false);
+    expect(app.setNotice).toHaveBeenCalledWith("Opened session session-c.", "info");
+  });
+
+  it("keeps the picker open and refreshes when the selected session goes stale", async () => {
+    const firstSessions = [
+      {
+        id: "session-a",
+        agentKey: "panda",
+        kind: "main" as const,
+        currentThreadId: "thread-a",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: "session-b",
+        agentKey: "panda",
+        kind: "branch" as const,
+        currentThreadId: "thread-b",
+        createdAt: 2,
+        updatedAt: 2,
+      },
+    ];
+    const refreshedSessions = [
+      {
+        id: "session-a",
+        agentKey: "panda",
+        kind: "main" as const,
+        currentThreadId: "thread-a",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ];
+    const listAgentSessions = vi.fn()
+      .mockResolvedValueOnce(firstSessions)
+      .mockResolvedValueOnce(refreshedSessions);
+    const openSession = vi.fn(async () => {
+      throw new Error("missing session");
+    });
+    const app = new PandaChatApp() as any;
+
+    app.currentThreadId = "thread-a";
+    app.currentThread = {
+      id: "thread-a",
+      sessionId: "session-a",
+      context: {agentKey: "panda", sessionId: "session-a"},
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    app.render = vi.fn();
+    app.services = {
+      listAgentSessions,
+      openSession,
+    } as ChatRuntimeServices;
+    app.switchThread = vi.fn(async () => undefined);
+    app.setNotice = vi.fn();
+
+    await app.openSessionPicker();
+    app.cycleSessionPicker(1);
+    await expect(app.selectSessionPickerEntry()).resolves.toBeUndefined();
+
+    expect(openSession).toHaveBeenCalledWith("session-b");
+    expect(app.switchThread).not.toHaveBeenCalled();
+    expect(listAgentSessions).toHaveBeenCalledTimes(2);
+    expect(app.sessionPicker.active).toBe(true);
+    expect(app.sessionPicker.sessions).toEqual(refreshedSessions);
+    expect(app.sessionPicker.selected).toBe(0);
+    expect(app.setNotice).toHaveBeenCalledWith(
+      "Session session-b is no longer available. Refreshed the list.",
+      "error",
+    );
   });
 });
 
@@ -816,7 +899,7 @@ describe("PandaChatApp performance helpers", () => {
       id: 2,
       role: "meta",
       title: "session",
-      body: "Resumed thread thread-123.",
+      body: "Opened session session-123.",
     });
     app.nextEntryId = 3;
 
@@ -982,7 +1065,7 @@ describe("buildChatHelpText", () => {
   it("documents reliable newline fallbacks", () => {
     const helpText = buildChatHelpText("/thinking <minimal|low|medium|high|xhigh|off>");
 
-    expect(helpText).toContain("/thread shows the current thread id and active session settings.");
+    expect(helpText).toContain("/thread shows the current session and thread ids plus active settings.");
     expect(helpText).toContain("/usage shows current context estimates, provider token usage, and cost.");
     expect(helpText).not.toContain("/thread shows the current thread id and storage mode.");
     expect(helpText).toContain("\\ + Enter inserts a newline.");
@@ -1016,7 +1099,7 @@ describe("buildChatViewModel", () => {
       transcriptSearchActive: false,
       transcriptSearchQuery: "",
       transcriptSearchSelection: 0,
-      threadPickerActive: false,
+      sessionPickerActive: false,
       historySearchActive: false,
       historySearchQuery: "",
       historySearchSelection: 0,
@@ -1037,6 +1120,7 @@ describe("buildChatViewModel", () => {
       runStartedAt: 0,
       agentLabel: "Panda",
       identityHandle: "alice",
+      currentSessionId: "session-test",
       currentThreadId: "thread-test",
       model: "openai/gpt-5.1",
       thinkingLabel: "off",
@@ -1055,7 +1139,7 @@ describe("buildChatViewModel", () => {
       transcriptSearchActive: false,
       transcriptSearchQuery: "",
       transcriptSearchSelection: 0,
-      threadPickerActive: false,
+      sessionPickerActive: false,
       historySearchActive: false,
       historySearchQuery: "",
       historySearchSelection: 0,
@@ -1076,6 +1160,7 @@ describe("buildChatViewModel", () => {
       runStartedAt: 0,
       agentLabel: "Panda",
       identityHandle: "alice",
+      currentSessionId: "session-test",
       currentThreadId: "thread-test",
       model: "openai/gpt-5.1",
       thinkingLabel: "off",
@@ -1089,7 +1174,7 @@ describe("buildChatViewModel", () => {
 });
 
 describe("PandaChatApp agent header", () => {
-  it("updates the header when switching to a thread with a different agent", async () => {
+  it("uses the session agent key in the header when switching threads", async () => {
     const app = new PandaChatApp() as any;
 
     app.services = {
@@ -1101,13 +1186,6 @@ describe("PandaChatApp agent header", () => {
         createdAt: 1,
         updatedAt: 1,
       },
-      getAgent: vi.fn(async (agentKey: string) => ({
-        agentKey,
-        displayName: agentKey === "panda" ? "Panda" : "Ops",
-        status: "active",
-        createdAt: 1,
-        updatedAt: 1,
-      })),
     } as ChatRuntimeServices;
     app.refreshToolCatalog = vi.fn();
     app.reloadVisibleTranscript = vi.fn(async () => {});
@@ -1115,65 +1193,43 @@ describe("PandaChatApp agent header", () => {
 
     await app.switchThread({
       id: "thread-panda",
-      identityId: "alice-id",
-      agentKey: "panda",
-      context: {cwd: "/tmp/panda"},
-      createdAt: 1,
-      updatedAt: 1,
-    });
-    expect(stripAnsi(app.buildView().headerLine)).toContain("Panda · @alice · cwd /tmp/panda");
-
-    await app.switchThread({
-      id: "thread-ops",
-      identityId: "alice-id",
-      agentKey: "ops",
-      context: {cwd: "/tmp/ops"},
-      createdAt: 1,
-      updatedAt: 1,
-    });
-    expect(stripAnsi(app.buildView().headerLine)).toContain("Ops · @alice · cwd /tmp/ops");
-  });
-
-  it("falls back to the agent key when agent lookup fails", async () => {
-    const app = new PandaChatApp() as any;
-
-    app.services = {
-      identity: {
-        id: "alice-id",
-        handle: "alice",
-        displayName: "Alice",
-        status: "active",
-        createdAt: 1,
-        updatedAt: 1,
+      sessionId: "session-panda",
+      context: {
+        cwd: "/tmp/panda",
+        agentKey: "panda",
+        sessionId: "session-panda",
+        identityId: "alice-id",
       },
-      getAgent: vi.fn(async () => {
-        throw new Error("boom");
-      }),
-    } as ChatRuntimeServices;
-    app.refreshToolCatalog = vi.fn();
-    app.reloadVisibleTranscript = vi.fn(async () => {});
-    app.syncStoredThreadState = vi.fn(async () => {});
-
-    await app.switchThread({
-      id: "thread-ops",
-      identityId: "alice-id",
-      agentKey: "ops",
-      context: {cwd: "/tmp/ops"},
       createdAt: 1,
       updatedAt: 1,
     });
+    expect(stripAnsi(app.buildView().headerLine)).toContain("panda · @alice · cwd /tmp/panda");
 
+    await app.switchThread({
+      id: "thread-ops",
+      sessionId: "session-ops",
+      context: {
+        cwd: "/tmp/ops",
+        agentKey: "ops",
+        sessionId: "session-ops",
+        identityId: "alice-id",
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    });
     expect(stripAnsi(app.buildView().headerLine)).toContain("ops · @alice · cwd /tmp/ops");
   });
 });
 
 describe("runChatCli", () => {
-  it("returns the final thread id from the chat app", async () => {
+  it("returns the final session and thread ids from the chat app", async () => {
     const run = vi.spyOn(PandaChatApp.prototype, "run").mockResolvedValue({
+      sessionId: "session-exit-result",
       threadId: "thread-exit-result",
     });
 
     await expect(runChatCli()).resolves.toEqual({
+      sessionId: "session-exit-result",
       threadId: "thread-exit-result",
     });
 
@@ -1181,8 +1237,8 @@ describe("runChatCli", () => {
   });
 });
 
-describe("PandaChatApp explicit thread id", () => {
-  it("preserves identity access errors instead of trying to recreate the thread", async () => {
+describe("PandaChatApp explicit session id", () => {
+  it("preserves access errors instead of trying to create a branch session", async () => {
     const createChatRuntime = vi.spyOn(tuiRuntime, "createChatRuntime").mockResolvedValue({
       identity: {
         id: "alice-id",
@@ -1193,19 +1249,19 @@ describe("PandaChatApp explicit thread id", () => {
         updatedAt: 1,
       },
       recoverOrphanedRuns: vi.fn(async () => []),
-      getThread: vi.fn(async () => {
-        throw new Error("Thread thread-locked does not belong to identity alice.");
+      openSession: vi.fn(async () => {
+        throw new Error("Session session-locked does not belong to identity alice.");
       }),
-      createThread: vi.fn(async () => {
+      createBranchSession: vi.fn(async () => {
         throw new Error("should not create");
       }),
     } as unknown as ChatRuntimeServices);
 
-    const app = new PandaChatApp({ threadId: "thread-locked" }) as any;
+    const app = new PandaChatApp({ session: "session-locked" }) as any;
     app.switchThread = vi.fn(async () => {});
 
-    await expect(app.initializeRuntime()).rejects.toThrow("Thread thread-locked does not belong to identity alice.");
-    expect(app.services.createThread).not.toHaveBeenCalled();
+    await expect(app.initializeRuntime()).rejects.toThrow("Session session-locked does not belong to identity alice.");
+    expect(app.services.createBranchSession).not.toHaveBeenCalled();
 
     createChatRuntime.mockRestore();
   });

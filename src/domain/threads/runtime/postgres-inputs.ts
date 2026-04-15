@@ -84,6 +84,7 @@ export async function enqueueThreadInput(
         channel_id,
         external_message_id,
         actor_id,
+        identity_id,
         created_at,
         metadata,
         message
@@ -96,8 +97,9 @@ export async function enqueueThreadInput(
         $6,
         $7,
         $8,
-        $9::jsonb,
-        $10::jsonb
+        $9,
+        $10::jsonb,
+        $11::jsonb
       )
       RETURNING *
     `, [
@@ -108,6 +110,7 @@ export async function enqueueThreadInput(
       payload.channelId ?? null,
       payload.externalMessageId ?? null,
       payload.actorId ?? null,
+      payload.identityId ?? null,
       createdAt,
       toJson(payload.metadata),
       toJson(payload.message),
@@ -167,6 +170,7 @@ export async function applyPendingThreadInputs(
           channel_id,
           external_message_id,
           actor_id,
+          identity_id,
           created_at,
           metadata,
           message
@@ -179,8 +183,9 @@ export async function applyPendingThreadInputs(
           $5,
           $6,
           $7,
-          $8::jsonb,
-          $9::jsonb
+          $8,
+          $9::jsonb,
+          $10::jsonb
         )
         RETURNING *
       `, [
@@ -190,6 +195,7 @@ export async function applyPendingThreadInputs(
         row.channel_id ?? null,
         row.external_message_id ?? null,
         row.actor_id ?? null,
+        row.identity_id ?? null,
         row.created_at,
         toJson(row.metadata ?? null),
         toJson(row.message),

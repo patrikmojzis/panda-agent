@@ -19,6 +19,18 @@ interface PgPoolLike {
   connect(): Promise<PoolClient>;
 }
 
+const READONLY_VIEW_GUIDANCE = [
+  "A single read-only SELECT or WITH query.",
+  "Prefer panda_sessions for the current session row.",
+  "panda_sessions exposes current_thread_id, not thread_id.",
+  "The readonly tool already scopes panda_threads, panda_messages, panda_tool_results, panda_inputs, panda_runs, panda_scheduled_tasks, panda_scheduled_task_runs, panda_watches, panda_watch_runs, and panda_watch_events to the current session.",
+  "Do not invent is_active flags or extra session_id subqueries unless you are joining raw tables outside the panda_* views.",
+  "For session automation, query panda_scheduled_tasks or panda_watches directly with ORDER BY/LIMIT.",
+  "Prefer panda_agent_skills for stored skill bodies and panda_messages_raw only when you truly need raw JSONB.",
+  "Large skill bodies may need substring(...) or targeted column selection.",
+  "If you need schema help, query information_schema.columns.",
+].join(" ");
+
 export interface PostgresReadonlyQueryToolOptions {
   pool: PgPoolLike;
   maxRows?: number;
@@ -172,21 +184,21 @@ function fitRowsToByteBudget(
   };
 }
 
-function readScope(context: unknown): { identityId: string; agentKey: string } {
+function readScope(context: unknown): { sessionId: string; agentKey: string } {
   if (
     !isRecord(context)
-    || typeof context.identityId !== "string"
-    || !context.identityId.trim()
+    || typeof context.sessionId !== "string"
+    || !context.sessionId.trim()
     || typeof context.agentKey !== "string"
     || !context.agentKey.trim()
   ) {
     throw new ToolError(
-      "The readonly Postgres tool requires both identityId and agentKey in the persisted Panda thread context.",
+      "The readonly Postgres tool requires both sessionId and agentKey in the Panda session context.",
     );
   }
 
   return {
-    identityId: context.identityId,
+    sessionId: context.sessionId,
     agentKey: context.agentKey,
   };
 }
@@ -194,14 +206,11 @@ function readScope(context: unknown): { identityId: string; agentKey: string } {
 export class PostgresReadonlyQueryTool<TContext = PandaSessionContext>
   extends Tool<typeof PostgresReadonlyQueryTool.schema, TContext> {
   static schema = z.object({
-    sql: z.string().trim().min(1).describe(
-      "A single read-only SELECT or WITH query. Prefer panda_messages for user and assistant chat turns, panda_tool_results for tool output, panda_threads for thread metadata, panda_agent_skills for stored skill bodies, panda_scheduled_tasks for scheduled jobs, panda_scheduled_task_runs for execution history, and panda_messages_raw only when you truly need raw JSONB. Large skill bodies may need substring(...) or targeted column selection. If you need schema help, query information_schema.columns.",
-    ),
+    sql: z.string().trim().min(1).describe(READONLY_VIEW_GUIDANCE),
   });
 
   name = "postgres_readonly_query";
-  description =
-    "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. Prefer panda_messages for the human conversation, panda_tool_results for tool output, panda_threads for thread metadata, panda_agent_skills for stored skill bodies, panda_scheduled_tasks for scheduled jobs, panda_scheduled_task_runs for execution history, and panda_messages_raw only when you need raw JSONB. Large skill bodies may need substring(...) or targeted column selection. Query information_schema.columns if you need schema help. Always use LIMIT on exploratory queries.";
+  description = `Run a single read-only SQL query against Postgres. Use only SELECT or WITH. ${READONLY_VIEW_GUIDANCE} Always use LIMIT on exploratory queries.`;
   schema = PostgresReadonlyQueryTool.schema;
 
   private readonly pool: PgPoolLike;
@@ -225,7 +234,7 @@ export class PostgresReadonlyQueryTool<TContext = PandaSessionContext>
     args: z.output<typeof PostgresReadonlyQueryTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
-    const { identityId, agentKey } = readScope(run.context);
+    const { sessionId, agentKey } = readScope(run.context);
     const sql = assertReadonlySql(args.sql);
     const limitedSql = `SELECT * FROM (${sql}) AS panda_readonly_query LIMIT ${this.maxRows + 1}`;
     const client = await this.pool.connect();
@@ -236,7 +245,7 @@ export class PostgresReadonlyQueryTool<TContext = PandaSessionContext>
       await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
       await client.query(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT_MS}ms'`);
       await client.query(`SET LOCAL idle_in_transaction_session_timeout = '${IDLE_TX_TIMEOUT_MS}ms'`);
-      await client.query("SELECT set_config('panda.identity_id', $1, true)", [identityId]);
+      await client.query("SELECT set_config('panda.session_id', $1, true)", [sessionId]);
       await client.query("SELECT set_config('panda.agent_key', $1, true)", [agentKey]);
 
       const result = await client.query(limitedSql);

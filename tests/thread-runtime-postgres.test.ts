@@ -7,6 +7,7 @@ import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js
 
 describe("PostgresThreadRuntimeStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
+  const SESSION_TABLE = "\"thread_runtime_agent_sessions\"";
 
   afterEach(async () => {
     while (pools.length > 0) {
@@ -18,6 +19,35 @@ describe("PostgresThreadRuntimeStore", () => {
       await pool.end();
     }
   });
+
+  async function seedSession(
+    pool: {query: (text: string, values?: readonly unknown[]) => Promise<unknown>},
+    input: {
+      sessionId: string;
+      threadId: string;
+      agentKey?: string;
+      createdByIdentityId?: string;
+    },
+  ): Promise<void> {
+    await pool.query(
+      `
+        INSERT INTO ${SESSION_TABLE} (
+          id,
+          agent_key,
+          kind,
+          current_thread_id,
+          created_by_identity_id,
+          metadata
+        ) VALUES ($1, $2, 'main', $3, $4, NULL::jsonb)
+      `,
+      [
+        input.sessionId,
+        input.agentKey ?? "panda",
+        input.threadId,
+        input.createdByIdentityId ?? null,
+      ],
+    );
+  }
 
   it("persists threads, pending inputs, transcript messages, and runs", async () => {
     const db = newDb();
@@ -51,13 +81,27 @@ describe("PostgresThreadRuntimeStore", () => {
     });
     expect(alice.id).toBe("alice-id");
 
+    await seedSession(pool, {
+      sessionId: "session-alice",
+      threadId: "pg-thread",
+      createdByIdentityId: alice.id,
+    });
+    await seedSession(pool, {
+      sessionId: "session-local",
+      threadId: "pg-thread-local",
+      agentKey: "panda-local",
+    });
+
     const created = await store.createThread({
       id: "pg-thread",
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-alice",
       systemPrompt: ["You are Panda."],
       context: {
         source: "telegram",
+        agentKey: "panda",
+        sessionId: "session-alice",
+        identityId: alice.id,
+        identityHandle: alice.handle,
       },
       maxTurns: 5,
       model: "openai/gpt-5.1",
@@ -69,9 +113,11 @@ describe("PostgresThreadRuntimeStore", () => {
       },
     });
 
-    expect(created.agentKey).toBe("panda");
-    expect(created.identityId).toBe(alice.id);
-    expect(created.identityId).not.toBe(alice.handle);
+    expect(created.sessionId).toBe("session-alice");
+    expect(created.context).toMatchObject({
+      agentKey: "panda",
+      identityId: alice.id,
+    });
     expect(created.systemPrompt).toEqual(["You are Panda."]);
     expect(created.thinking).toBe("medium");
     expect(created.inferenceProjection).toEqual({
@@ -82,19 +128,22 @@ describe("PostgresThreadRuntimeStore", () => {
 
     await store.createThread({
       id: "pg-thread-local",
-      agentKey: "panda",
+      sessionId: "session-local",
+      context: {
+        agentKey: "panda-local",
+        sessionId: "session-local",
+      },
     });
 
-    const aliceSummaries = await store.listThreadSummaries(undefined, alice.id);
+    const aliceSummaries = await store.listThreadSummaries(undefined, "session-alice");
     expect(aliceSummaries).toHaveLength(1);
     expect(aliceSummaries[0]?.thread.id).toBe("pg-thread");
 
-    const localSummaries = await store.listThreadSummaries(undefined, DEFAULT_IDENTITY_ID);
+    const localSummaries = await store.listThreadSummaries(undefined, "session-local");
     expect(localSummaries).toHaveLength(1);
     expect(localSummaries[0]?.thread.id).toBe("pg-thread-local");
 
     const updated = await store.updateThread("pg-thread", {
-      agentKey: "panda-debug",
       promptCacheKey: "thread:pg-thread",
       inferenceProjection: {
         dropMessages: {
@@ -103,7 +152,7 @@ describe("PostgresThreadRuntimeStore", () => {
       },
     });
 
-    expect(updated.agentKey).toBe("panda-debug");
+    expect(updated.sessionId).toBe("session-alice");
     expect(updated.promptCacheKey).toBe("thread:pg-thread");
     expect(updated.inferenceProjection).toEqual({
       dropMessages: {
@@ -262,7 +311,7 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(summaries[0]).toMatchObject({
       thread: {
         id: "pg-thread",
-        identityId: alice.id,
+        sessionId: "session-alice",
       },
       messageCount: 4,
       pendingInputCount: 0,
@@ -294,9 +343,17 @@ describe("PostgresThreadRuntimeStore", () => {
     const store = new PostgresThreadRuntimeStore({ pool });
     await store.ensureSchema();
 
+    await seedSession(pool, {
+      sessionId: "session-reset",
+      threadId: "pg-thread-reset",
+    });
     await store.createThread({
       id: "pg-thread-reset",
-      agentKey: "panda",
+      sessionId: "session-reset",
+      context: {
+        agentKey: "panda",
+        sessionId: "session-reset",
+      },
     });
 
     await store.enqueueInput("pg-thread-reset", {
@@ -329,9 +386,17 @@ describe("PostgresThreadRuntimeStore", () => {
     const store = new PostgresThreadRuntimeStore({ pool });
     await store.ensureSchema();
 
+    await seedSession(pool, {
+      sessionId: "session-pending-wake",
+      threadId: "pg-thread-pending-wake",
+    });
     await store.createThread({
       id: "pg-thread-pending-wake",
-      agentKey: "panda",
+      sessionId: "session-pending-wake",
+      context: {
+        agentKey: "panda",
+        sessionId: "session-pending-wake",
+      },
     });
 
     await expect(store.hasPendingWake("pg-thread-pending-wake")).resolves.toBe(false);
@@ -359,9 +424,17 @@ describe("PostgresThreadRuntimeStore", () => {
     const store = new PostgresThreadRuntimeStore({ pool });
     await store.ensureSchema();
 
+    await seedSession(pool, {
+      sessionId: "session-bash-job",
+      threadId: "pg-thread-bash-job",
+    });
     await store.createThread({
       id: "pg-thread-bash-job",
-      agentKey: "panda",
+      sessionId: "session-bash-job",
+      context: {
+        agentKey: "panda",
+        sessionId: "session-bash-job",
+      },
     });
     const run = await store.createRun("pg-thread-bash-job");
 
@@ -429,9 +502,17 @@ describe("PostgresThreadRuntimeStore", () => {
     const store = new PostgresThreadRuntimeStore({ pool });
     await store.ensureSchema();
 
+    await seedSession(pool, {
+      sessionId: "session-lost-job",
+      threadId: "pg-thread-lost-job",
+    });
     await store.createThread({
       id: "pg-thread-lost-job",
-      agentKey: "panda",
+      sessionId: "session-lost-job",
+      context: {
+        agentKey: "panda",
+        sessionId: "session-lost-job",
+      },
     });
     const created = await store.createBashJob({
       id: "00000000-0000-4000-8000-000000000002",
@@ -447,5 +528,29 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(lost.status).toBe("lost");
     expect(lost.statusReason).toBe("runtime restarted");
     expect(lost.finishedAt).toBeDefined();
+  });
+
+  it("rejects threads without a session id instead of silently creating one", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const store = new PostgresThreadRuntimeStore({ pool });
+    await store.ensureSchema();
+
+    await expect(store.createThread({
+      id: "pg-thread-missing-session",
+      sessionId: "   ",
+      context: {
+        agentKey: "panda",
+      },
+    })).rejects.toThrow("Thread pg-thread-missing-session is missing sessionId.");
   });
 });

@@ -17,23 +17,34 @@ import {type NoticeState} from "./chat-view.js";
 
 type NoticeTone = NoticeState["tone"];
 
+function readAgentKeyFromThreadContext(thread: ThreadRecord): string | undefined {
+  if (typeof thread.context !== "object" || thread.context === null || Array.isArray(thread.context)) {
+    return undefined;
+  }
+
+  const agentKey = (thread.context as {agentKey?: unknown}).agentKey;
+  return typeof agentKey === "string" && agentKey.trim() ? agentKey : undefined;
+}
+
 export interface ChatCommandHost {
   getCurrentThreadId(): string;
+  getCurrentSessionId(): string;
+  getCurrentAgentKey(): string | undefined;
   getModel(): string;
   getThinking(): ThinkingLevel | undefined;
   getDefaultAgentKey(): string | undefined;
   isRunning(): boolean;
   requireServices(): ChatRuntimeServices;
   requireIdleRun(action: string): boolean;
-  buildThreadDefaults(): {
-    id?: string;
+  buildSessionDefaults(): {
+    sessionId?: string;
     agentKey?: string;
     model: string;
     thinking?: ThinkingLevel;
   };
   switchThread(thread: ThreadRecord): Promise<void>;
   compactCurrentThread(customInstructions: string): Promise<void>;
-  openThreadPicker(): Promise<void>;
+  openSessionPicker(): Promise<void>;
   setCurrentThread(thread: ThreadRecord): void;
   setModel(model: string): void;
   setThinking(thinking: ThinkingLevel | undefined): void;
@@ -173,31 +184,33 @@ async function handleCompactCommand(host: ChatCommandHost, value: string): Promi
   return true;
 }
 
-async function handleNewThreadCommand(host: ChatCommandHost): Promise<boolean> {
-  if (!host.requireIdleRun("creating a new thread")) {
+async function handleNewSessionCommand(host: ChatCommandHost): Promise<boolean> {
+  if (!host.requireIdleRun("creating a branch session")) {
     return true;
   }
 
-  await host.switchThread(await host.requireServices().createThread(host.buildThreadDefaults()));
-  host.pushEntry("meta", "session", `Started a fresh thread ${host.getCurrentThreadId()}.`);
-  host.setNotice(`Started thread ${host.getCurrentThreadId()}.`, "info");
+  const thread = await host.requireServices().createBranchSession(host.buildSessionDefaults());
+  await host.switchThread(thread);
+  host.pushEntry("meta", "session", `Started branch session ${thread.sessionId}.`);
+  host.setNotice(`Started branch session ${thread.sessionId}.`, "info");
   return true;
 }
 
-async function handleResetThreadCommand(host: ChatCommandHost): Promise<boolean> {
+async function handleResetSessionCommand(host: ChatCommandHost): Promise<boolean> {
   if (!host.requireIdleRun("resetting Panda")) {
     return true;
   }
 
   try {
-    const thread = await host.requireServices().resetHomeThread({
+    const thread = await host.requireServices().resetSession({
+      sessionId: host.getCurrentSessionId(),
       agentKey: host.getDefaultAgentKey(),
       model: host.getModel(),
       thinking: host.getThinking(),
     });
     await host.switchThread(thread);
-    host.pushEntry("meta", "session", `Reset Panda. New home thread ${host.getCurrentThreadId()}.`);
-    host.setNotice(`Reset Panda to ${host.getCurrentThreadId()}.`, "info");
+    host.pushEntry("meta", "session", `Reset session ${thread.sessionId}.`);
+    host.setNotice(`Reset session ${thread.sessionId}.`, "info");
   } catch (error) {
     host.showCommandError("session", error instanceof Error ? error.message : String(error));
   }
@@ -206,19 +219,26 @@ async function handleResetThreadCommand(host: ChatCommandHost): Promise<boolean>
 }
 
 async function handleResumeCommand(host: ChatCommandHost, value: string): Promise<boolean> {
-  if (!host.requireIdleRun("resuming another thread")) {
+  if (!host.requireIdleRun("opening another session")) {
     return true;
   }
 
   if (!value) {
-    host.showCommandError("session", "Usage: /resume <thread-id>");
+    host.showCommandError("session", "Usage: /resume <session-id>");
     return true;
   }
 
   try {
-    await host.switchThread(await host.requireServices().getThread(value));
-    host.pushEntry("meta", "session", `Resumed thread ${host.getCurrentThreadId()}.`);
-    host.setNotice(`Resumed thread ${host.getCurrentThreadId()}.`, "info");
+    const thread = await host.requireServices().openSession(value);
+    const currentAgentKey = host.getCurrentAgentKey();
+    const nextAgentKey = readAgentKeyFromThreadContext(thread);
+    if (currentAgentKey && nextAgentKey !== currentAgentKey) {
+      throw new Error(`Session ${value} belongs to agent ${nextAgentKey}, not current agent ${currentAgentKey}.`);
+    }
+
+    await host.switchThread(thread);
+    host.pushEntry("meta", "session", `Opened session ${thread.sessionId}.`);
+    host.setNotice(`Opened session ${thread.sessionId}.`, "info");
   } catch (error) {
     host.showCommandError("session", error instanceof Error ? error.message : String(error));
   }
@@ -232,6 +252,8 @@ function showThreadSummary(host: ChatCommandHost): boolean {
     "session",
     [
       `identity ${host.requireServices().identity.handle}`,
+      `agent ${host.getCurrentAgentKey() ?? "-"}`,
+      `session ${host.getCurrentSessionId()}`,
       `thread ${host.getCurrentThreadId()}`,
       `model ${host.getModel()}`,
       `thinking ${formatThinkingLevel(host.getThinking())}`,
@@ -280,12 +302,12 @@ export async function runChatActionsCommandLine(
     model: (value) => handleModelCommand(host, value),
     thinking: (value) => handleThinkingCommand(host, value),
     compact: (value) => handleCompactCommand(host, value),
-    newThread: () => handleNewThreadCommand(host),
-    resetThread: () => handleResetThreadCommand(host),
+    newSession: () => handleNewSessionCommand(host),
+    resetSession: () => handleResetSessionCommand(host),
     resume: (value) => handleResumeCommand(host, value),
     showThread: () => showThreadSummary(host),
-    openThreadPicker: async () => {
-      await host.openThreadPicker();
+    openSessionPicker: async () => {
+      await host.openSessionPicker();
       return true;
     },
     abort: () => handleAbortCommand(host),
@@ -320,7 +342,7 @@ export async function submitChatComposer(host: ChatComposerHost): Promise<void> 
   const externalMessageId = randomUUID();
   host.queuePendingLocalInput(host.getCurrentThreadId(), message, externalMessageId);
   if (host.isRunning()) {
-    host.setNotice("Queued your message for the current thread.", "info");
+    host.setNotice("Queued your message for the current session.", "info");
   }
   void host.submitUserMessage(message, externalMessageId);
 }

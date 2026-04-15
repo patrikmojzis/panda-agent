@@ -36,7 +36,8 @@ import {
 } from "./types.js";
 import {PostgresIdentityStore, type PostgresIdentityStoreOptions} from "../../../domain/identity/postgres.js";
 import {buildIdentityTableNames} from "../../../domain/identity/postgres-shared.js";
-import {DEFAULT_IDENTITY_ID} from "../../../domain/identity/types.js";
+import {buildSessionTableNames} from "../../../domain/sessions/postgres-shared.js";
+import {PostgresSessionStore} from "../../../domain/sessions/postgres.js";
 
 interface PostgresThreadRuntimeStoreOptions {
   pool: PgPoolLike;
@@ -72,19 +73,27 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   private readonly tables: ThreadRuntimeTableNames;
   private readonly notificationChannel: string;
   private readonly identityTableName: string;
+  private readonly sessionTableName: string;
+  private readonly sessionStore: PostgresSessionStore;
   readonly identityStore: PostgresIdentityStore;
 
   constructor(options: PostgresThreadRuntimeStoreOptions) {
     this.pool = options.pool;
     const tablePrefix = options.tablePrefix ?? "thread_runtime";
     const identityTables = buildIdentityTableNames(tablePrefix);
+    const sessionTables = buildSessionTableNames(tablePrefix);
     this.tables = buildThreadRuntimeTableNames(tablePrefix);
     this.notificationChannel = buildThreadRuntimeNotificationChannel(tablePrefix);
     this.identityStore = options.identityStore ?? new PostgresIdentityStore({
       pool: options.pool,
       tablePrefix,
     } satisfies PostgresIdentityStoreOptions);
+    this.sessionStore = new PostgresSessionStore({
+      pool: options.pool,
+      tablePrefix,
+    });
     this.identityTableName = identityTables.identities;
+    this.sessionTableName = sessionTables.sessions;
   }
 
   private async notifyThreadChanged(threadId: string, queryable: PgQueryable = this.pool): Promise<void> {
@@ -103,19 +112,21 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
 
   async ensureSchema(): Promise<void> {
     await this.identityStore.ensureSchema();
-    await this.pool.query(buildThreadRuntimeSchemaSql(this.tables, this.identityTableName));
+    await this.sessionStore.ensureSchema();
+    await this.pool.query(buildThreadRuntimeSchemaSql(this.tables, this.sessionTableName, this.identityTableName));
   }
 
   async createThread(input: CreateThreadInput): Promise<ThreadRecord> {
-    const identityId = input.identityId ?? DEFAULT_IDENTITY_ID;
+    const sessionId = input.sessionId?.trim();
+    if (!sessionId) {
+      throw new Error(`Thread ${input.id} is missing sessionId.`);
+    }
     const model = input.model === undefined ? null : resolveModelSelector(input.model).canonical;
-    await this.identityStore.getIdentity(identityId);
 
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.threads} (
         id,
-        identity_id,
-        agent_key,
+        session_id,
         system_prompt,
         max_turns,
         context,
@@ -129,23 +140,21 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       ) VALUES (
         $1,
         $2,
-        $3,
-        $4::jsonb,
-        $5,
+        $3::jsonb,
+        $4,
+        $5::jsonb,
         $6::jsonb,
         $7::jsonb,
-        $8::jsonb,
+        $8,
         $9,
         $10,
         $11,
-        $12,
-        $13
+        $12
       )
       RETURNING *
     `, [
       input.id,
-      identityId,
-      input.agentKey,
+      sessionId,
       toJson(input.systemPrompt),
       input.maxTurns ?? null,
       toJson(input.context),
@@ -177,13 +186,13 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     return parseThreadRow(row as Record<string, unknown>);
   }
 
-  async listThreadSummaries(limit?: number, identityId?: string): Promise<readonly ThreadSummaryRecord[]> {
+  async listThreadSummaries(limit?: number, sessionId?: string): Promise<readonly ThreadSummaryRecord[]> {
     const values: unknown[] = [];
     let sql = `SELECT * FROM ${this.tables.threads}`;
 
-    if (identityId !== undefined) {
-      values.push(identityId);
-      sql += ` WHERE identity_id = $${values.length}`;
+    if (sessionId !== undefined) {
+      values.push(sessionId);
+      sql += ` WHERE session_id = $${values.length}`;
     }
 
     sql += " ORDER BY updated_at DESC";
@@ -273,10 +282,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       values.push(value);
       index += 1;
     };
-
-    if (update.agentKey !== undefined) {
-      push("agent_key", update.agentKey);
-    }
 
     if (update.systemPrompt !== undefined) {
       push("system_prompt", toJson(update.systemPrompt), "::jsonb");

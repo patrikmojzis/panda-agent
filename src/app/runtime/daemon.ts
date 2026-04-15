@@ -9,7 +9,6 @@ import {
     PANDA_DAEMON_STALE_AFTER_MS,
     type PandaDaemonOptions,
     type PandaDaemonServices,
-    resolveImplicitHomeThreadReplacementAgent,
 } from "./daemon-shared.js";
 
 export {
@@ -17,7 +16,6 @@ export {
   PANDA_DAEMON_HEARTBEAT_INTERVAL_MS,
   PANDA_DAEMON_REQUEST_TIMEOUT_MS,
   PANDA_DAEMON_STALE_AFTER_MS,
-  resolveImplicitHomeThreadReplacementAgent,
 };
 
 export type {

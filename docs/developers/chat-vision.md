@@ -2,141 +2,123 @@
 
 ## One Brain, Many Windows, Optional Branches
 
-Panda should feel like one stable relationship with one brain.
+Panda should feel like one stable brain.
 
-That brain has a `home` thread.
-The user can reach that same home through many windows:
+That brain is the agent.
+The durable lane users and channels attach to is the session.
 
-- TUI
-- Telegram
-- WhatsApp
-- future scheduled triggers like reminders or heartbeats
+So the shape is:
 
-Those windows are different entry and delivery surfaces.
-They are not separate brains by default.
+- one agent
+- one main session by default
+- many windows into that same session
+- optional branch sessions when someone explicitly splits off
 
 ## Core Model
 
 The stable user-facing unit is:
 
-- `(identity, agentKey) -> homeThreadId`
+- `session`
 
-That means:
+Not:
 
-- one identity can have multiple Pandas
-- each Panda can have its own home thread
-- the same Panda can be reached from multiple channels
+- `thread`, because `/reset` replaces it
+- `identity`, because identity participates but does not own runtime state
+- `agent`, because the agent is broader than one execution lane
 
-Threads are still the real persisted execution unit.
-The difference is that one of them is the canonical `home`.
+The base relationship is:
 
-## Mental Model
+- `identity <-> agent` pairing for access
+- `session` for execution and durable routing
 
-### Home
+## Main Session
 
-`home` is the main thread for a Panda relationship.
+Every agent has exactly one `main` session.
 
-This is the default place where:
+That is the default place where:
 
 - TUI opens
-- new direct-message channel conversations land
-- heartbeats run
-- reminders run unless they explicitly target another thread
+- first inbound DM conversations land
+- heartbeat runs
+- default scheduled work runs
 
-If the user thinks "this is my Panda chat", they mean `home`.
+The old phrase "home thread" is dead.
+The replacement is:
 
-### Windows
+- main session with a current thread
 
-Windows are surfaces that attach to the same relationship.
+## Windows
+
+Windows are just surfaces attached to the same session.
 
 Examples:
 
-- the TUI
-- a Telegram DM
-- a WhatsApp DM
+- TUI
+- Telegram DM
+- WhatsApp DM
 
-By default, they all point at `home`.
+By default they should feel like the same Panda, not separate brains.
 
-That means a user should be able to talk to the same Panda from TUI and Telegram without feeling like they entered a different app or lost their context.
+## Branches
 
-### Branches
+Branches are explicit side sessions on the same agent.
 
-Branches are explicit side threads.
+They are useful when someone wants to:
 
-They are useful when the user wants to peel off into a temporary topic, experiment, or deep-dive without dragging the whole home thread with them.
+- deep-dive
+- experiment
+- fork off a temporary topic
 
-Branches are optional.
-They are not the default story.
+They are not private by default.
+If someone wants a private mental space, they should use a separate agent.
 
 ## Command Semantics
 
 ### TUI
 
-TUI can expose real thread operations because it can actually show them.
+The TUI now speaks session-first:
 
-- `/new` creates a fresh thread and opens it in TUI
-- `/reset` creates a fresh empty thread and makes it the new `home`
-- future branch-oriented commands can live here naturally
+- `/new` creates a fresh branch session
+- `/reset` replaces the current session thread
+- `/sessions` opens the session picker
+- `/resume <session-id>` switches to another session
 
-### External Channels
+### Channels
 
-External channels should not pretend users can see hidden backend thread switches.
+Channels should not invent hidden session-management UX in-band.
+
+For v1:
+
+- new direct conversations bind to a session
+- explicit conversation-to-session rebinding is an operator/admin action
+- do not pretend Telegram or WhatsApp expose the full session model to end users yet
+
+## Routing
+
+Inbound flow is:
+
+1. resolve external actor to `identity_id`
+2. verify pairing to the target agent
+3. resolve conversation binding to `session_id`
+4. resolve `session.current_thread_id`
+5. enqueue the input on that thread
+
+That is the durable chain.
+
+## Scheduling
+
+Heartbeats, watches, and scheduled tasks belong to sessions.
 
 That means:
 
-- do not use `/new` in Telegram, WhatsApp, or similar channel UIs
-- use `/reset` instead
-- `/reset` creates a fresh empty thread and makes it the new `home`
+- reset does not destroy them
+- they re-resolve the session's current thread when they fire
 
-This is more honest.
-`/new` sounds like "start over", but in a channel it really means "reroute this surface to another invisible thread", which is confusing bullshit.
-
-## Delivery vs Execution
-
-There are two separate questions:
-
-- what thread should wake up?
-- where should the reply go?
-
-These are related, but they are not the same thing.
-
-### Execution Target
-
-The execution target is the thread Panda runs on.
-
-Usually that is:
-
-- `home`
-- or an explicit branch thread
-
-### Delivery Target
-
-The delivery target is the route Panda uses when it sends a message out.
-
-Examples:
-
-- Telegram DM
-- WhatsApp chat
-- another future channel surface
-
-Scheduled work should remember enough route information to reply naturally later, without forcing the model to rediscover where the user came from.
-
-## Scheduled Work
-
-Heartbeats, reminders, and other scheduled triggers belong to the Panda relationship, not to a random window.
-
-Default rule:
-
-- wake `home`
-- deliver to the best remembered route for that relationship
-
-If a reminder was explicitly created in a branch or bound to a specific route, it can override that default.
-
-The important point is that scheduled work should feel like it came from the same Panda the user already knows.
+That is why session indirection exists.
 
 ## What To Avoid
 
-- treating every channel as a separate default brain
-- making Telegram or WhatsApp own the truth
-- exposing hidden backend thread routing as a normal user concept
-- making `/new` silently rewrite channel routing in places where the user cannot inspect thread state
+- thinking in identity-owned home threads
+- binding channels directly to raw thread ids
+- treating every channel as a separate brain
+- sneaking private ACLs into branch sessions

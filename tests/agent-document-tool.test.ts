@@ -78,12 +78,12 @@ describe("AgentDocumentTool", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      documents: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      documents: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
     await agentStore.setRelationshipDocument("panda", "alice-id", "memory", "Alice memory.");
     await agentStore.setRelationshipDocument("panda", "bob-id", "memory", "Bob memory.");
@@ -92,7 +92,7 @@ describe("AgentDocumentTool", () => {
     return agentStore;
   }
 
-  it("reads documents using only the current thread scope", async () => {
+  it("reads documents using the current session's agent scope", async () => {
     const store = await createStore();
     const tool = new AgentDocumentTool({ store });
 
@@ -100,6 +100,7 @@ describe("AgentDocumentTool", () => {
       target: "relationship",
       slug: "memory",
       operation: "read",
+      identityId: "alice-id",
     }, createRunContext({
       identityId: "alice-id",
       agentKey: "panda",
@@ -145,6 +146,7 @@ describe("AgentDocumentTool", () => {
       target: "relationship",
       slug: "memory",
       operation: "transform",
+      identityId: "alice-id",
       expression: "concat(content, '\nSecond line.')",
     }, context) as ToolResultPayload;
     expect(parseToolResult(transformed)).toMatchObject({
@@ -168,7 +170,7 @@ describe("AgentDocumentTool", () => {
     }))).rejects.toBeInstanceOf(ToolError);
   });
 
-  it("defaults diary writes to the current thread-local day", async () => {
+  it("defaults diary writes to the current local day in the session timezone", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-10T23:30:00.000Z"));
 
@@ -188,7 +190,7 @@ describe("AgentDocumentTool", () => {
       readRelationshipDocument: async () => null,
       setRelationshipDocument: async () => { throw new Error("not needed"); },
       transformRelationshipDocument: async () => { throw new Error("not needed"); },
-      readDiaryEntry: async (_agentKey, _identityId, entryDate) => {
+      readDiaryEntry: async (_agentKey, entryDate) => {
         const content = diaryEntries.get(entryDate);
         return content === undefined
           ? null
@@ -201,7 +203,7 @@ describe("AgentDocumentTool", () => {
             updatedAt: 1,
           };
       },
-      setDiaryEntry: async (_agentKey, _identityId, entryDate, content) => {
+      setDiaryEntry: async (_agentKey, entryDate, content) => {
         diaryEntries.set(entryDate, content);
         return {
           agentKey: "panda",
@@ -228,5 +230,19 @@ describe("AgentDocumentTool", () => {
     }));
 
     expect(diaryEntries.get("2026-04-11")).toBe("Diary for today.");
+  });
+
+  it("describes diary defaults in session-timezone language", async () => {
+    const tool = new AgentDocumentTool({
+      store: await createStore(),
+    });
+
+    expect(tool.piTool.parameters).toMatchObject({
+      properties: {
+        date: {
+          description: "Only for diary. Defaults to the current local day in YYYY-MM-DD using the session timezone.",
+        },
+      },
+    });
   });
 });

@@ -49,10 +49,6 @@
       "types": "./dist/domain/threads/index.d.ts",
       "import": "./dist/domain/threads/index.js"
     },
-    "./domain/threads/home": {
-      "types": "./dist/domain/threads/home/index.d.ts",
-      "import": "./dist/domain/threads/home/index.js"
-    },
     "./domain/threads/requests": {
       "types": "./dist/domain/threads/requests/index.d.ts",
       "import": "./dist/domain/threads/requests/index.js"

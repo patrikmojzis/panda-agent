@@ -101,7 +101,7 @@ Panda reports tracked env key names only. It does not expose exported env values
 - foreground shell state can keep changing while the job runs
 - background completion does not update shared cwd
 - background completion does not export or unset shared env vars
-- resetting or replacing the home thread cancels that thread's background jobs
+- resetting the current session cancels the retired thread's background jobs
 
 ## Secret And Output Rules
 

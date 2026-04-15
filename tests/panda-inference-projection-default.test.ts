@@ -9,8 +9,11 @@ function createThread(
   const now = Date.now();
   return {
     id: "thread-defaults",
-    identityId: "local",
-    agentKey: "panda",
+    sessionId: "session-main",
+    context: {
+      agentKey: "panda",
+      sessionId: "session-main",
+    },
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -21,10 +24,12 @@ describe("createPandaThreadDefinition inference projection defaults", () => {
   it("applies Panda's global inference projection by default", () => {
     const definition = createPandaThreadDefinition({
       thread: createThread(),
+      session: {
+        id: "session-main",
+        agentKey: "panda",
+      },
       fallbackContext: {
         cwd: "/tmp/panda",
-        identityId: "local",
-        identityHandle: "local",
       },
     });
 
@@ -43,10 +48,12 @@ describe("createPandaThreadDefinition inference projection defaults", () => {
           },
         },
       }),
+      session: {
+        id: "session-main",
+        agentKey: "panda",
+      },
       fallbackContext: {
         cwd: "/tmp/panda",
-        identityId: "local",
-        identityHandle: "local",
       },
     });
 

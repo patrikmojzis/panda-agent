@@ -4,10 +4,12 @@ import process from "node:process";
 import path from "node:path";
 
 import {Command, InvalidArgumentError} from "commander";
+import {PANDA_DB_URL_OPTION_DESCRIPTION} from "./cli-shared.js";
 import {createPandaDaemon} from "./runtime/index.js";
 import {parseAgentKey, registerAgentCommands} from "../domain/agents/cli.js";
 import {registerCredentialCommands} from "../domain/credentials/cli.js";
 import {parseIdentityHandle, registerIdentityCommands} from "../domain/identity/cli.js";
+import {registerSessionCommands} from "../domain/sessions/cli.js";
 import {registerTelegramCommands} from "../integrations/channels/telegram/cli.js";
 import {type ChatCliOptions, runChatCli} from "../ui/tui/chat.js";
 import {renderResumeHint} from "../ui/tui/exit-hint.js";
@@ -52,13 +54,12 @@ async function runChatCommand(options: ChatCliOptions): Promise<void> {
     model: options.model,
     identity: options.identity,
     agent: options.agent,
-    resume: options.resume,
-    threadId: options.threadId,
+    session: options.session,
     dbUrl: options.dbUrl,
   });
 
-  if (result.threadId) {
-    process.stdout.write(`\n${renderResumeHint(result.threadId, process.stdout.columns ?? 80)}\n`);
+  if (result.sessionId) {
+    process.stdout.write(`\n${renderResumeHint(result.sessionId, process.stdout.columns ?? 80)}\n`);
   }
 }
 
@@ -139,11 +140,10 @@ async function runRunnerCommand(options: PandaRunnerCliOptions): Promise<void> {
 function configureChatOptions(command: Command): Command {
   return command
     .option("-m, --model <selector-or-alias>", "Model selector override")
-    .option("--identity <handle>", "Identity handle to use for thread ownership", parseIdentityHandle)
+    .option("--identity <handle>", "Identity handle to use as the active participant", parseIdentityHandle)
     .option("--agent <agentKey>", "Agent key to use", parseAgentKey)
-    .option("--resume <threadId>", "Resume an existing thread by id")
-    .option("--thread-id <threadId>", "Use an explicit thread id for a new or existing chat")
-    .option("--db-url <url>", "Postgres connection string for thread persistence");
+    .option("--session <sessionId>", "Open a chat on an existing session id")
+    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION);
 }
 
 function configureChatCommand(command: Command): Command {
@@ -171,7 +171,7 @@ program
   .command("run")
   .description("Run the singular Panda runtime daemon")
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
-  .option("--db-url <url>", "Postgres connection string for thread persistence")
+  .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
   .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
   .action((options: PandaRunCliOptions) => {
     return runPandaCommand(options);
@@ -191,6 +191,7 @@ program
 registerAgentCommands(program);
 registerCredentialCommands(program);
 registerIdentityCommands(program);
+registerSessionCommands(program);
 registerTelegramCommands(program);
 registerWhatsAppCommands(program);
 

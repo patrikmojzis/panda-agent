@@ -11,8 +11,7 @@ import type {
 export function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
   return {
     id: String(row.id),
-    identityId: String(row.identity_id),
-    agentKey: String(row.agent_key),
+    sessionId: String(row.session_id),
     systemPrompt: row.system_prompt === null ? undefined : (row.system_prompt as ThreadRecord["systemPrompt"]),
     maxTurns: row.max_turns === null ? undefined : Number(row.max_turns),
     context: row.context === null ? undefined : (row.context as ThreadRecord["context"]),
@@ -40,6 +39,7 @@ export function parseMessageRow(row: Record<string, unknown>): ThreadMessageReco
     channelId: row.channel_id === null ? undefined : String(row.channel_id),
     externalMessageId: row.external_message_id === null ? undefined : String(row.external_message_id),
     actorId: row.actor_id === null ? undefined : String(row.actor_id),
+    identityId: row.identity_id === null ? undefined : String(row.identity_id),
     runId: row.run_id === null ? undefined : String(row.run_id),
     createdAt: toMillis(row.created_at),
   };
@@ -57,6 +57,7 @@ export function parseInputRow(row: Record<string, unknown>): ThreadInputRecord {
     channelId: row.channel_id === null ? undefined : String(row.channel_id),
     externalMessageId: row.external_message_id === null ? undefined : String(row.external_message_id),
     actorId: row.actor_id === null ? undefined : String(row.actor_id),
+    identityId: row.identity_id === null ? undefined : String(row.identity_id),
     createdAt: toMillis(row.created_at),
     appliedAt: row.applied_at === null ? undefined : toMillis(row.applied_at),
   };

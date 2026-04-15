@@ -39,7 +39,7 @@ describe("buildPandaLlmContexts", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      documents: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
     await agentStore.setRelationshipDocument("panda", "alice-id", "memory", "Alice likes tea.");
     await agentStore.setDiaryEntry("panda", "alice-id", "2026-04-10", "Met for dinner.");
@@ -95,7 +95,11 @@ describe("buildPandaLlmContexts", () => {
     const threadStore = new TestThreadRuntimeStore();
     await threadStore.createThread({
       id: "thread-bg-context",
-      agentKey: "panda",
+      sessionId: "session-bg-context",
+      context: {
+        sessionId: "session-bg-context",
+        agentKey: "panda",
+      },
     });
     await threadStore.createBashJob({
       id: "job-running",
@@ -134,7 +138,11 @@ describe("buildPandaLlmContexts", () => {
     const threadStore = new TestThreadRuntimeStore();
     await threadStore.createThread({
       id: "thread-no-bg-context",
-      agentKey: "panda",
+      sessionId: "session-no-bg-context",
+      context: {
+        sessionId: "session-no-bg-context",
+        agentKey: "panda",
+      },
     });
     await threadStore.createBashJob({
       id: "job-done",

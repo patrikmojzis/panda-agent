@@ -7,10 +7,11 @@ import {
     PostgresCredentialStore,
     resolveCredentialCrypto,
 } from "../../domain/credentials/index.js";
+import {PostgresIdentityStore} from "../../domain/identity/index.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import {PostgresScheduledTaskStore, type ScheduledTaskStore,} from "../../domain/scheduling/tasks/index.js";
+import {PostgresSessionStore, type SessionStore} from "../../domain/sessions/index.js";
 import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.js";
-import {PostgresHomeThreadStore} from "../../domain/threads/home/index.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/index.js";
 import {
     buildThreadRuntimeNotificationChannel,
@@ -55,6 +56,7 @@ export interface RuntimeBootstrapResult {
   browserService: BrowserSessionService;
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
+  sessionStore: SessionStore;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
   watches: WatchStore;
@@ -109,9 +111,25 @@ export async function bootstrapPandaRuntime(
   const postgresPool = createPandaPool(options.dbUrl);
 
   try {
+    const identityStore = new PostgresIdentityStore({
+      pool: postgresPool,
+      tablePrefix: options.tablePrefix,
+    });
+    await identityStore.ensureSchema();
+    const agentStore = new PostgresAgentStore({
+      pool: postgresPool,
+      tablePrefix: options.tablePrefix,
+    });
+    await agentStore.ensureSchema();
+    const sessionStore = new PostgresSessionStore({
+      pool: postgresPool,
+      tablePrefix: options.tablePrefix,
+    });
+    await sessionStore.ensureSchema();
     const store = new PostgresThreadRuntimeStore({
       pool: postgresPool,
       tablePrefix: options.tablePrefix,
+      identityStore,
     });
     await store.ensureSchema();
     await store.markRunningBashJobsLost();
@@ -122,13 +140,6 @@ export async function bootstrapPandaRuntime(
       env: process.env,
     });
     const resolvedBrowserService = browserService;
-
-    const identityStore = store.identityStore;
-    const agentStore = new PostgresAgentStore({
-      pool: postgresPool,
-      tablePrefix: options.tablePrefix,
-    });
-    await agentStore.ensureSchema();
 
     const credentialStore = new PostgresCredentialStore({
       pool: postgresPool,
@@ -160,11 +171,6 @@ export async function bootstrapPandaRuntime(
     });
     await watches.ensureSchema();
 
-    await new PostgresHomeThreadStore({
-      pool: postgresPool,
-      tablePrefix: options.tablePrefix,
-    }).ensureSchema();
-
     await ensureReadonlyChatQuerySchema({
       queryable: postgresPool,
       tablePrefix: options.tablePrefix,
@@ -184,6 +190,7 @@ export async function bootstrapPandaRuntime(
         browserService: resolvedBrowserService,
         credentialResolver,
         identityStore,
+        sessionStore,
         store,
         extraTools,
       }),
@@ -260,6 +267,7 @@ export async function bootstrapPandaRuntime(
       browserService: resolvedBrowserService,
       credentialResolver,
       identityStore,
+      sessionStore,
       store,
       scheduledTasks,
       watches,

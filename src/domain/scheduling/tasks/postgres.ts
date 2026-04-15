@@ -3,6 +3,7 @@ import {randomUUID} from "node:crypto";
 import type {PoolClient} from "pg";
 
 import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
+import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import type {PgPoolLike} from "../../threads/runtime/postgres-db.js";
 import {quoteIdentifier, toMillis} from "../../threads/runtime/postgres-shared.js";
 import {computeInitialNextFireAt, normalizeScheduledTaskSchedule} from "./schedule.js";
@@ -44,15 +45,6 @@ function requireTrimmed(field: string, value: string): string {
   return trimmed;
 }
 
-function normalizeOptionalThreadId(value: string | null | undefined): string | undefined {
-  if (value === null || value === undefined) {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
 function toDate(value: number | undefined): Date | null {
   return value === undefined ? null : new Date(value);
 }
@@ -73,13 +65,11 @@ function parseTaskRow(row: Record<string, unknown>): ScheduledTaskRecord {
 
   return {
     id: String(row.id),
-    identityId: String(row.identity_id),
-    agentKey: String(row.agent_key),
+    sessionId: String(row.session_id),
+    createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
     title: String(row.title),
     instruction: String(row.instruction),
     schedule,
-    targetKind: String(row.target_kind) as ScheduledTaskRecord["targetKind"],
-    targetThreadId: row.target_thread_id === null ? undefined : String(row.target_thread_id),
     enabled: Boolean(row.enabled),
     nextFireAt: row.next_fire_at === null ? undefined : toMillis(row.next_fire_at),
     nextFireKind: String(row.next_fire_kind) as ScheduledTaskRecord["nextFireKind"],
@@ -97,8 +87,8 @@ function parseTaskRunRow(row: Record<string, unknown>): ScheduledTaskRunRecord {
   return {
     id: String(row.id),
     taskId: String(row.task_id),
-    identityId: String(row.identity_id),
-    agentKey: String(row.agent_key),
+    sessionId: String(row.session_id),
+    createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
     resolvedThreadId: row.resolved_thread_id === null ? undefined : String(row.resolved_thread_id),
     fireKind: String(row.fire_kind) as ScheduledTaskRunRecord["fireKind"],
     scheduledFor: toMillis(row.scheduled_for),
@@ -113,26 +103,21 @@ function parseTaskRunRow(row: Record<string, unknown>): ScheduledTaskRunRecord {
 }
 
 function normalizeCreateInput(input: CreateScheduledTaskInput): {
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
+  createdByIdentityId?: string;
   title: string;
   instruction: string;
-  targetKind: ScheduledTaskRecord["targetKind"];
-  targetThreadId?: string;
   enabled: boolean;
   schedule: ScheduledTaskRecord["schedule"];
   nextFireAt: number;
 } {
   const schedule = normalizeScheduledTaskSchedule(input.schedule);
-  const targetThreadId = normalizeOptionalThreadId(input.targetThreadId);
 
   return {
-    identityId: requireTrimmed("identity id", input.identityId),
-    agentKey: requireTrimmed("agent key", input.agentKey),
+    sessionId: requireTrimmed("session id", input.sessionId),
+    createdByIdentityId: input.createdByIdentityId?.trim() || undefined,
     title: requireTrimmed("title", input.title),
     instruction: requireTrimmed("instruction", input.instruction),
-    targetKind: targetThreadId ? "thread" : "home",
-    targetThreadId,
     enabled: input.enabled ?? true,
     schedule,
     nextFireAt: computeInitialNextFireAt(schedule, Date.now()),
@@ -155,21 +140,19 @@ function isWaitingDelayedDelivery(task: ScheduledTaskRecord): boolean {
 async function readLockedTask(
   client: PoolClient,
   tables: ScheduledTaskTableNames,
-  input: Pick<UpdateScheduledTaskInput, "taskId" | "identityId" | "agentKey">,
+  input: Pick<UpdateScheduledTaskInput, "taskId" | "sessionId">,
 ): Promise<ScheduledTaskRecord> {
   const result = await client.query(
     `
       SELECT *
       FROM ${tables.scheduledTasks}
       WHERE id = $1
-        AND identity_id = $2
-        AND agent_key = $3
+        AND session_id = $2
       FOR UPDATE
     `,
     [
       requireTrimmed("task id", input.taskId),
-      requireTrimmed("identity id", input.identityId),
-      requireTrimmed("agent key", input.agentKey),
+      requireTrimmed("session id", input.sessionId),
     ],
   );
   const row = result.rows[0];
@@ -184,20 +167,22 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
   private readonly pool: PgPoolLike;
   private readonly tables: ScheduledTaskTableNames;
   private readonly identityTableName: string;
+  private readonly sessionTableName: string;
 
   constructor(options: PostgresScheduledTaskStoreOptions) {
     this.pool = options.pool;
     const tablePrefix = options.tablePrefix ?? "thread_runtime";
     this.tables = buildScheduledTaskTableNames(tablePrefix);
     this.identityTableName = buildIdentityTableNames(tablePrefix).identities;
+    this.sessionTableName = buildSessionTableNames(tablePrefix).sessions;
   }
 
   async ensureSchema(): Promise<void> {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.scheduledTasks} (
         id UUID PRIMARY KEY,
-        identity_id TEXT NOT NULL REFERENCES ${this.identityTableName}(id) ON DELETE CASCADE,
-        agent_key TEXT NOT NULL,
+        session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
+        created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
         title TEXT NOT NULL,
         instruction TEXT NOT NULL,
         schedule_kind TEXT NOT NULL,
@@ -205,8 +190,6 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         deliver_at TIMESTAMPTZ,
         cron_expr TEXT,
         timezone TEXT,
-        target_kind TEXT NOT NULL,
-        target_thread_id TEXT,
         enabled BOOLEAN NOT NULL DEFAULT TRUE,
         completed_at TIMESTAMPTZ,
         cancelled_at TIMESTAMPTZ,
@@ -225,14 +208,14 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
     `);
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_scheduled_tasks_identity_agent_idx`)}
-      ON ${this.tables.scheduledTasks} (identity_id, agent_key, created_at DESC)
+      ON ${this.tables.scheduledTasks} (session_id, created_at DESC)
     `);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.scheduledTaskRuns} (
         id UUID PRIMARY KEY,
         task_id UUID NOT NULL REFERENCES ${this.tables.scheduledTasks}(id) ON DELETE CASCADE,
-        identity_id TEXT NOT NULL REFERENCES ${this.identityTableName}(id) ON DELETE CASCADE,
-        agent_key TEXT NOT NULL,
+        session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
+        created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
         resolved_thread_id TEXT,
         fire_kind TEXT NOT NULL,
         scheduled_for TIMESTAMPTZ NOT NULL,
@@ -257,8 +240,8 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
       `
         INSERT INTO ${this.tables.scheduledTasks} (
           id,
-          identity_id,
-          agent_key,
+          session_id,
+          created_by_identity_id,
           title,
           instruction,
           schedule_kind,
@@ -266,8 +249,6 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
           deliver_at,
           cron_expr,
           timezone,
-          target_kind,
-          target_thread_id,
           enabled,
           next_fire_at,
           next_fire_kind
@@ -284,16 +265,14 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
           $10,
           $11,
           $12,
-          $13,
-          $14,
           'execute'
         )
         RETURNING *
       `,
       [
         randomUUID(),
-        normalized.identityId,
-        normalized.agentKey,
+        normalized.sessionId,
+        normalized.createdByIdentityId ?? null,
         normalized.title,
         normalized.instruction,
         normalized.schedule.kind,
@@ -301,8 +280,6 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         normalized.schedule.kind === "once" ? normalized.schedule.deliverAt ?? null : null,
         normalized.schedule.kind === "recurring" ? normalized.schedule.cron : null,
         normalized.schedule.kind === "recurring" ? normalized.schedule.timezone : null,
-        normalized.targetKind,
-        normalized.targetThreadId ?? null,
         normalized.enabled,
         new Date(normalized.nextFireAt),
       ],
@@ -329,9 +306,6 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
       }
 
       const schedule = normalizeScheduledTaskSchedule(input.schedule ?? existing.schedule);
-      const targetThreadId = input.targetThreadId === undefined
-        ? existing.targetThreadId
-        : normalizeOptionalThreadId(input.targetThreadId);
       const result = await client.query(
         `
           UPDATE ${this.tables.scheduledTasks}
@@ -342,12 +316,10 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
               deliver_at = $6,
               cron_expr = $7,
               timezone = $8,
-              target_kind = $9,
-              target_thread_id = $10,
-              enabled = $11,
+              enabled = $9,
               completed_at = NULL,
               cancelled_at = NULL,
-              next_fire_at = $12,
+              next_fire_at = $10,
               next_fire_kind = 'execute',
               claimed_at = NULL,
               claimed_by = NULL,
@@ -365,8 +337,6 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
           schedule.kind === "once" ? schedule.deliverAt ?? null : null,
           schedule.kind === "recurring" ? schedule.cron : null,
           schedule.kind === "recurring" ? schedule.timezone : null,
-          targetThreadId ? "thread" : "home",
-          targetThreadId ?? null,
           input.enabled ?? existing.enabled,
           new Date(computeInitialNextFireAt(schedule, nowMs)),
         ],
@@ -396,14 +366,12 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
             claim_expires_at = NULL,
             updated_at = NOW()
         WHERE id = $1
-          AND identity_id = $2
-          AND agent_key = $3
+          AND session_id = $2
         RETURNING *
       `,
       [
         requireTrimmed("task id", input.taskId),
-        requireTrimmed("identity id", input.identityId),
-        requireTrimmed("agent key", input.agentKey),
+        requireTrimmed("session id", input.sessionId),
       ],
     );
     const row = result.rows[0];
@@ -500,8 +468,8 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
           INSERT INTO ${this.tables.scheduledTaskRuns} (
             id,
             task_id,
-            identity_id,
-            agent_key,
+            session_id,
+            created_by_identity_id,
             fire_kind,
             scheduled_for,
             status,
@@ -521,8 +489,8 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         [
           randomUUID(),
           task.id,
-          task.identityId,
-          task.agentKey,
+          task.sessionId,
+          task.createdByIdentityId ?? null,
           task.nextFireKind,
           new Date(task.nextFireAt!),
         ],

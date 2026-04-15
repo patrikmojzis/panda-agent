@@ -1,5 +1,4 @@
 import type {ThinkingLevel} from "../../kernel/agent/index.js";
-import {summarizeMessageText} from "../../personas/panda/message-preview.js";
 import type {ComposerState} from "./composer.js";
 import type {SlashCompletionContext} from "./commands.js";
 import {
@@ -7,7 +6,7 @@ import {
     buildWelcomeTranscriptLines,
     normalizeInlineText,
     type NoticeState,
-    THREAD_PICKER_VISIBLE_COUNT,
+    SESSION_PICKER_VISIBLE_COUNT,
     type TranscriptLine,
     type ViewModel,
 } from "./chat-view.js";
@@ -19,7 +18,7 @@ import {
     MAX_VISIBLE_PENDING_LOCAL_INPUTS,
     type PendingLocalInput,
     type SearchState,
-    type ThreadPickerState,
+    type SessionPickerState,
     TRANSCRIPT_GUTTER_WIDTH,
     type TranscriptEntry,
     type TranscriptLineCacheEntry,
@@ -35,7 +34,8 @@ interface BuildPandaChatViewInput {
   model: string;
   thinking?: ThinkingLevel;
   cwd: string;
-  threadPicker: ThreadPickerState;
+  sessionPicker: SessionPickerState;
+  currentSessionId: string;
   currentThreadId: string;
   pendingLocalInputs: readonly PendingLocalInput[];
   composer: ComposerState;
@@ -61,51 +61,50 @@ export interface ChatScreenFrame {
   cursorColumn: number;
 }
 
-function buildThreadPickerLayout(input: {
+function buildSessionPickerLayout(input: {
   width: number;
-  threadPicker: ThreadPickerState;
-  currentThreadId: string;
-  model: string;
+  sessionPicker: SessionPickerState;
+  currentSessionId: string;
 }): {lines: string[]; cursorRow: number; cursorColumn: number} {
-  const {width, threadPicker, currentThreadId, model} = input;
-  const header = theme.bold(theme.gold("threads")) + theme.slate(" > ");
+  const {width, sessionPicker, currentSessionId} = input;
+  const header = theme.bold(theme.gold("sessions")) + theme.slate(" > ");
   const headerWidth = stripAnsi(header).length;
   const bodyWidth = Math.max(1, width - 2);
   const lines: string[] = [
     header + truncatePlainText(
-      threadPicker.loading
-        ? "loading recent threads..."
-        : "up/down select · enter resume · esc cancel",
+      sessionPicker.loading
+        ? "loading sessions..."
+        : "up/down select · enter open · esc cancel",
       Math.max(1, width - headerWidth),
     ),
   ];
 
-  if (threadPicker.error) {
-    lines.push(theme.coral(truncatePlainText(threadPicker.error, bodyWidth)));
-  } else if (!threadPicker.loading && threadPicker.summaries.length === 0) {
-    lines.push(theme.dim("No stored threads yet."));
+  if (sessionPicker.error) {
+    lines.push(theme.coral(truncatePlainText(sessionPicker.error, bodyWidth)));
+  } else if (!sessionPicker.loading && sessionPicker.sessions.length === 0) {
+    lines.push(theme.dim("No sessions on this agent yet."));
   } else {
-    const maxStart = Math.max(0, threadPicker.summaries.length - THREAD_PICKER_VISIBLE_COUNT);
+    const maxStart = Math.max(0, sessionPicker.sessions.length - SESSION_PICKER_VISIBLE_COUNT);
     const start = clamp(
-      threadPicker.selected - Math.floor(THREAD_PICKER_VISIBLE_COUNT / 2),
+      sessionPicker.selected - Math.floor(SESSION_PICKER_VISIBLE_COUNT / 2),
       0,
       maxStart,
     );
-    const visible = threadPicker.summaries.slice(start, start + THREAD_PICKER_VISIBLE_COUNT);
+    const visible = sessionPicker.sessions.slice(start, start + SESSION_PICKER_VISIBLE_COUNT);
 
-    for (const [offset, summary] of visible.entries()) {
+    for (const [offset, session] of visible.entries()) {
       const absoluteIndex = start + offset;
-      const selected = absoluteIndex === threadPicker.selected;
+      const selected = absoluteIndex === sessionPicker.selected;
       const prefix = selected ? theme.gold("› ") : theme.dim("  ");
-      const current = summary.thread.id === currentThreadId ? " · current" : "";
-      const last = summary.lastMessage
-        ? normalizeInlineText(summarizeMessageText(summary.lastMessage.message) || summary.lastMessage.source)
-        : "no messages yet";
-      const shortId = summary.thread.id.length > 12
-        ? `${summary.thread.id.slice(0, 8)}…${summary.thread.id.slice(-4)}`
-        : summary.thread.id;
+      const current = session.id === currentSessionId ? " · current" : "";
+      const shortId = session.id.length > 12
+        ? `${session.id.slice(0, 8)}…${session.id.slice(-4)}`
+        : session.id;
+      const shortThreadId = session.currentThreadId.length > 12
+        ? `${session.currentThreadId.slice(0, 8)}…${session.currentThreadId.slice(-4)}`
+        : session.currentThreadId;
       lines.push(prefix + truncatePlainText(
-        `${shortId}${current} · ${summary.thread.model ?? model} · ${summary.messageCount} msgs · ${last}`,
+        `${session.kind} · session ${shortId}${current} · thread ${shortThreadId}`,
         Math.max(1, width - stripAnsi(prefix).length),
       ));
     }
@@ -120,10 +119,10 @@ function buildThreadPickerLayout(input: {
 
 function buildPendingLocalInputLines(input: {
   width: number;
-  threadPickerActive: boolean;
+  sessionPickerActive: boolean;
   pendingLocalInputs: readonly PendingLocalInput[];
 }): string[] {
-  if (input.threadPickerActive || input.pendingLocalInputs.length === 0) {
+  if (input.sessionPickerActive || input.pendingLocalInputs.length === 0) {
     return [];
   }
 
@@ -244,16 +243,14 @@ function buildTranscriptLines(input: {
 function buildComposerLayout(input: {
   width: number;
   composer: ComposerState;
-  threadPicker: ThreadPickerState;
-  currentThreadId: string;
-  model: string;
+  sessionPicker: SessionPickerState;
+  currentSessionId: string;
 }): {lines: string[]; cursorRow: number; cursorColumn: number} {
-  if (input.threadPicker.active) {
-    return buildThreadPickerLayout({
+  if (input.sessionPicker.active) {
+    return buildSessionPickerLayout({
       width: input.width,
-      threadPicker: input.threadPicker,
-      currentThreadId: input.currentThreadId,
-      model: input.model,
+      sessionPicker: input.sessionPicker,
+      currentSessionId: input.currentSessionId,
     });
   }
 
@@ -324,13 +321,12 @@ export function buildPandaChatView(input: BuildPandaChatViewInput): ViewModel {
   const composerLayout = buildComposerLayout({
     width,
     composer: input.composer,
-    threadPicker: input.threadPicker,
-    currentThreadId: input.currentThreadId,
-    model: input.model,
+    sessionPicker: input.sessionPicker,
+    currentSessionId: input.currentSessionId,
   });
   const pendingLocalInputLines = buildPendingLocalInputLines({
     width,
-    threadPickerActive: input.threadPicker.active,
+    sessionPickerActive: input.sessionPicker.active,
     pendingLocalInputs: input.pendingLocalInputs,
   });
 
@@ -341,7 +337,7 @@ export function buildPandaChatView(input: BuildPandaChatViewInput): ViewModel {
     transcriptSearchActive: input.transcriptSearch.active,
     transcriptSearchQuery: input.transcriptSearch.query,
     transcriptSearchSelection: input.transcriptSearch.selected,
-    threadPickerActive: input.threadPicker.active,
+    sessionPickerActive: input.sessionPicker.active,
     historySearchActive: input.historySearch.active,
     historySearchQuery: input.historySearch.query,
     historySearchSelection: input.historySearch.selected,
@@ -358,6 +354,7 @@ export function buildPandaChatView(input: BuildPandaChatViewInput): ViewModel {
     runStartedAt: input.runStartedAt,
     agentLabel: input.agentLabel,
     identityHandle: input.identityHandle,
+    currentSessionId: input.currentSessionId,
     currentThreadId: input.currentThreadId,
     model: input.model,
     thinkingLabel: formatThinkingLevel(input.thinking),

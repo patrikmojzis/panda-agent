@@ -23,7 +23,7 @@ The hot path is:
 
 1. `WatchRunner` lists due watches
 2. store claims one watch and creates a `watch_runs` row in `claimed`
-3. runner resolves the target thread
+3. runner resolves the watch session and reads `session.current_thread_id`
 4. evaluator resolves the source and normalizes it into one of:
    - `collection`
    - `snapshot`
@@ -53,6 +53,11 @@ Readonly views:
 The watch row stores config plus detector state.
 Runs are execution history.
 Events are durable emitted changes.
+
+Watches are session-owned:
+
+- `watches.session_id` is the durable anchor
+- runs and events store both `session_id` and the resolved thread id used at fire time
 
 ## Security Boundaries
 
@@ -86,7 +91,8 @@ Defaults:
 
 - first successful run ignores existing state
 - delivery is wake-only
-- omitted `targetThreadId` follows the current home thread dynamically
+- watch tools create watches for the current session automatically
+- the runner resolves the current thread dynamically from that session
 
 ## Design Rules
 

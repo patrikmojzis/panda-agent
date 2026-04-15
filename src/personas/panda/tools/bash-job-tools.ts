@@ -12,7 +12,7 @@ import type {PandaSessionContext} from "../types.js";
 function readThreadId(context: PandaSessionContext | undefined): string {
   const threadId = context?.threadId?.trim();
   if (!threadId) {
-    throw new ToolError("Background bash jobs require a Panda thread context.");
+    throw new ToolError("Background bash jobs require the current Panda session thread.");
   }
 
   return threadId;
@@ -102,7 +102,7 @@ export class BashJobStatusTool extends BashJobToolBase<typeof BashJobStatusTool.
   });
 
   name = "bash_job_status";
-  description = "Check the current state of a background bash job created earlier in the same thread.";
+  description = "Check the current state of a background bash job created earlier on the current session thread.";
   schema = BashJobStatusTool.schema;
 
   async handle(
@@ -121,7 +121,7 @@ export class BashJobWaitTool extends BashJobToolBase<typeof BashJobWaitTool.sche
   });
 
   name = "bash_job_wait";
-  description = "Wait up to timeoutMs for a background bash job from this thread to finish, then return its latest state.";
+  description = "Wait up to timeoutMs for a background bash job from the current session thread to finish, then return its latest state.";
   schema = BashJobWaitTool.schema;
 
   private readonly defaultWaitTimeoutMs: number;
@@ -150,7 +150,7 @@ export class BashJobCancelTool extends BashJobToolBase<typeof BashJobCancelTool.
   });
 
   name = "bash_job_cancel";
-  description = "Request cancellation of a background bash job from this thread and return its updated state.";
+  description = "Request cancellation of a background bash job from the current session thread and return its updated state.";
   schema = BashJobCancelTool.schema;
 
   async handle(

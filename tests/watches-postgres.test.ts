@@ -1,6 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
+import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
 
@@ -48,21 +49,28 @@ describe("PostgresWatchStore", () => {
 
     const threadStore = new PostgresThreadRuntimeStore({pool});
     await threadStore.ensureSchema();
+    const sessionStore = new PostgresSessionStore({pool});
     const alice = await threadStore.identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
+    });
+    await sessionStore.createSession({
+      id: "session-main",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "session-thread",
+      createdByIdentityId: alice.id,
     });
 
     const watches = new PostgresWatchStore({pool});
     await watches.ensureSchema();
 
     const created = await watches.createWatch({
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
+      createdByIdentityId: alice.id,
       title: "BTC 10% move",
       intervalMinutes: 5,
-      targetThreadId: "branch-thread",
       source: createHttpJsonSource(),
       detector: {
         kind: "percent_change",
@@ -71,10 +79,8 @@ describe("PostgresWatchStore", () => {
     });
 
     expect(created).toMatchObject({
-      identityId: "alice-id",
-      agentKey: "panda",
-      targetKind: "thread",
-      targetThreadId: "branch-thread",
+      sessionId: "session-main",
+      createdByIdentityId: "alice-id",
       enabled: true,
       title: "BTC 10% move",
     });
@@ -82,11 +88,9 @@ describe("PostgresWatchStore", () => {
 
     const updated = await watches.updateWatch({
       watchId: created.id,
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
       title: "BTC 12% move",
       intervalMinutes: 10,
-      targetThreadId: null,
       enabled: false,
     });
 
@@ -94,15 +98,12 @@ describe("PostgresWatchStore", () => {
       id: created.id,
       title: "BTC 12% move",
       intervalMinutes: 10,
-      targetKind: "home",
-      targetThreadId: undefined,
       enabled: false,
     });
 
     const disabled = await watches.disableWatch({
       watchId: created.id,
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
       reason: "finished",
     });
 
@@ -118,18 +119,26 @@ describe("PostgresWatchStore", () => {
 
     const threadStore = new PostgresThreadRuntimeStore({pool});
     await threadStore.ensureSchema();
+    const sessionStore = new PostgresSessionStore({pool});
     const alice = await threadStore.identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
+    });
+    await sessionStore.createSession({
+      id: "session-main",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "session-thread",
+      createdByIdentityId: alice.id,
     });
 
     const watches = new PostgresWatchStore({pool});
     await watches.ensureSchema();
 
     const created = await watches.createWatch({
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
+      createdByIdentityId: alice.id,
       title: "New registrations",
       intervalMinutes: 5,
       source: {
@@ -159,16 +168,16 @@ describe("PostgresWatchStore", () => {
 
     const running = await watches.startWatchRun({
       runId: claim!.run.id,
-      resolvedThreadId: "home-thread",
+      resolvedThreadId: "session-thread",
     });
     expect(running.status).toBe("running");
     expect(running.startedAt).toBeDefined();
 
     const firstEvent = await watches.recordEvent({
       watchId: created.id,
-      identityId: alice.id,
-      agentKey: "panda",
-      resolvedThreadId: "home-thread",
+      sessionId: "session-main",
+      createdByIdentityId: alice.id,
+      resolvedThreadId: "session-thread",
       eventKind: "new_items",
       summary: "Detected 2 new items.",
       dedupeKey: "same-event",
@@ -178,9 +187,9 @@ describe("PostgresWatchStore", () => {
     });
     const duplicateEvent = await watches.recordEvent({
       watchId: created.id,
-      identityId: alice.id,
-      agentKey: "panda",
-      resolvedThreadId: "home-thread",
+      sessionId: "session-main",
+      createdByIdentityId: alice.id,
+      resolvedThreadId: "session-thread",
       eventKind: "new_items",
       summary: "Detected 2 new items.",
       dedupeKey: "same-event",
@@ -196,7 +205,7 @@ describe("PostgresWatchStore", () => {
     const completed = await watches.completeWatchRun({
       runId: claim!.run.id,
       status: "changed",
-      resolvedThreadId: "home-thread",
+      resolvedThreadId: "session-thread",
       emittedEventId: firstEvent.event.id,
       state: {
         kind: "new_items",
@@ -235,18 +244,26 @@ describe("PostgresWatchStore", () => {
 
     const threadStore = new PostgresThreadRuntimeStore({pool});
     await threadStore.ensureSchema();
+    const sessionStore = new PostgresSessionStore({pool});
     const alice = await threadStore.identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
+    });
+    await sessionStore.createSession({
+      id: "session-main",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "session-thread",
+      createdByIdentityId: alice.id,
     });
 
     const watches = new PostgresWatchStore({pool});
     await watches.ensureSchema();
 
     const created = await watches.createWatch({
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
+      createdByIdentityId: alice.id,
       title: "BTC",
       intervalMinutes: 5,
       source: createHttpJsonSource(),
@@ -277,8 +294,7 @@ describe("PostgresWatchStore", () => {
 
     const updated = await watches.updateWatch({
       watchId: created.id,
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
       source: {
         kind: "http_json",
         url: "https://example.com/eth",
@@ -301,18 +317,26 @@ describe("PostgresWatchStore", () => {
 
     const threadStore = new PostgresThreadRuntimeStore({pool});
     await threadStore.ensureSchema();
+    const sessionStore = new PostgresSessionStore({pool});
     const alice = await threadStore.identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
+    });
+    await sessionStore.createSession({
+      id: "session-main",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "session-thread",
+      createdByIdentityId: alice.id,
     });
 
     const watches = new PostgresWatchStore({pool});
     await watches.ensureSchema();
 
     const created = await watches.createWatch({
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
+      createdByIdentityId: alice.id,
       title: "ISS",
       intervalMinutes: 5,
       source: {
@@ -350,8 +374,7 @@ describe("PostgresWatchStore", () => {
     const beforeUpdate = Date.now();
     const updated = await watches.updateWatch({
       watchId: created.id,
-      identityId: alice.id,
-      agentKey: "panda",
+      sessionId: "session-main",
       intervalMinutes: 1,
     });
     const afterUpdate = Date.now();

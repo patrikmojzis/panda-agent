@@ -259,7 +259,11 @@ describe("Thread", () => {
       const store = new TestThreadRuntimeStore();
       await store.createThread({
         id: "thread-bg",
-        agentKey: "panda",
+        sessionId: "session-thread-bg",
+        context: {
+          sessionId: "session-thread-bg",
+          agentKey: "panda",
+        },
       });
       const service = new BashJobService({ store });
       let turn = 0;

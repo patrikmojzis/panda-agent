@@ -1,8 +1,8 @@
 import type {JsonValue} from "../../kernel/agent/types.js";
 
 export type AgentStatus = "active" | "deleted";
-export type AgentDocumentSlug = "agent" | "soul" | "heartbeat" | "playbook";
-export type RelationshipDocumentSlug = "memory";
+export type AgentPromptSlug = "agent" | "soul" | "heartbeat" | "playbook";
+export type AgentDocumentSlug = "memory";
 
 export interface CreateAgentInput {
   agentKey: string;
@@ -17,18 +17,18 @@ export interface AgentRecord extends CreateAgentInput {
   updatedAt: number;
 }
 
-export interface AgentDocumentRecord {
+export interface AgentPromptRecord {
   agentKey: string;
-  slug: AgentDocumentSlug;
+  slug: AgentPromptSlug;
   content: string;
   createdAt: number;
   updatedAt: number;
 }
 
-export interface RelationshipDocumentRecord {
+export interface AgentDocumentRecord {
   agentKey: string;
-  identityId: string;
-  slug: RelationshipDocumentSlug;
+  identityId?: string;
+  slug: AgentDocumentSlug;
   content: string;
   createdAt: number;
   updatedAt: number;
@@ -36,9 +36,17 @@ export interface RelationshipDocumentRecord {
 
 export interface AgentDiaryRecord {
   agentKey: string;
-  identityId: string;
+  identityId?: string;
   entryDate: string;
   content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AgentPairingRecord {
+  agentKey: string;
+  identityId: string;
+  metadata?: JsonValue;
   createdAt: number;
   updatedAt: number;
 }
@@ -53,7 +61,7 @@ export interface AgentSkillRecord {
 }
 
 export interface BootstrapAgentInput extends CreateAgentInput {
-  documents: Record<AgentDocumentSlug, string>;
+  prompts?: Partial<Record<AgentPromptSlug, string>>;
 }
 
 export const MAX_AGENT_SKILL_DESCRIPTION_CHARS = 8_000;

@@ -63,7 +63,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function readAgentKey(context: ShellExecutionContext | undefined): string {
   const agentKey = context?.agentKey;
   if (!agentKey?.trim()) {
-    throw new ToolError("Remote bash execution requires agentKey in the Panda thread context.");
+    throw new ToolError("Remote bash execution requires agentKey in the current Panda session context.");
   }
 
   return agentKey;

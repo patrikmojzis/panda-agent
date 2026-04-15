@@ -83,7 +83,6 @@ export function buildPandaLlmContexts(
     memorySections.length > 0
     && options.agentStore
     && options.agentKey
-    && options.identityId
   ) {
     llmContexts.push(new AgentMemoryContext({
       store: options.agentStore,

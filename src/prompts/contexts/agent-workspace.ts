@@ -15,16 +15,12 @@ export interface AgentWorkspaceSkillEntry {
 
 export function renderAgentWorkspaceContext(options: {
   agentKey: string;
-  identityId: string;
   agentDocs?: readonly AgentWorkspaceDocSection[];
   relationshipMemory?: string;
   recentDiary?: readonly AgentWorkspaceDiaryEntry[];
   skills?: readonly AgentWorkspaceSkillEntry[];
 }): string {
-  const blocks = [`
-Agent key: ${options.agentKey}
-Relationship identity: ${options.identityId}
-`.trim()];
+  const blocks = [`Agent key: ${options.agentKey}`];
 
   if (options.agentDocs) {
     blocks.push(...options.agentDocs.map((doc) => `

@@ -148,13 +148,24 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       throw new Error(`Thread ${input.id} already exists.`);
     }
 
-    const identityId = input.identityId ?? DEFAULT_IDENTITY_ID;
-    await this.identityStore.getIdentity(identityId);
+    if (typeof input.sessionId !== "string" || !input.sessionId.trim()) {
+      throw new Error("Thread sessionId is required.");
+    }
 
     const now = Date.now();
     const thread: ThreadRecord = {
-      ...input,
-      identityId,
+      id: input.id,
+      sessionId: input.sessionId,
+      systemPrompt: input.systemPrompt,
+      maxTurns: input.maxTurns,
+      context: input.context,
+      runtimeState: input.runtimeState,
+      maxInputTokens: input.maxInputTokens,
+      promptCacheKey: input.promptCacheKey,
+      model: input.model,
+      temperature: input.temperature,
+      thinking: input.thinking,
+      inferenceProjection: input.inferenceProjection,
       createdAt: now,
       updatedAt: now,
     };
@@ -179,9 +190,9 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     return cloneRecord(thread.thread);
   }
 
-  async listThreadSummaries(limit?: number, identityId?: string): Promise<readonly ThreadSummaryRecord[]> {
+  async listThreadSummaries(limit?: number, sessionId?: string): Promise<readonly ThreadSummaryRecord[]> {
     const states = [...this.threads.values()]
-      .filter((state) => identityId === undefined || state.thread.identityId === identityId)
+      .filter((state) => sessionId === undefined || state.thread.sessionId === sessionId)
       .sort((left, right) => right.thread.updatedAt - left.thread.updatedAt);
     const visibleStates = limit === undefined
       ? states
@@ -269,6 +280,7 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
             channelId: existing.channelId,
             externalMessageId: existing.externalMessageId,
             actorId: existing.actorId,
+            identityId: existing.identityId,
             createdAt: existing.createdAt,
             appliedAt: existing.createdAt,
           } satisfies ThreadInputRecord;
@@ -290,6 +302,7 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       channelId: payload.channelId,
       externalMessageId: payload.externalMessageId,
       actorId: payload.actorId,
+      identityId: payload.identityId,
       createdAt: Date.now(),
     };
 
@@ -325,6 +338,7 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
           channelId: input.channelId,
           externalMessageId: input.externalMessageId,
           actorId: input.actorId,
+          identityId: input.identityId,
           createdAt: input.createdAt,
         };
 
@@ -454,6 +468,7 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       channelId: payload.channelId,
       externalMessageId: payload.externalMessageId,
       actorId: payload.actorId,
+      identityId: payload.identityId,
       runId: payload.runId,
       createdAt: Date.now(),
     };

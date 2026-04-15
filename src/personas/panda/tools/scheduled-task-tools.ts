@@ -5,6 +5,7 @@ import type {RunContext} from "../../../kernel/agent/run-context.js";
 import {Tool} from "../../../kernel/agent/tool.js";
 import {normalizeScheduledTaskSchedule, type ScheduledTaskStore} from "../../../domain/scheduling/tasks/index.js";
 import type {PandaSessionContext} from "../types.js";
+import {readPandaCurrentInputIdentityId} from "./context.js";
 
 const onceScheduleSchema = z.object({
   kind: z.literal("once"),
@@ -25,24 +26,22 @@ const scheduledTaskScheduleSchema = z.discriminatedUnion("kind", [
 ]);
 
 function readTaskScope(context: unknown): {
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
+  createdByIdentityId?: string;
 } {
   if (
     !context
     || typeof context !== "object"
     || Array.isArray(context)
-    || typeof (context as {identityId?: unknown}).identityId !== "string"
-    || !(context as {identityId: string}).identityId.trim()
-    || typeof (context as {agentKey?: unknown}).agentKey !== "string"
-    || !(context as {agentKey: string}).agentKey.trim()
+    || typeof (context as {sessionId?: unknown}).sessionId !== "string"
+    || !(context as {sessionId: string}).sessionId.trim()
   ) {
-    throw new ToolError("Scheduled task tools require both identityId and agentKey in the Panda thread context.");
+    throw new ToolError("Scheduled task tools require sessionId in the Panda session context.");
   }
 
   return {
-    identityId: (context as {identityId: string}).identityId,
-    agentKey: (context as {agentKey: string}).agentKey,
+    sessionId: (context as {sessionId: string}).sessionId,
+    createdByIdentityId: readPandaCurrentInputIdentityId(context),
   };
 }
 
@@ -65,14 +64,12 @@ export class ScheduledTaskCreateTool<TContext = PandaSessionContext>
     title: z.string().trim().min(1),
     instruction: z.string().trim().min(1),
     schedule: scheduledTaskScheduleSchema,
-    targetThreadId: z.string().trim().min(1).optional()
-      .describe("Optional explicit thread id. Omit to follow the current home thread dynamically."),
     enabled: z.boolean().optional(),
   });
 
   name = "scheduled_task_create";
   description =
-    "Create a one-off or recurring scheduled task. Use absolute ISO timestamps with timezone offsets for once tasks. Omit targetThreadId to follow home dynamically.";
+    "Create a one-off or recurring scheduled task for the current session. Use absolute ISO timestamps with timezone offsets for once tasks.";
   schema = ScheduledTaskCreateTool.schema;
 
   constructor(private readonly options: ScheduledTaskToolOptions) {
@@ -94,7 +91,6 @@ export class ScheduledTaskCreateTool<TContext = PandaSessionContext>
         title: args.title,
         instruction: args.instruction,
         schedule: normalizeScheduledTaskSchedule(args.schedule),
-        targetThreadId: args.targetThreadId,
         enabled: args.enabled,
       });
       return {
@@ -113,14 +109,12 @@ export class ScheduledTaskUpdateTool<TContext = PandaSessionContext>
     title: z.string().trim().min(1).optional(),
     instruction: z.string().trim().min(1).optional(),
     schedule: scheduledTaskScheduleSchema.optional(),
-    targetThreadId: z.string().trim().min(1).nullable().optional()
-      .describe("Explicit thread id, or null to reset the task back to the home thread."),
     enabled: z.boolean().optional(),
   });
 
   name = "scheduled_task_update";
   description =
-    "Update an existing scheduled task. Use null targetThreadId to reset an explicitly targeted task back to home-following behavior.";
+    "Update an existing scheduled task in the current session.";
   schema = ScheduledTaskUpdateTool.schema;
 
   constructor(private readonly options: ScheduledTaskToolOptions) {
@@ -143,7 +137,6 @@ export class ScheduledTaskUpdateTool<TContext = PandaSessionContext>
         title: args.title,
         instruction: args.instruction,
         schedule: args.schedule === undefined ? undefined : normalizeScheduledTaskSchedule(args.schedule),
-        targetThreadId: args.targetThreadId,
         enabled: args.enabled,
       });
       return {

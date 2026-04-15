@@ -2,16 +2,22 @@
 
 ## What It Is
 
-Panda has a first-class `Identity` model.
+Panda still has a first-class `Identity` model.
 
-An identity is the durable principal that owns threads.
-It is not:
+But identity is no longer the durable owner of threads or sessions.
 
-- a live agent instance
-- an auth account system
-- a connector-specific user record
+Identity is:
 
-Threads are still the persistent chat unit. The difference is that every thread belongs to exactly one identity.
+- the recognized human or external actor
+- the access principal paired to agents
+- optional scope for memory, diary, and credentials
+- speaker provenance for inbound messages
+
+Identity is not:
+
+- the session owner
+- the thread owner
+- the thing heartbeat, watches, or tasks hang off
 
 ## Current Model
 
@@ -32,11 +38,6 @@ Current status values:
 - `active`
 - `deleted`
 
-For custom identities:
-
-- `id` is an opaque internal key
-- `handle` is the human-facing unique name used by CLI and runtime selection
-
 ### Identity Binding
 
 An identity binding maps an external actor to a Panda identity.
@@ -52,127 +53,101 @@ A binding has:
 - `createdAt`
 - `updatedAt`
 
-The binding key is:
+That boundary stays actor-scoped.
+It does not decide the session.
 
-- `source`
-- `connectorKey`
-- `externalActorId`
+### Agent Pairing
 
-That means bindings are actor-scoped, not thread-scoped and not conversation-scoped.
+Agent access now hangs off pairings:
 
-### Thread Ownership
-
-Each thread has:
-
-- `identityId`
+- `identity_id`
+- `agent_key`
 
 That means:
 
-- one identity can own many threads
-- one thread belongs to exactly one identity
-- a thread does not move between identities
-
-Letting threads bounce between identities sounds flexible and turns into data-confusion garbage fast.
+- one identity can pair with many agents
+- one agent can pair with many identities
+- pairing is global per agent, not per session
 
 ## Default Local Identity
 
-Panda seeds a default identity automatically:
+Panda still seeds a default identity automatically:
 
 - `id`: `local`
 - `handle`: `local`
 - `displayName`: `Local`
 
-This keeps the existing CLI and TUI usable without forcing setup first.
+That keeps the CLI and TUI usable without ceremony.
+
+It does not imply a default agent anymore.
 
 ## Runtime Invariants
 
-The runtime runs as exactly one identity at a time.
+The TUI/client still runs as one selected identity at a time.
 
 That identity is resolved from:
 
 - `--identity <handle>` if provided
 - otherwise the default `local` identity
 
-When the runtime creates a thread, it stamps:
+Agent access is then checked through pairings:
 
-- `thread.identityId`
-- `context.identityId`
-- `context.identityHandle`
-
-When the runtime loads a thread, it verifies that the thread belongs to the selected identity. If not, it throws instead of crossing identity boundaries silently.
+- explicit `--agent` must be paired
+- if no agent is given and there is exactly one pairing, Panda can infer it
+- if there are zero or many pairings, Panda fails loudly
 
 ## Storage
 
-The Postgres runtime store now includes:
+Relevant tables now include:
 
 - `thread_runtime_identities`
 - `thread_runtime_identity_bindings`
+- `thread_runtime_agent_pairings`
+- `thread_runtime_agent_sessions`
 - `thread_runtime_threads`
 - `thread_runtime_messages`
 - `thread_runtime_inputs`
-- `thread_runtime_runs`
 
-If a custom table prefix is used, the prefix changes accordingly.
+Threads no longer have `identity_id` as ownership.
+Instead:
 
-`threads` now includes:
+- threads carry `session_id`
+- inputs and messages carry nullable speaker `identity_id`
 
-- `identity_id TEXT NOT NULL`
-
-That column is a foreign key to `identities.id`.
+That keeps provenance queryable without pretending the thread itself belongs to one person forever.
 
 ## Readonly SQL Views
 
-The readonly `panda_threads` view exposes:
+The readonly views expose speaker identity columns on inputs and messages.
 
-- `identity_id`
-- `identity_handle`
-
-That makes identity-aware debugging and transcript inspection possible from the readonly SQL tool.
+That matters now because one session can contain turns from many paired identities.
 
 ## Connector Direction
 
 The intended connector flow is:
 
 - connector event arrives
-- connector binding resolves to an identity
-- runtime runs as that identity
-- thread selection or creation happens under that identity after a separate conversation-to-thread mapping step
+- actor binding resolves to an identity
+- pairing gates access to the agent
+- conversation binding resolves to a session
+- session resolves to the current thread
 
-What exists now:
-
-- `identity_bindings` for external actor to identity
-
-What does not exist yet:
-
-- connector runtime integration
-- conversation-to-thread mapping
-- `/new` rotation semantics for connectors
-
-When that mapping lands, the safer name is probably `external_conversation_id`, not `external_channel_id`.
+So identity is still central.
+It just is not the owner anymore.
 
 ## Not Implemented Yet
 
-- identity switching inside the TUI
-- identity update commands
-- identity delete commands
-- connector runtime integration
-- conversation-to-thread mapping
-- auth or permissions between human operators
+- richer identity update/delete flows
+- per-session ACLs
+- in-band channel UX for explicit session rebinding
+
+Those omissions are deliberate.
 
 ## Code Map
-
-Identity-specific implementation:
 
 - [src/domain/identity/types.ts](../../src/domain/identity/types.ts)
 - [src/domain/identity/store.ts](../../src/domain/identity/store.ts)
 - [src/domain/identity/postgres.ts](../../src/domain/identity/postgres.ts)
-- [src/domain/identity/cli.ts](../../src/domain/identity/cli.ts)
-
-Thread and runtime integration:
-
-- [src/domain/threads/runtime/types.ts](../../src/domain/threads/runtime/types.ts)
-- [src/domain/threads/runtime/store.ts](../../src/domain/threads/runtime/store.ts)
-- [src/domain/threads/runtime/postgres.ts](../../src/domain/threads/runtime/postgres.ts)
-- [src/domain/threads/runtime/postgres-readonly.ts](../../src/domain/threads/runtime/postgres-readonly.ts)
-- [src/ui/tui/runtime.ts](../../src/ui/tui/runtime.ts)
-- [src/app/cli.ts](../../src/app/cli.ts)
+- [src/domain/agents/postgres.ts](../../src/domain/agents/postgres.ts)
+- [src/domain/sessions/postgres.ts](../../src/domain/sessions/postgres.ts)
+- [src/app/runtime/daemon-threads.ts](../../src/app/runtime/daemon-threads.ts)

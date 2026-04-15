@@ -21,16 +21,17 @@ export type PandaShellSession = ShellSession;
 
 export interface PandaSessionContext extends ShellExecutionContext {
   cwd?: string;
+  agentKey: string;
+  sessionId: string;
+  threadId: string;
   timezone?: string;
-  identityId?: string;
-  identityHandle?: string;
-  threadId?: string;
   runId?: string;
   currentInput?: {
     source: string;
     channelId?: string;
     externalMessageId?: string;
     actorId?: string;
+    identityId?: string;
     metadata?: JsonValue;
   };
   routeMemory?: PandaRouteMemory;

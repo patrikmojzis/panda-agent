@@ -31,7 +31,6 @@ export {
   type ScheduledTaskRunStatus,
   type ScheduledTaskSchedule,
   type ScheduledTaskScheduleKind,
-  type ScheduledTaskTargetKind,
   type ScheduledTaskThreadInputMetadata,
   type ScheduledTaskOnceSchedule,
   type StartScheduledTaskRunInput,

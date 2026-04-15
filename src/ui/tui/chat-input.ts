@@ -46,10 +46,10 @@ export interface ChatTranscriptNavigationHost {
   scrollTranscript(delta: number): void;
 }
 
-export interface ChatThreadPickerKeypressHost {
-  closeThreadPicker(): void;
-  selectThreadPickerEntry(): Promise<void>;
-  cycleThreadPicker(delta: number): void;
+export interface ChatSessionPickerKeypressHost {
+  closeSessionPicker(): void;
+  selectSessionPickerEntry(): Promise<void>;
+  cycleSessionPicker(delta: number): void;
 }
 
 export interface ChatTranscriptSearchKeypressHost {
@@ -69,10 +69,10 @@ export interface ChatHistorySearchKeypressHost {
 }
 
 export interface ChatModalKeypressHost {
-  isThreadPickerActive(): boolean;
+  isSessionPickerActive(): boolean;
   isHistorySearchActive(): boolean;
   isTranscriptSearchActive(): boolean;
-  handleThreadPickerKeypress(sequence: string, key: KeyLike): Promise<void>;
+  handleSessionPickerKeypress(sequence: string, key: KeyLike): Promise<void>;
   startHistorySearch(): void;
   startTranscriptSearch(): void;
   handleTranscriptSearchKeypress(sequence: string, key: KeyLike): void;
@@ -168,8 +168,8 @@ export async function handleChatModalKeypress(
   sequence: string,
   key: KeyLike,
 ): Promise<boolean> {
-  if (host.isThreadPickerActive()) {
-    await host.handleThreadPickerKeypress(sequence, key);
+  if (host.isSessionPickerActive()) {
+    await host.handleSessionPickerKeypress(sequence, key);
     return true;
   }
 
@@ -196,28 +196,28 @@ export async function handleChatModalKeypress(
   return false;
 }
 
-export async function handleChatThreadPickerKeypress(
-  host: ChatThreadPickerKeypressHost,
+export async function handleChatSessionPickerKeypress(
+  host: ChatSessionPickerKeypressHost,
   sequence: string,
   key: KeyLike,
 ): Promise<void> {
   if (key.name === "escape") {
-    host.closeThreadPicker();
+    host.closeSessionPicker();
     return;
   }
 
   if (key.name === "return" || sequence === "\r") {
-    await host.selectThreadPickerEntry();
+    await host.selectSessionPickerEntry();
     return;
   }
 
   if (key.name === "up") {
-    host.cycleThreadPicker(-1);
+    host.cycleSessionPicker(-1);
     return;
   }
 
   if (key.name === "down") {
-    host.cycleThreadPicker(1);
+    host.cycleSessionPicker(1);
   }
 }
 

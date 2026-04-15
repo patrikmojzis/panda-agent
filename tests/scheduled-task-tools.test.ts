@@ -29,13 +29,11 @@ function createStoreMock(): ScheduledTaskStore {
     ensureSchema: vi.fn(async () => {}),
     createTask: vi.fn(async (input) => ({
       id: "task-1",
-      identityId: input.identityId,
-      agentKey: input.agentKey,
+      sessionId: input.sessionId,
+      createdByIdentityId: input.createdByIdentityId,
       title: input.title,
       instruction: input.instruction,
       schedule: input.schedule,
-      targetKind: input.targetThreadId ? "thread" : "home",
-      targetThreadId: input.targetThreadId,
       enabled: input.enabled ?? true,
       nextFireAt: Date.parse(input.schedule.kind === "once" ? input.schedule.runAt : "2026-04-10T08:00:00.000Z"),
       nextFireKind: "execute",
@@ -44,16 +42,13 @@ function createStoreMock(): ScheduledTaskStore {
     })),
     updateTask: vi.fn(async (input) => ({
       id: input.taskId,
-      identityId: input.identityId,
-      agentKey: input.agentKey,
+      sessionId: input.sessionId,
       title: input.title ?? "task",
       instruction: input.instruction ?? "instruction",
       schedule: input.schedule ?? {
         kind: "once",
         runAt: "2026-04-11T09:00:00.000Z",
       },
-      targetKind: input.targetThreadId ? "thread" : "home",
-      targetThreadId: typeof input.targetThreadId === "string" ? input.targetThreadId : undefined,
       enabled: input.enabled ?? true,
       nextFireAt: 1,
       nextFireKind: "execute",
@@ -62,15 +57,13 @@ function createStoreMock(): ScheduledTaskStore {
     })),
     cancelTask: vi.fn(async (input) => ({
       id: input.taskId,
-      identityId: input.identityId,
-      agentKey: input.agentKey,
+      sessionId: input.sessionId,
       title: "task",
       instruction: "instruction",
       schedule: {
         kind: "once",
         runAt: "2026-04-11T09:00:00.000Z",
       },
-      targetKind: "home",
       enabled: true,
       nextFireKind: "execute",
       cancelledAt: 1,
@@ -93,9 +86,13 @@ function createStoreMock(): ScheduledTaskStore {
 
 describe("scheduled task Panda tools", () => {
   const context: PandaSessionContext = {
-    identityId: "identity-1",
     agentKey: "panda",
+    sessionId: "session-main",
     threadId: "thread-home",
+    currentInput: {
+      source: "tui",
+      identityId: "identity-1",
+    },
   };
 
   it("creates a once task and normalizes absolute timestamps", async () => {
@@ -117,8 +114,8 @@ describe("scheduled task Panda tools", () => {
       taskId: "task-1",
     });
     expect(store.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      identityId: "identity-1",
-      agentKey: "panda",
+      sessionId: "session-main",
+      createdByIdentityId: "identity-1",
       schedule: {
         kind: "once",
         runAt: "2026-04-11T07:00:00.000Z",
@@ -157,7 +154,7 @@ describe("scheduled task Panda tools", () => {
     }, createRunContext(context))).rejects.toBeInstanceOf(ToolError);
   });
 
-  it("passes null targetThreadId through update so home-following can be restored", async () => {
+  it("updates a task within the current session", async () => {
     const store = createStoreMock();
     const tool = new ScheduledTaskUpdateTool({
       store,
@@ -165,7 +162,7 @@ describe("scheduled task Panda tools", () => {
 
     const result = await tool.run({
       taskId: "task-1",
-      targetThreadId: null,
+      enabled: false,
     }, createRunContext(context));
 
     expect(result).toEqual({
@@ -174,7 +171,8 @@ describe("scheduled task Panda tools", () => {
     });
     expect(store.updateTask).toHaveBeenCalledWith(expect.objectContaining({
       taskId: "task-1",
-      targetThreadId: null,
+      sessionId: "session-main",
+      enabled: false,
     }));
   });
 

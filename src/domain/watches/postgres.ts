@@ -4,6 +4,7 @@ import type {PoolClient} from "pg";
 
 import type {JsonObject} from "../../kernel/agent/types.js";
 import {buildIdentityTableNames} from "../identity/postgres-shared.js";
+import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {PgPoolLike} from "../threads/runtime/postgres-db.js";
 import {quoteIdentifier, toJson, toMillis} from "../threads/runtime/postgres-shared.js";
 import {buildWatchTableNames, type WatchTableNames} from "./postgres-shared.js";
@@ -56,15 +57,6 @@ function normalizeIntervalMinutes(value: number): number {
   return normalized;
 }
 
-function normalizeOptionalThreadId(value: string | null | undefined): string | undefined {
-  if (value === null || value === undefined) {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
 function toDate(value: number | undefined): Date | null {
   return value === undefined ? null : new Date(value);
 }
@@ -72,12 +64,10 @@ function toDate(value: number | undefined): Date | null {
 function parseWatchRow(row: Record<string, unknown>): WatchRecord {
   return {
     id: String(row.id),
-    identityId: String(row.identity_id),
-    agentKey: String(row.agent_key),
+    sessionId: String(row.session_id),
+    createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
     title: String(row.title),
     intervalMinutes: Number(row.interval_minutes),
-    targetKind: String(row.target_kind) as WatchRecord["targetKind"],
-    targetThreadId: row.target_thread_id === null ? undefined : String(row.target_thread_id),
     source: row.source_config as WatchRecord["source"],
     detector: row.detector_config as WatchRecord["detector"],
     enabled: Boolean(row.enabled),
@@ -98,8 +88,8 @@ function parseWatchRunRow(row: Record<string, unknown>): WatchRunRecord {
   return {
     id: String(row.id),
     watchId: String(row.watch_id),
-    identityId: String(row.identity_id),
-    agentKey: String(row.agent_key),
+    sessionId: String(row.session_id),
+    createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
     scheduledFor: toMillis(row.scheduled_for),
     status: String(row.status) as WatchRunRecord["status"],
     resolvedThreadId: row.resolved_thread_id === null ? undefined : String(row.resolved_thread_id),
@@ -115,8 +105,8 @@ function parseWatchEventRow(row: Record<string, unknown>): WatchEventRecord {
   return {
     id: String(row.id),
     watchId: String(row.watch_id),
-    identityId: String(row.identity_id),
-    agentKey: String(row.agent_key),
+    sessionId: String(row.session_id),
+    createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
     resolvedThreadId: String(row.resolved_thread_id),
     eventKind: String(row.event_kind) as WatchEventRecord["eventKind"],
     summary: String(row.summary),
@@ -127,25 +117,19 @@ function parseWatchEventRow(row: Record<string, unknown>): WatchEventRecord {
 }
 
 function normalizeCreateInput(input: CreateWatchInput): {
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
+  createdByIdentityId?: string;
   title: string;
   intervalMinutes: number;
-  targetKind: WatchRecord["targetKind"];
-  targetThreadId?: string;
   source: WatchSpec["source"];
   detector: WatchSpec["detector"];
   enabled: boolean;
 } {
-  const targetThreadId = normalizeOptionalThreadId(input.targetThreadId);
-
   return {
-    identityId: requireTrimmed("identity id", input.identityId),
-    agentKey: requireTrimmed("agent key", input.agentKey),
+    sessionId: requireTrimmed("session id", input.sessionId),
+    createdByIdentityId: input.createdByIdentityId?.trim() || undefined,
     title: requireTrimmed("title", input.title),
     intervalMinutes: normalizeIntervalMinutes(input.intervalMinutes),
-    targetKind: targetThreadId ? "thread" : "home",
-    targetThreadId,
     source: input.source,
     detector: input.detector,
     enabled: input.enabled ?? true,
@@ -161,21 +145,19 @@ function isActiveClaim(watch: WatchRecord, nowMs: number): boolean {
 async function readLockedWatch(
   client: PoolClient,
   tables: WatchTableNames,
-  input: Pick<UpdateWatchInput, "watchId" | "identityId" | "agentKey">,
+  input: Pick<UpdateWatchInput, "watchId" | "sessionId">,
 ): Promise<WatchRecord> {
   const result = await client.query(
     `
       SELECT *
       FROM ${tables.watches}
       WHERE id = $1
-        AND identity_id = $2
-        AND agent_key = $3
+        AND session_id = $2
       FOR UPDATE
     `,
     [
       requireTrimmed("id", input.watchId),
-      requireTrimmed("identity id", input.identityId),
-      requireTrimmed("agent key", input.agentKey),
+      requireTrimmed("session id", input.sessionId),
     ],
   );
   const row = result.rows[0];
@@ -190,24 +172,24 @@ export class PostgresWatchStore implements WatchStore {
   private readonly pool: PgPoolLike;
   private readonly tables: WatchTableNames;
   private readonly identityTableName: string;
+  private readonly sessionTableName: string;
 
   constructor(options: PostgresWatchStoreOptions) {
     this.pool = options.pool;
     const tablePrefix = options.tablePrefix ?? "thread_runtime";
     this.tables = buildWatchTableNames(tablePrefix);
     this.identityTableName = buildIdentityTableNames(tablePrefix).identities;
+    this.sessionTableName = buildSessionTableNames(tablePrefix).sessions;
   }
 
   async ensureSchema(): Promise<void> {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.watches} (
         id UUID PRIMARY KEY,
-        identity_id TEXT NOT NULL REFERENCES ${this.identityTableName}(id) ON DELETE CASCADE,
-        agent_key TEXT NOT NULL,
+        session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
+        created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
         title TEXT NOT NULL,
         interval_minutes INTEGER NOT NULL,
-        target_kind TEXT NOT NULL,
-        target_thread_id TEXT,
         source_config JSONB NOT NULL,
         detector_config JSONB NOT NULL,
         enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -229,14 +211,14 @@ export class PostgresWatchStore implements WatchStore {
     `);
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_watches_identity_agent_idx`)}
-      ON ${this.tables.watches} (identity_id, agent_key, created_at DESC)
+      ON ${this.tables.watches} (session_id, created_at DESC)
     `);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.watchRuns} (
         id UUID PRIMARY KEY,
         watch_id UUID NOT NULL REFERENCES ${this.tables.watches}(id) ON DELETE CASCADE,
-        identity_id TEXT NOT NULL REFERENCES ${this.identityTableName}(id) ON DELETE CASCADE,
-        agent_key TEXT NOT NULL,
+        session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
+        created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
         scheduled_for TIMESTAMPTZ NOT NULL,
         status TEXT NOT NULL,
         resolved_thread_id TEXT,
@@ -255,8 +237,8 @@ export class PostgresWatchStore implements WatchStore {
       CREATE TABLE IF NOT EXISTS ${this.tables.watchEvents} (
         id UUID PRIMARY KEY,
         watch_id UUID NOT NULL REFERENCES ${this.tables.watches}(id) ON DELETE CASCADE,
-        identity_id TEXT NOT NULL REFERENCES ${this.identityTableName}(id) ON DELETE CASCADE,
-        agent_key TEXT NOT NULL,
+        session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
+        created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
         resolved_thread_id TEXT NOT NULL,
         event_kind TEXT NOT NULL,
         summary TEXT NOT NULL,
@@ -282,12 +264,10 @@ export class PostgresWatchStore implements WatchStore {
       `
         INSERT INTO ${this.tables.watches} (
           id,
-          identity_id,
-          agent_key,
+          session_id,
+          created_by_identity_id,
           title,
           interval_minutes,
-          target_kind,
-          target_thread_id,
           source_config,
           detector_config,
           enabled,
@@ -298,23 +278,19 @@ export class PostgresWatchStore implements WatchStore {
           $3,
           $4,
           $5,
-          $6,
-          $7,
-          $8::jsonb,
-          $9::jsonb,
-          $10,
-          $11
+          $6::jsonb,
+          $7::jsonb,
+          $8,
+          $9
         )
         RETURNING *
       `,
       [
         randomUUID(),
-        normalized.identityId,
-        normalized.agentKey,
+        normalized.sessionId,
+        normalized.createdByIdentityId ?? null,
         normalized.title,
         normalized.intervalMinutes,
-        normalized.targetKind,
-        normalized.targetThreadId ?? null,
         toJson(normalized.source),
         toJson(normalized.detector),
         normalized.enabled,
@@ -353,23 +329,18 @@ export class PostgresWatchStore implements WatchStore {
             : existing.nextPollAt === undefined
               ? null
               : new Date(existing.nextPollAt);
-      const targetThreadId = input.targetThreadId === undefined
-        ? existing.targetThreadId
-        : normalizeOptionalThreadId(input.targetThreadId);
       const result = await client.query(
         `
           UPDATE ${this.tables.watches}
           SET title = $2,
               interval_minutes = $3,
-              target_kind = $4,
-              target_thread_id = $5,
-              source_config = $6::jsonb,
-              detector_config = $7::jsonb,
-              enabled = $8,
-              state = CASE WHEN $9 THEN NULL ELSE state END,
-              disabled_at = CASE WHEN $8 THEN NULL ELSE COALESCE(disabled_at, NOW()) END,
-              next_poll_at = CASE WHEN $8 THEN COALESCE($10, NOW()) ELSE NULL END,
-              last_error = CASE WHEN $9 THEN NULL ELSE last_error END,
+              source_config = $4::jsonb,
+              detector_config = $5::jsonb,
+              enabled = $6,
+              state = CASE WHEN $7 THEN NULL ELSE state END,
+              disabled_at = CASE WHEN $6 THEN NULL ELSE COALESCE(disabled_at, NOW()) END,
+              next_poll_at = CASE WHEN $6 THEN COALESCE($8, NOW()) ELSE NULL END,
+              last_error = CASE WHEN $7 THEN NULL ELSE last_error END,
               updated_at = NOW()
           WHERE id = $1
           RETURNING *
@@ -378,8 +349,6 @@ export class PostgresWatchStore implements WatchStore {
           existing.id,
           input.title === undefined ? existing.title : requireTrimmed("title", input.title),
           nextIntervalMinutes,
-          targetThreadId ? "thread" : "home",
-          targetThreadId ?? null,
           toJson(input.source ?? existing.source),
           toJson(input.detector ?? existing.detector),
           enabled,
@@ -536,8 +505,8 @@ export class PostgresWatchStore implements WatchStore {
           INSERT INTO ${this.tables.watchRuns} (
             id,
             watch_id,
-            identity_id,
-            agent_key,
+            session_id,
+            created_by_identity_id,
             scheduled_for,
             status
           ) VALUES (
@@ -553,8 +522,8 @@ export class PostgresWatchStore implements WatchStore {
         [
           randomUUID(),
           claimedWatch.id,
-          claimedWatch.identityId,
-          claimedWatch.agentKey,
+          claimedWatch.sessionId,
+          claimedWatch.createdByIdentityId ?? null,
           new Date(scheduledFor),
         ],
       );
@@ -750,8 +719,8 @@ export class PostgresWatchStore implements WatchStore {
         INSERT INTO ${this.tables.watchEvents} (
           id,
           watch_id,
-          identity_id,
-          agent_key,
+          session_id,
+          created_by_identity_id,
           resolved_thread_id,
           event_kind,
           summary,
@@ -774,8 +743,8 @@ export class PostgresWatchStore implements WatchStore {
       [
         id,
         requireTrimmed("watch id", input.watchId),
-        requireTrimmed("identity id", input.identityId),
-        requireTrimmed("agent key", input.agentKey),
+        requireTrimmed("session id", input.sessionId),
+        input.createdByIdentityId?.trim() || null,
         requireTrimmed("resolved thread id", input.resolvedThreadId),
         input.eventKind,
         requireTrimmed("summary", input.summary),

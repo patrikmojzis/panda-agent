@@ -28,7 +28,7 @@ Remote runners do not own static secrets.
 
 In credentials v1, `panda-core` may still send short-lived env values with a single `/exec` request:
 
-- stored credentials resolved for the current thread
+- stored credentials resolved for the current session/thread context
 - persisted shell session env
 - explicit `bash.env` values for that call
 
@@ -238,7 +238,7 @@ The important rule stays the same:
 
 - remote foreground bash mutates the shared shell session
 - remote background bash does not
-- resetting or replacing the home thread cancels that thread's remote background jobs
+- resetting the current session cancels the retired thread's remote background jobs
 
 Background jobs snapshot cwd and env at spawn time and never merge anything back into the shared shell state.
 

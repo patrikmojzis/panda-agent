@@ -8,15 +8,14 @@ import {runChatActionsCommandLine, submitChatComposer, submitChatUserMessage,} f
 import {buildChatScreenFrame, buildPandaChatView} from "./chat-render.js";
 import {
   appendStoredChatMessages,
-  buildChatThreadDefaults,
+  buildChatSessionDefaults,
   createChatTranscriptEntry,
   observeLatestChatRun,
   pendingChatInputsForThread,
   queuePendingChatInput,
   removePendingChatInput,
-  resolveChatAgentLabel,
   resolveChatDisplayedCwd,
-  resolveInitialChatThread,
+  resolveInitialChatSessionThread,
 } from "./chat-session.js";
 import {type SlashCompletionContext,} from "./commands.js";
 import {type ComposerState, createComposerState, setComposerValue,} from "./composer.js";
@@ -26,7 +25,7 @@ import {
   handleChatInterruptKeypress,
   handleChatModalKeypress,
   handleChatPasteBoundaryKeypress,
-  handleChatThreadPickerKeypress,
+  handleChatSessionPickerKeypress,
   handleChatTranscriptNavigationKeypress,
   handleChatTranscriptSearchKeypress,
 } from "./chat-input.js";
@@ -57,12 +56,12 @@ import {
   startChatRenderTicker,
 } from "./chat-lifecycle.js";
 import {
-  closeChatThreadPicker,
-  cycleChatThreadPicker,
-  openChatThreadPicker,
-  refreshChatThreadPicker,
-  selectChatThreadPickerEntry,
-} from "./chat-thread-picker.js";
+  closeChatSessionPicker,
+  cycleChatSessionPicker,
+  openChatSessionPicker,
+  refreshChatSessionPicker,
+  selectChatSessionPickerEntry,
+} from "./chat-session-picker.js";
 import {
   type ChatSyncHost,
   handleChatStoreNotification,
@@ -80,8 +79,8 @@ import {
   type PendingLocalInput,
   type RunPhase,
   type SearchState,
+  type SessionPickerState,
   SPINNER_FRAME_COUNT,
-  type ThreadPickerState,
   TICK_MS,
   type TranscriptEntry,
   type TranscriptLineCacheEntry,
@@ -91,14 +90,22 @@ import type {ThreadRecord,} from "../../domain/threads/runtime/index.js";
 
 export type {ChatCliOptions, ChatCliResult} from "./chat-shared.js";
 
+function readAgentKeyFromThreadContext(thread: ThreadRecord): string {
+  if (typeof thread.context !== "object" || thread.context === null || Array.isArray(thread.context)) {
+    return "unknown";
+  }
+
+  const agentKey = (thread.context as Record<string, unknown>).agentKey;
+  return typeof agentKey === "string" && agentKey.trim() ? agentKey : "unknown";
+}
+
 export class PandaChatApp {
   private model: string;
   private thinking?: ThinkingLevel;
   private readonly fallbackCwd: string;
   private readonly identity?: string;
   private readonly defaultAgentKey?: string;
-  private readonly resumeThreadId?: string;
-  private readonly explicitThreadId?: string;
+  private readonly initialSessionId?: string;
   private readonly dbUrl?: string;
   private readonly transcript: TranscriptEntry[] = [];
   private readonly pendingLocalInputs: PendingLocalInput[] = [];
@@ -106,11 +113,11 @@ export class PandaChatApp {
   private composer: ComposerState = createComposerState();
   private readonly historySearch: SearchState = { active: false, query: "", selected: 0 };
   private readonly transcriptSearch: SearchState = { active: false, query: "", selected: 0 };
-  private readonly threadPicker: ThreadPickerState = {
+  private readonly sessionPicker: SessionPickerState = {
     active: false,
     loading: false,
     selected: 0,
-    summaries: [],
+    sessions: [],
     error: null,
   };
   private services: ChatRuntimeServices | null = null;
@@ -135,8 +142,8 @@ export class PandaChatApp {
   private syncRequestedWhileBusy = false;
   private lastStoredSyncAt = 0;
   private lastObservedRunStatusKey: string | null = null;
-  private threadPickerRefreshInFlight = false;
-  private threadPickerRefreshRequested = false;
+  private sessionPickerRefreshInFlight = false;
+  private sessionPickerRefreshRequested = false;
   private closeAfterRun = false;
   private closeAfterRunWaitInFlight = false;
   private dirty = false;
@@ -162,8 +169,7 @@ export class PandaChatApp {
     this.identity = options.identity;
     this.defaultAgentKey = options.agent;
     this.fallbackCwd = process.cwd();
-    this.resumeThreadId = options.resume;
-    this.explicitThreadId = options.threadId;
+    this.initialSessionId = options.session;
     this.dbUrl = options.dbUrl;
   }
 
@@ -192,7 +198,7 @@ export class PandaChatApp {
       this.pushEntry(
         "meta",
         "session",
-        `Resumed thread ${this.currentThreadId}. Loaded ${this.transcript.length} transcript entries.`,
+        `Opened session ${this.currentThread?.sessionId ?? "-"}. Loaded ${this.transcript.length} transcript entries.`,
       );
     }
     this.setNotice(`Ctrl-F find · Ctrl-R history · ${COMPOSER_NEWLINE_HINT} · Ctrl-C exit`, "info", 5_000);
@@ -207,6 +213,7 @@ export class PandaChatApp {
     }
 
     return {
+      sessionId: this.currentThread?.sessionId || undefined,
       threadId: this.currentThreadId || undefined,
     };
   }
@@ -338,8 +345,8 @@ export class PandaChatApp {
       applyLoadedSnapshot: (thread, transcript, runs) => this.applyLoadedSnapshot(thread, transcript, runs),
       requestRender: () => this.requestRender(),
       isClosed: () => this.closed,
-      isThreadPickerActive: () => this.threadPicker.active,
-      refreshThreadPicker: () => this.refreshThreadPicker(),
+      isSessionPickerActive: () => this.sessionPicker.active,
+      refreshSessionPicker: () => this.refreshSessionPicker(),
     };
   }
 
@@ -368,26 +375,25 @@ export class PandaChatApp {
   }
 
   private async resolveInitialThread(): Promise<ThreadRecord> {
-    return await resolveInitialChatThread({
+    return await resolveInitialChatSessionThread({
       services: this.requireServices(),
-      resumeThreadId: this.resumeThreadId,
-      explicitThreadId: this.explicitThreadId,
-      defaults: this.buildThreadDefaults(),
+      sessionId: this.initialSessionId,
+      defaults: this.buildSessionDefaults(),
     });
   }
 
-  private buildThreadDefaults(overrides: Partial<{
-    id: string;
+  private buildSessionDefaults(overrides: Partial<{
+    sessionId: string;
     agentKey: string;
     model: string;
     thinking: ThinkingLevel;
   }> = {}): {
-    id?: string;
+    sessionId?: string;
     agentKey?: string;
     model: string;
     thinking?: ThinkingLevel;
   } {
-    return buildChatThreadDefaults({
+    return buildChatSessionDefaults({
       defaultAgentKey: this.defaultAgentKey,
       model: this.model,
       thinking: this.thinking,
@@ -395,14 +401,10 @@ export class PandaChatApp {
     });
   }
 
-  private async resolveAgentLabel(agentKey: string): Promise<string> {
-    return await resolveChatAgentLabel(this.services, agentKey);
-  }
-
   private async switchThread(thread: ThreadRecord): Promise<void> {
     this.currentThread = thread;
     this.currentThreadId = thread.id;
-    this.currentAgentLabel = await this.resolveAgentLabel(thread.agentKey);
+    this.currentAgentLabel = readAgentKeyFromThreadContext(thread);
     this.model = thread.model ?? this.model;
     this.thinking = thread.thinking;
     this.runPhase = "idle";
@@ -550,79 +552,82 @@ export class PandaChatApp {
     await handleChatStoreNotification(this.buildSyncHost(), threadId);
   }
 
-  private async refreshThreadPicker(): Promise<void> {
-    await refreshChatThreadPicker({
-      threadPicker: this.threadPicker,
-      getCurrentThreadId: () => this.currentThreadId,
+  private async refreshSessionPicker(): Promise<void> {
+    await refreshChatSessionPicker({
+      sessionPicker: this.sessionPicker,
+      getCurrentSessionId: () => this.currentThread?.sessionId ?? "",
+      getCurrentAgentKey: () => this.currentThread ? readAgentKeyFromThreadContext(this.currentThread) : "",
       isRunning: () => this.isRunning,
       requireServices: () => this.requireServices(),
       switchThread: (thread) => this.switchThread(thread),
       render: () => this.render(),
       setNotice: (text, tone, durationMs) => this.relayNotice(text, tone, durationMs),
-      getRefreshInFlight: () => this.threadPickerRefreshInFlight,
+      getRefreshInFlight: () => this.sessionPickerRefreshInFlight,
       setRefreshInFlight: (enabled) => {
-        this.threadPickerRefreshInFlight = enabled;
+        this.sessionPickerRefreshInFlight = enabled;
       },
-      getRefreshRequested: () => this.threadPickerRefreshRequested,
+      getRefreshRequested: () => this.sessionPickerRefreshRequested,
       setRefreshRequested: (enabled) => {
-        this.threadPickerRefreshRequested = enabled;
+        this.sessionPickerRefreshRequested = enabled;
       },
     });
   }
 
-  private async openThreadPicker(): Promise<void> {
-    await openChatThreadPicker({
-      threadPicker: this.threadPicker,
-      getCurrentThreadId: () => this.currentThreadId,
+  private async openSessionPicker(): Promise<void> {
+    await openChatSessionPicker({
+      sessionPicker: this.sessionPicker,
+      getCurrentSessionId: () => this.currentThread?.sessionId ?? "",
+      getCurrentAgentKey: () => this.currentThread ? readAgentKeyFromThreadContext(this.currentThread) : "",
       isRunning: () => this.isRunning,
       requireServices: () => this.requireServices(),
       switchThread: (thread) => this.switchThread(thread),
       render: () => this.render(),
       setNotice: (text, tone, durationMs) => this.relayNotice(text, tone, durationMs),
-      getRefreshInFlight: () => this.threadPickerRefreshInFlight,
+      getRefreshInFlight: () => this.sessionPickerRefreshInFlight,
       setRefreshInFlight: (enabled) => {
-        this.threadPickerRefreshInFlight = enabled;
+        this.sessionPickerRefreshInFlight = enabled;
       },
-      getRefreshRequested: () => this.threadPickerRefreshRequested,
+      getRefreshRequested: () => this.sessionPickerRefreshRequested,
       setRefreshRequested: (enabled) => {
-        this.threadPickerRefreshRequested = enabled;
+        this.sessionPickerRefreshRequested = enabled;
       },
     });
   }
 
-  private closeThreadPicker(): void {
-    closeChatThreadPicker(this.threadPicker, (enabled) => {
-      this.threadPickerRefreshRequested = enabled;
+  private closeSessionPicker(): void {
+    closeChatSessionPicker(this.sessionPicker, (enabled) => {
+      this.sessionPickerRefreshRequested = enabled;
     });
   }
 
-  private cycleThreadPicker(delta: number): void {
-    cycleChatThreadPicker(this.threadPicker, delta);
+  private cycleSessionPicker(delta: number): void {
+    cycleChatSessionPicker(this.sessionPicker, delta);
   }
 
-  private async selectThreadPickerEntry(): Promise<void> {
-    await selectChatThreadPickerEntry({
-      threadPicker: this.threadPicker,
-      getCurrentThreadId: () => this.currentThreadId,
+  private async selectSessionPickerEntry(): Promise<void> {
+    await selectChatSessionPickerEntry({
+      sessionPicker: this.sessionPicker,
+      getCurrentSessionId: () => this.currentThread?.sessionId ?? "",
+      getCurrentAgentKey: () => this.currentThread ? readAgentKeyFromThreadContext(this.currentThread) : "",
       isRunning: () => this.isRunning,
       requireServices: () => this.requireServices(),
       switchThread: (thread) => this.switchThread(thread),
       render: () => this.render(),
       setNotice: (text, tone, durationMs) => this.relayNotice(text, tone, durationMs),
-      getRefreshInFlight: () => this.threadPickerRefreshInFlight,
+      getRefreshInFlight: () => this.sessionPickerRefreshInFlight,
       setRefreshInFlight: (enabled) => {
-        this.threadPickerRefreshInFlight = enabled;
+        this.sessionPickerRefreshInFlight = enabled;
       },
-      getRefreshRequested: () => this.threadPickerRefreshRequested,
+      getRefreshRequested: () => this.sessionPickerRefreshRequested,
       setRefreshRequested: (enabled) => {
-        this.threadPickerRefreshRequested = enabled;
+        this.sessionPickerRefreshRequested = enabled;
       },
     });
   }
 
   private get modeLabel(): string {
     return resolveChatModeLabel({
-      threadPickerActive: this.threadPicker.active,
+      sessionPickerActive: this.sessionPicker.active,
       historySearchActive: this.historySearch.active,
       transcriptSearchActive: this.transcriptSearch.active,
     });
@@ -706,7 +711,8 @@ export class PandaChatApp {
       model: this.model,
       thinking: this.thinking,
       cwd: this.resolveDisplayedCwd(),
-      threadPicker: this.threadPicker,
+      sessionPicker: this.sessionPicker,
+      currentSessionId: this.currentThread?.sessionId ?? "",
       currentThreadId: this.currentThreadId,
       pendingLocalInputs: this.pendingInputsForCurrentThread(),
       composer: this.composer,
@@ -854,16 +860,18 @@ export class PandaChatApp {
   private async handleCommand(commandLine: string): Promise<boolean> {
     return await runChatActionsCommandLine(commandLine, {
       getCurrentThreadId: () => this.currentThreadId,
+      getCurrentSessionId: () => this.currentThread?.sessionId ?? "",
+      getCurrentAgentKey: () => this.currentThread ? readAgentKeyFromThreadContext(this.currentThread) : "",
       getModel: () => this.model,
       getThinking: () => this.thinking,
       getDefaultAgentKey: () => this.defaultAgentKey,
       isRunning: () => this.isRunning,
       requireServices: () => this.requireServices(),
       requireIdleRun: (action) => this.requireIdleRun(action),
-      buildThreadDefaults: () => this.buildThreadDefaults(),
+      buildSessionDefaults: () => this.buildSessionDefaults(),
       switchThread: (thread) => this.switchThread(thread),
       compactCurrentThread: (customInstructions) => this.compactCurrentThread(customInstructions),
-      openThreadPicker: () => this.openThreadPicker(),
+      openSessionPicker: () => this.openSessionPicker(),
       setCurrentThread: (thread) => {
         this.currentThread = thread;
         this.currentThreadId = thread.id;
@@ -958,10 +966,10 @@ export class PandaChatApp {
 
   private async handleModalKeypress(sequence: string, key: KeyLike): Promise<boolean> {
     return await handleChatModalKeypress({
-      isThreadPickerActive: () => this.threadPicker.active,
+      isSessionPickerActive: () => this.sessionPicker.active,
       isHistorySearchActive: () => this.historySearch.active,
       isTranscriptSearchActive: () => this.transcriptSearch.active,
-      handleThreadPickerKeypress: (nextSequence, nextKey) => this.handleThreadPickerKeypress(nextSequence, nextKey),
+      handleSessionPickerKeypress: (nextSequence, nextKey) => this.handleSessionPickerKeypress(nextSequence, nextKey),
       startHistorySearch: () => this.startHistorySearch(),
       startTranscriptSearch: () => this.startTranscriptSearch(),
       handleTranscriptSearchKeypress: (nextSequence, nextKey) =>
@@ -999,11 +1007,11 @@ export class PandaChatApp {
     this.render();
   }
 
-  private async handleThreadPickerKeypress(sequence: string, key: KeyLike): Promise<void> {
-    await handleChatThreadPickerKeypress({
-      closeThreadPicker: () => this.closeThreadPicker(),
-      selectThreadPickerEntry: () => this.selectThreadPickerEntry(),
-      cycleThreadPicker: (delta) => this.cycleThreadPicker(delta),
+  private async handleSessionPickerKeypress(sequence: string, key: KeyLike): Promise<void> {
+    await handleChatSessionPickerKeypress({
+      closeSessionPicker: () => this.closeSessionPicker(),
+      selectSessionPickerEntry: () => this.selectSessionPickerEntry(),
+      cycleSessionPicker: (delta) => this.cycleSessionPicker(delta),
     }, sequence, key);
   }
 

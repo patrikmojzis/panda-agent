@@ -17,7 +17,7 @@ export function renderWatchEventPrompt(options: {
 This is a machine-generated watch event from Panda, not a live human message.
 The event has already been detected programmatically.
 Decide whether a user-facing notification or follow-up action is useful.
-If this thread is attached to an external channel, use outbound only when you intentionally want to notify the user.
+If this session is connected to an external channel, use outbound only when you intentionally want to notify the user.
 If nothing useful should happen, keep it quiet.
 
 Event kind: ${options.eventKind}

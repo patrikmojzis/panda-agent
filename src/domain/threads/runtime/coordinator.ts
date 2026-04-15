@@ -102,6 +102,7 @@ function buildCurrentInputContext(
   channelId?: string;
   externalMessageId?: string;
   actorId?: string;
+  identityId?: string;
   metadata?: ThreadMessageRecord["metadata"];
 } | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -115,6 +116,7 @@ function buildCurrentInputContext(
       channelId: entry.channelId,
       externalMessageId: entry.externalMessageId,
       actorId: entry.actorId,
+      identityId: entry.identityId,
       metadata: entry.metadata,
     };
   }
@@ -139,8 +141,14 @@ function buildRunContextValue(
     };
   }
 
+  const {
+    identityId: _identityId,
+    identityHandle: _identityHandle,
+    ...sanitizedBaseContext
+  } = baseContext;
+
   return {
-    ...baseContext,
+    ...sanitizedBaseContext,
     ...(currentInput ? { currentInput } : {}),
     ...(runId ? { runId } : {}),
   };

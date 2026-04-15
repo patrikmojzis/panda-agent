@@ -9,7 +9,7 @@ import type {AgentStore} from "../../../domain/agents/store.js";
 
 // Heartbeat guidance should only show up on heartbeat wakes, not in every normal run.
 const AGENT_DOC_SLUGS = ["agent", "soul", "playbook"] as const;
-const RELATIONSHIP_DOC_SLUG = "memory";
+const AGENT_DOCUMENT_SLUG = "memory" as const;
 
 export type AgentMemoryContextSection =
   | "agent_docs"
@@ -20,7 +20,7 @@ export type AgentMemoryContextSection =
 export interface AgentMemoryContextOptions {
   store: AgentStore;
   agentKey: string;
-  identityId: string;
+  identityId?: string;
   sections?: readonly AgentMemoryContextSection[];
 }
 
@@ -46,7 +46,7 @@ export class AgentMemoryContext extends LlmContext {
     if (sections.has("agent_docs")) {
       agentDocs = await Promise.all(
         AGENT_DOC_SLUGS.map(async (slug) => {
-          const record = await this.options.store.readAgentDocument(this.options.agentKey, slug);
+          const record = await this.options.store.readAgentPrompt(this.options.agentKey, slug);
           return {
             slug,
             content: record?.content ?? "",
@@ -56,10 +56,10 @@ export class AgentMemoryContext extends LlmContext {
     }
 
     if (sections.has("relationship_memory")) {
-      const record = await this.options.store.readRelationshipDocument(
+      const record = await this.options.store.readAgentDocument(
         this.options.agentKey,
+        AGENT_DOCUMENT_SLUG,
         this.options.identityId,
-        RELATIONSHIP_DOC_SLUG,
       );
       relationshipMemory = record?.content ?? "";
     }
@@ -67,8 +67,8 @@ export class AgentMemoryContext extends LlmContext {
     if (sections.has("diary")) {
       recentDiary = [...await this.options.store.listDiaryEntries(
         this.options.agentKey,
-        this.options.identityId,
         7,
+        this.options.identityId,
       )].reverse().map((entry) => ({
         entryDate: entry.entryDate,
         content: entry.content || "",
@@ -84,7 +84,6 @@ export class AgentMemoryContext extends LlmContext {
 
     return renderAgentWorkspaceContext({
       agentKey: this.options.agentKey,
-      identityId: this.options.identityId,
       agentDocs,
       relationshipMemory,
       recentDiary,

@@ -1,4 +1,4 @@
-import type {AgentDocumentSlug} from "../../domain/agents/types.js";
+import type {AgentPromptSlug} from "../../domain/agents/types.js";
 
 export const PANDA_SOUL_TEXT = `
 Have opinions. Pick a lane instead of hiding behind "it depends."
@@ -10,7 +10,7 @@ Swearing is allowed when it lands.
 Be the assistant you'd actually want to talk to at 2am.
 `.trim();
 
-export const DEFAULT_AGENT_DOCUMENT_TEMPLATES: Record<AgentDocumentSlug, string> = {
+export const DEFAULT_AGENT_DOCUMENT_TEMPLATES: Record<AgentPromptSlug, string> = {
   agent: `
 # Agent
 
@@ -26,7 +26,7 @@ ${PANDA_SOUL_TEXT}
   heartbeat: `
 # Heartbeat
 
-When a heartbeat wakes the thread, review pending promises, reminders, and unfinished follow-ups before doing anything else.
+When a heartbeat wakes this session, review pending promises, reminders, and unfinished follow-ups before doing anything else.
 `.trim(),
   playbook: `
 # Playbook

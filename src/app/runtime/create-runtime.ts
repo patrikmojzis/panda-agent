@@ -1,6 +1,7 @@
 import {Pool} from "pg";
 
 import {type AgentStore} from "../../domain/agents/index.js";
+import type {SessionStore} from "../../domain/sessions/index.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/index.js";
 import type {WatchStore} from "../../domain/watches/index.js";
 import {PostgresThreadLeaseManager, ThreadRuntimeCoordinator,} from "../../domain/threads/runtime/index.js";
@@ -40,6 +41,7 @@ export interface PandaDefinitionResolverContext {
   browserService: BrowserSessionService;
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
+  sessionStore: SessionStore;
   store: ThreadRuntimeStore;
   extraTools: readonly Tool[];
 }
@@ -63,6 +65,7 @@ export interface PandaRuntimeServices {
   browserService: BrowserSessionService;
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
+  sessionStore: SessionStore;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
   watches: WatchStore;
@@ -85,6 +88,7 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,
     identityStore: runtime.identityStore,
+    sessionStore: runtime.sessionStore,
     store: runtime.store,
     extraTools: runtime.extraTools,
   };
@@ -106,6 +110,7 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,
     identityStore: runtime.identityStore,
+    sessionStore: runtime.sessionStore,
     store: runtime.store,
     scheduledTasks: runtime.scheduledTasks,
     watches: runtime.watches,

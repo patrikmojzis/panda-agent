@@ -1,7 +1,6 @@
 import {stringToUserMessage} from "../../../kernel/agent/index.js";
 import {renderHeartbeatPrompt} from "../../../prompts/runtime/heartbeat.js";
-import type {HomeThreadStore} from "../../threads/home/store.js";
-import type {HomeThreadRecord} from "../../threads/home/types.js";
+import type {SessionRecord, SessionStore} from "../../sessions/index.js";
 import type {ThreadRuntimeCoordinator} from "../../threads/runtime/coordinator.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
@@ -17,26 +16,22 @@ function buildHeartbeatPrompt(scheduledFor: number, guidance?: string | null): s
   });
 }
 
-function computeNextHeartbeatFireAt(home: HomeThreadRecord, now: number): number {
-  return now + home.heartbeat.everyMinutes * 60_000;
-}
-
 export interface HeartbeatRunnerOptions {
-  homeThreads: HomeThreadStore;
+  sessions: SessionStore;
   coordinator: ThreadRuntimeCoordinator;
   pollIntervalMs?: number;
   claimTtlMs?: number;
-  resolveInstructions?: (home: HomeThreadRecord) => Promise<string | null> | string | null;
-  onError?: (error: unknown, identityId?: string) => Promise<void> | void;
+  resolveInstructions?: (session: SessionRecord) => Promise<string | null> | string | null;
+  onError?: (error: unknown, sessionId?: string) => Promise<void> | void;
 }
 
 export class HeartbeatRunner {
-  private readonly homeThreads: HomeThreadStore;
+  private readonly sessions: SessionStore;
   private readonly coordinator: ThreadRuntimeCoordinator;
   private readonly pollIntervalMs: number;
   private readonly claimTtlMs: number;
-  private readonly resolveInstructions?: (home: HomeThreadRecord) => Promise<string | null> | string | null;
-  private readonly onError?: (error: unknown, identityId?: string) => Promise<void> | void;
+  private readonly resolveInstructions?: (session: SessionRecord) => Promise<string | null> | string | null;
+  private readonly onError?: (error: unknown, sessionId?: string) => Promise<void> | void;
 
   private timer: NodeJS.Timeout | null = null;
   private stopped = true;
@@ -44,7 +39,7 @@ export class HeartbeatRunner {
   private pendingDrain = false;
 
   constructor(options: HeartbeatRunnerOptions) {
-    this.homeThreads = options.homeThreads;
+    this.sessions = options.sessions;
     this.coordinator = options.coordinator;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.claimTtlMs = options.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS;
@@ -100,7 +95,7 @@ export class HeartbeatRunner {
 
   private async drain(): Promise<void> {
     while (!this.stopped) {
-      const dueHeartbeats = await this.homeThreads.listDueHeartbeats({
+      const dueHeartbeats = await this.sessions.listDueHeartbeats({
         limit: DEFAULT_BATCH_SIZE,
       });
       if (dueHeartbeats.length === 0) {
@@ -108,13 +103,13 @@ export class HeartbeatRunner {
       }
 
       let claimedAny = false;
-      for (const home of dueHeartbeats) {
+      for (const heartbeat of dueHeartbeats) {
         if (this.stopped) {
           return;
         }
 
-        const claimed = await this.homeThreads.claimHeartbeat({
-          identityId: home.identityId,
+        const claimed = await this.sessions.claimHeartbeat({
+          sessionId: heartbeat.sessionId,
           claimedBy: HEARTBEAT_CLAIM_OWNER,
           claimExpiresAt: Date.now() + this.claimTtlMs,
         });
@@ -126,7 +121,7 @@ export class HeartbeatRunner {
         try {
           await this.processHeartbeat(claimed);
         } catch (error) {
-          await this.onError?.(error, claimed.identityId);
+          await this.onError?.(error, claimed.sessionId);
         }
       }
 
@@ -136,22 +131,14 @@ export class HeartbeatRunner {
     }
   }
 
-  private async processHeartbeat(home: HomeThreadRecord): Promise<void> {
+  private async processHeartbeat(heartbeat: Awaited<ReturnType<SessionStore["claimHeartbeat"]>> extends infer T ? Exclude<T, null> : never): Promise<void> {
     const now = Date.now();
-    // Re-read after claim so a concurrent home reset/switch follows the new home pointer
-    // instead of sending one stray heartbeat into the stale thread snapshot we claimed.
-    const currentHome = await this.homeThreads.resolveHomeThread({
-      identityId: home.identityId,
-    });
-    if (!currentHome) {
-      throw new Error(`Unknown home thread for identity ${home.identityId}`);
-    }
+    const session = await this.sessions.getSession(heartbeat.sessionId);
+    const nextFireAt = now + heartbeat.everyMinutes * 60_000;
 
-    const nextFireAt = computeNextHeartbeatFireAt(currentHome, now);
-
-    if (await this.coordinator.isThreadBusy(currentHome.threadId)) {
-      await this.homeThreads.recordHeartbeatResult({
-        identityId: home.identityId,
+    if (await this.coordinator.isThreadBusy(session.currentThreadId)) {
+      await this.sessions.recordHeartbeatResult({
+        sessionId: session.id,
         claimedBy: HEARTBEAT_CLAIM_OWNER,
         nextFireAt,
         lastSkipReason: "busy",
@@ -160,28 +147,28 @@ export class HeartbeatRunner {
     }
 
     try {
-      const guidance = await this.resolveInstructions?.(currentHome);
-      await this.coordinator.submitInput(currentHome.threadId, {
-        message: stringToUserMessage(buildHeartbeatPrompt(currentHome.heartbeat.nextFireAt, guidance)),
+      const guidance = await this.resolveInstructions?.(session);
+      await this.coordinator.submitInput(session.currentThreadId, {
+        message: stringToUserMessage(buildHeartbeatPrompt(heartbeat.nextFireAt, guidance)),
         source: HEARTBEAT_SOURCE,
         metadata: {
           heartbeat: {
             kind: "interval",
-            scheduledFor: new Date(currentHome.heartbeat.nextFireAt).toISOString(),
-            identityId: home.identityId,
+            scheduledFor: new Date(heartbeat.nextFireAt).toISOString(),
+            sessionId: session.id,
           },
         },
       });
-      await this.homeThreads.recordHeartbeatResult({
-        identityId: home.identityId,
+      await this.sessions.recordHeartbeatResult({
+        sessionId: session.id,
         claimedBy: HEARTBEAT_CLAIM_OWNER,
         nextFireAt,
         lastFireAt: now,
         lastSkipReason: null,
       });
     } catch (error) {
-      await this.homeThreads.recordHeartbeatResult({
-        identityId: home.identityId,
+      await this.sessions.recordHeartbeatResult({
+        sessionId: session.id,
         claimedBy: HEARTBEAT_CLAIM_OWNER,
         nextFireAt,
         lastSkipReason: error instanceof Error ? error.message : String(error),

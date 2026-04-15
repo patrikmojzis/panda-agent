@@ -1,9 +1,9 @@
 import type {Pool, PoolClient} from "pg";
 
 import type {RememberedRoute} from "../../../domain/channels/types.js";
-import {quoteIdentifier, toJson, toMillis} from "../runtime/postgres-shared.js";
-import {buildThreadRouteTableNames, type ThreadRouteTableNames} from "./postgres-shared.js";
-import type {ThreadRouteInput, ThreadRouteLookup, ThreadRouteRecord} from "./types.js";
+import {quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
+import {buildSessionRouteTableNames, type SessionRouteTableNames} from "./postgres-shared.js";
+import type {SessionRouteInput, SessionRouteLookup, SessionRouteRecord} from "./types.js";
 
 interface PgQueryable {
   query: Pool["query"];
@@ -13,23 +13,24 @@ interface PgPoolLike extends PgQueryable {
   connect(): Promise<PoolClient>;
 }
 
-export interface ThreadRouteRepoOptions {
+export interface SessionRouteRepoOptions {
   pool: PgPoolLike;
   tablePrefix?: string;
 }
 
-function requireTrimmed(field: string, value: string): string {
-  const trimmed = value.trim();
+function requireTrimmed(field: string, value: string | undefined | null): string {
+  const trimmed = value?.trim();
   if (!trimmed) {
-    throw new Error(`Thread route ${field} must not be empty.`);
+    throw new Error(`Session route ${field} must not be empty.`);
   }
 
   return trimmed;
 }
 
-function normalizeLookup(lookup: ThreadRouteLookup): ThreadRouteLookup {
+function normalizeLookup(lookup: SessionRouteLookup): SessionRouteLookup {
   return {
-    threadId: requireTrimmed("thread id", lookup.threadId),
+    sessionId: requireTrimmed("session id", lookup.sessionId),
+    identityId: lookup.identityId?.trim() || undefined,
     channel: lookup.channel?.trim() || undefined,
   };
 }
@@ -45,9 +46,10 @@ function normalizeRoute(route: RememberedRoute): RememberedRoute {
   };
 }
 
-function normalizeInput(input: ThreadRouteInput): ThreadRouteInput {
+function normalizeInput(input: SessionRouteInput): SessionRouteInput {
   return {
-    threadId: requireTrimmed("thread id", input.threadId),
+    sessionId: requireTrimmed("session id", input.sessionId),
+    identityId: input.identityId?.trim() || undefined,
     route: normalizeRoute(input.route),
   };
 }
@@ -63,10 +65,11 @@ function parseRoute(row: Record<string, unknown>): RememberedRoute {
   };
 }
 
-function parseRecord(row: Record<string, unknown>): ThreadRouteRecord {
+function parseRecord(row: Record<string, unknown>): SessionRouteRecord {
   const route = parseRoute(row);
   return {
-    threadId: String(row.thread_id),
+    sessionId: String(row.session_id),
+    identityId: typeof row.identity_id === "string" && row.identity_id.trim() ? row.identity_id : undefined,
     channel: route.source,
     route,
     createdAt: toMillis(row.created_at),
@@ -74,19 +77,20 @@ function parseRecord(row: Record<string, unknown>): ThreadRouteRecord {
   };
 }
 
-export class ThreadRouteRepo {
+export class SessionRouteRepo {
   private readonly pool: PgPoolLike;
-  private readonly tables: ThreadRouteTableNames;
+  private readonly tables: SessionRouteTableNames;
 
-  constructor(options: ThreadRouteRepoOptions) {
+  constructor(options: SessionRouteRepoOptions) {
     this.pool = options.pool;
-    this.tables = buildThreadRouteTableNames(options.tablePrefix ?? "thread_runtime");
+    this.tables = buildSessionRouteTableNames(options.tablePrefix ?? "thread_runtime");
   }
 
   async ensureSchema(): Promise<void> {
     await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.threadRoutes} (
-        thread_id TEXT NOT NULL,
+      CREATE TABLE IF NOT EXISTS ${this.tables.sessionRoutes} (
+        session_id TEXT NOT NULL,
+        identity_id TEXT NOT NULL DEFAULT '',
         channel TEXT NOT NULL,
         connector_key TEXT NOT NULL,
         external_conversation_id TEXT NOT NULL,
@@ -96,23 +100,30 @@ export class ThreadRouteRepo {
         metadata JSONB,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (thread_id, channel)
+        PRIMARY KEY (session_id, identity_id, channel)
       )
     `);
     await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_thread_routes_lookup_idx`)}
-      ON ${this.tables.threadRoutes} (thread_id, captured_at_ms DESC)
+      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_session_routes_lookup_idx`)}
+      ON ${this.tables.sessionRoutes} (session_id, identity_id, captured_at_ms DESC)
     `);
   }
 
-  async getLastRoute(lookup: ThreadRouteLookup): Promise<RememberedRoute | null> {
+  async getLastRoute(lookup: SessionRouteLookup): Promise<RememberedRoute | null> {
     const normalized = normalizeLookup(lookup);
-    const values: unknown[] = [normalized.threadId];
+    const values: unknown[] = [normalized.sessionId];
     let sql = `
       SELECT *
-      FROM ${this.tables.threadRoutes}
-      WHERE thread_id = $1
+      FROM ${this.tables.sessionRoutes}
+      WHERE session_id = $1
     `;
+
+    if (normalized.identityId) {
+      values.push(normalized.identityId);
+      sql += ` AND identity_id = $${values.length}`;
+    } else {
+      sql += " AND identity_id = ''";
+    }
 
     if (normalized.channel) {
       values.push(normalized.channel);
@@ -125,11 +136,12 @@ export class ThreadRouteRepo {
     return row ? parseRoute(row as Record<string, unknown>) : null;
   }
 
-  async saveLastRoute(input: ThreadRouteInput): Promise<ThreadRouteRecord> {
+  async saveLastRoute(input: SessionRouteInput): Promise<SessionRouteRecord> {
     const normalized = normalizeInput(input);
     const result = await this.pool.query(`
-      INSERT INTO ${this.tables.threadRoutes} (
-        thread_id,
+      INSERT INTO ${this.tables.sessionRoutes} (
+        session_id,
+        identity_id,
         channel,
         connector_key,
         external_conversation_id,
@@ -145,9 +157,10 @@ export class ThreadRouteRepo {
         $5,
         $6,
         $7,
-        $8::jsonb
+        $8,
+        $9::jsonb
       )
-      ON CONFLICT (thread_id, channel)
+      ON CONFLICT (session_id, identity_id, channel)
       DO UPDATE SET
         connector_key = EXCLUDED.connector_key,
         external_conversation_id = EXCLUDED.external_conversation_id,
@@ -158,7 +171,8 @@ export class ThreadRouteRepo {
         updated_at = NOW()
       RETURNING *
     `, [
-      normalized.threadId,
+      normalized.sessionId,
+      normalized.identityId ?? "",
       normalized.route.source,
       normalized.route.connectorKey,
       normalized.route.externalConversationId,

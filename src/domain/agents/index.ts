@@ -5,6 +5,11 @@ export {
   registerAgentCommands,
 } from "./cli.js";
 export {
+  discoverLegacyAgentSourceDirs,
+  importLegacyAgent,
+  planLegacyAgentImport,
+} from "./legacy-import.js";
+export {
   PostgresAgentStore,
   type PostgresAgentStoreOptions,
 } from "./postgres.js";
@@ -13,13 +18,24 @@ export { DEFAULT_AGENT_DOCUMENT_TEMPLATES } from "./templates.js";
 export type {
   AgentDiaryRecord,
   AgentDocumentRecord,
-  AgentDocumentSlug,
+  AgentPairingRecord,
+  AgentPromptRecord,
+  AgentPromptSlug,
   AgentRecord,
   AgentSkillRecord,
   AgentStatus,
   BootstrapAgentInput,
   CreateAgentInput,
-  RelationshipDocumentRecord,
-  RelationshipDocumentSlug,
+  AgentDocumentSlug,
 } from "./types.js";
 export { normalizeAgentKey, normalizeSkillKey } from "./types.js";
+export type {
+  ImportedLegacyAgentResult,
+  ImportLegacyAgentOptions,
+  LegacyAgentCredentialPlan,
+  LegacyAgentDiaryPlan,
+  LegacyAgentImportPlan,
+  LegacyAgentMemoryPlan,
+  LegacyAgentPromptPlan,
+  LegacyAgentSkillPlan,
+} from "./legacy-import.js";

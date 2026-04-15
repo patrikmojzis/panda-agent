@@ -320,7 +320,7 @@ export class TelegramService {
       await this.ensureActionWorker(stores, connectorKey).start();
       await this.bot.api.setMyCommands([
         {command: "start", description: "Pair this Telegram account with Panda"},
-        {command: "reset", description: "Reset Panda to a fresh empty home thread"},
+        {command: "reset", description: "Reset Panda to a fresh empty session"},
       ]);
       this.log("run_started", {
         connectorKey,

@@ -3,12 +3,10 @@ import {PostgresChannelActionStore} from "../../domain/channels/actions/index.js
 import {PostgresOutboundDeliveryStore} from "../../domain/channels/deliveries/index.js";
 import {HeartbeatRunner} from "../../domain/scheduling/heartbeats/runner.js";
 import {ScheduledTaskRunner} from "../../domain/scheduling/tasks/index.js";
+import {ConversationRepo, SessionRouteRepo} from "../../domain/sessions/index.js";
 import {WatchRunner} from "../../domain/watches/index.js";
-import {ConversationRepo} from "../../domain/threads/conversations/repo.js";
-import {PostgresHomeThreadStore} from "../../domain/threads/home/index.js";
 import {PandaRuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {createChannelTypingEventHandler} from "../../domain/threads/runtime/channel-typing.js";
-import {ThreadRouteRepo} from "../../domain/threads/routes/repo.js";
 import {createPandaRuntime, createPandaThreadDefinition, type PandaRuntimeServices,} from "./create-runtime.js";
 import {PandaDaemonStateRepo} from "./state/repo.js";
 import {resolveDefaultPandaModelSelector} from "../../personas/panda/defaults.js";
@@ -25,8 +23,7 @@ export interface PandaDaemonContext {
   daemonKey: string;
   runtime: PandaRuntimeServices;
   conversationBindings: ConversationRepo;
-  homeThreads: PostgresHomeThreadStore;
-  threadRoutes: ThreadRouteRepo;
+  sessionRoutes: SessionRouteRepo;
   outboundDeliveries: PostgresOutboundDeliveryStore;
   channelActions: PostgresChannelActionStore;
   requests: PandaRuntimeRequestRepo;
@@ -45,7 +42,7 @@ export async function bootstrapPandaDaemonContext(
   const model = resolveDefaultPandaModelSelector();
   const daemonKey = DEFAULT_PANDA_DAEMON_KEY;
 
-  let threadRoutes!: ThreadRouteRepo;
+  let sessionRoutes!: SessionRouteRepo;
   let outboundDeliveries!: PostgresOutboundDeliveryStore;
   let channelActions!: PostgresChannelActionStore;
 
@@ -80,15 +77,12 @@ export async function bootstrapPandaDaemonContext(
     maxSubagentDepth: options.maxSubagentDepth,
     tablePrefix: options.tablePrefix,
     onEvent: createChannelTypingEventHandler(typingDispatcher),
-    resolveDefinition: async (thread, {agentStore, bashJobService, browserService, credentialResolver, identityStore, store, extraTools}) => {
-      const identity = await identityStore.getIdentity(thread.identityId);
+    resolveDefinition: async (thread, {agentStore, bashJobService, browserService, credentialResolver, sessionStore, store, extraTools}) => {
+      const session = await sessionStore.getSession(thread.sessionId);
       return createPandaThreadDefinition({
         thread,
-        fallbackContext: {
-          ...fallbackContext,
-          identityId: identity.id,
-          identityHandle: identity.handle,
-        },
+        session,
+        fallbackContext,
         agentStore,
         threadStore: store,
         bashToolOptions: {
@@ -101,13 +95,13 @@ export async function bootstrapPandaDaemonContext(
         extraTools: [...extraTools, new OutboundTool(), new TelegramReactTool()],
         extraContext: {
           routeMemory: {
-            getLastRoute: (channel) => threadRoutes.getLastRoute({
-              threadId: thread.id,
+            getLastRoute: (channel) => sessionRoutes.getLastRoute({
+              sessionId: thread.sessionId,
               channel,
             }),
             saveLastRoute: async (route) => {
-              await threadRoutes.saveLastRoute({
-                threadId: thread.id,
+              await sessionRoutes.saveLastRoute({
+                sessionId: thread.sessionId,
                 route,
               });
             },
@@ -130,17 +124,11 @@ export async function bootstrapPandaDaemonContext(
     });
     await conversationBindings.ensureSchema();
 
-    const homeThreads = new PostgresHomeThreadStore({
+    sessionRoutes = new SessionRouteRepo({
       pool: runtime.pool,
       tablePrefix: options.tablePrefix,
     });
-    await homeThreads.ensureSchema();
-
-    threadRoutes = new ThreadRouteRepo({
-      pool: runtime.pool,
-      tablePrefix: options.tablePrefix,
-    });
-    await threadRoutes.ensureSchema();
+    await sessionRoutes.ensureSchema();
 
     outboundDeliveries = new PostgresOutboundDeliveryStore({
       pool: runtime.pool,
@@ -168,29 +156,28 @@ export async function bootstrapPandaDaemonContext(
 
     const scheduledTaskRunner = new ScheduledTaskRunner({
       tasks: runtime.scheduledTasks,
-      homeThreads,
-      threadRoutes,
+      sessions: runtime.sessionStore,
+      sessionRoutes,
       outboundDeliveries,
       threadStore: runtime.store,
       coordinator: runtime.coordinator,
     });
     const watchRunner = new WatchRunner({
       watches: runtime.watches,
-      homeThreads,
+      sessions: runtime.sessionStore,
       coordinator: runtime.coordinator,
       credentialResolver: runtime.credentialResolver,
     });
     const relationshipHeartbeatRunner = new HeartbeatRunner({
-      homeThreads,
+      sessions: runtime.sessionStore,
       coordinator: runtime.coordinator,
-      resolveInstructions: async (home) => {
-        const thread = await runtime.store.getThread(home.threadId);
-        const heartbeatDoc = await runtime.agentStore.readAgentDocument(thread.agentKey, "heartbeat");
+      resolveInstructions: async (session) => {
+        const heartbeatDoc = await runtime.agentStore.readAgentPrompt(session.agentKey, "heartbeat");
         return heartbeatDoc?.content?.trim() || null;
       },
-      onError: (error, identityId) => {
-        console.error("Relationship heartbeat runner failed", {
-          identityId,
+      onError: (error, sessionId) => {
+        console.error("Session heartbeat runner failed", {
+          sessionId,
           error: error instanceof Error ? error.message : String(error),
         });
       },
@@ -202,8 +189,7 @@ export async function bootstrapPandaDaemonContext(
       daemonKey,
       runtime,
       conversationBindings,
-      homeThreads,
-      threadRoutes,
+      sessionRoutes,
       outboundDeliveries,
       channelActions,
       requests,

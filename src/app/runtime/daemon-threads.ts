@@ -1,41 +1,35 @@
 import {randomUUID} from "node:crypto";
 
-import {type MediaDescriptor, relocateMediaDescriptor,} from "../../domain/channels/index.js";
-import {createDefaultIdentityInput, type IdentityRecord,} from "../../domain/identity/index.js";
+import {type MediaDescriptor, relocateMediaDescriptor} from "../../domain/channels/index.js";
+import {createDefaultIdentityInput, type IdentityRecord} from "../../domain/identity/index.js";
 import type {
-    CreateThreadRequestPayload,
-    ResetHomeThreadRequestPayload,
-    ResolveHomeThreadRequestPayload,
-    SwitchHomeAgentRequestPayload,
+    CreateBranchSessionRequestPayload,
+    ResetSessionRequestPayload,
+    ResolveMainSessionThreadRequestPayload,
 } from "../../domain/threads/requests/index.js";
-import {isMissingThreadError, type ThreadRecord,} from "../../domain/threads/runtime/index.js";
+import {type ThreadRecord} from "../../domain/threads/runtime/index.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
 import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
 import {resolvePandaAgentMediaDir} from "./data-dir.js";
 import type {PandaDaemonContext} from "./daemon-bootstrap.js";
-import {
-    buildHomeAgentMismatchMessage,
-    buildMissingDefaultAgentMessage,
-    buildMissingSwitchHomeAgentKeyMessage,
-} from "./daemon-copy.js";
-import {requireIdentityId, resolveImplicitHomeThreadReplacementAgent, trimNonEmptyString,} from "./daemon-shared.js";
+import {requireIdentityId, trimNonEmptyString} from "./daemon-shared.js";
 
 export interface DaemonThreadHelpers {
   ensureIdentity(identityId: string): Promise<IdentityRecord>;
-  createThread(input: {
+  createBranchSession(input: {
     identity: IdentityRecord;
-    id?: string;
+    sessionId?: string;
     agentKey?: string;
     model?: string;
-    thinking?: CreateThreadRequestPayload["thinking"];
-    inferenceProjection?: CreateThreadRequestPayload["inferenceProjection"];
+    thinking?: CreateBranchSessionRequestPayload["thinking"];
+    inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
     context?: Record<string, unknown>;
   }): Promise<ThreadRecord>;
   relocateThreadMedia(
     thread: ThreadRecord,
     media: readonly MediaDescriptor[],
   ): Promise<readonly MediaDescriptor[]>;
-  resolveOrCreateHomeThread(input: ResolveHomeThreadRequestPayload): Promise<ThreadRecord>;
+  openMainSession(input: ResolveMainSessionThreadRequestPayload): Promise<ThreadRecord>;
   resolveOrCreateConversationThread(input: {
     identityId: string;
     source: string;
@@ -53,8 +47,14 @@ export interface DaemonThreadHelpers {
     replyToMessageId?: string;
     threadId?: string;
   }): Promise<void>;
-  handleResetHomeThread(payload: ResetHomeThreadRequestPayload): Promise<Record<string, unknown>>;
-  handleSwitchHomeAgent(payload: SwitchHomeAgentRequestPayload): Promise<Record<string, unknown>>;
+  handleResetSession(payload: ResetSessionRequestPayload): Promise<Record<string, unknown>>;
+}
+
+async function listIdentityPairings(runtime: PandaDaemonContext["runtime"], identityId: string) {
+  const store = runtime.agentStore as typeof runtime.agentStore & {
+    listIdentityPairings?: (identityId: string) => Promise<readonly {agentKey: string}[]>;
+  };
+  return store.listIdentityPairings ? await store.listIdentityPairings(identityId) : [];
 }
 
 export function createDaemonThreadHelpers(
@@ -66,59 +66,118 @@ export function createDaemonThreadHelpers(
       : context.runtime.identityStore.getIdentity(identityId);
   };
 
-  const requireDefaultAgentKey = async (
+  const resolveAccessibleAgentKey = async (
     identity: IdentityRecord,
     explicitAgentKey?: string,
   ): Promise<string> => {
-    const agentKey = trimNonEmptyString(explicitAgentKey) ?? trimNonEmptyString(identity.defaultAgentKey);
-    if (!agentKey) {
-      throw new Error(buildMissingDefaultAgentMessage(identity));
+    const pairings = await listIdentityPairings(context.runtime, identity.id);
+    const requestedAgentKey = trimNonEmptyString(explicitAgentKey);
+    if (requestedAgentKey) {
+      await context.runtime.agentStore.getAgent(requestedAgentKey);
+      if (!pairings.some((pairing) => pairing.agentKey === requestedAgentKey)) {
+        throw new Error(`Identity ${identity.handle} is not paired to agent ${requestedAgentKey}.`);
+      }
+
+      return requestedAgentKey;
     }
 
-    await context.runtime.agentStore.getAgent(agentKey);
-    return agentKey;
-  };
-
-  const updateIdentityDefaultAgent = async (
-    identity: IdentityRecord,
-    agentKey: string,
-  ): Promise<IdentityRecord> => {
-    if (identity.defaultAgentKey === agentKey) {
-      return identity;
+    if (pairings.length === 1) {
+      return pairings[0]!.agentKey;
     }
 
-    return context.runtime.identityStore.updateIdentity({
-      identityId: identity.id,
-      defaultAgentKey: agentKey,
-    });
+    if (pairings.length === 0) {
+      throw new Error(`Identity ${identity.handle} is not paired to any agents.`);
+    }
+
+    throw new Error(`Identity ${identity.handle} is paired to multiple agents. Pick one explicitly.`);
   };
 
-  const createThread = async (input: {
-    identity: IdentityRecord;
-    id?: string;
+  const createInitialSessionThread = async (input: {
+    sessionId: string;
     agentKey?: string;
+    id?: string;
     model?: string;
-    thinking?: CreateThreadRequestPayload["thinking"];
-    inferenceProjection?: CreateThreadRequestPayload["inferenceProjection"];
+    thinking?: CreateBranchSessionRequestPayload["thinking"];
+    inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
     context?: Record<string, unknown>;
   }): Promise<ThreadRecord> => {
-    const agentKey = await requireDefaultAgentKey(input.identity, input.agentKey);
     return context.runtime.store.createThread({
       id: input.id ?? randomUUID(),
-      identityId: input.identity.id,
-      agentKey,
+      sessionId: input.sessionId,
       context: {
         ...context.fallbackContext,
-        // Do not persist the runner's synthetic home cwd here. Threads survive
-        // restarts and deployment changes, so baking a container-only path into
-        // stored thread state breaks later local resumes and other path layouts.
-        identityId: input.identity.id,
-        identityHandle: input.identity.handle,
+        ...(input.agentKey
+          ? {
+            agentKey: input.agentKey,
+            sessionId: input.sessionId,
+          }
+          : {}),
         ...(input.context ?? {}),
       },
       model: input.model ?? context.model,
       thinking: input.thinking,
       inferenceProjection: input.inferenceProjection,
+    });
+  };
+
+  const ensureMainSession = async (
+    agentKey: string,
+    identity?: IdentityRecord,
+  ) => {
+    const existing = await context.runtime.sessionStore.getMainSession(agentKey);
+    if (existing) {
+      return existing;
+    }
+
+    const sessionId = randomUUID();
+    const threadId = randomUUID();
+    const session = await context.runtime.sessionStore.createSession({
+      id: sessionId,
+      agentKey,
+      kind: "main",
+      currentThreadId: threadId,
+      createdByIdentityId: identity?.id,
+    });
+    await createInitialSessionThread({
+      sessionId,
+      agentKey,
+      id: threadId,
+    });
+    return session;
+  };
+
+  const resolveCurrentThread = async (sessionId: string): Promise<ThreadRecord> => {
+    const session = await context.runtime.sessionStore.getSession(sessionId);
+    return context.runtime.store.getThread(session.currentThreadId);
+  };
+
+  const createBranchSession = async (input: {
+    identity: IdentityRecord;
+    sessionId?: string;
+    agentKey?: string;
+    model?: string;
+    thinking?: CreateBranchSessionRequestPayload["thinking"];
+    inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
+    context?: Record<string, unknown>;
+  }): Promise<ThreadRecord> => {
+    const agentKey = await resolveAccessibleAgentKey(input.identity, input.agentKey);
+    const sessionId = input.sessionId ?? randomUUID();
+    const threadId = randomUUID();
+    await context.runtime.sessionStore.createSession({
+      id: sessionId,
+      agentKey,
+      kind: "branch",
+      currentThreadId: threadId,
+      createdByIdentityId: input.identity.id,
+    });
+    return createInitialSessionThread({
+      sessionId,
+      agentKey,
+      id: threadId,
+      model: input.model,
+      thinking: input.thinking,
+      inferenceProjection: input.inferenceProjection,
+      context: input.context,
     });
   };
 
@@ -130,116 +189,18 @@ export function createDaemonThreadHelpers(
       return media;
     }
 
-    // Move inbound channel media into the agent's home so that remote bash can
-    // reach the files through the agent's mounted home directory.
-    const rootDir = resolvePandaAgentMediaDir(thread.agentKey);
+    const session = await context.runtime.sessionStore.getSession(thread.sessionId);
+    const rootDir = resolvePandaAgentMediaDir(session.agentKey);
     return Promise.all(media.map((descriptor) => relocateMediaDescriptor(descriptor, {rootDir})));
   };
 
-  const bindHomeThread = async (thread: ThreadRecord): Promise<void> => {
-    await context.homeThreads.bindHomeThread({
-      identityId: thread.identityId,
-      threadId: thread.id,
-    });
-  };
-
-  const resolveExistingHomeThread = async (identityId: string): Promise<ThreadRecord | null> => {
-    const existing = await context.homeThreads.resolveHomeThread({identityId});
-    if (!existing) {
-      return null;
-    }
-
-    try {
-      const thread = await context.runtime.store.getThread(existing.threadId);
-      return thread.identityId === identityId ? thread : null;
-    } catch (error) {
-      if (isMissingThreadError(error, existing.threadId)) {
-        return null;
-      }
-
-      throw error;
-    }
-  };
-
-  const replaceHomeThread = async (input: {
-    identity: IdentityRecord;
-    source: ResetHomeThreadRequestPayload["source"] | "identity";
-    agentKey?: string;
-    model?: string;
-    thinking?: CreateThreadRequestPayload["thinking"];
-    inferenceProjection?: CreateThreadRequestPayload["inferenceProjection"];
-    context?: Record<string, unknown>;
-  }): Promise<{thread: ThreadRecord; previousThreadId?: string | null}> => {
-    const previousHome = await resolveExistingHomeThread(input.identity.id);
-    if (previousHome) {
-      await context.runtime.coordinator.abort(previousHome.id, `Reset requested from ${input.source}.`);
-      await context.runtime.coordinator.waitForCurrentRun(previousHome.id);
-      await context.runtime.bashJobService.cancelThreadJobs(previousHome.id);
-      await context.runtime.store.discardPendingInputs(previousHome.id);
-    }
-
-    const thread = await createThread({
-      identity: input.identity,
-      agentKey: input.agentKey,
-      model: input.model,
-      thinking: input.thinking,
-      inferenceProjection: input.inferenceProjection,
-      context: input.context,
-    });
-    if (trimNonEmptyString(input.agentKey)) {
-      await updateIdentityDefaultAgent(input.identity, thread.agentKey);
-    }
-    await bindHomeThread(thread);
-
-    return {
-      thread,
-      previousThreadId: previousHome?.id ?? null,
-    };
-  };
-
-  const resolveOrCreateHomeThread = async (
-    input: ResolveHomeThreadRequestPayload,
+  const openMainSession = async (
+    input: ResolveMainSessionThreadRequestPayload,
   ): Promise<ThreadRecord> => {
-    const identity = await ensureIdentity(requireIdentityId(input.identityId, "resolve_home_thread"));
-    const requestedAgentKey = trimNonEmptyString(input.agentKey);
-    const existing = await resolveExistingHomeThread(identity.id);
-    if (existing) {
-      if (!requestedAgentKey || existing.agentKey === requestedAgentKey) {
-        const replacementAgentKey = resolveImplicitHomeThreadReplacementAgent({
-          requestedAgentKey,
-          existingAgentKey: existing.agentKey,
-          identityDefaultAgentKey: identity.defaultAgentKey,
-        });
-        if (replacementAgentKey) {
-          const result = await replaceHomeThread({
-            identity,
-            source: "identity",
-            agentKey: replacementAgentKey,
-            model: input.model,
-            thinking: input.thinking,
-            inferenceProjection: input.inferenceProjection,
-          });
-          return result.thread;
-        }
-
-        return existing;
-      }
-
-      throw new Error(buildHomeAgentMismatchMessage(identity, existing.agentKey, requestedAgentKey));
-    }
-
-    const thread = await createThread({
-      identity,
-      agentKey: requestedAgentKey,
-      model: input.model,
-      thinking: input.thinking,
-      inferenceProjection: input.inferenceProjection,
-    });
-    if (requestedAgentKey) {
-      await updateIdentityDefaultAgent(identity, thread.agentKey);
-    }
-    await bindHomeThread(thread);
-    return thread;
+    const identity = await ensureIdentity(requireIdentityId(input.identityId, "resolve_main_session_thread"));
+    const agentKey = await resolveAccessibleAgentKey(identity, input.agentKey);
+    const session = await ensureMainSession(agentKey, identity);
+    return resolveCurrentThread(session.id);
   };
 
   const resolveOrCreateConversationThread = async (input: {
@@ -256,34 +217,24 @@ export function createDaemonThreadHelpers(
       externalConversationId: input.externalConversationId,
     });
     if (existing) {
-      try {
-        const thread = await context.runtime.store.getThread(existing.threadId);
-        return thread.identityId === input.identityId ? thread : null;
-      } catch (error) {
-        if (!isMissingThreadError(error, existing.threadId)) {
-          throw error;
-        }
-      }
+      return resolveCurrentThread(existing.sessionId);
     }
 
     const identity = await ensureIdentity(input.identityId);
-    const home = await resolveExistingHomeThread(identity.id);
-    const thread = home ?? await createThread({
-      identity,
-      context: input.context,
-    });
-    if (!home) {
-      await bindHomeThread(thread);
+    const pairings = await context.runtime.agentStore.listIdentityPairings(identity.id);
+    if (pairings.length !== 1) {
+      return null;
     }
 
+    const session = await ensureMainSession(pairings[0]!.agentKey, identity);
     await context.conversationBindings.bindConversation({
       source: input.source,
       connectorKey: input.connectorKey,
       externalConversationId: input.externalConversationId,
-      threadId: thread.id,
+      sessionId: session.id,
       metadata: input.metadata,
     });
-    return thread;
+    return resolveCurrentThread(session.id);
   };
 
   const queueSystemReply = async (input: {
@@ -312,28 +263,77 @@ export function createDaemonThreadHelpers(
     });
   };
 
-  const handleResetHomeThread = async (
-    payload: ResetHomeThreadRequestPayload,
-  ): Promise<Record<string, unknown>> => {
-    const identity = await ensureIdentity(requireIdentityId(payload.identityId, "reset_home_thread"));
-    const result = await replaceHomeThread({
-      identity,
-      source: payload.source,
-      agentKey: payload.agentKey,
-      model: payload.model,
-      thinking: payload.thinking,
-      inferenceProjection: payload.inferenceProjection,
-      context: payload.source === TELEGRAM_SOURCE && payload.externalConversationId
-        ? {source: TELEGRAM_SOURCE}
-        : undefined,
+  const resetSession = async (input: {
+    sessionId: string;
+    identity?: IdentityRecord;
+    source: string;
+    model?: string;
+    thinking?: ResetSessionRequestPayload["thinking"];
+    inferenceProjection?: ResetSessionRequestPayload["inferenceProjection"];
+    context?: Record<string, unknown>;
+  }): Promise<{thread: ThreadRecord; previousThreadId: string}> => {
+    const session = await context.runtime.sessionStore.getSession(input.sessionId);
+    const previousThread = await context.runtime.store.getThread(session.currentThreadId);
+    await context.runtime.coordinator.abort(previousThread.id, `Reset requested from ${input.source}.`);
+    await context.runtime.coordinator.waitForCurrentRun(previousThread.id);
+    await context.runtime.bashJobService.cancelThreadJobs(previousThread.id);
+    await context.runtime.store.discardPendingInputs(previousThread.id);
+
+    const thread = await createInitialSessionThread({
+      sessionId: session.id,
+      agentKey: session.agentKey,
+      model: input.model,
+      thinking: input.thinking,
+      inferenceProjection: input.inferenceProjection,
+      context: input.context,
+    });
+    await context.runtime.sessionStore.updateCurrentThread({
+      sessionId: session.id,
+      currentThreadId: thread.id,
     });
 
+    return {
+      thread,
+      previousThreadId: previousThread.id,
+    };
+  };
+
+  const handleResetSession = async (
+    payload: ResetSessionRequestPayload,
+  ): Promise<Record<string, unknown>> => {
     if (payload.source === TELEGRAM_SOURCE && payload.connectorKey && payload.externalConversationId) {
+      const binding = await context.conversationBindings.getConversationBinding({
+        source: TELEGRAM_SOURCE,
+        connectorKey: payload.connectorKey,
+        externalConversationId: payload.externalConversationId,
+      });
+
+      const identity = payload.identityId
+        ? await ensureIdentity(requireIdentityId(payload.identityId, "reset_session"))
+        : undefined;
+      const sessionId = binding?.sessionId
+        ?? (identity
+          ? (await ensureMainSession(await resolveAccessibleAgentKey(identity, payload.agentKey), identity)).id
+          : null);
+      if (!sessionId) {
+        throw new Error("Cannot reset an unbound conversation without a paired identity.");
+      }
+
+      const result = await resetSession({
+        sessionId,
+        identity,
+        source: payload.source,
+        model: payload.model,
+        thinking: payload.thinking,
+        inferenceProjection: payload.inferenceProjection,
+        context: {source: TELEGRAM_SOURCE},
+      });
+
       await context.conversationBindings.bindConversation({
         source: TELEGRAM_SOURCE,
         connectorKey: payload.connectorKey,
         externalConversationId: payload.externalConversationId,
-        threadId: result.thread.id,
+        sessionId,
         metadata: payload.commandExternalMessageId
           ? {
             kind: "telegram_reset_receipt",
@@ -341,8 +341,9 @@ export function createDaemonThreadHelpers(
           }
           : undefined,
       });
-      await context.threadRoutes.saveLastRoute({
-        threadId: result.thread.id,
+      await context.sessionRoutes.saveLastRoute({
+        sessionId,
+        identityId: identity?.id,
         route: {
           source: TELEGRAM_SOURCE,
           connectorKey: payload.connectorKey,
@@ -352,45 +353,73 @@ export function createDaemonThreadHelpers(
           capturedAt: Date.now(),
         },
       });
+
+      return {
+        threadId: result.thread.id,
+        previousThreadId: result.previousThreadId,
+        sessionId,
+      };
     }
 
-    return {
-      threadId: result.thread.id,
-      previousThreadId: result.previousThreadId,
-    };
-  };
+    if (payload.source === "operator") {
+      const session = payload.sessionId
+        ? await context.runtime.sessionStore.getSession(payload.sessionId)
+        : payload.threadId
+          ? await context.runtime.sessionStore.getSession((await context.runtime.store.getThread(payload.threadId)).sessionId)
+          : null;
+      if (!session) {
+        throw new Error("Operator reset requires sessionId or threadId.");
+      }
 
-  const handleSwitchHomeAgent = async (
-    payload: SwitchHomeAgentRequestPayload,
-  ): Promise<Record<string, unknown>> => {
-    const identity = await ensureIdentity(requireIdentityId(payload.identityId, "switch_home_agent"));
-    const requestedAgentKey = trimNonEmptyString(payload.agentKey);
-    if (!requestedAgentKey) {
-      throw new Error(buildMissingSwitchHomeAgentKeyMessage());
+      const result = await resetSession({
+        sessionId: session.id,
+        source: payload.source,
+        model: payload.model,
+        thinking: payload.thinking,
+        inferenceProjection: payload.inferenceProjection,
+      });
+
+      return {
+        threadId: result.thread.id,
+        previousThreadId: result.previousThreadId,
+        sessionId: session.id,
+      };
     }
 
-    await context.runtime.agentStore.getAgent(requestedAgentKey);
-    const updatedIdentity = await updateIdentityDefaultAgent(identity, requestedAgentKey);
-    const result = await replaceHomeThread({
-      identity: updatedIdentity,
-      source: "identity",
-      agentKey: requestedAgentKey,
+    const identity = await ensureIdentity(requireIdentityId(payload.identityId, "reset_session"));
+    let session;
+    if (payload.threadId) {
+      session = await context.runtime.sessionStore.getSession((await context.runtime.store.getThread(payload.threadId)).sessionId);
+      await resolveAccessibleAgentKey(identity, session.agentKey);
+    } else if (payload.sessionId) {
+      session = await context.runtime.sessionStore.getSession(payload.sessionId);
+      await resolveAccessibleAgentKey(identity, session.agentKey);
+    } else {
+      session = await ensureMainSession(await resolveAccessibleAgentKey(identity, payload.agentKey), identity);
+    }
+    const result = await resetSession({
+      sessionId: session.id,
+      identity,
+      source: payload.source,
+      model: payload.model,
+      thinking: payload.thinking,
+      inferenceProjection: payload.inferenceProjection,
     });
 
     return {
       threadId: result.thread.id,
       previousThreadId: result.previousThreadId,
+      sessionId: session.id,
     };
   };
 
   return {
     ensureIdentity,
-    createThread,
+    createBranchSession,
     relocateThreadMedia,
-    resolveOrCreateHomeThread,
+    openMainSession,
     resolveOrCreateConversationThread,
     queueSystemReply,
-    handleResetHomeThread,
-    handleSwitchHomeAgent,
+    handleResetSession,
   };
 }

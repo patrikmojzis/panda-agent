@@ -71,6 +71,5 @@ export {
   type WatchSourceKind,
   type WatchSpec,
   type WatchSqlQuerySourceConfig,
-  type WatchTargetKind,
   type WatchThreadInputMetadata,
 } from "./types.js";

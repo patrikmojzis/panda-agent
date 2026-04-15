@@ -4,11 +4,11 @@
 
 WhatsApp is a private DM window into Panda, not a separate brain.
 
-The intended shape stays consistent with the rest of chat:
+The intended shape is:
 
-- one brain (`home`)
-- many windows
-- optional branches later
+- one agent
+- one main session by default
+- many windows into that same session
 
 ## Privacy Boundary
 
@@ -41,7 +41,7 @@ Do not invent webhooks or clustering until there is a real reason.
 
 ## Inbound Shape
 
-Inbound normalization should fit Panda's current channel model, not drag provider junk into the core loop.
+Inbound normalization should fit Panda's channel model, not drag provider junk into the core loop.
 
 Useful channel metadata:
 
@@ -54,15 +54,25 @@ Keep connector-specific metadata minimal but useful.
 
 ## Routing
 
-Unbound WhatsApp DMs route to the relationship `home`.
+WhatsApp routing is session-first now.
 
-That means:
+The flow is:
 
-- DM to `home` by default
-- future branch override can hang off `conversation_threads`
-- remembered `lastRoute` lives on `home_threads`
+1. resolve the external actor to an identity
+2. verify that identity is paired to an agent
+3. resolve the conversation binding to a session
+4. resolve `session.current_thread_id`
+5. enqueue the input on that thread
 
-WhatsApp is a window into the same Panda, not a channel-owned truth source.
+For a new DM:
+
+- if the identity has exactly one paired agent, Panda can auto-bind that conversation to the agent's main session
+- if the identity has multiple paired agents, an operator must bind the conversation explicitly
+
+Storage lives in:
+
+- `conversation_sessions` for conversation -> session binding
+- `session_routes` for remembered return path
 
 ## Outbound
 
@@ -75,7 +85,8 @@ WhatsApp-specific behavior should stay in the adapter layer:
 - file send
 - successful sends update the remembered route
 
-Route resolution rules should match Telegram unless there is a concrete reason to diverge.
+We are not introducing a separate delivery-target abstraction here yet.
+Keep it simple.
 
 ## Media
 
@@ -100,8 +111,8 @@ Not in this slice:
 
 - groups
 - history sync ingest
-- channel-local `/new`
-- scheduler or heartbeat-specific behavior
+- in-band session rebinding UX
+- scheduler-specific special cases
 
 ## Code Map
 

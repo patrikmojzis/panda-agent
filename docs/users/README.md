@@ -5,6 +5,7 @@ This folder is for people running Panda, pairing channels, and keeping the thing
 Start here:
 
 - [Getting Started](./getting-started.md)
+- [Sessions](./sessions.md)
 - [Browser](./browser.md)
 - [Postgres](./postgres.md)
 - [Identity](./identity.md)

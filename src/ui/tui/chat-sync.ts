@@ -21,8 +21,8 @@ export interface ChatSyncHost {
   ): void;
   requestRender(): void;
   isClosed(): boolean;
-  isThreadPickerActive(): boolean;
-  refreshThreadPicker(): Promise<void>;
+  isSessionPickerActive(): boolean;
+  refreshSessionPicker(): Promise<void>;
 }
 
 export function scheduleChatStoredThreadSync(host: ChatSyncHost, delayMs = 150): void {
@@ -111,8 +111,8 @@ export async function handleChatStoreNotification(
     scheduleChatStoredThreadSync(host);
   }
 
-  if (host.isThreadPickerActive()) {
-    await host.refreshThreadPicker();
+  if (host.isSessionPickerActive()) {
+    await host.refreshSessionPicker();
     host.requestRender();
   }
 }

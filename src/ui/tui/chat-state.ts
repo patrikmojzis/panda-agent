@@ -43,12 +43,12 @@ export function resolveCurrentChatHistoryMatch(
 }
 
 export function resolveChatModeLabel(input: {
-  threadPickerActive: boolean;
+  sessionPickerActive: boolean;
   historySearchActive: boolean;
   transcriptSearchActive: boolean;
 }): string {
-  if (input.threadPickerActive) {
-    return "threads";
+  if (input.sessionPickerActive) {
+    return "sessions";
   }
 
   if (input.historySearchActive) {

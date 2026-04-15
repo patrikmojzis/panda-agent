@@ -122,6 +122,19 @@ export function ensurePandaShellSession(context: unknown): ShellSession | null {
   return nextShell;
 }
 
+export function readPandaCurrentInputIdentityId(context: unknown): string | undefined {
+  if (!isRecord(context)) {
+    return undefined;
+  }
+
+  const currentInput = context.currentInput;
+  if (!isRecord(currentInput)) {
+    return undefined;
+  }
+
+  return trimNonEmptyString(currentInput.identityId) ?? undefined;
+}
+
 export function resolvePandaPath(
   rawPath: string,
   context: unknown,

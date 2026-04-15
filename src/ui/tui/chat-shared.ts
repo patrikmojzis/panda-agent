@@ -4,8 +4,8 @@ import {
     resolveProviderApiKey,
     type ThinkingLevel,
 } from "../../kernel/agent/index.js";
-import type {ThreadSummaryRecord} from "../../domain/threads/runtime/index.js";
 import type {TranscriptLine} from "./chat-view.js";
+import type {SessionRecord} from "../../domain/sessions/index.js";
 
 export type EntryRole = "assistant" | "user" | "tool" | "meta" | "error";
 export type RunPhase = "idle" | "thinking";
@@ -31,11 +31,11 @@ export interface SearchState {
   selected: number;
 }
 
-export interface ThreadPickerState {
+export interface SessionPickerState {
   active: boolean;
   loading: boolean;
   selected: number;
-  summaries: readonly ThreadSummaryRecord[];
+  sessions: readonly SessionRecord[];
   error: string | null;
 }
 
@@ -66,12 +66,12 @@ export interface ChatCliOptions {
   thinking?: ThinkingLevel;
   identity?: string;
   agent?: string;
-  resume?: string;
-  threadId?: string;
+  session?: string;
   dbUrl?: string;
 }
 
 export interface ChatCliResult {
+  sessionId?: string;
   threadId?: string;
 }
 

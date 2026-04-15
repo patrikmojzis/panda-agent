@@ -1,6 +1,5 @@
 import type {JsonObject, JsonPrimitive, JsonValue} from "../../kernel/agent/types.js";
 
-export type WatchTargetKind = "home" | "thread";
 export type WatchRunStatus = "claimed" | "running" | "no_change" | "changed" | "failed" | "disabled";
 export type WatchSourceKind = "mongodb_query" | "sql_query" | "http_json" | "http_html" | "imap_mailbox";
 export type WatchObservationKind = "collection" | "snapshot" | "scalar";
@@ -186,16 +185,14 @@ export type WatchDetectorConfig =
 export interface WatchSpec {
   title: string;
   intervalMinutes: number;
-  targetThreadId?: string;
   source: WatchSourceConfig;
   detector: WatchDetectorConfig;
 }
 
 export interface WatchRecord extends WatchSpec {
   id: string;
-  identityId: string;
-  agentKey: string;
-  targetKind: WatchTargetKind;
+  sessionId: string;
+  createdByIdentityId?: string;
   enabled: boolean;
   nextPollAt?: number;
   claimedAt?: number;
@@ -212,8 +209,8 @@ export interface WatchRecord extends WatchSpec {
 export interface WatchRunRecord {
   id: string;
   watchId: string;
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
+  createdByIdentityId?: string;
   scheduledFor: number;
   status: WatchRunStatus;
   resolvedThreadId?: string;
@@ -227,8 +224,8 @@ export interface WatchRunRecord {
 export interface WatchEventRecord {
   id: string;
   watchId: string;
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
+  createdByIdentityId?: string;
   resolvedThreadId: string;
   eventKind: WatchEventKind;
   summary: string;
@@ -238,18 +235,16 @@ export interface WatchEventRecord {
 }
 
 export interface CreateWatchInput extends WatchSpec {
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
+  createdByIdentityId?: string;
   enabled?: boolean;
 }
 
 export interface UpdateWatchInput {
   watchId: string;
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
   title?: string;
   intervalMinutes?: number;
-  targetThreadId?: string | null;
   source?: WatchSourceConfig;
   detector?: WatchDetectorConfig;
   enabled?: boolean;
@@ -257,8 +252,7 @@ export interface UpdateWatchInput {
 
 export interface DisableWatchInput {
   watchId: string;
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
   reason?: string;
 }
 
@@ -302,8 +296,8 @@ export interface FailWatchRunInput {
 
 export interface RecordWatchEventInput {
   watchId: string;
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
+  createdByIdentityId?: string;
   resolvedThreadId: string;
   eventKind: WatchEventKind;
   summary: string;

@@ -81,12 +81,12 @@ These barrels still earn their keep:
 - `src/personas/panda/index.ts`
 - `src/domain/agents/index.ts`
 - `src/domain/identity/index.ts`
+- `src/domain/sessions/index.ts`
 - `src/domain/channels/index.ts`
 - `src/domain/threads/index.ts`
 - `src/domain/scheduling/index.ts`
 - `src/domain/channels/actions/index.ts`
 - `src/domain/channels/deliveries/index.ts`
-- `src/domain/threads/home/index.ts`
 - `src/domain/threads/requests/index.ts`
 - `src/domain/threads/runtime/index.ts`
 - `src/domain/scheduling/tasks/index.ts`
@@ -104,7 +104,6 @@ The package entrypoints mirror those real boundaries:
 - `panda/domain/channels/actions`
 - `panda/domain/channels/deliveries`
 - `panda/domain/threads`
-- `panda/domain/threads/home`
 - `panda/domain/threads/requests`
 - `panda/domain/threads/runtime`
 - `panda/domain/scheduling`
@@ -144,7 +143,7 @@ These are repos:
 - `ChannelCursorRepo`
 - `ConversationRepo`
 - `PandaRuntimeRequestRepo`
-- `ThreadRouteRepo`
+- `SessionRouteRepo`
 
 If a second implementation becomes real later, earn the abstraction then.
 Not before.

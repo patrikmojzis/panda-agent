@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {ThreadRouteRepo} from "../src/domain/threads/routes/repo.js";
+import {SessionRouteRepo} from "../src/domain/sessions/index.js";
 
 function createPool() {
   const db = newDb();
@@ -16,7 +16,7 @@ function createPool() {
   return new adapter.Pool();
 }
 
-describe("ThreadRouteRepo", () => {
+describe("SessionRouteRepo", () => {
   const pools: Array<{end(): Promise<void>}> = [];
 
   afterEach(async () => {
@@ -34,11 +34,11 @@ describe("ThreadRouteRepo", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const store = new ThreadRouteRepo({pool});
+    const store = new SessionRouteRepo({pool});
     await store.ensureSchema();
 
     await store.saveLastRoute({
-      threadId: "thread-a",
+      sessionId: "session-a",
       route: {
         source: "telegram",
         connectorKey: "bot-1",
@@ -49,7 +49,7 @@ describe("ThreadRouteRepo", () => {
       },
     });
     await store.saveLastRoute({
-      threadId: "thread-a",
+      sessionId: "session-a",
       route: {
         source: "whatsapp",
         connectorKey: "wa-1",
@@ -59,13 +59,13 @@ describe("ThreadRouteRepo", () => {
     });
 
     await expect(store.getLastRoute({
-      threadId: "thread-a",
+      sessionId: "session-a",
     })).resolves.toMatchObject({
       source: "whatsapp",
       externalConversationId: "jid-1",
     });
     await expect(store.getLastRoute({
-      threadId: "thread-a",
+      sessionId: "session-a",
       channel: "telegram",
     })).resolves.toMatchObject({
       source: "telegram",
@@ -77,11 +77,11 @@ describe("ThreadRouteRepo", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const store = new ThreadRouteRepo({pool});
+    const store = new SessionRouteRepo({pool});
     await store.ensureSchema();
 
     await store.saveLastRoute({
-      threadId: "thread-a",
+      sessionId: "session-a",
       route: {
         source: "telegram",
         connectorKey: "bot-1",
@@ -91,7 +91,7 @@ describe("ThreadRouteRepo", () => {
     });
 
     const updated = await store.saveLastRoute({
-      threadId: "thread-a",
+      sessionId: "session-a",
       route: {
         source: "telegram",
         connectorKey: "bot-2",
@@ -102,7 +102,7 @@ describe("ThreadRouteRepo", () => {
     });
 
     expect(updated).toMatchObject({
-      threadId: "thread-a",
+      sessionId: "session-a",
       channel: "telegram",
       route: {
         source: "telegram",
@@ -118,29 +118,50 @@ describe("ThreadRouteRepo", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const store = new ThreadRouteRepo({pool});
+    const store = new SessionRouteRepo({pool});
     await store.ensureSchema();
 
     await expect(store.saveLastRoute({
-      threadId: "   ",
+      sessionId: "   ",
       route: {
         source: "telegram",
         connectorKey: "bot-1",
         externalConversationId: "chat-1",
         capturedAt: 100,
       },
-    })).rejects.toThrow("Thread route thread id must not be empty.");
+    })).rejects.toThrow("Session route session id must not be empty.");
     await expect(store.saveLastRoute({
-      threadId: "thread-a",
+      sessionId: "session-a",
       route: {
         source: "   ",
         connectorKey: "bot-1",
         externalConversationId: "chat-1",
         capturedAt: 100,
       },
-    })).rejects.toThrow("Thread route source must not be empty.");
+    })).rejects.toThrow("Session route source must not be empty.");
     await expect(store.getLastRoute({
-      threadId: "   ",
-    })).rejects.toThrow("Thread route thread id must not be empty.");
+      sessionId: "   ",
+    })).rejects.toThrow("Session route session id must not be empty.");
+  });
+
+  it("does not accept thread-era route aliases", async () => {
+    const pool = createPool();
+    pools.push(pool);
+
+    const store = new SessionRouteRepo({pool});
+    await store.ensureSchema();
+
+    await expect(store.getLastRoute({
+      sessionId: undefined as unknown as string,
+    })).rejects.toThrow("Session route session id must not be empty.");
+    await expect(store.saveLastRoute({
+      sessionId: undefined as unknown as string,
+      route: {
+        source: "telegram",
+        connectorKey: "bot-1",
+        externalConversationId: "chat-1",
+        capturedAt: 100,
+      },
+    })).rejects.toThrow("Session route session id must not be empty.");
   });
 });

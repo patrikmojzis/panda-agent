@@ -1,7 +1,6 @@
 import type {JsonObject} from "../../../kernel/agent/types.js";
 
 export type ScheduledTaskScheduleKind = "once" | "recurring";
-export type ScheduledTaskTargetKind = "home" | "thread";
 export type ScheduledTaskFireKind = "execute" | "deliver";
 export type ScheduledTaskRunStatus = "claimed" | "running" | "succeeded" | "failed" | "cancelled";
 export type ScheduledTaskDeliveryStatus = "not_requested" | "sent" | "unavailable" | "failed";
@@ -24,13 +23,11 @@ export type ScheduledTaskSchedule =
 
 export interface ScheduledTaskRecord {
   id: string;
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
+  createdByIdentityId?: string;
   title: string;
   instruction: string;
   schedule: ScheduledTaskSchedule;
-  targetKind: ScheduledTaskTargetKind;
-  targetThreadId?: string;
   enabled: boolean;
   nextFireAt?: number;
   nextFireKind: ScheduledTaskFireKind;
@@ -46,8 +43,8 @@ export interface ScheduledTaskRecord {
 export interface ScheduledTaskRunRecord {
   id: string;
   taskId: string;
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
+  createdByIdentityId?: string;
   resolvedThreadId?: string;
   fireKind: ScheduledTaskFireKind;
   scheduledFor: number;
@@ -61,30 +58,26 @@ export interface ScheduledTaskRunRecord {
 }
 
 export interface CreateScheduledTaskInput {
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
+  createdByIdentityId?: string;
   title: string;
   instruction: string;
   schedule: ScheduledTaskSchedule;
-  targetThreadId?: string;
   enabled?: boolean;
 }
 
 export interface UpdateScheduledTaskInput {
   taskId: string;
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
   title?: string;
   instruction?: string;
   schedule?: ScheduledTaskSchedule;
-  targetThreadId?: string | null;
   enabled?: boolean;
 }
 
 export interface CancelScheduledTaskInput {
   taskId: string;
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
   reason?: string;
 }
 

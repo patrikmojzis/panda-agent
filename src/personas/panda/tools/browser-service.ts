@@ -230,7 +230,11 @@ function normalizeScopeKey(context: PandaSessionContext): {scope: BrowserSession
 }
 
 function resolveSessionContext(context: PandaSessionContext | undefined): PandaSessionContext {
-  return context ?? {};
+  return context ?? {
+    agentKey: "",
+    sessionId: "",
+    threadId: "",
+  };
 }
 
 function getEvaluateScriptSource(): string {

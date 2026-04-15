@@ -1,36 +1,36 @@
 import type {
-  AbortThreadRequestPayload,
-  CompactThreadRequestPayload,
-  CreateThreadRequestPayload,
-  PandaRuntimeRequestRecord,
-  ResetHomeThreadRequestPayload,
-  ResolveHomeThreadRequestPayload,
-  SwitchHomeAgentRequestPayload,
-  TelegramMessageRequestPayload,
-  TelegramReactionRequestPayload,
-  TuiInputRequestPayload,
-  UpdateThreadRequestPayload,
-  WhatsAppMessageRequestPayload,
+    AbortThreadRequestPayload,
+    CompactThreadRequestPayload,
+    CreateBranchSessionRequestPayload,
+    PandaRuntimeRequestRecord,
+    ResetSessionRequestPayload,
+    ResolveMainSessionThreadRequestPayload,
+    TelegramMessageRequestPayload,
+    TelegramReactionRequestPayload,
+    TuiInputRequestPayload,
+    UpdateThreadRequestPayload,
+    WhatsAppMessageRequestPayload,
 } from "../../domain/threads/requests/index.js";
 import {compactThread} from "../../domain/threads/runtime/index.js";
 import {stringToUserMessage} from "../../kernel/agent/index.js";
 import {
-  buildTelegramInboundPersistence,
-  buildTelegramInboundText,
-  buildTelegramReactionText,
-  normalizeTelegramCommand,
+    buildTelegramInboundPersistence,
+    buildTelegramInboundText,
+    buildTelegramReactionText,
+    normalizeTelegramCommand,
 } from "../../integrations/channels/telegram/helpers.js";
 import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
 import {buildWhatsAppInboundMetadata, buildWhatsAppInboundText,} from "../../integrations/channels/whatsapp/helpers.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
+import {renderTuiInboundText} from "../../prompts/channels/tui.js";
 import type {PandaDaemonContext} from "./daemon-bootstrap.js";
 import {
-  buildQueuedInputCompactionMessage,
-  buildTelegramNewIsTuiOnlyText,
-  buildTelegramResetText,
-  buildTelegramStartText,
-  buildUnsupportedRuntimeRequestMessage,
-  resolveMissingApiKeyMessage,
+    buildQueuedInputCompactionMessage,
+    buildTelegramNewIsTuiOnlyText,
+    buildTelegramResetText,
+    buildTelegramStartText,
+    buildUnsupportedRuntimeRequestMessage,
+    resolveMissingApiKeyMessage,
 } from "./daemon-copy.js";
 import type {DaemonThreadHelpers} from "./daemon-threads.js";
 import {requireIdentityId} from "./daemon-shared.js";
@@ -78,7 +78,7 @@ export function createDaemonRequestProcessor(
     }
 
     if (command === "reset") {
-      const result = await threads.handleResetHomeThread({
+      const result = await threads.handleResetSession({
         identityId: binding.identityId,
         source: TELEGRAM_SOURCE,
         connectorKey: payload.connectorKey,
@@ -102,6 +102,7 @@ export function createDaemonRequestProcessor(
       return {status: "dropped", reason: "unsupported_message_shape"};
     }
 
+    const identity = await context.runtime.identityStore.getIdentity(binding.identityId);
     const thread = await threads.resolveOrCreateConversationThread({
       identityId: binding.identityId,
       source: TELEGRAM_SOURCE,
@@ -122,6 +123,8 @@ export function createDaemonRequestProcessor(
       externalConversationId: payload.externalConversationId,
       externalActorId: payload.externalActorId,
       externalMessageId: payload.externalMessageId,
+      identityId: identity.id,
+      identityHandle: identity.handle,
       chatId: payload.chatId,
       chatType: payload.chatType,
       text: payload.text,
@@ -150,11 +153,13 @@ export function createDaemonRequestProcessor(
       channelId: payload.externalConversationId,
       externalMessageId: payload.externalMessageId,
       actorId: payload.externalActorId,
+      identityId: binding.identityId,
       message: stringToUserMessage(text),
       metadata: persistence.metadata,
     });
-    await context.threadRoutes.saveLastRoute({
-      threadId: thread.id,
+    await context.sessionRoutes.saveLastRoute({
+      sessionId: thread.sessionId,
+      identityId: binding.identityId,
       route: persistence.rememberedRoute,
     });
     return {status: "queued", threadId: thread.id};
@@ -172,12 +177,15 @@ export function createDaemonRequestProcessor(
       return {status: "dropped", reason: "unpaired_actor"};
     }
 
+    const identity = await context.runtime.identityStore.getIdentity(binding.identityId);
     const syntheticExternalMessageId = `telegram-reaction:${payload.updateId}`;
     const text = buildTelegramReactionText({
       connectorKey: payload.connectorKey,
       externalConversationId: payload.externalConversationId,
       externalActorId: payload.externalActorId,
       externalMessageId: syntheticExternalMessageId,
+      identityId: identity.id,
+      identityHandle: identity.handle,
       chatId: payload.chatId,
       chatType: payload.chatType,
       username: payload.username,
@@ -226,11 +234,13 @@ export function createDaemonRequestProcessor(
       channelId: payload.externalConversationId,
       externalMessageId: syntheticExternalMessageId,
       actorId: payload.externalActorId,
+      identityId: binding.identityId,
       message: stringToUserMessage(text),
       metadata: persistence.metadata,
     });
-    await context.threadRoutes.saveLastRoute({
-      threadId: thread.id,
+    await context.sessionRoutes.saveLastRoute({
+      sessionId: thread.sessionId,
+      identityId: binding.identityId,
       route: persistence.rememberedRoute,
     });
     return {status: "queued", threadId: thread.id};
@@ -252,6 +262,7 @@ export function createDaemonRequestProcessor(
       return {status: "dropped", reason: "unsupported_message_shape"};
     }
 
+    const identity = await context.runtime.identityStore.getIdentity(binding.identityId);
     const thread = await threads.resolveOrCreateConversationThread({
       identityId: binding.identityId,
       source: WHATSAPP_SOURCE,
@@ -272,6 +283,8 @@ export function createDaemonRequestProcessor(
       externalConversationId: payload.externalConversationId,
       externalActorId: payload.externalActorId,
       externalMessageId: payload.externalMessageId,
+      identityId: identity.id,
+      identityHandle: identity.handle,
       remoteJid: payload.remoteJid,
       chatType: payload.chatType,
       text: payload.text,
@@ -285,6 +298,7 @@ export function createDaemonRequestProcessor(
       channelId: payload.externalConversationId,
       externalMessageId: payload.externalMessageId,
       actorId: payload.externalActorId,
+      identityId: binding.identityId,
       message: stringToUserMessage(text),
       metadata: buildWhatsAppInboundMetadata({
         connectorKey: payload.connectorKey,
@@ -298,8 +312,9 @@ export function createDaemonRequestProcessor(
         media,
       }),
     });
-    await context.threadRoutes.saveLastRoute({
-      threadId: thread.id,
+    await context.sessionRoutes.saveLastRoute({
+      sessionId: thread.sessionId,
+      identityId: binding.identityId,
       route: {
         source: WHATSAPP_SOURCE,
         connectorKey: payload.connectorKey,
@@ -317,26 +332,33 @@ export function createDaemonRequestProcessor(
   ): Promise<Record<string, unknown>> => {
     const thread = payload.threadId
       ? await context.runtime.store.getThread(payload.threadId)
-      : await threads.resolveOrCreateHomeThread({
+      : await threads.openMainSession({
         identityId: requireIdentityId(payload.identityId, "tui_input"),
       });
     await context.runtime.coordinator.submitInput(thread.id, {
-      message: stringToUserMessage(payload.text),
+      message: stringToUserMessage(renderTuiInboundText({
+        actorId: payload.actorId,
+        externalMessageId: payload.externalMessageId,
+        identityId: payload.identityId,
+        identityHandle: payload.identityHandle,
+        body: payload.text,
+      })),
       source: "tui",
       channelId: "terminal",
       externalMessageId: payload.externalMessageId,
       actorId: payload.actorId,
+      identityId: payload.identityId,
     });
     return {status: "queued", threadId: thread.id};
   };
 
-  const handleCreateThread = async (
-    payload: CreateThreadRequestPayload,
+  const handleCreateBranchSession = async (
+    payload: CreateBranchSessionRequestPayload,
   ): Promise<Record<string, unknown>> => {
-    const identity = await threads.ensureIdentity(requireIdentityId(payload.identityId, "create_thread"));
-    const thread = await threads.createThread({
+    const identity = await threads.ensureIdentity(requireIdentityId(payload.identityId, "create_branch_session"));
+    const thread = await threads.createBranchSession({
       identity,
-      id: payload.id,
+      sessionId: payload.sessionId,
       agentKey: payload.agentKey,
       model: payload.model,
       thinking: payload.thinking,
@@ -405,18 +427,16 @@ export function createDaemonRequestProcessor(
         return handleWhatsAppMessage(request.payload as WhatsAppMessageRequestPayload);
       case "tui_input":
         return handleTuiInput(request.payload as TuiInputRequestPayload);
-      case "create_thread":
-        return handleCreateThread(request.payload as CreateThreadRequestPayload);
-      case "resolve_home_thread": {
-        const thread = await threads.resolveOrCreateHomeThread(
-          request.payload as ResolveHomeThreadRequestPayload,
+      case "create_branch_session":
+        return handleCreateBranchSession(request.payload as CreateBranchSessionRequestPayload);
+      case "resolve_main_session_thread": {
+        const thread = await threads.openMainSession(
+          request.payload as ResolveMainSessionThreadRequestPayload,
         );
         return {threadId: thread.id};
       }
-      case "reset_home_thread":
-        return threads.handleResetHomeThread(request.payload as ResetHomeThreadRequestPayload);
-      case "switch_home_agent":
-        return threads.handleSwitchHomeAgent(request.payload as SwitchHomeAgentRequestPayload);
+      case "reset_session":
+        return threads.handleResetSession(request.payload as ResetSessionRequestPayload);
       case "abort_thread":
         return handleAbortThread(request.payload as AbortThreadRequestPayload);
       case "compact_thread":

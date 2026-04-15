@@ -8,6 +8,8 @@ export function renderWhatsAppInboundText(options: {
   conversationId: string;
   actorId: string;
   externalMessageId: string;
+  identityId?: string;
+  identityHandle?: string;
   remoteJid: string;
   chatType: string;
   pushName?: string;
@@ -24,6 +26,8 @@ connector_key: ${options.connectorKey}
 conversation_id: ${options.conversationId}
 actor_id: ${options.actorId}
 external_message_id: ${options.externalMessageId}
+identity_id: ${formatMaybeValue(options.identityId)}
+identity_handle: ${formatMaybeValue(options.identityHandle)}
 remote_jid: ${options.remoteJid}
 chat_type: ${options.chatType}
 push_name: ${formatMaybeValue(options.pushName)}

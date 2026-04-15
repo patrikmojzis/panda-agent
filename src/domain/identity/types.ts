@@ -10,7 +10,6 @@ export interface CreateIdentityInput {
   id: string;
   handle: string;
   displayName: string;
-  defaultAgentKey?: string;
   status?: IdentityStatus;
   metadata?: JsonValue;
 }
@@ -23,7 +22,9 @@ export interface IdentityRecord extends CreateIdentityInput {
 
 export interface UpdateIdentityInput {
   identityId: string;
-  defaultAgentKey?: string | null;
+  displayName?: string;
+  status?: IdentityStatus;
+  metadata?: JsonValue | null;
 }
 
 export interface IdentityBindingLookup {

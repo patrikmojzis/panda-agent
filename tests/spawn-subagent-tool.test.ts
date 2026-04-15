@@ -86,15 +86,14 @@ function createAssistantMessage(
 }
 
 function createThreadRecord(): ThreadRecord {
-    return {
-      id: "thread-1",
-      identityId: "alice-id",
+  return {
+    id: "thread-1",
+    sessionId: "session-main",
+    model: "openai/gpt-5.1",
+    context: {
+      cwd: "/workspace/panda",
       agentKey: "panda",
-      model: "openai/gpt-5.1",
-      context: {
-        cwd: "/workspace/panda",
-        identityId: "alice-id",
-      identityHandle: "alice",
+      sessionId: "session-main",
     },
     createdAt: 1,
     updatedAt: 1,
@@ -109,9 +108,8 @@ function createParentRunContext(agent: Agent, overrides: Partial<PandaSessionCon
     messages: [stringToUserMessage("parent transcript secret")],
     context: {
       threadId: "thread-1",
+      sessionId: "session-main",
       agentKey: "panda",
-      identityId: "alice-id",
-      identityHandle: "alice",
       cwd: "/workspace/panda",
       subagentDepth: 0,
       ...overrides,

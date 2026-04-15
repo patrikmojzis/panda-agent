@@ -28,7 +28,8 @@ V1 behaves like this:
 
 - the first successful run uses `ignore_existing`
 - delivery is always `wake`
-- omitting `targetThreadId` means "follow the current home thread"
+- watches belong to the current session
+- the runner resolves `session.current_thread_id` at fire time
 - credentials are resolved at runtime from Panda's credential store
 - secrets are not stored in watch rows, watch events, or transcript metadata
 
@@ -69,6 +70,9 @@ Today the normal path is: tell Panda what you want to watch, and Panda should us
 - `watch_update`
 - `watch_disable`
 
+The watch is created on the current session automatically.
+There is no user-facing `targetThreadId` knob in v1.
+
 Examples of plain-English asks:
 
 - "Watch my IMAP inbox and tell me about new mail."
@@ -91,6 +95,7 @@ That keeps watch config visible to operators without stuffing admin state into e
 
 ## Practical Notes
 
+- resetting a session does not kill its watches; they follow the session onto the new thread
 - `sql_query` is single-statement only, requires an explicit dialect, and runs inside a read-only transaction
 - `mongodb_query` supports JSON-configured `find` and `aggregate`
 - `http_json` and `http_html` use the same safe fetch path and SSRF protections as Panda's web fetch stack

@@ -1,16 +1,11 @@
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
-import type {AgentRecord} from "../../domain/agents/index.js";
 import {createPandaClient} from "../../app/runtime/client.js";
-import type {
-    InferenceProjection,
-    ThreadRecord,
-    ThreadSummaryRecord,
-    ThreadUpdate
-} from "../../domain/threads/runtime/index.js";
+import type {InferenceProjection, ThreadRecord, ThreadUpdate} from "../../domain/threads/runtime/index.js";
 import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {IdentityRecord} from "../../domain/identity/index.js";
+import type {SessionRecord} from "../../domain/sessions/index.js";
 
 export interface ChatRuntimeOptions {
   model?: string;
@@ -21,8 +16,8 @@ export interface ChatRuntimeOptions {
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
 }
 
-export interface CreateChatThreadOptions {
-  id?: string;
+export interface CreateChatSessionOptions {
+  sessionId?: string;
   agentKey?: string;
   model?: string;
   thinking?: ThinkingLevel;
@@ -32,12 +27,12 @@ export interface CreateChatThreadOptions {
 export interface ChatRuntimeServices {
   identity: IdentityRecord;
   store: ThreadRuntimeStore;
-  getAgent(agentKey: string): Promise<AgentRecord>;
-  createThread(options?: CreateChatThreadOptions): Promise<ThreadRecord>;
-  resolveOrCreateHomeThread(options?: CreateChatThreadOptions): Promise<ThreadRecord>;
-  resetHomeThread(options?: Omit<CreateChatThreadOptions, "id">): Promise<ThreadRecord>;
+  createBranchSession(options?: CreateChatSessionOptions): Promise<ThreadRecord>;
+  openMainSession(options?: CreateChatSessionOptions): Promise<ThreadRecord>;
+  resetSession(options?: CreateChatSessionOptions): Promise<ThreadRecord>;
+  openSession(sessionId: string): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
-  listThreadSummaries(limit?: number): Promise<readonly ThreadSummaryRecord[]>;
+  listAgentSessions(agentKey: string): Promise<readonly SessionRecord[]>;
   submitTextInput(input: {
     threadId?: string;
     text: string;
@@ -72,30 +67,25 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
     onStoreNotification: options.onStoreNotification,
   });
 
-  const applyDefaults = (threadOptions: CreateChatThreadOptions = {}): CreateChatThreadOptions => {
+  const applyDefaults = (sessionOptions: CreateChatSessionOptions = {}): CreateChatSessionOptions => {
     return {
-      id: threadOptions.id,
-      agentKey: trimNonEmptyString(threadOptions.agentKey) ?? trimNonEmptyString(options.agent),
-      model: threadOptions.model ?? options.model,
-      thinking: threadOptions.thinking,
-      ...(threadOptions.inferenceProjection ? {inferenceProjection: threadOptions.inferenceProjection} : {}),
+      sessionId: sessionOptions.sessionId,
+      agentKey: trimNonEmptyString(sessionOptions.agentKey) ?? trimNonEmptyString(options.agent),
+      model: sessionOptions.model ?? options.model,
+      thinking: sessionOptions.thinking,
+      ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
     };
   };
 
   return {
     identity: client.identity,
     store: client.store,
-    getAgent: (agentKey) => client.getAgent(agentKey),
-    createThread: (threadOptions) => client.createThread(applyDefaults(threadOptions)),
-    resolveOrCreateHomeThread: (threadOptions) => client.resolveOrCreateHomeThread(applyDefaults(threadOptions)),
-    resetHomeThread: (threadOptions) => client.resetHomeThread({
-      agentKey: trimNonEmptyString(threadOptions?.agentKey) ?? trimNonEmptyString(options.agent),
-      model: threadOptions?.model ?? options.model,
-      thinking: threadOptions?.thinking,
-      ...(threadOptions?.inferenceProjection ? {inferenceProjection: threadOptions.inferenceProjection} : {}),
-    }),
+    createBranchSession: (sessionOptions) => client.createBranchSession(applyDefaults(sessionOptions)),
+    openMainSession: (sessionOptions) => client.openMainSession(applyDefaults(sessionOptions)),
+    resetSession: (sessionOptions) => client.resetSession(applyDefaults(sessionOptions)),
+    openSession: (sessionId) => client.openSession(sessionId),
     getThread: (threadId) => client.getThread(threadId),
-    listThreadSummaries: (limit = 20) => client.listThreadSummaries(limit),
+    listAgentSessions: (agentKey) => client.listAgentSessions(agentKey),
     submitTextInput: (input) => client.submitTextInput(input),
     abortThread: (threadId, reason) => client.abortThread(threadId, reason),
     waitForCurrentRun: (threadId, timeoutMs) => client.waitForCurrentRun(threadId, timeoutMs),

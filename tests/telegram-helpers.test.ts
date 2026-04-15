@@ -47,6 +47,8 @@ describe("telegram helpers", () => {
       externalConversationId: "123",
       externalActorId: "456",
       externalMessageId: "789",
+      identityId: "alice-id",
+      identityHandle: "alice",
       chatId: "123",
       chatType: "private",
       text: "hello",
@@ -57,6 +59,8 @@ describe("telegram helpers", () => {
       externalConversationId: "123",
       externalActorId: "456",
       externalMessageId: "789",
+      identityId: "alice-id",
+      identityHandle: "alice",
       chatId: "123",
       chatType: "private",
       media: [mediaDescriptor()],
@@ -66,6 +70,8 @@ describe("telegram helpers", () => {
       externalConversationId: "123",
       externalActorId: "456",
       externalMessageId: "789",
+      identityId: "alice-id",
+      identityHandle: "alice",
       chatId: "123",
       chatType: "private",
       text: "caption",
@@ -75,6 +81,18 @@ describe("telegram helpers", () => {
         }),
       ],
     })).toContain("photo.jpg");
+    expect(buildTelegramInboundText({
+      connectorKey: "bot-main",
+      externalConversationId: "123",
+      externalActorId: "456",
+      externalMessageId: "789",
+      identityId: "alice-id",
+      identityHandle: "alice",
+      chatId: "123",
+      chatType: "private",
+      text: "hello",
+      media: [],
+    })).toContain("identity_handle: alice");
   });
 
   it("builds reaction text with reaction-specific context fields", () => {
@@ -83,6 +101,8 @@ describe("telegram helpers", () => {
       externalConversationId: "123",
       externalActorId: "456",
       externalMessageId: "telegram-reaction:789",
+      identityId: "alice-id",
+      identityHandle: "alice",
       chatId: "123",
       chatType: "private",
       username: "alice",
@@ -93,6 +113,8 @@ describe("telegram helpers", () => {
     });
 
     expect(text).toContain("reaction_target_message_id: 777");
+    expect(text).toContain("identity_id: alice-id");
+    expect(text).toContain("identity_handle: alice");
     expect(text).toContain("reaction_added_emojis: 🔥, 👍");
     expect(text).toContain("reaction_actor_id: 456");
     expect(text).toContain("reaction_actor_username: alice");

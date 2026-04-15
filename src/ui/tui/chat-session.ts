@@ -1,17 +1,12 @@
 import type {ThinkingLevel, Tool} from "../../kernel/agent/index.js";
-import type {
-    ThreadMessageRecord,
-    ThreadRecord,
-    ThreadRunRecord,
-    ThreadSummaryRecord,
-} from "../../domain/threads/runtime/index.js";
-import {isMissingThreadError} from "../../domain/threads/runtime/index.js";
+import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord,} from "../../domain/threads/runtime/index.js";
 import type {ChatRuntimeServices} from "./runtime.js";
 import {type EntryRole, type PendingLocalInput, type RunPhase, type TranscriptEntry,} from "./chat-shared.js";
 import {renderTranscriptEntries} from "./transcript.js";
+import type {SessionRecord} from "../../domain/sessions/index.js";
 
-export interface ChatThreadDefaults {
-  id?: string;
+export interface ChatSessionDefaults {
+  sessionId?: string;
   agentKey?: string;
   model: string;
   thinking?: ThinkingLevel;
@@ -32,74 +27,30 @@ export function resolveChatDisplayedCwd(
     : fallbackCwd;
 }
 
-export function buildChatThreadDefaults(input: {
+export function buildChatSessionDefaults(input: {
   defaultAgentKey?: string;
   model: string;
   thinking?: ThinkingLevel;
-  overrides?: Partial<ChatThreadDefaults>;
-}): ChatThreadDefaults {
+  overrides?: Partial<ChatSessionDefaults>;
+}): ChatSessionDefaults {
   return {
-    id: input.overrides?.id,
+    sessionId: input.overrides?.sessionId,
     agentKey: input.overrides?.agentKey ?? input.defaultAgentKey,
     model: input.overrides?.model ?? input.model,
     thinking: input.overrides?.thinking ?? input.thinking,
   };
 }
 
-export async function getOrCreateExplicitChatThread(input: {
+export async function resolveInitialChatSessionThread(input: {
   services: ChatRuntimeServices;
-  threadId: string;
-  defaults: ChatThreadDefaults;
+  sessionId?: string;
+  defaults: ChatSessionDefaults;
 }): Promise<ThreadRecord> {
-  try {
-    return await input.services.getThread(input.threadId);
-  } catch (error) {
-    if (!isMissingThreadError(error, input.threadId)) {
-      throw error;
-    }
-
-    return await input.services.createThread({
-      ...input.defaults,
-      id: input.threadId,
-    });
-  }
-}
-
-export async function resolveInitialChatThread(input: {
-  services: ChatRuntimeServices;
-  resumeThreadId?: string;
-  explicitThreadId?: string;
-  defaults: ChatThreadDefaults;
-}): Promise<ThreadRecord> {
-  if (input.resumeThreadId) {
-    return await input.services.getThread(input.resumeThreadId);
+  if (input.sessionId) {
+    return await input.services.openSession(input.sessionId);
   }
 
-  if (input.explicitThreadId) {
-    return await getOrCreateExplicitChatThread({
-      services: input.services,
-      threadId: input.explicitThreadId,
-      defaults: input.defaults,
-    });
-  }
-
-  return await input.services.resolveOrCreateHomeThread(input.defaults);
-}
-
-export async function resolveChatAgentLabel(
-  services: ChatRuntimeServices | null,
-  agentKey: string,
-): Promise<string> {
-  if (!services || typeof services.getAgent !== "function") {
-    return agentKey;
-  }
-
-  try {
-    const agent = await services.getAgent(agentKey);
-    return agent.displayName.trim() || agent.agentKey;
-  } catch {
-    return agentKey;
-  }
+  return await input.services.openMainSession(input.defaults);
 }
 
 export function createChatTranscriptEntry(input: {
@@ -253,21 +204,21 @@ export function observeLatestChatRun(input: {
   };
 }
 
-export function resolveThreadPickerSelection(input: {
-  summaries: readonly ThreadSummaryRecord[];
-  selectedThreadId: string;
-  currentThreadId: string;
+export function resolveSessionPickerSelection(input: {
+  sessions: readonly SessionRecord[];
+  selectedSessionId: string;
+  currentSessionId: string;
 }): number {
-  if (input.summaries.length === 0) {
+  if (input.sessions.length === 0) {
     return 0;
   }
 
-  const selectedIndex = input.summaries.findIndex((summary) => summary.thread.id === input.selectedThreadId);
+  const selectedIndex = input.sessions.findIndex((session) => session.id === input.selectedSessionId);
   if (selectedIndex >= 0) {
     return selectedIndex;
   }
 
-  const fallbackIndex = input.summaries.findIndex((summary) => summary.thread.id === input.currentThreadId);
+  const fallbackIndex = input.sessions.findIndex((session) => session.id === input.currentSessionId);
   return fallbackIndex >= 0 ? fallbackIndex : 0;
 }
 

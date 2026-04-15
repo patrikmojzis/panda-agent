@@ -19,10 +19,10 @@ import {
     z,
 } from "../src/index.js";
 import {buildBackgroundBashRuntimeMessage} from "../src/app/runtime/background-bash-runtime-note.js";
-import {DEFAULT_IDENTITY_ID} from "../src/domain/identity/index.js";
 import {
     AUTO_COMPACT_BREAKER_COOLDOWN_MS,
     createCompactBoundaryMessage,
+    type CreateThreadInput,
     type ResolvedThreadDefinition,
     type ThreadDefinitionResolver,
     type ThreadMessageRecord,
@@ -30,7 +30,7 @@ import {
     ThreadRuntimeCoordinator,
 } from "../src/domain/threads/runtime/index.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
-import {TestIdentityStore, TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
+import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -276,13 +276,58 @@ class TestThreadDefinitionRegistry {
   }
 
   resolve(thread: ThreadRecord): Promise<ResolvedThreadDefinition> {
-    const resolver = this.resolvers.get(thread.agentKey);
+    const agentKey = readAgentKeyFromThreadContext(thread);
+    const resolver = this.resolvers.get(agentKey);
     if (!resolver) {
-      throw new Error(`No thread definition registered for agent key ${thread.agentKey}.`);
+      throw new Error(`No thread definition registered for agent key ${agentKey}.`);
     }
 
     return Promise.resolve(resolver(thread));
   }
+}
+
+function readAgentKeyFromThreadContext(thread: ThreadRecord): string {
+  const context = thread.context;
+  if (!context || typeof context !== "object") {
+    throw new Error(`Thread ${thread.id} is missing Panda session context.`);
+  }
+
+  const agentKey = "agentKey" in context && typeof context.agentKey === "string"
+    ? context.agentKey.trim()
+    : "";
+  if (!agentKey) {
+    throw new Error(`Thread ${thread.id} is missing agentKey in Panda session context.`);
+  }
+
+  return agentKey;
+}
+
+async function createRuntimeThread(
+  store: TestThreadRuntimeStore,
+  input: Omit<CreateThreadInput, "sessionId" | "context"> & {
+    agentKey: string;
+    sessionId?: string;
+    context?: Record<string, unknown>;
+  },
+): Promise<ThreadRecord> {
+  const {
+    id,
+    agentKey,
+    sessionId = `${id}-session`,
+    context,
+    ...threadInput
+  } = input;
+
+  return store.createThread({
+    id,
+    sessionId,
+    context: {
+      sessionId,
+      agentKey,
+      ...(context ?? {}),
+    },
+    ...threadInput,
+  });
 }
 
 async function seedAutoCompactionTranscript(store: TestThreadRuntimeStore, threadId: string): Promise<void> {
@@ -319,7 +364,7 @@ describe("ThreadRuntimeCoordinator", () => {
   it("clears thinking when updated to null", async () => {
     const store = new TestThreadRuntimeStore();
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-thinking",
       agentKey: "panda",
       thinking: "medium",
@@ -335,7 +380,7 @@ describe("ThreadRuntimeCoordinator", () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "panda-thread-runtime-bg-"));
     try {
       const store = new TestThreadRuntimeStore();
-      await store.createThread({
+      await createRuntimeThread(store, {
         id: "thread-bg-runtime",
         agentKey: "panda",
       });
@@ -419,7 +464,7 @@ describe("ThreadRuntimeCoordinator", () => {
       const started = createDeferred<void>();
       const release = createDeferred<{ done: string }>();
       const store = new TestThreadRuntimeStore();
-      await store.createThread({
+      await createRuntimeThread(store, {
         id: "thread-bg-autowake",
         agentKey: "bg-autowake-agent",
       });
@@ -546,7 +591,7 @@ describe("ThreadRuntimeCoordinator", () => {
     const started = createDeferred<void>();
     const release = createDeferred<{ done: string }>();
     const store = new TestThreadRuntimeStore();
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-cross-process-wake",
       agentKey: "cross-wake-agent",
     });
@@ -650,7 +695,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
   it("waits for pending durable wakes before reporting idle", async () => {
     const store = new TestThreadRuntimeStore();
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-pending-wake-idle",
       agentKey: "pending-wake-agent",
     });
@@ -715,7 +760,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
   it("treats pending durable wakes as busy", async () => {
     const store = new TestThreadRuntimeStore();
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-pending-wake-busy",
       agentKey: "busy-agent",
     });
@@ -746,7 +791,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-queued",
       agentKey: "queued-agent",
     });
@@ -808,7 +853,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-queued-during-run",
       agentKey: "queued-during-run",
     });
@@ -876,7 +921,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-exclusive",
       agentKey: "exclusive-agent",
     });
@@ -937,7 +982,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-replan",
       agentKey: "runtime-agent",
     });
@@ -1025,7 +1070,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-after-assistant",
       agentKey: "assistant-checkpoint",
     });
@@ -1090,7 +1135,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-compact-context",
       agentKey: "compact-agent",
     });
@@ -1171,7 +1216,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-auto-compact-under",
       agentKey: "small-agent",
       maxInputTokens: 1_000,
@@ -1209,7 +1254,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-auto-compact",
       agentKey: "auto-compact-agent",
       maxInputTokens: 350,
@@ -1268,7 +1313,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-auto-compact-fail",
       agentKey: "auto-compact-fail-agent",
       maxInputTokens: 350,
@@ -1330,7 +1375,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-auto-compact-retry",
       agentKey: "auto-compact-retry-agent",
       maxInputTokens: 350,
@@ -1392,7 +1437,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-auto-compact-breaker",
       agentKey: "auto-compact-breaker-agent",
       maxInputTokens: 350,
@@ -1470,8 +1515,8 @@ describe("ThreadRuntimeCoordinator", () => {
 
   it("recovers only orphaned runs that are not currently leased", async () => {
     const store = new TestThreadRuntimeStore();
-    await store.createThread({ id: "thread-free", agentKey: "panda" });
-    await store.createThread({ id: "thread-held", agentKey: "panda" });
+    await createRuntimeThread(store, { id: "thread-free", agentKey: "panda" });
+    await createRuntimeThread(store, { id: "thread-held", agentKey: "panda" });
     const freeRun = await store.createRun("thread-free");
     const heldRun = await store.createRun("thread-held");
 
@@ -1514,7 +1559,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-abort",
       agentKey: "abort-agent",
     });
@@ -1564,7 +1609,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-completion-race",
       agentKey: "completion-race",
     });
@@ -1622,7 +1667,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-crash",
       agentKey: "crash-agent",
     });
@@ -1671,7 +1716,7 @@ describe("ThreadRuntimeCoordinator", () => {
       runtime,
     });
 
-    await store.createThread({
+    await createRuntimeThread(store, {
       id: "thread-provider-error",
       agentKey: "provider-error-agent",
     });
@@ -1703,38 +1748,20 @@ describe("ThreadRuntimeCoordinator", () => {
 });
 
 describe("Thread runtime stores", () => {
-  it("only exposes the built-in local identity in the local test store", async () => {
-    const identityStore = new TestIdentityStore();
-    const store = new TestThreadRuntimeStore({ identityStore });
-    const localIdentity = await identityStore.getIdentity(DEFAULT_IDENTITY_ID);
-
-    expect(localIdentity.handle).toBe("local");
-
-    await store.createThread({ id: "local-thread", agentKey: "panda" });
-
-    const localSummaries = await store.listThreadSummaries(undefined, DEFAULT_IDENTITY_ID);
-    expect(localSummaries).toHaveLength(1);
-    expect(localSummaries[0]?.thread.id).toBe("local-thread");
-    expect(localSummaries[0]?.thread.identityId).toBe(DEFAULT_IDENTITY_ID);
-
-    const listed = await identityStore.listIdentities();
-    expect(listed.map((identity) => identity.handle)).toEqual(["local"]);
-    await expect(identityStore.getIdentityByHandle("alice")).rejects.toThrow("Persisted identities require Postgres");
-  });
-
-  it("rejects threads created for missing identities", async () => {
+  it("requires session-backed thread creation in the test store", async () => {
     const store = new TestThreadRuntimeStore();
 
     await expect(store.createThread({
-      id: "missing-identity-thread",
-      agentKey: "panda",
-      identityId: "ghost",
-    })).rejects.toThrow("Unknown identity ghost");
+      id: "missing-session-thread",
+      context: {
+        agentKey: "panda",
+      },
+    } as CreateThreadInput)).rejects.toThrow("Thread sessionId is required.");
   });
 
   it("dedupes retries per source and channel, not just external message id", async () => {
     const store = new TestThreadRuntimeStore();
-    await store.createThread({ id: "identity", agentKey: "panda" });
+    await createRuntimeThread(store, { id: "identity", agentKey: "panda" });
 
     await store.enqueueInput("identity", {
       message: stringToUserMessage("hello"),
@@ -1765,7 +1792,7 @@ describe("Thread runtime stores", () => {
 
   it("persists input metadata from pending inputs into the transcript", async () => {
     const store = new TestThreadRuntimeStore();
-    await store.createThread({ id: "metadata-thread", agentKey: "panda" });
+    await createRuntimeThread(store, { id: "metadata-thread", agentKey: "panda" });
 
     await store.enqueueInput("metadata-thread", {
       message: stringToUserMessage("photo attached"),
@@ -1822,10 +1849,10 @@ describe("Thread runtime stores", () => {
     ]);
   });
 
-  it("summarizes threads without loading transcripts per caller", async () => {
+  it("summarizes threads without loading transcripts for each thread", async () => {
     const store = new TestThreadRuntimeStore();
-    await store.createThread({ id: "summary-a", agentKey: "panda" });
-    await store.createThread({ id: "summary-b", agentKey: "panda" });
+    await createRuntimeThread(store, { id: "summary-a", agentKey: "panda" });
+    await createRuntimeThread(store, { id: "summary-b", agentKey: "panda" });
 
     await store.enqueueInput("summary-a", {
       message: stringToUserMessage("hello"),

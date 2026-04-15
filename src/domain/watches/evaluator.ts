@@ -38,6 +38,10 @@ const SQL_WATCH_IDLE_TX_TIMEOUT_MS = 5_000;
 
 export interface WatchEvaluationOptions {
   credentialResolver: CredentialResolver;
+  credentialScope?: {
+    agentKey: string;
+    identityId?: string;
+  };
   fetchImpl?: FetchImpl;
   lookupHostname?: LookupHostname;
   sourceResolvers?: Partial<Record<WatchSourceKind, WatchSourceResolver>>;
@@ -766,11 +770,20 @@ function extractHtmlObservation(
 async function resolveCredentialValue(
   watch: WatchRecord,
   resolver: CredentialResolver,
+  scope: WatchEvaluationOptions["credentialScope"],
   envKey: string,
 ): Promise<string> {
+  const agentKey = scope?.agentKey
+    ?? ((watch as WatchRecord & {agentKey?: string}).agentKey?.trim() || undefined);
+  if (!agentKey) {
+    throw new Error(`Watch ${watch.id} is missing agent scope for credential ${envKey}.`);
+  }
+
+  const identityId = scope?.identityId
+    ?? ((watch as WatchRecord & {identityId?: string}).identityId?.trim() || undefined);
   const resolved = await resolver.resolveCredential(envKey, {
-    agentKey: watch.agentKey,
-    identityId: watch.identityId,
+    agentKey,
+    identityId,
   });
   if (!resolved) {
     throw new Error(`Missing credential ${envKey} for watch ${watch.id}.`);
@@ -788,7 +801,12 @@ async function resolveHttpHeaders(
   for (const header of headers) {
     const name = requireTrimmed("header name", header.name);
     if (header.credentialEnvKey) {
-      resolved[name] = await resolveCredentialValue(watch, options.credentialResolver, header.credentialEnvKey);
+      resolved[name] = await resolveCredentialValue(
+        watch,
+        options.credentialResolver,
+        options.credentialScope,
+        header.credentialEnvKey,
+      );
       continue;
     }
     if (header.value) {
@@ -834,7 +852,7 @@ async function resolveMongoSource(
     throw new Error("Expected mongodb_query source.");
   }
 
-  const uri = await resolveCredentialValue(watch, options.credentialResolver, source.credentialEnvKey);
+  const uri = await resolveCredentialValue(watch, options.credentialResolver, options.credentialScope, source.credentialEnvKey);
   const client = new MongoClient(uri);
 
   try {
@@ -881,7 +899,12 @@ async function resolveSqlSource(
     throw new Error("Expected sql_query source.");
   }
 
-  const connectionString = await resolveCredentialValue(watch, options.credentialResolver, source.credentialEnvKey);
+  const connectionString = await resolveCredentialValue(
+    watch,
+    options.credentialResolver,
+    options.credentialScope,
+    source.credentialEnvKey,
+  );
   const query = validateReadOnlySqlQuery(source.query);
   const parameters = source.parameters ? [...source.parameters] : [];
 
@@ -953,6 +976,7 @@ async function resolveHttpJsonSource(
     headers.Authorization = `Bearer ${await resolveCredentialValue(
       watch,
       options.credentialResolver,
+      options.credentialScope,
       source.auth.credentialEnvKey,
     )}`;
   }
@@ -985,6 +1009,7 @@ async function resolveHttpHtmlSource(
     headers.Authorization = `Bearer ${await resolveCredentialValue(
       watch,
       options.credentialResolver,
+      options.credentialScope,
       source.auth.credentialEnvKey,
     )}`;
   }
@@ -1007,7 +1032,12 @@ async function resolveImapMailboxSource(
   }
 
   const user = source.usernameCredentialEnvKey
-    ? await resolveCredentialValue(watch, options.credentialResolver, source.usernameCredentialEnvKey)
+    ? await resolveCredentialValue(
+      watch,
+      options.credentialResolver,
+      options.credentialScope,
+      source.usernameCredentialEnvKey,
+    )
     : source.username;
   if (!user) {
     throw new Error(`Watch ${watch.id} needs an IMAP username or usernameCredentialEnvKey.`);
@@ -1020,7 +1050,12 @@ async function resolveImapMailboxSource(
     logger: false,
     auth: {
       user,
-      pass: await resolveCredentialValue(watch, options.credentialResolver, source.passwordCredentialEnvKey),
+      pass: await resolveCredentialValue(
+        watch,
+        options.credentialResolver,
+        options.credentialScope,
+        source.passwordCredentialEnvKey,
+      ),
     },
   });
 

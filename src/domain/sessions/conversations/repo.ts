@@ -1,7 +1,7 @@
 import type {Pool, PoolClient} from "pg";
 
-import {quoteIdentifier, toJson, toMillis} from "../runtime/postgres-shared.js";
-import {buildConversationThreadTableNames, type ConversationThreadTableNames} from "./postgres-shared.js";
+import {quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
+import {buildConversationSessionTableNames, type ConversationSessionTableNames} from "./postgres-shared.js";
 import type {BindConversationInput, BindConversationResult, ConversationBinding, ConversationLookup,} from "./types.js";
 
 interface PgQueryable {
@@ -20,7 +20,7 @@ export interface ConversationRepoOptions {
 function requireTrimmedConversationKeyPart(field: string, value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
-    throw new Error(`Conversation thread ${field} must not be empty.`);
+    throw new Error(`Conversation binding ${field} must not be empty.`);
   }
 
   return trimmed;
@@ -41,7 +41,7 @@ function normalizeBindConversationInput(
   return {
     ...input,
     ...lookup,
-    threadId: requireTrimmedConversationKeyPart("thread id", input.threadId),
+    sessionId: requireTrimmedConversationKeyPart("session id", input.sessionId),
   };
 }
 
@@ -50,7 +50,7 @@ function parseConversationBinding(row: Record<string, unknown>): ConversationBin
     source: String(row.source),
     connectorKey: String(row.connector_key),
     externalConversationId: String(row.external_conversation_id),
-    threadId: String(row.thread_id),
+    sessionId: String(row.session_id),
     metadata: row.metadata === null ? undefined : (row.metadata as ConversationBinding["metadata"]),
     createdAt: toMillis(row.created_at),
     updatedAt: toMillis(row.updated_at),
@@ -63,20 +63,20 @@ function isUniqueViolation(error: unknown): error is { code: string } {
 
 export class ConversationRepo {
   private readonly pool: PgPoolLike;
-  private readonly tables: ConversationThreadTableNames;
+  private readonly tables: ConversationSessionTableNames;
 
   constructor(options: ConversationRepoOptions) {
     this.pool = options.pool;
-    this.tables = buildConversationThreadTableNames(options.tablePrefix ?? "thread_runtime");
+    this.tables = buildConversationSessionTableNames(options.tablePrefix ?? "thread_runtime");
   }
 
   async ensureSchema(): Promise<void> {
     await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.conversationThreads} (
+      CREATE TABLE IF NOT EXISTS ${this.tables.conversationSessions} (
         source TEXT NOT NULL,
         connector_key TEXT NOT NULL,
         external_conversation_id TEXT NOT NULL,
-        thread_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
         metadata JSONB,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -84,8 +84,8 @@ export class ConversationRepo {
       )
     `);
     await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_conversation_threads_thread_id_idx`)}
-      ON ${this.tables.conversationThreads} (thread_id)
+      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_conversation_sessions_session_id_idx`)}
+      ON ${this.tables.conversationSessions} (session_id)
     `);
   }
 
@@ -94,7 +94,7 @@ export class ConversationRepo {
     const result = await this.pool.query(
       `
         SELECT *
-        FROM ${this.tables.conversationThreads}
+        FROM ${this.tables.conversationSessions}
         WHERE source = $1
           AND connector_key = $2
           AND external_conversation_id = $3
@@ -119,11 +119,11 @@ export class ConversationRepo {
       try {
         const insertedResult = await client.query(
           `
-            INSERT INTO ${this.tables.conversationThreads} (
+            INSERT INTO ${this.tables.conversationSessions} (
               source,
               connector_key,
               external_conversation_id,
-              thread_id,
+              session_id,
               metadata
             ) VALUES (
               $1,
@@ -138,7 +138,7 @@ export class ConversationRepo {
             normalizedInput.source,
             normalizedInput.connectorKey,
             normalizedInput.externalConversationId,
-            normalizedInput.threadId,
+            normalizedInput.sessionId,
             toJson(normalizedInput.metadata),
           ],
         );
@@ -158,7 +158,7 @@ export class ConversationRepo {
       const existingResult = await client.query(
         `
           SELECT *
-          FROM ${this.tables.conversationThreads}
+          FROM ${this.tables.conversationSessions}
           WHERE source = $1
             AND connector_key = $2
             AND external_conversation_id = $3
@@ -172,15 +172,15 @@ export class ConversationRepo {
       );
       const existingRow = existingResult.rows[0];
       if (!existingRow) {
-        throw new Error("Failed to lock existing conversation thread after conflict.");
+        throw new Error("Failed to lock existing conversation session after conflict.");
       }
 
-      const previousThreadId = String((existingRow as Record<string, unknown>).thread_id);
+      const previousSessionId = String((existingRow as Record<string, unknown>).session_id);
 
       const updateResult = await client.query(
         `
-          UPDATE ${this.tables.conversationThreads}
-          SET thread_id = $4,
+          UPDATE ${this.tables.conversationSessions}
+          SET session_id = $4,
               metadata = COALESCE($5::jsonb, metadata),
               updated_at = NOW()
           WHERE source = $1
@@ -192,13 +192,13 @@ export class ConversationRepo {
           normalizedInput.source,
           normalizedInput.connectorKey,
           normalizedInput.externalConversationId,
-          normalizedInput.threadId,
+          normalizedInput.sessionId,
           toJson(normalizedInput.metadata),
         ],
       );
       const updatedRow = updateResult.rows[0];
       if (!updatedRow) {
-        throw new Error("Failed to bind conversation thread after conflict.");
+        throw new Error("Failed to bind conversation session after conflict.");
       }
 
       await client.query("COMMIT");
@@ -206,8 +206,8 @@ export class ConversationRepo {
 
       return {
         binding: parseConversationBinding(updatedRow as Record<string, unknown>),
-        previousThreadId: previousThreadId !== normalizedInput.threadId
-          ? previousThreadId
+        previousSessionId: previousSessionId !== normalizedInput.sessionId
+          ? previousSessionId
           : undefined,
       };
     } catch (error) {
@@ -224,7 +224,7 @@ export class ConversationRepo {
     const normalizedLookup = normalizeConversationLookup(lookup);
     const result = await this.pool.query(
       `
-        DELETE FROM ${this.tables.conversationThreads}
+        DELETE FROM ${this.tables.conversationSessions}
         WHERE source = $1
           AND connector_key = $2
           AND external_conversation_id = $3

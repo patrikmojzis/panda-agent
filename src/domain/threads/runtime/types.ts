@@ -34,8 +34,7 @@ export interface InferenceProjection {
 
 export interface CreateThreadInput {
   id: string;
-  identityId?: string;
-  agentKey: string;
+  sessionId: string;
   systemPrompt?: string | ReadonlyArray<string>;
   maxTurns?: number;
   context?: JsonValue;
@@ -48,14 +47,13 @@ export interface CreateThreadInput {
   inferenceProjection?: InferenceProjection;
 }
 
-export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "identityId" | "thinking" | "runtimeState">> & {
+export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "sessionId" | "thinking" | "runtimeState">> & {
   thinking?: ThinkingLevel | null;
   runtimeState?: ThreadRuntimeState | null;
   inferenceProjection?: InferenceProjection | null;
 };
 
-export interface ThreadRecord extends Omit<CreateThreadInput, "identityId"> {
-  identityId: string;
+export interface ThreadRecord extends CreateThreadInput {
   createdAt: number;
   updatedAt: number;
 }
@@ -87,6 +85,7 @@ export interface ThreadMessageMetadata {
   channelId?: string;
   externalMessageId?: string;
   actorId?: string;
+  identityId?: string;
 }
 
 export function missingThreadError(threadId: string): Error {

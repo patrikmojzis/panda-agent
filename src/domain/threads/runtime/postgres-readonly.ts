@@ -1,9 +1,9 @@
 import type {Pool} from "pg";
 
 import {buildAgentTableNames} from "../../agents/postgres-shared.js";
-import {buildHomeThreadTableNames} from "../home/postgres-shared.js";
 import {buildIdentityTableNames} from "../../../domain/identity/postgres-shared.js";
 import {buildScheduledTaskTableNames} from "../../../domain/scheduling/tasks/postgres-shared.js";
+import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import {buildWatchTableNames} from "../../../domain/watches/postgres-shared.js";
 import {buildPrefixedRelationNames, buildThreadRuntimeTableNames, quoteIdentifier,} from "./postgres-shared.js";
 
@@ -12,6 +12,7 @@ interface PgQueryable {
 }
 
 export interface ReadonlyChatViewNames {
+  sessions: string;
   threads: string;
   messages: string;
   messagesRaw: string;
@@ -53,12 +54,13 @@ export async function ensureReadonlyChatQuerySchema(
   const tables = buildThreadRuntimeTableNames(options.tablePrefix ?? "thread_runtime");
   const agentTables = buildAgentTableNames(options.tablePrefix ?? "thread_runtime");
   const identityTables = buildIdentityTableNames(options.tablePrefix ?? "thread_runtime");
-  const homeThreadTables = buildHomeThreadTableNames(options.tablePrefix ?? "thread_runtime");
+  const sessionTables = buildSessionTableNames(options.tablePrefix ?? "thread_runtime");
   const scheduledTaskTables = buildScheduledTaskTableNames(options.tablePrefix ?? "thread_runtime");
   const watchTables = buildWatchTableNames(options.tablePrefix ?? "thread_runtime");
-  const { threads, messages, messagesRaw, toolResults, inputs, runs, agentSkills, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents } = buildPrefixedRelationNames(
+  const { sessions, threads, messages, messagesRaw, toolResults, inputs, runs, agentSkills, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents } = buildPrefixedRelationNames(
     options.viewPrefix ?? "panda",
     {
+      sessions: "sessions",
       threads: "threads",
       messages: "messages",
       messagesRaw: "messages_raw",
@@ -74,6 +76,7 @@ export async function ensureReadonlyChatQuerySchema(
     },
   );
   const views: ReadonlyChatViewNames = {
+    sessions,
     threads,
     messages,
     messagesRaw,
@@ -109,9 +112,12 @@ export async function ensureReadonlyChatQuerySchema(
       ELSE NULL
     END
   `;
-  const threadScopeSql = `
-    t.identity_id = current_setting('panda.identity_id', true)
-    AND t.agent_key = current_setting('panda.agent_key', true)
+  const sessionScopeSql = `t.session_id = current_setting('panda.session_id', true)`;
+  const activeSessionSql = `
+    SELECT *
+    FROM ${sessionTables.sessions}
+    WHERE id = current_setting('panda.session_id', true)
+    LIMIT 1
   `;
 
   await options.queryable.query(`
@@ -127,14 +133,31 @@ export async function ensureReadonlyChatQuerySchema(
     DROP VIEW IF EXISTS ${views.inputs};
     DROP VIEW IF EXISTS ${views.runs};
     DROP VIEW IF EXISTS ${views.threads};
+    DROP VIEW IF EXISTS ${views.sessions};
+
+    CREATE VIEW ${views.sessions}
+    WITH (security_barrier = true) AS
+    SELECT
+      s.id,
+      s.agent_key,
+      s.kind,
+      s.current_thread_id,
+      s.created_by_identity_id,
+      creator.handle AS created_by_identity_handle,
+      s.metadata,
+      s.created_at,
+      s.updated_at
+    FROM (${activeSessionSql}) AS s
+    LEFT JOIN ${identityTables.identities} AS creator
+      ON creator.id = s.created_by_identity_id;
 
     CREATE VIEW ${views.threads}
     WITH (security_barrier = true) AS
     SELECT
       t.id,
-      t.identity_id,
-      identity.handle AS identity_handle,
-      t.agent_key,
+      t.session_id,
+      session.agent_key,
+      session.kind AS session_kind,
       t.system_prompt,
       t.max_turns,
       t.context,
@@ -162,8 +185,8 @@ export async function ensureReadonlyChatQuerySchema(
         WHERE m.thread_id = t.id
       ) AS last_message_at
     FROM ${tables.threads} AS t
-    INNER JOIN ${identityTables.identities} AS identity ON identity.id = t.identity_id
-    WHERE ${threadScopeSql};
+    INNER JOIN ${sessionTables.sessions} AS session ON session.id = t.session_id
+    WHERE ${sessionScopeSql};
 
     CREATE VIEW ${views.messagesRaw}
     WITH (security_barrier = true) AS
@@ -176,6 +199,8 @@ export async function ensureReadonlyChatQuerySchema(
       m.channel_id,
       m.external_message_id,
       m.actor_id,
+      m.identity_id,
+      speaker.handle AS identity_handle,
       m.run_id,
       m.created_at,
       m.message,
@@ -192,7 +217,8 @@ export async function ensureReadonlyChatQuerySchema(
       END AS has_images
     FROM ${tables.messages} AS m
     INNER JOIN ${tables.threads} AS t ON t.id = m.thread_id
-    WHERE ${threadScopeSql};
+    LEFT JOIN ${identityTables.identities} AS speaker ON speaker.id = m.identity_id
+    WHERE ${sessionScopeSql};
 
     CREATE VIEW ${views.messages}
     WITH (security_barrier = true) AS
@@ -205,6 +231,8 @@ export async function ensureReadonlyChatQuerySchema(
       raw.channel_id,
       raw.external_message_id,
       raw.actor_id,
+      raw.identity_id,
+      raw.identity_handle,
       raw.run_id,
       raw.created_at,
       raw.role,
@@ -252,6 +280,8 @@ export async function ensureReadonlyChatQuerySchema(
       i.channel_id,
       i.external_message_id,
       i.actor_id,
+      i.identity_id,
+      speaker.handle AS identity_handle,
       i.created_at,
       i.applied_at,
       i.message,
@@ -267,7 +297,8 @@ export async function ensureReadonlyChatQuerySchema(
       END AS has_images
     FROM ${tables.inputs} AS i
     INNER JOIN ${tables.threads} AS t ON t.id = i.thread_id
-    WHERE ${threadScopeSql};
+    LEFT JOIN ${identityTables.identities} AS speaker ON speaker.id = i.identity_id
+    WHERE ${sessionScopeSql};
 
     CREATE VIEW ${views.runs}
     WITH (security_barrier = true) AS
@@ -282,7 +313,7 @@ export async function ensureReadonlyChatQuerySchema(
       r.error
     FROM ${tables.runs} AS r
     INNER JOIN ${tables.threads} AS t ON t.id = r.thread_id
-    WHERE ${threadScopeSql};
+    WHERE ${sessionScopeSql};
 
     CREATE VIEW ${views.agentSkills}
     WITH (security_barrier = true) AS
@@ -301,8 +332,9 @@ export async function ensureReadonlyChatQuerySchema(
     WITH (security_barrier = true) AS
     SELECT
       st.id,
-      st.identity_id,
-      st.agent_key,
+      st.session_id,
+      st.created_by_identity_id,
+      creator.handle AS created_by_identity_handle,
       st.title,
       st.instruction,
       st.schedule_kind,
@@ -310,12 +342,7 @@ export async function ensureReadonlyChatQuerySchema(
       st.deliver_at,
       st.cron_expr,
       st.timezone,
-      st.target_kind,
-      st.target_thread_id,
-      CASE
-        WHEN st.target_kind = 'thread' THEN st.target_thread_id
-        ELSE home.thread_id
-      END AS resolved_thread_id,
+      active_session.current_thread_id AS resolved_thread_id,
       st.enabled,
       CASE
         WHEN st.cancelled_at IS NOT NULL THEN 'cancelled'
@@ -340,18 +367,17 @@ export async function ensureReadonlyChatQuerySchema(
       st.created_at,
       st.updated_at
     FROM ${scheduledTaskTables.scheduledTasks} AS st
-    LEFT JOIN ${homeThreadTables.homeThreads} AS home
-      ON home.identity_id = st.identity_id
-    WHERE st.identity_id = current_setting('panda.identity_id', true)
-      AND st.agent_key = current_setting('panda.agent_key', true);
+    INNER JOIN (${activeSessionSql}) AS active_session ON active_session.id = st.session_id
+    LEFT JOIN ${identityTables.identities} AS creator ON creator.id = st.created_by_identity_id;
 
     CREATE VIEW ${views.scheduledTaskRuns}
     WITH (security_barrier = true) AS
     SELECT
       run.id,
       run.task_id,
-      run.identity_id,
-      run.agent_key,
+      run.session_id,
+      run.created_by_identity_id,
+      creator.handle AS created_by_identity_handle,
       run.resolved_thread_id,
       run.fire_kind,
       run.scheduled_for,
@@ -363,23 +389,19 @@ export async function ensureReadonlyChatQuerySchema(
       run.started_at,
       run.finished_at
     FROM ${scheduledTaskTables.scheduledTaskRuns} AS run
-    WHERE run.identity_id = current_setting('panda.identity_id', true)
-      AND run.agent_key = current_setting('panda.agent_key', true);
+    LEFT JOIN ${identityTables.identities} AS creator ON creator.id = run.created_by_identity_id
+    WHERE run.session_id = current_setting('panda.session_id', true);
 
     CREATE VIEW ${views.watches}
     WITH (security_barrier = true) AS
     SELECT
       watch.id,
-      watch.identity_id,
-      watch.agent_key,
+      watch.session_id,
+      watch.created_by_identity_id,
+      creator.handle AS created_by_identity_handle,
       watch.title,
       watch.interval_minutes,
-      watch.target_kind,
-      watch.target_thread_id,
-      CASE
-        WHEN watch.target_kind = 'thread' THEN watch.target_thread_id
-        ELSE home.thread_id
-      END AS resolved_thread_id,
+      active_session.current_thread_id AS resolved_thread_id,
       watch.source_config,
       watch.detector_config,
       watch.enabled,
@@ -394,18 +416,17 @@ export async function ensureReadonlyChatQuerySchema(
       watch.created_at,
       watch.updated_at
     FROM ${watchTables.watches} AS watch
-    LEFT JOIN ${homeThreadTables.homeThreads} AS home
-      ON home.identity_id = watch.identity_id
-    WHERE watch.identity_id = current_setting('panda.identity_id', true)
-      AND watch.agent_key = current_setting('panda.agent_key', true);
+    INNER JOIN (${activeSessionSql}) AS active_session ON active_session.id = watch.session_id
+    LEFT JOIN ${identityTables.identities} AS creator ON creator.id = watch.created_by_identity_id;
 
     CREATE VIEW ${views.watchRuns}
     WITH (security_barrier = true) AS
     SELECT
       run.id,
       run.watch_id,
-      run.identity_id,
-      run.agent_key,
+      run.session_id,
+      run.created_by_identity_id,
+      creator.handle AS created_by_identity_handle,
       run.scheduled_for,
       run.status,
       run.resolved_thread_id,
@@ -415,16 +436,17 @@ export async function ensureReadonlyChatQuerySchema(
       run.started_at,
       run.finished_at
     FROM ${watchTables.watchRuns} AS run
-    WHERE run.identity_id = current_setting('panda.identity_id', true)
-      AND run.agent_key = current_setting('panda.agent_key', true);
+    LEFT JOIN ${identityTables.identities} AS creator ON creator.id = run.created_by_identity_id
+    WHERE run.session_id = current_setting('panda.session_id', true);
 
     CREATE VIEW ${views.watchEvents}
     WITH (security_barrier = true) AS
     SELECT
       event.id,
       event.watch_id,
-      event.identity_id,
-      event.agent_key,
+      event.session_id,
+      event.created_by_identity_id,
+      creator.handle AS created_by_identity_handle,
       event.resolved_thread_id,
       event.event_kind,
       event.summary,
@@ -432,15 +454,15 @@ export async function ensureReadonlyChatQuerySchema(
       event.payload,
       event.created_at
     FROM ${watchTables.watchEvents} AS event
-    WHERE event.identity_id = current_setting('panda.identity_id', true)
-      AND event.agent_key = current_setting('panda.agent_key', true);
+    LEFT JOIN ${identityTables.identities} AS creator ON creator.id = event.created_by_identity_id
+    WHERE event.session_id = current_setting('panda.session_id', true);
   `);
 
   if (options.readonlyRole) {
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA public TO ${readonlyRole};
-      GRANT SELECT ON ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentSkills}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents} TO ${readonlyRole};
+      GRANT SELECT ON ${views.sessions}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentSkills}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents} TO ${readonlyRole};
     `);
   }
 

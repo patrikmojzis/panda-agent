@@ -7,6 +7,7 @@ import {Tool} from "../../../kernel/agent/tool.js";
 import type {WatchStore} from "../../../domain/watches/store.js";
 import type {WatchDetectorConfig, WatchSourceConfig} from "../../../domain/watches/types.js";
 import type {PandaSessionContext} from "../types.js";
+import {readPandaCurrentInputIdentityId} from "./context.js";
 
 const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([
   z.string(),
@@ -189,24 +190,22 @@ const watchDetectorSchema = z.union([
 ]) as z.ZodType<WatchDetectorConfig>;
 
 function readWatchScope(context: unknown): {
-  identityId: string;
-  agentKey: string;
+  sessionId: string;
+  createdByIdentityId?: string;
 } {
   if (
     !context
     || typeof context !== "object"
     || Array.isArray(context)
-    || typeof (context as {identityId?: unknown}).identityId !== "string"
-    || !(context as {identityId: string}).identityId.trim()
-    || typeof (context as {agentKey?: unknown}).agentKey !== "string"
-    || !(context as {agentKey: string}).agentKey.trim()
+    || typeof (context as {sessionId?: unknown}).sessionId !== "string"
+    || !(context as {sessionId: string}).sessionId.trim()
   ) {
-    throw new ToolError("Watch tools require both identityId and agentKey in the Panda thread context.");
+    throw new ToolError("Watch tools require sessionId in the Panda session context.");
   }
 
   return {
-    identityId: (context as {identityId: string}).identityId,
-    agentKey: (context as {agentKey: string}).agentKey,
+    sessionId: (context as {sessionId: string}).sessionId,
+    createdByIdentityId: readPandaCurrentInputIdentityId(context),
   };
 }
 
@@ -230,8 +229,6 @@ export class WatchCreateTool<TContext = PandaSessionContext>
     intervalMinutes: z.number().int().positive(),
     source: watchSourceSchema,
     detector: watchDetectorSchema,
-    targetThreadId: z.string().trim().min(1).optional()
-      .describe("Optional explicit thread id. Omit to follow the current home thread dynamically."),
     enabled: z.boolean().optional(),
   });
 
@@ -260,7 +257,6 @@ export class WatchCreateTool<TContext = PandaSessionContext>
         intervalMinutes: args.intervalMinutes,
         source: args.source,
         detector: args.detector,
-        targetThreadId: args.targetThreadId,
         enabled: args.enabled,
       });
       return {
@@ -280,14 +276,12 @@ export class WatchUpdateTool<TContext = PandaSessionContext>
     intervalMinutes: z.number().int().positive().optional(),
     source: watchSourceSchema.optional(),
     detector: watchDetectorSchema.optional(),
-    targetThreadId: z.string().trim().min(1).nullable().optional()
-      .describe("Explicit thread id, or null to reset the watch back to the home thread."),
     enabled: z.boolean().optional(),
   });
 
   name = "watch_update";
   description =
-    "Update an existing watch. Use null targetThreadId to reset an explicitly targeted watch back to home-following behavior.";
+    "Update an existing watch in the current session.";
   schema = WatchUpdateTool.schema;
 
   constructor(private readonly options: WatchToolOptions) {
@@ -311,7 +305,6 @@ export class WatchUpdateTool<TContext = PandaSessionContext>
         intervalMinutes: args.intervalMinutes,
         source: args.source,
         detector: args.detector,
-        targetThreadId: args.targetThreadId,
         enabled: args.enabled,
       });
       return {

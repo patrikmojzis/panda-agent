@@ -2,6 +2,7 @@ import type {LlmContext} from "../../kernel/agent/llm-context.js";
 import {Agent} from "../../kernel/agent/agent.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
 import type {AgentStore} from "../../domain/agents/index.js";
+import type {SessionRecord} from "../../domain/sessions/index.js";
 import type {InferenceProjection, ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {buildPandaLlmContexts, type PandaLlmContextSection,} from "../../personas/panda/contexts/builder.js";
@@ -36,7 +37,8 @@ export const DEFAULT_PANDA_INFERENCE_PROJECTION: InferenceProjection = {
 
 export interface CreatePandaThreadDefinitionOptions {
   thread: ThreadRecord;
-  fallbackContext: Pick<PandaSessionContext, "cwd" | "identityId" | "identityHandle">;
+  session: Pick<SessionRecord, "id" | "agentKey">;
+  fallbackContext: Pick<PandaSessionContext, "cwd">;
   agentStore?: AgentStore;
   threadStore?: Pick<ThreadRuntimeStore, "listBashJobs">;
   bashToolOptions?: BashToolOptions;
@@ -46,7 +48,7 @@ export interface CreatePandaThreadDefinitionOptions {
   llmContextSections?: readonly PandaLlmContextSection[];
   extraContext?: Omit<
     PandaSessionContext,
-    "cwd" | "timezone" | "identityId" | "identityHandle" | "threadId" | "agentKey" | "subagentDepth"
+    "cwd" | "timezone" | "threadId" | "sessionId" | "agentKey" | "subagentDepth"
   >;
 }
 
@@ -61,9 +63,9 @@ function hasStoredShellCwd(value: Record<string, unknown>): boolean {
 
 export function resolveStoredPandaContext(
   value: ThreadRecord["context"],
-  fallback: Pick<PandaSessionContext, "cwd" | "identityId" | "identityHandle">,
+  fallback: Pick<PandaSessionContext, "cwd">,
   agentKey?: string,
-): PandaSessionContext {
+): Pick<PandaSessionContext, "cwd" | "timezone"> {
   const remoteInitialCwd = agentKey ? resolveRemoteInitialCwd(agentKey) : null;
   if (!isRecord(value)) {
     return {
@@ -85,34 +87,27 @@ export function resolveStoredPandaContext(
   return {
     cwd: useRemoteInitialCwd && remoteInitialCwd ? remoteInitialCwd : storedCwd ?? fallback.cwd,
     timezone: typeof context.timezone === "string" ? context.timezone : undefined,
-    identityId: typeof context.identityId === "string" ? context.identityId : fallback.identityId,
-    identityHandle: typeof context.identityHandle === "string" ? context.identityHandle : fallback.identityHandle,
   };
 }
 
 export function createPandaThreadDefinition(
   options: CreatePandaThreadDefinitionOptions,
 ): ResolvedThreadDefinition {
+  const {session} = options;
   const context: PandaSessionContext = {
-    ...resolveStoredPandaContext(options.thread.context, options.fallbackContext, options.thread.agentKey),
+    ...resolveStoredPandaContext(options.thread.context, options.fallbackContext, session.agentKey),
     threadId: options.thread.id,
-    agentKey: options.thread.agentKey,
-    identityId: options.fallbackContext.identityId,
-    identityHandle: options.fallbackContext.identityHandle,
+    sessionId: session.id,
+    agentKey: session.agentKey,
     subagentDepth: 0,
     ...options.extraContext,
   };
-  const resolvedIdentityId = context.identityId ?? options.fallbackContext.identityId;
-  if (!resolvedIdentityId) {
-    throw new Error(`Missing identityId for thread ${options.thread.id}.`);
-  }
 
   const llmContexts: LlmContext[] = buildPandaLlmContexts({
     context,
     agentStore: options.agentStore,
     threadStore: options.threadStore,
-    agentKey: options.thread.agentKey,
-    identityId: resolvedIdentityId,
+    agentKey: session.agentKey,
     threadId: options.thread.id,
     sections: options.llmContextSections,
     extraLlmContexts: options.extraLlmContexts,
@@ -120,7 +115,7 @@ export function createPandaThreadDefinition(
 
   return {
     agent: new Agent({
-      name: options.thread.agentKey,
+      name: session.agentKey,
       instructions: PANDA_PROMPT,
       tools: buildPandaTools(options.extraTools, {
         bash: options.bashToolOptions,

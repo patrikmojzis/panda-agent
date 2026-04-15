@@ -7,16 +7,16 @@ import type {RunContext} from "../../../kernel/agent/run-context.js";
 import type {AgentStore} from "../../../domain/agents/store.js";
 import {resolveDateTimeContextOptions} from "../contexts/datetime-context.js";
 import type {
-    AgentDiaryRecord,
-    AgentDocumentRecord,
-    AgentDocumentSlug,
-    RelationshipDocumentRecord,
-    RelationshipDocumentSlug,
+  AgentDiaryRecord,
+  AgentDocumentRecord,
+  AgentDocumentSlug,
+  AgentPromptRecord,
+  AgentPromptSlug,
 } from "../../../domain/agents/types.js";
 import type {PandaSessionContext} from "../types.js";
 
-const AGENT_DOCUMENT_SLUGS = ["agent", "soul", "heartbeat", "playbook"] as const;
-const RELATIONSHIP_DOCUMENT_SLUGS = ["memory"] as const;
+const AGENT_PROMPT_SLUGS = ["agent", "soul", "heartbeat", "playbook"] as const;
+const AGENT_DOCUMENT_SLUGS = ["memory"] as const;
 const WHITELISTED_FUNCTIONS = new Set([
   "regexp_replace",
   "replace",
@@ -45,7 +45,6 @@ type AgentDocumentToolTarget = "agent" | "relationship" | "diary";
 type AgentDocumentToolOperation = "read" | "set" | "transform";
 
 interface Scope {
-  identityId: string;
   agentKey: string;
   timezone: string;
 }
@@ -62,18 +61,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function readScope(context: unknown): Scope {
   if (
     !isRecord(context)
-    || typeof context.identityId !== "string"
-    || !context.identityId.trim()
     || typeof context.agentKey !== "string"
     || !context.agentKey.trim()
   ) {
     throw new ToolError(
-      "The agent document tool requires both identityId and agentKey in the persisted Panda thread context.",
+      "The agent document tool requires agentKey in the Panda session context.",
     );
   }
 
   return {
-    identityId: context.identityId,
     agentKey: context.agentKey,
     timezone: resolveDateTimeContextOptions({
       timeZone: typeof context.timezone === "string" && context.timezone.trim()
@@ -257,21 +253,21 @@ function buildPayload(details: JsonObject): ToolResultPayload {
   };
 }
 
-function slugForTarget(target: AgentDocumentToolTarget, slug: string | undefined): AgentDocumentSlug | RelationshipDocumentSlug | undefined {
+function slugForTarget(target: AgentDocumentToolTarget, slug: string | undefined): AgentPromptSlug | AgentDocumentSlug | undefined {
   if (target === "agent") {
-    if (!slug || !AGENT_DOCUMENT_SLUGS.includes(slug as AgentDocumentSlug)) {
-      throw new ToolError(`Agent target requires one of: ${AGENT_DOCUMENT_SLUGS.join(", ")}.`);
+    if (!slug || !AGENT_PROMPT_SLUGS.includes(slug as AgentPromptSlug)) {
+      throw new ToolError(`Agent target requires one of: ${AGENT_PROMPT_SLUGS.join(", ")}.`);
     }
 
-    return slug as AgentDocumentSlug;
+    return slug as AgentPromptSlug;
   }
 
   if (target === "relationship") {
-    if (!slug || !RELATIONSHIP_DOCUMENT_SLUGS.includes(slug as RelationshipDocumentSlug)) {
-      throw new ToolError(`Relationship target requires one of: ${RELATIONSHIP_DOCUMENT_SLUGS.join(", ")}.`);
+    if (!slug || !AGENT_DOCUMENT_SLUGS.includes(slug as AgentDocumentSlug)) {
+      throw new ToolError(`Relationship target requires one of: ${AGENT_DOCUMENT_SLUGS.join(", ")}.`);
     }
 
-    return slug as RelationshipDocumentSlug;
+    return slug as AgentDocumentSlug;
   }
 
   if (slug) {
@@ -285,8 +281,8 @@ function recordPayload(
   scope: Scope,
   target: AgentDocumentToolTarget,
   operation: AgentDocumentToolOperation,
-  record: AgentDocumentRecord | RelationshipDocumentRecord | AgentDiaryRecord | null,
-  extra: { slug?: string; date?: string; exists?: boolean } = {},
+  record: AgentPromptRecord | AgentDocumentRecord | AgentDiaryRecord | null,
+  extra: { slug?: string; date?: string; exists?: boolean; identityId?: string } = {},
 ): ToolResultPayload {
   const details: JsonObject = {
     target,
@@ -295,8 +291,8 @@ function recordPayload(
     exists: extra.exists ?? Boolean(record),
     content: record?.content ?? "",
   };
-  if (target !== "agent") {
-    details.identityId = scope.identityId;
+  if (extra.identityId !== undefined) {
+    details.identityId = extra.identityId;
   }
   if (extra.slug !== undefined) {
     details.slug = extra.slug;
@@ -338,12 +334,15 @@ export class AgentDocumentTool<TContext = PandaSessionContext>
     slug: z.string().trim().optional().describe(
       "Required for agent and relationship targets. Agent supports agent, soul, heartbeat, playbook. Relationship supports memory.",
     ),
+    identityId: z.string().trim().optional().describe(
+      "Optional explicit identity scope for relationship memory or diary. Omit for global agent scope.",
+    ),
     operation: z.enum(["read", "set", "transform"]).describe("Read the current content, replace it, or transform it with a safe SQL-ish text expression."),
     content: z.string().optional().describe("Required for set. Replaces the whole document content."),
     expression: z.string().optional().describe(
       `Required for transform. Uses a restricted SQL-ish expression over the current content value.\n${AgentDocumentTool.transformGuide}`,
     ),
-    date: z.string().trim().optional().describe("Only for diary. Defaults to the current thread-local day in YYYY-MM-DD."),
+    date: z.string().trim().optional().describe("Only for diary. Defaults to the current local day in YYYY-MM-DD using the session timezone."),
   }).superRefine((value, ctx) => {
     try {
       slugForTarget(value.target, value.slug);
@@ -381,7 +380,8 @@ export class AgentDocumentTool<TContext = PandaSessionContext>
   name = "agent_document";
   description = [
     "Read or update shared agent docs, relationship memory, or a relationship diary entry.",
-    "The tool always uses the current thread's agent and identity.",
+    "The tool always uses the current session's agent.",
+    "Identity-scoped reads and writes require an explicit identityId argument.",
     AgentDocumentTool.transformGuide,
   ].join("\n\n");
   schema = AgentDocumentTool.schema;
@@ -410,29 +410,37 @@ export class AgentDocumentTool<TContext = PandaSessionContext>
 
     switch (args.target) {
       case "agent":
-        return this.handleAgentDocument(scope, args.operation, slug as AgentDocumentSlug, args.content, args.expression);
+        return this.handleAgentDocument(scope, args.operation, slug as AgentPromptSlug, args.content, args.expression);
       case "relationship":
         return this.handleRelationshipDocument(
           scope,
           args.operation,
-          slug as RelationshipDocumentSlug,
+          slug as AgentDocumentSlug,
           args.content,
           args.expression,
+          args.identityId?.trim() || undefined,
         );
       case "diary":
-        return this.handleDiary(scope, args.operation, normalizeDiaryDate(args.date, scope.timezone), args.content, args.expression);
+        return this.handleDiary(
+          scope,
+          args.operation,
+          normalizeDiaryDate(args.date, scope.timezone),
+          args.content,
+          args.expression,
+          args.identityId?.trim() || undefined,
+        );
     }
   }
 
   private async handleAgentDocument(
     scope: Scope,
     operation: AgentDocumentToolOperation,
-    slug: AgentDocumentSlug,
+    slug: AgentPromptSlug,
     content?: string,
     expression?: string,
   ): Promise<ToolResultPayload> {
     if (operation === "read") {
-      const record = await this.store.readAgentDocument(scope.agentKey, slug);
+      const record = await this.store.readAgentPrompt(scope.agentKey, slug);
       return recordPayload(scope, "agent", operation, record, {
         slug,
         exists: record !== null,
@@ -440,41 +448,43 @@ export class AgentDocumentTool<TContext = PandaSessionContext>
     }
 
     if (operation === "set") {
-      const record = await this.store.setAgentDocument(scope.agentKey, slug, content ?? "");
+      const record = await this.store.setAgentPrompt(scope.agentKey, slug, content ?? "");
       return recordPayload(scope, "agent", operation, record, { slug, exists: true });
     }
 
-    const record = await this.store.transformAgentDocument(scope.agentKey, slug, validateTransformExpression(expression ?? ""));
+    const record = await this.store.transformAgentPrompt(scope.agentKey, slug, validateTransformExpression(expression ?? ""));
     return recordPayload(scope, "agent", operation, record, { slug, exists: true });
   }
 
   private async handleRelationshipDocument(
     scope: Scope,
     operation: AgentDocumentToolOperation,
-    slug: RelationshipDocumentSlug,
+    slug: AgentDocumentSlug,
     content?: string,
     expression?: string,
+    identityId?: string,
   ): Promise<ToolResultPayload> {
     if (operation === "read") {
-      const record = await this.store.readRelationshipDocument(scope.agentKey, scope.identityId, slug);
+      const record = await this.store.readAgentDocument(scope.agentKey, slug, identityId);
       return recordPayload(scope, "relationship", operation, record, {
         slug,
         exists: record !== null,
+        identityId,
       });
     }
 
     if (operation === "set") {
-      const record = await this.store.setRelationshipDocument(scope.agentKey, scope.identityId, slug, content ?? "");
-      return recordPayload(scope, "relationship", operation, record, { slug, exists: true });
+      const record = await this.store.setAgentDocument(scope.agentKey, slug, content ?? "", identityId);
+      return recordPayload(scope, "relationship", operation, record, { slug, exists: true, identityId });
     }
 
-    const record = await this.store.transformRelationshipDocument(
+    const record = await this.store.transformAgentDocument(
       scope.agentKey,
-      scope.identityId,
       slug,
       validateTransformExpression(expression ?? ""),
+      identityId,
     );
-    return recordPayload(scope, "relationship", operation, record, { slug, exists: true });
+    return recordPayload(scope, "relationship", operation, record, { slug, exists: true, identityId });
   }
 
   private async handleDiary(
@@ -483,26 +493,28 @@ export class AgentDocumentTool<TContext = PandaSessionContext>
     entryDate: string,
     content?: string,
     expression?: string,
+    identityId?: string,
   ): Promise<ToolResultPayload> {
     if (operation === "read") {
-      const record = await this.store.readDiaryEntry(scope.agentKey, scope.identityId, entryDate);
+      const record = await this.store.readDiaryEntry(scope.agentKey, entryDate, identityId);
       return recordPayload(scope, "diary", operation, record, {
         date: entryDate,
         exists: record !== null,
+        identityId,
       });
     }
 
     if (operation === "set") {
-      const record = await this.store.setDiaryEntry(scope.agentKey, scope.identityId, entryDate, content ?? "");
-      return recordPayload(scope, "diary", operation, record, { date: entryDate, exists: true });
+      const record = await this.store.setDiaryEntry(scope.agentKey, entryDate, content ?? "", identityId);
+      return recordPayload(scope, "diary", operation, record, { date: entryDate, exists: true, identityId });
     }
 
     const record = await this.store.transformDiaryEntry(
       scope.agentKey,
-      scope.identityId,
       entryDate,
       validateTransformExpression(expression ?? ""),
+      identityId,
     );
-    return recordPayload(scope, "diary", operation, record, { date: entryDate, exists: true });
+    return recordPayload(scope, "diary", operation, record, { date: entryDate, exists: true, identityId });
   }
 }

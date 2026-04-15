@@ -91,6 +91,8 @@ describe("whatsapp helpers", () => {
       externalConversationId: "421900000000@s.whatsapp.net",
       externalActorId: "421900000000@s.whatsapp.net",
       externalMessageId: "wamid-1",
+      identityId: "patrik-id",
+      identityHandle: "patrik",
       remoteJid: "421900000000@s.whatsapp.net",
       chatType: "private",
       pushName: "Patrik",
@@ -105,6 +107,8 @@ describe("whatsapp helpers", () => {
 
     expect(text).toContain("<panda-channel-context>");
     expect(text).toContain("channel: whatsapp");
+    expect(text).toContain("identity_id: patrik-id");
+    expect(text).toContain("identity_handle: patrik");
     expect(text).toContain("push_name: Patrik");
     expect(text).toContain("quoted_message_id: quoted-123");
     expect(text).toContain("photo.jpg");

@@ -59,7 +59,7 @@ describe("credentials end-to-end", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      documents: {},
+      prompts: {},
     });
 
     const crypto = new CredentialCrypto("e2e-master-key");
@@ -151,7 +151,11 @@ describe("credentials end-to-end", () => {
     const store = new TestThreadRuntimeStore();
     await store.createThread({
       id: "thread-credentials-e2e",
-      agentKey: "panda",
+      sessionId: "session-credentials-e2e",
+      context: {
+        sessionId: "session-credentials-e2e",
+        agentKey: "panda",
+      },
     });
 
     const coordinator = new ThreadRuntimeCoordinator({
@@ -171,7 +175,6 @@ describe("credentials end-to-end", () => {
         }),
         context: {
           agentKey: "panda",
-          identityId: "local",
           cwd: workspace,
           shell: {
             cwd: workspace,
@@ -185,6 +188,7 @@ describe("credentials end-to-end", () => {
     await coordinator.submitInput("thread-credentials-e2e", {
       message: stringToUserMessage("Store my Notion key and make sure bash sees it."),
       source: "tui",
+      identityId: "local",
     });
     await coordinator.waitForIdle("thread-credentials-e2e");
 
@@ -240,7 +244,11 @@ describe("credentials end-to-end", () => {
     const store = new TestThreadRuntimeStore();
     await store.createThread({
       id: "thread-credentials-redacted-bash",
-      agentKey: "panda",
+      sessionId: "session-credentials-redacted-bash",
+      context: {
+        sessionId: "session-credentials-redacted-bash",
+        agentKey: "panda",
+      },
     });
 
     const coordinator = new ThreadRuntimeCoordinator({
@@ -260,7 +268,6 @@ describe("credentials end-to-end", () => {
         }),
         context: {
           agentKey: "panda",
-          identityId: "local",
           cwd: workspace,
           shell: {
             cwd: workspace,
@@ -274,6 +281,7 @@ describe("credentials end-to-end", () => {
     await coordinator.submitInput("thread-credentials-redacted-bash", {
       message: stringToUserMessage("Save my key and print it"),
       source: "tui",
+      identityId: "local",
     });
     await coordinator.waitForIdle("thread-credentials-redacted-bash");
 

@@ -76,7 +76,7 @@ describe("PostgresCredentialStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      documents: {},
+      prompts: {},
     });
 
     await credentialService.setCredential({
@@ -178,7 +178,7 @@ describe("PostgresCredentialStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      documents: {},
+      prompts: {},
     });
 
     await credentialService.setCredential({

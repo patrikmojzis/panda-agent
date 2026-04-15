@@ -29,6 +29,8 @@ describe("Panda feature surface", () => {
     expect(PANDA_PROMPT).toContain("## Soul");
     expect(PANDA_PROMPT).toContain("## Channels & Inner Monologue");
     expect(PANDA_PROMPT).toContain("No outbound call = no message delivered.");
+    expect(PANDA_PROMPT).toContain("panda_sessions` (the current session row only; use `current_thread_id`, not `thread_id`)");
+    expect(PANDA_PROMPT).toContain("Do not invent `is_active` flags or extra `session_id` subqueries");
     expect(PANDA_PROMPT).toContain(
       "Foreground bash mutates the shared shell session. The working directory persists across foreground bash calls, and simple export/unset environment changes persist across foreground bash calls in both local and remote mode.",
     );
@@ -134,14 +136,10 @@ describe("Panda feature surface", () => {
       } as any,
       {
         cwd: "/Users/patrikmojzis/Projects/panda-agent",
-        identityId: "identity-1",
-        identityHandle: "patrik",
       },
       "jozef",
     )).toMatchObject({
       cwd: "/root/.panda/agents/jozef",
-      identityId: "identity-1",
-      identityHandle: "patrik",
     });
   });
 
@@ -155,8 +153,6 @@ describe("Panda feature surface", () => {
       } as any,
       {
         cwd: "/Users/patrikmojzis/Projects/panda-agent",
-        identityId: "identity-1",
-        identityHandle: "patrik",
       },
       "jozef",
     ).cwd).toBe("/workspace/shared/project");

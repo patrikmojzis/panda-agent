@@ -68,7 +68,6 @@ function parseIdentityRow(row: Record<string, unknown>): IdentityRecord {
     id: String(row.id),
     handle: String(row.handle),
     displayName: String(row.display_name),
-    defaultAgentKey: typeof row.default_agent_key === "string" ? row.default_agent_key : undefined,
     status: String(row.status) as IdentityRecord["status"],
     metadata: row.metadata === null ? undefined : (row.metadata as IdentityRecord["metadata"]),
     createdAt: toMillis(row.created_at),
@@ -161,16 +160,11 @@ export class PostgresIdentityStore implements IdentityStore {
         id TEXT PRIMARY KEY,
         handle TEXT NOT NULL UNIQUE,
         display_name TEXT NOT NULL,
-        default_agent_key TEXT,
         status TEXT NOT NULL DEFAULT 'active',
         metadata JSONB,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.identities}
-      ADD COLUMN IF NOT EXISTS default_agent_key TEXT
     `);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.identityBindings} (
@@ -215,7 +209,6 @@ export class PostgresIdentityStore implements IdentityStore {
         id,
         handle,
         display_name,
-        default_agent_key,
         status,
         metadata
       ) VALUES (
@@ -223,15 +216,13 @@ export class PostgresIdentityStore implements IdentityStore {
         $2,
         $3,
         $4,
-        $5,
-        $6::jsonb
+        $5::jsonb
       )
       RETURNING *
     `, [
       input.id,
       normalizeIdentityHandle(input.handle),
       input.displayName,
-      input.defaultAgentKey?.trim() || null,
       input.status ?? "active",
       toJson(input.metadata),
     ]);
@@ -254,16 +245,39 @@ export class PostgresIdentityStore implements IdentityStore {
   }
 
   async updateIdentity(input: UpdateIdentityInput): Promise<IdentityRecord> {
+    const assignments: string[] = [];
+    const values: unknown[] = [input.identityId];
+    let index = 2;
+
+    if (input.displayName !== undefined) {
+      assignments.push(`display_name = $${index}`);
+      values.push(input.displayName.trim());
+      index += 1;
+    }
+
+    if (input.status !== undefined) {
+      assignments.push(`status = $${index}`);
+      values.push(input.status);
+      index += 1;
+    }
+
+    if (input.metadata !== undefined) {
+      assignments.push(`metadata = $${index}::jsonb`);
+      values.push(toJson(input.metadata));
+      index += 1;
+    }
+
+    if (assignments.length === 0) {
+      return this.getIdentity(input.identityId);
+    }
+
     const result = await this.pool.query(`
       UPDATE ${this.tables.identities}
-      SET default_agent_key = $2,
+      SET ${assignments.join(", ")},
           updated_at = NOW()
       WHERE id = $1
       RETURNING *
-    `, [
-      input.identityId,
-      input.defaultAgentKey?.trim() || null,
-    ]);
+    `, values);
     const row = result.rows[0];
     if (!row) {
       throw missingIdentityError(input.identityId);

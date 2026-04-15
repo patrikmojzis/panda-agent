@@ -7,11 +7,11 @@ interface ChatCommandHandlers {
   model(value: string): Promise<boolean> | boolean;
   thinking(value: string): Promise<boolean> | boolean;
   compact(value: string): Promise<boolean> | boolean;
-  newThread(): Promise<boolean> | boolean;
-  resetThread(): Promise<boolean> | boolean;
+  newSession(): Promise<boolean> | boolean;
+  resetSession(): Promise<boolean> | boolean;
   resume(value: string): Promise<boolean> | boolean;
   showThread(): Promise<boolean> | boolean;
-  openThreadPicker(): Promise<boolean> | boolean;
+  openSessionPicker(): Promise<boolean> | boolean;
   abort(): Promise<boolean> | boolean;
   exit(): Promise<boolean> | boolean;
   unknown(command: string): Promise<boolean> | boolean;
@@ -25,11 +25,11 @@ export function buildChatHelpText(thinkingCommandUsage: string): string {
     "/model <selector-or-alias> changes the active model.",
     `${thinkingCommandUsage} changes the active thinking level.`,
     "/compact [instructions] summarizes older context and keeps recent turns verbatim.",
-    "/new starts a fresh stored thread without changing home.",
-    "/reset starts a fresh empty thread and makes it the new home.",
-    "/resume <thread-id> switches to another stored thread.",
-    "/thread shows the current thread id and active session settings.",
-    "/threads opens the recent-thread picker.",
+    "/new starts a fresh branch session.",
+    "/reset replaces the current session thread with a fresh empty thread.",
+    "/resume <session-id> opens another stored session.",
+    "/thread shows the current session and thread ids plus active settings.",
+    "/sessions opens the session picker for the current agent.",
     "/abort aborts the active run.",
     "/exit leaves the TUI.",
     "",
@@ -71,15 +71,15 @@ export async function runChatCommandLine(
     case "/compact":
       return await handlers.compact(value);
     case "/new":
-      return await handlers.newThread();
+      return await handlers.newSession();
     case "/reset":
-      return await handlers.resetThread();
+      return await handlers.resetSession();
     case "/resume":
       return await handlers.resume(value);
     case "/thread":
       return await handlers.showThread();
-    case "/threads":
-      return await handlers.openThreadPicker();
+    case "/sessions":
+      return await handlers.openSessionPicker();
     case "/abort":
       return await handlers.abort();
     case "/exit":

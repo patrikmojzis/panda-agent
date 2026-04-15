@@ -1,6 +1,9 @@
 # Getting Started
 
-This is the shortest sane path to a working Panda setup.
+This is the shortest sane path from zero to a working Panda setup.
+
+If you are new, follow the steps in order.
+Do not freestyle the pairing model. That is how you end up confused at 2am.
 
 ## Before You Start
 
@@ -8,25 +11,14 @@ You need:
 
 - a working Postgres connection
 - an LLM API key for the provider you want to use
-- Docker if you want the built-in browser tool
+- Docker only if you want the built-in browser tool
 
-Current reality:
-
-- browser is a default built-in
-- Docker is only needed when you actually use the browser tool
-- the first browser action starts the Playwright container lazily
-
-If Postgres is not ready yet, fix that first:
+Useful background docs:
 
 - [Postgres](./postgres.md)
-
-If you plan to run bash in Docker or another isolated runner, read this too:
-
-- [Remote Bash](./remote-bash.md)
-
-If you want Panda to drive Chromium, read this too:
-
 - [Browser](./browser.md)
+- [Remote Bash](./remote-bash.md)
+- [Sessions](./sessions.md)
 
 ## The Model
 
@@ -34,49 +26,122 @@ Panda keeps these separate on purpose:
 
 - `agent` = persona
 - `identity` = person
-- `thread` = conversation
+- `session` = durable lane on that agent
+- `thread` = replaceable backing history for a session
 
-That means `panda agent create luna` creates a persona, not a home thread.
+What that means in practice:
 
-## Fresh Local Setup
+- `panda agent create luna` creates the agent and its `main` session
+- `panda identity create alice` creates the person
+- `panda agent pair luna alice` grants that person access to that agent
+- chat opens sessions, not identity-owned home threads
+
+The old `set-default-agent` and `switch-home-agent` flow is gone.
+Good riddance.
+
+## The Happy Path
+
+Do this:
 
 ```bash
 panda agent create luna
-panda identity create local --agent luna
+panda identity create local
+panda agent pair luna local
 panda run
-panda chat --identity local
+panda chat --identity local --agent luna
 ```
 
-That is the default happy path:
+That is the default local setup:
 
-- create the agent
-- create the identity and set its default agent
-- start the runtime
-- open chat on that identity
+1. create the agent
+2. create the identity
+3. pair the identity to the agent
+4. start the runtime
+5. open chat on that agent's main session
 
-## If The Identity Already Exists
+## Step 1: Create An Agent
 
-If the identity exists and you only want future home creation to prefer a new agent:
+Create an agent:
 
 ```bash
-panda identity set-default-agent local luna
+panda agent create luna
 ```
 
-If the identity already has a home thread and you want to replace that home:
+Optional display name:
 
 ```bash
-panda identity switch-home-agent local luna
+panda agent create luna --name "Luna"
 ```
 
-That distinction matters. `set-default-agent` is config only. It does not replace the current home thread.
+What this does:
 
-## Start The Runtime First
+- creates the agent row
+- seeds its default prompts
+- creates exactly one `main` session
+- creates the initial thread backing that session
+
+Useful checks:
+
+```bash
+panda agent list
+panda session list luna
+```
+
+## Step 2: Create An Identity
+
+Create an identity:
+
+```bash
+panda identity create local
+```
+
+Optional display name:
+
+```bash
+panda identity create alice --name "Alice"
+```
+
+Useful check:
+
+```bash
+panda identity list
+```
+
+## Step 3: Pair The Identity To The Agent
+
+Grant access:
+
+```bash
+panda agent pair luna local
+```
+
+Check pairings:
+
+```bash
+panda agent pairings luna
+```
+
+Remove a pairing:
+
+```bash
+panda agent unpair luna local
+```
+
+Important rule:
+
+- only paired identities can talk to an agent
+
+If an identity is not paired, TUI access and inbound channel access should fail.
+
+## Step 4: Start The Runtime
+
+Start the daemon:
 
 ```bash
 panda run
 ```
 
-Or with an explicit database URL:
+With an explicit database URL:
 
 ```bash
 panda run --db-url postgres://panda_app:app_pw@localhost:5432/panda
@@ -88,33 +153,116 @@ If chat says:
 panda run (primary) is offline.
 ```
 
-you skipped this step.
+then you forgot this step.
 
-## Open Chat
+## Step 5: Open Chat
 
-Open the current home thread:
-
-```bash
-panda chat --identity local
-```
-
-Assert the home agent at startup:
+Open chat on a specific agent:
 
 ```bash
 panda chat --identity local --agent luna
 ```
 
-Current behavior:
+Open a specific session directly:
 
-- if no home thread exists yet, Panda creates one on the requested agent
-- if the home thread already exists on that agent, Panda opens it
-- if the home thread exists on another agent, Panda fails loudly
+```bash
+panda chat --identity local --session 2c8d0a1e-...
+```
 
-That failure is deliberate. Silent switching is how you get confusing garbage.
+Important behavior:
 
-## Pair Channels If You Need Them
+- if the identity is paired to exactly one agent, Panda can infer the agent when you omit `--agent`
+- if the identity is paired to multiple agents, `--agent` is required
+- if you pass `--session`, Panda opens that session directly
 
-Telegram:
+That failure mode is deliberate.
+Silent switching would be bullshit.
+
+## Inspect What You Created
+
+List agents:
+
+```bash
+panda agent list
+```
+
+List sessions for an agent:
+
+```bash
+panda session list luna
+```
+
+Inspect one session:
+
+```bash
+panda session inspect <sessionId>
+```
+
+That inspect output shows:
+
+- agent key
+- session kind
+- current thread id
+- thread model
+- heartbeat status
+
+## If The Identity Already Exists
+
+If the identity already exists, you usually only need:
+
+```bash
+panda agent pair luna local
+panda chat --identity local --agent luna
+```
+
+## Multiple Agents
+
+One identity can pair with many agents:
+
+```bash
+panda agent pair work-bot local
+panda agent pair personal-bot local
+```
+
+At that point, this is ambiguous and should fail:
+
+```bash
+panda chat --identity local
+```
+
+Use this instead:
+
+```bash
+panda chat --identity local --agent work-bot
+```
+
+## Sessions Matter
+
+Every agent has:
+
+- one `main` session
+- optional `branch` sessions created later with `/new`
+
+Remember the key rule:
+
+- `/reset` keeps the same session and replaces its current thread
+
+That is why channels, heartbeat, watches, and scheduled tasks bind to sessions instead of raw thread ids.
+
+Read this next if you want the fuller mental model:
+
+- [Sessions](./sessions.md)
+
+## Channels
+
+Channel pairing is not the same thing as agent pairing.
+
+You still need both layers:
+
+1. external actor -> identity
+2. identity -> agent
+
+Telegram example:
 
 ```bash
 panda telegram whoami
@@ -122,7 +270,7 @@ panda telegram pair --identity local --actor 123456789
 panda telegram run
 ```
 
-WhatsApp:
+WhatsApp example:
 
 ```bash
 panda whatsapp whoami
@@ -130,11 +278,32 @@ panda whatsapp pair --phone 421900000000
 panda whatsapp run
 ```
 
-Channel workers do I/O. `panda run` still owns threads and inference.
+Channel workers handle I/O.
+`panda run` still owns routing, sessions, and inference.
+
+For a brand-new channel conversation:
+
+- if the identity is paired to exactly one agent, Panda can auto-bind that conversation to the agent's main session
+- if the identity is paired to multiple agents, bind the conversation explicitly
+
+Explicit bind example:
+
+```bash
+panda session bind-conversation <sessionId> telegram main <externalConversationId>
+```
+
+## Common Mistakes
+
+- creating an identity and forgetting to pair it to the agent
+- starting `panda chat` before `panda run`
+- assuming identity owns a home thread
+- assuming channel pairing is enough without agent pairing
+- omitting `--agent` after one identity has been paired to multiple agents
 
 ## Read Next
 
+- [Sessions](./sessions.md) for the durable unit and session CLI
+- [Identity](./identity.md) for the access model
+- [Heartbeat](./heartbeat.md) for periodic wakes
 - [Browser](./browser.md) for the Dockerized Chromium lane
-- [Identity](./identity.md) for home-thread behavior and operator flows
-- [Heartbeat](./heartbeat.md) for periodic wake behavior
-- [Remote Bash](./remote-bash.md) for Docker runner setups
+- [Remote Bash](./remote-bash.md) for runner setups

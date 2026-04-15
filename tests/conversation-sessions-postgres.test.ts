@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {ConversationRepo} from "../src/domain/threads/conversations/repo.js";
+import {ConversationRepo} from "../src/domain/sessions/conversations/repo.js";
 
 describe("ConversationRepo", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -17,7 +17,7 @@ describe("ConversationRepo", () => {
     }
   });
 
-  it("binds and rebinds conversation thread pointers", async () => {
+  it("binds and rebinds conversation session pointers", async () => {
     const db = newDb();
     db.public.registerFunction({
       name: "pg_notify",
@@ -42,17 +42,17 @@ describe("ConversationRepo", () => {
       source: " telegram ",
       connectorKey: " bot-main ",
       externalConversationId: " chat-1 ",
-      threadId: "thread-a",
+      sessionId: "session-a",
       metadata: {
         paired: true,
       },
     });
-    expect(firstBind.previousThreadId).toBeUndefined();
+    expect(firstBind.previousSessionId).toBeUndefined();
     expect(firstBind.binding).toMatchObject({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-1",
-      threadId: "thread-a",
+      sessionId: "session-a",
       metadata: {
         paired: true,
       },
@@ -63,26 +63,26 @@ describe("ConversationRepo", () => {
       connectorKey: "bot-main",
       externalConversationId: "chat-1",
     })).resolves.toMatchObject({
-      threadId: "thread-a",
+      sessionId: "session-a",
     });
 
     const rebound = await store.bindConversation({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-1",
-      threadId: "thread-b",
+      sessionId: "session-b",
     });
-    expect(rebound.previousThreadId).toBe("thread-a");
-    expect(rebound.binding.threadId).toBe("thread-b");
+    expect(rebound.previousSessionId).toBe("session-a");
+    expect(rebound.binding.sessionId).toBe("session-b");
 
-    const sameThread = await store.bindConversation({
+    const sameSession = await store.bindConversation({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-1",
-      threadId: "thread-b",
+      sessionId: "session-b",
     });
-    expect(sameThread.previousThreadId).toBeUndefined();
-    expect(sameThread.binding.threadId).toBe("thread-b");
+    expect(sameSession.previousSessionId).toBeUndefined();
+    expect(sameSession.binding.sessionId).toBe("session-b");
   });
 
   it("preserves metadata when rebinding without new metadata", async () => {
@@ -104,7 +104,7 @@ describe("ConversationRepo", () => {
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-keep-meta",
-      threadId: "thread-a",
+      sessionId: "session-a",
       metadata: {
         paired: true,
       },
@@ -114,12 +114,12 @@ describe("ConversationRepo", () => {
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-keep-meta",
-      threadId: "thread-b",
+      sessionId: "session-b",
     });
 
-    expect(rebound.previousThreadId).toBe("thread-a");
+    expect(rebound.previousSessionId).toBe("session-a");
     expect(rebound.binding).toMatchObject({
-      threadId: "thread-b",
+      sessionId: "session-b",
       metadata: {
         paired: true,
       },
@@ -145,19 +145,19 @@ describe("ConversationRepo", () => {
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "42",
-      threadId: "thread-telegram",
+      sessionId: "session-telegram",
     });
     await store.bindConversation({
       source: "telegram",
       connectorKey: "bot-sidecar",
       externalConversationId: "42",
-      threadId: "thread-sidecar",
+      sessionId: "session-sidecar",
     });
     await store.bindConversation({
       source: "whatsapp",
       connectorKey: "session-main",
       externalConversationId: "42",
-      threadId: "thread-whatsapp",
+      sessionId: "session-whatsapp",
     });
 
     await expect(store.getConversationBinding({
@@ -165,21 +165,21 @@ describe("ConversationRepo", () => {
       connectorKey: "bot-main",
       externalConversationId: "42",
     })).resolves.toMatchObject({
-      threadId: "thread-telegram",
+      sessionId: "session-telegram",
     });
     await expect(store.getConversationBinding({
       source: "telegram",
       connectorKey: "bot-sidecar",
       externalConversationId: "42",
     })).resolves.toMatchObject({
-      threadId: "thread-sidecar",
+      sessionId: "session-sidecar",
     });
     await expect(store.getConversationBinding({
       source: "whatsapp",
       connectorKey: "session-main",
       externalConversationId: "42",
     })).resolves.toMatchObject({
-      threadId: "thread-whatsapp",
+      sessionId: "session-whatsapp",
     });
   });
 
@@ -202,18 +202,18 @@ describe("ConversationRepo", () => {
       source: "   ",
       connectorKey: "bot-main",
       externalConversationId: "chat-1",
-      threadId: "thread-a",
-    })).rejects.toThrow("Conversation thread source must not be empty.");
+      sessionId: "session-a",
+    })).rejects.toThrow("Conversation binding source must not be empty.");
     await expect(store.getConversationBinding({
       source: "telegram",
       connectorKey: "   ",
       externalConversationId: "chat-1",
-    })).rejects.toThrow("Conversation thread connector key must not be empty.");
+    })).rejects.toThrow("Conversation binding connector key must not be empty.");
     await expect(store.bindConversation({
       source: "telegram",
       connectorKey: "bot-main",
       externalConversationId: "chat-1",
-      threadId: "   ",
-    })).rejects.toThrow("Conversation thread thread id must not be empty.");
+      sessionId: "   ",
+    })).rejects.toThrow("Conversation binding session id must not be empty.");
   });
 });

@@ -41,19 +41,3 @@ export function requireIdentityId(identityId: string | undefined, kind: string):
 
   return trimmed;
 }
-
-export function resolveImplicitHomeThreadReplacementAgent(input: {
-  requestedAgentKey?: string;
-  existingAgentKey: string;
-  identityDefaultAgentKey?: string;
-}): string | undefined {
-  const requestedAgentKey = trimNonEmptyString(input.requestedAgentKey);
-  const defaultAgentKey = trimNonEmptyString(input.identityDefaultAgentKey);
-  if (requestedAgentKey || !defaultAgentKey || input.existingAgentKey === defaultAgentKey) {
-    return undefined;
-  }
-
-  // "Open chat without --agent" should follow the identity default now, not
-  // whatever agent happened to own the home thread some time in the past.
-  return defaultAgentKey;
-}

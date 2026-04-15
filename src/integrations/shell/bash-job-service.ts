@@ -76,7 +76,7 @@ function isTerminalStatus(status: ThreadBashJobStatus | BashJobSnapshot["status"
 function readThreadId(context: BashJobContext | undefined): string {
   const threadId = context?.threadId?.trim();
   if (!threadId) {
-    throw new ToolError("Background bash jobs require a Panda thread context.");
+    throw new ToolError("Background bash jobs require the current Panda session thread.");
   }
 
   return threadId;
@@ -85,7 +85,7 @@ function readThreadId(context: BashJobContext | undefined): string {
 function readAgentKey(context: BashJobContext | undefined): string {
   const agentKey = context?.agentKey?.trim();
   if (!agentKey) {
-    throw new ToolError("Remote background bash requires agentKey in the Panda thread context.");
+    throw new ToolError("Remote background bash requires agentKey in the current Panda session context.");
   }
 
   return agentKey;

@@ -2,13 +2,13 @@ import {quoteIdentifier, type ThreadRuntimeTableNames} from "./postgres-shared.j
 
 export function buildThreadRuntimeSchemaSql(
   tables: ThreadRuntimeTableNames,
+  sessionTableName: string,
   identityTableName: string,
 ): string {
   return `
     CREATE TABLE IF NOT EXISTS ${tables.threads} (
       id TEXT PRIMARY KEY,
-      identity_id TEXT NOT NULL REFERENCES ${identityTableName}(id) ON DELETE RESTRICT,
-      agent_key TEXT NOT NULL,
+      session_id TEXT NOT NULL REFERENCES ${sessionTableName}(id) ON DELETE CASCADE,
       system_prompt JSONB,
       max_turns INTEGER,
       context JSONB,
@@ -45,6 +45,7 @@ export function buildThreadRuntimeSchemaSql(
       channel_id TEXT,
       external_message_id TEXT,
       actor_id TEXT,
+      identity_id TEXT REFERENCES ${identityTableName}(id) ON DELETE SET NULL,
       run_id UUID,
       created_at TIMESTAMPTZ NOT NULL,
       metadata JSONB,
@@ -57,8 +58,8 @@ export function buildThreadRuntimeSchemaSql(
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_messages_thread_sequence_idx`)}
     ON ${tables.messages} (thread_id, sequence);
 
-    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_threads_identity_updated_idx`)}
-    ON ${tables.threads} (identity_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_threads_session_updated_idx`)}
+    ON ${tables.threads} (session_id, updated_at DESC);
 
     CREATE TABLE IF NOT EXISTS ${tables.inputs} (
       id UUID PRIMARY KEY,
@@ -69,6 +70,7 @@ export function buildThreadRuntimeSchemaSql(
       channel_id TEXT,
       external_message_id TEXT,
       actor_id TEXT,
+      identity_id TEXT REFERENCES ${identityTableName}(id) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL,
       applied_at TIMESTAMPTZ,
       metadata JSONB,

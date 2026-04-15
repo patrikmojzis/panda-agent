@@ -3,6 +3,7 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 import {Bot} from "grammy";
 
+import {PANDA_DB_URL_OPTION_DESCRIPTION} from "../../../app/cli-shared.js";
 import {createDefaultIdentityInput, PostgresIdentityStore} from "../../../domain/identity/index.js";
 import {parseIdentityHandle} from "../../../domain/identity/cli.js";
 import {createPandaPool, requirePandaDatabaseUrl} from "../../../app/runtime/create-runtime.js";
@@ -150,7 +151,7 @@ export function registerTelegramCommands(program: Command): void {
     .description("Pair a Telegram user id to a Panda identity")
     .requiredOption("--identity <handle>", "Identity handle to pair", parseIdentityHandle)
     .requiredOption("--actor <telegramUserId>", "Telegram user id to pair", parseTelegramActorId)
-    .option("--db-url <url>", "Postgres connection string for thread persistence")
+    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
     .action((options: TelegramPairCliOptions) => {
       return telegramPairCommand(options);
     });
@@ -158,7 +159,7 @@ export function registerTelegramCommands(program: Command): void {
   telegramProgram
     .command("run")
     .description("Run the Telegram ingress worker")
-    .option("--db-url <url>", "Postgres connection string for thread persistence")
+    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
     .action((options: TelegramRunCliOptions) => {
       return telegramRunCommand(options);
     });

@@ -1,7 +1,7 @@
 import {stringToUserMessage} from "../../kernel/agent/index.js";
 import type {JsonObject} from "../../kernel/agent/types.js";
 import type {CredentialResolver} from "../credentials/index.js";
-import type {HomeThreadStore} from "../threads/home/store.js";
+import type {SessionStore} from "../sessions/index.js";
 import type {ThreadRuntimeCoordinator} from "../threads/runtime/coordinator.js";
 import {renderWatchEventPrompt} from "../../prompts/runtime/watch-events.js";
 import {evaluateWatch, type WatchEvaluationOptions} from "./evaluator.js";
@@ -15,7 +15,7 @@ const WATCH_EVENT_SOURCE = "watch_event";
 
 export interface WatchRunnerOptions extends Omit<WatchEvaluationOptions, "sourceResolvers"> {
   watches: WatchStore;
-  homeThreads: HomeThreadStore;
+  sessions: SessionStore;
   coordinator: ThreadRuntimeCoordinator;
   pollIntervalMs?: number;
   claimTtlMs?: number;
@@ -64,21 +64,15 @@ function buildWatchEventPrompt(options: {
 
 async function resolveTargetThreadId(
   watch: ClaimWatchResult["watch"],
-  homeThreads: HomeThreadStore,
+  sessions: SessionStore,
 ): Promise<string | undefined> {
-  if (watch.targetKind === "thread") {
-    return watch.targetThreadId;
-  }
-
-  const home = await homeThreads.resolveHomeThread({
-    identityId: watch.identityId,
-  });
-  return home?.threadId;
+  const session = await sessions.getSession(watch.sessionId);
+  return session.currentThreadId;
 }
 
 export class WatchRunner {
   private readonly watches: WatchStore;
-  private readonly homeThreads: HomeThreadStore;
+  private readonly sessions: SessionStore;
   private readonly coordinator: ThreadRuntimeCoordinator;
   private readonly credentialResolver: CredentialResolver;
   private readonly pollIntervalMs: number;
@@ -96,7 +90,7 @@ export class WatchRunner {
 
   constructor(options: WatchRunnerOptions) {
     this.watches = options.watches;
-    this.homeThreads = options.homeThreads;
+    this.sessions = options.sessions;
     this.coordinator = options.coordinator;
     this.credentialResolver = options.credentialResolver;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -193,7 +187,7 @@ export class WatchRunner {
   }
 
   private async processClaim(claim: ClaimWatchResult): Promise<void> {
-    const resolvedThreadId = await resolveTargetThreadId(claim.watch, this.homeThreads);
+    const resolvedThreadId = await resolveTargetThreadId(claim.watch, this.sessions);
     if (!resolvedThreadId) {
       await this.watches.failWatchRun({
         runId: claim.run.id,
@@ -209,8 +203,13 @@ export class WatchRunner {
 
     let evaluation;
     try {
+      const session = await this.sessions.getSession(claim.watch.sessionId);
       evaluation = await evaluateWatch(claim.watch, {
         credentialResolver: this.credentialResolver,
+        credentialScope: {
+          agentKey: session.agentKey,
+          identityId: claim.watch.createdByIdentityId,
+        },
         fetchImpl: this.fetchImpl,
         lookupHostname: this.lookupHostname,
         sourceResolvers: this.sourceResolvers,
@@ -237,8 +236,8 @@ export class WatchRunner {
 
     const event = await this.watches.recordEvent({
       watchId: claim.watch.id,
-      identityId: claim.watch.identityId,
-      agentKey: claim.watch.agentKey,
+      sessionId: claim.watch.sessionId,
+      createdByIdentityId: claim.watch.createdByIdentityId,
       resolvedThreadId,
       eventKind: evaluation.event.eventKind,
       summary: evaluation.event.summary,

@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {createChatRuntime} from "../src/ui/tui/runtime.js";
 
-const tuiRuntimeHomeAgentMocks = vi.hoisted(() => {
+const tuiRuntimeSessionMocks = vi.hoisted(() => {
   const client = {
     identity: {
       id: "local",
@@ -12,45 +12,41 @@ const tuiRuntimeHomeAgentMocks = vi.hoisted(() => {
       updatedAt: 1,
     },
     store: {},
-    createThread: vi.fn(async () => ({
+    createBranchSession: vi.fn(async () => ({
       id: "thread-created",
-      identityId: "local",
-      agentKey: "luna",
-      context: {},
+      sessionId: "session-created",
+      context: {agentKey: "luna", sessionId: "session-created"},
       createdAt: 1,
       updatedAt: 1,
     })),
-    resolveOrCreateHomeThread: vi.fn(async () => ({
+    openMainSession: vi.fn(async () => ({
       id: "thread-home",
-      identityId: "local",
-      agentKey: "luna",
-      context: {},
+      sessionId: "session-main",
+      context: {agentKey: "luna", sessionId: "session-main"},
       createdAt: 1,
       updatedAt: 1,
     })),
-    resetHomeThread: vi.fn(async () => ({
+    resetSession: vi.fn(async () => ({
       id: "thread-reset",
-      identityId: "local",
-      agentKey: "luna",
-      context: {},
+      sessionId: "session-main",
+      context: {agentKey: "luna", sessionId: "session-main"},
       createdAt: 1,
       updatedAt: 1,
     })),
-    getAgent: vi.fn(async (agentKey: string) => ({
-      agentKey,
-      displayName: agentKey,
-      status: "active" as const,
+    openSession: vi.fn(async () => ({
+      id: "thread-session",
+      sessionId: "session-main",
+      context: {agentKey: "luna", sessionId: "session-main"},
       createdAt: 1,
       updatedAt: 1,
     })),
     getThread: vi.fn(),
-    listThreadSummaries: vi.fn(async () => []),
+    listAgentSessions: vi.fn(async () => []),
     submitTextInput: vi.fn(),
     abortThread: vi.fn(async () => false),
     waitForCurrentRun: vi.fn(async () => {}),
     updateThread: vi.fn(),
     compactThread: vi.fn(),
-    switchHomeAgent: vi.fn(),
     close: vi.fn(async () => {}),
   };
 
@@ -61,29 +57,29 @@ const tuiRuntimeHomeAgentMocks = vi.hoisted(() => {
 });
 
 vi.mock("../src/app/runtime/client.js", () => ({
-  createPandaClient: tuiRuntimeHomeAgentMocks.createPandaClient,
+  createPandaClient: tuiRuntimeSessionMocks.createPandaClient,
 }));
 
-describe("createChatRuntime home-agent wiring", () => {
+describe("createChatRuntime session wiring", () => {
   afterEach(() => {
-    tuiRuntimeHomeAgentMocks.createPandaClient.mockClear();
-    tuiRuntimeHomeAgentMocks.client.createThread.mockClear();
-    tuiRuntimeHomeAgentMocks.client.resolveOrCreateHomeThread.mockClear();
-    tuiRuntimeHomeAgentMocks.client.resetHomeThread.mockClear();
-    tuiRuntimeHomeAgentMocks.client.close.mockClear();
+    tuiRuntimeSessionMocks.createPandaClient.mockClear();
+    tuiRuntimeSessionMocks.client.createBranchSession.mockClear();
+    tuiRuntimeSessionMocks.client.openMainSession.mockClear();
+    tuiRuntimeSessionMocks.client.resetSession.mockClear();
+    tuiRuntimeSessionMocks.client.close.mockClear();
   });
 
-  it("forwards the configured agent into home resolution", async () => {
+  it("forwards the configured agent into main-session resolution", async () => {
     const runtime = await createChatRuntime({
       identity: "local",
       agent: "luna",
       model: "openai-codex/gpt-5.4",
     });
 
-    await runtime.resolveOrCreateHomeThread();
+    await runtime.openMainSession();
 
-    expect(tuiRuntimeHomeAgentMocks.client.resolveOrCreateHomeThread).toHaveBeenCalledWith({
-      id: undefined,
+    expect(tuiRuntimeSessionMocks.client.openMainSession).toHaveBeenCalledWith({
+      sessionId: undefined,
       agentKey: "luna",
       model: "openai-codex/gpt-5.4",
       thinking: undefined,
@@ -96,31 +92,32 @@ describe("createChatRuntime home-agent wiring", () => {
       model: "openai-codex/gpt-5.4",
     });
 
-    await runtime.resolveOrCreateHomeThread();
+    await runtime.openMainSession();
 
-    expect(tuiRuntimeHomeAgentMocks.client.resolveOrCreateHomeThread).toHaveBeenCalledWith({
-      id: undefined,
+    expect(tuiRuntimeSessionMocks.client.openMainSession).toHaveBeenCalledWith({
+      sessionId: undefined,
       agentKey: undefined,
       model: "openai-codex/gpt-5.4",
       thinking: undefined,
     });
   });
 
-  it("forwards agentKey when resetting the home thread", async () => {
+  it("forwards agentKey when resetting the current session", async () => {
     const runtime = await createChatRuntime({
       identity: "local",
       agent: "jozef",
       model: "openai-codex/gpt-5.4",
     });
 
-    await runtime.resetHomeThread({
+    await runtime.resetSession({
       agentKey: "luna",
       model: "openai-codex/gpt-5.4",
     });
 
-    expect(tuiRuntimeHomeAgentMocks.client.resetHomeThread).toHaveBeenCalledWith({
+    expect(tuiRuntimeSessionMocks.client.resetSession).toHaveBeenCalledWith({
       agentKey: "luna",
       model: "openai-codex/gpt-5.4",
+      sessionId: undefined,
       thinking: undefined,
     });
   });

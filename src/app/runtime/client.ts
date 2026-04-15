@@ -1,7 +1,7 @@
 import type {PoolClient} from "pg";
 
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
-import {type AgentRecord, PostgresAgentStore} from "../../domain/agents/index.js";
+import {PostgresAgentStore} from "../../domain/agents/index.js";
 import {
     createDefaultIdentityInput,
     DEFAULT_IDENTITY_HANDLE,
@@ -17,12 +17,8 @@ import {
     type ThreadRuntimeNotification,
 } from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import type {
-    InferenceProjection,
-    ThreadRecord,
-    ThreadSummaryRecord,
-    ThreadUpdate,
-} from "../../domain/threads/runtime/types.js";
+import type {InferenceProjection, ThreadRecord, ThreadUpdate,} from "../../domain/threads/runtime/types.js";
+import {PostgresSessionStore, type SessionRecord} from "../../domain/sessions/index.js";
 import {DEFAULT_PANDA_DAEMON_KEY, PANDA_DAEMON_REQUEST_TIMEOUT_MS, PANDA_DAEMON_STALE_AFTER_MS,} from "./daemon.js";
 import {createPandaPool, requirePandaDatabaseUrl} from "./create-runtime.js";
 
@@ -46,8 +42,8 @@ export interface PandaClientOptions {
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
 }
 
-export interface PandaClientThreadOptions {
-  id?: string;
+export interface PandaClientSessionOptions {
+  sessionId?: string;
   agentKey?: string;
   model?: string;
   thinking?: ThinkingLevel;
@@ -63,13 +59,12 @@ export interface PandaClientCompactResult {
 export interface PandaClient {
   identity: IdentityRecord;
   store: ThreadRuntimeStore;
-  getAgent(agentKey: string): Promise<AgentRecord>;
-  createThread(options?: PandaClientThreadOptions): Promise<ThreadRecord>;
-  resolveOrCreateHomeThread(options?: PandaClientThreadOptions): Promise<ThreadRecord>;
-  resetHomeThread(options?: Omit<PandaClientThreadOptions, "id">): Promise<ThreadRecord>;
-  switchHomeAgent(agentKey: string): Promise<{thread: ThreadRecord; previousThreadId?: string | null}>;
+  createBranchSession(options?: PandaClientSessionOptions): Promise<ThreadRecord>;
+  openMainSession(options?: PandaClientSessionOptions): Promise<ThreadRecord>;
+  resetSession(options?: PandaClientSessionOptions): Promise<ThreadRecord>;
+  openSession(sessionId: string): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
-  listThreadSummaries(limit?: number): Promise<readonly ThreadSummaryRecord[]>;
+  listAgentSessions(agentKey: string): Promise<readonly SessionRecord[]>;
   submitTextInput(input: {
     threadId?: string;
     text: string;
@@ -151,6 +146,10 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
     pool,
     tablePrefix,
   });
+  const sessionStore = new PostgresSessionStore({
+    pool,
+    tablePrefix,
+  });
   const store = new PostgresThreadRuntimeStore({
     pool,
     tablePrefix,
@@ -170,6 +169,7 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
   try {
     await store.ensureSchema();
     await agentStore.ensureSchema();
+    await sessionStore.ensureSchema();
     await requests.ensureSchema();
     await daemonState.ensureSchema();
 
@@ -193,76 +193,75 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
       }
     };
 
-    const createThread = async (threadOptions: PandaClientThreadOptions = {}): Promise<ThreadRecord> => {
+    const assertIdentityCanAccessAgent = async (agentKey: string): Promise<void> => {
+      const pairings = await agentStore.listIdentityPairings(identity.id);
+      if (!pairings.some((pairing) => pairing.agentKey === agentKey)) {
+        throw new Error(`Identity ${identity.handle} is not paired to agent ${agentKey}.`);
+      }
+    };
+
+    const createBranchSession = async (sessionOptions: PandaClientSessionOptions = {}): Promise<ThreadRecord> => {
       await assertDaemonActive();
       const request = await requests.enqueueRequest({
-        kind: "create_thread",
+        kind: "create_branch_session",
         payload: {
           identityId: identity.id,
-          id: threadOptions.id,
-          agentKey: trimNonEmptyString(threadOptions.agentKey) ?? undefined,
-          model: threadOptions.model,
-          thinking: threadOptions.thinking,
-          ...(threadOptions.inferenceProjection ? {inferenceProjection: threadOptions.inferenceProjection} : {}),
+          sessionId: sessionOptions.sessionId,
+          agentKey: trimNonEmptyString(sessionOptions.agentKey) ?? undefined,
+          model: sessionOptions.model,
+          thinking: sessionOptions.thinking,
+          ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
         },
       });
       const result = await waitForRequestResult<{threadId: string}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
     };
 
-    const resolveOrCreateHomeThread = async (threadOptions: PandaClientThreadOptions = {}): Promise<ThreadRecord> => {
+    const openMainSession = async (sessionOptions: PandaClientSessionOptions = {}): Promise<ThreadRecord> => {
       await assertDaemonActive();
       const request = await requests.enqueueRequest({
-        kind: "resolve_home_thread",
+        kind: "resolve_main_session_thread",
         payload: {
           identityId: identity.id,
-          agentKey: trimNonEmptyString(threadOptions.agentKey) ?? undefined,
-          model: threadOptions.model,
-          thinking: threadOptions.thinking,
-          ...(threadOptions.inferenceProjection ? {inferenceProjection: threadOptions.inferenceProjection} : {}),
+          agentKey: trimNonEmptyString(sessionOptions.agentKey) ?? undefined,
+          model: sessionOptions.model,
+          thinking: sessionOptions.thinking,
+          ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
         },
       });
       const result = await waitForRequestResult<{threadId: string}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
     };
 
-    const resetHomeThread = async (
-      threadOptions: Omit<PandaClientThreadOptions, "id"> = {},
+    const resetSession = async (
+      sessionOptions: PandaClientSessionOptions = {},
     ): Promise<ThreadRecord> => {
       await assertDaemonActive();
       const request = await requests.enqueueRequest({
-        kind: "reset_home_thread",
+        kind: "reset_session",
         payload: {
           identityId: identity.id,
           source: "tui",
-          agentKey: trimNonEmptyString(threadOptions.agentKey) ?? undefined,
-          model: threadOptions.model,
-          thinking: threadOptions.thinking,
-          ...(threadOptions.inferenceProjection ? {inferenceProjection: threadOptions.inferenceProjection} : {}),
+          sessionId: trimNonEmptyString(sessionOptions.sessionId) ?? undefined,
+          agentKey: trimNonEmptyString(sessionOptions.agentKey) ?? undefined,
+          model: sessionOptions.model,
+          thinking: sessionOptions.thinking,
+          ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
         },
       });
       const result = await waitForRequestResult<{threadId: string}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
     };
 
-    const switchHomeAgent = async (agentKey: string): Promise<{thread: ThreadRecord; previousThreadId?: string | null}> => {
-      await assertDaemonActive();
-      const request = await requests.enqueueRequest({
-        kind: "switch_home_agent",
-        payload: {
-          identityId: identity.id,
-          agentKey: trimNonEmptyString(agentKey) ?? agentKey,
-        },
-      });
-      const result = await waitForRequestResult<{threadId: string; previousThreadId?: string | null}>(
-        requests,
-        request.id,
-        PANDA_DAEMON_REQUEST_TIMEOUT_MS,
-      );
-      return {
-        thread: await store.getThread(result.threadId),
-        previousThreadId: result.previousThreadId,
-      };
+    const openSession = async (sessionId: string): Promise<ThreadRecord> => {
+      const session = await sessionStore.getSession(sessionId);
+      await assertIdentityCanAccessAgent(session.agentKey);
+      return store.getThread(session.currentThreadId);
+    };
+
+    const listAgentSessions = async (agentKey: string): Promise<readonly SessionRecord[]> => {
+      await assertIdentityCanAccessAgent(agentKey);
+      return sessionStore.listAgentSessions(agentKey);
     };
 
     const submitTextInput = async (input: {
@@ -276,6 +275,7 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
         kind: "tui_input",
         payload: {
           identityId: identity.id,
+          identityHandle: identity.handle,
           threadId: trimNonEmptyString(input.threadId) ?? undefined,
           actorId: input.actorId,
           externalMessageId: input.externalMessageId,
@@ -343,13 +343,12 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
     return {
       identity,
       store,
-      getAgent: (agentKey) => agentStore.getAgent(agentKey),
-      createThread,
-      resolveOrCreateHomeThread,
-      resetHomeThread,
-      switchHomeAgent,
+      createBranchSession,
+      openMainSession,
+      resetSession,
+      openSession,
       getThread: (threadId) => store.getThread(threadId),
-      listThreadSummaries: (limit = 20) => store.listThreadSummaries(limit, identity.id),
+      listAgentSessions,
       submitTextInput,
       abortThread,
       waitForCurrentRun,

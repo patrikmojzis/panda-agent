@@ -7,7 +7,7 @@ export interface ConversationLookup {
 }
 
 export interface BindConversationInput extends ConversationLookup {
-  threadId: string;
+  sessionId: string;
   metadata?: JsonValue;
 }
 
@@ -18,5 +18,5 @@ export interface ConversationBinding extends BindConversationInput {
 
 export interface BindConversationResult {
   binding: ConversationBinding;
-  previousThreadId?: string;
+  previousSessionId?: string;
 }
