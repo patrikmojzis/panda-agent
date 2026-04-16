@@ -1,6 +1,7 @@
 import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {fileURLToPath} from "node:url";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
@@ -477,6 +478,9 @@ describe("BrowserTool", () => {
       scopeKey: "thread-123",
       startedAtMs: 123456789,
     });
+    const expectedSeccompPath = path.resolve(
+      fileURLToPath(new URL("../assets/playwright-seccomp-profile.json", import.meta.url)),
+    );
 
     expect(args).toContain("--init");
     expect(args).toContain("--ipc=host");
@@ -484,7 +488,7 @@ describe("BrowserTool", () => {
     expect(args).toContain("127.0.0.1::3000");
     expect(args).toContain("runtime.browser=1");
     expect(args).toContain("runtime.threadId=thread-123");
-    expect(args.some((value) => value.includes("seccomp=") && value.endsWith("assets/playwright-seccomp-profile.json"))).toBe(true);
+    expect(args).toContain(`seccomp=${expectedSeccompPath}`);
   });
 
   it("reuses sessions per thread and isolates them across threads", async () => {

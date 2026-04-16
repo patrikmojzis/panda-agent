@@ -15,28 +15,28 @@ import {withArtifactDetails} from "../../kernel/agent/tool-artifacts.js";
 import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {
-    buildRefSelector,
-    getSnapshotScript,
-    normalizeSnapshotResult,
-    renderBrowserSnapshot,
-    SNAPSHOT_REF_ATTRIBUTE,
-    type SnapshotScriptResult,
+  buildRefSelector,
+  getSnapshotScript,
+  normalizeSnapshotResult,
+  renderBrowserSnapshot,
+  SNAPSHOT_REF_ATTRIBUTE,
+  type SnapshotScriptResult,
 } from "./browser-snapshot.js";
 import {buildBrowserExternalContentDetails, wrapBrowserExternalContent,} from "./browser-output.js";
 import type {
-    BrowserAction,
-    BrowserProgressStatus,
-    BrowserSessionScope,
-    BrowserSnapshot,
-    BrowserSnapshotChanges,
-    BrowserSnapshotElement,
-    BrowserSnapshotMode,
+  BrowserAction,
+  BrowserProgressStatus,
+  BrowserSessionScope,
+  BrowserSnapshot,
+  BrowserSnapshotChanges,
+  BrowserSnapshotElement,
+  BrowserSnapshotMode,
 } from "./browser-types.js";
 import {
-    defaultLookupHostname,
-    type LookupHostname,
-    resolveSafeHttpTarget,
-    trimNonEmptyString,
+  defaultLookupHostname,
+  type LookupHostname,
+  resolveSafeHttpTarget,
+  trimNonEmptyString,
 } from "./safe-web-target.js";
 
 const require = createRequire(import.meta.url);
@@ -204,7 +204,7 @@ function resolveDefaultBrowserImage(): string {
 }
 
 function resolveSeccompProfilePath(): string {
-  return path.resolve(fileURLToPath(new URL("../../../../assets/playwright-seccomp-profile.json", import.meta.url)));
+  return path.resolve(fileURLToPath(new URL("../../../assets/playwright-seccomp-profile.json", import.meta.url)));
 }
 
 function normalizeBuffer(bytes: Buffer | Uint8Array): Buffer {
