@@ -2,10 +2,10 @@ import {Pool, type PoolClient} from "pg";
 
 import {type AgentStore, PostgresAgentStore} from "../../domain/agents/index.js";
 import {
-    CredentialResolver,
-    CredentialService,
-    PostgresCredentialStore,
-    resolveCredentialCrypto,
+  CredentialResolver,
+  CredentialService,
+  PostgresCredentialStore,
+  resolveCredentialCrypto,
 } from "../../domain/credentials/index.js";
 import {PostgresIdentityStore} from "../../domain/identity/index.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
@@ -14,8 +14,8 @@ import {PostgresSessionStore, type SessionStore} from "../../domain/sessions/ind
 import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/index.js";
 import {
-    buildThreadRuntimeNotificationChannel,
-    parseThreadRuntimeNotification,
+  buildThreadRuntimeNotificationChannel,
+  parseThreadRuntimeNotification,
 } from "../../domain/threads/runtime/postgres.js";
 import {ensureReadonlyChatQuerySchema, readDatabaseUsername,} from "../../domain/threads/runtime/postgres-readonly.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
@@ -26,9 +26,9 @@ import {AgentSkillTool} from "../../panda/tools/agent-skill-tool.js";
 import {BrowserSessionService} from "../../panda/tools/browser-service.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
 import {
-    ScheduledTaskCancelTool,
-    ScheduledTaskCreateTool,
-    ScheduledTaskUpdateTool,
+  ScheduledTaskCancelTool,
+  ScheduledTaskCreateTool,
+  ScheduledTaskUpdateTool,
 } from "../../panda/tools/scheduled-task-tools.js";
 import {WatchCreateTool, WatchDisableTool, WatchUpdateTool,} from "../../panda/tools/watch-tools.js";
 import {SpawnSubagentTool} from "../../panda/tools/spawn-subagent-tool.js";
@@ -214,8 +214,9 @@ export async function bootstrapPandaRuntime(
         mainTools,
       }),
       toolsets: {
-        explore: subagentToolsets.explore,
-        memoryExplorer: subagentToolsets.memoryExplorer,
+        workspace: subagentToolsets.workspace,
+        memory: subagentToolsets.memory,
+        browser: subagentToolsets.browser,
       },
       agentStore,
       maxSubagentDepth,

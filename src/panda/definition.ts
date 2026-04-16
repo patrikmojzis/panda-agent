@@ -5,8 +5,8 @@ import {BraveSearchTool, hasBraveSearchApiKey} from "./tools/brave-search-tool.j
 import {BrowserTool, type BrowserToolOptions} from "./tools/browser-tool.js";
 import {MediaTool} from "./tools/media-tool.js";
 import {
-    PostgresReadonlyQueryTool,
-    type PostgresReadonlyQueryToolOptions,
+  PostgresReadonlyQueryTool,
+  type PostgresReadonlyQueryToolOptions,
 } from "./tools/postgres-readonly-query-tool.js";
 import {WebFetchTool} from "./tools/web-fetch-tool.js";
 import {WebResearchTool} from "./tools/web-research-tool.js";
@@ -23,7 +23,7 @@ export interface BuildPandaToolsetsOptions extends BuildPandaToolsOptions {
   mainExtras?: ReadonlyArray<Tool>;
 }
 
-export type PandaToolsetKey = "main" | "explore" | "memoryExplorer";
+export type PandaToolsetKey = "main" | "workspace" | "memory" | "browser";
 
 export interface PandaToolRegistry {
   bash: BashTool;
@@ -44,8 +44,9 @@ export interface PandaToolRegistry {
 
 export interface PandaToolsets {
   main: readonly Tool[];
-  explore: readonly Tool[];
-  memoryExplorer: readonly Tool[];
+  workspace: readonly Tool[];
+  memory: readonly Tool[];
+  browser: readonly Tool[];
 }
 
 function compactTools(tools: ReadonlyArray<Tool | undefined>): readonly Tool[] {
@@ -105,20 +106,27 @@ export function buildPandaToolsetsFromRegistry(
       registry.bashJobCancel,
       registry.media,
       registry.webFetch,
-      registry.browser,
+      registry.postgresReadonlyQuery,
       registry.webResearch,
       registry.whisper,
       registry.braveSearch,
       ...mainExtras,
     ]),
-    explore: compactTools([
+    workspace: compactTools([
       registry.readFile,
       registry.globFiles,
       registry.grepFiles,
       registry.media,
     ]),
-    memoryExplorer: compactTools([
+    memory: compactTools([
       registry.postgresReadonlyQuery,
+    ]),
+    browser: compactTools([
+      registry.readFile,
+      registry.globFiles,
+      registry.grepFiles,
+      registry.media,
+      registry.browser,
     ]),
   };
 }

@@ -1,17 +1,17 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-    BashTool,
-    BraveSearchTool,
-    BrowserTool,
-    DateTimeContext,
-    EnvironmentContext,
-    MediaTool,
-    PANDA_PROMPT,
-    PostgresReadonlyQueryTool,
-    WebFetchTool,
-    WebResearchTool,
-    WhisperTool,
+  BashTool,
+  BraveSearchTool,
+  BrowserTool,
+  DateTimeContext,
+  EnvironmentContext,
+  MediaTool,
+  PANDA_PROMPT,
+  PostgresReadonlyQueryTool,
+  WebFetchTool,
+  WebResearchTool,
+  WhisperTool,
 } from "../src/index.js";
 import {buildPandaTools, buildPandaToolsets} from "../src/panda/definition.js";
 import {resolveStoredPandaContext} from "../src/app/runtime/create-runtime.js";
@@ -36,19 +36,19 @@ describe("Panda feature surface", () => {
     expect(PANDA_PROMPT).toContain("## Soul");
     expect(PANDA_PROMPT).toContain("## Channels & Inner Monologue");
     expect(PANDA_PROMPT).toContain("No outbound call = no message delivered.");
-    expect(PANDA_PROMPT).toContain("Use `role=\"explore\"` for read-only workspace inspection, file search, and local PDF/image/sketch inspection.");
-    expect(PANDA_PROMPT).toContain("delegate that lookup to `memory_explorer` instead of guessing.");
+    expect(PANDA_PROMPT).toContain("Use `role=\"workspace\"` for read-only workspace inspection, file search, and local PDF/image/sketch inspection.");
+    expect(PANDA_PROMPT).toContain("Use `role=\"browser\"` for browser automation and website inspection.");
+    expect(PANDA_PROMPT).toContain("For quick one-shot reads, you may use `postgres_readonly_query` directly.");
     expect(PANDA_PROMPT).toContain(
       "Foreground bash mutates the shared shell session. The working directory persists across foreground bash calls, and simple export/unset environment changes persist across foreground bash calls in both local and remote mode.",
     );
     expect(PANDA_PROMPT).toContain("Background bash is isolated.");
     expect(PANDA_PROMPT).toContain("Running background bash jobs may appear in context");
     expect(PANDA_PROMPT).toContain("Panda may receive a runtime note about it");
-    expect(tools).toHaveLength(4);
+    expect(tools).toHaveLength(3);
     expect(tools[0]).toBeInstanceOf(BashTool);
     expect(tools[1]).toBeInstanceOf(MediaTool);
     expect(tools[2]).toBeInstanceOf(WebFetchTool);
-    expect(tools[3]).toBeInstanceOf(BrowserTool);
   });
 
   it("adds Brave search when BRAVE_API_KEY is configured", () => {
@@ -56,8 +56,8 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildPandaTools();
 
-    expect(tools).toHaveLength(5);
-    expect(tools[4]).toBeInstanceOf(BraveSearchTool);
+    expect(tools).toHaveLength(4);
+    expect(tools[3]).toBeInstanceOf(BraveSearchTool);
   });
 
   it("adds Whisper when OPENAI_API_KEY is configured", () => {
@@ -65,9 +65,9 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     const tools = buildPandaTools();
 
-    expect(tools).toHaveLength(6);
-    expect(tools[4]).toBeInstanceOf(WebResearchTool);
-    expect(tools[5]).toBeInstanceOf(WhisperTool);
+    expect(tools).toHaveLength(5);
+    expect(tools[3]).toBeInstanceOf(WebResearchTool);
+    expect(tools[4]).toBeInstanceOf(WhisperTool);
   });
 
   it("appends extra tools without adding hidden defaults", () => {
@@ -76,11 +76,11 @@ describe("Panda feature surface", () => {
     const extraTool = { name: "extra-tool" } as any;
     const tools = buildPandaTools([extraTool]);
 
-    expect(tools).toHaveLength(5);
-    expect(tools[4]).toBe(extraTool);
+    expect(tools).toHaveLength(4);
+    expect(tools[3]).toBe(extraTool);
   });
 
-  it("builds explicit specialist toolsets and keeps readonly tools off the main agent", () => {
+  it("builds explicit specialist toolsets and keeps workspace/browser tools off the main agent", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
     const toolsets = buildPandaToolsets({
@@ -93,17 +93,25 @@ describe("Panda feature surface", () => {
       "bash",
       "view_media",
       "web_fetch",
-      "browser",
+      "postgres_readonly_query",
     ]);
-    expect(toolsets.main.some((tool) => tool instanceof PostgresReadonlyQueryTool)).toBe(false);
-    expect(toolsets.explore.map((tool) => tool.name)).toEqual([
+    expect(toolsets.main.some((tool) => tool instanceof PostgresReadonlyQueryTool)).toBe(true);
+    expect(toolsets.main.some((tool) => tool instanceof BrowserTool)).toBe(false);
+    expect(toolsets.workspace.map((tool) => tool.name)).toEqual([
       "read_file",
       "glob_files",
       "grep_files",
       "view_media",
     ]);
-    expect(toolsets.memoryExplorer.map((tool) => tool.name)).toEqual([
+    expect(toolsets.memory.map((tool) => tool.name)).toEqual([
       "postgres_readonly_query",
+    ]);
+    expect(toolsets.browser.map((tool) => tool.name)).toEqual([
+      "read_file",
+      "glob_files",
+      "grep_files",
+      "view_media",
+      "browser",
     ]);
   });
 

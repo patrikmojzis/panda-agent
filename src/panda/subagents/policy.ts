@@ -1,10 +1,14 @@
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import type {Tool} from "../../kernel/agent/tool.js";
-import {EXPLORE_SUBAGENT_PROMPT, MEMORY_EXPLORER_SUBAGENT_PROMPT,} from "../../prompts/runtime/subagents.js";
+import {
+  BROWSER_SUBAGENT_PROMPT,
+  MEMORY_SUBAGENT_PROMPT,
+  WORKSPACE_SUBAGENT_PROMPT,
+} from "../../prompts/runtime/subagents.js";
 import type {PandaLlmContextSection} from "../contexts/builder.js";
 import type {PandaToolsetKey} from "../definition.js";
 
-export const PANDA_SUBAGENT_ROLES = ["explore", "memory_explorer"] as const;
+export const PANDA_SUBAGENT_ROLES = ["workspace", "memory", "browser"] as const;
 export type PandaSubagentRole = typeof PANDA_SUBAGENT_ROLES[number];
 export type PandaSubagentToolsetKey = Exclude<PandaToolsetKey, "main">;
 
@@ -18,30 +22,45 @@ export interface PandaSubagentRolePolicy {
 }
 
 export const PANDA_SUBAGENT_TOOLSET_FILTERS: Record<PandaSubagentToolsetKey, ReadonlySet<string>> = {
-  explore: new Set([
+  workspace: new Set([
     "read_file",
     "glob_files",
     "grep_files",
     "view_media",
   ]),
-  memoryExplorer: new Set([
+  memory: new Set([
     "postgres_readonly_query",
+  ]),
+  browser: new Set([
+    "read_file",
+    "glob_files",
+    "grep_files",
+    "view_media",
+    "browser",
   ]),
 };
 
 export const PANDA_SUBAGENT_ROLE_POLICIES: Record<PandaSubagentRole, PandaSubagentRolePolicy> = {
-  explore: {
-    role: "explore",
-    prompt: EXPLORE_SUBAGENT_PROMPT,
-    toolset: "explore",
+  workspace: {
+    role: "workspace",
+    prompt: WORKSPACE_SUBAGENT_PROMPT,
+    toolset: "workspace",
     visibleContextSections: ["datetime", "environment"],
     thinking: "low",
     maySpawnSubagents: false,
   },
-  memory_explorer: {
-    role: "memory_explorer",
-    prompt: MEMORY_EXPLORER_SUBAGENT_PROMPT,
-    toolset: "memoryExplorer",
+  memory: {
+    role: "memory",
+    prompt: MEMORY_SUBAGENT_PROMPT,
+    toolset: "memory",
+    visibleContextSections: ["datetime", "environment"],
+    thinking: "medium",
+    maySpawnSubagents: false,
+  },
+  browser: {
+    role: "browser",
+    prompt: BROWSER_SUBAGENT_PROMPT,
+    toolset: "browser",
     visibleContextSections: ["datetime", "environment"],
     thinking: "medium",
     maySpawnSubagents: false,

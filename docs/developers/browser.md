@@ -14,12 +14,12 @@ The design is still opinionated on purpose:
 
 Core files:
 
-- `src/personas/panda/tools/browser-tool.ts`
-- `src/personas/panda/tools/browser-service.ts`
-- `src/personas/panda/tools/browser-snapshot.ts`
-- `src/personas/panda/tools/browser-output.ts`
-- `src/personas/panda/tools/browser-types.ts`
-- `src/personas/panda/tools/safe-web-target.ts`
+- `src/panda/tools/browser-tool.ts`
+- `src/panda/tools/browser-service.ts`
+- `src/panda/tools/browser-snapshot.ts`
+- `src/panda/tools/browser-output.ts`
+- `src/panda/tools/browser-types.ts`
+- `src/panda/tools/safe-web-target.ts`
 - `assets/playwright-seccomp-profile.json`
 
 Split of responsibility:
@@ -44,18 +44,18 @@ Relevant wiring:
 
 - `src/app/runtime/runtime-bootstrap.ts`
 - `src/app/runtime/thread-definition.ts`
-- `src/personas/panda/definition.ts`
+- `src/panda/definition.ts`
 
 Tool order:
 
 - `bash`
 - `view_media`
 - `web_fetch`
-- `browser`
+- `postgres_readonly_query` when configured
 - OpenAI-backed extras when configured
 - Brave search when configured
 
-`browser` still stays out of the `explore` subagent allowlist.
+`browser` stays out of the main toolset and the `workspace` subagent allowlist. It runs through its own dedicated `browser` worker role.
 
 ## Session Model
 

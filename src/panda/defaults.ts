@@ -37,16 +37,23 @@ export function resolveDefaultPandaModelSelector(
   return buildCanonicalModelSelector(provider, modelId);
 }
 
-export function resolveDefaultPandaExploreSubagentModelSelector(
+export function resolveDefaultPandaWorkspaceSubagentModelSelector(
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  const configured = env.PANDA_EXPLORE_SUBAGENT_MODEL?.trim();
+  const configured = env.PANDA_WORKSPACE_SUBAGENT_MODEL?.trim();
   return configured ? resolveModelSelector(configured).canonical : undefined;
 }
 
-export function resolveDefaultPandaMemoryExplorerSubagentModelSelector(
+export function resolveDefaultPandaMemorySubagentModelSelector(
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  const configured = env.PANDA_MEMORY_EXPLORER_SUBAGENT_MODEL?.trim();
+  const configured = env.PANDA_MEMORY_SUBAGENT_MODEL?.trim();
+  return configured ? resolveModelSelector(configured).canonical : undefined;
+}
+
+export function resolveDefaultPandaBrowserSubagentModelSelector(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const configured = env.PANDA_BROWSER_SUBAGENT_MODEL?.trim();
   return configured ? resolveModelSelector(configured).canonical : undefined;
 }

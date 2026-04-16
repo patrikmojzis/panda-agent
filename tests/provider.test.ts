@@ -1,18 +1,19 @@
 import {describe, expect, it} from "vitest";
 
 import {
-    Agent,
-    assertProviderName,
-    ConfigurationError,
-    parseProviderName,
-    resolveModelSelector,
-    Thread,
+  Agent,
+  assertProviderName,
+  ConfigurationError,
+  parseProviderName,
+  resolveModelSelector,
+  Thread,
 } from "../src/index.js";
 import {resolvePandaModel} from "../src/integrations/providers/shared/model.js";
 import {
-    resolveDefaultPandaExploreSubagentModelSelector,
-    resolveDefaultPandaMemoryExplorerSubagentModelSelector,
-    resolveDefaultPandaModelSelector,
+  resolveDefaultPandaBrowserSubagentModelSelector,
+  resolveDefaultPandaMemorySubagentModelSelector,
+  resolveDefaultPandaModelSelector,
+  resolveDefaultPandaWorkspaceSubagentModelSelector,
 } from "../src/panda/defaults.js";
 
 describe("model selector", () => {
@@ -88,20 +89,28 @@ describe("model selector", () => {
     })).toBe("anthropic/claude-haiku-4-5");
   });
 
-  it("resolves the explore subagent selector from PANDA_EXPLORE_SUBAGENT_MODEL", () => {
-    expect(resolveDefaultPandaExploreSubagentModelSelector({
-      PANDA_EXPLORE_SUBAGENT_MODEL: "opus",
+  it("resolves the workspace subagent selector from PANDA_WORKSPACE_SUBAGENT_MODEL", () => {
+    expect(resolveDefaultPandaWorkspaceSubagentModelSelector({
+      PANDA_WORKSPACE_SUBAGENT_MODEL: "opus",
     })).toBe("anthropic-oauth/claude-opus-4-6");
 
-    expect(resolveDefaultPandaExploreSubagentModelSelector({})).toBeUndefined();
+    expect(resolveDefaultPandaWorkspaceSubagentModelSelector({})).toBeUndefined();
   });
 
-  it("resolves the memory explorer subagent selector from PANDA_MEMORY_EXPLORER_SUBAGENT_MODEL", () => {
-    expect(resolveDefaultPandaMemoryExplorerSubagentModelSelector({
-      PANDA_MEMORY_EXPLORER_SUBAGENT_MODEL: "gpt",
+  it("resolves the memory subagent selector from PANDA_MEMORY_SUBAGENT_MODEL", () => {
+    expect(resolveDefaultPandaMemorySubagentModelSelector({
+      PANDA_MEMORY_SUBAGENT_MODEL: "gpt",
     })).toBe("openai-codex/gpt-5.4");
 
-    expect(resolveDefaultPandaMemoryExplorerSubagentModelSelector({})).toBeUndefined();
+    expect(resolveDefaultPandaMemorySubagentModelSelector({})).toBeUndefined();
+  });
+
+  it("resolves the browser subagent selector from PANDA_BROWSER_SUBAGENT_MODEL", () => {
+    expect(resolveDefaultPandaBrowserSubagentModelSelector({
+      PANDA_BROWSER_SUBAGENT_MODEL: "opus",
+    })).toBe("anthropic-oauth/claude-opus-4-6");
+
+    expect(resolveDefaultPandaBrowserSubagentModelSelector({})).toBeUndefined();
   });
 
   it("throws a configuration error for unknown model ids", () => {

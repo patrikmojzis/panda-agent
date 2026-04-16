@@ -7,8 +7,9 @@ import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ThreadDefinitionResolver} from "../../domain/threads/runtime/types.js";
 import {renderSubagentHandoff} from "../../prompts/runtime/subagents.js";
 import {
-    resolveDefaultPandaExploreSubagentModelSelector,
-    resolveDefaultPandaMemoryExplorerSubagentModelSelector,
+  resolveDefaultPandaBrowserSubagentModelSelector,
+  resolveDefaultPandaMemorySubagentModelSelector,
+  resolveDefaultPandaWorkspaceSubagentModelSelector,
 } from "../defaults.js";
 import {buildPandaLlmContexts} from "../contexts/builder.js";
 import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
@@ -33,7 +34,7 @@ export interface PandaSubagentRunResult {
 export interface PandaSubagentServiceOptions {
   store: ThreadRuntimeStore;
   resolveDefinition: ThreadDefinitionResolver;
-  toolsets: Pick<PandaToolsets, "explore" | "memoryExplorer">;
+  toolsets: Pick<PandaToolsets, "workspace" | "memory" | "browser">;
   agentStore?: AgentStore;
   maxSubagentDepth?: number;
 }
@@ -68,17 +69,19 @@ function extractAssistantText(message: AssistantMessage | null): string {
 
 function resolveDefaultSubagentModelSelector(role: PandaSubagentRole): string | undefined {
   switch (role) {
-    case "explore":
-      return resolveDefaultPandaExploreSubagentModelSelector();
-    case "memory_explorer":
-      return resolveDefaultPandaMemoryExplorerSubagentModelSelector();
+    case "workspace":
+      return resolveDefaultPandaWorkspaceSubagentModelSelector();
+    case "memory":
+      return resolveDefaultPandaMemorySubagentModelSelector();
+    case "browser":
+      return resolveDefaultPandaBrowserSubagentModelSelector();
   }
 }
 
 export class PandaSubagentService {
   private readonly store: ThreadRuntimeStore;
   private readonly resolveDefinition: ThreadDefinitionResolver;
-  private readonly toolsets: Pick<PandaToolsets, "explore" | "memoryExplorer">;
+  private readonly toolsets: Pick<PandaToolsets, "workspace" | "memory" | "browser">;
   private readonly agentStore?: PandaSubagentServiceOptions["agentStore"];
   private readonly maxSubagentDepth: number;
 
