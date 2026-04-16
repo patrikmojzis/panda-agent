@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 import {access, copyFile, mkdir, readdir, readFile} from "node:fs/promises";
 import path from "node:path";
 
-import {resolvePandaAgentDir} from "../../app/runtime/data-dir.js";
+import {resolveAgentDir} from "../../app/runtime/data-dir.js";
 import type {CredentialService} from "../credentials/index.js";
 import type {SessionStore} from "../sessions/store.js";
 import type {ThreadRuntimeStore} from "../threads/runtime/store.js";
@@ -808,7 +808,7 @@ export async function planLegacyAgentImport(
     : [];
   const skills = await buildSkillPlans(resolvedSourceDir, warnings);
   const credentials = await buildCredentialPlans(resolvedSourceDir, warnings);
-  const homeDir = resolvePandaAgentDir(agentKey, resolvedOptions.env);
+  const homeDir = resolveAgentDir(agentKey, resolvedOptions.env);
 
   const nonEnvSecretFiles = (await pathExists(path.join(resolvedSourceDir, "skills")))
     ? (await walkDirectory(path.join(resolvedSourceDir, "skills")))
@@ -1070,7 +1070,7 @@ export async function importLegacyAgent(
   options: ImportLegacyAgentOptions,
 ): Promise<ImportedLegacyAgentResult> {
   const env = options.env ?? process.env;
-  const homeDir = resolvePandaAgentDir(plan.agentKey, env);
+  const homeDir = resolveAgentDir(plan.agentKey, env);
   await mkdir(homeDir, {recursive: true});
 
   const createdAgent = await ensureAgentRecord(plan, options.agentStore);
@@ -1159,7 +1159,7 @@ export async function importLegacyAgent(
     warnings: [
       ...messageWarnings,
       ...(skippedCredentialCount > 0
-        ? [`Skipped ${skippedCredentialCount} credentials because PANDA_CREDENTIALS_MASTER_KEY is not set.`]
+        ? [`Skipped ${skippedCredentialCount} credentials because CREDENTIALS_MASTER_KEY is not set.`]
         : []),
     ],
   };

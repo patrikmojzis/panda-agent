@@ -41,15 +41,15 @@ Don't blur it.
 
 Tables:
 
-- `thread_runtime_watches`
-- `thread_runtime_watch_runs`
-- `thread_runtime_watch_events`
+- `runtime.watches`
+- `runtime.watch_runs`
+- `runtime.watch_events`
 
 Readonly views:
 
-- `panda_watches`
-- `panda_watch_runs`
-- `panda_watch_events`
+- `session.watches`
+- `session.watch_runs`
+- `session.watch_events`
 
 The watch row stores config plus detector state.
 Runs are execution history.

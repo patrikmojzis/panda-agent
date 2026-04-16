@@ -1,6 +1,6 @@
 import type {Pool} from "pg";
 
-import {quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
 import {buildChannelCursorTableNames, type ChannelCursorTableNames} from "./postgres-shared.js";
 import type {ChannelCursorInput, ChannelCursorLookup, ChannelCursorRecord,} from "./types.js";
 
@@ -10,7 +10,6 @@ interface PgQueryable {
 
 export interface ChannelCursorRepoOptions {
   pool: PgQueryable;
-  tablePrefix?: string;
 }
 
 function requireTrimmedCursorKeyPart(field: string, value: string): string {
@@ -57,10 +56,11 @@ export class ChannelCursorRepo {
 
   constructor(options: ChannelCursorRepoOptions) {
     this.pool = options.pool;
-    this.tables = buildChannelCursorTableNames(options.tablePrefix ?? "thread_runtime");
+    this.tables = buildChannelCursorTableNames();
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.channelCursors} (
         source TEXT NOT NULL,

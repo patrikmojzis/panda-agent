@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 
-import {createPandaThreadDefinition, DEFAULT_PANDA_INFERENCE_PROJECTION,} from "../src/app/runtime/create-runtime.js";
+import {createThreadDefinition, DEFAULT_INFERENCE_PROJECTION,} from "../src/app/runtime/create-runtime.js";
 import type {ThreadRecord} from "../src/domain/threads/runtime/types.js";
 
 function createThread(
@@ -20,9 +20,9 @@ function createThread(
   };
 }
 
-describe("createPandaThreadDefinition inference projection defaults", () => {
+describe("createThreadDefinition inference projection defaults", () => {
   it("applies Panda's global inference projection by default", () => {
-    const definition = createPandaThreadDefinition({
+    const definition = createThreadDefinition({
       thread: createThread(),
       session: {
         id: "session-main",
@@ -33,11 +33,11 @@ describe("createPandaThreadDefinition inference projection defaults", () => {
       },
     });
 
-    expect(definition.inferenceProjection).toEqual(DEFAULT_PANDA_INFERENCE_PROJECTION);
+    expect(definition.inferenceProjection).toEqual(DEFAULT_INFERENCE_PROJECTION);
   });
 
   it("merges thread overrides on top of the Panda default", () => {
-    const definition = createPandaThreadDefinition({
+    const definition = createThreadDefinition({
       thread: createThread({
         inferenceProjection: {
           dropMessages: {
@@ -58,13 +58,13 @@ describe("createPandaThreadDefinition inference projection defaults", () => {
     });
 
     expect(definition.inferenceProjection).toEqual({
-      ...DEFAULT_PANDA_INFERENCE_PROJECTION,
+      ...DEFAULT_INFERENCE_PROJECTION,
       dropMessages: {
-        ...DEFAULT_PANDA_INFERENCE_PROJECTION.dropMessages,
+        ...DEFAULT_INFERENCE_PROJECTION.dropMessages,
         preserveRecentUserTurns: 1,
       },
       dropThinking: {
-        ...DEFAULT_PANDA_INFERENCE_PROJECTION.dropThinking,
+        ...DEFAULT_INFERENCE_PROJECTION.dropThinking,
         olderThanMs: 60_000,
       },
     });

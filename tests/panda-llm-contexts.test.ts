@@ -1,12 +1,12 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {buildPandaLlmContexts, gatherContexts,} from "../src/index.js";
+import {buildDefaultAgentLlmContexts, gatherContexts,} from "../src/index.js";
 import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
-describe("buildPandaLlmContexts", () => {
+describe("buildDefaultAgentLlmContexts", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
 
   afterEach(async () => {
@@ -56,7 +56,7 @@ describe("buildPandaLlmContexts", () => {
   it("keeps the full agent profile in default Panda contexts", async () => {
     const fixture = await createFixture();
 
-    const dump = await gatherContexts(buildPandaLlmContexts({
+    const dump = await gatherContexts(buildDefaultAgentLlmContexts({
       context: fixture.context,
       agentStore: fixture.agentStore,
       agentKey: "panda",
@@ -65,7 +65,7 @@ describe("buildPandaLlmContexts", () => {
     expect(dump).toContain("**Current DateTime:**");
     expect(dump).toContain("**Environment Overview:**");
     expect(dump).toContain("**Agent Profile:**");
-    expect(dump).toContain("Summaries only. Query `panda_agent_skills` for full skill bodies when you need the exact content.");
+    expect(dump).toContain("Summaries only. Query `session.agent_skills` for full skill bodies when you need the exact content.");
     expect(dump).toContain("calendar\nUse this for calendar work.");
     expect(dump).not.toContain("Long skill body.");
     expect(dump).not.toContain("Alice likes tea.");
@@ -76,7 +76,7 @@ describe("buildPandaLlmContexts", () => {
   it("can limit Panda contexts to datetime and environment only", async () => {
     const fixture = await createFixture();
 
-    const dump = await gatherContexts(buildPandaLlmContexts({
+    const dump = await gatherContexts(buildDefaultAgentLlmContexts({
       context: fixture.context,
       agentStore: fixture.agentStore,
       agentKey: "panda",
@@ -117,7 +117,7 @@ describe("buildPandaLlmContexts", () => {
       status: "completed",
     });
 
-    const dump = await gatherContexts(buildPandaLlmContexts({
+    const dump = await gatherContexts(buildDefaultAgentLlmContexts({
       context: {
         cwd: "/workspace/panda",
       },
@@ -151,7 +151,7 @@ describe("buildPandaLlmContexts", () => {
       status: "completed",
     });
 
-    const dump = await gatherContexts(buildPandaLlmContexts({
+    const dump = await gatherContexts(buildDefaultAgentLlmContexts({
       context: {
         cwd: "/workspace/panda",
       },

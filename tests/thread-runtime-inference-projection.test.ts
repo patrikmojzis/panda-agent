@@ -365,7 +365,7 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
   });
 
   it("redacts browser screenshot image blocks before persisting the transcript", async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), "panda-browser-artifact-runtime-"));
+    const directory = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-artifact-runtime-"));
     const runtime = createMockRuntime(
       createAssistantMessage([
         {
@@ -485,7 +485,7 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
   });
 
   it("keeps replayed artifacts text-only when dropImages would strip them", async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), "panda-browser-artifact-drop-images-"));
+    const directory = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-artifact-drop-images-"));
     const runtime = createMockRuntime(
       createAssistantMessage([
         {

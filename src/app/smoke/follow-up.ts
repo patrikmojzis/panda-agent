@@ -8,8 +8,8 @@ import type {ToolResultMessage} from "@mariozechner/pi-ai";
 
 import type {ThreadMessageRecord, ThreadRecord} from "../../domain/threads/runtime/index.js";
 import {formatToolCallFallback, formatToolResultFallback, type JsonValue,} from "../../kernel/agent/index.js";
-import {createPandaClient} from "../runtime/client.js";
-import {createPandaDaemon} from "../runtime/daemon.js";
+import {createRuntimeClient} from "../runtime/client.js";
+import {createDaemon} from "../runtime/daemon.js";
 import {waitForSmokeDaemonOnline, waitForSmokeThreadIdle} from "./harness.js";
 
 export interface SmokeFollowUpOptions {
@@ -110,7 +110,7 @@ function isReadlineClosedError(error: unknown): boolean {
 }
 
 async function openFollowUpThread(input: {
-  client: Awaited<ReturnType<typeof createPandaClient>>;
+  client: Awaited<ReturnType<typeof createRuntimeClient>>;
   sessionId?: string;
   threadId?: string;
 }): Promise<ThreadRecord> {
@@ -126,16 +126,16 @@ async function openFollowUpThread(input: {
 }
 
 export async function startSmokeFollowUpRepl(options: SmokeFollowUpOptions): Promise<void> {
-  let daemon: Awaited<ReturnType<typeof createPandaDaemon>> | null = null;
+  let daemon: Awaited<ReturnType<typeof createDaemon>> | null = null;
   let daemonError: Error | null = null;
   let daemonRunPromise: Promise<void> | null = null;
-  let client: Awaited<ReturnType<typeof createPandaClient>> | null = null;
+  let client: Awaited<ReturnType<typeof createRuntimeClient>> | null = null;
 
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
 
   try {
-    daemon = await createPandaDaemon({
+    daemon = await createDaemon({
       cwd: options.cwd ?? process.cwd(),
       dbUrl: options.dbUrl,
     });
@@ -148,7 +148,7 @@ export async function startSmokeFollowUpRepl(options: SmokeFollowUpOptions): Pro
       getDaemonError: () => daemonError,
     });
 
-    client = await createPandaClient({
+    client = await createRuntimeClient({
       dbUrl: options.dbUrl,
       identity: options.identity,
     });

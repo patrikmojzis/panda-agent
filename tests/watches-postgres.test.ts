@@ -224,7 +224,7 @@ describe("PostgresWatchStore", () => {
     expect(reloaded.claimedAt).toBeUndefined();
 
     const eventRows = await pool.query(
-      `SELECT COUNT(*)::INTEGER AS count FROM "thread_runtime_watch_events" WHERE watch_id = $1`,
+      `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."watch_events" WHERE watch_id = $1`,
       [created.id],
     );
     expect(eventRows.rows[0]).toMatchObject({

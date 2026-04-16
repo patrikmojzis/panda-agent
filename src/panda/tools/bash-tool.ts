@@ -9,12 +9,8 @@ import {Tool, type ToolOutput} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
 import type {CredentialResolver} from "../../domain/credentials/index.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
-import {
-    ensurePandaShellSession,
-    readPandaBaseCwd,
-    readPandaCurrentInputIdentityId,
-} from "../../app/runtime/panda-path-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {ensureShellSession, readBaseCwd, readCurrentInputIdentityId,} from "../../app/runtime/panda-path-context.js";
 import {type BashExecutor, createDefaultBashExecutor,} from "../../integrations/shell/bash-executor.js";
 import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
 import {applyPersistedEnv, collectTrackedEnvKeys, resolveCommandCwd,} from "../../integrations/shell/bash-session.js";
@@ -26,7 +22,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 8_000;
 const DEFAULT_PROGRESS_INTERVAL_MS = 250;
 const DEFAULT_PROGRESS_TAIL_CHARS = 1_200;
-const DEFAULT_OUTPUT_DIRECTORY = path.join(tmpdir(), "panda-tool-results");
+const DEFAULT_OUTPUT_DIRECTORY = path.join(tmpdir(), "runtime-tool-results");
 
 function readToolResultText(message: ToolResultMessage<JsonValue>): string {
   return message.content
@@ -154,7 +150,7 @@ export interface BashToolOptions {
   jobService?: BashJobService;
 }
 
-export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTool.schema, TContext> {
+export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof BashTool.schema, TContext> {
   static schema = z.object({
     command: z.string().trim().min(1),
     cwd: z.string().trim().min(1).optional(),
@@ -255,8 +251,8 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
     args: z.output<typeof BashTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolOutput> {
-    const shellSession = ensurePandaShellSession(run.context);
-    const baseCwd = shellSession?.cwd ?? readPandaBaseCwd(run.context);
+    const shellSession = ensureShellSession(run.context);
+    const baseCwd = shellSession?.cwd ?? readBaseCwd(run.context);
     const cwd = resolveCommandCwd(args.cwd, baseCwd);
     const timeoutMs = args.timeoutMs ?? this.defaultTimeoutMs;
     const priorSecretSessionEnv = readSecretSessionEnv(shellSession);
@@ -265,14 +261,14 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
         agentKey: typeof run.context === "object" && run.context !== null && "agentKey" in run.context
           ? (run.context as {agentKey?: string}).agentKey
           : undefined,
-        identityId: readPandaCurrentInputIdentityId(run.context),
+        identityId: readCurrentInputIdentityId(run.context),
       })
       : {};
     const knownSecretValues = collectSecretValues(resolvedCredentialEnv, args.env, priorSecretSessionEnv);
     const trackedEnvKeys = collectTrackedEnvKeys(args.command);
     if (args.background === true) {
       if (!this.jobService) {
-        throw new ToolError("Background bash is not available in this Panda runtime.");
+        throw new ToolError("Background bash is not available in this runtime.");
       }
 
       const job = await this.jobService.start({
@@ -286,7 +282,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
         env: args.env,
         resolvedEnv: resolvedCredentialEnv,
         secretValues: knownSecretValues,
-        run: run as RunContext<PandaSessionContext>,
+        run: run as RunContext<DefaultAgentSessionContext>,
       });
 
       return buildBashJobPayload(job);
@@ -304,7 +300,7 @@ export class BashTool<TContext = PandaSessionContext> extends Tool<typeof BashTo
       outputDirectory: this.outputDirectory,
       env: args.env,
       resolvedEnv: resolvedCredentialEnv,
-      run: run as RunContext<PandaSessionContext>,
+      run: run as RunContext<DefaultAgentSessionContext>,
     });
     const appliedSessionEnvKeys = applyPersistedEnv(shellSession, result.persistedEnvEntries);
     updateSecretSessionKeys(shellSession, result.persistedEnvEntries, knownSecretValues);

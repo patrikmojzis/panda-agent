@@ -3,7 +3,7 @@ import {createServer} from "node:http";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {Readability} from "@mozilla/readability";
 
-import {Agent, type PandaSessionContext, RunContext, ToolError, WebFetchTool,} from "../src/index.js";
+import {Agent, type DefaultAgentSessionContext, RunContext, ToolError, WebFetchTool,} from "../src/index.js";
 import {
     createPinnedLookup,
     extractReadableContentFromHtml,
@@ -18,12 +18,12 @@ function createAgent() {
 }
 
 function createRunContext(
-  context: PandaSessionContext,
+  context: DefaultAgentSessionContext,
   options: {
     signal?: AbortSignal;
     onToolProgress?: (progress: Record<string, unknown>) => void;
   } = {},
-): RunContext<PandaSessionContext> {
+): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: createAgent(),
     turn: 1,

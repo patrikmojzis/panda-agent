@@ -1,4 +1,4 @@
-export interface PandaDaemonStateRecord {
+export interface DaemonStateRecord {
   daemonKey: string;
   heartbeatAt: number;
   startedAt: number;

@@ -25,7 +25,7 @@ ${prompt.content || "(empty)"}
   if (options.skills !== undefined) {
     blocks.push(`
 [skills]
-Summaries only. Query \`panda_agent_skills\` for full skill bodies when you need the exact content.
+Summaries only. Query \`session.agent_skills\` for full skill bodies when you need the exact content.
 ${options.skills.length === 0
     ? "(none)"
     : options.skills.map((entry) => `${entry.skillKey}\n${entry.description}`).join("\n\n")}

@@ -1,14 +1,14 @@
 import type {PoolClient} from "pg";
 
-import type {PandaRuntimeRequestRecord} from "../../domain/threads/requests/index.js";
-import type {PandaDaemonContext} from "./daemon-bootstrap.js";
+import type {RuntimeRequestRecord} from "../../domain/threads/requests/index.js";
+import type {DaemonContext} from "./daemon-bootstrap.js";
 import {buildDaemonAlreadyActiveMessage} from "./daemon-copy.js";
-import {hashLockKey, PANDA_DAEMON_HEARTBEAT_INTERVAL_MS, type PandaDaemonServices,} from "./daemon-shared.js";
+import {DAEMON_HEARTBEAT_INTERVAL_MS, type DaemonServices, hashLockKey,} from "./daemon-shared.js";
 
-export function createPandaDaemonLifecycle(input: {
-  context: PandaDaemonContext;
-  processRequest: (request: PandaRuntimeRequestRecord) => Promise<unknown>;
-}): PandaDaemonServices {
+export function createDaemonLifecycle(input: {
+  context: DaemonContext;
+  processRequest: (request: RuntimeRequestRecord) => Promise<unknown>;
+}): DaemonServices {
   let requestUnsubscribe: (() => Promise<void>) | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
   let lockClient: PoolClient | null = null;
@@ -98,7 +98,7 @@ export function createPandaDaemonLifecycle(input: {
       await heartbeat();
       heartbeatTimer = setInterval(() => {
         void heartbeat();
-      }, PANDA_DAEMON_HEARTBEAT_INTERVAL_MS);
+      }, DAEMON_HEARTBEAT_INTERVAL_MS);
       requestUnsubscribe = await input.context.requests.listenPendingRequests(async () => {
         await triggerDrain();
       });
@@ -109,7 +109,7 @@ export function createPandaDaemonLifecycle(input: {
       await triggerDrain();
 
       while (!stopped) {
-        await new Promise((resolve) => setTimeout(resolve, PANDA_DAEMON_HEARTBEAT_INTERVAL_MS));
+        await new Promise((resolve) => setTimeout(resolve, DAEMON_HEARTBEAT_INTERVAL_MS));
       }
     },
     stop: async () => {

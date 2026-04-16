@@ -6,7 +6,7 @@ That means:
 
 - the skill source of truth is the database, not `~/.panda/agents/<agent>/skills`
 - Panda injects only each skill's key and short description into normal runs
-- the full skill body is fetched on demand through the scoped `panda_agent_skills` readonly view
+- the full skill body is fetched on demand through the scoped `session.agent_skills` readonly view
 
 ## What Panda Sees By Default
 
@@ -38,7 +38,7 @@ It uses the same `agent_skill` tool with `operation = delete`.
 
 ## Reading Full Skill Content
 
-When Panda needs the exact body of a skill, it should query `panda_agent_skills` through `postgres_readonly_query`.
+When Panda needs the exact body of a skill, it should query `session.agent_skills` through `postgres_readonly_query`.
 
 Useful columns:
 
@@ -60,13 +60,13 @@ Example:
 
 ```sql
 SELECT skill_key, description, content_bytes
-FROM panda_agent_skills
+FROM session.agent_skills
 ORDER BY skill_key;
 ```
 
 ```sql
 SELECT substring(content FROM 1 FOR 3000) AS content_chunk
-FROM panda_agent_skills
+FROM session.agent_skills
 WHERE skill_key = 'calendar';
 ```
 

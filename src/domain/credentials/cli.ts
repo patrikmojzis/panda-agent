@@ -7,7 +7,7 @@ import {parseAgentKey} from "../agents/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {parseIdentityHandle} from "../identity/cli.js";
-import {ensureSchemas, withPandaPool} from "../../app/runtime/postgres-bootstrap.js";
+import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
 import {PostgresCredentialStore} from "./postgres.js";
 import {CredentialService} from "./resolver.js";
 import {resolveCredentialCrypto} from "./crypto.js";
@@ -57,7 +57,7 @@ async function withCredentialStores<T>(
     identityStore: PostgresIdentityStore;
   }) => Promise<T>,
 ): Promise<T> {
-  return withPandaPool(options.dbUrl, async (pool) => {
+  return withPostgresPool(options.dbUrl, async (pool) => {
     const agentStore = new PostgresAgentStore({pool});
     const identityStore = new PostgresIdentityStore({pool});
     const credentialStore = new PostgresCredentialStore({pool});
@@ -78,7 +78,7 @@ async function withCredentialService<T>(
   return withCredentialStores(options, async ({agentStore, credentialStore, identityStore}) => {
     const crypto = resolveCredentialCrypto();
     if (!crypto) {
-      throw new Error("PANDA_CREDENTIALS_MASTER_KEY is required for credential commands.");
+      throw new Error("CREDENTIALS_MASTER_KEY is required for credential commands.");
     }
 
     const credentialService = new CredentialService({

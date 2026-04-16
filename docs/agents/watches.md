@@ -429,4 +429,4 @@ Tool:
 - Store secrets in credentials and reference them by key.
 - Do not invent a custom probe in v1.
 - Do not claim there is a `watch_list` tool. There is not.
-- If inspection is needed, use Postgres views like `panda_watches`, `panda_watch_runs`, and `panda_watch_events`.
+- If inspection is needed, use Postgres views like `session.watches`, `session.watch_runs`, and `session.watch_events`.

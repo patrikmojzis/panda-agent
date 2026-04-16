@@ -1,6 +1,6 @@
 import type {Pool, PoolClient} from "pg";
 
-import {quoteIdentifier, toJson, toMillis} from "../threads/runtime/postgres-shared.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../threads/runtime/postgres-shared.js";
 import {buildSessionTableNames, type SessionTableNames} from "./postgres-shared.js";
 import type {SessionStore} from "./store.js";
 import type {
@@ -25,7 +25,6 @@ interface PgPoolLike extends PgQueryable {
 
 export interface PostgresSessionStoreOptions {
   pool: PgPoolLike;
-  tablePrefix?: string;
 }
 
 function requireTrimmed(field: string, value: string): string {
@@ -98,11 +97,11 @@ export class PostgresSessionStore implements SessionStore {
 
   constructor(options: PostgresSessionStoreOptions) {
     this.pool = options.pool;
-    const prefix = options.tablePrefix ?? "thread_runtime";
-    this.tables = buildSessionTableNames(prefix);
+    this.tables = buildSessionTableNames();
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.sessions} (
         id TEXT PRIMARY KEY,

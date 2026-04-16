@@ -5,7 +5,7 @@ import type {PoolClient} from "pg";
 import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import type {PgPoolLike} from "../../threads/runtime/postgres-db.js";
-import {quoteIdentifier, toMillis} from "../../threads/runtime/postgres-shared.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toMillis} from "../../threads/runtime/postgres-shared.js";
 import {computeInitialNextFireAt, normalizeScheduledTaskSchedule} from "./schedule.js";
 import {buildScheduledTaskTableNames, type ScheduledTaskTableNames} from "./postgres-shared.js";
 import type {ScheduledTaskStore} from "./store.js";
@@ -25,7 +25,6 @@ import type {
 
 export interface PostgresScheduledTaskStoreOptions {
   pool: PgPoolLike;
-  tablePrefix?: string;
 }
 
 function missingTaskError(taskId: string): Error {
@@ -171,13 +170,13 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
 
   constructor(options: PostgresScheduledTaskStoreOptions) {
     this.pool = options.pool;
-    const tablePrefix = options.tablePrefix ?? "thread_runtime";
-    this.tables = buildScheduledTaskTableNames(tablePrefix);
-    this.identityTableName = buildIdentityTableNames(tablePrefix).identities;
-    this.sessionTableName = buildSessionTableNames(tablePrefix).sessions;
+    this.tables = buildScheduledTaskTableNames();
+    this.identityTableName = buildIdentityTableNames().identities;
+    this.sessionTableName = buildSessionTableNames().sessions;
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.scheduledTasks} (
         id UUID PRIMARY KEY,

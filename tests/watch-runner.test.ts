@@ -5,10 +5,10 @@ import {DataType, newDb} from "pg-mem";
 import {Agent} from "../src/index.js";
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
 import {
-    PostgresWatchStore,
-    type WatchEvaluationResult,
-    type WatchEvaluator,
-    WatchRunner,
+  PostgresWatchStore,
+  type WatchEvaluationResult,
+  type WatchEvaluator,
+  WatchRunner,
 } from "../src/domain/watches/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
@@ -127,7 +127,7 @@ async function createHarness(evaluateWatch: WatchEvaluator) {
 
 async function forceWatchDue(pool: {query(text: string, values?: unknown[]): Promise<unknown>}, watchId: string): Promise<void> {
   await pool.query(
-    `UPDATE "thread_runtime_watches" SET next_poll_at = NOW() - INTERVAL '1 second' WHERE id = $1`,
+    `UPDATE "runtime"."watches" SET next_poll_at = NOW() - INTERVAL '1 second' WHERE id = $1`,
     [watchId],
   );
 }
@@ -282,7 +282,7 @@ describe("WatchRunner", () => {
     await harness.watchRunner.stop();
 
     const eventRows = await harness.pool.query(
-      `SELECT COUNT(*)::INTEGER AS count FROM "thread_runtime_watch_events" WHERE watch_id = $1`,
+      `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."watch_events" WHERE watch_id = $1`,
       [watch.id],
     );
     expect(eventRows.rows[0]).toMatchObject({count: 1});

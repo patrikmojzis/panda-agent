@@ -4,7 +4,7 @@ import {z} from "zod";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {formatToolResultFallback, Tool} from "../../kernel/agent/tool.js";
 import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {
     DEFAULT_WEB_RESEARCH_MODEL,
     DEFAULT_WEB_RESEARCH_REASONING_EFFORT,
@@ -23,7 +23,7 @@ export interface WebResearchToolOptions {
   reasoningEffort?: WebResearchReasoningEffort;
 }
 
-export class WebResearchTool<TContext = PandaSessionContext>
+export class WebResearchTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof WebResearchTool.schema, TContext> {
   static schema = z.object({
     query: z.string().trim().min(1),

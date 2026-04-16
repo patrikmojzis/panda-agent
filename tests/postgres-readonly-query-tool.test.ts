@@ -2,7 +2,7 @@ import {describe, expect, it} from "vitest";
 
 import {
     Agent,
-    type PandaSessionContext,
+    type DefaultAgentSessionContext,
     PostgresReadonlyQueryTool,
     RunContext,
     ToolError,
@@ -58,7 +58,7 @@ class FakeReadonlyPool {
   }
 }
 
-function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
+function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: new Agent({
       name: "readonly-test-agent",
@@ -102,11 +102,11 @@ describe("PostgresReadonlyQueryTool", () => {
       pool: new FakeReadonlyPool(),
     });
 
-    expect(tool.description).toContain("panda_sessions exposes current_thread_id, not thread_id.");
-    expect(tool.description).toContain("panda_agent_prompts, panda_agent_documents, panda_agent_diary, panda_agent_pairings, and panda_agent_skills");
+    expect(tool.description).toContain("session.agent_sessions exposes current_thread_id, not thread_id.");
+    expect(tool.description).toContain("session.agent_prompts, session.agent_documents, session.agent_diary, session.agent_pairings, and session.agent_skills");
     expect(tool.description).toContain("left(...), substring(...), regex filters, full-text search");
     expect(tool.description).toContain("Do not invent is_active flags or extra session_id subqueries");
-    expect(tool.description).toContain("query panda_scheduled_tasks or panda_watches directly");
+    expect(tool.description).toContain("query session.scheduled_tasks or session.watches directly");
   });
 
   it("runs queries inside a read-only transaction and scopes them by session and agent", async () => {
@@ -128,7 +128,7 @@ describe("PostgresReadonlyQueryTool", () => {
     });
 
     const result = await tool.run(
-      { sql: "select * from panda_messages order by created_at desc limit 5" },
+      { sql: "select * from session.messages order by created_at desc limit 5" },
       createRunContext({
         sessionId: "session-main",
         identityId: "identity-alice",
@@ -154,9 +154,9 @@ describe("PostgresReadonlyQueryTool", () => {
       "SET LOCAL statement_timeout = '5000ms'",
       "SET LOCAL lock_timeout = '500ms'",
       "SET LOCAL idle_in_transaction_session_timeout = '5000ms'",
-      "SELECT set_config('panda.session_id', $1, true)",
-      "SELECT set_config('panda.agent_key', $1, true)",
-      "SELECT * FROM (select * from panda_messages order by created_at desc limit 5) AS panda_readonly_query LIMIT 51",
+      "SELECT set_config('runtime.session_id', $1, true)",
+      "SELECT set_config('runtime.agent_key', $1, true)",
+      "SELECT * FROM (select * from session.messages order by created_at desc limit 5) AS runtime_readonly_query LIMIT 51",
       "COMMIT",
     ]);
     expect(pool.client.queries[4]?.values).toEqual(["session-main"]);
@@ -175,7 +175,7 @@ describe("PostgresReadonlyQueryTool", () => {
     });
 
     await expect(tool.run(
-      { sql: "delete from panda_threads" },
+      { sql: "delete from session.threads" },
       context,
     )).rejects.toBeInstanceOf(ToolError);
 
@@ -197,7 +197,7 @@ describe("PostgresReadonlyQueryTool", () => {
     });
 
     const result = await tool.run(
-      { sql: "select * from panda_threads order by updated_at desc limit 10" },
+      { sql: "select * from session.threads order by updated_at desc limit 10" },
       createRunContext({
         sessionId: "session-main",
         identityId: "identity-alice",
@@ -228,7 +228,7 @@ describe("PostgresReadonlyQueryTool", () => {
     });
 
     const result = await tool.run(
-      { sql: "select * from panda_messages_raw limit 1" },
+      { sql: "select * from session.messages_raw limit 1" },
       createRunContext({
         sessionId: "session-main",
         identityId: "identity-alice",
@@ -245,7 +245,7 @@ describe("PostgresReadonlyQueryTool", () => {
   });
 
   it("rolls back and surfaces database errors", async () => {
-    const sql = "select * from panda_messages";
+    const sql = "select * from session.messages";
     const pool = new FakeReadonlyPool([], sql);
     const tool = new PostgresReadonlyQueryTool({
       pool,
@@ -271,13 +271,13 @@ describe("PostgresReadonlyQueryTool", () => {
     });
 
     await expect(tool.run(
-      { sql: "select * from panda_threads limit 1" },
+      { sql: "select * from session.threads limit 1" },
       createRunContext({
         threadId: "thread-1",
         agentKey: "panda",
       }),
     )).rejects.toThrow(
-      "The readonly Postgres tool requires both sessionId and agentKey in the Panda session context.",
+      "The readonly Postgres tool requires both sessionId and agentKey in the runtime session context.",
     );
 
     expect(pool.connectCalls).toBe(0);
@@ -301,7 +301,7 @@ describe("PostgresReadonlyQueryTool", () => {
     });
 
     const result = await tool.run(
-      { sql: "select slug, left(content, 16) as preview from panda_agent_prompts order by updated_at desc limit 5" },
+      { sql: "select slug, left(content, 16) as preview from session.agent_prompts order by updated_at desc limit 5" },
       createRunContext({
         sessionId: "session-main",
         identityId: "identity-alice",
@@ -315,6 +315,6 @@ describe("PostgresReadonlyQueryTool", () => {
       slug: "heartbeat",
       preview: "Keep it short.",
     }]);
-    expect(pool.client.queries[6]?.text).toContain("left(content, 16) as preview from panda_agent_prompts");
+    expect(pool.client.queries[6]?.text).toContain("left(content, 16) as preview from session.agent_prompts");
   });
 });

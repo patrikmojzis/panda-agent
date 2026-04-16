@@ -4,7 +4,7 @@ import {z} from "zod";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {formatToolResultFallback, Tool} from "../../kernel/agent/tool.js";
 import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {
     DEFAULT_WEB_FETCH_MAX_CONTENT_CHARS,
     DEFAULT_WEB_FETCH_MAX_REDIRECTS,
@@ -49,7 +49,7 @@ function buildContentText(details: {
   return lines.join("\n").trim();
 }
 
-export class WebFetchTool<TContext = PandaSessionContext>
+export class WebFetchTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof WebFetchTool.schema, TContext> {
   static schema = z.object({
     url: z.string().trim().url().superRefine((value, ctx) => {

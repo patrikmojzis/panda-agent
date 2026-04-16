@@ -226,7 +226,7 @@ describe("ScheduledTaskRunner", () => {
     });
 
     await harness.pool.query(
-      `UPDATE "thread_runtime_scheduled_tasks" SET next_fire_at = $2 WHERE id = $1`,
+      `UPDATE "runtime"."scheduled_tasks" SET next_fire_at = $2 WHERE id = $1`,
       [task.id, new Date(Date.now() - 1_000)],
     );
     await harness.runner.start();
@@ -274,7 +274,7 @@ describe("ScheduledTaskRunner", () => {
     })).toBeNull();
 
     await harness.pool.query(
-      `UPDATE "thread_runtime_scheduled_tasks" SET next_fire_at = $2 WHERE id = $1`,
+      `UPDATE "runtime"."scheduled_tasks" SET next_fire_at = $2 WHERE id = $1`,
       [task.id, new Date(Date.now() - 1_000)],
     );
     await harness.runner.start();

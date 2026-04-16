@@ -69,7 +69,7 @@ const telegramCliMocks = vi.hoisted(() => {
     storeInstances,
     pool,
     serviceConstructor,
-    withPandaPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
+    withPostgresPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
       try {
         return await fn(pool);
       } finally {
@@ -99,7 +99,7 @@ vi.mock("../src/domain/identity/index.js", () => ({
 
 vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
   ensureSchemas: telegramCliMocks.ensureSchemas,
-  withPandaPool: telegramCliMocks.withPandaPool,
+  withPostgresPool: telegramCliMocks.withPostgresPool,
 }));
 
 function latestBot(): InstanceType<typeof telegramCliMocks.MockBot> {
@@ -127,7 +127,7 @@ describe("Telegram CLI", () => {
     telegramCliMocks.pool.end.mockClear();
     telegramCliMocks.serviceConstructor.mockClear();
     telegramCliMocks.ensureSchemas.mockClear();
-    telegramCliMocks.withPandaPool.mockClear();
+    telegramCliMocks.withPostgresPool.mockClear();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
@@ -161,7 +161,7 @@ describe("Telegram CLI", () => {
 
     const store = latestStore();
     expect(telegramCliMocks.serviceConstructor).not.toHaveBeenCalled();
-    expect(telegramCliMocks.withPandaPool).toHaveBeenCalledWith(
+    expect(telegramCliMocks.withPostgresPool).toHaveBeenCalledWith(
       "postgres://telegram-db",
       expect.any(Function),
     );

@@ -13,7 +13,7 @@ import {
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../src/panda/index.js";
-import type {PandaSessionContext} from "../src/app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 describe("Env value tools", () => {
@@ -72,7 +72,7 @@ describe("Env value tools", () => {
     };
   }
 
-  function createContext(overrides: Partial<PandaSessionContext> = {}): PandaSessionContext {
+  function createContext(overrides: Partial<DefaultAgentSessionContext> = {}): DefaultAgentSessionContext {
     return {
       agentKey: "panda",
       currentInput: {
@@ -88,9 +88,9 @@ describe("Env value tools", () => {
   }
 
   function createRunContext(
-    context: PandaSessionContext,
+    context: DefaultAgentSessionContext,
     tool: Agent,
-  ): RunContext<PandaSessionContext> {
+  ): RunContext<DefaultAgentSessionContext> {
     return new RunContext({
       agent: tool,
       turn: 1,

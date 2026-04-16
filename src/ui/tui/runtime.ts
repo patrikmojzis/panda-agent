@@ -1,6 +1,6 @@
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
-import {createPandaClient} from "../../app/runtime/client.js";
+import {createRuntimeClient} from "../../app/runtime/client.js";
 import type {InferenceProjection, ThreadRecord, ThreadUpdate} from "../../domain/threads/runtime/index.js";
 import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
@@ -12,7 +12,6 @@ export interface ChatRuntimeOptions {
   identity?: string;
   agent?: string;
   dbUrl?: string;
-  tablePrefix?: string;
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
 }
 
@@ -60,10 +59,9 @@ function trimNonEmptyString(value: string | null | undefined): string | undefine
 }
 
 export async function createChatRuntime(options: ChatRuntimeOptions): Promise<ChatRuntimeServices> {
-  const client = await createPandaClient({
+  const client = await createRuntimeClient({
     identity: options.identity,
     dbUrl: options.dbUrl,
-    tablePrefix: options.tablePrefix,
     onStoreNotification: options.onStoreNotification,
   });
 

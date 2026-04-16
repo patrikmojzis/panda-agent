@@ -21,7 +21,7 @@ Optional:
 
 - `TEST_MODEL`
 
-`TEST_DATABASE_URL` is the disposable live-test database. `panda smoke` uses `--db-url` first, then `TEST_DATABASE_URL`. It does not fall back to `PANDA_DATABASE_URL`.
+`TEST_DATABASE_URL` is the disposable live-test database. `panda smoke` uses `--db-url` first, then `TEST_DATABASE_URL`. It does not fall back to `DATABASE_URL`.
 
 ## Safety Model
 
@@ -109,7 +109,7 @@ Rules:
 Default artifact root:
 
 ```text
-.temp/panda-smoke/<timestamp>-<agentKey>/
+.temp/runtime-smoke/<timestamp>-<agentKey>/
 ```
 
 Each run writes:

@@ -1,16 +1,16 @@
 export {
-  PandaRuntimeRequestRepo,
-  type PandaRuntimeRequestRepoOptions,
+  RuntimeRequestRepo,
+  type RuntimeRequestRepoOptions,
 } from "./repo.js";
 export type {
   AbortThreadRequestPayload,
   CompactThreadRequestPayload,
   CreateRuntimeRequestInput,
   CreateBranchSessionRequestPayload,
-  PandaRuntimeRequestKind,
-  PandaRuntimeRequestPayload,
-  PandaRuntimeRequestRecord,
-  PandaRuntimeRequestStatus,
+  RuntimeRequestKind,
+  RuntimeRequestPayload,
+  RuntimeRequestRecord,
+  RuntimeRequestStatus,
   ResetSessionRequestPayload,
   ResolveMainSessionThreadRequestPayload,
   TelegramMessageRequestPayload,

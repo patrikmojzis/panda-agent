@@ -41,9 +41,9 @@ pnpm dev chat --db-url postgresql://localhost:5432/panda --agent panda
 If you want remote mode, also set:
 
 ```bash
-export PANDA_BASH_EXECUTION_MODE=remote
-export PANDA_RUNNER_URL_TEMPLATE=http://127.0.0.1:8080
-export PANDA_RUNNER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
+export BASH_EXECUTION_MODE=remote
+export RUNNER_URL_TEMPLATE=http://127.0.0.1:8080
+export RUNNER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
 ```
 
 and start the runner separately.

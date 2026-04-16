@@ -1,20 +1,20 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-  BashTool,
-  BraveSearchTool,
-  BrowserTool,
-  DateTimeContext,
-  EnvironmentContext,
-  MediaTool,
-  PANDA_PROMPT,
-  PostgresReadonlyQueryTool,
-  WebFetchTool,
-  WebResearchTool,
-  WhisperTool,
+    BashTool,
+    BraveSearchTool,
+    BrowserTool,
+    DateTimeContext,
+    DEFAULT_AGENT_INSTRUCTIONS,
+    EnvironmentContext,
+    MediaTool,
+    PostgresReadonlyQueryTool,
+    WebFetchTool,
+    WebResearchTool,
+    WhisperTool,
 } from "../src/index.js";
-import {buildPandaTools, buildPandaToolsets} from "../src/panda/definition.js";
-import {resolveStoredPandaContext} from "../src/app/runtime/create-runtime.js";
+import {buildDefaultAgentTools, buildDefaultAgentToolsets} from "../src/panda/definition.js";
+import {resolveStoredContext} from "../src/app/runtime/create-runtime.js";
 import {resolveRemoteInitialCwd} from "../src/integrations/shell/bash-executor.js";
 
 class FakeReadonlyPool {
@@ -31,20 +31,20 @@ describe("Panda feature surface", () => {
   it("builds the Panda prompt and default main tools", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
-    const tools = buildPandaTools();
+    const tools = buildDefaultAgentTools();
 
-    expect(PANDA_PROMPT).toContain("## Soul");
-    expect(PANDA_PROMPT).toContain("## Channels & Inner Monologue");
-    expect(PANDA_PROMPT).toContain("No outbound call = no message delivered.");
-    expect(PANDA_PROMPT).toContain("Use `role=\"workspace\"` for read-only workspace inspection, file search, and local PDF/image/sketch inspection.");
-    expect(PANDA_PROMPT).toContain("Use `role=\"browser\"` for browser automation and website inspection.");
-    expect(PANDA_PROMPT).toContain("For quick one-shot reads, you may use `postgres_readonly_query` directly.");
-    expect(PANDA_PROMPT).toContain(
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("## Soul");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("## Channels & Inner Monologue");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("No outbound call = no message delivered.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Use `role=\"workspace\"` for read-only workspace inspection, file search, and local PDF/image/sketch inspection.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Use `role=\"browser\"` for browser automation and website inspection.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("For quick one-shot reads, you may use `postgres_readonly_query` directly.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       "Foreground bash mutates the shared shell session. The working directory persists across foreground bash calls, and simple export/unset environment changes persist across foreground bash calls in both local and remote mode.",
     );
-    expect(PANDA_PROMPT).toContain("Background bash is isolated.");
-    expect(PANDA_PROMPT).toContain("Running background bash jobs may appear in context");
-    expect(PANDA_PROMPT).toContain("Panda may receive a runtime note about it");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Background bash is isolated.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Running background bash jobs may appear in context");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("the runtime may receive a note about it");
     expect(tools).toHaveLength(3);
     expect(tools[0]).toBeInstanceOf(BashTool);
     expect(tools[1]).toBeInstanceOf(MediaTool);
@@ -54,7 +54,7 @@ describe("Panda feature surface", () => {
   it("adds Brave search when BRAVE_API_KEY is configured", () => {
     vi.stubEnv("BRAVE_API_KEY", "BSA-test-key");
     vi.stubEnv("OPENAI_API_KEY", "");
-    const tools = buildPandaTools();
+    const tools = buildDefaultAgentTools();
 
     expect(tools).toHaveLength(4);
     expect(tools[3]).toBeInstanceOf(BraveSearchTool);
@@ -63,7 +63,7 @@ describe("Panda feature surface", () => {
   it("adds Whisper when OPENAI_API_KEY is configured", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
-    const tools = buildPandaTools();
+    const tools = buildDefaultAgentTools();
 
     expect(tools).toHaveLength(5);
     expect(tools[3]).toBeInstanceOf(WebResearchTool);
@@ -74,7 +74,7 @@ describe("Panda feature surface", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
     const extraTool = { name: "extra-tool" } as any;
-    const tools = buildPandaTools([extraTool]);
+    const tools = buildDefaultAgentTools([extraTool]);
 
     expect(tools).toHaveLength(4);
     expect(tools[3]).toBe(extraTool);
@@ -83,7 +83,7 @@ describe("Panda feature surface", () => {
   it("builds explicit specialist toolsets and keeps workspace/browser tools off the main agent", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
-    const toolsets = buildPandaToolsets({
+    const toolsets = buildDefaultAgentToolsets({
       postgresReadonly: {
         pool: new FakeReadonlyPool(),
       },
@@ -153,27 +153,27 @@ describe("Panda feature surface", () => {
   });
 
   it("resolves a remote initial cwd only in remote mode", () => {
-    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("BASH_EXECUTION_MODE", "remote");
 
     expect(resolveRemoteInitialCwd("jozef")).toBeNull();
 
-    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "local");
+    vi.stubEnv("BASH_EXECUTION_MODE", "local");
 
     expect(resolveRemoteInitialCwd("jozef")).toBeNull();
   });
 
   it("lets remote setups override the default runner cwd template", () => {
-    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/workspace/agents/{agentKey}");
+    vi.stubEnv("BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("RUNNER_CWD_TEMPLATE", "/workspace/agents/{agentKey}");
 
     expect(resolveRemoteInitialCwd("jozef")).toBe("/workspace/agents/jozef");
   });
 
   it("prefers the configured remote initial cwd when stored cwd is still the daemon fallback", () => {
-    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
 
-    expect(resolveStoredPandaContext(
+    expect(resolveStoredContext(
       {
         cwd: "/Users/patrikmojzis/Projects/panda-agent",
       } as any,
@@ -187,11 +187,11 @@ describe("Panda feature surface", () => {
   });
 
   it("rewrites an explicit host agent-home cwd to the remote runner path", () => {
-    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
-    vi.stubEnv("PANDA_DATA_DIR", "/Users/patrikmojzis/.panda");
+    vi.stubEnv("BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("DATA_DIR", "/Users/patrikmojzis/.panda");
 
-    expect(resolveStoredPandaContext(
+    expect(resolveStoredContext(
       {
         cwd: "/Users/patrikmojzis/.panda/agents/jozef",
       } as any,
@@ -203,11 +203,11 @@ describe("Panda feature surface", () => {
   });
 
   it("rewrites nested host agent-home cwd suffixes to the remote runner path", () => {
-    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
-    vi.stubEnv("PANDA_DATA_DIR", "/Users/patrikmojzis/.panda");
+    vi.stubEnv("BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("DATA_DIR", "/Users/patrikmojzis/.panda");
 
-    expect(resolveStoredPandaContext(
+    expect(resolveStoredContext(
       {
         cwd: "/Users/patrikmojzis/.panda/agents/jozef/projects/demo",
       } as any,
@@ -219,10 +219,10 @@ describe("Panda feature surface", () => {
   });
 
   it("preserves an explicit stored cwd in remote mode", () => {
-    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
 
-    expect(resolveStoredPandaContext(
+    expect(resolveStoredContext(
       {
         cwd: "/workspace/shared/project",
       } as any,

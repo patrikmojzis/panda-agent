@@ -48,7 +48,7 @@ What it does:
 - drops thinking, tool calls, tool results, cron prompts, and deleted session files
 - caps the import to the last 200 pairs so the main Panda thread does not become unusable
 - preserves original timestamps
-- writes the result into the agent's current main thread, so it shows up through `panda_messages`
+- writes the result into the agent's current main thread, so it shows up through `session.messages`
 
 Guardrail:
 
@@ -89,7 +89,7 @@ This keeps the raw workspace available without dragging old runtime garbage and 
 
 ## Credential Note
 
-The importer writes credentials only when `PANDA_CREDENTIALS_MASTER_KEY` is set.
+The importer writes credentials only when `CREDENTIALS_MASTER_KEY` is set.
 
 Without it:
 

@@ -4,7 +4,7 @@ import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {Agent, type PandaSessionContext, RunContext, ToolError,} from "../src/index.js";
+import {Agent, type DefaultAgentSessionContext, RunContext, ToolError,} from "../src/index.js";
 import {BrowserTool} from "../src/panda/tools/browser-tool.js";
 import {BrowserSessionService, buildBrowserDockerRunArgs} from "../src/panda/tools/browser-service.js";
 
@@ -16,12 +16,12 @@ function createAgent() {
 }
 
 function createRunContext(
-  context: PandaSessionContext,
+  context: DefaultAgentSessionContext,
   options: {
     signal?: AbortSignal;
     onToolProgress?: (progress: Record<string, unknown>) => void;
   } = {},
-): RunContext<PandaSessionContext> {
+): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: createAgent(),
     turn: 1,
@@ -64,7 +64,7 @@ class FakeLocator {
   constructor(private readonly page: FakePage, private readonly selector: string) {}
 
   private findSnapshotElement() {
-    const match = this.selector.match(/data-panda-ref="(e\d+)"/);
+    const match = this.selector.match(/data-runtime-ref="(e\d+)"/);
     if (!match) {
       return undefined;
     }
@@ -176,7 +176,7 @@ class FakePage {
     }
     if (typeof pageFunction === "function") {
       const source = String(pageFunction);
-      if (source.includes("panda-browser-ref-overlays")) {
+      if (source.includes("runtime-browser-ref-overlays")) {
         if (arg && typeof arg === "object" && "refAttribute" in arg) {
           this.labelOverlaysInstalled += 1;
         } else {
@@ -312,8 +312,8 @@ function createDockerExecMock() {
         Id: containerId,
         Config: {
           Labels: {
-            "panda.browser": "1",
-            "panda.startedAtMs": String(Date.now()),
+            "runtime.browser": "1",
+            "runtime.startedAtMs": String(Date.now()),
           },
         },
         State: {
@@ -334,8 +334,8 @@ function createDockerExecMock() {
           Id: id,
           Config: {
             Labels: {
-              "panda.browser": "1",
-              "panda.startedAtMs": String(Date.now()),
+              "runtime.browser": "1",
+              "runtime.startedAtMs": String(Date.now()),
             },
           },
           State: {
@@ -482,8 +482,8 @@ describe("BrowserTool", () => {
     expect(args).toContain("--ipc=host");
     expect(args).toContain("pwuser");
     expect(args).toContain("127.0.0.1::3000");
-    expect(args).toContain("panda.browser=1");
-    expect(args).toContain("panda.threadId=thread-123");
+    expect(args).toContain("runtime.browser=1");
+    expect(args).toContain("runtime.threadId=thread-123");
     expect(args.some((value) => value.includes("seccomp=") && value.endsWith("assets/playwright-seccomp-profile.json"))).toBe(true);
   });
 
@@ -494,7 +494,7 @@ describe("BrowserTool", () => {
     const connectBrowserImpl = vi.fn()
       .mockResolvedValueOnce(browserOne as any)
       .mockResolvedValueOnce(browserTwo as any);
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
       execFileImpl: docker.execFileImpl as any,
@@ -523,17 +523,17 @@ describe("BrowserTool", () => {
           stdout: JSON.stringify([
             {
               Id: "stale",
-              Config: {Labels: {"panda.startedAtMs": "10"}},
+              Config: {Labels: {"runtime.startedAtMs": "10"}},
               State: {Running: true},
             },
             {
               Id: "running",
-              Config: {Labels: {"panda.startedAtMs": "980"}},
+              Config: {Labels: {"runtime.startedAtMs": "980"}},
               State: {Running: true},
             },
             {
               Id: "stopped",
-              Config: {Labels: {"panda.startedAtMs": "990"}},
+              Config: {Labels: {"runtime.startedAtMs": "990"}},
               State: {Running: false},
             },
           ]),
@@ -573,7 +573,7 @@ describe("BrowserTool", () => {
       }
       return await docker.execFileImpl(file, args, options as never);
     });
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
       execFileImpl: execFileImpl as any,
@@ -641,7 +641,7 @@ describe("BrowserTool", () => {
     const docker = createDockerExecMock();
     const page = new FakePage();
     page.nextGotoUrl = "http://169.254.169.254/latest/meta-data";
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
       execFileImpl: docker.execFileImpl as any,
@@ -660,7 +660,7 @@ describe("BrowserTool", () => {
   it("guards routed subresource requests and aborts blocked ones", async () => {
     const docker = createDockerExecMock();
     const context = new FakeBrowserContext(new FakePage());
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
       execFileImpl: docker.execFileImpl as any,
@@ -693,7 +693,7 @@ describe("BrowserTool", () => {
     const docker = createDockerExecMock();
     const context = new FakeBrowserContext(new FakePage());
     const lookupHostname = vi.fn(async () => ["93.184.216.34"]);
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
       execFileImpl: docker.execFileImpl as any,
@@ -729,7 +729,7 @@ describe("BrowserTool", () => {
       .mockResolvedValueOnce(browserOne as any)
       .mockResolvedValueOnce(browserTwo as any);
     let now = 0;
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
       execFileImpl: docker.execFileImpl as any,
@@ -768,7 +768,7 @@ describe("BrowserTool", () => {
       signals: [],
       elements: [{ref: "e1", tag: "button", role: "button", text: "Continue"}],
     };
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
       execFileImpl: docker.execFileImpl as any,
@@ -790,7 +790,7 @@ describe("BrowserTool", () => {
       type: "text",
       text: expect.stringContaining("- [e1] button \"Continue\""),
     });
-    expect(page.locatorSelectors).toContain('[data-panda-ref="e1"]');
+    expect(page.locatorSelectors).toContain('[data-runtime-ref="e1"]');
     expect(click.details).toMatchObject({action: "click"});
   });
 
@@ -813,7 +813,7 @@ describe("BrowserTool", () => {
     page.onLocatorClick = async () => {
       context.emitPage(popup);
     };
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
       execFileImpl: docker.execFileImpl as any,
@@ -839,7 +839,7 @@ describe("BrowserTool", () => {
   });
 
   it("caps evaluate results and writes screenshot/pdf artifacts", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const docker = createDockerExecMock();
     const page = new FakePage();
@@ -899,7 +899,7 @@ describe("BrowserTool", () => {
   });
 
   it("returns the explicit evaluate hint when the page script yields nothing", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const docker = createDockerExecMock();
     const service = new BrowserSessionService({
@@ -952,7 +952,7 @@ describe("BrowserTool", () => {
         },
       ],
     };
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
       execFileImpl: docker.execFileImpl as any,
@@ -1003,7 +1003,7 @@ describe("BrowserTool", () => {
         },
       ],
     };
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
       execFileImpl: docker.execFileImpl as any,
@@ -1031,7 +1031,7 @@ describe("BrowserTool", () => {
   });
 
   it("returns labeled screenshots with companion snapshot text and cleans overlays up", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const docker = createDockerExecMock();
     const page = new FakePage();
@@ -1066,7 +1066,7 @@ describe("BrowserTool", () => {
   });
 
   it("persists thread-scoped browser storage state across close and reopen", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const docker = createDockerExecMock();
     const firstContext = new FakeBrowserContext(new FakePage());
@@ -1094,7 +1094,7 @@ describe("BrowserTool", () => {
 
   it("closes the persistent session and removes the container", async () => {
     const docker = createDockerExecMock();
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-browser-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
       execFileImpl: docker.execFileImpl as any,

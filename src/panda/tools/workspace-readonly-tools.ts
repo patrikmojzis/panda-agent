@@ -8,8 +8,8 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import {formatToolResultFallback, Tool} from "../../kernel/agent/tool.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
-import {resolvePandaPath} from "../../app/runtime/panda-path-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
 
 const DEFAULT_GLOB_LIMIT = 200;
 const DEFAULT_GREP_LIMIT = 100;
@@ -40,7 +40,7 @@ function toPosixPath(value: string): string {
 }
 
 function resolveWorkspaceRoot(context: unknown): string {
-  return resolvePandaPath(".", context);
+  return resolveContextPath(".", context);
 }
 
 function formatDisplayPath(targetPath: string, context: unknown): string {
@@ -219,7 +219,7 @@ function buildMatchText(matches: readonly {path: string; line: number; text: str
   return matches.map((match) => `${match.path}:${String(match.line)}: ${match.text}`).join("\n");
 }
 
-export class ReadFileTool<TContext = PandaSessionContext>
+export class ReadFileTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof ReadFileTool.schema, TContext> {
   static schema = z.object({
     path: z.string().trim().min(1).describe("Path to the text file to inspect."),
@@ -253,7 +253,7 @@ export class ReadFileTool<TContext = PandaSessionContext>
     args: z.output<typeof ReadFileTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
-    const resolvedPath = resolvePandaPath(args.path, run.context);
+    const resolvedPath = resolveContextPath(args.path, run.context);
     const displayPath = formatDisplayPath(resolvedPath, run.context);
     const startLine = args.startLine ?? 1;
     const maxLines = args.maxLines ?? DEFAULT_READ_MAX_LINES;
@@ -296,7 +296,7 @@ export class ReadFileTool<TContext = PandaSessionContext>
   }
 }
 
-export class GlobFilesTool<TContext = PandaSessionContext>
+export class GlobFilesTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof GlobFilesTool.schema, TContext> {
   static schema = z.object({
     pattern: z.string().trim().min(1).describe("Glob pattern like src/**/*.ts or **/*.md."),
@@ -331,7 +331,7 @@ export class GlobFilesTool<TContext = PandaSessionContext>
     args: z.output<typeof GlobFilesTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
-    const rootPath = resolvePandaPath(args.root ?? ".", run.context);
+    const rootPath = resolveContextPath(args.root ?? ".", run.context);
     const limit = args.limit ?? DEFAULT_GLOB_LIMIT;
     const matches: string[] = [];
     let truncated = false;
@@ -377,7 +377,7 @@ export class GlobFilesTool<TContext = PandaSessionContext>
   }
 }
 
-export class GrepFilesTool<TContext = PandaSessionContext>
+export class GrepFilesTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof GrepFilesTool.schema, TContext> {
   static schema = z.object({
     pattern: z.string().trim().min(1).describe("Regex pattern to search for."),
@@ -415,7 +415,7 @@ export class GrepFilesTool<TContext = PandaSessionContext>
     args: z.output<typeof GrepFilesTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
-    const rootPath = resolvePandaPath(args.root ?? ".", run.context);
+    const rootPath = resolveContextPath(args.root ?? ".", run.context);
     const limit = args.limit ?? DEFAULT_GREP_LIMIT;
     const source = args.literal ? args.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : args.pattern;
     const flags = args.caseSensitive ? "" : "i";

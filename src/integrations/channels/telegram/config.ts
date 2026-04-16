@@ -1,6 +1,6 @@
-import {resolvePandaMediaDir} from "../../../app/runtime/data-dir.js";
+import {resolveMediaDir} from "../../../app/runtime/data-dir.js";
 
-export { resolvePandaDataDir } from "../../../app/runtime/data-dir.js";
+export { resolveDataDir } from "../../../app/runtime/data-dir.js";
 
 function trimNonEmptyString(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
@@ -21,7 +21,7 @@ export function requireTelegramBotToken(env: NodeJS.ProcessEnv = process.env): s
 }
 
 export function resolveTelegramMediaDir(env: NodeJS.ProcessEnv = process.env): string {
-  return resolvePandaMediaDir(env);
+  return resolveMediaDir(env);
 }
 
 export const TELEGRAM_SOURCE = "telegram";

@@ -87,9 +87,9 @@ There is no `watch_list` tool in v1.
 Inspection is intentionally out of the model's default context.
 Use Postgres instead:
 
-- `panda_watches`
-- `panda_watch_runs`
-- `panda_watch_events`
+- `session.watches`
+- `session.watch_runs`
+- `session.watch_events`
 
 That keeps watch config visible to operators without stuffing admin state into every normal conversation.
 

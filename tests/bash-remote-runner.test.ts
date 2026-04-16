@@ -10,17 +10,17 @@ import {
     BashJobStatusTool,
     BashJobWaitTool,
     BashTool,
-    type PandaSessionContext,
+    type DefaultAgentSessionContext,
     RunContext,
     ToolError,
 } from "../src/index.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
 import {RemoteShellExecutor, resolveRunnerUrl,} from "../src/integrations/shell/bash-executor.js";
-import {type PandaBashRunner, startPandaBashRunner,} from "../src/integrations/shell/bash-runner.js";
+import {type BashRunner, startBashRunner,} from "../src/integrations/shell/bash-runner.js";
 import {
-    PANDA_RUNNER_AGENT_KEY_HEADER,
-    PANDA_RUNNER_EXPECTED_PATH_HEADER,
-    PANDA_RUNNER_PATH_SCOPED_HEADER,
+    RUNNER_AGENT_KEY_HEADER,
+    RUNNER_EXPECTED_PATH_HEADER,
+    RUNNER_PATH_SCOPED_HEADER,
 } from "../src/integrations/shell/bash-protocol.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
@@ -32,9 +32,9 @@ function createAgent() {
 }
 
 function createRunContext(
-  context: PandaSessionContext,
+  context: DefaultAgentSessionContext,
   options: { signal?: AbortSignal } = {},
-): RunContext<PandaSessionContext> {
+): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: createAgent(),
     turn: 1,
@@ -66,7 +66,7 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 
 }
 
 describe("remote bash runner", () => {
-  const runners: PandaBashRunner[] = [];
+  const runners: BashRunner[] = [];
   const directories: string[] = [];
 
   afterEach(async () => {
@@ -79,8 +79,8 @@ describe("remote bash runner", () => {
     }
   });
 
-  async function createRunner(agentKey: string, options: { env?: NodeJS.ProcessEnv } = {}): Promise<PandaBashRunner> {
-    const runner = await startPandaBashRunner({
+  async function createRunner(agentKey: string, options: { env?: NodeJS.ProcessEnv } = {}): Promise<BashRunner> {
+    const runner = await startBashRunner({
       agentKey,
       host: "127.0.0.1",
       port: 0,
@@ -96,7 +96,7 @@ describe("remote bash runner", () => {
     return directory;
   }
 
-  async function createRemoteBackgroundHarness(workspace: string, runner: PandaBashRunner) {
+  async function createRemoteBackgroundHarness(workspace: string, runner: BashRunner) {
     const store = new TestThreadRuntimeStore();
     const sessionId = "session-bg-remote";
     await store.createThread({
@@ -111,14 +111,14 @@ describe("remote bash runner", () => {
       store,
       env: {
         ...process.env,
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
     const bash = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
       outputDirectory: path.join(workspace, "tool-results"),
       jobService: service,
@@ -126,7 +126,7 @@ describe("remote bash runner", () => {
     const status = new BashJobStatusTool({ service });
     const wait = new BashJobWaitTool({ service });
     const cancel = new BashJobCancelTool({ service });
-    const context: PandaSessionContext = {
+    const context: DefaultAgentSessionContext = {
       sessionId,
       threadId: "thread-bg-remote",
       agentKey: "panda",
@@ -149,17 +149,17 @@ describe("remote bash runner", () => {
   }
 
   it("persists cwd changes across remote calls", async () => {
-    const projectRoot = await createWorkspace("panda-remote-project-");
+    const projectRoot = await createWorkspace("runtime-remote-project-");
     await mkdir(path.join(projectRoot, "nested"));
     const runner = await createRunner("panda");
     const expectedNested = await realpath(path.join(projectRoot, "nested"));
     const tool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
-    const context: PandaSessionContext = {
+    const context: DefaultAgentSessionContext = {
       agentKey: "panda",
       cwd: projectRoot,
       shell: {
@@ -183,17 +183,17 @@ describe("remote bash runner", () => {
   });
 
   it("does not inherit tool env, but keeps session env in remote bash", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
         OPENAI_API_KEY: "sk-secret",
         HOST_MARKER: "host",
       },
     });
-    const context: PandaSessionContext = {
+    const context: DefaultAgentSessionContext = {
       agentKey: "panda",
       cwd: agentHome,
       shell: {
@@ -215,7 +215,7 @@ describe("remote bash runner", () => {
   });
 
   it("does not inherit runner process env in remote bash", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda", {
       env: {
         ...process.env,
@@ -224,8 +224,8 @@ describe("remote bash runner", () => {
     });
     const tool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
 
@@ -247,12 +247,12 @@ describe("remote bash runner", () => {
   });
 
   it("accepts env overrides in remote mode", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
 
@@ -277,12 +277,12 @@ describe("remote bash runner", () => {
   });
 
   it("injects resolved credentials into remote bash without giving the runner static host env", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
         OPENAI_API_KEY: "host-secret",
       },
       credentialResolver: {
@@ -319,16 +319,16 @@ describe("remote bash runner", () => {
   });
 
   it("accepts env payloads at the runner", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
 
     const response = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/exec`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        [PANDA_RUNNER_AGENT_KEY_HEADER]: "panda",
-        [PANDA_RUNNER_PATH_SCOPED_HEADER]: "1",
-        [PANDA_RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
+        [RUNNER_AGENT_KEY_HEADER]: "panda",
+        [RUNNER_PATH_SCOPED_HEADER]: "1",
+        [RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
       },
       body: JSON.stringify({
         requestId: "request-strip-env",
@@ -351,15 +351,15 @@ describe("remote bash runner", () => {
   });
 
   it("persists exported env across remote calls", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
-    const context: PandaSessionContext = {
+    const context: DefaultAgentSessionContext = {
       agentKey: "panda",
       cwd: agentHome,
       shell: {
@@ -385,16 +385,16 @@ describe("remote bash runner", () => {
   });
 
   it("supports remote background job start, status, wait, and cancel endpoints", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
 
     const startResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/start`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        [PANDA_RUNNER_AGENT_KEY_HEADER]: "panda",
-        [PANDA_RUNNER_PATH_SCOPED_HEADER]: "1",
-        [PANDA_RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
+        [RUNNER_AGENT_KEY_HEADER]: "panda",
+        [RUNNER_PATH_SCOPED_HEADER]: "1",
+        [RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
       },
       body: JSON.stringify({
         jobId: "job-direct-1",
@@ -418,9 +418,9 @@ describe("remote bash runner", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        [PANDA_RUNNER_AGENT_KEY_HEADER]: "panda",
-        [PANDA_RUNNER_PATH_SCOPED_HEADER]: "1",
-        [PANDA_RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
+        [RUNNER_AGENT_KEY_HEADER]: "panda",
+        [RUNNER_PATH_SCOPED_HEADER]: "1",
+        [RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
       },
       body: JSON.stringify({
         jobId: "job-direct-1",
@@ -437,9 +437,9 @@ describe("remote bash runner", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        [PANDA_RUNNER_AGENT_KEY_HEADER]: "panda",
-        [PANDA_RUNNER_PATH_SCOPED_HEADER]: "1",
-        [PANDA_RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
+        [RUNNER_AGENT_KEY_HEADER]: "panda",
+        [RUNNER_PATH_SCOPED_HEADER]: "1",
+        [RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
       },
       body: JSON.stringify({
         jobId: "job-direct-1",
@@ -459,9 +459,9 @@ describe("remote bash runner", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        [PANDA_RUNNER_AGENT_KEY_HEADER]: "panda",
-        [PANDA_RUNNER_PATH_SCOPED_HEADER]: "1",
-        [PANDA_RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
+        [RUNNER_AGENT_KEY_HEADER]: "panda",
+        [RUNNER_PATH_SCOPED_HEADER]: "1",
+        [RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
       },
       body: JSON.stringify({
         jobId: "job-direct-2",
@@ -478,9 +478,9 @@ describe("remote bash runner", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        [PANDA_RUNNER_AGENT_KEY_HEADER]: "panda",
-        [PANDA_RUNNER_PATH_SCOPED_HEADER]: "1",
-        [PANDA_RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
+        [RUNNER_AGENT_KEY_HEADER]: "panda",
+        [RUNNER_PATH_SCOPED_HEADER]: "1",
+        [RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
       },
       body: JSON.stringify({
         jobId: "job-direct-2",
@@ -498,9 +498,9 @@ describe("remote bash runner", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        [PANDA_RUNNER_AGENT_KEY_HEADER]: "panda",
-        [PANDA_RUNNER_PATH_SCOPED_HEADER]: "1",
-        [PANDA_RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
+        [RUNNER_AGENT_KEY_HEADER]: "panda",
+        [RUNNER_PATH_SCOPED_HEADER]: "1",
+        [RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
       },
       body: JSON.stringify({
         jobId: "job-direct-1",
@@ -513,9 +513,9 @@ describe("remote bash runner", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        [PANDA_RUNNER_AGENT_KEY_HEADER]: "panda",
-        [PANDA_RUNNER_PATH_SCOPED_HEADER]: "1",
-        [PANDA_RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
+        [RUNNER_AGENT_KEY_HEADER]: "panda",
+        [RUNNER_PATH_SCOPED_HEADER]: "1",
+        [RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
       },
       body: JSON.stringify({
         jobId: "job-direct-2",
@@ -526,7 +526,7 @@ describe("remote bash runner", () => {
   });
 
   it("keeps remote background jobs isolated from the shared shell session", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const {bash, wait, context} = await createRemoteBackgroundHarness(agentHome, runner);
     context.shell!.env.SESSION_MARKER = "session";
@@ -559,7 +559,7 @@ describe("remote bash runner", () => {
   });
 
   it("runs multiple remote background jobs concurrently", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const {bash, wait, context} = await createRemoteBackgroundHarness(agentHome, runner);
 
@@ -588,7 +588,7 @@ describe("remote bash runner", () => {
   });
 
   it("fires the remote background completion handler when watcher-owned jobs finish", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const {bash, context, service, store} = await createRemoteBackgroundHarness(agentHome, runner);
     const completedJobIds: string[] = [];
@@ -635,18 +635,18 @@ describe("remote bash runner", () => {
       fetchImpl: fetchImpl as typeof fetch,
       env: {
         ...process.env,
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: "http://runner.local/{agentKey}",
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: "http://runner.local/{agentKey}",
       },
     });
     const bash = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: "http://runner.local/{agentKey}",
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: "http://runner.local/{agentKey}",
       },
       jobService: service,
     });
-    const context: PandaSessionContext = {
+    const context: DefaultAgentSessionContext = {
       threadId: "thread-bg-remote",
       agentKey: "panda",
       cwd: "/workspace/shared",
@@ -666,15 +666,15 @@ describe("remote bash runner", () => {
   });
 
   it("returns a clean error for unknown remote background jobs", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const response = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/status`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        [PANDA_RUNNER_AGENT_KEY_HEADER]: "panda",
-        [PANDA_RUNNER_PATH_SCOPED_HEADER]: "1",
-        [PANDA_RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
+        [RUNNER_AGENT_KEY_HEADER]: "panda",
+        [RUNNER_PATH_SCOPED_HEADER]: "1",
+        [RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
       },
       body: JSON.stringify({
         jobId: "missing-job",
@@ -699,11 +699,11 @@ describe("remote bash runner", () => {
     const runner = await createRunner("panda");
     const tool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
-    const context: PandaSessionContext = {
+    const context: DefaultAgentSessionContext = {
       agentKey: "panda",
       cwd: outsider,
       shell: {
@@ -722,13 +722,13 @@ describe("remote bash runner", () => {
   });
 
   it("reports a missing remote cwd clearly for foreground bash", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const missingCwd = path.join(agentHome, "missing-cwd");
     const runner = await createRunner("panda");
     const tool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
 
@@ -746,7 +746,7 @@ describe("remote bash runner", () => {
   });
 
   it("reports a missing remote cwd clearly for background bash", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const missingCwd = path.join(agentHome, "missing-cwd");
     const runner = await createRunner("panda");
     const {bash, context, store} = await createRemoteBackgroundHarness(agentHome, runner);
@@ -834,12 +834,12 @@ describe("remote bash runner", () => {
   });
 
   it("supports a single runner url without an agent key placeholder", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}`,
       },
     });
 
@@ -860,12 +860,12 @@ describe("remote bash runner", () => {
   });
 
   it("rejects requests for the wrong agent on path-scoped runner urls", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("jozef");
     const tool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/{agentKey}`,
       },
     });
 
@@ -883,12 +883,12 @@ describe("remote bash runner", () => {
   });
 
   it("supports path-scoped runner urls when the agent segment is not the final path segment", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/runners/{agentKey}/bash`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/runners/{agentKey}/bash`,
       },
     });
 
@@ -908,15 +908,15 @@ describe("remote bash runner", () => {
   });
 
   it("rejects path-scoped requests when the actual path does not match the expected agent route", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("jozef");
     const response = await fetch(`http://127.0.0.1:${runner.port}/runners/panda/bash/exec`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        [PANDA_RUNNER_AGENT_KEY_HEADER]: "jozef",
-        [PANDA_RUNNER_PATH_SCOPED_HEADER]: "1",
-        [PANDA_RUNNER_EXPECTED_PATH_HEADER]: "/runners/jozef/bash",
+        [RUNNER_AGENT_KEY_HEADER]: "jozef",
+        [RUNNER_PATH_SCOPED_HEADER]: "1",
+        [RUNNER_EXPECTED_PATH_HEADER]: "/runners/jozef/bash",
       },
       body: JSON.stringify({
         requestId: "request-1",
@@ -940,26 +940,26 @@ describe("remote bash runner", () => {
   });
 
   it("lets two agents intentionally share the same mounted workspace", async () => {
-    const agentHomeA = await createWorkspace("panda-agent-home-a-");
-    const agentHomeB = await createWorkspace("panda-agent-home-b-");
+    const agentHomeA = await createWorkspace("runtime-agent-home-a-");
+    const agentHomeB = await createWorkspace("runtime-agent-home-b-");
     const sharedWorkspace = await createWorkspace("panda-shared-workspace-");
     const runnerA = await createRunner("panda");
     const runnerB = await createRunner("ops");
     const expectedSharedWorkspace = await realpath(sharedWorkspace);
-    const pandaTool = new BashTool({
+    const primaryTool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runnerA.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runnerA.port}/agents/{agentKey}`,
       },
     });
     const opsTool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runnerB.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runnerB.port}/agents/{agentKey}`,
       },
     });
 
-    const pandaResult = await pandaTool.run(
+    const primaryResult = await primaryTool.run(
       { command: "pwd" },
       createRunContext({
         agentKey: "panda",
@@ -976,17 +976,17 @@ describe("remote bash runner", () => {
       }),
     );
 
-    expect(String(asObject(pandaResult).stdout).trim()).toBe(expectedSharedWorkspace);
+    expect(String(asObject(primaryResult).stdout).trim()).toBe(expectedSharedWorkspace);
     expect(String(asObject(opsResult).stdout).trim()).toBe(expectedSharedWorkspace);
   });
 
   it("aborts remote commands through the runner", async () => {
-    const agentHome = await createWorkspace("panda-agent-home-");
+    const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const tool = new BashTool({
       env: {
-        PANDA_BASH_EXECUTION_MODE: "remote",
-        PANDA_RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
     const controller = new AbortController();

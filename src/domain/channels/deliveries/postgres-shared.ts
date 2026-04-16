@@ -1,16 +1,16 @@
-import {buildPrefixedRelationNames, validateIdentifier,} from "../../threads/runtime/postgres-shared.js";
+import {buildRuntimeRelationNames} from "../../threads/runtime/postgres-shared.js";
 
 export interface OutboundDeliveryTableNames {
   prefix: string;
   outboundDeliveries: string;
 }
 
-export function buildOutboundDeliveryTableNames(prefix: string): OutboundDeliveryTableNames {
-  return buildPrefixedRelationNames(prefix, {
+export function buildOutboundDeliveryTableNames(): OutboundDeliveryTableNames {
+  return buildRuntimeRelationNames({
     outboundDeliveries: "outbound_deliveries",
   });
 }
 
-export function buildDeliveryNotificationChannel(prefix = "thread_runtime"): string {
-  return validateIdentifier(`${prefix}_outbound_delivery_events`);
+export function buildDeliveryNotificationChannel(): string {
+  return "runtime_outbound_delivery_events";
 }

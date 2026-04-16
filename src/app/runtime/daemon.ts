@@ -1,33 +1,33 @@
-import {bootstrapPandaDaemonContext} from "./daemon-bootstrap.js";
-import {createPandaDaemonLifecycle} from "./daemon-lifecycle.js";
+import {bootstrapDaemonContext} from "./daemon-bootstrap.js";
+import {createDaemonLifecycle} from "./daemon-lifecycle.js";
 import {createDaemonRequestProcessor} from "./daemon-requests.js";
 import {createDaemonThreadHelpers} from "./daemon-threads.js";
 import {
-    DEFAULT_PANDA_DAEMON_KEY,
-    PANDA_DAEMON_HEARTBEAT_INTERVAL_MS,
-    PANDA_DAEMON_REQUEST_TIMEOUT_MS,
-    PANDA_DAEMON_STALE_AFTER_MS,
-    type PandaDaemonOptions,
-    type PandaDaemonServices,
+    DAEMON_HEARTBEAT_INTERVAL_MS,
+    DAEMON_REQUEST_TIMEOUT_MS,
+    DAEMON_STALE_AFTER_MS,
+    type DaemonOptions,
+    type DaemonServices,
+    DEFAULT_DAEMON_KEY,
 } from "./daemon-shared.js";
 
 export {
-  DEFAULT_PANDA_DAEMON_KEY,
-  PANDA_DAEMON_HEARTBEAT_INTERVAL_MS,
-  PANDA_DAEMON_REQUEST_TIMEOUT_MS,
-  PANDA_DAEMON_STALE_AFTER_MS,
+  DEFAULT_DAEMON_KEY,
+  DAEMON_HEARTBEAT_INTERVAL_MS,
+  DAEMON_REQUEST_TIMEOUT_MS,
+  DAEMON_STALE_AFTER_MS,
 };
 
 export type {
-  PandaDaemonOptions,
-  PandaDaemonServices,
+  DaemonOptions,
+  DaemonServices,
 };
 
-export async function createPandaDaemon(options: PandaDaemonOptions): Promise<PandaDaemonServices> {
-  const context = await bootstrapPandaDaemonContext(options);
+export async function createDaemon(options: DaemonOptions): Promise<DaemonServices> {
+  const context = await bootstrapDaemonContext(options);
   const threads = createDaemonThreadHelpers(context);
   const processRequest = createDaemonRequestProcessor(context, threads);
-  return createPandaDaemonLifecycle({
+  return createDaemonLifecycle({
     context,
     processRequest,
   });

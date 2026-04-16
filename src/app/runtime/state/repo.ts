@@ -1,19 +1,18 @@
 import type {Pool} from "pg";
 
-import {toMillis} from "../../../domain/threads/runtime/postgres-shared.js";
-import {buildPandaDaemonStateTableNames, type PandaDaemonStateTableNames} from "./postgres-shared.js";
-import type {PandaDaemonStateRecord} from "./types.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, toMillis} from "../../../domain/threads/runtime/postgres-shared.js";
+import {buildDaemonStateTableNames, type DaemonStateTableNames} from "./postgres-shared.js";
+import type {DaemonStateRecord} from "./types.js";
 
 interface PgQueryable {
   query: Pool["query"];
 }
 
-export interface PandaDaemonStateRepoOptions {
+export interface DaemonStateRepoOptions {
   pool: PgQueryable;
-  tablePrefix?: string;
 }
 
-function parseRow(row: Record<string, unknown>): PandaDaemonStateRecord {
+function parseRow(row: Record<string, unknown>): DaemonStateRecord {
   return {
     daemonKey: String(row.daemon_key),
     heartbeatAt: toMillis(row.heartbeat_at),
@@ -22,16 +21,17 @@ function parseRow(row: Record<string, unknown>): PandaDaemonStateRecord {
   };
 }
 
-export class PandaDaemonStateRepo {
+export class DaemonStateRepo {
   private readonly pool: PgQueryable;
-  private readonly tables: PandaDaemonStateTableNames;
+  private readonly tables: DaemonStateTableNames;
 
-  constructor(options: PandaDaemonStateRepoOptions) {
+  constructor(options: DaemonStateRepoOptions) {
     this.pool = options.pool;
-    this.tables = buildPandaDaemonStateTableNames(options.tablePrefix ?? "thread_runtime");
+    this.tables = buildDaemonStateTableNames();
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.daemonState} (
         daemon_key TEXT PRIMARY KEY,
@@ -42,7 +42,7 @@ export class PandaDaemonStateRepo {
     `);
   }
 
-  async heartbeat(daemonKey: string): Promise<PandaDaemonStateRecord> {
+  async heartbeat(daemonKey: string): Promise<DaemonStateRecord> {
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.daemonState} (
         daemon_key,
@@ -62,7 +62,7 @@ export class PandaDaemonStateRepo {
     return parseRow(result.rows[0] as Record<string, unknown>);
   }
 
-  async readState(daemonKey: string): Promise<PandaDaemonStateRecord | null> {
+  async readState(daemonKey: string): Promise<DaemonStateRecord | null> {
     const result = await this.pool.query(`
       SELECT *
       FROM ${this.tables.daemonState}

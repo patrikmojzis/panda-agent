@@ -4,7 +4,7 @@ import type {Pool, PoolClient} from "pg";
 
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildIdentityTableNames} from "../identity/postgres-shared.js";
-import {quoteIdentifier, toMillis} from "../threads/runtime/postgres-shared.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toMillis} from "../threads/runtime/postgres-shared.js";
 import {buildCredentialTableNames, type CredentialTableNames} from "./postgres-shared.js";
 import {
     type CredentialListFilter,
@@ -25,7 +25,6 @@ interface PgPoolLike extends PgQueryable {
 
 export interface PostgresCredentialStoreOptions {
   pool: PgPoolLike;
-  tablePrefix?: string;
 }
 
 function toBuffer(value: unknown): Buffer {
@@ -110,13 +109,13 @@ export class PostgresCredentialStore {
 
   constructor(options: PostgresCredentialStoreOptions) {
     this.pool = options.pool;
-    const tablePrefix = options.tablePrefix ?? "thread_runtime";
-    this.tables = buildCredentialTableNames(tablePrefix);
-    this.agentTables = buildAgentTableNames(tablePrefix);
-    this.identityTables = buildIdentityTableNames(tablePrefix);
+    this.tables = buildCredentialTableNames();
+    this.agentTables = buildAgentTableNames();
+    this.identityTables = buildIdentityTableNames();
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.credentials} (
         id UUID PRIMARY KEY,

@@ -2,7 +2,12 @@ import {randomUUID} from "node:crypto";
 
 import type {Pool, PoolClient} from "pg";
 
-import {quoteIdentifier, toJson, toMillis} from "../../domain/threads/runtime/postgres-shared.js";
+import {
+    CREATE_RUNTIME_SCHEMA_SQL,
+    quoteIdentifier,
+    toJson,
+    toMillis
+} from "../../domain/threads/runtime/postgres-shared.js";
 import {buildIdentityTableNames, type IdentityTableNames} from "./postgres-shared.js";
 import {
     createDefaultIdentityInput,
@@ -27,7 +32,6 @@ interface PgPoolLike extends PgQueryable {
 
 export interface PostgresIdentityStoreOptions {
   pool: PgPoolLike;
-  tablePrefix?: string;
 }
 
 function requireTrimmedBindingKeyPart(field: string, value: string): string {
@@ -120,7 +124,7 @@ export class PostgresIdentityStore implements IdentityStore {
 
   constructor(options: PostgresIdentityStoreOptions) {
     this.pool = options.pool;
-    this.tables = buildIdentityTableNames(options.tablePrefix ?? "thread_runtime");
+    this.tables = buildIdentityTableNames();
   }
 
   private async insertIdentityBinding(input: CreateIdentityBindingInput): Promise<IdentityBindingRecord> {
@@ -155,6 +159,7 @@ export class PostgresIdentityStore implements IdentityStore {
 
   async ensureSchema(): Promise<void> {
     const localIdentity = createDefaultIdentityInput();
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.identities} (
         id TEXT PRIMARY KEY,

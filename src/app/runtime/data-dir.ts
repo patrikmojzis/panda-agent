@@ -19,8 +19,8 @@ function requireSafeAgentPathKey(agentKey: string): string {
   return trimmed;
 }
 
-export function resolvePandaDataDir(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = trimNonEmptyString(env.PANDA_DATA_DIR);
+export function resolveDataDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = trimNonEmptyString(env.DATA_DIR);
   if (!configured) {
     return path.join(os.homedir(), ".panda");
   }
@@ -36,14 +36,14 @@ export function resolvePandaDataDir(env: NodeJS.ProcessEnv = process.env): strin
   return path.resolve(configured);
 }
 
-export function resolvePandaMediaDir(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolvePandaDataDir(env), "media");
+export function resolveMediaDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveDataDir(env), "media");
 }
 
-export function resolvePandaAgentDir(agentKey: string, env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolvePandaDataDir(env), "agents", requireSafeAgentPathKey(agentKey));
+export function resolveAgentDir(agentKey: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveDataDir(env), "agents", requireSafeAgentPathKey(agentKey));
 }
 
-export function resolvePandaAgentMediaDir(agentKey: string, env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolvePandaAgentDir(agentKey, env), "media");
+export function resolveAgentMediaDir(agentKey: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveAgentDir(agentKey, env), "media");
 }

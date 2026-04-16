@@ -21,7 +21,7 @@ export class CredentialCrypto {
   constructor(masterKey: string) {
     const normalized = firstNonEmpty(masterKey);
     if (!normalized) {
-      throw new Error("PANDA_CREDENTIALS_MASTER_KEY must not be empty.");
+      throw new Error("CREDENTIALS_MASTER_KEY must not be empty.");
     }
 
     // v1 keeps the operator UX simple: any long random string works, and we
@@ -65,7 +65,7 @@ export class CredentialCrypto {
 }
 
 export function resolveCredentialCrypto(env: NodeJS.ProcessEnv = process.env): CredentialCrypto | null {
-  const masterKey = firstNonEmpty(env.PANDA_CREDENTIALS_MASTER_KEY);
+  const masterKey = firstNonEmpty(env.CREDENTIALS_MASTER_KEY);
   if (!masterKey) {
     return null;
   }

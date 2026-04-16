@@ -1,18 +1,18 @@
-export {PANDA_PROMPT} from "./prompt.js";
-export {buildPandaTools} from "./definition.js";
-export {resolveDefaultPandaModelSelector} from "./defaults.js";
+export {DEFAULT_AGENT_INSTRUCTIONS} from "./prompt.js";
+export {buildDefaultAgentTools} from "./definition.js";
+export {resolveDefaultAgentModelSelector} from "./defaults.js";
 export {
   AgentProfileContext,
   type AgentProfileContextOptions,
-  buildPandaLlmContexts,
-  DEFAULT_PANDA_LLM_CONTEXT_SECTIONS,
+  buildDefaultAgentLlmContexts,
+  DEFAULT_AGENT_LLM_CONTEXT_SECTIONS,
   type AgentProfileContextSection,
   DateTimeContext,
   EnvironmentContext,
-  type BuildPandaLlmContextsOptions,
+  type BuildDefaultAgentLlmContextsOptions,
   type DateTimeContextOptions,
   type EnvironmentContextOptions,
-  type PandaLlmContextSection,
+  type DefaultAgentLlmContextSection,
 } from "./contexts/builder.js";
 export {
   AgentDocumentTool,
@@ -97,15 +97,15 @@ export {
 } from "./tools/web-research-tool.js";
 export {
   filterToolsForSubagentRole,
-  getPandaSubagentRolePolicy,
-  PANDA_SUBAGENT_ROLE_POLICIES,
-  type PandaSubagentRole,
-  type PandaSubagentRolePolicy,
+  getDefaultAgentSubagentRolePolicy,
+  DEFAULT_AGENT_SUBAGENT_ROLE_POLICIES,
+  type DefaultAgentSubagentRole,
+  type DefaultAgentSubagentRolePolicy,
 } from "./subagents/policy.js";
 export type {
-  PandaChannelActionQueue,
-  PandaOutboundQueue,
-  PandaRouteMemory,
-  PandaSessionContext,
-  PandaShellSession,
+  DefaultAgentChannelActionQueue,
+  DefaultAgentOutboundQueue,
+  DefaultAgentRouteMemory,
+  DefaultAgentSessionContext,
+  DefaultAgentShellSession,
 } from "../app/runtime/panda-session-context.js";

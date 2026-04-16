@@ -22,12 +22,12 @@ import type {
     ThreadRunRecord,
 } from "../../domain/threads/runtime/index.js";
 import {readToolArtifact, type ToolArtifactDescriptor} from "../../kernel/agent/tool-artifacts.js";
-import {createPandaClient} from "../runtime/client.js";
-import {createPandaDaemon} from "../runtime/daemon.js";
-import {DEFAULT_PANDA_DAEMON_KEY, PANDA_DAEMON_STALE_AFTER_MS} from "../runtime/daemon-shared.js";
-import {createPandaPool} from "../runtime/database.js";
-import {ensureSchemas, withPandaPool} from "../runtime/postgres-bootstrap.js";
-import {PandaDaemonStateRepo} from "../runtime/state/repo.js";
+import {createRuntimeClient} from "../runtime/client.js";
+import {createDaemon} from "../runtime/daemon.js";
+import {DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY} from "../runtime/daemon-shared.js";
+import {createPostgresPool} from "../runtime/database.js";
+import {ensureSchemas, withPostgresPool} from "../runtime/postgres-bootstrap.js";
+import {DaemonStateRepo} from "../runtime/state/repo.js";
 import {
     DEFAULT_SMOKE_TIMEOUT_MS,
     requireSmokeDatabaseUrl,
@@ -36,7 +36,7 @@ import {
 } from "./config.js";
 import {recreateSmokeDatabase, resolveSmokeDatabaseTarget, type SmokeDatabaseTarget,} from "./database.js";
 
-export interface PandaSmokeInput {
+export interface SmokeInput {
   agentKey?: string;
   artifactsDir?: string;
   allowUnsafeDbReset?: boolean;
@@ -53,7 +53,7 @@ export interface PandaSmokeInput {
   timeoutMs?: number;
 }
 
-export type PandaSmokeStage =
+export type SmokeStage =
   | "config"
   | "db_reset"
   | "daemon_start"
@@ -63,20 +63,20 @@ export type PandaSmokeStage =
   | "collect"
   | "assertions";
 
-export interface PandaSmokeAssertion {
+export interface SmokeAssertion {
   details?: string;
   label: string;
   passed: boolean;
 }
 
-export interface PandaSmokeArtifacts {
+export interface SmokeArtifacts {
   runs: string;
   summary: string;
   toolArtifacts: string;
   transcript: string;
 }
 
-export interface PandaSmokeToolArtifactEntry {
+export interface SmokeToolArtifactEntry {
   artifact: ToolArtifactDescriptor;
   isError: boolean;
   messageId: string;
@@ -84,7 +84,7 @@ export interface PandaSmokeToolArtifactEntry {
   toolName: string;
 }
 
-export interface PandaSmokeBashArtifactEntry {
+export interface SmokeBashArtifactEntry {
   command: string;
   jobId: string;
   runId?: string;
@@ -93,20 +93,20 @@ export interface PandaSmokeBashArtifactEntry {
   stdoutPath?: string;
 }
 
-export interface PandaSmokeToolArtifacts {
-  bashArtifacts: readonly PandaSmokeBashArtifactEntry[];
-  toolArtifacts: readonly PandaSmokeToolArtifactEntry[];
+export interface SmokeToolArtifacts {
+  bashArtifacts: readonly SmokeBashArtifactEntry[];
+  toolArtifacts: readonly SmokeToolArtifactEntry[];
 }
 
-export interface PandaSmokeError {
+export interface SmokeError {
   message: string;
-  stage: PandaSmokeStage;
+  stage: SmokeStage;
 }
 
-export interface PandaSmokeResult {
+export interface SmokeResult {
   artifactDir: string;
-  artifacts: PandaSmokeArtifacts;
-  assertions: readonly PandaSmokeAssertion[];
+  artifacts: SmokeArtifacts;
+  assertions: readonly SmokeAssertion[];
   config: {
     agentKey: string;
     cwd: string;
@@ -121,13 +121,13 @@ export interface PandaSmokeResult {
     reuseDb: boolean;
     timeoutMs: number;
   };
-  error?: PandaSmokeError;
+  error?: SmokeError;
   runs: readonly ThreadRunRecord[];
   sessionId?: string;
   startedAt: number;
   success: boolean;
   threadId?: string;
-  toolArtifacts: PandaSmokeToolArtifacts;
+  toolArtifacts: SmokeToolArtifacts;
   transcript: readonly ThreadMessageRecord[];
 }
 
@@ -203,8 +203,8 @@ function collectObservedTools(transcript: readonly ThreadMessageRecord[]): Set<s
 function collectToolArtifacts(
   transcript: readonly ThreadMessageRecord[],
   bashJobs: readonly ThreadBashJobRecord[],
-): PandaSmokeToolArtifacts {
-  const toolArtifacts: PandaSmokeToolArtifactEntry[] = [];
+): SmokeToolArtifacts {
+  const toolArtifacts: SmokeToolArtifactEntry[] = [];
   for (const entry of transcript) {
     if (entry.message.role !== "toolResult") {
       continue;
@@ -236,7 +236,7 @@ function collectToolArtifacts(
       status: job.status,
       ...(job.stdoutPath ? {stdoutPath: job.stdoutPath} : {}),
       ...(job.stderrPath ? {stderrPath: job.stderrPath} : {}),
-    } satisfies PandaSmokeBashArtifactEntry];
+    } satisfies SmokeBashArtifactEntry];
   });
 
   return {
@@ -251,8 +251,8 @@ function evaluateAssertions(input: {
   forbidToolError: boolean;
   runs: readonly ThreadRunRecord[];
   transcript: readonly ThreadMessageRecord[];
-}): PandaSmokeAssertion[] {
-  const assertions: PandaSmokeAssertion[] = [];
+}): SmokeAssertion[] {
+  const assertions: SmokeAssertion[] = [];
   const transcriptText = collectTranscriptSearchText(input.transcript);
   const observedTools = collectObservedTools(input.transcript);
   const failedRuns = input.runs.filter((run) => run.status === "failed");
@@ -322,7 +322,7 @@ function evaluateAssertions(input: {
   return assertions;
 }
 
-function firstFailure(assertions: readonly PandaSmokeAssertion[]): PandaSmokeAssertion | undefined {
+function firstFailure(assertions: readonly SmokeAssertion[]): SmokeAssertion | undefined {
   return assertions.find((assertion) => !assertion.passed);
 }
 
@@ -363,7 +363,7 @@ async function bootstrapSmokeFixtures(input: {
   identity: IdentityRecord;
   sessionId?: string;
 }> {
-  return withPandaPool(input.dbUrl, async (pool) => {
+  return withPostgresPool(input.dbUrl, async (pool) => {
     const identityStore = new PostgresIdentityStore({pool});
     const agentStore = new PostgresAgentStore({pool});
     const sessionStore = new PostgresSessionStore({pool});
@@ -419,8 +419,8 @@ async function waitForDaemonOnline(input: {
   getDaemonError: () => Error | null;
 }): Promise<void> {
   const deadline = Date.now() + input.timeoutMs;
-  const pool = createPandaPool(input.dbUrl);
-  const daemonState = new PandaDaemonStateRepo({pool});
+  const pool = createPostgresPool(input.dbUrl);
+  const daemonState = new DaemonStateRepo({pool});
 
   try {
     await ensureSchemas([daemonState]);
@@ -430,8 +430,8 @@ async function waitForDaemonOnline(input: {
         throw daemonError;
       }
 
-      const state = await daemonState.readState(DEFAULT_PANDA_DAEMON_KEY);
-      if (state && Date.now() - state.heartbeatAt <= PANDA_DAEMON_STALE_AFTER_MS) {
+      const state = await daemonState.readState(DEFAULT_DAEMON_KEY);
+      if (state && Date.now() - state.heartbeatAt <= DAEMON_STALE_AFTER_MS) {
         return;
       }
 
@@ -458,7 +458,7 @@ export async function waitForSmokeDaemonOnline(input: {
 }
 
 export async function waitForSmokeThreadIdle(input: {
-  store: Awaited<ReturnType<typeof createPandaClient>>["store"];
+  store: Awaited<ReturnType<typeof createRuntimeClient>>["store"];
   threadId: string;
   timeoutMs: number;
 }): Promise<void> {
@@ -482,7 +482,7 @@ export async function waitForSmokeThreadIdle(input: {
 }
 
 async function loadSmokeRecords(input: {
-  client: Awaited<ReturnType<typeof createPandaClient>> | null;
+  client: Awaited<ReturnType<typeof createRuntimeClient>> | null;
   thread: ThreadRecord | null;
 }): Promise<{
   bashJobs: readonly ThreadBashJobRecord[];
@@ -510,7 +510,7 @@ async function loadSmokeRecords(input: {
   };
 }
 
-async function writeSmokeArtifacts(result: PandaSmokeResult): Promise<void> {
+async function writeSmokeArtifacts(result: SmokeResult): Promise<void> {
   await mkdir(result.artifactDir, {recursive: true});
   await Promise.all([
     writeFile(result.artifacts.summary, JSON.stringify(result, null, 2) + "\n"),
@@ -520,7 +520,7 @@ async function writeSmokeArtifacts(result: PandaSmokeResult): Promise<void> {
   ]);
 }
 
-export async function runPandaSmoke(input: PandaSmokeInput): Promise<PandaSmokeResult> {
+export async function runSmoke(input: SmokeInput): Promise<SmokeResult> {
   const startedAt = Date.now();
   const cwd = path.resolve(input.cwd ?? process.cwd());
   const requestedAgentKey = trimNonEmptyString(input.agentKey)
@@ -533,16 +533,16 @@ export async function runPandaSmoke(input: PandaSmokeInput): Promise<PandaSmokeR
     artifactsDir: input.artifactsDir,
     cwd,
   });
-  const artifacts: PandaSmokeArtifacts = {
+  const artifacts: SmokeArtifacts = {
     runs: path.join(artifactDir, "runs.json"),
     summary: path.join(artifactDir, "summary.json"),
     toolArtifacts: path.join(artifactDir, "tool-artifacts.json"),
     transcript: path.join(artifactDir, "transcript.json"),
   };
 
-  let stage: PandaSmokeStage = "config";
-  let client: Awaited<ReturnType<typeof createPandaClient>> | null = null;
-  let daemon: Awaited<ReturnType<typeof createPandaDaemon>> | null = null;
+  let stage: SmokeStage = "config";
+  let client: Awaited<ReturnType<typeof createRuntimeClient>> | null = null;
+  let daemon: Awaited<ReturnType<typeof createDaemon>> | null = null;
   let daemonRunPromise: Promise<void> | null = null;
   let daemonError: Error | null = null;
   let databaseTarget: SmokeDatabaseTarget | null = null;
@@ -553,8 +553,8 @@ export async function runPandaSmoke(input: PandaSmokeInput): Promise<PandaSmokeR
   let transcript: readonly ThreadMessageRecord[] = [];
   let runs: readonly ThreadRunRecord[] = [];
   let bashJobs: readonly ThreadBashJobRecord[] = [];
-  let assertions: readonly PandaSmokeAssertion[] = [];
-  let toolArtifacts: PandaSmokeToolArtifacts = {
+  let assertions: readonly SmokeAssertion[] = [];
+  let toolArtifacts: SmokeToolArtifacts = {
     bashArtifacts: [],
     toolArtifacts: [],
   };
@@ -590,7 +590,7 @@ export async function runPandaSmoke(input: PandaSmokeInput): Promise<PandaSmokeR
     }
 
     stage = "daemon_start";
-    daemon = await createPandaDaemon({
+    daemon = await createDaemon({
       cwd,
       dbUrl,
     });
@@ -616,7 +616,7 @@ export async function runPandaSmoke(input: PandaSmokeInput): Promise<PandaSmokeR
     identityHandle = identity.handle;
 
     stage = "client";
-    client = await createPandaClient({
+    client = await createRuntimeClient({
       dbUrl,
       identity: identity.handle,
     });
@@ -660,7 +660,7 @@ export async function runPandaSmoke(input: PandaSmokeInput): Promise<PandaSmokeR
     });
 
     const failure = firstFailure(assertions);
-    const result: PandaSmokeResult = {
+    const result: SmokeResult = {
       artifactDir,
       artifacts,
       assertions,
@@ -713,7 +713,7 @@ export async function runPandaSmoke(input: PandaSmokeInput): Promise<PandaSmokeR
       });
     }
 
-    const result: PandaSmokeResult = {
+    const result: SmokeResult = {
       artifactDir,
       artifacts,
       assertions,

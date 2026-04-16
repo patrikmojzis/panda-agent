@@ -9,7 +9,7 @@ import type {ChatRuntimeServices} from "../src/ui/tui/runtime.js";
 import * as tuiRuntime from "../src/ui/tui/runtime.js";
 import {stripAnsi} from "../src/ui/tui/theme.js";
 import {createComposerState, setComposerValue} from "../src/ui/tui/composer.js";
-import {PandaChatApp, runChatCli} from "../src/ui/tui/chat.js";
+import {ChatApp, runChatCli} from "../src/ui/tui/chat.js";
 import {collectThreadUsageSnapshot, formatThreadUsageSnapshot,} from "../src/ui/tui/usage-summary.js";
 
 type AppHarness = {
@@ -90,11 +90,11 @@ function imageToolResult(data = "abcd".repeat(200)) {
   };
 }
 
-describe("PandaChatApp Ctrl-C handling", () => {
+describe("ChatApp Ctrl-C handling", () => {
   it("aborts once and closes after the active run settles", async () => {
     const abortThread = vi.fn(async () => true);
     const waitForCurrentRun = vi.fn(async () => {});
-    const app = new PandaChatApp() as unknown as AppHarness;
+    const app = new ChatApp() as unknown as AppHarness;
 
     app.currentThreadId = "thread-ctrl-c";
     app.runPhase = "thinking";
@@ -132,7 +132,7 @@ describe("PandaChatApp Ctrl-C handling", () => {
     const offStdout = vi.spyOn(process.stdout, "off");
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const close = vi.fn(async () => {});
-    const app = new PandaChatApp() as unknown as AppHarness;
+    const app = new ChatApp() as unknown as AppHarness;
 
     app.currentThreadId = "thread-cleanup";
     app.runPhase = "thinking";
@@ -161,9 +161,9 @@ describe("PandaChatApp Ctrl-C handling", () => {
 
 });
 
-describe("PandaChatApp bracketed paste", () => {
+describe("ChatApp bracketed paste", () => {
   it("keeps pasted returns inside the composer until paste ends", async () => {
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
     const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
 
     app.render = vi.fn();
@@ -184,9 +184,9 @@ describe("PandaChatApp bracketed paste", () => {
   });
 });
 
-describe("PandaChatApp Shift+Enter", () => {
+describe("ChatApp Shift+Enter", () => {
   it("turns backslash-enter into a newline without sending", async () => {
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
     const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
 
     app.render = vi.fn();
@@ -200,7 +200,7 @@ describe("PandaChatApp Shift+Enter", () => {
   });
 
   it("inserts a newline when shift is held on return", async () => {
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
     const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
 
     app.render = vi.fn();
@@ -213,7 +213,7 @@ describe("PandaChatApp Shift+Enter", () => {
   });
 
   it("inserts a newline for meta-enter terminal keybindings", async () => {
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
     const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
 
     app.render = vi.fn();
@@ -227,7 +227,7 @@ describe("PandaChatApp Shift+Enter", () => {
   });
 
   it("inserts a newline for kitty and modifyOtherKeys Shift+Enter sequences", async () => {
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
     const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
 
     app.render = vi.fn();
@@ -243,9 +243,9 @@ describe("PandaChatApp Shift+Enter", () => {
   });
 });
 
-describe("PandaChatApp composer word shortcuts", () => {
+describe("ChatApp composer word shortcuts", () => {
   it("supports meta-left and meta-b for moving backward by word", async () => {
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
     app.render = vi.fn();
 
     const value = "alpha beta gamma";
@@ -259,7 +259,7 @@ describe("PandaChatApp composer word shortcuts", () => {
   });
 
   it("supports raw alt-arrow sequences and meta-f/right for moving forward by word", async () => {
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
     app.render = vi.fn();
 
     const value = "alpha beta gamma";
@@ -277,7 +277,7 @@ describe("PandaChatApp composer word shortcuts", () => {
   });
 
   it("supports meta-backspace for deleting the previous word", async () => {
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
     app.render = vi.fn();
 
     const value = "alpha beta gamma";
@@ -293,7 +293,7 @@ describe("PandaChatApp composer word shortcuts", () => {
   });
 });
 
-describe("PandaChatApp thinking command", () => {
+describe("ChatApp thinking command", () => {
   it("updates and clears thinking on the current thread", async () => {
     const updateThread = vi.fn(async (_threadId: string, update: { thinking?: "high" | null }) => ({
       id: "thread-thinking",
@@ -303,7 +303,7 @@ describe("PandaChatApp thinking command", () => {
       createdAt: 1,
       updatedAt: 2,
     }));
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
 
     app.currentThreadId = "thread-thinking";
     app.services = {
@@ -323,7 +323,7 @@ describe("PandaChatApp thinking command", () => {
     const updateThread = vi.fn(async () => {
       throw new Error("store unavailable");
     });
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
 
     app.currentThreadId = "thread-config";
     app.model = "openai/gpt-5.1";
@@ -355,7 +355,7 @@ describe("PandaChatApp thinking command", () => {
   });
 });
 
-describe("PandaChatApp fresh-session agent selection", () => {
+describe("ChatApp fresh-session agent selection", () => {
   it("does not inherit the current session agent for /new when no explicit chat agent is set", async () => {
     const createBranchSession = vi.fn(async () => ({
       id: "thread-new",
@@ -369,7 +369,7 @@ describe("PandaChatApp fresh-session agent selection", () => {
       createdAt: 1,
       updatedAt: 2,
     }));
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
     const expectedModel = app.model;
 
     app.currentThreadId = "thread-current";
@@ -418,7 +418,7 @@ describe("PandaChatApp fresh-session agent selection", () => {
       createdAt: 1,
       updatedAt: 2,
     }));
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
     const expectedModel = app.model;
 
     app.currentThreadId = "thread-current";
@@ -455,9 +455,9 @@ describe("PandaChatApp fresh-session agent selection", () => {
   });
 });
 
-describe("PandaChatApp history search", () => {
+describe("ChatApp history search", () => {
   it("filters history matches and loads the selected prompt into the composer", async () => {
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
     app.render = vi.fn();
     app.inputHistory.push("deploy alpha", "fix bug", "deploy beta");
 
@@ -476,7 +476,7 @@ describe("PandaChatApp history search", () => {
   });
 });
 
-describe("PandaChatApp session picker", () => {
+describe("ChatApp session picker", () => {
   it("preselects the current session and opens the chosen entry", async () => {
     const sessions = [
       {
@@ -513,7 +513,7 @@ describe("PandaChatApp session picker", () => {
     };
     const listAgentSessions = vi.fn(async () => sessions);
     const openSession = vi.fn(async () => selectedThread);
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
 
     app.currentThreadId = "thread-b";
     app.currentThread = {
@@ -584,7 +584,7 @@ describe("PandaChatApp session picker", () => {
     const openSession = vi.fn(async () => {
       throw new Error("missing session");
     });
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
 
     app.currentThreadId = "thread-a";
     app.currentThread = {
@@ -619,14 +619,14 @@ describe("PandaChatApp session picker", () => {
   });
 });
 
-describe("PandaChatApp compact command", () => {
+describe("ChatApp compact command", () => {
   it("calls the runtime compact operation and records the result locally", async () => {
     const compactThread = vi.fn(async () => ({
       compacted: true,
       tokensBefore: 1_200,
       tokensAfter: 400,
     }));
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
 
     app.currentThreadId = "thread-compact";
     app.currentThread = {
@@ -659,7 +659,7 @@ describe("PandaChatApp compact command", () => {
     const compactThread = vi.fn(async () => {
       throw new Error("summary too large");
     });
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
 
     app.currentThreadId = "thread-compact";
     app.currentThread = {
@@ -805,7 +805,7 @@ describe("thread usage snapshots", () => {
   });
 });
 
-describe("PandaChatApp usage command", () => {
+describe("ChatApp usage command", () => {
   it("shows a usage snapshot for the current thread", async () => {
     const thread = {
       id: "thread-usage",
@@ -837,7 +837,7 @@ describe("PandaChatApp usage command", () => {
         createdAt: 2,
       },
     ]);
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
 
     app.currentThreadId = "thread-usage";
     app.currentThread = thread;
@@ -861,10 +861,10 @@ describe("PandaChatApp usage command", () => {
   });
 });
 
-describe("PandaChatApp performance helpers", () => {
+describe("ChatApp performance helpers", () => {
   it("reuses cached transcript lines for unchanged assistant entries", () => {
     const renderMarkdownLines = vi.spyOn(markdown, "renderMarkdownLines");
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
 
     app.transcript.push({
       id: 1,
@@ -887,7 +887,7 @@ describe("PandaChatApp performance helpers", () => {
 
   it("renders usage meta entries through the markdown renderer", () => {
     const renderMarkdownLines = vi.spyOn(markdown, "renderMarkdownLines");
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
 
     app.transcript.push({
       id: 1,
@@ -912,7 +912,7 @@ describe("PandaChatApp performance helpers", () => {
   });
 
   it("batches transcript changes when appending stored messages", () => {
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
     const markDirty = vi.spyOn(app, "markDirty");
 
     app.appendStoredMessages([
@@ -950,7 +950,7 @@ describe("PandaChatApp performance helpers", () => {
     }));
     const loadTranscript = vi.fn(async () => []);
     const listRuns = vi.fn(async () => []);
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
 
     app.currentThreadId = "thread-sync";
     app.services = {
@@ -982,7 +982,7 @@ describe("PandaChatApp performance helpers", () => {
       }));
       const loadTranscript = vi.fn(async () => []);
       const listRuns = vi.fn(async () => []);
-      const app = new PandaChatApp() as any;
+      const app = new ChatApp() as any;
 
       app.currentThreadId = "thread-sync";
       app.services = {
@@ -1029,7 +1029,7 @@ describe("PandaChatApp performance helpers", () => {
       updatedAt: 2,
     }));
     const listRuns = vi.fn(async () => []);
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
 
     app.currentThreadId = "thread-sync";
     app.services = {
@@ -1173,9 +1173,9 @@ describe("buildChatViewModel", () => {
   });
 });
 
-describe("PandaChatApp agent header", () => {
+describe("ChatApp agent header", () => {
   it("uses the session agent key in the header when switching threads", async () => {
-    const app = new PandaChatApp() as any;
+    const app = new ChatApp() as any;
 
     app.services = {
       identity: {
@@ -1223,7 +1223,7 @@ describe("PandaChatApp agent header", () => {
 
 describe("runChatCli", () => {
   it("returns the final session and thread ids from the chat app", async () => {
-    const run = vi.spyOn(PandaChatApp.prototype, "run").mockResolvedValue({
+    const run = vi.spyOn(ChatApp.prototype, "run").mockResolvedValue({
       sessionId: "session-exit-result",
       threadId: "thread-exit-result",
     });
@@ -1237,7 +1237,7 @@ describe("runChatCli", () => {
   });
 });
 
-describe("PandaChatApp explicit session id", () => {
+describe("ChatApp explicit session id", () => {
   it("preserves access errors instead of trying to create a branch session", async () => {
     const createChatRuntime = vi.spyOn(tuiRuntime, "createChatRuntime").mockResolvedValue({
       identity: {
@@ -1257,7 +1257,7 @@ describe("PandaChatApp explicit session id", () => {
       }),
     } as unknown as ChatRuntimeServices);
 
-    const app = new PandaChatApp({ session: "session-locked" }) as any;
+    const app = new ChatApp({ session: "session-locked" }) as any;
     app.switchThread = vi.fn(async () => {});
 
     await expect(app.initializeRuntime()).rejects.toThrow("Session session-locked does not belong to identity alice.");

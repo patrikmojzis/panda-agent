@@ -1,16 +1,16 @@
 import type {Pool} from "pg";
 
-import {createPandaPool, requirePandaDatabaseUrl} from "./database.js";
+import {createPostgresPool, requireDatabaseUrl} from "./database.js";
 
 interface SchemaResource {
   ensureSchema(): Promise<void>;
 }
 
-export async function withPandaPool<T>(
+export async function withPostgresPool<T>(
   dbUrl: string | undefined,
   fn: (pool: Pool) => Promise<T>,
 ): Promise<T> {
-  const pool = createPandaPool(requirePandaDatabaseUrl(dbUrl));
+  const pool = createPostgresPool(requireDatabaseUrl(dbUrl));
 
   try {
     return await fn(pool);

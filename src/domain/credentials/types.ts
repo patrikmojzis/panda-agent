@@ -69,6 +69,26 @@ const BLOCKED_ENV_KEYS = new Set([
   "SHLVL",
 ]);
 
+const RESERVED_RUNTIME_ENV_KEYS = new Set([
+  "DATABASE_URL",
+  "READONLY_DATABASE_URL",
+  "BASH_EXECUTION_MODE",
+  "RUNNER_URL_TEMPLATE",
+  "RUNNER_CWD_TEMPLATE",
+  "RUNNER_AGENT_KEY",
+  "RUNNER_ALLOWED_ROOTS",
+  "RUNNER_PORT",
+  "RUNNER_HOST",
+  "DEFAULT_MODEL",
+  "WORKSPACE_SUBAGENT_MODEL",
+  "MEMORY_SUBAGENT_MODEL",
+  "BROWSER_SUBAGENT_MODEL",
+  "DATA_DIR",
+  "CREDENTIALS_MASTER_KEY",
+  "RUNNER_IMAGE",
+  "SHARED_ROOT",
+]);
+
 function requireTrimmed(field: string, value: string | undefined): string {
   const trimmed = value?.trim();
   if (!trimmed) {
@@ -87,8 +107,8 @@ export function normalizeCredentialEnvKey(value: string): string {
   }
 
   const upper = normalized.toUpperCase();
-  if (upper.startsWith("PANDA_")) {
-    throw new Error(`Credential env key ${normalized} is reserved for Panda runtime configuration.`);
+  if (upper.startsWith("PANDA_") || RESERVED_RUNTIME_ENV_KEYS.has(upper)) {
+    throw new Error(`Credential env key ${normalized} is reserved for runtime configuration.`);
   }
   if (BLOCKED_ENV_KEYS.has(upper)) {
     throw new Error(`Credential env key ${normalized} is not allowed.`);

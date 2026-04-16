@@ -5,7 +5,7 @@ import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 
 const thinkingSetToolSchema = z.object({
   level: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
@@ -85,13 +85,13 @@ export interface ThinkingSetToolOptions {
   persistence?: ThinkingSetPersistence;
 }
 
-export class ThinkingSetTool<TContext = PandaSessionContext>
+export class ThinkingSetTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof thinkingSetToolSchema, TContext> {
   static schema = thinkingSetToolSchema;
 
   name = "thinking_set";
   description = [
-    "Adjust Panda's thinking effort for the next model turn in this run.",
+    "Adjust the current run's thinking effort for the next model turn.",
     "Use persist=true to also update the current thread's stored default.",
   ].join("\n");
   schema = thinkingSetToolSchema;
@@ -139,7 +139,7 @@ export class ThinkingSetTool<TContext = PandaSessionContext>
 
     const threadId = readThreadId(run.context);
     if (!threadId) {
-      throw new ToolError("Persisting thinking requires threadId in the Panda session context.");
+      throw new ToolError("Persisting thinking requires threadId in the runtime session context.");
     }
 
     if (!this.persistence) {

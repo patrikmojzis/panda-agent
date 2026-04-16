@@ -12,7 +12,7 @@ describe("tui inbound text", () => {
       body: "hello from terminal",
     });
 
-    expect(text).toContain("<panda-input-context>");
+    expect(text).toContain("<runtime-input-context>");
     expect(text).toContain("source: tui");
     expect(text).toContain("actor_id: local-user");
     expect(text).toContain("identity_id: patrik-id");

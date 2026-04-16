@@ -4,7 +4,7 @@ import type {RunContext} from "../../../kernel/agent/run-context.js";
 import {Tool} from "../../../kernel/agent/tool.js";
 import {ToolError} from "../../../kernel/agent/exceptions.js";
 import type {JsonObject} from "../../../kernel/agent/types.js";
-import type {PandaSessionContext} from "../../../app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../../../app/runtime/panda-session-context.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 import {parseTelegramConversationId} from "./conversation-id.js";
 
@@ -61,7 +61,7 @@ function parseReactionConversationId(value: string) {
   }
 }
 
-function readCurrentTelegramTarget(context: PandaSessionContext | undefined): TelegramReactionTarget | null {
+function readCurrentTelegramTarget(context: DefaultAgentSessionContext | undefined): TelegramReactionTarget | null {
   if (context?.currentInput?.source !== TELEGRAM_SOURCE) {
     return null;
   }
@@ -90,7 +90,7 @@ function readCurrentTelegramTarget(context: PandaSessionContext | undefined): Te
   };
 }
 
-function readCurrentTelegramExternalMessageId(context: PandaSessionContext | undefined): string | undefined {
+function readCurrentTelegramExternalMessageId(context: DefaultAgentSessionContext | undefined): string | undefined {
   if (context?.currentInput?.source !== TELEGRAM_SOURCE) {
     return undefined;
   }
@@ -98,7 +98,7 @@ function readCurrentTelegramExternalMessageId(context: PandaSessionContext | und
   return readTrimmedString(context.currentInput.externalMessageId);
 }
 
-function readReactionTargetMessageId(context: PandaSessionContext | undefined): string | undefined {
+function readReactionTargetMessageId(context: DefaultAgentSessionContext | undefined): string | undefined {
   if (context?.currentInput?.source !== TELEGRAM_SOURCE) {
     return undefined;
   }
@@ -123,7 +123,7 @@ function readReactionTargetMessageId(context: PandaSessionContext | undefined): 
 
 function resolveTelegramMessageId(
   args: z.output<typeof telegramReactToolSchema>,
-  context: PandaSessionContext | undefined,
+  context: DefaultAgentSessionContext | undefined,
 ): string | undefined {
   return (
     readTrimmedString(args.messageId)
@@ -132,7 +132,7 @@ function resolveTelegramMessageId(
   );
 }
 
-export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, PandaSessionContext> {
+export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, DefaultAgentSessionContext> {
   static schema = telegramReactToolSchema;
 
   name = "telegram_react";
@@ -150,7 +150,7 @@ export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, Pand
 
   async handle(
     args: z.output<typeof TelegramReactTool.schema>,
-    run: RunContext<PandaSessionContext>,
+    run: RunContext<DefaultAgentSessionContext>,
   ): Promise<JsonObject> {
     const queue = run.context?.channelActionQueue;
     if (!queue) {

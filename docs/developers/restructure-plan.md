@@ -139,10 +139,10 @@ Keep these as stores:
 
 These are repos:
 
-- `PandaDaemonStateRepo`
+- `DaemonStateRepo`
 - `ChannelCursorRepo`
 - `ConversationRepo`
-- `PandaRuntimeRequestRepo`
+- `RuntimeRequestRepo`
 - `SessionRouteRepo`
 
 If a second implementation becomes real later, earn the abstraction then.

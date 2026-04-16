@@ -8,10 +8,10 @@ export {
   type ManagedBashJobOptions,
 } from "./bash-background-job.js";
 export {
-  startPandaBashRunner,
-  resolvePandaBashRunnerOptions,
-  type PandaBashRunner,
-  type PandaBashRunnerOptions,
+  startBashRunner,
+  resolveBashRunnerOptions,
+  type BashRunner,
+  type BashRunnerOptions,
 } from "./bash-runner.js";
 export {
   createDefaultBashExecutor,

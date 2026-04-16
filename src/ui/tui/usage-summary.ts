@@ -1,13 +1,13 @@
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
-import {DEFAULT_PANDA_INFERENCE_PROJECTION} from "../../app/runtime/thread-definition.js";
+import {DEFAULT_INFERENCE_PROJECTION} from "../../app/runtime/thread-definition.js";
 import {
-    estimateTranscriptTokens,
-    isCompactBoundaryRecord,
-    projectTranscriptForInference,
-    projectTranscriptForRun,
-    type ThreadMessageRecord,
-    type ThreadRecord,
+  estimateTranscriptTokens,
+  isCompactBoundaryRecord,
+  projectTranscriptForInference,
+  projectTranscriptForRun,
+  type ThreadMessageRecord,
+  type ThreadRecord,
 } from "../../domain/threads/runtime/index.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
 import {formatThinkingLevel} from "./chat-shared.js";
@@ -268,7 +268,7 @@ export function collectThreadUsageSnapshot(options: {
   // Mirror the same default projection Panda uses during live runs so the TUI
   // shows the context the model is actually likely to see, not just stored junk.
   const effectiveProjection = mergeInferenceProjection(
-    DEFAULT_PANDA_INFERENCE_PROJECTION,
+    DEFAULT_INFERENCE_PROJECTION,
     options.thread.inferenceProjection,
   );
   const runTranscript = projectTranscriptForRun(options.transcript);

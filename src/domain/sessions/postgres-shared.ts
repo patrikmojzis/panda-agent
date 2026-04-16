@@ -1,4 +1,4 @@
-import {buildPrefixedRelationNames} from "../threads/runtime/postgres-shared.js";
+import {buildRuntimeRelationNames} from "../threads/runtime/postgres-shared.js";
 
 export interface SessionTableNames {
   prefix: string;
@@ -6,8 +6,8 @@ export interface SessionTableNames {
   sessionHeartbeats: string;
 }
 
-export function buildSessionTableNames(prefix: string): SessionTableNames {
-  return buildPrefixedRelationNames(prefix, {
+export function buildSessionTableNames(): SessionTableNames {
+  return buildRuntimeRelationNames({
     sessions: "agent_sessions",
     sessionHeartbeats: "session_heartbeats",
   });

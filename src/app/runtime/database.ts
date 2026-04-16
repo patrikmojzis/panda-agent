@@ -9,24 +9,23 @@ function trimNonEmptyString(value: string | null | undefined): string | null {
   return trimmed || null;
 }
 
-export function resolvePandaDatabaseUrl(explicitDbUrl?: string): string | null {
+export function resolveDatabaseUrl(explicitDbUrl?: string): string | null {
   return (
     trimNonEmptyString(explicitDbUrl)
-    ?? trimNonEmptyString(process.env.PANDA_DATABASE_URL)
     ?? trimNonEmptyString(process.env.DATABASE_URL)
   );
 }
 
-export function requirePandaDatabaseUrl(explicitDbUrl?: string): string {
-  const dbUrl = resolvePandaDatabaseUrl(explicitDbUrl);
+export function requireDatabaseUrl(explicitDbUrl?: string): string {
+  const dbUrl = resolveDatabaseUrl(explicitDbUrl);
   if (dbUrl) {
     return dbUrl;
   }
 
-  throw new Error("Panda requires Postgres. Pass --db-url or set PANDA_DATABASE_URL.");
+  throw new Error("Panda requires Postgres. Pass --db-url or set DATABASE_URL.");
 }
 
-export function createPandaPool(connectionString: string): Pool {
+export function createPostgresPool(connectionString: string): Pool {
   return new Pool({
     connectionString,
   });

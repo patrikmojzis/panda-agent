@@ -70,9 +70,9 @@ command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 
-host_port="${PANDA_RUNNER_PORT:-8080}"
-image="${PANDA_RUNNER_IMAGE:-panda:latest}"
-shared_root="${PANDA_SHARED_ROOT:-$HOME/.panda/shared}"
+host_port="${RUNNER_PORT:-8080}"
+image="${RUNNER_IMAGE:-panda:latest}"
+shared_root="${SHARED_ROOT:-$HOME/.panda/shared}"
 detach=0
 build=0
 dry_run=0
@@ -150,7 +150,7 @@ run_cmd=(
   docker run --rm
   --name "$container_name"
   -p "${host_port}:8080"
-  -e "PANDA_RUNNER_AGENT_KEY=$agent_key"
+  -e "RUNNER_AGENT_KEY=$agent_key"
   -v "$agent_dir:/root/.panda/agents/$agent_key"
   -v "$shared_root:/workspace/shared"
 )
@@ -170,8 +170,8 @@ printf '  agent dir: %s\n' "$agent_dir"
 printf '  shared root: %s\n' "$shared_root"
 printf '\n'
 printf 'Local shell env for panda run:\n'
-printf '  export PANDA_BASH_EXECUTION_MODE=remote\n'
-printf '  export PANDA_RUNNER_URL_TEMPLATE=http://127.0.0.1:%s/{agentKey}\n' "$host_port"
+printf '  export BASH_EXECUTION_MODE=remote\n'
+printf '  export RUNNER_URL_TEMPLATE=http://127.0.0.1:%s/{agentKey}\n' "$host_port"
 printf '\n'
 
 if (( dry_run )); then

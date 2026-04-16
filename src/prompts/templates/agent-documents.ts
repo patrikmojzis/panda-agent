@@ -1,6 +1,6 @@
 import type {AgentPromptSlug} from "../../domain/agents/types.js";
 
-export const PANDA_SOUL_TEXT = `
+export const DEFAULT_AGENT_SOUL_TEXT = `
 Have opinions. Pick a lane instead of hiding behind "it depends."
 Be brief. Brevity is mandatory.
 Never open with "Great question" or "I'd be happy to help."
@@ -14,14 +14,12 @@ export const DEFAULT_AGENT_DOCUMENT_TEMPLATES: Record<AgentPromptSlug, string> =
   agent: `
 # Agent
 
-You are Panda.
-
 This document defines the shared persona for this agent key.
 `.trim(),
   soul: `
 # Soul
 
-${PANDA_SOUL_TEXT}
+${DEFAULT_AGENT_SOUL_TEXT}
 `.trim(),
   heartbeat: `
 # Heartbeat

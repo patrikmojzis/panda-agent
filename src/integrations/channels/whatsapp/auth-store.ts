@@ -11,7 +11,8 @@ import {
 } from "baileys";
 
 import {
-    buildPrefixedRelationNames,
+    buildRuntimeRelationNames,
+    CREATE_RUNTIME_SCHEMA_SQL,
     quoteIdentifier,
     toMillis,
 } from "../../../domain/threads/runtime/postgres-shared.js";
@@ -32,7 +33,6 @@ interface WhatsAppAuthTableNames {
 
 export interface PostgresWhatsAppAuthStoreOptions {
   pool: PgPoolLike;
-  tablePrefix?: string;
 }
 
 export interface WhatsAppAuthStateHandle {
@@ -47,8 +47,8 @@ export interface WhatsAppAuthCredsRecord {
   updatedAt: number;
 }
 
-function buildWhatsAppAuthTableNames(prefix: string): WhatsAppAuthTableNames {
-  return buildPrefixedRelationNames(prefix, {
+function buildWhatsAppAuthTableNames(): WhatsAppAuthTableNames {
+  return buildRuntimeRelationNames({
     authCreds: "whatsapp_auth_creds",
     authKeys: "whatsapp_auth_keys",
   });
@@ -120,10 +120,11 @@ export class PostgresWhatsAppAuthStore {
 
   constructor(options: PostgresWhatsAppAuthStoreOptions) {
     this.pool = options.pool;
-    this.tables = buildWhatsAppAuthTableNames(options.tablePrefix ?? "thread_runtime");
+    this.tables = buildWhatsAppAuthTableNames();
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.authCreds} (
         connector_key TEXT PRIMARY KEY,

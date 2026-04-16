@@ -195,8 +195,8 @@ describe("createDaemonThreadHelpers", () => {
   });
 
   it("stores canonical host cwd for new main sessions even in remote mode", async () => {
-    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
 
     const {helpers, identity} = createHelpers({
       pairings: [{agentKey: "panda"}],

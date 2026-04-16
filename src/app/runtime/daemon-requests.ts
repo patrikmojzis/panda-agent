@@ -2,9 +2,9 @@ import type {
     AbortThreadRequestPayload,
     CompactThreadRequestPayload,
     CreateBranchSessionRequestPayload,
-    PandaRuntimeRequestRecord,
     ResetSessionRequestPayload,
     ResolveMainSessionThreadRequestPayload,
+    RuntimeRequestRecord,
     TelegramMessageRequestPayload,
     TelegramReactionRequestPayload,
     TuiInputRequestPayload,
@@ -23,7 +23,7 @@ import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
 import {buildWhatsAppInboundMetadata, buildWhatsAppInboundText,} from "../../integrations/channels/whatsapp/helpers.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {renderTuiInboundText} from "../../prompts/channels/tui.js";
-import type {PandaDaemonContext} from "./daemon-bootstrap.js";
+import type {DaemonContext} from "./daemon-bootstrap.js";
 import {
     buildQueuedInputCompactionMessage,
     buildTelegramNewIsTuiOnlyText,
@@ -36,9 +36,9 @@ import type {DaemonThreadHelpers} from "./daemon-threads.js";
 import {requireIdentityId} from "./daemon-shared.js";
 
 export function createDaemonRequestProcessor(
-  context: PandaDaemonContext,
+  context: DaemonContext,
   threads: DaemonThreadHelpers,
-): (request: PandaRuntimeRequestRecord) => Promise<unknown> {
+): (request: RuntimeRequestRecord) => Promise<unknown> {
   const handleTelegramMessage = async (
     payload: TelegramMessageRequestPayload,
   ): Promise<Record<string, unknown>> => {
@@ -417,7 +417,7 @@ export function createDaemonRequestProcessor(
     return {threadId: thread.id};
   };
 
-  return async (request: PandaRuntimeRequestRecord): Promise<unknown> => {
+  return async (request: RuntimeRequestRecord): Promise<unknown> => {
     switch (request.kind) {
       case "telegram_message":
         return handleTelegramMessage(request.payload as TelegramMessageRequestPayload);

@@ -2,15 +2,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-  hasAnthropicOauthToken,
-  hasOpenAICodexOauthToken,
-  resolveAnthropicAccessToken,
-  resolveCodexHome,
-  resolveOpenAICodexAuthFilePath,
-  resolveOpenAICodexOauthToken,
+    hasAnthropicOauthToken,
+    hasOpenAICodexOauthToken,
+    resolveAnthropicAccessToken,
+    resolveCodexHome,
+    resolveOpenAICodexAuthFilePath,
+    resolveOpenAICodexOauthToken,
 } from "../src/index.js";
 
 afterEach(() => {
@@ -27,7 +27,7 @@ describe("auth helpers", () => {
   });
 
   it("reads chatgpt login tokens from the Codex auth cache", async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "panda-codex-auth-"));
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-codex-auth-"));
 
     try {
       await fs.writeFile(

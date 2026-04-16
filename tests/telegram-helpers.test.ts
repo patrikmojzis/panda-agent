@@ -53,7 +53,7 @@ describe("telegram helpers", () => {
       chatType: "private",
       text: "hello",
       media: [],
-    })).toContain("<panda-channel-context>");
+    })).toContain("<runtime-channel-context>");
     expect(buildTelegramInboundText({
       connectorKey: "bot-main",
       externalConversationId: "123",

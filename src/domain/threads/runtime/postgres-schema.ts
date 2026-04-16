@@ -1,4 +1,4 @@
-import {quoteIdentifier, type ThreadRuntimeTableNames} from "./postgres-shared.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, type ThreadRuntimeTableNames,} from "./postgres-shared.js";
 
 export function buildThreadRuntimeSchemaSql(
   tables: ThreadRuntimeTableNames,
@@ -6,6 +6,8 @@ export function buildThreadRuntimeSchemaSql(
   identityTableName: string,
 ): string {
   return `
+    ${CREATE_RUNTIME_SCHEMA_SQL}
+
     CREATE TABLE IF NOT EXISTS ${tables.threads} (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL REFERENCES ${sessionTableName}(id) ON DELETE CASCADE,

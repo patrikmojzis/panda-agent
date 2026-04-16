@@ -70,12 +70,12 @@ Background jobs follow the same split:
 Set this in `panda-core`:
 
 ```bash
-PANDA_BASH_EXECUTION_MODE=remote
-PANDA_RUNNER_URL_TEMPLATE=http://panda-runner-{agentKey}:8080
-PANDA_RUNNER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
+BASH_EXECUTION_MODE=remote
+RUNNER_URL_TEMPLATE=http://panda-runner-{agentKey}:8080
+RUNNER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
 ```
 
-`PANDA_RUNNER_URL_TEMPLATE` can be:
+`RUNNER_URL_TEMPLATE` can be:
 
 - a per-agent template with `{agentKey}`
 - a plain URL if every agent should hit the same runner endpoint
@@ -86,7 +86,7 @@ Examples:
 - `http://runner-gateway/{agentKey}`
 - `http://127.0.0.1:8080`
 
-`PANDA_RUNNER_CWD_TEMPLATE` tells `panda-core` what starting directory exists inside the runner.
+`RUNNER_CWD_TEMPLATE` tells `panda-core` what starting directory exists inside the runner.
 Use it whenever remote bash is on, especially when the core runs on your host but the runner lives in Docker.
 
 ## Runner Env
@@ -94,8 +94,8 @@ Use it whenever remote bash is on, especially when the core runs on your host bu
 Each runner gets its own agent key:
 
 ```bash
-PANDA_RUNNER_AGENT_KEY=panda
-PANDA_RUNNER_PORT=8080
+RUNNER_AGENT_KEY=panda
+RUNNER_PORT=8080
 ```
 
 The runner serves one agent. Container mounts and sandboxing decide what files it can touch.
@@ -119,7 +119,7 @@ Manual path:
 
 ```bash
 docker run --rm -p 8080:8080 \
-  -e PANDA_RUNNER_AGENT_KEY=panda \
+  -e RUNNER_AGENT_KEY=panda \
   -v "$HOME/.panda/agents/panda:/root/.panda/agents/panda" \
   -v "$HOME/.panda/shared:/workspace/shared" \
   panda:latest runner
@@ -128,9 +128,9 @@ docker run --rm -p 8080:8080 \
 Then start Panda locally against that runner:
 
 ```bash
-export PANDA_BASH_EXECUTION_MODE=remote
-export PANDA_RUNNER_URL_TEMPLATE=http://127.0.0.1:8080
-export PANDA_RUNNER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
+export BASH_EXECUTION_MODE=remote
+export RUNNER_URL_TEMPLATE=http://127.0.0.1:8080
+export RUNNER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
 
 pnpm dev run --db-url postgresql://localhost:5432/panda
 pnpm dev chat --db-url postgresql://localhost:5432/panda --agent panda
@@ -162,13 +162,13 @@ services:
     env_file:
       - ../.env
     environment:
-      PANDA_DATABASE_URL: postgres://panda_app:app_pw@db.example.com:5432/panda
-      PANDA_BASH_EXECUTION_MODE: remote
-      PANDA_RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
-      PANDA_RUNNER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
+      DATABASE_URL: postgres://panda_app:app_pw@db.example.com:5432/panda
+      BASH_EXECUTION_MODE: remote
+      RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
+      RUNNER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
     volumes:
       - ${HOME}/.panda:/root/.panda
-      - ${PANDA_SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
+      - ${SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
     depends_on:
       - panda-runner-panda
     networks:
@@ -178,11 +178,11 @@ services:
     image: panda:latest
     command: ["runner"]
     environment:
-      PANDA_RUNNER_AGENT_KEY: panda
-      PANDA_RUNNER_PORT: 8080
+      RUNNER_AGENT_KEY: panda
+      RUNNER_PORT: 8080
     volumes:
       - ${HOME}/.panda/agents/panda:/root/.panda/agents/panda
-      - ${PANDA_SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
+      - ${SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
     networks:
       - runner_net
 
@@ -202,8 +202,8 @@ Point `panda-core` at that database:
 services:
   panda-core:
     environment:
-      PANDA_DATABASE_URL: postgres://panda_app:app_pw@db.example.com:5432/panda
-      PANDA_READONLY_DATABASE_URL: postgres://panda_readonly:readonly_pw@db.example.com:5432/panda
+      DATABASE_URL: postgres://panda_app:app_pw@db.example.com:5432/panda
+      READONLY_DATABASE_URL: postgres://panda_readonly:readonly_pw@db.example.com:5432/panda
 ```
 
 If `panda chat` runs on your host, point it at the same DB:
@@ -227,7 +227,7 @@ It should return the runner agent key.
 Then verify the core is actually using remote mode:
 
 ```bash
-echo "$PANDA_BASH_EXECUTION_MODE"
+echo "$BASH_EXECUTION_MODE"
 ```
 
 If that is not exactly `remote`, Panda falls back to local in-process bash.

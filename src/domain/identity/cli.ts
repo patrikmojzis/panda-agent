@@ -3,8 +3,8 @@ import process from "node:process";
 
 import {Command, InvalidArgumentError} from "commander";
 
-import {PANDA_DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {ensureSchemas, withPandaPool} from "../../app/runtime/postgres-bootstrap.js";
+import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
+import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
 import {PostgresIdentityStore} from "./postgres.js";
 import {normalizeIdentityHandle} from "./types.js";
 
@@ -20,7 +20,7 @@ async function withIdentityStore<T>(
   options: IdentityCliOptions,
   fn: (store: PostgresIdentityStore) => Promise<T>,
 ): Promise<T> {
-  return withPandaPool(options.dbUrl, async (pool) => {
+  return withPostgresPool(options.dbUrl, async (pool) => {
     const store = new PostgresIdentityStore({pool});
     await ensureSchemas([store]);
     return fn(store);
@@ -87,7 +87,7 @@ export function registerIdentityCommands(program: Command): void {
   identityProgram
     .command("list")
     .description("List stored Panda identities")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: IdentityCliOptions) => {
       return listIdentitiesCommand(options);
     });
@@ -97,7 +97,7 @@ export function registerIdentityCommands(program: Command): void {
     .description("Create a Panda identity")
     .argument("<handle>", "Identity handle", parseIdentityHandle)
     .option("--name <displayName>", "Display name to show in UIs")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((handle: string, options: CreateIdentityCliOptions) => {
       return createIdentityCommand(handle, options);
     });

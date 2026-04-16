@@ -10,7 +10,7 @@ Best practice is:
 - one shared Postgres database
 - one normal app role
 - one restricted read-only role
-- scoped `panda_*` views as the only SQL tool surface
+- scoped `session.*` views as the only SQL tool surface
 
 That is the clean setup. Everything else is half-security cosplay.
 
@@ -22,7 +22,7 @@ You need:
 - one database Panda already uses, or will use
 - one normal Panda app connection that already works
 
-If Panda cannot connect with `PANDA_DATABASE_URL` yet, fix that first.
+If Panda cannot connect with `DATABASE_URL` yet, fix that first.
 Do not debug the read-only role before the main app role works.
 
 ## Why
@@ -35,24 +35,23 @@ Privacy comes from the database role you give that tool.
 
 The right shape is:
 
-- `postgres_readonly_query` reads only `panda_*` views
-- the views are filtered by the current `identityId` and `agentKey`
+- `postgres_readonly_query` reads only `session.*` views
+- the views are filtered by the current `sessionId` and `agentKey`
 - the SQL tool cannot read base tables directly
 
 ## Panda Env
 
 Panda reads the main database URL from:
 
-- `PANDA_DATABASE_URL`
 - `DATABASE_URL`
 - `--db-url`
 
 Panda reads the SQL tool database URL from:
 
-- `PANDA_READONLY_DATABASE_URL`
+- `READONLY_DATABASE_URL`
 - `--read-only-db-url`
 
-If `PANDA_READONLY_DATABASE_URL` is set, Panda uses that role for the SQL tool and grants it access to the scoped `panda_*` views during startup.
+If `READONLY_DATABASE_URL` is set, Panda uses that role for the SQL tool and grants it access to the scoped `session.*` views during startup.
 
 If it is not set, Panda currently falls back to the main app pool.
 That fallback is convenient, but it weakens the privacy story.
@@ -64,14 +63,14 @@ That fallback is convenient, but it weakens the privacy story.
 Example:
 
 ```bash
-PANDA_DATABASE_URL=postgres://panda_app:app_pw@localhost:5432/panda
+DATABASE_URL=postgres://panda_app:app_pw@localhost:5432/panda
 ```
 
 If the main connection is broken, stop here and fix that first.
 
 ### 2. Create the read-only role
 
-Create the role before starting Panda with `PANDA_READONLY_DATABASE_URL`.
+Create the role before starting Panda with `READONLY_DATABASE_URL`.
 
 ```sql
 CREATE ROLE panda_readonly LOGIN PASSWORD 'readonly_pw';
@@ -88,7 +87,7 @@ If your database is not named `panda`, replace it with the real name.
 ### 4. Point Panda at the same database with the new role
 
 ```bash
-PANDA_READONLY_DATABASE_URL=postgres://panda_readonly:readonly_pw@localhost:5432/panda
+READONLY_DATABASE_URL=postgres://panda_readonly:readonly_pw@localhost:5432/panda
 ```
 
 You can also pass both URLs explicitly:
@@ -119,7 +118,7 @@ If you never start Panda with both roles configured, the grants do not happen.
 Try a scoped view as the read-only user:
 
 ```bash
-psql postgresql://panda_readonly:readonly_pw@localhost:5432/panda -c 'SELECT * FROM panda_threads LIMIT 1;'
+psql postgresql://panda_readonly:readonly_pw@localhost:5432/panda -c 'SELECT * FROM session.threads LIMIT 1;'
 ```
 
 That should work after Panda has booted.
@@ -127,7 +126,7 @@ That should work after Panda has booted.
 Now try a raw table:
 
 ```bash
-psql postgresql://panda_readonly:readonly_pw@localhost:5432/panda -c 'SELECT * FROM thread_runtime_threads LIMIT 1;'
+psql postgresql://panda_readonly:readonly_pw@localhost:5432/panda -c 'SELECT * FROM runtime.threads LIMIT 1;'
 ```
 
 That should fail with a permission error.
@@ -138,28 +137,29 @@ If the raw table query works, the role is not actually restricted and the setup 
 
 Treat these views as the public interface:
 
-- `panda_threads`
-- `panda_messages`
-- `panda_messages_raw`
-- `panda_tool_results`
-- `panda_inputs`
-- `panda_runs`
-- `panda_agent_skills`
-- `panda_scheduled_tasks`
-- `panda_scheduled_task_runs`
-- `panda_watches`
-- `panda_watch_runs`
-- `panda_watch_events`
+- `session.agent_sessions`
+- `session.threads`
+- `session.messages`
+- `session.messages_raw`
+- `session.tool_results`
+- `session.inputs`
+- `session.runs`
+- `session.agent_skills`
+- `session.scheduled_tasks`
+- `session.scheduled_task_runs`
+- `session.watches`
+- `session.watch_runs`
+- `session.watch_events`
 
 If the agent needs more safe query surface later, add another scoped view.
 Do not solve that by handing the SQL tool raw table access.
 
-`panda_agent_skills` exposes stored skill bodies.
+`session.agent_skills` exposes stored skill bodies.
 Use `description` or `substring(content from ... for ...)` for large skills instead of yanking the whole blob every time.
 
 ## Hard Rules
 
-- do not use the same role for `PANDA_DATABASE_URL` and `PANDA_READONLY_DATABASE_URL`
+- do not use the same role for `DATABASE_URL` and `READONLY_DATABASE_URL`
 - do not grant the read-only role direct table access
 - do not rely on prompt instructions for privacy
 - prefer adding a new scoped view over exposing a raw table

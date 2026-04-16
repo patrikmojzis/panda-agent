@@ -103,7 +103,7 @@ Typical paths:
 - `~/.panda/media/browser/<thread-id>/...`
 - `~/.panda/agents/<agentKey>/media/browser/<thread-id>/...`
 
-If `PANDA_DATA_DIR` is set, the same structure lives there instead.
+If `DATA_DIR` is set, the same structure lives there instead.
 
 `screenshot` returns an image payload immediately.
 
@@ -169,13 +169,13 @@ If the first browser call is slow:
 If you want to inspect active Panda browser containers:
 
 ```bash
-docker ps --filter label=panda.browser=1
+docker ps --filter label=runtime.browser=1
 ```
 
 If you need to nuke stale ones manually:
 
 ```bash
-docker ps -aq --filter label=panda.browser=1
+docker ps -aq --filter label=runtime.browser=1
 docker rm -f <container-id>
 ```
 

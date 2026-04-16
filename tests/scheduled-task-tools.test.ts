@@ -2,7 +2,7 @@ import {describe, expect, it, vi} from "vitest";
 
 import {
     Agent,
-    type PandaSessionContext,
+    type DefaultAgentSessionContext,
     RunContext,
     ScheduledTaskCancelTool,
     ScheduledTaskCreateTool,
@@ -11,7 +11,7 @@ import {
 } from "../src/index.js";
 import type {ScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
 
-function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
+function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: new Agent({
       name: "scheduled-task-test-agent",
@@ -85,7 +85,7 @@ function createStoreMock(): ScheduledTaskStore {
 }
 
 describe("scheduled task Panda tools", () => {
-  const context: PandaSessionContext = {
+  const context: DefaultAgentSessionContext = {
     agentKey: "panda",
     sessionId: "session-main",
     threadId: "thread-home",

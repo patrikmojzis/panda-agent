@@ -11,13 +11,13 @@ export function renderTuiInboundText(options: {
 }): string {
   const trimmedBody = options.body.trim();
   return `
-<panda-input-context>
+<runtime-input-context>
 source: tui
 actor_id: ${options.actorId}
 external_message_id: ${options.externalMessageId}
 identity_id: ${formatMaybeValue(options.identityId)}
 identity_handle: ${formatMaybeValue(options.identityHandle)}
-</panda-input-context>
+</runtime-input-context>
 
 ${trimmedBody || "[Terminal message]"}
 `.trim();

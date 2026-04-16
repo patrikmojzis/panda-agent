@@ -14,28 +14,28 @@ import type {Tool} from "../../kernel/agent/tool.js";
 import type {CredentialResolver} from "../../domain/credentials/index.js";
 import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
 import type {BrowserSessionService} from "../../panda/tools/browser-service.js";
-import {createPandaPool, requirePandaDatabaseUrl, resolvePandaDatabaseUrl,} from "./database.js";
-import {bootstrapPandaRuntime,} from "./runtime-bootstrap.js";
+import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
+import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundBashRuntimeMessage} from "./background-bash-runtime-note.js";
 import {
-    createPandaThreadDefinition,
-    type CreatePandaThreadDefinitionOptions,
-    DEFAULT_PANDA_INFERENCE_PROJECTION,
-    resolveStoredPandaContext,
+    createThreadDefinition,
+    type CreateThreadDefinitionOptions,
+    DEFAULT_INFERENCE_PROJECTION,
+    resolveStoredContext,
 } from "./thread-definition.js";
 
 export {
-  createPandaPool,
-  createPandaThreadDefinition,
-  DEFAULT_PANDA_INFERENCE_PROJECTION,
-  requirePandaDatabaseUrl,
-  resolvePandaDatabaseUrl,
-  resolveStoredPandaContext,
+  createPostgresPool,
+  createThreadDefinition,
+  DEFAULT_INFERENCE_PROJECTION,
+  requireDatabaseUrl,
+  resolveDatabaseUrl,
+  resolveStoredContext,
 };
 
-export type {CreatePandaThreadDefinitionOptions};
+export type {CreateThreadDefinitionOptions};
 
-export interface PandaDefinitionResolverContext {
+export interface DefinitionResolverContext {
   agentStore: AgentStore;
   bashJobService: BashJobService;
   browserService: BrowserSessionService;
@@ -46,20 +46,19 @@ export interface PandaDefinitionResolverContext {
   mainTools: readonly Tool[];
 }
 
-export interface PandaRuntimeOptions {
+export interface RuntimeOptions {
   dbUrl?: string;
   readOnlyDbUrl?: string;
   maxSubagentDepth?: number;
-  tablePrefix?: string;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
   resolveDefinition: (
     thread: ThreadRecord,
-    context: PandaDefinitionResolverContext,
+    context: DefinitionResolverContext,
   ) => Promise<ResolvedThreadDefinition> | ResolvedThreadDefinition;
 }
 
-export interface PandaRuntimeServices {
+export interface RuntimeServices {
   agentStore: AgentStore;
   bashJobService: BashJobService;
   browserService: BrowserSessionService;
@@ -75,14 +74,14 @@ export interface PandaRuntimeServices {
   close(): Promise<void>;
 }
 
-export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<PandaRuntimeServices> {
-  const dbUrl = requirePandaDatabaseUrl(options.dbUrl);
-  const runtime = await bootstrapPandaRuntime({
+export async function createRuntime(options: RuntimeOptions): Promise<RuntimeServices> {
+  const dbUrl = requireDatabaseUrl(options.dbUrl);
+  const runtime = await bootstrapRuntime({
     ...options,
     dbUrl,
   });
 
-  const resolverContext: PandaDefinitionResolverContext = {
+  const resolverContext: DefinitionResolverContext = {
     agentStore: runtime.agentStore,
     bashJobService: runtime.bashJobService,
     browserService: runtime.browserService,

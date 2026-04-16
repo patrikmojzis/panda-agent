@@ -11,7 +11,7 @@ const ONE_PIXEL_PNG_BASE64 =
 
 describe("tool artifact replay", () => {
   it("rehydrates persisted image artifacts back into inline image blocks", async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), "panda-tool-artifact-image-"));
+    const directory = await mkdtemp(path.join(os.tmpdir(), "runtime-tool-artifact-image-"));
 
     try {
       const imagePath = path.join(directory, "shot.png");
@@ -47,7 +47,7 @@ describe("tool artifact replay", () => {
   });
 
   it("rehydrates pdf artifacts from their preview image when available", async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), "panda-tool-artifact-pdf-"));
+    const directory = await mkdtemp(path.join(os.tmpdir(), "runtime-tool-artifact-pdf-"));
 
     try {
       const previewPath = path.join(directory, "preview.png");

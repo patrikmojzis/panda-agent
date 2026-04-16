@@ -11,10 +11,10 @@ export {
   PostgresThreadRuntimeStore,
 } from "./postgres.js";
 export {
-  ensureReadonlyChatQuerySchema,
+  ensureReadonlySessionQuerySchema,
   readDatabaseUsername,
 } from "./postgres-readonly.js";
-export type { ReadonlyChatViewNames } from "./postgres-readonly.js";
+export type { ReadonlySessionViewNames } from "./postgres-readonly.js";
 export {
   AUTO_COMPACT_BREAKER_COOLDOWN_MS,
   AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,

@@ -20,7 +20,7 @@ function buildTelegramHeaderLines(options: {
   const extraLines = options.extraLines?.length ? `\n${options.extraLines.join("\n")}` : "";
   const attachments = options.attachments.length === 0 ? "- none" : options.attachments.join("\n");
   return `
-<panda-channel-context>
+<runtime-channel-context>
 channel: telegram
 connector_key: ${options.connectorKey}
 conversation_id: ${options.conversationId}
@@ -35,7 +35,7 @@ first_name: ${formatMaybeValue(options.firstName)}
 last_name: ${formatMaybeValue(options.lastName)}${extraLines}
 attachments:
 ${attachments}
-</panda-channel-context>
+</runtime-channel-context>
 `.trim();
 }
 

@@ -76,7 +76,7 @@ function isTerminalStatus(status: ThreadBashJobStatus | BashJobSnapshot["status"
 function readThreadId(context: BashJobContext | undefined): string {
   const threadId = context?.threadId?.trim();
   if (!threadId) {
-    throw new ToolError("Background bash jobs require the current Panda session thread.");
+    throw new ToolError("Background bash jobs require the current runtime session thread.");
   }
 
   return threadId;
@@ -85,7 +85,7 @@ function readThreadId(context: BashJobContext | undefined): string {
 function readAgentKey(context: BashJobContext | undefined): string {
   const agentKey = context?.agentKey?.trim();
   if (!agentKey) {
-    throw new ToolError("Remote background bash requires agentKey in the current Panda session context.");
+    throw new ToolError("Remote background bash requires agentKey in the current runtime session context.");
   }
 
   return agentKey;
@@ -277,7 +277,7 @@ export class BashJobService {
 
     const runnerUrlTemplate = resolveRunnerUrlTemplate(this.env);
     if (!runnerUrlTemplate) {
-      throw new ToolError("Remote background bash requires PANDA_RUNNER_URL_TEMPLATE.");
+      throw new ToolError("Remote background bash requires RUNNER_URL_TEMPLATE.");
     }
 
     const agentKey = readAgentKey(options.run.context);

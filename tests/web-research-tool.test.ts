@@ -1,6 +1,6 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {Agent, type PandaSessionContext, RunContext, ToolError, WebResearchTool,} from "../src/index.js";
+import {Agent, type DefaultAgentSessionContext, RunContext, ToolError, WebResearchTool,} from "../src/index.js";
 
 function createAgent() {
   return new Agent({
@@ -10,12 +10,12 @@ function createAgent() {
 }
 
 function createRunContext(
-  context: PandaSessionContext,
+  context: DefaultAgentSessionContext,
   options: {
     signal?: AbortSignal;
     onToolProgress?: (progress: Record<string, unknown>) => void;
   } = {},
-): RunContext<PandaSessionContext> {
+): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: createAgent(),
     turn: 1,

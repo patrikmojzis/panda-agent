@@ -136,7 +136,7 @@ describe("HeartbeatRunner", () => {
     pools.push(harness.pool);
 
     await harness.pool.query(
-      `UPDATE "thread_runtime_session_heartbeats" SET next_fire_at = $2 WHERE session_id = $1`,
+      `UPDATE "runtime"."session_heartbeats" SET next_fire_at = $2 WHERE session_id = $1`,
       ["session-main", new Date(Date.now() - 1_000)],
     );
 
@@ -158,7 +158,7 @@ describe("HeartbeatRunner", () => {
     });
     expect(heartbeatInput?.message).toMatchObject({
       role: "user",
-      content: expect.stringContaining("the `panda_*` views are already scoped to this session."),
+      content: expect.stringContaining("the `session.*` views are already scoped to this session."),
     });
     expect(harness.runtime.complete).toHaveBeenCalledTimes(1);
 
@@ -177,7 +177,7 @@ describe("HeartbeatRunner", () => {
       source: "tui",
     }, "queue");
     await harness.pool.query(
-      `UPDATE "thread_runtime_session_heartbeats" SET next_fire_at = $2 WHERE session_id = $1`,
+      `UPDATE "runtime"."session_heartbeats" SET next_fire_at = $2 WHERE session_id = $1`,
       ["session-main", new Date(Date.now() - 1_000)],
     );
 
@@ -185,7 +185,7 @@ describe("HeartbeatRunner", () => {
     await harness.runner.stop();
 
     const heartbeatInputs = await harness.pool.query(
-      `SELECT id FROM "thread_runtime_inputs" WHERE thread_id = $1 AND source = 'heartbeat'`,
+      `SELECT id FROM "runtime"."inputs" WHERE thread_id = $1 AND source = 'heartbeat'`,
       ["session-thread"],
     );
     expect(heartbeatInputs.rows).toHaveLength(0);

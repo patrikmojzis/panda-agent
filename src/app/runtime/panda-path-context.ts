@@ -63,7 +63,7 @@ function normalizeShellSession(shellSession: ShellSession): ShellSession {
   return shellSession;
 }
 
-export function readPandaBaseCwd(context: unknown): string {
+export function readBaseCwd(context: unknown): string {
   if (isRecord(context)) {
     const shell = context.shell;
     if (isRecord(shell) && typeof shell.cwd === "string" && shell.cwd.trim()) {
@@ -78,7 +78,7 @@ export function readPandaBaseCwd(context: unknown): string {
   return process.cwd();
 }
 
-export function ensurePandaShellSession(context: unknown): ShellSession | null {
+export function ensureShellSession(context: unknown): ShellSession | null {
   if (!isRecord(context)) {
     return null;
   }
@@ -89,7 +89,7 @@ export function ensurePandaShellSession(context: unknown): ShellSession | null {
   }
 
   const nextShell: ShellSession = {
-    cwd: readPandaBaseCwd(context),
+    cwd: readBaseCwd(context),
     env: {},
   };
 
@@ -97,7 +97,7 @@ export function ensurePandaShellSession(context: unknown): ShellSession | null {
   return nextShell;
 }
 
-export function readPandaCurrentInputIdentityId(context: unknown): string | undefined {
+export function readCurrentInputIdentityId(context: unknown): string | undefined {
   if (!isRecord(context)) {
     return undefined;
   }
@@ -110,14 +110,14 @@ export function readPandaCurrentInputIdentityId(context: unknown): string | unde
   return trimNonEmptyString(currentInput.identityId) ?? undefined;
 }
 
-export function resolvePandaPath(
+export function resolveContextPath(
   rawPath: string,
   context: unknown,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const resolvedPath = path.isAbsolute(rawPath)
     ? path.resolve(rawPath)
-    : path.resolve(readPandaBaseCwd(context), rawPath);
+    : path.resolve(readBaseCwd(context), rawPath);
 
   return resolveMountedAgentPath(resolvedPath, context, env);
 }

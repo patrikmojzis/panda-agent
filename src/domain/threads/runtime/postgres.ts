@@ -3,51 +3,51 @@ import {createHash, randomUUID} from "node:crypto";
 import {resolveModelSelector} from "../../../kernel/models/model-selector.js";
 import type {ThreadLease, ThreadLeaseManager} from "./coordinator.js";
 import {
-  buildThreadRuntimeTableNames,
-  type ThreadRuntimeTableNames,
-  toJson,
-  validateIdentifier,
+    buildThreadRuntimeTableNames,
+    CREATE_RUNTIME_SCHEMA_SQL,
+    type ThreadRuntimeTableNames,
+    toJson,
+    validateIdentifier,
 } from "./postgres-shared.js";
 import {buildThreadRuntimeSchemaSql} from "./postgres-schema.js";
 import {parseBashJobRow, parseInputRow, parseMessageRow, parseRunRow, parseThreadRow} from "./postgres-rows.js";
 import {
-  applyPendingThreadInputs,
-  discardPendingThreadInputs,
-  enqueueThreadInput,
-  promoteQueuedThreadInputs,
+    applyPendingThreadInputs,
+    discardPendingThreadInputs,
+    enqueueThreadInput,
+    promoteQueuedThreadInputs,
 } from "./postgres-inputs.js";
 import type {PgPoolLike, PgQueryable} from "./postgres-db.js";
 import type {ThreadEnqueueResult, ThreadRuntimeStore} from "./store.js";
 import {
-  type CreateThreadBashJobInput,
-  type CreateThreadInput,
-  missingThreadError,
-  type ThreadBashJobRecord,
-  type ThreadBashJobUpdate,
-  type ThreadInputDeliveryMode,
-  type ThreadInputPayload,
-  type ThreadInputRecord,
-  type ThreadMessageRecord,
-  type ThreadRecord,
-  type ThreadRunRecord,
-  type ThreadRuntimeMessagePayload,
-  type ThreadSummaryRecord,
-  type ThreadUpdate,
+    type CreateThreadBashJobInput,
+    type CreateThreadInput,
+    missingThreadError,
+    type ThreadBashJobRecord,
+    type ThreadBashJobUpdate,
+    type ThreadInputDeliveryMode,
+    type ThreadInputPayload,
+    type ThreadInputRecord,
+    type ThreadMessageRecord,
+    type ThreadRecord,
+    type ThreadRunRecord,
+    type ThreadRuntimeMessagePayload,
+    type ThreadSummaryRecord,
+    type ThreadUpdate,
 } from "./types.js";
 import {buildIdentityTableNames} from "../../../domain/identity/postgres-shared.js";
 import {buildSessionTableNames} from "../../../domain/sessions/postgres-shared.js";
 
 interface PostgresThreadRuntimeStoreOptions {
   pool: PgPoolLike;
-  tablePrefix?: string;
 }
 
 export interface ThreadRuntimeNotification {
   threadId: string;
 }
 
-export function buildThreadRuntimeNotificationChannel(prefix = "thread_runtime"): string {
-  return validateIdentifier(`${prefix}_events`);
+export function buildThreadRuntimeNotificationChannel(): string {
+  return validateIdentifier("runtime_events");
 }
 
 export function parseThreadRuntimeNotification(payload: string): ThreadRuntimeNotification | null {
@@ -74,11 +74,10 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
 
   constructor(options: PostgresThreadRuntimeStoreOptions) {
     this.pool = options.pool;
-    const tablePrefix = options.tablePrefix ?? "thread_runtime";
-    const identityTables = buildIdentityTableNames(tablePrefix);
-    const sessionTables = buildSessionTableNames(tablePrefix);
-    this.tables = buildThreadRuntimeTableNames(tablePrefix);
-    this.notificationChannel = buildThreadRuntimeNotificationChannel(tablePrefix);
+    const identityTables = buildIdentityTableNames();
+    const sessionTables = buildSessionTableNames();
+    this.tables = buildThreadRuntimeTableNames();
+    this.notificationChannel = buildThreadRuntimeNotificationChannel();
     this.identityTableName = identityTables.identities;
     this.sessionTableName = sessionTables.sessions;
   }
@@ -98,6 +97,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(buildThreadRuntimeSchemaSql(this.tables, this.sessionTableName, this.identityTableName));
   }
 
@@ -810,7 +810,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     return record;
   }
 
-  async markRunningBashJobsLost(reason = "Panda runtime restarted before the background bash job finished."): Promise<number> {
+  async markRunningBashJobsLost(reason = "The runtime restarted before the background bash job finished."): Promise<number> {
     const runningResult = await this.pool.query(
       `SELECT id, thread_id, started_at FROM ${this.tables.bashJobs} WHERE status = 'running'`,
     );

@@ -6,7 +6,7 @@ import type {JsonObject} from "../../kernel/agent/types.js";
 import {buildIdentityTableNames} from "../identity/postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {PgPoolLike} from "../threads/runtime/postgres-db.js";
-import {quoteIdentifier, toJson, toMillis} from "../threads/runtime/postgres-shared.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../threads/runtime/postgres-shared.js";
 import {buildWatchTableNames, type WatchTableNames} from "./postgres-shared.js";
 import type {RecordWatchEventResult, WatchStore} from "./store.js";
 import type {
@@ -28,7 +28,6 @@ import type {
 
 export interface PostgresWatchStoreOptions {
   pool: PgPoolLike;
-  tablePrefix?: string;
 }
 
 function missingWatchError(watchId: string): Error {
@@ -176,13 +175,13 @@ export class PostgresWatchStore implements WatchStore {
 
   constructor(options: PostgresWatchStoreOptions) {
     this.pool = options.pool;
-    const tablePrefix = options.tablePrefix ?? "thread_runtime";
-    this.tables = buildWatchTableNames(tablePrefix);
-    this.identityTableName = buildIdentityTableNames(tablePrefix).identities;
-    this.sessionTableName = buildSessionTableNames(tablePrefix).sessions;
+    this.tables = buildWatchTableNames();
+    this.identityTableName = buildIdentityTableNames().identities;
+    this.sessionTableName = buildSessionTableNames().sessions;
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.watches} (
         id UUID PRIMARY KEY,

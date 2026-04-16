@@ -1,15 +1,15 @@
 import {requireSmokeDatabaseUrl, resolveSmokeModelSelector,} from "../../src/app/smoke/config.js";
-import {type PandaSmokeInput, type PandaSmokeResult, runPandaSmoke,} from "../../src/app/smoke/harness.js";
+import {runSmoke, type SmokeInput, type SmokeResult,} from "../../src/app/smoke/harness.js";
 
 export async function runLiveSmokeTest(
-  input: Omit<PandaSmokeInput, "dbUrl" | "model"> & {
+  input: Omit<SmokeInput, "dbUrl" | "model"> & {
     dbUrl?: string;
     model?: string;
   },
-): Promise<PandaSmokeResult> {
+): Promise<SmokeResult> {
   const dbUrl = input.dbUrl ?? requireSmokeDatabaseUrl();
   const model = resolveSmokeModelSelector(input.model);
-  const result = await runPandaSmoke({
+  const result = await runSmoke({
     ...input,
     dbUrl,
     ...(model ? {model} : {}),

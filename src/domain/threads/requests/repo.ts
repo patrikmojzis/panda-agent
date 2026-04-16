@@ -2,13 +2,13 @@ import {randomUUID} from "node:crypto";
 
 import type {Pool, PoolClient} from "pg";
 
-import {toJson, toMillis} from "../runtime/postgres-shared.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, toJson, toMillis} from "../runtime/postgres-shared.js";
 import {
-  buildPandaRuntimeRequestNotificationChannel,
-  buildPandaRuntimeRequestTableNames,
-  type PandaRuntimeRequestTableNames,
+    buildRuntimeRequestNotificationChannel,
+    buildRuntimeRequestTableNames,
+    type RuntimeRequestTableNames,
 } from "./postgres-shared.js";
-import type {CreateRuntimeRequestInput, PandaRuntimeRequestPayload, PandaRuntimeRequestRecord,} from "./types.js";
+import type {CreateRuntimeRequestInput, RuntimeRequestPayload, RuntimeRequestRecord,} from "./types.js";
 
 interface PgQueryable {
   query: Pool["query"];
@@ -18,20 +18,19 @@ interface PgPoolLike extends PgQueryable {
   connect(): Promise<PoolClient>;
 }
 
-export interface PandaRuntimeRequestRepoOptions {
+export interface RuntimeRequestRepoOptions {
   pool: PgPoolLike;
-  tablePrefix?: string;
 }
 
-function parseRecord<TPayload extends PandaRuntimeRequestPayload>(
+function parseRecord<TPayload extends RuntimeRequestPayload>(
   row: Record<string, unknown>,
-): PandaRuntimeRequestRecord<TPayload> {
+): RuntimeRequestRecord<TPayload> {
   return {
     id: String(row.id),
-    kind: String(row.kind) as PandaRuntimeRequestRecord["kind"],
-    status: String(row.status) as PandaRuntimeRequestRecord["status"],
+    kind: String(row.kind) as RuntimeRequestRecord["kind"],
+    status: String(row.status) as RuntimeRequestRecord["status"],
     payload: row.payload as TPayload,
-    result: row.result === null ? undefined : row.result as PandaRuntimeRequestRecord["result"],
+    result: row.result === null ? undefined : row.result as RuntimeRequestRecord["result"],
     error: typeof row.error === "string" ? row.error : undefined,
     claimedAt: row.claimed_at === null ? undefined : toMillis(row.claimed_at),
     createdAt: toMillis(row.created_at),
@@ -49,16 +48,15 @@ function requireTrimmedRequestId(id: string): string {
   return trimmed;
 }
 
-export class PandaRuntimeRequestRepo {
+export class RuntimeRequestRepo {
   private readonly pool: PgPoolLike;
-  private readonly tables: PandaRuntimeRequestTableNames;
+  private readonly tables: RuntimeRequestTableNames;
   private readonly notificationChannel: string;
 
-  constructor(options: PandaRuntimeRequestRepoOptions) {
+  constructor(options: RuntimeRequestRepoOptions) {
     this.pool = options.pool;
-    const prefix = options.tablePrefix ?? "thread_runtime";
-    this.tables = buildPandaRuntimeRequestTableNames(prefix);
-    this.notificationChannel = buildPandaRuntimeRequestNotificationChannel(prefix);
+    this.tables = buildRuntimeRequestTableNames();
+    this.notificationChannel = buildRuntimeRequestNotificationChannel();
   }
 
   private async notifyPendingRequest(): Promise<void> {
@@ -66,6 +64,7 @@ export class PandaRuntimeRequestRepo {
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.runtimeRequests} (
         id UUID PRIMARY KEY,
@@ -86,9 +85,9 @@ export class PandaRuntimeRequestRepo {
     `);
   }
 
-  async enqueueRequest<TPayload extends PandaRuntimeRequestPayload>(
+  async enqueueRequest<TPayload extends RuntimeRequestPayload>(
     input: CreateRuntimeRequestInput<TPayload>,
-  ): Promise<PandaRuntimeRequestRecord<TPayload>> {
+  ): Promise<RuntimeRequestRecord<TPayload>> {
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.runtimeRequests} (
         id,
@@ -113,7 +112,7 @@ export class PandaRuntimeRequestRepo {
     return record;
   }
 
-  async claimNextPendingRequest(): Promise<PandaRuntimeRequestRecord | null> {
+  async claimNextPendingRequest(): Promise<RuntimeRequestRecord | null> {
     const client = await this.pool.connect();
 
     try {
@@ -146,7 +145,7 @@ export class PandaRuntimeRequestRepo {
     }
   }
 
-  async completeRequest(id: string, resultValue?: unknown): Promise<PandaRuntimeRequestRecord> {
+  async completeRequest(id: string, resultValue?: unknown): Promise<RuntimeRequestRecord> {
     const result = await this.pool.query(`
       UPDATE ${this.tables.runtimeRequests}
       SET status = 'completed',
@@ -163,7 +162,7 @@ export class PandaRuntimeRequestRepo {
     return parseRecord(result.rows[0] as Record<string, unknown>);
   }
 
-  async failRequest(id: string, error: string): Promise<PandaRuntimeRequestRecord> {
+  async failRequest(id: string, error: string): Promise<RuntimeRequestRecord> {
     const result = await this.pool.query(`
       UPDATE ${this.tables.runtimeRequests}
       SET status = 'failed',
@@ -179,7 +178,7 @@ export class PandaRuntimeRequestRepo {
     return parseRecord(result.rows[0] as Record<string, unknown>);
   }
 
-  async getRequest(id: string): Promise<PandaRuntimeRequestRecord> {
+  async getRequest(id: string): Promise<RuntimeRequestRecord> {
     const result = await this.pool.query(`
       SELECT *
       FROM ${this.tables.runtimeRequests}

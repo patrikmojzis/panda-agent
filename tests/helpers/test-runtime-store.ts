@@ -2,34 +2,34 @@ import {randomUUID} from "node:crypto";
 
 import type {IdentityStore} from "../../src/domain/identity/store.js";
 import {
-  createDefaultIdentityInput,
-  type CreateIdentityBindingInput,
-  type CreateIdentityInput,
-  DEFAULT_IDENTITY_HANDLE,
-  DEFAULT_IDENTITY_ID,
-  type EnsureIdentityBindingInput,
-  type IdentityBindingLookup,
-  type IdentityBindingRecord,
-  type IdentityRecord,
-  normalizeIdentityHandle,
+    createDefaultIdentityInput,
+    type CreateIdentityBindingInput,
+    type CreateIdentityInput,
+    DEFAULT_IDENTITY_HANDLE,
+    DEFAULT_IDENTITY_ID,
+    type EnsureIdentityBindingInput,
+    type IdentityBindingLookup,
+    type IdentityBindingRecord,
+    type IdentityRecord,
+    normalizeIdentityHandle,
 } from "../../src/domain/identity/types.js";
 import type {ThreadEnqueueResult, ThreadRuntimeStore} from "../../src/domain/threads/runtime/store.js";
 import {
-  type CreateThreadBashJobInput,
-  type CreateThreadInput,
-  matchesThreadInputIdentity,
-  missingThreadError,
-  type ThreadBashJobRecord,
-  type ThreadBashJobUpdate,
-  type ThreadInputDeliveryMode,
-  type ThreadInputPayload,
-  type ThreadInputRecord,
-  type ThreadMessageRecord,
-  type ThreadRecord,
-  type ThreadRunRecord,
-  type ThreadRuntimeMessagePayload,
-  type ThreadSummaryRecord,
-  type ThreadUpdate,
+    type CreateThreadBashJobInput,
+    type CreateThreadInput,
+    matchesThreadInputIdentity,
+    missingThreadError,
+    type ThreadBashJobRecord,
+    type ThreadBashJobUpdate,
+    type ThreadInputDeliveryMode,
+    type ThreadInputPayload,
+    type ThreadInputRecord,
+    type ThreadMessageRecord,
+    type ThreadRecord,
+    type ThreadRunRecord,
+    type ThreadRuntimeMessagePayload,
+    type ThreadSummaryRecord,
+    type ThreadUpdate,
 } from "../../src/domain/threads/runtime/types.js";
 
 function cloneRecord<T extends object>(record: T): T {
@@ -75,7 +75,7 @@ export class TestIdentityStore implements IdentityStore {
       throw new Error(`Identity ${DEFAULT_IDENTITY_ID} already exists.`);
     }
 
-    throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set PANDA_DATABASE_URL.");
+    throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set DATABASE_URL.");
   }
 
   async ensureIdentity(input: CreateIdentityInput): Promise<IdentityRecord> {
@@ -83,7 +83,7 @@ export class TestIdentityStore implements IdentityStore {
       return cloneRecord(this.localIdentity);
     }
 
-    throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set PANDA_DATABASE_URL.");
+    throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set DATABASE_URL.");
   }
 
   async getIdentity(identityId: string): Promise<IdentityRecord> {
@@ -97,7 +97,7 @@ export class TestIdentityStore implements IdentityStore {
   async getIdentityByHandle(handle: string): Promise<IdentityRecord> {
     const normalizedHandle = normalizeIdentityHandle(handle);
     if (normalizedHandle !== DEFAULT_IDENTITY_HANDLE) {
-      throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set PANDA_DATABASE_URL.");
+      throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set DATABASE_URL.");
     }
 
     return cloneRecord(this.localIdentity);
@@ -108,11 +108,11 @@ export class TestIdentityStore implements IdentityStore {
   }
 
   async createIdentityBinding(_input: CreateIdentityBindingInput): Promise<IdentityBindingRecord> {
-    throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set PANDA_DATABASE_URL.");
+    throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set DATABASE_URL.");
   }
 
   async ensureIdentityBinding(_input: EnsureIdentityBindingInput): Promise<IdentityBindingRecord> {
-    throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set PANDA_DATABASE_URL.");
+    throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set DATABASE_URL.");
   }
 
   async resolveIdentityBinding(_lookup: IdentityBindingLookup): Promise<IdentityBindingRecord | null> {
@@ -125,7 +125,7 @@ export class TestIdentityStore implements IdentityStore {
   }
 
   async deleteIdentityBinding(_lookup: IdentityBindingLookup): Promise<boolean> {
-    throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set PANDA_DATABASE_URL.");
+    throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set DATABASE_URL.");
   }
 }
 
@@ -644,7 +644,7 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     return cloneRecord(next);
   }
 
-  async markRunningBashJobsLost(reason = "Panda runtime restarted before the background bash job finished."): Promise<number> {
+  async markRunningBashJobsLost(reason = "The runtime restarted before the background bash job finished."): Promise<number> {
     let count = 0;
     const finishedAt = Date.now();
 

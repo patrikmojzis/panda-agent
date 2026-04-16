@@ -138,7 +138,7 @@ const credentialCliMocks = vi.hoisted(() => {
     MockPostgresAgentStore,
     MockPostgresCredentialStore,
     MockPostgresIdentityStore,
-    withPandaPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
+    withPostgresPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
       try {
         return await fn(pool);
       } finally {
@@ -170,7 +170,7 @@ vi.mock("../src/domain/credentials/crypto.js", () => ({
 
 vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
   ensureSchemas: credentialCliMocks.ensureSchemas,
-  withPandaPool: credentialCliMocks.withPandaPool,
+  withPostgresPool: credentialCliMocks.withPostgresPool,
 }));
 
 function createProgram(): Command {
@@ -218,7 +218,7 @@ describe("Credential CLI", () => {
       createdAt: 1,
       updatedAt: 2,
     };
-    credentialCliMocks.withPandaPool.mockClear();
+    credentialCliMocks.withPostgresPool.mockClear();
     vi.restoreAllMocks();
   });
 

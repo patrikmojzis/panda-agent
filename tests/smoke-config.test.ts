@@ -11,9 +11,9 @@ import {
 import {looksLikeDisposableDatabaseName, resolveSmokeDatabaseTarget,} from "../src/app/smoke/database.js";
 
 describe("smoke config", () => {
-  it("resolves TEST_DATABASE_URL without falling back to PANDA_DATABASE_URL", () => {
+  it("resolves TEST_DATABASE_URL without falling back to DATABASE_URL", () => {
     expect(resolveSmokeDatabaseUrl(undefined, {
-      PANDA_DATABASE_URL: "postgres://ignored/panda",
+      DATABASE_URL: "postgres://ignored/panda",
       TEST_DATABASE_URL: "postgres://live/smoke_db",
     })).toBe("postgres://live/smoke_db");
   });
@@ -26,7 +26,7 @@ describe("smoke config", () => {
 
   it("fails fast when no smoke database url is configured", () => {
     expect(() => requireSmokeDatabaseUrl(undefined, {
-      PANDA_DATABASE_URL: "postgres://ignored/panda",
+      DATABASE_URL: "postgres://ignored/panda",
     })).toThrow("Live smoke requires Postgres");
   });
 
@@ -48,7 +48,7 @@ describe("smoke config", () => {
 
     expect(resolved).toBe(path.resolve(
       "/workspace/panda",
-      ".temp/panda-smoke/2026-04-16T12-00-01-234Z-panda-agent",
+      ".temp/runtime-smoke/2026-04-16T12-00-01-234Z-panda-agent",
     ));
   });
 });

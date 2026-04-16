@@ -4,9 +4,9 @@ import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
-import {PANDA_SUBAGENT_ROLES, type PandaSubagentRole} from "../subagents/policy.js";
-import {PandaSubagentService} from "../subagents/service.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
+import {DEFAULT_AGENT_SUBAGENT_ROLES, type DefaultAgentSubagentRole} from "../subagents/policy.js";
+import {DefaultAgentSubagentService} from "../subagents/service.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 
 function buildPayload(details: JsonObject): ToolResultPayload {
   return {
@@ -19,13 +19,13 @@ function buildPayload(details: JsonObject): ToolResultPayload {
 }
 
 export interface SpawnSubagentToolOptions {
-  service: PandaSubagentService;
+  service: DefaultAgentSubagentService;
 }
 
-export class SpawnSubagentTool<TContext = PandaSessionContext>
+export class SpawnSubagentTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof SpawnSubagentTool.schema, TContext> {
   static schema = z.object({
-    role: z.enum(PANDA_SUBAGENT_ROLES).describe(
+    role: z.enum(DEFAULT_AGENT_SUBAGENT_ROLES).describe(
       'Subagent role to run. Use "workspace" for read-only workspace inspection, "memory" for Postgres-backed memory search, and "browser" for isolated browser automation.',
     ),
     task: z.string().trim().min(1).describe("The concrete task to delegate."),
@@ -35,14 +35,14 @@ export class SpawnSubagentTool<TContext = PandaSessionContext>
 
   name = "spawn_subagent";
   description = [
-    "Run a fresh synchronous Panda subagent and return its final answer.",
+    "Run a fresh synchronous subagent and return its final answer.",
     "Subagents do not inherit the parent transcript.",
     'Use role="workspace" for read-only codebase inspection, role="memory" for durable memory lookup through Postgres, and role="browser" for isolated browser work.',
     "Use this for scoped delegated exploration when a separate pass is faster or safer.",
   ].join("\n");
   schema = SpawnSubagentTool.schema;
 
-  private readonly service: PandaSubagentService;
+  private readonly service: DefaultAgentSubagentService;
 
   constructor(options: SpawnSubagentToolOptions) {
     super();
@@ -61,8 +61,8 @@ export class SpawnSubagentTool<TContext = PandaSessionContext>
   ): Promise<ToolResultPayload> {
     try {
       const result = await this.service.runSubagent({
-        run: run as unknown as RunContext<PandaSessionContext>,
-        role: args.role as PandaSubagentRole,
+        run: run as unknown as RunContext<DefaultAgentSessionContext>,
+        role: args.role as DefaultAgentSubagentRole,
         task: args.task,
         context: args.context,
         model: args.model,

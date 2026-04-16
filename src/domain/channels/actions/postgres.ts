@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 
 import type {Pool, PoolClient} from "pg";
 
-import {quoteIdentifier, toMillis} from "../../threads/runtime/postgres-shared.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toMillis} from "../../threads/runtime/postgres-shared.js";
 import {
     buildActionNotificationChannel,
     buildChannelActionTableNames,
@@ -20,7 +20,6 @@ interface PgPoolLike extends PgQueryable {
 
 export interface PostgresChannelActionStoreOptions {
   pool: PgPoolLike;
-  tablePrefix?: string;
 }
 
 function requireTrimmed(field: string, value: string): string {
@@ -103,9 +102,8 @@ export class PostgresChannelActionStore {
 
   constructor(options: PostgresChannelActionStoreOptions) {
     this.pool = options.pool;
-    const prefix = options.tablePrefix ?? "thread_runtime";
-    this.tables = buildChannelActionTableNames(prefix);
-    this.notificationChannel = buildActionNotificationChannel(prefix);
+    this.tables = buildChannelActionTableNames();
+    this.notificationChannel = buildActionNotificationChannel();
   }
 
   private async notify(input: ActionNotification): Promise<void> {
@@ -116,6 +114,7 @@ export class PostgresChannelActionStore {
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.channelActions} (
         id UUID PRIMARY KEY,

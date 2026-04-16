@@ -128,7 +128,7 @@ describe("PostgresAgentStore", () => {
       }),
     ]);
 
-    const countResult = await pool.query("SELECT COUNT(*)::int AS count FROM thread_runtime_agent_diary");
+    const countResult = await pool.query("SELECT COUNT(*)::int AS count FROM runtime.agent_diary");
     expect(countResult.rows[0]?.count).toBe(1);
   });
 
@@ -195,9 +195,9 @@ describe("PostgresAgentStore", () => {
       "Travel planning skill.",
       "# Travel\nBody.",
     );
-    await pool.query("DELETE FROM thread_runtime_agents WHERE agent_key = 'panda'");
+    await pool.query("DELETE FROM runtime.agents WHERE agent_key = 'panda'");
 
-    const countResult = await pool.query("SELECT COUNT(*)::int AS count FROM thread_runtime_agent_skills");
+    const countResult = await pool.query("SELECT COUNT(*)::int AS count FROM runtime.agent_skills");
     expect(countResult.rows[0]?.count).toBe(1);
     await expect(agentStore.readAgentSkill("ops", "calendar")).resolves.toMatchObject({
       description: "Ops-only description.",

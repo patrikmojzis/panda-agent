@@ -3,10 +3,10 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 import {Bot} from "grammy";
 
-import {PANDA_DB_URL_OPTION_DESCRIPTION} from "../../../app/cli-shared.js";
+import {DB_URL_OPTION_DESCRIPTION} from "../../../app/cli-shared.js";
 import {createDefaultIdentityInput, PostgresIdentityStore} from "../../../domain/identity/index.js";
 import {parseIdentityHandle} from "../../../domain/identity/cli.js";
-import {ensureSchemas, withPandaPool} from "../../../app/runtime/postgres-bootstrap.js";
+import {ensureSchemas, withPostgresPool} from "../../../app/runtime/postgres-bootstrap.js";
 import {requireTelegramBotToken, resolveTelegramMediaDir, TELEGRAM_SOURCE} from "./config.js";
 import {TelegramService} from "./service.js";
 
@@ -49,7 +49,7 @@ async function withTelegramIdentityStore<T>(
   options: TelegramIdentityCliOptions,
   fn: (store: PostgresIdentityStore) => Promise<T>,
 ): Promise<T> {
-  return withPandaPool(options.dbUrl, async (pool) => {
+  return withPostgresPool(options.dbUrl, async (pool) => {
     const store = new PostgresIdentityStore({pool});
     await ensureSchemas([store]);
     return fn(store);
@@ -145,7 +145,7 @@ export function registerTelegramCommands(program: Command): void {
     .description("Pair a Telegram user id to a Panda identity")
     .requiredOption("--identity <handle>", "Identity handle to pair", parseIdentityHandle)
     .requiredOption("--actor <telegramUserId>", "Telegram user id to pair", parseTelegramActorId)
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: TelegramPairCliOptions) => {
       return telegramPairCommand(options);
     });
@@ -153,7 +153,7 @@ export function registerTelegramCommands(program: Command): void {
   telegramProgram
     .command("run")
     .description("Run the Telegram ingress worker")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: TelegramRunCliOptions) => {
       return telegramRunCommand(options);
     });

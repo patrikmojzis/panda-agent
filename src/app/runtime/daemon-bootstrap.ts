@@ -5,44 +5,44 @@ import {HeartbeatRunner} from "../../domain/scheduling/heartbeats/runner.js";
 import {ScheduledTaskRunner} from "../../domain/scheduling/tasks/index.js";
 import {ConversationRepo, SessionRouteRepo} from "../../domain/sessions/index.js";
 import {WatchRunner} from "../../domain/watches/index.js";
-import {PandaRuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
+import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {createChannelTypingEventHandler} from "../../domain/threads/runtime/channel-typing.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
-import {createPandaRuntime, createPandaThreadDefinition, type PandaRuntimeServices,} from "./create-runtime.js";
+import {createRuntime, createThreadDefinition, type RuntimeServices,} from "./create-runtime.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
-import {PandaDaemonStateRepo} from "./state/repo.js";
-import {resolveDefaultPandaModelSelector} from "../../panda/defaults.js";
-import type {PandaDaemonOptions} from "./daemon-shared.js";
-import {DEFAULT_PANDA_DAEMON_KEY} from "./daemon-shared.js";
+import {DaemonStateRepo} from "./state/repo.js";
+import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
+import type {DaemonOptions} from "./daemon-shared.js";
+import {DEFAULT_DAEMON_KEY} from "./daemon-shared.js";
 import {TELEGRAM_SOURCE,} from "../../integrations/channels/telegram/config.js";
 import {TelegramReactTool} from "../../integrations/channels/telegram/telegram-react-tool.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {OutboundTool} from "../../panda/tools/outbound-tool.js";
 
-export interface PandaDaemonContext {
+export interface DaemonContext {
   fallbackContext: {cwd: string};
   model: string;
   daemonKey: string;
-  runtime: PandaRuntimeServices;
+  runtime: RuntimeServices;
   conversationBindings: ConversationRepo;
   sessionRoutes: SessionRouteRepo;
   outboundDeliveries: PostgresOutboundDeliveryStore;
   channelActions: PostgresChannelActionStore;
-  requests: PandaRuntimeRequestRepo;
-  daemonState: PandaDaemonStateRepo;
+  requests: RuntimeRequestRepo;
+  daemonState: DaemonStateRepo;
   scheduledTaskRunner: ScheduledTaskRunner;
   watchRunner: WatchRunner;
   relationshipHeartbeatRunner: HeartbeatRunner;
 }
 
-export async function bootstrapPandaDaemonContext(
-  options: PandaDaemonOptions,
-): Promise<PandaDaemonContext> {
+export async function bootstrapDaemonContext(
+  options: DaemonOptions,
+): Promise<DaemonContext> {
   const fallbackContext = {
     cwd: options.cwd,
   } as const;
-  const model = resolveDefaultPandaModelSelector();
-  const daemonKey = DEFAULT_PANDA_DAEMON_KEY;
+  const model = resolveDefaultAgentModelSelector();
+  const daemonKey = DEFAULT_DAEMON_KEY;
 
   let sessionRoutes!: SessionRouteRepo;
   let outboundDeliveries!: PostgresOutboundDeliveryStore;
@@ -73,15 +73,14 @@ export async function bootstrapPandaDaemonContext(
     },
   ]);
 
-  const runtime = await createPandaRuntime({
+  const runtime = await createRuntime({
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
     maxSubagentDepth: options.maxSubagentDepth,
-    tablePrefix: options.tablePrefix,
     onEvent: createChannelTypingEventHandler(typingDispatcher),
     resolveDefinition: async (thread, {agentStore, bashJobService, browserService, credentialResolver, sessionStore, store, mainTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
-      return createPandaThreadDefinition({
+      return createThreadDefinition({
         thread,
         session,
         fallbackContext,
@@ -122,32 +121,26 @@ export async function bootstrapPandaDaemonContext(
   try {
     const conversationBindings = new ConversationRepo({
       pool: runtime.pool,
-      tablePrefix: options.tablePrefix,
     });
 
     sessionRoutes = new SessionRouteRepo({
       pool: runtime.pool,
-      tablePrefix: options.tablePrefix,
     });
 
     outboundDeliveries = new PostgresOutboundDeliveryStore({
       pool: runtime.pool,
-      tablePrefix: options.tablePrefix,
     });
 
     channelActions = new PostgresChannelActionStore({
       pool: runtime.pool,
-      tablePrefix: options.tablePrefix,
     });
 
-    const requests = new PandaRuntimeRequestRepo({
+    const requests = new RuntimeRequestRepo({
       pool: runtime.pool,
-      tablePrefix: options.tablePrefix,
     });
 
-    const daemonState = new PandaDaemonStateRepo({
+    const daemonState = new DaemonStateRepo({
       pool: runtime.pool,
-      tablePrefix: options.tablePrefix,
     });
     await ensureSchemas([
       conversationBindings,

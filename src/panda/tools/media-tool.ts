@@ -8,14 +8,14 @@ import {promisify} from "node:util";
 import type {ToolResultMessage} from "@mariozechner/pi-ai";
 import {z} from "zod";
 
-import {resolvePandaAgentMediaDir, resolvePandaMediaDir} from "../../app/runtime/data-dir.js";
+import {resolveAgentMediaDir, resolveMediaDir} from "../../app/runtime/data-dir.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {stripToolArtifactInlineImages, withArtifactDetails} from "../../kernel/agent/tool-artifacts.js";
 import type {JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
-import {resolvePandaPath} from "../../app/runtime/panda-path-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_PDF_PREVIEW_SIZE = 1600;
@@ -43,20 +43,20 @@ function trimNonEmptyString(value: unknown): string | null {
   return trimmed || null;
 }
 
-function resolveMediaArtifactRoot(context: PandaSessionContext | undefined, env: NodeJS.ProcessEnv): string {
+function resolveMediaArtifactRoot(context: DefaultAgentSessionContext | undefined, env: NodeJS.ProcessEnv): string {
   const agentKey = trimNonEmptyString(context?.agentKey);
   if (agentKey) {
-    return resolvePandaAgentMediaDir(agentKey, env);
+    return resolveAgentMediaDir(agentKey, env);
   }
 
-  return resolvePandaMediaDir(env);
+  return resolveMediaDir(env);
 }
 
 async function writeDurablePdfPreview(
   previewPath: string,
   sourcePath: string,
   previewSize: number,
-  context: PandaSessionContext | undefined,
+  context: DefaultAgentSessionContext | undefined,
   env: NodeJS.ProcessEnv,
 ): Promise<{path: string; bytes: Buffer}> {
   const root = resolveMediaArtifactRoot(context, env);
@@ -151,10 +151,10 @@ async function pdfPayload(
   filePath: string,
   originalPath: string,
   previewSize: number,
-  context: PandaSessionContext | undefined,
+  context: DefaultAgentSessionContext | undefined,
   env: NodeJS.ProcessEnv,
 ): Promise<ToolResultPayload> {
-  const tempDirectory = await mkdtemp(path.join(tmpdir(), `panda-pdf-preview-${randomUUID()}-`));
+  const tempDirectory = await mkdtemp(path.join(tmpdir(), `runtime-pdf-preview-${randomUUID()}-`));
 
   try {
     await execFileAsync("qlmanage", ["-t", "-s", String(previewSize), "-o", tempDirectory, filePath], {
@@ -226,7 +226,7 @@ async function pdfPayload(
   }
 }
 
-export class MediaTool<TContext = PandaSessionContext> extends Tool<typeof MediaTool.schema, TContext> {
+export class MediaTool<TContext = DefaultAgentSessionContext> extends Tool<typeof MediaTool.schema, TContext> {
   static schema = z.object({
     path: z.string().trim().min(1).describe(
       "Absolute path or path relative to the current working directory. In remote bash mode, agent-home runner paths are translated automatically.",
@@ -261,7 +261,7 @@ export class MediaTool<TContext = PandaSessionContext> extends Tool<typeof Media
     args: z.output<typeof MediaTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
-    const resolvedPath = resolvePandaPath(args.path, run.context);
+    const resolvedPath = resolveContextPath(args.path, run.context);
     await ensureReadableFile(resolvedPath);
 
     const extension = path.extname(resolvedPath).toLowerCase();
@@ -275,7 +275,7 @@ export class MediaTool<TContext = PandaSessionContext> extends Tool<typeof Media
         resolvedPath,
         args.path,
         this.pdfPreviewSize,
-        run.context as PandaSessionContext | undefined,
+        run.context as DefaultAgentSessionContext | undefined,
         process.env,
       );
     }

@@ -54,7 +54,8 @@ describe("legacy agent import", () => {
     const threadStore = new TestThreadRuntimeStore();
     const credentialStore = new PostgresCredentialStore({pool});
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS thread_runtime_identities (
+      CREATE SCHEMA IF NOT EXISTS runtime;
+      CREATE TABLE IF NOT EXISTS runtime.identities (
         id TEXT PRIMARY KEY,
         handle TEXT
       )
@@ -69,7 +70,7 @@ describe("legacy agent import", () => {
       threadStore,
       createIdentity: async (identity: {id: string; handle: string}) => {
         await pool.query(
-          "INSERT INTO thread_runtime_identities (id, handle) VALUES ($1, $2)",
+          "INSERT INTO runtime.identities (id, handle) VALUES ($1, $2)",
           [identity.id, identity.handle],
         );
         return identity;
@@ -82,7 +83,7 @@ describe("legacy agent import", () => {
   }
 
   it("plans legacy files into Panda storage shapes", async () => {
-    const sandbox = await makeTempDir("panda-legacy-plan-");
+    const sandbox = await makeTempDir("runtime-legacy-plan-");
     const sourceDir = path.join(sandbox, "clawd");
     await mkdir(sourceDir, {recursive: true});
 
@@ -112,7 +113,7 @@ describe("legacy agent import", () => {
 
     const plan = await planLegacyAgentImport(sourceDir, {
       ...process.env,
-      PANDA_DATA_DIR: path.join(sandbox, ".panda"),
+      DATA_DIR: path.join(sandbox, ".panda"),
     });
 
     expect(plan.agentKey).toBe("clawd");
@@ -145,9 +146,9 @@ describe("legacy agent import", () => {
   });
 
   it("imports scoped memory, credentials, and legacy messages", async () => {
-    const sandbox = await makeTempDir("panda-legacy-import-");
+    const sandbox = await makeTempDir("runtime-legacy-import-");
     const sourceDir = path.join(sandbox, "luna");
-    const pandaDataDir = path.join(sandbox, ".panda");
+    const dataDir = path.join(sandbox, ".panda");
     await mkdir(sourceDir, {recursive: true});
 
     await writeWorkspaceFile(sourceDir, "AGENTS.md", "# AGENTS\nWorkspace rules.");
@@ -232,7 +233,7 @@ describe("legacy agent import", () => {
     });
     const env = {
       ...process.env,
-      PANDA_DATA_DIR: pandaDataDir,
+      DATA_DIR: dataDir,
     };
     const plan = await planLegacyAgentImport(sourceDir, {
       env,

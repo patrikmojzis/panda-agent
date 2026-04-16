@@ -5,10 +5,10 @@ import type {AgentStore} from "../../domain/agents/index.js";
 import type {SessionRecord} from "../../domain/sessions/index.js";
 import type {InferenceProjection, ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import {buildPandaLlmContexts, type PandaLlmContextSection,} from "../../panda/contexts/builder.js";
-import {buildPandaTools} from "../../panda/definition.js";
-import {PANDA_PROMPT} from "../../panda/prompt.js";
-import type {PandaSessionContext} from "./panda-session-context.js";
+import {buildDefaultAgentLlmContexts, type DefaultAgentLlmContextSection,} from "../../panda/contexts/builder.js";
+import {buildDefaultAgentTools} from "../../panda/definition.js";
+import {DEFAULT_AGENT_INSTRUCTIONS} from "../../panda/prompt.js";
+import type {DefaultAgentSessionContext} from "./panda-session-context.js";
 import type {BashToolOptions} from "../../panda/tools/bash-tool.js";
 import type {BrowserToolOptions} from "../../panda/tools/browser-tool.js";
 import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js";
@@ -18,7 +18,7 @@ import type {Tool} from "../../kernel/agent/tool.js";
 const HOUR_MS = 60 * 60 * 1_000;
 const DAY_MS = 24 * HOUR_MS;
 
-export const DEFAULT_PANDA_INFERENCE_PROJECTION: InferenceProjection = {
+export const DEFAULT_INFERENCE_PROJECTION: InferenceProjection = {
   dropToolCalls: {
     olderThanMs: 4 * HOUR_MS,
     preserveRecentUserTurns: 13,
@@ -36,19 +36,19 @@ export const DEFAULT_PANDA_INFERENCE_PROJECTION: InferenceProjection = {
   },
 };
 
-export interface CreatePandaThreadDefinitionOptions {
+export interface CreateThreadDefinitionOptions {
   thread: ThreadRecord;
   session: Pick<SessionRecord, "id" | "agentKey">;
-  fallbackContext: Pick<PandaSessionContext, "cwd">;
+  fallbackContext: Pick<DefaultAgentSessionContext, "cwd">;
   agentStore?: AgentStore;
   threadStore?: Pick<ThreadRuntimeStore, "listBashJobs">;
   bashToolOptions?: BashToolOptions;
   browserToolOptions?: BrowserToolOptions;
   tools?: readonly Tool[];
   extraLlmContexts?: readonly LlmContext[];
-  llmContextSections?: readonly PandaLlmContextSection[];
+  llmContextSections?: readonly DefaultAgentLlmContextSection[];
   extraContext?: Omit<
-    PandaSessionContext,
+    DefaultAgentSessionContext,
     "cwd" | "threadId" | "sessionId" | "agentKey" | "subagentDepth"
   >;
 }
@@ -62,11 +62,11 @@ function hasStoredShellCwd(value: Record<string, unknown>): boolean {
   return isRecord(shell) && typeof shell.cwd === "string" && shell.cwd.trim().length > 0;
 }
 
-export function resolveStoredPandaContext(
+export function resolveStoredContext(
   value: ThreadRecord["context"],
-  fallback: Pick<PandaSessionContext, "cwd">,
+  fallback: Pick<DefaultAgentSessionContext, "cwd">,
   agentKey?: string,
-): Pick<PandaSessionContext, "cwd"> {
+): Pick<DefaultAgentSessionContext, "cwd"> {
   const remoteInitialCwd = agentKey ? resolveRemoteInitialCwd(agentKey) : null;
   if (!isRecord(value)) {
     return {
@@ -91,12 +91,12 @@ export function resolveStoredPandaContext(
   };
 }
 
-export function createPandaThreadDefinition(
-  options: CreatePandaThreadDefinitionOptions,
+export function createThreadDefinition(
+  options: CreateThreadDefinitionOptions,
 ): ResolvedThreadDefinition {
   const {session} = options;
-  const context: PandaSessionContext = {
-    ...resolveStoredPandaContext(options.thread.context, options.fallbackContext, session.agentKey),
+  const context: DefaultAgentSessionContext = {
+    ...resolveStoredContext(options.thread.context, options.fallbackContext, session.agentKey),
     threadId: options.thread.id,
     sessionId: session.id,
     agentKey: session.agentKey,
@@ -104,7 +104,7 @@ export function createPandaThreadDefinition(
     ...options.extraContext,
   };
 
-  const llmContexts: LlmContext[] = buildPandaLlmContexts({
+  const llmContexts: LlmContext[] = buildDefaultAgentLlmContexts({
     context,
     agentStore: options.agentStore,
     threadStore: options.threadStore,
@@ -117,8 +117,8 @@ export function createPandaThreadDefinition(
   return {
     agent: new Agent({
       name: session.agentKey,
-      instructions: PANDA_PROMPT,
-      tools: options.tools ?? buildPandaTools([], {
+      instructions: DEFAULT_AGENT_INSTRUCTIONS,
+      tools: options.tools ?? buildDefaultAgentTools([], {
         bash: options.bashToolOptions,
         browser: options.browserToolOptions,
       }),
@@ -126,7 +126,7 @@ export function createPandaThreadDefinition(
     context,
     llmContexts,
     inferenceProjection: mergeInferenceProjection(
-      DEFAULT_PANDA_INFERENCE_PROJECTION,
+      DEFAULT_INFERENCE_PROJECTION,
       options.thread.inferenceProjection,
     ),
   };

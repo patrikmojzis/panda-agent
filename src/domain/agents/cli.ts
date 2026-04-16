@@ -6,9 +6,9 @@ import {mkdir} from "node:fs/promises";
 import {Command, InvalidArgumentError} from "commander";
 import type {Pool} from "pg";
 
-import {PANDA_DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {ensureSchemas, withPandaPool} from "../../app/runtime/postgres-bootstrap.js";
-import {resolvePandaAgentDir} from "../../app/runtime/data-dir.js";
+import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
+import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
+import {resolveAgentDir} from "../../app/runtime/data-dir.js";
 import {CredentialService, PostgresCredentialStore, resolveCredentialCrypto} from "../credentials/index.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
 import {parseIdentityHandle} from "../identity/cli.js";
@@ -65,7 +65,7 @@ async function withAgentStores<T>(
     threadStore: PostgresThreadRuntimeStore;
   }) => Promise<T>,
 ): Promise<T> {
-  return withPandaPool(options.dbUrl, async (pool) => {
+  return withPostgresPool(options.dbUrl, async (pool) => {
     const stores = createAgentCliStores(pool);
     await ensureSchemas([
       stores.identityStore,
@@ -87,7 +87,7 @@ async function withLegacyImportStores<T>(
     threadStore: PostgresThreadRuntimeStore;
   }) => Promise<T>,
 ): Promise<T> {
-  return withPandaPool(options.dbUrl, async (pool) => {
+  return withPostgresPool(options.dbUrl, async (pool) => {
     const stores = createAgentCliStores(pool);
     const credentialStore = new PostgresCredentialStore({pool});
     await ensureSchemas([
@@ -153,7 +153,7 @@ export async function createAgentCommand(agentKey: string, options: CreateAgentC
       displayName: options.name?.trim() || agentKey,
       prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
-    const agentHome = resolvePandaAgentDir(created.agentKey);
+    const agentHome = resolveAgentDir(created.agentKey);
 
     const sessionId = randomUUID();
     const threadId = randomUUID();
@@ -359,7 +359,7 @@ export function registerAgentCommands(program: Command): void {
   agentProgram
     .command("list")
     .description("List stored Panda agents")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: AgentCliOptions) => {
       return listAgentsCommand(options);
     });
@@ -369,7 +369,7 @@ export function registerAgentCommands(program: Command): void {
     .description("Create a Panda agent")
     .argument("<agentKey>", "Agent key", parseAgentKey)
     .option("--name <displayName>", "Display name to show in UIs")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((agentKey: string, options: CreateAgentCliOptions) => {
       return createAgentCommand(agentKey, options);
     });
@@ -379,7 +379,7 @@ export function registerAgentCommands(program: Command): void {
     .description("Pair an identity with an agent")
     .argument("<agentKey>", "Agent key", parseAgentKey)
     .argument("<identityHandle>", "Identity handle")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((agentKey: string, identityHandle: string, options: PairAgentCliOptions) => {
       return pairAgentCommand(agentKey, identityHandle, options);
     });
@@ -389,7 +389,7 @@ export function registerAgentCommands(program: Command): void {
     .description("Remove an identity pairing from an agent")
     .argument("<agentKey>", "Agent key", parseAgentKey)
     .argument("<identityHandle>", "Identity handle")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((agentKey: string, identityHandle: string, options: PairAgentCliOptions) => {
       return unpairAgentCommand(agentKey, identityHandle, options);
     });
@@ -398,7 +398,7 @@ export function registerAgentCommands(program: Command): void {
     .command("pairings")
     .description("List identities paired to an agent")
     .argument("<agentKey>", "Agent key", parseAgentKey)
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((agentKey: string, options: PairAgentCliOptions) => {
       return listPairingsCommand(agentKey, options);
     });
@@ -410,7 +410,7 @@ export function registerAgentCommands(program: Command): void {
     .option("--dry-run", "Show the migration plan without writing to Postgres")
     .option("--identity <handle>", "Identity handle to scope memory, diary, credentials, and imported user messages", parseIdentityHandle)
     .option("--include-messages", "Import lossy legacy user/assistant transcript pairs into the main Panda thread")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sourcePath: string, options: ImportLegacyAgentCliOptions) => {
       return importLegacyCommand(sourcePath, options);
     });

@@ -1,4 +1,4 @@
-import {buildPrefixedRelationNames} from "../../domain/threads/runtime/postgres-shared.js";
+import {buildRuntimeRelationNames} from "../../domain/threads/runtime/postgres-shared.js";
 
 export interface IdentityTableNames {
   prefix: string;
@@ -6,8 +6,8 @@ export interface IdentityTableNames {
   identityBindings: string;
 }
 
-export function buildIdentityTableNames(prefix: string): IdentityTableNames {
-  return buildPrefixedRelationNames(prefix, {
+export function buildIdentityTableNames(): IdentityTableNames {
+  return buildRuntimeRelationNames({
     identities: "identities",
     identityBindings: "identity_bindings",
   });

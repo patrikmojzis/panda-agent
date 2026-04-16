@@ -1,7 +1,7 @@
 import type {Pool, PoolClient} from "pg";
 
 import type {RememberedRoute} from "../../../domain/channels/types.js";
-import {quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
 import {buildSessionRouteTableNames, type SessionRouteTableNames} from "./postgres-shared.js";
 import type {SessionRouteInput, SessionRouteLookup, SessionRouteRecord} from "./types.js";
 
@@ -15,7 +15,6 @@ interface PgPoolLike extends PgQueryable {
 
 export interface SessionRouteRepoOptions {
   pool: PgPoolLike;
-  tablePrefix?: string;
 }
 
 function requireTrimmed(field: string, value: string | undefined | null): string {
@@ -83,10 +82,11 @@ export class SessionRouteRepo {
 
   constructor(options: SessionRouteRepoOptions) {
     this.pool = options.pool;
-    this.tables = buildSessionRouteTableNames(options.tablePrefix ?? "thread_runtime");
+    this.tables = buildSessionRouteTableNames();
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.sessionRoutes} (
         session_id TEXT NOT NULL,

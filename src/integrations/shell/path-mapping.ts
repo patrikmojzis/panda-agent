@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import {resolvePandaAgentDir} from "../../app/runtime/data-dir.js";
+import {resolveAgentDir} from "../../app/runtime/data-dir.js";
 import {resolveBashExecutionMode, resolveRunnerCwd, resolveRunnerCwdTemplate,} from "./bash-executor.js";
 
 function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
@@ -22,7 +22,7 @@ function resolveRemoteAgentRoots(
   }
 
   return {
-    hostAgentRoot: path.resolve(resolvePandaAgentDir(agentKey, env)),
+    hostAgentRoot: path.resolve(resolveAgentDir(agentKey, env)),
     runnerAgentRoot: path.resolve(resolveRunnerCwd(runnerCwdTemplate, agentKey)),
   };
 }

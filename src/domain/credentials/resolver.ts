@@ -38,7 +38,7 @@ export class CredentialResolver {
 
   private requireCrypto(): CredentialCrypto {
     if (!this.crypto) {
-      throw new Error("PANDA_CREDENTIALS_MASTER_KEY is required to decrypt stored credentials.");
+      throw new Error("CREDENTIALS_MASTER_KEY is required to decrypt stored credentials.");
     }
 
     return this.crypto;

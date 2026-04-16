@@ -6,11 +6,11 @@ import {describe, expect, it} from "vitest";
 
 import {Agent, RunContext} from "../src/kernel/agent/index.js";
 import {OutboundTool} from "../src/panda/index.js";
-import type {PandaSessionContext} from "../src/app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
 
 function createContext(
-  overrides: Partial<PandaSessionContext> = {},
-): PandaSessionContext & {
+  overrides: Partial<DefaultAgentSessionContext> = {},
+): DefaultAgentSessionContext & {
   routeLookups: Array<string | undefined>;
   queued: unknown[];
   rememberedRoutes: unknown[];
@@ -53,7 +53,7 @@ function createContext(
   };
 }
 
-function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
+function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: new Agent(),
     turn: 0,
@@ -65,7 +65,7 @@ function createRunContext(context: PandaSessionContext): RunContext<PandaSession
 
 describe("OutboundTool", () => {
   it("queues a reply on the current inbound route", async () => {
-    const tool = new OutboundTool<PandaSessionContext>();
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext({
       currentInput: {
         source: "telegram",
@@ -119,12 +119,12 @@ describe("OutboundTool", () => {
   });
 
   it("resolves relative file paths before queueing", async () => {
-    const tempDir = await mkdtemp(path.join(tmpdir(), "panda-outbound-tool-"));
+    const tempDir = await mkdtemp(path.join(tmpdir(), "runtime-outbound-tool-"));
     const relativeFile = "report.txt";
     const absoluteFile = path.join(tempDir, relativeFile);
     await writeFile(absoluteFile, "hi");
 
-    const tool = new OutboundTool<PandaSessionContext>();
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext({
       cwd: tempDir,
       currentInput: {
@@ -156,7 +156,7 @@ describe("OutboundTool", () => {
   });
 
   it("uses the remembered route for a requested different channel", async () => {
-    const tool = new OutboundTool<PandaSessionContext>();
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext({
       currentInput: {
         source: "telegram",
@@ -217,7 +217,7 @@ describe("OutboundTool", () => {
   });
 
   it("falls back to the newest remembered route when there is no current inbound message", async () => {
-    const tool = new OutboundTool<PandaSessionContext>();
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext({
       routeMemory: {
         getLastRoute: async (channel) => {
@@ -255,7 +255,7 @@ describe("OutboundTool", () => {
   });
 
   it("does not rewrite the remembered route when an explicit target override is used", async () => {
-    const tool = new OutboundTool<PandaSessionContext>();
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext({
       routeMemory: {
         getLastRoute: async (channel) => {
@@ -296,7 +296,7 @@ describe("OutboundTool", () => {
   });
 
   it("errors when a requested channel has no current or remembered route", async () => {
-    const tool = new OutboundTool<PandaSessionContext>();
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext();
 
     await expect(tool.run({
@@ -309,7 +309,7 @@ describe("OutboundTool", () => {
   });
 
   it("rejects outbound during prepare-only scheduled execution", async () => {
-    const tool = new OutboundTool<PandaSessionContext>();
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext({
       currentInput: {
         source: "scheduled_task",

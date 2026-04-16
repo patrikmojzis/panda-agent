@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 
-import * as pandaPersona from "../src/panda/index.js";
+import * as personaExports from "../src/panda/index.js";
 
 const EXPECTED_PERSONA_EXPORTS = [
   "AgentDocumentTool",
@@ -13,15 +13,15 @@ const EXPECTED_PERSONA_EXPORTS = [
   "BraveSearchTool",
   "BrowserTool",
   "ClearEnvValueTool",
-  "DEFAULT_PANDA_LLM_CONTEXT_SECTIONS",
+  "DEFAULT_AGENT_LLM_CONTEXT_SECTIONS",
   "DateTimeContext",
   "EnvironmentContext",
   "GlobFilesTool",
   "GrepFilesTool",
   "MediaTool",
   "OutboundTool",
-  "PANDA_PROMPT",
-  "PANDA_SUBAGENT_ROLE_POLICIES",
+  "DEFAULT_AGENT_INSTRUCTIONS",
+  "DEFAULT_AGENT_SUBAGENT_ROLE_POLICIES",
   "PostgresReadonlyQueryTool",
   "ReadFileTool",
   "ScheduledTaskCancelTool",
@@ -37,29 +37,29 @@ const EXPECTED_PERSONA_EXPORTS = [
   "WebResearchTool",
   "WhisperTool",
   "buildBashJobPayload",
-  "buildPandaLlmContexts",
-  "buildPandaTools",
+  "buildDefaultAgentLlmContexts",
+  "buildDefaultAgentTools",
   "filterToolsForSubagentRole",
-  "getPandaSubagentRolePolicy",
-  "resolveDefaultPandaModelSelector",
+  "getDefaultAgentSubagentRolePolicy",
+  "resolveDefaultAgentModelSelector",
 ] as const;
 
 const FORBIDDEN_PERSONA_EXPORTS = [
-  "PandaSubagentRunInput",
-  "PandaSubagentRunResult",
-  "PandaSubagentService",
-  "PandaSubagentServiceOptions",
+  "DefaultAgentSubagentRunInput",
+  "DefaultAgentSubagentRunResult",
+  "DefaultAgentSubagentService",
+  "DefaultAgentSubagentServiceOptions",
   "summarizeMessageText",
 ] as const;
 
 describe("panda persona public API", () => {
   it("matches the intentional persona export surface", () => {
-    expect(Object.keys(pandaPersona).sort()).toEqual([...EXPECTED_PERSONA_EXPORTS]);
+    expect(Object.keys(personaExports).sort()).toEqual([...EXPECTED_PERSONA_EXPORTS].sort());
   });
 
   it("does not leak persona wiring helpers", () => {
     for (const exportName of FORBIDDEN_PERSONA_EXPORTS) {
-      expect(pandaPersona).not.toHaveProperty(exportName);
+      expect(personaExports).not.toHaveProperty(exportName);
     }
   });
 });

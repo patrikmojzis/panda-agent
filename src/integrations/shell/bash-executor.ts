@@ -11,11 +11,7 @@ import type {
     BashRunnerExecRequest,
     BashRunnerResponse,
 } from "./bash-protocol.js";
-import {
-    PANDA_RUNNER_AGENT_KEY_HEADER,
-    PANDA_RUNNER_EXPECTED_PATH_HEADER,
-    PANDA_RUNNER_PATH_SCOPED_HEADER,
-} from "./bash-protocol.js";
+import {RUNNER_AGENT_KEY_HEADER, RUNNER_EXPECTED_PATH_HEADER, RUNNER_PATH_SCOPED_HEADER,} from "./bash-protocol.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import type {ShellExecutionContext} from "./types.js";
 
@@ -63,7 +59,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function readAgentKey(context: ShellExecutionContext | undefined): string {
   const agentKey = context?.agentKey;
   if (!agentKey?.trim()) {
-    throw new ToolError("Remote bash execution requires agentKey in the current Panda session context.");
+    throw new ToolError("Remote bash execution requires agentKey in the current runtime session context.");
   }
 
   return agentKey;
@@ -79,15 +75,15 @@ function firstNonEmpty(value: string | null | undefined): string | null {
 }
 
 export function resolveBashExecutionMode(env: NodeJS.ProcessEnv = process.env): BashExecutionMode {
-  return firstNonEmpty(env.PANDA_BASH_EXECUTION_MODE) === "remote" ? "remote" : "local";
+  return firstNonEmpty(env.BASH_EXECUTION_MODE) === "remote" ? "remote" : "local";
 }
 
 export function resolveRunnerUrlTemplate(env: NodeJS.ProcessEnv = process.env): string | null {
-  return firstNonEmpty(env.PANDA_RUNNER_URL_TEMPLATE);
+  return firstNonEmpty(env.RUNNER_URL_TEMPLATE);
 }
 
 export function resolveRunnerCwdTemplate(env: NodeJS.ProcessEnv = process.env): string | null {
-  return firstNonEmpty(env.PANDA_RUNNER_CWD_TEMPLATE);
+  return firstNonEmpty(env.RUNNER_CWD_TEMPLATE);
 }
 
 function resolveAgentTemplateValue(template: string, agentKey: string): string {
@@ -125,7 +121,7 @@ function normalizeUrlPathname(pathname: string): string {
 }
 
 function isPathScopedRunnerTemplate(template: string): boolean {
-  const marker = "__PANDA_AGENT_KEY__";
+  const marker = "__RUNTIME_AGENT_KEY__";
   const url = new URL(template.replaceAll("{agentKey}", marker));
   return url.pathname.includes(marker);
 }
@@ -138,14 +134,14 @@ export function buildRunnerRequestHeaders(
   const pathScoped = isPathScopedRunnerTemplate(runnerUrlTemplate);
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    [PANDA_RUNNER_AGENT_KEY_HEADER]: agentKey,
-    [PANDA_RUNNER_PATH_SCOPED_HEADER]: pathScoped ? "1" : "0",
+    [RUNNER_AGENT_KEY_HEADER]: agentKey,
+    [RUNNER_PATH_SCOPED_HEADER]: pathScoped ? "1" : "0",
   };
 
   if (pathScoped) {
     // The runner compares this against the request URL so agent-aware routes
     // still fail loudly even when {agentKey} is buried inside a longer path.
-    headers[PANDA_RUNNER_EXPECTED_PATH_HEADER] = normalizeUrlPathname(new URL(runnerUrl).pathname);
+    headers[RUNNER_EXPECTED_PATH_HEADER] = normalizeUrlPathname(new URL(runnerUrl).pathname);
   }
 
   return headers;
@@ -326,7 +322,7 @@ export class RemoteShellExecutor implements BashExecutor {
     options: BashExecutorOptions & {run: RunContext<TContext>},
   ): Promise<BashExecutionResult> {
     if (!this.runnerUrlTemplate) {
-      throw new ToolError("Remote bash execution requires PANDA_RUNNER_URL_TEMPLATE.");
+      throw new ToolError("Remote bash execution requires RUNNER_URL_TEMPLATE.");
     }
 
     const agentKey = readAgentKey(options.run.context);

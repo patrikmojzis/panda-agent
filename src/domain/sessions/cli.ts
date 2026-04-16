@@ -3,15 +3,11 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 import type {Pool} from "pg";
 
-import {PANDA_DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {
-  DEFAULT_PANDA_DAEMON_KEY,
-  PANDA_DAEMON_REQUEST_TIMEOUT_MS,
-  PANDA_DAEMON_STALE_AFTER_MS
-} from "../../app/runtime/daemon.js";
-import {ensureSchemas, withPandaPool} from "../../app/runtime/postgres-bootstrap.js";
-import {PandaDaemonStateRepo} from "../../app/runtime/state/repo.js";
-import {PandaRuntimeRequestRepo} from "../threads/requests/repo.js";
+import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
+import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY} from "../../app/runtime/daemon.js";
+import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
+import {DaemonStateRepo} from "../../app/runtime/state/repo.js";
+import {RuntimeRequestRepo} from "../threads/requests/repo.js";
 import {ConversationRepo} from "./conversations/repo.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
@@ -30,8 +26,8 @@ interface HeartbeatCliOptions extends SessionCliOptions {
 interface WithSessionStores {
   sessionStore: PostgresSessionStore;
   threadStore: PostgresThreadRuntimeStore;
-  requests: PandaRuntimeRequestRepo;
-  daemonState: PandaDaemonStateRepo;
+  requests: RuntimeRequestRepo;
+  daemonState: DaemonStateRepo;
   conversations: ConversationRepo;
 }
 
@@ -43,8 +39,8 @@ function createSessionCliStores(pool: Pool): WithSessionStores & {
     identityStore,
     sessionStore: new PostgresSessionStore({pool}),
     threadStore: new PostgresThreadRuntimeStore({pool}),
-    requests: new PandaRuntimeRequestRepo({pool}),
-    daemonState: new PandaDaemonStateRepo({pool}),
+    requests: new RuntimeRequestRepo({pool}),
+    daemonState: new DaemonStateRepo({pool}),
     conversations: new ConversationRepo({pool}),
   };
 }
@@ -62,7 +58,7 @@ async function withSessionStores<T>(
   options: SessionCliOptions,
   fn: (stores: WithSessionStores) => Promise<T>,
 ): Promise<T> {
-  return withPandaPool(options.dbUrl, async (pool) => {
+  return withPostgresPool(options.dbUrl, async (pool) => {
     const stores = createSessionCliStores(pool);
     await ensureSchemas([
       stores.identityStore,
@@ -77,7 +73,7 @@ async function withSessionStores<T>(
 }
 
 async function waitForRequestResult(
-  requests: PandaRuntimeRequestRepo,
+  requests: RuntimeRequestRepo,
   requestId: string,
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
@@ -97,10 +93,10 @@ async function waitForRequestResult(
   throw new Error(`Timed out waiting for runtime request ${requestId}.`);
 }
 
-async function requireDaemonOnline(daemonState: PandaDaemonStateRepo): Promise<void> {
-  const state = await daemonState.readState(DEFAULT_PANDA_DAEMON_KEY);
-  if (!state || Date.now() - state.heartbeatAt > PANDA_DAEMON_STALE_AFTER_MS) {
-    throw new Error(`panda run (${DEFAULT_PANDA_DAEMON_KEY}) is offline.`);
+async function requireDaemonOnline(daemonState: DaemonStateRepo): Promise<void> {
+  const state = await daemonState.readState(DEFAULT_DAEMON_KEY);
+  if (!state || Date.now() - state.heartbeatAt > DAEMON_STALE_AFTER_MS) {
+    throw new Error(`panda run (${DEFAULT_DAEMON_KEY}) is offline.`);
   }
 }
 
@@ -155,7 +151,7 @@ async function resetSessionCommand(sessionId: string, options: SessionCliOptions
         sessionId: session.id,
       },
     });
-    const result = await waitForRequestResult(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
+    const result = await waitForRequestResult(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
     process.stdout.write(
       [
         `Reset session ${session.id}.`,
@@ -220,7 +216,7 @@ export function registerSessionCommands(program: Command): void {
     .command("list")
     .description("List sessions for an agent")
     .argument("<agentKey>", "Agent key")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((agentKey: string, options: SessionCliOptions) => {
       return listSessionsCommand(agentKey, options);
     });
@@ -229,7 +225,7 @@ export function registerSessionCommands(program: Command): void {
     .command("inspect")
     .description("Inspect one session")
     .argument("<sessionId>", "Session id")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sessionId: string, options: SessionCliOptions) => {
       return inspectSessionCommand(sessionId, options);
     });
@@ -238,7 +234,7 @@ export function registerSessionCommands(program: Command): void {
     .command("reset")
     .description("Reset one session through the daemon")
     .argument("<sessionId>", "Session id")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sessionId: string, options: SessionCliOptions) => {
       return resetSessionCommand(sessionId, options);
     });
@@ -250,7 +246,7 @@ export function registerSessionCommands(program: Command): void {
     .option("--enable", "Enable heartbeat")
     .option("--disable", "Disable heartbeat")
     .option("--every <minutes>", "Heartbeat interval in minutes", parsePositiveInt)
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sessionId: string, options: HeartbeatCliOptions) => {
       return heartbeatCommand(sessionId, options);
     });
@@ -262,7 +258,7 @@ export function registerSessionCommands(program: Command): void {
     .argument("<source>", "Channel source, for example telegram")
     .argument("<connectorKey>", "Connector key")
     .argument("<externalConversationId>", "External conversation id")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((
       sessionId: string,
       source: string,

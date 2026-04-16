@@ -1,16 +1,16 @@
-import {buildPrefixedRelationNames, validateIdentifier} from "../runtime/postgres-shared.js";
+import {buildRuntimeRelationNames} from "../runtime/postgres-shared.js";
 
-export interface PandaRuntimeRequestTableNames {
+export interface RuntimeRequestTableNames {
   prefix: string;
   runtimeRequests: string;
 }
 
-export function buildPandaRuntimeRequestTableNames(prefix: string): PandaRuntimeRequestTableNames {
-  return buildPrefixedRelationNames(prefix, {
+export function buildRuntimeRequestTableNames(): RuntimeRequestTableNames {
+  return buildRuntimeRelationNames({
     runtimeRequests: "runtime_requests",
   });
 }
 
-export function buildPandaRuntimeRequestNotificationChannel(prefix = "thread_runtime"): string {
-  return validateIdentifier(`${prefix}_runtime_request_events`);
+export function buildRuntimeRequestNotificationChannel(): string {
+  return "runtime_request_events";
 }

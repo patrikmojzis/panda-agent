@@ -1,11 +1,11 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {Agent, AgentSkillTool, type PandaSessionContext, RunContext, ToolError,} from "../src/index.js";
+import {Agent, AgentSkillTool, type DefaultAgentSessionContext, RunContext, ToolError,} from "../src/index.js";
 import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 
-function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
+function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: new Agent({
       name: "panda",

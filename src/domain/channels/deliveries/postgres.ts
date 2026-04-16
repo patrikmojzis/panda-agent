@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 
 import type {Pool, PoolClient} from "pg";
 
-import {quoteIdentifier, toJson, toMillis,} from "../../threads/runtime/postgres-shared.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis,} from "../../threads/runtime/postgres-shared.js";
 import type {OutboundItem, OutboundSentItem, OutboundTarget} from "../types.js";
 import {
     buildDeliveryNotificationChannel,
@@ -28,7 +28,6 @@ interface PgPoolLike extends PgQueryable {
 
 export interface PostgresOutboundDeliveryStoreOptions {
   pool: PgPoolLike;
-  tablePrefix?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -152,9 +151,8 @@ export class PostgresOutboundDeliveryStore {
 
   constructor(options: PostgresOutboundDeliveryStoreOptions) {
     this.pool = options.pool;
-    const prefix = options.tablePrefix ?? "thread_runtime";
-    this.tables = buildOutboundDeliveryTableNames(prefix);
-    this.notificationChannel = buildDeliveryNotificationChannel(prefix);
+    this.tables = buildOutboundDeliveryTableNames();
+    this.notificationChannel = buildDeliveryNotificationChannel();
   }
 
   private async notifyPendingDelivery(target: Pick<OutboundTarget, "connectorKey"> & { source: string }): Promise<void> {
@@ -168,6 +166,7 @@ export class PostgresOutboundDeliveryStore {
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.outboundDeliveries} (
         id UUID PRIMARY KEY,

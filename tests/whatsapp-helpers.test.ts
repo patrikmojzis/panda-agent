@@ -105,7 +105,7 @@ describe("whatsapp helpers", () => {
       ],
     });
 
-    expect(text).toContain("<panda-channel-context>");
+    expect(text).toContain("<runtime-channel-context>");
     expect(text).toContain("channel: whatsapp");
     expect(text).toContain("identity_id: patrik-id");
     expect(text).toContain("identity_handle: patrik");

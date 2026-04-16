@@ -8,7 +8,7 @@ import type {
     BrowserSnapshotMode,
 } from "./browser-types.js";
 
-export const SNAPSHOT_REF_ATTRIBUTE = "data-panda-ref";
+export const SNAPSHOT_REF_ATTRIBUTE = "data-runtime-ref";
 
 export type SnapshotScriptResult = {
   url: string;
@@ -253,7 +253,7 @@ export function renderBrowserSnapshot(
 export function getSnapshotScript(): string {
   return String.raw`
     const root = globalThis;
-    const refAttribute = "data-panda-ref";
+    const refAttribute = "data-runtime-ref";
     const maxElements = 200;
     const safeMaxChars = typeof maxChars === "number" && Number.isFinite(maxChars) ? maxChars : 20000;
     const dialogSelector = "dialog,[role='dialog'],[role='alertdialog'],[aria-modal='true']";

@@ -1,8 +1,8 @@
 import type {JsonObject} from "../../kernel/agent/types.js";
 
-export const PANDA_RUNNER_AGENT_KEY_HEADER = "x-panda-agent-key";
-export const PANDA_RUNNER_PATH_SCOPED_HEADER = "x-panda-agent-path-scoped";
-export const PANDA_RUNNER_EXPECTED_PATH_HEADER = "x-panda-expected-path";
+export const RUNNER_AGENT_KEY_HEADER = "x-runtime-agent-key";
+export const RUNNER_PATH_SCOPED_HEADER = "x-runtime-agent-path-scoped";
+export const RUNNER_EXPECTED_PATH_HEADER = "x-runtime-expected-path";
 
 export interface PersistedEnvEntry {
   key: string;

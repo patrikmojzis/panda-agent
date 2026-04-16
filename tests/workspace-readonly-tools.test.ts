@@ -6,14 +6,14 @@ import {afterEach, describe, expect, it} from "vitest";
 
 import {
     Agent,
+    type DefaultAgentSessionContext,
     GlobFilesTool,
     GrepFilesTool,
-    type PandaSessionContext,
     ReadFileTool,
     RunContext,
 } from "../src/index.js";
 
-function createRunContext(tool: {name: string}, cwd: string): RunContext<PandaSessionContext> {
+function createRunContext(tool: {name: string}, cwd: string): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: new Agent({
       name: "panda",
@@ -39,7 +39,7 @@ afterEach(async () => {
 });
 
 async function createWorkspace(): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), "panda-readonly-tools-"));
+  const root = await mkdtemp(path.join(tmpdir(), "runtime-readonly-tools-"));
   tempDirs.push(root);
   await mkdir(path.join(root, "src", "nested"), {recursive: true});
   await writeFile(

@@ -38,7 +38,7 @@ export class DateTimeContext extends LlmContext {
 
   async getContent(): Promise<string> {
     const now = resolveNow(this.now);
-    // Panda uses the host clock and host timezone as the single source of truth.
+    // The agent runtime uses the host clock and host timezone as the single source of truth.
     const { locale, timeZone } = resolveDateTimeContextOptions();
     const dateTime = new Intl.DateTimeFormat(locale, {
       dateStyle: "full",

@@ -18,7 +18,7 @@ describe("FileSystemMediaStore", () => {
   });
 
   it("writes bytes to a stable source/connector partition", async () => {
-    const rootDir = path.join(tmpdir(), `panda-media-store-${Date.now()}-a`);
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-a`);
     directories.add(rootDir);
 
     const store = new FileSystemMediaStore({
@@ -52,7 +52,7 @@ describe("FileSystemMediaStore", () => {
   });
 
   it("sanitizes storage path segments and falls back to a binary extension", async () => {
-    const rootDir = path.join(tmpdir(), `panda-media-store-${Date.now()}-b`);
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-b`);
     directories.add(rootDir);
 
     const store = new FileSystemMediaStore({
@@ -74,7 +74,7 @@ describe("FileSystemMediaStore", () => {
   });
 
   it("keeps media paths under the configured root for dot segments", async () => {
-    const rootDir = path.join(tmpdir(), `panda-media-store-${Date.now()}-d`);
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-d`);
     directories.add(rootDir);
 
     const store = new FileSystemMediaStore({
@@ -94,7 +94,7 @@ describe("FileSystemMediaStore", () => {
   });
 
   it("validates required fields", async () => {
-    const rootDir = path.join(tmpdir(), `panda-media-store-${Date.now()}-c`);
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-c`);
     directories.add(rootDir);
 
     const store = new FileSystemMediaStore({ rootDir });
@@ -114,7 +114,7 @@ describe("FileSystemMediaStore", () => {
   });
 
   it("rejects size metadata that does not match the payload bytes", async () => {
-    const rootDir = path.join(tmpdir(), `panda-media-store-${Date.now()}-e`);
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-e`);
     directories.add(rootDir);
 
     const store = new FileSystemMediaStore({ rootDir });
@@ -129,8 +129,8 @@ describe("FileSystemMediaStore", () => {
   });
 
   it("relocates media into another root and stays idempotent", async () => {
-    const sourceRootDir = path.join(tmpdir(), `panda-media-store-${Date.now()}-f-source`);
-    const targetRootDir = path.join(tmpdir(), `panda-media-store-${Date.now()}-f-target`);
+    const sourceRootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-f-source`);
+    const targetRootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-f-target`);
     directories.add(sourceRootDir);
     directories.add(targetRootDir);
 

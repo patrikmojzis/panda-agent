@@ -1,16 +1,16 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {Agent, RunContext, ThinkingSetTool, ToolError,} from "../src/index.js";
-import type {PandaSessionContext} from "../src/app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
 function createHarness(options: {
-  context?: Partial<PandaSessionContext>;
+  context?: Partial<DefaultAgentSessionContext>;
   thinking?: ThinkingLevel;
 } = {}) {
   let liveThinking = options.thinking;
 
-  const run = new RunContext<PandaSessionContext>({
+  const run = new RunContext<DefaultAgentSessionContext>({
     agent: new Agent({
       name: "panda",
       instructions: "Use tools.",
@@ -173,7 +173,7 @@ describe("ThinkingSetTool", () => {
 
   it("fails when live thinking control is unavailable", async () => {
     const tool = new ThinkingSetTool();
-    const run = new RunContext<PandaSessionContext>({
+    const run = new RunContext<DefaultAgentSessionContext>({
       agent: new Agent({
         name: "panda",
         instructions: "Use tools.",
@@ -198,7 +198,7 @@ describe("ThinkingSetTool", () => {
       updateThreadThinking: vi.fn(),
     };
     const tool = new ThinkingSetTool({persistence});
-    const run = new RunContext<PandaSessionContext>({
+    const run = new RunContext<DefaultAgentSessionContext>({
       agent: new Agent({
         name: "panda",
         instructions: "Use tools.",

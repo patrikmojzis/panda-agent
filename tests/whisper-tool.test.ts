@@ -1,16 +1,16 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import {mkdtemp, rm, writeFile} from "node:fs/promises";
+import {tmpdir} from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-  Agent,
-  RunContext,
-  ToolError,
-  WhisperTool,
-  type PandaSessionContext,
-  type ToolResultPayload,
+    Agent,
+    type DefaultAgentSessionContext,
+    RunContext,
+    ToolError,
+    type ToolResultPayload,
+    WhisperTool,
 } from "../src/index.js";
 
 function createAgent() {
@@ -20,7 +20,7 @@ function createAgent() {
   });
 }
 
-function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
+function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: createAgent(),
     turn: 1,
@@ -50,7 +50,7 @@ describe("WhisperTool", () => {
   });
 
   it("uploads a local audio file to whisper-1 and returns the transcript", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-whisper-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-whisper-"));
     const audioBytes = Buffer.from("fake-audio-data");
 
     try {
@@ -136,7 +136,7 @@ describe("WhisperTool", () => {
   });
 
   it("rejects files larger than the OpenAI upload limit", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-whisper-limit-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-whisper-limit-"));
 
     try {
       const audioPath = path.join(workspace, "huge.wav");

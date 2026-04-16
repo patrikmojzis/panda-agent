@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {ensureReadonlyChatQuerySchema,} from "../src/domain/threads/runtime/index.js";
+import {ensureReadonlySessionQuerySchema,} from "../src/domain/threads/runtime/index.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
@@ -22,50 +22,50 @@ class PgMemReadonlySchemaQueryable {
         continue;
       }
 
-      if (/^CREATE VIEW "panda_threads"/i.test(statement)) {
+      if (/^CREATE VIEW "session"."threads"/i.test(statement)) {
         const whereMatches = [...statement.matchAll(/\bWHERE\b/gi)];
         const whereIndex = whereMatches.at(-1)?.index;
         const whereClause = whereIndex === undefined
           ? undefined
           : statement.slice(whereIndex + "WHERE".length).trim();
         if (!whereClause) {
-          throw new Error("Expected panda_threads view SQL to contain a WHERE clause.");
+          throw new Error("Expected session.threads view SQL to contain a WHERE clause.");
         }
 
         await this.pool.query(`
-          CREATE VIEW "panda_threads" AS
+          CREATE VIEW "session"."threads" AS
           SELECT
             t.id,
             t.session_id
-          FROM "thread_runtime_threads" AS t
+          FROM "runtime"."threads" AS t
           WHERE ${whereClause}
         `);
         continue;
       }
 
-      if (/^CREATE VIEW "panda_(messages_raw|messages|tool_results|inputs|runs|agent_prompts|agent_documents|agent_diary|agent_pairings|agent_skills)"/i.test(statement)) {
+      if (/^CREATE VIEW "session"."(messages_raw|messages|tool_results|inputs|runs|agent_prompts|agent_documents|agent_diary|agent_pairings|agent_skills|agent_sessions)"/i.test(statement)) {
         continue;
       }
 
-      if (/^CREATE VIEW "panda_scheduled_tasks"/i.test(statement)) {
+      if (/^CREATE VIEW "session"."scheduled_tasks"/i.test(statement)) {
         await this.pool.query(`
-          CREATE VIEW "panda_scheduled_tasks" AS
+          CREATE VIEW "session"."scheduled_tasks" AS
           SELECT
             scheduled_tasks.id,
             scheduled_tasks.session_id,
             scheduled_tasks.created_by_identity_id,
             session.current_thread_id AS resolved_thread_id
-          FROM "thread_runtime_scheduled_tasks" AS scheduled_tasks
-          INNER JOIN "thread_runtime_agent_sessions" AS session
+          FROM "runtime"."scheduled_tasks" AS scheduled_tasks
+          INNER JOIN "runtime"."agent_sessions" AS session
             ON session.id = scheduled_tasks.session_id
-          WHERE scheduled_tasks.session_id = current_setting('panda.session_id', true)
+          WHERE scheduled_tasks.session_id = current_setting('runtime.session_id', true)
         `);
         continue;
       }
 
-      if (/^CREATE VIEW "panda_scheduled_task_runs"/i.test(statement)) {
+      if (/^CREATE VIEW "session"."scheduled_task_runs"/i.test(statement)) {
         await this.pool.query(`
-          CREATE VIEW "panda_scheduled_task_runs" AS
+          CREATE VIEW "session"."scheduled_task_runs" AS
           SELECT
             scheduled_task_runs.id,
             scheduled_task_runs.task_id,
@@ -73,54 +73,54 @@ class PgMemReadonlySchemaQueryable {
             scheduled_task_runs.status,
             scheduled_task_runs.delivery_status,
             scheduled_task_runs.created_at
-          FROM "thread_runtime_scheduled_task_runs" AS scheduled_task_runs
-          WHERE scheduled_task_runs.session_id = current_setting('panda.session_id', true)
+          FROM "runtime"."scheduled_task_runs" AS scheduled_task_runs
+          WHERE scheduled_task_runs.session_id = current_setting('runtime.session_id', true)
         `);
         continue;
       }
 
-      if (/^CREATE VIEW "panda_watches"/i.test(statement)) {
+      if (/^CREATE VIEW "session"."watches"/i.test(statement)) {
         await this.pool.query(`
-          CREATE VIEW "panda_watches" AS
+          CREATE VIEW "session"."watches" AS
           SELECT
             watch.id,
             watch.session_id,
             watch.created_by_identity_id,
             session.current_thread_id AS resolved_thread_id
-          FROM "thread_runtime_watches" AS watch
-          INNER JOIN "thread_runtime_agent_sessions" AS session
+          FROM "runtime"."watches" AS watch
+          INNER JOIN "runtime"."agent_sessions" AS session
             ON session.id = watch.session_id
-          WHERE watch.session_id = current_setting('panda.session_id', true)
+          WHERE watch.session_id = current_setting('runtime.session_id', true)
         `);
         continue;
       }
 
-      if (/^CREATE VIEW "panda_watch_runs"/i.test(statement)) {
+      if (/^CREATE VIEW "session"."watch_runs"/i.test(statement)) {
         await this.pool.query(`
-          CREATE VIEW "panda_watch_runs" AS
+          CREATE VIEW "session"."watch_runs" AS
           SELECT
             watch_runs.id,
             watch_runs.watch_id,
             watch_runs.session_id,
             watch_runs.status,
             watch_runs.created_at
-          FROM "thread_runtime_watch_runs" AS watch_runs
-          WHERE watch_runs.session_id = current_setting('panda.session_id', true)
+          FROM "runtime"."watch_runs" AS watch_runs
+          WHERE watch_runs.session_id = current_setting('runtime.session_id', true)
         `);
         continue;
       }
 
-      if (/^CREATE VIEW "panda_watch_events"/i.test(statement)) {
+      if (/^CREATE VIEW "session"."watch_events"/i.test(statement)) {
         await this.pool.query(`
-          CREATE VIEW "panda_watch_events" AS
+          CREATE VIEW "session"."watch_events" AS
           SELECT
             watch_events.id,
             watch_events.watch_id,
             watch_events.session_id,
             watch_events.created_by_identity_id,
             watch_events.created_at
-          FROM "thread_runtime_watch_events" AS watch_events
-          WHERE watch_events.session_id = current_setting('panda.session_id', true)
+          FROM "runtime"."watch_events" AS watch_events
+          WHERE watch_events.session_id = current_setting('runtime.session_id', true)
         `);
         continue;
       }
@@ -171,8 +171,8 @@ function createScopedPool() {
   return {
     pool,
     setScope(next: {sessionId?: string | null; agentKey?: string | null}) {
-      scope.set("panda.session_id", next.sessionId ?? null);
-      scope.set("panda.agent_key", next.agentKey ?? null);
+      scope.set("runtime.session_id", next.sessionId ?? null);
+      scope.set("runtime.agent_key", next.agentKey ?? null);
     },
   };
 }
@@ -349,13 +349,13 @@ describe("PostgresScheduledTaskStore", () => {
       sessionId: "session-alice",
       agentKey: "panda",
     });
-    await ensureReadonlyChatQuerySchema({
+    await ensureReadonlySessionQuerySchema({
       queryable: new PgMemReadonlySchemaQueryable(pool),
     });
 
     let tasksResult = await pool.query(`
       SELECT id, resolved_thread_id
-      FROM "panda_scheduled_tasks"
+      FROM "session"."scheduled_tasks"
       ORDER BY id
     `);
     expect(tasksResult.rows).toEqual([{
@@ -365,7 +365,7 @@ describe("PostgresScheduledTaskStore", () => {
 
     const runsResult = await pool.query(`
       SELECT task_id, status, delivery_status
-      FROM "panda_scheduled_task_runs"
+      FROM "session"."scheduled_task_runs"
       ORDER BY created_at
     `);
     expect(runsResult.rows).toEqual([{
@@ -380,7 +380,7 @@ describe("PostgresScheduledTaskStore", () => {
     });
     tasksResult = await pool.query(`
       SELECT id, resolved_thread_id
-      FROM "panda_scheduled_tasks"
+      FROM "session"."scheduled_tasks"
       ORDER BY id
     `);
     expect(tasksResult.rows).toEqual([{

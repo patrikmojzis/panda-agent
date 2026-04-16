@@ -2,7 +2,7 @@ import {describe, expect, it, vi} from "vitest";
 
 import {
     Agent,
-    type PandaSessionContext,
+    type DefaultAgentSessionContext,
     RunContext,
     ToolError,
     WatchCreateTool,
@@ -11,7 +11,7 @@ import {
 } from "../src/index.js";
 import type {WatchStore} from "../src/domain/watches/index.js";
 
-function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
+function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: new Agent({
       name: "watch-test-agent",
@@ -98,7 +98,7 @@ function createStoreMock(): WatchStore {
 }
 
 describe("watch Panda tools", () => {
-  const context: PandaSessionContext = {
+  const context: DefaultAgentSessionContext = {
     agentKey: "panda",
     sessionId: "session-main",
     threadId: "thread-home",
@@ -204,6 +204,6 @@ describe("watch Panda tools", () => {
       },
     }, createRunContext({
       threadId: "thread-home",
-    } as PandaSessionContext))).rejects.toBeInstanceOf(ToolError);
+    } as DefaultAgentSessionContext))).rejects.toBeInstanceOf(ToolError);
   });
 });

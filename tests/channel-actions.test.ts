@@ -106,7 +106,7 @@ describe("PostgresChannelActionStore", () => {
     expect(recovered).toBe(1);
 
     const rows = await pool.query(
-      `SELECT status, last_error FROM "thread_runtime_channel_actions" WHERE id = $1`,
+      `SELECT status, last_error FROM "runtime"."channel_actions" WHERE id = $1`,
       [action.id],
     );
     expect(rows.rows[0]).toMatchObject({

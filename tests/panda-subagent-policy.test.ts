@@ -1,13 +1,13 @@
 import {describe, expect, it} from "vitest";
 
 import {
-  filterToolsForSubagentRole,
-  getPandaSubagentRolePolicy,
-  PostgresReadonlyQueryTool,
-  Tool,
-  z,
+    filterToolsForSubagentRole,
+    getDefaultAgentSubagentRolePolicy,
+    PostgresReadonlyQueryTool,
+    Tool,
+    z,
 } from "../src/index.js";
-import {buildPandaToolsets} from "../src/panda/definition.js";
+import {buildDefaultAgentToolsets} from "../src/panda/definition.js";
 
 class FakeReadonlyPool {
   async connect(): Promise<never> {
@@ -29,24 +29,24 @@ class FakeAgentDocumentTool extends Tool<typeof FakeAgentDocumentTool.schema> {
   }
 }
 
-describe("Panda subagent policy", () => {
+describe("default agent subagent policy", () => {
   it("maps roles to explicit specialist toolsets", () => {
-    expect(getPandaSubagentRolePolicy("workspace")).toMatchObject({
+    expect(getDefaultAgentSubagentRolePolicy("workspace")).toMatchObject({
       toolset: "workspace",
       thinking: "low",
     });
-    expect(getPandaSubagentRolePolicy("memory")).toMatchObject({
+    expect(getDefaultAgentSubagentRolePolicy("memory")).toMatchObject({
       toolset: "memory",
       thinking: "medium",
     });
-    expect(getPandaSubagentRolePolicy("browser")).toMatchObject({
+    expect(getDefaultAgentSubagentRolePolicy("browser")).toMatchObject({
       toolset: "browser",
       thinking: "medium",
     });
   });
 
   it("builds the workspace toolset with readonly workspace tools plus media only", () => {
-    const toolsets = buildPandaToolsets({
+    const toolsets = buildDefaultAgentToolsets({
       postgresReadonly: {
         pool: new FakeReadonlyPool(),
       },
@@ -61,7 +61,7 @@ describe("Panda subagent policy", () => {
   });
 
   it("keeps the memory subagent Postgres-only", () => {
-    const toolsets = buildPandaToolsets({
+    const toolsets = buildDefaultAgentToolsets({
       postgresReadonly: {
         pool: new FakeReadonlyPool(),
       },
@@ -73,7 +73,7 @@ describe("Panda subagent policy", () => {
   });
 
   it("gives the browser subagent browser plus readonly artifact inspection tools", () => {
-    const toolsets = buildPandaToolsets({
+    const toolsets = buildDefaultAgentToolsets({
       postgresReadonly: {
         pool: new FakeReadonlyPool(),
       },
@@ -89,7 +89,7 @@ describe("Panda subagent policy", () => {
   });
 
   it("keeps the helper filter aligned with the explicit workspace toolset", () => {
-    const toolsets = buildPandaToolsets({
+    const toolsets = buildDefaultAgentToolsets({
       postgresReadonly: {
         pool: new FakeReadonlyPool(),
       },
@@ -112,7 +112,7 @@ describe("Panda subagent policy", () => {
   });
 
   it("keeps the helper filter aligned with the explicit memory toolset", () => {
-    const toolsets = buildPandaToolsets({
+    const toolsets = buildDefaultAgentToolsets({
       postgresReadonly: {
         pool: new FakeReadonlyPool(),
       },
@@ -132,7 +132,7 @@ describe("Panda subagent policy", () => {
   });
 
   it("keeps the helper filter aligned with the explicit browser toolset", () => {
-    const toolsets = buildPandaToolsets({
+    const toolsets = buildDefaultAgentToolsets({
       postgresReadonly: {
         pool: new FakeReadonlyPool(),
       },

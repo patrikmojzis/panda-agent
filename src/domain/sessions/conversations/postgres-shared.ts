@@ -1,12 +1,12 @@
-import {buildPrefixedRelationNames} from "../../threads/runtime/postgres-shared.js";
+import {buildRuntimeRelationNames} from "../../threads/runtime/postgres-shared.js";
 
 export interface ConversationSessionTableNames {
   prefix: string;
   conversationSessions: string;
 }
 
-export function buildConversationSessionTableNames(prefix: string): ConversationSessionTableNames {
-  return buildPrefixedRelationNames(prefix, {
+export function buildConversationSessionTableNames(): ConversationSessionTableNames {
+  return buildRuntimeRelationNames({
     conversationSessions: "conversation_sessions",
   });
 }

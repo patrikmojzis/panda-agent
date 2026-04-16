@@ -6,7 +6,7 @@ import type {RunContext} from "../../kernel/agent/run-context.js";
 import {formatToolResultFallback, Tool, type ToolOutput} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 
 const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 const DEFAULT_COUNT = 5;
@@ -194,7 +194,7 @@ export function hasBraveSearchApiKey(env: NodeJS.ProcessEnv = process.env): bool
   return trimNonEmptyString(env.BRAVE_API_KEY) !== null;
 }
 
-export class BraveSearchTool<TContext = PandaSessionContext>
+export class BraveSearchTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof BraveSearchTool.schema, TContext> {
   static schema = z.object({
     query: z.string().trim().min(1),

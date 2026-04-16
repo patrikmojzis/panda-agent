@@ -2,7 +2,7 @@ import {completeSimple, type SimpleStreamOptions, streamSimple} from "@mariozech
 
 import type {LlmRuntime, LlmRuntimeRequest} from "../../../kernel/agent/runtime.js";
 import {resolveProviderApiKey} from "./auth.js";
-import {resolvePandaModel} from "./model.js";
+import {resolveProviderModel} from "./model.js";
 
 function buildRuntimeOptions(request: LlmRuntimeRequest): SimpleStreamOptions {
   const apiKey = resolveProviderApiKey(request.providerName);
@@ -33,12 +33,12 @@ function buildRuntimeOptions(request: LlmRuntimeRequest): SimpleStreamOptions {
 
 export class PiAiRuntime implements LlmRuntime {
   async complete(request: LlmRuntimeRequest) {
-    const model = resolvePandaModel(request.providerName, request.modelId);
+    const model = resolveProviderModel(request.providerName, request.modelId);
     return completeSimple(model, request.context, buildRuntimeOptions(request));
   }
 
   stream(request: LlmRuntimeRequest) {
-    const model = resolvePandaModel(request.providerName, request.modelId);
+    const model = resolveProviderModel(request.providerName, request.modelId);
     return streamSimple(model, request.context, buildRuntimeOptions(request));
   }
 }

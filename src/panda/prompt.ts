@@ -1,1 +1,1 @@
-export {PANDA_PROMPT} from "../prompts/runtime/panda-system.js";
+export {DEFAULT_AGENT_INSTRUCTIONS} from "../prompts/runtime/default-agent.js";

@@ -100,13 +100,13 @@ Agent access is then checked through pairings:
 
 Relevant tables now include:
 
-- `thread_runtime_identities`
-- `thread_runtime_identity_bindings`
-- `thread_runtime_agent_pairings`
-- `thread_runtime_agent_sessions`
-- `thread_runtime_threads`
-- `thread_runtime_messages`
-- `thread_runtime_inputs`
+- `runtime.identities`
+- `runtime.identity_bindings`
+- `runtime.agent_pairings`
+- `runtime.agent_sessions`
+- `runtime.threads`
+- `runtime.messages`
+- `runtime.inputs`
 
 Threads no longer have `identity_id` as ownership.
 Instead:

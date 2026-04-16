@@ -5,7 +5,7 @@ import type {RunContext} from "../../kernel/agent/run-context.js";
 import {stripToolArtifactInlineImages} from "../../kernel/agent/tool-artifacts.js";
 import {formatToolResultFallback, Tool} from "../../kernel/agent/tool.js";
 import type {JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {BrowserSessionService, getDefaultBrowserSessionService} from "./browser-service.js";
 import type {BrowserAction, BrowserLoadState, BrowserSnapshotMode} from "./browser-types.js";
 
@@ -48,7 +48,7 @@ function requireRefOrSelector(
 const browserLoadStateSchema = z.enum(["load", "domcontentloaded", "networkidle"]) satisfies z.ZodType<BrowserLoadState>;
 const browserSnapshotModeSchema = z.enum(["compact", "full"]) satisfies z.ZodType<BrowserSnapshotMode>;
 
-export interface BrowserToolService<TContext = PandaSessionContext> {
+export interface BrowserToolService<TContext = DefaultAgentSessionContext> {
   handle(action: BrowserAction, run: RunContext<TContext>): Promise<ToolResultPayload>;
 }
 
@@ -74,7 +74,7 @@ export interface BrowserToolOptions {
   dataDir?: string;
 }
 
-export class BrowserTool<TContext = PandaSessionContext>
+export class BrowserTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof BrowserTool.schema, TContext> {
   static schema = z.object({
     action: z.enum([

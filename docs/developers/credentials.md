@@ -33,7 +33,7 @@ Partial unique indexes enforce one value per exact scope:
 
 ## Encryption
 
-Values are encrypted in app code with `PANDA_CREDENTIALS_MASTER_KEY`.
+Values are encrypted in app code with `CREDENTIALS_MASTER_KEY`.
 
 - algorithm: AES-256-GCM
 - key derivation: SHA-256 of the configured master key string
@@ -72,11 +72,11 @@ Remote intentionally does not inherit core host env or runner host env. If it di
 
 ## Runtime Wiring
 
-`createPandaRuntime()` does the setup:
+`createRuntime()` does the setup:
 
 - ensures the credentials schema
 - builds a `CredentialResolver` for bash
-- builds a `CredentialService` only when `PANDA_CREDENTIALS_MASTER_KEY` exists
+- builds a `CredentialService` only when `CREDENTIALS_MASTER_KEY` exists
 - registers `set_env_value` and `clear_env_value` only when decryption is actually possible
 
 `BashTool` resolves credentials on every execution using thread `agentKey` and `identityId`.

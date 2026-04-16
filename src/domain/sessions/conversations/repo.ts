@@ -1,6 +1,6 @@
 import type {Pool, PoolClient} from "pg";
 
-import {quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
 import {buildConversationSessionTableNames, type ConversationSessionTableNames} from "./postgres-shared.js";
 import type {BindConversationInput, BindConversationResult, ConversationBinding, ConversationLookup,} from "./types.js";
 
@@ -14,7 +14,6 @@ interface PgPoolLike extends PgQueryable {
 
 export interface ConversationRepoOptions {
   pool: PgPoolLike;
-  tablePrefix?: string;
 }
 
 function requireTrimmedConversationKeyPart(field: string, value: string): string {
@@ -67,10 +66,11 @@ export class ConversationRepo {
 
   constructor(options: ConversationRepoOptions) {
     this.pool = options.pool;
-    this.tables = buildConversationSessionTableNames(options.tablePrefix ?? "thread_runtime");
+    this.tables = buildConversationSessionTableNames();
   }
 
   async ensureSchema(): Promise<void> {
+    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.conversationSessions} (
         source TEXT NOT NULL,

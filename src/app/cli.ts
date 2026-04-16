@@ -4,8 +4,8 @@ import process from "node:process";
 import path from "node:path";
 
 import {Command, InvalidArgumentError} from "commander";
-import {PANDA_DB_URL_OPTION_DESCRIPTION} from "./cli-shared.js";
-import {createPandaDaemon} from "./runtime/index.js";
+import {DB_URL_OPTION_DESCRIPTION} from "./cli-shared.js";
+import {createDaemon} from "./runtime/index.js";
 import {parseAgentKey, registerAgentCommands} from "../domain/agents/cli.js";
 import {registerCredentialCommands} from "../domain/credentials/cli.js";
 import {parseIdentityHandle, registerIdentityCommands} from "../domain/identity/cli.js";
@@ -14,7 +14,7 @@ import {registerTelegramCommands} from "../integrations/channels/telegram/cli.js
 import {type ChatCliOptions, runChatCli} from "../ui/tui/chat.js";
 import {renderResumeHint} from "../ui/tui/exit-hint.js";
 import {registerWhatsAppCommands} from "../integrations/channels/whatsapp/cli.js";
-import {resolvePandaBashRunnerOptions, startPandaBashRunner} from "../integrations/shell/index.js";
+import {resolveBashRunnerOptions, startBashRunner} from "../integrations/shell/index.js";
 import {registerSmokeCommand} from "./smoke/cli.js";
 
 try {
@@ -28,13 +28,13 @@ try {
 const program = new Command();
 program.enablePositionalOptions();
 
-interface PandaRunCliOptions {
+interface RunCliOptions {
   cwd?: string;
   dbUrl?: string;
   readOnlyDbUrl?: string;
 }
 
-interface PandaRunnerCliOptions {
+interface RunnerCliOptions {
   agent?: string;
   host?: string;
   outputDirectory?: string;
@@ -64,8 +64,8 @@ async function runChatCommand(options: ChatCliOptions): Promise<void> {
   }
 }
 
-async function runPandaCommand(options: PandaRunCliOptions): Promise<void> {
-  const daemon = await createPandaDaemon({
+async function runRuntimeCommand(options: RunCliOptions): Promise<void> {
+  const daemon = await createDaemon({
     cwd: path.resolve(options.cwd ?? process.cwd()),
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
@@ -94,14 +94,14 @@ async function runPandaCommand(options: PandaRunCliOptions): Promise<void> {
   }
 }
 
-async function runRunnerCommand(options: PandaRunnerCliOptions): Promise<void> {
-  const resolved = resolvePandaBashRunnerOptions({
+async function runRunnerCommand(options: RunnerCliOptions): Promise<void> {
+  const resolved = resolveBashRunnerOptions({
     ...process.env,
-    ...(options.agent ? { PANDA_RUNNER_AGENT_KEY: options.agent } : {}),
-    ...(options.port !== undefined ? { PANDA_RUNNER_PORT: String(options.port) } : {}),
-    ...(options.host ? { PANDA_RUNNER_HOST: options.host } : {}),
+    ...(options.agent ? { RUNNER_AGENT_KEY: options.agent } : {}),
+    ...(options.port !== undefined ? { RUNNER_PORT: String(options.port) } : {}),
+    ...(options.host ? { RUNNER_HOST: options.host } : {}),
   });
-  const runner = await startPandaBashRunner({
+  const runner = await startBashRunner({
     ...resolved,
     ...(options.agent ? { agentKey: options.agent } : {}),
     ...(options.port !== undefined ? { port: options.port } : {}),
@@ -144,7 +144,7 @@ function configureChatOptions(command: Command): Command {
     .option("--identity <handle>", "Identity handle to use as the active participant", parseIdentityHandle)
     .option("--agent <agentKey>", "Agent key to use", parseAgentKey)
     .option("--session <sessionId>", "Open a chat on an existing session id")
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION);
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION);
 }
 
 function configureChatCommand(command: Command): Command {
@@ -173,10 +173,10 @@ program
   .command("run")
   .description("Run the singular Panda runtime daemon")
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
-  .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+  .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
   .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
-  .action((options: PandaRunCliOptions) => {
-    return runPandaCommand(options);
+  .action((options: RunCliOptions) => {
+    return runRuntimeCommand(options);
   });
 
 program
@@ -186,7 +186,7 @@ program
   .option("--host <host>", "Host to bind the runner server")
   .option("--port <port>", "Port to bind the runner server", parsePort)
   .option("--output-directory <path>", "Directory used for temporary runner output capture")
-  .action((options: PandaRunnerCliOptions) => {
+  .action((options: RunnerCliOptions) => {
     return runRunnerCommand(options);
   });
 

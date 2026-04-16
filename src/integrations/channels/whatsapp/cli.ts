@@ -2,7 +2,7 @@ import process from "node:process";
 
 import {Command, InvalidArgumentError} from "commander";
 
-import {PANDA_DB_URL_OPTION_DESCRIPTION} from "../../../app/cli-shared.js";
+import {DB_URL_OPTION_DESCRIPTION} from "../../../app/cli-shared.js";
 import {resolveWhatsAppConnectorKey, resolveWhatsAppDataDir} from "./config.js";
 import {WhatsAppService} from "./service.js";
 
@@ -133,7 +133,7 @@ export function registerWhatsAppCommands(program: Command): void {
     .command("whoami")
     .description("Show the WhatsApp connector state and linked account")
     .option("--connector <key>", "Connector key override", parseWhatsAppConnectorKey)
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: WhatsAppCliOptions) => {
       return whatsappWhoamiCommand(options);
     });
@@ -143,7 +143,7 @@ export function registerWhatsAppCommands(program: Command): void {
     .description("Pair the WhatsApp connector using a phone-number pairing code")
     .requiredOption("--phone <number>", "Phone number to pair (digits only or E.164)", parseWhatsAppPhoneNumber)
     .option("--connector <key>", "Connector key override", parseWhatsAppConnectorKey)
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: WhatsAppPairCliOptions) => {
       return whatsappPairCommand(options);
     });
@@ -152,7 +152,7 @@ export function registerWhatsAppCommands(program: Command): void {
     .command("run")
     .description("Run the WhatsApp ingress worker")
     .option("--connector <key>", "Connector key override", parseWhatsAppConnectorKey)
-    .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: WhatsAppRunCliOptions) => {
       return whatsappRunCommand(options);
     });

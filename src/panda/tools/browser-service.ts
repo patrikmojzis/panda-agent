@@ -8,12 +8,12 @@ import {promisify} from "node:util";
 
 import {type Browser, type BrowserContext, chromium, type Locator, type Page} from "playwright-core";
 
-import {resolvePandaAgentMediaDir, resolvePandaMediaDir} from "../../app/runtime/data-dir.js";
+import {resolveAgentMediaDir, resolveMediaDir} from "../../app/runtime/data-dir.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {withArtifactDetails} from "../../kernel/agent/tool-artifacts.js";
 import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {
     buildRefSelector,
     getSnapshotScript,
@@ -51,10 +51,10 @@ const DEFAULT_BROWSER_SESSION_MAX_AGE_MS = 60 * 60_000;
 const DEFAULT_BROWSER_MAX_SNAPSHOT_CHARS = 20_000;
 const DEFAULT_BROWSER_MAX_EVALUATE_RESULT_CHARS = 20_000;
 const DEFAULT_BROWSER_REAPER_INTERVAL_MS = 60_000;
-const BROWSER_LABEL = "panda.browser";
+const BROWSER_LABEL = "runtime.browser";
 const BROWSER_LABEL_VALUE = "1";
-const BROWSER_STARTED_AT_LABEL = "panda.startedAtMs";
-const BROWSER_THREAD_LABEL = "panda.threadId";
+const BROWSER_STARTED_AT_LABEL = "runtime.startedAtMs";
+const BROWSER_THREAD_LABEL = "runtime.threadId";
 
 type ExecFileImpl = (
   file: string,
@@ -215,7 +215,7 @@ function normalizeBrowserLabelValue(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "unknown";
 }
 
-function normalizeScopeKey(context: PandaSessionContext): {scope: BrowserSessionScope; key: string} {
+function normalizeScopeKey(context: DefaultAgentSessionContext): {scope: BrowserSessionScope; key: string} {
   if (trimNonEmpty(context.threadId)) {
     return {
       scope: "thread",
@@ -229,7 +229,7 @@ function normalizeScopeKey(context: PandaSessionContext): {scope: BrowserSession
   };
 }
 
-function resolveSessionContext(context: PandaSessionContext | undefined): PandaSessionContext {
+function resolveSessionContext(context: DefaultAgentSessionContext | undefined): DefaultAgentSessionContext {
   return context ?? {
     agentKey: "",
     sessionId: "",
@@ -267,7 +267,7 @@ function safeAgentKey(agentKey: string): string {
 }
 
 function resolveBrowserMediaRoot(
-  context: PandaSessionContext,
+  context: DefaultAgentSessionContext,
   dataDir: string | undefined,
   env: NodeJS.ProcessEnv,
 ): string {
@@ -281,9 +281,9 @@ function resolveBrowserMediaRoot(
   }
 
   if (agentKey) {
-    return resolvePandaAgentMediaDir(agentKey, env);
+    return resolveAgentMediaDir(agentKey, env);
   }
-  return resolvePandaMediaDir(env);
+  return resolveMediaDir(env);
 }
 
 async function defaultExecFileImpl(
@@ -647,7 +647,7 @@ export class BrowserSessionService {
     }
   }
 
-  private emitProgress<TContext extends PandaSessionContext>(
+  private emitProgress<TContext extends DefaultAgentSessionContext>(
     run: RunContext<TContext>,
     status: BrowserProgressStatus,
     extra: JsonObject = {},
@@ -785,7 +785,7 @@ export class BrowserSessionService {
     }).catch(() => undefined);
   }
 
-  private async startSession<TContext extends PandaSessionContext>(
+  private async startSession<TContext extends DefaultAgentSessionContext>(
     scope: {scope: BrowserSessionScope; key: string},
     run: RunContext<TContext>,
     timeoutMs: number,
@@ -895,7 +895,7 @@ export class BrowserSessionService {
     return session.page;
   }
 
-  private async resolveSession<TContext extends PandaSessionContext>(
+  private async resolveSession<TContext extends DefaultAgentSessionContext>(
     scope: {scope: BrowserSessionScope; key: string},
     run: RunContext<TContext>,
     timeoutMs: number,
@@ -1133,14 +1133,14 @@ export class BrowserSessionService {
       const payload = input as {refAttribute?: unknown};
       const refAttribute = typeof payload.refAttribute === "string"
         ? payload.refAttribute
-        : "data-panda-ref";
+        : "data-runtime-ref";
       const root = globalThis as {document?: any};
       const document = root.document;
       if (!document?.body) {
         return;
       }
 
-      const overlayId = "panda-browser-ref-overlays";
+      const overlayId = "runtime-browser-ref-overlays";
       document.getElementById(overlayId)?.remove();
 
       const overlayRoot = document.createElement("div");
@@ -1197,7 +1197,7 @@ export class BrowserSessionService {
   private async removeScreenshotLabels(page: Page): Promise<void> {
     await page.evaluate(() => {
       const root = globalThis as {document?: any};
-      root.document?.getElementById("panda-browser-ref-overlays")?.remove();
+      root.document?.getElementById("runtime-browser-ref-overlays")?.remove();
     }).catch(() => undefined);
   }
 
@@ -1361,7 +1361,7 @@ export class BrowserSessionService {
     }
   }
 
-  async handle<TContext extends PandaSessionContext>(
+  async handle<TContext extends DefaultAgentSessionContext>(
     action: BrowserAction,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {

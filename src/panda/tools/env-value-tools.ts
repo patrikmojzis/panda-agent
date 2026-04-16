@@ -5,8 +5,8 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {CredentialService} from "../../domain/credentials/index.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
-import {readPandaCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
 
 function buildPayload(details: JsonObject): ToolResultPayload {
   return {
@@ -21,7 +21,7 @@ function buildPayload(details: JsonObject): ToolResultPayload {
 function readScope(context: unknown): { agentKey: string; identityId?: string } {
   if (typeof context !== "object" || context === null || Array.isArray(context)) {
     throw new ToolError(
-      "Credential tools require agentKey in the current Panda session context.",
+      "Credential tools require agentKey in the current runtime session context.",
     );
   }
 
@@ -29,13 +29,13 @@ function readScope(context: unknown): { agentKey: string; identityId?: string } 
   const agentKey = typeof record.agentKey === "string" ? record.agentKey.trim() : "";
   if (!agentKey) {
     throw new ToolError(
-      "Credential tools require agentKey in the current Panda session context.",
+      "Credential tools require agentKey in the current runtime session context.",
     );
   }
 
   return {
     agentKey,
-    identityId: readPandaCurrentInputIdentityId(context),
+    identityId: readCurrentInputIdentityId(context),
   };
 }
 
@@ -43,7 +43,7 @@ export interface EnvValueToolOptions {
   service: CredentialService;
 }
 
-export class SetEnvValueTool<TContext = PandaSessionContext> extends Tool<typeof SetEnvValueTool.schema, TContext> {
+export class SetEnvValueTool<TContext = DefaultAgentSessionContext> extends Tool<typeof SetEnvValueTool.schema, TContext> {
   static schema = z.object({
     key: z.string().trim().min(1).describe("Shell env key to store."),
     value: z.string().describe("Secret value to persist."),
@@ -117,7 +117,7 @@ export class SetEnvValueTool<TContext = PandaSessionContext> extends Tool<typeof
   }
 }
 
-export class ClearEnvValueTool<TContext = PandaSessionContext> extends Tool<typeof ClearEnvValueTool.schema, TContext> {
+export class ClearEnvValueTool<TContext = DefaultAgentSessionContext> extends Tool<typeof ClearEnvValueTool.schema, TContext> {
   static schema = z.object({
     key: z.string().trim().min(1).describe("Shell env key to clear."),
     scope: z.enum(["relationship", "agent"]).optional().describe(

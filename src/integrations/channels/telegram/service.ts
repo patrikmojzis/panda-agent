@@ -11,9 +11,9 @@ import {
     ChannelOutboundDeliveryWorker,
     PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/index.js";
-import {createPandaPool, requirePandaDatabaseUrl} from "../../../app/runtime/create-runtime.js";
+import {createPostgresPool, requireDatabaseUrl} from "../../../app/runtime/create-runtime.js";
 import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
-import {PandaRuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
+import {RuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
 import {TELEGRAM_POLL_TIMEOUT_SECONDS, TELEGRAM_SOURCE, TELEGRAM_UPDATES_CURSOR_KEY} from "./config.js";
 import {buildTelegramConversationId} from "./helpers.js";
 import {createTelegramOutboundAdapter} from "./outbound.js";
@@ -28,7 +28,6 @@ export interface TelegramServiceOptions {
   token: string;
   dataDir: string;
   dbUrl?: string;
-  tablePrefix?: string;
 }
 
 interface ConnectorLock {
@@ -69,7 +68,7 @@ interface TelegramWorkerStores {
   channelCursors: ChannelCursorRepo;
   outboundDeliveries: PostgresOutboundDeliveryStore;
   channelActions: PostgresChannelActionStore;
-  requests: PandaRuntimeRequestRepo;
+  requests: RuntimeRequestRepo;
   mediaStore: FileSystemMediaStore;
 }
 
@@ -125,7 +124,6 @@ export class TelegramService {
     this.options = {
       dataDir: options.dataDir,
       dbUrl: options.dbUrl,
-      tablePrefix: options.tablePrefix,
     };
     this.bot = new Bot<TelegramContext>(options.token);
 
@@ -180,22 +178,18 @@ export class TelegramService {
 
     if (!this.storesPromise) {
       this.storesPromise = (async () => {
-        const pool = createPandaPool(requirePandaDatabaseUrl(this.options.dbUrl));
+        const pool = createPostgresPool(requireDatabaseUrl(this.options.dbUrl));
         const channelCursors = new ChannelCursorRepo({
           pool,
-          tablePrefix: this.options.tablePrefix,
         });
         const outboundDeliveries = new PostgresOutboundDeliveryStore({
           pool,
-          tablePrefix: this.options.tablePrefix,
         });
         const channelActions = new PostgresChannelActionStore({
           pool,
-          tablePrefix: this.options.tablePrefix,
         });
-        const requests = new PandaRuntimeRequestRepo({
+        const requests = new RuntimeRequestRepo({
           pool,
-          tablePrefix: this.options.tablePrefix,
         });
         await ensureSchemas([
           channelCursors,

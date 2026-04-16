@@ -7,48 +7,48 @@ import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ThreadDefinitionResolver} from "../../domain/threads/runtime/types.js";
 import {renderSubagentHandoff} from "../../prompts/runtime/subagents.js";
 import {
-  resolveDefaultPandaBrowserSubagentModelSelector,
-  resolveDefaultPandaMemorySubagentModelSelector,
-  resolveDefaultPandaWorkspaceSubagentModelSelector,
+    resolveDefaultAgentBrowserSubagentModelSelector,
+    resolveDefaultAgentMemorySubagentModelSelector,
+    resolveDefaultAgentWorkspaceSubagentModelSelector,
 } from "../defaults.js";
-import {buildPandaLlmContexts} from "../contexts/builder.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
-import type {PandaToolsets} from "../definition.js";
-import {getPandaSubagentRolePolicy, type PandaSubagentRole,} from "./policy.js";
+import {buildDefaultAgentLlmContexts} from "../contexts/builder.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {DefaultAgentToolsets} from "../definition.js";
+import {type DefaultAgentSubagentRole, getDefaultAgentSubagentRolePolicy,} from "./policy.js";
 
-export interface PandaSubagentRunInput {
-  run: RunContext<PandaSessionContext>;
-  role: PandaSubagentRole;
+export interface DefaultAgentSubagentRunInput {
+  run: RunContext<DefaultAgentSessionContext>;
+  role: DefaultAgentSubagentRole;
   task: string;
   context?: string;
   model?: string;
 }
 
-export interface PandaSubagentRunResult {
-  role: PandaSubagentRole;
+export interface DefaultAgentSubagentRunResult {
+  role: DefaultAgentSubagentRole;
   finalMessage: string;
   toolCallCount: number;
   durationMs: number;
 }
 
-export interface PandaSubagentServiceOptions {
+export interface DefaultAgentSubagentServiceOptions {
   store: ThreadRuntimeStore;
   resolveDefinition: ThreadDefinitionResolver;
-  toolsets: Pick<PandaToolsets, "workspace" | "memory" | "browser">;
+  toolsets: Pick<DefaultAgentToolsets, "workspace" | "memory" | "browser">;
   agentStore?: AgentStore;
   maxSubagentDepth?: number;
 }
 
-function isPandaSessionContext(value: unknown): value is PandaSessionContext {
+function isDefaultAgentSessionContext(value: unknown): value is DefaultAgentSessionContext {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function buildSubagentContext(
-  parentContext: PandaSessionContext | undefined,
+  parentContext: DefaultAgentSessionContext | undefined,
   depth: number,
-): PandaSessionContext {
+): DefaultAgentSessionContext {
   if (!parentContext?.agentKey || !parentContext?.sessionId || !parentContext?.threadId) {
-    throw new ToolError("Subagents require agentKey, sessionId, and threadId in the current Panda session context.");
+    throw new ToolError("Subagents require agentKey, sessionId, and threadId in the current runtime session context.");
   }
 
   return {
@@ -67,25 +67,25 @@ function extractAssistantText(message: AssistantMessage | null): string {
   return text.trim();
 }
 
-function resolveDefaultSubagentModelSelector(role: PandaSubagentRole): string | undefined {
+function resolveDefaultSubagentModelSelector(role: DefaultAgentSubagentRole): string | undefined {
   switch (role) {
     case "workspace":
-      return resolveDefaultPandaWorkspaceSubagentModelSelector();
+      return resolveDefaultAgentWorkspaceSubagentModelSelector();
     case "memory":
-      return resolveDefaultPandaMemorySubagentModelSelector();
+      return resolveDefaultAgentMemorySubagentModelSelector();
     case "browser":
-      return resolveDefaultPandaBrowserSubagentModelSelector();
+      return resolveDefaultAgentBrowserSubagentModelSelector();
   }
 }
 
-export class PandaSubagentService {
+export class DefaultAgentSubagentService {
   private readonly store: ThreadRuntimeStore;
   private readonly resolveDefinition: ThreadDefinitionResolver;
-  private readonly toolsets: Pick<PandaToolsets, "workspace" | "memory" | "browser">;
-  private readonly agentStore?: PandaSubagentServiceOptions["agentStore"];
+  private readonly toolsets: Pick<DefaultAgentToolsets, "workspace" | "memory" | "browser">;
+  private readonly agentStore?: DefaultAgentSubagentServiceOptions["agentStore"];
   private readonly maxSubagentDepth: number;
 
-  constructor(options: PandaSubagentServiceOptions) {
+  constructor(options: DefaultAgentSubagentServiceOptions) {
     this.store = options.store;
     this.resolveDefinition = options.resolveDefinition;
     this.toolsets = options.toolsets;
@@ -93,8 +93,8 @@ export class PandaSubagentService {
     this.maxSubagentDepth = options.maxSubagentDepth ?? 1;
   }
 
-  async runSubagent(input: PandaSubagentRunInput): Promise<PandaSubagentRunResult> {
-    const parentContext = isPandaSessionContext(input.run.context) ? input.run.context : undefined;
+  async runSubagent(input: DefaultAgentSubagentRunInput): Promise<DefaultAgentSubagentRunResult> {
+    const parentContext = isDefaultAgentSessionContext(input.run.context) ? input.run.context : undefined;
     const currentDepth = parentContext?.subagentDepth ?? 0;
     if (currentDepth >= this.maxSubagentDepth) {
       throw new ToolError(
@@ -105,18 +105,18 @@ export class PandaSubagentService {
 
     const threadId = parentContext?.threadId?.trim();
     if (!threadId) {
-      throw new ToolError("Subagents require a parent thread id in the current Panda runtime context.");
+      throw new ToolError("Subagents require a parent thread id in the current runtime context.");
     }
 
     const threadRecord = await this.store.getThread(threadId);
     const parentDefinition = await this.resolveDefinition(threadRecord);
-    const policy = getPandaSubagentRolePolicy(input.role);
+    const policy = getDefaultAgentSubagentRolePolicy(input.role);
     const childContext = buildSubagentContext(parentContext, currentDepth + 1);
     const childMessages: Message[] = [stringToUserMessage(renderSubagentHandoff(input.task, input.context))];
     const childTools = this.toolsets[policy.toolset];
     const threadStore = typeof this.store.listBashJobs === "function" ? this.store : undefined;
     const defaultRoleModel = resolveDefaultSubagentModelSelector(input.role);
-    const childThread = new Thread<PandaSessionContext>({
+    const childThread = new Thread<DefaultAgentSessionContext>({
       agent: new Agent({
         name: `${childContext.agentKey}-${input.role}`,
         instructions: "",
@@ -128,7 +128,7 @@ export class PandaSubagentService {
       systemPrompt: policy.prompt,
       maxTurns: parentDefinition.maxTurns ?? threadRecord.maxTurns,
       context: childContext,
-      llmContexts: buildPandaLlmContexts({
+      llmContexts: buildDefaultAgentLlmContexts({
         context: childContext,
         agentStore: this.agentStore,
         threadStore,

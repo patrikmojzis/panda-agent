@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {createPandaRuntime} from "../src/app/runtime/create-runtime.js";
+import {createRuntime} from "../src/app/runtime/create-runtime.js";
 
 const runtimeMocks = vi.hoisted(() => {
   const poolInstances: Array<{
@@ -25,7 +25,7 @@ const runtimeMocks = vi.hoisted(() => {
 
   return {
     client,
-    ensureReadonlyChatQuerySchema: vi.fn(async () => {}),
+    ensureReadonlySessionQuerySchema: vi.fn(async () => {}),
     ensureSchema: vi.fn(async () => {}),
     MockPool,
     poolInstances,
@@ -80,12 +80,12 @@ vi.mock("../src/domain/threads/runtime/index.js", () => ({
 }));
 
 vi.mock("../src/domain/threads/runtime/postgres-readonly.js", () => ({
-  ensureReadonlyChatQuerySchema: runtimeMocks.ensureReadonlyChatQuerySchema,
+  ensureReadonlySessionQuerySchema: runtimeMocks.ensureReadonlySessionQuerySchema,
   readDatabaseUsername: runtimeMocks.readDatabaseUsername,
 }));
 
 vi.mock("../src/domain/threads/runtime/postgres.js", () => ({
-  buildThreadRuntimeNotificationChannel: vi.fn(() => "thread_runtime_notifications"),
+  buildThreadRuntimeNotificationChannel: vi.fn(() => "runtime_events"),
   parseThreadRuntimeNotification: vi.fn(() => null),
 }));
 
@@ -97,10 +97,10 @@ vi.mock("../src/panda/tools/browser-service.js", () => ({
   BrowserSessionService: browserMocks.MockBrowserSessionService,
 }));
 
-describe("createPandaRuntime", () => {
+describe("createRuntime", () => {
   afterEach(() => {
     runtimeMocks.ensureSchema.mockReset();
-    runtimeMocks.ensureReadonlyChatQuerySchema.mockReset();
+    runtimeMocks.ensureReadonlySessionQuerySchema.mockReset();
     runtimeMocks.readDatabaseUsername.mockClear();
     runtimeMocks.client.on.mockClear();
     runtimeMocks.client.off.mockClear();
@@ -115,7 +115,7 @@ describe("createPandaRuntime", () => {
   it("ends the pool when schema bootstrap fails", async () => {
     runtimeMocks.ensureSchema.mockRejectedValueOnce(new Error("schema blew up"));
 
-    await expect(createPandaRuntime({
+    await expect(createRuntime({
       dbUrl: "postgres://panda:test@localhost:5432/panda",
       resolveDefinition: vi.fn(),
     })).rejects.toThrow("schema blew up");
@@ -127,7 +127,7 @@ describe("createPandaRuntime", () => {
   it("releases the notification client and pool when LISTEN setup fails", async () => {
     runtimeMocks.client.query.mockRejectedValueOnce(new Error("listen blew up"));
 
-    await expect(createPandaRuntime({
+    await expect(createRuntime({
       dbUrl: "postgres://panda:test@localhost:5432/panda",
       onStoreNotification: vi.fn(),
       resolveDefinition: vi.fn(),
@@ -140,7 +140,7 @@ describe("createPandaRuntime", () => {
   });
 
   it("does not eagerly start the browser service during runtime bootstrap", async () => {
-    const runtime = await createPandaRuntime({
+    const runtime = await createRuntime({
       dbUrl: "postgres://panda:test@localhost:5432/panda",
       resolveDefinition: vi.fn(),
     });

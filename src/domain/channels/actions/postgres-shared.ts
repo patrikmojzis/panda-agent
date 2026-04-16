@@ -1,16 +1,16 @@
-import {buildPrefixedRelationNames, validateIdentifier} from "../../threads/runtime/postgres-shared.js";
+import {buildRuntimeRelationNames} from "../../threads/runtime/postgres-shared.js";
 
 export interface ChannelActionTableNames {
   prefix: string;
   channelActions: string;
 }
 
-export function buildChannelActionTableNames(prefix: string): ChannelActionTableNames {
-  return buildPrefixedRelationNames(prefix, {
+export function buildChannelActionTableNames(): ChannelActionTableNames {
+  return buildRuntimeRelationNames({
     channelActions: "channel_actions",
   });
 }
 
-export function buildActionNotificationChannel(prefix = "thread_runtime"): string {
-  return validateIdentifier(`${prefix}_channel_action_events`);
+export function buildActionNotificationChannel(): string {
+  return "runtime_channel_action_events";
 }

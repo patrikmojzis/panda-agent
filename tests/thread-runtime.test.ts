@@ -289,14 +289,14 @@ class TestThreadDefinitionRegistry {
 function readAgentKeyFromThreadContext(thread: ThreadRecord): string {
   const context = thread.context;
   if (!context || typeof context !== "object") {
-    throw new Error(`Thread ${thread.id} is missing Panda session context.`);
+    throw new Error(`Thread ${thread.id} is missing runtime session context.`);
   }
 
   const agentKey = "agentKey" in context && typeof context.agentKey === "string"
     ? context.agentKey.trim()
     : "";
   if (!agentKey) {
-    throw new Error(`Thread ${thread.id} is missing agentKey in Panda session context.`);
+    throw new Error(`Thread ${thread.id} is missing agentKey in runtime session context.`);
   }
 
   return agentKey;

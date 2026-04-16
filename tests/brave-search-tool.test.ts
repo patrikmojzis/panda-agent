@@ -1,12 +1,6 @@
-import { describe, expect, it, vi, afterEach } from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {
-  Agent,
-  BraveSearchTool,
-  RunContext,
-  ToolError,
-  type PandaSessionContext,
-} from "../src/index.js";
+import {Agent, BraveSearchTool, type DefaultAgentSessionContext, RunContext, ToolError,} from "../src/index.js";
 
 function createAgent() {
   return new Agent({
@@ -15,7 +9,7 @@ function createAgent() {
   });
 }
 
-function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
+function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: createAgent(),
     turn: 1,

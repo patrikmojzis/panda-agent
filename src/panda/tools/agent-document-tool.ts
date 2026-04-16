@@ -13,7 +13,7 @@ import type {
     AgentPromptRecord,
     AgentPromptSlug,
 } from "../../domain/agents/types.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 
 const AGENT_PROMPT_SLUGS = ["agent", "soul", "heartbeat"] as const;
 const AGENT_DOCUMENT_SLUGS = ["memory"] as const;
@@ -65,7 +65,7 @@ function readScope(context: unknown): Scope {
     || !context.agentKey.trim()
   ) {
     throw new ToolError(
-      "The agent document tool requires agentKey in the Panda session context.",
+      "The agent document tool requires agentKey in the runtime session context.",
     );
   }
 
@@ -307,7 +307,7 @@ export interface AgentDocumentToolOptions {
   store: AgentStore;
 }
 
-export class AgentDocumentTool<TContext = PandaSessionContext>
+export class AgentDocumentTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof AgentDocumentTool.schema, TContext> {
   private static readonly transformGuide = [
     "Safe SQL-ish text editing over content.",

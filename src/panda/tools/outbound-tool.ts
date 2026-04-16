@@ -16,8 +16,8 @@ import type {
     RememberedRoute,
 } from "../../domain/channels/types.js";
 import {parseScheduledTaskThreadInputMetadata} from "../../domain/scheduling/tasks/index.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
-import {resolvePandaPath} from "../../app/runtime/panda-path-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
 
 const outboundItemSchema = z.discriminatedUnion("type", [
   z.object({
@@ -67,7 +67,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function readRememberedTarget(context: PandaSessionContext | undefined): Promise<{
+async function readRememberedTarget(context: DefaultAgentSessionContext | undefined): Promise<{
   channel: string;
   target: OutboundTarget;
 } | null> {
@@ -88,7 +88,7 @@ async function readRememberedTarget(context: PandaSessionContext | undefined): P
 }
 
 async function readRememberedTargetForChannel(
-  context: PandaSessionContext | undefined,
+  context: DefaultAgentSessionContext | undefined,
   channel?: string,
 ): Promise<{
   channel: string;
@@ -120,7 +120,7 @@ function rememberRouteFromTarget(target: OutboundTarget): RememberedRoute {
   };
 }
 
-function ensureOutboundQueue(context: PandaSessionContext | undefined): NonNullable<PandaSessionContext["outboundQueue"]> {
+function ensureOutboundQueue(context: DefaultAgentSessionContext | undefined): NonNullable<DefaultAgentSessionContext["outboundQueue"]> {
   const queue = context?.outboundQueue;
   if (!queue) {
     throw new ToolError("Outbound is unavailable in this runtime.");
@@ -129,7 +129,7 @@ function ensureOutboundQueue(context: PandaSessionContext | undefined): NonNulla
   return queue;
 }
 
-function requireThreadId(context: PandaSessionContext | undefined): string {
+function requireThreadId(context: DefaultAgentSessionContext | undefined): string {
   const threadId = context?.threadId?.trim();
   if (!threadId) {
     throw new ToolError("Outbound requires a thread id in the current runtime context.");
@@ -165,9 +165,9 @@ async function ensureReadableResolvedPath(filePath: string): Promise<void> {
 
 async function resolveOutboundItemPath<TItem extends OutboundImageItem | OutboundFileItem>(
   item: TItem,
-  run: RunContext<PandaSessionContext>,
+  run: RunContext<DefaultAgentSessionContext>,
 ): Promise<TItem> {
-  const resolvedPath = resolvePandaPath(item.path, run.context);
+  const resolvedPath = resolveContextPath(item.path, run.context);
   await ensureReadableResolvedPath(resolvedPath);
   return {
     ...item,
@@ -177,7 +177,7 @@ async function resolveOutboundItemPath<TItem extends OutboundImageItem | Outboun
 
 async function resolveOutboundItems(
   items: readonly z.output<typeof outboundItemSchema>[],
-  run: RunContext<PandaSessionContext>,
+  run: RunContext<DefaultAgentSessionContext>,
 ): Promise<readonly OutboundItem[]> {
   const resolved: OutboundItem[] = [];
 
@@ -220,7 +220,7 @@ function serializeQueuedDelivery(delivery: {
   };
 }
 
-export class OutboundTool<TContext = PandaSessionContext> extends Tool<typeof outboundToolSchema, TContext> {
+export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<typeof outboundToolSchema, TContext> {
   static schema = outboundToolSchema;
 
   name = "outbound";
@@ -247,14 +247,14 @@ export class OutboundTool<TContext = PandaSessionContext> extends Tool<typeof ou
     args: z.output<typeof OutboundTool.schema>,
     run: RunContext<TContext>,
   ): Promise<JsonObject> {
-    const pandaContext = run.context as PandaSessionContext | undefined;
-    const scheduledTask = parseScheduledTaskThreadInputMetadata(pandaContext?.currentInput?.metadata)?.scheduledTask;
+    const sessionContext = run.context as DefaultAgentSessionContext | undefined;
+    const scheduledTask = parseScheduledTaskThreadInputMetadata(sessionContext?.currentInput?.metadata)?.scheduledTask;
     if (scheduledTask?.phase === "execute" && scheduledTask.deliveryMode === "deferred") {
       throw new ToolError("Outbound is disabled during prepare-only scheduled task execution.");
     }
 
-    const queue = ensureOutboundQueue(pandaContext);
-    const currentRoute = resolveChannelRouteTarget(pandaContext?.currentInput);
+    const queue = ensureOutboundQueue(sessionContext);
+    const currentRoute = resolveChannelRouteTarget(sessionContext?.currentInput);
     const hasExplicitTarget = Boolean(args.target);
     const requestedChannel = args.channel;
 
@@ -262,9 +262,9 @@ export class OutboundTool<TContext = PandaSessionContext> extends Tool<typeof ou
     if (currentRoute && (!requestedChannel || currentRoute.channel === requestedChannel)) {
       defaultRoute = currentRoute;
     } else if (requestedChannel) {
-      defaultRoute = await readRememberedTargetForChannel(pandaContext, requestedChannel);
+      defaultRoute = await readRememberedTargetForChannel(sessionContext, requestedChannel);
     } else {
-      defaultRoute = await readRememberedTarget(pandaContext);
+      defaultRoute = await readRememberedTarget(sessionContext);
     }
 
     const channel = requestedChannel ?? defaultRoute?.channel;
@@ -277,15 +277,15 @@ export class OutboundTool<TContext = PandaSessionContext> extends Tool<typeof ou
       throw new ToolError("No outbound target was provided and no current inbound route is available.");
     }
 
-    const items = await resolveOutboundItems(args.items, run as RunContext<PandaSessionContext>);
+    const items = await resolveOutboundItems(args.items, run as RunContext<DefaultAgentSessionContext>);
     const delivery = await queue.enqueueDelivery({
-      threadId: requireThreadId(pandaContext),
+      threadId: requireThreadId(sessionContext),
       channel,
       target,
       items,
     });
     if (!hasExplicitTarget) {
-      await pandaContext?.routeMemory?.saveLastRoute(rememberRouteFromTarget(target));
+      await sessionContext?.routeMemory?.saveLastRoute(rememberRouteFromTarget(target));
     }
 
     return serializeQueuedDelivery({

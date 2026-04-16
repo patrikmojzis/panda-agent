@@ -1,4 +1,4 @@
-import {buildPrefixedRelationNames} from "../../domain/threads/runtime/postgres-shared.js";
+import {buildRuntimeRelationNames} from "../../domain/threads/runtime/postgres-shared.js";
 
 export interface AgentTableNames {
   prefix: string;
@@ -10,8 +10,8 @@ export interface AgentTableNames {
   agentDiary: string;
 }
 
-export function buildAgentTableNames(prefix: string): AgentTableNames {
-  return buildPrefixedRelationNames(prefix, {
+export function buildAgentTableNames(): AgentTableNames {
+  return buildRuntimeRelationNames({
     agents: "agents",
     agentSkills: "agent_skills",
     agentPrompts: "agent_prompts",

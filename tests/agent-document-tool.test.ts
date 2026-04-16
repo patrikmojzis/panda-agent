@@ -4,7 +4,7 @@ import {DataType, newDb} from "pg-mem";
 import {
     Agent,
     AgentDocumentTool,
-    type PandaSessionContext,
+    type DefaultAgentSessionContext,
     RunContext,
     ToolError,
     type ToolResultPayload,
@@ -13,7 +13,7 @@ import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore,} from "../src/doma
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import type {AgentStore} from "../src/domain/agents/store.js";
 
-function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
+function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: new Agent({
       name: "panda",
@@ -177,7 +177,7 @@ describe("AgentDocumentTool", () => {
       target: "relationship",
       slug: "memory",
       operation: "transform",
-      expression: "select * from thread_runtime_messages",
+      expression: "select * from runtime.messages",
     }, createRunContext({
       identityId: "alice-id",
       agentKey: "panda",

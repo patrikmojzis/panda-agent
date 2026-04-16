@@ -20,7 +20,7 @@ export function renderWhatsAppInboundText(options: {
   const trimmedBody = options.body?.trim() ?? "";
   const attachments = options.attachments.length === 0 ? "- none" : options.attachments.join("\n");
   return `
-<panda-channel-context>
+<runtime-channel-context>
 channel: ${options.channel}
 connector_key: ${options.connectorKey}
 conversation_id: ${options.conversationId}
@@ -34,7 +34,7 @@ push_name: ${formatMaybeValue(options.pushName)}
 quoted_message_id: ${formatMaybeValue(options.quotedMessageId)}
 attachments:
 ${attachments}
-</panda-channel-context>
+</runtime-channel-context>
 
 ${trimmedBody || "[WhatsApp message]"}
 `.trim();

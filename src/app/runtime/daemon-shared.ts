@@ -1,20 +1,19 @@
 import {createHash} from "node:crypto";
 import {buildMissingRuntimeIdentityIdMessage} from "./daemon-copy.js";
 
-export const DEFAULT_PANDA_DAEMON_KEY = "primary";
-export const PANDA_DAEMON_HEARTBEAT_INTERVAL_MS = 5_000;
-export const PANDA_DAEMON_STALE_AFTER_MS = 15_000;
-export const PANDA_DAEMON_REQUEST_TIMEOUT_MS = 30_000;
+export const DEFAULT_DAEMON_KEY = "primary";
+export const DAEMON_HEARTBEAT_INTERVAL_MS = 5_000;
+export const DAEMON_STALE_AFTER_MS = 15_000;
+export const DAEMON_REQUEST_TIMEOUT_MS = 30_000;
 
-export interface PandaDaemonOptions {
+export interface DaemonOptions {
   cwd: string;
   dbUrl?: string;
   readOnlyDbUrl?: string;
   maxSubagentDepth?: number;
-  tablePrefix?: string;
 }
 
-export interface PandaDaemonServices {
+export interface DaemonServices {
   run(): Promise<void>;
   stop(): Promise<void>;
 }

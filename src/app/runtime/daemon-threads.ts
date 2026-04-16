@@ -10,8 +10,8 @@ import type {
 import {type ThreadRecord} from "../../domain/threads/runtime/index.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
 import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
-import {resolvePandaAgentMediaDir} from "./data-dir.js";
-import type {PandaDaemonContext} from "./daemon-bootstrap.js";
+import {resolveAgentMediaDir} from "./data-dir.js";
+import type {DaemonContext} from "./daemon-bootstrap.js";
 import {requireIdentityId, trimNonEmptyString} from "./daemon-shared.js";
 
 export interface DaemonThreadHelpers {
@@ -50,7 +50,7 @@ export interface DaemonThreadHelpers {
   handleResetSession(payload: ResetSessionRequestPayload): Promise<Record<string, unknown>>;
 }
 
-async function listIdentityPairings(runtime: PandaDaemonContext["runtime"], identityId: string) {
+async function listIdentityPairings(runtime: DaemonContext["runtime"], identityId: string) {
   const store = runtime.agentStore as typeof runtime.agentStore & {
     listIdentityPairings?: (identityId: string) => Promise<readonly {agentKey: string}[]>;
   };
@@ -58,7 +58,7 @@ async function listIdentityPairings(runtime: PandaDaemonContext["runtime"], iden
 }
 
 export function createDaemonThreadHelpers(
-  context: PandaDaemonContext,
+  context: DaemonContext,
 ): DaemonThreadHelpers {
   const ensureIdentity = async (identityId: string): Promise<IdentityRecord> => {
     return identityId === createDefaultIdentityInput().id
@@ -190,7 +190,7 @@ export function createDaemonThreadHelpers(
     }
 
     const session = await context.runtime.sessionStore.getSession(thread.sessionId);
-    const rootDir = resolvePandaAgentMediaDir(session.agentKey);
+    const rootDir = resolveAgentMediaDir(session.agentKey);
     return Promise.all(media.map((descriptor) => relocateMediaDescriptor(descriptor, {rootDir})));
   };
 

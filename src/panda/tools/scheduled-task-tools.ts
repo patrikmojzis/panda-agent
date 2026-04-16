@@ -4,8 +4,8 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {normalizeScheduledTaskSchedule, type ScheduledTaskStore} from "../../domain/scheduling/tasks/index.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
-import {readPandaCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
 
 const onceScheduleSchema = z.object({
   kind: z.literal("once"),
@@ -36,12 +36,12 @@ function readTaskScope(context: unknown): {
     || typeof (context as {sessionId?: unknown}).sessionId !== "string"
     || !(context as {sessionId: string}).sessionId.trim()
   ) {
-    throw new ToolError("Scheduled task tools require sessionId in the Panda session context.");
+    throw new ToolError("Scheduled task tools require sessionId in the runtime session context.");
   }
 
   return {
     sessionId: (context as {sessionId: string}).sessionId,
-    createdByIdentityId: readPandaCurrentInputIdentityId(context),
+    createdByIdentityId: readCurrentInputIdentityId(context),
   };
 }
 
@@ -58,7 +58,7 @@ export interface ScheduledTaskToolOptions {
   store: ScheduledTaskStore;
 }
 
-export class ScheduledTaskCreateTool<TContext = PandaSessionContext>
+export class ScheduledTaskCreateTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof ScheduledTaskCreateTool.schema, TContext> {
   static schema = z.object({
     title: z.string().trim().min(1),
@@ -102,7 +102,7 @@ export class ScheduledTaskCreateTool<TContext = PandaSessionContext>
   }
 }
 
-export class ScheduledTaskUpdateTool<TContext = PandaSessionContext>
+export class ScheduledTaskUpdateTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof ScheduledTaskUpdateTool.schema, TContext> {
   static schema = z.object({
     taskId: z.string().trim().min(1),
@@ -149,7 +149,7 @@ export class ScheduledTaskUpdateTool<TContext = PandaSessionContext>
   }
 }
 
-export class ScheduledTaskCancelTool<TContext = PandaSessionContext>
+export class ScheduledTaskCancelTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof ScheduledTaskCancelTool.schema, TContext> {
   static schema = z.object({
     taskId: z.string().trim().min(1),

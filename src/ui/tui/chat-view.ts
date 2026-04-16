@@ -62,7 +62,7 @@ const TRANSCRIPT_FRAME_ROWS = 4;
 const MIN_TRANSCRIPT_HEIGHT = 4;
 const TRANSCRIPT_GUTTER_WIDTH = 2;
 
-const PANDA_SPLASH = [
+const WELCOME_SPLASH = [
   "                       _       ",
   "                      | |      ",
   " _ __   __ _ _ __   __| | __ _ ",
@@ -271,7 +271,7 @@ function buildWelcomeIdentityLines(options: BuildWelcomeTranscriptLinesOptions, 
   return [
     centerAnsiText(theme.bold(theme.white("Welcome to Panda")), width),
     "",
-    ...PANDA_SPLASH.map((line) => centerAnsiText(theme.mint(line), width)),
+    ...WELCOME_SPLASH.map((line) => centerAnsiText(theme.mint(line), width)),
     "",
     theme.bold(theme.slate("Session")),
     ...buildWelcomeDetailLines("Model", options.model, width),

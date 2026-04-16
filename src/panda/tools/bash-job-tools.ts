@@ -7,12 +7,12 @@ import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {ThreadBashJobRecord} from "../../domain/threads/runtime/types.js";
 import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 
-function readThreadId(context: PandaSessionContext | undefined): string {
+function readThreadId(context: DefaultAgentSessionContext | undefined): string {
   const threadId = context?.threadId?.trim();
   if (!threadId) {
-    throw new ToolError("Background bash jobs require the current Panda session thread.");
+    throw new ToolError("Background bash jobs require the current runtime session thread.");
   }
 
   return threadId;
@@ -83,7 +83,7 @@ export interface BashJobToolOptions {
 
 abstract class BashJobToolBase<
   TSchema extends z.ZodTypeAny,
-> extends Tool<TSchema, PandaSessionContext> {
+> extends Tool<TSchema, DefaultAgentSessionContext> {
   protected readonly service: BashJobService;
 
   constructor(options: BashJobToolOptions) {
@@ -107,7 +107,7 @@ export class BashJobStatusTool extends BashJobToolBase<typeof BashJobStatusTool.
 
   async handle(
     args: z.output<typeof BashJobStatusTool.schema>,
-    run: RunContext<PandaSessionContext>,
+    run: RunContext<DefaultAgentSessionContext>,
   ): Promise<ToolOutput> {
     const record = await this.service.status(readThreadId(run.context), args.jobId);
     return buildBashJobPayload(record);
@@ -133,7 +133,7 @@ export class BashJobWaitTool extends BashJobToolBase<typeof BashJobWaitTool.sche
 
   async handle(
     args: z.output<typeof BashJobWaitTool.schema>,
-    run: RunContext<PandaSessionContext>,
+    run: RunContext<DefaultAgentSessionContext>,
   ): Promise<ToolOutput> {
     const record = await this.service.wait(
       readThreadId(run.context),
@@ -155,7 +155,7 @@ export class BashJobCancelTool extends BashJobToolBase<typeof BashJobCancelTool.
 
   async handle(
     args: z.output<typeof BashJobCancelTool.schema>,
-    run: RunContext<PandaSessionContext>,
+    run: RunContext<DefaultAgentSessionContext>,
   ): Promise<ToolOutput> {
     const record = await this.service.cancel(readThreadId(run.context), args.jobId);
     return buildBashJobPayload(record);

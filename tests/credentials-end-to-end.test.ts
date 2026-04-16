@@ -71,7 +71,7 @@ describe("credentials end-to-end", () => {
       store: credentialStore,
       crypto,
     });
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-credentials-e2e-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-credentials-e2e-"));
     directories.push(workspace);
 
     return {

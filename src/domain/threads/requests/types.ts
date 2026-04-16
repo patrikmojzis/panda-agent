@@ -3,7 +3,7 @@ import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import type {InferenceProjection, ThreadUpdate} from "../runtime/types.js";
 
-export type PandaRuntimeRequestKind =
+export type RuntimeRequestKind =
   | "telegram_message"
   | "telegram_reaction"
   | "whatsapp_message"
@@ -15,7 +15,7 @@ export type PandaRuntimeRequestKind =
   | "compact_thread"
   | "update_thread";
 
-export type PandaRuntimeRequestStatus = "pending" | "running" | "completed" | "failed";
+export type RuntimeRequestStatus = "pending" | "running" | "completed" | "failed";
 
 export interface BaseRuntimeRequestPayload {
   identityId?: string;
@@ -116,7 +116,7 @@ export interface UpdateThreadRequestPayload extends BaseRuntimeRequestPayload {
   update: ThreadUpdate;
 }
 
-export type PandaRuntimeRequestPayload =
+export type RuntimeRequestPayload =
   | TelegramMessageRequestPayload
   | TelegramReactionRequestPayload
   | WhatsAppMessageRequestPayload
@@ -128,15 +128,15 @@ export type PandaRuntimeRequestPayload =
   | CompactThreadRequestPayload
   | UpdateThreadRequestPayload;
 
-export interface CreateRuntimeRequestInput<TPayload extends PandaRuntimeRequestPayload = PandaRuntimeRequestPayload> {
-  kind: PandaRuntimeRequestKind;
+export interface CreateRuntimeRequestInput<TPayload extends RuntimeRequestPayload = RuntimeRequestPayload> {
+  kind: RuntimeRequestKind;
   payload: TPayload;
 }
 
-export interface PandaRuntimeRequestRecord<TPayload extends PandaRuntimeRequestPayload = PandaRuntimeRequestPayload> {
+export interface RuntimeRequestRecord<TPayload extends RuntimeRequestPayload = RuntimeRequestPayload> {
   id: string;
-  kind: PandaRuntimeRequestKind;
-  status: PandaRuntimeRequestStatus;
+  kind: RuntimeRequestKind;
+  status: RuntimeRequestStatus;
   payload: TPayload;
   result?: JsonValue;
   error?: string;

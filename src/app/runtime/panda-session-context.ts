@@ -4,22 +4,22 @@ import type {ChannelActionInput, ChannelActionRecord,} from "../../domain/channe
 import type {RememberedRoute} from "../../domain/channels/types.js";
 import type {ShellExecutionContext, ShellSession} from "../../integrations/shell/types.js";
 
-export interface PandaRouteMemory {
+export interface DefaultAgentRouteMemory {
   getLastRoute(channel?: string): Promise<RememberedRoute | null>;
   saveLastRoute(route: RememberedRoute): Promise<void>;
 }
 
-export interface PandaOutboundQueue {
+export interface DefaultAgentOutboundQueue {
   enqueueDelivery(input: OutboundDeliveryInput): Promise<OutboundDeliveryRecord>;
 }
 
-export interface PandaChannelActionQueue {
+export interface DefaultAgentChannelActionQueue {
   enqueueAction(input: ChannelActionInput): Promise<ChannelActionRecord>;
 }
 
-export type PandaShellSession = ShellSession;
+export type DefaultAgentShellSession = ShellSession;
 
-export interface PandaSessionContext extends ShellExecutionContext {
+export interface DefaultAgentSessionContext extends ShellExecutionContext {
   cwd?: string;
   agentKey: string;
   sessionId: string;
@@ -33,8 +33,8 @@ export interface PandaSessionContext extends ShellExecutionContext {
     identityId?: string;
     metadata?: JsonValue;
   };
-  routeMemory?: PandaRouteMemory;
-  outboundQueue?: PandaOutboundQueue;
-  channelActionQueue?: PandaChannelActionQueue;
+  routeMemory?: DefaultAgentRouteMemory;
+  outboundQueue?: DefaultAgentOutboundQueue;
+  channelActionQueue?: DefaultAgentChannelActionQueue;
   subagentDepth?: number;
 }

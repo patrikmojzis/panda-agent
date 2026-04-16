@@ -1,11 +1,11 @@
 import {stdin as input, stdout as output} from "node:process";
 
 import {resolveModelSelector, type ThinkingLevel, Tool,} from "../../kernel/agent/index.js";
-import {buildPandaTools} from "../../panda/definition.js";
-import {resolveDefaultPandaModelSelector} from "../../panda/defaults.js";
+import {buildDefaultAgentTools} from "../../panda/definition.js";
+import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
 import {type ChatRuntimeServices, createChatRuntime,} from "./runtime.js";
 import {runChatActionsCommandLine, submitChatComposer, submitChatUserMessage,} from "./chat-actions.js";
-import {buildChatScreenFrame, buildPandaChatView} from "./chat-render.js";
+import {buildChatScreenFrame, buildChatView} from "./chat-render.js";
 import {
     appendStoredChatMessages,
     buildChatSessionDefaults,
@@ -99,7 +99,7 @@ function readAgentKeyFromThreadContext(thread: ThreadRecord): string {
   return typeof agentKey === "string" && agentKey.trim() ? agentKey : "unknown";
 }
 
-export class PandaChatApp {
+export class ChatApp {
   private model: string;
   private thinking?: ThinkingLevel;
   private readonly fallbackCwd: string;
@@ -163,7 +163,7 @@ export class PandaChatApp {
 
   constructor(options: ChatCliOptions = {}) {
     this.model = options.model === undefined
-      ? resolveDefaultPandaModelSelector()
+      ? resolveDefaultAgentModelSelector()
       : resolveModelSelector(options.model).canonical;
     this.thinking = options.thinking;
     this.identity = options.identity;
@@ -355,7 +355,7 @@ export class PandaChatApp {
   }
 
   private refreshToolCatalog(): void {
-    this.currentTools = buildPandaTools();
+    this.currentTools = buildDefaultAgentTools();
   }
 
   private resolveDisplayedCwd(): string {
@@ -702,7 +702,7 @@ export class PandaChatApp {
     const historyMatches = this.historyMatches();
     const slashContext = this.currentSlashContext();
 
-    return buildPandaChatView({
+    return buildChatView({
       terminalWidth: output.columns || 100,
       terminalRows: output.rows || 32,
       transcript: this.transcript,
@@ -1059,6 +1059,6 @@ export class PandaChatApp {
 }
 
 export async function runChatCli(options: ChatCliOptions = {}): Promise<ChatCliResult> {
-  const app = new PandaChatApp(options);
+  const app = new ChatApp(options);
   return await app.run();
 }

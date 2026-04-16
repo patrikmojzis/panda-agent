@@ -5,27 +5,27 @@ import {BraveSearchTool, hasBraveSearchApiKey} from "./tools/brave-search-tool.j
 import {BrowserTool, type BrowserToolOptions} from "./tools/browser-tool.js";
 import {MediaTool} from "./tools/media-tool.js";
 import {
-  PostgresReadonlyQueryTool,
-  type PostgresReadonlyQueryToolOptions,
+    PostgresReadonlyQueryTool,
+    type PostgresReadonlyQueryToolOptions,
 } from "./tools/postgres-readonly-query-tool.js";
 import {WebFetchTool} from "./tools/web-fetch-tool.js";
 import {WebResearchTool} from "./tools/web-research-tool.js";
 import {hasOpenAiApiKey, WhisperTool} from "./tools/whisper-tool.js";
 import {GlobFilesTool, GrepFilesTool, ReadFileTool} from "./tools/workspace-readonly-tools.js";
 
-export interface BuildPandaToolsOptions {
+export interface BuildDefaultAgentToolsOptions {
   bash?: BashToolOptions;
   browser?: BrowserToolOptions;
   postgresReadonly?: PostgresReadonlyQueryToolOptions;
 }
 
-export interface BuildPandaToolsetsOptions extends BuildPandaToolsOptions {
+export interface BuildDefaultAgentToolsetsOptions extends BuildDefaultAgentToolsOptions {
   mainExtras?: ReadonlyArray<Tool>;
 }
 
-export type PandaToolsetKey = "main" | "workspace" | "memory" | "browser";
+export type DefaultAgentToolsetKey = "main" | "workspace" | "memory" | "browser";
 
-export interface PandaToolRegistry {
+export interface DefaultAgentToolRegistry {
   bash: BashTool;
   bashJobStatus?: BashJobStatusTool;
   bashJobWait?: BashJobWaitTool;
@@ -42,7 +42,7 @@ export interface PandaToolRegistry {
   postgresReadonlyQuery?: PostgresReadonlyQueryTool;
 }
 
-export interface PandaToolsets {
+export interface DefaultAgentToolsets {
   main: readonly Tool[];
   workspace: readonly Tool[];
   memory: readonly Tool[];
@@ -53,10 +53,10 @@ function compactTools(tools: ReadonlyArray<Tool | undefined>): readonly Tool[] {
   return tools.filter((tool): tool is Tool => tool !== undefined);
 }
 
-export function createPandaToolRegistry(
-  options: BuildPandaToolsOptions = {},
-): PandaToolRegistry {
-  const registry: PandaToolRegistry = {
+export function createDefaultAgentToolRegistry(
+  options: BuildDefaultAgentToolsOptions = {},
+): DefaultAgentToolRegistry {
+  const registry: DefaultAgentToolRegistry = {
     bash: new BashTool(options.bash),
     readFile: new ReadFileTool(),
     globFiles: new GlobFilesTool(),
@@ -94,10 +94,10 @@ export function createPandaToolRegistry(
   return registry;
 }
 
-export function buildPandaToolsetsFromRegistry(
-  registry: PandaToolRegistry,
+export function buildDefaultAgentToolsetsFromRegistry(
+  registry: DefaultAgentToolRegistry,
   mainExtras: ReadonlyArray<Tool> = [],
-): PandaToolsets {
+): DefaultAgentToolsets {
   return {
     main: compactTools([
       registry.bash,
@@ -131,18 +131,18 @@ export function buildPandaToolsetsFromRegistry(
   };
 }
 
-export function buildPandaToolsets(
-  options: BuildPandaToolsetsOptions = {},
-): PandaToolsets {
+export function buildDefaultAgentToolsets(
+  options: BuildDefaultAgentToolsetsOptions = {},
+): DefaultAgentToolsets {
   const {mainExtras = [], ...toolOptions} = options;
-  return buildPandaToolsetsFromRegistry(createPandaToolRegistry(toolOptions), mainExtras);
+  return buildDefaultAgentToolsetsFromRegistry(createDefaultAgentToolRegistry(toolOptions), mainExtras);
 }
 
-export function buildPandaTools(
+export function buildDefaultAgentTools(
   extraTools: ReadonlyArray<Tool> = [],
-  options: BuildPandaToolsOptions = {},
+  options: BuildDefaultAgentToolsOptions = {},
 ): ReadonlyArray<Tool> {
-  return buildPandaToolsets({
+  return buildDefaultAgentToolsets({
     ...options,
     mainExtras: extraTools,
   }).main;

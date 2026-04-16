@@ -6,8 +6,8 @@ import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import type {WatchStore} from "../../domain/watches/store.js";
 import type {WatchDetectorConfig, WatchSourceConfig} from "../../domain/watches/types.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
-import {readPandaCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
 
 const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([
   z.string(),
@@ -200,12 +200,12 @@ function readWatchScope(context: unknown): {
     || typeof (context as {sessionId?: unknown}).sessionId !== "string"
     || !(context as {sessionId: string}).sessionId.trim()
   ) {
-    throw new ToolError("Watch tools require sessionId in the Panda session context.");
+    throw new ToolError("Watch tools require sessionId in the runtime session context.");
   }
 
   return {
     sessionId: (context as {sessionId: string}).sessionId,
-    createdByIdentityId: readPandaCurrentInputIdentityId(context),
+    createdByIdentityId: readCurrentInputIdentityId(context),
   };
 }
 
@@ -222,7 +222,7 @@ export interface WatchToolOptions {
   store: WatchStore;
 }
 
-export class WatchCreateTool<TContext = PandaSessionContext>
+export class WatchCreateTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof WatchCreateTool.schema, TContext> {
   static schema = z.object({
     title: z.string().trim().min(1),
@@ -234,7 +234,7 @@ export class WatchCreateTool<TContext = PandaSessionContext>
 
   name = "watch_create";
   description =
-    "Create a deterministic watch that polls a source, compares results in code, and wakes Panda only when a real change event exists.";
+    "Create a deterministic watch that polls a source, compares results in code, and wakes the agent only when a real change event exists.";
   schema = WatchCreateTool.schema;
 
   constructor(private readonly options: WatchToolOptions) {
@@ -268,7 +268,7 @@ export class WatchCreateTool<TContext = PandaSessionContext>
   }
 }
 
-export class WatchUpdateTool<TContext = PandaSessionContext>
+export class WatchUpdateTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof WatchUpdateTool.schema, TContext> {
   static schema = z.object({
     watchId: z.string().trim().min(1),
@@ -317,7 +317,7 @@ export class WatchUpdateTool<TContext = PandaSessionContext>
   }
 }
 
-export class WatchDisableTool<TContext = PandaSessionContext>
+export class WatchDisableTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof WatchDisableTool.schema, TContext> {
   static schema = z.object({
     watchId: z.string().trim().min(1),

@@ -8,7 +8,7 @@ import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 describe("PostgresThreadRuntimeStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
-  const SESSION_TABLE = "\"thread_runtime_agent_sessions\"";
+  const SESSION_TABLE = "\"runtime\".\"agent_sessions\"";
 
   afterEach(async () => {
     while (pools.length > 0) {
@@ -95,7 +95,7 @@ describe("PostgresThreadRuntimeStore", () => {
     const created = await store.createThread({
       id: "pg-thread",
       sessionId: "session-alice",
-      systemPrompt: ["You are Panda."],
+      systemPrompt: ["You are the default agent."],
       context: {
         source: "telegram",
         agentKey: "panda",
@@ -118,7 +118,7 @@ describe("PostgresThreadRuntimeStore", () => {
       agentKey: "panda",
       identityId: alice.id,
     });
-    expect(created.systemPrompt).toEqual(["You are Panda."]);
+    expect(created.systemPrompt).toEqual(["You are the default agent."]);
     expect(created.thinking).toBe("medium");
     expect(created.inferenceProjection).toEqual({
       dropThinking: {

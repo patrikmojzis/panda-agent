@@ -2,10 +2,10 @@ import {Pool, type PoolClient} from "pg";
 
 import {type AgentStore, PostgresAgentStore} from "../../domain/agents/index.js";
 import {
-  CredentialResolver,
-  CredentialService,
-  PostgresCredentialStore,
-  resolveCredentialCrypto,
+    CredentialResolver,
+    CredentialService,
+    PostgresCredentialStore,
+    resolveCredentialCrypto,
 } from "../../domain/credentials/index.js";
 import {PostgresIdentityStore} from "../../domain/identity/index.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
@@ -14,30 +14,33 @@ import {PostgresSessionStore, type SessionStore} from "../../domain/sessions/ind
 import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/index.js";
 import {
-  buildThreadRuntimeNotificationChannel,
-  parseThreadRuntimeNotification,
+    buildThreadRuntimeNotificationChannel,
+    parseThreadRuntimeNotification,
 } from "../../domain/threads/runtime/postgres.js";
-import {ensureReadonlyChatQuerySchema, readDatabaseUsername,} from "../../domain/threads/runtime/postgres-readonly.js";
+import {
+    ensureReadonlySessionQuerySchema,
+    readDatabaseUsername,
+} from "../../domain/threads/runtime/postgres-readonly.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
-import {buildPandaToolsetsFromRegistry, createPandaToolRegistry,} from "../../panda/definition.js";
+import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry,} from "../../panda/definition.js";
 import {AgentDocumentTool} from "../../panda/tools/agent-document-tool.js";
 import {AgentSkillTool} from "../../panda/tools/agent-skill-tool.js";
 import {BrowserSessionService} from "../../panda/tools/browser-service.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
 import {
-  ScheduledTaskCancelTool,
-  ScheduledTaskCreateTool,
-  ScheduledTaskUpdateTool,
+    ScheduledTaskCancelTool,
+    ScheduledTaskCreateTool,
+    ScheduledTaskUpdateTool,
 } from "../../panda/tools/scheduled-task-tools.js";
 import {WatchCreateTool, WatchDisableTool, WatchUpdateTool,} from "../../panda/tools/watch-tools.js";
 import {SpawnSubagentTool} from "../../panda/tools/spawn-subagent-tool.js";
 import {ThinkingSetTool} from "../../panda/tools/thinking-set-tool.js";
-import {PandaSubagentService} from "../../panda/subagents/service.js";
+import {DefaultAgentSubagentService} from "../../panda/subagents/service.js";
 import {BashJobService} from "../../integrations/shell/bash-job-service.js";
-import {createPandaPool} from "./database.js";
+import {createPostgresPool} from "./database.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
-import type {PandaRuntimeOptions} from "./create-runtime.js";
+import type {RuntimeOptions} from "./create-runtime.js";
 
 function trimNonEmptyString(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
@@ -48,7 +51,7 @@ function trimNonEmptyString(value: string | null | undefined): string | null {
   return trimmed || null;
 }
 
-export interface RuntimeBootstrapOptions extends Omit<PandaRuntimeOptions, "dbUrl"> {
+export interface RuntimeBootstrapOptions extends Omit<RuntimeOptions, "dbUrl"> {
   dbUrl: string;
 }
 
@@ -96,12 +99,12 @@ function createCloseRuntime(options: {
   };
 }
 
-export async function bootstrapPandaRuntime(
+export async function bootstrapRuntime(
   options: RuntimeBootstrapOptions,
 ): Promise<RuntimeBootstrapResult> {
   const readOnlyDbUrl =
     trimNonEmptyString(options.readOnlyDbUrl)
-    ?? trimNonEmptyString(process.env.PANDA_READONLY_DATABASE_URL);
+    ?? trimNonEmptyString(process.env.READONLY_DATABASE_URL);
 
   let readonlyPool: Pool | null = null;
   let notificationClient: PoolClient | null = null;
@@ -110,24 +113,20 @@ export async function bootstrapPandaRuntime(
   let browserService: BrowserSessionService | null = null;
   const maxSubagentDepth = options.maxSubagentDepth ?? 1;
 
-  const postgresPool = createPandaPool(options.dbUrl);
+  const postgresPool = createPostgresPool(options.dbUrl);
 
   try {
     const identityStore = new PostgresIdentityStore({
       pool: postgresPool,
-      tablePrefix: options.tablePrefix,
     });
     const agentStore = new PostgresAgentStore({
       pool: postgresPool,
-      tablePrefix: options.tablePrefix,
     });
     const sessionStore = new PostgresSessionStore({
       pool: postgresPool,
-      tablePrefix: options.tablePrefix,
     });
     const store = new PostgresThreadRuntimeStore({
       pool: postgresPool,
-      tablePrefix: options.tablePrefix,
     });
     await ensureSchemas([
       identityStore,
@@ -146,7 +145,6 @@ export async function bootstrapPandaRuntime(
 
     const credentialStore = new PostgresCredentialStore({
       pool: postgresPool,
-      tablePrefix: options.tablePrefix,
     });
 
     const credentialCrypto = resolveCredentialCrypto();
@@ -163,12 +161,10 @@ export async function bootstrapPandaRuntime(
 
     const scheduledTasks = new PostgresScheduledTaskStore({
       pool: postgresPool,
-      tablePrefix: options.tablePrefix,
     });
 
     const watches = new PostgresWatchStore({
       pool: postgresPool,
-      tablePrefix: options.tablePrefix,
     });
     await ensureSchemas([
       credentialStore,
@@ -176,17 +172,16 @@ export async function bootstrapPandaRuntime(
       watches,
     ]);
 
-    await ensureReadonlyChatQuerySchema({
+    await ensureReadonlySessionQuerySchema({
       queryable: postgresPool,
-      tablePrefix: options.tablePrefix,
       readonlyRole: readOnlyDbUrl ? readDatabaseUsername(readOnlyDbUrl) : null,
     });
 
     if (readOnlyDbUrl) {
-      readonlyPool = createPandaPool(readOnlyDbUrl);
+      readonlyPool = createPostgresPool(readOnlyDbUrl);
     }
 
-    const toolRegistry = createPandaToolRegistry({
+    const toolRegistry = createDefaultAgentToolRegistry({
       bash: {
         jobService: bashJobService,
         credentialResolver,
@@ -198,10 +193,10 @@ export async function bootstrapPandaRuntime(
         pool: readonlyPool ?? postgresPool,
       },
     });
-    const subagentToolsets = buildPandaToolsetsFromRegistry(toolRegistry);
+    const subagentToolsets = buildDefaultAgentToolsetsFromRegistry(toolRegistry);
 
     let mainTools: readonly Tool[] = [];
-    const subagentService = new PandaSubagentService({
+    const subagentService = new DefaultAgentSubagentService({
       store,
       resolveDefinition: (thread) => options.resolveDefinition(thread, {
         agentStore,
@@ -222,7 +217,7 @@ export async function bootstrapPandaRuntime(
       maxSubagentDepth,
     });
 
-    mainTools = buildPandaToolsetsFromRegistry(toolRegistry, [
+    mainTools = buildDefaultAgentToolsetsFromRegistry(toolRegistry, [
       new ThinkingSetTool({
         persistence: {
           updateThreadThinking: async (threadId, thinking) => {
@@ -273,7 +268,7 @@ export async function bootstrapPandaRuntime(
     ]).main;
 
     if (options.onStoreNotification) {
-      notificationChannel = buildThreadRuntimeNotificationChannel(options.tablePrefix ?? "thread_runtime");
+      notificationChannel = buildThreadRuntimeNotificationChannel();
       notificationClient = await postgresPool.connect();
       notificationHandler = (message: { channel: string; payload?: string }) => {
         if (message.channel !== notificationChannel || typeof message.payload !== "string") {

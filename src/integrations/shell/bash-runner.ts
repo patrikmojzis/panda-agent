@@ -18,11 +18,7 @@ import type {
     BashRunnerJobStartRequest,
     BashRunnerJobWaitRequest,
 } from "./bash-protocol.js";
-import {
-    PANDA_RUNNER_AGENT_KEY_HEADER,
-    PANDA_RUNNER_EXPECTED_PATH_HEADER,
-    PANDA_RUNNER_PATH_SCOPED_HEADER,
-} from "./bash-protocol.js";
+import {RUNNER_AGENT_KEY_HEADER, RUNNER_EXPECTED_PATH_HEADER, RUNNER_PATH_SCOPED_HEADER,} from "./bash-protocol.js";
 import {ManagedBashJob} from "./bash-background-job.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import {executeBashCommand} from "./bash-execution.js";
@@ -34,7 +30,7 @@ interface ActiveRunnerRequest {
   controller: AbortController;
 }
 
-export interface PandaBashRunnerOptions {
+export interface BashRunnerOptions {
   agentKey: string;
   port?: number;
   host?: string;
@@ -43,7 +39,7 @@ export interface PandaBashRunnerOptions {
   outputDirectory?: string;
 }
 
-export interface PandaBashRunner {
+export interface BashRunner {
   readonly agentKey: string;
   readonly port: number;
   readonly host: string;
@@ -322,7 +318,7 @@ function validateRunnerRequestTarget(
   agentKey: string,
   endpoint: "exec" | "abort" | "jobs/start" | "jobs/status" | "jobs/wait" | "jobs/cancel",
 ): void {
-  const requestedAgentKey = readHeaderValue(request.headers[PANDA_RUNNER_AGENT_KEY_HEADER]);
+  const requestedAgentKey = readHeaderValue(request.headers[RUNNER_AGENT_KEY_HEADER]);
   if (!requestedAgentKey) {
     throw new ToolError("Runner request is missing the target agent key header.");
   }
@@ -337,7 +333,7 @@ function validateRunnerRequestTarget(
     });
   }
 
-  const pathScoped = readHeaderValue(request.headers[PANDA_RUNNER_PATH_SCOPED_HEADER]) === "1";
+  const pathScoped = readHeaderValue(request.headers[RUNNER_PATH_SCOPED_HEADER]) === "1";
   if (!pathScoped) {
     return;
   }
@@ -347,7 +343,7 @@ function validateRunnerRequestTarget(
     throw new ToolError("Path-scoped runner request must end with the expected endpoint.");
   }
 
-  const expectedBasePath = readHeaderValue(request.headers[PANDA_RUNNER_EXPECTED_PATH_HEADER]);
+  const expectedBasePath = readHeaderValue(request.headers[RUNNER_EXPECTED_PATH_HEADER]);
   if (expectedBasePath) {
     const basePath = normalizeRequestPathname(pathname.slice(0, -(`/${endpoint}`).length));
     if (basePath !== expectedBasePath) {
@@ -405,23 +401,23 @@ function buildAbortedResult(request: BashRunnerExecRequest, shell: string, reaso
   };
 }
 
-export function resolvePandaBashRunnerOptions(env: NodeJS.ProcessEnv = process.env): PandaBashRunnerOptions {
-  const agentKey = normalizeAgentKey(firstNonEmpty(env.PANDA_RUNNER_AGENT_KEY) ?? "");
+export function resolveBashRunnerOptions(env: NodeJS.ProcessEnv = process.env): BashRunnerOptions {
+  const agentKey = normalizeAgentKey(firstNonEmpty(env.RUNNER_AGENT_KEY) ?? "");
   return {
     agentKey,
-    port: parsePort(firstNonEmpty(env.PANDA_RUNNER_PORT), DEFAULT_RUNNER_PORT),
-    host: firstNonEmpty(env.PANDA_RUNNER_HOST) ?? DEFAULT_RUNNER_HOST,
+    port: parsePort(firstNonEmpty(env.RUNNER_PORT), DEFAULT_RUNNER_PORT),
+    host: firstNonEmpty(env.RUNNER_HOST) ?? DEFAULT_RUNNER_HOST,
     env,
   };
 }
 
-export async function startPandaBashRunner(options: PandaBashRunnerOptions): Promise<PandaBashRunner> {
+export async function startBashRunner(options: BashRunnerOptions): Promise<BashRunner> {
   const agentKey = normalizeAgentKey(options.agentKey);
   const requestedPort = options.port ?? DEFAULT_RUNNER_PORT;
   const host = options.host ?? DEFAULT_RUNNER_HOST;
   const env = options.env ?? process.env;
   const shell = options.shell ?? env.SHELL ?? "/bin/zsh";
-  const outputDirectory = path.resolve(options.outputDirectory ?? path.join(os.tmpdir(), "panda-runner-results"));
+  const outputDirectory = path.resolve(options.outputDirectory ?? path.join(os.tmpdir(), "runtime-runner-results"));
   const activeRequests = new Map<string, ActiveRunnerRequest>();
   const backgroundJobs = new Map<string, ManagedBashJob>();
   const pendingAborts = new Map<string, NodeJS.Timeout>();

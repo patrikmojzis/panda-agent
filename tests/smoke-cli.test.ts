@@ -7,12 +7,12 @@ import {registerSmokeCommand} from "../src/app/smoke/cli.js";
 const smokeCliMocks = vi.hoisted(() => {
   const result = {
     current: {
-      artifactDir: "/tmp/panda-smoke/pass",
+      artifactDir: "/tmp/runtime-smoke/pass",
       artifacts: {
-        runs: "/tmp/panda-smoke/pass/runs.json",
-        summary: "/tmp/panda-smoke/pass/summary.json",
-        toolArtifacts: "/tmp/panda-smoke/pass/tool-artifacts.json",
-        transcript: "/tmp/panda-smoke/pass/transcript.json",
+        runs: "/tmp/runtime-smoke/pass/runs.json",
+        summary: "/tmp/runtime-smoke/pass/summary.json",
+        toolArtifacts: "/tmp/runtime-smoke/pass/tool-artifacts.json",
+        transcript: "/tmp/runtime-smoke/pass/transcript.json",
       },
       assertions: [],
       config: {
@@ -42,13 +42,13 @@ const smokeCliMocks = vi.hoisted(() => {
 
   return {
     result,
-    runPandaSmoke: vi.fn(async () => result.current),
+    runSmoke: vi.fn(async () => result.current),
     startSmokeFollowUpRepl: vi.fn(async () => {}),
   };
 });
 
 vi.mock("../src/app/smoke/harness.js", () => ({
-  runPandaSmoke: smokeCliMocks.runPandaSmoke,
+  runSmoke: smokeCliMocks.runSmoke,
 }));
 
 vi.mock("../src/app/smoke/follow-up.js", () => ({
@@ -63,15 +63,15 @@ function createProgram(): Command {
 
 describe("Smoke CLI", () => {
   afterEach(() => {
-    smokeCliMocks.runPandaSmoke.mockClear();
+    smokeCliMocks.runSmoke.mockClear();
     smokeCliMocks.startSmokeFollowUpRepl.mockClear();
     smokeCliMocks.result.current = {
-      artifactDir: "/tmp/panda-smoke/pass",
+      artifactDir: "/tmp/runtime-smoke/pass",
       artifacts: {
-        runs: "/tmp/panda-smoke/pass/runs.json",
-        summary: "/tmp/panda-smoke/pass/summary.json",
-        toolArtifacts: "/tmp/panda-smoke/pass/tool-artifacts.json",
-        transcript: "/tmp/panda-smoke/pass/transcript.json",
+        runs: "/tmp/runtime-smoke/pass/runs.json",
+        summary: "/tmp/runtime-smoke/pass/summary.json",
+        toolArtifacts: "/tmp/runtime-smoke/pass/tool-artifacts.json",
+        transcript: "/tmp/runtime-smoke/pass/transcript.json",
       },
       assertions: [],
       config: {
@@ -122,7 +122,7 @@ describe("Smoke CLI", () => {
       {from: "user"},
     );
 
-    expect(smokeCliMocks.runPandaSmoke).toHaveBeenCalledWith(expect.objectContaining({
+    expect(smokeCliMocks.runSmoke).toHaveBeenCalledWith(expect.objectContaining({
       agentKey: "panda",
       dbUrl: "postgres://smoke-db",
       expectText: ["hi"],
@@ -131,7 +131,7 @@ describe("Smoke CLI", () => {
       inputs: ["say hi"],
     }));
     expect(write).toHaveBeenCalledWith(
-      "Smoke passed.\nthread thread-1\nsession session-1\nartifacts /tmp/panda-smoke/pass\n",
+      "Smoke passed.\nthread thread-1\nsession session-1\nartifacts /tmp/runtime-smoke/pass\n",
     );
   });
 
@@ -182,7 +182,7 @@ describe("Smoke CLI", () => {
     );
 
     expect(smokeCliMocks.startSmokeFollowUpRepl).toHaveBeenCalledWith({
-      artifactDir: "/tmp/panda-smoke/pass",
+      artifactDir: "/tmp/runtime-smoke/pass",
       dbUrl: "postgres://smoke-db",
       identity: "local",
       sessionId: "session-1",
@@ -190,7 +190,7 @@ describe("Smoke CLI", () => {
       timeoutMs: 120_000,
     });
     expect(write).toHaveBeenCalledWith(
-      "Smoke passed.\nthread thread-1\nsession session-1\nartifacts /tmp/panda-smoke/pass\n",
+      "Smoke passed.\nthread thread-1\nsession session-1\nartifacts /tmp/runtime-smoke/pass\n",
     );
   });
 
@@ -211,7 +211,7 @@ describe("Smoke CLI", () => {
       {from: "user"},
     );
 
-    expect(smokeCliMocks.runPandaSmoke).toHaveBeenCalledWith(expect.objectContaining({
+    expect(smokeCliMocks.runSmoke).toHaveBeenCalledWith(expect.objectContaining({
       agentKey: undefined,
       dbUrl: "postgres://smoke-db",
       inputs: ["why did you fail?"],
@@ -219,7 +219,7 @@ describe("Smoke CLI", () => {
       sessionId: "session-existing",
     }));
     expect(write).toHaveBeenCalledWith(
-      "Smoke passed.\nthread thread-1\nsession session-1\nartifacts /tmp/panda-smoke/pass\n",
+      "Smoke passed.\nthread thread-1\nsession session-1\nartifacts /tmp/runtime-smoke/pass\n",
     );
   });
 
@@ -237,7 +237,7 @@ describe("Smoke CLI", () => {
       {from: "user"},
     )).rejects.toThrow("Session-targeted smoke requires --reuse-db.");
 
-    expect(smokeCliMocks.runPandaSmoke).not.toHaveBeenCalled();
+    expect(smokeCliMocks.runSmoke).not.toHaveBeenCalled();
   });
 
   it("rejects session-targeted smoke when model override is passed", async () => {
@@ -257,7 +257,7 @@ describe("Smoke CLI", () => {
       {from: "user"},
     )).rejects.toThrow("Session-targeted smoke does not support --model.");
 
-    expect(smokeCliMocks.runPandaSmoke).not.toHaveBeenCalled();
+    expect(smokeCliMocks.runSmoke).not.toHaveBeenCalled();
   });
 
   it("rejects smoke when neither agent nor session is provided", async () => {
@@ -272,6 +272,6 @@ describe("Smoke CLI", () => {
       {from: "user"},
     )).rejects.toThrow("Pass --agent or --session.");
 
-    expect(smokeCliMocks.runPandaSmoke).not.toHaveBeenCalled();
+    expect(smokeCliMocks.runSmoke).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import {buildPrefixedRelationNames} from "../../threads/runtime/postgres-shared.js";
+import {buildRuntimeRelationNames} from "../../threads/runtime/postgres-shared.js";
 
 export interface ScheduledTaskTableNames {
   prefix: string;
@@ -6,8 +6,8 @@ export interface ScheduledTaskTableNames {
   scheduledTaskRuns: string;
 }
 
-export function buildScheduledTaskTableNames(prefix: string): ScheduledTaskTableNames {
-  return buildPrefixedRelationNames(prefix, {
+export function buildScheduledTaskTableNames(): ScheduledTaskTableNames {
+  return buildRuntimeRelationNames({
     scheduledTasks: "scheduled_tasks",
     scheduledTaskRuns: "scheduled_task_runs",
   });

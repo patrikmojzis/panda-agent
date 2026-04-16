@@ -145,7 +145,7 @@ describe("PostgresCredentialStore", () => {
       value: "agent-token",
     });
 
-    const count = await pool.query("SELECT COUNT(*)::int AS count FROM thread_runtime_credentials");
+    const count = await pool.query("SELECT COUNT(*)::int AS count FROM runtime.credentials");
     expect(count.rows[0]?.count).toBe(2);
   });
 
@@ -160,7 +160,7 @@ describe("PostgresCredentialStore", () => {
     })).rejects.toThrow("not allowed");
 
     await expect(credentialService.setCredential({
-      envKey: "PANDA_DATABASE_URL",
+      envKey: "DATABASE_URL",
       value: "nope",
       scope: "identity",
       identityId: "local",

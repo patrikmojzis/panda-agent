@@ -8,8 +8,8 @@ import {
     type IdentityRecord,
     PostgresIdentityStore,
 } from "../../domain/identity/index.js";
-import {PandaRuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
-import {PandaDaemonStateRepo} from "./state/repo.js";
+import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
+import {DaemonStateRepo} from "./state/repo.js";
 import {
     buildThreadRuntimeNotificationChannel,
     parseThreadRuntimeNotification,
@@ -19,8 +19,8 @@ import {
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {InferenceProjection, ThreadRecord, ThreadUpdate,} from "../../domain/threads/runtime/types.js";
 import {PostgresSessionStore, type SessionRecord} from "../../domain/sessions/index.js";
-import {DEFAULT_PANDA_DAEMON_KEY, PANDA_DAEMON_REQUEST_TIMEOUT_MS, PANDA_DAEMON_STALE_AFTER_MS,} from "./daemon.js";
-import {createPandaPool, requirePandaDatabaseUrl} from "./create-runtime.js";
+import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY,} from "./daemon.js";
+import {createPostgresPool, requireDatabaseUrl} from "./create-runtime.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
 
 function trimNonEmptyString(value: string | null | undefined): string | null {
@@ -36,14 +36,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export interface PandaClientOptions {
+export interface RuntimeClientOptions {
   identity?: string;
   dbUrl?: string;
-  tablePrefix?: string;
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
 }
 
-export interface PandaClientSessionOptions {
+export interface RuntimeClientSessionOptions {
   sessionId?: string;
   agentKey?: string;
   model?: string;
@@ -51,18 +50,18 @@ export interface PandaClientSessionOptions {
   inferenceProjection?: InferenceProjection;
 }
 
-export interface PandaClientCompactResult {
+export interface RuntimeClientCompactResult {
   compacted: boolean;
   tokensBefore?: number;
   tokensAfter?: number;
 }
 
-export interface PandaClient {
+export interface RuntimeClient {
   identity: IdentityRecord;
   store: ThreadRuntimeStore;
-  createBranchSession(options?: PandaClientSessionOptions): Promise<ThreadRecord>;
-  openMainSession(options?: PandaClientSessionOptions): Promise<ThreadRecord>;
-  resetSession(options?: PandaClientSessionOptions): Promise<ThreadRecord>;
+  createBranchSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
+  openMainSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
+  resetSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
   openSession(sessionId: string): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
   listAgentSessions(agentKey: string): Promise<readonly SessionRecord[]>;
@@ -75,12 +74,12 @@ export interface PandaClient {
   abortThread(threadId: string, reason?: string): Promise<boolean>;
   waitForCurrentRun(threadId: string, timeoutMs?: number): Promise<void>;
   updateThread(threadId: string, update: ThreadUpdate): Promise<ThreadRecord>;
-  compactThread(threadId: string, customInstructions: string): Promise<PandaClientCompactResult>;
+  compactThread(threadId: string, customInstructions: string): Promise<RuntimeClientCompactResult>;
   close(): Promise<void>;
 }
 
 async function waitForRequestResult<T>(
-  requests: PandaRuntimeRequestRepo,
+  requests: RuntimeRequestRepo,
   requestId: string,
   timeoutMs: number,
 ): Promise<T> {
@@ -104,11 +103,10 @@ async function waitForRequestResult<T>(
 
 async function listenThreadNotifications(options: {
   pool: { connect(): Promise<PoolClient> };
-  tablePrefix?: string;
   listener: (notification: ThreadRuntimeNotification) => Promise<void> | void;
 }): Promise<() => Promise<void>> {
   const client = await options.pool.connect();
-  const channel = buildThreadRuntimeNotificationChannel(options.tablePrefix ?? "thread_runtime");
+  const channel = buildThreadRuntimeNotificationChannel();
   const handleNotification = (message: { channel: string; payload?: string }) => {
     if (message.channel !== channel || typeof message.payload !== "string") {
       return;
@@ -135,33 +133,26 @@ async function listenThreadNotifications(options: {
   };
 }
 
-export async function createPandaClient(options: PandaClientOptions): Promise<PandaClient> {
-  const pool = createPandaPool(requirePandaDatabaseUrl(options.dbUrl));
-  const tablePrefix = options.tablePrefix;
+export async function createRuntimeClient(options: RuntimeClientOptions): Promise<RuntimeClient> {
+  const pool = createPostgresPool(requireDatabaseUrl(options.dbUrl));
 
   const identityStore = new PostgresIdentityStore({
     pool,
-    tablePrefix,
   });
   const agentStore = new PostgresAgentStore({
     pool,
-    tablePrefix,
   });
   const sessionStore = new PostgresSessionStore({
     pool,
-    tablePrefix,
   });
   const store = new PostgresThreadRuntimeStore({
     pool,
-    tablePrefix,
   });
-  const requests = new PandaRuntimeRequestRepo({
+  const requests = new RuntimeRequestRepo({
     pool,
-    tablePrefix,
   });
-  const daemonState = new PandaDaemonStateRepo({
+  const daemonState = new DaemonStateRepo({
     pool,
-    tablePrefix,
   });
 
   let unsubscribe: (() => Promise<void>) | null = null;
@@ -184,15 +175,14 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
     if (options.onStoreNotification) {
       unsubscribe = await listenThreadNotifications({
         pool,
-        tablePrefix,
         listener: options.onStoreNotification,
       });
     }
 
     const assertDaemonActive = async (): Promise<void> => {
-      const state = await daemonState.readState(DEFAULT_PANDA_DAEMON_KEY);
-      if (!state || Date.now() - state.heartbeatAt > PANDA_DAEMON_STALE_AFTER_MS) {
-        throw new Error(`panda run (${DEFAULT_PANDA_DAEMON_KEY}) is offline.`);
+      const state = await daemonState.readState(DEFAULT_DAEMON_KEY);
+      if (!state || Date.now() - state.heartbeatAt > DAEMON_STALE_AFTER_MS) {
+        throw new Error(`Runtime daemon (${DEFAULT_DAEMON_KEY}) is offline.`);
       }
     };
 
@@ -203,7 +193,7 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
       }
     };
 
-    const createBranchSession = async (sessionOptions: PandaClientSessionOptions = {}): Promise<ThreadRecord> => {
+    const createBranchSession = async (sessionOptions: RuntimeClientSessionOptions = {}): Promise<ThreadRecord> => {
       await assertDaemonActive();
       const request = await requests.enqueueRequest({
         kind: "create_branch_session",
@@ -216,11 +206,11 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
         },
       });
-      const result = await waitForRequestResult<{threadId: string}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
+      const result = await waitForRequestResult<{threadId: string}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
     };
 
-    const openMainSession = async (sessionOptions: PandaClientSessionOptions = {}): Promise<ThreadRecord> => {
+    const openMainSession = async (sessionOptions: RuntimeClientSessionOptions = {}): Promise<ThreadRecord> => {
       await assertDaemonActive();
       const request = await requests.enqueueRequest({
         kind: "resolve_main_session_thread",
@@ -232,12 +222,12 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
         },
       });
-      const result = await waitForRequestResult<{threadId: string}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
+      const result = await waitForRequestResult<{threadId: string}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
     };
 
     const resetSession = async (
-      sessionOptions: PandaClientSessionOptions = {},
+      sessionOptions: RuntimeClientSessionOptions = {},
     ): Promise<ThreadRecord> => {
       await assertDaemonActive();
       const request = await requests.enqueueRequest({
@@ -252,7 +242,7 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
         },
       });
-      const result = await waitForRequestResult<{threadId: string}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
+      const result = await waitForRequestResult<{threadId: string}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
     };
 
@@ -285,7 +275,7 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
           text: input.text,
         },
       });
-      return waitForRequestResult<{threadId: string}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
+      return waitForRequestResult<{threadId: string}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
     };
 
     const abortThread = async (threadId: string, reason?: string): Promise<boolean> => {
@@ -298,11 +288,11 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
           reason,
         },
       });
-      const result = await waitForRequestResult<{aborted?: boolean}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
+      const result = await waitForRequestResult<{aborted?: boolean}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
       return result.aborted === true;
     };
 
-    const waitForCurrentRun = async (threadId: string, timeoutMs = PANDA_DAEMON_REQUEST_TIMEOUT_MS): Promise<void> => {
+    const waitForCurrentRun = async (threadId: string, timeoutMs = DAEMON_REQUEST_TIMEOUT_MS): Promise<void> => {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() <= deadline) {
         const runs = await store.listRuns(threadId);
@@ -326,11 +316,11 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
           update,
         },
       });
-      const result = await waitForRequestResult<{threadId: string}>(requests, request.id, PANDA_DAEMON_REQUEST_TIMEOUT_MS);
+      const result = await waitForRequestResult<{threadId: string}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
     };
 
-    const compactThread = async (threadId: string, customInstructions: string): Promise<PandaClientCompactResult> => {
+    const compactThread = async (threadId: string, customInstructions: string): Promise<RuntimeClientCompactResult> => {
       await assertDaemonActive();
       const request = await requests.enqueueRequest({
         kind: "compact_thread",
@@ -340,7 +330,7 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
           customInstructions,
         },
       });
-      return waitForRequestResult<PandaClientCompactResult>(requests, request.id, 15 * 60_000);
+      return waitForRequestResult<RuntimeClientCompactResult>(requests, request.id, 15 * 60_000);
     };
 
     return {

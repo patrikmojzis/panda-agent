@@ -1,19 +1,19 @@
 import {describe, expect, it} from "vitest";
 
 import {
-  Agent,
-  assertProviderName,
-  ConfigurationError,
-  parseProviderName,
-  resolveModelSelector,
-  Thread,
+    Agent,
+    assertProviderName,
+    ConfigurationError,
+    parseProviderName,
+    resolveModelSelector,
+    Thread,
 } from "../src/index.js";
-import {resolvePandaModel} from "../src/integrations/providers/shared/model.js";
+import {resolveProviderModel} from "../src/integrations/providers/shared/model.js";
 import {
-  resolveDefaultPandaBrowserSubagentModelSelector,
-  resolveDefaultPandaMemorySubagentModelSelector,
-  resolveDefaultPandaModelSelector,
-  resolveDefaultPandaWorkspaceSubagentModelSelector,
+    resolveDefaultAgentBrowserSubagentModelSelector,
+    resolveDefaultAgentMemorySubagentModelSelector,
+    resolveDefaultAgentModelSelector,
+    resolveDefaultAgentWorkspaceSubagentModelSelector,
 } from "../src/panda/defaults.js";
 
 describe("model selector", () => {
@@ -67,55 +67,55 @@ describe("model selector", () => {
     })).toThrowError(ConfigurationError);
   });
 
-  it("resolves the default selector from PANDA_MODEL and auth heuristics", () => {
-    expect(resolveDefaultPandaModelSelector({
-      PANDA_MODEL: "gpt",
+  it("resolves the default selector from DEFAULT_MODEL and auth heuristics", () => {
+    expect(resolveDefaultAgentModelSelector({
+      DEFAULT_MODEL: "gpt",
     })).toBe("openai-codex/gpt-5.4");
 
-    expect(resolveDefaultPandaModelSelector({
+    expect(resolveDefaultAgentModelSelector({
       ANTHROPIC_AUTH_TOKEN: "anthropic-oauth-token",
       ANTHROPIC_MODEL: "claude-sonnet-4-7",
     })).toBe("anthropic-oauth/claude-sonnet-4-7");
 
-    expect(resolveDefaultPandaModelSelector({
+    expect(resolveDefaultAgentModelSelector({
       OPENAI_OAUTH_TOKEN: "codex-oauth-token",
       OPENAI_CODEX_MODEL: "gpt-5.5",
     })).toBe("openai-codex/gpt-5.5");
 
-    expect(resolveDefaultPandaModelSelector({
+    expect(resolveDefaultAgentModelSelector({
       ANTHROPIC_API_KEY: "anthropic-api-key",
       ANTHROPIC_MODEL: "claude-haiku-4-5",
       CODEX_HOME: "/tmp/panda-empty-codex-home",
     })).toBe("anthropic/claude-haiku-4-5");
   });
 
-  it("resolves the workspace subagent selector from PANDA_WORKSPACE_SUBAGENT_MODEL", () => {
-    expect(resolveDefaultPandaWorkspaceSubagentModelSelector({
-      PANDA_WORKSPACE_SUBAGENT_MODEL: "opus",
+  it("resolves the workspace subagent selector from WORKSPACE_SUBAGENT_MODEL", () => {
+    expect(resolveDefaultAgentWorkspaceSubagentModelSelector({
+      WORKSPACE_SUBAGENT_MODEL: "opus",
     })).toBe("anthropic-oauth/claude-opus-4-6");
 
-    expect(resolveDefaultPandaWorkspaceSubagentModelSelector({})).toBeUndefined();
+    expect(resolveDefaultAgentWorkspaceSubagentModelSelector({})).toBeUndefined();
   });
 
-  it("resolves the memory subagent selector from PANDA_MEMORY_SUBAGENT_MODEL", () => {
-    expect(resolveDefaultPandaMemorySubagentModelSelector({
-      PANDA_MEMORY_SUBAGENT_MODEL: "gpt",
+  it("resolves the memory subagent selector from MEMORY_SUBAGENT_MODEL", () => {
+    expect(resolveDefaultAgentMemorySubagentModelSelector({
+      MEMORY_SUBAGENT_MODEL: "gpt",
     })).toBe("openai-codex/gpt-5.4");
 
-    expect(resolveDefaultPandaMemorySubagentModelSelector({})).toBeUndefined();
+    expect(resolveDefaultAgentMemorySubagentModelSelector({})).toBeUndefined();
   });
 
-  it("resolves the browser subagent selector from PANDA_BROWSER_SUBAGENT_MODEL", () => {
-    expect(resolveDefaultPandaBrowserSubagentModelSelector({
-      PANDA_BROWSER_SUBAGENT_MODEL: "opus",
+  it("resolves the browser subagent selector from BROWSER_SUBAGENT_MODEL", () => {
+    expect(resolveDefaultAgentBrowserSubagentModelSelector({
+      BROWSER_SUBAGENT_MODEL: "opus",
     })).toBe("anthropic-oauth/claude-opus-4-6");
 
-    expect(resolveDefaultPandaBrowserSubagentModelSelector({})).toBeUndefined();
+    expect(resolveDefaultAgentBrowserSubagentModelSelector({})).toBeUndefined();
   });
 
   it("throws a configuration error for unknown model ids", () => {
-    expect(() => resolvePandaModel("openai", "gpt-not-real")).toThrowError(ConfigurationError);
-    expect(() => resolvePandaModel("openai", "gpt-not-real")).toThrowError(
+    expect(() => resolveProviderModel("openai", "gpt-not-real")).toThrowError(ConfigurationError);
+    expect(() => resolveProviderModel("openai", "gpt-not-real")).toThrowError(
       'Unknown model "gpt-not-real" for provider "openai".',
     );
   });

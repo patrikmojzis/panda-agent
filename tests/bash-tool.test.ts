@@ -10,8 +10,8 @@ import {
     BashJobStatusTool,
     BashJobWaitTool,
     BashTool,
+    type DefaultAgentSessionContext,
     type JsonObject,
-    type PandaSessionContext,
     RunContext,
     ToolError,
     type ToolResultMessage,
@@ -27,9 +27,9 @@ function createAgent() {
 }
 
 function createRunContext(
-  context: PandaSessionContext,
+  context: DefaultAgentSessionContext,
   options: { signal?: AbortSignal } = {},
-): RunContext<PandaSessionContext> {
+): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: createAgent(),
     turn: 1,
@@ -71,7 +71,7 @@ async function createBackgroundHarness(workspace: string) {
   const cancel = new BashJobCancelTool({
     service,
   });
-  const context: PandaSessionContext = {
+  const context: DefaultAgentSessionContext = {
     sessionId,
     agentKey: "panda",
     threadId: "thread-bg",
@@ -157,12 +157,12 @@ describe("BashTool", () => {
   });
 
   it("persists cwd changes across calls in the same shell session", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-cwd-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-cwd-"));
     try {
       await mkdir(path.join(workspace, "nested"));
       const expectedNested = await realpath(path.join(workspace, "nested"));
 
-      const context: PandaSessionContext = {
+      const context: DefaultAgentSessionContext = {
         cwd: workspace,
         shell: {
           cwd: workspace,
@@ -196,9 +196,9 @@ describe("BashTool", () => {
   });
 
   it("persists simple exported env vars across calls and supports unset", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-env-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-env-"));
     try {
-      const context: PandaSessionContext = {
+      const context: DefaultAgentSessionContext = {
         cwd: workspace,
         shell: {
           cwd: workspace,
@@ -210,16 +210,16 @@ describe("BashTool", () => {
       });
 
       const exportResult = await tool.run(
-        { command: 'export PANDA_TEST_VAR="hello world"' },
+        { command: 'export RUNTIME_TEST_VAR="hello world"' },
         createRunContext(context),
       );
       const exportOutput = asObject(exportResult);
 
       expect(exportOutput.noOutput).toBe(true);
-      expect(context.shell?.env.PANDA_TEST_VAR).toBe("hello world");
+      expect(context.shell?.env.RUNTIME_TEST_VAR).toBe("hello world");
 
       const readResult = await tool.run(
-        { command: 'printf %s "$PANDA_TEST_VAR"' },
+        { command: 'printf %s "$RUNTIME_TEST_VAR"' },
         createRunContext(context),
       );
       const readOutput = asObject(readResult);
@@ -227,21 +227,21 @@ describe("BashTool", () => {
       expect(String(readOutput.stdout)).toBe("hello world");
 
       const unsetResult = await tool.run(
-        { command: "unset PANDA_TEST_VAR" },
+        { command: "unset RUNTIME_TEST_VAR" },
         createRunContext(context),
       );
 
       expect(asObject(unsetResult).noOutput).toBe(true);
-      expect(context.shell?.env.PANDA_TEST_VAR).toBeUndefined();
+      expect(context.shell?.env.RUNTIME_TEST_VAR).toBeUndefined();
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
   });
 
   it("injects resolved credentials before session env and per-call env", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-credentials-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-credentials-"));
     try {
-      const context: PandaSessionContext = {
+      const context: DefaultAgentSessionContext = {
         agentKey: "panda",
         cwd: workspace,
         currentInput: {
@@ -294,9 +294,9 @@ describe("BashTool", () => {
   });
 
   it("redacts credential and per-call env values from bash output", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-redaction-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-redaction-"));
     try {
-      const context: PandaSessionContext = {
+      const context: DefaultAgentSessionContext = {
         agentKey: "panda",
         cwd: workspace,
         currentInput: {
@@ -335,9 +335,9 @@ describe("BashTool", () => {
   });
 
   it("redacts secret values persisted into the shell session across later calls", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-session-secret-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-session-secret-"));
     try {
-      const context: PandaSessionContext = {
+      const context: DefaultAgentSessionContext = {
         agentKey: "panda",
         cwd: workspace,
         currentInput: {
@@ -381,9 +381,9 @@ describe("BashTool", () => {
   });
 
   it("persists large stdout to disk while returning a truncated preview", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-output-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-output-"));
     try {
-      const context: PandaSessionContext = {
+      const context: DefaultAgentSessionContext = {
         cwd: workspace,
         shell: {
           cwd: workspace,
@@ -412,9 +412,9 @@ describe("BashTool", () => {
   });
 
   it("does not persist large output files for secret-bearing bash calls", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-secret-output-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-secret-output-"));
     try {
-      const context: PandaSessionContext = {
+      const context: DefaultAgentSessionContext = {
         agentKey: "panda",
         cwd: workspace,
         currentInput: {
@@ -452,7 +452,7 @@ describe("BashTool", () => {
   });
 
   it("starts a background bash job and returns a running handle immediately", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-bg-start-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-start-"));
     try {
       const {bash, wait, context, store} = await createBackgroundHarness(workspace);
 
@@ -486,7 +486,7 @@ describe("BashTool", () => {
   });
 
   it("does not leave a durable job behind when local background spawn fails", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-bg-start-fail-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-start-fail-"));
     try {
       const store = new TestThreadRuntimeStore();
       await store.createThread({
@@ -505,7 +505,7 @@ describe("BashTool", () => {
         outputDirectory: path.join(workspace, "tool-results"),
         jobService: service,
       });
-      const context: PandaSessionContext = {
+      const context: DefaultAgentSessionContext = {
         sessionId: "session-bg",
         agentKey: "panda",
         threadId: "thread-bg",
@@ -528,7 +528,7 @@ describe("BashTool", () => {
   });
 
   it("keeps background cwd and env isolated from the shared shell session", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-bg-isolated-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-isolated-"));
     try {
       await mkdir(path.join(workspace, "nested"));
       const expectedNested = await realpath(path.join(workspace, "nested"));
@@ -567,7 +567,7 @@ describe("BashTool", () => {
   });
 
   it("runs multiple background jobs concurrently while foreground bash keeps mutating the shared session", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-bg-concurrent-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-concurrent-"));
     try {
       await mkdir(path.join(workspace, "nested"));
       const expectedNested = await realpath(path.join(workspace, "nested"));
@@ -619,7 +619,7 @@ describe("BashTool", () => {
   });
 
   it("cancels background jobs explicitly", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-bg-cancel-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-cancel-"));
     try {
       const {bash, cancel, status, context} = await createBackgroundHarness(workspace);
 
@@ -648,7 +648,7 @@ describe("BashTool", () => {
   });
 
   it("persists large non-secret background output and avoids persisted files for secret-bearing jobs", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-bg-output-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-output-"));
     try {
       const store = new TestThreadRuntimeStore();
       await store.createThread({
@@ -667,7 +667,7 @@ describe("BashTool", () => {
         jobService: service,
       });
       const wait = new BashJobWaitTool({ service });
-      const context: PandaSessionContext = {
+      const context: DefaultAgentSessionContext = {
         sessionId: "session-bg",
         agentKey: "panda",
         threadId: "thread-bg",
@@ -717,9 +717,9 @@ describe("BashTool", () => {
   });
 
   it("marks timed out commands as interrupted errors", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-timeout-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-timeout-"));
     try {
-      const context: PandaSessionContext = {
+      const context: DefaultAgentSessionContext = {
         cwd: workspace,
         shell: {
           cwd: workspace,
@@ -753,9 +753,9 @@ describe("BashTool", () => {
   });
 
   it("aborts spawned commands when the run signal is cancelled", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-abort-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-abort-"));
     try {
-      const context: PandaSessionContext = {
+      const context: DefaultAgentSessionContext = {
         cwd: workspace,
         shell: {
           cwd: workspace,

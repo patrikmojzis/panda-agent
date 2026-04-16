@@ -6,7 +6,7 @@ import {parseAgentKey} from "../../domain/agents/cli.js";
 import {parseIdentityHandle} from "../../domain/identity/cli.js";
 import {requireSmokeDatabaseUrl} from "./config.js";
 import {startSmokeFollowUpRepl} from "./follow-up.js";
-import {runPandaSmoke} from "./harness.js";
+import {runSmoke} from "./harness.js";
 
 interface SmokeCliOptions {
   agent?: string;
@@ -48,7 +48,7 @@ function parseSessionId(value: string): string {
   return trimmed;
 }
 
-function renderSmokeText(result: Awaited<ReturnType<typeof runPandaSmoke>>): string {
+function renderSmokeText(result: Awaited<ReturnType<typeof runSmoke>>): string {
   if (result.success) {
     return [
       "Smoke passed.",
@@ -78,7 +78,7 @@ export async function runSmokeCliCommand(options: SmokeCliOptions): Promise<void
   }
 
   const dbUrl = requireSmokeDatabaseUrl(options.dbUrl);
-  const result = await runPandaSmoke({
+  const result = await runSmoke({
     agentKey: options.agent,
     allowUnsafeDbReset: options.allowUnsafeDbReset,
     artifactsDir: options.artifactsDir,

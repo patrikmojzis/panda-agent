@@ -43,7 +43,7 @@ const identityCliMocks = vi.hoisted(() => {
       }
     }),
     randomUUID: vi.fn(() => "identity-created"),
-    withPandaPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
+    withPostgresPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
       try {
         return await fn(pool);
       } finally {
@@ -63,7 +63,7 @@ vi.mock("../src/domain/identity/postgres.js", () => ({
 
 vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
   ensureSchemas: identityCliMocks.ensureSchemas,
-  withPandaPool: identityCliMocks.withPandaPool,
+  withPostgresPool: identityCliMocks.withPostgresPool,
 }));
 
 function createProgram(): Command {
@@ -87,7 +87,7 @@ describe("Identity CLI", () => {
     identityCliMocks.pool.end.mockClear();
     identityCliMocks.ensureSchemas.mockClear();
     identityCliMocks.randomUUID.mockClear();
-    identityCliMocks.withPandaPool.mockClear();
+    identityCliMocks.withPostgresPool.mockClear();
     vi.restoreAllMocks();
   });
 
@@ -101,7 +101,7 @@ describe("Identity CLI", () => {
 
     expect(latestIdentityStore().ensureSchema).toHaveBeenCalledOnce();
     expect(latestIdentityStore().listIdentities).toHaveBeenCalledOnce();
-    expect(identityCliMocks.withPandaPool).toHaveBeenCalledWith(
+    expect(identityCliMocks.withPostgresPool).toHaveBeenCalledWith(
       "postgres://identity-db",
       expect.any(Function),
     );

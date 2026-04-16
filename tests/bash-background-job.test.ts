@@ -29,7 +29,7 @@ describe("ManagedBashJob", () => {
 
   it("keeps status snapshots running until terminal metadata is ready", async () => {
     const {ManagedBashJob} = await import("../src/integrations/shell/bash-background-job.js");
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-bash-job-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-job-"));
     directories.push(workspace);
 
     const job = await ManagedBashJob.start({

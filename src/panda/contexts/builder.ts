@@ -5,9 +5,9 @@ import {AgentProfileContext, type AgentProfileContextSection} from "./agent-prof
 import {BackgroundJobsContext} from "./background-jobs-context.js";
 import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 
-export type PandaLlmContextSection =
+export type DefaultAgentLlmContextSection =
   | "datetime"
   | "environment"
   | "background_jobs"
@@ -18,7 +18,7 @@ const PROFILE_SECTIONS = new Set<AgentProfileContextSection>([
   "skills",
 ]);
 
-export const DEFAULT_PANDA_LLM_CONTEXT_SECTIONS: readonly PandaLlmContextSection[] = [
+export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "datetime",
   "environment",
   "background_jobs",
@@ -26,13 +26,13 @@ export const DEFAULT_PANDA_LLM_CONTEXT_SECTIONS: readonly PandaLlmContextSection
   "skills",
 ];
 
-export interface BuildPandaLlmContextsOptions {
-  context?: PandaSessionContext;
+export interface BuildDefaultAgentLlmContextsOptions {
+  context?: DefaultAgentSessionContext;
   agentStore?: AgentStore;
   threadStore?: Pick<ThreadRuntimeStore, "listBashJobs">;
   agentKey?: string;
   threadId?: string;
-  sections?: readonly PandaLlmContextSection[];
+  sections?: readonly DefaultAgentLlmContextSection[];
   extraLlmContexts?: readonly LlmContext[];
 }
 
@@ -44,12 +44,12 @@ export {
 export {DateTimeContext, type DateTimeContextOptions} from "./datetime-context.js";
 export {EnvironmentContext, type EnvironmentContextOptions} from "./environment-context.js";
 
-export function buildPandaLlmContexts(
-  options: BuildPandaLlmContextsOptions,
+export function buildDefaultAgentLlmContexts(
+  options: BuildDefaultAgentLlmContextsOptions,
 ): LlmContext[] {
   const sections = options.sections?.length
     ? [...options.sections]
-    : [...DEFAULT_PANDA_LLM_CONTEXT_SECTIONS];
+    : [...DEFAULT_AGENT_LLM_CONTEXT_SECTIONS];
   const uniqueSections = new Set(sections);
   const llmContexts: LlmContext[] = [];
 

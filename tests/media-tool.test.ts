@@ -4,7 +4,7 @@ import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {Agent, MediaTool, type PandaSessionContext, RunContext, type ToolResultPayload,} from "../src/index.js";
+import {Agent, type DefaultAgentSessionContext, MediaTool, RunContext, type ToolResultPayload,} from "../src/index.js";
 
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6p6WQAAAAASUVORK5CYII=";
@@ -54,7 +54,7 @@ function createAgent() {
   });
 }
 
-function createRunContext(context: PandaSessionContext): RunContext<PandaSessionContext> {
+function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: createAgent(),
     turn: 1,
@@ -71,7 +71,7 @@ describe("MediaTool", () => {
   });
 
   it("returns an attached image for image files", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-media-image-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-media-image-"));
     try {
       const imagePath = path.join(workspace, "image.png");
       await writeFile(imagePath, Buffer.from(ONE_PIXEL_PNG_BASE64, "base64"));
@@ -147,10 +147,10 @@ describe("MediaTool", () => {
   });
 
   it("returns a preview image for pdf files", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-media-pdf-"));
-    const dataDir = await mkdtemp(path.join(tmpdir(), "panda-media-store-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-media-pdf-"));
+    const dataDir = await mkdtemp(path.join(tmpdir(), "runtime-media-store-"));
     try {
-      vi.stubEnv("PANDA_DATA_DIR", dataDir);
+      vi.stubEnv("DATA_DIR", dataDir);
       const pdfPath = path.join(workspace, "document.pdf");
       await writeFile(pdfPath, SIMPLE_PDF, "utf8");
 
@@ -192,10 +192,10 @@ describe("MediaTool", () => {
   });
 
   it("reuses the same durable preview path for repeated pdf views", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "panda-media-pdf-cache-"));
-    const dataDir = await mkdtemp(path.join(tmpdir(), "panda-media-store-"));
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-media-pdf-cache-"));
+    const dataDir = await mkdtemp(path.join(tmpdir(), "runtime-media-store-"));
     try {
-      vi.stubEnv("PANDA_DATA_DIR", dataDir);
+      vi.stubEnv("DATA_DIR", dataDir);
       const pdfPath = path.join(workspace, "document.pdf");
       await writeFile(pdfPath, SIMPLE_PDF, "utf8");
 
@@ -219,11 +219,11 @@ describe("MediaTool", () => {
   });
 
   it("reads runner agent-home paths when remote bash is enabled", async () => {
-    const dataDir = await mkdtemp(path.join(tmpdir(), "panda-media-remote-"));
+    const dataDir = await mkdtemp(path.join(tmpdir(), "runtime-media-remote-"));
     try {
-      vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
-      vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
-      vi.stubEnv("PANDA_DATA_DIR", dataDir);
+      vi.stubEnv("BASH_EXECUTION_MODE", "remote");
+      vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+      vi.stubEnv("DATA_DIR", dataDir);
 
       const localImagePath = path.join(dataDir, "agents", "jozef", "media", "telegram", "photo.png");
       await mkdir(path.dirname(localImagePath), {recursive: true});

@@ -2,33 +2,33 @@ import {createHash} from "node:crypto";
 
 import type {Pool} from "pg";
 import {
-  addTransactionCapability,
-  type AuthenticationState,
-  type BaileysEventMap,
-  Browsers,
-  type ConnectionState,
-  DisconnectReason,
-  isJidBroadcast,
-  isJidGroup,
-  isJidNewsletter,
-  isJidStatusBroadcast,
-  jidNormalizedUser,
-  makeCacheableSignalKeyStore,
-  makeWASocket,
-  type WAMessage,
-  type WASocket,
+    addTransactionCapability,
+    type AuthenticationState,
+    type BaileysEventMap,
+    Browsers,
+    type ConnectionState,
+    DisconnectReason,
+    isJidBroadcast,
+    isJidGroup,
+    isJidNewsletter,
+    isJidStatusBroadcast,
+    jidNormalizedUser,
+    makeCacheableSignalKeyStore,
+    makeWASocket,
+    type WAMessage,
+    type WASocket,
 } from "baileys";
 import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
 import {ChannelActionWorker} from "../../../domain/channels/actions/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
-import {createPandaPool, requirePandaDatabaseUrl} from "../../../app/runtime/create-runtime.js";
+import {createPostgresPool, requireDatabaseUrl} from "../../../app/runtime/create-runtime.js";
 import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
-import {PandaRuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
+import {RuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {
-  ChannelOutboundDeliveryWorker,
-  PostgresOutboundDeliveryStore
+    ChannelOutboundDeliveryWorker,
+    PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/index.js";
 import {WHATSAPP_SOURCE} from "./config.js";
 import {PostgresWhatsAppAuthStore} from "./auth-store.js";
@@ -40,7 +40,6 @@ export interface WhatsAppServiceOptions {
   connectorKey: string;
   dataDir: string;
   dbUrl?: string;
-  tablePrefix?: string;
 }
 
 interface WhatsAppLoggerLike {
@@ -80,7 +79,7 @@ interface WhatsAppWorkerStores {
   authStore: PostgresWhatsAppAuthStore;
   outboundDeliveries: PostgresOutboundDeliveryStore;
   channelActions: PostgresChannelActionStore;
-  requests: PandaRuntimeRequestRepo;
+  requests: RuntimeRequestRepo;
   mediaStore: FileSystemMediaStore;
 }
 
@@ -234,10 +233,9 @@ export class WhatsAppService {
       return this.authStore;
     }
 
-    const pool = createPandaPool(requirePandaDatabaseUrl(this.options.dbUrl));
+    const pool = createPostgresPool(requireDatabaseUrl(this.options.dbUrl));
     const authStore = new PostgresWhatsAppAuthStore({
       pool,
-      tablePrefix: this.options.tablePrefix,
     });
     await ensureSchemas([authStore]);
 
@@ -260,15 +258,12 @@ export class WhatsAppService {
 
         const outboundDeliveries = new PostgresOutboundDeliveryStore({
           pool: this.pool,
-          tablePrefix: this.options.tablePrefix,
         });
         const channelActions = new PostgresChannelActionStore({
           pool: this.pool,
-          tablePrefix: this.options.tablePrefix,
         });
-        const requests = new PandaRuntimeRequestRepo({
+        const requests = new RuntimeRequestRepo({
           pool: this.pool,
-          tablePrefix: this.options.tablePrefix,
         });
         await ensureSchemas([
           outboundDeliveries,

@@ -1,4 +1,4 @@
-import {buildPrefixedRelationNames} from "../threads/runtime/postgres-shared.js";
+import {buildRuntimeRelationNames} from "../threads/runtime/postgres-shared.js";
 
 export interface WatchTableNames {
   prefix: string;
@@ -7,8 +7,8 @@ export interface WatchTableNames {
   watchEvents: string;
 }
 
-export function buildWatchTableNames(prefix: string): WatchTableNames {
-  return buildPrefixedRelationNames(prefix, {
+export function buildWatchTableNames(): WatchTableNames {
+  return buildRuntimeRelationNames({
     watches: "watches",
     watchRuns: "watch_runs",
     watchEvents: "watch_events",

@@ -7,8 +7,8 @@ import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
-import {resolvePandaPath} from "../../app/runtime/panda-path-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
 
 const OPENAI_TRANSCRIPTION_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions";
 const DEFAULT_MODEL = "whisper-1";
@@ -112,7 +112,7 @@ export function hasOpenAiApiKey(env: NodeJS.ProcessEnv = process.env): boolean {
   return trimNonEmptyString(env.OPENAI_API_KEY) !== null;
 }
 
-export class WhisperTool<TContext = PandaSessionContext> extends Tool<typeof WhisperTool.schema, TContext> {
+export class WhisperTool<TContext = DefaultAgentSessionContext> extends Tool<typeof WhisperTool.schema, TContext> {
   static schema = z.object({
     path: z.string().trim().min(1).describe(
       "Absolute path or path relative to the current working directory. In remote bash mode, agent-home runner paths are translated automatically.",
@@ -151,7 +151,7 @@ export class WhisperTool<TContext = PandaSessionContext> extends Tool<typeof Whi
       throw new ToolError("OPENAI_API_KEY is not configured.");
     }
 
-    const resolvedPath = resolvePandaPath(args.path, run.context);
+    const resolvedPath = resolveContextPath(args.path, run.context);
     const sizeBytes = await ensureReadableFile(resolvedPath);
     const fileName = path.basename(resolvedPath);
     const mimeType = inferMimeType(resolvedPath);

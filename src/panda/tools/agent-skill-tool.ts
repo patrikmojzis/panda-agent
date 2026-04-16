@@ -3,7 +3,7 @@ import {z} from "zod";
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
-import type {PandaSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import type {AgentStore} from "../../domain/agents/store.js";
 import {
     MAX_AGENT_SKILL_CONTENT_CHARS,
@@ -20,7 +20,7 @@ function readAgentSkillScope(context: unknown): { agentKey: string } {
     || typeof (context as {agentKey?: unknown}).agentKey !== "string"
     || !(context as {agentKey: string}).agentKey.trim()
   ) {
-    throw new ToolError("The agent skill tool requires agentKey in the Panda session context.");
+    throw new ToolError("The agent skill tool requires agentKey in the runtime session context.");
   }
 
   return {
@@ -36,13 +36,13 @@ function issueMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export class AgentSkillTool<TContext = PandaSessionContext>
+export class AgentSkillTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof AgentSkillTool.schema, TContext> {
   static schema = z.object({
     operation: z.enum(["set", "delete"]).describe("Create or replace a skill, or delete it by key."),
     skillKey: z.string().trim().min(1).describe("Stable slug-style skill key, for example calendar or trip_planner."),
     description: z.string().optional().describe(
-      `Required for set. Short summary injected into the normal Panda workspace. Max ${MAX_AGENT_SKILL_DESCRIPTION_CHARS} characters.`,
+      `Required for set. Short summary injected into the standard agent context. Max ${MAX_AGENT_SKILL_DESCRIPTION_CHARS} characters.`,
     ),
     content: z.string().optional().describe(
       `Required for set. Full markdown skill body stored in Postgres. Max ${MAX_AGENT_SKILL_CONTENT_CHARS} characters.`,
@@ -80,7 +80,7 @@ export class AgentSkillTool<TContext = PandaSessionContext>
 
   name = "agent_skill";
   description =
-    "Create, replace, or delete agent-scoped skills stored in Postgres. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal Panda runs only inject each skill's key and description.";
+    "Create, replace, or delete agent-scoped skills stored in Postgres. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal agent runs only inject each skill's key and description.";
   schema = AgentSkillTool.schema;
 
   private readonly store: AgentStore;

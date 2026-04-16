@@ -53,17 +53,17 @@ const tuiRuntimeSessionMocks = vi.hoisted(() => {
 
   return {
     client,
-    createPandaClient: vi.fn(async () => client),
+    createRuntimeClient: vi.fn(async () => client),
   };
 });
 
 vi.mock("../src/app/runtime/client.js", () => ({
-  createPandaClient: tuiRuntimeSessionMocks.createPandaClient,
+  createRuntimeClient: tuiRuntimeSessionMocks.createRuntimeClient,
 }));
 
 describe("createChatRuntime session wiring", () => {
   afterEach(() => {
-    tuiRuntimeSessionMocks.createPandaClient.mockClear();
+    tuiRuntimeSessionMocks.createRuntimeClient.mockClear();
     tuiRuntimeSessionMocks.client.createBranchSession.mockClear();
     tuiRuntimeSessionMocks.client.openMainSession.mockClear();
     tuiRuntimeSessionMocks.client.resetSession.mockClear();
@@ -125,9 +125,9 @@ describe("createChatRuntime session wiring", () => {
   });
 
   it("shows the remote runner cwd for stored agent-home paths", () => {
-    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
-    vi.stubEnv("PANDA_DATA_DIR", "/Users/tester/.panda");
+    vi.stubEnv("BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("DATA_DIR", "/Users/tester/.panda");
 
     expect(resolveChatDisplayedCwd({
       id: "thread-1",

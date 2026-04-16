@@ -25,7 +25,7 @@ import {
 } from "./chat-shared.js";
 import {stripAnsi, theme} from "./theme.js";
 
-interface BuildPandaChatViewInput {
+interface BuildChatViewInput {
   terminalWidth: number;
   terminalRows: number;
   transcript: readonly TranscriptEntry[];
@@ -307,7 +307,7 @@ function buildComposerLayout(input: {
   };
 }
 
-export function buildPandaChatView(input: BuildPandaChatViewInput): ViewModel {
+export function buildChatView(input: BuildChatViewInput): ViewModel {
   const width = Math.max(72, Math.min(input.terminalWidth || 100, 140));
   const transcriptLines = buildTranscriptLines({
     width,
