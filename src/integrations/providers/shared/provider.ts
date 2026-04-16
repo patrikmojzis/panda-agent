@@ -20,7 +20,7 @@ const PROVIDER_CONFIGS = {
     runtimeProvider: "openai",
     authKind: "openai-api-key",
     defaultModelEnvVar: "OPENAI_MODEL",
-    defaultModel: "gpt-5.1",
+    defaultModel: "gpt-5.4",
     missingApiKeyMessage: "Missing OPENAI_API_KEY.",
   },
   "openai-codex": {
