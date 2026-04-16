@@ -152,45 +152,30 @@ This is the cleaner deployment shape:
 - external Postgres
 - provider tokens only on `panda-core`
 
-Example:
+The primary UX is now the stack wrapper, not hand-editing Compose:
 
-```yaml
-services:
-  panda-core:
-    image: panda:latest
-    command: ["run"]
-    env_file:
-      - ../.env
-    environment:
-      DATABASE_URL: postgres://panda_app:app_pw@db.example.com:5432/panda
-      BASH_EXECUTION_MODE: remote
-      RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
-      RUNNER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
-    volumes:
-      - ${HOME}/.panda:/root/.panda
-      - ${SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
-    depends_on:
-      - panda-runner-panda
-    networks:
-      - runner_net
+```bash
+# in .env
+PANDA_AGENTS=claw,luna
 
-  panda-runner-panda:
-    image: panda:latest
-    command: ["runner"]
-    environment:
-      RUNNER_AGENT_KEY: panda
-      RUNNER_PORT: 8080
-    volumes:
-      - ${HOME}/.panda/agents/panda:/root/.panda/agents/panda
-      - ${SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
-    networks:
-      - runner_net
-
-networks:
-  runner_net:
+./scripts/docker-stack.sh up --build
 ```
 
-There is also a ready-made example in [examples/docker-compose.remote-bash.external-db.yml](../../examples/docker-compose.remote-bash.external-db.yml).
+Normal deployment flow:
+
+1. Put your real `DATABASE_URL` and `BROWSER_RUNNER_SHARED_SECRET` in `.env`
+2. Set `PANDA_AGENTS=claw,luna`
+3. Run `./scripts/docker-stack.sh up --build`
+
+That wrapper:
+
+- starts `panda-core`
+- starts the shared `panda-browser-runner`
+- generates one `panda-runner-<agentKey>` service per agent
+- auto-runs `panda agent ensure <agentKey>` inside core after startup
+- auto-enables the `panda-telegram` worker when `TELEGRAM_BOT_TOKEN` is set
+
+The base compose file it builds on is still [examples/docker-compose.remote-bash.external-db.yml](../../examples/docker-compose.remote-bash.external-db.yml).
 
 ## External Postgres
 
@@ -219,7 +204,16 @@ pnpm dev chat \
 Health check:
 
 ```bash
-curl http://panda-runner-panda:8080/health
+./scripts/docker-stack.sh ps
+```
+
+If you want a specific runner check:
+
+```bash
+docker compose --env-file .env \
+  -f examples/docker-compose.remote-bash.external-db.yml \
+  -f .generated/docker-compose.remote-bash.external-db.runners.yml \
+  exec -T panda-runner-claw curl -fsS http://127.0.0.1:8080/health
 ```
 
 It should return the runner agent key.

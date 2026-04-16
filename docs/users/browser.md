@@ -127,13 +127,23 @@ The ready-made compose example is:
 
 - [examples/docker-compose.remote-bash.external-db.yml](../../examples/docker-compose.remote-bash.external-db.yml)
 
-Run that compose example from the repo root, or set `BROWSER_RUNNER_SECCOMP_PROFILE` to an absolute host path for `assets/playwright-seccomp-profile.json`.
+The normal flow is:
+
+```bash
+# in .env
+PANDA_AGENTS=claw,luna
+
+./scripts/docker-stack.sh up --build
+```
+
+Run that from the repo root, or set `BROWSER_RUNNER_SECCOMP_PROFILE` to an absolute host path for `assets/playwright-seccomp-profile.json`.
 
 That stack now includes:
 
 - `panda-core`
-- `panda-runner-panda` for remote bash
 - `panda-browser-runner` for browser
+- one generated `panda-runner-<agentKey>` service per agent in `PANDA_AGENTS`
+- optional `panda-telegram` when `TELEGRAM_BOT_TOKEN` is set
 
 ## Screenshots And PDFs
 

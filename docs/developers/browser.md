@@ -143,6 +143,8 @@ The repo now has two image targets:
 
 The compose example now keeps browser-runner state on a separate host path by default instead of nesting it under the core-mounted `~/.panda` tree.
 
+Per-agent bash runners are no longer hardcoded in that compose file. The stack wrapper generates them from `PANDA_AGENTS` into `.generated/docker-compose.remote-bash.external-db.runners.yml`.
+
 The compose example in [examples/docker-compose.remote-bash.external-db.yml](../../examples/docker-compose.remote-bash.external-db.yml) is the source of truth for the current deployment shape.
 
 ## Testing

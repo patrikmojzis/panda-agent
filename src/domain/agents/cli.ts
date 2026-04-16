@@ -10,7 +10,7 @@ import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
 import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
 import {resolveAgentDir} from "../../app/runtime/data-dir.js";
 import {CredentialService, PostgresCredentialStore, resolveCredentialCrypto} from "../credentials/index.js";
-import {PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
+import {isMissingThreadError, PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
 import {parseIdentityHandle} from "../identity/cli.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {PostgresSessionStore} from "../sessions/index.js";
@@ -23,7 +23,7 @@ import {
 } from "./legacy-import.js";
 import {PostgresAgentStore} from "./postgres.js";
 import {DEFAULT_AGENT_DOCUMENT_TEMPLATES} from "./templates.js";
-import {normalizeAgentKey} from "./types.js";
+import {type AgentRecord, normalizeAgentKey} from "./types.js";
 
 interface AgentCliOptions {
   dbUrl?: string;
@@ -41,12 +41,25 @@ interface ImportLegacyAgentCliOptions extends AgentCliOptions {
   includeMessages?: boolean;
 }
 
-function createAgentCliStores(pool: Pool): {
+interface AgentCliStores {
   agentStore: PostgresAgentStore;
   identityStore: PostgresIdentityStore;
   sessionStore: PostgresSessionStore;
   threadStore: PostgresThreadRuntimeStore;
-} {
+}
+
+export interface EnsureAgentResult {
+  agentKey: string;
+  displayName: string;
+  createdAgent: boolean;
+  createdMainSession: boolean;
+  createdMainThread: boolean;
+  sessionId: string;
+  threadId: string;
+  homeDir: string;
+}
+
+function createAgentCliStores(pool: Pool): AgentCliStores {
   const identityStore = new PostgresIdentityStore({pool});
   return {
     agentStore: new PostgresAgentStore({pool}),
@@ -58,12 +71,7 @@ function createAgentCliStores(pool: Pool): {
 
 async function withAgentStores<T>(
   options: AgentCliOptions,
-  fn: (stores: {
-    agentStore: PostgresAgentStore;
-    identityStore: PostgresIdentityStore;
-    sessionStore: PostgresSessionStore;
-    threadStore: PostgresThreadRuntimeStore;
-  }) => Promise<T>,
+  fn: (stores: AgentCliStores) => Promise<T>,
 ): Promise<T> {
   return withPostgresPool(options.dbUrl, async (pool) => {
     const stores = createAgentCliStores(pool);
@@ -123,6 +131,121 @@ export function parseAgentKey(value: string): string {
   }
 }
 
+function isMissingAgentError(error: unknown, agentKey: string): boolean {
+  return error instanceof Error
+    && error.message === `Unknown agent ${agentKey}. Create it with \`panda agent create ${agentKey}\`.`;
+}
+
+function buildMainThreadContext(agentKey: string, sessionId: string, env: NodeJS.ProcessEnv): {
+  agentKey: string;
+  sessionId: string;
+  cwd: string;
+} {
+  return {
+    agentKey,
+    sessionId,
+    cwd: resolveAgentDir(agentKey, env),
+  };
+}
+
+async function createMainSessionThread(
+  stores: Pick<AgentCliStores, "sessionStore" | "threadStore">,
+  agentKey: string,
+  env: NodeJS.ProcessEnv,
+): Promise<{sessionId: string; threadId: string}> {
+  const sessionId = randomUUID();
+  const threadId = randomUUID();
+  await stores.sessionStore.createSession({
+    id: sessionId,
+    agentKey,
+    kind: "main",
+    currentThreadId: threadId,
+  });
+  await stores.threadStore.createThread({
+    id: threadId,
+    sessionId,
+    context: buildMainThreadContext(agentKey, sessionId, env),
+  });
+  return {sessionId, threadId};
+}
+
+export async function ensureAgent(
+  stores: Pick<AgentCliStores, "agentStore" | "sessionStore" | "threadStore">,
+  agentKey: string,
+  options: {name?: string; env?: NodeJS.ProcessEnv} = {},
+): Promise<EnsureAgentResult> {
+  const normalizedAgentKey = normalizeAgentKey(agentKey);
+  const env = options.env ?? process.env;
+  let createdAgent = false;
+  let createdMainSession = false;
+  let createdMainThread = false;
+
+  let agent: AgentRecord;
+  try {
+    agent = await stores.agentStore.getAgent(normalizedAgentKey);
+  } catch (error) {
+    if (!isMissingAgentError(error, normalizedAgentKey)) {
+      throw error;
+    }
+
+    agent = await stores.agentStore.bootstrapAgent({
+      agentKey: normalizedAgentKey,
+      displayName: options.name?.trim() || normalizedAgentKey,
+      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+    });
+    createdAgent = true;
+  }
+
+  const homeDir = resolveAgentDir(agent.agentKey, env);
+  await mkdir(homeDir, {recursive: true});
+
+  const mainSession = await stores.sessionStore.getMainSession(agent.agentKey);
+  let sessionId: string;
+  let threadId: string;
+
+  if (!mainSession) {
+    const created = await createMainSessionThread(stores, agent.agentKey, env);
+    sessionId = created.sessionId;
+    threadId = created.threadId;
+    createdMainSession = true;
+    createdMainThread = true;
+  } else {
+    sessionId = mainSession.id;
+    threadId = mainSession.currentThreadId;
+
+    try {
+      await stores.threadStore.getThread(threadId);
+    } catch (error) {
+      if (!isMissingThreadError(error, threadId)) {
+        throw error;
+      }
+
+      threadId = randomUUID();
+      await stores.threadStore.createThread({
+        id: threadId,
+        sessionId,
+        context: buildMainThreadContext(agent.agentKey, sessionId, env),
+      });
+      await stores.sessionStore.updateCurrentThread({
+        sessionId,
+        currentThreadId: threadId,
+      });
+      createdMainThread = true;
+    }
+  }
+
+  return {
+    agentKey: agent.agentKey,
+    displayName: agent.displayName,
+    createdAgent,
+    createdMainSession,
+    createdMainThread,
+    sessionId,
+    threadId,
+    homeDir,
+  };
+}
+
 export async function listAgentsCommand(options: AgentCliOptions): Promise<void> {
   await withAgentStores(options, async ({agentStore, sessionStore}) => {
     const agents = await agentStore.listAgents();
@@ -154,25 +277,11 @@ export async function createAgentCommand(agentKey: string, options: CreateAgentC
       prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
     const agentHome = resolveAgentDir(created.agentKey);
-
-    const sessionId = randomUUID();
-    const threadId = randomUUID();
-    await sessionStore.createSession({
-      id: sessionId,
-      agentKey: created.agentKey,
-      kind: "main",
-      currentThreadId: threadId,
-    });
-    await threadStore.createThread({
-      id: threadId,
-      sessionId,
-      context: {
-        agentKey: created.agentKey,
-        sessionId,
-        cwd: agentHome,
-      },
-    });
-
+    const {sessionId, threadId} = await createMainSessionThread(
+      {sessionStore, threadStore},
+      created.agentKey,
+      process.env,
+    );
     await mkdir(agentHome, {recursive: true});
 
     process.stdout.write(
@@ -182,6 +291,29 @@ export async function createAgentCommand(agentKey: string, options: CreateAgentC
         `main session ${sessionId}`,
         `initial thread ${threadId}`,
         `home ${agentHome}`,
+      ].join("\n") + "\n",
+    );
+  });
+}
+
+export async function ensureAgentCommand(agentKey: string, options: CreateAgentCliOptions): Promise<void> {
+  await withAgentStores(options, async ({agentStore, sessionStore, threadStore}) => {
+    const ensured = await ensureAgent(
+      {agentStore, sessionStore, threadStore},
+      agentKey,
+      {name: options.name, env: process.env},
+    );
+
+    process.stdout.write(
+      [
+        `Ensured agent ${ensured.agentKey}.`,
+        `name ${ensured.displayName}`,
+        `agent created ${ensured.createdAgent ? "yes" : "no"}`,
+        `main session created ${ensured.createdMainSession ? "yes" : "no"}`,
+        `main thread created ${ensured.createdMainThread ? "yes" : "no"}`,
+        `main session ${ensured.sessionId}`,
+        `current thread ${ensured.threadId}`,
+        `home ${ensured.homeDir}`,
       ].join("\n") + "\n",
     );
   });
@@ -372,6 +504,16 @@ export function registerAgentCommands(program: Command): void {
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((agentKey: string, options: CreateAgentCliOptions) => {
       return createAgentCommand(agentKey, options);
+    });
+
+  agentProgram
+    .command("ensure")
+    .description("Create a Panda agent if missing and repair its main session scaffold")
+    .argument("<agentKey>", "Agent key", parseAgentKey)
+    .option("--name <displayName>", "Display name to use when the agent is created")
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((agentKey: string, options: CreateAgentCliOptions) => {
+      return ensureAgentCommand(agentKey, options);
     });
 
   agentProgram

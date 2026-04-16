@@ -1,5 +1,7 @@
 export {
   createAgentCommand,
+  ensureAgent,
+  ensureAgentCommand,
   listAgentsCommand,
   parseAgentKey,
   registerAgentCommands,
