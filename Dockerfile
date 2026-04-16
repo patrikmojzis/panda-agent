@@ -1,6 +1,8 @@
 ARG PLAYWRIGHT_VERSION=1.59.1
+ARG UBUNTU_MIRROR=http://mirrors.digitalocean.com/ubuntu
 
 FROM ubuntu:24.04 AS base
+ARG UBUNTU_MIRROR
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SHELL=/bin/bash
@@ -18,6 +20,11 @@ RUN set -eux; \
       sleep 5; \
     done; \
   }; \
+  if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+    sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources; \
+  elif [ -f /etc/apt/sources.list ]; then \
+    sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list; \
+  fi; \
   apt_retry apt-get update; \
   apt_retry apt-get install -y --no-install-recommends \
     bash \
