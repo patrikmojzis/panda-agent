@@ -8,7 +8,7 @@ const MAX_ERROR_CHARS = 4_000;
 const MAX_VISIBLE_SOURCES = 10;
 const MAX_DETAIL_SOURCES = 20;
 
-export type WebResearchReasoningEffort = "minimal" | "low" | "medium" | "high";
+export type WebResearchReasoningEffort =  "low" | "medium" | "high";
 export type WebResearchProgressStatus = "researching" | "formatting";
 export type WebResearchProgress = {
   status: WebResearchProgressStatus;

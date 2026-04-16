@@ -1,8 +1,8 @@
 import {
-    getProviderConfig,
-    resolveModelSelector,
-    resolveProviderApiKey,
-    type ThinkingLevel,
+  getProviderConfig,
+  resolveModelSelector,
+  resolveProviderApiKey,
+  type ThinkingLevel,
 } from "../../kernel/agent/index.js";
 import type {TranscriptLine} from "./chat-view.js";
 import type {SessionRecord} from "../../domain/sessions/index.js";
@@ -55,7 +55,7 @@ export const MAX_VISIBLE_PENDING_LOCAL_INPUTS = 3;
 export const NOTICE_MS = 3_600;
 export const BRACKETED_PASTE_ON = "\u001b[?2004h";
 export const BRACKETED_PASTE_OFF = "\u001b[?2004l";
-export const THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
+export const THINKING_LEVELS: readonly ThinkingLevel[] = ["low", "medium", "high", "xhigh"];
 export const WELCOME_ENTRY_TEXT = [
   "Type your request and press Enter to start a run with Panda.",
   "Start with a code change, a debugging question, or a quick explanation of this repo.",

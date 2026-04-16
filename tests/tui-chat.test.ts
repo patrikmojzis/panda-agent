@@ -1063,7 +1063,7 @@ describe("ChatApp performance helpers", () => {
 
 describe("buildChatHelpText", () => {
   it("documents reliable newline fallbacks", () => {
-    const helpText = buildChatHelpText("/thinking <minimal|low|medium|high|xhigh|off>");
+    const helpText = buildChatHelpText("/thinking <low|medium|high|xhigh|off>");
 
     expect(helpText).toContain("/thread shows the current session and thread ids plus active settings.");
     expect(helpText).toContain("/usage shows current context estimates, provider token usage, and cost.");

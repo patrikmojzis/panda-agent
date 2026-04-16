@@ -8,7 +8,7 @@ import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 
 const thinkingSetToolSchema = z.object({
-  level: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+  level: z.enum(["off", "low", "medium", "high", "xhigh"]),
   persist: z.boolean().optional().default(false),
   reason: z.string().trim().min(1).optional(),
 });

@@ -6,20 +6,20 @@ import {describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 
 import {
-    Agent,
-    BashJobWaitTool,
-    BashTool,
-    Hook,
-    type LlmRuntime,
-    type RunContext,
-    RunPipeline,
-    StreamingFailedError,
-    stringToUserMessage,
-    Thread,
-    type ThreadRunEvent,
-    Tool,
-    type ToolResultPayload,
-    z,
+  Agent,
+  BashJobWaitTool,
+  BashTool,
+  Hook,
+  type LlmRuntime,
+  type RunContext,
+  RunPipeline,
+  StreamingFailedError,
+  stringToUserMessage,
+  Thread,
+  type ThreadRunEvent,
+  Tool,
+  type ToolResultPayload,
+  z,
 } from "../src/index.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
@@ -75,7 +75,7 @@ class AdjustThinkingTool extends Tool<typeof AdjustThinkingTool.schema> {
   name = "adjust-thinking";
   description = "Adjust the live thinking level";
   static schema = z.object({
-    level: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+    level: z.enum(["off", "low", "medium", "high", "xhigh"]),
   });
   schema = AdjustThinkingTool.schema;
 
