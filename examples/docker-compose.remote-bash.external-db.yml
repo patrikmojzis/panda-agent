@@ -16,6 +16,7 @@ services:
     volumes:
       - ${HOME}/.panda:/root/.panda
       - ${SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
+      - /etc/ssl/certs/panda-postgres-ca.crt:/etc/ssl/certs/panda-postgres-ca.crt:ro
     depends_on:
       panda-browser-runner:
         condition: service_healthy
@@ -80,6 +81,7 @@ services:
       DATABASE_URL: ${DATABASE_URL}
     volumes:
       - ${HOME}/.panda:/root/.panda
+      - /etc/ssl/certs/panda-postgres-ca.crt:/etc/ssl/certs/panda-postgres-ca.crt:ro
     depends_on:
       panda-core:
         condition: service_healthy
