@@ -11,7 +11,7 @@ Verify that background bash:
 - starts more than one job at once
 - stays isolated from shared cwd and env
 - surfaces running jobs in context while they are active
-- can auto-wake Panda with a runtime note on completion
+- can auto-wake Panda with a queued background event on completion
 - works in both status/wait/cancel flows
 - becomes `lost` after a Panda restart
 
@@ -102,7 +102,7 @@ Start another short background job and keep chatting instead of polling.
 
 Expected:
 
-- Panda gets a runtime note when the job finishes
+- Panda gets a machine-generated background event when the job finishes
 - Panda can react without an explicit `bash_job_status`
 
 5. Cancel the long job.
@@ -147,5 +147,5 @@ Expected:
 - background jobs must never update shared cwd
 - background jobs must never export or unset shared env vars
 - explicit `bash_job_*` tools should be used instead of shell polling loops
-- auto-wake should append a compact runtime note, not fake a user message
+- auto-wake should queue a durable background event through thread input, not append an assistant message mid-run
 - remote mode should behave the same as local mode from Panda’s point of view

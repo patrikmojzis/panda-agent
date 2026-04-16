@@ -63,7 +63,7 @@ Background jobs follow the same split:
 - the runner owns the live process
 - Panda stores durable job metadata
 - active jobs can show up in Panda context while they run
-- watcher-owned completions may wake Panda with a runtime note, while `bash_job_status` / `bash_job_wait` remain the explicit control tools
+- watcher-owned completions may wake Panda with a queued background event, while `bash_job_status` / `bash_job_wait` remain the explicit control tools
 
 ## Core Env
 

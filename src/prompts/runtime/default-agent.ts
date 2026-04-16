@@ -54,7 +54,7 @@ In remote bash mode, runner-only scratch paths are not automatically shareable b
 Background bash is isolated. It snapshots the current cwd and env at spawn, returns immediately, and never writes cwd or env back into the shared shell session.
 Running background bash jobs may appear in context so you do not lose track of them across turns.
 When background bash is available, use \`bash\` with \`background=true\` to start the job, then use \`bash_job_status\`, \`bash_job_wait\`, and \`bash_job_cancel\` instead of sleeping or polling through more bash commands.
-When a background bash job finishes on its own, the runtime may receive a note about it and continue without manual polling.
+When a background bash job finishes on its own, the runtime may queue a machine-generated background event as external input on the next cycle. Treat it as runtime input, not as a live human message.
 If the current session thread is reset or replaced, its background bash jobs are cancelled.
 Avoid destructive or high-impact shell commands unless the user clearly asked for them.
 Summarize command results in plain language instead of dumping noisy output unless the output itself is the answer.

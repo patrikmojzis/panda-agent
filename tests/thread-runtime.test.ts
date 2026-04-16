@@ -6,28 +6,28 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 
 import {
-    Agent,
-    BashJobStatusTool,
-    BashJobWaitTool,
-    BashTool,
-    type LlmRuntime,
-    PiAiRuntime,
-    RunContext,
-    stringToUserMessage,
-    Thread,
-    Tool,
-    z,
+  Agent,
+  BashJobStatusTool,
+  BashJobWaitTool,
+  BashTool,
+  type LlmRuntime,
+  PiAiRuntime,
+  RunContext,
+  stringToUserMessage,
+  Thread,
+  Tool,
+  z,
 } from "../src/index.js";
-import {buildBackgroundBashRuntimeMessage} from "../src/app/runtime/background-bash-runtime-note.js";
+import {buildBackgroundBashThreadInput} from "../src/app/runtime/background-bash-thread-input.js";
 import {
-    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-    createCompactBoundaryMessage,
-    type CreateThreadInput,
-    type ResolvedThreadDefinition,
-    type ThreadDefinitionResolver,
-    type ThreadMessageRecord,
-    type ThreadRecord,
-    ThreadRuntimeCoordinator,
+  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+  createCompactBoundaryMessage,
+  type CreateThreadInput,
+  type ResolvedThreadDefinition,
+  type ThreadDefinitionResolver,
+  type ThreadMessageRecord,
+  type ThreadRecord,
+  ThreadRuntimeCoordinator,
 } from "../src/domain/threads/runtime/index.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
@@ -521,8 +521,9 @@ describe("ThreadRuntimeCoordinator", () => {
 
           if (callCount === 5) {
             expect(request.context.messages.some((entry) => {
-              return entry.role === "assistant"
-                && entry.content.some((block) => block.type === "text" && block.text.includes("Background bash job update."));
+              return entry.role === "user"
+                && typeof entry.content === "string"
+                && entry.content.includes("[Background Bash Event]");
             })).toBe(true);
             return message("noticed the background completion");
           }
@@ -557,7 +558,7 @@ describe("ThreadRuntimeCoordinator", () => {
         resolveDefinition: (thread) => registry.resolve(thread),
       });
       service.setBackgroundCompletionHandler(async (record) => {
-        await store.appendRuntimeMessage(record.threadId, buildBackgroundBashRuntimeMessage(record));
+        await coordinator.submitInput(record.threadId, buildBackgroundBashThreadInput(record), "queue");
         await coordinator.wake(record.threadId);
       });
 
@@ -568,8 +569,8 @@ describe("ThreadRuntimeCoordinator", () => {
 
       await started.promise;
       await waitFor(async () => {
-        const transcript = await store.loadTranscript("thread-bg-autowake");
-        return transcript.filter((entry) => entry.source === "background_bash").length === 2;
+        const pendingInputs = await store.listPendingInputs("thread-bg-autowake");
+        return pendingInputs.filter((entry) => entry.source === "background_bash").length === 2;
       });
 
       release.resolve({ done: "released" });
@@ -577,6 +578,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
       const transcript = await store.loadTranscript("thread-bg-autowake");
       expect(transcript.filter((entry) => entry.source === "background_bash")).toHaveLength(2);
+      expect(transcript.filter((entry) => entry.source === "background_bash").every((entry) => entry.origin === "input")).toBe(true);
       expect(runtime.complete).toHaveBeenCalledTimes(5);
       expect(transcript.at(-1)?.message).toMatchObject({
         role: "assistant",
@@ -587,7 +589,7 @@ describe("ThreadRuntimeCoordinator", () => {
     }
   });
 
-  it("preserves durable non-input wakes when another coordinator owns the thread lease", async () => {
+  it("preserves queued background bash input when another coordinator owns the thread lease", async () => {
     const started = createDeferred<void>();
     const release = createDeferred<{ done: string }>();
     const store = new TestThreadRuntimeStore();
@@ -617,8 +619,9 @@ describe("ThreadRuntimeCoordinator", () => {
 
         if (callCount === 3) {
           expect(request.context.messages.some((entry) => {
-            return entry.role === "assistant"
-              && entry.content.some((block) => block.type === "text" && block.text.includes("Background bash job update."));
+            return entry.role === "user"
+              && typeof entry.content === "string"
+              && entry.content.includes("[Background Bash Event]");
           })).toBe(true);
           return message("noticed wake from another coordinator");
         }
@@ -656,9 +659,9 @@ describe("ThreadRuntimeCoordinator", () => {
     });
 
     await started.promise;
-    await store.appendRuntimeMessage(
+    await otherCoordinator.submitInput(
       "thread-cross-process-wake",
-      buildBackgroundBashRuntimeMessage({
+      buildBackgroundBashThreadInput({
         id: "job-cross-wake",
         threadId: "thread-cross-process-wake",
         status: "completed",
@@ -679,6 +682,7 @@ describe("ThreadRuntimeCoordinator", () => {
         stderrPersisted: false,
         trackedEnvKeys: [],
       }),
+      "queue",
     );
     await otherCoordinator.wake("thread-cross-process-wake");
 
@@ -707,7 +711,7 @@ describe("ThreadRuntimeCoordinator", () => {
     const registry = new TestThreadDefinitionRegistry().register("pending-wake-agent", {
       agent: new Agent({
         name: "pending-wake-agent",
-        instructions: "React to runtime notes.",
+        instructions: "React to runtime events.",
         tools: [],
       }),
       runtime,
@@ -718,9 +722,9 @@ describe("ThreadRuntimeCoordinator", () => {
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
-    await store.appendRuntimeMessage(
+    await store.enqueueInput(
       "thread-pending-wake-idle",
-      buildBackgroundBashRuntimeMessage({
+      buildBackgroundBashThreadInput({
         id: "job-pending-wake-idle",
         threadId: "thread-pending-wake-idle",
         status: "completed",
@@ -741,6 +745,7 @@ describe("ThreadRuntimeCoordinator", () => {
         stderrPersisted: false,
         trackedEnvKeys: [],
       }),
+      "queue",
     );
     await store.requestWake("thread-pending-wake-idle");
 
@@ -748,6 +753,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(runtime.complete).toHaveBeenCalledTimes(2);
     const transcript = await store.loadTranscript("thread-pending-wake-idle");
+    expect(transcript.some((entry) => entry.origin === "input" && entry.source === "background_bash")).toBe(true);
     expect(transcript.some((entry) => {
       return entry.message.role === "assistant"
         && entry.message.content.some((block) => block.type === "text" && block.text === "processed pending wake");

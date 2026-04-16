@@ -49,7 +49,7 @@ describe("Panda feature surface", () => {
     );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Background bash is isolated.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Running background bash jobs may appear in context");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("the runtime may receive a note about it");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("the runtime may queue a machine-generated background event as external input on the next cycle");
     expect(tools).toHaveLength(3);
     expect(tools[0]).toBeInstanceOf(BashTool);
     expect(tools[1]).toBeInstanceOf(MediaTool);

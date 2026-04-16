@@ -7,7 +7,7 @@ function truncatePreview(value: string, maxChars: number): string {
   return `${trimmed.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
-export function renderBackgroundBashRuntimeNote(options: {
+export function renderBackgroundBashEventPrompt(options: {
   jobId: string;
   status: string;
   command: string;
@@ -18,7 +18,10 @@ export function renderBackgroundBashRuntimeNote(options: {
   stderr?: string;
 }): string {
   const lines = [
-    "Background bash job update.",
+    "[Background Bash Event]",
+    "This is a machine-generated runtime event from background bash, not a live human message.",
+    "A background bash job reached a terminal state outside the foreground tool loop.",
+    "Decide whether any follow-up is useful. If nothing useful should happen, keep it quiet.",
     `Job ID: ${options.jobId}`,
     `Status: ${options.status}`,
     `Command: ${truncatePreview(options.command, 160)}`,

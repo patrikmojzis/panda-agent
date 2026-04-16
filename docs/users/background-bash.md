@@ -10,7 +10,7 @@ Use this when you want a shell command to keep running while Panda does other wo
 - background `bash` is an isolated snapshot
 - background jobs never merge cwd or env back into the shared shell session
 - running jobs can appear in Panda's context while they are active
-- completion may show up as a runtime note, but status/wait/cancel are still the explicit control tools
+- completion may arrive as a machine-generated background event, but status/wait/cancel are still the explicit control tools
 
 That means background bash is good for long-running work, but bad for “change directory here and keep using it later.” Foreground bash still owns shared shell state.
 
@@ -74,7 +74,7 @@ Panda asks the job to stop, waits briefly, and returns the final or current stat
 ## Auto-Wake And Context
 
 - Panda may see active background jobs in context during later turns
-- when a watcher-owned background job finishes on its own, Panda may receive a runtime note and keep going without manual polling
+- when a watcher-owned background job finishes on its own, Panda may receive a queued background event and keep going without manual polling
 - `bash_job_status` and `bash_job_wait` are still the right tools when Panda needs the full latest state on demand
 
 ## What Comes Back

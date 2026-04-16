@@ -16,7 +16,7 @@ import type {BashJobService} from "../../integrations/shell/bash-job-service.js"
 import type {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
-import {buildBackgroundBashRuntimeMessage} from "./background-bash-runtime-note.js";
+import {buildBackgroundBashThreadInput} from "./background-bash-thread-input.js";
 import {
     createThreadDefinition,
     type CreateThreadDefinitionOptions,
@@ -99,7 +99,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     onEvent: options.onEvent,
   });
   runtime.bashJobService.setBackgroundCompletionHandler(async (record) => {
-    await runtime.store.appendRuntimeMessage(record.threadId, buildBackgroundBashRuntimeMessage(record));
+    await coordinator.submitInput(record.threadId, buildBackgroundBashThreadInput(record), "queue");
     await coordinator.wake(record.threadId);
   });
 

@@ -161,7 +161,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
 
   name = "bash";
   description =
-    "Run a shell command. Foreground bash mutates the shared shell cwd and simple export/unset env state across calls. Background bash starts an isolated snapshot job, returns immediately, never mutates the shared shell session, and may later surface as a runtime note; use bash_job_status, bash_job_wait, and bash_job_cancel for follow-up.";
+    "Run a shell command. Foreground bash mutates the shared shell cwd and simple export/unset env state across calls. Background bash starts an isolated snapshot job, returns immediately, never mutates the shared shell session, and may later surface as a machine-generated runtime event; use bash_job_status, bash_job_wait, and bash_job_cancel for follow-up.";
   schema = BashTool.schema;
 
   private readonly defaultTimeoutMs: number;
