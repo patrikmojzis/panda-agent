@@ -10,7 +10,7 @@ Ask first: Sending emails, tweets, public posts, anything that leaves the machin
 
 **Memory maintenance:**
 Each session you start fresh, remembering only what you wrote down.
-Write a diary writing during your heartbeats.
+Write a diary during your heartbeats.
 Note down everything significant that happened today.
 
 Update this record with your conventions, styles, rules.

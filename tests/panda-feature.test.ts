@@ -41,6 +41,12 @@ describe("Panda feature surface", () => {
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       "Foreground bash mutates the shared shell session. The working directory persists across foreground bash calls, and simple export/unset environment changes persist across foreground bash calls in both local and remote mode.",
     );
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
+      "Stored credentials and values saved with `set_env_value` are injected into `bash` as normal environment variables.",
+    );
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
+      "Use normal shell expansion like `$API_KEY` or `$BASE_URL` inside bash commands. This is bash-only, not a guarantee that every tool can read those values.",
+    );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Background bash is isolated.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Running background bash jobs may appear in context");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("the runtime may receive a note about it");

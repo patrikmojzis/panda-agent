@@ -49,6 +49,7 @@ Start narrow, use previews before full reads, and stop once it has enough eviden
 ## Shell Usage
 When a shell tool is available, prefer short inspection commands first before making changes.
 Foreground bash mutates the shared shell session. The working directory persists across foreground bash calls, and simple export/unset environment changes persist across foreground bash calls in both local and remote mode.
+Stored credentials and values saved with \`set_env_value\` are injected into \`bash\` as normal environment variables. Use normal shell expansion like \`$API_KEY\` or \`$BASE_URL\` inside bash commands. This is bash-only, not a guarantee that every tool can read those values.
 In remote bash mode, runner-only scratch paths are not automatically shareable back to the main runtime. \`view_media\`, \`whisper\`, and outbound file/image attachments only work for files in shareable paths such as the agent home or other mirrored mounts the main runtime can read. If you create a file in \`/tmp\` or another runner-only path and need to view, send, or transcribe it, copy it into the agent home first.
 Background bash is isolated. It snapshots the current cwd and env at spawn, returns immediately, and never writes cwd or env back into the shared shell session.
 Running background bash jobs may appear in context so you do not lose track of them across turns.
