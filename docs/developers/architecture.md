@@ -168,6 +168,7 @@ These are the source barrels that still deserve to exist:
 - `src/domain/channels/index.ts`
 - `src/domain/threads/index.ts`
 - `src/domain/scheduling/index.ts`
+- `src/domain/watches/index.ts`
 
 `src/index.ts` is the package root.
 Do not re-export domain repos, stores, channel integrations, or other internal plumbing from it unless we intentionally want that to become package API.
@@ -188,6 +189,7 @@ The supported package entrypoints are:
 - `panda/domain/threads/runtime`
 - `panda/domain/scheduling`
 - `panda/domain/scheduling/tasks`
+- `panda/domain/watches`
 - `panda/integrations/shell`
 
 Use the root for the normal public API.

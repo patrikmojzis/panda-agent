@@ -113,7 +113,6 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   readonly systemPrompt?: string | ReadonlyArray<string>;
   readonly model: string;
   readonly temperature?: number;
-  readonly thinking?: ThinkingLevel;
 
   private readonly modelSelection: ResolvedModelSelector;
   private readonly runtime: LlmRuntime;
@@ -121,6 +120,9 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   private readonly history: Message[];
   private readonly signal?: AbortSignal;
   private readonly checkpoint?: ThreadCheckpointHandler;
+  private readonly defaultThinking?: ThinkingLevel;
+  private effectiveThinking?: ThinkingLevel;
+  private thinkingScopeDepth = 0;
 
   constructor(options: ThreadOptions<TContext, TOutput>) {
     this.agent = options.agent;
@@ -137,11 +139,16 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     this.modelSelection = resolveModelSelector(options.model ?? defaultModel);
     this.model = this.modelSelection.canonical;
     this.temperature = options.temperature;
-    this.thinking = options.thinking;
+    this.defaultThinking = options.thinking;
+    this.effectiveThinking = options.thinking;
     this.runtime = options.runtime ?? new PiAiRuntime();
     this.countTokens = options.countTokens ?? estimateTokensFromString;
     this.signal = options.signal;
     this.checkpoint = options.checkpoint;
+  }
+
+  get thinking(): ThinkingLevel | undefined {
+    return this.effectiveThinking;
   }
 
   get messages(): readonly Message[] {
@@ -160,6 +167,10 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       messages: runMessages,
       context: this.context,
       signal: this.signal,
+      getThinking: () => this.effectiveThinking,
+      setThinking: (next) => {
+        this.effectiveThinking = next;
+      },
     });
   }
 
@@ -167,6 +178,27 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     decision?: ThreadCheckpointDecision | void,
   ): ThreadCheckpointDecision {
     return decision ?? { action: "continue" };
+  }
+
+  private resetThinking(): void {
+    this.effectiveThinking = this.defaultThinking;
+  }
+
+  private beginThinkingScope(): boolean {
+    const isTopLevelScope = this.thinkingScopeDepth === 0;
+    if (isTopLevelScope) {
+      this.resetThinking();
+    }
+
+    this.thinkingScopeDepth += 1;
+    return isTopLevelScope;
+  }
+
+  private endThinkingScope(isTopLevelScope: boolean): void {
+    this.thinkingScopeDepth = Math.max(0, this.thinkingScopeDepth - 1);
+    if (isTopLevelScope) {
+      this.resetThinking();
+    }
   }
 
   private buildCancelledToolResultMessage(
@@ -252,6 +284,10 @@ export class Thread<TContext = unknown, TOutput = unknown> {
         messages: runContext.messages,
         context: runContext.context,
         signal: this.signal,
+        getThinking: () => this.effectiveThinking,
+        setThinking: (next) => {
+          this.effectiveThinking = next;
+        },
         onToolProgress: (progress) => {
           progressQueue.push({
             type: "tool_progress",
@@ -461,7 +497,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       providerName: this.modelSelection.providerName,
       modelId: this.modelSelection.modelId,
       temperature: this.temperature,
-      thinking: this.thinking,
+      thinking: this.effectiveThinking,
       promptCacheKey: this.promptCacheKey,
       signal: this.signal,
       context: buildConversationContext({
@@ -474,71 +510,83 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   }
 
   async *run(): AsyncGenerator<ThreadRunEvent> {
-    const { runMessages, runContext } = await this.prepareTurn();
+    const isTopLevelScope = this.beginThinkingScope();
 
-    throwIfAborted(this.signal);
-    const response = await this.runtime.complete(await this.buildRuntimeRequest(runMessages));
-    throwIfAborted(this.signal);
-    throwIfAssistantResponseFailed(response);
+    try {
+      const { runMessages, runContext } = await this.prepareTurn();
 
-    yield response;
+      throwIfAborted(this.signal);
+      const response = await this.runtime.complete(await this.buildRuntimeRequest(runMessages));
+      throwIfAborted(this.signal);
+      throwIfAssistantResponseFailed(response);
 
-    const functionCalls = await this.finalizeAssistantTurn(response, runContext);
-    if (functionCalls.length > 0) {
-      if (this.checkpoint) {
-        const decision = this.resolveCheckpointDecision(await this.checkpoint({
-          phase: "after_assistant",
-          runContext,
-          assistantMessage: response,
-          toolCalls: functionCalls,
-        }));
+      yield response;
 
-        if (decision.action === "interrupt") {
-          if (decision.cancelPendingToolCalls !== false) {
-            yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
+      const functionCalls = await this.finalizeAssistantTurn(response, runContext);
+      if (functionCalls.length > 0) {
+        if (this.checkpoint) {
+          const decision = this.resolveCheckpointDecision(await this.checkpoint({
+            phase: "after_assistant",
+            runContext,
+            assistantMessage: response,
+            toolCalls: functionCalls,
+          }));
+
+          if (decision.action === "interrupt") {
+            if (decision.cancelPendingToolCalls !== false) {
+              yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
+            }
+
+            return;
           }
-
-          return;
         }
-      }
 
-      yield* this.executeToolCalls(functionCalls, runContext, () => this.run());
+        yield* this.executeToolCalls(functionCalls, runContext, () => this.run());
+      }
+    } finally {
+      this.endThinkingScope(isTopLevelScope);
     }
   }
 
   async *stream(): AsyncGenerator<ThreadStreamEvent> {
-    const { runMessages, runContext } = await this.prepareTurn();
+    const isTopLevelScope = this.beginThinkingScope();
 
-    throwIfAborted(this.signal);
-    const stream = this.runtime.stream(await this.buildRuntimeRequest(runMessages));
+    try {
+      const { runMessages, runContext } = await this.prepareTurn();
 
-    for await (const event of stream) {
-      yield event;
-    }
+      throwIfAborted(this.signal);
+      const stream = this.runtime.stream(await this.buildRuntimeRequest(runMessages));
 
-    const response = await stream.result();
-    throwIfAssistantResponseFailed(response);
-
-    const functionCalls = await this.finalizeAssistantTurn(response, runContext);
-    if (functionCalls.length > 0) {
-      if (this.checkpoint) {
-        const decision = this.resolveCheckpointDecision(await this.checkpoint({
-          phase: "after_assistant",
-          runContext,
-          assistantMessage: response,
-          toolCalls: functionCalls,
-        }));
-
-        if (decision.action === "interrupt") {
-          if (decision.cancelPendingToolCalls !== false) {
-            yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
-          }
-
-          return;
-        }
+      for await (const event of stream) {
+        yield event;
       }
 
-      yield* this.executeToolCalls(functionCalls, runContext, () => this.stream());
+      const response = await stream.result();
+      throwIfAssistantResponseFailed(response);
+
+      const functionCalls = await this.finalizeAssistantTurn(response, runContext);
+      if (functionCalls.length > 0) {
+        if (this.checkpoint) {
+          const decision = this.resolveCheckpointDecision(await this.checkpoint({
+            phase: "after_assistant",
+            runContext,
+            assistantMessage: response,
+            toolCalls: functionCalls,
+          }));
+
+          if (decision.action === "interrupt") {
+            if (decision.cancelPendingToolCalls !== false) {
+              yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
+            }
+
+            return;
+          }
+        }
+
+        yield* this.executeToolCalls(functionCalls, runContext, () => this.stream());
+      }
+    } finally {
+      this.endThinkingScope(isTopLevelScope);
     }
   }
 

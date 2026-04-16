@@ -19,6 +19,10 @@ export interface ReadonlyChatViewNames {
   toolResults: string;
   inputs: string;
   runs: string;
+  agentPrompts: string;
+  agentDocuments: string;
+  agentDiary: string;
+  agentPairings: string;
   agentSkills: string;
   scheduledTasks: string;
   scheduledTaskRuns: string;
@@ -57,7 +61,7 @@ export async function ensureReadonlyChatQuerySchema(
   const sessionTables = buildSessionTableNames(options.tablePrefix ?? "thread_runtime");
   const scheduledTaskTables = buildScheduledTaskTableNames(options.tablePrefix ?? "thread_runtime");
   const watchTables = buildWatchTableNames(options.tablePrefix ?? "thread_runtime");
-  const { sessions, threads, messages, messagesRaw, toolResults, inputs, runs, agentSkills, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents } = buildPrefixedRelationNames(
+  const { sessions, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentDocuments, agentDiary, agentPairings, agentSkills, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents } = buildPrefixedRelationNames(
     options.viewPrefix ?? "panda",
     {
       sessions: "sessions",
@@ -67,6 +71,10 @@ export async function ensureReadonlyChatQuerySchema(
       toolResults: "tool_results",
       inputs: "inputs",
       runs: "runs",
+      agentPrompts: "agent_prompts",
+      agentDocuments: "agent_documents",
+      agentDiary: "agent_diary",
+      agentPairings: "agent_pairings",
       agentSkills: "agent_skills",
       scheduledTasks: "scheduled_tasks",
       scheduledTaskRuns: "scheduled_task_runs",
@@ -83,6 +91,10 @@ export async function ensureReadonlyChatQuerySchema(
     toolResults,
     inputs,
     runs,
+    agentPrompts,
+    agentDocuments,
+    agentDiary,
+    agentPairings,
     agentSkills,
     scheduledTasks,
     scheduledTaskRuns,
@@ -124,6 +136,10 @@ export async function ensureReadonlyChatQuerySchema(
     DROP VIEW IF EXISTS ${views.watchEvents};
     DROP VIEW IF EXISTS ${views.watchRuns};
     DROP VIEW IF EXISTS ${views.watches};
+    DROP VIEW IF EXISTS ${views.agentPairings};
+    DROP VIEW IF EXISTS ${views.agentDiary};
+    DROP VIEW IF EXISTS ${views.agentDocuments};
+    DROP VIEW IF EXISTS ${views.agentPrompts};
     DROP VIEW IF EXISTS ${views.agentSkills};
     DROP VIEW IF EXISTS ${views.scheduledTaskRuns};
     DROP VIEW IF EXISTS ${views.scheduledTasks};
@@ -315,6 +331,71 @@ export async function ensureReadonlyChatQuerySchema(
     INNER JOIN ${tables.threads} AS t ON t.id = r.thread_id
     WHERE ${sessionScopeSql};
 
+    CREATE VIEW ${views.agentPrompts}
+    WITH (security_barrier = true) AS
+    SELECT
+      prompt.agent_key,
+      prompt.slug,
+      prompt.content,
+      octet_length(convert_to(prompt.content, 'utf8'))::INTEGER AS content_bytes,
+      prompt.created_at,
+      prompt.updated_at
+    FROM ${agentTables.agentPrompts} AS prompt
+    WHERE prompt.agent_key = current_setting('panda.agent_key', true);
+
+    CREATE VIEW ${views.agentDocuments}
+    WITH (security_barrier = true) AS
+    SELECT
+      document.id,
+      document.agent_key,
+      document.identity_id,
+      identity_row.handle AS identity_handle,
+      CASE
+        WHEN document.identity_id IS NULL THEN 'global'
+        ELSE 'identity'
+      END AS scope,
+      document.slug,
+      document.content,
+      octet_length(convert_to(document.content, 'utf8'))::INTEGER AS content_bytes,
+      document.created_at,
+      document.updated_at
+    FROM ${agentTables.agentDocuments} AS document
+    LEFT JOIN ${identityTables.identities} AS identity_row ON identity_row.id = document.identity_id
+    WHERE document.agent_key = current_setting('panda.agent_key', true);
+
+    CREATE VIEW ${views.agentDiary}
+    WITH (security_barrier = true) AS
+    SELECT
+      diary.id,
+      diary.agent_key,
+      diary.identity_id,
+      identity_row.handle AS identity_handle,
+      CASE
+        WHEN diary.identity_id IS NULL THEN 'global'
+        ELSE 'identity'
+      END AS scope,
+      diary.entry_date,
+      diary.content,
+      octet_length(convert_to(diary.content, 'utf8'))::INTEGER AS content_bytes,
+      diary.created_at,
+      diary.updated_at
+    FROM ${agentTables.agentDiary} AS diary
+    LEFT JOIN ${identityTables.identities} AS identity_row ON identity_row.id = diary.identity_id
+    WHERE diary.agent_key = current_setting('panda.agent_key', true);
+
+    CREATE VIEW ${views.agentPairings}
+    WITH (security_barrier = true) AS
+    SELECT
+      pairing.agent_key,
+      pairing.identity_id,
+      identity_row.handle AS identity_handle,
+      pairing.metadata,
+      pairing.created_at,
+      pairing.updated_at
+    FROM ${agentTables.agentPairings} AS pairing
+    INNER JOIN ${identityTables.identities} AS identity_row ON identity_row.id = pairing.identity_id
+    WHERE pairing.agent_key = current_setting('panda.agent_key', true);
+
     CREATE VIEW ${views.agentSkills}
     WITH (security_barrier = true) AS
     SELECT
@@ -462,7 +543,7 @@ export async function ensureReadonlyChatQuerySchema(
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA public TO ${readonlyRole};
-      GRANT SELECT ON ${views.sessions}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentSkills}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents} TO ${readonlyRole};
+      GRANT SELECT ON ${views.sessions}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentDocuments}, ${views.agentDiary}, ${views.agentPairings}, ${views.agentSkills}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents} TO ${readonlyRole};
     `);
   }
 

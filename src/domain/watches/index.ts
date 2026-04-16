@@ -1,11 +1,4 @@
 export {
-  defaultWatchSourceResolvers,
-  evaluateWatch,
-  validateReadOnlySqlQuery,
-  type WatchEvaluationOptions,
-  type WatchSourceResolver,
-} from "./evaluator.js";
-export {
   buildWatchTableNames,
   type WatchTableNames,
 } from "./postgres-shared.js";
@@ -13,7 +6,7 @@ export {
   PostgresWatchStore,
   type PostgresWatchStoreOptions,
 } from "./postgres.js";
-export {WatchRunner, type WatchRunnerOptions} from "./runner.js";
+export {WatchRunner, type WatchEvaluator, type WatchRunnerOptions} from "./runner.js";
 export type {
   RecordWatchEventResult,
   WatchStore,

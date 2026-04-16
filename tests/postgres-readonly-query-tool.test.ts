@@ -103,6 +103,8 @@ describe("PostgresReadonlyQueryTool", () => {
     });
 
     expect(tool.description).toContain("panda_sessions exposes current_thread_id, not thread_id.");
+    expect(tool.description).toContain("panda_agent_prompts, panda_agent_documents, panda_agent_diary, panda_agent_pairings, and panda_agent_skills");
+    expect(tool.description).toContain("left(...), substring(...), regex filters, full-text search");
     expect(tool.description).toContain("Do not invent is_active flags or extra session_id subqueries");
     expect(tool.description).toContain("query panda_scheduled_tasks or panda_watches directly");
   });
@@ -287,5 +289,32 @@ describe("PostgresReadonlyQueryTool", () => {
     expect(readDatabaseUsername("postgresql://localhost/panda?user=readonly_user")).toBe("readonly_user");
     expect(readDatabaseUsername("postgresql://localhost/panda?username=readonly_name")).toBe("readonly_name");
     expect(readDatabaseUsername("postgresql:///panda_dev")).toBeNull();
+  });
+
+  it("supports exploratory reads against the new agent memory views", async () => {
+    const pool = new FakeReadonlyPool([{
+      slug: "heartbeat",
+      preview: "Keep it short.",
+    }]);
+    const tool = new PostgresReadonlyQueryTool({
+      pool,
+    });
+
+    const result = await tool.run(
+      { sql: "select slug, left(content, 16) as preview from panda_agent_prompts order by updated_at desc limit 5" },
+      createRunContext({
+        sessionId: "session-main",
+        identityId: "identity-alice",
+        threadId: "thread-1",
+        agentKey: "panda",
+      }),
+    ) as ToolResultPayload;
+
+    const parsed = parseToolResult(result);
+    expect(parsed.rows).toEqual([{
+      slug: "heartbeat",
+      preview: "Keep it short.",
+    }]);
+    expect(pool.client.queries[6]?.text).toContain("left(content, 16) as preview from panda_agent_prompts");
   });
 });

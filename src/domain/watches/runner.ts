@@ -1,25 +1,31 @@
 import {stringToUserMessage} from "../../kernel/agent/index.js";
 import type {JsonObject} from "../../kernel/agent/types.js";
-import type {CredentialResolver} from "../credentials/index.js";
 import type {SessionStore} from "../sessions/index.js";
 import type {ThreadRuntimeCoordinator} from "../threads/runtime/coordinator.js";
 import {renderWatchEventPrompt} from "../../prompts/runtime/watch-events.js";
-import {evaluateWatch, type WatchEvaluationOptions} from "./evaluator.js";
 import type {WatchStore} from "./store.js";
-import type {ClaimWatchResult, WatchThreadInputMetadata,} from "./types.js";
+import type {ClaimWatchResult, WatchEvaluationResult, WatchRecord, WatchThreadInputMetadata,} from "./types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const DEFAULT_CLAIM_TTL_MS = 10 * 60_000;
 const DEFAULT_BATCH_SIZE = 25;
 const WATCH_EVENT_SOURCE = "watch_event";
 
-export interface WatchRunnerOptions extends Omit<WatchEvaluationOptions, "sourceResolvers"> {
+export type WatchEvaluator = (
+  watch: WatchRecord,
+  context: {
+    agentKey: string;
+    identityId?: string;
+  },
+) => Promise<WatchEvaluationResult>;
+
+export interface WatchRunnerOptions {
   watches: WatchStore;
   sessions: SessionStore;
   coordinator: ThreadRuntimeCoordinator;
+  evaluateWatch: WatchEvaluator;
   pollIntervalMs?: number;
   claimTtlMs?: number;
-  sourceResolvers?: WatchEvaluationOptions["sourceResolvers"];
   onError?: (error: unknown, watchId?: string) => Promise<void> | void;
 }
 
@@ -62,24 +68,13 @@ function buildWatchEventPrompt(options: {
   });
 }
 
-async function resolveTargetThreadId(
-  watch: ClaimWatchResult["watch"],
-  sessions: SessionStore,
-): Promise<string | undefined> {
-  const session = await sessions.getSession(watch.sessionId);
-  return session.currentThreadId;
-}
-
 export class WatchRunner {
   private readonly watches: WatchStore;
   private readonly sessions: SessionStore;
   private readonly coordinator: ThreadRuntimeCoordinator;
-  private readonly credentialResolver: CredentialResolver;
+  private readonly evaluateWatchFn: WatchEvaluator;
   private readonly pollIntervalMs: number;
   private readonly claimTtlMs: number;
-  private readonly fetchImpl?: WatchEvaluationOptions["fetchImpl"];
-  private readonly lookupHostname?: WatchEvaluationOptions["lookupHostname"];
-  private readonly sourceResolvers?: WatchEvaluationOptions["sourceResolvers"];
   private readonly onError?: (error: unknown, watchId?: string) => Promise<void> | void;
   private readonly claimOwner = "watch-runner";
 
@@ -92,12 +87,9 @@ export class WatchRunner {
     this.watches = options.watches;
     this.sessions = options.sessions;
     this.coordinator = options.coordinator;
-    this.credentialResolver = options.credentialResolver;
+    this.evaluateWatchFn = options.evaluateWatch;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.claimTtlMs = options.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS;
-    this.fetchImpl = options.fetchImpl;
-    this.lookupHostname = options.lookupHostname;
-    this.sourceResolvers = options.sourceResolvers;
     this.onError = options.onError;
   }
 
@@ -187,7 +179,8 @@ export class WatchRunner {
   }
 
   private async processClaim(claim: ClaimWatchResult): Promise<void> {
-    const resolvedThreadId = await resolveTargetThreadId(claim.watch, this.sessions);
+    const session = await this.sessions.getSession(claim.watch.sessionId);
+    const resolvedThreadId = session.currentThreadId;
     if (!resolvedThreadId) {
       await this.watches.failWatchRun({
         runId: claim.run.id,
@@ -203,16 +196,9 @@ export class WatchRunner {
 
     let evaluation;
     try {
-      const session = await this.sessions.getSession(claim.watch.sessionId);
-      evaluation = await evaluateWatch(claim.watch, {
-        credentialResolver: this.credentialResolver,
-        credentialScope: {
-          agentKey: session.agentKey,
-          identityId: claim.watch.createdByIdentityId,
-        },
-        fetchImpl: this.fetchImpl,
-        lookupHostname: this.lookupHostname,
-        sourceResolvers: this.sourceResolvers,
+      evaluation = await this.evaluateWatchFn(claim.watch, {
+        agentKey: session.agentKey,
+        identityId: claim.watch.createdByIdentityId ?? session.createdByIdentityId,
       });
     } catch (error) {
       await this.watches.failWatchRun({

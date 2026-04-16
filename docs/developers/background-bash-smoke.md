@@ -2,6 +2,8 @@
 
 This is a manual developer smoke test. It is not CI.
 
+Start with [Live Smoke](./live-smoke.md) if you just need a headless real-runtime check. Use this recipe when you specifically need to watch interactive background bash behavior over multiple turns.
+
 ## Goal
 
 Verify that background bash:
@@ -15,7 +17,14 @@ Verify that background bash:
 
 ## Setup
 
-Start Panda against a disposable database.
+If you want a quick sanity check before the interactive flow, run:
+
+```bash
+TEST_DATABASE_URL=postgresql://localhost:5432/panda_smoke \
+pnpm smoke --agent panda --input "Reply with the single word ready." --expect-text "ready"
+```
+
+Then start Panda against a disposable database for the interactive background-bash checks.
 
 Example:
 

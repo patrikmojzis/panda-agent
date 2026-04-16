@@ -1,6 +1,8 @@
 import {readFileSync} from "node:fs";
 
 import {describe, expect, it} from "vitest";
+import * as domainAgents from "../src/domain/agents/index.js";
+import * as domainWatches from "../src/domain/watches/index.js";
 
 const packageJson = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -91,5 +93,17 @@ describe("package exports", () => {
     expect(packageJson.exports).not.toHaveProperty("./personas/panda/tools/env-value-tools");
     expect(packageJson.exports).not.toHaveProperty("./personas/panda/tools/web-fetch");
     expect(packageJson.exports).not.toHaveProperty("./personas/panda/tools/web-fetch-tool");
+  });
+
+  it("keeps domain subpath barrels slim", () => {
+    expect(domainAgents).not.toHaveProperty("discoverLegacyAgentSourceDirs");
+    expect(domainAgents).not.toHaveProperty("importLegacyAgent");
+    expect(domainAgents).not.toHaveProperty("planLegacyAgentImport");
+
+    expect(domainWatches).not.toHaveProperty("defaultWatchSourceResolvers");
+    expect(domainWatches).not.toHaveProperty("evaluateWatch");
+    expect(domainWatches).not.toHaveProperty("validateReadOnlySqlQuery");
+    expect(domainWatches).toHaveProperty("PostgresWatchStore");
+    expect(domainWatches).toHaveProperty("WatchRunner");
   });
 });

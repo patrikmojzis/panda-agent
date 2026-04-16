@@ -4,9 +4,10 @@ import path from "node:path";
 import {mkdir} from "node:fs/promises";
 
 import {Command, InvalidArgumentError} from "commander";
+import type {Pool} from "pg";
 
 import {PANDA_DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {createPandaPool, requirePandaDatabaseUrl} from "../../app/runtime/create-runtime.js";
+import {ensureSchemas, withPandaPool} from "../../app/runtime/postgres-bootstrap.js";
 import {resolvePandaAgentDir} from "../../app/runtime/data-dir.js";
 import {CredentialService, PostgresCredentialStore, resolveCredentialCrypto} from "../credentials/index.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
@@ -40,6 +41,21 @@ interface ImportLegacyAgentCliOptions extends AgentCliOptions {
   includeMessages?: boolean;
 }
 
+function createAgentCliStores(pool: Pool): {
+  agentStore: PostgresAgentStore;
+  identityStore: PostgresIdentityStore;
+  sessionStore: PostgresSessionStore;
+  threadStore: PostgresThreadRuntimeStore;
+} {
+  const identityStore = new PostgresIdentityStore({pool});
+  return {
+    agentStore: new PostgresAgentStore({pool}),
+    identityStore,
+    sessionStore: new PostgresSessionStore({pool}),
+    threadStore: new PostgresThreadRuntimeStore({pool}),
+  };
+}
+
 async function withAgentStores<T>(
   options: AgentCliOptions,
   fn: (stores: {
@@ -49,21 +65,16 @@ async function withAgentStores<T>(
     threadStore: PostgresThreadRuntimeStore;
   }) => Promise<T>,
 ): Promise<T> {
-  const pool = createPandaPool(requirePandaDatabaseUrl(options.dbUrl));
-  const identityStore = new PostgresIdentityStore({pool});
-  const agentStore = new PostgresAgentStore({pool});
-  const sessionStore = new PostgresSessionStore({pool});
-  const threadStore = new PostgresThreadRuntimeStore({pool, identityStore});
-
-  try {
-    await identityStore.ensureSchema();
-    await agentStore.ensureSchema();
-    await sessionStore.ensureSchema();
-    await threadStore.ensureSchema();
-    return await fn({agentStore, identityStore, sessionStore, threadStore});
-  } finally {
-    await pool.end();
-  }
+  return withPandaPool(options.dbUrl, async (pool) => {
+    const stores = createAgentCliStores(pool);
+    await ensureSchemas([
+      stores.identityStore,
+      stores.agentStore,
+      stores.sessionStore,
+      stores.threadStore,
+    ]);
+    return fn(stores);
+  });
 }
 
 async function withLegacyImportStores<T>(
@@ -76,19 +87,16 @@ async function withLegacyImportStores<T>(
     threadStore: PostgresThreadRuntimeStore;
   }) => Promise<T>,
 ): Promise<T> {
-  const pool = createPandaPool(requirePandaDatabaseUrl(options.dbUrl));
-  const identityStore = new PostgresIdentityStore({pool});
-  const agentStore = new PostgresAgentStore({pool});
-  const sessionStore = new PostgresSessionStore({pool});
-  const threadStore = new PostgresThreadRuntimeStore({pool, identityStore});
-  const credentialStore = new PostgresCredentialStore({pool});
-
-  try {
-    await identityStore.ensureSchema();
-    await agentStore.ensureSchema();
-    await sessionStore.ensureSchema();
-    await threadStore.ensureSchema();
-    await credentialStore.ensureSchema();
+  return withPandaPool(options.dbUrl, async (pool) => {
+    const stores = createAgentCliStores(pool);
+    const credentialStore = new PostgresCredentialStore({pool});
+    await ensureSchemas([
+      stores.identityStore,
+      stores.agentStore,
+      stores.sessionStore,
+      stores.threadStore,
+      credentialStore,
+    ]);
     const crypto = resolveCredentialCrypto();
     const credentialService = crypto
       ? new CredentialService({
@@ -96,10 +104,11 @@ async function withLegacyImportStores<T>(
         crypto,
       })
       : null;
-    return await fn({agentStore, credentialService, identityStore, sessionStore, threadStore});
-  } finally {
-    await pool.end();
-  }
+    return fn({
+      ...stores,
+      credentialService,
+    });
+  });
 }
 
 export function parseAgentKey(value: string): string {

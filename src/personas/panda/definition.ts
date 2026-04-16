@@ -7,6 +7,7 @@ import {MediaTool} from "./tools/media-tool.js";
 import {WebFetchTool} from "./tools/web-fetch-tool.js";
 import {WebResearchTool} from "./tools/web-research-tool.js";
 import {hasOpenAiApiKey, WhisperTool} from "./tools/whisper-tool.js";
+import {GlobFilesTool, GrepFilesTool, ReadFileTool} from "./tools/workspace-readonly-tools.js";
 
 export interface BuildPandaToolsOptions {
   bash?: BashToolOptions;
@@ -35,6 +36,9 @@ export function buildPandaTools(
     : [];
   return [
     new BashTool(options.bash),
+    new ReadFileTool(),
+    new GlobFilesTool(),
+    new GrepFilesTool(),
     ...bashJobTools,
     new MediaTool(),
     new WebFetchTool(),

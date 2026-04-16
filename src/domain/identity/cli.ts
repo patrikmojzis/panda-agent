@@ -4,7 +4,7 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 
 import {PANDA_DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {createPandaPool, requirePandaDatabaseUrl} from "../../app/runtime/create-runtime.js";
+import {ensureSchemas, withPandaPool} from "../../app/runtime/postgres-bootstrap.js";
 import {PostgresIdentityStore} from "./postgres.js";
 import {normalizeIdentityHandle} from "./types.js";
 
@@ -20,15 +20,11 @@ async function withIdentityStore<T>(
   options: IdentityCliOptions,
   fn: (store: PostgresIdentityStore) => Promise<T>,
 ): Promise<T> {
-  const pool = createPandaPool(requirePandaDatabaseUrl(options.dbUrl));
-  const store = new PostgresIdentityStore({pool});
-
-  try {
-    await store.ensureSchema();
-    return await fn(store);
-  } finally {
-    await pool.end();
-  }
+  return withPandaPool(options.dbUrl, async (pool) => {
+    const store = new PostgresIdentityStore({pool});
+    await ensureSchemas([store]);
+    return fn(store);
+  });
 }
 
 export function parseIdentityHandle(value: string): string {

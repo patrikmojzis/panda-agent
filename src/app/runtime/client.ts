@@ -21,6 +21,7 @@ import type {InferenceProjection, ThreadRecord, ThreadUpdate,} from "../../domai
 import {PostgresSessionStore, type SessionRecord} from "../../domain/sessions/index.js";
 import {DEFAULT_PANDA_DAEMON_KEY, PANDA_DAEMON_REQUEST_TIMEOUT_MS, PANDA_DAEMON_STALE_AFTER_MS,} from "./daemon.js";
 import {createPandaPool, requirePandaDatabaseUrl} from "./create-runtime.js";
+import {ensureSchemas} from "./postgres-bootstrap.js";
 
 function trimNonEmptyString(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
@@ -153,7 +154,6 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
   const store = new PostgresThreadRuntimeStore({
     pool,
     tablePrefix,
-    identityStore,
   });
   const requests = new PandaRuntimeRequestRepo({
     pool,
@@ -167,11 +167,14 @@ export async function createPandaClient(options: PandaClientOptions): Promise<Pa
   let unsubscribe: (() => Promise<void>) | null = null;
 
   try {
-    await store.ensureSchema();
-    await agentStore.ensureSchema();
-    await sessionStore.ensureSchema();
-    await requests.ensureSchema();
-    await daemonState.ensureSchema();
+    await ensureSchemas([
+      identityStore,
+      agentStore,
+      sessionStore,
+      store,
+      requests,
+      daemonState,
+    ]);
 
     const requestedIdentityHandle = trimNonEmptyString(options.identity) ?? DEFAULT_IDENTITY_HANDLE;
     const identity = requestedIdentityHandle === DEFAULT_IDENTITY_HANDLE

@@ -3,7 +3,6 @@ import {renderScheduledTaskPrompt} from "../../../prompts/runtime/scheduled-task
 import type {RememberedRoute} from "../../channels/types.js";
 import type {SessionRouteRepo, SessionStore} from "../../sessions/index.js";
 import {summarizeMessageText} from "../../../personas/panda/message-preview.js";
-import type {OutboundDeliveryStore} from "../../channels/deliveries/store.js";
 import type {ThreadRuntimeCoordinator} from "../../threads/runtime/coordinator.js";
 import type {ThreadRuntimeStore} from "../../threads/runtime/store.js";
 import {computeClaimNextFireAt} from "./schedule.js";
@@ -15,17 +14,22 @@ import type {
     ScheduledTaskRunRecord,
     ScheduledTaskThreadInputMetadata,
 } from "./types.js";
+import type {OutboundDeliveryInput} from "../../channels/deliveries/types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const DEFAULT_CLAIM_TTL_MS = 10 * 60_000;
 const DEFAULT_BATCH_SIZE = 25;
 const SCHEDULED_TASK_SOURCE = "scheduled_task";
 
+type OutboundDeliveryQueue = {
+  enqueueDelivery(input: OutboundDeliveryInput): Promise<unknown>;
+};
+
 export interface ScheduledTaskRunnerOptions {
   tasks: ScheduledTaskStore;
   sessions: SessionStore;
   sessionRoutes: SessionRouteRepo;
-  outboundDeliveries: OutboundDeliveryStore;
+  outboundDeliveries: OutboundDeliveryQueue;
   threadStore: ThreadRuntimeStore;
   coordinator: ThreadRuntimeCoordinator;
   pollIntervalMs?: number;
@@ -121,7 +125,7 @@ async function executeScheduledTaskThreadRun(options: {
 }
 
 async function enqueueTextDelivery(options: {
-  outboundDeliveries: OutboundDeliveryStore;
+  outboundDeliveries: OutboundDeliveryQueue;
   threadId: string;
   route: RememberedRoute;
   text: string;
@@ -146,7 +150,7 @@ export class ScheduledTaskRunner {
   private readonly tasks: ScheduledTaskStore;
   private readonly sessions: SessionStore;
   private readonly sessionRoutes: SessionRouteRepo;
-  private readonly outboundDeliveries: OutboundDeliveryStore;
+  private readonly outboundDeliveries: OutboundDeliveryQueue;
   private readonly threadStore: ThreadRuntimeStore;
   private readonly coordinator: ThreadRuntimeCoordinator;
   private readonly pollIntervalMs: number;

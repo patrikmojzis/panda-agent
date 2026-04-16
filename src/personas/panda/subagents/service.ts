@@ -6,6 +6,10 @@ import type {AgentStore} from "../../../domain/agents/store.js";
 import type {ThreadRuntimeStore} from "../../../domain/threads/runtime/store.js";
 import type {ThreadDefinitionResolver} from "../../../domain/threads/runtime/types.js";
 import {renderSubagentHandoff} from "../../../prompts/runtime/subagents.js";
+import {
+  resolveDefaultPandaExploreSubagentModelSelector,
+  resolveDefaultPandaMemoryExplorerSubagentModelSelector,
+} from "../defaults.js";
 import {buildPandaLlmContexts} from "../contexts/builder.js";
 import type {PandaSessionContext} from "../types.js";
 import {filterToolsForSubagentRole, getPandaSubagentRolePolicy, type PandaSubagentRole,} from "./policy.js";
@@ -75,6 +79,15 @@ function extractAssistantText(message: AssistantMessage | null): string {
   return text.trim();
 }
 
+function resolveDefaultSubagentModelSelector(role: PandaSubagentRole): string | undefined {
+  switch (role) {
+    case "explore":
+      return resolveDefaultPandaExploreSubagentModelSelector();
+    case "memory_explorer":
+      return resolveDefaultPandaMemoryExplorerSubagentModelSelector();
+  }
+}
+
 export class PandaSubagentService {
   private readonly store: ThreadRuntimeStore;
   private readonly resolveDefinition: ThreadDefinitionResolver;
@@ -110,6 +123,7 @@ export class PandaSubagentService {
     const childMessages: Message[] = [stringToUserMessage(renderSubagentHandoff(input.task, input.context))];
     const childTools = filterToolsForSubagentRole(input.run.agent.tools, input.role);
     const threadStore = typeof this.store.listBashJobs === "function" ? this.store : undefined;
+    const defaultRoleModel = resolveDefaultSubagentModelSelector(input.role);
     const childThread = new Thread<PandaSessionContext>({
       agent: new Agent({
         name: `${childContext.agentKey}-${input.role}`,
@@ -134,9 +148,9 @@ export class PandaSubagentService {
       maxInputTokens: parentDefinition.maxInputTokens ?? threadRecord.maxInputTokens,
       promptCacheKey: parentDefinition.promptCacheKey ?? threadRecord.promptCacheKey,
       runPipelines: parentDefinition.runPipelines,
-      model: input.model ?? parentDefinition.model ?? threadRecord.model,
+      model: input.model ?? defaultRoleModel ?? parentDefinition.model ?? threadRecord.model,
       temperature: parentDefinition.temperature ?? threadRecord.temperature,
-      thinking: parentDefinition.thinking ?? threadRecord.thinking,
+      thinking: policy.thinking,
       runtime: parentDefinition.runtime,
       countTokens: parentDefinition.countTokens,
       signal: input.run.signal,

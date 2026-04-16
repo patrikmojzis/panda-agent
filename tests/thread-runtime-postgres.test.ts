@@ -4,6 +4,7 @@ import {DataType, newDb} from "pg-mem";
 import {stringToUserMessage} from "../src/index.js";
 import {DEFAULT_IDENTITY_ID,} from "../src/domain/identity/index.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
+import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 describe("PostgresThreadRuntimeStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -61,21 +62,20 @@ describe("PostgresThreadRuntimeStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresThreadRuntimeStore({ pool });
-    await store.ensureSchema();
+    const {identityStore, threadStore: store} = await createRuntimeStores(pool);
 
-    await expect(store.identityStore.getIdentity(DEFAULT_IDENTITY_ID)).resolves.toMatchObject({
+    await expect(identityStore.getIdentity(DEFAULT_IDENTITY_ID)).resolves.toMatchObject({
       handle: "local",
       displayName: "Local",
       status: "active",
     });
 
-    const alice = await store.identityStore.createIdentity({
+    const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
     });
-    await expect(store.identityStore.getIdentityByHandle("alice")).resolves.toMatchObject({
+    await expect(identityStore.getIdentityByHandle("alice")).resolves.toMatchObject({
       id: "alice-id",
       handle: "alice",
     });
@@ -340,8 +340,7 @@ describe("PostgresThreadRuntimeStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresThreadRuntimeStore({ pool });
-    await store.ensureSchema();
+    const {threadStore: store} = await createRuntimeStores(pool);
 
     await seedSession(pool, {
       sessionId: "session-reset",
@@ -383,8 +382,7 @@ describe("PostgresThreadRuntimeStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresThreadRuntimeStore({ pool });
-    await store.ensureSchema();
+    const {threadStore: store} = await createRuntimeStores(pool);
 
     await seedSession(pool, {
       sessionId: "session-pending-wake",
@@ -421,8 +419,7 @@ describe("PostgresThreadRuntimeStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresThreadRuntimeStore({ pool });
-    await store.ensureSchema();
+    const {threadStore: store} = await createRuntimeStores(pool);
 
     await seedSession(pool, {
       sessionId: "session-bash-job",
@@ -499,8 +496,7 @@ describe("PostgresThreadRuntimeStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresThreadRuntimeStore({ pool });
-    await store.ensureSchema();
+    const {threadStore: store} = await createRuntimeStores(pool);
 
     await seedSession(pool, {
       sessionId: "session-lost-job",
@@ -542,8 +538,7 @@ describe("PostgresThreadRuntimeStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const store = new PostgresThreadRuntimeStore({ pool });
-    await store.ensureSchema();
+    const {threadStore: store} = await createRuntimeStores(pool);
 
     await expect(store.createThread({
       id: "pg-thread-missing-session",

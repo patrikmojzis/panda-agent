@@ -4,7 +4,7 @@ import {Tool} from "../../../kernel/agent/tool.js";
 import {ToolError} from "../../../kernel/agent/exceptions.js";
 import type {JsonObject, ToolResultPayload} from "../../../kernel/agent/types.js";
 import type {RunContext} from "../../../kernel/agent/run-context.js";
-import {type PandaSubagentRole} from "../subagents/policy.js";
+import {PANDA_SUBAGENT_ROLES, type PandaSubagentRole} from "../subagents/policy.js";
 import {PandaSubagentService} from "../subagents/service.js";
 import type {PandaSessionContext} from "../types.js";
 
@@ -25,7 +25,9 @@ export interface SpawnSubagentToolOptions {
 export class SpawnSubagentTool<TContext = PandaSessionContext>
   extends Tool<typeof SpawnSubagentTool.schema, TContext> {
   static schema = z.object({
-    role: z.enum(["explore"]).describe("Subagent role to run."),
+    role: z.enum(PANDA_SUBAGENT_ROLES).describe(
+      'Subagent role to run. Use "explore" for read-only workspace inspection and "memory_explorer" for Postgres-backed memory search.',
+    ),
     task: z.string().trim().min(1).describe("The concrete task to delegate."),
     context: z.string().trim().min(1).optional().describe("Optional extra context for the child."),
     model: z.string().trim().min(1).optional().describe("Optional model override for the child run."),
@@ -35,6 +37,7 @@ export class SpawnSubagentTool<TContext = PandaSessionContext>
   description = [
     "Run a fresh synchronous Panda subagent and return its final answer.",
     "Subagents do not inherit the parent transcript.",
+    'Use role="explore" for read-only codebase inspection and role="memory_explorer" for durable memory lookup through Postgres.',
     "Use this for scoped delegated exploration when a separate pass is faster or safer.",
   ].join("\n");
   schema = SpawnSubagentTool.schema;

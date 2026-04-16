@@ -125,16 +125,26 @@ const credentialCliMocks = vi.hoisted(() => {
     agentStoreInstances,
     credentialServiceInstances,
     credentialStoreInstances,
-    createPandaPool: vi.fn(() => pool),
+    ensureSchemas: vi.fn(async (resources: Array<{ ensureSchema(): Promise<void> }>) => {
+      for (const resource of resources) {
+        await resource.ensureSchema();
+      }
+    }),
     identityStoreInstances,
     pool,
     resolveCredentialResult,
-    requirePandaDatabaseUrl: vi.fn((dbUrl?: string) => dbUrl ?? "postgres://resolved-db"),
     resolveCredentialCrypto: vi.fn(() => ({kind: "crypto"})),
     MockCredentialService,
     MockPostgresAgentStore,
     MockPostgresCredentialStore,
     MockPostgresIdentityStore,
+    withPandaPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
+      try {
+        return await fn(pool);
+      } finally {
+        await pool.end();
+      }
+    }),
   };
 });
 
@@ -158,9 +168,9 @@ vi.mock("../src/domain/credentials/crypto.js", () => ({
   resolveCredentialCrypto: credentialCliMocks.resolveCredentialCrypto,
 }));
 
-vi.mock("../src/app/runtime/create-runtime.js", () => ({
-  createPandaPool: credentialCliMocks.createPandaPool,
-  requirePandaDatabaseUrl: credentialCliMocks.requirePandaDatabaseUrl,
+vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
+  ensureSchemas: credentialCliMocks.ensureSchemas,
+  withPandaPool: credentialCliMocks.withPandaPool,
 }));
 
 function createProgram(): Command {
@@ -194,8 +204,7 @@ describe("Credential CLI", () => {
     credentialCliMocks.credentialStoreInstances.length = 0;
     credentialCliMocks.credentialServiceInstances.length = 0;
     credentialCliMocks.pool.end.mockClear();
-    credentialCliMocks.createPandaPool.mockClear();
-    credentialCliMocks.requirePandaDatabaseUrl.mockClear();
+    credentialCliMocks.ensureSchemas.mockClear();
     credentialCliMocks.resolveCredentialCrypto.mockClear();
     credentialCliMocks.resolveCredentialResult.current = {
       id: "credential-2",
@@ -209,6 +218,7 @@ describe("Credential CLI", () => {
       createdAt: 1,
       updatedAt: 2,
     };
+    credentialCliMocks.withPandaPool.mockClear();
     vi.restoreAllMocks();
   });
 

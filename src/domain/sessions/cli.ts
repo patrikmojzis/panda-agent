@@ -1,14 +1,15 @@
 import process from "node:process";
 
 import {Command, InvalidArgumentError} from "commander";
+import type {Pool} from "pg";
 
 import {PANDA_DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
 import {
-    DEFAULT_PANDA_DAEMON_KEY,
-    PANDA_DAEMON_REQUEST_TIMEOUT_MS,
-    PANDA_DAEMON_STALE_AFTER_MS
+  DEFAULT_PANDA_DAEMON_KEY,
+  PANDA_DAEMON_REQUEST_TIMEOUT_MS,
+  PANDA_DAEMON_STALE_AFTER_MS
 } from "../../app/runtime/daemon.js";
-import {createPandaPool, requirePandaDatabaseUrl} from "../../app/runtime/create-runtime.js";
+import {ensureSchemas, withPandaPool} from "../../app/runtime/postgres-bootstrap.js";
 import {PandaDaemonStateRepo} from "../../app/runtime/state/repo.js";
 import {PandaRuntimeRequestRepo} from "../threads/requests/repo.js";
 import {ConversationRepo} from "./conversations/repo.js";
@@ -34,6 +35,20 @@ interface WithSessionStores {
   conversations: ConversationRepo;
 }
 
+function createSessionCliStores(pool: Pool): WithSessionStores & {
+  identityStore: PostgresIdentityStore;
+} {
+  const identityStore = new PostgresIdentityStore({pool});
+  return {
+    identityStore,
+    sessionStore: new PostgresSessionStore({pool}),
+    threadStore: new PostgresThreadRuntimeStore({pool}),
+    requests: new PandaRuntimeRequestRepo({pool}),
+    daemonState: new PandaDaemonStateRepo({pool}),
+    conversations: new ConversationRepo({pool}),
+  };
+}
+
 function parsePositiveInt(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
@@ -47,25 +62,18 @@ async function withSessionStores<T>(
   options: SessionCliOptions,
   fn: (stores: WithSessionStores) => Promise<T>,
 ): Promise<T> {
-  const pool = createPandaPool(requirePandaDatabaseUrl(options.dbUrl));
-  const identityStore = new PostgresIdentityStore({pool});
-  const sessionStore = new PostgresSessionStore({pool});
-  const threadStore = new PostgresThreadRuntimeStore({pool, identityStore});
-  const requests = new PandaRuntimeRequestRepo({pool});
-  const daemonState = new PandaDaemonStateRepo({pool});
-  const conversations = new ConversationRepo({pool});
-
-  try {
-    await identityStore.ensureSchema();
-    await sessionStore.ensureSchema();
-    await threadStore.ensureSchema();
-    await requests.ensureSchema();
-    await daemonState.ensureSchema();
-    await conversations.ensureSchema();
-    return await fn({sessionStore, threadStore, requests, daemonState, conversations});
-  } finally {
-    await pool.end();
-  }
+  return withPandaPool(options.dbUrl, async (pool) => {
+    const stores = createSessionCliStores(pool);
+    await ensureSchemas([
+      stores.identityStore,
+      stores.sessionStore,
+      stores.threadStore,
+      stores.requests,
+      stores.daemonState,
+      stores.conversations,
+    ]);
+    return fn(stores);
+  });
 }
 
 async function waitForRequestResult(

@@ -34,15 +34,12 @@ import {
   type ThreadSummaryRecord,
   type ThreadUpdate,
 } from "./types.js";
-import {PostgresIdentityStore, type PostgresIdentityStoreOptions} from "../../../domain/identity/postgres.js";
 import {buildIdentityTableNames} from "../../../domain/identity/postgres-shared.js";
 import {buildSessionTableNames} from "../../../domain/sessions/postgres-shared.js";
-import {PostgresSessionStore} from "../../../domain/sessions/postgres.js";
 
 interface PostgresThreadRuntimeStoreOptions {
   pool: PgPoolLike;
   tablePrefix?: string;
-  identityStore?: PostgresIdentityStore;
 }
 
 export interface ThreadRuntimeNotification {
@@ -74,8 +71,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   private readonly notificationChannel: string;
   private readonly identityTableName: string;
   private readonly sessionTableName: string;
-  private readonly sessionStore: PostgresSessionStore;
-  readonly identityStore: PostgresIdentityStore;
 
   constructor(options: PostgresThreadRuntimeStoreOptions) {
     this.pool = options.pool;
@@ -84,14 +79,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     const sessionTables = buildSessionTableNames(tablePrefix);
     this.tables = buildThreadRuntimeTableNames(tablePrefix);
     this.notificationChannel = buildThreadRuntimeNotificationChannel(tablePrefix);
-    this.identityStore = options.identityStore ?? new PostgresIdentityStore({
-      pool: options.pool,
-      tablePrefix,
-    } satisfies PostgresIdentityStoreOptions);
-    this.sessionStore = new PostgresSessionStore({
-      pool: options.pool,
-      tablePrefix,
-    });
     this.identityTableName = identityTables.identities;
     this.sessionTableName = sessionTables.sessions;
   }
@@ -111,8 +98,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   }
 
   async ensureSchema(): Promise<void> {
-    await this.identityStore.ensureSchema();
-    await this.sessionStore.ensureSchema();
     await this.pool.query(buildThreadRuntimeSchemaSql(this.tables, this.sessionTableName, this.identityTableName));
   }
 

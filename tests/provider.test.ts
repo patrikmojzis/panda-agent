@@ -9,7 +9,11 @@ import {
     Thread,
 } from "../src/index.js";
 import {resolvePandaModel} from "../src/integrations/providers/shared/model.js";
-import {resolveDefaultPandaModelSelector} from "../src/personas/panda/defaults.js";
+import {
+    resolveDefaultPandaExploreSubagentModelSelector,
+    resolveDefaultPandaMemoryExplorerSubagentModelSelector,
+    resolveDefaultPandaModelSelector,
+} from "../src/personas/panda/defaults.js";
 
 describe("model selector", () => {
   it("parses supported provider names", () => {
@@ -82,6 +86,22 @@ describe("model selector", () => {
       ANTHROPIC_MODEL: "claude-haiku-4-5",
       CODEX_HOME: "/tmp/panda-empty-codex-home",
     })).toBe("anthropic/claude-haiku-4-5");
+  });
+
+  it("resolves the explore subagent selector from PANDA_EXPLORE_SUBAGENT_MODEL", () => {
+    expect(resolveDefaultPandaExploreSubagentModelSelector({
+      PANDA_EXPLORE_SUBAGENT_MODEL: "opus",
+    })).toBe("anthropic-oauth/claude-opus-4-6");
+
+    expect(resolveDefaultPandaExploreSubagentModelSelector({})).toBeUndefined();
+  });
+
+  it("resolves the memory explorer subagent selector from PANDA_MEMORY_EXPLORER_SUBAGENT_MODEL", () => {
+    expect(resolveDefaultPandaMemoryExplorerSubagentModelSelector({
+      PANDA_MEMORY_EXPLORER_SUBAGENT_MODEL: "gpt",
+    })).toBe("openai-codex/gpt-5.4");
+
+    expect(resolveDefaultPandaMemoryExplorerSubagentModelSelector({})).toBeUndefined();
   });
 
   it("throws a configuration error for unknown model ids", () => {

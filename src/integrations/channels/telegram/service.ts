@@ -12,6 +12,7 @@ import {
     PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/index.js";
 import {createPandaPool, requirePandaDatabaseUrl} from "../../../app/runtime/create-runtime.js";
+import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
 import {PandaRuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
 import {TELEGRAM_POLL_TIMEOUT_SECONDS, TELEGRAM_SOURCE, TELEGRAM_UPDATES_CURSOR_KEY} from "./config.js";
 import {buildTelegramConversationId} from "./helpers.js";
@@ -196,11 +197,12 @@ export class TelegramService {
           pool,
           tablePrefix: this.options.tablePrefix,
         });
-
-        await channelCursors.ensureSchema();
-        await outboundDeliveries.ensureSchema();
-        await channelActions.ensureSchema();
-        await requests.ensureSchema();
+        await ensureSchemas([
+          channelCursors,
+          outboundDeliveries,
+          channelActions,
+          requests,
+        ]);
 
         return {
           pool,

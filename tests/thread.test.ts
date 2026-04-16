@@ -71,6 +71,25 @@ class ProgressTool extends Tool<typeof ProgressTool.schema> {
   }
 }
 
+class AdjustThinkingTool extends Tool<typeof AdjustThinkingTool.schema> {
+  name = "adjust-thinking";
+  description = "Adjust the live thinking level";
+  static schema = z.object({
+    level: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+  });
+  schema = AdjustThinkingTool.schema;
+
+  async handle(
+    args: z.output<typeof AdjustThinkingTool.schema>,
+    run: RunContext,
+  ): Promise<{ applied: string | null }> {
+    run.setThinking(args.level === "off" ? undefined : args.level);
+    return {
+      applied: run.getThinking() ?? null,
+    };
+  }
+}
+
 class RichOutputTool extends Tool<typeof RichOutputTool.schema> {
   name = "rich-output";
   description = "Return text and image content";
@@ -432,6 +451,128 @@ describe("Thread", () => {
       temperature: 0.25,
       thinking: "medium",
     }));
+  });
+
+  it("uses updated thinking on the next request after a tool changes it", async () => {
+    const requests: LlmRuntimeRequest[] = [];
+    const runtime: LlmRuntime = {
+      complete: vi.fn().mockImplementation(async (request: LlmRuntimeRequest) => {
+        requests.push(request);
+        if (requests.length === 1) {
+          return createAssistantMessage([
+            {
+              type: "toolCall",
+              id: "call_1",
+              name: "adjust-thinking",
+              arguments: { level: "high" },
+            },
+          ]);
+        }
+
+        return message("done");
+      }),
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "adaptive-thinking-agent",
+        instructions: "Adjust thinking when needed.",
+        tools: [new AdjustThinkingTool()],
+      }),
+      model: "openai/gpt-4o-mini",
+      thinking: "low",
+      messages: [stringToUserMessage("hello")],
+      runtime,
+    });
+
+    await thread.runToCompletion();
+
+    expect(requests.map((request) => request.thinking ?? null)).toEqual(["low", "high"]);
+  });
+
+  it("clears live thinking on the next request after a tool turns it off", async () => {
+    const requests: LlmRuntimeRequest[] = [];
+    const runtime: LlmRuntime = {
+      complete: vi.fn().mockImplementation(async (request: LlmRuntimeRequest) => {
+        requests.push(request);
+        if (requests.length === 1) {
+          return createAssistantMessage([
+            {
+              type: "toolCall",
+              id: "call_1",
+              name: "adjust-thinking",
+              arguments: { level: "off" },
+            },
+          ]);
+        }
+
+        return message("done");
+      }),
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "adaptive-thinking-agent",
+        instructions: "Adjust thinking when needed.",
+        tools: [new AdjustThinkingTool()],
+      }),
+      model: "openai/gpt-4o-mini",
+      thinking: "medium",
+      messages: [stringToUserMessage("hello")],
+      runtime,
+    });
+
+    await thread.runToCompletion();
+
+    expect(requests.map((request) => request.thinking ?? null)).toEqual(["medium", null]);
+  });
+
+  it("resets ephemeral thinking before the next top-level run on a reused thread", async () => {
+    const requests: LlmRuntimeRequest[] = [];
+    const runtime: LlmRuntime = {
+      complete: vi.fn().mockImplementation(async (request: LlmRuntimeRequest) => {
+        requests.push(request);
+        if (requests.length === 1) {
+          return createAssistantMessage([
+            {
+              type: "toolCall",
+              id: "call_1",
+              name: "adjust-thinking",
+              arguments: { level: "high" },
+            },
+          ]);
+        }
+
+        return message("done");
+      }),
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "adaptive-thinking-agent",
+        instructions: "Adjust thinking when needed.",
+        tools: [new AdjustThinkingTool()],
+      }),
+      model: "openai/gpt-4o-mini",
+      thinking: "low",
+      messages: [stringToUserMessage("hello")],
+      runtime,
+    });
+
+    await thread.runToCompletion();
+    thread.addMessage(stringToUserMessage("hello again"));
+    await thread.runToCompletion();
+
+    expect(requests.map((request) => request.thinking ?? null)).toEqual(["low", "high", "low"]);
   });
 
   it("streams tool progress events before the final tool result", async () => {

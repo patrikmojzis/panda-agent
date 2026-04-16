@@ -3,9 +3,14 @@ import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {DataType, newDb} from "pg-mem";
 
 import {Agent} from "../src/index.js";
-import {PostgresSessionStore} from "../src/domain/sessions/index.js";
-import {PostgresThreadRuntimeStore, ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
-import {PostgresWatchStore, WatchRunner, type WatchSourceResolver} from "../src/domain/watches/index.js";
+import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
+import {
+    PostgresWatchStore,
+    type WatchEvaluationResult,
+    type WatchEvaluator,
+    WatchRunner,
+} from "../src/domain/watches/index.js";
+import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
   return {
@@ -51,7 +56,7 @@ class LeaseManager {
   }
 }
 
-async function createHarness(sourceResolvers: Partial<Record<string, WatchSourceResolver>>) {
+async function createHarness(evaluateWatch: WatchEvaluator) {
   const db = newDb();
   db.public.registerFunction({
     name: "pg_notify",
@@ -62,13 +67,11 @@ async function createHarness(sourceResolvers: Partial<Record<string, WatchSource
   const adapter = db.adapters.createPg();
   const pool = new adapter.Pool();
 
-  const threadStore = new PostgresThreadRuntimeStore({pool});
-  await threadStore.ensureSchema();
-  const sessionStore = new PostgresSessionStore({pool});
+  const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
   const watchStore = new PostgresWatchStore({pool});
   await watchStore.ensureSchema();
 
-  const alice = await threadStore.identityStore.createIdentity({
+  const alice = await identityStore.createIdentity({
     id: "alice-id",
     handle: "alice",
     displayName: "Alice",
@@ -107,20 +110,7 @@ async function createHarness(sourceResolvers: Partial<Record<string, WatchSource
     watches: watchStore,
     sessions: sessionStore,
     coordinator,
-    credentialResolver: {
-      resolveCredential: vi.fn(async (envKey: string) => ({
-        id: envKey,
-        envKey,
-        value: `${envKey}-value`,
-        scope: "relationship",
-        agentKey: "panda",
-        identityId: alice.id,
-        keyVersion: 1,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      })),
-    } as any,
-    sourceResolvers: sourceResolvers as any,
+    evaluateWatch,
   });
 
   return {
@@ -157,29 +147,36 @@ describe("WatchRunner", () => {
   });
 
   it("wakes Panda for a Mongo-style new registration event after bootstrap", async () => {
-    const resolver = vi.fn()
+    const evaluateWatch = vi.fn<WatchEvaluator>()
       .mockResolvedValueOnce({
-        identityToken: "mongo-stream",
-        observation: {
-          kind: "collection",
-          items: [
-            {id: "reg-1", cursor: "2026-04-11T10:00:00.000Z", summary: "Alice"},
-          ],
+        changed: false,
+        nextState: {
+          kind: "new_items",
+          identityToken: "mongo-stream",
+          bootstrapped: true,
+          lastCursor: "2026-04-11T10:00:00.000Z",
+          lastIds: ["reg-1"],
         },
-      })
+      } satisfies WatchEvaluationResult)
       .mockResolvedValueOnce({
-        identityToken: "mongo-stream",
-        observation: {
-          kind: "collection",
-          items: [
-            {id: "reg-1", cursor: "2026-04-11T10:00:00.000Z", summary: "Alice"},
-            {id: "reg-2", cursor: "2026-04-11T10:05:00.000Z", summary: "Bob"},
-          ],
+        changed: true,
+        nextState: {
+          kind: "new_items",
+          identityToken: "mongo-stream",
+          bootstrapped: true,
+          lastCursor: "2026-04-11T10:05:00.000Z",
+          lastIds: ["reg-2"],
+        },
+        event: {
+          eventKind: "new_items",
+          summary: "Detected 1 new item.",
+          dedupeKey: "reg-2",
+          payload: {
+            totalNewItems: 1,
+          },
         },
       });
-    const harness = await createHarness({
-      mongodb_query: resolver as WatchSourceResolver,
-    });
+    const harness = await createHarness(evaluateWatch);
     pools.push(harness.pool);
 
     const watch = await harness.watchStore.createWatch({
@@ -214,7 +211,15 @@ describe("WatchRunner", () => {
 
     const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
     expect(latestRun?.status).toBe("changed");
-    expect(resolver).toHaveBeenCalledTimes(2);
+    expect(evaluateWatch).toHaveBeenCalledTimes(2);
+    expect(evaluateWatch).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({id: watch.id}),
+      {
+        agentKey: "panda",
+        identityId: harness.alice.id,
+      },
+    );
 
     const transcript = await harness.threadStore.loadTranscript("session-thread");
     const input = transcript.find((entry) => entry.origin === "input" && entry.source === "watch_event");
@@ -224,29 +229,33 @@ describe("WatchRunner", () => {
   });
 
   it("wakes Panda for an IMAP-style new email event only after bootstrap", async () => {
-    const resolver = vi.fn()
+    const evaluateWatch = vi.fn<WatchEvaluator>()
       .mockResolvedValueOnce({
-        identityToken: "uidvalidity-1",
-        observation: {
-          kind: "collection",
-          items: [
-            {id: "101", cursor: 101, summary: "First mail"},
-          ],
+        changed: false,
+        nextState: {
+          kind: "new_items",
+          identityToken: "uidvalidity-1",
+          bootstrapped: true,
+          lastCursor: 101,
+          lastIds: ["101"],
         },
-      })
+      } satisfies WatchEvaluationResult)
       .mockResolvedValueOnce({
-        identityToken: "uidvalidity-1",
-        observation: {
-          kind: "collection",
-          items: [
-            {id: "101", cursor: 101, summary: "First mail"},
-            {id: "102", cursor: 102, summary: "Second mail"},
-          ],
+        changed: true,
+        nextState: {
+          kind: "new_items",
+          identityToken: "uidvalidity-1",
+          bootstrapped: true,
+          lastCursor: 102,
+          lastIds: ["102"],
+        },
+        event: {
+          eventKind: "new_items",
+          summary: "Detected 1 new item.",
+          dedupeKey: "imap-102",
         },
       });
-    const harness = await createHarness({
-      imap_mailbox: resolver as WatchSourceResolver,
-    });
+    const harness = await createHarness(evaluateWatch);
     pools.push(harness.pool);
 
     const watch = await harness.watchStore.createWatch({
@@ -280,24 +289,29 @@ describe("WatchRunner", () => {
   });
 
   it("wakes Panda for a BTC percent-move watch", async () => {
-    const resolver = vi.fn()
+    const evaluateWatch = vi.fn<WatchEvaluator>()
       .mockResolvedValueOnce({
-        observation: {
-          kind: "scalar",
-          value: 100,
-          label: "BTC",
+        changed: false,
+        nextState: {
+          kind: "percent_change",
+          baseline: 100,
+          lastValue: 100,
         },
-      })
+      } satisfies WatchEvaluationResult)
       .mockResolvedValueOnce({
-        observation: {
-          kind: "scalar",
-          value: 112,
-          label: "BTC",
+        changed: true,
+        nextState: {
+          kind: "percent_change",
+          baseline: 112,
+          lastValue: 112,
+        },
+        event: {
+          eventKind: "percent_change",
+          summary: "BTC moved +12.00% (from 100 to 112).",
+          dedupeKey: "btc-112",
         },
       });
-    const harness = await createHarness({
-      http_json: resolver as WatchSourceResolver,
-    });
+    const harness = await createHarness(evaluateWatch);
     pools.push(harness.pool);
 
     const watch = await harness.watchStore.createWatch({
@@ -332,22 +346,29 @@ describe("WatchRunner", () => {
   });
 
   it("wakes Panda for a property-listing HTML snapshot change", async () => {
-    const resolver = vi.fn()
+    const evaluateWatch = vi.fn<WatchEvaluator>()
       .mockResolvedValueOnce({
-        observation: {
-          kind: "snapshot",
-          text: "Listing A\nListing B",
+        changed: false,
+        nextState: {
+          kind: "snapshot_changed",
+          fingerprint: "listing-a-b",
+          excerpt: "Listing A Listing B",
         },
-      })
+      } satisfies WatchEvaluationResult)
       .mockResolvedValueOnce({
-        observation: {
-          kind: "snapshot",
-          text: "Listing A\nListing B\nListing C",
+        changed: true,
+        nextState: {
+          kind: "snapshot_changed",
+          fingerprint: "listing-a-b-c",
+          excerpt: "Listing A Listing B Listing C",
+        },
+        event: {
+          eventKind: "snapshot_changed",
+          summary: "Observed content changed.",
+          dedupeKey: "listing-c",
         },
       });
-    const harness = await createHarness({
-      http_html: resolver as WatchSourceResolver,
-    });
+    const harness = await createHarness(evaluateWatch);
     pools.push(harness.pool);
 
     const watch = await harness.watchStore.createWatch({

@@ -136,6 +136,13 @@ pnpm dev run --db-url postgresql://localhost:5432/panda
 pnpm dev chat --db-url postgresql://localhost:5432/panda --agent panda
 ```
 
+If you only need a one-shot live check and not the TUI, use the headless smoke path instead:
+
+```bash
+TEST_DATABASE_URL=postgresql://localhost:5432/panda_smoke \
+pnpm smoke --agent panda --input "Run pwd and tell me where you are." --expect-tool bash
+```
+
 ## Setup B: Docker Core, Per-Agent Runners
 
 This is the cleaner deployment shape:

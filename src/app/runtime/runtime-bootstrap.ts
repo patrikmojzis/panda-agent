@@ -32,9 +32,11 @@ import {
 } from "../../personas/panda/tools/scheduled-task-tools.js";
 import {WatchCreateTool, WatchDisableTool, WatchUpdateTool,} from "../../personas/panda/tools/watch-tools.js";
 import {SpawnSubagentTool} from "../../personas/panda/tools/spawn-subagent-tool.js";
+import {ThinkingSetTool} from "../../personas/panda/tools/thinking-set-tool.js";
 import {PandaSubagentService} from "../../personas/panda/subagents/service.js";
 import {BashJobService} from "../../integrations/shell/bash-job-service.js";
 import {createPandaPool} from "./database.js";
+import {ensureSchemas} from "./postgres-bootstrap.js";
 import type {PandaRuntimeOptions} from "./create-runtime.js";
 
 function trimNonEmptyString(value: string | null | undefined): string | null {
@@ -115,23 +117,24 @@ export async function bootstrapPandaRuntime(
       pool: postgresPool,
       tablePrefix: options.tablePrefix,
     });
-    await identityStore.ensureSchema();
     const agentStore = new PostgresAgentStore({
       pool: postgresPool,
       tablePrefix: options.tablePrefix,
     });
-    await agentStore.ensureSchema();
     const sessionStore = new PostgresSessionStore({
       pool: postgresPool,
       tablePrefix: options.tablePrefix,
     });
-    await sessionStore.ensureSchema();
     const store = new PostgresThreadRuntimeStore({
       pool: postgresPool,
       tablePrefix: options.tablePrefix,
-      identityStore,
     });
-    await store.ensureSchema();
+    await ensureSchemas([
+      identityStore,
+      agentStore,
+      sessionStore,
+      store,
+    ]);
     await store.markRunningBashJobsLost();
     const bashJobService = new BashJobService({
       store,
@@ -145,7 +148,6 @@ export async function bootstrapPandaRuntime(
       pool: postgresPool,
       tablePrefix: options.tablePrefix,
     });
-    await credentialStore.ensureSchema();
 
     const credentialCrypto = resolveCredentialCrypto();
     const credentialResolver = new CredentialResolver({
@@ -163,13 +165,16 @@ export async function bootstrapPandaRuntime(
       pool: postgresPool,
       tablePrefix: options.tablePrefix,
     });
-    await scheduledTasks.ensureSchema();
 
     const watches = new PostgresWatchStore({
       pool: postgresPool,
       tablePrefix: options.tablePrefix,
     });
-    await watches.ensureSchema();
+    await ensureSchemas([
+      credentialStore,
+      scheduledTasks,
+      watches,
+    ]);
 
     await ensureReadonlyChatQuerySchema({
       queryable: postgresPool,
@@ -199,6 +204,16 @@ export async function bootstrapPandaRuntime(
     });
 
     extraTools = [
+      new ThinkingSetTool({
+        persistence: {
+          updateThreadThinking: async (threadId, thinking) => {
+            const thread = await store.updateThread(threadId, {thinking});
+            return {
+              thinking: thread.thinking,
+            };
+          },
+        },
+      }),
       new SpawnSubagentTool({
         service: subagentService,
       }),

@@ -1,7 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import type {WatchRecord} from "../src/domain/watches/index.js";
-import {evaluateWatch} from "../src/domain/watches/index.js";
+import {evaluateWatch} from "../src/integrations/watches/evaluator.js";
 
 function createCredentialResolver() {
   return {

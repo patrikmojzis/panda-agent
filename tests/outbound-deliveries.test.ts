@@ -6,7 +6,6 @@ import {
     ChannelOutboundDeliveryWorker,
     PostgresOutboundDeliveryStore,
 } from "../src/domain/channels/deliveries/index.js";
-import type {OutboundDeliveryStore} from "../src/domain/channels/deliveries/store.js";
 import type {
     CompleteDeliveryInput,
     DeliveryNotification,
@@ -121,7 +120,7 @@ describe("PostgresOutboundDeliveryStore", () => {
   });
 });
 
-class MemoryDeliveryStore implements OutboundDeliveryStore {
+class MemoryDeliveryStore {
   deliveries: OutboundDeliveryRecord[] = [];
   listener: ((notification: DeliveryNotification) => Promise<void> | void) | null = null;
   counter = 0;

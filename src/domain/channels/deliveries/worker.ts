@@ -1,10 +1,25 @@
 import type {ChannelOutboundAdapter} from "../outbound.js";
 import type {OutboundRequest} from "../types.js";
-import type {OutboundDeliveryStore} from "./store.js";
-import type {DeliveryNotification, DeliveryWorkerLookup} from "./types.js";
+import type {
+    CompleteDeliveryInput,
+    DeliveryNotification,
+    DeliveryWorkerLookup,
+    FailDeliveryInput,
+    OutboundDeliveryRecord
+} from "./types.js";
+
+type ChannelOutboundDeliveryWorkerStore = {
+  failSendingDeliveries(lookup: DeliveryWorkerLookup, error: string): Promise<number>;
+  listenPendingDeliveries(
+    listener: (notification: DeliveryNotification) => Promise<void> | void,
+  ): Promise<() => Promise<void>>;
+  claimNextPendingDelivery(lookup: DeliveryWorkerLookup): Promise<OutboundDeliveryRecord | null>;
+  markDeliverySent(input: CompleteDeliveryInput): Promise<OutboundDeliveryRecord>;
+  markDeliveryFailed(input: FailDeliveryInput): Promise<OutboundDeliveryRecord>;
+};
 
 export interface ChannelOutboundDeliveryWorkerOptions {
-  store: OutboundDeliveryStore;
+  store: ChannelOutboundDeliveryWorkerStore;
   adapter: ChannelOutboundAdapter;
   connectorKey: string;
   canSend?: () => boolean;
@@ -19,9 +34,7 @@ function isMatchingNotification(
     && notification.connectorKey === lookup.connectorKey;
 }
 
-function toRequest(delivery: Awaited<ReturnType<OutboundDeliveryStore["claimNextPendingDelivery"]>> extends infer T
-  ? Exclude<T, null>
-  : never): OutboundRequest {
+function toRequest(delivery: OutboundDeliveryRecord): OutboundRequest {
   return {
     channel: delivery.channel,
     target: delivery.target,
@@ -30,7 +43,7 @@ function toRequest(delivery: Awaited<ReturnType<OutboundDeliveryStore["claimNext
 }
 
 export class ChannelOutboundDeliveryWorker {
-  private readonly store: OutboundDeliveryStore;
+  private readonly store: ChannelOutboundDeliveryWorkerStore;
   private readonly adapter: ChannelOutboundAdapter;
   private readonly lookup: DeliveryWorkerLookup;
   private readonly canSend?: () => boolean;

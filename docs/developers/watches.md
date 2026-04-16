@@ -13,6 +13,7 @@ Core files:
 - `src/domain/watches/store.ts`
 - `src/domain/watches/postgres.ts`
 - `src/domain/watches/evaluator.ts`
+- `src/integrations/watches/evaluator.ts`
 - `src/domain/watches/runner.ts`
 - `src/personas/panda/tools/watch-tools.ts`
 - `src/prompts/runtime/watch-events.ts`
@@ -24,11 +25,11 @@ The hot path is:
 1. `WatchRunner` lists due watches
 2. store claims one watch and creates a `watch_runs` row in `claimed`
 3. runner resolves the watch session and reads `session.current_thread_id`
-4. evaluator resolves the source and normalizes it into one of:
+4. the integrations evaluator resolves the source and normalizes it into one of:
    - `collection`
    - `snapshot`
    - `scalar`
-5. detector compares that observation against stored watch state
+5. the domain evaluator compares that observation against stored watch state
 6. if changed, store records a durable `watch_events` row
 7. runner injects one synthetic `watch_event` input into the resolved thread with `wake`
 8. Panda sees the structured watch-event prompt and decides whether to notify or act
@@ -97,6 +98,7 @@ Defaults:
 ## Design Rules
 
 - keep source resolution out of the runner
+- keep source adapters in `src/integrations/watches`, not `src/domain/watches`
 - keep detector logic pure and testable
 - keep secrets out of rows, events, transcript metadata, and logs
 - prefer extending the observation model over sprinkling adapter-specific comparisons everywhere

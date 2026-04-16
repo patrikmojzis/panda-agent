@@ -1,9 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
-
-import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
-import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
+import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createPool() {
   const db = newDb();
@@ -47,10 +45,8 @@ describe("PostgresWatchStore", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const threadStore = new PostgresThreadRuntimeStore({pool});
-    await threadStore.ensureSchema();
-    const sessionStore = new PostgresSessionStore({pool});
-    const alice = await threadStore.identityStore.createIdentity({
+    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
@@ -117,10 +113,8 @@ describe("PostgresWatchStore", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const threadStore = new PostgresThreadRuntimeStore({pool});
-    await threadStore.ensureSchema();
-    const sessionStore = new PostgresSessionStore({pool});
-    const alice = await threadStore.identityStore.createIdentity({
+    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
@@ -242,10 +236,8 @@ describe("PostgresWatchStore", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const threadStore = new PostgresThreadRuntimeStore({pool});
-    await threadStore.ensureSchema();
-    const sessionStore = new PostgresSessionStore({pool});
-    const alice = await threadStore.identityStore.createIdentity({
+    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
@@ -315,10 +307,8 @@ describe("PostgresWatchStore", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const threadStore = new PostgresThreadRuntimeStore({pool});
-    await threadStore.ensureSchema();
-    const sessionStore = new PostgresSessionStore({pool});
-    const alice = await threadStore.identityStore.createIdentity({
+    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",

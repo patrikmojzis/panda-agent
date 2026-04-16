@@ -3,6 +3,7 @@ import {PostgresCredentialStore} from "./postgres.js";
 import type {
     CredentialListEntry,
     CredentialListFilter,
+    CredentialRecord,
     CredentialResolutionContext,
     CredentialScopeInput,
     DecryptedCredentialRecord,
@@ -10,7 +11,7 @@ import type {
 import {maskCredentialValue, normalizeCredentialEnvKey, normalizeCredentialScopeInput,} from "./types.js";
 
 function decryptRecord(
-  record: Awaited<ReturnType<PostgresCredentialStore["resolveCredential"]>> extends infer T ? NonNullable<T> : never,
+  record: CredentialRecord,
   crypto: CredentialCrypto,
 ): DecryptedCredentialRecord {
   return {

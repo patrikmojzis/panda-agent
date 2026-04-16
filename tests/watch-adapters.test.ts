@@ -1,6 +1,6 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {WatchRecord} from "../src/domain/watches/index.js";
-import {evaluateWatch, validateReadOnlySqlQuery,} from "../src/domain/watches/index.js";
+import {evaluateWatch, validateReadOnlySqlQuery,} from "../src/integrations/watches/evaluator.js";
 
 const adapterMocks = vi.hoisted(() => {
   const state = {

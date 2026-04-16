@@ -6,7 +6,6 @@ export {
   PostgresOutboundDeliveryStore,
   type PostgresOutboundDeliveryStoreOptions,
 } from "./postgres.js";
-export {type OutboundDeliveryStore} from "./store.js";
 export {
   ChannelOutboundDeliveryWorker,
   type ChannelOutboundDeliveryWorkerOptions,

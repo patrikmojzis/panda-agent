@@ -14,5 +14,6 @@ Start here:
 - [OpenClaw Import](./openclaw-import.md)
 - [Heartbeat](./heartbeat.md)
 - [Watches](./watches.md)
+- [Live Smoke](./live-smoke.md)
 - [Background Bash Smoke Recipe](./background-bash-smoke.md)
 - [WhatsApp](./whatsapp.md)

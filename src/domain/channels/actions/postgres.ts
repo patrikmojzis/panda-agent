@@ -8,7 +8,6 @@ import {
     buildChannelActionTableNames,
     type ChannelActionTableNames,
 } from "./postgres-shared.js";
-import type {ChannelActionStore} from "./store.js";
 import type {ActionNotification, ActionWorkerLookup, ChannelActionInput, ChannelActionRecord,} from "./types.js";
 
 interface PgQueryable {
@@ -73,7 +72,31 @@ function parseRecord(row: Record<string, unknown>): ChannelActionRecord {
   };
 }
 
-export class PostgresChannelActionStore implements ChannelActionStore {
+function buildClaimNextPendingActionQuery(tableName: string, useSkipLocked: boolean): string {
+  return `
+    SELECT *
+    FROM ${tableName}
+    WHERE channel = $1
+      AND connector_key = $2
+      AND status = 'pending'
+    ORDER BY created_at ASC, id ASC
+    LIMIT 1
+    FOR UPDATE${useSkipLocked ? " SKIP LOCKED" : ""}
+  `;
+}
+
+function isSkipLockedSyntaxUnsupported(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return message.includes("skip locked")
+    || message.includes("kw_skip")
+    || message.includes("syntax error");
+}
+
+export class PostgresChannelActionStore {
   private readonly pool: PgPoolLike;
   private readonly tables: ChannelActionTableNames;
   private readonly notificationChannel: string;
@@ -155,36 +178,57 @@ export class PostgresChannelActionStore implements ChannelActionStore {
     const client = await this.pool.connect();
 
     try {
-      await client.query("BEGIN");
-      const result = await client.query(`
-        WITH next_action AS (
-          SELECT id
-          FROM ${this.tables.channelActions}
-          WHERE channel = $1
-            AND connector_key = $2
-            AND status = 'pending'
-          ORDER BY created_at ASC, id ASC
-          FOR UPDATE SKIP LOCKED
-          LIMIT 1
-        )
-        UPDATE ${this.tables.channelActions} AS action
-        SET status = 'sending',
-            attempt_count = action.attempt_count + 1,
-            claimed_at = NOW(),
-            updated_at = NOW()
-        FROM next_action
-        WHERE action.id = next_action.id
-        RETURNING action.*
-      `, [
-        normalized.channel,
-        normalized.connectorKey,
-      ]);
-      await client.query("COMMIT");
-      const row = result.rows[0];
-      return row ? parseRecord(row as Record<string, unknown>) : null;
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
+      // Real Postgres should skip already-locked rows so overlapping workers do not
+      // stall on the same oldest pending action. pg-mem does not parse SKIP LOCKED,
+      // so tests fall back to plain FOR UPDATE.
+      for (const useSkipLocked of [true, false] as const) {
+        let inTransaction = false;
+        try {
+          await client.query("BEGIN");
+          inTransaction = true;
+
+          const selectResult = await client.query(
+            buildClaimNextPendingActionQuery(this.tables.channelActions, useSkipLocked),
+            [
+              normalized.channel,
+              normalized.connectorKey,
+            ],
+          );
+          const row = selectResult.rows[0];
+          if (!row) {
+            await client.query("COMMIT");
+            return null;
+          }
+
+          const updateResult = await client.query(`
+            UPDATE ${this.tables.channelActions}
+            SET status = 'sending',
+                attempt_count = attempt_count + 1,
+                claimed_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING *
+          `, [
+            String((row as Record<string, unknown>).id),
+          ]);
+
+          await client.query("COMMIT");
+          const updatedRow = updateResult.rows[0];
+          return updatedRow ? parseRecord(updatedRow as Record<string, unknown>) : null;
+        } catch (error) {
+          if (inTransaction) {
+            await client.query("ROLLBACK");
+          }
+
+          if (useSkipLocked && isSkipLockedSyntaxUnsupported(error)) {
+            continue;
+          }
+
+          throw error;
+        }
+      }
+
+      return null;
     } finally {
       client.release();
     }

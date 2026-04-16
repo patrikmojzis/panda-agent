@@ -1,6 +1,6 @@
 import {stringToUserMessage} from "../../../kernel/agent/index.js";
 import {renderHeartbeatPrompt} from "../../../prompts/runtime/heartbeat.js";
-import type {SessionRecord, SessionStore} from "../../sessions/index.js";
+import type {SessionHeartbeatRecord, SessionRecord, SessionStore} from "../../sessions/index.js";
 import type {ThreadRuntimeCoordinator} from "../../threads/runtime/coordinator.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
@@ -131,7 +131,7 @@ export class HeartbeatRunner {
     }
   }
 
-  private async processHeartbeat(heartbeat: Awaited<ReturnType<SessionStore["claimHeartbeat"]>> extends infer T ? Exclude<T, null> : never): Promise<void> {
+  private async processHeartbeat(heartbeat: SessionHeartbeatRecord): Promise<void> {
     const now = Date.now();
     const session = await this.sessions.getSession(heartbeat.sessionId);
     const nextFireAt = now + heartbeat.everyMinutes * 60_000;

@@ -1,4 +1,4 @@
-import {describe, expect, it, vi} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 
 import {
@@ -17,18 +17,50 @@ import {
 } from "../src/index.js";
 import {PandaSubagentService} from "../src/personas/panda/subagents/service.js";
 
-class FakeBashTool extends Tool<typeof FakeBashTool.schema, PandaSessionContext> {
+class FakeReadFileTool extends Tool<typeof FakeReadFileTool.schema, PandaSessionContext> {
   static schema = z.object({
-    command: z.string(),
+    path: z.string(),
   });
 
-  name = "bash";
-  description = "Fake bash";
-  schema = FakeBashTool.schema;
+  name = "read_file";
+  description = "Fake read_file";
+  schema = FakeReadFileTool.schema;
 
-  async handle(args: z.output<typeof FakeBashTool.schema>): Promise<{ command: string }> {
+  async handle(args: z.output<typeof FakeReadFileTool.schema>): Promise<{ path: string }> {
     return {
-      command: args.command,
+      path: args.path,
+    };
+  }
+}
+
+class FakeGlobFilesTool extends Tool<typeof FakeGlobFilesTool.schema, PandaSessionContext> {
+  static schema = z.object({
+    pattern: z.string(),
+  });
+
+  name = "glob_files";
+  description = "Fake glob_files";
+  schema = FakeGlobFilesTool.schema;
+
+  async handle(args: z.output<typeof FakeGlobFilesTool.schema>): Promise<{ pattern: string }> {
+    return {
+      pattern: args.pattern,
+    };
+  }
+}
+
+class FakeGrepFilesTool extends Tool<typeof FakeGrepFilesTool.schema, PandaSessionContext> {
+  static schema = z.object({
+    pattern: z.string(),
+  });
+
+  name = "grep_files";
+  description = "Fake grep_files";
+  schema = FakeGrepFilesTool.schema;
+
+  async handle(args: z.output<typeof FakeGrepFilesTool.schema>): Promise<{ pattern: string }> {
+    return {
+      pattern: args.pattern,
     };
   }
 }
@@ -44,6 +76,22 @@ class FakeAgentDocumentTool extends Tool<typeof FakeAgentDocumentTool.schema, Pa
 
   async handle(): Promise<{ ok: true }> {
     return { ok: true };
+  }
+}
+
+class FakePostgresReadonlyQueryTool extends Tool<typeof FakePostgresReadonlyQueryTool.schema, PandaSessionContext> {
+  static schema = z.object({
+    sql: z.string(),
+  });
+
+  name = "postgres_readonly_query";
+  description = "Read-only Postgres memory query";
+  schema = FakePostgresReadonlyQueryTool.schema;
+
+  async handle(args: z.output<typeof FakePostgresReadonlyQueryTool.schema>): Promise<{ sql: string }> {
+    return {
+      sql: args.sql,
+    };
   }
 }
 
@@ -90,6 +138,7 @@ function createThreadRecord(): ThreadRecord {
     id: "thread-1",
     sessionId: "session-main",
     model: "openai/gpt-5.1",
+    thinking: "high",
     context: {
       cwd: "/workspace/panda",
       agentKey: "panda",
@@ -118,6 +167,10 @@ function createParentRunContext(agent: Agent, overrides: Partial<PandaSessionCon
 }
 
 describe("SpawnSubagentTool", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("runs a fresh scoped child and returns a structured result", async () => {
     const requests: LlmRuntimeRequest[] = [];
     const runtime: LlmRuntime = {
@@ -127,9 +180,9 @@ describe("SpawnSubagentTool", () => {
           return createAssistantMessage([{
             type: "toolCall",
             id: "call_1",
-            name: "bash",
+            name: "glob_files",
             arguments: {
-              command: "pwd",
+              pattern: "src/**/*.ts",
             },
           }]);
         }
@@ -165,7 +218,9 @@ describe("SpawnSubagentTool", () => {
       instructions: "Parent Panda instructions",
       tools: [
         tool,
-        new FakeBashTool(),
+        new FakeReadFileTool(),
+        new FakeGlobFilesTool(),
+        new FakeGrepFilesTool(),
         new FakeAgentDocumentTool(),
         new FakeOutboundTool(),
       ],
@@ -188,15 +243,198 @@ describe("SpawnSubagentTool", () => {
     expect(requests).toHaveLength(2);
     expect(requests[0]?.providerName).toBe("openai");
     expect(requests[0]?.modelId).toBe("gpt-child");
+    expect(requests[0]?.thinking).toBe("low");
     expect(requests[0]?.context.messages).toHaveLength(1);
     expect(JSON.stringify(requests[0]?.context.messages)).toContain("Inspect the codebase for subagent hooks.");
     expect(JSON.stringify(requests[0]?.context.messages)).toContain("Focus on runtime wiring.");
     expect(JSON.stringify(requests[0]?.context.messages)).not.toContain("parent transcript");
     expect(requests[0]?.context.systemPrompt).toContain("You are Panda's explore subagent.");
+    expect(requests[0]?.context.systemPrompt).toContain("This role is read-only.");
     expect(requests[0]?.context.systemPrompt).toContain("**Current DateTime:**");
     expect(requests[0]?.context.systemPrompt).toContain("**Environment Overview:**");
     expect(requests[0]?.context.systemPrompt).not.toContain("**Agent Workspace:**");
-    expect(requests[0]?.context.tools?.map((toolDef) => toolDef.name)).toEqual(["bash"]);
+    expect(requests[0]?.context.tools?.map((toolDef) => toolDef.name)).toEqual([
+      "read_file",
+      "glob_files",
+      "grep_files",
+    ]);
+  });
+
+  it("uses the role default model when PANDA_EXPLORE_SUBAGENT_MODEL is configured", async () => {
+    vi.stubEnv("PANDA_EXPLORE_SUBAGENT_MODEL", "opus");
+    const requests: LlmRuntimeRequest[] = [];
+    const runtime: LlmRuntime = {
+      complete: vi.fn().mockImplementation(async (request: LlmRuntimeRequest) => {
+        requests.push(request);
+        return createAssistantMessage([{
+          type: "text",
+          text: "Done.",
+        }]);
+      }),
+      stream: vi.fn(() => {
+        throw new Error("stream not expected");
+      }),
+    };
+    const service = new PandaSubagentService({
+      store: {
+        getThread: vi.fn(async () => createThreadRecord()),
+      } as any,
+      resolveDefinition: vi.fn(async () => ({
+        agent: new Agent({
+          name: "panda",
+          instructions: "Parent Panda instructions",
+        }),
+        runtime,
+        model: "openai/gpt-parent",
+      } satisfies ResolvedThreadDefinition)),
+      maxSubagentDepth: 1,
+    });
+    const tool = new SpawnSubagentTool({ service });
+    const agent = new Agent({
+      name: "panda",
+      instructions: "Parent Panda instructions",
+      tools: [tool, new FakeReadFileTool(), new FakeGlobFilesTool(), new FakeGrepFilesTool()],
+    });
+
+    await tool.run({
+      role: "explore",
+      task: "Inspect the codebase.",
+    }, createParentRunContext(agent));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.providerName).toBe("anthropic-oauth");
+    expect(requests[0]?.modelId).toBe("claude-opus-4-6");
+  });
+
+  it("runs a postgres-only memory explorer child and returns a structured result", async () => {
+    const requests: LlmRuntimeRequest[] = [];
+    const runtime: LlmRuntime = {
+      complete: vi.fn().mockImplementation(async (request: LlmRuntimeRequest) => {
+        requests.push(request);
+        if (requests.length === 1) {
+          return createAssistantMessage([{
+            type: "toolCall",
+            id: "call_1",
+            name: "postgres_readonly_query",
+            arguments: {
+              sql: "SELECT slug, left(content, 80) FROM panda_agent_prompts LIMIT 5",
+            },
+          }]);
+        }
+
+        return createAssistantMessage([{
+          type: "text",
+          text: "Found the heartbeat prompt and one diary hit for Alice.",
+        }]);
+      }),
+      stream: vi.fn(() => {
+        throw new Error("stream not expected");
+      }),
+    };
+    const service = new PandaSubagentService({
+      store: {
+        getThread: vi.fn(async () => createThreadRecord()),
+      } as any,
+      resolveDefinition: vi.fn(async () => ({
+        agent: new Agent({
+          name: "panda",
+          instructions: "Parent Panda instructions",
+        }),
+        systemPrompt: "Parent system prompt",
+        runtime,
+        model: "openai/gpt-parent",
+      } satisfies ResolvedThreadDefinition)),
+      maxSubagentDepth: 1,
+    });
+    const tool = new SpawnSubagentTool({ service });
+    const agent = new Agent({
+      name: "panda",
+      instructions: "Parent Panda instructions",
+      tools: [
+        tool,
+        new FakeReadFileTool(),
+        new FakeGlobFilesTool(),
+        new FakeGrepFilesTool(),
+        new FakePostgresReadonlyQueryTool(),
+        new FakeAgentDocumentTool(),
+        new FakeOutboundTool(),
+      ],
+    });
+
+    const result = await tool.run({
+      role: "memory_explorer",
+      task: "Search durable memory for heartbeat guidance and any Alice-specific notes.",
+      context: "Prefer previews before full reads and stay in Postgres.",
+      model: "openai/gpt-child",
+    }, createParentRunContext(agent));
+
+    expect(result).toMatchObject({
+      details: {
+        role: "memory_explorer",
+        finalMessage: "Found the heartbeat prompt and one diary hit for Alice.",
+        toolCallCount: 1,
+      },
+    });
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.providerName).toBe("openai");
+    expect(requests[0]?.modelId).toBe("gpt-child");
+    expect(requests[0]?.thinking).toBe("medium");
+    expect(requests[0]?.context.messages).toHaveLength(1);
+    expect(JSON.stringify(requests[0]?.context.messages)).toContain("Search durable memory for heartbeat guidance");
+    expect(JSON.stringify(requests[0]?.context.messages)).toContain("Prefer previews before full reads");
+    expect(requests[0]?.context.systemPrompt).toContain("You are Panda's memory explorer subagent.");
+    expect(requests[0]?.context.systemPrompt).toContain("Treat Postgres like grep for memory:");
+    expect(requests[0]?.context.systemPrompt).toContain("REGEXP_SPLIT_TO_TABLE");
+    expect(requests[0]?.context.systemPrompt).toContain("TO_TSVECTOR");
+    expect(requests[0]?.context.tools?.map((toolDef) => toolDef.name)).toEqual([
+      "postgres_readonly_query",
+    ]);
+  });
+
+  it("uses the role default model when PANDA_MEMORY_EXPLORER_SUBAGENT_MODEL is configured", async () => {
+    vi.stubEnv("PANDA_MEMORY_EXPLORER_SUBAGENT_MODEL", "gpt");
+    const requests: LlmRuntimeRequest[] = [];
+    const runtime: LlmRuntime = {
+      complete: vi.fn().mockImplementation(async (request: LlmRuntimeRequest) => {
+        requests.push(request);
+        return createAssistantMessage([{
+          type: "text",
+          text: "Done.",
+        }]);
+      }),
+      stream: vi.fn(() => {
+        throw new Error("stream not expected");
+      }),
+    };
+    const service = new PandaSubagentService({
+      store: {
+        getThread: vi.fn(async () => createThreadRecord()),
+      } as any,
+      resolveDefinition: vi.fn(async () => ({
+        agent: new Agent({
+          name: "panda",
+          instructions: "Parent Panda instructions",
+        }),
+        runtime,
+        model: "anthropic-oauth/claude-opus-4-6",
+      } satisfies ResolvedThreadDefinition)),
+      maxSubagentDepth: 1,
+    });
+    const tool = new SpawnSubagentTool({ service });
+    const agent = new Agent({
+      name: "panda",
+      instructions: "Parent Panda instructions",
+      tools: [tool, new FakePostgresReadonlyQueryTool()],
+    });
+
+    await tool.run({
+      role: "memory_explorer",
+      task: "Inspect durable memory.",
+    }, createParentRunContext(agent));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.providerName).toBe("openai-codex");
+    expect(requests[0]?.modelId).toBe("gpt-5.4");
   });
 
   it("enforces the configured subagent depth limit", async () => {
@@ -216,7 +454,7 @@ describe("SpawnSubagentTool", () => {
     const agent = new Agent({
       name: "panda",
       instructions: "Parent Panda instructions",
-      tools: [tool, new FakeBashTool()],
+      tools: [tool, new FakeReadFileTool()],
     });
 
     await expect(tool.run({
@@ -253,7 +491,7 @@ describe("SpawnSubagentTool", () => {
     const agent = new Agent({
       name: "panda",
       instructions: "Parent Panda instructions",
-      tools: [tool, new FakeBashTool()],
+      tools: [tool, new FakeReadFileTool()],
     });
 
     await expect(tool.run({

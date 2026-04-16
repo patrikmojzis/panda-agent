@@ -4,9 +4,10 @@ import {DataType, newDb} from "pg-mem";
 
 import {Agent,} from "../src/index.js";
 import {PostgresScheduledTaskStore, ScheduledTaskRunner,} from "../src/domain/scheduling/tasks/index.js";
-import {PostgresSessionStore, SessionRouteRepo} from "../src/domain/sessions/index.js";
-import {PostgresThreadRuntimeStore, ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
+import {SessionRouteRepo} from "../src/domain/sessions/index.js";
+import {ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
 import {PostgresOutboundDeliveryStore,} from "../src/domain/channels/deliveries/index.js";
+import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
   return {
@@ -67,9 +68,7 @@ async function createHarness(options: {
   const adapter = db.adapters.createPg();
   const pool = new adapter.Pool();
 
-  const threadStore = new PostgresThreadRuntimeStore({pool});
-  await threadStore.ensureSchema();
-  const sessionStore = new PostgresSessionStore({pool});
+  const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
   const scheduledTasks = new PostgresScheduledTaskStore({pool});
   await scheduledTasks.ensureSchema();
   const sessionRoutes = new SessionRouteRepo({pool});
@@ -77,7 +76,7 @@ async function createHarness(options: {
   const outboundDeliveries = new PostgresOutboundDeliveryStore({pool});
   await outboundDeliveries.ensureSchema();
 
-  const alice = await threadStore.identityStore.createIdentity({
+  const alice = await identityStore.createIdentity({
     id: "alice-id",
     handle: "alice",
     displayName: "Alice",

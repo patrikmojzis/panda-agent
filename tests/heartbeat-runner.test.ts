@@ -4,8 +4,9 @@ import {DataType, newDb} from "pg-mem";
 
 import {Agent, stringToUserMessage,} from "../src/index.js";
 import {HeartbeatRunner} from "../src/domain/scheduling/heartbeats/runner.js";
-import {PostgresSessionStore, type SessionHeartbeatRecord, type SessionStore} from "../src/domain/sessions/index.js";
-import {PostgresThreadRuntimeStore, ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
+import {type SessionHeartbeatRecord, type SessionStore} from "../src/domain/sessions/index.js";
+import {ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
+import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
   return {
@@ -65,11 +66,9 @@ async function createHarness(options: {
   const adapter = db.adapters.createPg();
   const pool = new adapter.Pool();
 
-  const threadStore = new PostgresThreadRuntimeStore({pool});
-  await threadStore.ensureSchema();
-  const sessionStore = new PostgresSessionStore({pool});
+  const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
 
-  const alice = await threadStore.identityStore.createIdentity({
+  const alice = await identityStore.createIdentity({
     id: "alice-id",
     handle: "alice",
     displayName: "Alice",

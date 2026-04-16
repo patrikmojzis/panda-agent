@@ -80,6 +80,9 @@
     "start": "node dist/app/cli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "smoke": "tsx src/app/cli.ts smoke",
+    "test:live": "vitest run --config vitest.live.config.ts",
+    "test:live:watch": "vitest --config vitest.live.config.ts",
     "example:basic": "tsx examples/basic.ts",
     "example:structured": "tsx examples/structured-output.ts"
   },

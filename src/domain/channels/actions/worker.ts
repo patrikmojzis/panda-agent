@@ -1,8 +1,17 @@
-import type {ChannelActionStore} from "./store.js";
 import type {ActionNotification, ActionWorkerLookup, ChannelActionRecord} from "./types.js";
 
+type ChannelActionWorkerStore = {
+  failSendingActions(lookup: ActionWorkerLookup, error: string): Promise<number>;
+  listenPendingActions(
+    listener: (notification: ActionNotification) => Promise<void> | void,
+  ): Promise<() => Promise<void>>;
+  claimNextPendingAction(lookup: ActionWorkerLookup): Promise<ChannelActionRecord | null>;
+  markActionSent(id: string): Promise<ChannelActionRecord>;
+  markActionFailed(id: string, error: string): Promise<ChannelActionRecord>;
+};
+
 export interface ChannelActionWorkerOptions {
-  store: ChannelActionStore;
+  store: ChannelActionWorkerStore;
   lookup: ActionWorkerLookup;
   dispatch(action: ChannelActionRecord): Promise<void>;
   onError?: (error: unknown, actionId?: string) => Promise<void> | void;
@@ -17,7 +26,7 @@ function isMatchingNotification(
 }
 
 export class ChannelActionWorker {
-  private readonly store: ChannelActionStore;
+  private readonly store: ChannelActionWorkerStore;
   private readonly lookup: ActionWorkerLookup;
   private readonly dispatchAction: (action: ChannelActionRecord) => Promise<void>;
   private readonly onError?: (error: unknown, actionId?: string) => Promise<void> | void;

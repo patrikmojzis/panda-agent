@@ -15,6 +15,7 @@ import {type ChatCliOptions, runChatCli} from "../ui/tui/chat.js";
 import {renderResumeHint} from "../ui/tui/exit-hint.js";
 import {registerWhatsAppCommands} from "../integrations/channels/whatsapp/cli.js";
 import {resolvePandaBashRunnerOptions, startPandaBashRunner} from "../integrations/shell/index.js";
+import {registerSmokeCommand} from "./smoke/cli.js";
 
 try {
   (process as NodeJS.Process & { loadEnvFile?: (path?: string) => void }).loadEnvFile?.();
@@ -160,6 +161,7 @@ program
   .version("0.1.0");
 
 configureChatCommand(program);
+registerSmokeCommand(program);
 
 configureChatCommand(
   program

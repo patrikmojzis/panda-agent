@@ -7,7 +7,7 @@ import {parseAgentKey} from "../agents/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {parseIdentityHandle} from "../identity/cli.js";
-import {createPandaPool, requirePandaDatabaseUrl} from "../../app/runtime/create-runtime.js";
+import {ensureSchemas, withPandaPool} from "../../app/runtime/postgres-bootstrap.js";
 import {PostgresCredentialStore} from "./postgres.js";
 import {CredentialService} from "./resolver.js";
 import {resolveCredentialCrypto} from "./crypto.js";
@@ -57,19 +57,14 @@ async function withCredentialStores<T>(
     identityStore: PostgresIdentityStore;
   }) => Promise<T>,
 ): Promise<T> {
-  const pool = createPandaPool(requirePandaDatabaseUrl(options.dbUrl));
-  const agentStore = new PostgresAgentStore({pool});
-  const identityStore = new PostgresIdentityStore({pool});
-  const credentialStore = new PostgresCredentialStore({pool});
+  return withPandaPool(options.dbUrl, async (pool) => {
+    const agentStore = new PostgresAgentStore({pool});
+    const identityStore = new PostgresIdentityStore({pool});
+    const credentialStore = new PostgresCredentialStore({pool});
 
-  try {
-    await identityStore.ensureSchema();
-    await agentStore.ensureSchema();
-    await credentialStore.ensureSchema();
+    await ensureSchemas([identityStore, agentStore, credentialStore]);
     return await fn({agentStore, credentialStore, identityStore});
-  } finally {
-    await pool.end();
-  }
+  });
 }
 
 async function withCredentialService<T>(

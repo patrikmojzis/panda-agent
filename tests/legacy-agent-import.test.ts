@@ -5,7 +5,8 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 
 import {CredentialCrypto, CredentialService, PostgresCredentialStore,} from "../src/domain/credentials/index.js";
-import {importLegacyAgent, planLegacyAgentImport, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {importLegacyAgent, planLegacyAgentImport,} from "../src/domain/agents/legacy-import.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 

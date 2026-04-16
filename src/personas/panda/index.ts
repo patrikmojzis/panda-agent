@@ -58,6 +58,11 @@ export {
   type PostgresReadonlyQueryToolOptions,
 } from "./tools/postgres-readonly-query-tool.js";
 export {
+  GlobFilesTool,
+  GrepFilesTool,
+  ReadFileTool,
+} from "./tools/workspace-readonly-tools.js";
+export {
   ScheduledTaskCancelTool,
   ScheduledTaskCreateTool,
   ScheduledTaskUpdateTool,
@@ -73,6 +78,11 @@ export {
   SpawnSubagentTool,
   type SpawnSubagentToolOptions,
 } from "./tools/spawn-subagent-tool.js";
+export {
+  ThinkingSetTool,
+  type ThinkingSetPersistence,
+  type ThinkingSetToolOptions,
+} from "./tools/thinking-set-tool.js";
 export {
   WhisperTool,
   type WhisperToolOptions,

@@ -6,7 +6,7 @@ import {Bot} from "grammy";
 import {PANDA_DB_URL_OPTION_DESCRIPTION} from "../../../app/cli-shared.js";
 import {createDefaultIdentityInput, PostgresIdentityStore} from "../../../domain/identity/index.js";
 import {parseIdentityHandle} from "../../../domain/identity/cli.js";
-import {createPandaPool, requirePandaDatabaseUrl} from "../../../app/runtime/create-runtime.js";
+import {ensureSchemas, withPandaPool} from "../../../app/runtime/postgres-bootstrap.js";
 import {requireTelegramBotToken, resolveTelegramMediaDir, TELEGRAM_SOURCE} from "./config.js";
 import {TelegramService} from "./service.js";
 
@@ -49,17 +49,11 @@ async function withTelegramIdentityStore<T>(
   options: TelegramIdentityCliOptions,
   fn: (store: PostgresIdentityStore) => Promise<T>,
 ): Promise<T> {
-  const pool = createPandaPool(requirePandaDatabaseUrl(options.dbUrl));
-  const store = new PostgresIdentityStore({
-    pool,
+  return withPandaPool(options.dbUrl, async (pool) => {
+    const store = new PostgresIdentityStore({pool});
+    await ensureSchemas([store]);
+    return fn(store);
   });
-
-  try {
-    await store.ensureSchema();
-    return await fn(store);
-  } finally {
-    await pool.end();
-  }
 }
 
 function createTelegramRunService(options: TelegramRunCliOptions = {}): TelegramService {

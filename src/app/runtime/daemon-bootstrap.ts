@@ -7,7 +7,9 @@ import {ConversationRepo, SessionRouteRepo} from "../../domain/sessions/index.js
 import {WatchRunner} from "../../domain/watches/index.js";
 import {PandaRuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {createChannelTypingEventHandler} from "../../domain/threads/runtime/channel-typing.js";
+import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {createPandaRuntime, createPandaThreadDefinition, type PandaRuntimeServices,} from "./create-runtime.js";
+import {ensureSchemas} from "./postgres-bootstrap.js";
 import {PandaDaemonStateRepo} from "./state/repo.js";
 import {resolveDefaultPandaModelSelector} from "../../personas/panda/defaults.js";
 import type {PandaDaemonOptions} from "./daemon-shared.js";
@@ -122,37 +124,39 @@ export async function bootstrapPandaDaemonContext(
       pool: runtime.pool,
       tablePrefix: options.tablePrefix,
     });
-    await conversationBindings.ensureSchema();
 
     sessionRoutes = new SessionRouteRepo({
       pool: runtime.pool,
       tablePrefix: options.tablePrefix,
     });
-    await sessionRoutes.ensureSchema();
 
     outboundDeliveries = new PostgresOutboundDeliveryStore({
       pool: runtime.pool,
       tablePrefix: options.tablePrefix,
     });
-    await outboundDeliveries.ensureSchema();
 
     channelActions = new PostgresChannelActionStore({
       pool: runtime.pool,
       tablePrefix: options.tablePrefix,
     });
-    await channelActions.ensureSchema();
 
     const requests = new PandaRuntimeRequestRepo({
       pool: runtime.pool,
       tablePrefix: options.tablePrefix,
     });
-    await requests.ensureSchema();
 
     const daemonState = new PandaDaemonStateRepo({
       pool: runtime.pool,
       tablePrefix: options.tablePrefix,
     });
-    await daemonState.ensureSchema();
+    await ensureSchemas([
+      conversationBindings,
+      sessionRoutes,
+      outboundDeliveries,
+      channelActions,
+      requests,
+      daemonState,
+    ]);
 
     const scheduledTaskRunner = new ScheduledTaskRunner({
       tasks: runtime.scheduledTasks,
@@ -162,11 +166,14 @@ export async function bootstrapPandaDaemonContext(
       threadStore: runtime.store,
       coordinator: runtime.coordinator,
     });
+    const evaluateWatch = createWatchEvaluator({
+      credentialResolver: runtime.credentialResolver,
+    });
     const watchRunner = new WatchRunner({
       watches: runtime.watches,
       sessions: runtime.sessionStore,
       coordinator: runtime.coordinator,
-      credentialResolver: runtime.credentialResolver,
+      evaluateWatch,
     });
     const relationshipHeartbeatRunner = new HeartbeatRunner({
       sessions: runtime.sessionStore,

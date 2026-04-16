@@ -37,9 +37,19 @@ const identityCliMocks = vi.hoisted(() => {
     pool,
     identityStoreInstances,
     MockPostgresIdentityStore,
-    createPandaPool: vi.fn(() => pool),
-    requirePandaDatabaseUrl: vi.fn((dbUrl?: string) => dbUrl ?? "postgres://resolved-db"),
+    ensureSchemas: vi.fn(async (resources: Array<{ ensureSchema(): Promise<void> }>) => {
+      for (const resource of resources) {
+        await resource.ensureSchema();
+      }
+    }),
     randomUUID: vi.fn(() => "identity-created"),
+    withPandaPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
+      try {
+        return await fn(pool);
+      } finally {
+        await pool.end();
+      }
+    }),
   };
 });
 
@@ -51,9 +61,9 @@ vi.mock("../src/domain/identity/postgres.js", () => ({
   PostgresIdentityStore: identityCliMocks.MockPostgresIdentityStore,
 }));
 
-vi.mock("../src/app/runtime/create-runtime.js", () => ({
-  createPandaPool: identityCliMocks.createPandaPool,
-  requirePandaDatabaseUrl: identityCliMocks.requirePandaDatabaseUrl,
+vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
+  ensureSchemas: identityCliMocks.ensureSchemas,
+  withPandaPool: identityCliMocks.withPandaPool,
 }));
 
 function createProgram(): Command {
@@ -75,9 +85,9 @@ describe("Identity CLI", () => {
   afterEach(() => {
     identityCliMocks.identityStoreInstances.length = 0;
     identityCliMocks.pool.end.mockClear();
-    identityCliMocks.createPandaPool.mockClear();
-    identityCliMocks.requirePandaDatabaseUrl.mockClear();
+    identityCliMocks.ensureSchemas.mockClear();
     identityCliMocks.randomUUID.mockClear();
+    identityCliMocks.withPandaPool.mockClear();
     vi.restoreAllMocks();
   });
 
@@ -91,7 +101,10 @@ describe("Identity CLI", () => {
 
     expect(latestIdentityStore().ensureSchema).toHaveBeenCalledOnce();
     expect(latestIdentityStore().listIdentities).toHaveBeenCalledOnce();
-    expect(identityCliMocks.requirePandaDatabaseUrl).toHaveBeenCalledWith("postgres://identity-db");
+    expect(identityCliMocks.withPandaPool).toHaveBeenCalledWith(
+      "postgres://identity-db",
+      expect.any(Function),
+    );
     expect(identityCliMocks.pool.end).toHaveBeenCalledOnce();
     expect(write).toHaveBeenCalledWith(
       "local\n  id local · status active\n  created 2026-04-10T12:30:00.000Z\n\n",

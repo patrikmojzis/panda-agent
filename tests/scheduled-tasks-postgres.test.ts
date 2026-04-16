@@ -1,10 +1,10 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {ensureReadonlyChatQuerySchema, PostgresThreadRuntimeStore,} from "../src/domain/threads/runtime/index.js";
+import {ensureReadonlyChatQuerySchema,} from "../src/domain/threads/runtime/index.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
-import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
+import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 class PgMemReadonlySchemaQueryable {
   constructor(
@@ -197,10 +197,8 @@ describe("PostgresScheduledTaskStore", () => {
     const {pool} = createScopedPool();
     pools.push(pool);
 
-    const threadStore = new PostgresThreadRuntimeStore({pool});
-    await threadStore.ensureSchema();
-    const sessionStore = new PostgresSessionStore({pool});
-    const alice = await threadStore.identityStore.createIdentity({
+    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
@@ -278,19 +276,17 @@ describe("PostgresScheduledTaskStore", () => {
     const {pool, setScope} = createScopedPool();
     pools.push(pool);
 
-    const threadStore = new PostgresThreadRuntimeStore({pool});
-    await threadStore.ensureSchema();
-    const sessionStore = new PostgresSessionStore({pool});
+    const {identityStore, sessionStore} = await createRuntimeStores(pool);
     const scheduledTasks = new PostgresScheduledTaskStore({pool});
     await scheduledTasks.ensureSchema();
     await new PostgresWatchStore({pool}).ensureSchema();
 
-    const alice = await threadStore.identityStore.createIdentity({
+    const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
     });
-    const bob = await threadStore.identityStore.createIdentity({
+    const bob = await identityStore.createIdentity({
       id: "bob-id",
       handle: "bob",
       displayName: "Bob",

@@ -61,11 +61,21 @@ const telegramCliMocks = vi.hoisted(() => {
     MockPostgresIdentityStore,
     MockTelegramService,
     botInstances,
+    ensureSchemas: vi.fn(async (resources: Array<{ ensureSchema(): Promise<void> }>) => {
+      for (const resource of resources) {
+        await resource.ensureSchema();
+      }
+    }),
     storeInstances,
     pool,
     serviceConstructor,
-    createPandaPool: vi.fn(() => pool),
-    requirePandaDatabaseUrl: vi.fn((dbUrl?: string) => dbUrl ?? "postgres://resolved-db"),
+    withPandaPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
+      try {
+        return await fn(pool);
+      } finally {
+        await pool.end();
+      }
+    }),
   };
 });
 
@@ -87,9 +97,9 @@ vi.mock("../src/domain/identity/index.js", () => ({
   }),
 }));
 
-vi.mock("../src/app/runtime/create-runtime.js", () => ({
-  createPandaPool: telegramCliMocks.createPandaPool,
-  requirePandaDatabaseUrl: telegramCliMocks.requirePandaDatabaseUrl,
+vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
+  ensureSchemas: telegramCliMocks.ensureSchemas,
+  withPandaPool: telegramCliMocks.withPandaPool,
 }));
 
 function latestBot(): InstanceType<typeof telegramCliMocks.MockBot> {
@@ -116,8 +126,8 @@ describe("Telegram CLI", () => {
     telegramCliMocks.storeInstances.length = 0;
     telegramCliMocks.pool.end.mockClear();
     telegramCliMocks.serviceConstructor.mockClear();
-    telegramCliMocks.createPandaPool.mockClear();
-    telegramCliMocks.requirePandaDatabaseUrl.mockClear();
+    telegramCliMocks.ensureSchemas.mockClear();
+    telegramCliMocks.withPandaPool.mockClear();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
@@ -151,8 +161,10 @@ describe("Telegram CLI", () => {
 
     const store = latestStore();
     expect(telegramCliMocks.serviceConstructor).not.toHaveBeenCalled();
-    expect(telegramCliMocks.requirePandaDatabaseUrl).toHaveBeenCalledWith("postgres://telegram-db");
-    expect(telegramCliMocks.createPandaPool).toHaveBeenCalledWith("postgres://telegram-db");
+    expect(telegramCliMocks.withPandaPool).toHaveBeenCalledWith(
+      "postgres://telegram-db",
+      expect.any(Function),
+    );
     expect(store.ensureSchema).toHaveBeenCalledTimes(1);
     expect(store.ensureIdentity).toHaveBeenCalledTimes(1);
     expect(store.getIdentityByHandle).not.toHaveBeenCalled();

@@ -4,7 +4,6 @@ import type {Pool, PoolClient} from "pg";
 
 import {quoteIdentifier, toJson, toMillis,} from "../../threads/runtime/postgres-shared.js";
 import type {OutboundItem, OutboundSentItem, OutboundTarget} from "../types.js";
-import type {OutboundDeliveryStore} from "./store.js";
 import {
     buildDeliveryNotificationChannel,
     buildOutboundDeliveryTableNames,
@@ -146,7 +145,7 @@ export function parseDeliveryNotification(payload: string): DeliveryNotification
   }
 }
 
-export class PostgresOutboundDeliveryStore implements OutboundDeliveryStore {
+export class PostgresOutboundDeliveryStore {
   private readonly pool: PgPoolLike;
   private readonly tables: OutboundDeliveryTableNames;
   private readonly notificationChannel: string;
