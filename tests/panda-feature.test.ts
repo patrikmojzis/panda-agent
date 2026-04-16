@@ -1,17 +1,17 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-    BashTool,
-    BraveSearchTool,
-    BrowserTool,
-    DateTimeContext,
-    DEFAULT_AGENT_INSTRUCTIONS,
-    EnvironmentContext,
-    MediaTool,
-    PostgresReadonlyQueryTool,
-    WebFetchTool,
-    WebResearchTool,
-    WhisperTool,
+  BashTool,
+  BraveSearchTool,
+  BrowserTool,
+  DateTimeContext,
+  DEFAULT_AGENT_INSTRUCTIONS,
+  EnvironmentContext,
+  MediaTool,
+  PostgresReadonlyQueryTool,
+  WebFetchTool,
+  WebResearchTool,
+  WhisperTool,
 } from "../src/index.js";
 import {buildDefaultAgentTools, buildDefaultAgentToolsets} from "../src/panda/definition.js";
 import {resolveStoredContext} from "../src/app/runtime/create-runtime.js";
@@ -33,7 +33,6 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildDefaultAgentTools();
 
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("## Soul");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("## Channels & Inner Monologue");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("No outbound call = no message delivered.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Use `role=\"workspace\"` for read-only workspace inspection, file search, and local PDF/image/sketch inspection.");

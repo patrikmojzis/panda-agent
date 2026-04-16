@@ -37,7 +37,7 @@ const browserMocks = vi.hoisted(() => {
   const instances: unknown[] = [];
   const start = vi.fn(async () => {});
   const close = vi.fn(async () => {});
-  class MockBrowserSessionService {
+  class MockBrowserRunnerClient {
     constructor(_options: unknown) {
       instances.push(this);
     }
@@ -54,7 +54,7 @@ const browserMocks = vi.hoisted(() => {
   return {
     close,
     instances,
-    MockBrowserSessionService,
+    MockBrowserRunnerClient,
     start,
   };
 });
@@ -93,8 +93,8 @@ vi.mock("../src/panda/tools/postgres-readonly-query-tool.js", () => ({
   PostgresReadonlyQueryTool: class {},
 }));
 
-vi.mock("../src/panda/tools/browser-service.js", () => ({
-  BrowserSessionService: browserMocks.MockBrowserSessionService,
+vi.mock("../src/integrations/browser/client.js", () => ({
+  BrowserRunnerClient: browserMocks.MockBrowserRunnerClient,
 }));
 
 describe("createRuntime", () => {

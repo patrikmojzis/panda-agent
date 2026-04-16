@@ -2,7 +2,13 @@
 
 Panda ships with a built-in `browser` tool.
 
-It drives real headless Chromium through Dockerized Playwright Server. Use it when `web_fetch` is too dumb for the job.
+It now runs through a dedicated `browser-runner` service.
+
+That split is intentional:
+
+- `panda-core` keeps DB creds, model keys, and connector secrets
+- `browser-runner` owns Chromium, Playwright, session state, and browser network access
+- the browser lane no longer requires Docker access inside `panda-core`
 
 ## What It Does
 
@@ -20,22 +26,9 @@ The tool supports:
 - `pdf`
 - `close`
 
-The browser is stateful inside a normal thread. Panda keeps one session alive, reuses it across calls, and restores stored auth state when that thread opens a fresh browser session later.
+The public tool API did not change.
 
-## Requirements
-
-You need:
-
-- Docker installed on the machine running Panda
-- a working Docker daemon
-- permission for the Panda process to run `docker`
-- enough RAM for Chromium to not suck
-
-You do not need to start Playwright manually.
-
-Panda starts the browser container lazily on the first real browser action.
-
-## Sessions And Persistence
+## Runtime Shape
 
 - one browser session per Panda thread
 - one active page in that session
@@ -44,72 +37,114 @@ Panda starts the browser container lazily on the first real browser action.
 - hard max session age is 60 minutes by default
 - `browser close` kills the session immediately
 
-Thread-scoped sessions also persist Playwright storage state under the browser artifact directory.
-
-That means cookies and local storage usually survive:
+Thread-scoped sessions persist Playwright storage state in the browser-runner data directory, so auth state usually survives:
 
 - `browser close`
 - idle expiry
 - max-age recycling
-- runtime restarts that reuse the same Panda data directory
+- browser-runner restarts that reuse the same runner data volume
 
 If Panda has no `threadId`, the browser falls back to an ephemeral one-call session with no persistence.
 
-## Snapshot UX
+## Core Env
 
-These actions already return a fresh page snapshot:
+Set this in `panda-core`:
 
-- `navigate`
-- `click`
-- `type`
-- `press`
-- `select`
-- `wait`
-- `snapshot`
-
-They accept `snapshotMode`:
-
-- `compact`: default, good for normal driving
-- `full`: longer visible-text dump when the compact view is not enough
-
-Snapshots now include:
-
-- page title
-- URL
-- page signals like `dialog`, `login`, `validation_error`, `captcha`
-- a `Changes:` summary after state-changing actions
-- richer interactive element state like values, checked/selected state, invalid, required, readonly, and href
-
-## Untrusted Browser Content
-
-Browser-derived page text is wrapped like this:
-
-```text
-<<<EXTERNAL_UNTRUSTED_CONTENT source="browser" kind="snapshot">>>
-...
-<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>
+```bash
+BROWSER_RUNNER_URL=http://panda-browser-runner:8080
+BROWSER_RUNNER_SHARED_SECRET=change-me
 ```
 
-That is deliberate.
+`BROWSER_RUNNER_URL` can point at any reachable runner base URL.
 
-Web pages are untrusted input. Panda should read them, not obey them.
+## Runner Env
+
+Set this in `browser-runner`:
+
+```bash
+BROWSER_RUNNER_PORT=8080
+BROWSER_RUNNER_SHARED_SECRET=change-me
+BROWSER_RUNNER_DATA_DIR=/home/pwuser/.panda/browser-runner
+```
+
+Optional tuning:
+
+- `BROWSER_ACTION_TIMEOUT_MS`
+- `BROWSER_SESSION_IDLE_TTL_MS`
+- `BROWSER_SESSION_MAX_AGE_MS`
+
+## Setup A: Local Core, Docker Browser Runner
+
+This is the nicest dev setup now:
+
+- `panda run` on your host
+- `browser-runner` in Docker
+- Postgres on your host or external
+
+Build images:
+
+```bash
+docker build -t panda:latest .
+docker build --target browser-runner -t panda-browser-runner:latest .
+```
+
+Start the runner:
+
+```bash
+SEC=$(pwd)/assets/playwright-seccomp-profile.json
+
+docker run --rm --init --ipc=host -p 8081:8080 \
+  --user pwuser \
+  --security-opt "seccomp=$SEC" \
+  -e BROWSER_RUNNER_PORT=8080 \
+  -e BROWSER_RUNNER_SHARED_SECRET=change-me \
+  -e BROWSER_RUNNER_DATA_DIR=/home/pwuser/.panda/browser-runner \
+  -v "$HOME/.panda-browser-runner:/home/pwuser/.panda/browser-runner" \
+  panda-browser-runner:latest
+```
+
+That separate host path is intentional. It keeps browser cookies and storage state out of the core-mounted `~/.panda` tree by default.
+
+Start Panda locally:
+
+```bash
+export BROWSER_RUNNER_URL=http://127.0.0.1:8081
+export BROWSER_RUNNER_SHARED_SECRET=change-me
+
+pnpm dev run --db-url postgresql://localhost:5432/panda
+```
+
+## Setup B: Docker Core, Docker Browser Runner
+
+This is the deployment shape:
+
+- `panda-core` in Docker
+- `browser-runner` in Docker
+- external Postgres
+- DB/provider secrets only on `panda-core`
+
+The ready-made compose example is:
+
+- [examples/docker-compose.remote-bash.external-db.yml](../../examples/docker-compose.remote-bash.external-db.yml)
+
+Run that compose example from the repo root, or set `BROWSER_RUNNER_SECCOMP_PROFILE` to an absolute host path for `assets/playwright-seccomp-profile.json`.
+
+That stack now includes:
+
+- `panda-core`
+- `panda-runner-panda` for remote bash
+- `panda-browser-runner` for browser
 
 ## Screenshots And PDFs
 
-Screenshots and PDFs are saved under Panda's media storage.
+Final screenshots and PDFs still land under Panda's normal media storage on the core side.
 
 Typical paths:
 
 - `~/.panda/media/browser/<thread-id>/...`
 - `~/.panda/agents/<agentKey>/media/browser/<thread-id>/...`
 
-If `DATA_DIR` is set, the same structure lives there instead.
-
-`screenshot` returns an image payload immediately.
-
-Whole-page screenshots also support `labels: true`, which overlays the current `e1`, `e2`, ... refs onto the page before capture. That is useful when you want visual proof plus a text snapshot that lines up with the same refs.
-
-`labels: true` is page-only. It does not work for element screenshots.
+The browser-runner keeps its own session state and scratch artifacts under `BROWSER_RUNNER_DATA_DIR`.
 
 ## Safety Boundaries
 
@@ -133,13 +168,7 @@ That is decent SSRF protection. It is not full browsing isolation.
 
 ## Quick Smoke Test
 
-Start Panda:
-
-```bash
-panda run
-```
-
-Then ask for something blunt:
+With core and runner both up, ask Panda:
 
 ```text
 Open https://example.com in the browser, tell me the page title, take a labeled screenshot, then close the browser session.
@@ -147,36 +176,30 @@ Open https://example.com in the browser, tell me the page title, take a labeled 
 
 That proves:
 
-- Docker works
-- the Playwright image starts
+- core can reach the browser-runner
+- auth between them is correct
 - Chromium can reach the internet
-- screenshots land in media storage
-- the labeled screenshot flow works
+- screenshots land in Panda media storage
+- thread-scoped browser state works
 
 ## Troubleshooting
 
-If browser startup fails:
+If browser calls fail immediately:
 
-- run `docker info`
-- make sure the Panda process can call `docker`
-- make sure the daemon is actually running
+- check `BROWSER_RUNNER_URL`
+- check `BROWSER_RUNNER_SHARED_SECRET`
+- hit `[health](http://127.0.0.1:8080/health)` on the runner container or service
 
 If the first browser call is slow:
 
-- the Playwright image is probably being pulled
-- that is normal on first use
+- Chromium is cold-starting
+- that is normal
 
-If you want to inspect active Panda browser containers:
+If browser state is not surviving restarts:
 
-```bash
-docker ps --filter label=runtime.browser=1
-```
+- make sure `BROWSER_RUNNER_DATA_DIR` is mounted to durable storage
 
-If you need to nuke stale ones manually:
+If Chromium dies on heavier pages:
 
-```bash
-docker ps -aq --filter label=runtime.browser=1
-docker rm -f <container-id>
-```
-
-Use that second command with your brain on.
+- make sure the runner is using `--ipc=host`
+- make sure the seccomp profile path points at `assets/playwright-seccomp-profile.json`

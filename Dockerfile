@@ -1,3 +1,5 @@
+ARG PLAYWRIGHT_VERSION=1.59.1
+
 FROM ubuntu:24.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -65,3 +67,25 @@ EXPOSE 8080
 
 ENTRYPOINT ["panda"]
 CMD ["--help"]
+
+FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble AS browser-runner
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+
+RUN ln -sf /app/dist/app/cli.js /usr/local/bin/panda \
+  && chmod +x /app/dist/app/cli.js \
+  && mkdir -p /home/pwuser/.panda/browser-runner \
+  && chown -R pwuser:pwuser /home/pwuser/.panda
+
+USER pwuser
+
+EXPOSE 8080
+
+ENTRYPOINT ["panda"]
+CMD ["browser-runner"]
+
+FROM runtime AS final

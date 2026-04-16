@@ -1,0 +1,307 @@
+import {createServer, type IncomingMessage, type Server, type ServerResponse} from "node:http";
+import {readFile} from "node:fs/promises";
+
+import {z} from "zod";
+
+import {normalizeAgentKey} from "../../domain/agents/types.js";
+import {Agent} from "../../kernel/agent/agent.js";
+import {ToolError} from "../../kernel/agent/exceptions.js";
+import {RunContext} from "../../kernel/agent/run-context.js";
+import {readToolArtifact} from "../../kernel/agent/tool-artifacts.js";
+import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
+import {browserActionSchema} from "../../panda/tools/browser-schema.js";
+import {BrowserSessionService, type BrowserSessionServiceOptions} from "./session-service.js";
+import type {
+    BrowserRunnerActionRequest,
+    BrowserRunnerActionResponse,
+    BrowserRunnerArtifact,
+    BrowserRunnerHealthResponse,
+} from "./protocol.js";
+
+const DEFAULT_BROWSER_RUNNER_PORT = 8080;
+const DEFAULT_BROWSER_RUNNER_HOST = "0.0.0.0";
+
+const browserRunnerRequestSchema = z.object({
+  agentKey: z.string().trim().default(""),
+  sessionId: z.string().trim().optional(),
+  threadId: z.string().trim().optional(),
+  action: browserActionSchema,
+});
+
+const runnerAgent = new Agent({
+  name: "browser-runner",
+  instructions: "Internal browser runner.",
+});
+
+export interface BrowserRunnerOptions extends BrowserSessionServiceOptions {
+  host?: string;
+  port?: number;
+  sharedSecret?: string;
+}
+
+export interface BrowserRunner {
+  readonly host: string;
+  readonly port: number;
+  readonly server: Server;
+  close(): Promise<void>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function firstNonEmpty(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function parsePort(value: string | null, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error(`Invalid browser runner port: ${value}`);
+  }
+
+  return parsed;
+}
+
+function parseOptionalPositiveInt(value: string | null | undefined, label: string): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${label} must be a positive integer.`);
+  }
+
+  return parsed;
+}
+
+function validateSharedSecret(value: string | null | undefined): string {
+  const trimmed = firstNonEmpty(value);
+  if (!trimmed) {
+    throw new Error("Browser runner shared secret must not be empty.");
+  }
+
+  return trimmed;
+}
+
+function unauthorized(response: ServerResponse, statusCode: number, error: string): void {
+  response.writeHead(statusCode, {"content-type": "application/json"});
+  response.end(JSON.stringify({
+    ok: false,
+    error,
+  } satisfies BrowserRunnerActionResponse));
+}
+
+function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {
+  response.writeHead(statusCode, {"content-type": "application/json"});
+  response.end(JSON.stringify(payload));
+}
+
+async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ToolError(`Browser runner request body must be valid JSON: ${message}`);
+  }
+}
+
+function requireAuthorization(request: IncomingMessage, sharedSecret: string): void {
+  const header = firstNonEmpty(request.headers.authorization ?? null);
+  if (!header) {
+    throw new ToolError("Missing Authorization header.", {details: {statusCode: 401}});
+  }
+
+  if (header !== `Bearer ${sharedSecret}`) {
+    throw new ToolError("Invalid browser runner Authorization header.", {details: {statusCode: 403}});
+  }
+}
+
+function validateActionRequest(value: unknown): BrowserRunnerActionRequest {
+  const parsed = browserRunnerRequestSchema.safeParse(value);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((issue) => issue.message);
+    throw new ToolError(
+      issues.length === 1 ? issues[0] ?? "Invalid browser runner request." : `Invalid browser runner request: ${issues.join("; ")}`,
+      {details: {issues}},
+    );
+  }
+
+  const agentKey = parsed.data.agentKey ? normalizeAgentKey(parsed.data.agentKey) : "";
+  return {
+    agentKey,
+    ...(parsed.data.sessionId ? {sessionId: parsed.data.sessionId} : {}),
+    ...(parsed.data.threadId ? {threadId: parsed.data.threadId} : {}),
+    action: parsed.data.action as BrowserRunnerActionRequest["action"],
+  };
+}
+
+async function buildRunnerArtifact(payload: ToolResultPayload): Promise<BrowserRunnerArtifact | undefined> {
+  const artifact = readToolArtifact(payload.details);
+  if (!artifact) {
+    return undefined;
+  }
+
+  const bytes = await readFile(artifact.path);
+  return {
+    kind: artifact.kind,
+    mimeType: artifact.mimeType,
+    data: bytes.toString("base64"),
+    bytes: bytes.length,
+    path: artifact.path,
+  };
+}
+
+async function buildRunnerResponse(payload: ToolResultPayload): Promise<BrowserRunnerActionResponse> {
+  const text = payload.content
+    .filter((part): part is {type: "text"; text: string} => part.type === "text")
+    .map((part) => part.text)
+    .join("\n\n");
+  const details = isRecord(payload.details) ? payload.details as JsonObject : undefined;
+  const artifact = await buildRunnerArtifact(payload);
+
+  return {
+    ok: true,
+    text,
+    ...(details ? {details} : {}),
+    ...(artifact ? {artifact} : {}),
+  };
+}
+
+export function resolveBrowserRunnerOptions(env: NodeJS.ProcessEnv = process.env): BrowserRunnerOptions {
+  return {
+    env,
+    host: firstNonEmpty(env.BROWSER_RUNNER_HOST) ?? DEFAULT_BROWSER_RUNNER_HOST,
+    port: parsePort(firstNonEmpty(env.BROWSER_RUNNER_PORT), DEFAULT_BROWSER_RUNNER_PORT),
+    sharedSecret: validateSharedSecret(env.BROWSER_RUNNER_SHARED_SECRET),
+    dataDir: firstNonEmpty(env.BROWSER_RUNNER_DATA_DIR) ?? undefined,
+    actionTimeoutMs: parseOptionalPositiveInt(firstNonEmpty(env.BROWSER_ACTION_TIMEOUT_MS), "BROWSER_ACTION_TIMEOUT_MS"),
+    sessionIdleTtlMs: parseOptionalPositiveInt(firstNonEmpty(env.BROWSER_SESSION_IDLE_TTL_MS), "BROWSER_SESSION_IDLE_TTL_MS"),
+    sessionMaxAgeMs: parseOptionalPositiveInt(firstNonEmpty(env.BROWSER_SESSION_MAX_AGE_MS), "BROWSER_SESSION_MAX_AGE_MS"),
+  };
+}
+
+export async function startBrowserRunner(options: BrowserRunnerOptions): Promise<BrowserRunner> {
+  const host = options.host ?? DEFAULT_BROWSER_RUNNER_HOST;
+  const port = options.port ?? DEFAULT_BROWSER_RUNNER_PORT;
+  const sharedSecret = validateSharedSecret(options.sharedSecret);
+  const service = new BrowserSessionService(options);
+
+  const server = createServer(async (request, response) => {
+    try {
+      if (!request.url) {
+        response.statusCode = 404;
+        response.end();
+        return;
+      }
+
+      const requestUrl = new URL(request.url, `http://${request.headers.host ?? "runner.local"}`);
+      if (request.method === "GET" && requestUrl.pathname === "/health") {
+        writeJson(response, 200, {
+          ok: true,
+          status: "ok",
+        } satisfies BrowserRunnerHealthResponse);
+        return;
+      }
+
+      if (request.method !== "POST" || requestUrl.pathname !== "/action") {
+        response.statusCode = 404;
+        response.end();
+        return;
+      }
+
+      requireAuthorization(request, sharedSecret);
+      const body = await readJsonBody(request);
+      const parsed = validateActionRequest(body);
+      const controller = new AbortController();
+      request.on("close", () => controller.abort());
+
+      const payload = await service.handle(parsed.action, new RunContext({
+        agent: runnerAgent,
+        turn: 1,
+        maxTurns: 1,
+        messages: [],
+        signal: controller.signal,
+        context: {
+          agentKey: parsed.agentKey,
+          sessionId: parsed.sessionId ?? "",
+          threadId: parsed.threadId ?? "",
+        },
+      }));
+
+      writeJson(response, 200, await buildRunnerResponse(payload));
+    } catch (error) {
+      if (error instanceof ToolError) {
+        const statusCode = isRecord(error.details) && typeof error.details.statusCode === "number"
+          ? error.details.statusCode
+          : 400;
+        if (statusCode === 401 || statusCode === 403) {
+          unauthorized(response, statusCode, error.message);
+          return;
+        }
+        const details = isRecord(error.details) && !("statusCode" in error.details)
+          ? error.details as JsonObject
+          : undefined;
+        writeJson(response, statusCode, {
+          ok: false,
+          error: error.message,
+          ...(details ? {details} : {}),
+        } satisfies BrowserRunnerActionResponse);
+        return;
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      writeJson(response, 500, {
+        ok: false,
+        error: message,
+      } satisfies BrowserRunnerActionResponse);
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, host, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+
+  const address = server.address();
+  return {
+    host,
+    port: address && typeof address === "object" ? address.port : port,
+    server,
+    async close(): Promise<void> {
+      await service.close().catch(() => undefined);
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      }).catch(() => undefined);
+    },
+  };
+}

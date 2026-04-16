@@ -70,7 +70,7 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).not.toContain("Long skill body.");
     expect(dump).not.toContain("Alice likes tea.");
     expect(dump).not.toContain("Met for dinner.");
-    expect(dump).not.toContain(DEFAULT_AGENT_DOCUMENT_TEMPLATES.heartbeat);
+    expect(dump).not.toContain("**Heartbeat Guidance**");
   });
 
   it("can limit Panda contexts to datetime and environment only", async () => {

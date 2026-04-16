@@ -2,60 +2,57 @@
 
 This is Panda's heavyweight web lane.
 
-The design is still opinionated on purpose:
+The important architectural call now is simple:
 
-- one compact `browser` tool
-- stateful per thread
-- official Playwright Docker image
-- no host browser install
-- no tool explosion
+- `panda-core` does not own Docker or Chromium anymore
+- `browser-runner` is the isolated browser process boundary
+- the browser tool in core is an HTTP client
+
+That keeps provider creds, DB creds, and connector secrets out of the browser container.
 
 ## File Map
 
-Core files:
+Core-side files:
 
 - `src/panda/tools/browser-tool.ts`
-- `src/panda/tools/browser-service.ts`
+- `src/panda/tools/browser-schema.ts`
+- `src/integrations/browser/client.ts`
+- `src/integrations/browser/protocol.ts`
+
+Runner-side files:
+
+- `src/integrations/browser/runner.ts`
+- `src/integrations/browser/session-service.ts`
+
+Shared browser logic still lives in:
+
 - `src/panda/tools/browser-snapshot.ts`
 - `src/panda/tools/browser-output.ts`
 - `src/panda/tools/browser-types.ts`
 - `src/panda/tools/safe-web-target.ts`
-- `assets/playwright-seccomp-profile.json`
 
-Split of responsibility:
+## Responsibility Split
 
-- `browser-tool.ts`: schema, public tool surface, short formatting
-- `browser-service.ts`: Docker lifecycle, Playwright connection, session reuse, auth-state persistence, cleanup, artifacts
-- `browser-snapshot.ts`: page snapshot script, ref generation, rendering, change-summary text
-- `browser-output.ts`: tiny wrapper for untrusted browser-derived content
-- `safe-web-target.ts`: shared SSRF/private-network guard reused by `browser` and `web_fetch`
+- `browser-tool.ts`: public tool surface, formatting, redaction
+- `browser-schema.ts`: shared action validation used by both tool and runner
+- `client.ts`: authenticated HTTP client, response parsing, artifact copy into core media paths
+- `runner.ts`: HTTP server, bearer-token auth, request validation, response shaping
+- `session-service.ts`: Chromium launch, session reuse, storage-state persistence, SSRF checks, snapshot/evaluate/screenshot/pdf behavior
 
 ## Runtime Shape
 
-The browser service is created in runtime bootstrap, but Docker startup is lazy.
+The browser tool is still only exposed through the dedicated `browser` subagent lane.
 
-That means:
+The difference is transport:
 
-- Panda can boot without immediately touching Docker
-- the first real browser action starts the container
-- Docker is still required if you actually use the tool
+1. browser subagent calls `browser`
+2. `browser-tool` validates the action
+3. `BrowserRunnerClient` sends `POST /action` to `browser-runner`
+4. `BrowserSessionService` executes inside the runner
+5. screenshot/PDF bytes come back over HTTP
+6. core writes the final artifact into its own media storage and returns the usual tool result
 
-Relevant wiring:
-
-- `src/app/runtime/runtime-bootstrap.ts`
-- `src/app/runtime/thread-definition.ts`
-- `src/panda/definition.ts`
-
-Tool order:
-
-- `bash`
-- `view_media`
-- `web_fetch`
-- `postgres_readonly_query` when configured
-- OpenAI-backed extras when configured
-- Brave search when configured
-
-`browser` stays out of the main toolset and the `workspace` subagent allowlist. It runs through its own dedicated `browser` worker role.
+The public tool schema stayed unchanged on purpose.
 
 ## Session Model
 
@@ -65,22 +62,64 @@ Tool order:
 - popups switch to the newest page automatically
 - idle TTL: 10 minutes by default
 - max session age: 60 minutes by default
-- `close()` kills the session container immediately
+- `close()` kills the session immediately
 
-Thread-scoped sessions now persist Playwright storage state in the browser artifact directory. That gives us boring, useful auth persistence across:
+Persistent session state lives under `BROWSER_RUNNER_DATA_DIR`, keyed by agent and thread.
 
-- `close()`
-- idle expiry
-- max-age recycle
-- process restarts that reuse the same data dir
+Final screenshots and PDFs still live under Panda's normal core media paths.
 
-The implementation is intentionally small: Playwright `storageState` restore on context creation, then best-effort save on action completion and close.
+That split matters:
+
+- runner state is for browser continuity
+- core media paths are for artifact replay, TUI display, and user-facing outputs
+
+## Protocol
+
+Runner endpoints:
+
+- `GET /health`
+- `POST /action`
+
+`POST /action` requires:
+
+- `Authorization: Bearer <BROWSER_RUNNER_SHARED_SECRET>`
+
+Request body:
+
+- `agentKey`
+- `sessionId`
+- `threadId`
+- validated browser `action`
+
+Response body is typed, not raw tool payload:
+
+- `{ ok, text, details, artifact? }`
+
+`artifact` is used only for screenshot/PDF outputs and contains base64 bytes plus the runner-side path.
+
+Core rewrites the final metadata to its own artifact path before returning the tool result.
+
+## Chromium Ownership
+
+`BrowserSessionService` launches Chromium directly inside the runner container with Playwright.
+
+No nested Docker.
+No Playwright sidecar container.
+No seccomp-profile dependency in `panda-core` itself.
+
+That killed the old `spawn docker ENOENT` class of failure for dockerized core.
+
+The runner deployment still needs the normal Chromium hardening:
+
+- run as non-root `pwuser`
+- use the Playwright seccomp profile from `assets/playwright-seccomp-profile.json`
+- keep `--ipc=host` or an equivalent larger shared-memory setup
 
 ## Safety Model
 
 The browser reuses the shared guarded-target checks from `web_fetch`.
 
-It blocks:
+It still blocks:
 
 - non-HTTP(S)
 - embedded credentials
@@ -90,105 +129,33 @@ It blocks:
 Checks happen:
 
 - before initial navigation
-- after navigation settles, on the final URL
-- in a Playwright route handler for page subrequests
+- after navigation settles on the final URL
+- in a Playwright route handler for subrequests
 
 That is SSRF protection, not full browsing isolation.
 
-## Output Shape
+## Docker Shape
 
-Snapshot-returning actions:
+The repo now has two image targets:
 
-- `navigate`
-- `snapshot`
-- `click`
-- `type`
-- `press`
-- `select`
-- `wait`
+- default/final `panda:latest` for `panda-core` and bash runners
+- `--target browser-runner` for the dedicated browser image
 
-They accept `snapshotMode: "compact" | "full"` and return:
+The compose example now keeps browser-runner state on a separate host path by default instead of nesting it under the core-mounted `~/.panda` tree.
 
-- title
-- URL
-- signals
-- `Changes:` summary after state-changing actions
-- visible dialog/page text
-- interactive elements with stable `e1`, `e2`, ... refs
-- richer state like `value`, `checked`, `selected`, `required`, `invalid`, `readonly`, `href`
-
-Browser-derived text is wrapped in:
-
-```text
-<<<EXTERNAL_UNTRUSTED_CONTENT source="browser" kind="snapshot">>>
-...
-<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>
-```
-
-`evaluate` uses the same wrapping when it returns content. If the script yields nothing, the tool answers with the explicit `return` hint instead of fake `null` sludge.
-
-`screenshot(labels=true)` is page-only. It injects temporary ref overlays that line up with the current snapshot refs, captures the image, then cleans the overlays up.
-
-## Docker Contract
-
-We derive the container image tag from the installed `playwright-core` version:
-
-- host dependency: `playwright-core@X`
-- image: `mcr.microsoft.com/playwright:vX-noble`
-
-Container launch uses:
-
-- `--init`
-- `--ipc=host`
-- `--workdir /home/pwuser`
-- `--user pwuser`
-- `--security-opt seccomp=assets/playwright-seccomp-profile.json`
-- loopback-only port publish `127.0.0.1::3000`
-- labels for browser ownership, thread id, and start time
-
-Inside the container:
-
-```bash
-npx -y playwright@X run-server --port 3000 --host 0.0.0.0
-```
-
-## Artifacts
-
-Artifacts land under Panda media storage in a browser subtree:
-
-- `~/.panda/media/browser/<thread-or-ephemeral>/...`
-- agent-scoped equivalent when `agentKey` exists
-
-The same subtree also holds the thread-scoped `storage-state.json` file used for browser auth persistence.
+The compose example in [examples/docker-compose.remote-bash.external-db.yml](../../examples/docker-compose.remote-bash.external-db.yml) is the source of truth for the current deployment shape.
 
 ## Testing
 
 Fast checks:
 
 - `pnpm typecheck`
-- `pnpm exec vitest run tests/browser-tool.test.ts`
+- `pnpm exec vitest run tests/browser-tool.test.ts tests/browser-runner.test.ts`
 
-Useful coverage now includes:
+Live checks worth doing before shipping:
 
-- Docker command construction
-- session reuse and isolation
-- startup cleanup
-- SSRF blocking on navigation, redirects, and subrequests
-- richer snapshot rendering
-- post-action change summaries
-- labeled screenshots
-- evaluate no-value hint
-- storage-state persistence across close/reopen
+- host core + dockerized browser-runner
+- dockerized core + dockerized browser-runner + external Postgres
+- combined stack with remote bash runner still alive
 
-Still do a live smoke. Browser code without a real run is fake confidence with better branding.
-
-## Next Work
-
-The next sane steps are:
-
-- isolate browser access behind a less-trusted subagent lane
-- tighten outbound network policy beyond SSRF checks
-- optionally persist more than Playwright storage state if a real auth case needs it
-- add a dedicated browser smoke command
-
-Do not turn this into fifteen tiny browser tools. That still sucks.
+Browser code without a live smoke is still fake confidence, just with better branding.

@@ -10,11 +10,16 @@ services:
       READONLY_DATABASE_URL: ${READONLY_DATABASE_URL:-}
       BASH_EXECUTION_MODE: remote
       RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
+      RUNNER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
+      BROWSER_RUNNER_URL: http://panda-browser-runner:8080
+      BROWSER_RUNNER_SHARED_SECRET: ${BROWSER_RUNNER_SHARED_SECRET}
     volumes:
       - ${HOME}/.panda:/root/.panda
       - ${SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
     depends_on:
       panda-runner-panda:
+        condition: service_healthy
+      panda-browser-runner:
         condition: service_healthy
     networks:
       - runner_net
@@ -25,11 +30,11 @@ services:
         - --input-type=module
         - -e
         - |
-          import { PostgresPandaDaemonStateStore } from "/app/dist/features/daemon-state/index.js";
-          import { createPostgresPool } from "/app/dist/features/panda/runtime.js";
-          import { DEFAULT_DAEMON_KEY, DAEMON_STALE_AFTER_MS } from "/app/dist/features/panda/daemon.js";
+          import { DaemonStateRepo } from "/app/dist/app/runtime/state/repo.js";
+          import { createPostgresPool } from "/app/dist/app/runtime/database.js";
+          import { DEFAULT_DAEMON_KEY, DAEMON_STALE_AFTER_MS } from "/app/dist/app/runtime/daemon-shared.js";
           const pool = createPostgresPool(process.env.DATABASE_URL);
-          const store = new PostgresPandaDaemonStateStore({ pool });
+          const store = new DaemonStateRepo({ pool });
           const state = await store.readState(DEFAULT_DAEMON_KEY);
           await pool.end();
           if (!state || Date.now() - state.heartbeatAt > DAEMON_STALE_AFTER_MS) {
@@ -39,6 +44,32 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+
+  panda-browser-runner:
+    build:
+      context: ..
+      target: browser-runner
+    image: panda-browser-runner:latest
+    command: ["browser-runner"]
+    init: true
+    user: pwuser
+    ipc: host
+    security_opt:
+      - seccomp=${BROWSER_RUNNER_SECCOMP_PROFILE:-${PWD}/assets/playwright-seccomp-profile.json}
+    environment:
+      BROWSER_RUNNER_PORT: 8080
+      BROWSER_RUNNER_SHARED_SECRET: ${BROWSER_RUNNER_SHARED_SECRET}
+      BROWSER_RUNNER_DATA_DIR: /home/pwuser/.panda/browser-runner
+    volumes:
+      - ${BROWSER_RUNNER_ROOT:-${HOME}/.panda-browser-runner}:/home/pwuser/.panda/browser-runner
+    networks:
+      - runner_net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
   panda-runner-panda:
     build: ..

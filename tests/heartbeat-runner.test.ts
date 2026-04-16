@@ -158,7 +158,7 @@ describe("HeartbeatRunner", () => {
     });
     expect(heartbeatInput?.message).toMatchObject({
       role: "user",
-      content: expect.stringContaining("the `session.*` views are already scoped to this session."),
+      content: expect.stringContaining("This is a periodic runtime wake."),
     });
     expect(harness.runtime.complete).toHaveBeenCalledTimes(1);
 

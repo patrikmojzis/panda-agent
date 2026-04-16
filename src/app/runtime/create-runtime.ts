@@ -13,7 +13,7 @@ import type {IdentityStore} from "../../domain/identity/store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {CredentialResolver} from "../../domain/credentials/index.js";
 import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
-import type {BrowserSessionService} from "../../panda/tools/browser-service.js";
+import type {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundBashRuntimeMessage} from "./background-bash-runtime-note.js";
@@ -38,7 +38,7 @@ export type {CreateThreadDefinitionOptions};
 export interface DefinitionResolverContext {
   agentStore: AgentStore;
   bashJobService: BashJobService;
-  browserService: BrowserSessionService;
+  browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
@@ -61,7 +61,7 @@ export interface RuntimeOptions {
 export interface RuntimeServices {
   agentStore: AgentStore;
   bashJobService: BashJobService;
-  browserService: BrowserSessionService;
+  browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
   sessionStore: SessionStore;

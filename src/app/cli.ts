@@ -14,6 +14,7 @@ import {registerTelegramCommands} from "../integrations/channels/telegram/cli.js
 import {type ChatCliOptions, runChatCli} from "../ui/tui/chat.js";
 import {renderResumeHint} from "../ui/tui/exit-hint.js";
 import {registerWhatsAppCommands} from "../integrations/channels/whatsapp/cli.js";
+import {resolveBrowserRunnerOptions, startBrowserRunner} from "../integrations/browser/index.js";
 import {resolveBashRunnerOptions, startBashRunner} from "../integrations/shell/index.js";
 import {registerSmokeCommand} from "./smoke/cli.js";
 
@@ -39,6 +40,12 @@ interface RunnerCliOptions {
   host?: string;
   outputDirectory?: string;
   port?: number;
+}
+
+interface BrowserRunnerCliOptions {
+  host?: string;
+  port?: number;
+  dataDirectory?: string;
 }
 
 function parsePort(value: string): number {
@@ -138,6 +145,47 @@ async function runRunnerCommand(options: RunnerCliOptions): Promise<void> {
   }
 }
 
+async function runBrowserRunnerCommand(options: BrowserRunnerCliOptions): Promise<void> {
+  const resolved = resolveBrowserRunnerOptions({
+    ...process.env,
+    ...(options.port !== undefined ? { BROWSER_RUNNER_PORT: String(options.port) } : {}),
+    ...(options.host ? { BROWSER_RUNNER_HOST: options.host } : {}),
+    ...(options.dataDirectory ? { BROWSER_RUNNER_DATA_DIR: path.resolve(options.dataDirectory) } : {}),
+  });
+  const runner = await startBrowserRunner({
+    ...resolved,
+    ...(options.port !== undefined ? {port: options.port} : {}),
+    ...(options.host ? {host: options.host} : {}),
+    ...(options.dataDirectory ? {dataDir: path.resolve(options.dataDirectory)} : {}),
+  });
+
+  const shutdown = async () => {
+    await runner.close();
+  };
+
+  const handleSigint = () => {
+    void shutdown();
+  };
+  const handleSigterm = () => {
+    void shutdown();
+  };
+
+  process.once("SIGINT", handleSigint);
+  process.once("SIGTERM", handleSigterm);
+
+  try {
+    process.stdout.write(`Panda browser runner listening on http://${runner.host}:${runner.port}\n`);
+    await new Promise<void>((resolve, reject) => {
+      runner.server.once("close", resolve);
+      runner.server.once("error", reject);
+    });
+  } finally {
+    process.off("SIGINT", handleSigint);
+    process.off("SIGTERM", handleSigterm);
+    await runner.close().catch(() => {});
+  }
+}
+
 function configureChatOptions(command: Command): Command {
   return command
     .option("-m, --model <selector-or-alias>", "Model selector override")
@@ -188,6 +236,16 @@ program
   .option("--output-directory <path>", "Directory used for temporary runner output capture")
   .action((options: RunnerCliOptions) => {
     return runRunnerCommand(options);
+  });
+
+program
+  .command("browser-runner")
+  .description("Run the isolated browser runner")
+  .option("--host <host>", "Host to bind the browser runner server")
+  .option("--port <port>", "Port to bind the browser runner server", parsePort)
+  .option("--data-directory <path>", "Directory for browser runner session state and scratch artifacts")
+  .action((options: BrowserRunnerCliOptions) => {
+    return runBrowserRunnerCommand(options);
   });
 
 registerAgentCommands(program);

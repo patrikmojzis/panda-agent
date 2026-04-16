@@ -1,13 +1,13 @@
 import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import {fileURLToPath} from "node:url";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {Agent, type DefaultAgentSessionContext, RunContext, ToolError,} from "../src/index.js";
+import type {BrowserRunner} from "../src/integrations/browser/runner.js";
+import {BrowserSessionService} from "../src/integrations/browser/session-service.js";
 import {BrowserTool} from "../src/panda/tools/browser-tool.js";
-import {BrowserSessionService, buildBrowserDockerRunArgs} from "../src/panda/tools/browser-service.js";
 
 function createAgent() {
   return new Agent({
@@ -279,6 +279,7 @@ class FakeBrowserContext {
 
 class FakeBrowser {
   private disconnectListener: (() => void) | null = null;
+  closed = false;
 
   constructor(readonly context: FakeBrowserContext) {}
 
@@ -288,6 +289,7 @@ class FakeBrowser {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     this.disconnectListener?.();
   }
 
@@ -298,81 +300,19 @@ class FakeBrowser {
   }
 }
 
-function createDockerExecMock() {
-  let nextContainerId = 1;
-  const inspectRecords = new Map<string, unknown>();
-  const removedIds: string[] = [];
-  const execFileImpl = vi.fn(async (_file: string, args: readonly string[]) => {
-    const [command, ...rest] = args;
-    if (command === "ps") {
-      return {stdout: "", stderr: ""};
-    }
-    if (command === "run") {
-      const containerId = `container-${nextContainerId++}`;
-      inspectRecords.set(containerId, {
-        Id: containerId,
-        Config: {
-          Labels: {
-            "runtime.browser": "1",
-            "runtime.startedAtMs": String(Date.now()),
-          },
-        },
-        State: {
-          Running: true,
-        },
-        NetworkSettings: {
-          Ports: {
-            "3000/tcp": [{HostIp: "127.0.0.1", HostPort: "45678"}],
-          },
-        },
-      });
-      return {stdout: `${containerId}\n`, stderr: ""};
-    }
-    if (command === "inspect") {
-      const ids = rest;
-      return {
-        stdout: JSON.stringify(ids.map((id) => inspectRecords.get(id) ?? {
-          Id: id,
-          Config: {
-            Labels: {
-              "runtime.browser": "1",
-              "runtime.startedAtMs": String(Date.now()),
-            },
-          },
-          State: {
-            Running: true,
-          },
-          NetworkSettings: {
-            Ports: {
-              "3000/tcp": [{HostIp: "127.0.0.1", HostPort: "45678"}],
-            },
-          },
-        })),
-        stderr: "",
-      };
-    }
-    if (command === "rm") {
-      removedIds.push(...rest.slice(1));
-      return {stdout: rest.slice(1).join("\n"), stderr: ""};
-    }
-    throw new Error(`Unexpected docker command: ${args.join(" ")}`);
-  });
-
-  return {
-    execFileImpl,
-    removedIds,
-  };
-}
-
 describe("BrowserTool", () => {
   const tempDirs: string[] = [];
   const services: BrowserSessionService[] = [];
+  const runners: BrowserRunner[] = [];
 
   afterEach(async () => {
     for (const service of services) {
       await service.close().catch(() => undefined);
     }
     services.length = 0;
+    while (runners.length > 0) {
+      await runners.pop()?.close();
+    }
     await Promise.all(tempDirs.map((dir) => rm(dir, {recursive: true, force: true})));
     tempDirs.length = 0;
     vi.restoreAllMocks();
@@ -472,37 +412,16 @@ describe("BrowserTool", () => {
     });
   });
 
-  it("builds the Docker command with pwuser, seccomp, labels, and loopback port mapping", () => {
-    const args = buildBrowserDockerRunArgs({
-      image: "mcr.microsoft.com/playwright:v1.59.1-noble",
-      scopeKey: "thread-123",
-      startedAtMs: 123456789,
-    });
-    const expectedSeccompPath = path.resolve(
-      fileURLToPath(new URL("../assets/playwright-seccomp-profile.json", import.meta.url)),
-    );
-
-    expect(args).toContain("--init");
-    expect(args).toContain("--ipc=host");
-    expect(args).toContain("pwuser");
-    expect(args).toContain("127.0.0.1::3000");
-    expect(args).toContain("runtime.browser=1");
-    expect(args).toContain("runtime.threadId=thread-123");
-    expect(args).toContain(`seccomp=${expectedSeccompPath}`);
-  });
-
   it("reuses sessions per thread and isolates them across threads", async () => {
-    const docker = createDockerExecMock();
     const browserOne = new FakeBrowser(new FakeBrowserContext(new FakePage()));
     const browserTwo = new FakeBrowser(new FakeBrowserContext(new FakePage()));
-    const connectBrowserImpl = vi.fn()
+    const launchBrowserImpl = vi.fn()
       .mockResolvedValueOnce(browserOne as any)
       .mockResolvedValueOnce(browserTwo as any);
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: connectBrowserImpl as any,
+      launchBrowserImpl: launchBrowserImpl as any,
       dataDir: tempDir,
     });
     services.push(service);
@@ -511,106 +430,19 @@ describe("BrowserTool", () => {
     await service.handle({action: "snapshot"}, createRunContext({cwd: "/workspace/panda", threadId: "thread-a"}));
     await service.handle({action: "snapshot"}, createRunContext({cwd: "/workspace/panda", threadId: "thread-b"}));
 
-    expect(connectBrowserImpl).toHaveBeenCalledTimes(2);
-    expect(docker.execFileImpl.mock.calls.filter(([, args]) => args[0] === "run")).toHaveLength(2);
+    expect(launchBrowserImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("cleans up stale or stopped orphan containers on startup", async () => {
-    const execFileImpl = vi.fn(async (_file: string, args: readonly string[]) => {
-      const [command, ...rest] = args;
-      if (command === "ps") {
-        return {stdout: "stale\nrunning\nstopped\n", stderr: ""};
-      }
-      if (command === "inspect") {
-        expect(rest).toEqual(["stale", "running", "stopped"]);
-        return {
-          stdout: JSON.stringify([
-            {
-              Id: "stale",
-              Config: {Labels: {"runtime.startedAtMs": "10"}},
-              State: {Running: true},
-            },
-            {
-              Id: "running",
-              Config: {Labels: {"runtime.startedAtMs": "980"}},
-              State: {Running: true},
-            },
-            {
-              Id: "stopped",
-              Config: {Labels: {"runtime.startedAtMs": "990"}},
-              State: {Running: false},
-            },
-          ]),
-          stderr: "",
-        };
-      }
-      if (command === "rm") {
-        expect(rest).toEqual(["-f", "stale", "running", "stopped"]);
-        return {stdout: "stale\nrunning\nstopped\n", stderr: ""};
-      }
-      throw new Error(`Unexpected docker command: ${args.join(" ")}`);
-    });
+  it("closes the launched browser when session startup fails", async () => {
+    const browser = {
+      newContext: async () => {
+        throw new Error("context failed");
+      },
+      close: vi.fn(async () => {}),
+      on: vi.fn(),
+    };
     const service = new BrowserSessionService({
-      execFileImpl: execFileImpl as any,
-      now: () => 1_000,
-      sessionMaxAgeMs: 100,
-    });
-    services.push(service);
-
-    await service.cleanupStartupContainers();
-
-    expect(execFileImpl).toHaveBeenCalledTimes(3);
-  });
-
-  it("retries startup after the first lazy-start bootstrap failure", async () => {
-    const docker = createDockerExecMock();
-    let failStartup = true;
-    const execFileImpl = vi.fn(async (file: string, args: readonly string[], options?: {
-      encoding?: BufferEncoding;
-      signal?: AbortSignal;
-    }) => {
-      if (args[0] === "ps" && failStartup) {
-        failStartup = false;
-        const error = new Error("docker unavailable") as Error & {stderr?: string};
-        error.stderr = "daemon down";
-        throw error;
-      }
-      return await docker.execFileImpl(file, args, options as never);
-    });
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
-    tempDirs.push(tempDir);
-    const service = new BrowserSessionService({
-      execFileImpl: execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(new FakePage())) as any),
-      dataDir: tempDir,
-    });
-    services.push(service);
-
-    await expect(service.handle(
-      {action: "snapshot"},
-      createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
-    )).rejects.toThrow(/browser docker command failed/i);
-
-    const result = await service.handle(
-      {action: "snapshot"},
-      createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
-    );
-
-    expect(result.details).toMatchObject({action: "snapshot"});
-    expect(execFileImpl.mock.calls.filter(([, args]) => args[0] === "ps")).toHaveLength(2);
-  });
-
-  it("cleans up the container when session startup fails after docker run", async () => {
-    const docker = createDockerExecMock();
-    const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => ({
-        newContext: async () => {
-          throw new Error("context failed");
-        },
-        close: async () => {},
-        on: () => {},
-      }) as any),
+      launchBrowserImpl: vi.fn(async () => browser as any),
     });
     services.push(service);
 
@@ -619,15 +451,13 @@ describe("BrowserTool", () => {
       createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
     )).rejects.toThrow("context failed");
 
-    expect(docker.removedIds).toContain("container-1");
+    expect(browser.close).toHaveBeenCalledTimes(1);
   });
 
   it("blocks private targets before navigation starts", async () => {
-    const docker = createDockerExecMock();
-    const connectBrowserImpl = vi.fn();
+    const launchBrowserImpl = vi.fn();
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: connectBrowserImpl as any,
+      launchBrowserImpl: launchBrowserImpl as any,
       lookupHostname: async () => ["127.0.0.1"],
     });
     services.push(service);
@@ -637,19 +467,16 @@ describe("BrowserTool", () => {
       createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
     )).rejects.toBeInstanceOf(ToolError);
 
-    expect(connectBrowserImpl).not.toHaveBeenCalled();
-    expect(docker.execFileImpl.mock.calls.some(([, args]) => args[0] === "run")).toBe(false);
+    expect(launchBrowserImpl).not.toHaveBeenCalled();
   });
 
   it("blocks redirects that land on a private final URL", async () => {
-    const docker = createDockerExecMock();
     const page = new FakePage();
     page.nextGotoUrl = "http://169.254.169.254/latest/meta-data";
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
       lookupHostname: async (hostname) => hostname === "example.com" ? ["93.184.216.34"] : ["169.254.169.254"],
       dataDir: tempDir,
     });
@@ -662,13 +489,11 @@ describe("BrowserTool", () => {
   });
 
   it("guards routed subresource requests and aborts blocked ones", async () => {
-    const docker = createDockerExecMock();
     const context = new FakeBrowserContext(new FakePage());
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
       lookupHostname: async () => ["93.184.216.34"],
       dataDir: tempDir,
     });
@@ -694,14 +519,12 @@ describe("BrowserTool", () => {
   });
 
   it("re-checks routed requests instead of caching allow decisions forever", async () => {
-    const docker = createDockerExecMock();
     const context = new FakeBrowserContext(new FakePage());
     const lookupHostname = vi.fn(async () => ["93.184.216.34"]);
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
       lookupHostname,
       dataDir: tempDir,
     });
@@ -726,18 +549,16 @@ describe("BrowserTool", () => {
   });
 
   it("enforces idle TTL on reuse instead of waiting for the background reaper", async () => {
-    const docker = createDockerExecMock();
     const browserOne = new FakeBrowser(new FakeBrowserContext(new FakePage()));
     const browserTwo = new FakeBrowser(new FakeBrowserContext(new FakePage()));
-    const connectBrowserImpl = vi.fn()
+    const launchBrowserImpl = vi.fn()
       .mockResolvedValueOnce(browserOne as any)
       .mockResolvedValueOnce(browserTwo as any);
     let now = 0;
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: connectBrowserImpl as any,
+      launchBrowserImpl: launchBrowserImpl as any,
       dataDir: tempDir,
       now: () => now,
       sessionIdleTtlMs: 100,
@@ -756,12 +577,11 @@ describe("BrowserTool", () => {
       createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
     );
 
-    expect(connectBrowserImpl).toHaveBeenCalledTimes(2);
-    expect(docker.removedIds).toContain("container-1");
+    expect(launchBrowserImpl).toHaveBeenCalledTimes(2);
+    expect(browserOne.closed).toBe(true);
   });
 
   it("returns compact snapshots with stable refs and uses ref selectors for actions", async () => {
-    const docker = createDockerExecMock();
     const page = new FakePage();
     page.snapshot = {
       url: "https://example.com/docs",
@@ -775,8 +595,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
       dataDir: tempDir,
     });
     services.push(service);
@@ -799,7 +618,6 @@ describe("BrowserTool", () => {
   });
 
   it("switches to the newest popup page automatically", async () => {
-    const docker = createDockerExecMock();
     const page = new FakePage();
     const context = new FakeBrowserContext(page);
     const popup = new FakePage();
@@ -820,8 +638,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
       dataDir: tempDir,
     });
     services.push(service);
@@ -845,11 +662,9 @@ describe("BrowserTool", () => {
   it("caps evaluate results and writes screenshot/pdf artifacts", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
-    const docker = createDockerExecMock();
     const page = new FakePage();
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
       dataDir: tempDir,
       maxEvaluateResultChars: 12,
     });
@@ -905,10 +720,8 @@ describe("BrowserTool", () => {
   it("returns the explicit evaluate hint when the page script yields nothing", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
-    const docker = createDockerExecMock();
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(new FakePage())) as any),
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(new FakePage())) as any),
       dataDir: tempDir,
     });
     services.push(service);
@@ -927,7 +740,6 @@ describe("BrowserTool", () => {
   });
 
   it("renders full snapshots with state badges, signals, and wrapped external content", async () => {
-    const docker = createDockerExecMock();
     const page = new FakePage();
     page.snapshot = {
       url: "https://example.com/form",
@@ -959,8 +771,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
       dataDir: tempDir,
     });
     services.push(service);
@@ -988,7 +799,6 @@ describe("BrowserTool", () => {
   });
 
   it("surfaces target changes after typing and keeps snapshot refs fresh", async () => {
-    const docker = createDockerExecMock();
     const page = new FakePage();
     page.snapshot = {
       url: "https://example.com/form",
@@ -1010,8 +820,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
       dataDir: tempDir,
     });
     services.push(service);
@@ -1037,11 +846,9 @@ describe("BrowserTool", () => {
   it("returns labeled screenshots with companion snapshot text and cleans overlays up", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
-    const docker = createDockerExecMock();
     const page = new FakePage();
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
       dataDir: tempDir,
     });
     services.push(service);
@@ -1072,15 +879,13 @@ describe("BrowserTool", () => {
   it("persists thread-scoped browser storage state across close and reopen", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
-    const docker = createDockerExecMock();
     const firstContext = new FakeBrowserContext(new FakePage());
     const secondContext = new FakeBrowserContext(new FakePage());
-    const connectBrowserImpl = vi.fn()
+    const launchBrowserImpl = vi.fn()
       .mockResolvedValueOnce(new FakeBrowser(firstContext) as any)
       .mockResolvedValueOnce(new FakeBrowser(secondContext) as any);
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: connectBrowserImpl as any,
+      launchBrowserImpl: launchBrowserImpl as any,
       dataDir: tempDir,
     });
     services.push(service);
@@ -1096,13 +901,12 @@ describe("BrowserTool", () => {
     await expect(stat(String(secondContext.storageStateInput))).resolves.toBeTruthy();
   });
 
-  it("closes the persistent session and removes the container", async () => {
-    const docker = createDockerExecMock();
+  it("closes the persistent session and closes the browser", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
+    const browser = new FakeBrowser(new FakeBrowserContext(new FakePage()));
     const service = new BrowserSessionService({
-      execFileImpl: docker.execFileImpl as any,
-      connectBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(new FakePage())) as any),
+      launchBrowserImpl: vi.fn(async () => browser as any),
       dataDir: tempDir,
     });
     services.push(service);
@@ -1117,6 +921,6 @@ describe("BrowserTool", () => {
     );
 
     expect(result.details).toMatchObject({action: "close", closed: true});
-    expect(docker.removedIds).toContain("container-1");
+    expect(browser.closed).toBe(true);
   });
 });

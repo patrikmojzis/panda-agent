@@ -26,7 +26,7 @@ import type {Tool} from "../../kernel/agent/tool.js";
 import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry,} from "../../panda/definition.js";
 import {AgentDocumentTool} from "../../panda/tools/agent-document-tool.js";
 import {AgentSkillTool} from "../../panda/tools/agent-skill-tool.js";
-import {BrowserSessionService} from "../../panda/tools/browser-service.js";
+import {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
 import {
     ScheduledTaskCancelTool,
@@ -58,7 +58,7 @@ export interface RuntimeBootstrapOptions extends Omit<RuntimeOptions, "dbUrl"> {
 export interface RuntimeBootstrapResult {
   agentStore: AgentStore;
   bashJobService: BashJobService;
-  browserService: BrowserSessionService;
+  browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
@@ -72,7 +72,7 @@ export interface RuntimeBootstrapResult {
 
 function createCloseRuntime(options: {
   bashJobService: BashJobService | null;
-  browserService: BrowserSessionService | null;
+  browserService: BrowserRunnerClient | null;
   postgresPool: Pool;
   readonlyPool: Pool | null;
   notificationClient: PoolClient | null;
@@ -110,7 +110,7 @@ export async function bootstrapRuntime(
   let notificationClient: PoolClient | null = null;
   let notificationHandler: ((message: { channel: string; payload?: string }) => void) | null = null;
   let notificationChannel: string | null = null;
-  let browserService: BrowserSessionService | null = null;
+  let browserService: BrowserRunnerClient | null = null;
   const maxSubagentDepth = options.maxSubagentDepth ?? 1;
 
   const postgresPool = createPostgresPool(options.dbUrl);
@@ -138,7 +138,7 @@ export async function bootstrapRuntime(
     const bashJobService = new BashJobService({
       store,
     });
-    browserService = new BrowserSessionService({
+    browserService = new BrowserRunnerClient({
       env: process.env,
     });
     const resolvedBrowserService = browserService;

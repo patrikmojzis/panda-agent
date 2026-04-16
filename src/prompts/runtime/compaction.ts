@@ -20,7 +20,7 @@ export function renderCompactionPrompt(options: {
 
   return `
 CRITICAL: Respond with plain text only. Do not call tools.
-You are compacting an earlier portion of a coding-assistant conversation so the session can continue in the same repository.
+You are compacting an earlier portion of an agent conversation so the session can continue in the same repository.
 The most recent messages will be kept verbatim after this summary. Summarize only the older messages you were given.
 Optimize for continuity, not elegance. Preserve exact details that are likely to matter for continuing the work:
 - exact file paths
