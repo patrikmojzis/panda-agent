@@ -1,7 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {Agent, RunContext, ThinkingSetTool, ToolError,} from "../src/index.js";
-import type {PandaSessionContext} from "../src/personas/panda/types.js";
+import type {PandaSessionContext} from "../src/app/runtime/panda-session-context.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
 function createHarness(options: {

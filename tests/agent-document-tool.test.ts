@@ -35,6 +35,24 @@ function parseToolResult(result: ToolResultPayload): Record<string, unknown> {
   return JSON.parse(textPart.text) as Record<string, unknown>;
 }
 
+function resolveSystemLocalDate(now: Date): string {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  if (!year || !month || !day) {
+    throw new Error(`Failed to resolve local date for timezone ${timeZone}.`);
+  }
+
+  return `${year}-${month}-${day}`;
+}
+
 describe("AgentDocumentTool", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
 
@@ -104,7 +122,6 @@ describe("AgentDocumentTool", () => {
     }, createRunContext({
       identityId: "alice-id",
       agentKey: "panda",
-      timezone: "UTC",
     })) as ToolResultPayload;
 
     expect(parseToolResult(relationshipResult)).toMatchObject({
@@ -122,7 +139,6 @@ describe("AgentDocumentTool", () => {
     }, createRunContext({
       identityId: "alice-id",
       agentKey: "ops",
-      timezone: "UTC",
     })) as ToolResultPayload;
 
     expect(parseToolResult(agentResult)).toMatchObject({
@@ -139,7 +155,6 @@ describe("AgentDocumentTool", () => {
     const context = createRunContext({
       identityId: "alice-id",
       agentKey: "panda",
-      timezone: "UTC",
     });
 
     const transformed = await tool.run({
@@ -166,13 +181,13 @@ describe("AgentDocumentTool", () => {
     }, createRunContext({
       identityId: "alice-id",
       agentKey: "panda",
-      timezone: "UTC",
     }))).rejects.toBeInstanceOf(ToolError);
   });
 
-  it("defaults diary writes to the current local day in the session timezone", async () => {
+  it("defaults diary writes to the current local day in the system timezone", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-10T23:30:00.000Z"));
+    const now = new Date("2026-04-10T23:30:00.000Z");
+    vi.setSystemTime(now);
 
     const diaryEntries = new Map<string, string>();
     const fakeStore: AgentStore = {
@@ -226,13 +241,12 @@ describe("AgentDocumentTool", () => {
     }, createRunContext({
       identityId: "alice-id",
       agentKey: "panda",
-      timezone: "Pacific/Auckland",
     }));
 
-    expect(diaryEntries.get("2026-04-11")).toBe("Diary for today.");
+    expect(diaryEntries.get(resolveSystemLocalDate(now))).toBe("Diary for today.");
   });
 
-  it("describes diary defaults in session-timezone language", async () => {
+  it("describes diary defaults in system-timezone language", async () => {
     const tool = new AgentDocumentTool({
       store: await createStore(),
     });
@@ -240,7 +254,7 @@ describe("AgentDocumentTool", () => {
     expect(tool.piTool.parameters).toMatchObject({
       properties: {
         date: {
-          description: "Only for diary. Defaults to the current local day in YYYY-MM-DD using the session timezone.",
+          description: "Only for diary. Defaults to the current local day in YYYY-MM-DD using the current system timezone.",
         },
       },
     });

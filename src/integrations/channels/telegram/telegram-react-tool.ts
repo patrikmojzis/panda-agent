@@ -4,7 +4,7 @@ import type {RunContext} from "../../../kernel/agent/run-context.js";
 import {Tool} from "../../../kernel/agent/tool.js";
 import {ToolError} from "../../../kernel/agent/exceptions.js";
 import type {JsonObject} from "../../../kernel/agent/types.js";
-import type {PandaSessionContext} from "../../../personas/panda/types.js";
+import type {PandaSessionContext} from "../../../app/runtime/panda-session-context.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 import {parseTelegramConversationId} from "./conversation-id.js";
 

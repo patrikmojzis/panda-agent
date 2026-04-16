@@ -15,7 +15,7 @@ import {
     ToolError,
     z,
 } from "../src/index.js";
-import {PandaSubagentService} from "../src/personas/panda/subagents/service.js";
+import {PandaSubagentService} from "../src/panda/subagents/service.js";
 
 class FakeReadFileTool extends Tool<typeof FakeReadFileTool.schema, PandaSessionContext> {
   static schema = z.object({
@@ -61,6 +61,22 @@ class FakeGrepFilesTool extends Tool<typeof FakeGrepFilesTool.schema, PandaSessi
   async handle(args: z.output<typeof FakeGrepFilesTool.schema>): Promise<{ pattern: string }> {
     return {
       pattern: args.pattern,
+    };
+  }
+}
+
+class FakeMediaTool extends Tool<typeof FakeMediaTool.schema, PandaSessionContext> {
+  static schema = z.object({
+    path: z.string(),
+  });
+
+  name = "view_media";
+  description = "Fake view_media";
+  schema = FakeMediaTool.schema;
+
+  async handle(args: z.output<typeof FakeMediaTool.schema>): Promise<{ path: string }> {
+    return {
+      path: args.path,
     };
   }
 }
@@ -166,6 +182,20 @@ function createParentRunContext(agent: Agent, overrides: Partial<PandaSessionCon
   });
 }
 
+function createSubagentToolsets() {
+  return {
+    explore: [
+      new FakeReadFileTool(),
+      new FakeGlobFilesTool(),
+      new FakeGrepFilesTool(),
+      new FakeMediaTool(),
+    ],
+    memoryExplorer: [
+      new FakePostgresReadonlyQueryTool(),
+    ],
+  } as const;
+}
+
 describe("SpawnSubagentTool", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -210,6 +240,7 @@ describe("SpawnSubagentTool", () => {
         runtime,
         model: "openai/gpt-parent",
       } satisfies ResolvedThreadDefinition)),
+      toolsets: createSubagentToolsets(),
       maxSubagentDepth: 1,
     });
     const tool = new SpawnSubagentTool({ service });
@@ -218,9 +249,6 @@ describe("SpawnSubagentTool", () => {
       instructions: "Parent Panda instructions",
       tools: [
         tool,
-        new FakeReadFileTool(),
-        new FakeGlobFilesTool(),
-        new FakeGrepFilesTool(),
         new FakeAgentDocumentTool(),
         new FakeOutboundTool(),
       ],
@@ -252,11 +280,14 @@ describe("SpawnSubagentTool", () => {
     expect(requests[0]?.context.systemPrompt).toContain("This role is read-only.");
     expect(requests[0]?.context.systemPrompt).toContain("**Current DateTime:**");
     expect(requests[0]?.context.systemPrompt).toContain("**Environment Overview:**");
-    expect(requests[0]?.context.systemPrompt).not.toContain("**Agent Workspace:**");
+    expect(requests[0]?.context.systemPrompt).not.toContain("**Agent Profile:**");
+    expect(requests[0]?.context.systemPrompt).not.toContain("Parent Panda instructions");
+    expect(requests[0]?.context.systemPrompt).not.toContain("Parent system prompt");
     expect(requests[0]?.context.tools?.map((toolDef) => toolDef.name)).toEqual([
       "read_file",
       "glob_files",
       "grep_files",
+      "view_media",
     ]);
   });
 
@@ -287,13 +318,14 @@ describe("SpawnSubagentTool", () => {
         runtime,
         model: "openai/gpt-parent",
       } satisfies ResolvedThreadDefinition)),
+      toolsets: createSubagentToolsets(),
       maxSubagentDepth: 1,
     });
     const tool = new SpawnSubagentTool({ service });
     const agent = new Agent({
       name: "panda",
       instructions: "Parent Panda instructions",
-      tools: [tool, new FakeReadFileTool(), new FakeGlobFilesTool(), new FakeGrepFilesTool()],
+      tools: [tool],
     });
 
     await tool.run({
@@ -344,6 +376,7 @@ describe("SpawnSubagentTool", () => {
         runtime,
         model: "openai/gpt-parent",
       } satisfies ResolvedThreadDefinition)),
+      toolsets: createSubagentToolsets(),
       maxSubagentDepth: 1,
     });
     const tool = new SpawnSubagentTool({ service });
@@ -352,10 +385,6 @@ describe("SpawnSubagentTool", () => {
       instructions: "Parent Panda instructions",
       tools: [
         tool,
-        new FakeReadFileTool(),
-        new FakeGlobFilesTool(),
-        new FakeGrepFilesTool(),
-        new FakePostgresReadonlyQueryTool(),
         new FakeAgentDocumentTool(),
         new FakeOutboundTool(),
       ],
@@ -386,6 +415,8 @@ describe("SpawnSubagentTool", () => {
     expect(requests[0]?.context.systemPrompt).toContain("Treat Postgres like grep for memory:");
     expect(requests[0]?.context.systemPrompt).toContain("REGEXP_SPLIT_TO_TABLE");
     expect(requests[0]?.context.systemPrompt).toContain("TO_TSVECTOR");
+    expect(requests[0]?.context.systemPrompt).not.toContain("Parent Panda instructions");
+    expect(requests[0]?.context.systemPrompt).not.toContain("Parent system prompt");
     expect(requests[0]?.context.tools?.map((toolDef) => toolDef.name)).toEqual([
       "postgres_readonly_query",
     ]);
@@ -418,13 +449,14 @@ describe("SpawnSubagentTool", () => {
         runtime,
         model: "anthropic-oauth/claude-opus-4-6",
       } satisfies ResolvedThreadDefinition)),
+      toolsets: createSubagentToolsets(),
       maxSubagentDepth: 1,
     });
     const tool = new SpawnSubagentTool({ service });
     const agent = new Agent({
       name: "panda",
       instructions: "Parent Panda instructions",
-      tools: [tool, new FakePostgresReadonlyQueryTool()],
+      tools: [tool],
     });
 
     await tool.run({
@@ -448,6 +480,7 @@ describe("SpawnSubagentTool", () => {
           instructions: "Parent Panda instructions",
         }),
       } satisfies ResolvedThreadDefinition)),
+      toolsets: createSubagentToolsets(),
       maxSubagentDepth: 1,
     });
     const tool = new SpawnSubagentTool({ service });
@@ -485,6 +518,7 @@ describe("SpawnSubagentTool", () => {
         }),
         runtime,
       } satisfies ResolvedThreadDefinition)),
+      toolsets: createSubagentToolsets(),
       maxSubagentDepth: 1,
     });
     const tool = new SpawnSubagentTool({ service });

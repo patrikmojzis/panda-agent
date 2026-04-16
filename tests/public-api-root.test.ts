@@ -6,7 +6,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "Agent",
   "AgentDocumentTool",
   "AgentError",
-  "AgentMemoryContext",
+  "AgentProfileContext",
   "AgentSkillTool",
   "BashJobCancelTool",
   "BashJobStatusTool",

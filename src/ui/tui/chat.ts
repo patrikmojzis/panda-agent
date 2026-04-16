@@ -1,90 +1,90 @@
 import {stdin as input, stdout as output} from "node:process";
 
 import {resolveModelSelector, type ThinkingLevel, Tool,} from "../../kernel/agent/index.js";
-import {buildPandaTools} from "../../personas/panda/definition.js";
-import {resolveDefaultPandaModelSelector} from "../../personas/panda/defaults.js";
+import {buildPandaTools} from "../../panda/definition.js";
+import {resolveDefaultPandaModelSelector} from "../../panda/defaults.js";
 import {type ChatRuntimeServices, createChatRuntime,} from "./runtime.js";
 import {runChatActionsCommandLine, submitChatComposer, submitChatUserMessage,} from "./chat-actions.js";
 import {buildChatScreenFrame, buildPandaChatView} from "./chat-render.js";
 import {
-  appendStoredChatMessages,
-  buildChatSessionDefaults,
-  createChatTranscriptEntry,
-  observeLatestChatRun,
-  pendingChatInputsForThread,
-  queuePendingChatInput,
-  removePendingChatInput,
-  resolveChatDisplayedCwd,
-  resolveInitialChatSessionThread,
+    appendStoredChatMessages,
+    buildChatSessionDefaults,
+    createChatTranscriptEntry,
+    observeLatestChatRun,
+    pendingChatInputsForThread,
+    queuePendingChatInput,
+    removePendingChatInput,
+    resolveChatDisplayedCwd,
+    resolveInitialChatSessionThread,
 } from "./chat-session.js";
 import {type SlashCompletionContext,} from "./commands.js";
 import {type ComposerState, createComposerState, setComposerValue,} from "./composer.js";
 import {
-  handleChatComposerKeypress,
-  handleChatHistorySearchKeypress,
-  handleChatInterruptKeypress,
-  handleChatModalKeypress,
-  handleChatPasteBoundaryKeypress,
-  handleChatSessionPickerKeypress,
-  handleChatTranscriptNavigationKeypress,
-  handleChatTranscriptSearchKeypress,
+    handleChatComposerKeypress,
+    handleChatHistorySearchKeypress,
+    handleChatInterruptKeypress,
+    handleChatModalKeypress,
+    handleChatPasteBoundaryKeypress,
+    handleChatSessionPickerKeypress,
+    handleChatTranscriptNavigationKeypress,
+    handleChatTranscriptSearchKeypress,
 } from "./chat-input.js";
 import {
-  applySelectedChatSlashCompletion,
-  clearExpiredChatNotice,
-  createChatNotice,
-  cycleChatHistorySelection,
-  cycleChatTranscriptSelection,
-  findChatHistoryMatches,
-  recordChatHistory,
-  resetChatTranscriptState,
-  resolveChatModeLabel,
-  resolveChatSlashContext,
-  resolveCurrentChatHistoryMatch,
-  resolveScrolledTranscript,
-  resolveSelectedTranscriptMatchScroll,
-  resolveTranscriptBottom,
-  startChatHistorySearch,
+    applySelectedChatSlashCompletion,
+    clearExpiredChatNotice,
+    createChatNotice,
+    cycleChatHistorySelection,
+    cycleChatTranscriptSelection,
+    findChatHistoryMatches,
+    recordChatHistory,
+    resetChatTranscriptState,
+    resolveChatModeLabel,
+    resolveChatSlashContext,
+    resolveCurrentChatHistoryMatch,
+    resolveScrolledTranscript,
+    resolveSelectedTranscriptMatchScroll,
+    resolveTranscriptBottom,
+    startChatHistorySearch,
 } from "./chat-state.js";
 import {
-  attachChatTerminal,
-  type ChatCleanupHost,
-  type ChatCloseAfterRunHost,
-  type ChatRenderTickerHost,
-  cleanupChatTerminal,
-  scheduleChatCloseAfterRun,
-  startChatRenderTicker,
+    attachChatTerminal,
+    type ChatCleanupHost,
+    type ChatCloseAfterRunHost,
+    type ChatRenderTickerHost,
+    cleanupChatTerminal,
+    scheduleChatCloseAfterRun,
+    startChatRenderTicker,
 } from "./chat-lifecycle.js";
 import {
-  closeChatSessionPicker,
-  cycleChatSessionPicker,
-  openChatSessionPicker,
-  refreshChatSessionPicker,
-  selectChatSessionPickerEntry,
+    closeChatSessionPicker,
+    cycleChatSessionPicker,
+    openChatSessionPicker,
+    refreshChatSessionPicker,
+    selectChatSessionPickerEntry,
 } from "./chat-session-picker.js";
 import {
-  type ChatSyncHost,
-  handleChatStoreNotification,
-  scheduleChatStoredThreadSync,
-  syncChatStoredThreadState,
+    type ChatSyncHost,
+    handleChatStoreNotification,
+    scheduleChatStoredThreadSync,
+    syncChatStoredThreadState,
 } from "./chat-sync.js";
 import {COMPOSER_NEWLINE_HINT, type KeyLike, normalizeTerminalKeySequence,} from "./input.js";
 import {type NoticeState, type ViewModel,} from "./chat-view.js";
 import {CLEAR_SCREEN, cursorTo, HIDE_CURSOR, SHOW_CURSOR,} from "./screen.js";
 import {
-  type ChatCliOptions,
-  type ChatCliResult,
-  type EntryRole,
-  NOTICE_MS,
-  type PendingLocalInput,
-  type RunPhase,
-  type SearchState,
-  type SessionPickerState,
-  SPINNER_FRAME_COUNT,
-  TICK_MS,
-  type TranscriptEntry,
-  type TranscriptLineCacheEntry,
-  WELCOME_ENTRY_TEXT,
+    type ChatCliOptions,
+    type ChatCliResult,
+    type EntryRole,
+    NOTICE_MS,
+    type PendingLocalInput,
+    type RunPhase,
+    type SearchState,
+    type SessionPickerState,
+    SPINNER_FRAME_COUNT,
+    TICK_MS,
+    type TranscriptEntry,
+    type TranscriptLineCacheEntry,
+    WELCOME_ENTRY_TEXT,
 } from "./chat-shared.js";
 import type {ThreadRecord,} from "../../domain/threads/runtime/index.js";
 

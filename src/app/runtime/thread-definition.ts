@@ -5,12 +5,12 @@ import type {AgentStore} from "../../domain/agents/index.js";
 import type {SessionRecord} from "../../domain/sessions/index.js";
 import type {InferenceProjection, ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import {buildPandaLlmContexts, type PandaLlmContextSection,} from "../../personas/panda/contexts/builder.js";
-import {buildPandaTools} from "../../personas/panda/definition.js";
-import {PANDA_PROMPT} from "../../personas/panda/prompt.js";
-import type {PandaSessionContext} from "../../personas/panda/types.js";
-import type {BashToolOptions} from "../../personas/panda/tools/bash-tool.js";
-import type {BrowserToolOptions} from "../../personas/panda/tools/browser-tool.js";
+import {buildPandaLlmContexts, type PandaLlmContextSection,} from "../../panda/contexts/builder.js";
+import {buildPandaTools} from "../../panda/definition.js";
+import {PANDA_PROMPT} from "../../panda/prompt.js";
+import type {PandaSessionContext} from "./panda-session-context.js";
+import type {BashToolOptions} from "../../panda/tools/bash-tool.js";
+import type {BrowserToolOptions} from "../../panda/tools/browser-tool.js";
 import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js";
 import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js";
 import type {Tool} from "../../kernel/agent/tool.js";
@@ -44,12 +44,12 @@ export interface CreatePandaThreadDefinitionOptions {
   threadStore?: Pick<ThreadRuntimeStore, "listBashJobs">;
   bashToolOptions?: BashToolOptions;
   browserToolOptions?: BrowserToolOptions;
-  extraTools?: readonly Tool[];
+  tools?: readonly Tool[];
   extraLlmContexts?: readonly LlmContext[];
   llmContextSections?: readonly PandaLlmContextSection[];
   extraContext?: Omit<
     PandaSessionContext,
-    "cwd" | "timezone" | "threadId" | "sessionId" | "agentKey" | "subagentDepth"
+    "cwd" | "threadId" | "sessionId" | "agentKey" | "subagentDepth"
   >;
 }
 
@@ -66,7 +66,7 @@ export function resolveStoredPandaContext(
   value: ThreadRecord["context"],
   fallback: Pick<PandaSessionContext, "cwd">,
   agentKey?: string,
-): Pick<PandaSessionContext, "cwd" | "timezone"> {
+): Pick<PandaSessionContext, "cwd"> {
   const remoteInitialCwd = agentKey ? resolveRemoteInitialCwd(agentKey) : null;
   if (!isRecord(value)) {
     return {
@@ -88,7 +88,6 @@ export function resolveStoredPandaContext(
 
   return {
     cwd: selectedCwd && agentKey ? mapHostAgentPathToRunner(selectedCwd, agentKey) : selectedCwd,
-    timezone: typeof context.timezone === "string" ? context.timezone : undefined,
   };
 }
 
@@ -119,7 +118,7 @@ export function createPandaThreadDefinition(
     agent: new Agent({
       name: session.agentKey,
       instructions: PANDA_PROMPT,
-      tools: buildPandaTools(options.extraTools, {
+      tools: options.tools ?? buildPandaTools([], {
         bash: options.bashToolOptions,
         browser: options.browserToolOptions,
       }),

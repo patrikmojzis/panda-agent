@@ -11,13 +11,13 @@ import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {createPandaRuntime, createPandaThreadDefinition, type PandaRuntimeServices,} from "./create-runtime.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
 import {PandaDaemonStateRepo} from "./state/repo.js";
-import {resolveDefaultPandaModelSelector} from "../../personas/panda/defaults.js";
+import {resolveDefaultPandaModelSelector} from "../../panda/defaults.js";
 import type {PandaDaemonOptions} from "./daemon-shared.js";
 import {DEFAULT_PANDA_DAEMON_KEY} from "./daemon-shared.js";
 import {TELEGRAM_SOURCE,} from "../../integrations/channels/telegram/config.js";
 import {TelegramReactTool} from "../../integrations/channels/telegram/telegram-react-tool.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
-import {OutboundTool} from "../../personas/panda/tools/outbound-tool.js";
+import {OutboundTool} from "../../panda/tools/outbound-tool.js";
 
 export interface PandaDaemonContext {
   fallbackContext: {cwd: string};
@@ -79,7 +79,7 @@ export async function bootstrapPandaDaemonContext(
     maxSubagentDepth: options.maxSubagentDepth,
     tablePrefix: options.tablePrefix,
     onEvent: createChannelTypingEventHandler(typingDispatcher),
-    resolveDefinition: async (thread, {agentStore, bashJobService, browserService, credentialResolver, sessionStore, store, extraTools}) => {
+    resolveDefinition: async (thread, {agentStore, bashJobService, browserService, credentialResolver, sessionStore, store, mainTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
       return createPandaThreadDefinition({
         thread,
@@ -94,7 +94,7 @@ export async function bootstrapPandaDaemonContext(
         browserToolOptions: {
           service: browserService,
         },
-        extraTools: [...extraTools, new OutboundTool(), new TelegramReactTool()],
+        tools: [...mainTools, new OutboundTool(), new TelegramReactTool()],
         extraContext: {
           routeMemory: {
             getLastRoute: (channel) => sessionRoutes.getLastRoute({

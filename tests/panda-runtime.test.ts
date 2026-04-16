@@ -89,11 +89,11 @@ vi.mock("../src/domain/threads/runtime/postgres.js", () => ({
   parseThreadRuntimeNotification: vi.fn(() => null),
 }));
 
-vi.mock("../src/personas/panda/tools/postgres-readonly-query-tool.js", () => ({
+vi.mock("../src/panda/tools/postgres-readonly-query-tool.js", () => ({
   PostgresReadonlyQueryTool: class {},
 }));
 
-vi.mock("../src/personas/panda/tools/browser-service.js", () => ({
+vi.mock("../src/panda/tools/browser-service.js", () => ({
   BrowserSessionService: browserMocks.MockBrowserSessionService,
 }));
 

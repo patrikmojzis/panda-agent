@@ -311,7 +311,6 @@ async function readUtf8IfExists(targetPath: string): Promise<string | null> {
 
 async function buildPromptPlans(sourceDir: string, displayName: string, warnings: string[]): Promise<readonly LegacyAgentPromptPlan[]> {
   const promptFiles: ReadonlyArray<{slug: AgentPromptSlug; fileName: string}> = [
-    {slug: "playbook", fileName: "AGENTS.md"},
     {slug: "heartbeat", fileName: "HEARTBEAT.md"},
     {slug: "soul", fileName: "SOUL.md"},
   ];
@@ -847,6 +846,10 @@ function shouldSkipLegacyCopy(relativePath: string): boolean {
   }
 
   if (baseName === ".DS_Store") {
+    return true;
+  }
+
+  if (baseName === "AGENTS.md") {
     return true;
   }
 

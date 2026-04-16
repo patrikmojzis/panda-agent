@@ -12,8 +12,8 @@ import {
 } from "../src/domain/credentials/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
-import {ClearEnvValueTool, SetEnvValueTool} from "../src/personas/panda/index.js";
-import type {PandaSessionContext} from "../src/personas/panda/types.js";
+import {ClearEnvValueTool, SetEnvValueTool} from "../src/panda/index.js";
+import type {PandaSessionContext} from "../src/app/runtime/panda-session-context.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 describe("Env value tools", () => {

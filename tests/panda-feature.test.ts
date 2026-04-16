@@ -6,25 +6,29 @@ import {
     BrowserTool,
     DateTimeContext,
     EnvironmentContext,
-    GlobFilesTool,
-    GrepFilesTool,
     MediaTool,
     PANDA_PROMPT,
-    ReadFileTool,
+    PostgresReadonlyQueryTool,
     WebFetchTool,
     WebResearchTool,
     WhisperTool,
 } from "../src/index.js";
-import {buildPandaTools} from "../src/personas/panda/definition.js";
+import {buildPandaTools, buildPandaToolsets} from "../src/panda/definition.js";
 import {resolveStoredPandaContext} from "../src/app/runtime/create-runtime.js";
 import {resolveRemoteInitialCwd} from "../src/integrations/shell/bash-executor.js";
+
+class FakeReadonlyPool {
+  async connect(): Promise<never> {
+    throw new Error("not used in toolset tests");
+  }
+}
 
 describe("Panda feature surface", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  it("builds the Panda prompt and default tools", () => {
+  it("builds the Panda prompt and default main tools", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildPandaTools();
@@ -32,22 +36,19 @@ describe("Panda feature surface", () => {
     expect(PANDA_PROMPT).toContain("## Soul");
     expect(PANDA_PROMPT).toContain("## Channels & Inner Monologue");
     expect(PANDA_PROMPT).toContain("No outbound call = no message delivered.");
-    expect(PANDA_PROMPT).toContain("panda_sessions` (the current session row only; use `current_thread_id`, not `thread_id`)");
-    expect(PANDA_PROMPT).toContain("Do not invent `is_active` flags or extra `session_id` subqueries");
+    expect(PANDA_PROMPT).toContain("Use `role=\"explore\"` for read-only workspace inspection, file search, and local PDF/image/sketch inspection.");
+    expect(PANDA_PROMPT).toContain("delegate that lookup to `memory_explorer` instead of guessing.");
     expect(PANDA_PROMPT).toContain(
       "Foreground bash mutates the shared shell session. The working directory persists across foreground bash calls, and simple export/unset environment changes persist across foreground bash calls in both local and remote mode.",
     );
     expect(PANDA_PROMPT).toContain("Background bash is isolated.");
     expect(PANDA_PROMPT).toContain("Running background bash jobs may appear in context");
     expect(PANDA_PROMPT).toContain("Panda may receive a runtime note about it");
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(4);
     expect(tools[0]).toBeInstanceOf(BashTool);
-    expect(tools[1]).toBeInstanceOf(ReadFileTool);
-    expect(tools[2]).toBeInstanceOf(GlobFilesTool);
-    expect(tools[3]).toBeInstanceOf(GrepFilesTool);
-    expect(tools[4]).toBeInstanceOf(MediaTool);
-    expect(tools[5]).toBeInstanceOf(WebFetchTool);
-    expect(tools[6]).toBeInstanceOf(BrowserTool);
+    expect(tools[1]).toBeInstanceOf(MediaTool);
+    expect(tools[2]).toBeInstanceOf(WebFetchTool);
+    expect(tools[3]).toBeInstanceOf(BrowserTool);
   });
 
   it("adds Brave search when BRAVE_API_KEY is configured", () => {
@@ -55,8 +56,8 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildPandaTools();
 
-    expect(tools).toHaveLength(8);
-    expect(tools[7]).toBeInstanceOf(BraveSearchTool);
+    expect(tools).toHaveLength(5);
+    expect(tools[4]).toBeInstanceOf(BraveSearchTool);
   });
 
   it("adds Whisper when OPENAI_API_KEY is configured", () => {
@@ -64,9 +65,9 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     const tools = buildPandaTools();
 
-    expect(tools).toHaveLength(9);
-    expect(tools[7]).toBeInstanceOf(WebResearchTool);
-    expect(tools[8]).toBeInstanceOf(WhisperTool);
+    expect(tools).toHaveLength(6);
+    expect(tools[4]).toBeInstanceOf(WebResearchTool);
+    expect(tools[5]).toBeInstanceOf(WhisperTool);
   });
 
   it("appends extra tools without adding hidden defaults", () => {
@@ -75,17 +76,45 @@ describe("Panda feature surface", () => {
     const extraTool = { name: "extra-tool" } as any;
     const tools = buildPandaTools([extraTool]);
 
-    expect(tools).toHaveLength(8);
-    expect(tools[7]).toBe(extraTool);
+    expect(tools).toHaveLength(5);
+    expect(tools[4]).toBe(extraTool);
   });
 
-  it("renders the datetime context with the configured timezone", async () => {
-    const context = new DateTimeContext({
-      now: new Date("2026-04-06T10:30:00.000Z"),
-      timeZone: "UTC",
+  it("builds explicit specialist toolsets and keeps readonly tools off the main agent", () => {
+    vi.stubEnv("BRAVE_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "");
+    const toolsets = buildPandaToolsets({
+      postgresReadonly: {
+        pool: new FakeReadonlyPool(),
+      },
     });
 
-    await expect(context.getContent()).resolves.toContain("Timezone: UTC");
+    expect(toolsets.main.map((tool) => tool.name)).toEqual([
+      "bash",
+      "view_media",
+      "web_fetch",
+      "browser",
+    ]);
+    expect(toolsets.main.some((tool) => tool instanceof PostgresReadonlyQueryTool)).toBe(false);
+    expect(toolsets.explore.map((tool) => tool.name)).toEqual([
+      "read_file",
+      "glob_files",
+      "grep_files",
+      "view_media",
+    ]);
+    expect(toolsets.memoryExplorer.map((tool) => tool.name)).toEqual([
+      "postgres_readonly_query",
+    ]);
+  });
+
+  it("renders the datetime context with the host timezone", async () => {
+    const context = new DateTimeContext({
+      now: new Date("2026-04-06T10:30:00.000Z"),
+    });
+
+    await expect(context.getContent()).resolves.toContain(
+      `Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC"}`,
+    );
   });
 
   it("renders a compact environment overview", async () => {

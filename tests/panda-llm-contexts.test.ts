@@ -49,28 +49,27 @@ describe("buildPandaLlmContexts", () => {
       agentStore,
       context: {
         cwd: "/workspace/panda",
-        timezone: "UTC",
       },
     };
   }
 
-  it("keeps the full agent workspace in default Panda contexts", async () => {
+  it("keeps the full agent profile in default Panda contexts", async () => {
     const fixture = await createFixture();
 
     const dump = await gatherContexts(buildPandaLlmContexts({
       context: fixture.context,
       agentStore: fixture.agentStore,
       agentKey: "panda",
-      identityId: "alice-id",
     }));
 
     expect(dump).toContain("**Current DateTime:**");
     expect(dump).toContain("**Environment Overview:**");
-    expect(dump).toContain("**Agent Workspace:**");
-    expect(dump).toContain("Alice likes tea.");
+    expect(dump).toContain("**Agent Profile:**");
     expect(dump).toContain("Summaries only. Query `panda_agent_skills` for full skill bodies when you need the exact content.");
     expect(dump).toContain("calendar\nUse this for calendar work.");
     expect(dump).not.toContain("Long skill body.");
+    expect(dump).not.toContain("Alice likes tea.");
+    expect(dump).not.toContain("Met for dinner.");
     expect(dump).not.toContain(DEFAULT_AGENT_DOCUMENT_TEMPLATES.heartbeat);
   });
 
@@ -81,13 +80,12 @@ describe("buildPandaLlmContexts", () => {
       context: fixture.context,
       agentStore: fixture.agentStore,
       agentKey: "panda",
-      identityId: "alice-id",
       sections: ["datetime", "environment"],
     }));
 
     expect(dump).toContain("**Current DateTime:**");
     expect(dump).toContain("**Environment Overview:**");
-    expect(dump).not.toContain("**Agent Workspace:**");
+    expect(dump).not.toContain("**Agent Profile:**");
     expect(dump).not.toContain("Alice likes tea.");
   });
 
@@ -122,7 +120,6 @@ describe("buildPandaLlmContexts", () => {
     const dump = await gatherContexts(buildPandaLlmContexts({
       context: {
         cwd: "/workspace/panda",
-        timezone: "UTC",
       },
       threadStore,
       threadId: "thread-bg-context",
@@ -157,7 +154,6 @@ describe("buildPandaLlmContexts", () => {
     const dump = await gatherContexts(buildPandaLlmContexts({
       context: {
         cwd: "/workspace/panda",
-        timezone: "UTC",
       },
       threadStore,
       threadId: "thread-no-bg-context",

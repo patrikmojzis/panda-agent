@@ -6,7 +6,7 @@ import {
     type Tool,
     type ToolResultMessage,
 } from "../../kernel/agent/index.js";
-import {summarizeMessageText} from "../../personas/panda/message-preview.js";
+import {summarizeMessageText} from "../../kernel/transcript/message-preview.js";
 import type {ThreadMessageMetadata} from "../../domain/threads/runtime/index.js";
 
 interface TranscriptEntryView {

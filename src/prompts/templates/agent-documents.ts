@@ -28,12 +28,4 @@ ${PANDA_SOUL_TEXT}
 
 When a heartbeat wakes this session, review pending promises, reminders, and unfinished follow-ups before doing anything else.
 `.trim(),
-  playbook: `
-# Playbook
-
-Shared responsibilities for this agent:
-- Keep notes up to date.
-- Record important user context in relationship memory.
-- Use tools deliberately.
-`.trim(),
 };

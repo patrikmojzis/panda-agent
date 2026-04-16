@@ -13,7 +13,7 @@ import type {IdentityStore} from "../../domain/identity/store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {CredentialResolver} from "../../domain/credentials/index.js";
 import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
-import type {BrowserSessionService} from "../../personas/panda/tools/browser-service.js";
+import type {BrowserSessionService} from "../../panda/tools/browser-service.js";
 import {createPandaPool, requirePandaDatabaseUrl, resolvePandaDatabaseUrl,} from "./database.js";
 import {bootstrapPandaRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundBashRuntimeMessage} from "./background-bash-runtime-note.js";
@@ -43,7 +43,7 @@ export interface PandaDefinitionResolverContext {
   identityStore: IdentityStore;
   sessionStore: SessionStore;
   store: ThreadRuntimeStore;
-  extraTools: readonly Tool[];
+  mainTools: readonly Tool[];
 }
 
 export interface PandaRuntimeOptions {
@@ -70,7 +70,7 @@ export interface PandaRuntimeServices {
   scheduledTasks: ScheduledTaskStore;
   watches: WatchStore;
   coordinator: ThreadRuntimeCoordinator;
-  extraTools: readonly Tool[];
+  mainTools: readonly Tool[];
   pool: Pool;
   close(): Promise<void>;
 }
@@ -90,7 +90,7 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
     identityStore: runtime.identityStore,
     sessionStore: runtime.sessionStore,
     store: runtime.store,
-    extraTools: runtime.extraTools,
+    mainTools: runtime.mainTools,
   };
 
   const coordinator = new ThreadRuntimeCoordinator({
@@ -115,7 +115,7 @@ export async function createPandaRuntime(options: PandaRuntimeOptions): Promise<
     scheduledTasks: runtime.scheduledTasks,
     watches: runtime.watches,
     coordinator,
-    extraTools: runtime.extraTools,
+    mainTools: runtime.mainTools,
     pool: runtime.pool,
     close: runtime.close,
   };

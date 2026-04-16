@@ -5,8 +5,8 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {Agent, type PandaSessionContext, RunContext, ToolError,} from "../src/index.js";
-import {BrowserTool} from "../src/personas/panda/tools/browser-tool.js";
-import {BrowserSessionService, buildBrowserDockerRunArgs} from "../src/personas/panda/tools/browser-service.js";
+import {BrowserTool} from "../src/panda/tools/browser-tool.js";
+import {BrowserSessionService, buildBrowserDockerRunArgs} from "../src/panda/tools/browser-service.js";
 
 function createAgent() {
   return new Agent({

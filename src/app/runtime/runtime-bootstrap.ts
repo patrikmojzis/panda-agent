@@ -20,20 +20,20 @@ import {
 import {ensureReadonlyChatQuerySchema, readDatabaseUsername,} from "../../domain/threads/runtime/postgres-readonly.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
-import {AgentDocumentTool} from "../../personas/panda/tools/agent-document-tool.js";
-import {AgentSkillTool} from "../../personas/panda/tools/agent-skill-tool.js";
-import {BrowserSessionService} from "../../personas/panda/tools/browser-service.js";
-import {ClearEnvValueTool, SetEnvValueTool} from "../../personas/panda/tools/env-value-tools.js";
-import {PostgresReadonlyQueryTool} from "../../personas/panda/tools/postgres-readonly-query-tool.js";
+import {buildPandaToolsetsFromRegistry, createPandaToolRegistry,} from "../../panda/definition.js";
+import {AgentDocumentTool} from "../../panda/tools/agent-document-tool.js";
+import {AgentSkillTool} from "../../panda/tools/agent-skill-tool.js";
+import {BrowserSessionService} from "../../panda/tools/browser-service.js";
+import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
 import {
     ScheduledTaskCancelTool,
     ScheduledTaskCreateTool,
     ScheduledTaskUpdateTool,
-} from "../../personas/panda/tools/scheduled-task-tools.js";
-import {WatchCreateTool, WatchDisableTool, WatchUpdateTool,} from "../../personas/panda/tools/watch-tools.js";
-import {SpawnSubagentTool} from "../../personas/panda/tools/spawn-subagent-tool.js";
-import {ThinkingSetTool} from "../../personas/panda/tools/thinking-set-tool.js";
-import {PandaSubagentService} from "../../personas/panda/subagents/service.js";
+} from "../../panda/tools/scheduled-task-tools.js";
+import {WatchCreateTool, WatchDisableTool, WatchUpdateTool,} from "../../panda/tools/watch-tools.js";
+import {SpawnSubagentTool} from "../../panda/tools/spawn-subagent-tool.js";
+import {ThinkingSetTool} from "../../panda/tools/thinking-set-tool.js";
+import {PandaSubagentService} from "../../panda/subagents/service.js";
 import {BashJobService} from "../../integrations/shell/bash-job-service.js";
 import {createPandaPool} from "./database.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
@@ -62,7 +62,7 @@ export interface RuntimeBootstrapResult {
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
   watches: WatchStore;
-  extraTools: readonly Tool[];
+  mainTools: readonly Tool[];
   pool: Pool;
   close(): Promise<void>;
 }
@@ -186,7 +186,21 @@ export async function bootstrapPandaRuntime(
       readonlyPool = createPandaPool(readOnlyDbUrl);
     }
 
-    let extraTools: readonly Tool[] = [];
+    const toolRegistry = createPandaToolRegistry({
+      bash: {
+        jobService: bashJobService,
+        credentialResolver,
+      },
+      browser: {
+        service: resolvedBrowserService,
+      },
+      postgresReadonly: {
+        pool: readonlyPool ?? postgresPool,
+      },
+    });
+    const subagentToolsets = buildPandaToolsetsFromRegistry(toolRegistry);
+
+    let mainTools: readonly Tool[] = [];
     const subagentService = new PandaSubagentService({
       store,
       resolveDefinition: (thread) => options.resolveDefinition(thread, {
@@ -197,13 +211,17 @@ export async function bootstrapPandaRuntime(
         identityStore,
         sessionStore,
         store,
-        extraTools,
+        mainTools,
       }),
+      toolsets: {
+        explore: subagentToolsets.explore,
+        memoryExplorer: subagentToolsets.memoryExplorer,
+      },
       agentStore,
       maxSubagentDepth,
     });
 
-    extraTools = [
+    mainTools = buildPandaToolsetsFromRegistry(toolRegistry, [
       new ThinkingSetTool({
         persistence: {
           updateThreadThinking: async (threadId, thinking) => {
@@ -233,9 +251,6 @@ export async function bootstrapPandaRuntime(
           }),
         ]
         : []),
-      new PostgresReadonlyQueryTool({
-        pool: readonlyPool ?? postgresPool,
-      }),
       new ScheduledTaskCreateTool({
         store: scheduledTasks,
       }),
@@ -254,7 +269,7 @@ export async function bootstrapPandaRuntime(
       new WatchDisableTool({
         store: watches,
       }),
-    ];
+    ]).main;
 
     if (options.onStoreNotification) {
       notificationChannel = buildThreadRuntimeNotificationChannel(options.tablePrefix ?? "thread_runtime");
@@ -286,7 +301,7 @@ export async function bootstrapPandaRuntime(
       store,
       scheduledTasks,
       watches,
-      extraTools,
+      mainTools,
       pool: postgresPool,
       close: createCloseRuntime({
         bashJobService,

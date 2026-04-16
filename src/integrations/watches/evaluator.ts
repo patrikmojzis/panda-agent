@@ -25,7 +25,7 @@ import {
     type FetchImpl,
     fetchSafeHttpResource,
     type LookupHostname,
-} from "../../personas/panda/tools/web-fetch.js";
+} from "../../panda/tools/web-fetch.js";
 
 const SQL_WATCH_STATEMENT_TIMEOUT_MS = 5_000;
 const SQL_WATCH_LOCK_TIMEOUT_MS = 500;

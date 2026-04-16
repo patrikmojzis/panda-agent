@@ -8,7 +8,7 @@ import {
     createPinnedLookup,
     extractReadableContentFromHtml,
     fetchWithPinnedLookup,
-} from "../src/personas/panda/tools/web-fetch.js";
+} from "../src/panda/tools/web-fetch.js";
 
 function createAgent() {
   return new Agent({

@@ -15,7 +15,7 @@ import {
 } from "../src/domain/credentials/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
-import {SetEnvValueTool} from "../src/personas/panda/index.js";
+import {SetEnvValueTool} from "../src/panda/index.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 describe("credentials end-to-end", () => {

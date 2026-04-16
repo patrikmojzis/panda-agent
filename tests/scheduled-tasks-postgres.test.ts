@@ -43,7 +43,7 @@ class PgMemReadonlySchemaQueryable {
         continue;
       }
 
-      if (/^CREATE VIEW "panda_(messages_raw|messages|tool_results|inputs|runs|agent_skills)"/i.test(statement)) {
+      if (/^CREATE VIEW "panda_(messages_raw|messages|tool_results|inputs|runs|agent_prompts|agent_documents|agent_diary|agent_pairings|agent_skills)"/i.test(statement)) {
         continue;
       }
 

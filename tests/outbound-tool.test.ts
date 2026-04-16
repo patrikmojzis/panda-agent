@@ -5,8 +5,8 @@ import {tmpdir} from "node:os";
 import {describe, expect, it} from "vitest";
 
 import {Agent, RunContext} from "../src/kernel/agent/index.js";
-import {OutboundTool} from "../src/personas/panda/index.js";
-import type {PandaSessionContext} from "../src/personas/panda/types.js";
+import {OutboundTool} from "../src/panda/index.js";
+import type {PandaSessionContext} from "../src/app/runtime/panda-session-context.js";
 
 function createContext(
   overrides: Partial<PandaSessionContext> = {},

@@ -13,7 +13,7 @@ import {
     resolveDefaultPandaExploreSubagentModelSelector,
     resolveDefaultPandaMemoryExplorerSubagentModelSelector,
     resolveDefaultPandaModelSelector,
-} from "../src/personas/panda/defaults.js";
+} from "../src/panda/defaults.js";
 
 describe("model selector", () => {
   it("parses supported provider names", () => {

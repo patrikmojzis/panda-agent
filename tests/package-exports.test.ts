@@ -23,9 +23,9 @@ const EXPECTED_EXPORTS = {
     types: "./dist/kernel/agent/index.d.ts",
     import: "./dist/kernel/agent/index.js",
   },
-  "./personas/panda": {
-    types: "./dist/personas/panda/index.d.ts",
-    import: "./dist/personas/panda/index.js",
+  "./panda": {
+    types: "./dist/panda/index.d.ts",
+    import: "./dist/panda/index.js",
   },
   "./domain/agents": {
     types: "./dist/domain/agents/index.d.ts",
@@ -83,16 +83,17 @@ describe("package exports", () => {
   });
 
   it("does not expose internal implementation subpaths", () => {
+    expect(packageJson.exports).not.toHaveProperty("./personas/panda");
     expect(packageJson.exports).not.toHaveProperty("./domain/credentials");
     expect(packageJson.exports).not.toHaveProperty("./domain/sessions/conversations");
     expect(packageJson.exports).not.toHaveProperty("./domain/threads/conversations");
     expect(packageJson.exports).not.toHaveProperty("./domain/threads/routes");
     expect(packageJson.exports).not.toHaveProperty("./integrations/channels/telegram");
     expect(packageJson.exports).not.toHaveProperty("./integrations/channels/whatsapp");
-    expect(packageJson.exports).not.toHaveProperty("./personas/panda/tools/bash-tool");
-    expect(packageJson.exports).not.toHaveProperty("./personas/panda/tools/env-value-tools");
-    expect(packageJson.exports).not.toHaveProperty("./personas/panda/tools/web-fetch");
-    expect(packageJson.exports).not.toHaveProperty("./personas/panda/tools/web-fetch-tool");
+    expect(packageJson.exports).not.toHaveProperty("./panda/tools/bash-tool");
+    expect(packageJson.exports).not.toHaveProperty("./panda/tools/env-value-tools");
+    expect(packageJson.exports).not.toHaveProperty("./panda/tools/web-fetch");
+    expect(packageJson.exports).not.toHaveProperty("./panda/tools/web-fetch-tool");
   });
 
   it("keeps domain subpath barrels slim", () => {

@@ -2,7 +2,7 @@ import {stringToUserMessage} from "../../../kernel/agent/index.js";
 import {renderScheduledTaskPrompt} from "../../../prompts/runtime/scheduled-tasks.js";
 import type {RememberedRoute} from "../../channels/types.js";
 import type {SessionRouteRepo, SessionStore} from "../../sessions/index.js";
-import {summarizeMessageText} from "../../../personas/panda/message-preview.js";
+import {summarizeMessageText} from "../../../kernel/transcript/message-preview.js";
 import type {ThreadRuntimeCoordinator} from "../../threads/runtime/coordinator.js";
 import type {ThreadRuntimeStore} from "../../threads/runtime/store.js";
 import {computeClaimNextFireAt} from "./schedule.js";

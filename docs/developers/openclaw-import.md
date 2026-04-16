@@ -19,7 +19,6 @@ The command accepts either:
 
 OpenClaw files map into Panda like this:
 
-- `AGENTS.md` -> `agent_prompts.playbook`
 - `HEARTBEAT.md` -> `agent_prompts.heartbeat`
 - `SOUL.md` -> `agent_prompts.soul`
 - `IDENTITY.md` -> not migrated into prompts

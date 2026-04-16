@@ -1,10 +1,10 @@
 import {describe, expect, it} from "vitest";
 
-import * as pandaPersona from "../src/personas/panda/index.js";
+import * as pandaPersona from "../src/panda/index.js";
 
 const EXPECTED_PERSONA_EXPORTS = [
   "AgentDocumentTool",
-  "AgentMemoryContext",
+  "AgentProfileContext",
   "AgentSkillTool",
   "BashJobCancelTool",
   "BashJobStatusTool",

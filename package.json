@@ -21,9 +21,9 @@
       "types": "./dist/kernel/agent/index.d.ts",
       "import": "./dist/kernel/agent/index.js"
     },
-    "./personas/panda": {
-      "types": "./dist/personas/panda/index.d.ts",
-      "import": "./dist/personas/panda/index.js"
+    "./panda": {
+      "types": "./dist/panda/index.d.ts",
+      "import": "./dist/panda/index.js"
     },
     "./domain/agents": {
       "types": "./dist/domain/agents/index.d.ts",

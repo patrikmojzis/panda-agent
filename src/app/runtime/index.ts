@@ -24,6 +24,13 @@ export {
   type PandaRuntimeOptions,
   type PandaRuntimeServices,
 } from "./create-runtime.js";
+export type {
+  PandaChannelActionQueue,
+  PandaOutboundQueue,
+  PandaRouteMemory,
+  PandaSessionContext,
+  PandaShellSession,
+} from "./panda-session-context.js";
 export {
   resolvePandaMediaDir,
   resolvePandaAgentDir,

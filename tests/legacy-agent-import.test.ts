@@ -119,11 +119,9 @@ describe("legacy agent import", () => {
     expect(plan.displayName).toBe("Clawd");
     expect(plan.prompts.map((prompt) => prompt.slug)).toEqual([
       "agent",
-      "playbook",
       "heartbeat",
       "soul",
     ]);
-    expect(plan.prompts.find((prompt) => prompt.slug === "playbook")?.content).toContain("Legacy agent instructions.");
     expect(plan.memory?.content).toContain("Imported from USER.md");
     expect(plan.memory?.content).toContain("Imported from MEMORY.md");
     expect(plan.diary).toHaveLength(1);
@@ -255,7 +253,7 @@ describe("legacy agent import", () => {
       createdAgent: true,
       createdMainSession: true,
       identityId: "patrik-id",
-      promptCount: 4,
+      promptCount: 3,
       importedMemory: true,
       diaryEntryCount: 1,
       messageCount: 2,
@@ -274,9 +272,6 @@ describe("legacy agent import", () => {
       }),
     ]);
 
-    await expect(harness.agentStore.readAgentPrompt("luna", "playbook")).resolves.toMatchObject({
-      content: "# AGENTS\nWorkspace rules.",
-    });
     await expect(harness.agentStore.readAgentPrompt("luna", "heartbeat")).resolves.toMatchObject({
       content: "# HEARTBEAT\nCheck in twice a day.",
     });
@@ -346,6 +341,7 @@ describe("legacy agent import", () => {
 
     const copiedReference = await readFile(path.join(plan.legacyCopyDir, "docs/reference.md"), "utf8");
     expect(copiedReference).toBe("Useful reference.");
+    await expect(readFile(path.join(plan.legacyCopyDir, "AGENTS.md"), "utf8")).rejects.toThrow();
     await expect(readFile(path.join(plan.legacyCopyDir, "skills/notion/.env"), "utf8")).rejects.toThrow();
     await expect(readFile(path.join(plan.legacyCopyDir, ".git/config"), "utf8")).rejects.toThrow();
     await expect(readFile(path.join(plan.legacyCopyDir, "node_modules/trash.js"), "utf8")).rejects.toThrow();

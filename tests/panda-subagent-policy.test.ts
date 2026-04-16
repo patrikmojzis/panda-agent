@@ -1,20 +1,13 @@
 import {describe, expect, it} from "vitest";
 
 import {
-    BraveSearchTool,
-    BrowserTool,
     filterToolsForSubagentRole,
     getPandaSubagentRolePolicy,
-    GlobFilesTool,
-    GrepFilesTool,
-    MediaTool,
     PostgresReadonlyQueryTool,
-    ReadFileTool,
     Tool,
-    WebFetchTool,
-    WebResearchTool,
     z,
 } from "../src/index.js";
+import {buildPandaToolsets} from "../src/panda/definition.js";
 
 class FakeReadonlyPool {
   async connect(): Promise<never> {
@@ -37,66 +30,76 @@ class FakeAgentDocumentTool extends Tool<typeof FakeAgentDocumentTool.schema> {
 }
 
 describe("Panda subagent policy", () => {
-  it("keeps readonly workspace tools available and excludes memory and web_research tools for the explore role", () => {
-    const tools = filterToolsForSubagentRole(
-      [
-        new ReadFileTool(),
-        new GlobFilesTool(),
-        new GrepFilesTool(),
-        new MediaTool(),
-        new WebFetchTool(),
-        new PostgresReadonlyQueryTool({ pool: new FakeReadonlyPool() }),
-        new BraveSearchTool(),
-        new WebResearchTool(),
-      ],
-      "explore",
-    );
+  it("maps roles to explicit specialist toolsets", () => {
+    expect(getPandaSubagentRolePolicy("explore")).toMatchObject({
+      toolset: "explore",
+      thinking: "low",
+    });
+    expect(getPandaSubagentRolePolicy("memory_explorer")).toMatchObject({
+      toolset: "memoryExplorer",
+      thinking: "medium",
+    });
+  });
 
-    expect(tools.map((tool) => tool.name)).toEqual([
+  it("builds the explore toolset with readonly workspace tools plus media only", () => {
+    const toolsets = buildPandaToolsets({
+      postgresReadonly: {
+        pool: new FakeReadonlyPool(),
+      },
+    });
+
+    expect(toolsets.explore.map((tool) => tool.name)).toEqual([
       "read_file",
       "glob_files",
       "grep_files",
       "view_media",
-      "web_fetch",
     ]);
-  });
-
-  it("keeps browser excluded for the explore role", () => {
-    const tools = filterToolsForSubagentRole(
-      [
-        new ReadFileTool(),
-        new GlobFilesTool(),
-        new GrepFilesTool(),
-        new MediaTool(),
-        new WebFetchTool(),
-        new BraveSearchTool(),
-        new BrowserTool(),
-        new WebResearchTool(),
-      ],
-      "explore",
-    );
-
-    expect(tools.map((tool) => tool.name)).toEqual([
-      "read_file",
-      "glob_files",
-      "grep_files",
-      "view_media",
-      "web_fetch",
-    ]);
-  });
-
-  it("uses low thinking for the explore role", () => {
-    expect(getPandaSubagentRolePolicy("explore").thinking).toBe("low");
   });
 
   it("keeps the memory explorer Postgres-only", () => {
+    const toolsets = buildPandaToolsets({
+      postgresReadonly: {
+        pool: new FakeReadonlyPool(),
+      },
+    });
+
+    expect(toolsets.memoryExplorer.map((tool) => tool.name)).toEqual([
+      "postgres_readonly_query",
+    ]);
+  });
+
+  it("keeps the helper filter aligned with the explicit explore toolset", () => {
+    const toolsets = buildPandaToolsets({
+      postgresReadonly: {
+        pool: new FakeReadonlyPool(),
+      },
+    });
     const tools = filterToolsForSubagentRole(
       [
-        new ReadFileTool(),
-        new GlobFilesTool(),
-        new GrepFilesTool(),
-        new MediaTool(),
-        new WebFetchTool(),
+        ...toolsets.main,
+        ...toolsets.explore,
+        new FakeAgentDocumentTool(),
+      ],
+      "explore",
+    );
+
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "read_file",
+      "glob_files",
+      "grep_files",
+      "view_media",
+    ]);
+  });
+
+  it("keeps the helper filter aligned with the explicit memory toolset", () => {
+    const toolsets = buildPandaToolsets({
+      postgresReadonly: {
+        pool: new FakeReadonlyPool(),
+      },
+    });
+    const tools = filterToolsForSubagentRole(
+      [
+        ...toolsets.main,
         new PostgresReadonlyQueryTool({ pool: new FakeReadonlyPool() }),
         new FakeAgentDocumentTool(),
       ],
@@ -106,9 +109,5 @@ describe("Panda subagent policy", () => {
     expect(tools.map((tool) => tool.name)).toEqual([
       "postgres_readonly_query",
     ]);
-  });
-
-  it("uses medium thinking for the memory explorer role", () => {
-    expect(getPandaSubagentRolePolicy("memory_explorer").thinking).toBe("medium");
   });
 });

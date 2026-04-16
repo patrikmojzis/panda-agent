@@ -10,7 +10,7 @@ That means:
 
 ## What Panda Sees By Default
 
-In the normal Agent Workspace context, Panda gets a cheap skill index:
+In the normal Agent Profile context, Panda gets a cheap skill index:
 
 - `skill_key`
 - `description`

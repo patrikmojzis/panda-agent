@@ -2,7 +2,7 @@ import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {resolvePandaPath} from "../src/personas/panda/tools/context.js";
+import {resolvePandaPath} from "../src/app/runtime/panda-path-context.js";
 
 describe("resolvePandaPath", () => {
   afterEach(() => {
