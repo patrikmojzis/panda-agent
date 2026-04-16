@@ -3,36 +3,36 @@ import {createHash, randomUUID} from "node:crypto";
 import {resolveModelSelector} from "../../../kernel/models/model-selector.js";
 import type {ThreadLease, ThreadLeaseManager} from "./coordinator.js";
 import {
-    buildThreadRuntimeTableNames,
-    type ThreadRuntimeTableNames,
-    toJson,
-    validateIdentifier,
+  buildThreadRuntimeTableNames,
+  type ThreadRuntimeTableNames,
+  toJson,
+  validateIdentifier,
 } from "./postgres-shared.js";
 import {buildThreadRuntimeSchemaSql} from "./postgres-schema.js";
 import {parseBashJobRow, parseInputRow, parseMessageRow, parseRunRow, parseThreadRow} from "./postgres-rows.js";
 import {
-    applyPendingThreadInputs,
-    discardPendingThreadInputs,
-    enqueueThreadInput,
-    promoteQueuedThreadInputs,
+  applyPendingThreadInputs,
+  discardPendingThreadInputs,
+  enqueueThreadInput,
+  promoteQueuedThreadInputs,
 } from "./postgres-inputs.js";
 import type {PgPoolLike, PgQueryable} from "./postgres-db.js";
 import type {ThreadEnqueueResult, ThreadRuntimeStore} from "./store.js";
 import {
-    type CreateThreadBashJobInput,
-    type CreateThreadInput,
-    missingThreadError,
-    type ThreadBashJobRecord,
-    type ThreadBashJobUpdate,
-    type ThreadInputDeliveryMode,
-    type ThreadInputPayload,
-    type ThreadInputRecord,
-    type ThreadMessageRecord,
-    type ThreadRecord,
-    type ThreadRunRecord,
-    type ThreadRuntimeMessagePayload,
-    type ThreadSummaryRecord,
-    type ThreadUpdate,
+  type CreateThreadBashJobInput,
+  type CreateThreadInput,
+  missingThreadError,
+  type ThreadBashJobRecord,
+  type ThreadBashJobUpdate,
+  type ThreadInputDeliveryMode,
+  type ThreadInputPayload,
+  type ThreadInputRecord,
+  type ThreadMessageRecord,
+  type ThreadRecord,
+  type ThreadRunRecord,
+  type ThreadRuntimeMessagePayload,
+  type ThreadSummaryRecord,
+  type ThreadUpdate,
 } from "./types.js";
 import {PostgresIdentityStore, type PostgresIdentityStoreOptions} from "../../../domain/identity/postgres.js";
 import {buildIdentityTableNames} from "../../../domain/identity/postgres-shared.js";
@@ -465,6 +465,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     threadId: string,
     payload: ThreadRuntimeMessagePayload,
   ): Promise<ThreadMessageRecord> {
+    const createdAt = new Date(payload.createdAt ?? Date.now());
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.messages} (
         id,
@@ -474,6 +475,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         channel_id,
         external_message_id,
         actor_id,
+        identity_id,
         run_id,
         created_at,
         metadata,
@@ -481,26 +483,29 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       ) VALUES (
         $1,
         $2,
-        'runtime',
         $3,
         $4,
         $5,
         $6,
         $7,
         $8,
-        $9::jsonb,
-        $10::jsonb
+        $9,
+        $10,
+        $11::jsonb,
+        $12::jsonb
       )
       RETURNING *
     `, [
       randomUUID(),
       threadId,
+      payload.origin ?? "runtime",
       payload.source,
       payload.channelId ?? null,
       payload.externalMessageId ?? null,
       payload.actorId ?? null,
+      payload.identityId ?? null,
       payload.runId ?? null,
-      new Date(),
+      createdAt,
       toJson(payload.metadata),
       toJson(payload.message),
     ]);

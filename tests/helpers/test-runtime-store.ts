@@ -2,34 +2,34 @@ import {randomUUID} from "node:crypto";
 
 import type {IdentityStore} from "../../src/domain/identity/store.js";
 import {
-    createDefaultIdentityInput,
-    type CreateIdentityBindingInput,
-    type CreateIdentityInput,
-    DEFAULT_IDENTITY_HANDLE,
-    DEFAULT_IDENTITY_ID,
-    type EnsureIdentityBindingInput,
-    type IdentityBindingLookup,
-    type IdentityBindingRecord,
-    type IdentityRecord,
-    normalizeIdentityHandle,
+  createDefaultIdentityInput,
+  type CreateIdentityBindingInput,
+  type CreateIdentityInput,
+  DEFAULT_IDENTITY_HANDLE,
+  DEFAULT_IDENTITY_ID,
+  type EnsureIdentityBindingInput,
+  type IdentityBindingLookup,
+  type IdentityBindingRecord,
+  type IdentityRecord,
+  normalizeIdentityHandle,
 } from "../../src/domain/identity/types.js";
 import type {ThreadEnqueueResult, ThreadRuntimeStore} from "../../src/domain/threads/runtime/store.js";
 import {
-    type CreateThreadBashJobInput,
-    type CreateThreadInput,
-    matchesThreadInputIdentity,
-    missingThreadError,
-    type ThreadBashJobRecord,
-    type ThreadBashJobUpdate,
-    type ThreadInputDeliveryMode,
-    type ThreadInputPayload,
-    type ThreadInputRecord,
-    type ThreadMessageRecord,
-    type ThreadRecord,
-    type ThreadRunRecord,
-    type ThreadRuntimeMessagePayload,
-    type ThreadSummaryRecord,
-    type ThreadUpdate,
+  type CreateThreadBashJobInput,
+  type CreateThreadInput,
+  matchesThreadInputIdentity,
+  missingThreadError,
+  type ThreadBashJobRecord,
+  type ThreadBashJobUpdate,
+  type ThreadInputDeliveryMode,
+  type ThreadInputPayload,
+  type ThreadInputRecord,
+  type ThreadMessageRecord,
+  type ThreadRecord,
+  type ThreadRunRecord,
+  type ThreadRuntimeMessagePayload,
+  type ThreadSummaryRecord,
+  type ThreadUpdate,
 } from "../../src/domain/threads/runtime/types.js";
 
 function cloneRecord<T extends object>(record: T): T {
@@ -461,7 +461,7 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       id: randomUUID(),
       threadId,
       sequence: thread.nextMessageSequence,
-      origin: "runtime",
+      origin: payload.origin ?? "runtime",
       message: payload.message,
       metadata: payload.metadata,
       source: payload.source,
@@ -470,7 +470,7 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       actorId: payload.actorId,
       identityId: payload.identityId,
       runId: payload.runId,
-      createdAt: Date.now(),
+      createdAt: payload.createdAt ?? Date.now(),
     };
 
     thread.nextMessageSequence += 1;

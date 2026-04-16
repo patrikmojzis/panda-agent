@@ -6,10 +6,13 @@ import {resolvePandaAgentDir} from "../../app/runtime/data-dir.js";
 import type {CredentialService} from "../credentials/index.js";
 import type {SessionStore} from "../sessions/store.js";
 import type {ThreadRuntimeStore} from "../threads/runtime/store.js";
+import type {ThreadRuntimeMessagePayload} from "../threads/runtime/types.js";
 import type {AgentStore} from "./store.js";
 import {DEFAULT_AGENT_DOCUMENT_TEMPLATES} from "./templates.js";
 import type {AgentPromptSlug} from "./types.js";
 import {normalizeAgentKey, normalizeSkillKey} from "./types.js";
+
+const DEFAULT_LEGACY_MESSAGE_PAIR_LIMIT = 200;
 
 export interface LegacyAgentPromptPlan {
   slug: AgentPromptSlug;
@@ -41,6 +44,15 @@ export interface LegacyAgentMemoryPlan {
   sourcePaths: readonly string[];
 }
 
+export interface LegacyAgentTranscriptMessagePlan {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+  sourcePath: string;
+  legacySessionId: string;
+  legacyMessageId?: string;
+}
+
 export interface LegacyAgentImportPlan {
   sourceDir: string;
   agentKey: string;
@@ -48,6 +60,8 @@ export interface LegacyAgentImportPlan {
   prompts: readonly LegacyAgentPromptPlan[];
   memory: LegacyAgentMemoryPlan | null;
   diary: readonly LegacyAgentDiaryPlan[];
+  messages: readonly LegacyAgentTranscriptMessagePlan[];
+  messageImportIncluded: boolean;
   skills: readonly LegacyAgentSkillPlan[];
   credentials: readonly LegacyAgentCredentialPlan[];
   warnings: readonly string[];
@@ -55,11 +69,19 @@ export interface LegacyAgentImportPlan {
   legacyCopyDir: string;
 }
 
+export interface PlanLegacyAgentImportOptions {
+  env?: NodeJS.ProcessEnv;
+  includeMessages?: boolean;
+  messagePairLimit?: number;
+}
+
 export interface ImportLegacyAgentOptions {
   agentStore: AgentStore;
   sessionStore?: SessionStore;
   threadStore?: ThreadRuntimeStore;
   credentialService?: CredentialService;
+  identityId?: string;
+  includeMessages?: boolean;
   env?: NodeJS.ProcessEnv;
   copyLegacyWorkspace?: boolean;
 }
@@ -72,9 +94,11 @@ export interface ImportedLegacyAgentResult {
   legacyCopyDir: string;
   createdAgent: boolean;
   createdMainSession: boolean;
+  identityId?: string;
   promptCount: number;
   importedMemory: boolean;
   diaryEntryCount: number;
+  messageCount: number;
   skillCount: number;
   credentialCount: number;
   skippedCredentialCount: number;
@@ -113,7 +137,7 @@ function renderGeneratedAgentPrompt(displayName: string): string {
 
 You are ${displayName}.
 
-This agent was imported from a legacy OpenClaw workspace.
+This agent was imported from an OpenClaw workspace.
 IDENTITY.md was intentionally left out of Panda's prompt store.
 `.trim();
 }
@@ -488,6 +512,264 @@ async function buildCredentialPlans(sourceDir: string, warnings: string[]): Prom
   return [...credentialsByKey.values()].sort((left, right) => left.envKey.localeCompare(right.envKey));
 }
 
+function resolvePlanLegacyImportOptions(
+  input: NodeJS.ProcessEnv | PlanLegacyAgentImportOptions | undefined,
+): { env: NodeJS.ProcessEnv; includeMessages: boolean; messagePairLimit: number } {
+  if (!input) {
+    return {
+      env: process.env,
+      includeMessages: false,
+      messagePairLimit: DEFAULT_LEGACY_MESSAGE_PAIR_LIMIT,
+    };
+  }
+
+  const maybeOptions = input as PlanLegacyAgentImportOptions;
+  if (
+    (typeof maybeOptions.env === "object" && maybeOptions.env !== null)
+    || typeof maybeOptions.includeMessages === "boolean"
+    || typeof maybeOptions.messagePairLimit === "number"
+  ) {
+    const pairLimit = Number(maybeOptions.messagePairLimit);
+    return {
+      env: maybeOptions.env ?? process.env,
+      includeMessages: Boolean(maybeOptions.includeMessages),
+      messagePairLimit: Number.isInteger(pairLimit) && pairLimit > 0
+        ? pairLimit
+        : DEFAULT_LEGACY_MESSAGE_PAIR_LIMIT,
+    };
+  }
+
+  return {
+    env: input as NodeJS.ProcessEnv,
+    includeMessages: false,
+    messagePairLimit: DEFAULT_LEGACY_MESSAGE_PAIR_LIMIT,
+  };
+}
+
+function parseLegacyTimestamp(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractLegacyMessageText(content: unknown): string | null {
+  if (typeof content === "string") {
+    return trimNonEmpty(content);
+  }
+
+  if (!Array.isArray(content)) {
+    return null;
+  }
+
+  const blocks = content
+    .filter((block): block is {type?: unknown; text?: unknown} => typeof block === "object" && block !== null)
+    .filter((block) => block.type === "text" && typeof block.text === "string")
+    .map((block) => (block.text as string).trim())
+    .filter(Boolean);
+
+  return trimNonEmpty(blocks.join("\n"));
+}
+
+function sanitizeLegacyUserText(rawText: string): string {
+  let sanitized = rawText.trim();
+  sanitized = sanitized.replace(/\n\[message_id:[^\]]+\]\s*$/i, "").trim();
+  if (sanitized.startsWith("[") && !sanitized.startsWith("[cron:")) {
+    sanitized = sanitized.replace(/^\[[^\]]+\]\s*/, "").trim();
+  }
+
+  return sanitized;
+}
+
+function shouldImportLegacyUserText(rawText: string, sanitizedText: string): boolean {
+  if (!sanitizedText) {
+    return false;
+  }
+
+  if (rawText.trim().startsWith("[cron:")) {
+    return false;
+  }
+
+  return !sanitizedText.startsWith("A new session was started via /new or /reset.");
+}
+
+function shouldImportLegacyAssistantText(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length > 0 && trimmed !== "NO_REPLY";
+}
+
+function isLegacySessionFileName(fileName: string): boolean {
+  return fileName.endsWith(".jsonl") || fileName.includes(".jsonl.reset.");
+}
+
+async function resolveLegacySessionsDir(
+  sourceDir: string,
+  agentKey: string,
+): Promise<{sessionsDir: string; legacyAgentKey: string} | null> {
+  const agentsDir = path.join(path.dirname(sourceDir), ".openclaw", "agents");
+  if (!await pathExists(agentsDir)) {
+    return null;
+  }
+
+  const exactDir = path.join(agentsDir, agentKey, "sessions");
+  if (await pathExists(exactDir)) {
+    return {
+      sessionsDir: exactDir,
+      legacyAgentKey: agentKey,
+    };
+  }
+
+  if (agentKey === "clawd") {
+    const fallbackDir = path.join(agentsDir, "main", "sessions");
+    if (await pathExists(fallbackDir)) {
+      return {
+        sessionsDir: fallbackDir,
+        legacyAgentKey: "main",
+      };
+    }
+  }
+
+  return null;
+}
+
+async function buildMessagePlans(
+  sourceDir: string,
+  agentKey: string,
+  warnings: string[],
+  pairLimit: number = DEFAULT_LEGACY_MESSAGE_PAIR_LIMIT,
+): Promise<readonly LegacyAgentTranscriptMessagePlan[]> {
+  const sessionSource = await resolveLegacySessionsDir(sourceDir, agentKey);
+  if (!sessionSource) {
+    warnings.push("No matching .openclaw session history found; skipped OpenClaw messages.");
+    return [];
+  }
+
+  if (sessionSource.legacyAgentKey !== agentKey) {
+    warnings.push(`Used .openclaw/agents/${sessionSource.legacyAgentKey} sessions for ${agentKey}.`);
+  }
+
+  const entries = await readdir(sessionSource.sessionsDir, {withFileTypes: true});
+  const sessionFiles = entries
+    .filter((entry) => entry.isFile() && isLegacySessionFileName(entry.name) && !entry.name.includes(".deleted."))
+    .map((entry) => path.join(sessionSource.sessionsDir, entry.name))
+    .sort((left, right) => left.localeCompare(right));
+
+  if (sessionFiles.length === 0) {
+    warnings.push(`No importable session files found under ${sessionSource.sessionsDir}.`);
+    return [];
+  }
+
+  const pairedMessages: Array<{user: LegacyAgentTranscriptMessagePlan; assistant: LegacyAgentTranscriptMessagePlan}> = [];
+
+  for (const sourcePath of sessionFiles) {
+    const content = await readFile(sourcePath, "utf8");
+    const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    let legacySessionId = path.basename(sourcePath).split(".jsonl")[0] ?? path.basename(sourcePath);
+    let pendingUser: LegacyAgentTranscriptMessagePlan | null = null;
+
+    for (const [index, line] of lines.entries()) {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        warnings.push(`Skipped malformed legacy session row ${index + 1} in ${sourcePath}.`);
+        continue;
+      }
+
+      if (parsed.type === "session" && typeof parsed.id === "string") {
+        legacySessionId = parsed.id;
+        pendingUser = null;
+        continue;
+      }
+
+      if (parsed.type !== "message") {
+        continue;
+      }
+
+      const message = typeof parsed.message === "object" && parsed.message !== null
+        ? parsed.message as Record<string, unknown>
+        : null;
+      const role = message?.role;
+      if (role !== "user" && role !== "assistant") {
+        continue;
+      }
+
+      const rawText = extractLegacyMessageText(message?.content);
+      if (!rawText) {
+        if (role === "user") {
+          pendingUser = null;
+        }
+        continue;
+      }
+
+      const createdAt = parseLegacyTimestamp(message?.timestamp ?? parsed.timestamp);
+      if (createdAt === null) {
+        warnings.push(`Skipped legacy message with invalid timestamp in ${sourcePath}.`);
+        if (role === "user") {
+          pendingUser = null;
+        }
+        continue;
+      }
+
+      if (role === "user") {
+        const sanitizedText = sanitizeLegacyUserText(rawText);
+        pendingUser = shouldImportLegacyUserText(rawText, sanitizedText)
+          ? {
+            role: "user",
+            content: sanitizedText,
+            createdAt,
+            sourcePath,
+            legacySessionId,
+            legacyMessageId: typeof parsed.id === "string" ? parsed.id : undefined,
+          }
+          : null;
+        continue;
+      }
+
+      if (!pendingUser) {
+        continue;
+      }
+
+      const assistantText = rawText.trim();
+      if (!shouldImportLegacyAssistantText(assistantText)) {
+        continue;
+      }
+
+      pairedMessages.push({
+        user: pendingUser,
+        assistant: {
+          role: "assistant",
+          content: assistantText,
+          createdAt,
+          sourcePath,
+          legacySessionId,
+          legacyMessageId: typeof parsed.id === "string" ? parsed.id : undefined,
+        },
+      });
+      pendingUser = null;
+    }
+  }
+
+  pairedMessages.sort((left, right) => {
+    return left.user.createdAt - right.user.createdAt
+      || left.assistant.createdAt - right.assistant.createdAt;
+  });
+
+  if (pairedMessages.length > pairLimit) {
+    warnings.push(`Clipped OpenClaw chat import to the last ${pairLimit} user/assistant pairs.`);
+  }
+
+  return pairedMessages
+    .slice(-pairLimit)
+    .flatMap((pair) => [pair.user, pair.assistant]);
+}
+
 export async function discoverLegacyAgentSourceDirs(inputPath: string): Promise<readonly string[]> {
   const resolvedInput = path.resolve(inputPath);
   if (await pathExists(path.join(resolvedInput, "AGENTS.md"))) {
@@ -511,8 +793,9 @@ export async function discoverLegacyAgentSourceDirs(inputPath: string): Promise<
 
 export async function planLegacyAgentImport(
   sourceDir: string,
-  env: NodeJS.ProcessEnv = process.env,
+  options: NodeJS.ProcessEnv | PlanLegacyAgentImportOptions = process.env,
 ): Promise<LegacyAgentImportPlan> {
+  const resolvedOptions = resolvePlanLegacyImportOptions(options);
   const resolvedSourceDir = path.resolve(sourceDir);
   const agentKey = normalizeAgentKey(path.basename(resolvedSourceDir));
   const displayName = titleCaseWords(agentKey);
@@ -521,9 +804,12 @@ export async function planLegacyAgentImport(
   const prompts = await buildPromptPlans(resolvedSourceDir, displayName, warnings);
   const memory = await buildMemoryPlan(resolvedSourceDir);
   const diary = await buildDiaryPlan(resolvedSourceDir);
+  const messages = resolvedOptions.includeMessages
+    ? await buildMessagePlans(resolvedSourceDir, agentKey, warnings, resolvedOptions.messagePairLimit)
+    : [];
   const skills = await buildSkillPlans(resolvedSourceDir, warnings);
   const credentials = await buildCredentialPlans(resolvedSourceDir, warnings);
-  const homeDir = resolvePandaAgentDir(agentKey, env);
+  const homeDir = resolvePandaAgentDir(agentKey, resolvedOptions.env);
 
   const nonEnvSecretFiles = (await pathExists(path.join(resolvedSourceDir, "skills")))
     ? (await walkDirectory(path.join(resolvedSourceDir, "skills")))
@@ -541,6 +827,8 @@ export async function planLegacyAgentImport(
     prompts,
     memory,
     diary,
+    messages,
+    messageImportIncluded: resolvedOptions.includeMessages,
     skills,
     credentials,
     warnings,
@@ -633,19 +921,42 @@ async function ensureAgentRecord(
   }
 }
 
+async function pairAgentIdentity(
+  agentKey: string,
+  identityId: string | undefined,
+  store: AgentStore,
+): Promise<void> {
+  if (!identityId) {
+    return;
+  }
+
+  await store.ensurePairing(agentKey, identityId);
+}
+
+interface MainSessionTarget {
+  created: boolean;
+  sessionId: string;
+  threadId: string;
+}
+
 async function ensureMainSession(
   agentKey: string,
   homeDir: string,
+  identityId?: string,
   sessionStore?: SessionStore,
   threadStore?: ThreadRuntimeStore,
-): Promise<boolean> {
+): Promise<MainSessionTarget | null> {
   if (!sessionStore || !threadStore) {
-    return false;
+    return null;
   }
 
   const existing = await sessionStore.getMainSession(agentKey);
   if (existing) {
-    return false;
+    return {
+      created: false,
+      sessionId: existing.id,
+      threadId: existing.currentThreadId,
+    };
   }
 
   const sessionId = randomUUID();
@@ -655,6 +966,7 @@ async function ensureMainSession(
     agentKey,
     kind: "main",
     currentThreadId: threadId,
+    createdByIdentityId: identityId,
   });
   await threadStore.createThread({
     id: threadId,
@@ -666,7 +978,88 @@ async function ensureMainSession(
     },
   });
 
-  return true;
+  return {
+    created: true,
+    sessionId,
+    threadId,
+  };
+}
+
+function buildLegacyImportedMessagePayload(
+  message: LegacyAgentTranscriptMessagePlan,
+  identityId: string | undefined,
+): ThreadRuntimeMessagePayload {
+  const legacyImportMetadata = {
+    legacySessionId: message.legacySessionId,
+    sourcePath: message.sourcePath,
+    ...(message.legacyMessageId ? {legacyMessageId: message.legacyMessageId} : {}),
+  };
+
+  return {
+    origin: message.role === "user" ? "input" : "runtime",
+    source: "legacy_import",
+    createdAt: message.createdAt,
+    identityId: message.role === "user" ? identityId : undefined,
+    message: message.role === "user"
+      ? {
+        role: "user",
+        content: message.content,
+        timestamp: message.createdAt,
+      }
+      : {
+        role: "assistant",
+        content: [{type: "text", text: message.content}],
+        api: "legacy-import",
+        model: "legacy-import",
+        provider: "legacy-import",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: 0,
+          },
+        },
+        stopReason: "stop",
+        timestamp: message.createdAt,
+      },
+    metadata: {
+      legacyImport: legacyImportMetadata,
+    } as ThreadRuntimeMessagePayload["metadata"],
+  };
+}
+
+async function importLegacyMessages(
+  plan: LegacyAgentImportPlan,
+  threadId: string,
+  threadStore: ThreadRuntimeStore | undefined,
+  identityId: string | undefined,
+  warnings: string[],
+): Promise<number> {
+  if (!threadStore || !plan.messageImportIncluded || plan.messages.length === 0) {
+    return 0;
+  }
+
+  const transcript = await threadStore.loadTranscript(threadId);
+  if (transcript.length > 0) {
+    warnings.push(`Skipped ${plan.messages.length} OpenClaw messages because thread ${threadId} already has transcript history.`);
+    return 0;
+  }
+
+  for (const message of plan.messages) {
+    await threadStore.appendRuntimeMessage(
+      threadId,
+      buildLegacyImportedMessagePayload(message, identityId),
+    );
+  }
+
+  return plan.messages.length;
 }
 
 export async function importLegacyAgent(
@@ -678,6 +1071,7 @@ export async function importLegacyAgent(
   await mkdir(homeDir, {recursive: true});
 
   const createdAgent = await ensureAgentRecord(plan, options.agentStore);
+  await pairAgentIdentity(plan.agentKey, options.identityId, options.agentStore);
   if (!createdAgent) {
     for (const prompt of plan.prompts) {
       await options.agentStore.setAgentPrompt(plan.agentKey, prompt.slug, prompt.content);
@@ -685,11 +1079,11 @@ export async function importLegacyAgent(
   }
 
   if (plan.memory) {
-    await options.agentStore.setAgentDocument(plan.agentKey, "memory", plan.memory.content);
+    await options.agentStore.setAgentDocument(plan.agentKey, "memory", plan.memory.content, options.identityId);
   }
 
   for (const entry of plan.diary) {
-    await options.agentStore.setDiaryEntry(plan.agentKey, entry.entryDate, entry.content);
+    await options.agentStore.setDiaryEntry(plan.agentKey, entry.entryDate, entry.content, options.identityId);
   }
 
   for (const skill of plan.skills) {
@@ -708,8 +1102,9 @@ export async function importLegacyAgent(
       await options.credentialService.setCredential({
         envKey: credential.envKey,
         value: credential.value,
-        scope: "agent",
+        scope: options.identityId ? "relationship" : "agent",
         agentKey: plan.agentKey,
+        identityId: options.identityId,
       });
       credentialCount += 1;
     }
@@ -721,12 +1116,26 @@ export async function importLegacyAgent(
     await copyLegacyWorkspace(plan.sourceDir, plan.legacyCopyDir);
   }
 
-  const createdMainSession = await ensureMainSession(
+  const mainSession = await ensureMainSession(
     plan.agentKey,
     homeDir,
+    options.identityId,
     options.sessionStore,
     options.threadStore,
   );
+  const messageWarnings = [...plan.warnings];
+  if (options.includeMessages && !mainSession) {
+    messageWarnings.push("Skipped OpenClaw messages because Panda session storage is unavailable.");
+  }
+  const messageCount = options.includeMessages && mainSession
+    ? await importLegacyMessages(
+      plan,
+      mainSession.threadId,
+      options.threadStore,
+      options.identityId,
+      messageWarnings,
+    )
+    : 0;
 
   return {
     agentKey: plan.agentKey,
@@ -735,15 +1144,17 @@ export async function importLegacyAgent(
     homeDir,
     legacyCopyDir: plan.legacyCopyDir,
     createdAgent,
-    createdMainSession,
+    createdMainSession: mainSession?.created ?? false,
+    identityId: options.identityId,
     promptCount: plan.prompts.length,
     importedMemory: plan.memory !== null,
     diaryEntryCount: plan.diary.length,
+    messageCount,
     skillCount: plan.skills.length,
     credentialCount,
     skippedCredentialCount,
     warnings: [
-      ...plan.warnings,
+      ...messageWarnings,
       ...(skippedCredentialCount > 0
         ? [`Skipped ${skippedCredentialCount} credentials because PANDA_CREDENTIALS_MASTER_KEY is not set.`]
         : []),

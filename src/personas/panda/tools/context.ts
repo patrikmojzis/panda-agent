@@ -1,11 +1,6 @@
 import path from "node:path";
 
-import {resolvePandaAgentDir} from "../../../app/runtime/data-dir.js";
-import {
-    resolveBashExecutionMode,
-    resolveRunnerCwd,
-    resolveRunnerCwdTemplate,
-} from "../../../integrations/shell/bash-executor.js";
+import {mapRunnerAgentPathToHost} from "../../../integrations/shell/path-mapping.js";
 import type {ShellSession} from "../../../integrations/shell/types.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -29,39 +24,19 @@ function readContextAgentKey(context: unknown): string | null {
   return trimNonEmptyString(context.agentKey);
 }
 
-function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
-  const relative = path.relative(rootPath, candidatePath);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
 function resolveMountedAgentPath(
   resolvedPath: string,
   context: unknown,
   env: NodeJS.ProcessEnv,
 ): string {
-  if (resolveBashExecutionMode(env) !== "remote") {
-    return resolvedPath;
-  }
-
   const agentKey = readContextAgentKey(context);
   if (!agentKey) {
     return resolvedPath;
   }
 
-  const runnerCwdTemplate = resolveRunnerCwdTemplate(env);
-  if (!runnerCwdTemplate) {
-    return resolvedPath;
-  }
-
-  const runnerAgentRoot = path.resolve(resolveRunnerCwd(runnerCwdTemplate, agentKey));
-  if (!isPathWithinRoot(runnerAgentRoot, resolvedPath)) {
-    return resolvedPath;
-  }
-
   // Remote bash sees the agent home through the runner mount, but file tools
   // still run in panda-core and need the host-visible mirror path.
-  const relativePath = path.relative(runnerAgentRoot, resolvedPath);
-  return path.join(resolvePandaAgentDir(agentKey, env), relativePath);
+  return mapRunnerAgentPathToHost(resolvedPath, agentKey, env);
 }
 
 function normalizeShellSession(shellSession: ShellSession): ShellSession {

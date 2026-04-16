@@ -10,14 +10,15 @@ import {createPandaPool, requirePandaDatabaseUrl} from "../../app/runtime/create
 import {resolvePandaAgentDir} from "../../app/runtime/data-dir.js";
 import {CredentialService, PostgresCredentialStore, resolveCredentialCrypto} from "../credentials/index.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
+import {parseIdentityHandle} from "../identity/cli.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {PostgresSessionStore} from "../sessions/index.js";
 import {
-    discoverLegacyAgentSourceDirs,
-    type ImportedLegacyAgentResult,
-    importLegacyAgent,
-    type LegacyAgentImportPlan,
-    planLegacyAgentImport,
+  discoverLegacyAgentSourceDirs,
+  type ImportedLegacyAgentResult,
+  importLegacyAgent,
+  type LegacyAgentImportPlan,
+  planLegacyAgentImport,
 } from "./legacy-import.js";
 import {PostgresAgentStore} from "./postgres.js";
 import {DEFAULT_AGENT_DOCUMENT_TEMPLATES} from "./templates.js";
@@ -35,6 +36,8 @@ interface PairAgentCliOptions extends AgentCliOptions {}
 
 interface ImportLegacyAgentCliOptions extends AgentCliOptions {
   dryRun?: boolean;
+  identity?: string;
+  includeMessages?: boolean;
 }
 
 async function withAgentStores<T>(
@@ -68,6 +71,7 @@ async function withLegacyImportStores<T>(
   fn: (stores: {
     agentStore: PostgresAgentStore;
     credentialService: CredentialService | null;
+    identityStore: PostgresIdentityStore;
     sessionStore: PostgresSessionStore;
     threadStore: PostgresThreadRuntimeStore;
   }) => Promise<T>,
@@ -92,7 +96,7 @@ async function withLegacyImportStores<T>(
         crypto,
       })
       : null;
-    return await fn({agentStore, credentialService, sessionStore, threadStore});
+    return await fn({agentStore, credentialService, identityStore, sessionStore, threadStore});
   } finally {
     await pool.end();
   }
@@ -140,6 +144,7 @@ export async function createAgentCommand(agentKey: string, options: CreateAgentC
       displayName: options.name?.trim() || agentKey,
       prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
+    const agentHome = resolvePandaAgentDir(created.agentKey);
 
     const sessionId = randomUUID();
     const threadId = randomUUID();
@@ -155,11 +160,11 @@ export async function createAgentCommand(agentKey: string, options: CreateAgentC
       context: {
         agentKey: created.agentKey,
         sessionId,
-        cwd: resolvePandaAgentDir(created.agentKey),
+        cwd: agentHome,
       },
     });
 
-    await mkdir(resolvePandaAgentDir(created.agentKey), {recursive: true});
+    await mkdir(agentHome, {recursive: true});
 
     process.stdout.write(
       [
@@ -167,7 +172,7 @@ export async function createAgentCommand(agentKey: string, options: CreateAgentC
         `name ${created.displayName}`,
         `main session ${sessionId}`,
         `initial thread ${threadId}`,
-        `home ${resolvePandaAgentDir(created.agentKey)}`,
+        `home ${agentHome}`,
       ].join("\n") + "\n",
     );
   });
@@ -238,14 +243,16 @@ function renderMemorySummary(plan: LegacyAgentImportPlan): string {
   return plan.memory.sourcePaths.map((sourcePath) => path.basename(sourcePath)).join(" + ");
 }
 
-function renderLegacyPlan(plan: LegacyAgentImportPlan): string {
+function renderLegacyPlan(plan: LegacyAgentImportPlan, options: {identityHandle?: string; includeMessages?: boolean} = {}): string {
   return [
     `${plan.agentKey}`,
     `  name ${plan.displayName}`,
     `  source ${plan.sourceDir}`,
+    ...(options.identityHandle ? [`  identity ${options.identityHandle}`] : []),
     `  prompts ${renderPromptSummary(plan)}`,
     `  memory ${renderMemorySummary(plan)}`,
     `  diary ${plan.diary.length} merged day entries`,
+    ...(options.includeMessages ? [`  messages ${plan.messages.length}`] : []),
     `  skills ${plan.skills.length}`,
     `  credentials ${plan.credentials.length}`,
     `  legacy copy ${plan.legacyCopyDir}`,
@@ -253,7 +260,10 @@ function renderLegacyPlan(plan: LegacyAgentImportPlan): string {
   ].join("\n");
 }
 
-function renderLegacyImportResult(result: ImportedLegacyAgentResult): string {
+function renderLegacyImportResult(
+  result: ImportedLegacyAgentResult,
+  options: {identityHandle?: string; includeMessages?: boolean} = {},
+): string {
   return [
     `Imported ${result.agentKey}.`,
     `name ${result.displayName}`,
@@ -262,9 +272,11 @@ function renderLegacyImportResult(result: ImportedLegacyAgentResult): string {
     `legacy copy ${result.legacyCopyDir}`,
     `agent created ${result.createdAgent ? "yes" : "no"}`,
     `main session created ${result.createdMainSession ? "yes" : "no"}`,
+    ...(options.identityHandle ? [`identity ${options.identityHandle} (${result.identityId ?? "unresolved"})`] : []),
     `prompts ${result.promptCount}`,
     `memory ${result.importedMemory ? "yes" : "no"}`,
     `diary entries ${result.diaryEntryCount}`,
+    ...(options.includeMessages ? [`messages imported ${result.messageCount}`] : []),
     `skills ${result.skillCount}`,
     `credentials imported ${result.credentialCount}`,
     `credentials skipped ${result.skippedCredentialCount}`,
@@ -275,17 +287,25 @@ function renderLegacyImportResult(result: ImportedLegacyAgentResult): string {
 async function importLegacyCommand(sourcePath: string, options: ImportLegacyAgentCliOptions): Promise<void> {
   const sourceDirs = await discoverLegacyAgentSourceDirs(sourcePath);
   if (sourceDirs.length === 0) {
-    throw new Error(`No legacy agents found under ${path.resolve(sourcePath)}.`);
+    throw new Error(`No OpenClaw agents found under ${path.resolve(sourcePath)}.`);
   }
 
-  const plans = await Promise.all(sourceDirs.map((dir) => planLegacyAgentImport(dir)));
+  const plans = await Promise.all(sourceDirs.map((dir) => {
+    return planLegacyAgentImport(dir, {
+      env: process.env,
+      includeMessages: options.includeMessages,
+    });
+  }));
 
   if (options.dryRun) {
     process.stdout.write(
       [
-        `Discovered ${plans.length} legacy agent${plans.length === 1 ? "" : "s"}.`,
+        `Discovered ${plans.length} OpenClaw agent${plans.length === 1 ? "" : "s"}.`,
         "",
-        ...plans.map((plan) => renderLegacyPlan(plan)),
+        ...plans.map((plan) => renderLegacyPlan(plan, {
+          identityHandle: options.identity,
+          includeMessages: options.includeMessages,
+        })),
         "",
         "Dry run only. No database writes happened.",
       ].join("\n") + "\n",
@@ -293,18 +313,32 @@ async function importLegacyCommand(sourcePath: string, options: ImportLegacyAgen
     return;
   }
 
-  await withLegacyImportStores(options, async ({agentStore, credentialService, sessionStore, threadStore}) => {
+  await withLegacyImportStores(options, async ({
+    agentStore,
+    credentialService,
+    identityStore,
+    sessionStore,
+    threadStore,
+  }) => {
+    const identityId = options.identity
+      ? (await identityStore.getIdentityByHandle(options.identity)).id
+      : undefined;
     const results: ImportedLegacyAgentResult[] = [];
     for (const plan of plans) {
       results.push(await importLegacyAgent(plan, {
         agentStore,
         credentialService: credentialService ?? undefined,
+        identityId,
+        includeMessages: options.includeMessages,
         sessionStore,
         threadStore,
       }));
     }
 
-    process.stdout.write(results.map((result) => renderLegacyImportResult(result)).join("\n\n") + "\n");
+    process.stdout.write(results.map((result) => renderLegacyImportResult(result, {
+      identityHandle: options.identity,
+      includeMessages: options.includeMessages,
+    })).join("\n\n") + "\n");
   });
 }
 
@@ -361,10 +395,12 @@ export function registerAgentCommands(program: Command): void {
     });
 
   agentProgram
-    .command("import-legacy")
-    .description("Import legacy OpenClaw-style agents into Panda")
-    .argument("<sourcePath>", "Legacy agent directory or parent directory containing agent folders")
+    .command("import-openclaw")
+    .description("Import OpenClaw agents into Panda")
+    .argument("<sourcePath>", "OpenClaw agent directory or parent directory containing agent folders")
     .option("--dry-run", "Show the migration plan without writing to Postgres")
+    .option("--identity <handle>", "Identity handle to scope memory, diary, credentials, and imported user messages", parseIdentityHandle)
+    .option("--include-messages", "Import lossy legacy user/assistant transcript pairs into the main Panda thread")
     .option("--db-url <url>", PANDA_DB_URL_OPTION_DESCRIPTION)
     .action((sourcePath: string, options: ImportLegacyAgentCliOptions) => {
       return importLegacyCommand(sourcePath, options);

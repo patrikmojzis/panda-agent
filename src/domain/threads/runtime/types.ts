@@ -155,9 +155,11 @@ export interface ThreadInputPayload extends ThreadMessageMetadata {
 }
 
 export interface ThreadRuntimeMessagePayload extends ThreadMessageMetadata {
+  origin?: ThreadMessageOrigin;
   message: Message;
   metadata?: JsonValue;
   runId?: string;
+  createdAt?: number;
 }
 
 export type ThreadRunStatus = "running" | "completed" | "failed";

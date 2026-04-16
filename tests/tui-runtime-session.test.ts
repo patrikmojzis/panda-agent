@@ -1,5 +1,6 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {createChatRuntime} from "../src/ui/tui/runtime.js";
+import {resolveChatDisplayedCwd} from "../src/ui/tui/chat-session.js";
 
 const tuiRuntimeSessionMocks = vi.hoisted(() => {
   const client = {
@@ -67,6 +68,7 @@ describe("createChatRuntime session wiring", () => {
     tuiRuntimeSessionMocks.client.openMainSession.mockClear();
     tuiRuntimeSessionMocks.client.resetSession.mockClear();
     tuiRuntimeSessionMocks.client.close.mockClear();
+    vi.unstubAllEnvs();
   });
 
   it("forwards the configured agent into main-session resolution", async () => {
@@ -120,5 +122,22 @@ describe("createChatRuntime session wiring", () => {
       sessionId: undefined,
       thinking: undefined,
     });
+  });
+
+  it("shows the remote runner cwd for stored agent-home paths", () => {
+    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("PANDA_DATA_DIR", "/Users/tester/.panda");
+
+    expect(resolveChatDisplayedCwd({
+      id: "thread-1",
+      sessionId: "session-1",
+      context: {
+        agentKey: "jozef",
+        cwd: "/Users/tester/.panda/agents/jozef",
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    } as any, "/Users/tester/Projects/panda-agent")).toBe("/root/.panda/agents/jozef");
   });
 });

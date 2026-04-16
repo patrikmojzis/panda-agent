@@ -1,5 +1,6 @@
 import type {ThinkingLevel, Tool} from "../../kernel/agent/index.js";
 import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord,} from "../../domain/threads/runtime/index.js";
+import {resolveStoredPandaContext} from "../../app/runtime/create-runtime.js";
 import type {ChatRuntimeServices} from "./runtime.js";
 import {type EntryRole, type PendingLocalInput, type RunPhase, type TranscriptEntry,} from "./chat-shared.js";
 import {renderTranscriptEntries} from "./transcript.js";
@@ -21,10 +22,14 @@ export function resolveChatDisplayedCwd(
     return fallbackCwd;
   }
 
-  const cwd = (context as {cwd?: unknown}).cwd;
-  return typeof cwd === "string" && cwd.trim().length > 0
-    ? cwd
-    : fallbackCwd;
+  const agentKey = typeof (context as {agentKey?: unknown}).agentKey === "string"
+    ? (context as {agentKey: string}).agentKey
+    : undefined;
+  return resolveStoredPandaContext(
+    context,
+    {cwd: fallbackCwd},
+    agentKey,
+  ).cwd ?? fallbackCwd;
 }
 
 export function buildChatSessionDefaults(input: {

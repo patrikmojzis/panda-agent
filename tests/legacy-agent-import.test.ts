@@ -6,6 +6,8 @@ import path from "node:path";
 
 import {CredentialCrypto, CredentialService, PostgresCredentialStore,} from "../src/domain/credentials/index.js";
 import {importLegacyAgent, planLegacyAgentImport, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {PostgresSessionStore} from "../src/domain/sessions/index.js";
+import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 describe("legacy agent import", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -47,13 +49,30 @@ describe("legacy agent import", () => {
     pools.push(pool);
 
     const agentStore = new PostgresAgentStore({pool});
+    const sessionStore = new PostgresSessionStore({pool});
+    const threadStore = new TestThreadRuntimeStore();
     const credentialStore = new PostgresCredentialStore({pool});
-    await pool.query(`CREATE TABLE IF NOT EXISTS thread_runtime_identities (id TEXT PRIMARY KEY)`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS thread_runtime_identities (
+        id TEXT PRIMARY KEY,
+        handle TEXT
+      )
+    `);
     await agentStore.ensureSchema();
+    await sessionStore.ensureSchema();
     await credentialStore.ensureSchema();
 
     return {
       agentStore,
+      sessionStore,
+      threadStore,
+      createIdentity: async (identity: {id: string; handle: string}) => {
+        await pool.query(
+          "INSERT INTO thread_runtime_identities (id, handle) VALUES ($1, $2)",
+          [identity.id, identity.handle],
+        );
+        return identity;
+      },
       credentialService: new CredentialService({
         store: credentialStore,
         crypto: new CredentialCrypto("legacy-import-test-key"),
@@ -107,6 +126,8 @@ describe("legacy agent import", () => {
     expect(plan.memory?.content).toContain("Imported from USER.md");
     expect(plan.memory?.content).toContain("Imported from MEMORY.md");
     expect(plan.diary).toHaveLength(1);
+    expect(plan.messages).toEqual([]);
+    expect(plan.messageImportIncluded).toBe(false);
     expect(plan.diary[0]).toMatchObject({
       entryDate: "2026-01-26",
     });
@@ -124,7 +145,7 @@ describe("legacy agent import", () => {
     expect(plan.warnings.some((warning) => warning.includes("email.pass"))).toBe(true);
   });
 
-  it("imports into Postgres and copies a filtered legacy snapshot", async () => {
+  it("imports scoped memory, credentials, and legacy messages", async () => {
     const sandbox = await makeTempDir("panda-legacy-import-");
     const sourceDir = path.join(sandbox, "luna");
     const pandaDataDir = path.join(sandbox, ".panda");
@@ -143,32 +164,114 @@ describe("legacy agent import", () => {
     ].join("\n"));
     await writeWorkspaceFile(sourceDir, "skills/notion/.env", "NOTION_API_KEY=shh");
     await writeWorkspaceFile(sourceDir, "docs/reference.md", "Useful reference.");
+    await writeWorkspaceFile(sourceDir, ".openclaw-placeholder", "ignored");
     await writeWorkspaceFile(sourceDir, ".git/config", "[core]");
     await writeWorkspaceFile(sourceDir, "node_modules/trash.js", "ignore me");
+    await writeWorkspaceFile(path.join(sandbox, ".openclaw", "agents", "luna"), "sessions/11111111-1111-1111-1111-111111111111.jsonl", [
+      JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "legacy-session-1",
+        timestamp: "2026-02-08T22:45:18.551Z",
+        cwd: "/root",
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "legacy-user-1",
+        timestamp: "2026-02-08T22:45:34.499Z",
+        message: {
+          role: "user",
+          content: [{
+            type: "text",
+            text: "[Telegram Anhelina (@angelinakozinska) id:2009588507 +7s 2026-02-08 22:45 UTC] Privit\n[message_id: 2107]",
+          }],
+          timestamp: 1770590734491,
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "legacy-assistant-1",
+        timestamp: "2026-02-08T22:45:40.675Z",
+        message: {
+          role: "assistant",
+          content: [
+            {type: "thinking", thinking: "warm reply"},
+            {type: "text", text: "Привіт, Ангеліно!"},
+          ],
+          timestamp: 1770590740675,
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "legacy-user-cron",
+        timestamp: "2026-02-08T23:00:00.000Z",
+        message: {
+          role: "user",
+          content: [{
+            type: "text",
+            text: "[cron:123 internal] Read and follow /root/luna/skills/subconscious.md",
+          }],
+          timestamp: 1770591600000,
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "legacy-assistant-cron",
+        timestamp: "2026-02-08T23:00:10.000Z",
+        message: {
+          role: "assistant",
+          content: [{type: "text", text: "NO_REPLY"}],
+          timestamp: 1770591610000,
+        },
+      }),
+    ].join("\n"));
 
     const harness = await createHarness();
+    const identity = await harness.createIdentity({
+      id: "patrik-id",
+      handle: "patrik",
+    });
     const env = {
       ...process.env,
       PANDA_DATA_DIR: pandaDataDir,
     };
-    const plan = await planLegacyAgentImport(sourceDir, env);
+    const plan = await planLegacyAgentImport(sourceDir, {
+      env,
+      includeMessages: true,
+    });
     const result = await importLegacyAgent(plan, {
       agentStore: harness.agentStore,
       credentialService: harness.credentialService,
+      identityId: identity.id,
+      includeMessages: true,
+      sessionStore: harness.sessionStore,
+      threadStore: harness.threadStore,
       env,
     });
 
     expect(result).toMatchObject({
       agentKey: "luna",
       createdAgent: true,
-      createdMainSession: false,
+      createdMainSession: true,
+      identityId: "patrik-id",
       promptCount: 4,
       importedMemory: true,
       diaryEntryCount: 1,
+      messageCount: 2,
       skillCount: 1,
       credentialCount: 1,
       skippedCredentialCount: 0,
     });
+    expect(plan.messages).toEqual([
+      expect.objectContaining({
+        role: "user",
+        content: "Privit",
+      }),
+      expect.objectContaining({
+        role: "assistant",
+        content: "Привіт, Ангеліно!",
+      }),
+    ]);
 
     await expect(harness.agentStore.readAgentPrompt("luna", "playbook")).resolves.toMatchObject({
       content: "# AGENTS\nWorkspace rules.",
@@ -179,13 +282,16 @@ describe("legacy agent import", () => {
     await expect(harness.agentStore.readAgentPrompt("luna", "soul")).resolves.toMatchObject({
       content: "# SOUL\nWarm but relentless.",
     });
-    await expect(harness.agentStore.readAgentDocument("luna", "memory")).resolves.toMatchObject({
+    await expect(harness.agentStore.readAgentDocument("luna", "memory")).resolves.toBeNull();
+    await expect(harness.agentStore.readAgentDocument("luna", "memory", identity.id)).resolves.toMatchObject({
       content: expect.stringContaining("Angelina profile."),
     });
-    await expect(harness.agentStore.listDiaryEntries("luna")).resolves.toEqual([
+    await expect(harness.agentStore.listDiaryEntries("luna")).resolves.toEqual([]);
+    await expect(harness.agentStore.listDiaryEntries("luna", 10, identity.id)).resolves.toEqual([
       expect.objectContaining({
         entryDate: "2026-02-08",
         content: "Daily recap.",
+        identityId: identity.id,
       }),
     ]);
     await expect(harness.agentStore.listAgentSkills("luna")).resolves.toEqual([
@@ -193,11 +299,49 @@ describe("legacy agent import", () => {
         skillKey: "notion",
       }),
     ]);
+    await expect(harness.agentStore.listAgentPairings("luna")).resolves.toEqual([
+      expect.objectContaining({
+        identityId: identity.id,
+      }),
+    ]);
 
     const credential = await harness.credentialService.resolveCredential("NOTION_API_KEY", {
       agentKey: "luna",
+      identityId: identity.id,
     });
     expect(credential?.value).toBe("shh");
+    await expect(harness.credentialService.resolveCredential("NOTION_API_KEY", {
+      agentKey: "luna",
+    })).resolves.toBeNull();
+
+    const session = await harness.sessionStore.getMainSession("luna");
+    expect(session).toMatchObject({
+      createdByIdentityId: identity.id,
+    });
+    expect(session).not.toBeNull();
+    const transcript = await harness.threadStore.loadTranscript(session!.currentThreadId);
+    expect(transcript).toMatchObject([
+      {
+        origin: "input",
+        source: "legacy_import",
+        identityId: identity.id,
+        createdAt: 1770590734491,
+        message: {
+          role: "user",
+          content: "Privit",
+        },
+      },
+      {
+        origin: "runtime",
+        source: "legacy_import",
+        identityId: undefined,
+        createdAt: 1770590740675,
+        message: {
+          role: "assistant",
+          content: [{type: "text", text: "Привіт, Ангеліно!"}],
+        },
+      },
+    ]);
 
     const copiedReference = await readFile(path.join(plan.legacyCopyDir, "docs/reference.md"), "utf8");
     expect(copiedReference).toBe("Useful reference.");

@@ -1,16 +1,16 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-    BashTool,
-    BraveSearchTool,
-    BrowserTool,
-    DateTimeContext,
-    EnvironmentContext,
-    MediaTool,
-    PANDA_PROMPT,
-    WebFetchTool,
-    WebResearchTool,
-    WhisperTool,
+  BashTool,
+  BraveSearchTool,
+  BrowserTool,
+  DateTimeContext,
+  EnvironmentContext,
+  MediaTool,
+  PANDA_PROMPT,
+  WebFetchTool,
+  WebResearchTool,
+  WhisperTool,
 } from "../src/index.js";
 import {buildPandaTools} from "../src/personas/panda/definition.js";
 import {resolveStoredPandaContext} from "../src/app/runtime/create-runtime.js";
@@ -141,6 +141,38 @@ describe("Panda feature surface", () => {
     )).toMatchObject({
       cwd: "/root/.panda/agents/jozef",
     });
+  });
+
+  it("rewrites an explicit host agent-home cwd to the remote runner path", () => {
+    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("PANDA_DATA_DIR", "/Users/patrikmojzis/.panda");
+
+    expect(resolveStoredPandaContext(
+      {
+        cwd: "/Users/patrikmojzis/.panda/agents/jozef",
+      } as any,
+      {
+        cwd: "/Users/patrikmojzis/Projects/panda-agent",
+      },
+      "jozef",
+    ).cwd).toBe("/root/.panda/agents/jozef");
+  });
+
+  it("rewrites nested host agent-home cwd suffixes to the remote runner path", () => {
+    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("PANDA_DATA_DIR", "/Users/patrikmojzis/.panda");
+
+    expect(resolveStoredPandaContext(
+      {
+        cwd: "/Users/patrikmojzis/.panda/agents/jozef/projects/demo",
+      } as any,
+      {
+        cwd: "/Users/patrikmojzis/Projects/panda-agent",
+      },
+      "jozef",
+    ).cwd).toBe("/root/.panda/agents/jozef/projects/demo");
   });
 
   it("preserves an explicit stored cwd in remote mode", () => {

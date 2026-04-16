@@ -12,6 +12,7 @@ import type {PandaSessionContext} from "../../personas/panda/types.js";
 import type {BashToolOptions} from "../../personas/panda/tools/bash-tool.js";
 import type {BrowserToolOptions} from "../../personas/panda/tools/browser-tool.js";
 import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js";
+import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 
 const HOUR_MS = 60 * 60 * 1_000;
@@ -83,9 +84,10 @@ export function resolveStoredPandaContext(
     && !hasStoredShellCwd(context)
     && (!storedCwd || storedCwd === fallback.cwd),
   );
+  const selectedCwd = useRemoteInitialCwd && remoteInitialCwd ? remoteInitialCwd : storedCwd ?? fallback.cwd;
 
   return {
-    cwd: useRemoteInitialCwd && remoteInitialCwd ? remoteInitialCwd : storedCwd ?? fallback.cwd,
+    cwd: selectedCwd && agentKey ? mapHostAgentPathToRunner(selectedCwd, agentKey) : selectedCwd,
     timezone: typeof context.timezone === "string" ? context.timezone : undefined,
   };
 }

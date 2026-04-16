@@ -31,6 +31,7 @@ describe("createDaemonThreadHelpers", () => {
       await rm(directories.pop() ?? "", { recursive: true, force: true });
     }
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   function createIdentity() {
@@ -59,6 +60,15 @@ describe("createDaemonThreadHelpers", () => {
     const store = options.store ?? new TestThreadRuntimeStore();
     let boundThreadId = options.currentThreadId ?? "thread-old-home";
     const identity = createIdentity();
+    const sessions = new Map<string, {
+      id: string;
+      agentKey: string;
+      kind: "main" | "branch";
+      currentThreadId: string;
+      createdByIdentityId?: string;
+      createdAt: number;
+      updatedAt: number;
+    }>();
 
     return {
       store,
@@ -85,29 +95,43 @@ describe("createDaemonThreadHelpers", () => {
             getIdentity: vi.fn(async () => identity),
           },
           sessionStore: {
-            getMainSession: vi.fn(async () => null),
-            createSession: vi.fn(async ({id, agentKey, currentThreadId}: {id: string; agentKey: string; currentThreadId: string}) => ({
-              id,
-              agentKey,
-              kind: "main" as const,
-              currentThreadId,
-              createdByIdentityId: options.createdByIdentityId,
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-            })),
-            getSession: vi.fn(async () => ({
-              id: "session-main",
-              agentKey: "panda",
-              kind: "main" as const,
-              currentThreadId: boundThreadId,
-              createdByIdentityId: options.createdByIdentityId,
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-            })),
-            updateCurrentThread: vi.fn(async ({currentThreadId}: {currentThreadId: string}) => {
+            getMainSession: vi.fn(async (agentKey: string) => {
+              return [...sessions.values()].find((session) => session.agentKey === agentKey && session.kind === "main") ?? null;
+            }),
+            createSession: vi.fn(async ({id, agentKey, currentThreadId}: {id: string; agentKey: string; currentThreadId: string}) => {
               boundThreadId = currentThreadId;
+              const session = {
+                id,
+                agentKey,
+                kind: "main" as const,
+                currentThreadId,
+                createdByIdentityId: options.createdByIdentityId,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              };
+              sessions.set(id, session);
+              return session;
+            }),
+            getSession: vi.fn(async (sessionId: string) => {
+              const session = sessions.get(sessionId);
+              if (session) {
+                return session;
+              }
+
               return {
-                id: "session-main",
+                id: sessionId,
+                agentKey: "panda",
+                kind: "main" as const,
+                currentThreadId: boundThreadId,
+                createdByIdentityId: options.createdByIdentityId,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              };
+            }),
+            updateCurrentThread: vi.fn(async ({sessionId, currentThreadId}: {sessionId: string; currentThreadId: string}) => {
+              boundThreadId = currentThreadId;
+              const existing = sessions.get(sessionId) ?? {
+                id: sessionId,
                 agentKey: "panda",
                 kind: "main" as const,
                 currentThreadId,
@@ -115,6 +139,13 @@ describe("createDaemonThreadHelpers", () => {
                 createdAt: Date.now(),
                 updatedAt: Date.now(),
               };
+              const updated = {
+                ...existing,
+                currentThreadId,
+                updatedAt: Date.now(),
+              };
+              sessions.set(sessionId, updated);
+              return updated;
             }),
           },
         } as any,
@@ -161,6 +192,25 @@ describe("createDaemonThreadHelpers", () => {
       source: "tui",
       agentKey: "panda",
     })).rejects.toThrow("Identity home is not paired to agent panda.");
+  });
+
+  it("stores canonical host cwd for new main sessions even in remote mode", async () => {
+    vi.stubEnv("PANDA_BASH_EXECUTION_MODE", "remote");
+    vi.stubEnv("PANDA_RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+
+    const {helpers, identity} = createHelpers({
+      pairings: [{agentKey: "panda"}],
+      workspace: "/Users/patrikmojzis/Projects/panda-agent",
+    });
+
+    const thread = await helpers.openMainSession({
+      identityId: identity.id,
+    });
+
+    expect(thread.context).toMatchObject({
+      agentKey: "panda",
+      cwd: "/Users/patrikmojzis/Projects/panda-agent",
+    });
   });
 
   it("cancels old-thread background jobs during session reset", async () => {

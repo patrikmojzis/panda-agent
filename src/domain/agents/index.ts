@@ -38,4 +38,6 @@ export type {
   LegacyAgentMemoryPlan,
   LegacyAgentPromptPlan,
   LegacyAgentSkillPlan,
+  LegacyAgentTranscriptMessagePlan,
+  PlanLegacyAgentImportOptions,
 } from "./legacy-import.js";
