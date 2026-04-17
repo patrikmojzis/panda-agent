@@ -1,34 +1,35 @@
 import type {Message} from "@mariozechner/pi-ai";
 
 import {Thread} from "../../../kernel/agent/thread.js";
+import {resolveEffectiveThreadContextBudget} from "../../../kernel/models/model-context-policy.js";
 import {buildCanonicalModelSelector} from "../../../kernel/models/model-selector.js";
 import {getProviderConfig} from "../../../integrations/providers/shared/provider.js";
 import type {ThreadRunEvent} from "../../../kernel/agent/types.js";
 import {stringifyUnknown} from "../../../kernel/agent/helpers/stringify.js";
 import type {
-    AutoCompactionRuntimeState,
-    ResolvedThreadDefinition,
-    ThreadDefinitionResolver,
-    ThreadInputPayload,
-    ThreadMessageRecord,
-    ThreadRecord,
-    ThreadRunRecord,
+  AutoCompactionRuntimeState,
+  ResolvedThreadDefinition,
+  ThreadDefinitionResolver,
+  ThreadInputPayload,
+  ThreadMessageRecord,
+  ThreadRecord,
+  ThreadRunRecord,
 } from "./types.js";
 import type {ThreadRuntimeStore} from "./store.js";
 import {
-    appendCompactionFailureNotice,
-    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-    AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
-    compactThread,
-    estimateTranscriptTokens,
-    projectTranscriptForRun,
-    readAutoCompactionRuntimeState,
-    shouldAutoCompactThread,
-    updateAutoCompactionRuntimeState,
+  appendCompactionFailureNotice,
+  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+  AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
+  compactThread,
+  estimateTranscriptTokens,
+  projectTranscriptForRun,
+  readAutoCompactionRuntimeState,
+  shouldAutoCompactThread,
+  updateAutoCompactionRuntimeState,
 } from "../../../kernel/transcript/compaction.js";
 import {
-    applyImageProjectionForInference,
-    projectTranscriptForInference,
+  applyImageProjectionForInference,
+  projectTranscriptForInference,
 } from "../../../kernel/transcript/inference-projection.js";
 import {rehydrateProjectedToolArtifacts} from "./tool-artifact-replay.js";
 
@@ -406,6 +407,12 @@ export class ThreadRuntimeCoordinator {
     messages: readonly ThreadMessageRecord[],
     signal?: AbortSignal,
   ): ConstructorParameters<typeof Thread>[0] {
+    const modelConfig = this.resolveModelConfig(thread, definition);
+    const budget = resolveEffectiveThreadContextBudget({
+      model: modelConfig.model,
+      maxInputTokens: definition.maxInputTokens ?? thread.maxInputTokens,
+    });
+
     return {
       agent: definition.agent,
       messages: messages.map((entry) => entry.message),
@@ -414,12 +421,12 @@ export class ThreadRuntimeCoordinator {
       context: buildRunContextValue(definition.context ?? thread.context, messages, run.id),
       llmContexts: definition.llmContexts,
       hooks: definition.hooks,
-      maxInputTokens: definition.maxInputTokens ?? thread.maxInputTokens,
+      maxInputTokens: budget.effectiveOperatingWindow,
       promptCacheKey: definition.promptCacheKey ?? thread.promptCacheKey,
       runPipelines: definition.runPipelines,
-      model: definition.model ?? thread.model,
+      model: modelConfig.model,
       temperature: definition.temperature ?? thread.temperature,
-      thinking: definition.thinking ?? thread.thinking,
+      thinking: modelConfig.thinking,
       runtime: definition.runtime,
       countTokens: definition.countTokens,
       signal,
@@ -532,9 +539,15 @@ export class ThreadRuntimeCoordinator {
     }
 
     const transcriptTokens = estimateTranscriptTokens(options.transcript);
+    const modelConfig = this.resolveModelConfig(thread, options.definition);
+    const budget = resolveEffectiveThreadContextBudget({
+      model: modelConfig.model,
+      maxInputTokens: options.definition.maxInputTokens ?? thread.maxInputTokens,
+    });
     const autoCompactCheck = shouldAutoCompactThread({
       thread,
       transcriptTokens,
+      compactTriggerTokens: budget.compactTriggerTokens,
       now,
     });
     if (!autoCompactCheck.shouldCompact) {
@@ -552,12 +565,13 @@ export class ThreadRuntimeCoordinator {
       };
     }
 
-    const modelConfig = this.resolveModelConfig(thread, options.definition);
-
     try {
       const compacted = await compactThread({
         store: this.store,
-        thread,
+        thread: {
+          ...thread,
+          maxInputTokens: budget.effectiveOperatingWindow,
+        },
         transcript: options.transcript,
         model: modelConfig.model,
         thinking: modelConfig.thinking,

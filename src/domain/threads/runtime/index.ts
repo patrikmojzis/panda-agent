@@ -18,7 +18,6 @@ export type { ReadonlySessionViewNames } from "./postgres-readonly.js";
 export {
   AUTO_COMPACT_BREAKER_COOLDOWN_MS,
   AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
-  AUTO_COMPACT_TRIGGER_BUFFER_TOKENS,
   DEFAULT_COMPACT_PRESERVED_USER_TURNS,
   compactThread,
   createCompactBoundaryMessage,

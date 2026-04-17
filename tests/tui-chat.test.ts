@@ -799,6 +799,7 @@ describe("thread usage snapshots", () => {
     });
     expect(formatted).toContain("## Context");
     expect(formatted).toContain("**Stored thread:** 6 msgs");
+    expect(formatted).toContain("**Context policy:** operating");
     expect(formatted).toContain("**Inline images:** stored 1");
     expect(formatted).toContain("**Last compaction:** manual");
     expect(formatted).toContain("**Thread total:** 2 responses");
@@ -856,7 +857,7 @@ describe("ChatApp usage command", () => {
     expect(app.transcript.at(-1)).toMatchObject({
       role: "meta",
       title: "usage",
-      body: expect.stringContaining("## Provider Usage"),
+      body: expect.stringContaining("**Context policy:**"),
     });
   });
 });

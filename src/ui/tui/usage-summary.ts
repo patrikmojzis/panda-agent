@@ -9,6 +9,7 @@ import {
   type ThreadMessageRecord,
   type ThreadRecord,
 } from "../../domain/threads/runtime/index.js";
+import {resolveEffectiveThreadContextBudget} from "../../kernel/models/model-context-policy.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
 import {formatThinkingLevel} from "./chat-shared.js";
 
@@ -70,7 +71,12 @@ export interface ThreadUsageSnapshot {
   runEstimatedTokens: number;
   visibleEstimatedTokens: number;
   storedJsonBytes: number;
-  maxInputTokens?: number;
+  hardWindow: number;
+  operatingWindow: number;
+  compactAtPercent: number;
+  compactTriggerTokens: number;
+  operatingWindowSource: "model" | "thread";
+  threadOverride?: number;
   storedImages: ImageStats;
   visibleImages: ImageStats;
   totalUsage: UsageTotals;
@@ -278,11 +284,16 @@ export function collectThreadUsageSnapshot(options: {
     options.now ?? Date.now(),
   );
   const {total, last} = collectUsageTotals(options.transcript);
+  const model = options.thread.model ?? options.model;
+  const budget = resolveEffectiveThreadContextBudget({
+    model,
+    maxInputTokens: options.thread.maxInputTokens,
+  });
 
   return {
     threadId: options.thread.id,
     agentKey: readAgentKeyFromThreadContext(options.thread),
-    model: options.thread.model ?? options.model,
+    model,
     thinking: options.thread.thinking ?? options.thinking,
     runState: options.isRunning ? "thinking" : "idle",
     storedMessages: options.transcript.length,
@@ -292,7 +303,12 @@ export function collectThreadUsageSnapshot(options: {
     runEstimatedTokens: estimateTranscriptTokens(runTranscript),
     visibleEstimatedTokens: estimateTranscriptTokens(visibleTranscript),
     storedJsonBytes: measureStoredJsonBytes(options.transcript),
-    maxInputTokens: options.thread.maxInputTokens,
+    hardWindow: budget.hardWindow,
+    operatingWindow: budget.effectiveOperatingWindow,
+    compactAtPercent: budget.compactAtPercent,
+    compactTriggerTokens: budget.compactTriggerTokens,
+    operatingWindowSource: budget.operatingWindowSource,
+    threadOverride: budget.threadOverride,
     storedImages: measureInlineImages(options.transcript),
     visibleImages: measureInlineImages(visibleTranscript),
     totalUsage: total,
@@ -313,17 +329,20 @@ export function formatThreadUsageSnapshot(snapshot: ThreadUsageSnapshot): string
     `- **Visible now:** ${formatInt(snapshot.visibleMessages)} msgs · ~${formatInt(snapshot.visibleEstimatedTokens)} est tokens`,
     `- **Run input:** ${formatInt(snapshot.runMessages)} msgs · ~${formatInt(snapshot.runEstimatedTokens)} est tokens`,
     `- **Stored thread:** ${formatInt(snapshot.storedMessages)} msgs · ~${formatInt(snapshot.storedEstimatedTokens)} est tokens · ${formatBytes(snapshot.storedJsonBytes)} JSON`,
+    `- **Context policy:** operating ${formatInt(snapshot.operatingWindow)} · hard ${formatInt(snapshot.hardWindow)} · compact at ${snapshot.compactAtPercent}% (~${formatInt(snapshot.compactTriggerTokens)})`,
   ];
 
-  if (snapshot.maxInputTokens !== undefined) {
-    const fill = snapshot.maxInputTokens > 0
-      ? `${((snapshot.visibleEstimatedTokens / snapshot.maxInputTokens) * 100).toFixed(1)}%`
-      : "n/a";
-    lines.push(
-      `- **Thread budget:** ~${formatInt(snapshot.visibleEstimatedTokens)} / ${formatInt(snapshot.maxInputTokens)} est tokens (${fill})`,
-    );
+  const fill = snapshot.operatingWindow > 0
+    ? `${((snapshot.visibleEstimatedTokens / snapshot.operatingWindow) * 100).toFixed(1)}%`
+    : "n/a";
+  lines.push(
+    `- **Active budget:** ~${formatInt(snapshot.visibleEstimatedTokens)} / ${formatInt(snapshot.operatingWindow)} est tokens (${fill})`,
+  );
+
+  if (snapshot.operatingWindowSource === "thread" && snapshot.threadOverride !== undefined) {
+    lines.push(`- **Budget source:** thread override (${formatInt(snapshot.threadOverride)})`);
   } else {
-    lines.push("- **Thread budget:** not set on this thread");
+    lines.push("- **Budget source:** model policy");
   }
 
   if (snapshot.storedImages.count > 0 || snapshot.visibleImages.count > 0) {

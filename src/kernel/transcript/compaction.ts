@@ -4,6 +4,7 @@ import {formatToolCallFallback, formatToolResultFallback, PiAiRuntime} from "../
 import {buildCompactSummaryMessage, stripCompactSummaryPrefix} from "../agent/helpers/compact.js";
 import {estimateTokensFromString} from "../agent/helpers/token-count.js";
 import {stringToUserMessage} from "../agent/helpers/input.js";
+import {resolveEffectiveThreadContextBudget} from "../models/model-context-policy.js";
 import {resolveModelSelector} from "../models/model-selector.js";
 import {renderCompactionPrompt} from "../../prompts/runtime/compaction.js";
 import {getProviderConfig, type ProviderName} from "../../integrations/providers/shared/provider.js";
@@ -18,8 +19,7 @@ import type {
   ThreadRuntimeState,
 } from "../../domain/threads/runtime/types.js";
 
-export const DEFAULT_COMPACT_PRESERVED_USER_TURNS = 3;
-export const AUTO_COMPACT_TRIGGER_BUFFER_TOKENS = 64;
+export const DEFAULT_COMPACT_PRESERVED_USER_TURNS = 6;
 export const AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD = 2;
 export const AUTO_COMPACT_BREAKER_COOLDOWN_MS = 5 * 60_000;
 const TOOL_TEXT_LIMIT = 4_000;
@@ -364,16 +364,16 @@ export function updateAutoCompactionRuntimeState(
 }
 
 export function shouldAutoCompactThread(options: {
-  thread: Pick<ThreadRecord, "maxInputTokens" | "runtimeState">;
+  thread: Pick<ThreadRecord, "runtimeState">;
   transcriptTokens: number;
+  compactTriggerTokens?: number;
   now?: number;
 }): AutoCompactCheckResult {
-  const maxInputTokens = options.thread.maxInputTokens;
-  if (maxInputTokens === undefined) {
+  if (options.compactTriggerTokens === undefined) {
     return { shouldCompact: false };
   }
 
-  const shouldCompact = options.transcriptTokens >= Math.max(1, maxInputTokens - AUTO_COMPACT_TRIGGER_BUFFER_TOKENS);
+  const shouldCompact = options.transcriptTokens >= options.compactTriggerTokens;
   if (!shouldCompact) {
     return { shouldCompact: false };
   }
@@ -412,9 +412,11 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
   }
 
   const preservedTailTokens = estimateTranscriptTokens(split.preservedTail);
-  const summaryTokenBudget = options.thread.maxInputTokens === undefined
-    ? undefined
-    : options.thread.maxInputTokens - preservedTailTokens;
+  const effectiveBudget = resolveEffectiveThreadContextBudget({
+    model: options.model,
+    maxInputTokens: options.thread.maxInputTokens,
+  });
+  const summaryTokenBudget = effectiveBudget.effectiveOperatingWindow - preservedTailTokens;
   if (summaryTokenBudget !== undefined && summaryTokenBudget <= 0) {
     throw new Error(
       "Recent context already fills the input budget, so compact cannot preserve the recent turns verbatim.",
