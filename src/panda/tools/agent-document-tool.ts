@@ -15,7 +15,7 @@ import type {
 } from "../../domain/agents/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 
-const AGENT_PROMPT_SLUGS = ["agent", "soul", "heartbeat"] as const;
+const AGENT_PROMPT_SLUGS = ["agent", "heartbeat"] as const;
 const AGENT_DOCUMENT_SLUGS = ["memory"] as const;
 const WHITELISTED_FUNCTIONS = new Set([
   "regexp_replace",
@@ -328,7 +328,7 @@ export class AgentDocumentTool<TContext = DefaultAgentSessionContext>
       "Which document scope to work with: shared agent docs, relationship memory, or the daily diary.",
     ),
     slug: z.string().trim().optional().describe(
-      "Required for agent and relationship targets. Agent supports agent, soul, heartbeat. Relationship supports memory.",
+      "Required for agent and relationship targets. Agent supports agent and heartbeat. Relationship supports memory.",
     ),
     identityId: z.string().trim().optional().describe(
       "Optional explicit identity scope for relationship memory or diary. Omit for global agent scope.",

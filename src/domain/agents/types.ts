@@ -1,7 +1,7 @@
 import type {JsonValue} from "../../kernel/agent/types.js";
 
 export type AgentStatus = "active" | "deleted";
-export type AgentPromptSlug = "agent" | "soul" | "heartbeat";
+export type AgentPromptSlug = "agent" | "heartbeat";
 export type AgentDocumentSlug = "memory";
 
 export interface CreateAgentInput {

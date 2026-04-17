@@ -121,8 +121,9 @@ describe("legacy agent import", () => {
     expect(plan.prompts.map((prompt) => prompt.slug)).toEqual([
       "agent",
       "heartbeat",
-      "soul",
     ]);
+    expect(plan.prompts[0]?.content).toContain("Imported from SOUL.md");
+    expect(plan.prompts[0]?.content).toContain("# SOUL\nHave a point of view.");
     expect(plan.memory?.content).toContain("Imported from USER.md");
     expect(plan.memory?.content).toContain("Imported from MEMORY.md");
     expect(plan.diary).toHaveLength(1);
@@ -254,7 +255,7 @@ describe("legacy agent import", () => {
       createdAgent: true,
       createdMainSession: true,
       identityId: "patrik-id",
-      promptCount: 3,
+      promptCount: 2,
       importedMemory: true,
       diaryEntryCount: 1,
       messageCount: 2,
@@ -273,11 +274,11 @@ describe("legacy agent import", () => {
       }),
     ]);
 
+    await expect(harness.agentStore.readAgentPrompt("luna", "agent")).resolves.toMatchObject({
+      content: expect.stringContaining("# SOUL\nWarm but relentless."),
+    });
     await expect(harness.agentStore.readAgentPrompt("luna", "heartbeat")).resolves.toMatchObject({
       content: "# HEARTBEAT\nCheck in twice a day.",
-    });
-    await expect(harness.agentStore.readAgentPrompt("luna", "soul")).resolves.toMatchObject({
-      content: "# SOUL\nWarm but relentless.",
     });
     await expect(harness.agentStore.readAgentDocument("luna", "memory")).resolves.toBeNull();
     await expect(harness.agentStore.readAgentDocument("luna", "memory", identity.id)).resolves.toMatchObject({

@@ -6,11 +6,11 @@ import {buildScheduledTaskTableNames} from "../../../domain/scheduling/tasks/pos
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import {buildWatchTableNames} from "../../../domain/watches/postgres-shared.js";
 import {
-    buildSessionRelationNames,
-    buildThreadRuntimeTableNames,
-    quoteIdentifier,
-    RUNTIME_SCHEMA,
-    SESSION_SCHEMA,
+  buildSessionRelationNames,
+  buildThreadRuntimeTableNames,
+  quoteIdentifier,
+  RUNTIME_SCHEMA,
+  SESSION_SCHEMA,
 } from "./postgres-shared.js";
 
 interface PgQueryable {
@@ -344,7 +344,8 @@ export async function ensureReadonlySessionQuerySchema(
       prompt.created_at,
       prompt.updated_at
     FROM ${agentTables.agentPrompts} AS prompt
-    WHERE prompt.agent_key = current_setting('runtime.agent_key', true);
+    WHERE prompt.agent_key = current_setting('runtime.agent_key', true)
+      AND prompt.slug IN ('agent', 'heartbeat');
 
     CREATE VIEW ${views.agentDocuments}
     WITH (security_barrier = true) AS

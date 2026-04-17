@@ -431,6 +431,10 @@ describe("ensureReadonlySessionQuerySchema", () => {
       displayName: "Ops",
       prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
+    await pool.query(`
+      INSERT INTO "runtime"."agent_prompts" (agent_key, slug, content)
+      VALUES ('panda', 'soul', 'Old soul prompt.')
+    `);
     await agentStore.setAgentPrompt("panda", "heartbeat", "Panda heartbeat prompt.");
     await agentStore.setAgentPrompt("ops", "heartbeat", "Ops heartbeat prompt.");
 
@@ -450,6 +454,14 @@ describe("ensureReadonlySessionQuerySchema", () => {
         slug: "heartbeat",
         content_bytes: 23,
       },
+    ]);
+
+    const visibleSlugs = await pool.query(
+      "SELECT slug FROM \"session\".\"agent_prompts\" ORDER BY slug",
+    );
+    expect(visibleSlugs.rows).toEqual([
+      {slug: "agent"},
+      {slug: "heartbeat"},
     ]);
   });
 

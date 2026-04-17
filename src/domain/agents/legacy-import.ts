@@ -164,6 +164,22 @@ function mergeImportedMarkdownBlocks(blocks: readonly {label: string; content: s
     .join("\n\n---\n\n");
 }
 
+function joinMarkdownSections(sections: readonly string[]): string {
+  const normalized = sections
+    .map((section) => section.trim())
+    .filter(Boolean);
+
+  if (normalized.length === 0) {
+    return "";
+  }
+
+  if (normalized.length === 1) {
+    return normalized[0] ?? "";
+  }
+
+  return normalized.join("\n\n---\n\n");
+}
+
 function extractDiaryDate(fileName: string): string | null {
   const match = /^(\d{4}-\d{2}-\d{2})(?:[-_].+)?\.md$/i.exec(fileName);
   return match?.[1] ?? null;
@@ -314,14 +330,22 @@ async function readUtf8IfExists(targetPath: string): Promise<string | null> {
 }
 
 async function buildPromptPlans(sourceDir: string, displayName: string, warnings: string[]): Promise<readonly LegacyAgentPromptPlan[]> {
+  const soulSourcePath = path.join(sourceDir, "SOUL.md");
+  const soulContent = await readUtf8IfExists(soulSourcePath);
+  const agentSections = [renderGeneratedAgentPrompt(displayName)];
+  if (soulContent !== null) {
+    // SOUL.md is legacy shape. Fold it into the durable agent prompt so Panda has one source of truth.
+    agentSections.push(`<!-- Imported from SOUL.md -->\n${cleanImportedBlock(soulContent)}`);
+  }
+
   const promptFiles: ReadonlyArray<{slug: AgentPromptSlug; fileName: string}> = [
     {slug: "heartbeat", fileName: "HEARTBEAT.md"},
-    {slug: "soul", fileName: "SOUL.md"},
   ];
 
   const prompts: LegacyAgentPromptPlan[] = [{
     slug: "agent",
-    content: renderGeneratedAgentPrompt(displayName),
+    content: joinMarkdownSections(agentSections),
+    sourcePath: soulContent === null ? undefined : soulSourcePath,
   }];
 
   for (const promptFile of promptFiles) {

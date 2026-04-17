@@ -20,7 +20,7 @@ The command accepts either:
 OpenClaw files map into Panda like this:
 
 - `HEARTBEAT.md` -> `agent_prompts.heartbeat`
-- `SOUL.md` -> `agent_prompts.soul`
+- `SOUL.md` -> merged into `agent_prompts.agent`
 - `IDENTITY.md` -> not migrated into prompts
 - generated `agent_prompts.agent` -> short Panda-native wrapper so the slot is not empty
 - `USER.md` + `MEMORY.md` -> merged into `agent_documents.memory`

@@ -35,7 +35,11 @@ describe("AgentProfileContext", () => {
       displayName: "Panda",
       prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
-    await agentStore.setAgentPrompt("panda", "soul", "Be kind.");
+    await agentStore.setAgentPrompt(
+      "panda",
+      "agent",
+      `${DEFAULT_AGENT_DOCUMENT_TEMPLATES.agent}\n\nBe kind.`,
+    );
     await agentStore.setAgentSkill("panda", "calendar", "Use this for calendar work.", "# Calendar\nLong skill body.");
 
     const context = new AgentProfileContext({
@@ -46,8 +50,8 @@ describe("AgentProfileContext", () => {
 
     expect(content).toContain("[agent]");
     expect(content).toContain(DEFAULT_AGENT_DOCUMENT_TEMPLATES.agent);
-    expect(content).toContain("[soul]");
     expect(content).toContain("Be kind.");
+    expect(content).not.toContain("[soul]");
     expect(content).toContain("Summaries only. Query `session.agent_skills` for full skill bodies when you need the exact content.");
     expect(content).toContain("calendar\nUse this for calendar work.");
     expect(content).not.toContain("Long skill body.");

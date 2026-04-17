@@ -7,7 +7,7 @@ import {
 import type {AgentStore} from "../../domain/agents/store.js";
 
 // Heartbeat guidance should only show up on heartbeat wakes, not in every normal run.
-const AGENT_PROMPT_SLUGS = ["agent", "soul"] as const;
+const AGENT_PROMPT_SLUGS = ["agent"] as const;
 
 export type AgentProfileContextSection =
   | "prompts"
