@@ -11,7 +11,6 @@ import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {createRuntime, createThreadDefinition, type RuntimeServices,} from "./create-runtime.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
 import {DaemonStateRepo} from "./state/repo.js";
-import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
 import type {DaemonOptions} from "./daemon-shared.js";
 import {DEFAULT_DAEMON_KEY} from "./daemon-shared.js";
 import {TELEGRAM_SOURCE,} from "../../integrations/channels/telegram/config.js";
@@ -21,7 +20,6 @@ import {OutboundTool} from "../../panda/tools/outbound-tool.js";
 
 export interface DaemonContext {
   fallbackContext: {cwd: string};
-  model: string;
   daemonKey: string;
   runtime: RuntimeServices;
   conversationBindings: ConversationRepo;
@@ -41,7 +39,6 @@ export async function bootstrapDaemonContext(
   const fallbackContext = {
     cwd: options.cwd,
   } as const;
-  const model = resolveDefaultAgentModelSelector();
   const daemonKey = DEFAULT_DAEMON_KEY;
 
   let sessionRoutes!: SessionRouteRepo;
@@ -185,7 +182,6 @@ export async function bootstrapDaemonContext(
 
     return {
       fallbackContext,
-      model,
       daemonKey,
       runtime,
       conversationBindings,

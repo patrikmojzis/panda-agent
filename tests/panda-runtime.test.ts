@@ -10,11 +10,11 @@ const runtimeMocks = vi.hoisted(() => {
   const client = {
     off: vi.fn(),
     on: vi.fn(),
-    query: vi.fn(),
+    query: vi.fn(async () => ({rows: []})),
     release: vi.fn(),
   };
   class MockPool {
-    query = vi.fn();
+    query = vi.fn(async () => ({rows: [{count: 0}]}));
     connect = vi.fn(async () => client);
     end = vi.fn(async () => {});
 
@@ -105,6 +105,7 @@ describe("createRuntime", () => {
     runtimeMocks.client.on.mockClear();
     runtimeMocks.client.off.mockClear();
     runtimeMocks.client.query.mockReset();
+    runtimeMocks.client.query.mockImplementation(async () => ({rows: []}));
     runtimeMocks.client.release.mockClear();
     runtimeMocks.poolInstances.length = 0;
     browserMocks.start.mockClear();

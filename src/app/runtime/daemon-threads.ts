@@ -2,12 +2,16 @@ import {randomUUID} from "node:crypto";
 
 import {type MediaDescriptor, relocateMediaDescriptor} from "../../domain/channels/index.js";
 import type {IdentityRecord} from "../../domain/identity/index.js";
-import {createSessionWithInitialThread, resetSessionCurrentThread} from "../../domain/sessions/index.js";
+import {
+    createSessionWithInitialThread,
+    resetSessionCurrentThread,
+    type SessionRecord
+} from "../../domain/sessions/index.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {
-  CreateBranchSessionRequestPayload,
-  ResetSessionRequestPayload,
-  ResolveMainSessionThreadRequestPayload,
+    CreateBranchSessionRequestPayload,
+    ResetSessionRequestPayload,
+    ResolveMainSessionThreadRequestPayload,
 } from "../../domain/threads/requests/index.js";
 import {PostgresThreadRuntimeStore, type ThreadRecord} from "../../domain/threads/runtime/index.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
@@ -114,7 +118,7 @@ export function createDaemonThreadHelpers(
           : {}),
         ...(input.context ?? {}),
       },
-      model: input.model ?? context.model,
+      model: input.model,
       thinking: input.thinking,
       inferenceProjection: input.inferenceProjection,
     };
@@ -123,10 +127,18 @@ export function createDaemonThreadHelpers(
   const ensureMainSession = async (
     agentKey: string,
     identity?: IdentityRecord,
-  ) => {
+    initialThread?: {
+      model?: string;
+      thinking?: ResolveMainSessionThreadRequestPayload["thinking"];
+      inferenceProjection?: ResolveMainSessionThreadRequestPayload["inferenceProjection"];
+    },
+  ): Promise<{created: boolean; session: SessionRecord}> => {
     const existing = await context.runtime.sessionStore.getMainSession(agentKey);
     if (existing) {
-      return existing;
+      return {
+        created: false,
+        session: existing,
+      };
     }
 
     const sessionId = randomUUID();
@@ -151,9 +163,15 @@ export function createDaemonThreadHelpers(
           sessionId,
           agentKey,
           id: threadId,
+          model: initialThread?.model,
+          thinking: initialThread?.thinking,
+          inferenceProjection: initialThread?.inferenceProjection,
         }),
       });
-      return created.session;
+      return {
+        created: true,
+        session: created.session,
+      };
     }
 
     const session = await context.runtime.sessionStore.createSession({
@@ -167,8 +185,14 @@ export function createDaemonThreadHelpers(
       sessionId,
       agentKey,
       id: threadId,
+      model: initialThread?.model,
+      thinking: initialThread?.thinking,
+      inferenceProjection: initialThread?.inferenceProjection,
     }));
-    return session;
+    return {
+      created: true,
+      session,
+    };
   };
 
   const resolveCurrentThread = async (sessionId: string): Promise<ThreadRecord> => {
@@ -246,8 +270,20 @@ export function createDaemonThreadHelpers(
   ): Promise<ThreadRecord> => {
     const identity = await ensureIdentity(requireIdentityId(input.identityId, "resolve_main_session_thread"));
     const agentKey = await resolveAccessibleAgentKey(identity, input.agentKey);
-    const session = await ensureMainSession(agentKey, identity);
-    return resolveCurrentThread(session.id);
+    const {created, session} = await ensureMainSession(agentKey, identity, {
+      model: input.model,
+      thinking: input.thinking,
+      inferenceProjection: input.inferenceProjection,
+    });
+    let thread = await resolveCurrentThread(session.id);
+    if (!created && (input.model !== undefined || input.thinking !== undefined || input.inferenceProjection !== undefined)) {
+      thread = await context.runtime.store.updateThread(thread.id, {
+        ...(input.model !== undefined ? {model: input.model} : {}),
+        ...(input.thinking !== undefined ? {thinking: input.thinking} : {}),
+        ...(input.inferenceProjection !== undefined ? {inferenceProjection: input.inferenceProjection} : {}),
+      });
+    }
+    return thread;
   };
 
   const resolveOrCreateConversationThread = async (input: {
@@ -273,7 +309,7 @@ export function createDaemonThreadHelpers(
       return null;
     }
 
-    const session = await ensureMainSession(pairings[0]!.agentKey, identity);
+    const {session} = await ensureMainSession(pairings[0]!.agentKey, identity);
     await context.conversationBindings.bindConversation({
       source: input.source,
       connectorKey: input.connectorKey,
@@ -312,7 +348,6 @@ export function createDaemonThreadHelpers(
 
   const resetSession = async (input: {
     sessionId: string;
-    identity?: IdentityRecord;
     source: string;
     model?: string;
     thinking?: ResetSessionRequestPayload["thinking"];
@@ -381,7 +416,7 @@ export function createDaemonThreadHelpers(
         : undefined;
       const sessionId = binding?.sessionId
         ?? (identity
-          ? (await ensureMainSession(await resolveAccessibleAgentKey(identity, payload.agentKey), identity)).id
+          ? (await ensureMainSession(await resolveAccessibleAgentKey(identity, payload.agentKey), identity)).session.id
           : null);
       if (!sessionId) {
         throw new Error("Cannot reset an unbound conversation without a paired identity.");
@@ -389,7 +424,6 @@ export function createDaemonThreadHelpers(
 
       const result = await resetSession({
         sessionId,
-        identity,
         source: payload.source,
         model: payload.model,
         thinking: payload.thinking,
@@ -463,11 +497,10 @@ export function createDaemonThreadHelpers(
       session = await context.runtime.sessionStore.getSession(payload.sessionId);
       await resolveAccessibleAgentKey(identity, session.agentKey);
     } else {
-      session = await ensureMainSession(await resolveAccessibleAgentKey(identity, payload.agentKey), identity);
+      session = (await ensureMainSession(await resolveAccessibleAgentKey(identity, payload.agentKey), identity)).session;
     }
     const result = await resetSession({
       sessionId: session.id,
-      identity,
       source: payload.source,
       model: payload.model,
       thinking: payload.thinking,

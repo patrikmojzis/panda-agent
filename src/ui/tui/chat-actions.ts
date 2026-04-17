@@ -4,6 +4,7 @@ import {resolveModelSelector, type ThinkingLevel,} from "../../kernel/agent/inde
 import type {ThreadRecord} from "../../domain/threads/runtime/index.js";
 import type {ChatRuntimeServices} from "./runtime.js";
 import {buildChatHelpText, describeUnknownCommand, runChatCommandLine} from "./chat-commands.js";
+import {resolveStoredChatDisplayConfig} from "./chat-session.js";
 import {collectThreadUsageSnapshot, formatThreadUsageSnapshot,} from "./usage-summary.js";
 import {
     type EntryRole,
@@ -32,14 +33,13 @@ export interface ChatCommandHost {
   getCurrentAgentKey(): string | undefined;
   getModel(): string;
   getThinking(): ThinkingLevel | undefined;
-  getDefaultAgentKey(): string | undefined;
   isRunning(): boolean;
   requireServices(): ChatRuntimeServices;
   requireIdleRun(action: string): boolean;
   buildSessionDefaults(): {
     sessionId?: string;
     agentKey?: string;
-    model: string;
+    model?: string;
     thinking?: ThinkingLevel;
   };
   switchThread(thread: ThreadRecord): Promise<void>;
@@ -89,19 +89,29 @@ async function handleModelCommand(host: ChatCommandHost, value: string): Promise
   }
 
   if (!value) {
-    host.showCommandError("config", "Usage: /model <selector-or-alias>");
+    host.showCommandError("config", "Usage: /model <selector-or-alias|default>");
     return true;
   }
 
   try {
-    const resolved = resolveModelSelector(value);
-    const thread = await host.requireServices().updateThread(host.getCurrentThreadId(), {
-      model: resolved.canonical,
+    const trimmed = value.trim();
+    const services = host.requireServices();
+    const resetToDefault = trimmed.toLowerCase() === "default";
+    const thread = await services.updateThread(host.getCurrentThreadId(), {
+      model: resetToDefault ? null : resolveModelSelector(trimmed).canonical,
     });
+    const runConfig = resetToDefault
+      ? await services.resolveThreadRunConfig(thread.id).catch(() => resolveStoredChatDisplayConfig(thread))
+      : {model: thread.model ?? host.getModel()};
     host.setCurrentThread(thread);
-    host.setModel(resolved.canonical);
-    host.pushEntry("meta", "config", `Model set to ${resolved.canonical}.`);
-    host.setNotice(`Model ${resolved.canonical}`, "info");
+    host.setModel(runConfig.model);
+    if (resetToDefault) {
+      host.pushEntry("meta", "config", `Model reset to default (${runConfig.model}).`);
+      host.setNotice(`Model default (${runConfig.model})`, "info");
+    } else {
+      host.pushEntry("meta", "config", `Model set to ${runConfig.model}.`);
+      host.setNotice(`Model ${runConfig.model}`, "info");
+    }
   } catch (error) {
     host.showCommandError("config", error instanceof Error ? error.message : String(error));
   }
@@ -149,11 +159,12 @@ async function handleUsageCommand(host: ChatCommandHost): Promise<boolean> {
   try {
     const services = host.requireServices();
     const threadId = host.getCurrentThreadId();
-    const [thread, transcript, runConfig] = await Promise.all([
+    const [thread, transcript] = await Promise.all([
       services.getThread(threadId),
       services.store.loadTranscript(threadId),
-      services.resolveThreadRunConfig(threadId),
     ]);
+    const runConfig = await services.resolveThreadRunConfig(threadId)
+      .catch(() => resolveStoredChatDisplayConfig(thread));
     const summary = formatThreadUsageSnapshot(collectThreadUsageSnapshot({
       thread,
       transcript,
@@ -204,10 +215,8 @@ async function handleResetSessionCommand(host: ChatCommandHost): Promise<boolean
 
   try {
     const thread = await host.requireServices().resetSession({
+      ...host.buildSessionDefaults(),
       sessionId: host.getCurrentSessionId(),
-      agentKey: host.getDefaultAgentKey(),
-      model: host.getModel(),
-      thinking: host.getThinking(),
     });
     await host.switchThread(thread);
     host.pushEntry("meta", "session", `Reset session ${thread.sessionId}.`);

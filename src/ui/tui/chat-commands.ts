@@ -22,7 +22,7 @@ export function buildChatHelpText(thinkingCommandUsage: string): string {
     "Commands:",
     "/help shows command help.",
     "/usage shows current context estimates, provider token usage, and cost.",
-    "/model <selector-or-alias> changes the active model.",
+    "/model <selector-or-alias|default> changes the active model.",
     `${thinkingCommandUsage} changes the active thinking level.`,
     "/compact [instructions] summarizes older context and keeps recent turns verbatim.",
     "/new starts a fresh branch session.",

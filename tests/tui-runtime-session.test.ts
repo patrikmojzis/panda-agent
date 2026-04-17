@@ -75,7 +75,6 @@ describe("createChatRuntime session wiring", () => {
     const runtime = await createChatRuntime({
       identity: "test-user",
       agent: "luna",
-      model: "openai-codex/gpt-5.4",
     });
 
     await runtime.openMainSession();
@@ -83,15 +82,13 @@ describe("createChatRuntime session wiring", () => {
     expect(tuiRuntimeSessionMocks.client.openMainSession).toHaveBeenCalledWith({
       sessionId: undefined,
       agentKey: "luna",
-      model: "openai-codex/gpt-5.4",
       thinking: undefined,
     });
   });
 
-  it("leaves agentKey unset when chat did not explicitly choose an agent", async () => {
+  it("does not invent a model when chat did not explicitly choose one", async () => {
     const runtime = await createChatRuntime({
       identity: "test-user",
-      model: "openai-codex/gpt-5.4",
     });
 
     await runtime.openMainSession();
@@ -99,7 +96,6 @@ describe("createChatRuntime session wiring", () => {
     expect(tuiRuntimeSessionMocks.client.openMainSession).toHaveBeenCalledWith({
       sessionId: undefined,
       agentKey: undefined,
-      model: "openai-codex/gpt-5.4",
       thinking: undefined,
     });
   });
@@ -108,7 +104,6 @@ describe("createChatRuntime session wiring", () => {
     const runtime = await createChatRuntime({
       identity: "test-user",
       agent: "jozef",
-      model: "openai-codex/gpt-5.4",
     });
 
     await runtime.resetSession({
@@ -125,9 +120,7 @@ describe("createChatRuntime session wiring", () => {
   });
 
   it("fails loudly when chat starts without an explicit identity", async () => {
-    await expect(createChatRuntime({
-      model: "openai-codex/gpt-5.4",
-    })).rejects.toThrow("Panda chat requires --identity <handle>.");
+    await expect(createChatRuntime({})).rejects.toThrow("Panda chat requires --identity <handle>.");
 
     expect(tuiRuntimeSessionMocks.createRuntimeClient).not.toHaveBeenCalled();
   });

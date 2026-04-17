@@ -62,7 +62,6 @@ export const WELCOME_ENTRY_TEXT = [
 ].join("\n");
 
 export interface ChatCliOptions {
-  model?: string;
   thinking?: ThinkingLevel;
   identity?: string;
   agent?: string;

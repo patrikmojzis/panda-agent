@@ -319,6 +319,83 @@ describe("ChatApp thinking command", () => {
     expect(app.thinking).toBeUndefined();
   });
 
+  it("resets the current thread back to the runtime default with /model default", async () => {
+    const updateThread = vi.fn(async () => ({
+      id: "thread-config",
+      sessionId: "session-main",
+      model: undefined,
+      thinking: undefined,
+      createdAt: 1,
+      updatedAt: 2,
+    }));
+    const resolveThreadRunConfig = vi.fn(async () => ({
+      model: "anthropic-oauth/claude-opus-4-6",
+      thinking: undefined,
+    }));
+    const app = new ChatApp() as any;
+
+    app.currentThreadId = "thread-config";
+    app.model = "openai/gpt-5.4";
+    app.currentThread = {
+      id: "thread-config",
+      sessionId: "session-main",
+      model: "openai/gpt-5.4",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    app.services = {
+      updateThread,
+      resolveThreadRunConfig,
+    } as ChatRuntimeServices;
+
+    await expect(app.handleCommand("/model default")).resolves.toBe(true);
+
+    expect(updateThread).toHaveBeenCalledWith("thread-config", {model: null});
+    expect(resolveThreadRunConfig).toHaveBeenCalledWith("thread-config");
+    expect(app.currentThread.model).toBeUndefined();
+    expect(app.model).toBe("anthropic-oauth/claude-opus-4-6");
+  });
+
+  it("falls back to the stored default when /model default cannot resolve live config", async () => {
+    vi.stubEnv("DEFAULT_MODEL", "anthropic-oauth/claude-opus-4-6");
+    try {
+      const updateThread = vi.fn(async () => ({
+        id: "thread-config",
+        sessionId: "session-main",
+        model: undefined,
+        thinking: undefined,
+        createdAt: 1,
+        updatedAt: 2,
+      }));
+      const resolveThreadRunConfig = vi.fn(async () => {
+        throw new Error("daemon offline");
+      });
+      const app = new ChatApp() as any;
+
+      app.currentThreadId = "thread-config";
+      app.model = "openai/gpt-5.4";
+      app.currentThread = {
+        id: "thread-config",
+        sessionId: "session-main",
+        model: "openai/gpt-5.4",
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      app.services = {
+        updateThread,
+        resolveThreadRunConfig,
+      } as ChatRuntimeServices;
+
+      await expect(app.handleCommand("/model default")).resolves.toBe(true);
+
+      expect(updateThread).toHaveBeenCalledWith("thread-config", {model: null});
+      expect(resolveThreadRunConfig).toHaveBeenCalledWith("thread-config");
+      expect(app.model).toBe("anthropic-oauth/claude-opus-4-6");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("surfaces store failures for model and thinking updates", async () => {
     const updateThread = vi.fn(async () => {
       throw new Error("store unavailable");
@@ -370,7 +447,7 @@ describe("ChatApp fresh-session agent selection", () => {
       updatedAt: 2,
     }));
     const app = new ChatApp() as any;
-    const expectedModel = app.model;
+    const expectedModel = "openai/gpt-5.1";
 
     app.currentThreadId = "thread-current";
     app.currentThread = {
@@ -419,7 +496,7 @@ describe("ChatApp fresh-session agent selection", () => {
       updatedAt: 2,
     }));
     const app = new ChatApp() as any;
-    const expectedModel = app.model;
+    const expectedModel = "openai/gpt-5.1";
 
     app.currentThreadId = "thread-current";
     app.currentThread = {
@@ -450,6 +527,78 @@ describe("ChatApp fresh-session agent selection", () => {
       agentKey: undefined,
       model: expectedModel,
       sessionId: "session-main",
+      thinking: undefined,
+    });
+  });
+
+  it("preserves inherited default model semantics for /new and /reset", async () => {
+    const createBranchSession = vi.fn(async () => ({
+      id: "thread-branch-default",
+      sessionId: "session-branch",
+      model: undefined,
+      context: {
+        agentKey: "panda",
+        sessionId: "session-branch",
+      },
+      createdAt: 1,
+      updatedAt: 2,
+    }));
+    const resetSession = vi.fn(async () => ({
+      id: "thread-reset-default",
+      sessionId: "session-main",
+      model: undefined,
+      context: {
+        agentKey: "panda",
+        sessionId: "session-main",
+      },
+      createdAt: 1,
+      updatedAt: 2,
+    }));
+    const createNewApp = () => {
+      const app = new ChatApp() as any;
+      app.model = "anthropic-oauth/claude-opus-4-6";
+      app.currentThreadId = "thread-current";
+      app.currentThread = {
+        id: "thread-current",
+        sessionId: "session-main",
+        model: undefined,
+        context: {
+          agentKey: "panda",
+          sessionId: "session-main",
+        },
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      app.switchThread = vi.fn(async (thread) => {
+        app.currentThread = thread;
+        app.currentThreadId = thread.id;
+      });
+      return app;
+    };
+
+    const newApp = createNewApp();
+    newApp.services = {
+      createBranchSession,
+      resetSession,
+    } as ChatRuntimeServices;
+    await expect(newApp.handleCommand("/new")).resolves.toBe(true);
+    expect(createBranchSession).toHaveBeenCalledWith({
+      sessionId: undefined,
+      agentKey: undefined,
+      model: undefined,
+      thinking: undefined,
+    });
+
+    const resetApp = createNewApp();
+    resetApp.services = {
+      createBranchSession,
+      resetSession,
+    } as ChatRuntimeServices;
+    await expect(resetApp.handleCommand("/reset")).resolves.toBe(true);
+    expect(resetSession).toHaveBeenCalledWith({
+      sessionId: "session-main",
+      agentKey: undefined,
+      model: undefined,
       thinking: undefined,
     });
   });
@@ -867,6 +1016,62 @@ describe("ChatApp usage command", () => {
     });
     expect(app.transcript.at(-1)?.body).toContain("`openai/gpt-5.4`");
   });
+
+  it("falls back to stored thread config when live config is unavailable", async () => {
+    const thread = {
+      id: "thread-usage",
+      identityId: "test-user",
+      agentKey: "panda",
+      model: "anthropic/claude-opus-4-6",
+      thinking: "high" as const,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const getThread = vi.fn(async () => thread);
+    const loadTranscript = vi.fn(async () => [
+      {
+        id: "message-1",
+        threadId: "thread-usage",
+        sequence: 1,
+        origin: "input" as const,
+        source: "tui",
+        message: stringToUserMessage("hello"),
+        createdAt: 1,
+      },
+      {
+        id: "message-2",
+        threadId: "thread-usage",
+        sequence: 2,
+        origin: "runtime" as const,
+        source: "assistant",
+        message: assistantWithUsage("hi"),
+        createdAt: 2,
+      },
+    ]);
+    const resolveThreadRunConfig = vi.fn(async () => {
+      throw new Error("daemon offline");
+    });
+    const app = new ChatApp() as any;
+
+    app.currentThreadId = "thread-usage";
+    app.currentThread = thread;
+    app.model = thread.model;
+    app.thinking = thread.thinking;
+    app.services = {
+      getThread,
+      resolveThreadRunConfig,
+      store: {
+        loadTranscript,
+      },
+    } as ChatRuntimeServices;
+
+    await expect(app.handleCommand("/usage")).resolves.toBe(true);
+    expect(getThread).toHaveBeenCalledWith("thread-usage");
+    expect(loadTranscript).toHaveBeenCalledWith("thread-usage");
+    expect(resolveThreadRunConfig).toHaveBeenCalledWith("thread-usage");
+    expect(app.transcript.at(-1)?.body).toContain("`anthropic/claude-opus-4-6`");
+    expect(app.transcript.at(-1)?.body).toContain("thinking `high`");
+  });
 });
 
 describe("ChatApp performance helpers", () => {
@@ -1270,6 +1475,44 @@ describe("ChatApp explicit session id", () => {
 
     await expect(app.initializeRuntime()).rejects.toThrow("Session session-locked does not belong to identity alice.");
     expect(app.services.createBranchSession).not.toHaveBeenCalled();
+
+    createChatRuntime.mockRestore();
+  });
+
+  it("opens a stored session without requiring live daemon config", async () => {
+    const thread = {
+      id: "thread-session",
+      sessionId: "session-stored",
+      context: {
+        agentKey: "panda",
+        sessionId: "session-stored",
+      },
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const createChatRuntime = vi.spyOn(tuiRuntime, "createChatRuntime").mockResolvedValue({
+      identity: {
+        id: "alice-id",
+        handle: "alice",
+        displayName: "Alice",
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      openSession: vi.fn(async () => thread),
+      store: {
+        loadTranscript: vi.fn(async () => []),
+        getThread: vi.fn(async () => thread),
+        listRuns: vi.fn(async () => []),
+      },
+    } as unknown as ChatRuntimeServices);
+
+    const app = new ChatApp({ session: "session-stored" }) as any;
+    const expectedModel = app.model;
+
+    await expect(app.initializeRuntime()).resolves.toBeUndefined();
+    expect(app.currentThreadId).toBe("thread-session");
+    expect(app.model).toBe(expectedModel);
 
     createChatRuntime.mockRestore();
   });

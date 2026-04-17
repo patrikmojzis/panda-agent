@@ -5,6 +5,7 @@ This folder is for contributors changing Panda internals.
 Start here:
 
 - [Architecture](./architecture.md)
+- [Daemon](./daemon.md)
 - [Sessions](./sessions.md)
 - [Browser](./browser.md)
 - [Current Structure](./restructure-plan.md)

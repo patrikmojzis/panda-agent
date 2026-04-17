@@ -168,6 +168,12 @@ describe("PostgresThreadRuntimeStore", () => {
     });
     expect(clearedThinking.thinking).toBeUndefined();
 
+    const clearedModel = await store.updateThread("pg-thread", {
+      model: null,
+    });
+    expect(clearedModel.model).toBeUndefined();
+    expect((await store.getThread("pg-thread")).model).toBeUndefined();
+
     const clearedProjection = await store.updateThread("pg-thread", {
       inferenceProjection: null,
     });

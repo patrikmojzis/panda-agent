@@ -1,6 +1,7 @@
 import type {ThinkingLevel, Tool} from "../../kernel/agent/index.js";
 import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord,} from "../../domain/threads/runtime/index.js";
 import {resolveStoredContext} from "../../app/runtime/create-runtime.js";
+import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
 import type {ChatRuntimeServices} from "./runtime.js";
 import {type EntryRole, type PendingLocalInput, type RunPhase, type TranscriptEntry,} from "./chat-shared.js";
 import {renderTranscriptEntries} from "./transcript.js";
@@ -9,7 +10,7 @@ import type {SessionRecord} from "../../domain/sessions/index.js";
 export interface ChatSessionDefaults {
   sessionId?: string;
   agentKey?: string;
-  model: string;
+  model?: string;
   thinking?: ThinkingLevel;
 }
 
@@ -34,7 +35,7 @@ export function resolveChatDisplayedCwd(
 
 export function buildChatSessionDefaults(input: {
   defaultAgentKey?: string;
-  model: string;
+  model?: string;
   thinking?: ThinkingLevel;
   overrides?: Partial<ChatSessionDefaults>;
 }): ChatSessionDefaults {
@@ -43,6 +44,16 @@ export function buildChatSessionDefaults(input: {
     agentKey: input.overrides?.agentKey ?? input.defaultAgentKey,
     model: input.overrides?.model ?? input.model,
     thinking: input.overrides?.thinking ?? input.thinking,
+  };
+}
+
+export function resolveStoredChatDisplayConfig(thread: Pick<ThreadRecord, "model" | "thinking">): {
+  model: string;
+  thinking?: ThinkingLevel;
+} {
+  return {
+    model: thread.model ?? resolveDefaultAgentModelSelector(),
+    thinking: thread.thinking,
   };
 }
 

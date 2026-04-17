@@ -465,7 +465,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     }
 
     if (update.model !== undefined) {
-      push("model", resolveModelSelector(update.model).canonical);
+      push("model", update.model === null ? null : resolveModelSelector(update.model).canonical);
     }
 
     if (update.temperature !== undefined) {

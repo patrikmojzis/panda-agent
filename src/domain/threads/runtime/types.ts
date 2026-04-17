@@ -46,7 +46,8 @@ export interface CreateThreadInput {
   inferenceProjection?: InferenceProjection;
 }
 
-export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "sessionId" | "thinking" | "runtimeState">> & {
+export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "sessionId" | "thinking" | "runtimeState" | "model">> & {
+  model?: string | null;
   thinking?: ThinkingLevel | null;
   runtimeState?: ThreadRuntimeState | null;
   inferenceProjection?: InferenceProjection | null;

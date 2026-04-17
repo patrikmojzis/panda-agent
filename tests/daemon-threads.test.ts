@@ -226,6 +226,37 @@ describe("createDaemonThreadHelpers", () => {
     });
   });
 
+  it("leaves new main sessions unpinned when no explicit model was requested", async () => {
+    const {helpers, identity} = createHelpers({
+      pairings: [{agentKey: "panda"}],
+    });
+
+    const thread = await helpers.openMainSession({
+      identityId: identity.id,
+    });
+
+    expect(thread.model).toBeUndefined();
+  });
+
+  it("applies an explicit model when opening an existing main session", async () => {
+    const {helpers, identity} = createHelpers({
+      pairings: [{agentKey: "panda"}],
+    });
+
+    const initial = await helpers.openMainSession({
+      identityId: identity.id,
+    });
+    expect(initial.model).toBeUndefined();
+
+    const updated = await helpers.openMainSession({
+      identityId: identity.id,
+      model: "anthropic-oauth/claude-opus-4-6",
+    });
+
+    expect(updated.id).toBe(initial.id);
+    expect(updated.model).toBe("anthropic-oauth/claude-opus-4-6");
+  });
+
   it("cancels old-thread background jobs during session reset", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "panda-daemon-reset-bg-"));
     directories.push(workspace);

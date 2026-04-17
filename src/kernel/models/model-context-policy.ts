@@ -1,5 +1,5 @@
-import {buildCanonicalModelSelector, resolveModelSelector} from "./model-selector.js";
-import {getProviderConfig} from "../../integrations/providers/shared/provider.js";
+import {resolveModelSelector} from "./model-selector.js";
+import {resolveRuntimeDefaultModelSelector} from "./default-model.js";
 
 export interface ModelContextPolicy {
   hardWindow: number;
@@ -54,7 +54,7 @@ export const MODEL_CONTEXT_POLICY_RULES: readonly ModelContextPolicyRule[] = [
 ] as const;
 
 function getDefaultCanonicalModel(): string {
-  return buildCanonicalModelSelector("openai", getProviderConfig("openai").defaultModel);
+  return resolveRuntimeDefaultModelSelector();
 }
 
 function sanitizePositiveInteger(value: unknown): number | undefined {

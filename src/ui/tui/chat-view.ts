@@ -80,7 +80,7 @@ const WELCOME_TIPS = [
 
 const WELCOME_COMMANDS = [
   ["/help", "show commands and keybindings"],
-  ["/model <selector-or-alias>", "switch model"],
+  ["/model <selector-or-alias|default>", "switch model"],
   ["/thinking <level|off>", "set the thinking level"],
   ["/compact [instructions]", "summarize older context and keep recent turns"],
   ["/sessions", "browse sessions on this agent"],

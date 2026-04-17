@@ -59,7 +59,6 @@ function parsePort(value: string): number {
 
 async function runChatCommand(options: ChatCliOptions): Promise<void> {
   const result = await runChatCli({
-    model: options.model,
     identity: options.identity,
     agent: options.agent,
     session: options.session,
@@ -188,7 +187,6 @@ async function runBrowserRunnerCommand(options: BrowserRunnerCliOptions): Promis
 
 function configureChatOptions(command: Command): Command {
   return command
-    .option("-m, --model <selector-or-alias>", "Model selector override")
     .option("--identity <handle>", "Identity handle to use as the active participant (required)", parseIdentityHandle)
     .option("--agent <agentKey>", "Agent key to use", parseAgentKey)
     .option("--session <sessionId>", "Open a chat on an existing session id")

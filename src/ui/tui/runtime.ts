@@ -8,7 +8,6 @@ import type {IdentityRecord} from "../../domain/identity/index.js";
 import type {SessionRecord} from "../../domain/sessions/index.js";
 
 export interface ChatRuntimeOptions {
-  model?: string;
   identity?: string;
   agent?: string;
   dbUrl?: string;
@@ -82,8 +81,8 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
     return {
       sessionId: sessionOptions.sessionId,
       agentKey: trimNonEmptyString(sessionOptions.agentKey) ?? trimNonEmptyString(options.agent),
-      model: sessionOptions.model ?? options.model,
       thinking: sessionOptions.thinking,
+      ...(sessionOptions.model !== undefined ? {model: sessionOptions.model} : {}),
       ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
     };
   };

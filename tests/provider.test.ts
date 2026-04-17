@@ -1,4 +1,4 @@
-import {describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
     Agent,
@@ -17,6 +17,10 @@ import {
 } from "../src/panda/defaults.js";
 
 describe("model selector", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("parses supported provider names", () => {
     expect(parseProviderName(" openai-codex ")).toBe("openai-codex");
     expect(parseProviderName("open-ai")).toBeNull();
@@ -87,6 +91,19 @@ describe("model selector", () => {
       ANTHROPIC_MODEL: "claude-haiku-4-5",
       CODEX_HOME: "/tmp/panda-empty-codex-home",
     })).toBe("anthropic/claude-haiku-4-5");
+  });
+
+  it("uses the environment default when a thread has no explicit model", () => {
+    vi.stubEnv("DEFAULT_MODEL", "anthropic-oauth/claude-opus-4-6");
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "core",
+        instructions: "Be helpful",
+      }),
+    });
+
+    expect(thread.model).toBe("anthropic-oauth/claude-opus-4-6");
   });
 
   it("resolves the workspace subagent selector from WORKSPACE_SUBAGENT_MODEL", () => {

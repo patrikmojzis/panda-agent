@@ -1,6 +1,6 @@
 import {stdin as input, stdout as output} from "node:process";
 
-import {resolveModelSelector, type ThinkingLevel, Tool,} from "../../kernel/agent/index.js";
+import {type ThinkingLevel, Tool,} from "../../kernel/agent/index.js";
 import {buildDefaultAgentTools} from "../../panda/definition.js";
 import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
 import {type ChatRuntimeServices, createChatRuntime,} from "./runtime.js";
@@ -16,6 +16,7 @@ import {
     removePendingChatInput,
     resolveChatDisplayedCwd,
     resolveInitialChatSessionThread,
+    resolveStoredChatDisplayConfig,
 } from "./chat-session.js";
 import {type SlashCompletionContext,} from "./commands.js";
 import {type ComposerState, createComposerState, setComposerValue,} from "./composer.js";
@@ -162,9 +163,7 @@ export class ChatApp {
   };
 
   constructor(options: ChatCliOptions = {}) {
-    this.model = options.model === undefined
-      ? resolveDefaultAgentModelSelector()
-      : resolveModelSelector(options.model).canonical;
+    this.model = resolveDefaultAgentModelSelector();
     this.thinking = options.thinking;
     this.identity = options.identity;
     this.defaultAgentKey = options.agent;
@@ -364,7 +363,6 @@ export class ChatApp {
 
   private async initializeRuntime(): Promise<void> {
     this.services = await createChatRuntime({
-      model: this.model,
       identity: this.identity,
       agent: this.defaultAgentKey,
       dbUrl: this.dbUrl,
@@ -390,23 +388,24 @@ export class ChatApp {
   }> = {}): {
     sessionId?: string;
     agentKey?: string;
-    model: string;
+    model?: string;
     thinking?: ThinkingLevel;
   } {
     return buildChatSessionDefaults({
       defaultAgentKey: this.defaultAgentKey,
-      model: this.model,
+      model: this.currentThread?.model,
       thinking: this.thinking,
       overrides,
     });
   }
 
   private async switchThread(thread: ThreadRecord): Promise<void> {
+    const displayConfig = resolveStoredChatDisplayConfig(thread);
     this.currentThread = thread;
     this.currentThreadId = thread.id;
     this.currentAgentLabel = readAgentKeyFromThreadContext(thread);
-    this.model = thread.model ?? this.model;
-    this.thinking = thread.thinking;
+    this.model = displayConfig.model;
+    this.thinking = displayConfig.thinking;
     this.runPhase = "idle";
     this.lastObservedRunStatusKey = null;
     this.refreshToolCatalog();
@@ -520,9 +519,12 @@ export class ChatApp {
     transcript: Parameters<typeof appendStoredChatMessages>[0]["records"],
     runs: Parameters<typeof observeLatestChatRun>[0]["runs"],
   ): void {
+    const displayConfig = resolveStoredChatDisplayConfig(thread);
     this.currentThread = thread;
-    this.model = thread.model ?? this.model;
-    this.thinking = thread.thinking;
+    this.currentThreadId = thread.id;
+    this.currentAgentLabel = readAgentKeyFromThreadContext(thread);
+    this.model = displayConfig.model;
+    this.thinking = displayConfig.thinking;
     this.refreshToolCatalog();
     this.markDirty();
     this.appendStoredMessages(transcript);
@@ -864,7 +866,6 @@ export class ChatApp {
       getCurrentAgentKey: () => this.currentThread ? readAgentKeyFromThreadContext(this.currentThread) : "",
       getModel: () => this.model,
       getThinking: () => this.thinking,
-      getDefaultAgentKey: () => this.defaultAgentKey,
       isRunning: () => this.isRunning,
       requireServices: () => this.requireServices(),
       requireIdleRun: (action) => this.requireIdleRun(action),
@@ -875,7 +876,6 @@ export class ChatApp {
       setCurrentThread: (thread) => {
         this.currentThread = thread;
         this.currentThreadId = thread.id;
-        this.model = thread.model ?? this.model;
         this.thinking = thread.thinking;
       },
       setModel: (model) => {

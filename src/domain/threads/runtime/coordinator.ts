@@ -2,34 +2,33 @@ import type {Message} from "@mariozechner/pi-ai";
 
 import {Thread} from "../../../kernel/agent/thread.js";
 import {resolveModelRuntimeBudget} from "../../../kernel/models/model-context-policy.js";
-import {buildCanonicalModelSelector} from "../../../kernel/models/model-selector.js";
-import {getProviderConfig} from "../../../integrations/providers/shared/provider.js";
+import {resolveRuntimeDefaultModelSelector} from "../../../kernel/models/default-model.js";
 import type {ThreadRunEvent} from "../../../kernel/agent/types.js";
 import {stringifyUnknown} from "../../../kernel/agent/helpers/stringify.js";
 import type {
-  AutoCompactionRuntimeState,
-  ResolvedThreadDefinition,
-  ThreadDefinitionResolver,
-  ThreadInputPayload,
-  ThreadMessageRecord,
-  ThreadRecord,
-  ThreadRunRecord,
+    AutoCompactionRuntimeState,
+    ResolvedThreadDefinition,
+    ThreadDefinitionResolver,
+    ThreadInputPayload,
+    ThreadMessageRecord,
+    ThreadRecord,
+    ThreadRunRecord,
 } from "./types.js";
 import type {ThreadRuntimeStore} from "./store.js";
 import {
-  appendCompactionFailureNotice,
-  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-  AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
-  compactThread,
-  estimateTranscriptTokens,
-  projectTranscriptForRun,
-  readAutoCompactionRuntimeState,
-  shouldAutoCompactThread,
-  updateAutoCompactionRuntimeState,
+    appendCompactionFailureNotice,
+    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+    AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
+    compactThread,
+    estimateTranscriptTokens,
+    projectTranscriptForRun,
+    readAutoCompactionRuntimeState,
+    shouldAutoCompactThread,
+    updateAutoCompactionRuntimeState,
 } from "../../../kernel/transcript/compaction.js";
 import {
-  applyImageProjectionForInference,
-  projectTranscriptForInference,
+    applyImageProjectionForInference,
+    projectTranscriptForInference,
 } from "../../../kernel/transcript/inference-projection.js";
 import {rehydrateProjectedToolArtifacts} from "./tool-artifact-replay.js";
 
@@ -472,7 +471,7 @@ export class ThreadRuntimeCoordinator {
     model: string;
     thinking: ThreadRecord["thinking"];
   } {
-    const defaultModel = buildCanonicalModelSelector("openai", getProviderConfig("openai").defaultModel);
+    const defaultModel = resolveRuntimeDefaultModelSelector();
     return {
       model: definition.model ?? thread.model ?? defaultModel,
       thinking: definition.thinking ?? thread.thinking,
