@@ -27,3 +27,10 @@ export function resolveDefaultAgentBrowserSubagentModelSelector(
   const configured = env.BROWSER_SUBAGENT_MODEL?.trim();
   return configured ? resolveModelSelector(configured).canonical : undefined;
 }
+
+export function resolveDefaultAgentSkillMaintainerSubagentModelSelector(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const configured = env.SKILL_MAINTAINER_SUBAGENT_MODEL?.trim();
+  return configured ? resolveModelSelector(configured).canonical : undefined;
+}

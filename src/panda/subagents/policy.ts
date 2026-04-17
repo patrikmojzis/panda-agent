@@ -3,12 +3,13 @@ import type {Tool} from "../../kernel/agent/tool.js";
 import {
     BROWSER_SUBAGENT_PROMPT,
     MEMORY_SUBAGENT_PROMPT,
+    SKILL_MAINTAINER_SUBAGENT_PROMPT,
     WORKSPACE_SUBAGENT_PROMPT,
 } from "../../prompts/runtime/subagents.js";
 import type {DefaultAgentLlmContextSection} from "../contexts/builder.js";
 import type {DefaultAgentToolsetKey} from "../definition.js";
 
-export const DEFAULT_AGENT_SUBAGENT_ROLES = ["workspace", "memory", "browser"] as const;
+export const DEFAULT_AGENT_SUBAGENT_ROLES = ["workspace", "memory", "browser", "skill_maintainer"] as const;
 export type DefaultAgentSubagentRole = typeof DEFAULT_AGENT_SUBAGENT_ROLES[number];
 export type DefaultAgentSubagentToolsetKey = Exclude<DefaultAgentToolsetKey, "main">;
 
@@ -38,6 +39,10 @@ export const DEFAULT_AGENT_SUBAGENT_TOOLSET_FILTERS: Record<DefaultAgentSubagent
     "view_media",
     "browser",
   ]),
+  skill_maintainer: new Set([
+    "postgres_readonly_query",
+    "agent_skill",
+  ]),
 };
 
 export const DEFAULT_AGENT_SUBAGENT_ROLE_POLICIES: Record<DefaultAgentSubagentRole, DefaultAgentSubagentRolePolicy> = {
@@ -61,6 +66,14 @@ export const DEFAULT_AGENT_SUBAGENT_ROLE_POLICIES: Record<DefaultAgentSubagentRo
     role: "browser",
     prompt: BROWSER_SUBAGENT_PROMPT,
     toolset: "browser",
+    visibleContextSections: ["datetime", "environment"],
+    thinking: "medium",
+    maySpawnSubagents: false,
+  },
+  skill_maintainer: {
+    role: "skill_maintainer",
+    prompt: SKILL_MAINTAINER_SUBAGENT_PROMPT,
+    toolset: "skill_maintainer",
     visibleContextSections: ["datetime", "environment"],
     thinking: "medium",
     maySpawnSubagents: false,

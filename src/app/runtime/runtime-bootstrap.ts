@@ -201,7 +201,14 @@ export async function bootstrapRuntime(
         pool: readonlyPool ?? postgresPool,
       },
     });
-    const subagentToolsets = buildDefaultAgentToolsetsFromRegistry(toolRegistry);
+    const agentSkillTool = new AgentSkillTool({
+      store: agentStore,
+    });
+    const subagentToolsets = buildDefaultAgentToolsetsFromRegistry(
+      toolRegistry,
+      [],
+      [agentSkillTool],
+    );
 
     let mainTools: readonly Tool[] = [];
     const subagentService = new DefaultAgentSubagentService({
@@ -220,6 +227,7 @@ export async function bootstrapRuntime(
         workspace: subagentToolsets.workspace,
         memory: subagentToolsets.memory,
         browser: subagentToolsets.browser,
+        skill_maintainer: subagentToolsets.skill_maintainer,
       },
       agentStore,
       maxSubagentDepth,
@@ -242,9 +250,7 @@ export async function bootstrapRuntime(
       new AgentDocumentTool({
         store: agentStore,
       }),
-      new AgentSkillTool({
-        store: agentStore,
-      }),
+      agentSkillTool,
       ...(credentialService
         ? [
           new SetEnvValueTool({

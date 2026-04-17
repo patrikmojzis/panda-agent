@@ -56,6 +56,8 @@ export interface AgentSkillRecord {
   skillKey: string;
   description: string;
   content: string;
+  lastLoadedAt?: number;
+  loadCount: number;
   createdAt: number;
   updatedAt: number;
 }

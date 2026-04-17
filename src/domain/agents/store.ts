@@ -21,6 +21,7 @@ export interface AgentStore {
   listIdentityPairings(identityId: string): Promise<readonly AgentPairingRecord[]>;
   listAgentSkills(agentKey: string): Promise<readonly AgentSkillRecord[]>;
   readAgentSkill(agentKey: string, skillKey: string): Promise<AgentSkillRecord | null>;
+  loadAgentSkill(agentKey: string, skillKey: string): Promise<AgentSkillRecord | null>;
   setAgentSkill(agentKey: string, skillKey: string, description: string, content: string): Promise<AgentSkillRecord>;
   deleteAgentSkill(agentKey: string, skillKey: string): Promise<boolean>;
   readAgentPrompt(agentKey: string, slug: AgentPromptSlug): Promise<AgentPromptRecord | null>;

@@ -80,6 +80,79 @@ describe("AgentSkillTool", () => {
     await expect(store.readAgentSkill("panda", "calendar")).resolves.toMatchObject({
       description: "Use this for calendar work.",
       content: "# Calendar\nLong skill body.",
+      loadCount: 0,
+      lastLoadedAt: undefined,
+    });
+  });
+
+  it("loads the current session agent's full skill body and updates load metadata", async () => {
+    const store = await createStore();
+    await store.setAgentSkill("panda", "calendar", "Panda skill.", "# Panda");
+    await store.setAgentSkill("ops", "calendar", "Ops skill.", "# Ops");
+    const tool = new AgentSkillTool({ store });
+
+    const firstLoad = await tool.run({
+      operation: "load",
+      skillKey: "calendar",
+    }, createRunContext({
+      agentKey: "panda",
+    }));
+    const secondLoad = await tool.run({
+      operation: "load",
+      skillKey: "calendar",
+    }, createRunContext({
+      agentKey: "panda",
+    }));
+
+    expect(firstLoad).toMatchObject({
+      operation: "load",
+      agentKey: "panda",
+      skillKey: "calendar",
+      found: true,
+      description: "Panda skill.",
+      content: "# Panda",
+      contentBytes: expect.any(Number),
+      loadCount: 1,
+      lastLoadedAt: expect.any(Number),
+    });
+    expect(secondLoad).toMatchObject({
+      operation: "load",
+      agentKey: "panda",
+      skillKey: "calendar",
+      found: true,
+      description: "Panda skill.",
+      content: "# Panda",
+      loadCount: 2,
+      lastLoadedAt: expect.any(Number),
+    });
+    await expect(store.readAgentSkill("panda", "calendar")).resolves.toMatchObject({
+      description: "Panda skill.",
+      content: "# Panda",
+      loadCount: 2,
+      lastLoadedAt: expect.any(Number),
+    });
+    await expect(store.readAgentSkill("ops", "calendar")).resolves.toMatchObject({
+      description: "Ops skill.",
+      content: "# Ops",
+      loadCount: 0,
+      lastLoadedAt: undefined,
+    });
+  });
+
+  it("returns a non-throwing miss for load", async () => {
+    const store = await createStore();
+    const tool = new AgentSkillTool({ store });
+
+    await expect(tool.run({
+      operation: "load",
+      skillKey: "missing",
+    }, createRunContext({
+      agentKey: "panda",
+    }))).resolves.toEqual({
+      operation: "load",
+      agentKey: "panda",
+      skillKey: "missing",
+      found: false,
     });
   });
 

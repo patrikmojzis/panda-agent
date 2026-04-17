@@ -29,6 +29,20 @@ class FakeAgentDocumentTool extends Tool<typeof FakeAgentDocumentTool.schema> {
   }
 }
 
+class FakeAgentSkillTool extends Tool<typeof FakeAgentSkillTool.schema> {
+  static schema = z.object({
+    skillKey: z.string(),
+  });
+
+  name = "agent_skill";
+  description = "Allowed in skill maintainer";
+  schema = FakeAgentSkillTool.schema;
+
+  async handle(): Promise<{ ok: true }> {
+    return { ok: true };
+  }
+}
+
 describe("default agent subagent policy", () => {
   it("maps roles to explicit specialist toolsets", () => {
     expect(getDefaultAgentSubagentRolePolicy("workspace")).toMatchObject({
@@ -41,6 +55,10 @@ describe("default agent subagent policy", () => {
     });
     expect(getDefaultAgentSubagentRolePolicy("browser")).toMatchObject({
       toolset: "browser",
+      thinking: "medium",
+    });
+    expect(getDefaultAgentSubagentRolePolicy("skill_maintainer")).toMatchObject({
+      toolset: "skill_maintainer",
       thinking: "medium",
     });
   });
@@ -85,6 +103,20 @@ describe("default agent subagent policy", () => {
       "grep_files",
       "view_media",
       "browser",
+    ]);
+  });
+
+  it("gives the skill maintainer Postgres plus agent_skill only", () => {
+    const toolsets = buildDefaultAgentToolsets({
+      postgresReadonly: {
+        pool: new FakeReadonlyPool(),
+      },
+      skillMaintainerExtras: [new FakeAgentSkillTool()],
+    });
+
+    expect(toolsets.skill_maintainer.map((tool) => tool.name)).toEqual([
+      "postgres_readonly_query",
+      "agent_skill",
     ]);
   });
 
@@ -152,6 +184,28 @@ describe("default agent subagent policy", () => {
       "grep_files",
       "view_media",
       "browser",
+    ]);
+  });
+
+  it("keeps the helper filter aligned with the explicit skill maintainer toolset", () => {
+    const toolsets = buildDefaultAgentToolsets({
+      postgresReadonly: {
+        pool: new FakeReadonlyPool(),
+      },
+      skillMaintainerExtras: [new FakeAgentSkillTool()],
+    });
+    const tools = filterToolsForSubagentRole(
+      [
+        ...toolsets.main,
+        ...toolsets.skill_maintainer,
+        new FakeAgentDocumentTool(),
+      ],
+      "skill_maintainer",
+    );
+
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "postgres_readonly_query",
+      "agent_skill",
     ]);
   });
 });

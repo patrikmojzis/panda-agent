@@ -21,9 +21,10 @@ export interface BuildDefaultAgentToolsOptions {
 
 export interface BuildDefaultAgentToolsetsOptions extends BuildDefaultAgentToolsOptions {
   mainExtras?: ReadonlyArray<Tool>;
+  skillMaintainerExtras?: ReadonlyArray<Tool>;
 }
 
-export type DefaultAgentToolsetKey = "main" | "workspace" | "memory" | "browser";
+export type DefaultAgentToolsetKey = "main" | "workspace" | "memory" | "browser" | "skill_maintainer";
 
 export interface DefaultAgentToolRegistry {
   bash: BashTool;
@@ -47,6 +48,7 @@ export interface DefaultAgentToolsets {
   workspace: readonly Tool[];
   memory: readonly Tool[];
   browser: readonly Tool[];
+  skill_maintainer: readonly Tool[];
 }
 
 function compactTools(tools: ReadonlyArray<Tool | undefined>): readonly Tool[] {
@@ -97,6 +99,7 @@ export function createDefaultAgentToolRegistry(
 export function buildDefaultAgentToolsetsFromRegistry(
   registry: DefaultAgentToolRegistry,
   mainExtras: ReadonlyArray<Tool> = [],
+  skillMaintainerExtras: ReadonlyArray<Tool> = [],
 ): DefaultAgentToolsets {
   return {
     main: compactTools([
@@ -128,14 +131,22 @@ export function buildDefaultAgentToolsetsFromRegistry(
       registry.media,
       registry.browser,
     ]),
+    skill_maintainer: compactTools([
+      registry.postgresReadonlyQuery,
+      ...skillMaintainerExtras,
+    ]),
   };
 }
 
 export function buildDefaultAgentToolsets(
   options: BuildDefaultAgentToolsetsOptions = {},
 ): DefaultAgentToolsets {
-  const {mainExtras = [], ...toolOptions} = options;
-  return buildDefaultAgentToolsetsFromRegistry(createDefaultAgentToolRegistry(toolOptions), mainExtras);
+  const {mainExtras = [], skillMaintainerExtras = [], ...toolOptions} = options;
+  return buildDefaultAgentToolsetsFromRegistry(
+    createDefaultAgentToolRegistry(toolOptions),
+    mainExtras,
+    skillMaintainerExtras,
+  );
 }
 
 export function buildDefaultAgentTools(

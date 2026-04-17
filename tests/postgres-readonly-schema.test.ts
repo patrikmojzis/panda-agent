@@ -394,6 +394,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
       prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
     await agentStore.setAgentSkill("panda", "calendar", "Panda calendar skill.", "# Panda");
+    await agentStore.loadAgentSkill("panda", "calendar");
     await agentStore.setAgentSkill("ops", "calendar", "Ops calendar skill.", "# Ops");
 
     setScope({
@@ -404,7 +405,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     await ensureReadonlySessionQuerySchema({ queryable });
 
     const result = await pool.query(
-      "SELECT skill_key, description, content_bytes FROM \"session\".\"agent_skills\" ORDER BY skill_key",
+      "SELECT skill_key, description, content_bytes, load_count, last_loaded_at IS NOT NULL AS has_last_loaded_at FROM \"session\".\"agent_skills\" ORDER BY skill_key",
     );
 
     expect(result.rows).toEqual([
@@ -412,6 +413,8 @@ describe("ensureReadonlySessionQuerySchema", () => {
         skill_key: "calendar",
         description: "Panda calendar skill.",
         content_bytes: 7,
+        load_count: 1,
+        has_last_loaded_at: true,
       },
     ]);
   });

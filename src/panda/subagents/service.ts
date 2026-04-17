@@ -9,6 +9,7 @@ import {renderSubagentHandoff} from "../../prompts/runtime/subagents.js";
 import {
   resolveDefaultAgentBrowserSubagentModelSelector,
   resolveDefaultAgentMemorySubagentModelSelector,
+  resolveDefaultAgentSkillMaintainerSubagentModelSelector,
   resolveDefaultAgentWorkspaceSubagentModelSelector,
 } from "../defaults.js";
 import {buildDefaultAgentLlmContexts} from "../contexts/builder.js";
@@ -34,7 +35,7 @@ export interface DefaultAgentSubagentRunResult {
 export interface DefaultAgentSubagentServiceOptions {
   store: ThreadRuntimeStore;
   resolveDefinition: ThreadDefinitionResolver;
-  toolsets: Pick<DefaultAgentToolsets, "workspace" | "memory" | "browser">;
+  toolsets: Pick<DefaultAgentToolsets, "workspace" | "memory" | "browser" | "skill_maintainer">;
   agentStore?: AgentStore;
   maxSubagentDepth?: number;
 }
@@ -75,13 +76,15 @@ function resolveDefaultSubagentModelSelector(role: DefaultAgentSubagentRole): st
       return resolveDefaultAgentMemorySubagentModelSelector();
     case "browser":
       return resolveDefaultAgentBrowserSubagentModelSelector();
+    case "skill_maintainer":
+      return resolveDefaultAgentSkillMaintainerSubagentModelSelector();
   }
 }
 
 export class DefaultAgentSubagentService {
   private readonly store: ThreadRuntimeStore;
   private readonly resolveDefinition: ThreadDefinitionResolver;
-  private readonly toolsets: Pick<DefaultAgentToolsets, "workspace" | "memory" | "browser">;
+  private readonly toolsets: Pick<DefaultAgentToolsets, "workspace" | "memory" | "browser" | "skill_maintainer">;
   private readonly agentStore?: DefaultAgentSubagentServiceOptions["agentStore"];
   private readonly maxSubagentDepth: number;
 

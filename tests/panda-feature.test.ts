@@ -1,17 +1,17 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-  BashTool,
-  BraveSearchTool,
-  BrowserTool,
-  DateTimeContext,
-  DEFAULT_AGENT_INSTRUCTIONS,
-  EnvironmentContext,
-  MediaTool,
-  PostgresReadonlyQueryTool,
-  WebFetchTool,
-  WebResearchTool,
-  WhisperTool,
+    BashTool,
+    BraveSearchTool,
+    BrowserTool,
+    DateTimeContext,
+    DEFAULT_AGENT_INSTRUCTIONS,
+    EnvironmentContext,
+    MediaTool,
+    PostgresReadonlyQueryTool,
+    WebFetchTool,
+    WebResearchTool,
+    WhisperTool,
 } from "../src/index.js";
 import {buildDefaultAgentTools, buildDefaultAgentToolsets} from "../src/panda/definition.js";
 import {resolveStoredContext} from "../src/app/runtime/create-runtime.js";
@@ -37,7 +37,11 @@ describe("Panda feature surface", () => {
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("No outbound call = no message delivered.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Use `role=\"workspace\"` for read-only workspace inspection, file search, and local PDF/image/sketch inspection.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Use `role=\"browser\"` for browser automation and website inspection.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Use `role=\"skill_maintainer\"` after the user-facing answer is ready");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("For quick one-shot reads, you may use `postgres_readonly_query` directly.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("call `agent_skill` with `operation=\"load\"` before improvising");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`reusable_artifact_produced`");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Do not write reflective skills directly from the main agent");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       "Foreground bash mutates the shared shell session. The working directory persists across foreground bash calls, and simple export/unset environment changes persist across foreground bash calls in both local and remote mode.",
     );
@@ -117,6 +121,9 @@ describe("Panda feature surface", () => {
       "grep_files",
       "view_media",
       "browser",
+    ]);
+    expect(toolsets.skill_maintainer.map((tool) => tool.name)).toEqual([
+      "postgres_readonly_query",
     ]);
   });
 

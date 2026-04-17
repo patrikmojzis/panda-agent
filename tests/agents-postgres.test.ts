@@ -166,22 +166,41 @@ describe("PostgresAgentStore", () => {
     );
 
     expect(created.skillKey).toBe("calendar");
+    expect(created.loadCount).toBe(0);
+    expect(created.lastLoadedAt).toBeUndefined();
     expect(updated.updatedAt).toBeGreaterThanOrEqual(created.updatedAt);
     await expect(agentStore.readAgentSkill("panda", "calendar")).resolves.toMatchObject({
       skillKey: "calendar",
       description: "Updated description.",
       content: "# Calendar\nUpdated skill body.",
+      loadCount: 0,
+      lastLoadedAt: undefined,
     });
+    const firstLoad = await agentStore.loadAgentSkill("panda", "calendar");
+    const secondLoad = await agentStore.loadAgentSkill("panda", "calendar");
+    expect(firstLoad).toMatchObject({
+      skillKey: "calendar",
+      loadCount: 1,
+      lastLoadedAt: expect.any(Number),
+    });
+    expect(secondLoad).toMatchObject({
+      skillKey: "calendar",
+      loadCount: 2,
+      lastLoadedAt: expect.any(Number),
+    });
+    await expect(agentStore.loadAgentSkill("panda", "missing")).resolves.toBeNull();
     await expect(agentStore.listAgentSkills("panda")).resolves.toEqual([
       expect.objectContaining({
         skillKey: "calendar",
         description: "Updated description.",
+        loadCount: 2,
       }),
     ]);
     await expect(agentStore.listAgentSkills("ops")).resolves.toEqual([
       expect.objectContaining({
         skillKey: "calendar",
         description: "Ops-only description.",
+        loadCount: 0,
       }),
     ]);
 

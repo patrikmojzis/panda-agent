@@ -127,6 +127,24 @@ class FakePostgresReadonlyQueryTool extends Tool<typeof FakePostgresReadonlyQuer
   }
 }
 
+class FakeAgentSkillTool extends Tool<typeof FakeAgentSkillTool.schema, DefaultAgentSessionContext> {
+  static schema = z.object({
+    operation: z.string(),
+    skillKey: z.string(),
+  });
+
+  name = "agent_skill";
+  description = "Read/write agent skills";
+  schema = FakeAgentSkillTool.schema;
+
+  async handle(args: z.output<typeof FakeAgentSkillTool.schema>): Promise<{ operation: string; skillKey: string }> {
+    return {
+      operation: args.operation,
+      skillKey: args.skillKey,
+    };
+  }
+}
+
 class FakeOutboundTool extends Tool<typeof FakeOutboundTool.schema, DefaultAgentSessionContext> {
   static schema = z.object({
     message: z.string(),
@@ -215,6 +233,10 @@ function createSubagentToolsets() {
       new FakeGrepFilesTool(),
       new FakeMediaTool(),
       new FakeBrowserTool(),
+    ],
+    skill_maintainer: [
+      new FakePostgresReadonlyQueryTool(),
+      new FakeAgentSkillTool(),
     ],
   } as const;
 }
@@ -563,6 +585,84 @@ describe("SpawnSubagentTool", () => {
       "grep_files",
       "view_media",
       "browser",
+    ]);
+  });
+
+  it("runs a skill maintainer child with Postgres plus agent_skill only", async () => {
+    const requests: LlmRuntimeRequest[] = [];
+    const runtime: LlmRuntime = {
+      complete: vi.fn().mockImplementation(async (request: LlmRuntimeRequest) => {
+        requests.push(request);
+        if (requests.length === 1) {
+          return createAssistantMessage([{
+            type: "toolCall",
+            id: "call_1",
+            name: "agent_skill",
+            arguments: {
+              operation: "load",
+              skillKey: "calendar",
+            },
+          }]);
+        }
+
+        return createAssistantMessage([{
+          type: "text",
+          text: "Updated the existing skill with the reusable workflow.",
+        }]);
+      }),
+      stream: vi.fn(() => {
+        throw new Error("stream not expected");
+      }),
+    };
+    const service = new DefaultAgentSubagentService({
+      store: {
+        getThread: vi.fn(async () => createThreadRecord()),
+      } as any,
+      resolveDefinition: vi.fn(async () => ({
+        agent: new Agent({
+          name: "panda",
+          instructions: "Parent Panda instructions",
+        }),
+        systemPrompt: "Parent system prompt",
+        runtime,
+        model: "openai/gpt-parent",
+      } satisfies ResolvedThreadDefinition)),
+      toolsets: createSubagentToolsets(),
+      maxSubagentDepth: 1,
+    });
+    const tool = new SpawnSubagentTool({ service });
+    const agent = new Agent({
+      name: "panda",
+      instructions: "Parent Panda instructions",
+      tools: [tool],
+    });
+
+    const result = await tool.run({
+      role: "skill_maintainer",
+      task: "Review the run and decide whether to create, update, or noop a skill.",
+      context: "{\"mode\":\"auto\",\"reasons\":[\"reusable_artifact_produced\"],\"summary\":\"A reusable workflow was produced.\"}",
+      model: "openai/gpt-child",
+    }, createParentRunContext(agent));
+
+    expect(result).toMatchObject({
+      details: {
+        role: "skill_maintainer",
+        finalMessage: "Updated the existing skill with the reusable workflow.",
+        toolCallCount: 1,
+      },
+    });
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.providerName).toBe("openai");
+    expect(requests[0]?.modelId).toBe("gpt-child");
+    expect(requests[0]?.thinking).toBe("medium");
+    expect(JSON.stringify(requests[0]?.context.messages)).toContain("Review the run and decide whether to create, update, or noop a skill.");
+    expect(JSON.stringify(requests[0]?.context.messages)).toContain("reusable_artifact_produced");
+    expect(requests[0]?.context.systemPrompt).toContain("You are the skill maintainer subagent.");
+    expect(requests[0]?.context.systemPrompt).toContain("Start with the current thread.");
+    expect(requests[0]?.context.systemPrompt).toContain("agent_skill with operation=\"load\"");
+    expect(requests[0]?.context.tools?.map((toolDef) => toolDef.name)).toEqual([
+      "postgres_readonly_query",
+      "agent_skill",
     ]);
   });
 

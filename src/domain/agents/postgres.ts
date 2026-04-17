@@ -77,6 +77,10 @@ function parseAgentSkillRow(row: Record<string, unknown>): AgentSkillRecord {
     skillKey: String(row.skill_key),
     description: String(row.description),
     content: String(row.content),
+    lastLoadedAt: row.last_loaded_at === null || row.last_loaded_at === undefined
+      ? undefined
+      : toMillis(row.last_loaded_at),
+    loadCount: Number(row.load_count ?? 0),
     createdAt: toMillis(row.created_at),
     updatedAt: toMillis(row.updated_at),
   };
@@ -193,10 +197,20 @@ export class PostgresAgentStore implements AgentStore {
         skill_key TEXT NOT NULL,
         description TEXT NOT NULL,
         content TEXT NOT NULL,
+        last_loaded_at TIMESTAMPTZ,
+        load_count INTEGER NOT NULL DEFAULT 0,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (agent_key, skill_key)
       )
+    `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.agentSkills}
+      ADD COLUMN IF NOT EXISTS last_loaded_at TIMESTAMPTZ
+    `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.agentSkills}
+      ADD COLUMN IF NOT EXISTS load_count INTEGER NOT NULL DEFAULT 0
     `);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.agentPrompts} (
@@ -409,6 +423,24 @@ export class PostgresAgentStore implements AgentStore {
       FROM ${this.tables.agentSkills}
       WHERE agent_key = $1
         AND skill_key = $2
+    `, [
+      normalizeAgentKey(agentKey),
+      normalizeSkillKey(skillKey),
+    ]);
+
+    const row = result.rows[0];
+    return row ? parseAgentSkillRow(row as Record<string, unknown>) : null;
+  }
+
+  async loadAgentSkill(agentKey: string, skillKey: string): Promise<AgentSkillRecord | null> {
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.agentSkills}
+      SET
+        last_loaded_at = NOW(),
+        load_count = load_count + 1
+      WHERE agent_key = $1
+        AND skill_key = $2
+      RETURNING *
     `, [
       normalizeAgentKey(agentKey),
       normalizeSkillKey(skillKey),

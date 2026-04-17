@@ -26,7 +26,7 @@ export class SpawnSubagentTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof SpawnSubagentTool.schema, TContext> {
   static schema = z.object({
     role: z.enum(DEFAULT_AGENT_SUBAGENT_ROLES).describe(
-      'Subagent role to run. Use "workspace" for read-only workspace inspection, "memory" for Postgres-backed memory search, and "browser" for isolated browser automation.',
+      'Subagent role to run. Use "workspace" for read-only workspace inspection, "memory" for Postgres-backed memory search, "browser" for isolated browser automation, and "skill_maintainer" for skill reflection and maintenance.',
     ),
     task: z.string().trim().min(1).describe("The concrete task to delegate."),
     context: z.string().trim().min(1).optional().describe("Optional extra context for the child."),
@@ -37,7 +37,7 @@ export class SpawnSubagentTool<TContext = DefaultAgentSessionContext>
   description = [
     "Run a fresh synchronous subagent and return its final answer.",
     "Subagents do not inherit the parent transcript.",
-    'Use role="workspace" for read-only codebase inspection, role="memory" for durable memory lookup through Postgres, and role="browser" for isolated browser work.',
+    'Use role="workspace" for read-only codebase inspection, role="memory" for durable memory lookup through Postgres, role="browser" for isolated browser work, and role="skill_maintainer" for skill reflection and maintenance.',
     "Use this for scoped delegated exploration when a separate pass is faster or safer.",
   ].join("\n");
   schema = SpawnSubagentTool.schema;
