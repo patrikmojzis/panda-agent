@@ -1,6 +1,16 @@
 import type {Pool, PoolClient} from "pg";
 
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../threads/runtime/postgres-shared.js";
+import {
+    buildThreadRuntimeTableNames,
+    CREATE_RUNTIME_SCHEMA_SQL,
+    quoteIdentifier,
+    toJson,
+    toMillis
+} from "../threads/runtime/postgres-shared.js";
+import {withTransaction} from "../threads/runtime/postgres-db.js";
+import {buildAgentTableNames} from "../agents/postgres-shared.js";
+import {buildIdentityTableNames} from "../identity/postgres-shared.js";
+import {addConstraint, assertIntegrityChecks} from "../../lib/postgres-integrity.js";
 import {buildSessionTableNames, type SessionTableNames} from "./postgres-shared.js";
 import type {SessionStore} from "./store.js";
 import type {
@@ -94,10 +104,27 @@ function missingHeartbeatError(sessionId: string): Error {
 export class PostgresSessionStore implements SessionStore {
   private readonly pool: PgPoolLike;
   private readonly tables: SessionTableNames;
+  private readonly agentTableName: string;
+  private readonly identityTableName: string;
+  private readonly threadTableName: string;
 
   constructor(options: PostgresSessionStoreOptions) {
     this.pool = options.pool;
     this.tables = buildSessionTableNames();
+    this.agentTableName = buildAgentTableNames().agents;
+    this.identityTableName = buildIdentityTableNames().identities;
+    this.threadTableName = buildThreadRuntimeTableNames().threads;
+  }
+
+  private async hasThreadTable(queryable: PgQueryable = this.pool): Promise<boolean> {
+    const result = await queryable.query(`
+      SELECT 1
+      FROM information_schema.tables
+      WHERE table_schema = 'runtime'
+        AND table_name = 'threads'
+      LIMIT 1
+    `);
+    return result.rows.length > 0;
   }
 
   async ensureSchema(): Promise<void> {
@@ -142,10 +169,47 @@ export class PostgresSessionStore implements SessionStore {
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_session_heartbeats_due_idx`)}
       ON ${this.tables.sessionHeartbeats} (enabled, next_fire_at, claim_expires_at, session_id)
     `);
+    await assertIntegrityChecks(this.pool, "Session schema", [
+      {
+        label: "agent_sessions.agent_key orphaned from agents.agent_key",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.sessions} AS session
+          LEFT JOIN ${this.agentTableName} AS agent
+            ON agent.agent_key = session.agent_key
+          WHERE agent.agent_key IS NULL
+        `,
+      },
+      {
+        label: "agent_sessions.created_by_identity_id orphaned from identities.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.sessions} AS session
+          LEFT JOIN ${this.identityTableName} AS identity
+            ON identity.id = session.created_by_identity_id
+          WHERE session.created_by_identity_id IS NOT NULL
+            AND identity.id IS NULL
+        `,
+      },
+    ]);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.sessions}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_agent_sessions_agent_fk`)}
+      FOREIGN KEY (agent_key)
+      REFERENCES ${this.agentTableName}(agent_key)
+      ON DELETE CASCADE
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.sessions}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_agent_sessions_created_by_identity_fk`)}
+      FOREIGN KEY (created_by_identity_id)
+      REFERENCES ${this.identityTableName}(id)
+      ON DELETE SET NULL
+    `);
   }
 
-  async createSession(input: CreateSessionInput): Promise<SessionRecord> {
-    const result = await this.pool.query(`
+  async createSessionRecord(input: CreateSessionInput, queryable: PgQueryable = this.pool): Promise<SessionRecord> {
+    const result = await queryable.query(`
       INSERT INTO ${this.tables.sessions} (
         id,
         agent_key,
@@ -172,7 +236,7 @@ export class PostgresSessionStore implements SessionStore {
     ]);
 
     const session = parseSessionRow(result.rows[0] as Record<string, unknown>);
-    await this.pool.query(`
+    await queryable.query(`
       INSERT INTO ${this.tables.sessionHeartbeats} (
         session_id,
         enabled
@@ -187,6 +251,27 @@ export class PostgresSessionStore implements SessionStore {
     ]);
 
     return session;
+  }
+
+  async createSession(input: CreateSessionInput): Promise<SessionRecord> {
+    return withTransaction(this.pool, async (client) => {
+      const session = await this.createSessionRecord(input, client);
+      if (await this.hasThreadTable(client)) {
+        await client.query(`
+          INSERT INTO ${this.threadTableName} (
+            id,
+            session_id
+          ) VALUES (
+            $1,
+            $2
+          )
+        `, [
+          session.currentThreadId,
+          session.id,
+        ]);
+      }
+      return session;
+    });
   }
 
   async getSession(sessionId: string): Promise<SessionRecord> {
@@ -226,16 +311,35 @@ export class PostgresSessionStore implements SessionStore {
     return result.rows.map((row) => parseSessionRow(row as Record<string, unknown>));
   }
 
-  async updateCurrentThread(input: UpdateSessionCurrentThreadInput): Promise<SessionRecord> {
-    const result = await this.pool.query(`
+  async updateCurrentThreadRecord(
+    input: UpdateSessionCurrentThreadInput,
+    queryable: PgQueryable = this.pool,
+  ): Promise<SessionRecord> {
+    const sessionId = requireTrimmed("id", input.sessionId);
+    const currentThreadId = requireTrimmed("current thread id", input.currentThreadId);
+    const threadResult = await queryable.query(`
+      SELECT 1
+      FROM ${this.threadTableName}
+      WHERE session_id = $1
+        AND id = $2
+      LIMIT 1
+    `, [
+      sessionId,
+      currentThreadId,
+    ]);
+    if (threadResult.rows.length === 0) {
+      throw new Error(`Thread ${currentThreadId} does not belong to session ${sessionId}.`);
+    }
+
+    const result = await queryable.query(`
       UPDATE ${this.tables.sessions}
       SET current_thread_id = $2,
           updated_at = NOW()
       WHERE id = $1
       RETURNING *
     `, [
-      requireTrimmed("id", input.sessionId),
-      requireTrimmed("current thread id", input.currentThreadId),
+      sessionId,
+      currentThreadId,
     ]);
     const row = result.rows[0];
     if (!row) {
@@ -243,6 +347,10 @@ export class PostgresSessionStore implements SessionStore {
     }
 
     return parseSessionRow(row as Record<string, unknown>);
+  }
+
+  async updateCurrentThread(input: UpdateSessionCurrentThreadInput): Promise<SessionRecord> {
+    return this.updateCurrentThreadRecord(input);
   }
 
   async getHeartbeat(sessionId: string): Promise<SessionHeartbeatRecord | null> {

@@ -13,13 +13,13 @@ import {CredentialService, PostgresCredentialStore, resolveCredentialCrypto} fro
 import {isMissingThreadError, PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
 import {parseIdentityHandle} from "../identity/cli.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
-import {PostgresSessionStore} from "../sessions/index.js";
+import {createSessionWithInitialThread, PostgresSessionStore, resetSessionCurrentThread} from "../sessions/index.js";
 import {
-  discoverLegacyAgentSourceDirs,
-  type ImportedLegacyAgentResult,
-  importLegacyAgent,
-  type LegacyAgentImportPlan,
-  planLegacyAgentImport,
+    discoverLegacyAgentSourceDirs,
+    type ImportedLegacyAgentResult,
+    importLegacyAgent,
+    type LegacyAgentImportPlan,
+    planLegacyAgentImport,
 } from "./legacy-import.js";
 import {PostgresAgentStore} from "./postgres.js";
 import {DEFAULT_AGENT_DOCUMENT_TEMPLATES} from "./templates.js";
@@ -42,6 +42,7 @@ interface ImportLegacyAgentCliOptions extends AgentCliOptions {
 }
 
 interface AgentCliStores {
+  pool: Pool;
   agentStore: PostgresAgentStore;
   identityStore: PostgresIdentityStore;
   sessionStore: PostgresSessionStore;
@@ -62,6 +63,7 @@ export interface EnsureAgentResult {
 function createAgentCliStores(pool: Pool): AgentCliStores {
   const identityStore = new PostgresIdentityStore({pool});
   return {
+    pool,
     agentStore: new PostgresAgentStore({pool}),
     identityStore,
     sessionStore: new PostgresSessionStore({pool}),
@@ -91,6 +93,7 @@ async function withLegacyImportStores<T>(
     agentStore: PostgresAgentStore;
     credentialService: CredentialService | null;
     identityStore: PostgresIdentityStore;
+    pool: Pool;
     sessionStore: PostgresSessionStore;
     threadStore: PostgresThreadRuntimeStore;
   }) => Promise<T>,
@@ -149,28 +152,47 @@ function buildMainThreadContext(agentKey: string, sessionId: string, env: NodeJS
 }
 
 async function createMainSessionThread(
-  stores: Pick<AgentCliStores, "sessionStore" | "threadStore">,
+  stores: Pick<AgentCliStores, "sessionStore" | "threadStore"> & {pool?: Pool},
   agentKey: string,
   env: NodeJS.ProcessEnv,
 ): Promise<{sessionId: string; threadId: string}> {
   const sessionId = randomUUID();
   const threadId = randomUUID();
-  await stores.sessionStore.createSession({
-    id: sessionId,
-    agentKey,
-    kind: "main",
-    currentThreadId: threadId,
-  });
-  await stores.threadStore.createThread({
-    id: threadId,
-    sessionId,
-    context: buildMainThreadContext(agentKey, sessionId, env),
-  });
+  if (stores.pool) {
+    await createSessionWithInitialThread({
+      pool: stores.pool,
+      sessionStore: stores.sessionStore,
+      threadStore: stores.threadStore,
+      session: {
+        id: sessionId,
+        agentKey,
+        kind: "main",
+        currentThreadId: threadId,
+      },
+      thread: {
+        id: threadId,
+        sessionId,
+        context: buildMainThreadContext(agentKey, sessionId, env),
+      },
+    });
+  } else {
+    await stores.sessionStore.createSession({
+      id: sessionId,
+      agentKey,
+      kind: "main",
+      currentThreadId: threadId,
+    });
+    await stores.threadStore.createThread({
+      id: threadId,
+      sessionId,
+      context: buildMainThreadContext(agentKey, sessionId, env),
+    });
+  }
   return {sessionId, threadId};
 }
 
 export async function ensureAgent(
-  stores: Pick<AgentCliStores, "agentStore" | "sessionStore" | "threadStore">,
+  stores: Pick<AgentCliStores, "agentStore" | "sessionStore" | "threadStore"> & {pool?: Pool},
   agentKey: string,
   options: {name?: string; env?: NodeJS.ProcessEnv} = {},
 ): Promise<EnsureAgentResult> {
@@ -221,15 +243,32 @@ export async function ensureAgent(
       }
 
       threadId = randomUUID();
-      await stores.threadStore.createThread({
-        id: threadId,
-        sessionId,
-        context: buildMainThreadContext(agent.agentKey, sessionId, env),
-      });
-      await stores.sessionStore.updateCurrentThread({
-        sessionId,
-        currentThreadId: threadId,
-      });
+      if (stores.pool) {
+        await resetSessionCurrentThread({
+          pool: stores.pool,
+          sessionStore: stores.sessionStore,
+          threadStore: stores.threadStore,
+          thread: {
+            id: threadId,
+            sessionId,
+            context: buildMainThreadContext(agent.agentKey, sessionId, env),
+          },
+          session: {
+            sessionId,
+            currentThreadId: threadId,
+          },
+        });
+      } else {
+        await stores.threadStore.createThread({
+          id: threadId,
+          sessionId,
+          context: buildMainThreadContext(agent.agentKey, sessionId, env),
+        });
+        await stores.sessionStore.updateCurrentThread({
+          sessionId,
+          currentThreadId: threadId,
+        });
+      }
       createdMainThread = true;
     }
   }
@@ -458,6 +497,7 @@ async function importLegacyCommand(sourcePath: string, options: ImportLegacyAgen
     agentStore,
     credentialService,
     identityStore,
+    pool,
     sessionStore,
     threadStore,
   }) => {
@@ -471,6 +511,7 @@ async function importLegacyCommand(sourcePath: string, options: ImportLegacyAgen
         credentialService: credentialService ?? undefined,
         identityId,
         includeMessages: options.includeMessages,
+        pool,
         sessionStore,
         threadStore,
       }));

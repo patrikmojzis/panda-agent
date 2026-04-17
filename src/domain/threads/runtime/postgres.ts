@@ -1,10 +1,12 @@
 import {createHash, randomUUID} from "node:crypto";
 
 import {resolveModelSelector} from "../../../kernel/models/model-selector.js";
+import {addConstraint, alterIfSupported, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
 import type {ThreadLease, ThreadLeaseManager} from "./coordinator.js";
 import {
     buildThreadRuntimeTableNames,
     CREATE_RUNTIME_SCHEMA_SQL,
+    quoteIdentifier,
     type ThreadRuntimeTableNames,
     toJson,
     validateIdentifier,
@@ -99,16 +101,159 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   async ensureSchema(): Promise<void> {
     await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(buildThreadRuntimeSchemaSql(this.tables, this.sessionTableName, this.identityTableName));
+    await assertIntegrityChecks(this.pool, "Thread runtime schema", [
+      {
+        label: "agent_sessions.current_thread_id orphaned from threads.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.sessionTableName} AS session
+          LEFT JOIN ${this.tables.threads} AS thread
+            ON thread.id = session.current_thread_id
+          WHERE thread.id IS NULL
+        `,
+      },
+      {
+        label: "agent_sessions.current_thread_id bound to a thread from another session",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.sessionTableName} AS session
+          INNER JOIN ${this.tables.threads} AS thread
+            ON thread.id = session.current_thread_id
+          WHERE thread.session_id <> session.id
+        `,
+      },
+      {
+        label: "messages.run_id orphaned from runs.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.messages} AS message
+          LEFT JOIN ${this.tables.runs} AS run
+            ON run.id = message.run_id
+          WHERE message.run_id IS NOT NULL
+            AND run.id IS NULL
+        `,
+      },
+      {
+        label: "messages.run_id bound to a run from another thread",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.messages} AS message
+          INNER JOIN ${this.tables.runs} AS run
+            ON run.id = message.run_id
+          WHERE message.run_id IS NOT NULL
+            AND run.thread_id <> message.thread_id
+        `,
+      },
+      {
+        label: "bash_jobs.run_id bound to a run from another thread",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.bashJobs} AS job
+          INNER JOIN ${this.tables.runs} AS run
+            ON run.id = job.run_id
+          WHERE job.run_id IS NOT NULL
+            AND run.thread_id <> job.thread_id
+        `,
+      },
+    ]);
+    await this.pool.query(`
+      UPDATE ${this.tables.messages}
+      SET run_thread_id = NULL
+      WHERE run_id IS NULL
+        AND run_thread_id IS NOT NULL
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.messages}
+      SET run_thread_id = run.thread_id
+      FROM ${this.tables.runs} AS run
+      WHERE ${this.tables.messages}.run_id IS NOT NULL
+        AND run.id = ${this.tables.messages}.run_id
+        AND (
+          ${this.tables.messages}.run_thread_id IS NULL
+          OR ${this.tables.messages}.run_thread_id <> run.thread_id
+        )
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.bashJobs}
+      SET run_thread_id = NULL
+      WHERE run_id IS NULL
+        AND run_thread_id IS NOT NULL
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.bashJobs}
+      SET run_thread_id = run.thread_id
+      FROM ${this.tables.runs} AS run
+      WHERE ${this.tables.bashJobs}.run_id IS NOT NULL
+        AND run.id = ${this.tables.bashJobs}.run_id
+        AND (
+          ${this.tables.bashJobs}.run_thread_id IS NULL
+          OR ${this.tables.bashJobs}.run_thread_id <> run.thread_id
+        )
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.messages}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_messages_run_fk`)}
+      FOREIGN KEY (run_id)
+      REFERENCES ${this.tables.runs}(id)
+      ON DELETE SET NULL
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.messages}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_messages_run_scope_check`)}
+      CHECK (
+        (
+          run_id IS NULL
+          AND run_thread_id IS NULL
+        ) OR (
+          run_id IS NOT NULL
+          AND run_thread_id = thread_id
+        )
+      )
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.messages}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_messages_run_scope_fk`)}
+      FOREIGN KEY (run_thread_id, run_id)
+      REFERENCES ${this.tables.runs}(thread_id, id)
+      ON DELETE SET NULL
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.bashJobs}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_bash_jobs_run_scope_check`)}
+      CHECK (
+        (
+          run_id IS NULL
+          AND run_thread_id IS NULL
+        ) OR (
+          run_id IS NOT NULL
+          AND run_thread_id = thread_id
+        )
+      )
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.bashJobs}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_bash_jobs_run_scope_fk`)}
+      FOREIGN KEY (run_thread_id, run_id)
+      REFERENCES ${this.tables.runs}(thread_id, id)
+      ON DELETE SET NULL
+    `);
+    await alterIfSupported(this.pool, `
+      ALTER TABLE ${this.sessionTableName}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_agent_sessions_current_thread_fk`)}
+      FOREIGN KEY (id, current_thread_id)
+      REFERENCES ${this.tables.threads}(session_id, id)
+      DEFERRABLE INITIALLY DEFERRED
+    `);
   }
 
-  async createThread(input: CreateThreadInput): Promise<ThreadRecord> {
+  async createThreadRecord(input: CreateThreadInput, queryable: PgQueryable = this.pool): Promise<ThreadRecord> {
     const sessionId = input.sessionId?.trim();
     if (!sessionId) {
       throw new Error(`Thread ${input.id} is missing sessionId.`);
     }
     const model = input.model === undefined ? null : resolveModelSelector(input.model).canonical;
 
-    const result = await this.pool.query(`
+    const result = await queryable.query(`
       INSERT INTO ${this.tables.threads} (
         id,
         session_id,
@@ -136,6 +281,30 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         $11,
         $12
       )
+      ON CONFLICT (id) DO UPDATE
+      SET system_prompt = EXCLUDED.system_prompt,
+          max_turns = EXCLUDED.max_turns,
+          context = EXCLUDED.context,
+          runtime_state = EXCLUDED.runtime_state,
+          inference_projection = EXCLUDED.inference_projection,
+          max_input_tokens = EXCLUDED.max_input_tokens,
+          prompt_cache_key = EXCLUDED.prompt_cache_key,
+          model = EXCLUDED.model,
+          temperature = EXCLUDED.temperature,
+          thinking = EXCLUDED.thinking,
+          updated_at = NOW()
+      WHERE ${this.tables.threads}.session_id = EXCLUDED.session_id
+        AND ${this.tables.threads}.system_prompt IS NULL
+        AND ${this.tables.threads}.max_turns IS NULL
+        AND ${this.tables.threads}.context IS NULL
+        AND ${this.tables.threads}.runtime_state IS NULL
+        AND ${this.tables.threads}.inference_projection IS NULL
+        AND ${this.tables.threads}.max_input_tokens IS NULL
+        AND ${this.tables.threads}.prompt_cache_key IS NULL
+        AND ${this.tables.threads}.model IS NULL
+        AND ${this.tables.threads}.temperature IS NULL
+        AND ${this.tables.threads}.thinking IS NULL
+        AND ${this.tables.threads}.pending_wake_at IS NULL
       RETURNING *
     `, [
       input.id,
@@ -151,10 +320,18 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       input.temperature ?? null,
       input.thinking ?? null,
     ]);
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(`Thread ${input.id} already exists and cannot be recreated.`);
+    }
 
-    const record = parseThreadRow(result.rows[0] as Record<string, unknown>);
-    await this.notifyThreadChanged(record.id);
+    const record = parseThreadRow(row as Record<string, unknown>);
+    await this.notifyThreadChanged(record.id, queryable);
     return record;
+  }
+
+  async createThread(input: CreateThreadInput): Promise<ThreadRecord> {
+    return this.createThreadRecord(input);
   }
 
   async getThread(threadId: string): Promise<ThreadRecord> {
@@ -462,6 +639,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         actor_id,
         identity_id,
         run_id,
+        run_thread_id,
         created_at,
         metadata,
         message
@@ -476,8 +654,9 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         $8,
         $9,
         $10,
-        $11::jsonb,
-        $12::jsonb
+        $11,
+        $12::jsonb,
+        $13::jsonb
       )
       RETURNING *
     `, [
@@ -490,6 +669,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       payload.actorId ?? null,
       payload.identityId ?? null,
       payload.runId ?? null,
+      payload.runId ? threadId : null,
       createdAt,
       toJson(payload.metadata),
       toJson(payload.message),
@@ -616,6 +796,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         id,
         thread_id,
         run_id,
+        run_thread_id,
         status,
         command,
         mode,
@@ -654,14 +835,16 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         $17,
         $18,
         $19,
-        $20::jsonb,
-        $21
+        $20,
+        $21::jsonb,
+        $22
       )
       RETURNING *
     `, [
       input.id,
       input.threadId,
       input.runId ?? null,
+      input.runId ? input.threadId : null,
       input.status ?? "running",
       input.command,
       input.mode,
@@ -724,7 +907,10 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     };
 
     if (update.runId !== undefined) {
-      push("run_id", update.runId ?? null);
+      assignments.push(`run_id = $${index}`);
+      assignments.push(`run_thread_id = CASE WHEN $${index} IS NULL THEN NULL ELSE thread_id END`);
+      values.push(update.runId ?? null);
+      index += 1;
     }
     if (update.status !== undefined) {
       push("status", update.status);

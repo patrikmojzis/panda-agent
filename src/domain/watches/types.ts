@@ -226,7 +226,7 @@ export interface WatchEventRecord {
   watchId: string;
   sessionId: string;
   createdByIdentityId?: string;
-  resolvedThreadId: string;
+  resolvedThreadId?: string;
   eventKind: WatchEventKind;
   summary: string;
   dedupeKey: string;

@@ -4,7 +4,10 @@ import path from "node:path";
 
 import {resolveAgentDir} from "../../app/runtime/data-dir.js";
 import type {CredentialService} from "../credentials/index.js";
+import {createSessionWithInitialThread, PostgresSessionStore} from "../sessions/index.js";
 import type {SessionStore} from "../sessions/store.js";
+import type {PgPoolLike} from "../threads/runtime/postgres-db.js";
+import {PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
 import type {ThreadRuntimeStore} from "../threads/runtime/store.js";
 import type {ThreadRuntimeMessagePayload} from "../threads/runtime/types.js";
 import type {AgentStore} from "./store.js";
@@ -77,6 +80,7 @@ export interface PlanLegacyAgentImportOptions {
 
 export interface ImportLegacyAgentOptions {
   agentStore: AgentStore;
+  pool?: PgPoolLike;
   sessionStore?: SessionStore;
   threadStore?: ThreadRuntimeStore;
   credentialService?: CredentialService;
@@ -946,6 +950,7 @@ async function ensureMainSession(
   agentKey: string,
   homeDir: string,
   identityId?: string,
+  pool?: PgPoolLike,
   sessionStore?: SessionStore,
   threadStore?: ThreadRuntimeStore,
 ): Promise<MainSessionTarget | null> {
@@ -964,22 +969,46 @@ async function ensureMainSession(
 
   const sessionId = randomUUID();
   const threadId = randomUUID();
-  await sessionStore.createSession({
-    id: sessionId,
-    agentKey,
-    kind: "main",
-    currentThreadId: threadId,
-    createdByIdentityId: identityId,
-  });
-  await threadStore.createThread({
-    id: threadId,
-    sessionId,
-    context: {
+  if (pool && sessionStore instanceof PostgresSessionStore && threadStore instanceof PostgresThreadRuntimeStore) {
+    await createSessionWithInitialThread({
+      pool,
+      sessionStore,
+      threadStore,
+      session: {
+        id: sessionId,
+        agentKey,
+        kind: "main",
+        currentThreadId: threadId,
+        createdByIdentityId: identityId,
+      },
+      thread: {
+        id: threadId,
+        sessionId,
+        context: {
+          agentKey,
+          sessionId,
+          cwd: homeDir,
+        },
+      },
+    });
+  } else {
+    await sessionStore.createSession({
+      id: sessionId,
       agentKey,
+      kind: "main",
+      currentThreadId: threadId,
+      createdByIdentityId: identityId,
+    });
+    await threadStore.createThread({
+      id: threadId,
       sessionId,
-      cwd: homeDir,
-    },
-  });
+      context: {
+        agentKey,
+        sessionId,
+        cwd: homeDir,
+      },
+    });
+  }
 
   return {
     created: true,
@@ -1123,6 +1152,7 @@ export async function importLegacyAgent(
     plan.agentKey,
     homeDir,
     options.identityId,
+    options.pool,
     options.sessionStore,
     options.threadStore,
   );

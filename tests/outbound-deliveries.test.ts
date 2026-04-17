@@ -14,6 +14,7 @@ import type {
     OutboundDeliveryInput,
     OutboundDeliveryRecord,
 } from "../src/domain/channels/deliveries/types.js";
+import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 describe("PostgresOutboundDeliveryStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -39,8 +40,19 @@ describe("PostgresOutboundDeliveryStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
+    const {sessionStore, threadStore} = await createRuntimeStores(pool);
     const store = new PostgresOutboundDeliveryStore({ pool });
     await store.ensureSchema();
+    await sessionStore.createSession({
+      id: "session-1",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-1",
+    });
+    await threadStore.createThread({
+      id: "thread-1",
+      sessionId: "session-1",
+    });
 
     const delivery = await store.enqueueDelivery({
       threadId: "thread-1",
@@ -89,8 +101,19 @@ describe("PostgresOutboundDeliveryStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
+    const {sessionStore, threadStore} = await createRuntimeStores(pool);
     const store = new PostgresOutboundDeliveryStore({ pool });
     await store.ensureSchema();
+    await sessionStore.createSession({
+      id: "session-1",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-1",
+    });
+    await threadStore.createThread({
+      id: "thread-1",
+      sessionId: "session-1",
+    });
 
     const delivery = await store.enqueueDelivery({
       threadId: "thread-1",

@@ -197,7 +197,7 @@ describe("PostgresScheduledTaskStore", () => {
     const {pool} = createScopedPool();
     pools.push(pool);
 
-    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
     const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
@@ -209,6 +209,10 @@ describe("PostgresScheduledTaskStore", () => {
       kind: "main",
       currentThreadId: "session-thread",
       createdByIdentityId: alice.id,
+    });
+    await threadStore.createThread({
+      id: "session-thread",
+      sessionId: "session-main",
     });
 
     const scheduledTasks = new PostgresScheduledTaskStore({pool});
@@ -276,7 +280,7 @@ describe("PostgresScheduledTaskStore", () => {
     const {pool, setScope} = createScopedPool();
     pools.push(pool);
 
-    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
     const scheduledTasks = new PostgresScheduledTaskStore({pool});
     await scheduledTasks.ensureSchema();
     await new PostgresWatchStore({pool}).ensureSchema();
@@ -306,6 +310,18 @@ describe("PostgresScheduledTaskStore", () => {
       currentThreadId: "home-bob",
       createdByIdentityId: bob.id,
     });
+    await threadStore.createThread({
+      id: "home-a",
+      sessionId: "session-alice",
+    });
+    await threadStore.createThread({
+      id: "home-bob",
+      sessionId: "session-bob",
+    });
+    await threadStore.createThread({
+      id: "home-b",
+      sessionId: "session-alice",
+    });
 
     const aliceTask = await scheduledTasks.createTask({
       sessionId: "session-alice",
@@ -334,6 +350,7 @@ describe("PostgresScheduledTaskStore", () => {
       claimExpiresAt: Date.now() + 60_000,
     });
     expect(claim).not.toBeNull();
+    const threadRun = await threadStore.createRun("home-a");
     await scheduledTasks.startTaskRun({
       runId: claim!.run.id,
       resolvedThreadId: "home-a",
@@ -341,7 +358,7 @@ describe("PostgresScheduledTaskStore", () => {
     await scheduledTasks.completeTaskRun({
       runId: claim!.run.id,
       resolvedThreadId: "home-a",
-      threadRunId: "thread-run-1",
+      threadRunId: threadRun.id,
       deliveryStatus: "sent",
     });
 

@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {DEFAULT_AGENT_DOCUMENT_TEMPLATES,} from "../src/domain/agents/index.js";
 import {ensureReadonlySessionQuerySchema} from "../src/domain/threads/runtime/index.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
@@ -256,8 +256,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     const { pool, setScope } = createScopedPool();
     pools.push(pool);
 
-    const {identityStore, sessionStore, threadStore: store} = await createRuntimeStores(pool);
-    await new PostgresAgentStore({ pool }).ensureSchema();
+    const {agentStore, identityStore, sessionStore, threadStore: store} = await createRuntimeStores(pool);
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
 
@@ -265,6 +264,11 @@ describe("ensureReadonlySessionQuerySchema", () => {
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
+    });
+    await agentStore.bootstrapAgent({
+      agentKey: "ops",
+      displayName: "Ops",
+      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
     const bob = await identityStore.createIdentity({
       id: "bob-id",
@@ -319,8 +323,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     const { pool, setScope } = createScopedPool();
     pools.push(pool);
 
-    const {identityStore, sessionStore, threadStore: store} = await createRuntimeStores(pool);
-    await new PostgresAgentStore({ pool }).ensureSchema();
+    const {agentStore, identityStore, sessionStore, threadStore: store} = await createRuntimeStores(pool);
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
 
@@ -328,6 +331,11 @@ describe("ensureReadonlySessionQuerySchema", () => {
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
+    });
+    await agentStore.bootstrapAgent({
+      agentKey: "ops",
+      displayName: "Ops",
+      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
 
     await sessionStore.createSession({
@@ -377,16 +385,9 @@ describe("ensureReadonlySessionQuerySchema", () => {
     const { pool, setScope } = createScopedPool();
     pools.push(pool);
 
-    await createRuntimeStores(pool);
-    const agentStore = new PostgresAgentStore({ pool });
-    await agentStore.ensureSchema();
+    const {agentStore} = await createRuntimeStores(pool);
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
-    await agentStore.bootstrapAgent({
-      agentKey: "panda",
-      displayName: "Panda",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
-    });
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
@@ -419,16 +420,9 @@ describe("ensureReadonlySessionQuerySchema", () => {
     const { pool, setScope } = createScopedPool();
     pools.push(pool);
 
-    await createRuntimeStores(pool);
-    const agentStore = new PostgresAgentStore({ pool });
-    await agentStore.ensureSchema();
+    const {agentStore} = await createRuntimeStores(pool);
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
-    await agentStore.bootstrapAgent({
-      agentKey: "panda",
-      displayName: "Panda",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
-    });
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
@@ -460,20 +454,13 @@ describe("ensureReadonlySessionQuerySchema", () => {
     const { pool, setScope } = createScopedPool();
     pools.push(pool);
 
-    const {identityStore} = await createRuntimeStores(pool);
-    const agentStore = new PostgresAgentStore({ pool });
-    await agentStore.ensureSchema();
+    const {agentStore, identityStore} = await createRuntimeStores(pool);
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
     const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
-    });
-    await agentStore.bootstrapAgent({
-      agentKey: "panda",
-      displayName: "Panda",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
     await agentStore.bootstrapAgent({
       agentKey: "ops",
@@ -513,20 +500,13 @@ describe("ensureReadonlySessionQuerySchema", () => {
     const { pool, setScope } = createScopedPool();
     pools.push(pool);
 
-    const {identityStore} = await createRuntimeStores(pool);
-    const agentStore = new PostgresAgentStore({ pool });
-    await agentStore.ensureSchema();
+    const {agentStore, identityStore} = await createRuntimeStores(pool);
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
     const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
       displayName: "Alice",
-    });
-    await agentStore.bootstrapAgent({
-      agentKey: "panda",
-      displayName: "Panda",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
     await agentStore.bootstrapAgent({
       agentKey: "ops",
@@ -568,9 +548,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     const { pool, setScope } = createScopedPool();
     pools.push(pool);
 
-    const {identityStore} = await createRuntimeStores(pool);
-    const agentStore = new PostgresAgentStore({ pool });
-    await agentStore.ensureSchema();
+    const {agentStore, identityStore} = await createRuntimeStores(pool);
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
     const alice = await identityStore.createIdentity({
@@ -582,11 +560,6 @@ describe("ensureReadonlySessionQuerySchema", () => {
       id: "bob-id",
       handle: "bob",
       displayName: "Bob",
-    });
-    await agentStore.bootstrapAgent({
-      agentKey: "panda",
-      displayName: "Panda",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
     });
     await agentStore.bootstrapAgent({
       agentKey: "ops",

@@ -7,6 +7,7 @@ import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
 import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY} from "../../app/runtime/daemon.js";
 import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
 import {DaemonStateRepo} from "../../app/runtime/state/repo.js";
+import {PostgresAgentStore} from "../agents/postgres.js";
 import {RuntimeRequestRepo} from "../threads/requests/repo.js";
 import {ConversationRepo} from "./conversations/repo.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
@@ -32,10 +33,12 @@ interface WithSessionStores {
 }
 
 function createSessionCliStores(pool: Pool): WithSessionStores & {
+  agentStore: PostgresAgentStore;
   identityStore: PostgresIdentityStore;
 } {
   const identityStore = new PostgresIdentityStore({pool});
   return {
+    agentStore: new PostgresAgentStore({pool}),
     identityStore,
     sessionStore: new PostgresSessionStore({pool}),
     threadStore: new PostgresThreadRuntimeStore({pool}),
@@ -62,6 +65,7 @@ async function withSessionStores<T>(
     const stores = createSessionCliStores(pool);
     await ensureSchemas([
       stores.identityStore,
+      stores.agentStore,
       stores.sessionStore,
       stores.threadStore,
       stores.requests,

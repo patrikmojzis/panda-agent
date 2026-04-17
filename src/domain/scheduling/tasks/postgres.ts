@@ -5,7 +5,13 @@ import type {PoolClient} from "pg";
 import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import type {PgPoolLike} from "../../threads/runtime/postgres-db.js";
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toMillis} from "../../threads/runtime/postgres-shared.js";
+import {
+    buildThreadRuntimeTableNames,
+    CREATE_RUNTIME_SCHEMA_SQL,
+    quoteIdentifier,
+    toMillis
+} from "../../threads/runtime/postgres-shared.js";
+import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
 import {computeInitialNextFireAt, normalizeScheduledTaskSchedule} from "./schedule.js";
 import {buildScheduledTaskTableNames, type ScheduledTaskTableNames} from "./postgres-shared.js";
 import type {ScheduledTaskStore} from "./store.js";
@@ -167,12 +173,17 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
   private readonly tables: ScheduledTaskTableNames;
   private readonly identityTableName: string;
   private readonly sessionTableName: string;
+  private readonly threadTableName: string;
+  private readonly runTableName: string;
 
   constructor(options: PostgresScheduledTaskStoreOptions) {
     this.pool = options.pool;
     this.tables = buildScheduledTaskTableNames();
     this.identityTableName = buildIdentityTableNames().identities;
     this.sessionTableName = buildSessionTableNames().sessions;
+    const threadTables = buildThreadRuntimeTableNames();
+    this.threadTableName = threadTables.threads;
+    this.runTableName = threadTables.runs;
   }
 
   async ensureSchema(): Promise<void> {
@@ -210,16 +221,22 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
       ON ${this.tables.scheduledTasks} (session_id, created_at DESC)
     `);
     await this.pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_scheduled_tasks_session_id_id_idx`)}
+      ON ${this.tables.scheduledTasks} (session_id, id)
+    `);
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.scheduledTaskRuns} (
         id UUID PRIMARY KEY,
         task_id UUID NOT NULL REFERENCES ${this.tables.scheduledTasks}(id) ON DELETE CASCADE,
         session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
         created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
         resolved_thread_id TEXT,
+        resolved_thread_session_id TEXT,
         fire_kind TEXT NOT NULL,
         scheduled_for TIMESTAMPTZ NOT NULL,
         status TEXT NOT NULL,
-        thread_run_id TEXT,
+        thread_run_id UUID,
+        thread_run_thread_id TEXT,
         delivery_status TEXT NOT NULL DEFAULT 'not_requested',
         error TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -230,6 +247,215 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_task_created_idx`)}
       ON ${this.tables.scheduledTaskRuns} (task_id, created_at DESC)
+    `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.scheduledTaskRuns}
+      ADD COLUMN IF NOT EXISTS resolved_thread_session_id TEXT
+    `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.scheduledTaskRuns}
+      ADD COLUMN IF NOT EXISTS thread_run_thread_id TEXT
+    `);
+    const threadRunTypeResult = await this.pool.query(`
+      SELECT data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'runtime'
+        AND table_name = 'scheduled_task_runs'
+        AND column_name = 'thread_run_id'
+    `);
+    const threadRunType = String((threadRunTypeResult.rows[0] as {data_type?: unknown} | undefined)?.data_type ?? "");
+    if (threadRunType && threadRunType !== "uuid") {
+      await assertIntegrityChecks(this.pool, "Scheduled task schema", [
+        {
+          label: "scheduled_task_runs.thread_run_id invalid UUID format",
+          sql: `
+            SELECT COUNT(*)::INTEGER AS count
+            FROM ${this.tables.scheduledTaskRuns}
+            WHERE thread_run_id IS NOT NULL
+              AND BTRIM(thread_run_id::text) !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          `,
+        },
+      ]);
+      await this.pool.query(`
+        ALTER TABLE ${this.tables.scheduledTaskRuns}
+        ALTER COLUMN thread_run_id TYPE UUID
+        USING CASE
+          WHEN thread_run_id IS NULL THEN NULL
+          ELSE thread_run_id::uuid
+        END
+      `);
+    }
+    await assertIntegrityChecks(this.pool, "Scheduled task schema", [
+      {
+        label: "scheduled_task_runs.task_id orphaned from scheduled_tasks.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.scheduledTaskRuns} AS run
+          LEFT JOIN ${this.tables.scheduledTasks} AS task
+            ON task.id = run.task_id
+          WHERE task.id IS NULL
+        `,
+      },
+      {
+        label: "scheduled_task_runs task/session mismatch",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.scheduledTaskRuns} AS run
+          INNER JOIN ${this.tables.scheduledTasks} AS task
+            ON task.id = run.task_id
+          WHERE task.session_id <> run.session_id
+        `,
+      },
+      {
+        label: "scheduled_task_runs.resolved_thread_id orphaned from threads.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.scheduledTaskRuns} AS run
+          LEFT JOIN ${this.threadTableName} AS thread
+            ON thread.id = run.resolved_thread_id
+          WHERE run.resolved_thread_id IS NOT NULL
+            AND thread.id IS NULL
+        `,
+      },
+      {
+        label: "scheduled_task_runs.resolved_thread_id bound to another session",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.scheduledTaskRuns} AS run
+          INNER JOIN ${this.threadTableName} AS thread
+            ON thread.id = run.resolved_thread_id
+          WHERE run.resolved_thread_id IS NOT NULL
+            AND thread.session_id <> run.session_id
+        `,
+      },
+      {
+        label: "scheduled_task_runs.thread_run_id orphaned from runs.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.scheduledTaskRuns} AS run
+          LEFT JOIN ${this.runTableName} AS thread_run
+            ON thread_run.id = run.thread_run_id
+          WHERE run.thread_run_id IS NOT NULL
+            AND thread_run.id IS NULL
+        `,
+      },
+      {
+        label: "scheduled_task_runs.thread_run_id set without resolved_thread_id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.scheduledTaskRuns}
+          WHERE thread_run_id IS NOT NULL
+            AND resolved_thread_id IS NULL
+        `,
+      },
+      {
+        label: "scheduled_task_runs.thread_run_id bound to another thread",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.scheduledTaskRuns} AS run
+          INNER JOIN ${this.runTableName} AS thread_run
+            ON thread_run.id = run.thread_run_id
+          WHERE run.thread_run_id IS NOT NULL
+            AND thread_run.thread_id <> run.resolved_thread_id
+        `,
+      },
+    ]);
+    await this.pool.query(`
+      UPDATE ${this.tables.scheduledTaskRuns}
+      SET resolved_thread_session_id = NULL
+      WHERE resolved_thread_id IS NULL
+        AND resolved_thread_session_id IS NOT NULL
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.scheduledTaskRuns}
+      SET resolved_thread_session_id = thread.session_id
+      FROM ${this.threadTableName} AS thread
+      WHERE ${this.tables.scheduledTaskRuns}.resolved_thread_id IS NOT NULL
+        AND thread.id = ${this.tables.scheduledTaskRuns}.resolved_thread_id
+        AND (
+          ${this.tables.scheduledTaskRuns}.resolved_thread_session_id IS NULL
+          OR ${this.tables.scheduledTaskRuns}.resolved_thread_session_id <> thread.session_id
+        )
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.scheduledTaskRuns}
+      SET thread_run_thread_id = NULL
+      WHERE thread_run_id IS NULL
+        AND thread_run_thread_id IS NOT NULL
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.scheduledTaskRuns}
+      SET thread_run_thread_id = thread_run.thread_id
+      FROM ${this.runTableName} AS thread_run
+      WHERE ${this.tables.scheduledTaskRuns}.thread_run_id IS NOT NULL
+        AND thread_run.id = ${this.tables.scheduledTaskRuns}.thread_run_id
+        AND (
+          ${this.tables.scheduledTaskRuns}.thread_run_thread_id IS NULL
+          OR ${this.tables.scheduledTaskRuns}.thread_run_thread_id <> thread_run.thread_id
+        )
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.scheduledTaskRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_task_scope_fk`)}
+      FOREIGN KEY (session_id, task_id)
+      REFERENCES ${this.tables.scheduledTasks}(session_id, id)
+      ON DELETE CASCADE
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.scheduledTaskRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_resolved_thread_fk`)}
+      FOREIGN KEY (resolved_thread_id)
+      REFERENCES ${this.threadTableName}(id)
+      ON DELETE SET NULL
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.scheduledTaskRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_thread_run_fk`)}
+      FOREIGN KEY (thread_run_id)
+      REFERENCES ${this.runTableName}(id)
+      ON DELETE SET NULL
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.scheduledTaskRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_resolved_thread_scope_check`)}
+      CHECK (
+        (
+          resolved_thread_id IS NULL
+          AND resolved_thread_session_id IS NULL
+        ) OR (
+          resolved_thread_id IS NOT NULL
+          AND resolved_thread_session_id = session_id
+        )
+      )
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.scheduledTaskRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_resolved_thread_scope_fk`)}
+      FOREIGN KEY (resolved_thread_session_id, resolved_thread_id)
+      REFERENCES ${this.threadTableName}(session_id, id)
+      ON DELETE SET NULL
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.scheduledTaskRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_thread_run_scope_check`)}
+      CHECK (
+        (
+          thread_run_id IS NULL
+          AND thread_run_thread_id IS NULL
+        ) OR (
+          thread_run_id IS NOT NULL
+          AND thread_run_thread_id IS NOT NULL
+          AND resolved_thread_id IS NOT NULL
+          AND thread_run_thread_id = resolved_thread_id
+        )
+      )
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.scheduledTaskRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_thread_run_scope_fk`)}
+      FOREIGN KEY (thread_run_thread_id, thread_run_id)
+      REFERENCES ${this.runTableName}(thread_id, id)
+      ON DELETE SET NULL
     `);
   }
 
@@ -541,6 +767,10 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         UPDATE ${this.tables.scheduledTaskRuns}
         SET status = 'running',
             resolved_thread_id = COALESCE($2, resolved_thread_id),
+            resolved_thread_session_id = CASE
+              WHEN COALESCE($2, resolved_thread_id) IS NULL THEN NULL
+              ELSE session_id
+            END,
             started_at = COALESCE(started_at, NOW())
         WHERE id = $1
         RETURNING *
@@ -564,7 +794,15 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         UPDATE ${this.tables.scheduledTaskRuns}
         SET status = 'succeeded',
             resolved_thread_id = COALESCE($2, resolved_thread_id),
+            resolved_thread_session_id = CASE
+              WHEN COALESCE($2, resolved_thread_id) IS NULL THEN NULL
+              ELSE session_id
+            END,
             thread_run_id = COALESCE($3, thread_run_id),
+            thread_run_thread_id = CASE
+              WHEN COALESCE($3, thread_run_id) IS NULL THEN NULL
+              ELSE COALESCE($2, resolved_thread_id)
+            END,
             delivery_status = COALESCE($4, delivery_status),
             error = NULL,
             finished_at = NOW()
@@ -592,7 +830,15 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         UPDATE ${this.tables.scheduledTaskRuns}
         SET status = 'failed',
             resolved_thread_id = COALESCE($2, resolved_thread_id),
+            resolved_thread_session_id = CASE
+              WHEN COALESCE($2, resolved_thread_id) IS NULL THEN NULL
+              ELSE session_id
+            END,
             thread_run_id = COALESCE($3, thread_run_id),
+            thread_run_thread_id = CASE
+              WHEN COALESCE($3, thread_run_id) IS NULL THEN NULL
+              ELSE COALESCE($2, resolved_thread_id)
+            END,
             delivery_status = COALESCE($4, delivery_status),
             error = $5,
             finished_at = NOW()

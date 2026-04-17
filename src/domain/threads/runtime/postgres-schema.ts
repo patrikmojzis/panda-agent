@@ -49,6 +49,7 @@ export function buildThreadRuntimeSchemaSql(
       actor_id TEXT,
       identity_id TEXT REFERENCES ${identityTableName}(id) ON DELETE SET NULL,
       run_id UUID,
+      run_thread_id TEXT,
       created_at TIMESTAMPTZ NOT NULL,
       metadata JSONB,
       message JSONB NOT NULL
@@ -57,11 +58,17 @@ export function buildThreadRuntimeSchemaSql(
     ALTER TABLE ${tables.messages}
     ADD COLUMN IF NOT EXISTS metadata JSONB;
 
+    ALTER TABLE ${tables.messages}
+    ADD COLUMN IF NOT EXISTS run_thread_id TEXT;
+
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_messages_thread_sequence_idx`)}
     ON ${tables.messages} (thread_id, sequence);
 
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_threads_session_updated_idx`)}
     ON ${tables.threads} (session_id, updated_at DESC);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_threads_session_id_id_idx`)}
+    ON ${tables.threads} (session_id, id);
 
     CREATE TABLE IF NOT EXISTS ${tables.inputs} (
       id UUID PRIMARY KEY,
@@ -103,10 +110,14 @@ export function buildThreadRuntimeSchemaSql(
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_runs_thread_started_idx`)}
     ON ${tables.runs} (thread_id, started_at);
 
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_runs_thread_id_id_idx`)}
+    ON ${tables.runs} (thread_id, id);
+
     CREATE TABLE IF NOT EXISTS ${tables.bashJobs} (
       id UUID PRIMARY KEY,
       thread_id TEXT NOT NULL REFERENCES ${tables.threads}(id) ON DELETE CASCADE,
       run_id UUID REFERENCES ${tables.runs}(id) ON DELETE SET NULL,
+      run_thread_id TEXT,
       status TEXT NOT NULL,
       command TEXT NOT NULL,
       mode TEXT NOT NULL,
@@ -131,6 +142,9 @@ export function buildThreadRuntimeSchemaSql(
       tracked_env_keys JSONB NOT NULL DEFAULT '[]'::jsonb,
       status_reason TEXT
     );
+
+    ALTER TABLE ${tables.bashJobs}
+    ADD COLUMN IF NOT EXISTS run_thread_id TEXT;
 
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_bash_jobs_thread_started_idx`)}
     ON ${tables.bashJobs} (thread_id, started_at);

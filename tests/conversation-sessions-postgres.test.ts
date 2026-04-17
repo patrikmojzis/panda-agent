@@ -1,6 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
+import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 import {ConversationRepo} from "../src/domain/sessions/conversations/repo.js";
 
 describe("ConversationRepo", () => {
@@ -29,8 +30,21 @@ describe("ConversationRepo", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
+    const {sessionStore} = await createRuntimeStores(pool);
     const store = new ConversationRepo({ pool });
     await store.ensureSchema();
+    await sessionStore.createSession({
+      id: "session-a",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-a",
+    });
+    await sessionStore.createSession({
+      id: "session-b",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-b",
+    });
 
     await expect(store.getConversationBinding({
       source: "telegram",
@@ -97,8 +111,21 @@ describe("ConversationRepo", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
+    const {sessionStore} = await createRuntimeStores(pool);
     const store = new ConversationRepo({ pool });
     await store.ensureSchema();
+    await sessionStore.createSession({
+      id: "session-a",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-a",
+    });
+    await sessionStore.createSession({
+      id: "session-b",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-b",
+    });
 
     await store.bindConversation({
       source: "telegram",
@@ -138,8 +165,27 @@ describe("ConversationRepo", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
+    const {sessionStore} = await createRuntimeStores(pool);
     const store = new ConversationRepo({ pool });
     await store.ensureSchema();
+    await sessionStore.createSession({
+      id: "session-telegram",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-telegram",
+    });
+    await sessionStore.createSession({
+      id: "session-sidecar",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-sidecar",
+    });
+    await sessionStore.createSession({
+      id: "session-whatsapp",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-whatsapp",
+    });
 
     await store.bindConversation({
       source: "telegram",
@@ -195,6 +241,7 @@ describe("ConversationRepo", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
+    await createRuntimeStores(pool);
     const store = new ConversationRepo({ pool });
     await store.ensureSchema();
 

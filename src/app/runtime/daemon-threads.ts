@@ -2,12 +2,14 @@ import {randomUUID} from "node:crypto";
 
 import {type MediaDescriptor, relocateMediaDescriptor} from "../../domain/channels/index.js";
 import {createDefaultIdentityInput, type IdentityRecord} from "../../domain/identity/index.js";
+import {createSessionWithInitialThread, resetSessionCurrentThread} from "../../domain/sessions/index.js";
+import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {
     CreateBranchSessionRequestPayload,
     ResetSessionRequestPayload,
     ResolveMainSessionThreadRequestPayload,
 } from "../../domain/threads/requests/index.js";
-import {type ThreadRecord} from "../../domain/threads/runtime/index.js";
+import {PostgresThreadRuntimeStore, type ThreadRecord} from "../../domain/threads/runtime/index.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
 import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
@@ -92,7 +94,7 @@ export function createDaemonThreadHelpers(
     throw new Error(`Identity ${identity.handle} is paired to multiple agents. Pick one explicitly.`);
   };
 
-  const createInitialSessionThread = async (input: {
+  const buildInitialSessionThreadInput = (input: {
     sessionId: string;
     agentKey?: string;
     id?: string;
@@ -100,8 +102,8 @@ export function createDaemonThreadHelpers(
     thinking?: CreateBranchSessionRequestPayload["thinking"];
     inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
     context?: Record<string, unknown>;
-  }): Promise<ThreadRecord> => {
-    return context.runtime.store.createThread({
+  }) => {
+    return {
       id: input.id ?? randomUUID(),
       sessionId: input.sessionId,
       context: {
@@ -117,7 +119,7 @@ export function createDaemonThreadHelpers(
       model: input.model ?? context.model,
       thinking: input.thinking,
       inferenceProjection: input.inferenceProjection,
-    });
+    };
   };
 
   const ensureMainSession = async (
@@ -131,6 +133,31 @@ export function createDaemonThreadHelpers(
 
     const sessionId = randomUUID();
     const threadId = randomUUID();
+    if (
+      context.runtime.pool
+      && context.runtime.sessionStore instanceof PostgresSessionStore
+      && context.runtime.store instanceof PostgresThreadRuntimeStore
+    ) {
+      const created = await createSessionWithInitialThread({
+        pool: context.runtime.pool,
+        sessionStore: context.runtime.sessionStore,
+        threadStore: context.runtime.store,
+        session: {
+          id: sessionId,
+          agentKey,
+          kind: "main",
+          currentThreadId: threadId,
+          createdByIdentityId: identity?.id,
+        },
+        thread: buildInitialSessionThreadInput({
+          sessionId,
+          agentKey,
+          id: threadId,
+        }),
+      });
+      return created.session;
+    }
+
     const session = await context.runtime.sessionStore.createSession({
       id: sessionId,
       agentKey,
@@ -138,11 +165,11 @@ export function createDaemonThreadHelpers(
       currentThreadId: threadId,
       createdByIdentityId: identity?.id,
     });
-    await createInitialSessionThread({
+    await context.runtime.store.createThread(buildInitialSessionThreadInput({
       sessionId,
       agentKey,
       id: threadId,
-    });
+    }));
     return session;
   };
 
@@ -163,14 +190,7 @@ export function createDaemonThreadHelpers(
     const agentKey = await resolveAccessibleAgentKey(input.identity, input.agentKey);
     const sessionId = input.sessionId ?? randomUUID();
     const threadId = randomUUID();
-    await context.runtime.sessionStore.createSession({
-      id: sessionId,
-      agentKey,
-      kind: "branch",
-      currentThreadId: threadId,
-      createdByIdentityId: input.identity.id,
-    });
-    return createInitialSessionThread({
+    const threadInput = buildInitialSessionThreadInput({
       sessionId,
       agentKey,
       id: threadId,
@@ -179,6 +199,35 @@ export function createDaemonThreadHelpers(
       inferenceProjection: input.inferenceProjection,
       context: input.context,
     });
+    if (
+      context.runtime.pool
+      && context.runtime.sessionStore instanceof PostgresSessionStore
+      && context.runtime.store instanceof PostgresThreadRuntimeStore
+    ) {
+      const created = await createSessionWithInitialThread({
+        pool: context.runtime.pool,
+        sessionStore: context.runtime.sessionStore,
+        threadStore: context.runtime.store,
+        session: {
+          id: sessionId,
+          agentKey,
+          kind: "branch",
+          currentThreadId: threadId,
+          createdByIdentityId: input.identity.id,
+        },
+        thread: threadInput,
+      });
+      return created.thread;
+    }
+
+    await context.runtime.sessionStore.createSession({
+      id: sessionId,
+      agentKey,
+      kind: "branch",
+      currentThreadId: threadId,
+      createdByIdentityId: input.identity.id,
+    });
+    return context.runtime.store.createThread(threadInput);
   };
 
   const relocateThreadMedia = async (
@@ -279,7 +328,7 @@ export function createDaemonThreadHelpers(
     await context.runtime.bashJobService.cancelThreadJobs(previousThread.id);
     await context.runtime.store.discardPendingInputs(previousThread.id);
 
-    const thread = await createInitialSessionThread({
+    const nextThread = buildInitialSessionThreadInput({
       sessionId: session.id,
       agentKey: session.agentKey,
       model: input.model,
@@ -287,10 +336,31 @@ export function createDaemonThreadHelpers(
       inferenceProjection: input.inferenceProjection,
       context: input.context,
     });
-    await context.runtime.sessionStore.updateCurrentThread({
-      sessionId: session.id,
-      currentThreadId: thread.id,
-    });
+    const thread = (
+      context.runtime.pool
+      && context.runtime.sessionStore instanceof PostgresSessionStore
+      && context.runtime.store instanceof PostgresThreadRuntimeStore
+    )
+      ? await resetSessionCurrentThread({
+        pool: context.runtime.pool,
+        sessionStore: context.runtime.sessionStore,
+        threadStore: context.runtime.store,
+        thread: nextThread,
+        session: {
+          sessionId: session.id,
+          currentThreadId: nextThread.id,
+        },
+      })
+      : await context.runtime.store.createThread(nextThread);
+    if (!(context.runtime.pool
+      && context.runtime.sessionStore instanceof PostgresSessionStore
+      && context.runtime.store instanceof PostgresThreadRuntimeStore)
+    ) {
+      await context.runtime.sessionStore.updateCurrentThread({
+        sessionId: session.id,
+        currentThreadId: nextThread.id,
+      });
+    }
 
     return {
       thread,

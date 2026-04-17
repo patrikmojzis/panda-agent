@@ -10,6 +10,10 @@ export {
   SessionRouteRepo,
   type SessionRouteRepoOptions,
 } from "./routes/repo.js";
+export {
+  createSessionWithInitialThread,
+  resetSessionCurrentThread,
+} from "./lifecycle.js";
 export type {
   BindConversationInput,
   BindConversationResult,

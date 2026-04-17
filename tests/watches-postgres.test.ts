@@ -45,7 +45,7 @@ describe("PostgresWatchStore", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
     const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
@@ -57,6 +57,10 @@ describe("PostgresWatchStore", () => {
       kind: "main",
       currentThreadId: "session-thread",
       createdByIdentityId: alice.id,
+    });
+    await threadStore.createThread({
+      id: "session-thread",
+      sessionId: "session-main",
     });
 
     const watches = new PostgresWatchStore({pool});
@@ -113,7 +117,7 @@ describe("PostgresWatchStore", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
     const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
@@ -125,6 +129,10 @@ describe("PostgresWatchStore", () => {
       kind: "main",
       currentThreadId: "session-thread",
       createdByIdentityId: alice.id,
+    });
+    await threadStore.createThread({
+      id: "session-thread",
+      sessionId: "session-main",
     });
 
     const watches = new PostgresWatchStore({pool});
@@ -236,7 +244,7 @@ describe("PostgresWatchStore", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
     const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
@@ -248,6 +256,10 @@ describe("PostgresWatchStore", () => {
       kind: "main",
       currentThreadId: "session-thread",
       createdByIdentityId: alice.id,
+    });
+    await threadStore.createThread({
+      id: "session-thread",
+      sessionId: "session-main",
     });
 
     const watches = new PostgresWatchStore({pool});
@@ -307,7 +319,7 @@ describe("PostgresWatchStore", () => {
     const pool = createPool();
     pools.push(pool);
 
-    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
     const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
@@ -319,6 +331,10 @@ describe("PostgresWatchStore", () => {
       kind: "main",
       currentThreadId: "session-thread",
       createdByIdentityId: alice.id,
+    });
+    await threadStore.createThread({
+      id: "session-thread",
+      sessionId: "session-main",
     });
 
     const watches = new PostgresWatchStore({pool});

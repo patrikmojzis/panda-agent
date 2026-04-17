@@ -1,6 +1,8 @@
 import type {Pool, PoolClient} from "pg";
 
 import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
+import {buildSessionTableNames} from "../postgres-shared.js";
+import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
 import {buildConversationSessionTableNames, type ConversationSessionTableNames} from "./postgres-shared.js";
 import type {BindConversationInput, BindConversationResult, ConversationBinding, ConversationLookup,} from "./types.js";
 
@@ -63,10 +65,12 @@ function isUniqueViolation(error: unknown): error is { code: string } {
 export class ConversationRepo {
   private readonly pool: PgPoolLike;
   private readonly tables: ConversationSessionTableNames;
+  private readonly sessionTableName: string;
 
   constructor(options: ConversationRepoOptions) {
     this.pool = options.pool;
     this.tables = buildConversationSessionTableNames();
+    this.sessionTableName = buildSessionTableNames().sessions;
   }
 
   async ensureSchema(): Promise<void> {
@@ -86,6 +90,25 @@ export class ConversationRepo {
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_conversation_sessions_session_id_idx`)}
       ON ${this.tables.conversationSessions} (session_id)
+    `);
+    await assertIntegrityChecks(this.pool, "Conversation binding schema", [
+      {
+        label: "conversation_sessions.session_id orphaned from agent_sessions.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.conversationSessions} AS binding
+          LEFT JOIN ${this.sessionTableName} AS session
+            ON session.id = binding.session_id
+          WHERE session.id IS NULL
+        `,
+      },
+    ]);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.conversationSessions}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_conversation_sessions_session_fk`)}
+      FOREIGN KEY (session_id)
+      REFERENCES ${this.sessionTableName}(id)
+      ON DELETE CASCADE
     `);
   }
 

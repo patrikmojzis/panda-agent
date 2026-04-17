@@ -11,6 +11,8 @@ Start here:
 - [Chat Vision](./chat-vision.md)
 - [Identity](./identity.md)
 - [Credentials](./credentials.md)
+- [DB Integrity](./db-integrity.md)
+- [DB Integrity Plan](./db-integrity-plan.md)
 - [OpenClaw Import](./openclaw-import.md)
 - [Heartbeat](./heartbeat.md)
 - [Watches](./watches.md)

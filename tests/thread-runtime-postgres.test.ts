@@ -62,7 +62,7 @@ describe("PostgresThreadRuntimeStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const {identityStore, threadStore: store} = await createRuntimeStores(pool);
+    const {agentStore, identityStore, threadStore: store} = await createRuntimeStores(pool);
 
     await expect(identityStore.getIdentity(DEFAULT_IDENTITY_ID)).resolves.toMatchObject({
       handle: "local",
@@ -80,6 +80,11 @@ describe("PostgresThreadRuntimeStore", () => {
       handle: "alice",
     });
     expect(alice.id).toBe("alice-id");
+    await agentStore.bootstrapAgent({
+      agentKey: "panda-local",
+      displayName: "Panda Local",
+      prompts: {},
+    });
 
     await seedSession(pool, {
       sessionId: "session-alice",

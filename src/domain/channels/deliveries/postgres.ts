@@ -2,7 +2,14 @@ import {randomUUID} from "node:crypto";
 
 import type {Pool, PoolClient} from "pg";
 
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis,} from "../../threads/runtime/postgres-shared.js";
+import {
+    buildThreadRuntimeTableNames,
+    CREATE_RUNTIME_SCHEMA_SQL,
+    quoteIdentifier,
+    toJson,
+    toMillis,
+} from "../../threads/runtime/postgres-shared.js";
+import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
 import type {OutboundItem, OutboundSentItem, OutboundTarget} from "../types.js";
 import {
     buildDeliveryNotificationChannel,
@@ -148,11 +155,13 @@ export class PostgresOutboundDeliveryStore {
   private readonly pool: PgPoolLike;
   private readonly tables: OutboundDeliveryTableNames;
   private readonly notificationChannel: string;
+  private readonly threadTableName: string;
 
   constructor(options: PostgresOutboundDeliveryStoreOptions) {
     this.pool = options.pool;
     this.tables = buildOutboundDeliveryTableNames();
     this.notificationChannel = buildDeliveryNotificationChannel();
+    this.threadTableName = buildThreadRuntimeTableNames().threads;
   }
 
   private async notifyPendingDelivery(target: Pick<OutboundTarget, "connectorKey"> & { source: string }): Promise<void> {
@@ -195,6 +204,26 @@ export class PostgresOutboundDeliveryStore {
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_outbound_deliveries_thread_idx`)}
       ON ${this.tables.outboundDeliveries} (thread_id, created_at DESC)
+    `);
+    await assertIntegrityChecks(this.pool, "Outbound delivery schema", [
+      {
+        label: "outbound_deliveries.thread_id orphaned from threads.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.outboundDeliveries} AS delivery
+          LEFT JOIN ${this.threadTableName} AS thread
+            ON thread.id = delivery.thread_id
+          WHERE delivery.thread_id IS NOT NULL
+            AND thread.id IS NULL
+        `,
+      },
+    ]);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.outboundDeliveries}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_outbound_deliveries_thread_fk`)}
+      FOREIGN KEY (thread_id)
+      REFERENCES ${this.threadTableName}(id)
+      ON DELETE SET NULL
     `);
   }
 

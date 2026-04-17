@@ -6,7 +6,14 @@ import type {JsonObject} from "../../kernel/agent/types.js";
 import {buildIdentityTableNames} from "../identity/postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {PgPoolLike} from "../threads/runtime/postgres-db.js";
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../threads/runtime/postgres-shared.js";
+import {
+    buildThreadRuntimeTableNames,
+    CREATE_RUNTIME_SCHEMA_SQL,
+    quoteIdentifier,
+    toJson,
+    toMillis
+} from "../threads/runtime/postgres-shared.js";
+import {addConstraint, assertIntegrityChecks} from "../../lib/postgres-integrity.js";
 import {buildWatchTableNames, type WatchTableNames} from "./postgres-shared.js";
 import type {RecordWatchEventResult, WatchStore} from "./store.js";
 import type {
@@ -106,7 +113,7 @@ function parseWatchEventRow(row: Record<string, unknown>): WatchEventRecord {
     watchId: String(row.watch_id),
     sessionId: String(row.session_id),
     createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
-    resolvedThreadId: String(row.resolved_thread_id),
+    resolvedThreadId: row.resolved_thread_id === null ? undefined : String(row.resolved_thread_id),
     eventKind: String(row.event_kind) as WatchEventRecord["eventKind"],
     summary: String(row.summary),
     dedupeKey: String(row.dedupe_key),
@@ -181,12 +188,14 @@ export class PostgresWatchStore implements WatchStore {
   private readonly tables: WatchTableNames;
   private readonly identityTableName: string;
   private readonly sessionTableName: string;
+  private readonly threadTableName: string;
 
   constructor(options: PostgresWatchStoreOptions) {
     this.pool = options.pool;
     this.tables = buildWatchTableNames();
     this.identityTableName = buildIdentityTableNames().identities;
     this.sessionTableName = buildSessionTableNames().sessions;
+    this.threadTableName = buildThreadRuntimeTableNames().threads;
   }
 
   async ensureSchema(): Promise<void> {
@@ -222,6 +231,10 @@ export class PostgresWatchStore implements WatchStore {
       ON ${this.tables.watches} (session_id, created_at DESC)
     `);
     await this.pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_watches_session_id_id_idx`)}
+      ON ${this.tables.watches} (session_id, id)
+    `);
+    await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.watchRuns} (
         id UUID PRIMARY KEY,
         watch_id UUID NOT NULL REFERENCES ${this.tables.watches}(id) ON DELETE CASCADE,
@@ -230,6 +243,8 @@ export class PostgresWatchStore implements WatchStore {
         scheduled_for TIMESTAMPTZ NOT NULL,
         status TEXT NOT NULL,
         resolved_thread_id TEXT,
+        resolved_thread_session_id TEXT,
+        emitted_event_watch_id UUID,
         emitted_event_id UUID,
         error TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -247,7 +262,8 @@ export class PostgresWatchStore implements WatchStore {
         watch_id UUID NOT NULL REFERENCES ${this.tables.watches}(id) ON DELETE CASCADE,
         session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
         created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
-        resolved_thread_id TEXT NOT NULL,
+        resolved_thread_id TEXT,
+        resolved_thread_session_id TEXT,
         event_kind TEXT NOT NULL,
         summary TEXT NOT NULL,
         dedupe_key TEXT NOT NULL,
@@ -262,6 +278,270 @@ export class PostgresWatchStore implements WatchStore {
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_watch_events_watch_created_idx`)}
       ON ${this.tables.watchEvents} (watch_id, created_at DESC)
+    `);
+    await this.pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_watch_events_watch_id_id_idx`)}
+      ON ${this.tables.watchEvents} (watch_id, id)
+    `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.watchRuns}
+      ADD COLUMN IF NOT EXISTS resolved_thread_session_id TEXT
+    `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.watchRuns}
+      ADD COLUMN IF NOT EXISTS emitted_event_watch_id UUID
+    `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.watchEvents}
+      ADD COLUMN IF NOT EXISTS resolved_thread_session_id TEXT
+    `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.watchEvents}
+      ALTER COLUMN resolved_thread_id DROP NOT NULL
+    `);
+    await assertIntegrityChecks(this.pool, "Watch schema", [
+      {
+        label: "watch_runs.watch_id orphaned from watches.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.watchRuns} AS run
+          LEFT JOIN ${this.tables.watches} AS watch
+            ON watch.id = run.watch_id
+          WHERE watch.id IS NULL
+        `,
+      },
+      {
+        label: "watch_runs watch/session mismatch",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.watchRuns} AS run
+          INNER JOIN ${this.tables.watches} AS watch
+            ON watch.id = run.watch_id
+          WHERE watch.session_id <> run.session_id
+        `,
+      },
+      {
+        label: "watch_runs.resolved_thread_id orphaned from threads.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.watchRuns} AS run
+          LEFT JOIN ${this.threadTableName} AS thread
+            ON thread.id = run.resolved_thread_id
+          WHERE run.resolved_thread_id IS NOT NULL
+            AND thread.id IS NULL
+        `,
+      },
+      {
+        label: "watch_runs.resolved_thread_id bound to another session",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.watchRuns} AS run
+          INNER JOIN ${this.threadTableName} AS thread
+            ON thread.id = run.resolved_thread_id
+          WHERE run.resolved_thread_id IS NOT NULL
+            AND thread.session_id <> run.session_id
+        `,
+      },
+      {
+        label: "watch_runs.emitted_event_id orphaned from watch_events.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.watchRuns} AS run
+          LEFT JOIN ${this.tables.watchEvents} AS event
+            ON event.id = run.emitted_event_id
+          WHERE run.emitted_event_id IS NOT NULL
+            AND event.id IS NULL
+        `,
+      },
+      {
+        label: "watch_runs.emitted_event_id bound to another watch",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.watchRuns} AS run
+          INNER JOIN ${this.tables.watchEvents} AS event
+            ON event.id = run.emitted_event_id
+          WHERE run.emitted_event_id IS NOT NULL
+            AND event.watch_id <> run.watch_id
+        `,
+      },
+      {
+        label: "watch_events watch/session mismatch",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.watchEvents} AS event
+          INNER JOIN ${this.tables.watches} AS watch
+            ON watch.id = event.watch_id
+          WHERE watch.session_id <> event.session_id
+        `,
+      },
+      {
+        label: "watch_events.resolved_thread_id orphaned from threads.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.watchEvents} AS event
+          LEFT JOIN ${this.threadTableName} AS thread
+            ON thread.id = event.resolved_thread_id
+          WHERE event.resolved_thread_id IS NOT NULL
+            AND thread.id IS NULL
+        `,
+      },
+      {
+        label: "watch_events.resolved_thread_id bound to another session",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.watchEvents} AS event
+          INNER JOIN ${this.threadTableName} AS thread
+            ON thread.id = event.resolved_thread_id
+          WHERE event.resolved_thread_id IS NOT NULL
+            AND thread.session_id <> event.session_id
+        `,
+      },
+    ]);
+    await this.pool.query(`
+      UPDATE ${this.tables.watchRuns}
+      SET resolved_thread_session_id = NULL
+      WHERE resolved_thread_id IS NULL
+        AND resolved_thread_session_id IS NOT NULL
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.watchRuns}
+      SET resolved_thread_session_id = thread.session_id
+      FROM ${this.threadTableName} AS thread
+      WHERE ${this.tables.watchRuns}.resolved_thread_id IS NOT NULL
+        AND thread.id = ${this.tables.watchRuns}.resolved_thread_id
+        AND (
+          ${this.tables.watchRuns}.resolved_thread_session_id IS NULL
+          OR ${this.tables.watchRuns}.resolved_thread_session_id <> thread.session_id
+        )
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.watchRuns}
+      SET emitted_event_watch_id = NULL
+      WHERE emitted_event_id IS NULL
+        AND emitted_event_watch_id IS NOT NULL
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.watchRuns}
+      SET emitted_event_watch_id = event.watch_id
+      FROM ${this.tables.watchEvents} AS event
+      WHERE ${this.tables.watchRuns}.emitted_event_id IS NOT NULL
+        AND event.id = ${this.tables.watchRuns}.emitted_event_id
+        AND (
+          ${this.tables.watchRuns}.emitted_event_watch_id IS NULL
+          OR ${this.tables.watchRuns}.emitted_event_watch_id <> event.watch_id
+        )
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.watchEvents}
+      SET resolved_thread_session_id = NULL
+      WHERE resolved_thread_id IS NULL
+        AND resolved_thread_session_id IS NOT NULL
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.watchEvents}
+      SET resolved_thread_session_id = thread.session_id
+      FROM ${this.threadTableName} AS thread
+      WHERE ${this.tables.watchEvents}.resolved_thread_id IS NOT NULL
+        AND thread.id = ${this.tables.watchEvents}.resolved_thread_id
+        AND (
+          ${this.tables.watchEvents}.resolved_thread_session_id IS NULL
+          OR ${this.tables.watchEvents}.resolved_thread_session_id <> thread.session_id
+        )
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.watchRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_watch_scope_fk`)}
+      FOREIGN KEY (session_id, watch_id)
+      REFERENCES ${this.tables.watches}(session_id, id)
+      ON DELETE CASCADE
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.watchRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_resolved_thread_fk`)}
+      FOREIGN KEY (resolved_thread_id)
+      REFERENCES ${this.threadTableName}(id)
+      ON DELETE SET NULL
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.watchRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_emitted_event_fk`)}
+      FOREIGN KEY (emitted_event_id)
+      REFERENCES ${this.tables.watchEvents}(id)
+      ON DELETE SET NULL
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.watchRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_emitted_event_scope_check`)}
+      CHECK (
+        (
+          emitted_event_id IS NULL
+          AND emitted_event_watch_id IS NULL
+        ) OR (
+          emitted_event_id IS NOT NULL
+          AND emitted_event_watch_id = watch_id
+        )
+      )
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.watchRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_emitted_event_scope_fk`)}
+      FOREIGN KEY (emitted_event_watch_id, emitted_event_id)
+      REFERENCES ${this.tables.watchEvents}(watch_id, id)
+      ON DELETE SET NULL
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.watchRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_resolved_thread_scope_check`)}
+      CHECK (
+        (
+          resolved_thread_id IS NULL
+          AND resolved_thread_session_id IS NULL
+        ) OR (
+          resolved_thread_id IS NOT NULL
+          AND resolved_thread_session_id = session_id
+        )
+      )
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.watchRuns}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_resolved_thread_scope_fk`)}
+      FOREIGN KEY (resolved_thread_session_id, resolved_thread_id)
+      REFERENCES ${this.threadTableName}(session_id, id)
+      ON DELETE SET NULL
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.watchEvents}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_events_watch_scope_fk`)}
+      FOREIGN KEY (session_id, watch_id)
+      REFERENCES ${this.tables.watches}(session_id, id)
+      ON DELETE CASCADE
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.watchEvents}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_events_resolved_thread_fk`)}
+      FOREIGN KEY (resolved_thread_id)
+      REFERENCES ${this.threadTableName}(id)
+      ON DELETE SET NULL
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.watchEvents}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_events_resolved_thread_scope_check`)}
+      CHECK (
+        (
+          resolved_thread_id IS NULL
+          AND resolved_thread_session_id IS NULL
+        ) OR (
+          resolved_thread_id IS NOT NULL
+          AND resolved_thread_session_id = session_id
+        )
+      )
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.watchEvents}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_events_resolved_thread_scope_fk`)}
+      FOREIGN KEY (resolved_thread_session_id, resolved_thread_id)
+      REFERENCES ${this.threadTableName}(session_id, id)
+      ON DELETE SET NULL
     `);
   }
 
@@ -566,6 +846,10 @@ export class PostgresWatchStore implements WatchStore {
         UPDATE ${this.tables.watchRuns}
         SET status = 'running',
             resolved_thread_id = COALESCE($2, resolved_thread_id),
+            resolved_thread_session_id = CASE
+              WHEN COALESCE($2, resolved_thread_id) IS NULL THEN NULL
+              ELSE session_id
+            END,
             started_at = COALESCE(started_at, NOW())
         WHERE id = $1
         RETURNING *
@@ -596,6 +880,14 @@ export class PostgresWatchStore implements WatchStore {
           UPDATE ${this.tables.watchRuns}
           SET status = $2,
               resolved_thread_id = COALESCE($3, resolved_thread_id),
+              resolved_thread_session_id = CASE
+                WHEN COALESCE($3, resolved_thread_id) IS NULL THEN NULL
+                ELSE session_id
+              END,
+              emitted_event_watch_id = CASE
+                WHEN COALESCE($4, emitted_event_id) IS NULL THEN NULL
+                ELSE watch_id
+              END,
               emitted_event_id = COALESCE($4, emitted_event_id),
               error = NULL,
               finished_at = NOW()
@@ -659,6 +951,10 @@ export class PostgresWatchStore implements WatchStore {
           UPDATE ${this.tables.watchRuns}
           SET status = 'failed',
               resolved_thread_id = COALESCE($2, resolved_thread_id),
+              resolved_thread_session_id = CASE
+                WHEN COALESCE($2, resolved_thread_id) IS NULL THEN NULL
+                ELSE session_id
+              END,
               error = $3,
               finished_at = NOW()
           WHERE id = $1
@@ -738,6 +1034,7 @@ export class PostgresWatchStore implements WatchStore {
           session_id,
           created_by_identity_id,
           resolved_thread_id,
+          resolved_thread_session_id,
           event_kind,
           summary,
           dedupe_key,
@@ -751,7 +1048,8 @@ export class PostgresWatchStore implements WatchStore {
           $6,
           $7,
           $8,
-          $9::jsonb
+          $9,
+          $10::jsonb
         )
         ON CONFLICT (watch_id, dedupe_key) DO NOTHING
         RETURNING *
@@ -762,6 +1060,7 @@ export class PostgresWatchStore implements WatchStore {
         requireTrimmed("session id", input.sessionId),
         input.createdByIdentityId?.trim() || null,
         requireTrimmed("resolved thread id", input.resolvedThreadId),
+        requireTrimmed("session id", input.sessionId),
         input.eventKind,
         requireTrimmed("summary", input.summary),
         requireTrimmed("dedupe key", input.dedupeKey),

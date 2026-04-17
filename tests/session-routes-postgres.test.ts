@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {SessionRouteRepo} from "../src/domain/sessions/index.js";
+import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createPool() {
   const db = newDb();
@@ -34,8 +35,15 @@ describe("SessionRouteRepo", () => {
     const pool = createPool();
     pools.push(pool);
 
+    const {sessionStore} = await createRuntimeStores(pool);
     const store = new SessionRouteRepo({pool});
     await store.ensureSchema();
+    await sessionStore.createSession({
+      id: "session-a",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-a",
+    });
 
     await store.saveLastRoute({
       sessionId: "session-a",
@@ -77,8 +85,15 @@ describe("SessionRouteRepo", () => {
     const pool = createPool();
     pools.push(pool);
 
+    const {sessionStore} = await createRuntimeStores(pool);
     const store = new SessionRouteRepo({pool});
     await store.ensureSchema();
+    await sessionStore.createSession({
+      id: "session-a",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-a",
+    });
 
     await store.saveLastRoute({
       sessionId: "session-a",
@@ -118,6 +133,7 @@ describe("SessionRouteRepo", () => {
     const pool = createPool();
     pools.push(pool);
 
+    await createRuntimeStores(pool);
     const store = new SessionRouteRepo({pool});
     await store.ensureSchema();
 
@@ -148,6 +164,7 @@ describe("SessionRouteRepo", () => {
     const pool = createPool();
     pools.push(pool);
 
+    await createRuntimeStores(pool);
     const store = new SessionRouteRepo({pool});
     await store.ensureSchema();
 
