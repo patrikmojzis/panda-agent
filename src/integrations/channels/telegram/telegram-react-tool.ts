@@ -8,6 +8,85 @@ import type {DefaultAgentSessionContext} from "../../../app/runtime/panda-sessio
 import {TELEGRAM_SOURCE} from "./config.js";
 import {parseTelegramConversationId} from "./conversation-id.js";
 
+// Keep Telegram's provider-specific reaction allowlist out of the Zod schema.
+// Tool schemas are exposed to the model, and this list is runtime validation
+// detail, not something worth carrying around in prompt context every turn.
+const ALLOWED_TELEGRAM_REACTION_EMOJIS = new Set([
+  "❤",
+  "👍",
+  "👎",
+  "🔥",
+  "🥰",
+  "👏",
+  "😁",
+  "🤔",
+  "🤯",
+  "😱",
+  "🤬",
+  "😢",
+  "🎉",
+  "🤩",
+  "🤮",
+  "💩",
+  "🙏",
+  "👌",
+  "🕊",
+  "🤡",
+  "🥱",
+  "🥴",
+  "😍",
+  "🐳",
+  "❤‍🔥",
+  "🌚",
+  "🌭",
+  "💯",
+  "🤣",
+  "⚡",
+  "🍌",
+  "🏆",
+  "💔",
+  "🤨",
+  "😐",
+  "🍓",
+  "🍾",
+  "💋",
+  "🖕",
+  "😈",
+  "😴",
+  "😭",
+  "🤓",
+  "👻",
+  "👨‍💻",
+  "👀",
+  "🎃",
+  "🙈",
+  "😇",
+  "😨",
+  "🤝",
+  "✍",
+  "🤗",
+  "🫡",
+  "🎅",
+  "🎄",
+  "☃",
+  "💅",
+  "🤪",
+  "🗿",
+  "🆒",
+  "💘",
+  "🙉",
+  "🦄",
+  "😘",
+  "💊",
+  "🙊",
+  "😎",
+  "👾",
+  "🤷‍♂",
+  "🤷",
+  "🤷‍♀",
+  "😡",
+]);
+
 const telegramReactToolSchema = z.object({
   emoji: z.string().trim().min(1).optional(),
   remove: z.boolean().optional(),
@@ -59,6 +138,14 @@ function parseReactionConversationId(value: string) {
   } catch (error) {
     throw new ToolError(error instanceof Error ? error.message : String(error));
   }
+}
+
+function requireAllowedTelegramReactionEmoji(value: string): string {
+  if (!ALLOWED_TELEGRAM_REACTION_EMOJIS.has(value)) {
+    throw new ToolError("telegram_react emoji is unsupported by Telegram.");
+  }
+
+  return value;
 }
 
 function readCurrentTelegramTarget(context: DefaultAgentSessionContext | undefined): TelegramReactionTarget | null {
@@ -170,7 +257,7 @@ export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, Defa
     parseReactionConversationId(target.conversationId);
     const messageId = parseTelegramMessageId(messageIdValue);
     const remove = args.remove === true;
-    const resolvedEmoji = remove ? "" : args.emoji!.trim();
+    const resolvedEmoji = remove ? "" : requireAllowedTelegramReactionEmoji(args.emoji!.trim());
     await queue.enqueueAction({
       channel: TELEGRAM_SOURCE,
       connectorKey: target.connectorKey,

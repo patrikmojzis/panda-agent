@@ -139,6 +139,29 @@ describe("TelegramReactTool", () => {
     });
   });
 
+  it("rejects emojis Telegram does not support", async () => {
+    const channelActionQueue = createQueue();
+    const tool = new TelegramReactTool();
+
+    await expect(tool.run({
+      emoji: "💪",
+    }, createRunContext({
+      channelActionQueue,
+      currentInput: {
+        source: "telegram",
+        externalMessageId: "555",
+        metadata: {
+          route: {
+            connectorKey: "8669743878",
+            externalConversationId: "1615376408",
+          },
+        },
+      },
+    }))).rejects.toThrow("telegram_react emoji is unsupported by Telegram.");
+
+    expect(channelActionQueue.enqueueAction).not.toHaveBeenCalled();
+  });
+
   it("requires messageId when the current input is not Telegram", async () => {
     const channelActionQueue = createQueue();
     const tool = new TelegramReactTool();
