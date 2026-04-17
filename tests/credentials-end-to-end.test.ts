@@ -188,14 +188,14 @@ describe("credentials end-to-end", () => {
     await coordinator.submitInput("thread-credentials-e2e", {
       message: stringToUserMessage("Store my Notion key and make sure bash sees it."),
       source: "tui",
-      identityId: "local",
+      identityId: "alice-id",
     });
     await coordinator.waitForIdle("thread-credentials-e2e");
 
     await expect(credentialStore.getCredentialExact("NOTION_API_KEY", {
       scope: "relationship",
       agentKey: "panda",
-      identityId: "local",
+      identityId: "alice-id",
     })).resolves.toMatchObject({
       scope: "relationship",
     });
@@ -281,7 +281,7 @@ describe("credentials end-to-end", () => {
     await coordinator.submitInput("thread-credentials-redacted-bash", {
       message: stringToUserMessage("Save my key and print it"),
       source: "tui",
-      identityId: "local",
+      identityId: "alice-id",
     });
     await coordinator.waitForIdle("thread-credentials-redacted-bash");
 

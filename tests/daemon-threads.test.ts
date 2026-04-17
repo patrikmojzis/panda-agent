@@ -4,11 +4,10 @@ import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {DEFAULT_IDENTITY_ID} from "../src/domain/identity/index.js";
 import {createDaemonThreadHelpers} from "../src/app/runtime/daemon-threads.js";
 import {Agent, BashTool, RunContext,} from "../src/index.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
-import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
+import {TEST_IDENTITY_ID, TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createRunContext(context: Record<string, unknown>): RunContext<Record<string, unknown>> {
   return new RunContext({
@@ -36,7 +35,7 @@ describe("createDaemonThreadHelpers", () => {
 
   function createIdentity() {
     return {
-      id: DEFAULT_IDENTITY_ID,
+      id: TEST_IDENTITY_ID,
       handle: "home",
       displayName: "Home",
       status: "active" as const,
@@ -51,6 +50,7 @@ describe("createDaemonThreadHelpers", () => {
     pairings?: readonly {agentKey: string}[];
     currentThreadId?: string;
     createdByIdentityId?: string;
+    getIdentity?: (identityId: string) => Promise<ReturnType<typeof createIdentity>>;
     bashJobService?: { cancelThreadJobs(threadId: string): Promise<void> };
     coordinator?: {
       abort(threadId: string, reason?: string): Promise<boolean>;
@@ -92,7 +92,7 @@ describe("createDaemonThreadHelpers", () => {
           },
           identityStore: {
             ensureIdentity: vi.fn(async () => identity),
-            getIdentity: vi.fn(async () => identity),
+            getIdentity: vi.fn(async (identityId: string) => await (options.getIdentity?.(identityId) ?? Promise.resolve(identity))),
           },
           sessionStore: {
             getMainSession: vi.fn(async (agentKey: string) => {
@@ -194,6 +194,19 @@ describe("createDaemonThreadHelpers", () => {
     })).rejects.toThrow("Identity home is not paired to agent panda.");
   });
 
+  it("fails on unknown identity ids instead of auto-healing them", async () => {
+    const {helpers} = createHelpers({
+      getIdentity: async (identityId: string) => {
+        throw new Error(`Unknown identity ${identityId}`);
+      },
+    });
+
+    await expect(helpers.openMainSession({
+      identityId: "missing-identity",
+      agentKey: "panda",
+    })).rejects.toThrow("Unknown identity missing-identity");
+  });
+
   it("stores canonical host cwd for new main sessions even in remote mode", async () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
     vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
@@ -224,7 +237,7 @@ describe("createDaemonThreadHelpers", () => {
       context: {
         agentKey: "panda",
         sessionId: "session-main",
-        identityId: DEFAULT_IDENTITY_ID,
+        identityId: TEST_IDENTITY_ID,
         identityHandle: "home",
       },
     } as any);
@@ -254,12 +267,12 @@ describe("createDaemonThreadHelpers", () => {
       workspace,
       pairings: [{agentKey: "panda"}],
       currentThreadId: "thread-old-home",
-      createdByIdentityId: DEFAULT_IDENTITY_ID,
+      createdByIdentityId: TEST_IDENTITY_ID,
       bashJobService,
     });
 
     const result = await helpers.handleResetSession({
-      identityId: DEFAULT_IDENTITY_ID,
+      identityId: TEST_IDENTITY_ID,
       source: "tui",
       threadId: "thread-old-home",
     });

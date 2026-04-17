@@ -2,7 +2,6 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {stringToUserMessage} from "../src/index.js";
-import {DEFAULT_IDENTITY_ID,} from "../src/domain/identity/index.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
@@ -63,12 +62,6 @@ describe("PostgresThreadRuntimeStore", () => {
     pools.push(pool);
 
     const {agentStore, identityStore, threadStore: store} = await createRuntimeStores(pool);
-
-    await expect(identityStore.getIdentity(DEFAULT_IDENTITY_ID)).resolves.toMatchObject({
-      handle: "local",
-      displayName: "Local",
-      status: "active",
-    });
 
     const alice = await identityStore.createIdentity({
       id: "alice-id",

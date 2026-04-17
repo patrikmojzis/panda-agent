@@ -44,7 +44,7 @@ That means:
 Fresh setup:
 
 ```bash
-panda identity create local
+panda identity create alice
 ```
 
 List identities:
@@ -56,13 +56,13 @@ panda identity list
 Pair the identity to an agent:
 
 ```bash
-panda agent pair luna local
+panda agent pair luna alice
 ```
 
 Remove the pairing:
 
 ```bash
-panda agent unpair luna local
+panda agent unpair luna alice
 ```
 
 List pairings for an agent:
@@ -77,22 +77,22 @@ Fresh local setup:
 
 ```bash
 panda agent create luna
-panda identity create local
-panda agent pair luna local
+panda identity create alice
+panda agent pair luna alice
 panda run
-panda chat --identity local --agent luna
+panda chat --identity alice --agent luna
 ```
 
 Open chat when the identity is already paired:
 
 ```bash
-panda chat --identity local --agent luna
+panda chat --identity alice --agent luna
 ```
 
 If the identity is paired to exactly one agent, Panda can infer the agent:
 
 ```bash
-panda chat --identity local
+panda chat --identity alice
 ```
 
 ## Channels

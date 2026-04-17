@@ -1,13 +1,13 @@
 import {randomUUID} from "node:crypto";
 
 import {type MediaDescriptor, relocateMediaDescriptor} from "../../domain/channels/index.js";
-import {createDefaultIdentityInput, type IdentityRecord} from "../../domain/identity/index.js";
+import type {IdentityRecord} from "../../domain/identity/index.js";
 import {createSessionWithInitialThread, resetSessionCurrentThread} from "../../domain/sessions/index.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {
-    CreateBranchSessionRequestPayload,
-    ResetSessionRequestPayload,
-    ResolveMainSessionThreadRequestPayload,
+  CreateBranchSessionRequestPayload,
+  ResetSessionRequestPayload,
+  ResolveMainSessionThreadRequestPayload,
 } from "../../domain/threads/requests/index.js";
 import {PostgresThreadRuntimeStore, type ThreadRecord} from "../../domain/threads/runtime/index.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
@@ -63,9 +63,7 @@ export function createDaemonThreadHelpers(
   context: DaemonContext,
 ): DaemonThreadHelpers {
   const ensureIdentity = async (identityId: string): Promise<IdentityRecord> => {
-    return identityId === createDefaultIdentityInput().id
-      ? context.runtime.identityStore.ensureIdentity(createDefaultIdentityInput())
-      : context.runtime.identityStore.getIdentity(identityId);
+    return context.runtime.identityStore.getIdentity(identityId);
   };
 
   const resolveAccessibleAgentKey = async (

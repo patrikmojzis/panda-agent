@@ -36,8 +36,8 @@ describe("telegram helpers", () => {
   });
 
   it("builds pairing bootstrap text", () => {
-    expect(buildTelegramPairCommand("123", "local")).toBe(
-      "panda telegram pair --identity local --actor 123",
+    expect(buildTelegramPairCommand("123")).toBe(
+      "panda telegram pair --identity <identity-handle> --actor 123",
     );
   });
 

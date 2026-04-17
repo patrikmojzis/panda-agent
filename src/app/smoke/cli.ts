@@ -133,7 +133,7 @@ export function registerSmokeCommand(program: Command): void {
     .option("--session <sessionId>", "Existing session id to target directly", parseSessionId)
     .option("--input <text>", "Input text to send to Panda (repeatable)", collectOption, [])
     .option("--model <selector-or-alias>", "Model selector override")
-    .option("--identity <handle>", "Identity handle to use", parseIdentityHandle)
+    .option("--identity <handle>", "Identity handle to use (defaults to smoke)", parseIdentityHandle)
     .option("--db-url <url>", "Postgres connection string for live smoke (or TEST_DATABASE_URL)")
     .option("--timeout-ms <ms>", "Run timeout in milliseconds", parsePositiveInt)
     .option("--expect-text <text>", "Expected transcript substring (repeatable)", collectOption, [])

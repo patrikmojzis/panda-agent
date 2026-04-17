@@ -91,7 +91,7 @@ export function normalizeTelegramCommand(commandText: string | undefined, botUse
 
 export function buildTelegramPairCommand(
   actorId: string,
-  identityHandle = "local",
+  identityHandle = "<identity-handle>",
 ): string {
   return `panda telegram pair --identity ${identityHandle} --actor ${actorId}`;
 }

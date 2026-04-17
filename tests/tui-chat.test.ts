@@ -364,7 +364,7 @@ describe("ChatApp fresh-session agent selection", () => {
       context: {
         agentKey: "jozef",
         sessionId: "session-branch",
-        identityId: "local",
+        identityId: "test-user",
       },
       createdAt: 1,
       updatedAt: 2,
@@ -380,7 +380,7 @@ describe("ChatApp fresh-session agent selection", () => {
       context: {
         agentKey: "panda",
         sessionId: "session-main",
-        identityId: "local",
+        identityId: "test-user",
       },
       createdAt: 1,
       updatedAt: 1,
@@ -413,7 +413,7 @@ describe("ChatApp fresh-session agent selection", () => {
       context: {
         agentKey: "jozef",
         sessionId: "session-main",
-        identityId: "local",
+        identityId: "test-user",
       },
       createdAt: 1,
       updatedAt: 2,
@@ -429,7 +429,7 @@ describe("ChatApp fresh-session agent selection", () => {
       context: {
         agentKey: "panda",
         sessionId: "session-main",
-        identityId: "local",
+        identityId: "test-user",
       },
       createdAt: 1,
       updatedAt: 1,
@@ -688,7 +688,7 @@ describe("thread usage snapshots", () => {
     const compactBoundary = createCompactBoundaryMessage("Intent:\n- keep going");
     const thread = {
       id: "thread-usage",
-      identityId: "local",
+      identityId: "test-user",
       agentKey: "panda",
       model: "anthropic/claude-opus-4-6",
       thinking: "high" as const,
@@ -809,7 +809,7 @@ describe("ChatApp usage command", () => {
   it("shows a usage snapshot for the current thread", async () => {
     const thread = {
       id: "thread-usage",
-      identityId: "local",
+      identityId: "test-user",
       agentKey: "panda",
       model: "anthropic/claude-opus-4-6",
       thinking: "high" as const,

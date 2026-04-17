@@ -3,22 +3,21 @@ import {randomUUID} from "node:crypto";
 import type {Pool, PoolClient} from "pg";
 
 import {
-    CREATE_RUNTIME_SCHEMA_SQL,
-    quoteIdentifier,
-    toJson,
-    toMillis
+  CREATE_RUNTIME_SCHEMA_SQL,
+  quoteIdentifier,
+  toJson,
+  toMillis
 } from "../../domain/threads/runtime/postgres-shared.js";
 import {buildIdentityTableNames, type IdentityTableNames} from "./postgres-shared.js";
 import {
-    createDefaultIdentityInput,
-    type CreateIdentityBindingInput,
-    type CreateIdentityInput,
-    type EnsureIdentityBindingInput,
-    type IdentityBindingLookup,
-    type IdentityBindingRecord,
-    type IdentityRecord,
-    normalizeIdentityHandle,
-    type UpdateIdentityInput,
+  type CreateIdentityBindingInput,
+  type CreateIdentityInput,
+  type EnsureIdentityBindingInput,
+  type IdentityBindingLookup,
+  type IdentityBindingRecord,
+  type IdentityRecord,
+  normalizeIdentityHandle,
+  type UpdateIdentityInput,
 } from "./types.js";
 import type {IdentityStore} from "./store.js";
 
@@ -158,7 +157,6 @@ export class PostgresIdentityStore implements IdentityStore {
   }
 
   async ensureSchema(): Promise<void> {
-    const localIdentity = createDefaultIdentityInput();
     await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.identities} (
@@ -187,25 +185,6 @@ export class PostgresIdentityStore implements IdentityStore {
       CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_identity_bindings_lookup_idx`)}
       ON ${this.tables.identityBindings} (source, connector_key, external_actor_id)
     `);
-    await this.pool.query(`
-      INSERT INTO ${this.tables.identities} (
-        id,
-        handle,
-        display_name,
-        status
-      ) VALUES (
-        $1,
-        $2,
-        $3,
-        $4
-      )
-      ON CONFLICT (id) DO NOTHING;
-    `, [
-      localIdentity.id,
-      normalizeIdentityHandle(localIdentity.handle),
-      localIdentity.displayName,
-      localIdentity.status ?? "active",
-    ]);
   }
 
   async createIdentity(input: CreateIdentityInput): Promise<IdentityRecord> {

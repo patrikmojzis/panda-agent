@@ -16,7 +16,7 @@ export interface SmokeFollowUpOptions {
   artifactDir: string;
   cwd?: string;
   dbUrl: string;
-  identity?: string;
+  identity: string;
   input?: NodeJS.ReadableStream;
   output?: Writable;
   sessionId?: string;

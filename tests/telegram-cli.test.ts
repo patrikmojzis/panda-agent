@@ -26,11 +26,17 @@ const telegramCliMocks = vi.hoisted(() => {
   class MockPostgresIdentityStore {
     readonly ensureSchema = vi.fn(async () => {});
     readonly ensureIdentity = vi.fn(async () => ({
-      id: "identity-local",
+      id: "identity-test-user",
     }));
-    readonly getIdentityByHandle = vi.fn(async (handle: string) => ({
-      id: `identity-${handle}`,
-    }));
+    readonly getIdentityByHandle = vi.fn(async (handle: string) => {
+      if (handle === "missing-user") {
+        throw new Error("Unknown identity handle missing-user");
+      }
+
+      return {
+        id: `identity-${handle}`,
+      };
+    });
     readonly ensureIdentityBinding = vi.fn(async (input: {
       source: string;
       connectorKey: string;
@@ -89,12 +95,6 @@ vi.mock("../src/integrations/channels/telegram/service.js", () => ({
 
 vi.mock("../src/domain/identity/index.js", () => ({
   PostgresIdentityStore: telegramCliMocks.MockPostgresIdentityStore,
-  createDefaultIdentityInput: () => ({
-    id: "local-id",
-    handle: "local",
-    displayName: "Local",
-    status: "active",
-  }),
 }));
 
 vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
@@ -154,7 +154,7 @@ describe("Telegram CLI", () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     await telegramPairCommand({
-      identity: "local",
+      identity: "alice",
       actor: "123",
       dbUrl: "postgres://telegram-db",
     });
@@ -166,13 +166,13 @@ describe("Telegram CLI", () => {
       expect.any(Function),
     );
     expect(store.ensureSchema).toHaveBeenCalledTimes(1);
-    expect(store.ensureIdentity).toHaveBeenCalledTimes(1);
-    expect(store.getIdentityByHandle).not.toHaveBeenCalled();
+    expect(store.ensureIdentity).not.toHaveBeenCalled();
+    expect(store.getIdentityByHandle).toHaveBeenCalledWith("alice");
     expect(store.ensureIdentityBinding).toHaveBeenCalledWith({
       source: TELEGRAM_SOURCE,
       connectorKey: "42",
       externalActorId: "123",
-      identityId: "identity-local",
+      identityId: "identity-alice",
       metadata: {
         pairedVia: "telegram-cli",
       },
@@ -181,9 +181,21 @@ describe("Telegram CLI", () => {
     expect(write).toHaveBeenCalledWith(
       [
         "Paired Telegram actor 123.",
-        "identity identity-local",
+        "identity identity-alice",
         "connector 42",
       ].join("\n") + "\n",
     );
+  });
+
+  it("fails cleanly when the requested identity does not exist", async () => {
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "telegram-token");
+
+    await expect(telegramPairCommand({
+      identity: "missing-user",
+      actor: "123",
+      dbUrl: "postgres://telegram-db",
+    })).rejects.toThrow("Unknown identity handle missing-user");
+
+    expect(latestStore().ensureIdentityBinding).not.toHaveBeenCalled();
   });
 });

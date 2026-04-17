@@ -189,7 +189,7 @@ async function runBrowserRunnerCommand(options: BrowserRunnerCliOptions): Promis
 function configureChatOptions(command: Command): Command {
   return command
     .option("-m, --model <selector-or-alias>", "Model selector override")
-    .option("--identity <handle>", "Identity handle to use as the active participant", parseIdentityHandle)
+    .option("--identity <handle>", "Identity handle to use as the active participant (required)", parseIdentityHandle)
     .option("--agent <agentKey>", "Agent key to use", parseAgentKey)
     .option("--session <sessionId>", "Open a chat on an existing session id")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION);

@@ -45,13 +45,13 @@ Do this:
 
 ```bash
 panda agent create luna
-panda identity create local
-panda agent pair luna local
+panda identity create alice
+panda agent pair luna alice
 panda run
-panda chat --identity local --agent luna
+panda chat --identity alice --agent luna
 ```
 
-That is the default local setup:
+That is the normal local setup:
 
 1. create the agent
 2. create the identity
@@ -92,7 +92,7 @@ panda session list luna
 Create an identity:
 
 ```bash
-panda identity create local
+panda identity create alice
 ```
 
 Optional display name:
@@ -112,7 +112,7 @@ panda identity list
 Grant access:
 
 ```bash
-panda agent pair luna local
+panda agent pair luna alice
 ```
 
 Check pairings:
@@ -124,7 +124,7 @@ panda agent pairings luna
 Remove a pairing:
 
 ```bash
-panda agent unpair luna local
+panda agent unpair luna alice
 ```
 
 Important rule:
@@ -160,13 +160,13 @@ then you forgot this step.
 Open chat on a specific agent:
 
 ```bash
-panda chat --identity local --agent luna
+panda chat --identity alice --agent luna
 ```
 
 Open a specific session directly:
 
 ```bash
-panda chat --identity local --session 2c8d0a1e-...
+panda chat --identity alice --session 2c8d0a1e-...
 ```
 
 Important behavior:
@@ -211,8 +211,8 @@ That inspect output shows:
 If the identity already exists, you usually only need:
 
 ```bash
-panda agent pair luna local
-panda chat --identity local --agent luna
+panda agent pair luna alice
+panda chat --identity alice --agent luna
 ```
 
 ## Multiple Agents
@@ -220,20 +220,20 @@ panda chat --identity local --agent luna
 One identity can pair with many agents:
 
 ```bash
-panda agent pair work-bot local
-panda agent pair personal-bot local
+panda agent pair work-bot alice
+panda agent pair personal-bot alice
 ```
 
 At that point, this is ambiguous and should fail:
 
 ```bash
-panda chat --identity local
+panda chat --identity alice
 ```
 
 Use this instead:
 
 ```bash
-panda chat --identity local --agent work-bot
+panda chat --identity alice --agent work-bot
 ```
 
 ## Sessions Matter
@@ -266,7 +266,7 @@ Telegram example:
 
 ```bash
 panda telegram whoami
-panda telegram pair --identity local --actor 123456789
+panda telegram pair --identity alice --actor 123456789
 panda telegram run
 ```
 

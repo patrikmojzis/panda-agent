@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_IDENTITY_ID, PostgresIdentityStore,} from "../src/domain/identity/index.js";
+import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 
 describe("PostgresIdentityStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -17,7 +17,7 @@ describe("PostgresIdentityStore", () => {
     }
   });
 
-  it("persists identities and seeds the local identity", async () => {
+  it("persists identities without seeding a built-in default", async () => {
     const db = newDb();
     db.public.registerFunction({
       name: "pg_notify",
@@ -32,11 +32,7 @@ describe("PostgresIdentityStore", () => {
     const store = new PostgresIdentityStore({ pool });
     await store.ensureSchema();
 
-    await expect(store.getIdentity(DEFAULT_IDENTITY_ID)).resolves.toMatchObject({
-      handle: "local",
-      displayName: "Local",
-      status: "active",
-    });
+    await expect(store.listIdentities()).resolves.toEqual([]);
 
     const created = await store.createIdentity({
       id: "alice-id",
@@ -50,7 +46,7 @@ describe("PostgresIdentityStore", () => {
       id: "alice-id",
       displayName: "Alice",
     });
-    await expect(store.listIdentities()).resolves.toHaveLength(2);
+    await expect(store.listIdentities()).resolves.toHaveLength(1);
     await expect(store.createIdentity({
       id: "bad-empty",
       handle: "   ",
@@ -95,7 +91,6 @@ describe("PostgresIdentityStore", () => {
       connectorKey: "bot-main",
       externalActorId: "123",
     })).resolves.toBeNull();
-    await expect(store.listIdentityBindings(DEFAULT_IDENTITY_ID)).resolves.toEqual([]);
     await expect(store.createIdentityBinding({
       id: "00000000-0000-0000-0000-000000000010",
       identityId: "missing",

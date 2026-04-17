@@ -1,9 +1,5 @@
 import type {JsonValue} from "../../kernel/agent/types.js";
 
-export const DEFAULT_IDENTITY_ID = "local";
-export const DEFAULT_IDENTITY_HANDLE = "local";
-export const DEFAULT_IDENTITY_DISPLAY_NAME = "Local";
-
 export type IdentityStatus = "active" | "deleted";
 
 export interface CreateIdentityInput {
@@ -61,13 +57,4 @@ export function normalizeIdentityHandle(value: string): string {
   }
 
   return normalized;
-}
-
-export function createDefaultIdentityInput(): CreateIdentityInput {
-  return {
-    id: DEFAULT_IDENTITY_ID,
-    handle: DEFAULT_IDENTITY_HANDLE,
-    displayName: DEFAULT_IDENTITY_DISPLAY_NAME,
-    status: "active",
-  };
 }

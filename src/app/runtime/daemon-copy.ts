@@ -1,4 +1,3 @@
-import {DEFAULT_IDENTITY_HANDLE} from "../../domain/identity/index.js";
 import {resolveModelSelector} from "../../kernel/agent/index.js";
 import {buildTelegramPairCommand} from "../../integrations/channels/telegram/helpers.js";
 import {resolveProviderApiKey} from "../../integrations/providers/shared/auth.js";
@@ -14,7 +13,7 @@ export function buildMissingRuntimeIdentityIdMessage(kind: string): string {
 
 export function buildTelegramStartText(
   actorId: string,
-  defaultIdentityHandle = DEFAULT_IDENTITY_HANDLE,
+  defaultIdentityHandle = "<identity-handle>",
 ): string {
   return [
     "Pair this Telegram account with Panda by running:",

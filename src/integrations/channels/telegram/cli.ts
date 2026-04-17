@@ -4,7 +4,7 @@ import {Command, InvalidArgumentError} from "commander";
 import {Bot} from "grammy";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../../app/cli-shared.js";
-import {createDefaultIdentityInput, PostgresIdentityStore} from "../../../domain/identity/index.js";
+import {PostgresIdentityStore} from "../../../domain/identity/index.js";
 import {parseIdentityHandle} from "../../../domain/identity/cli.js";
 import {ensureSchemas, withPostgresPool} from "../../../app/runtime/postgres-bootstrap.js";
 import {requireTelegramBotToken, resolveTelegramMediaDir, TELEGRAM_SOURCE} from "./config.js";
@@ -77,12 +77,9 @@ export async function telegramWhoamiCommand(): Promise<void> {
 
 export async function telegramPairCommand(options: TelegramPairCliOptions): Promise<void> {
   const botIdentity = await resolveTelegramBotIdentity();
-  const defaultIdentity = createDefaultIdentityInput();
 
   await withTelegramIdentityStore(options, async (store) => {
-    const identity = options.identity === defaultIdentity.handle
-      ? await store.ensureIdentity(defaultIdentity)
-      : await store.getIdentityByHandle(options.identity);
+    const identity = await store.getIdentityByHandle(options.identity);
     const binding = await store.ensureIdentityBinding({
       source: TELEGRAM_SOURCE,
       connectorKey: botIdentity.connectorKey,

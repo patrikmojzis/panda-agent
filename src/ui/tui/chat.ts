@@ -728,7 +728,7 @@ export class ChatApp {
       isRunning: this.isRunning,
       runStartedAt: this.runStartedAt,
       agentLabel: this.currentAgentLabel,
-      identityHandle: this.services?.identity?.handle ?? this.identity ?? "local",
+      identityHandle: this.services?.identity?.handle ?? this.identity ?? "-",
       modeLabel: this.modeLabel,
     });
   }

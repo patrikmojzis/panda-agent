@@ -5,8 +5,7 @@ import path from "node:path";
 import type {Message} from "@mariozechner/pi-ai";
 
 import {
-    createDefaultIdentityInput,
-    DEFAULT_IDENTITY_HANDLE,
+    type CreateIdentityInput,
     type IdentityRecord,
     normalizeIdentityHandle,
     PostgresIdentityStore,
@@ -142,6 +141,19 @@ function trimNonEmptyString(value: string | null | undefined): string | undefine
 
   const trimmed = value.trim();
   return trimmed || undefined;
+}
+
+const DEFAULT_SMOKE_IDENTITY_ID = "smoke";
+const DEFAULT_SMOKE_IDENTITY_HANDLE = "smoke";
+const DEFAULT_SMOKE_IDENTITY_DISPLAY_NAME = "Smoke";
+
+function createDefaultSmokeIdentityInput(): CreateIdentityInput {
+  return {
+    id: DEFAULT_SMOKE_IDENTITY_ID,
+    handle: DEFAULT_SMOKE_IDENTITY_HANDLE,
+    displayName: DEFAULT_SMOKE_IDENTITY_DISPLAY_NAME,
+    status: "active",
+  };
 }
 
 function isMissingAgentError(error: unknown, agentKey: string): boolean {
@@ -332,11 +344,7 @@ async function ensureSmokeIdentity(
 ): Promise<IdentityRecord> {
   const normalizedHandle = requestedHandle
     ? normalizeIdentityHandle(requestedHandle)
-    : DEFAULT_IDENTITY_HANDLE;
-
-  if (normalizedHandle === DEFAULT_IDENTITY_HANDLE) {
-    return store.ensureIdentity(createDefaultIdentityInput());
-  }
+    : DEFAULT_SMOKE_IDENTITY_HANDLE;
 
   try {
     return await store.getIdentityByHandle(normalizedHandle);
@@ -344,6 +352,10 @@ async function ensureSmokeIdentity(
     if (!isMissingIdentityHandleError(error, normalizedHandle)) {
       throw error;
     }
+  }
+
+  if (normalizedHandle === DEFAULT_SMOKE_IDENTITY_HANDLE) {
+    return store.ensureIdentity(createDefaultSmokeIdentityInput());
   }
 
   return store.createIdentity({
@@ -547,7 +559,7 @@ export async function runSmoke(input: SmokeInput): Promise<SmokeResult> {
   let daemonError: Error | null = null;
   let databaseTarget: SmokeDatabaseTarget | null = null;
   let resolvedAgentKey = requestedAgentKey ?? "unknown";
-  let identityHandle = normalizeIdentityHandle(input.identity ?? DEFAULT_IDENTITY_HANDLE);
+  let identityHandle = normalizeIdentityHandle(input.identity ?? DEFAULT_SMOKE_IDENTITY_HANDLE);
   let targetSessionId = requestedSessionId;
   let thread: ThreadRecord | null = null;
   let transcript: readonly ThreadMessageRecord[] = [];

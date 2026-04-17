@@ -42,14 +42,14 @@ const credentialCliMocks = vi.hoisted(() => {
     readonly ensureSchema = vi.fn(async () => {});
     readonly getIdentity = vi.fn(async (identityId: string) => ({
       id: identityId,
-      handle: identityId === "local-id" ? "local" : "alice",
+      handle: identityId === "test-user-id" ? "test-user" : "alice",
       displayName: identityId,
       status: "active" as const,
       createdAt: 1,
       updatedAt: 1,
     }));
     readonly getIdentityByHandle = vi.fn(async (handle: string) => ({
-      id: handle === "local" ? "local-id" : `${handle}-id`,
+      id: handle === "test-user" ? "test-user-id" : `${handle}-id`,
       handle,
       displayName: handle,
       status: "active" as const,
@@ -108,7 +108,7 @@ const credentialCliMocks = vi.hoisted(() => {
         valuePreview: "sk-l...8484",
         scope: "relationship" as const,
         agentKey: "panda",
-        identityId: "local-id",
+        identityId: "test-user-id",
         keyVersion: 1,
         createdAt: 1,
         updatedAt: 2,
@@ -234,7 +234,7 @@ describe("Credential CLI", () => {
         "--agent",
         "panda",
         "--identity",
-        "local",
+        "test-user",
         "--db-url",
         "postgres://credentials-db",
       ],
@@ -246,14 +246,14 @@ describe("Credential CLI", () => {
       value: "sk-live-339398484",
       scope: "relationship",
       agentKey: "panda",
-      identityId: "local-id",
+      identityId: "test-user-id",
     });
     expect(write).toHaveBeenCalledWith(
       [
         "Stored OPENAI_API_KEY.",
         "scope relationship",
         "agent panda",
-        "identity local",
+        "identity test-user",
         "value sk-l...8484",
       ].join("\n") + "\n",
     );
@@ -300,7 +300,7 @@ describe("Credential CLI", () => {
         "--agent",
         "panda",
         "--identity",
-        "local",
+        "test-user",
         "--db-url",
         "postgres://credentials-db",
       ],
@@ -311,14 +311,14 @@ describe("Credential CLI", () => {
     expect(latestCredentialStore().deleteCredential).toHaveBeenCalledWith("OPENAI_API_KEY", {
       scope: "relationship",
       agentKey: "panda",
-      identityId: "local-id",
+      identityId: "test-user-id",
     });
     expect(write).toHaveBeenCalledWith(
       [
         "Cleared OPENAI_API_KEY.",
         "scope relationship",
         "agent panda",
-        "identity local",
+        "identity test-user",
       ].join("\n") + "\n",
     );
   });
@@ -339,7 +339,7 @@ describe("Credential CLI", () => {
         "--agent",
         "panda",
         "--identity",
-        "local",
+        "test-user",
         "--db-url",
         "postgres://credentials-db",
       ],
@@ -349,14 +349,14 @@ describe("Credential CLI", () => {
     expect(listService.listCredentials).toHaveBeenCalledWith({});
     expect(latestService().resolveCredential).toHaveBeenCalledWith("NOTION_API_KEY", {
       agentKey: "panda",
-      identityId: "local-id",
+      identityId: "test-user-id",
     });
     expect(write).toHaveBeenCalledWith(
       [
         "OPENAI_API_KEY",
         "  scope relationship",
         "  agent panda",
-        "  identity local",
+        "  identity test-user",
         "  value sk-l...8484",
         "  updated 1970-01-01T00:00:00.002Z",
       ].join("\n") + "\n",
@@ -384,7 +384,7 @@ describe("Credential CLI", () => {
         "--agent",
         "panda",
         "--identity",
-        "local",
+        "test-user",
         "--db-url",
         "postgres://credentials-db",
       ],

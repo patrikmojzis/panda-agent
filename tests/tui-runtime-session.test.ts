@@ -5,9 +5,9 @@ import {resolveChatDisplayedCwd} from "../src/ui/tui/chat-session.js";
 const tuiRuntimeSessionMocks = vi.hoisted(() => {
   const client = {
     identity: {
-      id: "local",
-      handle: "local",
-      displayName: "Local",
+      id: "test-user",
+      handle: "test-user",
+      displayName: "Test User",
       status: "active" as const,
       createdAt: 1,
       updatedAt: 1,
@@ -73,7 +73,7 @@ describe("createChatRuntime session wiring", () => {
 
   it("forwards the configured agent into main-session resolution", async () => {
     const runtime = await createChatRuntime({
-      identity: "local",
+      identity: "test-user",
       agent: "luna",
       model: "openai-codex/gpt-5.4",
     });
@@ -90,7 +90,7 @@ describe("createChatRuntime session wiring", () => {
 
   it("leaves agentKey unset when chat did not explicitly choose an agent", async () => {
     const runtime = await createChatRuntime({
-      identity: "local",
+      identity: "test-user",
       model: "openai-codex/gpt-5.4",
     });
 
@@ -106,7 +106,7 @@ describe("createChatRuntime session wiring", () => {
 
   it("forwards agentKey when resetting the current session", async () => {
     const runtime = await createChatRuntime({
-      identity: "local",
+      identity: "test-user",
       agent: "jozef",
       model: "openai-codex/gpt-5.4",
     });
@@ -122,6 +122,14 @@ describe("createChatRuntime session wiring", () => {
       sessionId: undefined,
       thinking: undefined,
     });
+  });
+
+  it("fails loudly when chat starts without an explicit identity", async () => {
+    await expect(createChatRuntime({
+      model: "openai-codex/gpt-5.4",
+    })).rejects.toThrow("Panda chat requires --identity <handle>.");
+
+    expect(tuiRuntimeSessionMocks.createRuntimeClient).not.toHaveBeenCalled();
   });
 
   it("shows the remote runner cwd for stored agent-home paths", () => {

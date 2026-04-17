@@ -2,12 +2,7 @@ import type {PoolClient} from "pg";
 
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {PostgresAgentStore} from "../../domain/agents/index.js";
-import {
-    createDefaultIdentityInput,
-    DEFAULT_IDENTITY_HANDLE,
-    type IdentityRecord,
-    PostgresIdentityStore,
-} from "../../domain/identity/index.js";
+import {type IdentityRecord, normalizeIdentityHandle, PostgresIdentityStore,} from "../../domain/identity/index.js";
 import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {DaemonStateRepo} from "./state/repo.js";
 import {
@@ -36,8 +31,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function requireRuntimeIdentityHandle(value: string | null | undefined): string {
+  const trimmed = trimNonEmptyString(value);
+  if (!trimmed) {
+    throw new Error("Runtime client requires an explicit identity handle.");
+  }
+
+  return normalizeIdentityHandle(trimmed);
+}
+
 export interface RuntimeClientOptions {
-  identity?: string;
+  identity: string;
   dbUrl?: string;
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
 }
@@ -167,10 +171,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       daemonState,
     ]);
 
-    const requestedIdentityHandle = trimNonEmptyString(options.identity) ?? DEFAULT_IDENTITY_HANDLE;
-    const identity = requestedIdentityHandle === DEFAULT_IDENTITY_HANDLE
-      ? await identityStore.ensureIdentity(createDefaultIdentityInput())
-      : await identityStore.getIdentityByHandle(requestedIdentityHandle);
+    const identity = await identityStore.getIdentityByHandle(requireRuntimeIdentityHandle(options.identity));
 
     if (options.onStoreNotification) {
       unsubscribe = await listenThreadNotifications({

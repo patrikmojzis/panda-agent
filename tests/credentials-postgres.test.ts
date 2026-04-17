@@ -163,7 +163,7 @@ describe("PostgresCredentialStore", () => {
       envKey: "DATABASE_URL",
       value: "nope",
       scope: "identity",
-      identityId: "local",
+      identityId: "test-user",
     })).rejects.toThrow("reserved");
   });
 

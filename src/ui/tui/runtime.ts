@@ -58,9 +58,18 @@ function trimNonEmptyString(value: string | null | undefined): string | undefine
   return trimmed || undefined;
 }
 
+function requireChatIdentityHandle(value: string | undefined): string {
+  const identity = trimNonEmptyString(value);
+  if (!identity) {
+    throw new Error("Panda chat requires --identity <handle>. Create one with `panda identity create <handle>`.");
+  }
+
+  return identity;
+}
+
 export async function createChatRuntime(options: ChatRuntimeOptions): Promise<ChatRuntimeServices> {
   const client = await createRuntimeClient({
-    identity: options.identity,
+    identity: requireChatIdentityHandle(options.identity),
     dbUrl: options.dbUrl,
     onStoreNotification: options.onStoreNotification,
   });

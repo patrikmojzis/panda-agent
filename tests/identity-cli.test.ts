@@ -13,9 +13,9 @@ const identityCliMocks = vi.hoisted(() => {
     readonly ensureSchema = vi.fn(async () => {});
     readonly listIdentities = vi.fn(async () => ([
       {
-        id: "local",
-        handle: "local",
-        displayName: "Local",
+        id: "test-user",
+        handle: "test-user",
+        displayName: "Test User",
         status: "active" as const,
         createdAt: Date.UTC(2026, 3, 10, 12, 30, 0),
         updatedAt: Date.UTC(2026, 3, 10, 12, 30, 0),
@@ -107,7 +107,7 @@ describe("Identity CLI", () => {
     );
     expect(identityCliMocks.pool.end).toHaveBeenCalledOnce();
     expect(write).toHaveBeenCalledWith(
-      "local\n  id local · status active\n  created 2026-04-10T12:30:00.000Z\n\n",
+      "test-user\n  id test-user · status active\n  created 2026-04-10T12:30:00.000Z\n\n",
     );
   });
 

@@ -328,7 +328,7 @@ describe("Env value tools", () => {
     await coordinator.submitInput("thread-credentials-redaction", {
       message: stringToUserMessage("Save my key"),
       source: "tui",
-      identityId: "local",
+      identityId: "alice-id",
     });
     await coordinator.waitForIdle("thread-credentials-redaction");
 

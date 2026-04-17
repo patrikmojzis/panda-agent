@@ -69,17 +69,15 @@ That means:
 - one agent can pair with many identities
 - pairing is global per agent, not per session
 
-## Default Local Identity
+## No Built-In Identity
 
-Panda still seeds a default identity automatically:
+Panda does not seed a built-in identity anymore.
 
-- `id`: `local`
-- `handle`: `local`
-- `displayName`: `Local`
+Operators create identities explicitly, for example:
 
-That keeps the CLI and TUI usable without ceremony.
-
-It does not imply a default agent anymore.
+- `id`: `alice`
+- `handle`: `alice`
+- `displayName`: `Alice`
 
 ## Runtime Invariants
 
@@ -87,8 +85,7 @@ The TUI/client still runs as one selected identity at a time.
 
 That identity is resolved from:
 
-- `--identity <handle>` if provided
-- otherwise the default `local` identity
+- explicit `--identity <handle>`
 
 Agent access is then checked through pairings:
 

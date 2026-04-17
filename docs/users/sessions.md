@@ -78,7 +78,7 @@ panda session bind-conversation 2c8d0a1e-... telegram main 123456
 Open chat on an agent's main session:
 
 ```bash
-panda chat --identity local --agent luna
+panda chat --identity alice --agent luna
 ```
 
 If an identity is paired to exactly one agent, Panda can infer the agent.
@@ -87,7 +87,7 @@ If that identity is paired to multiple agents, `--agent` is required.
 You can also open a session directly:
 
 ```bash
-panda chat --identity local --session 2c8d0a1e-...
+panda chat --identity alice --session 2c8d0a1e-...
 ```
 
 ## Channels

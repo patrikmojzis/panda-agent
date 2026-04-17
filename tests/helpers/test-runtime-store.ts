@@ -2,11 +2,8 @@ import {randomUUID} from "node:crypto";
 
 import type {IdentityStore} from "../../src/domain/identity/store.js";
 import {
-    createDefaultIdentityInput,
     type CreateIdentityBindingInput,
     type CreateIdentityInput,
-    DEFAULT_IDENTITY_HANDLE,
-    DEFAULT_IDENTITY_ID,
     type EnsureIdentityBindingInput,
     type IdentityBindingLookup,
     type IdentityBindingRecord,
@@ -46,6 +43,9 @@ function requiresPostgresError(message: string): Error {
   return new Error(message);
 }
 
+export const TEST_IDENTITY_ID = "test-user";
+export const TEST_IDENTITY_HANDLE = "test-user";
+
 interface TestThreadState {
   thread: ThreadRecord;
   nextMessageSequence: number;
@@ -56,55 +56,55 @@ interface TestThreadState {
 }
 
 export class TestIdentityStore implements IdentityStore {
-  private readonly localIdentity: IdentityRecord;
+  private readonly testIdentity: IdentityRecord;
 
   constructor() {
     const now = Date.now();
-    const localIdentity = createDefaultIdentityInput();
-    this.localIdentity = {
-      ...localIdentity,
-      status: localIdentity.status ?? "active",
-      handle: normalizeIdentityHandle(localIdentity.handle),
+    this.testIdentity = {
+      id: TEST_IDENTITY_ID,
+      handle: TEST_IDENTITY_HANDLE,
+      displayName: "Test User",
+      status: "active",
       createdAt: now,
       updatedAt: now,
     };
   }
 
   async createIdentity(input: CreateIdentityInput): Promise<IdentityRecord> {
-    if (input.id === DEFAULT_IDENTITY_ID || normalizeIdentityHandle(input.handle) === DEFAULT_IDENTITY_HANDLE) {
-      throw new Error(`Identity ${DEFAULT_IDENTITY_ID} already exists.`);
+    if (input.id === TEST_IDENTITY_ID || normalizeIdentityHandle(input.handle) === TEST_IDENTITY_HANDLE) {
+      throw new Error(`Identity ${TEST_IDENTITY_ID} already exists.`);
     }
 
     throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set DATABASE_URL.");
   }
 
   async ensureIdentity(input: CreateIdentityInput): Promise<IdentityRecord> {
-    if (input.id === DEFAULT_IDENTITY_ID || normalizeIdentityHandle(input.handle) === DEFAULT_IDENTITY_HANDLE) {
-      return cloneRecord(this.localIdentity);
+    if (input.id === TEST_IDENTITY_ID || normalizeIdentityHandle(input.handle) === TEST_IDENTITY_HANDLE) {
+      return cloneRecord(this.testIdentity);
     }
 
     throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set DATABASE_URL.");
   }
 
   async getIdentity(identityId: string): Promise<IdentityRecord> {
-    if (identityId !== DEFAULT_IDENTITY_ID) {
+    if (identityId !== TEST_IDENTITY_ID) {
       throw new Error(`Unknown identity ${identityId}`);
     }
 
-    return cloneRecord(this.localIdentity);
+    return cloneRecord(this.testIdentity);
   }
 
   async getIdentityByHandle(handle: string): Promise<IdentityRecord> {
     const normalizedHandle = normalizeIdentityHandle(handle);
-    if (normalizedHandle !== DEFAULT_IDENTITY_HANDLE) {
+    if (normalizedHandle !== TEST_IDENTITY_HANDLE) {
       throw requiresPostgresError("Persisted identities require Postgres. Pass --db-url or set DATABASE_URL.");
     }
 
-    return cloneRecord(this.localIdentity);
+    return cloneRecord(this.testIdentity);
   }
 
   async listIdentities(): Promise<readonly IdentityRecord[]> {
-    return [cloneRecord(this.localIdentity)];
+    return [cloneRecord(this.testIdentity)];
   }
 
   async createIdentityBinding(_input: CreateIdentityBindingInput): Promise<IdentityBindingRecord> {
