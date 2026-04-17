@@ -838,6 +838,10 @@ describe("ChatApp usage command", () => {
         createdAt: 2,
       },
     ]);
+    const resolveThreadRunConfig = vi.fn(async () => ({
+      model: "openai/gpt-5.4",
+      thinking: "medium" as const,
+    }));
     const app = new ChatApp() as any;
 
     app.currentThreadId = "thread-usage";
@@ -846,6 +850,7 @@ describe("ChatApp usage command", () => {
     app.thinking = thread.thinking;
     app.services = {
       getThread,
+      resolveThreadRunConfig,
       store: {
         loadTranscript,
       },
@@ -854,11 +859,13 @@ describe("ChatApp usage command", () => {
     await expect(app.handleCommand("/usage")).resolves.toBe(true);
     expect(getThread).toHaveBeenCalledWith("thread-usage");
     expect(loadTranscript).toHaveBeenCalledWith("thread-usage");
+    expect(resolveThreadRunConfig).toHaveBeenCalledWith("thread-usage");
     expect(app.transcript.at(-1)).toMatchObject({
       role: "meta",
       title: "usage",
       body: expect.stringContaining("**Context policy:**"),
     });
+    expect(app.transcript.at(-1)?.body).toContain("`openai/gpt-5.4`");
   });
 });
 

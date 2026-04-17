@@ -7,6 +7,7 @@ export type {
   CompactThreadRequestPayload,
   CreateRuntimeRequestInput,
   CreateBranchSessionRequestPayload,
+  ResolveThreadRunConfigRequestPayload,
   RuntimeRequestKind,
   RuntimeRequestPayload,
   RuntimeRequestRecord,

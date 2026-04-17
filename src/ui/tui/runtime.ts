@@ -31,6 +31,10 @@ export interface ChatRuntimeServices {
   resetSession(options?: CreateChatSessionOptions): Promise<ThreadRecord>;
   openSession(sessionId: string): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
+  resolveThreadRunConfig(threadId: string): Promise<{
+    model: string;
+    thinking?: ThinkingLevel;
+  }>;
   listAgentSessions(agentKey: string): Promise<readonly SessionRecord[]>;
   submitTextInput(input: {
     threadId?: string;
@@ -92,6 +96,7 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
     resetSession: (sessionOptions) => client.resetSession(applyDefaults(sessionOptions)),
     openSession: (sessionId) => client.openSession(sessionId),
     getThread: (threadId) => client.getThread(threadId),
+    resolveThreadRunConfig: (threadId) => client.resolveThreadRunConfig(threadId),
     listAgentSessions: (agentKey) => client.listAgentSessions(agentKey),
     submitTextInput: (input) => client.submitTextInput(input),
     abortThread: (threadId, reason) => client.abortThread(threadId, reason),

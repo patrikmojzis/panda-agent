@@ -4,8 +4,8 @@ import {
   DEFAULT_MODEL_CONTEXT_POLICY,
   getCompactTriggerTokens,
   type ModelContextPolicyRule,
-  resolveEffectiveThreadContextBudget,
   resolveModelContextPolicy,
+  resolveModelRuntimeBudget,
 } from "../src/kernel/models/model-context-policy.js";
 
 describe("model context policy", () => {
@@ -43,7 +43,7 @@ describe("model context policy", () => {
     expect(resolved.match).toBe("claude-opus-4");
     expect(resolved.modelId).toBe("claude-opus-4-6");
     expect(resolved.operatingWindow).toBe(200_000);
-    expect(resolved.compactAtPercent).toBe(85);
+    expect(resolved.compactAtPercent).toBe(90);
   });
 
   it("uses the global fallback when no model policy matches", () => {
@@ -55,16 +55,14 @@ describe("model context policy", () => {
     expect(resolved.compactAtPercent).toBe(DEFAULT_MODEL_CONTEXT_POLICY.compactAtPercent);
   });
 
-  it("applies the thread override to the active operating window and trigger", () => {
-    const resolved = resolveEffectiveThreadContextBudget({
-      model: "openai/gpt-5.4",
-      maxInputTokens: 120_000,
-    });
+  it("uses the GPT-5 family operating window for the active budget", () => {
+    const resolved = resolveModelRuntimeBudget("openai/gpt-5.4");
 
-    expect(resolved.operatingWindowSource).toBe("thread");
     expect(resolved.operatingWindow).toBe(272_000);
-    expect(resolved.effectiveOperatingWindow).toBe(120_000);
-    expect(resolved.compactTriggerTokens).toBe(102_000);
+    expect(resolved.compactTriggerTokens).toBe(getCompactTriggerTokens({
+      operatingWindow: resolved.operatingWindow,
+      compactAtPercent: resolved.compactAtPercent,
+    }));
   });
 
   it("computes compact trigger tokens from the configured percentage", () => {

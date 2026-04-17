@@ -9,7 +9,7 @@ import {
   type ThreadMessageRecord,
   type ThreadRecord,
 } from "../../domain/threads/runtime/index.js";
-import {resolveEffectiveThreadContextBudget} from "../../kernel/models/model-context-policy.js";
+import {resolveModelRuntimeBudget} from "../../kernel/models/model-context-policy.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
 import {formatThinkingLevel} from "./chat-shared.js";
 
@@ -75,8 +75,6 @@ export interface ThreadUsageSnapshot {
   operatingWindow: number;
   compactAtPercent: number;
   compactTriggerTokens: number;
-  operatingWindowSource: "model" | "thread";
-  threadOverride?: number;
   storedImages: ImageStats;
   visibleImages: ImageStats;
   totalUsage: UsageTotals;
@@ -284,17 +282,14 @@ export function collectThreadUsageSnapshot(options: {
     options.now ?? Date.now(),
   );
   const {total, last} = collectUsageTotals(options.transcript);
-  const model = options.thread.model ?? options.model;
-  const budget = resolveEffectiveThreadContextBudget({
-    model,
-    maxInputTokens: options.thread.maxInputTokens,
-  });
+  const model = options.model ?? options.thread.model;
+  const budget = resolveModelRuntimeBudget(model);
 
   return {
     threadId: options.thread.id,
     agentKey: readAgentKeyFromThreadContext(options.thread),
     model,
-    thinking: options.thread.thinking ?? options.thinking,
+    thinking: options.thinking ?? options.thread.thinking,
     runState: options.isRunning ? "thinking" : "idle",
     storedMessages: options.transcript.length,
     runMessages: runTranscript.length,
@@ -304,11 +299,9 @@ export function collectThreadUsageSnapshot(options: {
     visibleEstimatedTokens: estimateTranscriptTokens(visibleTranscript),
     storedJsonBytes: measureStoredJsonBytes(options.transcript),
     hardWindow: budget.hardWindow,
-    operatingWindow: budget.effectiveOperatingWindow,
+    operatingWindow: budget.operatingWindow,
     compactAtPercent: budget.compactAtPercent,
     compactTriggerTokens: budget.compactTriggerTokens,
-    operatingWindowSource: budget.operatingWindowSource,
-    threadOverride: budget.threadOverride,
     storedImages: measureInlineImages(options.transcript),
     visibleImages: measureInlineImages(visibleTranscript),
     totalUsage: total,
@@ -338,12 +331,6 @@ export function formatThreadUsageSnapshot(snapshot: ThreadUsageSnapshot): string
   lines.push(
     `- **Active budget:** ~${formatInt(snapshot.visibleEstimatedTokens)} / ${formatInt(snapshot.operatingWindow)} est tokens (${fill})`,
   );
-
-  if (snapshot.operatingWindowSource === "thread" && snapshot.threadOverride !== undefined) {
-    lines.push(`- **Budget source:** thread override (${formatInt(snapshot.threadOverride)})`);
-  } else {
-    lines.push("- **Budget source:** model policy");
-  }
 
   if (snapshot.storedImages.count > 0 || snapshot.visibleImages.count > 0) {
     lines.push(

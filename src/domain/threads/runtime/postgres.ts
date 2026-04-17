@@ -4,38 +4,38 @@ import {resolveModelSelector} from "../../../kernel/models/model-selector.js";
 import {addConstraint, alterIfSupported, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
 import type {ThreadLease, ThreadLeaseManager} from "./coordinator.js";
 import {
-    buildThreadRuntimeTableNames,
-    CREATE_RUNTIME_SCHEMA_SQL,
-    quoteIdentifier,
-    type ThreadRuntimeTableNames,
-    toJson,
-    validateIdentifier,
+  buildThreadRuntimeTableNames,
+  CREATE_RUNTIME_SCHEMA_SQL,
+  quoteIdentifier,
+  type ThreadRuntimeTableNames,
+  toJson,
+  validateIdentifier,
 } from "./postgres-shared.js";
 import {buildThreadRuntimeSchemaSql} from "./postgres-schema.js";
 import {parseBashJobRow, parseInputRow, parseMessageRow, parseRunRow, parseThreadRow} from "./postgres-rows.js";
 import {
-    applyPendingThreadInputs,
-    discardPendingThreadInputs,
-    enqueueThreadInput,
-    promoteQueuedThreadInputs,
+  applyPendingThreadInputs,
+  discardPendingThreadInputs,
+  enqueueThreadInput,
+  promoteQueuedThreadInputs,
 } from "./postgres-inputs.js";
 import type {PgPoolLike, PgQueryable} from "./postgres-db.js";
 import type {ThreadEnqueueResult, ThreadRuntimeStore} from "./store.js";
 import {
-    type CreateThreadBashJobInput,
-    type CreateThreadInput,
-    missingThreadError,
-    type ThreadBashJobRecord,
-    type ThreadBashJobUpdate,
-    type ThreadInputDeliveryMode,
-    type ThreadInputPayload,
-    type ThreadInputRecord,
-    type ThreadMessageRecord,
-    type ThreadRecord,
-    type ThreadRunRecord,
-    type ThreadRuntimeMessagePayload,
-    type ThreadSummaryRecord,
-    type ThreadUpdate,
+  type CreateThreadBashJobInput,
+  type CreateThreadInput,
+  missingThreadError,
+  type ThreadBashJobRecord,
+  type ThreadBashJobUpdate,
+  type ThreadInputDeliveryMode,
+  type ThreadInputPayload,
+  type ThreadInputRecord,
+  type ThreadMessageRecord,
+  type ThreadRecord,
+  type ThreadRunRecord,
+  type ThreadRuntimeMessagePayload,
+  type ThreadSummaryRecord,
+  type ThreadUpdate,
 } from "./types.js";
 import {buildIdentityTableNames} from "../../../domain/identity/postgres-shared.js";
 import {buildSessionTableNames} from "../../../domain/sessions/postgres-shared.js";
@@ -262,7 +262,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         context,
         runtime_state,
         inference_projection,
-        max_input_tokens,
         prompt_cache_key,
         model,
         temperature,
@@ -278,8 +277,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         $8,
         $9,
         $10,
-        $11,
-        $12
+        $11
       )
       ON CONFLICT (id) DO UPDATE
       SET system_prompt = EXCLUDED.system_prompt,
@@ -287,7 +285,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
           context = EXCLUDED.context,
           runtime_state = EXCLUDED.runtime_state,
           inference_projection = EXCLUDED.inference_projection,
-          max_input_tokens = EXCLUDED.max_input_tokens,
           prompt_cache_key = EXCLUDED.prompt_cache_key,
           model = EXCLUDED.model,
           temperature = EXCLUDED.temperature,
@@ -299,7 +296,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         AND ${this.tables.threads}.context IS NULL
         AND ${this.tables.threads}.runtime_state IS NULL
         AND ${this.tables.threads}.inference_projection IS NULL
-        AND ${this.tables.threads}.max_input_tokens IS NULL
         AND ${this.tables.threads}.prompt_cache_key IS NULL
         AND ${this.tables.threads}.model IS NULL
         AND ${this.tables.threads}.temperature IS NULL
@@ -314,7 +310,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       toJson(input.context),
       toJson(input.runtimeState),
       toJson(input.inferenceProjection),
-      input.maxInputTokens ?? null,
       input.promptCacheKey ?? null,
       model,
       input.temperature ?? null,
@@ -463,10 +458,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
 
     if (update.inferenceProjection !== undefined) {
       push("inference_projection", toJson(update.inferenceProjection ?? null), "::jsonb");
-    }
-
-    if (update.maxInputTokens !== undefined) {
-      push("max_input_tokens", update.maxInputTokens);
     }
 
     if (update.promptCacheKey !== undefined) {

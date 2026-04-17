@@ -10,6 +10,7 @@ export type RuntimeRequestKind =
   | "tui_input"
   | "create_branch_session"
   | "resolve_main_session_thread"
+  | "resolve_thread_run_config"
   | "reset_session"
   | "abort_thread"
   | "compact_thread"
@@ -87,6 +88,10 @@ export interface ResolveMainSessionThreadRequestPayload extends BaseRuntimeReque
   inferenceProjection?: InferenceProjection;
 }
 
+export interface ResolveThreadRunConfigRequestPayload extends BaseRuntimeRequestPayload {
+  threadId: string;
+}
+
 export interface ResetSessionRequestPayload extends BaseRuntimeRequestPayload {
   source: "telegram" | "tui" | "operator";
   sessionId?: string;
@@ -123,6 +128,7 @@ export type RuntimeRequestPayload =
   | TuiInputRequestPayload
   | CreateBranchSessionRequestPayload
   | ResolveMainSessionThreadRequestPayload
+  | ResolveThreadRunConfigRequestPayload
   | ResetSessionRequestPayload
   | AbortThreadRequestPayload
   | CompactThreadRequestPayload

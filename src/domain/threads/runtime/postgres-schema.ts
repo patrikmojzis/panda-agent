@@ -16,7 +16,6 @@ export function buildThreadRuntimeSchemaSql(
       context JSONB,
       runtime_state JSONB,
       inference_projection JSONB,
-      max_input_tokens INTEGER,
       prompt_cache_key TEXT,
       model TEXT,
       temperature DOUBLE PRECISION,
@@ -34,6 +33,9 @@ export function buildThreadRuntimeSchemaSql(
 
     ALTER TABLE ${tables.threads}
     ADD COLUMN IF NOT EXISTS pending_wake_at TIMESTAMPTZ;
+
+    ALTER TABLE ${tables.threads}
+    DROP COLUMN IF EXISTS max_input_tokens;
 
     ALTER TABLE ${tables.threads}
     DROP COLUMN IF EXISTS provider;

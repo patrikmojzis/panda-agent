@@ -6,11 +6,11 @@ import {buildScheduledTaskTableNames} from "../../../domain/scheduling/tasks/pos
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import {buildWatchTableNames} from "../../../domain/watches/postgres-shared.js";
 import {
-    buildSessionRelationNames,
-    buildThreadRuntimeTableNames,
-    quoteIdentifier,
-    RUNTIME_SCHEMA,
-    SESSION_SCHEMA,
+  buildSessionRelationNames,
+  buildThreadRuntimeTableNames,
+  quoteIdentifier,
+  RUNTIME_SCHEMA,
+  SESSION_SCHEMA,
 } from "./postgres-shared.js";
 
 interface PgQueryable {
@@ -182,7 +182,6 @@ export async function ensureReadonlySessionQuerySchema(
       t.max_turns,
       t.context,
       t.inference_projection,
-      t.max_input_tokens,
       t.prompt_cache_key,
       t.model,
       t.temperature,

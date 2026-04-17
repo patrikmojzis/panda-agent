@@ -1,13 +1,58 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
-
 import {Agent, buildCompactSummaryMessage, PiAiRuntime, stringToUserMessage, Thread,} from "../src/index.js";
 import {
-    compactThread,
-    createCompactBoundaryMessage,
-    formatTranscriptForCompaction,
-    projectTranscriptForRun,
-    splitTranscriptForCompaction,
+  compactThread,
+  createCompactBoundaryMessage,
+  formatTranscriptForCompaction,
+  projectTranscriptForRun,
+  splitTranscriptForCompaction,
 } from "../src/domain/threads/runtime/index.js";
+
+const TEST_MODELS = vi.hoisted(() => ({
+  window350: "openai/panda-test-window-350",
+  window600: "openai/panda-test-window-600",
+  operatingWindowByModel: new Map<string, number>([
+    ["openai/panda-test-window-350", 350],
+    ["openai/panda-test-window-600", 600],
+  ]),
+}));
+
+vi.mock("../src/kernel/models/model-context-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/kernel/models/model-context-policy.js")>();
+
+  return {
+    ...actual,
+    resolveModelRuntimeBudget(model?: string) {
+      const operatingWindow = model ? TEST_MODELS.operatingWindowByModel.get(model) : undefined;
+      if (operatingWindow === undefined) {
+        return actual.resolveModelRuntimeBudget(model);
+      }
+
+      const modelId = model.includes("/") ? model.slice(model.indexOf("/") + 1) : model;
+      const policy = actual.resolveModelContextPolicy(model, {
+        rules: [{
+          kind: "exact",
+          match: modelId,
+          hardWindow: operatingWindow,
+          operatingWindow,
+          compactAtPercent: 85,
+        }],
+        fallback: actual.DEFAULT_MODEL_CONTEXT_POLICY,
+      });
+
+      return {
+        ...policy,
+        compactTriggerTokens: actual.getCompactTriggerTokens({
+          operatingWindow: policy.operatingWindow,
+          compactAtPercent: policy.compactAtPercent,
+        }),
+      };
+    },
+  };
+});
+
+const TEST_MODEL_WINDOW_350 = TEST_MODELS.window350;
+const TEST_MODEL_WINDOW_600 = TEST_MODELS.window600;
 
 function assistant(text: string) {
   return {
@@ -101,6 +146,60 @@ function buildCompactionTranscript() {
       source: "assistant",
       message: assistant("reply three"),
       createdAt: 8,
+    },
+    {
+      id: "9",
+      threadId: "thread-compact",
+      sequence: 9,
+      origin: "input" as const,
+      source: "tui",
+      message: stringToUserMessage("keep four"),
+      createdAt: 9,
+    },
+    {
+      id: "10",
+      threadId: "thread-compact",
+      sequence: 10,
+      origin: "runtime" as const,
+      source: "assistant",
+      message: assistant("reply four"),
+      createdAt: 10,
+    },
+    {
+      id: "11",
+      threadId: "thread-compact",
+      sequence: 11,
+      origin: "input" as const,
+      source: "tui",
+      message: stringToUserMessage("keep five"),
+      createdAt: 11,
+    },
+    {
+      id: "12",
+      threadId: "thread-compact",
+      sequence: 12,
+      origin: "runtime" as const,
+      source: "assistant",
+      message: assistant("reply five"),
+      createdAt: 12,
+    },
+    {
+      id: "13",
+      threadId: "thread-compact",
+      sequence: 13,
+      origin: "input" as const,
+      source: "tui",
+      message: stringToUserMessage("keep six"),
+      createdAt: 13,
+    },
+    {
+      id: "14",
+      threadId: "thread-compact",
+      sequence: 14,
+      origin: "runtime" as const,
+      source: "assistant",
+      message: assistant("reply six"),
+      createdAt: 14,
     },
   ];
 }
@@ -310,9 +409,8 @@ describe("thread compaction helpers", () => {
       },
       thread: {
         id: "thread-compact",
-        maxInputTokens: 350,
       },
-      model: "openai/gpt-5.1",
+      model: TEST_MODEL_WINDOW_600,
       trigger: "auto",
     });
 
@@ -359,10 +457,9 @@ describe("thread compaction helpers", () => {
       },
       thread: {
         id: "thread-compact",
-        maxInputTokens: 350,
       },
       transcript,
-      model: "openai/gpt-5.1",
+      model: TEST_MODEL_WINDOW_600,
       trigger: "auto",
     })).resolves.not.toBeNull();
 
@@ -409,9 +506,8 @@ describe("thread compaction helpers", () => {
       },
       thread: {
         id: "thread-compact",
-        maxInputTokens: 350,
       },
-      model: "openai/gpt-5.1",
+      model: TEST_MODEL_WINDOW_600,
       trigger: "auto",
     })).rejects.toThrow("too large");
 
@@ -435,7 +531,7 @@ describe("Thread.getRunInput compact pinning", () => {
         instructions: "Reply briefly",
       }),
       messages,
-      maxInputTokens: 350,
+      model: TEST_MODEL_WINDOW_350,
     });
 
     const runInput = await thread.getRunInput();

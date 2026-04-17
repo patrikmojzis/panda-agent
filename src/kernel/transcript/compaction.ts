@@ -4,7 +4,7 @@ import {formatToolCallFallback, formatToolResultFallback, PiAiRuntime} from "../
 import {buildCompactSummaryMessage, stripCompactSummaryPrefix} from "../agent/helpers/compact.js";
 import {estimateTokensFromString} from "../agent/helpers/token-count.js";
 import {stringToUserMessage} from "../agent/helpers/input.js";
-import {resolveEffectiveThreadContextBudget} from "../models/model-context-policy.js";
+import {resolveModelRuntimeBudget} from "../models/model-context-policy.js";
 import {resolveModelSelector} from "../models/model-selector.js";
 import {renderCompactionPrompt} from "../../prompts/runtime/compaction.js";
 import {getProviderConfig, type ProviderName} from "../../integrations/providers/shared/provider.js";
@@ -55,7 +55,7 @@ export interface CompactThreadOptions {
       payload: ThreadRuntimeMessagePayload,
     ): Promise<ThreadMessageRecord>;
   }, "loadTranscript" | "appendRuntimeMessage">;
-  thread: Pick<ThreadRecord, "id" | "maxInputTokens">;
+  thread: Pick<ThreadRecord, "id">;
   transcript?: readonly ThreadMessageRecord[];
   model: string;
   thinking?: ThinkingLevel;
@@ -412,12 +412,9 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
   }
 
   const preservedTailTokens = estimateTranscriptTokens(split.preservedTail);
-  const effectiveBudget = resolveEffectiveThreadContextBudget({
-    model: options.model,
-    maxInputTokens: options.thread.maxInputTokens,
-  });
-  const summaryTokenBudget = effectiveBudget.effectiveOperatingWindow - preservedTailTokens;
-  if (summaryTokenBudget !== undefined && summaryTokenBudget <= 0) {
+  const runtimeBudget = resolveModelRuntimeBudget(options.model);
+  const summaryTokenBudget = runtimeBudget.operatingWindow - preservedTailTokens;
+  if (summaryTokenBudget <= 0) {
     throw new Error(
       "Recent context already fills the input budget, so compact cannot preserve the recent turns verbatim.",
     );
@@ -434,9 +431,9 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
 
   const compactMessage = createCompactBoundaryMessage(summary);
   const summaryTokens = estimateTokensFromString(JSON.stringify(compactMessage));
-  if (summaryTokenBudget !== undefined && summaryTokens > summaryTokenBudget) {
+  if (summaryTokens > summaryTokenBudget) {
     throw new Error(
-      "Compaction summary was too large to fit alongside the preserved recent turns. Try stricter instructions or raise maxInputTokens.",
+      "Compaction summary was too large to fit alongside the preserved recent turns. Try stricter instructions or use a model policy with a larger operating window.",
     );
   }
 

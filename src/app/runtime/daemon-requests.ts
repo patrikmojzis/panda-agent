@@ -4,6 +4,7 @@ import type {
     CreateBranchSessionRequestPayload,
     ResetSessionRequestPayload,
     ResolveMainSessionThreadRequestPayload,
+    ResolveThreadRunConfigRequestPayload,
     RuntimeRequestRecord,
     TelegramMessageRequestPayload,
     TelegramReactionRequestPayload,
@@ -379,7 +380,8 @@ export function createDaemonRequestProcessor(
   ): Promise<Record<string, unknown>> => {
       const compacted = await context.runtime.coordinator.runExclusively(payload.threadId, async () => {
         const thread = await context.runtime.store.getThread(payload.threadId);
-        const modelName = thread.model ?? context.model;
+        const runConfig = await context.runtime.coordinator.resolveThreadRunConfig(thread);
+        const modelName = runConfig.model;
         const apiKeyMessage = resolveMissingApiKeyMessage(modelName);
         if (apiKeyMessage) {
           throw new Error(apiKeyMessage);
@@ -393,7 +395,7 @@ export function createDaemonRequestProcessor(
         store: context.runtime.store,
         thread,
         model: modelName,
-        thinking: thread.thinking,
+        thinking: runConfig.thinking,
         customInstructions: payload.customInstructions,
         trigger: "manual",
       });
@@ -407,6 +409,16 @@ export function createDaemonRequestProcessor(
       compacted: true,
       tokensBefore: compacted.tokensBefore,
       tokensAfter: compacted.tokensAfter,
+    };
+  };
+
+  const handleResolveThreadRunConfig = async (
+    payload: ResolveThreadRunConfigRequestPayload,
+  ): Promise<Record<string, unknown>> => {
+    const config = await context.runtime.coordinator.resolveThreadRunConfig(payload.threadId);
+    return {
+      model: config.model,
+      thinking: config.thinking ?? null,
     };
   };
 
@@ -435,6 +447,8 @@ export function createDaemonRequestProcessor(
         );
         return {threadId: thread.id};
       }
+      case "resolve_thread_run_config":
+        return handleResolveThreadRunConfig(request.payload as ResolveThreadRunConfigRequestPayload);
       case "reset_session":
         return threads.handleResetSession(request.payload as ResetSessionRequestPayload);
       case "abort_thread":

@@ -68,6 +68,10 @@ export interface RuntimeClient {
   resetSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
   openSession(sessionId: string): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
+  resolveThreadRunConfig(threadId: string): Promise<{
+    model: string;
+    thinking?: ThinkingLevel;
+  }>;
   listAgentSessions(agentKey: string): Promise<readonly SessionRecord[]>;
   submitTextInput(input: {
     threadId?: string;
@@ -334,6 +338,28 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       return waitForRequestResult<RuntimeClientCompactResult>(requests, request.id, 15 * 60_000);
     };
 
+    const resolveThreadRunConfig = async (
+      threadId: string,
+    ): Promise<{model: string; thinking?: ThinkingLevel}> => {
+      await assertDaemonActive();
+      const request = await requests.enqueueRequest({
+        kind: "resolve_thread_run_config",
+        payload: {
+          identityId: identity.id,
+          threadId,
+        },
+      });
+      const result = await waitForRequestResult<{model: string; thinking?: ThinkingLevel | null}>(
+        requests,
+        request.id,
+        DAEMON_REQUEST_TIMEOUT_MS,
+      );
+      return {
+        model: result.model,
+        thinking: result.thinking ?? undefined,
+      };
+    };
+
     return {
       identity,
       store,
@@ -342,6 +368,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       resetSession,
       openSession,
       getThread: (threadId) => store.getThread(threadId),
+      resolveThreadRunConfig,
       listAgentSessions,
       submitTextInput,
       abortThread,

@@ -39,7 +39,6 @@ export interface CreateThreadInput {
   maxTurns?: number;
   context?: JsonValue;
   runtimeState?: ThreadRuntimeState;
-  maxInputTokens?: number;
   promptCacheKey?: string;
   model?: string;
   temperature?: number;
@@ -65,7 +64,6 @@ export interface ResolvedThreadDefinition {
   context?: unknown;
   llmContexts?: ReadonlyArray<LlmContext>;
   hooks?: ReadonlyArray<Hook>;
-  maxInputTokens?: number;
   promptCacheKey?: string;
   runPipelines?: ReadonlyArray<RunPipeline>;
   model?: string;

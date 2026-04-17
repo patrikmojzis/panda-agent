@@ -1,11 +1,11 @@
 import {toMillis, toOrderNumber} from "./postgres-shared.js";
 import type {
-    ThreadBashJobRecord,
-    ThreadInputDeliveryMode,
-    ThreadInputRecord,
-    ThreadMessageRecord,
-    ThreadRecord,
-    ThreadRunRecord,
+  ThreadBashJobRecord,
+  ThreadInputDeliveryMode,
+  ThreadInputRecord,
+  ThreadMessageRecord,
+  ThreadRecord,
+  ThreadRunRecord,
 } from "./types.js";
 
 export function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
@@ -17,7 +17,6 @@ export function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
     context: row.context === null ? undefined : (row.context as ThreadRecord["context"]),
     runtimeState: row.runtime_state === null ? undefined : (row.runtime_state as ThreadRecord["runtimeState"]),
     inferenceProjection: row.inference_projection === null ? undefined : (row.inference_projection as ThreadRecord["inferenceProjection"]),
-    maxInputTokens: row.max_input_tokens === null ? undefined : Number(row.max_input_tokens),
     promptCacheKey: row.prompt_cache_key === null ? undefined : String(row.prompt_cache_key),
     model: row.model === null ? undefined : String(row.model),
     temperature: row.temperature === null ? undefined : Number(row.temperature),

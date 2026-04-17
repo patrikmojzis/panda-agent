@@ -19,17 +19,14 @@ export interface ResolvedModelContextPolicy extends ModelContextPolicy {
   matchKind: "exact" | "prefix" | "fallback";
 }
 
-export interface EffectiveThreadContextBudget extends ResolvedModelContextPolicy {
-  effectiveOperatingWindow: number;
+export interface ResolvedModelRuntimeBudget extends ResolvedModelContextPolicy {
   compactTriggerTokens: number;
-  operatingWindowSource: "model" | "thread";
-  threadOverride?: number;
 }
 
 export const DEFAULT_MODEL_CONTEXT_POLICY: ModelContextPolicy = {
-  hardWindow: 200_000,
-  operatingWindow: 150_000,
-  compactAtPercent: 85,
+  hardWindow: 1_000_000,
+  operatingWindow: 200_000,
+  compactAtPercent: 90,
 };
 
 export const MODEL_CONTEXT_POLICY_RULES: readonly ModelContextPolicyRule[] = [
@@ -38,21 +35,21 @@ export const MODEL_CONTEXT_POLICY_RULES: readonly ModelContextPolicyRule[] = [
     match: "gpt-5",
     hardWindow: 1_050_000,
     operatingWindow: 272_000,
-    compactAtPercent: 85,
+    compactAtPercent: 90,
   },
   {
     kind: "prefix",
     match: "claude-opus-4",
     hardWindow: 1_000_000,
     operatingWindow: 200_000,
-    compactAtPercent: 85,
+    compactAtPercent: 90,
   },
   {
     kind: "prefix",
     match: "claude-sonnet-4",
     hardWindow: 1_000_000,
     operatingWindow: 200_000,
-    compactAtPercent: 85,
+    compactAtPercent: 90,
   },
 ] as const;
 
@@ -157,22 +154,14 @@ export function resolveModelContextPolicy(
   };
 }
 
-export function resolveEffectiveThreadContextBudget(options: {
-  model?: string;
-  maxInputTokens?: number;
-}): EffectiveThreadContextBudget {
-  const policy = resolveModelContextPolicy(options.model);
-  const threadOverride = sanitizePositiveInteger(options.maxInputTokens);
-  const effectiveOperatingWindow = threadOverride ?? policy.operatingWindow;
+export function resolveModelRuntimeBudget(model?: string): ResolvedModelRuntimeBudget {
+  const policy = resolveModelContextPolicy(model);
 
   return {
     ...policy,
-    effectiveOperatingWindow,
     compactTriggerTokens: getCompactTriggerTokens({
-      operatingWindow: effectiveOperatingWindow,
+      operatingWindow: policy.operatingWindow,
       compactAtPercent: policy.compactAtPercent,
     }),
-    operatingWindowSource: threadOverride === undefined ? "model" : "thread",
-    ...(threadOverride === undefined ? {} : {threadOverride}),
   };
 }

@@ -2,28 +2,29 @@ import type {AssistantMessage, Message, ThinkingLevel, ToolCall, ToolResultMessa
 
 import type {Agent} from "./agent.js";
 import {
-    InvalidJSONResponseError,
-    InvalidSchemaResponseError,
-    MaxTurnsReachedError,
-    StreamingFailedError,
-    ToolError,
+  InvalidJSONResponseError,
+  InvalidSchemaResponseError,
+  MaxTurnsReachedError,
+  StreamingFailedError,
+  ToolError,
 } from "./exceptions.js";
 import {stringifyUnknown} from "./helpers/stringify.js";
 import {estimateTokensFromString, type TokenCounter} from "./helpers/token-count.js";
 import {gatherContexts, type LlmContext} from "./llm-context.js";
 import type {Hook} from "./hook.js";
 import {
-    buildConversationContext,
-    buildToolResultMessage,
-    collectAssistantToolCalls,
+  buildConversationContext,
+  buildToolResultMessage,
+  collectAssistantToolCalls,
 } from "../../integrations/providers/shared/messages.js";
 import {isCompactSummaryMessage} from "./helpers/compact.js";
 import {PiAiRuntime} from "../../integrations/providers/shared/runtime.js";
 import {
-    buildCanonicalModelSelector,
-    type ResolvedModelSelector,
-    resolveModelSelector,
+  buildCanonicalModelSelector,
+  type ResolvedModelSelector,
+  resolveModelSelector,
 } from "../models/model-selector.js";
+import {resolveModelRuntimeBudget} from "../models/model-context-policy.js";
 import {getProviderConfig} from "../../integrations/providers/shared/provider.js";
 import {RunContext} from "./run-context.js";
 import type {LlmRuntime, LlmRuntimeRequest} from "./runtime.js";
@@ -41,7 +42,6 @@ export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   context?: TContext;
   llmContexts?: ReadonlyArray<LlmContext>;
   hooks?: ReadonlyArray<Hook<TContext>>;
-  maxInputTokens?: number;
   promptCacheKey?: string;
   runPipelines?: ReadonlyArray<RunPipeline<TContext>>;
   model?: string;
@@ -107,7 +107,6 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   readonly llmContexts?: ReadonlyArray<LlmContext>;
   readonly hooks?: ReadonlyArray<Hook<TContext>>;
   turnCount = 0;
-  readonly maxInputTokens?: number;
   readonly promptCacheKey?: string;
   readonly runPipelines?: ReadonlyArray<RunPipeline<TContext>>;
   readonly systemPrompt?: string | ReadonlyArray<string>;
@@ -117,6 +116,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   private readonly modelSelection: ResolvedModelSelector;
   private readonly runtime: LlmRuntime;
   private readonly countTokens: TokenCounter;
+  private readonly contextWindowTokens: number;
   private readonly history: Message[];
   private readonly signal?: AbortSignal;
   private readonly checkpoint?: ThreadCheckpointHandler;
@@ -132,12 +132,12 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     this.context = options.context;
     this.llmContexts = options.llmContexts;
     this.hooks = options.hooks;
-    this.maxInputTokens = options.maxInputTokens;
     this.promptCacheKey = options.promptCacheKey;
     this.runPipelines = options.runPipelines;
     const defaultModel = buildCanonicalModelSelector("openai", getProviderConfig("openai").defaultModel);
     this.modelSelection = resolveModelSelector(options.model ?? defaultModel);
     this.model = this.modelSelection.canonical;
+    this.contextWindowTokens = resolveModelRuntimeBudget(this.model).operatingWindow;
     this.temperature = options.temperature;
     this.defaultThinking = options.thinking;
     this.effectiveThinking = options.thinking;
@@ -374,10 +374,6 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   }
 
   async getRunInput(): Promise<Message[]> {
-    if (!this.maxInputTokens) {
-      return [...this.history];
-    }
-
     const firstMessage = this.history[0];
     const pinnedMessage = firstMessage && isCompactSummaryMessage(firstMessage)
       ? firstMessage
@@ -386,13 +382,13 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       ? this.countTokens(JSON.stringify(pinnedMessage))
       : 0;
 
-    if (pinnedMessage && pinnedTokens >= this.maxInputTokens) {
+    if (pinnedMessage && pinnedTokens >= this.contextWindowTokens) {
       return [pinnedMessage];
     }
 
     const trimmedMessages: Message[] = [];
     let currentTokens = 0;
-    const budget = this.maxInputTokens - pinnedTokens;
+    const budget = this.contextWindowTokens - pinnedTokens;
     const stopIndex = pinnedMessage ? 1 : 0;
 
     for (let index = this.history.length - 1; index >= stopIndex; index -= 1) {

@@ -149,15 +149,16 @@ async function handleUsageCommand(host: ChatCommandHost): Promise<boolean> {
   try {
     const services = host.requireServices();
     const threadId = host.getCurrentThreadId();
-    const [thread, transcript] = await Promise.all([
+    const [thread, transcript, runConfig] = await Promise.all([
       services.getThread(threadId),
       services.store.loadTranscript(threadId),
+      services.resolveThreadRunConfig(threadId),
     ]);
     const summary = formatThreadUsageSnapshot(collectThreadUsageSnapshot({
       thread,
       transcript,
-      model: host.getModel(),
-      thinking: host.getThinking(),
+      model: runConfig.model,
+      thinking: runConfig.thinking,
       isRunning: host.isRunning(),
     }));
 

@@ -4,7 +4,6 @@ import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
-
 import {
   Agent,
   BashJobStatusTool,
@@ -31,6 +30,58 @@ import {
 } from "../src/domain/threads/runtime/index.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
+
+const TEST_MODELS = vi.hoisted(() => ({
+  window350: "openai/panda-test-window-350",
+  window620: "openai/panda-test-window-620",
+  window1000: "openai/panda-test-window-1000",
+  window5000: "openai/panda-test-window-5000",
+  operatingWindowByModel: new Map<string, number>([
+    ["openai/panda-test-window-350", 350],
+    ["openai/panda-test-window-620", 620],
+    ["openai/panda-test-window-1000", 1_000],
+    ["openai/panda-test-window-5000", 5_000],
+  ]),
+}));
+
+vi.mock("../src/kernel/models/model-context-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/kernel/models/model-context-policy.js")>();
+
+  return {
+    ...actual,
+    resolveModelRuntimeBudget(model?: string) {
+      const operatingWindow = model ? TEST_MODELS.operatingWindowByModel.get(model) : undefined;
+      if (operatingWindow === undefined) {
+        return actual.resolveModelRuntimeBudget(model);
+      }
+
+      const modelId = model.includes("/") ? model.slice(model.indexOf("/") + 1) : model;
+      const policy = actual.resolveModelContextPolicy(model, {
+        rules: [{
+          kind: "exact",
+          match: modelId,
+          hardWindow: operatingWindow,
+          operatingWindow,
+          compactAtPercent: 85,
+        }],
+        fallback: actual.DEFAULT_MODEL_CONTEXT_POLICY,
+      });
+
+      return {
+        ...policy,
+        compactTriggerTokens: actual.getCompactTriggerTokens({
+          operatingWindow: policy.operatingWindow,
+          compactAtPercent: policy.compactAtPercent,
+        }),
+      };
+    },
+  };
+});
+
+const TEST_MODEL_WINDOW_350 = TEST_MODELS.window350;
+const TEST_MODEL_WINDOW_620 = TEST_MODELS.window620;
+const TEST_MODEL_WINDOW_1000 = TEST_MODELS.window1000;
+const TEST_MODEL_WINDOW_5000 = TEST_MODELS.window5000;
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -356,6 +407,33 @@ async function seedAutoCompactionTranscript(store: TestThreadRuntimeStore, threa
   await store.applyPendingInputs(threadId);
   await store.appendRuntimeMessage(threadId, {
     message: message("reply two"),
+    source: "assistant",
+  });
+  await store.enqueueInput(threadId, {
+    message: stringToUserMessage("keep three"),
+    source: "telegram",
+  });
+  await store.applyPendingInputs(threadId);
+  await store.appendRuntimeMessage(threadId, {
+    message: message("reply three"),
+    source: "assistant",
+  });
+  await store.enqueueInput(threadId, {
+    message: stringToUserMessage("keep four"),
+    source: "telegram",
+  });
+  await store.applyPendingInputs(threadId);
+  await store.appendRuntimeMessage(threadId, {
+    message: message("reply four"),
+    source: "assistant",
+  });
+  await store.enqueueInput(threadId, {
+    message: stringToUserMessage("keep five"),
+    source: "telegram",
+  });
+  await store.applyPendingInputs(threadId);
+  await store.appendRuntimeMessage(threadId, {
+    message: message("reply five"),
     source: "assistant",
   });
 }
@@ -1219,13 +1297,13 @@ describe("ThreadRuntimeCoordinator", () => {
         name: "small-agent",
         instructions: "Reply briefly",
       }),
+      model: TEST_MODEL_WINDOW_1000,
       runtime,
     });
 
     await createRuntimeThread(store, {
       id: "thread-auto-compact-under",
       agentKey: "small-agent",
-      maxInputTokens: 1_000,
     });
 
     const coordinator = new ThreadRuntimeCoordinator({
@@ -1257,13 +1335,13 @@ describe("ThreadRuntimeCoordinator", () => {
         name: "auto-compact-agent",
         instructions: "Reply briefly",
       }),
+      model: TEST_MODEL_WINDOW_620,
       runtime,
     });
 
     await createRuntimeThread(store, {
       id: "thread-auto-compact",
       agentKey: "auto-compact-agent",
-      maxInputTokens: 350,
     });
     await seedAutoCompactionTranscript(store, "thread-auto-compact");
 
@@ -1316,13 +1394,13 @@ describe("ThreadRuntimeCoordinator", () => {
         name: "auto-compact-fail-agent",
         instructions: "Reply briefly",
       }),
+      model: TEST_MODEL_WINDOW_620,
       runtime,
     });
 
     await createRuntimeThread(store, {
       id: "thread-auto-compact-fail",
       agentKey: "auto-compact-fail-agent",
-      maxInputTokens: 350,
     });
     await seedAutoCompactionTranscript(store, "thread-auto-compact-fail");
 
@@ -1373,18 +1451,19 @@ describe("ThreadRuntimeCoordinator", () => {
       .mockResolvedValueOnce(message(`<summary>\nIntent:\n- ${"x".repeat(8_000)}\n</summary>`));
     const runtime = createMockRuntime(message("after retry"));
     const store = new FailRunBlockingStore(enteredFailRun, releaseFailRun);
-    const registry = new TestThreadDefinitionRegistry().register("auto-compact-retry-agent", {
+    let retryModel = TEST_MODEL_WINDOW_620;
+    const registry = new TestThreadDefinitionRegistry().register("auto-compact-retry-agent", () => ({
       agent: new Agent({
         name: "auto-compact-retry-agent",
         instructions: "Reply briefly",
       }),
+      model: retryModel,
       runtime,
-    });
+    }));
 
     await createRuntimeThread(store, {
       id: "thread-auto-compact-retry",
       agentKey: "auto-compact-retry-agent",
-      maxInputTokens: 350,
     });
     await seedAutoCompactionTranscript(store, "thread-auto-compact-retry");
 
@@ -1406,7 +1485,7 @@ describe("ThreadRuntimeCoordinator", () => {
       source: "telegram",
     });
 
-    await store.updateThread("thread-auto-compact-retry", { maxInputTokens: 5_000 });
+    retryModel = TEST_MODEL_WINDOW_5000;
     releaseFailRun.resolve();
     await coordinator.waitForIdle("thread-auto-compact-retry");
 
@@ -1440,13 +1519,13 @@ describe("ThreadRuntimeCoordinator", () => {
         name: "auto-compact-breaker-agent",
         instructions: "Reply briefly",
       }),
+      model: TEST_MODEL_WINDOW_350,
       runtime,
     });
 
     await createRuntimeThread(store, {
       id: "thread-auto-compact-breaker",
       agentKey: "auto-compact-breaker-agent",
-      maxInputTokens: 350,
     });
     await seedAutoCompactionTranscript(store, "thread-auto-compact-breaker");
 

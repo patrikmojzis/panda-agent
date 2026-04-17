@@ -7,9 +7,9 @@ import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ThreadDefinitionResolver} from "../../domain/threads/runtime/types.js";
 import {renderSubagentHandoff} from "../../prompts/runtime/subagents.js";
 import {
-    resolveDefaultAgentBrowserSubagentModelSelector,
-    resolveDefaultAgentMemorySubagentModelSelector,
-    resolveDefaultAgentWorkspaceSubagentModelSelector,
+  resolveDefaultAgentBrowserSubagentModelSelector,
+  resolveDefaultAgentMemorySubagentModelSelector,
+  resolveDefaultAgentWorkspaceSubagentModelSelector,
 } from "../defaults.js";
 import {buildDefaultAgentLlmContexts} from "../contexts/builder.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
@@ -136,7 +136,6 @@ export class DefaultAgentSubagentService {
         threadId,
         sections: policy.visibleContextSections,
       }),
-      maxInputTokens: parentDefinition.maxInputTokens ?? threadRecord.maxInputTokens,
       promptCacheKey: parentDefinition.promptCacheKey ?? threadRecord.promptCacheKey,
       runPipelines: parentDefinition.runPipelines,
       model: input.model ?? defaultRoleModel ?? parentDefinition.model ?? threadRecord.model,

@@ -1,7 +1,7 @@
 import type {Message} from "@mariozechner/pi-ai";
 
 import {Thread} from "../../../kernel/agent/thread.js";
-import {resolveEffectiveThreadContextBudget} from "../../../kernel/models/model-context-policy.js";
+import {resolveModelRuntimeBudget} from "../../../kernel/models/model-context-policy.js";
 import {buildCanonicalModelSelector} from "../../../kernel/models/model-selector.js";
 import {getProviderConfig} from "../../../integrations/providers/shared/provider.js";
 import type {ThreadRunEvent} from "../../../kernel/agent/types.js";
@@ -215,6 +215,19 @@ export class ThreadRuntimeCoordinator {
     this.onEvent = options.onEvent;
   }
 
+  async resolveThreadRunConfig(
+    threadOrId: ThreadRecord | string,
+  ): Promise<{
+    model: string;
+    thinking: ThreadRecord["thinking"];
+  }> {
+    const thread = typeof threadOrId === "string"
+      ? await this.store.getThread(threadOrId)
+      : threadOrId;
+    const definition = await this.resolveDefinition(thread);
+    return this.resolveModelConfig(thread, definition);
+  }
+
   async submitInput(
     threadId: string,
     payload: ThreadInputPayload,
@@ -408,10 +421,6 @@ export class ThreadRuntimeCoordinator {
     signal?: AbortSignal,
   ): ConstructorParameters<typeof Thread>[0] {
     const modelConfig = this.resolveModelConfig(thread, definition);
-    const budget = resolveEffectiveThreadContextBudget({
-      model: modelConfig.model,
-      maxInputTokens: definition.maxInputTokens ?? thread.maxInputTokens,
-    });
 
     return {
       agent: definition.agent,
@@ -421,7 +430,6 @@ export class ThreadRuntimeCoordinator {
       context: buildRunContextValue(definition.context ?? thread.context, messages, run.id),
       llmContexts: definition.llmContexts,
       hooks: definition.hooks,
-      maxInputTokens: budget.effectiveOperatingWindow,
       promptCacheKey: definition.promptCacheKey ?? thread.promptCacheKey,
       runPipelines: definition.runPipelines,
       model: modelConfig.model,
@@ -540,10 +548,7 @@ export class ThreadRuntimeCoordinator {
 
     const transcriptTokens = estimateTranscriptTokens(options.transcript);
     const modelConfig = this.resolveModelConfig(thread, options.definition);
-    const budget = resolveEffectiveThreadContextBudget({
-      model: modelConfig.model,
-      maxInputTokens: options.definition.maxInputTokens ?? thread.maxInputTokens,
-    });
+    const budget = resolveModelRuntimeBudget(modelConfig.model);
     const autoCompactCheck = shouldAutoCompactThread({
       thread,
       transcriptTokens,
@@ -568,10 +573,7 @@ export class ThreadRuntimeCoordinator {
     try {
       const compacted = await compactThread({
         store: this.store,
-        thread: {
-          ...thread,
-          maxInputTokens: budget.effectiveOperatingWindow,
-        },
+        thread,
         transcript: options.transcript,
         model: modelConfig.model,
         thinking: modelConfig.thinking,
