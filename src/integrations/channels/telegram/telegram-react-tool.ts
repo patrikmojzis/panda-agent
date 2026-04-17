@@ -11,7 +11,7 @@ import {parseTelegramConversationId} from "./conversation-id.js";
 // Keep Telegram's provider-specific reaction allowlist out of the Zod schema.
 // Tool schemas are exposed to the model, and this list is runtime validation
 // detail, not something worth carrying around in prompt context every turn.
-const ALLOWED_TELEGRAM_REACTION_EMOJIS = new Set([
+const ALLOWED_TELEGRAM_REACTION_EMOJI_LIST = [
   "❤",
   "👍",
   "👎",
@@ -85,7 +85,8 @@ const ALLOWED_TELEGRAM_REACTION_EMOJIS = new Set([
   "🤷",
   "🤷‍♀",
   "😡",
-]);
+];
+const ALLOWED_TELEGRAM_REACTION_EMOJIS = new Set(ALLOWED_TELEGRAM_REACTION_EMOJI_LIST);
 
 const telegramReactToolSchema = z.object({
   emoji: z.string().trim().min(1).optional(),
@@ -142,7 +143,9 @@ function parseReactionConversationId(value: string) {
 
 function requireAllowedTelegramReactionEmoji(value: string): string {
   if (!ALLOWED_TELEGRAM_REACTION_EMOJIS.has(value)) {
-    throw new ToolError("telegram_react emoji is unsupported by Telegram.");
+    throw new ToolError(
+      `telegram_react emoji is unsupported by Telegram. Allowed emoji: ${ALLOWED_TELEGRAM_REACTION_EMOJI_LIST.join(", ")}`,
+    );
   }
 
   return value;

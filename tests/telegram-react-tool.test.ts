@@ -157,7 +157,7 @@ describe("TelegramReactTool", () => {
           },
         },
       },
-    }))).rejects.toThrow("telegram_react emoji is unsupported by Telegram.");
+    }))).rejects.toThrow("telegram_react emoji is unsupported by Telegram. Allowed emoji:");
 
     expect(channelActionQueue.enqueueAction).not.toHaveBeenCalled();
   });
