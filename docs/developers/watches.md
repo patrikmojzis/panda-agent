@@ -90,7 +90,9 @@ Detectors:
 
 Defaults:
 
-- first successful run ignores existing state
+- watch mutations preflight through the real evaluator before persistence
+- enabled creates and enabled source/detector resets can seed state at write time
+- first successful runner poll ignores existing state when no seed is present
 - delivery is wake-only
 - watch tools create watches for the current session automatically
 - the runner resolves the current thread dynamically from that session

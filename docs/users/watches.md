@@ -26,14 +26,17 @@ Detectors:
 
 V1 behaves like this:
 
-- the first successful run uses `ignore_existing`
+- `watch_create` and `watch_update` run a real preflight probe before saving
+- negative array indices like `data[-1].score` are rejected; sort/filter upstream and use `[0]`
+- enabled creates and enabled source/detector resets bootstrap state immediately on save
+- the first successful runner poll still uses `ignore_existing` when a watch has no seeded state yet
 - delivery is always `wake`
 - watches belong to the current session
 - the runner resolves `session.current_thread_id` at fire time
 - credentials are resolved at runtime from Panda's credential store
 - secrets are not stored in watch rows, watch events, or transcript metadata
 
-That first rule matters.
+That bootstrap rule matters.
 If you create an inbox watch, Panda does not scream about the last 400 emails already sitting there.
 
 ## Good Use Cases

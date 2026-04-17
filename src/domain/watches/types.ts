@@ -238,6 +238,8 @@ export interface CreateWatchInput extends WatchSpec {
   sessionId: string;
   createdByIdentityId?: string;
   enabled?: boolean;
+  state?: JsonObject;
+  nextPollAt?: number | null;
 }
 
 export interface UpdateWatchInput {
@@ -248,6 +250,8 @@ export interface UpdateWatchInput {
   source?: WatchSourceConfig;
   detector?: WatchDetectorConfig;
   enabled?: boolean;
+  state?: JsonObject | null;
+  nextPollAt?: number | null;
 }
 
 export interface DisableWatchInput {

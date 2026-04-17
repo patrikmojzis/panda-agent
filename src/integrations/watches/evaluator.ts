@@ -6,6 +6,7 @@ import {Pool as PgPool} from "pg";
 
 import type {CredentialResolver} from "../../domain/credentials/index.js";
 import {evaluateWatchObservation} from "../../domain/watches/evaluator.js";
+import {validateWatchPath, validateWatchSourcePaths} from "../../domain/watches/path-validation.js";
 import type {WatchEvaluator} from "../../domain/watches/runner.js";
 import type {
     WatchCollectionItem,
@@ -133,7 +134,8 @@ function normalizeUnknownJson(value: unknown): JsonValue {
 }
 
 function parsePath(path: string): readonly string[] {
-  return path
+  const normalized = validateWatchPath(path, "path");
+  return normalized
     .replace(/\[(\d+)\]/g, ".$1")
     .split(".")
     .map((segment) => segment.trim())
@@ -899,6 +901,7 @@ export async function evaluateWatch(
   watch: WatchRecord,
   options: WatchEvaluationOptions,
 ) {
+  validateWatchSourcePaths(watch.source);
   const resolver = options.sourceResolvers?.[watch.source.kind] ?? defaultWatchSourceResolvers[watch.source.kind];
   if (!resolver) {
     throw new Error(`Unsupported watch source ${watch.source.kind}.`);

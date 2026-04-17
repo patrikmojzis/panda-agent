@@ -9,6 +9,7 @@ import {
     WatchDisableTool,
     WatchUpdateTool,
 } from "../src/index.js";
+import type {WatchMutationService} from "../src/domain/watches/mutation-service.js";
 import type {WatchStore} from "../src/domain/watches/index.js";
 
 function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
@@ -97,6 +98,47 @@ function createStoreMock(): WatchStore {
   };
 }
 
+function createMutationServiceMock() {
+  return {
+    createWatch: vi.fn(async (input, scope) => ({
+      id: "watch-1",
+      sessionId: scope.sessionId,
+      createdByIdentityId: scope.createdByIdentityId,
+      title: input.title,
+      intervalMinutes: input.intervalMinutes,
+      source: input.source,
+      detector: input.detector,
+      enabled: input.enabled ?? true,
+      nextPollAt: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    })),
+    updateWatch: vi.fn(async (input, scope) => ({
+      id: input.watchId,
+      sessionId: scope.sessionId,
+      createdByIdentityId: scope.createdByIdentityId,
+      title: input.title ?? "watch",
+      intervalMinutes: input.intervalMinutes ?? 5,
+      source: input.source ?? {
+        kind: "http_json",
+        url: "https://example.com/btc",
+        result: {
+          observation: "scalar",
+          valuePath: "price",
+        },
+      },
+      detector: input.detector ?? {
+        kind: "percent_change",
+        percent: 10,
+      },
+      enabled: input.enabled ?? true,
+      nextPollAt: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    })),
+  } as unknown as WatchMutationService;
+}
+
 describe("watch Panda tools", () => {
   const context: DefaultAgentSessionContext = {
     agentKey: "panda",
@@ -110,7 +152,9 @@ describe("watch Panda tools", () => {
 
   it("creates a watch with Panda scope", async () => {
     const store = createStoreMock();
+    const mutations = createMutationServiceMock();
     const tool = new WatchCreateTool({
+      mutations,
       store,
     });
 
@@ -135,16 +179,20 @@ describe("watch Panda tools", () => {
     expect(result).toEqual({
       watchId: "watch-1",
     });
-    expect(store.createWatch).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mutations.createWatch).toHaveBeenCalledWith(expect.objectContaining({
+      title: "BTC 10% move",
+    }), expect.objectContaining({
+      agentKey: "panda",
       sessionId: "session-main",
       createdByIdentityId: "identity-1",
-      title: "BTC 10% move",
     }));
   });
 
   it("updates a watch within the current session", async () => {
     const store = createStoreMock();
+    const mutations = createMutationServiceMock();
     const tool = new WatchUpdateTool({
+      mutations,
       store,
     });
 
@@ -157,16 +205,20 @@ describe("watch Panda tools", () => {
       watchId: "watch-1",
       updated: true,
     });
-    expect(store.updateWatch).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mutations.updateWatch).toHaveBeenCalledWith(expect.objectContaining({
       watchId: "watch-1",
-      sessionId: "session-main",
       enabled: false,
+    }), expect.objectContaining({
+      agentKey: "panda",
+      sessionId: "session-main",
     }));
   });
 
   it("disables a watch without deleting it", async () => {
     const store = createStoreMock();
+    const mutations = createMutationServiceMock();
     const tool = new WatchDisableTool({
+      mutations,
       store,
     });
 
@@ -187,6 +239,7 @@ describe("watch Panda tools", () => {
 
   it("requires sessionId in Panda context", async () => {
     const tool = new WatchCreateTool({
+      mutations: createMutationServiceMock(),
       store: createStoreMock(),
     });
 

@@ -123,7 +123,10 @@ function normalizeCreateInput(input: CreateWatchInput): {
   source: WatchSpec["source"];
   detector: WatchSpec["detector"];
   enabled: boolean;
+  state?: JsonObject;
+  nextPollAt: Date | null;
 } {
+  const enabled = input.enabled ?? true;
   return {
     sessionId: requireTrimmed("session id", input.sessionId),
     createdByIdentityId: input.createdByIdentityId?.trim() || undefined,
@@ -131,7 +134,13 @@ function normalizeCreateInput(input: CreateWatchInput): {
     intervalMinutes: normalizeIntervalMinutes(input.intervalMinutes),
     source: input.source,
     detector: input.detector,
-    enabled: input.enabled ?? true,
+    enabled,
+    state: input.state,
+    nextPollAt: input.nextPollAt === undefined
+      ? (enabled ? new Date() : null)
+      : input.nextPollAt === null
+        ? null
+        : toDate(input.nextPollAt),
   };
 }
 
@@ -258,7 +267,6 @@ export class PostgresWatchStore implements WatchStore {
 
   async createWatch(input: CreateWatchInput): Promise<WatchRecord> {
     const normalized = normalizeCreateInput(input);
-    const now = new Date();
     const result = await this.pool.query(
       `
         INSERT INTO ${this.tables.watches} (
@@ -270,7 +278,8 @@ export class PostgresWatchStore implements WatchStore {
           source_config,
           detector_config,
           enabled,
-          next_poll_at
+          next_poll_at,
+          state
         ) VALUES (
           $1,
           $2,
@@ -280,7 +289,8 @@ export class PostgresWatchStore implements WatchStore {
           $6::jsonb,
           $7::jsonb,
           $8,
-          $9
+          $9,
+          $10::jsonb
         )
         RETURNING *
       `,
@@ -293,7 +303,8 @@ export class PostgresWatchStore implements WatchStore {
         toJson(normalized.source),
         toJson(normalized.detector),
         normalized.enabled,
-        now,
+        normalized.nextPollAt,
+        toJson(normalized.state ?? null),
       ],
     );
 
@@ -319,9 +330,14 @@ export class PostgresWatchStore implements WatchStore {
         : normalizeIntervalMinutes(input.intervalMinutes);
       const intervalChanged = nextIntervalMinutes !== existing.intervalMinutes;
       const enabled = input.enabled ?? existing.enabled;
+      const nextState = input.state === undefined
+        ? (resetState ? null : existing.state ?? null)
+        : input.state;
       const nextPollAt = !enabled
         ? null
-        : resetState
+        : input.nextPollAt !== undefined
+          ? (input.nextPollAt === null ? null : toDate(input.nextPollAt))
+          : resetState
           ? new Date()
           : intervalChanged
             ? new Date(Date.now() + nextIntervalMinutes * 60_000)
@@ -336,10 +352,10 @@ export class PostgresWatchStore implements WatchStore {
               source_config = $4::jsonb,
               detector_config = $5::jsonb,
               enabled = $6,
-              state = CASE WHEN $7 THEN NULL ELSE state END,
+              state = $7::jsonb,
               disabled_at = CASE WHEN $6 THEN NULL ELSE COALESCE(disabled_at, NOW()) END,
               next_poll_at = CASE WHEN $6 THEN COALESCE($8, NOW()) ELSE NULL END,
-              last_error = CASE WHEN $7 THEN NULL ELSE last_error END,
+              last_error = CASE WHEN $9 THEN NULL ELSE last_error END,
               updated_at = NOW()
           WHERE id = $1
           RETURNING *
@@ -351,8 +367,9 @@ export class PostgresWatchStore implements WatchStore {
           toJson(input.source ?? existing.source),
           toJson(input.detector ?? existing.detector),
           enabled,
-          resetState,
+          toJson(nextState),
           nextPollAt,
+          resetState,
         ],
       );
 

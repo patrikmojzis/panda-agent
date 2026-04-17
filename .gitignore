@@ -2,6 +2,7 @@ node_modules/
 dist/
 .generated/
 .env
+.env.codex
 .idea/
 todo/
 todo.md

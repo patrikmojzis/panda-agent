@@ -11,6 +11,7 @@ import {PostgresIdentityStore} from "../../domain/identity/index.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import {PostgresScheduledTaskStore, type ScheduledTaskStore,} from "../../domain/scheduling/tasks/index.js";
 import {PostgresSessionStore, type SessionStore} from "../../domain/sessions/index.js";
+import {WatchMutationService} from "../../domain/watches/mutation-service.js";
 import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/index.js";
 import {
@@ -27,6 +28,7 @@ import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry,} 
 import {AgentDocumentTool} from "../../panda/tools/agent-document-tool.js";
 import {AgentSkillTool} from "../../panda/tools/agent-skill-tool.js";
 import {BrowserRunnerClient} from "../../integrations/browser/client.js";
+import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
 import {
     ScheduledTaskCancelTool,
@@ -166,6 +168,12 @@ export async function bootstrapRuntime(
     const watches = new PostgresWatchStore({
       pool: postgresPool,
     });
+    const watchMutations = new WatchMutationService({
+      store: watches,
+      evaluateWatch: createWatchEvaluator({
+        credentialResolver,
+      }),
+    });
     await ensureSchemas([
       credentialStore,
       scheduledTasks,
@@ -257,12 +265,15 @@ export async function bootstrapRuntime(
         store: scheduledTasks,
       }),
       new WatchCreateTool({
+        mutations: watchMutations,
         store: watches,
       }),
       new WatchUpdateTool({
+        mutations: watchMutations,
         store: watches,
       }),
       new WatchDisableTool({
+        mutations: watchMutations,
         store: watches,
       }),
     ]).main;

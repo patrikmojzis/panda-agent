@@ -4,6 +4,7 @@ import type {JsonValue} from "../../kernel/agent/types.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
+import type {WatchMutationService} from "../../domain/watches/mutation-service.js";
 import type {WatchStore} from "../../domain/watches/store.js";
 import type {WatchDetectorConfig, WatchSourceConfig} from "../../domain/watches/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
@@ -190,6 +191,7 @@ const watchDetectorSchema = z.union([
 ]) as z.ZodType<WatchDetectorConfig>;
 
 function readWatchScope(context: unknown): {
+  agentKey: string;
   sessionId: string;
   createdByIdentityId?: string;
 } {
@@ -197,13 +199,16 @@ function readWatchScope(context: unknown): {
     !context
     || typeof context !== "object"
     || Array.isArray(context)
+    || typeof (context as {agentKey?: unknown}).agentKey !== "string"
+    || !(context as {agentKey: string}).agentKey.trim()
     || typeof (context as {sessionId?: unknown}).sessionId !== "string"
     || !(context as {sessionId: string}).sessionId.trim()
   ) {
-    throw new ToolError("Watch tools require sessionId in the runtime session context.");
+    throw new ToolError("Watch tools require agentKey and sessionId in the runtime session context.");
   }
 
   return {
+    agentKey: (context as {agentKey: string}).agentKey,
     sessionId: (context as {sessionId: string}).sessionId,
     createdByIdentityId: readCurrentInputIdentityId(context),
   };
@@ -219,6 +224,7 @@ function wrapWatchError(error: unknown): never {
 }
 
 export interface WatchToolOptions {
+  mutations: WatchMutationService;
   store: WatchStore;
 }
 
@@ -251,14 +257,13 @@ export class WatchCreateTool<TContext = DefaultAgentSessionContext>
   ): Promise<{watchId: string}> {
     try {
       const scope = readWatchScope(run.context);
-      const watch = await this.options.store.createWatch({
-        ...scope,
+      const watch = await this.options.mutations.createWatch({
         title: args.title,
         intervalMinutes: args.intervalMinutes,
         source: args.source,
         detector: args.detector,
         enabled: args.enabled,
-      });
+      }, scope);
       return {
         watchId: watch.id,
       };
@@ -298,15 +303,14 @@ export class WatchUpdateTool<TContext = DefaultAgentSessionContext>
   ): Promise<{watchId: string; updated: true}> {
     try {
       const scope = readWatchScope(run.context);
-      const watch = await this.options.store.updateWatch({
-        ...scope,
+      const watch = await this.options.mutations.updateWatch({
         watchId: args.watchId,
         title: args.title,
         intervalMinutes: args.intervalMinutes,
         source: args.source,
         detector: args.detector,
         enabled: args.enabled,
-      });
+      }, scope);
       return {
         watchId: watch.id,
         updated: true,

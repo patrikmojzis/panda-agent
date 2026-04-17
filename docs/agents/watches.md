@@ -407,6 +407,7 @@ Tool:
 - `watch_update`
 
 Changing the source or detector resets watch state and reboots the watch from fresh state.
+Panda should expect `watch_create` and `watch_update` to preflight the source immediately, so bad paths or broken probes fail at save time instead of on the first poll.
 
 ## Disable Example
 
@@ -426,6 +427,7 @@ Tool:
 - Use `new_items` for rows, messages, listings, or feed entries.
 - Use `snapshot_changed` for page or document content changes.
 - Use `percent_change` for numeric threshold watches.
+- Do not use negative array indices like `[-1]` in watch paths. Sort/filter upstream and use `[0]`.
 - Store secrets in credentials and reference them by key.
 - Do not invent a custom probe in v1.
 - Do not claim there is a `watch_list` tool. There is not.
