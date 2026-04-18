@@ -5,29 +5,29 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {
-    Agent,
-    BashJobStatusTool,
-    BashJobWaitTool,
-    BashTool,
-    type LlmRuntime,
-    OutboundTool,
-    PiAiRuntime,
-    RunContext,
-    stringToUserMessage,
-    Thread,
-    Tool,
-    z,
+  Agent,
+  BashJobStatusTool,
+  BashJobWaitTool,
+  BashTool,
+  type LlmRuntime,
+  OutboundTool,
+  PiAiRuntime,
+  RunContext,
+  stringToUserMessage,
+  Thread,
+  Tool,
+  z,
 } from "../src/index.js";
 import {buildBackgroundBashThreadInput} from "../src/app/runtime/background-bash-thread-input.js";
 import {
-    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-    createCompactBoundaryMessage,
-    type CreateThreadInput,
-    type ResolvedThreadDefinition,
-    type ThreadDefinitionResolver,
-    type ThreadMessageRecord,
-    type ThreadRecord,
-    ThreadRuntimeCoordinator,
+  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+  createCompactBoundaryMessage,
+  type CreateThreadInput,
+  type ResolvedThreadDefinition,
+  type ThreadDefinitionResolver,
+  type ThreadMessageRecord,
+  type ThreadRecord,
+  ThreadRuntimeCoordinator,
 } from "../src/domain/threads/runtime/index.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
@@ -1399,6 +1399,163 @@ describe("ThreadRuntimeCoordinator", () => {
       details: {
         echoed: "still drain this",
       },
+    });
+  });
+
+  it("applies a late input on the immediate next turn even if it lands after boundary polling starts", async () => {
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call_echo",
+          name: "echo",
+          arguments: { message: "first" },
+        },
+      ]),
+      message("saw the late ping right away"),
+      message("unexpected third turn"),
+    );
+
+    let coordinator!: ThreadRuntimeCoordinator;
+    let injected = false;
+    class BoundaryRaceStore extends TestThreadRuntimeStore {
+      override async hasRunnableInputs(threadId: string): Promise<boolean> {
+        const base = await super.hasRunnableInputs(threadId);
+        if (!injected && !base && runtime.complete.mock.calls.length === 1) {
+          injected = true;
+          queueMicrotask(() => {
+            void coordinator.submitInput(threadId, {
+              message: stringToUserMessage("late ping"),
+              source: "telegram",
+              channelId: "chat-race",
+              externalMessageId: "late-1",
+              actorId: "user-race",
+            });
+          });
+        }
+
+        return base;
+      }
+    }
+
+    const store = new BoundaryRaceStore();
+    const registry = new TestThreadDefinitionRegistry().register("boundary-race", {
+      agent: new Agent({
+        name: "boundary-race",
+        instructions: "Use tools when needed",
+        tools: [new EchoTool()],
+      }),
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-boundary-race",
+      agentKey: "boundary-race",
+    });
+
+    coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-boundary-race", {
+      message: stringToUserMessage("start"),
+      source: "telegram",
+      channelId: "chat-race",
+      externalMessageId: "start-1",
+      actorId: "user-race",
+    });
+
+    await coordinator.waitForIdle("thread-boundary-race");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    expect(runtime.complete.mock.calls[1]?.[0].context.messages.some((entry: { role: string; content: unknown }) => {
+      return entry.role === "user" && entry.content === "late ping";
+    })).toBe(true);
+
+    const transcript = await store.loadTranscript("thread-boundary-race");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "telegram",
+      "assistant",
+      "tool:echo",
+      "telegram",
+      "assistant",
+    ]);
+  });
+
+  it("drains pending wakes when a fresh input also arrives at the boundary", async () => {
+    const started = createDeferred<void>();
+    const release = createDeferred<{ done: string }>();
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call_slow",
+          name: "slow",
+          arguments: { message: "first" },
+        },
+      ]),
+      message("handled the late ping once"),
+      message("unexpected empty wake turn"),
+    );
+
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("wake-drain", {
+      agent: new Agent({
+        name: "wake-drain",
+        instructions: "Use tools when needed",
+        tools: [new SlowTool(started, release)],
+      }),
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-wake-drain",
+      agentKey: "wake-drain",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-wake-drain", {
+      message: stringToUserMessage("start"),
+      source: "telegram",
+      channelId: "chat-wake",
+      externalMessageId: "start-1",
+      actorId: "user-wake",
+    });
+
+    await started.promise;
+
+    await coordinator.submitInput("thread-wake-drain", {
+      message: stringToUserMessage("late ping"),
+      source: "telegram",
+      channelId: "chat-wake",
+      externalMessageId: "late-1",
+      actorId: "user-wake",
+    });
+    await coordinator.wake("thread-wake-drain");
+
+    release.resolve({ done: "released" });
+    await coordinator.waitForIdle("thread-wake-drain");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
+
+    const transcript = await store.loadTranscript("thread-wake-drain");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "telegram",
+      "assistant",
+      "tool:slow",
+      "telegram",
+      "assistant",
+    ]);
+    expect(transcript.at(-1)?.message).toMatchObject({
+      role: "assistant",
+      content: [{ type: "text", text: "handled the late ping once" }],
     });
   });
 

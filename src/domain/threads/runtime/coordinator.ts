@@ -1,34 +1,34 @@
 import type {Message} from "@mariozechner/pi-ai";
 
-import {Thread} from "../../../kernel/agent/thread.js";
+import {runThreadStep, Thread, type ThreadResumeState, type ThreadStepResult} from "../../../kernel/agent/thread.js";
 import {resolveModelRuntimeBudget} from "../../../kernel/models/model-context-policy.js";
 import {resolveRuntimeDefaultModelSelector} from "../../../kernel/models/default-model.js";
 import type {ThreadRunEvent} from "../../../kernel/agent/types.js";
 import {stringifyUnknown} from "../../../kernel/agent/helpers/stringify.js";
 import type {
-    AutoCompactionRuntimeState,
-    ResolvedThreadDefinition,
-    ThreadDefinitionResolver,
-    ThreadInputPayload,
-    ThreadMessageRecord,
-    ThreadRecord,
-    ThreadRunRecord,
+  AutoCompactionRuntimeState,
+  ResolvedThreadDefinition,
+  ThreadDefinitionResolver,
+  ThreadInputPayload,
+  ThreadMessageRecord,
+  ThreadRecord,
+  ThreadRunRecord,
 } from "./types.js";
-import type {ThreadRuntimeStore} from "./store.js";
+import type {ThreadInputApplyScope, ThreadRuntimeStore} from "./store.js";
 import {
-    appendCompactionFailureNotice,
-    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-    AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
-    compactThread,
-    estimateTranscriptTokens,
-    projectTranscriptForRun,
-    readAutoCompactionRuntimeState,
-    shouldAutoCompactThread,
-    updateAutoCompactionRuntimeState,
+  appendCompactionFailureNotice,
+  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+  AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
+  compactThread,
+  estimateTranscriptTokens,
+  projectTranscriptForRun,
+  readAutoCompactionRuntimeState,
+  shouldAutoCompactThread,
+  updateAutoCompactionRuntimeState,
 } from "../../../kernel/transcript/compaction.js";
 import {
-    applyImageProjectionForInference,
-    projectTranscriptForInference,
+  applyImageProjectionForInference,
+  projectTranscriptForInference,
 } from "../../../kernel/transcript/inference-projection.js";
 import {rehydrateProjectedToolArtifacts} from "./tool-artifact-replay.js";
 
@@ -74,6 +74,11 @@ export type ThreadRuntimeEvent =
     threadId: string;
     run: ThreadRunRecord;
   };
+
+interface ThreadBoundaryState {
+  hasRunnableInputs: boolean;
+  hadPendingWake: boolean;
+}
 
 function isPersistedThreadMessage(event: ThreadRunEvent): event is Extract<ThreadRunEvent, { role: string }> {
   return "role" in event && (event.role === "assistant" || event.role === "toolResult");
@@ -321,7 +326,7 @@ export class ThreadRuntimeCoordinator {
     } finally {
       await lease.release();
 
-      if ((await this.store.hasRunnableInputs(threadId)) || (await this.store.consumePendingWake(threadId))) {
+      if (this.shouldContinueFromBoundary(await this.takeBoundaryState(threadId))) {
         this.ensureRunning(threadId);
       }
     }
@@ -356,6 +361,19 @@ export class ThreadRuntimeCoordinator {
     await this.onEvent?.(event);
   }
 
+  private shouldContinueFromBoundary(boundary: ThreadBoundaryState): boolean {
+    return boundary.hasRunnableInputs || boundary.hadPendingWake;
+  }
+
+  private async takeBoundaryState(threadId: string): Promise<ThreadBoundaryState> {
+    const hasRunnableInputs = await this.store.hasRunnableInputs(threadId);
+    const hadPendingWake = await this.store.consumePendingWake(threadId);
+    return {
+      hasRunnableInputs,
+      hadPendingWake,
+    };
+  }
+
   private ensureRunning(threadId: string): void {
     if (this.activeRuns.has(threadId)) {
       return;
@@ -364,7 +382,7 @@ export class ThreadRuntimeCoordinator {
     const promise = this.runUntilIdle(threadId)
       .then(async ({restartRequested, acquiredLease}) => {
         this.activeRuns.delete(threadId);
-        if (acquiredLease && (restartRequested || (await this.store.consumePendingWake(threadId)))) {
+        if (acquiredLease && (restartRequested || this.shouldContinueFromBoundary(await this.takeBoundaryState(threadId)))) {
           this.ensureRunning(threadId);
         }
       })
@@ -418,6 +436,7 @@ export class ThreadRuntimeCoordinator {
     definition: ResolvedThreadDefinition,
     messages: readonly ThreadMessageRecord[],
     signal?: AbortSignal,
+    resumeState?: ThreadResumeState,
   ): ConstructorParameters<typeof Thread>[0] {
     const modelConfig = this.resolveModelConfig(thread, definition);
 
@@ -437,12 +456,11 @@ export class ThreadRuntimeCoordinator {
       runtime: definition.runtime,
       countTokens: definition.countTokens,
       signal,
+      resumeState,
       checkpoint: async (checkpoint) => {
         const pendingToolCalls = checkpoint.phase === "after_assistant"
           ? checkpoint.toolCalls
-          : checkpoint.phase === "after_tool_result"
-            ? checkpoint.remainingToolCalls
-            : [];
+          : checkpoint.remainingToolCalls;
 
         const latestRun = await this.store.getRun(run.id);
         if (latestRun.abortRequestedAt) {
@@ -452,20 +470,7 @@ export class ThreadRuntimeCoordinator {
             cancelPendingToolCalls: pendingToolCalls.length > 0,
           } as const;
         }
-
-        if (checkpoint.phase !== "before_next_turn") {
-          return { action: "continue" } as const;
-        }
-
-        if (!(await this.store.hasRunnableInputs(thread.id)) && !(await this.store.hasPendingWake(thread.id))) {
-          return { action: "continue" } as const;
-        }
-
-        return {
-          action: "interrupt",
-          reason: "New external input arrived.",
-          cancelPendingToolCalls: false,
-        } as const;
+        return { action: "continue" } as const;
       },
     };
   }
@@ -637,10 +642,12 @@ export class ThreadRuntimeCoordinator {
     let finishedRun: ThreadRunRecord | null = null;
     let restartRequested = false;
     let skippedRun = false;
+    let resumeState: ThreadResumeState | undefined;
+    let inputApplyScope: ThreadInputApplyScope = "all";
 
     try {
       while (true) {
-        const appliedInputs = await this.store.applyPendingInputs(threadId);
+        const appliedInputs = await this.store.applyPendingInputs(threadId, inputApplyScope);
         if (appliedInputs.length > 0) {
           await this.emit({
             type: "inputs_applied",
@@ -686,10 +693,20 @@ export class ThreadRuntimeCoordinator {
           inferenceProjection?.dropImages,
         );
         const executor = new Thread(
-          this.buildThreadOptions(run, preflight.thread, definition, finalTranscript, controller.signal),
+          this.buildThreadOptions(run, preflight.thread, definition, finalTranscript, controller.signal, resumeState),
         );
 
-        for await (const event of executor.run()) {
+        const step = runThreadStep(executor);
+        let stepResult: ThreadStepResult | undefined;
+
+        while (true) {
+          const next = await step.next();
+          if (next.done) {
+            stepResult = next.value;
+            break;
+          }
+
+          const event = next.value;
           if (isPersistedThreadMessage(event)) {
             await this.store.appendRuntimeMessage(threadId, {
               message: sanitizePersistedMessage(event, definition.agent.tools),
@@ -706,9 +723,14 @@ export class ThreadRuntimeCoordinator {
           });
         }
 
-        if (!(await this.store.hasRunnableInputs(threadId)) && !(await this.store.consumePendingWake(threadId))) {
+        resumeState = stepResult?.resumeState;
+        const boundary = await this.takeBoundaryState(threadId);
+        const continueForWakeCycle = this.shouldContinueFromBoundary(boundary);
+        if (!(stepResult?.needsAnotherTurn ?? false) && !continueForWakeCycle) {
           break;
         }
+
+        inputApplyScope = continueForWakeCycle ? "all" : "runnable";
       }
 
       if (!skippedRun) {
@@ -731,7 +753,7 @@ export class ThreadRuntimeCoordinator {
 
       this.activeSignals.delete(threadId);
       await lease.release();
-      restartRequested = (await this.store.hasRunnableInputs(threadId)) || (await this.store.consumePendingWake(threadId));
+      restartRequested = this.shouldContinueFromBoundary(await this.takeBoundaryState(threadId));
     }
 
     return {

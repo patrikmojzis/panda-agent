@@ -42,7 +42,10 @@ export {
   type ThreadCheckpointDecision,
   type ThreadCheckpointHandler,
 } from "./thread-checkpoint.js";
-export { Thread, type ThreadOptions } from "./thread.js";
+export {
+  Thread,
+  type ThreadOptions,
+} from "./thread.js";
 export { Tool, formatToolCallFallback, formatToolResultFallback, type ToolOutput } from "./tool.js";
 export { stringToUserMessage } from "./helpers/input.js";
 export {

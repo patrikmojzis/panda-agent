@@ -19,6 +19,8 @@ export interface ThreadEnqueueResult {
   inserted: boolean;
 }
 
+export type ThreadInputApplyScope = "all" | "runnable";
+
 export interface ThreadRuntimeStore {
   createThread(input: CreateThreadInput): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
@@ -30,7 +32,10 @@ export interface ThreadRuntimeStore {
     payload: ThreadInputPayload,
     deliveryMode?: ThreadInputDeliveryMode,
   ): Promise<ThreadEnqueueResult>;
-  applyPendingInputs(threadId: string): Promise<readonly ThreadMessageRecord[]>;
+  applyPendingInputs(
+    threadId: string,
+    scope?: ThreadInputApplyScope,
+  ): Promise<readonly ThreadMessageRecord[]>;
   discardPendingInputs(threadId: string): Promise<number>;
   hasPendingInputs(threadId: string): Promise<boolean>;
   hasRunnableInputs(threadId: string): Promise<boolean>;

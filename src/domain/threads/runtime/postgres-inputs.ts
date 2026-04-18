@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
 
-import type {ThreadEnqueueResult} from "./store.js";
+import type {ThreadEnqueueResult, ThreadInputApplyScope} from "./store.js";
 import {type ThreadRuntimeTableNames, toJson} from "./postgres-shared.js";
 import {parseInputRow, parseMessageRow} from "./postgres-rows.js";
 import {type PgPoolLike, type PgQueryable, withTransaction} from "./postgres-db.js";
@@ -134,14 +134,19 @@ export async function enqueueThreadInput(
   }
 }
 
-export async function applyPendingThreadInputs(
-  options: ThreadInputMutationOptions & { pool: PgPoolLike },
+async function applyThreadInputs(
+  options: ThreadInputMutationOptions & {
+    pool: PgPoolLike;
+    scope?: ThreadInputApplyScope;
+  },
 ): Promise<readonly ThreadMessageRecord[]> {
   return withTransaction(options.pool, async (client) => {
     const pendingResult = await client.query(`
       SELECT *
       FROM ${options.tables.inputs}
-      WHERE thread_id = $1 AND applied_at IS NULL
+      WHERE thread_id = $1
+        AND applied_at IS NULL
+        ${options.scope === "runnable" ? "AND delivery_mode = 'wake'" : ""}
       ORDER BY input_order ASC
       FOR UPDATE
     `, [options.threadId]);
@@ -207,6 +212,15 @@ export async function applyPendingThreadInputs(
     await options.notifyThreadChanged(options.threadId, client);
     return inserted;
   });
+}
+
+export async function applyPendingThreadInputs(
+  options: ThreadInputMutationOptions & {
+    pool: PgPoolLike;
+    scope?: ThreadInputApplyScope;
+  },
+): Promise<readonly ThreadMessageRecord[]> {
+  return applyThreadInputs(options);
 }
 
 export async function discardPendingThreadInputs(

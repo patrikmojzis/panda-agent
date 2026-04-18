@@ -2,20 +2,20 @@ import type {AssistantMessage, Message, ThinkingLevel, ToolCall, ToolResultMessa
 
 import type {Agent} from "./agent.js";
 import {
-    InvalidJSONResponseError,
-    InvalidSchemaResponseError,
-    MaxTurnsReachedError,
-    StreamingFailedError,
-    ToolError,
+  InvalidJSONResponseError,
+  InvalidSchemaResponseError,
+  MaxTurnsReachedError,
+  StreamingFailedError,
+  ToolError,
 } from "./exceptions.js";
 import {stringifyUnknown} from "./helpers/stringify.js";
 import {estimateTokensFromString, type TokenCounter} from "./helpers/token-count.js";
 import {gatherContexts, type LlmContext} from "./llm-context.js";
 import type {Hook} from "./hook.js";
 import {
-    buildConversationContext,
-    buildToolResultMessage,
-    collectAssistantToolCalls,
+  buildConversationContext,
+  buildToolResultMessage,
+  collectAssistantToolCalls,
 } from "../../integrations/providers/shared/messages.js";
 import {isCompactSummaryMessage} from "./helpers/compact.js";
 import {PiAiRuntime} from "../../integrations/providers/shared/runtime.js";
@@ -47,6 +47,26 @@ export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   countTokens?: TokenCounter;
   signal?: AbortSignal;
   checkpoint?: ThreadCheckpointHandler;
+  resumeState?: ThreadResumeState;
+}
+
+export interface ThreadResumeState {
+  turnCount: number;
+  thinking?: ThinkingLevel;
+}
+
+export interface ThreadStepResult {
+  needsAnotherTurn: boolean;
+  resumeState: ThreadResumeState;
+}
+
+const runThreadStepSymbol = Symbol("runThreadStep");
+
+// Internal scheduler seam for the runtime coordinator; keep it off the package root.
+export async function* runThreadStep<TContext = unknown, TOutput = unknown>(
+  thread: Thread<TContext, TOutput>,
+): AsyncGenerator<ThreadRunEvent, ThreadStepResult> {
+  return yield* thread[runThreadStepSymbol]();
 }
 
 function stringifyJson(value: JsonValue): string {
@@ -119,10 +139,12 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   private readonly defaultThinking?: ThinkingLevel;
   private effectiveThinking?: ThinkingLevel;
   private thinkingScopeDepth = 0;
+  private preserveThinkingOnNextScopeEntry: boolean;
 
   constructor(options: ThreadOptions<TContext, TOutput>) {
     this.agent = options.agent;
     this.maxTurns = options.maxTurns ?? 100;
+    this.turnCount = options.resumeState?.turnCount ?? 0;
     this.history = [...(options.messages ?? [])];
     this.systemPrompt = options.systemPrompt;
     this.context = options.context;
@@ -136,7 +158,8 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     this.contextWindowTokens = resolveModelRuntimeBudget(this.model).operatingWindow;
     this.temperature = options.temperature;
     this.defaultThinking = options.thinking;
-    this.effectiveThinking = options.thinking;
+    this.effectiveThinking = options.resumeState?.thinking ?? options.thinking;
+    this.preserveThinkingOnNextScopeEntry = options.resumeState !== undefined;
     this.runtime = options.runtime ?? new PiAiRuntime();
     this.countTokens = options.countTokens ?? estimateTokensFromString;
     this.signal = options.signal;
@@ -180,10 +203,28 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     this.effectiveThinking = this.defaultThinking;
   }
 
+  private snapshotResumeState(): ThreadResumeState {
+    return {
+      turnCount: this.turnCount,
+      thinking: this.effectiveThinking,
+    };
+  }
+
+  private buildStepResult(needsAnotherTurn: boolean): ThreadStepResult {
+    return {
+      needsAnotherTurn,
+      resumeState: this.snapshotResumeState(),
+    };
+  }
+
   private beginThinkingScope(): boolean {
     const isTopLevelScope = this.thinkingScopeDepth === 0;
     if (isTopLevelScope) {
-      this.resetThinking();
+      if (this.preserveThinkingOnNextScopeEntry) {
+        this.preserveThinkingOnNextScopeEntry = false;
+      } else {
+        this.resetThinking();
+      }
     }
 
     this.thinkingScopeDepth += 1;
@@ -264,11 +305,10 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     return collectAssistantToolCalls(response);
   }
 
-  async *executeToolCalls<TNextEvent>(
+  async *executeToolCalls(
     functionCalls: ToolCall[],
     runContext: RunContext<TContext>,
-    nextTurn: () => AsyncGenerator<TNextEvent>,
-  ): AsyncGenerator<ToolProgressEvent | ToolResultMessage<JsonValue> | TNextEvent> {
+  ): AsyncGenerator<ToolProgressEvent | ToolResultMessage<JsonValue>, boolean> {
     for (const [index, call] of functionCalls.entries()) {
       const progressQueue: ToolProgressEvent[] = [];
       let wakeProgressWaiter: (() => void) | undefined;
@@ -361,23 +401,12 @@ export class Thread<TContext = unknown, TOutput = unknown> {
             yield* this.emitCancelledToolResults(remainingToolCalls, runContext, decision.reason);
           }
 
-          return;
+          return false;
         }
       }
     }
 
-    if (this.checkpoint) {
-      const decision = this.resolveCheckpointDecision(await this.checkpoint({
-        phase: "before_next_turn",
-        runContext,
-      }));
-
-      if (decision.action === "interrupt") {
-        return;
-      }
-    }
-
-    yield* nextTurn();
+    return true;
   }
 
   async getRunInput(): Promise<Message[]> {
@@ -512,81 +541,115 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     };
   }
 
+  private async *runStepWithinScope(): AsyncGenerator<ThreadRunEvent, ThreadStepResult> {
+    const { runMessages, runContext } = await this.prepareTurn();
+
+    throwIfAborted(this.signal);
+    const response = await this.runtime.complete(await this.buildRuntimeRequest(runMessages));
+    throwIfAborted(this.signal);
+    throwIfAssistantResponseFailed(response);
+
+    yield response;
+
+    const functionCalls = await this.finalizeAssistantTurn(response, runContext);
+    if (functionCalls.length === 0) {
+      return this.buildStepResult(false);
+    }
+
+    if (this.checkpoint) {
+      const decision = this.resolveCheckpointDecision(await this.checkpoint({
+        phase: "after_assistant",
+        runContext,
+        assistantMessage: response,
+        toolCalls: functionCalls,
+      }));
+
+      if (decision.action === "interrupt") {
+        if (decision.cancelPendingToolCalls !== false) {
+          yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
+        }
+
+        return this.buildStepResult(false);
+      }
+    }
+
+    const needsAnotherTurn = yield* this.executeToolCalls(functionCalls, runContext);
+    return this.buildStepResult(needsAnotherTurn);
+  }
+
+  async *[runThreadStepSymbol](): AsyncGenerator<ThreadRunEvent, ThreadStepResult> {
+    const isTopLevelScope = this.beginThinkingScope();
+
+    try {
+      return yield* this.runStepWithinScope();
+    } finally {
+      this.endThinkingScope(isTopLevelScope);
+    }
+  }
+
   async *run(): AsyncGenerator<ThreadRunEvent> {
     const isTopLevelScope = this.beginThinkingScope();
 
     try {
-      const { runMessages, runContext } = await this.prepareTurn();
-
-      throwIfAborted(this.signal);
-      const response = await this.runtime.complete(await this.buildRuntimeRequest(runMessages));
-      throwIfAborted(this.signal);
-      throwIfAssistantResponseFailed(response);
-
-      yield response;
-
-      const functionCalls = await this.finalizeAssistantTurn(response, runContext);
-      if (functionCalls.length > 0) {
-        if (this.checkpoint) {
-          const decision = this.resolveCheckpointDecision(await this.checkpoint({
-            phase: "after_assistant",
-            runContext,
-            assistantMessage: response,
-            toolCalls: functionCalls,
-          }));
-
-          if (decision.action === "interrupt") {
-            if (decision.cancelPendingToolCalls !== false) {
-              yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
-            }
-
-            return;
-          }
+      while (true) {
+        const stepResult = yield* this.runStepWithinScope();
+        if (!stepResult.needsAnotherTurn) {
+          return;
         }
-
-        yield* this.executeToolCalls(functionCalls, runContext, () => this.run());
       }
     } finally {
       this.endThinkingScope(isTopLevelScope);
     }
   }
 
+  private async *streamStepWithinScope(): AsyncGenerator<ThreadStreamEvent, ThreadStepResult> {
+    const { runMessages, runContext } = await this.prepareTurn();
+
+    throwIfAborted(this.signal);
+    const stream = this.runtime.stream(await this.buildRuntimeRequest(runMessages));
+
+    for await (const event of stream) {
+      yield event;
+    }
+
+    const response = await stream.result();
+    throwIfAssistantResponseFailed(response);
+
+    const functionCalls = await this.finalizeAssistantTurn(response, runContext);
+    if (functionCalls.length === 0) {
+      return this.buildStepResult(false);
+    }
+
+    if (this.checkpoint) {
+      const decision = this.resolveCheckpointDecision(await this.checkpoint({
+        phase: "after_assistant",
+        runContext,
+        assistantMessage: response,
+        toolCalls: functionCalls,
+      }));
+
+      if (decision.action === "interrupt") {
+        if (decision.cancelPendingToolCalls !== false) {
+          yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
+        }
+
+        return this.buildStepResult(false);
+      }
+    }
+
+    const needsAnotherTurn = yield* this.executeToolCalls(functionCalls, runContext);
+    return this.buildStepResult(needsAnotherTurn);
+  }
+
   async *stream(): AsyncGenerator<ThreadStreamEvent> {
     const isTopLevelScope = this.beginThinkingScope();
 
     try {
-      const { runMessages, runContext } = await this.prepareTurn();
-
-      throwIfAborted(this.signal);
-      const stream = this.runtime.stream(await this.buildRuntimeRequest(runMessages));
-
-      for await (const event of stream) {
-        yield event;
-      }
-
-      const response = await stream.result();
-      throwIfAssistantResponseFailed(response);
-
-      const functionCalls = await this.finalizeAssistantTurn(response, runContext);
-      if (functionCalls.length > 0) {
-        if (this.checkpoint) {
-          const decision = this.resolveCheckpointDecision(await this.checkpoint({
-            phase: "after_assistant",
-            runContext,
-            assistantMessage: response,
-            toolCalls: functionCalls,
-          }));
-
-          if (decision.action === "interrupt") {
-            if (decision.cancelPendingToolCalls !== false) {
-              yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
-            }
-
-            return;
-          }
+      while (true) {
+        const stepResult = yield* this.streamStepWithinScope();
+        if (!stepResult.needsAnotherTurn) {
+          return;
         }
-
-        yield* this.executeToolCalls(functionCalls, runContext, () => this.stream());
       }
     } finally {
       this.endThinkingScope(isTopLevelScope);

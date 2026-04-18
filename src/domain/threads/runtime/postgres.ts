@@ -20,7 +20,7 @@ import {
   promoteQueuedThreadInputs,
 } from "./postgres-inputs.js";
 import type {PgPoolLike, PgQueryable} from "./postgres-db.js";
-import type {ThreadEnqueueResult, ThreadRuntimeStore} from "./store.js";
+import type {ThreadEnqueueResult, ThreadInputApplyScope, ThreadRuntimeStore} from "./store.js";
 import {
   type CreateThreadBashJobInput,
   type CreateThreadInput,
@@ -522,11 +522,15 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     });
   }
 
-  async applyPendingInputs(threadId: string): Promise<readonly ThreadMessageRecord[]> {
+  async applyPendingInputs(
+    threadId: string,
+    scope: ThreadInputApplyScope = "all",
+  ): Promise<readonly ThreadMessageRecord[]> {
     return applyPendingThreadInputs({
       pool: this.pool,
       tables: this.tables,
       threadId,
+      scope,
       touchThread: (id, queryable) => this.touchThread(id, queryable),
       notifyThreadChanged: (id, queryable) => this.notifyThreadChanged(id, queryable),
     });
