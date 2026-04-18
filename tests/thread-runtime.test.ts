@@ -5,28 +5,29 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {
-  Agent,
-  BashJobStatusTool,
-  BashJobWaitTool,
-  BashTool,
-  type LlmRuntime,
-  PiAiRuntime,
-  RunContext,
-  stringToUserMessage,
-  Thread,
-  Tool,
-  z,
+    Agent,
+    BashJobStatusTool,
+    BashJobWaitTool,
+    BashTool,
+    type LlmRuntime,
+    OutboundTool,
+    PiAiRuntime,
+    RunContext,
+    stringToUserMessage,
+    Thread,
+    Tool,
+    z,
 } from "../src/index.js";
 import {buildBackgroundBashThreadInput} from "../src/app/runtime/background-bash-thread-input.js";
 import {
-  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-  createCompactBoundaryMessage,
-  type CreateThreadInput,
-  type ResolvedThreadDefinition,
-  type ThreadDefinitionResolver,
-  type ThreadMessageRecord,
-  type ThreadRecord,
-  ThreadRuntimeCoordinator,
+    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+    createCompactBoundaryMessage,
+    type CreateThreadInput,
+    type ResolvedThreadDefinition,
+    type ThreadDefinitionResolver,
+    type ThreadMessageRecord,
+    type ThreadRecord,
+    ThreadRuntimeCoordinator,
 } from "../src/domain/threads/runtime/index.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
@@ -536,7 +537,7 @@ describe("ThreadRuntimeCoordinator", () => {
     }
   });
 
-  it("auto-wakes once when watcher-owned background jobs finish during an active run", async () => {
+  it("surfaces queued wake inputs before the next model turn when watcher-owned background jobs finish during an active run", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "panda-thread-runtime-autowake-"));
     try {
       const started = createDeferred<void>();
@@ -594,10 +595,6 @@ describe("ThreadRuntimeCoordinator", () => {
           }
 
           if (callCount === 4) {
-            return message("finished the current run");
-          }
-
-          if (callCount === 5) {
             expect(request.context.messages.some((entry) => {
               return entry.role === "user"
                 && typeof entry.content === "string"
@@ -657,7 +654,7 @@ describe("ThreadRuntimeCoordinator", () => {
       const transcript = await store.loadTranscript("thread-bg-autowake");
       expect(transcript.filter((entry) => entry.source === "background_bash")).toHaveLength(2);
       expect(transcript.filter((entry) => entry.source === "background_bash").every((entry) => entry.origin === "input")).toBe(true);
-      expect(runtime.complete).toHaveBeenCalledTimes(5);
+      expect(runtime.complete).toHaveBeenCalledTimes(4);
       expect(transcript.at(-1)?.message).toMatchObject({
         role: "assistant",
         content: [{ type: "text", text: "noticed the background completion" }],
@@ -692,10 +689,6 @@ describe("ThreadRuntimeCoordinator", () => {
         }
 
         if (callCount === 2) {
-          return message("finished current run");
-        }
-
-        if (callCount === 3) {
           expect(request.context.messages.some((entry) => {
             return entry.role === "user"
               && typeof entry.content === "string"
@@ -767,7 +760,7 @@ describe("ThreadRuntimeCoordinator", () => {
     release.resolve({ done: "released" });
     await ownerCoordinator.waitForIdle("thread-cross-process-wake");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(3);
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
     const transcript = await store.loadTranscript("thread-cross-process-wake");
     expect(transcript.at(-1)?.message).toMatchObject({
       role: "assistant",
@@ -1035,7 +1028,7 @@ describe("ThreadRuntimeCoordinator", () => {
     ]);
   });
 
-  it("replans after a new input arrives during a tool run", async () => {
+  it("drains planned tools before replanning when a new input arrives during a tool run", async () => {
     const started = createDeferred<void>();
     const release = createDeferred<{ done: string }>();
     const runtime = createMockRuntime(
@@ -1115,19 +1108,17 @@ describe("ThreadRuntimeCoordinator", () => {
       "assistant",
     ]);
 
-    const cancelledResult = transcript[3];
-    expect(cancelledResult?.message).toMatchObject({
+    const echoResult = transcript[3];
+    expect(echoResult?.message).toMatchObject({
       role: "toolResult",
       toolName: "echo",
-      isError: true,
       details: {
-        cancelled: true,
-        reason: "New external input arrived.",
+        echoed: "second",
       },
     });
   });
 
-  it("interrupts before the first tool starts when new input arrives after the assistant reply", async () => {
+  it("still runs the first planned tool when new input arrives after the assistant reply", async () => {
     const runtime = new DeferredRuntime();
     const firstResponse = createDeferred<AssistantMessage>();
     runtime.queue(firstResponse.promise);
@@ -1188,7 +1179,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await coordinator.waitForIdle("thread-after-assistant");
 
-    expect(slowHandle).not.toHaveBeenCalled();
+    expect(slowHandle).toHaveBeenCalledTimes(1);
 
     const transcript = await store.loadTranscript("thread-after-assistant");
     expect(transcript.map((entry) => entry.source)).toEqual([
@@ -1202,8 +1193,211 @@ describe("ThreadRuntimeCoordinator", () => {
       role: "toolResult",
       toolName: "echo",
       details: {
-        cancelled: true,
-        reason: "New external input arrived.",
+        echoed: "should not run",
+      },
+    });
+  });
+
+  it("drains a planned outbound before applying fresh telegram input", async () => {
+    const runtime = new DeferredRuntime();
+    const firstResponse = createDeferred<AssistantMessage>();
+    runtime.queue(firstResponse.promise);
+    runtime.queue(message("followed up after the new telegram message"));
+
+    const enqueueDelivery = vi.fn(async (input) => ({
+      id: "delivery-1",
+      ...input,
+      status: "pending" as const,
+      attemptCount: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }));
+
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("outbound-agent", {
+      agent: new Agent({
+        name: "outbound-agent",
+        instructions: "Reply on telegram.",
+        tools: [new OutboundTool()],
+      }),
+      runtime,
+      context: {
+        threadId: "thread-outbound-drain",
+        outboundQueue: {
+          enqueueDelivery,
+        },
+      },
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-outbound-drain",
+      agentKey: "outbound-agent",
+      context: {
+        threadId: "thread-outbound-drain",
+      },
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-outbound-drain", {
+      message: stringToUserMessage("reply to me"),
+      source: "telegram",
+      channelId: "chat-99",
+      externalMessageId: "msg-1",
+      actorId: "user-99",
+      metadata: {
+        route: {
+          source: "telegram",
+          connectorKey: "bot-main",
+          externalConversationId: "chat-99",
+          externalActorId: "user-99",
+          externalMessageId: "msg-1",
+        },
+      },
+    });
+
+    await waitFor(() => runtime.complete.mock.calls.length === 1);
+
+    await coordinator.submitInput("thread-outbound-drain", {
+      message: stringToUserMessage("one more thing"),
+      source: "telegram",
+      channelId: "chat-99",
+      externalMessageId: "msg-2",
+      actorId: "user-99",
+      metadata: {
+        route: {
+          source: "telegram",
+          connectorKey: "bot-main",
+          externalConversationId: "chat-99",
+          externalActorId: "user-99",
+          externalMessageId: "msg-2",
+        },
+      },
+    });
+
+    firstResponse.resolve(createAssistantMessage([{
+      type: "toolCall",
+      id: "call_outbound",
+      name: "outbound",
+      arguments: {
+        items: [{ type: "text", text: "first reply still goes out" }],
+      },
+    }]));
+
+    await coordinator.waitForIdle("thread-outbound-drain");
+
+    expect(enqueueDelivery).toHaveBeenCalledTimes(1);
+    expect(enqueueDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-outbound-drain",
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-main",
+        externalConversationId: "chat-99",
+        externalActorId: "user-99",
+      },
+      items: [{ type: "text", text: "first reply still goes out" }],
+    }));
+
+    const transcript = await store.loadTranscript("thread-outbound-drain");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "telegram",
+      "assistant",
+      "tool:outbound",
+      "telegram",
+      "assistant",
+    ]);
+    expect(transcript[2]?.message).toMatchObject({
+      role: "toolResult",
+      toolName: "outbound",
+      details: {
+        ok: true,
+        status: "queued",
+        deliveryId: "delivery-1",
+      },
+    });
+  });
+
+  it("surfaces A2A wake inputs between turns without cancelling the current plan", async () => {
+    const started = createDeferred<void>();
+    const release = createDeferred<{ done: string }>();
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {
+          type: "toolCall",
+          id: "call_slow",
+          name: "slow",
+          arguments: { message: "first" },
+        },
+        {
+          type: "toolCall",
+          id: "call_echo",
+          name: "echo",
+          arguments: { message: "still drain this" },
+        },
+      ]),
+      message("responded after the A2A ping"),
+    );
+
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("a2a-turn-boundary-agent", {
+      agent: new Agent({
+        name: "a2a-turn-boundary-agent",
+        instructions: "Use tools when needed",
+        tools: [new SlowTool(started, release), new EchoTool()],
+      }),
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-a2a-turn-boundary",
+      agentKey: "a2a-turn-boundary-agent",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-a2a-turn-boundary", {
+      message: stringToUserMessage("start"),
+      source: "tui",
+    });
+
+    await started.promise;
+
+    await coordinator.submitInput("thread-a2a-turn-boundary", {
+      message: stringToUserMessage("[A2A] ping from another Panda"),
+      source: "a2a",
+      channelId: "session-upstream",
+      externalMessageId: "a2a:msg-1",
+      actorId: "koala",
+    });
+
+    release.resolve({ done: "first" });
+    await coordinator.waitForIdle("thread-a2a-turn-boundary");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
+
+    const transcript = await store.loadTranscript("thread-a2a-turn-boundary");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "tui",
+      "assistant",
+      "tool:slow",
+      "tool:echo",
+      "a2a",
+      "assistant",
+    ]);
+    expect(transcript[3]?.message).toMatchObject({
+      role: "toolResult",
+      toolName: "echo",
+      details: {
+        echoed: "still drain this",
       },
     });
   });

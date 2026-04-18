@@ -440,7 +440,9 @@ export class ThreadRuntimeCoordinator {
       checkpoint: async (checkpoint) => {
         const pendingToolCalls = checkpoint.phase === "after_assistant"
           ? checkpoint.toolCalls
-          : checkpoint.remainingToolCalls;
+          : checkpoint.phase === "after_tool_result"
+            ? checkpoint.remainingToolCalls
+            : [];
 
         const latestRun = await this.store.getRun(run.id);
         if (latestRun.abortRequestedAt) {
@@ -451,14 +453,18 @@ export class ThreadRuntimeCoordinator {
           } as const;
         }
 
-        if (!(await this.store.hasRunnableInputs(thread.id))) {
+        if (checkpoint.phase !== "before_next_turn") {
+          return { action: "continue" } as const;
+        }
+
+        if (!(await this.store.hasRunnableInputs(thread.id)) && !(await this.store.hasPendingWake(thread.id))) {
           return { action: "continue" } as const;
         }
 
         return {
           action: "interrupt",
           reason: "New external input arrived.",
-          cancelPendingToolCalls: pendingToolCalls.length > 0,
+          cancelPendingToolCalls: false,
         } as const;
       },
     };

@@ -228,6 +228,7 @@ Inbound A2A does **not** fake a human:
 - same-session send is blocked
 - allowlist is enforced both on send and on receive
 - A2A is wake-only
+- wake means "make the recipient runnable for the next turn boundary", not "preempt the current planned tool chain"
 - A2A is fire-and-forget
 - there is no request/response RPC behavior in v1
 - there is no wildcard "any session on this agent" binding

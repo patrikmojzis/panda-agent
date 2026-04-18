@@ -74,7 +74,7 @@ Panda asks the job to stop, waits briefly, and returns the final or current stat
 ## Auto-Wake And Context
 
 - Panda may see active background jobs in context during later turns
-- when a watcher-owned background job finishes on its own, Panda may receive a queued background event and keep going without manual polling
+- when a watcher-owned background job finishes on its own, Panda may receive a queued background event and see it at the next turn boundary without manual polling
 - `bash_job_status` and `bash_job_wait` are still the right tools when Panda needs the full latest state on demand
 
 ## What Comes Back

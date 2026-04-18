@@ -366,6 +366,17 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       }
     }
 
+    if (this.checkpoint) {
+      const decision = this.resolveCheckpointDecision(await this.checkpoint({
+        phase: "before_next_turn",
+        runContext,
+      }));
+
+      if (decision.action === "interrupt") {
+        return;
+      }
+    }
+
     yield* nextTurn();
   }
 

@@ -24,6 +24,10 @@ export type ThreadCheckpoint =
     toolCall: ToolCall;
     toolResult: ToolResultMessage<JsonValue>;
     remainingToolCalls: readonly ToolCall[];
+  }
+  | {
+    phase: "before_next_turn";
+    runContext: RunContext<unknown>;
   };
 
 export type ThreadCheckpointHandler = (

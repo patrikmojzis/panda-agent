@@ -120,6 +120,7 @@ Once a binding exists, Panda can use `message_agent` to send:
 Delivery is:
 
 - wake-only
+- normal wake does not preempt the recipient's already-planned tools; Panda sees the A2A message at the next turn boundary
 - fire-and-forget
 - session-scoped
 
