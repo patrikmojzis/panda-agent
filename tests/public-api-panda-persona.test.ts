@@ -32,6 +32,7 @@ const EXPECTED_PERSONA_EXPORTS = [
   "ThinkingSetTool",
   "WatchCreateTool",
   "WatchDisableTool",
+  "WatchSchemaGetTool",
   "WatchUpdateTool",
   "WebFetchTool",
   "WebResearchTool",

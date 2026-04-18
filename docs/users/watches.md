@@ -69,12 +69,19 @@ If you need those, you're ahead of the product. Congratulations.
 
 Today the normal path is: tell Panda what you want to watch, and Panda should use:
 
+- `watch_schema_get` when it needs the exact branch fields for a chosen source or detector kind
 - `watch_create`
 - `watch_update`
 - `watch_disable`
 
 The watch is created on the current session automatically.
 There is no user-facing `targetThreadId` knob in v1.
+
+In practice the flow is:
+
+1. choose `source.kind` and `detector.kind`
+2. call `watch_schema_get` if Panda needs the exact branch fields
+3. call `watch_create` or `watch_update` with the real nested config
 
 Examples of plain-English asks:
 

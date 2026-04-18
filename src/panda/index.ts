@@ -71,6 +71,7 @@ export {
 export {
   WatchCreateTool,
   WatchDisableTool,
+  WatchSchemaGetTool,
   WatchUpdateTool,
   type WatchToolOptions,
 } from "./tools/watch-tools.js";

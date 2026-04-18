@@ -97,6 +97,19 @@ Defaults:
 - watch tools create watches for the current session automatically
 - the runner resolves the current thread dynamically from that session
 
+## Temporary Schema Escape Hatch
+
+`watch_create` and `watch_update` intentionally expose compact provider-visible schemas.
+Detailed branch schemas now live behind `watch_schema_get`.
+
+This is tactical, not architecture:
+
+- it exists because the current tool transport injects full JSON Schema into prompt context
+- watches are unusually expensive because source and detector branches are large unions
+- the real long-term fix is transport-level discovery or CLI-style help, not a family of `*_schema_get` tools
+
+Do not copy this pattern for unrelated tools unless we revisit the transport design first.
+
 ## Design Rules
 
 - keep source resolution out of the runner

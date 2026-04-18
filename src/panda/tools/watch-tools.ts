@@ -1,194 +1,28 @@
 import {z} from "zod";
 
-import type {JsonValue} from "../../kernel/agent/types.js";
+import type {WatchStore} from "../../domain/watches/store.js";
+import type {WatchMutationService} from "../../domain/watches/mutation-service.js";
+import type {WatchEventKind, WatchSourceKind} from "../../domain/watches/types.js";
+import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
+import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
-import type {WatchMutationService} from "../../domain/watches/mutation-service.js";
-import type {WatchStore} from "../../domain/watches/store.js";
-import type {WatchDetectorConfig, WatchSourceConfig} from "../../domain/watches/types.js";
-import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
-import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
-
-const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([
-  z.string(),
-  z.number(),
-  z.boolean(),
-  z.null(),
-  z.array(jsonValueSchema),
-  z.record(z.string(), jsonValueSchema),
-]));
-
-const requestHeaderSchema = z.object({
-  name: z.string().trim().min(1),
-  value: z.string().trim().min(1).optional(),
-  credentialEnvKey: z.string().trim().min(1).optional(),
-});
-
-const htmlFieldSelectorSchema = z.object({
-  selector: z.string().trim().min(1),
-  attribute: z.string().trim().min(1).optional(),
-});
-
-const rowCollectionResultSchema = z.object({
-  observation: z.literal("collection"),
-  itemIdField: z.string().trim().min(1),
-  itemCursorField: z.string().trim().min(1),
-  summaryField: z.string().trim().min(1).optional(),
-  fields: z.array(z.string().trim().min(1)).optional(),
-});
-
-const rowScalarResultSchema = z.object({
-  observation: z.literal("scalar"),
-  valueField: z.string().trim().min(1),
-  label: z.string().trim().min(1).optional(),
-});
-
-const rowResultSchema = z.union([
-  rowCollectionResultSchema,
-  rowScalarResultSchema,
-]);
-
-const jsonCollectionResultSchema = z.object({
-  observation: z.literal("collection"),
-  itemsPath: z.string().trim().min(1).optional(),
-  itemIdPath: z.string().trim().min(1),
-  itemCursorPath: z.string().trim().min(1),
-  summaryPath: z.string().trim().min(1).optional(),
-  fieldPaths: z.record(z.string(), z.string().trim().min(1)).optional(),
-});
-
-const jsonScalarResultSchema = z.object({
-  observation: z.literal("scalar"),
-  valuePath: z.string().trim().min(1),
-  label: z.string().trim().min(1).optional(),
-});
-
-const jsonSnapshotResultSchema = z.object({
-  observation: z.literal("snapshot"),
-  path: z.string().trim().min(1).optional(),
-});
-
-const jsonResultSchema = z.union([
-  jsonCollectionResultSchema,
-  jsonScalarResultSchema,
-  jsonSnapshotResultSchema,
-]);
-
-const htmlCollectionResultSchema = z.object({
-  observation: z.literal("collection"),
-  itemSelector: z.string().trim().min(1),
-  itemId: htmlFieldSelectorSchema,
-  itemCursor: htmlFieldSelectorSchema,
-  summary: htmlFieldSelectorSchema.optional(),
-  fields: z.record(z.string(), htmlFieldSelectorSchema).optional(),
-});
-
-const htmlSnapshotResultSchema = z.object({
-  observation: z.literal("snapshot"),
-  mode: z.enum(["readable_text", "selector_text"]),
-  selector: z.string().trim().min(1).optional(),
-});
-
-const htmlResultSchema = z.union([
-  htmlCollectionResultSchema,
-  htmlSnapshotResultSchema,
-]);
-
-const mongoFindSourceSchema = z.object({
-  kind: z.literal("mongodb_query"),
-  credentialEnvKey: z.string().trim().min(1),
-  database: z.string().trim().min(1),
-  collection: z.string().trim().min(1),
-  operation: z.literal("find"),
-  filter: jsonValueSchema.optional(),
-  projection: jsonValueSchema.optional(),
-  sort: jsonValueSchema.optional(),
-  limit: z.number().int().positive().optional(),
-  result: rowResultSchema,
-});
-
-const mongoAggregateSourceSchema = z.object({
-  kind: z.literal("mongodb_query"),
-  credentialEnvKey: z.string().trim().min(1),
-  database: z.string().trim().min(1),
-  collection: z.string().trim().min(1),
-  operation: z.literal("aggregate"),
-  pipeline: jsonValueSchema,
-  limit: z.number().int().positive().optional(),
-  result: rowResultSchema,
-});
-
-const sqlSourceSchema = z.object({
-  kind: z.literal("sql_query"),
-  credentialEnvKey: z.string().trim().min(1),
-  dialect: z.enum(["postgres", "mysql"]),
-  query: z.string().trim().min(1),
-  parameters: z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
-  result: rowResultSchema,
-});
-
-const httpJsonSourceSchema = z.object({
-  kind: z.literal("http_json"),
-  url: z.string().trim().url(),
-  method: z.enum(["GET", "POST"]).optional(),
-  headers: z.array(requestHeaderSchema).optional(),
-  auth: z.object({
-    type: z.literal("bearer"),
-    credentialEnvKey: z.string().trim().min(1),
-  }).optional(),
-  body: z.string().optional(),
-  result: jsonResultSchema,
-});
-
-const httpHtmlSourceSchema = z.object({
-  kind: z.literal("http_html"),
-  url: z.string().trim().url(),
-  headers: z.array(requestHeaderSchema).optional(),
-  auth: z.object({
-    type: z.literal("bearer"),
-    credentialEnvKey: z.string().trim().min(1),
-  }).optional(),
-  result: htmlResultSchema,
-});
-
-const imapMailboxSourceSchema = z.object({
-  kind: z.literal("imap_mailbox"),
-  host: z.string().trim().min(1),
-  port: z.number().int().positive().optional(),
-  secure: z.boolean().optional(),
-  mailbox: z.string().trim().min(1).optional(),
-  username: z.string().trim().min(1).optional(),
-  usernameCredentialEnvKey: z.string().trim().min(1).optional(),
-  passwordCredentialEnvKey: z.string().trim().min(1),
-  maxMessages: z.number().int().positive().optional(),
-}).refine((value) => Boolean(value.username || value.usernameCredentialEnvKey), {
-  message: "imap_mailbox requires either username or usernameCredentialEnvKey.",
-});
-
-const watchSourceSchema = z.union([
-  mongoFindSourceSchema,
-  mongoAggregateSourceSchema,
-  sqlSourceSchema,
-  httpJsonSourceSchema,
-  httpHtmlSourceSchema,
-  imapMailboxSourceSchema,
-]) as z.ZodType<WatchSourceConfig>;
-
-const watchDetectorSchema = z.union([
-  z.object({
-    kind: z.literal("new_items"),
-    maxItems: z.number().int().positive().optional(),
-  }),
-  z.object({
-    kind: z.literal("snapshot_changed"),
-    excerptChars: z.number().int().positive().optional(),
-  }),
-  z.object({
-    kind: z.literal("percent_change"),
-    percent: z.number().positive(),
-  }),
-]) as z.ZodType<WatchDetectorConfig>;
+import {
+  getCompactWatchDetectorEnvelopeSchema,
+  getCompactWatchSourceEnvelopeSchema,
+  getWatchDetectorExample,
+  getWatchDetectorKindSchema,
+  getWatchDetectorNotes,
+  getWatchDetectorSchema,
+  getWatchSourceExample,
+  getWatchSourceKindSchema,
+  getWatchSourceNotes,
+  getWatchSourceSchema,
+  parseWatchDetectorConfig,
+  parseWatchSourceConfig,
+  requireSchemaGetSelection,
+} from "./watch-schema-catalog.js";
 
 function readWatchScope(context: unknown): {
   agentKey: string;
@@ -228,19 +62,90 @@ export interface WatchToolOptions {
   store: WatchStore;
 }
 
+const compactWatchSourceEnvelopeSchema = getCompactWatchSourceEnvelopeSchema();
+const compactWatchDetectorEnvelopeSchema = getCompactWatchDetectorEnvelopeSchema();
+
+export class WatchSchemaGetTool<TContext = DefaultAgentSessionContext>
+  extends Tool<typeof WatchSchemaGetTool.schema, TContext> {
+  static schema = z.object({
+    sourceKind: getWatchSourceKindSchema().optional(),
+    detectorKind: getWatchDetectorKindSchema().optional(),
+  }).superRefine((value, ctx) => {
+    if (value.sourceKind === undefined && value.detectorKind === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "watch_schema_get requires sourceKind, detectorKind, or both.",
+      });
+    }
+  });
+
+  name = "watch_schema_get";
+  description =
+    "Return the exact detailed schema, one example, and short notes for a specific watch source kind, detector kind, or both. Call this before watch_create or watch_update once you know the chosen kinds.";
+  schema = WatchSchemaGetTool.schema;
+
+  override formatCall(args: Record<string, unknown>): string {
+    const sourceKind = typeof args.sourceKind === "string" ? args.sourceKind : null;
+    const detectorKind = typeof args.detectorKind === "string" ? args.detectorKind : null;
+    return [sourceKind, detectorKind].filter(Boolean).join(" + ") || super.formatCall(args);
+  }
+
+  async handle(
+    args: z.output<typeof WatchSchemaGetTool.schema>,
+    _run: RunContext<TContext>,
+  ): Promise<{
+    source?: {
+      kind: WatchSourceKind;
+      schema: ReturnType<typeof getWatchSourceSchema>;
+      example: ReturnType<typeof getWatchSourceExample>;
+      notes: string[];
+    };
+    detector?: {
+      kind: WatchEventKind;
+      schema: ReturnType<typeof getWatchDetectorSchema>;
+      example: ReturnType<typeof getWatchDetectorExample>;
+      notes: string[];
+    };
+  }> {
+    const request = requireSchemaGetSelection(args);
+    return {
+      ...(request.sourceKind
+        ? {
+          source: {
+            kind: request.sourceKind,
+            schema: getWatchSourceSchema(request.sourceKind),
+            example: getWatchSourceExample(request.sourceKind),
+            notes: getWatchSourceNotes(request.sourceKind),
+          },
+        }
+        : {}),
+      ...(request.detectorKind
+        ? {
+          detector: {
+            kind: request.detectorKind,
+            schema: getWatchDetectorSchema(request.detectorKind),
+            example: getWatchDetectorExample(request.detectorKind),
+            notes: getWatchDetectorNotes(request.detectorKind),
+          },
+        }
+        : {}),
+    };
+  }
+}
+
 export class WatchCreateTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof WatchCreateTool.schema, TContext> {
   static schema = z.object({
     title: z.string().trim().min(1),
     intervalMinutes: z.number().int().positive(),
-    source: watchSourceSchema,
-    detector: watchDetectorSchema,
+    source: compactWatchSourceEnvelopeSchema,
+    detector: compactWatchDetectorEnvelopeSchema,
     enabled: z.boolean().optional(),
   });
 
   name = "watch_create";
   description =
-    "Create a deterministic watch that polls a source, compares results in code, and wakes the agent only when a real change event exists.";
+    "Create a deterministic watch that polls a source, compares results in code, and wakes the agent only when a real change event exists. Before calling this tool, choose source.kind and detector.kind, call watch_schema_get for those kinds, and use the returned branch schema. Do not guess nested source or detector fields.";
   schema = WatchCreateTool.schema;
 
   constructor(private readonly options: WatchToolOptions) {
@@ -260,8 +165,8 @@ export class WatchCreateTool<TContext = DefaultAgentSessionContext>
       const watch = await this.options.mutations.createWatch({
         title: args.title,
         intervalMinutes: args.intervalMinutes,
-        source: args.source,
-        detector: args.detector,
+        source: parseWatchSourceConfig(args.source),
+        detector: parseWatchDetectorConfig(args.detector),
         enabled: args.enabled,
       }, scope);
       return {
@@ -279,14 +184,14 @@ export class WatchUpdateTool<TContext = DefaultAgentSessionContext>
     watchId: z.string().trim().min(1),
     title: z.string().trim().min(1).optional(),
     intervalMinutes: z.number().int().positive().optional(),
-    source: watchSourceSchema.optional(),
-    detector: watchDetectorSchema.optional(),
+    source: compactWatchSourceEnvelopeSchema.optional(),
+    detector: compactWatchDetectorEnvelopeSchema.optional(),
     enabled: z.boolean().optional(),
   });
 
   name = "watch_update";
   description =
-    "Update an existing watch in the current session.";
+    "Update an existing watch in the current session. Before changing source or detector, choose the kind, call watch_schema_get for that kind, and use the returned branch schema. Do not guess nested source or detector fields.";
   schema = WatchUpdateTool.schema;
 
   constructor(private readonly options: WatchToolOptions) {
@@ -307,8 +212,8 @@ export class WatchUpdateTool<TContext = DefaultAgentSessionContext>
         watchId: args.watchId,
         title: args.title,
         intervalMinutes: args.intervalMinutes,
-        source: args.source,
-        detector: args.detector,
+        source: args.source === undefined ? undefined : parseWatchSourceConfig(args.source),
+        detector: args.detector === undefined ? undefined : parseWatchDetectorConfig(args.detector),
         enabled: args.enabled,
       }, scope);
       return {

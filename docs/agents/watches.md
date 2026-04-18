@@ -6,6 +6,20 @@ If a user asks Panda to set up a watch, the agent should build a deterministic w
 
 Do not put raw secrets into `watch_create` or `watch_update`.
 
+## Schema Discovery
+
+`watch_create` and `watch_update` now expose compact top-level schemas on purpose.
+
+Normal flow:
+
+1. decide the `source.kind`
+2. decide the `detector.kind`
+3. call `watch_schema_get` if you need the exact branch fields, example payload, or notes
+4. call `watch_create` or `watch_update` with the full nested config
+
+Do not guess branch fields when the exact shape matters.
+Ask the tool.
+
 ## The Rule
 
 The pattern is always:

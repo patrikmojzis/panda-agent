@@ -54,6 +54,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "ToolError",
   "WatchCreateTool",
   "WatchDisableTool",
+  "WatchSchemaGetTool",
   "WatchUpdateTool",
   "WebFetchTool",
   "WebResearchTool",

@@ -7,6 +7,7 @@ import {
     ToolError,
     WatchCreateTool,
     WatchDisableTool,
+    WatchSchemaGetTool,
     WatchUpdateTool,
 } from "../src/index.js";
 import type {WatchMutationService} from "../src/domain/watches/mutation-service.js";
@@ -214,6 +215,77 @@ describe("watch Panda tools", () => {
     }));
   });
 
+  it("returns detailed watch schema help on demand", async () => {
+    const tool = new WatchSchemaGetTool();
+
+    const result = await tool.run({
+      sourceKind: "http_json",
+      detectorKind: "percent_change",
+    }, createRunContext(context));
+
+    expect(result).toMatchObject({
+      source: {
+        kind: "http_json",
+        example: {
+          kind: "http_json",
+          url: "https://api.example.com/btc-price",
+        },
+      },
+      detector: {
+        kind: "percent_change",
+        example: {
+          kind: "percent_change",
+          percent: 10,
+        },
+      },
+    });
+    expect(result.source?.notes.length).toBeGreaterThan(0);
+    expect(result.detector?.notes.length).toBeGreaterThan(0);
+    expect(result.source?.schema).toMatchObject({
+      type: "object",
+      properties: {
+        kind: {
+          const: "http_json",
+        },
+        url: {
+          format: "uri",
+        },
+      },
+    });
+    expect(result.detector?.schema).toMatchObject({
+      type: "object",
+      properties: {
+        kind: {
+          const: "percent_change",
+        },
+        percent: {
+          type: "number",
+        },
+      },
+      required: ["kind", "percent"],
+    });
+  });
+
+  it("supports source-only schema help", async () => {
+    const tool = new WatchSchemaGetTool();
+
+    const result = await tool.run({
+      sourceKind: "imap_mailbox",
+    }, createRunContext(context));
+
+    expect(result).toEqual({
+      source: expect.objectContaining({
+        kind: "imap_mailbox",
+      }),
+    });
+  });
+
+  it("rejects empty schema help requests", async () => {
+    const tool = new WatchSchemaGetTool();
+
+    await expect(tool.run({}, createRunContext(context))).rejects.toBeInstanceOf(ToolError);
+  });
+
   it("disables a watch without deleting it", async () => {
     const store = createStoreMock();
     const mutations = createMutationServiceMock();
@@ -258,5 +330,92 @@ describe("watch Panda tools", () => {
     }, createRunContext({
       threadId: "thread-home",
     } as DefaultAgentSessionContext))).rejects.toBeInstanceOf(ToolError);
+  });
+
+  it("keeps watch_create provider schema compact", () => {
+    const tool = new WatchCreateTool({
+      mutations: createMutationServiceMock(),
+      store: createStoreMock(),
+    });
+
+    expect(tool.piTool.parameters).toMatchObject({
+      type: "object",
+      properties: {
+        source: {
+          type: "object",
+          properties: {
+            kind: {
+              enum: ["mongodb_query", "sql_query", "http_json", "http_html", "imap_mailbox"],
+            },
+          },
+          required: ["kind"],
+        },
+        detector: {
+          type: "object",
+          properties: {
+            kind: {
+              enum: ["new_items", "snapshot_changed", "percent_change"],
+            },
+          },
+          required: ["kind"],
+        },
+      },
+    });
+    expect(tool.piTool.parameters.properties?.source).not.toHaveProperty("anyOf");
+    expect(tool.piTool.parameters.properties?.detector).not.toHaveProperty("anyOf");
+  });
+
+  it("keeps watch_update provider schema compact", () => {
+    const tool = new WatchUpdateTool({
+      mutations: createMutationServiceMock(),
+      store: createStoreMock(),
+    });
+
+    expect(tool.piTool.parameters).toMatchObject({
+      type: "object",
+      properties: {
+        source: {
+          type: "object",
+          properties: {
+            kind: {
+              enum: ["mongodb_query", "sql_query", "http_json", "http_html", "imap_mailbox"],
+            },
+          },
+        },
+        detector: {
+          type: "object",
+          properties: {
+            kind: {
+              enum: ["new_items", "snapshot_changed", "percent_change"],
+            },
+          },
+        },
+      },
+    });
+    expect(tool.piTool.parameters.properties?.source).not.toHaveProperty("anyOf");
+    expect(tool.piTool.parameters.properties?.detector).not.toHaveProperty("anyOf");
+  });
+
+  it("still validates detailed source fields before persistence", async () => {
+    const mutations = createMutationServiceMock();
+    const tool = new WatchCreateTool({
+      mutations,
+      store: createStoreMock(),
+    });
+
+    await expect(tool.run({
+      title: "Broken JSON watch",
+      intervalMinutes: 5,
+      source: {
+        kind: "http_json",
+        url: "https://example.com/btc",
+      },
+      detector: {
+        kind: "percent_change",
+        percent: 10,
+      },
+    }, createRunContext(context))).rejects.toBeInstanceOf(ToolError);
+
+    expect(mutations.createWatch).not.toHaveBeenCalled();
   });
 });
