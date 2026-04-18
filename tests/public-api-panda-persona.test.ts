@@ -19,6 +19,7 @@ const EXPECTED_PERSONA_EXPORTS = [
   "GlobFilesTool",
   "GrepFilesTool",
   "MediaTool",
+  "MessageAgentTool",
   "OutboundTool",
   "DEFAULT_AGENT_INSTRUCTIONS",
   "DEFAULT_AGENT_SUBAGENT_ROLE_POLICIES",

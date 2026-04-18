@@ -52,6 +52,7 @@ export {
   type EnvValueToolOptions,
 } from "./tools/env-value-tools.js";
 export {MediaTool, type MediaToolOptions} from "./tools/media-tool.js";
+export {MessageAgentTool} from "./tools/message-agent-tool.js";
 export {OutboundTool} from "./tools/outbound-tool.js";
 export {
   PostgresReadonlyQueryTool,
@@ -105,6 +106,7 @@ export {
 } from "./subagents/policy.js";
 export type {
   DefaultAgentChannelActionQueue,
+  DefaultAgentMessageAgentService,
   DefaultAgentOutboundQueue,
   DefaultAgentRouteMemory,
   DefaultAgentSessionContext,

@@ -102,6 +102,7 @@ export function createDaemonLifecycle(input: {
       requestUnsubscribe = await input.context.requests.listenPendingRequests(async () => {
         await triggerDrain();
       });
+      await input.context.a2aOutboundWorker.start();
       await input.context.scheduledTaskRunner.start();
       await input.context.watchRunner.start();
       await input.context.relationshipHeartbeatRunner.start();
@@ -122,6 +123,7 @@ export function createDaemonLifecycle(input: {
         await requestUnsubscribe();
         requestUnsubscribe = null;
       }
+      await input.context.a2aOutboundWorker.stop();
       await input.context.scheduledTaskRunner.stop();
       await input.context.watchRunner.stop();
       await input.context.relationshipHeartbeatRunner.stop();

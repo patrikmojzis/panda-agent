@@ -1,11 +1,11 @@
 import type {ChannelOutboundAdapter} from "../outbound.js";
 import type {OutboundRequest} from "../types.js";
 import type {
-    CompleteDeliveryInput,
-    DeliveryNotification,
-    DeliveryWorkerLookup,
-    FailDeliveryInput,
-    OutboundDeliveryRecord
+  CompleteDeliveryInput,
+  DeliveryNotification,
+  DeliveryWorkerLookup,
+  FailDeliveryInput,
+  OutboundDeliveryRecord
 } from "./types.js";
 
 type ChannelOutboundDeliveryWorkerStore = {
@@ -39,6 +39,7 @@ function toRequest(delivery: OutboundDeliveryRecord): OutboundRequest {
     channel: delivery.channel,
     target: delivery.target,
     items: delivery.items,
+    metadata: delivery.metadata,
   };
 }
 

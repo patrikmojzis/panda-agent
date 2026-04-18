@@ -29,6 +29,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "LlmContext",
   "MaxTurnsReachedError",
   "MediaTool",
+  "MessageAgentTool",
   "OutboundTool",
   "DAEMON_HEARTBEAT_INTERVAL_MS",
   "DAEMON_REQUEST_TIMEOUT_MS",

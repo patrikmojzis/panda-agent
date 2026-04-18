@@ -308,6 +308,29 @@ describe("OutboundTool", () => {
     });
   });
 
+  it("rejects A2A fallback routes", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      currentInput: {
+        source: "a2a",
+        metadata: {
+          route: {
+            source: "a2a",
+            connectorKey: "local",
+            externalConversationId: "session-b",
+            externalActorId: "koala",
+          },
+        },
+      },
+    });
+
+    await expect(tool.run({
+      items: [{ type: "text", text: "nope" }],
+    }, createRunContext(context))).rejects.toThrow(
+      "Use message_agent for Panda A2A messages.",
+    );
+  });
+
   it("rejects outbound during prepare-only scheduled execution", async () => {
     const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext({

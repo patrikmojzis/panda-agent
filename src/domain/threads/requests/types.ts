@@ -4,6 +4,7 @@ import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import type {InferenceProjection, ThreadUpdate} from "../runtime/types.js";
 
 export type RuntimeRequestKind =
+  | "a2a_message"
   | "telegram_message"
   | "telegram_reaction"
   | "whatsapp_message"
@@ -20,6 +21,43 @@ export type RuntimeRequestStatus = "pending" | "running" | "completed" | "failed
 
 export interface BaseRuntimeRequestPayload {
   identityId?: string;
+}
+
+export interface A2AMessageTextItem {
+  type: "text";
+  text: string;
+}
+
+export interface A2AMessageImageItem {
+  type: "image";
+  media: MediaDescriptor;
+  caption?: string;
+}
+
+export interface A2AMessageFileItem {
+  type: "file";
+  media: MediaDescriptor;
+  filename?: string;
+  caption?: string;
+  mimeType?: string;
+}
+
+export type A2AMessageItem =
+  | A2AMessageTextItem
+  | A2AMessageImageItem
+  | A2AMessageFileItem;
+
+export interface A2AMessageRequestPayload extends BaseRuntimeRequestPayload {
+  connectorKey: string;
+  externalMessageId: string;
+  fromAgentKey: string;
+  fromSessionId: string;
+  fromThreadId: string;
+  fromRunId?: string;
+  toAgentKey: string;
+  toSessionId: string;
+  sentAt: number;
+  items: readonly A2AMessageItem[];
 }
 
 export interface TelegramMessageRequestPayload extends BaseRuntimeRequestPayload {
@@ -122,6 +160,7 @@ export interface UpdateThreadRequestPayload extends BaseRuntimeRequestPayload {
 }
 
 export type RuntimeRequestPayload =
+  | A2AMessageRequestPayload
   | TelegramMessageRequestPayload
   | TelegramReactionRequestPayload
   | WhatsAppMessageRequestPayload

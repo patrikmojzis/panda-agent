@@ -9,15 +9,16 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
 import {resolveChannelRouteTarget} from "../../domain/channels/route-target.js";
 import type {
-    OutboundFileItem,
-    OutboundImageItem,
-    OutboundItem,
-    OutboundTarget,
-    RememberedRoute,
+  OutboundFileItem,
+  OutboundImageItem,
+  OutboundItem,
+  OutboundTarget,
+  RememberedRoute,
 } from "../../domain/channels/types.js";
 import {parseScheduledTaskThreadInputMetadata} from "../../domain/scheduling/tasks/index.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
+import {A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
 
 const outboundItemSchema = z.discriminatedUnion("type", [
   z.object({
@@ -270,6 +271,9 @@ export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<ty
     const channel = requestedChannel ?? defaultRoute?.channel;
     if (!channel) {
       throw new ToolError("No outbound channel was provided and no current inbound route is available.");
+    }
+    if (channel === A2A_SOURCE) {
+      throw new ToolError("Use message_agent for A2A messages.");
     }
 
     const target = buildExplicitTarget(channel, args.target) ?? defaultRoute?.target;

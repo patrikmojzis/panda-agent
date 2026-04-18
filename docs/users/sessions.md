@@ -101,6 +101,8 @@ For v1:
 - if the paired identity has exactly one paired agent, a new conversation can auto-bind to that agent's main session
 - if the identity has multiple paired agents, bind the conversation explicitly with `panda session bind-conversation`
 
+For Panda-to-Panda messaging, use [A2A Messaging](./a2a.md).
+
 ## Important Rules
 
 - all paired identities can access all sessions on that agent

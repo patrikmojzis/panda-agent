@@ -70,6 +70,7 @@ export interface OutboundRequest {
   channel: string;
   target: OutboundTarget;
   items: readonly OutboundItem[];
+  metadata?: JsonValue;
 }
 
 export type ChannelTypingPhase = "start" | "keepalive" | "stop";

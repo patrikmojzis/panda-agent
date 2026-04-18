@@ -1,24 +1,27 @@
 import type {
-    AbortThreadRequestPayload,
-    CompactThreadRequestPayload,
-    CreateBranchSessionRequestPayload,
-    ResetSessionRequestPayload,
-    ResolveMainSessionThreadRequestPayload,
-    ResolveThreadRunConfigRequestPayload,
-    RuntimeRequestRecord,
-    TelegramMessageRequestPayload,
-    TelegramReactionRequestPayload,
-    TuiInputRequestPayload,
-    UpdateThreadRequestPayload,
-    WhatsAppMessageRequestPayload,
+  A2AMessageRequestPayload,
+  AbortThreadRequestPayload,
+  CompactThreadRequestPayload,
+  CreateBranchSessionRequestPayload,
+  ResetSessionRequestPayload,
+  ResolveMainSessionThreadRequestPayload,
+  ResolveThreadRunConfigRequestPayload,
+  RuntimeRequestRecord,
+  TelegramMessageRequestPayload,
+  TelegramReactionRequestPayload,
+  TuiInputRequestPayload,
+  UpdateThreadRequestPayload,
+  WhatsAppMessageRequestPayload,
 } from "../../domain/threads/requests/index.js";
 import {compactThread} from "../../domain/threads/runtime/index.js";
 import {stringToUserMessage} from "../../kernel/agent/index.js";
+import {buildA2AInboundPersistence, buildA2AInboundText} from "../../integrations/channels/a2a/helpers.js";
+import {A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
 import {
-    buildTelegramInboundPersistence,
-    buildTelegramInboundText,
-    buildTelegramReactionText,
-    normalizeTelegramCommand,
+  buildTelegramInboundPersistence,
+  buildTelegramInboundText,
+  buildTelegramReactionText,
+  normalizeTelegramCommand,
 } from "../../integrations/channels/telegram/helpers.js";
 import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
 import {buildWhatsAppInboundMetadata, buildWhatsAppInboundText,} from "../../integrations/channels/whatsapp/helpers.js";
@@ -26,12 +29,12 @@ import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {renderTuiInboundText} from "../../prompts/channels/tui.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
 import {
-    buildQueuedInputCompactionMessage,
-    buildTelegramNewIsTuiOnlyText,
-    buildTelegramResetText,
-    buildTelegramStartText,
-    buildUnsupportedRuntimeRequestMessage,
-    resolveMissingApiKeyMessage,
+  buildQueuedInputCompactionMessage,
+  buildTelegramNewIsTuiOnlyText,
+  buildTelegramResetText,
+  buildTelegramStartText,
+  buildUnsupportedRuntimeRequestMessage,
+  resolveMissingApiKeyMessage,
 } from "./daemon-copy.js";
 import type {DaemonThreadHelpers} from "./daemon-threads.js";
 import {requireIdentityId} from "./daemon-shared.js";
@@ -162,6 +165,43 @@ export function createDaemonRequestProcessor(
       sessionId: thread.sessionId,
       identityId: binding.identityId,
       route: persistence.rememberedRoute,
+    });
+    return {status: "queued", threadId: thread.id};
+  };
+
+  const handleA2AMessage = async (
+    payload: A2AMessageRequestPayload,
+  ): Promise<Record<string, unknown>> => {
+    const allowed = await context.a2aBindings.hasBinding({
+      senderSessionId: payload.fromSessionId,
+      recipientSessionId: payload.toSessionId,
+    });
+    if (!allowed) {
+      return {status: "dropped", reason: "unbound_session_pair"};
+    }
+
+    const session = await context.runtime.sessionStore.getSession(payload.toSessionId);
+    if (session.agentKey !== payload.toAgentKey) {
+      return {status: "dropped", reason: "recipient_session_agent_mismatch"};
+    }
+    const duplicate = await context.a2aBindings.hasReceivedMessage({
+      recipientSessionId: payload.toSessionId,
+      senderSessionId: payload.fromSessionId,
+      messageId: payload.externalMessageId,
+    });
+    if (duplicate) {
+      return {status: "dropped", reason: "duplicate_message"};
+    }
+
+    const thread = await context.runtime.store.getThread(session.currentThreadId);
+    const persistence = buildA2AInboundPersistence(payload);
+    await context.runtime.coordinator.submitInput(thread.id, {
+      source: A2A_SOURCE,
+      channelId: payload.fromSessionId,
+      externalMessageId: payload.externalMessageId,
+      actorId: payload.fromAgentKey,
+      message: stringToUserMessage(buildA2AInboundText(payload)),
+      metadata: persistence.metadata,
     });
     return {status: "queued", threadId: thread.id};
   };
@@ -431,6 +471,8 @@ export function createDaemonRequestProcessor(
 
   return async (request: RuntimeRequestRecord): Promise<unknown> => {
     switch (request.kind) {
+      case "a2a_message":
+        return handleA2AMessage(request.payload as A2AMessageRequestPayload);
       case "telegram_message":
         return handleTelegramMessage(request.payload as TelegramMessageRequestPayload);
       case "telegram_reaction":

@@ -6,6 +6,7 @@ Start here:
 
 - [Getting Started](./getting-started.md)
 - [Sessions](./sessions.md)
+- [A2A Messaging](./a2a.md)
 - [Browser](./browser.md)
 - [Postgres](./postgres.md)
 - [Identity](./identity.md)

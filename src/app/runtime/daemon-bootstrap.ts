@@ -1,27 +1,35 @@
-import {ChannelTypingDispatcher} from "../../domain/channels/index.js";
+import {A2ASessionBindingRepo} from "../../domain/a2a/index.js";
+import {ChannelTypingDispatcher, FileSystemMediaStore} from "../../domain/channels/index.js";
 import {PostgresChannelActionStore} from "../../domain/channels/actions/index.js";
-import {PostgresOutboundDeliveryStore} from "../../domain/channels/deliveries/index.js";
+import {ChannelOutboundDeliveryWorker, PostgresOutboundDeliveryStore} from "../../domain/channels/deliveries/index.js";
 import {HeartbeatRunner} from "../../domain/scheduling/heartbeats/runner.js";
 import {ScheduledTaskRunner} from "../../domain/scheduling/tasks/index.js";
 import {ConversationRepo, SessionRouteRepo} from "../../domain/sessions/index.js";
 import {WatchRunner} from "../../domain/watches/index.js";
 import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {createChannelTypingEventHandler} from "../../domain/threads/runtime/channel-typing.js";
+import {A2AMessagingService} from "../../domain/a2a/service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {createRuntime, createThreadDefinition, type RuntimeServices,} from "./create-runtime.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
 import {DaemonStateRepo} from "./state/repo.js";
 import type {DaemonOptions} from "./daemon-shared.js";
 import {DEFAULT_DAEMON_KEY} from "./daemon-shared.js";
+import {A2A_CONNECTOR_KEY, resolveA2AMaxMessagesPerHour} from "../../integrations/channels/a2a/config.js";
+import {createA2AOutboundAdapter} from "../../integrations/channels/a2a/outbound.js";
 import {TELEGRAM_SOURCE,} from "../../integrations/channels/telegram/config.js";
 import {TelegramReactTool} from "../../integrations/channels/telegram/telegram-react-tool.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
+import {resolveAgentMediaDir} from "./data-dir.js";
 import {OutboundTool} from "../../panda/tools/outbound-tool.js";
+import {MessageAgentTool} from "../../panda/tools/message-agent-tool.js";
 
 export interface DaemonContext {
   fallbackContext: {cwd: string};
   daemonKey: string;
   runtime: RuntimeServices;
+  a2aBindings: A2ASessionBindingRepo;
+  a2aOutboundWorker: ChannelOutboundDeliveryWorker;
   conversationBindings: ConversationRepo;
   sessionRoutes: SessionRouteRepo;
   outboundDeliveries: PostgresOutboundDeliveryStore;
@@ -44,6 +52,8 @@ export async function bootstrapDaemonContext(
   let sessionRoutes!: SessionRouteRepo;
   let outboundDeliveries!: PostgresOutboundDeliveryStore;
   let channelActions!: PostgresChannelActionStore;
+  let a2aBindings!: A2ASessionBindingRepo;
+  let a2aMessagingService!: A2AMessagingService;
 
   const typingDispatcher = new ChannelTypingDispatcher([
     {
@@ -90,7 +100,7 @@ export async function bootstrapDaemonContext(
         browserToolOptions: {
           service: browserService,
         },
-        tools: [...mainTools, new OutboundTool(), new TelegramReactTool()],
+        tools: [...mainTools, new OutboundTool(), new MessageAgentTool(), new TelegramReactTool()],
         extraContext: {
           routeMemory: {
             getLastRoute: (channel) => sessionRoutes.getLastRoute({
@@ -110,6 +120,9 @@ export async function bootstrapDaemonContext(
           channelActionQueue: {
             enqueueAction: (input) => channelActions.enqueueAction(input),
           },
+          messageAgent: {
+            queueMessage: (input) => a2aMessagingService.queueMessage(input),
+          },
         },
       });
     },
@@ -128,6 +141,10 @@ export async function bootstrapDaemonContext(
       pool: runtime.pool,
     });
 
+    a2aBindings = new A2ASessionBindingRepo({
+      pool: runtime.pool,
+    });
+
     channelActions = new PostgresChannelActionStore({
       pool: runtime.pool,
     });
@@ -143,10 +160,35 @@ export async function bootstrapDaemonContext(
       conversationBindings,
       sessionRoutes,
       outboundDeliveries,
+      a2aBindings,
       channelActions,
       requests,
       daemonState,
     ]);
+
+    a2aMessagingService = new A2AMessagingService({
+      bindings: a2aBindings,
+      outboundDeliveries,
+      sessions: runtime.sessionStore,
+      maxMessagesPerHour: resolveA2AMaxMessagesPerHour(process.env),
+    });
+
+    const a2aOutboundWorker = new ChannelOutboundDeliveryWorker({
+      store: outboundDeliveries,
+      adapter: createA2AOutboundAdapter({
+        requests,
+        sessionStore: runtime.sessionStore,
+        createMediaStore: (rootDir) => new FileSystemMediaStore({rootDir}),
+        resolveAgentMediaDir: (agentKey) => resolveAgentMediaDir(agentKey),
+      }),
+      connectorKey: A2A_CONNECTOR_KEY,
+      onError: (error, deliveryId) => {
+        console.error("A2A outbound delivery failed", {
+          deliveryId: deliveryId ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
 
     const scheduledTaskRunner = new ScheduledTaskRunner({
       tasks: runtime.scheduledTasks,
@@ -184,6 +226,8 @@ export async function bootstrapDaemonContext(
       fallbackContext,
       daemonKey,
       runtime,
+      a2aBindings,
+      a2aOutboundWorker,
       conversationBindings,
       sessionRoutes,
       outboundDeliveries,
