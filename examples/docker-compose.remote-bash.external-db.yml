@@ -3,6 +3,8 @@ services:
     build: ..
     image: panda:latest
     command: ["run"]
+    restart: unless-stopped
+    stop_grace_period: 30s
     env_file:
       - ../.env
     environment:
@@ -79,6 +81,8 @@ services:
     build: ..
     image: panda:latest
     command: ["telegram", "run"]
+    restart: unless-stopped
+    stop_grace_period: 30s
     profiles: ["telegram"]
     env_file:
       - ../.env
