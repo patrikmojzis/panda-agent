@@ -6,5 +6,10 @@ services:
       DB_TYPE: postgres
       DATABASE_URL: ${WIKI_DB_URL:-}
       DB_SSL_CA: ${WIKI_DB_SSL_CA:-}
+    networks:
+      - wiki_net
     ports:
       - "${WIKI_HOST_PORT:-3100}:3000"
+
+networks:
+  wiki_net:

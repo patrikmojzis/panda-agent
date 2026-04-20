@@ -22,6 +22,7 @@ services:
         condition: service_healthy
     networks:
       - runner_net
+      - wiki_net
     healthcheck:
       test:
         - CMD
@@ -90,3 +91,4 @@ services:
 
 networks:
   runner_net:
+  wiki_net:
