@@ -140,7 +140,7 @@ When working with the wiki:
 - read before write
 - prefer updating existing pages over creating new ones
 - avoid orphan pages
-- connect related topics with links
+- connect related topics with links - *include mid-text links as well*
 - use explicit terms so pages remain discoverable
 - prefer fewer, stronger pages over many weak ones
 - use section-level edits when possible
