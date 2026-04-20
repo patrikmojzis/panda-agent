@@ -640,24 +640,28 @@ describe("Thread.getRunInput compact pinning", () => {
       }),
       messages,
       model: TEST_MODEL_WINDOW_350,
-      countTokens: (serialized) => {
-        if (serialized.includes("\"toolCallId\":\"call-old\"")) {
-          return 300;
+      countTokens: (text) => {
+        if (text === "call-old") {
+          return 150;
         }
 
-        if (serialized.includes("\"id\":\"call-old\"")) {
-          return 70;
+        if (text.includes("\"message\":\"call-old\"")) {
+          return 150;
         }
 
-        if (serialized.includes("\"after tool\"")) {
+        if (text === "after tool") {
           return 80;
         }
 
-        if (serialized.includes("\"latest\"")) {
+        if (text === "latest") {
           return 100;
         }
 
-        return 40;
+        if (text === "before") {
+          return 40;
+        }
+
+        return 10;
       },
     });
 
@@ -683,16 +687,20 @@ describe("Thread.getRunInput compact pinning", () => {
       }),
       messages,
       model: TEST_MODEL_WINDOW_350,
-      countTokens: (serialized) => {
-        if (serialized.includes("\"toolCallId\":\"call-new\"")) {
-          return 250;
+      countTokens: (text) => {
+        if (text === "call-new") {
+          return 120;
         }
 
-        if (serialized.includes("\"id\":\"call-new\"")) {
-          return 200;
+        if (text.includes("\"message\":\"call-new\"")) {
+          return 120;
         }
 
-        return 40;
+        if (text === "before") {
+          return 40;
+        }
+
+        return 10;
       },
     });
 

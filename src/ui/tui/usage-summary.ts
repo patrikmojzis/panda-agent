@@ -2,12 +2,12 @@ import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
 import {DEFAULT_INFERENCE_PROJECTION} from "../../app/runtime/thread-definition.js";
 import {
-  estimateTranscriptTokens,
-  isCompactBoundaryRecord,
-  projectTranscriptForInference,
-  projectTranscriptForRun,
-  type ThreadMessageRecord,
-  type ThreadRecord,
+    estimateTranscriptTokens,
+    isCompactBoundaryRecord,
+    projectTranscriptForInference,
+    projectTranscriptForRun,
+    type ThreadMessageRecord,
+    type ThreadRecord,
 } from "../../domain/threads/runtime/index.js";
 import {resolveModelRuntimeBudget} from "../../kernel/models/model-context-policy.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
@@ -281,6 +281,7 @@ export function collectThreadUsageSnapshot(options: {
     effectiveProjection,
     options.now ?? Date.now(),
   );
+  const replayVisibleArtifacts = effectiveProjection?.dropImages === undefined;
   const {total, last} = collectUsageTotals(options.transcript);
   const model = options.model ?? options.thread.model;
   const budget = resolveModelRuntimeBudget(model);
@@ -295,8 +296,12 @@ export function collectThreadUsageSnapshot(options: {
     runMessages: runTranscript.length,
     visibleMessages: visibleTranscript.length,
     storedEstimatedTokens: estimateTranscriptTokens(options.transcript),
-    runEstimatedTokens: estimateTranscriptTokens(runTranscript),
-    visibleEstimatedTokens: estimateTranscriptTokens(visibleTranscript),
+    runEstimatedTokens: estimateTranscriptTokens(runTranscript, {
+      replayToolArtifacts: true,
+    }),
+    visibleEstimatedTokens: estimateTranscriptTokens(visibleTranscript, {
+      replayToolArtifacts: replayVisibleArtifacts,
+    }),
     storedJsonBytes: measureStoredJsonBytes(options.transcript),
     hardWindow: budget.hardWindow,
     operatingWindow: budget.operatingWindow,

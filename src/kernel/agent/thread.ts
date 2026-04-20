@@ -30,6 +30,7 @@ import type {ThreadCheckpointDecision, ThreadCheckpointHandler} from "./thread-c
 import {isToolResultPayload} from "./tool.js";
 import type {JsonValue, ThreadRunEvent, ThreadStreamEvent, ToolProgressEvent, ToolResultContent,} from "./types.js";
 import {buildReplaySegments, trimReplaySegmentsToBudget,} from "../transcript/replay-segments.js";
+import {estimateVisibleMessageTokens} from "../transcript/token-estimation.js";
 
 export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   agent: Agent<TOutput>;
@@ -434,7 +435,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       ...(pinnedMessage ? {pinnedMessage} : {}),
       segments,
       budgetTokens: this.contextWindowTokens,
-      estimateMessageTokens: (message) => this.countTokens(JSON.stringify(message)),
+      estimateMessageTokens: (message) => estimateVisibleMessageTokens(message, this.countTokens),
       keepNewestOversizedSegment: true,
     });
   }

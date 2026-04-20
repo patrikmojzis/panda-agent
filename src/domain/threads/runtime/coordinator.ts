@@ -6,29 +6,29 @@ import {resolveRuntimeDefaultModelSelector} from "../../../kernel/models/default
 import type {ThreadRunEvent} from "../../../kernel/agent/types.js";
 import {stringifyUnknown} from "../../../kernel/agent/helpers/stringify.js";
 import type {
-  AutoCompactionRuntimeState,
-  ResolvedThreadDefinition,
-  ThreadDefinitionResolver,
-  ThreadInputPayload,
-  ThreadMessageRecord,
-  ThreadRecord,
-  ThreadRunRecord,
+    AutoCompactionRuntimeState,
+    ResolvedThreadDefinition,
+    ThreadDefinitionResolver,
+    ThreadInputPayload,
+    ThreadMessageRecord,
+    ThreadRecord,
+    ThreadRunRecord,
 } from "./types.js";
 import type {ThreadInputApplyScope, ThreadRuntimeStore} from "./store.js";
 import {
-  appendCompactionFailureNotice,
-  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-  AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
-  compactThread,
-  estimateTranscriptTokens,
-  projectTranscriptForRun,
-  readAutoCompactionRuntimeState,
-  shouldAutoCompactThread,
-  updateAutoCompactionRuntimeState,
+    appendCompactionFailureNotice,
+    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+    AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
+    compactThread,
+    estimateTranscriptTokens,
+    projectTranscriptForRun,
+    readAutoCompactionRuntimeState,
+    shouldAutoCompactThread,
+    updateAutoCompactionRuntimeState,
 } from "../../../kernel/transcript/compaction.js";
 import {
-  applyImageProjectionForInference,
-  projectTranscriptForInference,
+    applyImageProjectionForInference,
+    projectTranscriptForInference,
 } from "../../../kernel/transcript/inference-projection.js";
 import {rehydrateProjectedToolArtifacts} from "./tool-artifact-replay.js";
 
@@ -556,7 +556,9 @@ export class ThreadRuntimeCoordinator {
       thread = await this.clearAutoCompactionState(thread);
     }
 
-    const transcriptTokens = estimateTranscriptTokens(options.transcript);
+    const transcriptTokens = estimateTranscriptTokens(options.transcript, {
+      replayToolArtifacts: true,
+    });
     const modelConfig = this.resolveModelConfig(thread, options.definition);
     const budget = resolveModelRuntimeBudget(modelConfig.model);
     const autoCompactCheck = shouldAutoCompactThread({

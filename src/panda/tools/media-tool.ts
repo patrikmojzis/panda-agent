@@ -122,6 +122,8 @@ async function imagePayload(filePath: string, originalPath: string, mimeType: st
     path: filePath,
     mimeType,
     bytes: bytes.length,
+    ...(metadata.width !== undefined ? {width: metadata.width} : {}),
+    ...(metadata.height !== undefined ? {height: metadata.height} : {}),
     originalPath,
   });
 
@@ -193,6 +195,8 @@ async function pdfPayload(
         path: durablePreview.path,
         mimeType: "image/png",
         bytes: durablePreview.bytes.length,
+        ...(metadata.width !== undefined ? {width: metadata.width} : {}),
+        ...(metadata.height !== undefined ? {height: metadata.height} : {}),
       },
     });
 

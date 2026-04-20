@@ -9,6 +9,8 @@ export interface ToolArtifactPreview {
   path: string;
   mimeType: string;
   bytes?: number;
+  width?: number;
+  height?: number;
 }
 
 export interface ToolArtifactDescriptor {
@@ -17,6 +19,8 @@ export interface ToolArtifactDescriptor {
   path: string;
   mimeType: string;
   bytes?: number;
+  width?: number;
+  height?: number;
   originalPath?: string;
   preview?: ToolArtifactPreview;
 }
@@ -36,6 +40,12 @@ function trimNonEmptyString(value: unknown): string | null {
 
 function readPositiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function readPositiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
 }
 
 export function readToolArtifact(details: JsonValue | undefined): ToolArtifactDescriptor | null {
@@ -58,17 +68,23 @@ export function readToolArtifact(details: JsonValue | undefined): ToolArtifactDe
     const previewPath = trimNonEmptyString(artifact.preview.path);
     const previewMimeType = trimNonEmptyString(artifact.preview.mimeType);
     const previewBytes = readPositiveNumber(artifact.preview.bytes);
+    const previewWidth = readPositiveInteger(artifact.preview.width);
+    const previewHeight = readPositiveInteger(artifact.preview.height);
     if (artifact.preview.kind === "image" && previewPath && previewMimeType) {
       preview = {
         kind: "image",
         path: previewPath,
         mimeType: previewMimeType,
         ...(previewBytes !== undefined ? {bytes: previewBytes} : {}),
+        ...(previewWidth !== undefined ? {width: previewWidth} : {}),
+        ...(previewHeight !== undefined ? {height: previewHeight} : {}),
       };
     }
   }
 
   const artifactBytes = readPositiveNumber(artifact.bytes);
+  const artifactWidth = readPositiveInteger(artifact.width);
+  const artifactHeight = readPositiveInteger(artifact.height);
   const originalPath = trimNonEmptyString(artifact.originalPath);
 
   return {
@@ -77,6 +93,8 @@ export function readToolArtifact(details: JsonValue | undefined): ToolArtifactDe
     path,
     mimeType,
     ...(artifactBytes !== undefined ? {bytes: artifactBytes} : {}),
+    ...(artifactWidth !== undefined ? {width: artifactWidth} : {}),
+    ...(artifactHeight !== undefined ? {height: artifactHeight} : {}),
     ...(originalPath ? {originalPath} : {}),
     ...(preview ? {preview} : {}),
   };

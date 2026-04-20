@@ -2,7 +2,7 @@ import type {Message, ThinkingLevel} from "@mariozechner/pi-ai";
 
 import {formatToolCallFallback, formatToolResultFallback, PiAiRuntime} from "../agent/index.js";
 import {buildCompactSummaryMessage, stripCompactSummaryPrefix} from "../agent/helpers/compact.js";
-import {estimateTokensFromString} from "../agent/helpers/token-count.js";
+import {estimateTokensFromString, type TokenCounter} from "../agent/helpers/token-count.js";
 import {stringToUserMessage} from "../agent/helpers/input.js";
 import {resolveModelRuntimeBudget} from "../models/model-context-policy.js";
 import {resolveModelSelector} from "../models/model-selector.js";
@@ -11,6 +11,7 @@ import {getProviderConfig, type ProviderName} from "../../integrations/providers
 import {resolveProviderApiKey} from "../../integrations/providers/shared/auth.js";
 import type {JsonObject, JsonValue} from "../agent/types.js";
 import type {LlmRuntime} from "../agent/runtime.js";
+import {estimateReplayMessageTokens, estimateVisibleMessageTokens} from "./token-estimation.js";
 import type {
   AutoCompactionRuntimeState,
   ThreadMessageRecord,
@@ -75,6 +76,11 @@ export interface CompactThreadResult {
 export interface AutoCompactCheckResult {
   shouldCompact: boolean;
   cooldownUntil?: number;
+}
+
+export interface EstimateTranscriptTokensOptions {
+  estimateTextTokens?: TokenCounter;
+  replayToolArtifacts?: boolean;
 }
 
 function truncateText(text: string, maxChars: number): string {
@@ -275,12 +281,16 @@ export function parseCompactSummary(raw: string): string {
   return summary.trim();
 }
 
-function estimateMessageTokens(message: Message): number {
-  return estimateTokensFromString(JSON.stringify(message));
-}
+export function estimateTranscriptTokens(
+  transcript: readonly ThreadMessageRecord[],
+  options: EstimateTranscriptTokensOptions = {},
+): number {
+  const estimateTextTokens = options.estimateTextTokens ?? estimateTokensFromString;
+  const estimateMessageTokens = options.replayToolArtifacts
+    ? estimateReplayMessageTokens
+    : estimateVisibleMessageTokens;
 
-export function estimateTranscriptTokens(transcript: readonly ThreadMessageRecord[]): number {
-  return transcript.reduce((sum, record) => sum + estimateMessageTokens(record.message), 0);
+  return transcript.reduce((sum, record) => sum + estimateMessageTokens(record.message, estimateTextTokens), 0);
 }
 
 export function createCompactBoundaryMessage(summary: string): ReturnType<typeof stringToUserMessage> {
@@ -411,7 +421,9 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
     return null;
   }
 
-  const preservedTailTokens = estimateTranscriptTokens(split.preservedTail);
+  const preservedTailTokens = estimateTranscriptTokens(split.preservedTail, {
+    replayToolArtifacts: true,
+  });
   const runtimeBudget = resolveModelRuntimeBudget(options.model);
   const summaryTokenBudget = runtimeBudget.operatingWindow - preservedTailTokens;
   if (summaryTokenBudget <= 0) {
@@ -430,14 +442,16 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
   });
 
   const compactMessage = createCompactBoundaryMessage(summary);
-  const summaryTokens = estimateTokensFromString(JSON.stringify(compactMessage));
+  const summaryTokens = estimateVisibleMessageTokens(compactMessage);
   if (summaryTokens > summaryTokenBudget) {
     throw new Error(
       "Compaction summary was too large to fit alongside the preserved recent turns. Try stricter instructions or use a model policy with a larger operating window.",
     );
   }
 
-  const tokensBefore = estimateTranscriptTokens(activeTranscript);
+  const tokensBefore = estimateTranscriptTokens(activeTranscript, {
+    replayToolArtifacts: true,
+  });
   const tokensAfter = summaryTokens + preservedTailTokens;
   const metadata: CompactBoundaryMetadata = {
     kind: "compact_boundary",

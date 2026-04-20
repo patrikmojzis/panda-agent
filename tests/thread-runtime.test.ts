@@ -5,29 +5,29 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {
-  Agent,
-  BashJobStatusTool,
-  BashJobWaitTool,
-  BashTool,
-  type LlmRuntime,
-  OutboundTool,
-  PiAiRuntime,
-  RunContext,
-  stringToUserMessage,
-  Thread,
-  Tool,
-  z,
+    Agent,
+    BashJobStatusTool,
+    BashJobWaitTool,
+    BashTool,
+    type LlmRuntime,
+    OutboundTool,
+    PiAiRuntime,
+    RunContext,
+    stringToUserMessage,
+    Thread,
+    Tool,
+    z,
 } from "../src/index.js";
 import {buildBackgroundBashThreadInput} from "../src/app/runtime/background-bash-thread-input.js";
 import {
-  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-  createCompactBoundaryMessage,
-  type CreateThreadInput,
-  type ResolvedThreadDefinition,
-  type ThreadDefinitionResolver,
-  type ThreadMessageRecord,
-  type ThreadRecord,
-  ThreadRuntimeCoordinator,
+    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+    createCompactBoundaryMessage,
+    type CreateThreadInput,
+    type ResolvedThreadDefinition,
+    type ThreadDefinitionResolver,
+    type ThreadMessageRecord,
+    type ThreadRecord,
+    ThreadRuntimeCoordinator,
 } from "../src/domain/threads/runtime/index.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
@@ -384,7 +384,7 @@ async function createRuntimeThread(
 
 async function seedAutoCompactionTranscript(store: TestThreadRuntimeStore, threadId: string): Promise<void> {
   await store.enqueueInput(threadId, {
-    message: stringToUserMessage("old request " + "a".repeat(600)),
+    message: stringToUserMessage("old request " + "a".repeat(2_400)),
     source: "telegram",
   });
   await store.applyPendingInputs(threadId);
