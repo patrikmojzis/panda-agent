@@ -76,19 +76,47 @@ require_command() {
 
 persist_wiki_binding() {
   local agent_key=$1 group_id=$2 namespace=$3 token=$4
+  local stack_compose="$repo_root/examples/docker-compose.remote-bash.external-db.yml"
+  local runners_compose="$repo_root/.generated/docker-compose.remote-bash.external-db.runners.yml"
 
   [[ -n "$(trim "${DATABASE_URL:-}")" ]] || die "DATABASE_URL is required to store Panda wiki bindings."
   [[ -n "$(trim "${CREDENTIALS_MASTER_KEY:-}")" ]] || die "CREDENTIALS_MASTER_KEY is required to encrypt Panda wiki bindings."
-  require_command pnpm
+
+  if command -v pnpm >/dev/null 2>&1; then
+    (
+      cd "$repo_root"
+      printf '%s' "$token" | pnpm exec tsx src/app/cli.ts \
+        wiki binding set "$agent_key" \
+        --group-id "$group_id" \
+        --namespace "$namespace" \
+        --stdin
+    )
+    return 0
+  fi
+
+  [[ -f "$stack_compose" ]] || die "pnpm is not installed and panda-core compose file is missing: $stack_compose"
+
+  local -a panda_compose_args=(
+    "$docker_bin" compose
+  )
+  if [[ -f "$env_file" ]]; then
+    panda_compose_args+=(--env-file "$env_file")
+  fi
+  panda_compose_args+=(
+    -f "$stack_compose"
+  )
+  if [[ -f "$runners_compose" ]]; then
+    panda_compose_args+=(-f "$runners_compose")
+  fi
 
   (
     cd "$repo_root"
-    printf '%s' "$token" | pnpm exec tsx src/app/cli.ts \
-      wiki binding set "$agent_key" \
+    printf '%s' "$token" | "${panda_compose_args[@]}" exec -T panda-core \
+      panda wiki binding set "$agent_key" \
       --group-id "$group_id" \
       --namespace "$namespace" \
       --stdin
-  )
+  ) || die "Failed to store Panda wiki binding via panda-core."
 }
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
