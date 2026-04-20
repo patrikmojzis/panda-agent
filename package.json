@@ -97,7 +97,7 @@
   "license": "ISC",
   "packageManager": "pnpm@10.33.0",
   "dependencies": {
-    "@mariozechner/pi-ai": "^0.65.2",
+    "@mariozechner/pi-ai": "^0.67.68",
     "@mozilla/readability": "^0.6.0",
     "abort-controller": "^3.0.0",
     "baileys": "7.0.0-rc.9",
