@@ -6,21 +6,21 @@ import {describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 
 import {
-    Agent,
-    BashJobWaitTool,
-    BashTool,
-    Hook,
-    type LlmRuntime,
-    type LlmRuntimeRequest,
-    type RunContext,
-    RunPipeline,
-    StreamingFailedError,
-    stringToUserMessage,
-    Thread,
-    type ThreadRunEvent,
-    Tool,
-    type ToolResultPayload,
-    z,
+  Agent,
+  BashJobWaitTool,
+  BashTool,
+  Hook,
+  type LlmRuntime,
+  type LlmRuntimeRequest,
+  type RunContext,
+  RunPipeline,
+  StreamingFailedError,
+  stringToUserMessage,
+  Thread,
+  type ThreadRunEvent,
+  Tool,
+  type ToolResultPayload,
+  z,
 } from "../src/index.js";
 import {runThreadStep, type ThreadStepResult} from "../src/kernel/agent/thread.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
@@ -730,67 +730,5 @@ describe("Thread", () => {
         kind: "preview",
       },
     });
-  });
-
-  it("drops trimmed tool results whose matching tool call fell out of the replay window", async () => {
-    const oldToolCall = createAssistantMessage([
-      {
-        type: "toolCall",
-        id: "call_old",
-        name: "echo",
-        arguments: { message: "old" },
-      },
-    ]);
-    const oldToolResult = {
-      role: "toolResult" as const,
-      toolCallId: "call_old",
-      toolName: "echo",
-      content: [{ type: "text" as const, text: "old result" }],
-      isError: false,
-      timestamp: Date.now(),
-    };
-    const oldCompletion = message("old done");
-    const latestUser = stringToUserMessage("latest");
-
-    const thread = new Thread({
-      agent: new Agent({
-        name: "trim-tool-results",
-        instructions: "Reply briefly",
-      }),
-      model: "openai/gpt-4o-mini",
-      messages: [
-        stringToUserMessage("setup"),
-        oldToolCall,
-        oldToolResult,
-        oldCompletion,
-        latestUser,
-      ],
-      countTokens: (serialized) => {
-        if (serialized.includes("\"toolCallId\":\"call_old\"")) {
-          return 50_000;
-        }
-
-        if (serialized.includes("\"id\":\"call_old\"")) {
-          return 70_000;
-        }
-
-        if (serialized.includes("\"old done\"")) {
-          return 50_000;
-        }
-
-        if (serialized.includes("\"latest\"")) {
-          return 50_000;
-        }
-
-        return 10_000;
-      },
-    });
-
-    const runInput = await thread.getRunInput();
-
-    expect(runInput).toEqual([
-      oldCompletion,
-      latestUser,
-    ]);
   });
 });

@@ -2,20 +2,20 @@ import type {AssistantMessage, Message, ThinkingLevel, ToolCall, ToolResultMessa
 
 import type {Agent} from "./agent.js";
 import {
-    InvalidJSONResponseError,
-    InvalidSchemaResponseError,
-    MaxTurnsReachedError,
-    StreamingFailedError,
-    ToolError,
+  InvalidJSONResponseError,
+  InvalidSchemaResponseError,
+  MaxTurnsReachedError,
+  StreamingFailedError,
+  ToolError,
 } from "./exceptions.js";
 import {stringifyUnknown} from "./helpers/stringify.js";
 import {estimateTokensFromString, type TokenCounter} from "./helpers/token-count.js";
 import {gatherContexts, type LlmContext} from "./llm-context.js";
 import type {Hook} from "./hook.js";
 import {
-    buildConversationContext,
-    buildToolResultMessage,
-    collectAssistantToolCalls,
+  buildConversationContext,
+  buildToolResultMessage,
+  collectAssistantToolCalls,
 } from "../../integrations/providers/shared/messages.js";
 import {isCompactSummaryMessage} from "./helpers/compact.js";
 import {PiAiRuntime} from "../../integrations/providers/shared/runtime.js";
@@ -108,31 +108,6 @@ function textToolResultContent(text: string): ToolResultContent {
 
 function isAssistantMessage(event: ThreadRunEvent): event is AssistantMessage {
   return "role" in event && event.role === "assistant";
-}
-
-function dropOrphanedToolResultMessages(messages: readonly Message[]): Message[] {
-  const normalized: Message[] = [];
-  let pendingToolCallIds = new Set<string>();
-
-  for (const message of messages) {
-    if (message.role === "assistant") {
-      normalized.push(message);
-      pendingToolCallIds = new Set(collectAssistantToolCalls(message).map((toolCall) => toolCall.id));
-      continue;
-    }
-
-    if (message.role === "toolResult") {
-      if (pendingToolCallIds.has(message.toolCallId)) {
-        normalized.push(message);
-      }
-      continue;
-    }
-
-    pendingToolCallIds = new Set();
-    normalized.push(message);
-  }
-
-  return normalized;
 }
 
 function throwIfAssistantResponseFailed(response: AssistantMessage): void {
@@ -471,7 +446,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       trimmedMessages.unshift(pinnedMessage);
     }
 
-    return dropOrphanedToolResultMessages(trimmedMessages);
+    return trimmedMessages;
   }
 
   async parseStructuredOutput(output: AssistantMessage): Promise<TOutput> {
