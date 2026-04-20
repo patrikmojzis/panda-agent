@@ -19,6 +19,7 @@ export function renderWikiOverviewContext(options: {
 }): string {
   const lines = [
     `Namespace: ${options.namespacePath}`,
+    "Allowed scope: only this namespace and its child pages.",
     options.cacheTtl
       ? `Last refreshed: ${options.lastRefreshed} (cached up to ${options.cacheTtl})`
       : `Last refreshed: ${options.lastRefreshed}`,

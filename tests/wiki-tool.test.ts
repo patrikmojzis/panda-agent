@@ -815,7 +815,7 @@ describe("WikiTool", () => {
       sessionId: "session-1",
       threadId: "thread-1",
     }))).rejects.toMatchObject({
-      message: "Wiki path agents/luna/profile is outside the agent namespace agents/panda.",
+      message: "Wiki path agents/luna/profile is outside the agent namespace agents/panda. Use only agents/panda or its children, for example agents/panda/profile.",
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });

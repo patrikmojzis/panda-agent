@@ -99,7 +99,7 @@ function buildArchivePath(path: string, namespacePath: string, now = new Date())
 function assertNamespacePath(path: string, namespacePath: string): void {
   if (!isPathWithinNamespace(path, namespacePath)) {
     throw new ToolError(
-      `Wiki path ${path} is outside the agent namespace ${namespacePath}.`,
+      `Wiki path ${path} is outside the agent namespace ${namespacePath}. Use only ${namespacePath} or its children, for example ${namespacePath}/profile.`,
     );
   }
 }
@@ -176,7 +176,7 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       "Read one page, search pages, replace a full page body, replace one markdown section, or archive a page by moving it under _archive.",
     ),
     path: z.string().trim().min(1).optional().describe(
-      "Wiki path without locale, for example agents/panda/profile. Leading slash is okay; it will be stripped. Search defaults to the agent namespace when omitted. Archived pages stay hidden unless you search inside _archive explicitly.",
+      "Wiki path without locale. It must stay inside the current agent namespace, for example agents/panda/profile. Leading slash is okay; it will be stripped. Search defaults to the agent namespace when omitted. Archived pages stay hidden unless you search inside _archive explicitly.",
     ),
     locale: z.string().trim().min(1).optional().describe(
       `Wiki locale. Defaults to ${DEFAULT_WIKI_LOCALE}.`,
@@ -323,6 +323,7 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
   name = "wiki";
   description = [
     "Read, search, write, and archive agent-owned Wiki.js pages.",
+    "Every path is hard-scoped to the current agent namespace. Do not read or write outside it.",
     "Write replaces the full page body; there is no line-level patching here.",
     "write_section replaces or appends one ## markdown section so agents do not have to hand-edit whole pages.",
     "archive moves a page under the namespace _archive tree instead of deleting it.",

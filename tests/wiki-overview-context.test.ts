@@ -134,6 +134,7 @@ describe("WikiOverviewContext", () => {
     const second = await context.getContent();
 
     expect(first).toContain("Namespace: agents/panda");
+    expect(first).toContain("Allowed scope: only this namespace and its child pages.");
     expect(first).toContain("Last refreshed: just now (cached up to 5m)");
     expect(first).toContain("- Project Alpha :: agents/panda/project-alpha (updated 2026-04-19T11:10:00.000Z)");
     expect(first).toContain("- Profile :: agents/panda/profile (2 inbound links)");
@@ -168,6 +169,7 @@ describe("WikiOverviewContext", () => {
     const content = await context.getContent();
 
     expect(content).toContain("Namespace: agents/panda");
+    expect(content).toContain("Allowed scope: only this namespace and its child pages.");
     expect(content).toContain("Last refreshed: just now");
     expect(content).toContain("- No pages yet.");
     expect(content).toContain("- No inbound links yet.");
