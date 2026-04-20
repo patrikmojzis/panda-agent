@@ -6,22 +6,21 @@ import type {Message} from "@mariozechner/pi-ai";
 
 import {sleep} from "../../lib/async.js";
 import {trimToUndefined} from "../../lib/strings.js";
+import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore,} from "../../domain/agents/index.js";
 import {
-    type CreateIdentityInput,
-    type IdentityRecord,
-    normalizeIdentityHandle,
-    PostgresIdentityStore,
+  type CreateIdentityInput,
+  type IdentityRecord,
+  normalizeIdentityHandle,
+  PostgresIdentityStore,
 } from "../../domain/identity/index.js";
 import {isMissingAgentError} from "../../domain/agents/errors.js";
-import {PostgresAgentStore} from "../../domain/agents/postgres.js";
-import {DEFAULT_AGENT_DOCUMENT_TEMPLATES} from "../../domain/agents/templates.js";
 import {normalizeAgentKey} from "../../domain/agents/types.js";
 import {PostgresSessionStore} from "../../domain/sessions/index.js";
 import type {
-    ThreadBashJobRecord,
-    ThreadMessageRecord,
-    ThreadRecord,
-    ThreadRunRecord,
+  ThreadBashJobRecord,
+  ThreadMessageRecord,
+  ThreadRecord,
+  ThreadRunRecord,
 } from "../../domain/threads/runtime/index.js";
 import {readToolArtifact, type ToolArtifactDescriptor} from "../../kernel/agent/tool-artifacts.js";
 import {createRuntimeClient} from "../runtime/client.js";
@@ -31,10 +30,10 @@ import {createPostgresPool} from "../runtime/database.js";
 import {ensureSchemas, withPostgresPool} from "../runtime/postgres-bootstrap.js";
 import {DaemonStateRepo} from "../runtime/state/repo.js";
 import {
-    DEFAULT_SMOKE_TIMEOUT_MS,
-    requireSmokeDatabaseUrl,
-    resolveSmokeArtifactDirectory,
-    resolveSmokeModelSelector,
+  DEFAULT_SMOKE_TIMEOUT_MS,
+  requireSmokeDatabaseUrl,
+  resolveSmokeArtifactDirectory,
+  resolveSmokeModelSelector,
 } from "./config.js";
 import {recreateSmokeDatabase, resolveSmokeDatabaseTarget, type SmokeDatabaseTarget,} from "./database.js";
 
@@ -398,7 +397,7 @@ async function bootstrapSmokeFixtures(input: {
       await agentStore.bootstrapAgent({
         agentKey: input.agentKey,
         displayName: input.agentKey,
-        prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+        prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
       });
     }
 

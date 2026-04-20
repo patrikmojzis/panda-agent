@@ -15,9 +15,9 @@ export {
   type DefaultAgentLlmContextSection,
 } from "./contexts/builder.js";
 export {
-  AgentDocumentTool,
-  type AgentDocumentToolOptions,
-} from "./tools/agent-document-tool.js";
+  AgentPromptTool,
+  type AgentPromptToolOptions,
+} from "./tools/agent-prompt-tool.js";
 export {
   AgentSkillTool,
   type AgentSkillToolOptions,
@@ -102,11 +102,7 @@ export {
   type WikiToolOptions,
 } from "./tools/wiki-tool.js";
 export {
-  filterToolsForSubagentRole,
-  getDefaultAgentSubagentRolePolicy,
-  DEFAULT_AGENT_SUBAGENT_ROLE_POLICIES,
   type DefaultAgentSubagentRole,
-  type DefaultAgentSubagentRolePolicy,
 } from "./subagents/policy.js";
 export type {
   DefaultAgentChannelActionQueue,

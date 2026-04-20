@@ -1,7 +1,4 @@
 import type {
-    AgentDiaryRecord,
-    AgentDocumentRecord,
-    AgentDocumentSlug,
     AgentPairingRecord,
     AgentPromptRecord,
     AgentPromptSlug,
@@ -27,25 +24,4 @@ export interface AgentStore {
   readAgentPrompt(agentKey: string, slug: AgentPromptSlug): Promise<AgentPromptRecord | null>;
   setAgentPrompt(agentKey: string, slug: AgentPromptSlug, content: string): Promise<AgentPromptRecord>;
   transformAgentPrompt(agentKey: string, slug: AgentPromptSlug, expression: string): Promise<AgentPromptRecord>;
-  readAgentDocument(
-    agentKey: string,
-    slug: AgentDocumentSlug,
-    identityId?: string,
-  ): Promise<AgentDocumentRecord | null>;
-  setAgentDocument(
-    agentKey: string,
-    slug: AgentDocumentSlug,
-    content: string,
-    identityId?: string,
-  ): Promise<AgentDocumentRecord>;
-  transformAgentDocument(
-    agentKey: string,
-    slug: AgentDocumentSlug,
-    expression: string,
-    identityId?: string,
-  ): Promise<AgentDocumentRecord>;
-  readDiaryEntry(agentKey: string, entryDate: string, identityId?: string): Promise<AgentDiaryRecord | null>;
-  setDiaryEntry(agentKey: string, entryDate: string, content: string, identityId?: string): Promise<AgentDiaryRecord>;
-  transformDiaryEntry(agentKey: string, entryDate: string, expression: string, identityId?: string): Promise<AgentDiaryRecord>;
-  listDiaryEntries(agentKey: string, limit?: number, identityId?: string): Promise<readonly AgentDiaryRecord[]>;
 }

@@ -13,7 +13,11 @@ import {
     WebResearchTool,
     WhisperTool,
 } from "../src/index.js";
-import {buildDefaultAgentTools, buildDefaultAgentToolsets} from "../src/panda/definition.js";
+import {
+    buildDefaultAgentTools,
+    buildDefaultAgentToolsetsFromRegistry,
+    createDefaultAgentToolRegistry,
+} from "../src/panda/definition.js";
 import {resolveStoredContext} from "../src/app/runtime/create-runtime.js";
 import {resolveRemoteInitialCwd} from "../src/integrations/shell/bash-executor.js";
 
@@ -102,11 +106,11 @@ describe("Panda feature surface", () => {
   it("builds explicit specialist toolsets and keeps workspace/browser tools off the main agent", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
-    const toolsets = buildDefaultAgentToolsets({
+    const toolsets = buildDefaultAgentToolsetsFromRegistry(createDefaultAgentToolRegistry({
       postgresReadonly: {
         pool: new FakeReadonlyPool(),
       },
-    });
+    }));
 
     expect(toolsets.main.map((tool) => tool.name)).toEqual([
       "bash",

@@ -124,16 +124,8 @@ describe("legacy agent import", () => {
     ]);
     expect(plan.prompts[0]?.content).toContain("Imported from SOUL.md");
     expect(plan.prompts[0]?.content).toContain("# SOUL\nHave a point of view.");
-    expect(plan.memory?.content).toContain("Imported from USER.md");
-    expect(plan.memory?.content).toContain("Imported from MEMORY.md");
-    expect(plan.diary).toHaveLength(1);
     expect(plan.messages).toEqual([]);
     expect(plan.messageImportIncluded).toBe(false);
-    expect(plan.diary[0]).toMatchObject({
-      entryDate: "2026-01-26",
-    });
-    expect(plan.diary[0]?.content).toContain("Imported from 2026-01-26.md");
-    expect(plan.diary[0]?.content).toContain("Extra pricing note.");
     expect(plan.skills).toHaveLength(1);
     expect(plan.skills[0]).toMatchObject({
       skillKey: "notion",
@@ -143,10 +135,12 @@ describe("legacy agent import", () => {
       "NOTION_API_KEY",
       "NOTION_API_VERSION",
     ]);
+    expect(plan.warnings.some((warning) => warning.includes("Skipped legacy memory import from USER.md + MEMORY.md"))).toBe(true);
+    expect(plan.warnings.some((warning) => warning.includes("Skipped 3 legacy markdown files from memory/"))).toBe(true);
     expect(plan.warnings.some((warning) => warning.includes("email.pass"))).toBe(true);
   });
 
-  it("imports scoped memory, credentials, and legacy messages", async () => {
+  it("imports credentials and legacy messages while skipping legacy memory files", async () => {
     const sandbox = await makeTempDir("runtime-legacy-import-");
     const sourceDir = path.join(sandbox, "luna");
     const dataDir = path.join(sandbox, ".panda");
@@ -256,8 +250,6 @@ describe("legacy agent import", () => {
       createdMainSession: true,
       identityId: "patrik-id",
       promptCount: 2,
-      importedMemory: true,
-      diaryEntryCount: 1,
       messageCount: 2,
       skillCount: 1,
       credentialCount: 1,
@@ -280,18 +272,6 @@ describe("legacy agent import", () => {
     await expect(harness.agentStore.readAgentPrompt("luna", "heartbeat")).resolves.toMatchObject({
       content: "# HEARTBEAT\nCheck in twice a day.",
     });
-    await expect(harness.agentStore.readAgentDocument("luna", "memory")).resolves.toBeNull();
-    await expect(harness.agentStore.readAgentDocument("luna", "memory", identity.id)).resolves.toMatchObject({
-      content: expect.stringContaining("Angelina profile."),
-    });
-    await expect(harness.agentStore.listDiaryEntries("luna")).resolves.toEqual([]);
-    await expect(harness.agentStore.listDiaryEntries("luna", 10, identity.id)).resolves.toEqual([
-      expect.objectContaining({
-        entryDate: "2026-02-08",
-        content: "Daily recap.",
-        identityId: identity.id,
-      }),
-    ]);
     await expect(harness.agentStore.listAgentSkills("luna")).resolves.toEqual([
       expect.objectContaining({
         skillKey: "notion",
@@ -340,6 +320,8 @@ describe("legacy agent import", () => {
         },
       },
     ]);
+    expect(result.warnings.some((warning) => warning.includes("Skipped legacy memory import"))).toBe(true);
+    expect(result.warnings.some((warning) => warning.includes("Skipped 1 legacy markdown files from memory/"))).toBe(true);
 
     const copiedReference = await readFile(path.join(plan.legacyCopyDir, "docs/reference.md"), "utf8");
     expect(copiedReference).toBe("Useful reference.");

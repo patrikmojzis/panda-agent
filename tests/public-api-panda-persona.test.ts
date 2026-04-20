@@ -3,7 +3,7 @@ import {describe, expect, it} from "vitest";
 import * as personaExports from "../src/panda/index.js";
 
 const EXPECTED_PERSONA_EXPORTS = [
-  "AgentDocumentTool",
+  "AgentPromptTool",
   "AgentProfileContext",
   "AgentSkillTool",
   "BashJobCancelTool",
@@ -22,7 +22,6 @@ const EXPECTED_PERSONA_EXPORTS = [
   "MessageAgentTool",
   "OutboundTool",
   "DEFAULT_AGENT_INSTRUCTIONS",
-  "DEFAULT_AGENT_SUBAGENT_ROLE_POLICIES",
   "PostgresReadonlyQueryTool",
   "ReadFileTool",
   "ScheduledTaskCancelTool",
@@ -42,8 +41,6 @@ const EXPECTED_PERSONA_EXPORTS = [
   "buildBashJobPayload",
   "buildDefaultAgentLlmContexts",
   "buildDefaultAgentTools",
-  "filterToolsForSubagentRole",
-  "getDefaultAgentSubagentRolePolicy",
   "resolveDefaultAgentModelSelector",
 ] as const;
 

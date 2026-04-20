@@ -1,6 +1,5 @@
 import {ensureSchemas} from "../../src/app/runtime/postgres-bootstrap.js";
-import {PostgresAgentStore} from "../../src/domain/agents/index.js";
-import {DEFAULT_AGENT_DOCUMENT_TEMPLATES} from "../../src/domain/agents/templates.js";
+import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../../src/domain/sessions/index.js";
 import {PostgresThreadRuntimeStore} from "../../src/domain/threads/runtime/index.js";
@@ -23,7 +22,7 @@ export async function createRuntimeStores(pool: {
   await agentStore.bootstrapAgent({
     agentKey: "panda",
     displayName: "Panda",
-    prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+    prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
   });
 
   return {

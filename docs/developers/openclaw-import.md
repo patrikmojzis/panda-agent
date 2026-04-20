@@ -23,19 +23,17 @@ OpenClaw files map into Panda like this:
 - `SOUL.md` -> merged into `agent_prompts.agent`
 - `IDENTITY.md` -> not migrated into prompts
 - generated `agent_prompts.agent` -> short Panda-native wrapper so the slot is not empty
-- `USER.md` + `MEMORY.md` -> merged into `agent_documents.memory`
-- `memory/YYYY-MM-DD*.md` -> `agent_diary`
+- `USER.md` + `MEMORY.md` -> skipped with a warning; Panda memory now lives in the wiki
+- `memory/YYYY-MM-DD*.md` -> skipped with a warning; Panda journal now lives in the wiki
 - `skills/*/SKILL.md` -> `agent_skills`
 - `skills/**/*.env`, `skills/**/.env`, `skills/**/*.env.*` -> credentials
 
 When `--identity <handle>` is set:
 
-- imported `memory` lands in the agent+identity document scope
-- imported diary entries land in the agent+identity diary scope
 - imported credentials land in the relationship scope (`agent_key` + `identity_id`)
 - the importer also pairs that identity to the agent
 
-Without `--identity`, those imports stay agent-scoped like before.
+Without `--identity`, credential imports stay agent-scoped like before.
 
 ## Message Import
 
@@ -54,17 +52,12 @@ Guardrail:
 
 - if the Panda main thread already has transcript rows, legacy message import is skipped instead of duplicating soup
 
-## Diary Merge Rule
+## Legacy Memory Note
 
-Panda stores one diary row per day.
+The importer no longer maps OpenClaw memory or diary files into Postgres.
 
-OpenClaw workspaces sometimes split the same day across:
-
-- `2026-01-26.md`
-- `2026-01-26-topic.md`
-- `2026-01-26-1533.md`
-
-The importer collapses those into one markdown blob for that date and keeps filename markers so the source is still obvious.
+That is intentional.
+Panda memory now belongs in the wiki, not in old SQL blobs.
 
 ## Legacy Copy
 

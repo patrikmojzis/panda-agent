@@ -10,7 +10,7 @@ Identity is:
 
 - the recognized human or external actor
 - the access principal paired to agents
-- optional scope for memory, diary, and credentials
+- optional scope for credentials
 - speaker provenance for inbound messages
 
 Identity is not:

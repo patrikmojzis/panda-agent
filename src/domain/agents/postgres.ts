@@ -1,31 +1,27 @@
 import type {Pool, PoolClient} from "pg";
 
-import {isUniqueViolation} from "../../lib/postgres-errors.js";
 import {
-    CREATE_RUNTIME_SCHEMA_SQL,
-    quoteIdentifier,
-    toJson,
-    toMillis
+  CREATE_RUNTIME_SCHEMA_SQL,
+  quoteIdentifier,
+  toJson,
+  toMillis
 } from "../../domain/threads/runtime/postgres-shared.js";
 import {buildIdentityTableNames} from "../identity/postgres-shared.js";
 import {type AgentTableNames, buildAgentTableNames} from "./postgres-shared.js";
 import type {AgentStore} from "./store.js";
 import type {
-    AgentDiaryRecord,
-    AgentDocumentRecord,
-    AgentDocumentSlug,
-    AgentPairingRecord,
-    AgentPromptRecord,
-    AgentPromptSlug,
-    AgentRecord,
-    AgentSkillRecord,
-    BootstrapAgentInput,
+  AgentPairingRecord,
+  AgentPromptRecord,
+  AgentPromptSlug,
+  AgentRecord,
+  AgentSkillRecord,
+  BootstrapAgentInput,
 } from "./types.js";
 import {
-    normalizeAgentKey,
-    normalizeAgentSkillContent,
-    normalizeAgentSkillDescription,
-    normalizeSkillKey,
+  normalizeAgentKey,
+  normalizeAgentSkillContent,
+  normalizeAgentSkillDescription,
+  normalizeSkillKey,
 } from "./types.js";
 
 interface PgQueryable {
@@ -61,17 +57,6 @@ function parseAgentPromptRow(row: Record<string, unknown>): AgentPromptRecord {
   };
 }
 
-function parseAgentDocumentRow(row: Record<string, unknown>): AgentDocumentRecord {
-  return {
-    agentKey: String(row.agent_key),
-    identityId: row.identity_id === null ? undefined : String(row.identity_id),
-    slug: String(row.slug) as AgentDocumentSlug,
-    content: String(row.content),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
-  };
-}
-
 function parseAgentSkillRow(row: Record<string, unknown>): AgentSkillRecord {
   return {
     agentKey: String(row.agent_key),
@@ -82,20 +67,6 @@ function parseAgentSkillRow(row: Record<string, unknown>): AgentSkillRecord {
       ? undefined
       : toMillis(row.last_loaded_at),
     loadCount: Number(row.load_count ?? 0),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
-  };
-}
-
-function parseAgentDiaryRow(row: Record<string, unknown>): AgentDiaryRecord {
-  const rawEntryDate = row.entry_date;
-  return {
-    agentKey: String(row.agent_key),
-    identityId: row.identity_id === null ? undefined : String(row.identity_id),
-    entryDate: rawEntryDate instanceof Date
-      ? rawEntryDate.toISOString().slice(0, 10)
-      : String(rawEntryDate),
-    content: String(row.content),
     createdAt: toMillis(row.created_at),
     updatedAt: toMillis(row.updated_at),
   };
@@ -120,35 +91,8 @@ function requireIdentityId(value: string): string {
   return trimmed;
 }
 
-function normalizeOptionalIdentityId(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  return requireIdentityId(value);
-}
-
-function requireEntryDate(value: string): string {
-  const trimmed = value.trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-    throw new Error("Diary entry date must use YYYY-MM-DD.");
-  }
-
-  return trimmed;
-}
-
 function missingAgentError(agentKey: string): Error {
   return new Error(`Unknown agent ${agentKey}. Create it with \`panda agent create ${agentKey}\`.`);
-}
-
-const AGENT_PROMPT_SLUG_SET = new Set<AgentPromptSlug>(["agent", "heartbeat"]);
-
-function isPromptSlug(slug: string): slug is AgentPromptSlug {
-  return AGENT_PROMPT_SLUG_SET.has(slug as AgentPromptSlug);
-}
-
-function looksLikeEntryDate(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
 }
 
 export class PostgresAgentStore implements AgentStore {
@@ -218,52 +162,6 @@ export class PostgresAgentStore implements AgentStore {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (agent_key, slug)
       )
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.agentDocuments} (
-        id BIGSERIAL PRIMARY KEY,
-        agent_key TEXT NOT NULL REFERENCES ${this.tables.agents}(agent_key) ON DELETE CASCADE,
-        identity_id TEXT REFERENCES ${this.identityTables.identities}(id) ON DELETE CASCADE,
-        slug TEXT NOT NULL,
-        content TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_agent_documents_global_idx`)}
-      ON ${this.tables.agentDocuments} (agent_key, slug)
-      WHERE identity_id IS NULL
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_agent_documents_scoped_idx`)}
-      ON ${this.tables.agentDocuments} (agent_key, identity_id, slug)
-      WHERE identity_id IS NOT NULL
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.agentDiary} (
-        id BIGSERIAL PRIMARY KEY,
-        agent_key TEXT NOT NULL REFERENCES ${this.tables.agents}(agent_key) ON DELETE CASCADE,
-        identity_id TEXT REFERENCES ${this.identityTables.identities}(id) ON DELETE CASCADE,
-        entry_date DATE NOT NULL,
-        content TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_agent_diary_global_idx`)}
-      ON ${this.tables.agentDiary} (agent_key, entry_date)
-      WHERE identity_id IS NULL
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_agent_diary_scoped_idx`)}
-      ON ${this.tables.agentDiary} (agent_key, identity_id, entry_date)
-      WHERE identity_id IS NOT NULL
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_agent_diary_lookup_idx`)}
-      ON ${this.tables.agentDiary} (agent_key, identity_id, entry_date DESC)
     `);
   }
 
@@ -561,310 +459,5 @@ export class PostgresAgentStore implements AgentStore {
     ]);
 
     return parseAgentPromptRow(result.rows[0] as Record<string, unknown>);
-  }
-
-  private async readScopedDocumentRow(
-    agentKey: string,
-    slug: AgentDocumentSlug,
-    identityId?: string,
-  ): Promise<Record<string, unknown> | null> {
-    const normalizedAgentKey = normalizeAgentKey(agentKey);
-    const normalizedIdentityId = normalizeOptionalIdentityId(identityId);
-    const result = await this.pool.query(`
-      SELECT *
-      FROM ${this.tables.agentDocuments}
-      WHERE agent_key = $1
-        AND slug = $2
-        AND ${normalizedIdentityId ? "identity_id = $3" : "identity_id IS NULL"}
-      LIMIT 1
-    `, normalizedIdentityId
-      ? [normalizedAgentKey, slug, normalizedIdentityId]
-      : [normalizedAgentKey, slug],
-    );
-    return (result.rows[0] as Record<string, unknown> | undefined) ?? null;
-  }
-
-  async readAgentDocument(agentKey: string, slug: AgentDocumentSlug, identityId?: string): Promise<AgentDocumentRecord | null> {
-    if (identityId === undefined && isPromptSlug(slug)) {
-      const prompt = await this.readAgentPrompt(agentKey, slug);
-      return prompt
-        ? {
-          agentKey: prompt.agentKey,
-          slug: prompt.slug as AgentDocumentSlug,
-          content: prompt.content,
-          createdAt: prompt.createdAt,
-          updatedAt: prompt.updatedAt,
-        }
-        : null;
-    }
-
-    const row = await this.readScopedDocumentRow(agentKey, slug, identityId);
-    return row ? parseAgentDocumentRow(row) : null;
-  }
-
-  async setAgentDocument(agentKey: string, slug: AgentDocumentSlug, content: string, identityId?: string): Promise<AgentDocumentRecord> {
-    if (identityId === undefined && isPromptSlug(slug)) {
-      const prompt = await this.setAgentPrompt(agentKey, slug, content);
-      return {
-        agentKey: prompt.agentKey,
-        slug: prompt.slug as AgentDocumentSlug,
-        content: prompt.content,
-        createdAt: prompt.createdAt,
-        updatedAt: prompt.updatedAt,
-      };
-    }
-
-    const normalizedAgentKey = normalizeAgentKey(agentKey);
-    const normalizedIdentityId = normalizeOptionalIdentityId(identityId);
-    const existing = await this.readScopedDocumentRow(normalizedAgentKey, slug, normalizedIdentityId);
-    if (existing) {
-      const result = await this.pool.query(`
-        UPDATE ${this.tables.agentDocuments}
-        SET content = $2,
-            updated_at = NOW()
-        WHERE id = $1
-        RETURNING *
-      `, [
-        Number(existing.id),
-        content,
-      ]);
-      return parseAgentDocumentRow(result.rows[0] as Record<string, unknown>);
-    }
-
-    try {
-      const result = await this.pool.query(`
-        INSERT INTO ${this.tables.agentDocuments} (
-          agent_key,
-          identity_id,
-          slug,
-          content
-        ) VALUES (
-          $1,
-          $2,
-          $3,
-          $4
-        )
-        RETURNING *
-      `, [
-        normalizedAgentKey,
-        normalizedIdentityId ?? null,
-        slug,
-        content,
-      ]);
-      return parseAgentDocumentRow(result.rows[0] as Record<string, unknown>);
-    } catch (error) {
-      if (!isUniqueViolation(error)) {
-        throw error;
-      }
-
-      return this.setAgentDocument(normalizedAgentKey, slug, content, normalizedIdentityId);
-    }
-  }
-
-  async transformAgentDocument(agentKey: string, slug: AgentDocumentSlug, expression: string, identityId?: string): Promise<AgentDocumentRecord> {
-    if (identityId === undefined && isPromptSlug(slug)) {
-      const prompt = await this.transformAgentPrompt(agentKey, slug, expression);
-      return {
-        agentKey: prompt.agentKey,
-        slug: prompt.slug as AgentDocumentSlug,
-        content: prompt.content,
-        createdAt: prompt.createdAt,
-        updatedAt: prompt.updatedAt,
-      };
-    }
-
-    let existing = await this.readScopedDocumentRow(agentKey, slug, identityId);
-    if (!existing) {
-      await this.setAgentDocument(agentKey, slug, "", identityId);
-      existing = await this.readScopedDocumentRow(agentKey, slug, identityId);
-    }
-    const result = await this.pool.query(`
-      UPDATE ${this.tables.agentDocuments}
-      SET content = COALESCE((${expression})::text, ''),
-          updated_at = NOW()
-      WHERE id = $1
-      RETURNING *
-    `, [Number(existing?.id)]);
-
-    return parseAgentDocumentRow(result.rows[0] as Record<string, unknown>);
-  }
-
-  async readRelationshipDocument(agentKey: string, identityId: string, slug: AgentDocumentSlug): Promise<AgentDocumentRecord | null> {
-    return this.readAgentDocument(agentKey, slug, identityId);
-  }
-
-  async setRelationshipDocument(
-    agentKey: string,
-    identityId: string,
-    slug: AgentDocumentSlug,
-    content: string,
-  ): Promise<AgentDocumentRecord> {
-    return this.setAgentDocument(agentKey, slug, content, identityId);
-  }
-
-  async transformRelationshipDocument(
-    agentKey: string,
-    identityId: string,
-    slug: AgentDocumentSlug,
-    expression: string,
-  ): Promise<AgentDocumentRecord> {
-    return this.transformAgentDocument(agentKey, slug, expression, identityId);
-  }
-
-  private async readDiaryRow(agentKey: string, entryDate: string, identityId?: string): Promise<Record<string, unknown> | null> {
-    const normalizedAgentKey = normalizeAgentKey(agentKey);
-    const normalizedEntryDate = requireEntryDate(entryDate);
-    const normalizedIdentityId = normalizeOptionalIdentityId(identityId);
-    const result = await this.pool.query(`
-      SELECT *
-      FROM ${this.tables.agentDiary}
-      WHERE agent_key = $1
-        AND entry_date = $2::date
-        AND ${normalizedIdentityId ? "identity_id = $3" : "identity_id IS NULL"}
-      LIMIT 1
-    `, normalizedIdentityId
-      ? [normalizedAgentKey, normalizedEntryDate, normalizedIdentityId]
-      : [normalizedAgentKey, normalizedEntryDate],
-    );
-
-    return (result.rows[0] as Record<string, unknown> | undefined) ?? null;
-  }
-
-  private normalizeDiaryReadArgs(arg2: string, arg3?: string): {entryDate: string; identityId?: string} {
-    return looksLikeEntryDate(arg2)
-      ? {entryDate: arg2, identityId: arg3}
-      : {entryDate: arg3 ?? "", identityId: arg2};
-  }
-
-  private normalizeDiaryWriteArgs(
-    arg2: string,
-    arg3: string,
-    arg4?: string,
-  ): {entryDate: string; content: string; identityId?: string} {
-    return looksLikeEntryDate(arg2)
-      ? {entryDate: arg2, content: arg3, identityId: arg4}
-      : {entryDate: arg3, content: arg4 ?? "", identityId: arg2};
-  }
-
-  private normalizeDiaryListArgs(
-    arg2?: number | string,
-    arg3?: string | number,
-  ): {limit: number; identityId?: string} {
-    if (typeof arg2 === "number" || arg2 === undefined) {
-      return {
-        limit: arg2 ?? 7,
-        identityId: typeof arg3 === "string" ? arg3 : undefined,
-      };
-    }
-
-    return {
-      identityId: arg2,
-      limit: typeof arg3 === "number" ? arg3 : 7,
-    };
-  }
-
-  async readDiaryEntry(agentKey: string, entryDate: string, identityId?: string): Promise<AgentDiaryRecord | null>;
-  async readDiaryEntry(agentKey: string, identityId: string, entryDate: string): Promise<AgentDiaryRecord | null>;
-  async readDiaryEntry(agentKey: string, arg2: string, arg3?: string): Promise<AgentDiaryRecord | null> {
-    const {entryDate, identityId} = this.normalizeDiaryReadArgs(arg2, arg3);
-    const row = await this.readDiaryRow(agentKey, entryDate, identityId);
-    return row ? parseAgentDiaryRow(row) : null;
-  }
-
-  async setDiaryEntry(agentKey: string, entryDate: string, content: string, identityId?: string): Promise<AgentDiaryRecord>;
-  async setDiaryEntry(agentKey: string, identityId: string, entryDate: string, content: string): Promise<AgentDiaryRecord>;
-  async setDiaryEntry(agentKey: string, arg2: string, arg3: string, arg4?: string): Promise<AgentDiaryRecord> {
-    const {entryDate, content, identityId} = this.normalizeDiaryWriteArgs(arg2, arg3, arg4);
-    const normalizedAgentKey = normalizeAgentKey(agentKey);
-    const normalizedEntryDate = requireEntryDate(entryDate);
-    const normalizedIdentityId = normalizeOptionalIdentityId(identityId);
-    const existing = await this.readDiaryRow(normalizedAgentKey, normalizedEntryDate, normalizedIdentityId);
-    if (existing) {
-      const result = await this.pool.query(`
-        UPDATE ${this.tables.agentDiary}
-        SET content = $2,
-            updated_at = NOW()
-        WHERE id = $1
-        RETURNING *
-      `, [
-        Number(existing.id),
-        content,
-      ]);
-      return parseAgentDiaryRow(result.rows[0] as Record<string, unknown>);
-    }
-
-    try {
-      const result = await this.pool.query(`
-        INSERT INTO ${this.tables.agentDiary} (
-          agent_key,
-          identity_id,
-          entry_date,
-          content
-        ) VALUES (
-          $1,
-          $2,
-          $3::date,
-          $4
-        )
-        RETURNING *
-      `, [
-        normalizedAgentKey,
-        normalizedIdentityId ?? null,
-        normalizedEntryDate,
-        content,
-      ]);
-      return parseAgentDiaryRow(result.rows[0] as Record<string, unknown>);
-    } catch (error) {
-      if (!isUniqueViolation(error)) {
-        throw error;
-      }
-
-      return this.setDiaryEntry(normalizedAgentKey, normalizedEntryDate, content, normalizedIdentityId);
-    }
-  }
-
-  async transformDiaryEntry(agentKey: string, entryDate: string, expression: string, identityId?: string): Promise<AgentDiaryRecord>;
-  async transformDiaryEntry(agentKey: string, identityId: string, entryDate: string, expression: string): Promise<AgentDiaryRecord>;
-  async transformDiaryEntry(agentKey: string, arg2: string, arg3: string, arg4?: string): Promise<AgentDiaryRecord> {
-    const {entryDate, content: expression, identityId} = this.normalizeDiaryWriteArgs(arg2, arg3, arg4);
-    let row = await this.readDiaryRow(agentKey, entryDate, identityId);
-    if (!row) {
-      await this.setDiaryEntry(agentKey, entryDate, "", identityId);
-      row = await this.readDiaryRow(agentKey, entryDate, identityId);
-    }
-    const result = await this.pool.query(`
-      UPDATE ${this.tables.agentDiary}
-      SET content = COALESCE((${expression})::text, ''),
-          updated_at = NOW()
-      WHERE id = $1
-      RETURNING *
-    `, [Number(row?.id)]);
-
-    return parseAgentDiaryRow(result.rows[0] as Record<string, unknown>);
-  }
-
-  async listDiaryEntries(agentKey: string, limit?: number, identityId?: string): Promise<readonly AgentDiaryRecord[]>;
-  async listDiaryEntries(agentKey: string, identityId: string, limit?: number): Promise<readonly AgentDiaryRecord[]>;
-  async listDiaryEntries(
-    agentKey: string,
-    arg2?: number | string,
-    arg3?: string | number,
-  ): Promise<readonly AgentDiaryRecord[]> {
-    const {limit, identityId} = this.normalizeDiaryListArgs(arg2, arg3);
-    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.trunc(limit) : 7;
-    const normalizedIdentityId = normalizeOptionalIdentityId(identityId);
-    const result = await this.pool.query(`
-      SELECT *
-      FROM ${this.tables.agentDiary}
-      WHERE agent_key = $1
-        AND ${normalizedIdentityId ? "identity_id = $2" : "identity_id IS NULL"}
-      ORDER BY entry_date DESC
-      LIMIT $${normalizedIdentityId ? 3 : 2}
-    `, normalizedIdentityId
-      ? [normalizeAgentKey(agentKey), normalizedIdentityId, safeLimit]
-      : [normalizeAgentKey(agentKey), safeLimit],
-    );
-
-    return result.rows.map((row) => parseAgentDiaryRow(row as Record<string, unknown>));
   }
 }

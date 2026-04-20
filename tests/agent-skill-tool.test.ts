@@ -2,7 +2,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {Agent, AgentSkillTool, type DefaultAgentSessionContext, RunContext, ToolError,} from "../src/index.js";
-import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 
 function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
@@ -46,12 +46,12 @@ describe("AgentSkillTool", () => {
     await store.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await store.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
     return store;

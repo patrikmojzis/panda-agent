@@ -12,7 +12,7 @@ import {PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
 import type {ThreadRuntimeStore} from "../threads/runtime/store.js";
 import type {ThreadRuntimeMessagePayload} from "../threads/runtime/types.js";
 import type {AgentStore} from "./store.js";
-import {DEFAULT_AGENT_DOCUMENT_TEMPLATES} from "./templates.js";
+import {DEFAULT_AGENT_PROMPT_TEMPLATES} from "../../prompts/templates/agent-prompts.js";
 import type {AgentPromptSlug} from "./types.js";
 import {normalizeAgentKey, normalizeSkillKey} from "./types.js";
 
@@ -22,12 +22,6 @@ export interface LegacyAgentPromptPlan {
   slug: AgentPromptSlug;
   content: string;
   sourcePath?: string;
-}
-
-export interface LegacyAgentDiaryPlan {
-  entryDate: string;
-  content: string;
-  sourcePaths: readonly string[];
 }
 
 export interface LegacyAgentSkillPlan {
@@ -41,11 +35,6 @@ export interface LegacyAgentCredentialPlan {
   envKey: string;
   value: string;
   sourcePath: string;
-}
-
-export interface LegacyAgentMemoryPlan {
-  content: string;
-  sourcePaths: readonly string[];
 }
 
 export interface LegacyAgentTranscriptMessagePlan {
@@ -62,8 +51,6 @@ export interface LegacyAgentImportPlan {
   agentKey: string;
   displayName: string;
   prompts: readonly LegacyAgentPromptPlan[];
-  memory: LegacyAgentMemoryPlan | null;
-  diary: readonly LegacyAgentDiaryPlan[];
   messages: readonly LegacyAgentTranscriptMessagePlan[];
   messageImportIncluded: boolean;
   skills: readonly LegacyAgentSkillPlan[];
@@ -101,8 +88,6 @@ export interface ImportedLegacyAgentResult {
   createdMainSession: boolean;
   identityId?: string;
   promptCount: number;
-  importedMemory: boolean;
-  diaryEntryCount: number;
   messageCount: number;
   skillCount: number;
   credentialCount: number;
@@ -146,20 +131,6 @@ function cleanImportedBlock(content: string): string {
   return content.trim() || "(empty)";
 }
 
-function mergeImportedMarkdownBlocks(blocks: readonly {label: string; content: string}[]): string {
-  if (blocks.length === 0) {
-    return "";
-  }
-
-  if (blocks.length === 1) {
-    return cleanImportedBlock(blocks[0]?.content ?? "");
-  }
-
-  return blocks
-    .map((block) => `<!-- Imported from ${block.label} -->\n${cleanImportedBlock(block.content)}`)
-    .join("\n\n---\n\n");
-}
-
 function joinMarkdownSections(sections: readonly string[]): string {
   const normalized = sections
     .map((section) => section.trim())
@@ -174,23 +145,6 @@ function joinMarkdownSections(sections: readonly string[]): string {
   }
 
   return normalized.join("\n\n---\n\n");
-}
-
-function extractDiaryDate(fileName: string): string | null {
-  const match = /^(\d{4}-\d{2}-\d{2})(?:[-_].+)?\.md$/i.exec(fileName);
-  return match?.[1] ?? null;
-}
-
-function sortDiaryFiles(entryDate: string, left: string, right: string): number {
-  const canonical = `${entryDate}.md`;
-  if (left === canonical && right !== canonical) {
-    return -1;
-  }
-  if (right === canonical && left !== canonical) {
-    return 1;
-  }
-
-  return left.localeCompare(right);
 }
 
 function parseFrontmatterValue(content: string, key: string): string | null {
@@ -351,7 +305,7 @@ async function buildPromptPlans(sourceDir: string, displayName: string, warnings
       warnings.push(`Missing ${promptFile.fileName}; kept Panda default for ${promptFile.slug}.`);
       prompts.push({
         slug: promptFile.slug,
-        content: DEFAULT_AGENT_DOCUMENT_TEMPLATES[promptFile.slug],
+        content: DEFAULT_AGENT_PROMPT_TEMPLATES[promptFile.slug],
       });
       continue;
     }
@@ -366,85 +320,27 @@ async function buildPromptPlans(sourceDir: string, displayName: string, warnings
   return prompts;
 }
 
-async function buildMemoryPlan(sourceDir: string): Promise<LegacyAgentMemoryPlan | null> {
-  const sources: {label: string; sourcePath: string; content: string}[] = [];
-
-  for (const fileName of ["USER.md", "MEMORY.md"]) {
+async function appendLegacyMemoryWarnings(sourceDir: string, warnings: string[]): Promise<void> {
+  const skippedMemoryFiles = await Promise.all(["USER.md", "MEMORY.md"].map(async (fileName) => {
     const sourcePath = path.join(sourceDir, fileName);
-    const content = await readUtf8IfExists(sourcePath);
-    if (content === null) {
-      continue;
-    }
-
-    sources.push({
-      label: fileName,
-      sourcePath,
-      content,
-    });
+    return await pathExists(sourcePath) ? fileName : null;
+  }));
+  const visibleMemoryFiles = skippedMemoryFiles.filter((fileName): fileName is string => fileName !== null);
+  if (visibleMemoryFiles.length > 0) {
+    warnings.push(`Skipped legacy memory import from ${visibleMemoryFiles.join(" + ")}; Panda now uses wiki memory.`);
   }
 
-  if (sources.length === 0) {
-    return null;
-  }
-
-  return {
-    content: mergeImportedMarkdownBlocks(sources),
-    sourcePaths: sources.map((source) => source.sourcePath),
-  };
-}
-
-async function buildDiaryPlan(sourceDir: string): Promise<readonly LegacyAgentDiaryPlan[]> {
   const memoryDir = path.join(sourceDir, "memory");
   if (!await pathExists(memoryDir)) {
-    return [];
+    return;
   }
 
-  const files = await readdir(memoryDir, {withFileTypes: true});
-  const grouped = new Map<string, string[]>();
-
-  for (const entry of files) {
-    if (!entry.isFile()) {
-      continue;
-    }
-
-    const entryDate = extractDiaryDate(entry.name);
-    if (!entryDate) {
-      continue;
-    }
-
-    const current = grouped.get(entryDate);
-    if (current) {
-      current.push(entry.name);
-      continue;
-    }
-
-    grouped.set(entryDate, [entry.name]);
+  const diaryFiles = (await readdir(memoryDir, {withFileTypes: true}))
+    .filter((entry) => entry.isFile() && /\.md$/i.test(entry.name))
+    .map((entry) => entry.name);
+  if (diaryFiles.length > 0) {
+    warnings.push(`Skipped ${diaryFiles.length} legacy markdown files from memory/; Panda now uses wiki journal pages.`);
   }
-
-  const diaryPlans: LegacyAgentDiaryPlan[] = [];
-  const sortedDates = [...grouped.keys()].sort();
-
-  for (const entryDate of sortedDates) {
-    const fileNames = [...(grouped.get(entryDate) ?? [])].sort((left, right) => sortDiaryFiles(entryDate, left, right));
-    const sections = await Promise.all(fileNames.map(async (fileName) => {
-      const sourcePath = path.join(memoryDir, fileName);
-      return {
-        label: fileName,
-        sourcePath,
-        content: await readFile(sourcePath, "utf8"),
-      };
-    }));
-
-    // Panda stores one diary row per day. Legacy agents sometimes split the same
-    // day across multiple files, so we collapse them into one stable markdown blob.
-    diaryPlans.push({
-      entryDate,
-      content: mergeImportedMarkdownBlocks(sections),
-      sourcePaths: sections.map((section) => section.sourcePath),
-    });
-  }
-
-  return diaryPlans;
 }
 
 async function buildSkillPlans(sourceDir: string, warnings: string[]): Promise<readonly LegacyAgentSkillPlan[]> {
@@ -825,8 +721,7 @@ export async function planLegacyAgentImport(
   const warnings: string[] = [];
 
   const prompts = await buildPromptPlans(resolvedSourceDir, displayName, warnings);
-  const memory = await buildMemoryPlan(resolvedSourceDir);
-  const diary = await buildDiaryPlan(resolvedSourceDir);
+  await appendLegacyMemoryWarnings(resolvedSourceDir, warnings);
   const messages = resolvedOptions.includeMessages
     ? await buildMessagePlans(resolvedSourceDir, agentKey, warnings, resolvedOptions.messagePairLimit)
     : [];
@@ -848,8 +743,6 @@ export async function planLegacyAgentImport(
     agentKey,
     displayName,
     prompts,
-    memory,
-    diary,
     messages,
     messageImportIncluded: resolvedOptions.includeMessages,
     skills,
@@ -1130,14 +1023,6 @@ export async function importLegacyAgent(
     }
   }
 
-  if (plan.memory) {
-    await options.agentStore.setAgentDocument(plan.agentKey, "memory", plan.memory.content, options.identityId);
-  }
-
-  for (const entry of plan.diary) {
-    await options.agentStore.setDiaryEntry(plan.agentKey, entry.entryDate, entry.content, options.identityId);
-  }
-
   for (const skill of plan.skills) {
     await options.agentStore.setAgentSkill(
       plan.agentKey,
@@ -1200,8 +1085,6 @@ export async function importLegacyAgent(
     createdMainSession: mainSession?.created ?? false,
     identityId: options.identityId,
     promptCount: plan.prompts.length,
-    importedMemory: plan.memory !== null,
-    diaryEntryCount: plan.diary.length,
     messageCount,
     skillCount: plan.skills.length,
     credentialCount,

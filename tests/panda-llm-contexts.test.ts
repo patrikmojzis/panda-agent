@@ -2,7 +2,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {buildDefaultAgentLlmContexts, gatherContexts,} from "../src/index.js";
-import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
@@ -39,10 +39,8 @@ describe("buildDefaultAgentLlmContexts", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
-    await agentStore.setRelationshipDocument("panda", "alice-id", "memory", "Alice likes tea.");
-    await agentStore.setDiaryEntry("panda", "alice-id", "2026-04-10", "Met for dinner.");
     await agentStore.setAgentSkill("panda", "calendar", "Use this for calendar work.", "# Calendar\nLong skill body.");
 
     return {
@@ -68,8 +66,6 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).toContain("Summaries only. Query `session.agent_skills` for full skill bodies when you need the exact content.");
     expect(dump).toContain("calendar\nUse this for calendar work.");
     expect(dump).not.toContain("Long skill body.");
-    expect(dump).not.toContain("Alice likes tea.");
-    expect(dump).not.toContain("Met for dinner.");
     expect(dump).not.toContain("**Heartbeat Guidance**");
   });
 
@@ -86,7 +82,6 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).toContain("**Current DateTime:**");
     expect(dump).toContain("**Environment Overview:**");
     expect(dump).not.toContain("**Agent Profile:**");
-    expect(dump).not.toContain("Alice likes tea.");
   });
 
   it("instantiates the wiki overview context when bindings are configured", async () => {

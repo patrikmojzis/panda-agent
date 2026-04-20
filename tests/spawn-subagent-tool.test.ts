@@ -2,18 +2,18 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 
 import {
-    Agent,
-    type DefaultAgentSessionContext,
-    type LlmRuntime,
-    type LlmRuntimeRequest,
-    type ResolvedThreadDefinition,
-    RunContext,
-    SpawnSubagentTool,
-    stringToUserMessage,
-    type ThreadRecord,
-    Tool,
-    ToolError,
-    z,
+  Agent,
+  type DefaultAgentSessionContext,
+  type LlmRuntime,
+  type LlmRuntimeRequest,
+  type ResolvedThreadDefinition,
+  RunContext,
+  SpawnSubagentTool,
+  stringToUserMessage,
+  type ThreadRecord,
+  Tool,
+  ToolError,
+  z,
 } from "../src/index.js";
 import {DefaultAgentSubagentService} from "../src/panda/subagents/service.js";
 
@@ -81,14 +81,14 @@ class FakeMediaTool extends Tool<typeof FakeMediaTool.schema, DefaultAgentSessio
   }
 }
 
-class FakeAgentDocumentTool extends Tool<typeof FakeAgentDocumentTool.schema, DefaultAgentSessionContext> {
+class FakeAgentPromptTool extends Tool<typeof FakeAgentPromptTool.schema, DefaultAgentSessionContext> {
   static schema = z.object({
     target: z.string(),
   });
 
-  name = "agent_document";
+  name = "agent_prompt";
   description = "Blocked in specialists";
-  schema = FakeAgentDocumentTool.schema;
+  schema = FakeAgentPromptTool.schema;
 
   async handle(): Promise<{ ok: true }> {
     return { ok: true };
@@ -141,6 +141,24 @@ class FakeAgentSkillTool extends Tool<typeof FakeAgentSkillTool.schema, DefaultA
     return {
       operation: args.operation,
       skillKey: args.skillKey,
+    };
+  }
+}
+
+class FakeWikiTool extends Tool<typeof FakeWikiTool.schema, DefaultAgentSessionContext> {
+  static schema = z.object({
+    operation: z.string(),
+    slug: z.string().optional(),
+  });
+
+  name = "wiki";
+  description = "Read/write wiki memory";
+  schema = FakeWikiTool.schema;
+
+  async handle(args: z.output<typeof FakeWikiTool.schema>): Promise<{ operation: string; slug?: string }> {
+    return {
+      operation: args.operation,
+      slug: args.slug,
     };
   }
 }
@@ -226,6 +244,7 @@ function createSubagentToolsets() {
     ],
     memory: [
       new FakePostgresReadonlyQueryTool(),
+      new FakeWikiTool(),
     ],
     browser: [
       new FakeReadFileTool(),
@@ -294,7 +313,7 @@ describe("SpawnSubagentTool", () => {
       instructions: "Parent Panda instructions",
       tools: [
         tool,
-        new FakeAgentDocumentTool(),
+        new FakeAgentPromptTool(),
         new FakeOutboundTool(),
       ],
     });
@@ -401,7 +420,7 @@ describe("SpawnSubagentTool", () => {
 
         return createAssistantMessage([{
           type: "text",
-          text: "Found the heartbeat prompt and one diary hit for Alice.",
+          text: "Found the heartbeat prompt and Alice pairing metadata.",
         }]);
       }),
       stream: vi.fn(() => {
@@ -430,7 +449,7 @@ describe("SpawnSubagentTool", () => {
       instructions: "Parent Panda instructions",
       tools: [
         tool,
-        new FakeAgentDocumentTool(),
+        new FakeAgentPromptTool(),
         new FakeOutboundTool(),
       ],
     });
@@ -445,7 +464,7 @@ describe("SpawnSubagentTool", () => {
     expect(result).toMatchObject({
       details: {
         role: "memory",
-        finalMessage: "Found the heartbeat prompt and one diary hit for Alice.",
+        finalMessage: "Found the heartbeat prompt and Alice pairing metadata.",
         toolCallCount: 1,
       },
     });
@@ -457,6 +476,8 @@ describe("SpawnSubagentTool", () => {
     expect(JSON.stringify(requests[0]?.context.messages)).toContain("Search durable memory for heartbeat guidance");
     expect(JSON.stringify(requests[0]?.context.messages)).toContain("Prefer previews before full reads");
     expect(requests[0]?.context.systemPrompt).toContain("You are the memory subagent.");
+    expect(requests[0]?.context.systemPrompt).toContain("Durable semantic and journal memory live in the wiki, not in Postgres.");
+    expect(requests[0]?.context.systemPrompt).toContain("Your tools are postgres_readonly_query and wiki.");
     expect(requests[0]?.context.systemPrompt).toContain("Treat Postgres like grep for memory:");
     expect(requests[0]?.context.systemPrompt).toContain("REGEXP_SPLIT_TO_TABLE");
     expect(requests[0]?.context.systemPrompt).toContain("TO_TSVECTOR");
@@ -464,6 +485,7 @@ describe("SpawnSubagentTool", () => {
     expect(requests[0]?.context.systemPrompt).not.toContain("Parent system prompt");
     expect(requests[0]?.context.tools?.map((toolDef) => toolDef.name)).toEqual([
       "postgres_readonly_query",
+      "wiki",
     ]);
   });
 

@@ -6,11 +6,11 @@ import {buildScheduledTaskTableNames} from "../../../domain/scheduling/tasks/pos
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import {buildWatchTableNames} from "../../../domain/watches/postgres-shared.js";
 import {
-  buildSessionRelationNames,
-  buildThreadRuntimeTableNames,
-  quoteIdentifier,
-  RUNTIME_SCHEMA,
-  SESSION_SCHEMA,
+    buildSessionRelationNames,
+    buildThreadRuntimeTableNames,
+    quoteIdentifier,
+    RUNTIME_SCHEMA,
+    SESSION_SCHEMA,
 } from "./postgres-shared.js";
 
 interface PgQueryable {
@@ -26,8 +26,6 @@ export interface ReadonlySessionViewNames {
   inputs: string;
   runs: string;
   agentPrompts: string;
-  agentDocuments: string;
-  agentDiary: string;
   agentPairings: string;
   agentSkills: string;
   scheduledTasks: string;
@@ -65,7 +63,7 @@ export async function ensureReadonlySessionQuerySchema(
   const sessionTables = buildSessionTableNames();
   const scheduledTaskTables = buildScheduledTaskTableNames();
   const watchTables = buildWatchTableNames();
-  const { agentSessions, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentDocuments, agentDiary, agentPairings, agentSkills, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents } = buildSessionRelationNames({
+  const { agentSessions, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentPairings, agentSkills, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents } = buildSessionRelationNames({
     agentSessions: "agent_sessions",
     threads: "threads",
     messages: "messages",
@@ -74,8 +72,6 @@ export async function ensureReadonlySessionQuerySchema(
     inputs: "inputs",
     runs: "runs",
     agentPrompts: "agent_prompts",
-    agentDocuments: "agent_documents",
-    agentDiary: "agent_diary",
     agentPairings: "agent_pairings",
     agentSkills: "agent_skills",
     scheduledTasks: "scheduled_tasks",
@@ -93,8 +89,6 @@ export async function ensureReadonlySessionQuerySchema(
     inputs,
     runs,
     agentPrompts,
-    agentDocuments,
-    agentDiary,
     agentPairings,
     agentSkills,
     scheduledTasks,
@@ -141,8 +135,6 @@ export async function ensureReadonlySessionQuerySchema(
     DROP VIEW IF EXISTS ${views.watchRuns};
     DROP VIEW IF EXISTS ${views.watches};
     DROP VIEW IF EXISTS ${views.agentPairings};
-    DROP VIEW IF EXISTS ${views.agentDiary};
-    DROP VIEW IF EXISTS ${views.agentDocuments};
     DROP VIEW IF EXISTS ${views.agentPrompts};
     DROP VIEW IF EXISTS ${views.agentSkills};
     DROP VIEW IF EXISTS ${views.scheduledTaskRuns};
@@ -347,46 +339,6 @@ export async function ensureReadonlySessionQuerySchema(
     WHERE prompt.agent_key = current_setting('runtime.agent_key', true)
       AND prompt.slug IN ('agent', 'heartbeat');
 
-    CREATE VIEW ${views.agentDocuments}
-    WITH (security_barrier = true) AS
-    SELECT
-      document.id,
-      document.agent_key,
-      document.identity_id,
-      identity_row.handle AS identity_handle,
-      CASE
-        WHEN document.identity_id IS NULL THEN 'global'
-        ELSE 'identity'
-      END AS scope,
-      document.slug,
-      document.content,
-      octet_length(convert_to(document.content, 'utf8'))::INTEGER AS content_bytes,
-      document.created_at,
-      document.updated_at
-    FROM ${agentTables.agentDocuments} AS document
-    LEFT JOIN ${identityTables.identities} AS identity_row ON identity_row.id = document.identity_id
-    WHERE document.agent_key = current_setting('runtime.agent_key', true);
-
-    CREATE VIEW ${views.agentDiary}
-    WITH (security_barrier = true) AS
-    SELECT
-      diary.id,
-      diary.agent_key,
-      diary.identity_id,
-      identity_row.handle AS identity_handle,
-      CASE
-        WHEN diary.identity_id IS NULL THEN 'global'
-        ELSE 'identity'
-      END AS scope,
-      diary.entry_date,
-      diary.content,
-      octet_length(convert_to(diary.content, 'utf8'))::INTEGER AS content_bytes,
-      diary.created_at,
-      diary.updated_at
-    FROM ${agentTables.agentDiary} AS diary
-    LEFT JOIN ${identityTables.identities} AS identity_row ON identity_row.id = diary.identity_id
-    WHERE diary.agent_key = current_setting('runtime.agent_key', true);
-
     CREATE VIEW ${views.agentPairings}
     WITH (security_barrier = true) AS
     SELECT
@@ -549,7 +501,7 @@ export async function ensureReadonlySessionQuerySchema(
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA ${quoteIdentifier(SESSION_SCHEMA)} TO ${readonlyRole};
-      GRANT SELECT ON ${views.agentSessions}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentDocuments}, ${views.agentDiary}, ${views.agentPairings}, ${views.agentSkills}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents} TO ${readonlyRole};
+      GRANT SELECT ON ${views.agentSessions}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents} TO ${readonlyRole};
     `);
   }
 

@@ -5,7 +5,7 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_AGENT_DOCUMENT_TEMPLATES} from "../src/domain/agents/templates.js";
+import {DEFAULT_AGENT_PROMPT_TEMPLATES} from "../src/domain/agents/index.js";
 import {A2ASessionBindingRepo} from "../src/domain/a2a/index.js";
 import {A2AMessagingService} from "../src/domain/a2a/service.js";
 import {FileSystemMediaStore, PostgresOutboundDeliveryStore,} from "../src/domain/channels/index.js";
@@ -42,7 +42,7 @@ describe("A2ASessionBindingRepo", () => {
     await agentStore.bootstrapAgent({
       agentKey: "koala",
       displayName: "Koala",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
     await sessionStore.createSession({
@@ -158,7 +158,7 @@ describe("A2ASessionBindingRepo", () => {
     await agentStore.bootstrapAgent({
       agentKey: "koala",
       displayName: "Koala",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
     await sessionStore.createSession({

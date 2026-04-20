@@ -2,7 +2,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {AgentProfileContext} from "../src/index.js";
-import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 
 describe("AgentProfileContext", () => {
@@ -33,12 +33,12 @@ describe("AgentProfileContext", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await agentStore.setAgentPrompt(
       "panda",
       "agent",
-      `${DEFAULT_AGENT_DOCUMENT_TEMPLATES.agent}\n\nBe kind.`,
+      `${DEFAULT_AGENT_PROMPT_TEMPLATES.agent}\n\nBe kind.`,
     );
     await agentStore.setAgentSkill("panda", "calendar", "Use this for calendar work.", "# Calendar\nLong skill body.");
 
@@ -49,7 +49,7 @@ describe("AgentProfileContext", () => {
     const content = await context.getContent();
 
     expect(content).toContain("[agent]");
-    expect(content).toContain(DEFAULT_AGENT_DOCUMENT_TEMPLATES.agent);
+    expect(content).toContain(DEFAULT_AGENT_PROMPT_TEMPLATES.agent);
     expect(content).toContain("Be kind.");
     expect(content).not.toContain("[soul]");
     expect(content).toContain("Summaries only. Query `session.agent_skills` for full skill bodies when you need the exact content.");

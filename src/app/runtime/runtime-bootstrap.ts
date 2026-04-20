@@ -2,10 +2,10 @@ import {Pool, type PoolClient} from "pg";
 
 import {type AgentStore, PostgresAgentStore} from "../../domain/agents/index.js";
 import {
-    CredentialResolver,
-    CredentialService,
-    PostgresCredentialStore,
-    resolveCredentialCrypto,
+  CredentialResolver,
+  CredentialService,
+  PostgresCredentialStore,
+  resolveCredentialCrypto,
 } from "../../domain/credentials/index.js";
 import {PostgresIdentityStore} from "../../domain/identity/index.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
@@ -16,42 +16,42 @@ import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.j
 import {PostgresWikiBindingStore, WikiBindingService} from "../../domain/wiki/index.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/index.js";
 import {
-    buildThreadRuntimeNotificationChannel,
-    parseThreadRuntimeNotification,
+  buildThreadRuntimeNotificationChannel,
+  parseThreadRuntimeNotification,
 } from "../../domain/threads/runtime/postgres.js";
 import {
-    ensureReadonlySessionQuerySchema,
-    readDatabaseUsername,
+  ensureReadonlySessionQuerySchema,
+  readDatabaseUsername,
 } from "../../domain/threads/runtime/postgres-readonly.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry,} from "../../panda/definition.js";
-import {AgentDocumentTool} from "../../panda/tools/agent-document-tool.js";
+import {AgentPromptTool} from "../../panda/tools/agent-prompt-tool.js";
 import {AgentSkillTool} from "../../panda/tools/agent-skill-tool.js";
 import {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
 import {WikiTool} from "../../panda/tools/wiki-tool.js";
 import {
-    ScheduledTaskCancelTool,
-    ScheduledTaskCreateTool,
-    ScheduledTaskUpdateTool,
+  ScheduledTaskCancelTool,
+  ScheduledTaskCreateTool,
+  ScheduledTaskUpdateTool,
 } from "../../panda/tools/scheduled-task-tools.js";
 import {
-    WatchCreateTool,
-    WatchDisableTool,
-    WatchSchemaGetTool,
-    WatchUpdateTool,
+  WatchCreateTool,
+  WatchDisableTool,
+  WatchSchemaGetTool,
+  WatchUpdateTool,
 } from "../../panda/tools/watch-tools.js";
 import {SpawnSubagentTool} from "../../panda/tools/spawn-subagent-tool.js";
 import {ThinkingSetTool} from "../../panda/tools/thinking-set-tool.js";
 import {DefaultAgentSubagentService} from "../../panda/subagents/service.js";
 import {BashJobService} from "../../integrations/shell/bash-job-service.js";
 import {
-    buildObservedPoolConfig,
-    createPostgresPool,
-    observePostgresPool,
-    type PostgresPoolObserver,
+  buildObservedPoolConfig,
+  createPostgresPool,
+  observePostgresPool,
+  type PostgresPoolObserver,
 } from "./database.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import {trimToNull} from "../../lib/strings.js";
@@ -395,6 +395,7 @@ export async function bootstrapRuntime(
     const subagentToolsets = buildDefaultAgentToolsetsFromRegistry(
       toolRegistry,
       [],
+      wikiTool ? [wikiTool] : [],
       [agentSkillTool],
     );
 
@@ -437,7 +438,7 @@ export async function bootstrapRuntime(
       new SpawnSubagentTool({
         service: subagentService,
       }),
-      new AgentDocumentTool({
+      new AgentPromptTool({
         store: agentStore,
       }),
       ...(wikiTool ? [wikiTool] : []),

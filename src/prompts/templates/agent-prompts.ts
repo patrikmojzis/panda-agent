@@ -1,6 +1,6 @@
 import type {AgentPromptSlug} from "../../domain/agents/types.js";
 
-export const DEFAULT_AGENT_DOCUMENT_TEMPLATES: Record<AgentPromptSlug, string> = {
+export const DEFAULT_AGENT_PROMPT_TEMPLATES: Record<AgentPromptSlug, string> = {
   agent: `
 # Agent
 

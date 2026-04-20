@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_AGENT_DOCUMENT_TEMPLATES,} from "../src/domain/agents/index.js";
+import {DEFAULT_AGENT_PROMPT_TEMPLATES,} from "../src/domain/agents/index.js";
 import {ensureReadonlySessionQuerySchema} from "../src/domain/threads/runtime/index.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
@@ -214,8 +214,6 @@ describe("ensureReadonlySessionQuerySchema", () => {
       inputs: "\"session\".\"inputs\"",
       runs: "\"session\".\"runs\"",
       agentPrompts: "\"session\".\"agent_prompts\"",
-      agentDocuments: "\"session\".\"agent_documents\"",
-      agentDiary: "\"session\".\"agent_diary\"",
       agentPairings: "\"session\".\"agent_pairings\"",
       agentSkills: "\"session\".\"agent_skills\"",
       scheduledTasks: "\"session\".\"scheduled_tasks\"",
@@ -231,8 +229,6 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"messages\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"tool_results\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_prompts\"");
-    expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_documents\"");
-    expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_diary\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_pairings\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_skills\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"scheduled_tasks\"");
@@ -245,11 +241,9 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("t.inference_projection");
     expect(queryable.queries[0]).toContain("t.session_id = current_setting('runtime.session_id', true)");
     expect(queryable.queries[0]).toContain("prompt.agent_key = current_setting('runtime.agent_key', true)");
-    expect(queryable.queries[0]).toContain("document.agent_key = current_setting('runtime.agent_key', true)");
-    expect(queryable.queries[0]).toContain("diary.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("pairing.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("skill.agent_key = current_setting('runtime.agent_key', true)");
-    expect(queryable.queries[1]).toContain("GRANT SELECT ON \"session\".\"agent_sessions\", \"session\".\"threads\", \"session\".\"messages\", \"session\".\"messages_raw\", \"session\".\"tool_results\", \"session\".\"inputs\", \"session\".\"runs\", \"session\".\"agent_prompts\", \"session\".\"agent_documents\", \"session\".\"agent_diary\", \"session\".\"agent_pairings\", \"session\".\"agent_skills\", \"session\".\"scheduled_tasks\", \"session\".\"scheduled_task_runs\", \"session\".\"watches\", \"session\".\"watch_runs\", \"session\".\"watch_events\"");
+    expect(queryable.queries[1]).toContain("GRANT SELECT ON \"session\".\"agent_sessions\", \"session\".\"threads\", \"session\".\"messages\", \"session\".\"messages_raw\", \"session\".\"tool_results\", \"session\".\"inputs\", \"session\".\"runs\", \"session\".\"agent_prompts\", \"session\".\"agent_pairings\", \"session\".\"agent_skills\", \"session\".\"scheduled_tasks\", \"session\".\"scheduled_task_runs\", \"session\".\"watches\", \"session\".\"watch_runs\", \"session\".\"watch_events\"");
   });
 
   it("filters readonly threads by session when multiple identities share an agent", async () => {
@@ -268,7 +262,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     const bob = await identityStore.createIdentity({
       id: "bob-id",
@@ -335,7 +329,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
     await sessionStore.createSession({
@@ -391,7 +385,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await agentStore.setAgentSkill("panda", "calendar", "Panda calendar skill.", "# Panda");
     await agentStore.loadAgentSkill("panda", "calendar");
@@ -429,7 +423,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await pool.query(`
       INSERT INTO "runtime"."agent_prompts" (agent_key, slug, content)
@@ -465,100 +459,6 @@ describe("ensureReadonlySessionQuerySchema", () => {
     ]);
   });
 
-  it("filters readonly agent documents by agent key and exposes identity metadata", async () => {
-    const { pool, setScope } = createScopedPool();
-    pools.push(pool);
-
-    const {agentStore, identityStore} = await createRuntimeStores(pool);
-    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
-    await new PostgresWatchStore({ pool }).ensureSchema();
-    const alice = await identityStore.createIdentity({
-      id: "alice-id",
-      handle: "alice",
-      displayName: "Alice",
-    });
-    await agentStore.bootstrapAgent({
-      agentKey: "ops",
-      displayName: "Ops",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
-    });
-    await agentStore.setAgentDocument("panda", "memory", "Global Panda memory.");
-    await agentStore.setAgentDocument("panda", "memory", "Alice Panda memory.", alice.id);
-    await agentStore.setAgentDocument("ops", "memory", "Ops memory.");
-
-    setScope({
-      sessionId: "panda-session",
-      agentKey: "panda",
-    });
-    const queryable = new PgMemReadonlySchemaQueryable(pool);
-    await ensureReadonlySessionQuerySchema({ queryable });
-
-    const result = await pool.query(
-      "SELECT identity_handle, scope, content_bytes FROM \"session\".\"agent_documents\" ORDER BY scope, identity_handle NULLS FIRST",
-    );
-
-    expect(result.rows).toEqual([
-      {
-        identity_handle: null,
-        scope: "global",
-        content_bytes: 20,
-      },
-      {
-        identity_handle: "alice",
-        scope: "identity",
-        content_bytes: 19,
-      },
-    ]);
-  });
-
-  it("filters readonly agent diary by agent key and exposes identity metadata", async () => {
-    const { pool, setScope } = createScopedPool();
-    pools.push(pool);
-
-    const {agentStore, identityStore} = await createRuntimeStores(pool);
-    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
-    await new PostgresWatchStore({ pool }).ensureSchema();
-    const alice = await identityStore.createIdentity({
-      id: "alice-id",
-      handle: "alice",
-      displayName: "Alice",
-    });
-    await agentStore.bootstrapAgent({
-      agentKey: "ops",
-      displayName: "Ops",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
-    });
-    await agentStore.setDiaryEntry("panda", "2026-04-16", "Global Panda diary.");
-    await agentStore.setDiaryEntry("panda", "2026-04-15", "Alice Panda diary.", alice.id);
-    await agentStore.setDiaryEntry("ops", "2026-04-16", "Ops diary.");
-
-    setScope({
-      sessionId: "panda-session",
-      agentKey: "panda",
-    });
-    const queryable = new PgMemReadonlySchemaQueryable(pool);
-    await ensureReadonlySessionQuerySchema({ queryable });
-
-    const result = await pool.query(
-      "SELECT entry_date, identity_handle, scope, content_bytes FROM \"session\".\"agent_diary\" ORDER BY entry_date DESC, scope",
-    );
-
-    expect(result.rows).toEqual([
-      {
-        entry_date: new Date("2026-04-16T00:00:00.000Z"),
-        identity_handle: null,
-        scope: "global",
-        content_bytes: 19,
-      },
-      {
-        entry_date: new Date("2026-04-15T00:00:00.000Z"),
-        identity_handle: "alice",
-        scope: "identity",
-        content_bytes: 18,
-      },
-    ]);
-  });
-
   it("filters readonly agent pairings by agent key", async () => {
     const { pool, setScope } = createScopedPool();
     pools.push(pool);
@@ -579,7 +479,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await agentStore.ensurePairing("panda", alice.id);
     await agentStore.ensurePairing("ops", bob.id);

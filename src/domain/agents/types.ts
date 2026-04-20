@@ -2,7 +2,6 @@ import type {JsonValue} from "../../kernel/agent/types.js";
 
 export type AgentStatus = "active" | "deleted";
 export type AgentPromptSlug = "agent" | "heartbeat";
-export type AgentDocumentSlug = "memory";
 
 export interface CreateAgentInput {
   agentKey: string;
@@ -20,24 +19,6 @@ export interface AgentRecord extends CreateAgentInput {
 export interface AgentPromptRecord {
   agentKey: string;
   slug: AgentPromptSlug;
-  content: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface AgentDocumentRecord {
-  agentKey: string;
-  identityId?: string;
-  slug: AgentDocumentSlug;
-  content: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface AgentDiaryRecord {
-  agentKey: string;
-  identityId?: string;
-  entryDate: string;
   content: string;
   createdAt: number;
   updatedAt: number;

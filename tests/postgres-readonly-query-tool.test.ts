@@ -103,7 +103,7 @@ describe("PostgresReadonlyQueryTool", () => {
     });
 
     expect(tool.description).toContain("session.agent_sessions exposes current_thread_id, not thread_id.");
-    expect(tool.description).toContain("session.agent_prompts, session.agent_documents, session.agent_diary, session.agent_pairings, and session.agent_skills");
+    expect(tool.description).toContain("session.agent_prompts, session.agent_pairings, and session.agent_skills");
     expect(tool.description).toContain("left(...), substring(...), regex filters, full-text search");
     expect(tool.description).toContain("Do not invent is_active flags or extra session_id subqueries");
     expect(tool.description).toContain("query session.scheduled_tasks or session.watches directly");
@@ -291,7 +291,7 @@ describe("PostgresReadonlyQueryTool", () => {
     expect(readDatabaseUsername("postgresql:///panda_dev")).toBeNull();
   });
 
-  it("supports exploratory reads against the new agent memory views", async () => {
+  it("supports exploratory reads against agent metadata views", async () => {
     const pool = new FakeReadonlyPool([{
       slug: "heartbeat",
       preview: "Keep it short.",

@@ -1,31 +1,12 @@
 import {describe, expect, it} from "vitest";
 
-import {
-    filterToolsForSubagentRole,
-    getDefaultAgentSubagentRolePolicy,
-    PostgresReadonlyQueryTool,
-    Tool,
-    z,
-} from "../src/index.js";
-import {buildDefaultAgentToolsets} from "../src/panda/definition.js";
+import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry,} from "../src/panda/definition.js";
+import {getDefaultAgentSubagentRolePolicy} from "../src/panda/subagents/policy.js";
+import {Tool, z} from "../src/index.js";
 
 class FakeReadonlyPool {
   async connect(): Promise<never> {
-    throw new Error("not used in filter tests");
-  }
-}
-
-class FakeAgentDocumentTool extends Tool<typeof FakeAgentDocumentTool.schema> {
-  static schema = z.object({
-    target: z.string(),
-  });
-
-  name = "agent_document";
-  description = "Not allowed";
-  schema = FakeAgentDocumentTool.schema;
-
-  async handle(): Promise<{ ok: true }> {
-    return { ok: true };
+    throw new Error("not used in subagent policy tests");
   }
 }
 
@@ -43,7 +24,41 @@ class FakeAgentSkillTool extends Tool<typeof FakeAgentSkillTool.schema> {
   }
 }
 
+class FakeWikiTool extends Tool<typeof FakeWikiTool.schema> {
+  static schema = z.object({
+    operation: z.string(),
+  });
+
+  name = "wiki";
+  description = "Allowed for memory specialists";
+  schema = FakeWikiTool.schema;
+
+  async handle(): Promise<{ ok: true }> {
+    return { ok: true };
+  }
+}
+
 describe("default agent subagent policy", () => {
+  function createToolsetsWithExtras(options: {
+    memoryExtras?: readonly Tool[];
+    skillMaintainerExtras?: readonly Tool[];
+  } = {}) {
+    return buildDefaultAgentToolsetsFromRegistry(
+      createDefaultAgentToolRegistry({
+        postgresReadonly: {
+          pool: new FakeReadonlyPool(),
+        },
+      }),
+      [],
+      options.memoryExtras ?? [],
+      options.skillMaintainerExtras ?? [],
+    );
+  }
+
+  function createBaseToolsets() {
+    return createToolsetsWithExtras();
+  }
+
   it("maps roles to explicit specialist toolsets", () => {
     expect(getDefaultAgentSubagentRolePolicy("workspace")).toMatchObject({
       toolset: "workspace",
@@ -64,11 +79,7 @@ describe("default agent subagent policy", () => {
   });
 
   it("builds the workspace toolset with readonly workspace tools plus media only", () => {
-    const toolsets = buildDefaultAgentToolsets({
-      postgresReadonly: {
-        pool: new FakeReadonlyPool(),
-      },
-    });
+    const toolsets = createBaseToolsets();
 
     expect(toolsets.workspace.map((tool) => tool.name)).toEqual([
       "read_file",
@@ -78,24 +89,27 @@ describe("default agent subagent policy", () => {
     ]);
   });
 
-  it("keeps the memory subagent Postgres-only", () => {
-    const toolsets = buildDefaultAgentToolsets({
-      postgresReadonly: {
-        pool: new FakeReadonlyPool(),
-      },
-    });
+  it("keeps the memory subagent minimal without wiki extras", () => {
+    const toolsets = createBaseToolsets();
 
     expect(toolsets.memory.map((tool) => tool.name)).toEqual([
       "postgres_readonly_query",
     ]);
   });
 
-  it("gives the browser subagent browser plus readonly artifact inspection tools", () => {
-    const toolsets = buildDefaultAgentToolsets({
-      postgresReadonly: {
-        pool: new FakeReadonlyPool(),
-      },
+  it("lets the memory subagent receive wiki when memory extras are configured", () => {
+    const toolsets = createToolsetsWithExtras({
+      memoryExtras: [new FakeWikiTool()],
     });
+
+    expect(toolsets.memory.map((tool) => tool.name)).toEqual([
+      "postgres_readonly_query",
+      "wiki",
+    ]);
+  });
+
+  it("gives the browser subagent browser plus readonly artifact inspection tools", () => {
+    const toolsets = createBaseToolsets();
 
     expect(toolsets.browser.map((tool) => tool.name)).toEqual([
       "read_file",
@@ -107,103 +121,11 @@ describe("default agent subagent policy", () => {
   });
 
   it("gives the skill maintainer Postgres plus agent_skill only", () => {
-    const toolsets = buildDefaultAgentToolsets({
-      postgresReadonly: {
-        pool: new FakeReadonlyPool(),
-      },
+    const toolsets = createToolsetsWithExtras({
       skillMaintainerExtras: [new FakeAgentSkillTool()],
     });
 
     expect(toolsets.skill_maintainer.map((tool) => tool.name)).toEqual([
-      "postgres_readonly_query",
-      "agent_skill",
-    ]);
-  });
-
-  it("keeps the helper filter aligned with the explicit workspace toolset", () => {
-    const toolsets = buildDefaultAgentToolsets({
-      postgresReadonly: {
-        pool: new FakeReadonlyPool(),
-      },
-    });
-    const tools = filterToolsForSubagentRole(
-      [
-        ...toolsets.main,
-        ...toolsets.workspace,
-        new FakeAgentDocumentTool(),
-      ],
-      "workspace",
-    );
-
-    expect(tools.map((tool) => tool.name)).toEqual([
-      "read_file",
-      "glob_files",
-      "grep_files",
-      "view_media",
-    ]);
-  });
-
-  it("keeps the helper filter aligned with the explicit memory toolset", () => {
-    const toolsets = buildDefaultAgentToolsets({
-      postgresReadonly: {
-        pool: new FakeReadonlyPool(),
-      },
-    });
-    const tools = filterToolsForSubagentRole(
-      [
-        ...toolsets.main,
-        new PostgresReadonlyQueryTool({ pool: new FakeReadonlyPool() }),
-        new FakeAgentDocumentTool(),
-      ],
-      "memory",
-    );
-
-    expect(tools.map((tool) => tool.name)).toEqual([
-      "postgres_readonly_query",
-    ]);
-  });
-
-  it("keeps the helper filter aligned with the explicit browser toolset", () => {
-    const toolsets = buildDefaultAgentToolsets({
-      postgresReadonly: {
-        pool: new FakeReadonlyPool(),
-      },
-    });
-    const tools = filterToolsForSubagentRole(
-      [
-        ...toolsets.main,
-        ...toolsets.browser,
-        new FakeAgentDocumentTool(),
-      ],
-      "browser",
-    );
-
-    expect(tools.map((tool) => tool.name)).toEqual([
-      "read_file",
-      "glob_files",
-      "grep_files",
-      "view_media",
-      "browser",
-    ]);
-  });
-
-  it("keeps the helper filter aligned with the explicit skill maintainer toolset", () => {
-    const toolsets = buildDefaultAgentToolsets({
-      postgresReadonly: {
-        pool: new FakeReadonlyPool(),
-      },
-      skillMaintainerExtras: [new FakeAgentSkillTool()],
-    });
-    const tools = filterToolsForSubagentRole(
-      [
-        ...toolsets.main,
-        ...toolsets.skill_maintainer,
-        new FakeAgentDocumentTool(),
-      ],
-      "skill_maintainer",
-    );
-
-    expect(tools.map((tool) => tool.name)).toEqual([
       "postgres_readonly_query",
       "agent_skill",
     ]);

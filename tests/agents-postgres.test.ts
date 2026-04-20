@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_AGENT_DOCUMENT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 
 describe("PostgresAgentStore", () => {
@@ -65,7 +65,7 @@ describe("PostgresAgentStore", () => {
     const created = await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
     expect(created).toMatchObject({
@@ -84,12 +84,12 @@ describe("PostgresAgentStore", () => {
     ]);
     await expect(agentStore.readAgentPrompt("panda", "agent")).resolves.toMatchObject({
       slug: "agent",
-      content: DEFAULT_AGENT_DOCUMENT_TEMPLATES.agent,
+      content: DEFAULT_AGENT_PROMPT_TEMPLATES.agent,
     });
   });
 
-  it("isolates relationship memory by identity and keeps diary unique per day", async () => {
-    const { pool, identityStore, agentStore } = await createStores();
+  it("stores pairings per identity and keeps prompts scoped by agent", async () => {
+    const { identityStore, agentStore } = await createStores();
     await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
@@ -103,33 +103,28 @@ describe("PostgresAgentStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
-
-    await agentStore.setRelationshipDocument("panda", "alice-id", "memory", "Alice likes tea.");
-    await agentStore.setRelationshipDocument("panda", "bob-id", "memory", "Bob likes coffee.");
-
-    await expect(agentStore.readRelationshipDocument("panda", "alice-id", "memory")).resolves.toMatchObject({
-      content: "Alice likes tea.",
+    await agentStore.ensurePairing("panda", "alice-id");
+    await agentStore.ensurePairing("panda", "bob-id");
+    await agentStore.setAgentPrompt("panda", "heartbeat", "Panda heartbeat.");
+    await agentStore.bootstrapAgent({
+      agentKey: "ops",
+      displayName: "Ops",
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
-    await expect(agentStore.readRelationshipDocument("panda", "bob-id", "memory")).resolves.toMatchObject({
-      content: "Bob likes coffee.",
-    });
+    await agentStore.setAgentPrompt("ops", "heartbeat", "Ops heartbeat.");
 
-    const firstDiary = await agentStore.setDiaryEntry("panda", "alice-id", "2026-04-10", "Met for dinner.");
-    const updatedDiary = await agentStore.setDiaryEntry("panda", "alice-id", "2026-04-10", "Changed plans.");
-    expect(updatedDiary.entryDate).toBe("2026-04-10");
-    expect(updatedDiary.content).toBe("Changed plans.");
-    expect(updatedDiary.updatedAt).toBeGreaterThanOrEqual(firstDiary.updatedAt);
-    await expect(agentStore.listDiaryEntries("panda", "alice-id", 7)).resolves.toEqual([
-      expect.objectContaining({
-        entryDate: "2026-04-10",
-        content: "Changed plans.",
-      }),
+    await expect(agentStore.listAgentPairings("panda")).resolves.toEqual([
+      expect.objectContaining({identityId: "alice-id"}),
+      expect.objectContaining({identityId: "bob-id"}),
     ]);
-
-    const countResult = await pool.query("SELECT COUNT(*)::int AS count FROM runtime.agent_diary");
-    expect(countResult.rows[0]?.count).toBe(1);
+    await expect(agentStore.readAgentPrompt("panda", "heartbeat")).resolves.toMatchObject({
+      content: "Panda heartbeat.",
+    });
+    await expect(agentStore.readAgentPrompt("ops", "heartbeat")).resolves.toMatchObject({
+      content: "Ops heartbeat.",
+    });
   });
 
   it("stores agent skills by agent key and cascades them on agent delete", async () => {
@@ -138,12 +133,12 @@ describe("PostgresAgentStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
     const created = await agentStore.setAgentSkill(
@@ -229,7 +224,7 @@ describe("PostgresAgentStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_DOCUMENT_TEMPLATES,
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
     await expect(agentStore.setAgentSkill(

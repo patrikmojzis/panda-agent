@@ -5,8 +5,8 @@ import {BraveSearchTool, hasBraveSearchApiKey} from "./tools/brave-search-tool.j
 import {BrowserTool, type BrowserToolOptions} from "./tools/browser-tool.js";
 import {MediaTool} from "./tools/media-tool.js";
 import {
-    PostgresReadonlyQueryTool,
-    type PostgresReadonlyQueryToolOptions,
+  PostgresReadonlyQueryTool,
+  type PostgresReadonlyQueryToolOptions,
 } from "./tools/postgres-readonly-query-tool.js";
 import {WebFetchTool} from "./tools/web-fetch-tool.js";
 import {WebResearchTool} from "./tools/web-research-tool.js";
@@ -17,11 +17,6 @@ export interface BuildDefaultAgentToolsOptions {
   bash?: BashToolOptions;
   browser?: BrowserToolOptions;
   postgresReadonly?: PostgresReadonlyQueryToolOptions;
-}
-
-export interface BuildDefaultAgentToolsetsOptions extends BuildDefaultAgentToolsOptions {
-  mainExtras?: ReadonlyArray<Tool>;
-  skillMaintainerExtras?: ReadonlyArray<Tool>;
 }
 
 export type DefaultAgentToolsetKey = "main" | "workspace" | "memory" | "browser" | "skill_maintainer";
@@ -99,6 +94,7 @@ export function createDefaultAgentToolRegistry(
 export function buildDefaultAgentToolsetsFromRegistry(
   registry: DefaultAgentToolRegistry,
   mainExtras: ReadonlyArray<Tool> = [],
+  memoryExtras: ReadonlyArray<Tool> = [],
   skillMaintainerExtras: ReadonlyArray<Tool> = [],
 ): DefaultAgentToolsets {
   return {
@@ -123,6 +119,7 @@ export function buildDefaultAgentToolsetsFromRegistry(
     ]),
     memory: compactTools([
       registry.postgresReadonlyQuery,
+      ...memoryExtras,
     ]),
     browser: compactTools([
       registry.readFile,
@@ -138,23 +135,12 @@ export function buildDefaultAgentToolsetsFromRegistry(
   };
 }
 
-export function buildDefaultAgentToolsets(
-  options: BuildDefaultAgentToolsetsOptions = {},
-): DefaultAgentToolsets {
-  const {mainExtras = [], skillMaintainerExtras = [], ...toolOptions} = options;
-  return buildDefaultAgentToolsetsFromRegistry(
-    createDefaultAgentToolRegistry(toolOptions),
-    mainExtras,
-    skillMaintainerExtras,
-  );
-}
-
 export function buildDefaultAgentTools(
   extraTools: ReadonlyArray<Tool> = [],
   options: BuildDefaultAgentToolsOptions = {},
 ): ReadonlyArray<Tool> {
-  return buildDefaultAgentToolsets({
-    ...options,
-    mainExtras: extraTools,
-  }).main;
+  return buildDefaultAgentToolsetsFromRegistry(
+    createDefaultAgentToolRegistry(options),
+    extraTools,
+  ).main;
 }
