@@ -24,8 +24,8 @@ Required env for bootstrap:
 
 Optional env:
   WIKI_IMAGE=ghcr.io/requarks/wiki:2
-  WIKI_HOST_PORT=3100
-  WIKI_SITE_URL=http://localhost:3100
+  WIKI_PUBLISH_PORT=3100
+  WIKI_SITE_URL=http://127.0.0.1:3100
   WIKI_SEARCH_DICT_LANGUAGE=simple
   WIKI_DB_URL=postgresql://user:pass@host:5432/panda_wiki
   WIKI_DB_SSL_CERT_FILE=/path/to/ca.crt
@@ -140,10 +140,28 @@ source "$env_loader"
 load_env_file "$env_file"
 
 export WIKI_IMAGE="${WIKI_IMAGE:-ghcr.io/requarks/wiki:2}"
-export WIKI_HOST_PORT="${WIKI_HOST_PORT:-3100}"
-export WIKI_SITE_URL="${WIKI_SITE_URL:-http://localhost:${WIKI_HOST_PORT}}"
+export WIKI_PUBLISH_PORT="${WIKI_PUBLISH_PORT:-}"
 export WIKI_SEARCH_DICT_LANGUAGE="${WIKI_SEARCH_DICT_LANGUAGE:-simple}"
 export WIKI_DB_URL="${WIKI_DB_URL:-}"
+
+resolve_wiki_site_url() {
+  local explicit publish_port
+  explicit="$(trim "${WIKI_SITE_URL:-}")"
+  if [[ -n "$explicit" ]]; then
+    printf '%s\n' "$explicit"
+    return 0
+  fi
+
+  publish_port="$(trim "${WIKI_PUBLISH_PORT:-}")"
+  if [[ -n "$publish_port" ]]; then
+    printf 'http://127.0.0.1:%s\n' "$publish_port"
+    return 0
+  fi
+
+  printf '\n'
+}
+
+export WIKI_SITE_URL="$(resolve_wiki_site_url)"
 
 declare -a normalized_agents=()
 
@@ -188,9 +206,12 @@ resolve_wiki_ssl_cert_file() {
 }
 
 render_generated_compose() {
+  local wiki_db_ssl_cert_file wiki_publish_port
   mkdir -p "$generated_dir"
+  wiki_db_ssl_cert_file="$(trim "${WIKI_DB_SSL_CERT_FILE:-}")"
+  wiki_publish_port="$(trim "${WIKI_PUBLISH_PORT:-}")"
 
-  if [[ -z "${WIKI_DB_SSL_CERT_FILE:-}" ]]; then
+  if [[ -z "$wiki_db_ssl_cert_file" && -z "$wiki_publish_port" ]]; then
     cat > "$generated_compose" <<'EOF'
 services: {}
 EOF
@@ -200,9 +221,21 @@ EOF
   cat > "$generated_compose" <<EOF
 services:
   wiki:
-    volumes:
-      - ${WIKI_DB_SSL_CERT_FILE}:/etc/ssl/certs/panda-postgres-ca.crt:ro
 EOF
+
+  if [[ -n "$wiki_db_ssl_cert_file" ]]; then
+    cat >> "$generated_compose" <<EOF
+    volumes:
+      - ${wiki_db_ssl_cert_file}:/etc/ssl/certs/panda-postgres-ca.crt:ro
+EOF
+  fi
+
+  if [[ -n "$wiki_publish_port" ]]; then
+    cat >> "$generated_compose" <<EOF
+    ports:
+      - "127.0.0.1:${wiki_publish_port}:3000"
+EOF
+  fi
 }
 
 export WIKI_DB_SSL_CERT_FILE="${WIKI_DB_SSL_CERT_FILE:-$(resolve_wiki_ssl_cert_file)}"
@@ -261,6 +294,10 @@ wait_for_http() {
     fi
     sleep 2
   done
+}
+
+require_wiki_site_url() {
+  [[ -n "$(trim "${WIKI_SITE_URL:-}")" ]] || die "WIKI_SITE_URL or WIKI_PUBLISH_PORT is required for wiki-local HTTP commands."
 }
 
 wiki_needs_setup() {
@@ -514,6 +551,7 @@ bootstrap() {
     agents_to_bootstrap+=("$agent_key")
   done < <(resolve_bootstrap_agents "$@")
 
+  require_wiki_site_url
   wait_for_http "$WIKI_SITE_URL" 120
   finalize_setup
   jwt="$(login_jwt)"

@@ -8,8 +8,6 @@ services:
       DB_SSL_CA: ${WIKI_DB_SSL_CA:-}
     networks:
       - wiki_net
-    ports:
-      - "${WIKI_HOST_PORT:-3100}:3000"
 
 networks:
   wiki_net:

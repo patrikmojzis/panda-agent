@@ -147,9 +147,12 @@ resolve_wiki_ssl_cert_file() {
 }
 
 render_generated_wiki_compose() {
+  local wiki_db_ssl_cert_file wiki_publish_port
   mkdir -p "$generated_dir"
+  wiki_db_ssl_cert_file="$(trim "${WIKI_DB_SSL_CERT_FILE:-}")"
+  wiki_publish_port="$(trim "${WIKI_PUBLISH_PORT:-}")"
 
-  if [[ -z "${WIKI_DB_SSL_CERT_FILE:-}" ]]; then
+  if [[ -z "$wiki_db_ssl_cert_file" && -z "$wiki_publish_port" ]]; then
     cat > "$generated_wiki_compose" <<'EOF'
 services: {}
 EOF
@@ -159,9 +162,21 @@ EOF
   cat > "$generated_wiki_compose" <<EOF
 services:
   wiki:
-    volumes:
-      - ${WIKI_DB_SSL_CERT_FILE}:/etc/ssl/certs/panda-postgres-ca.crt:ro
 EOF
+
+  if [[ -n "$wiki_db_ssl_cert_file" ]]; then
+    cat >> "$generated_wiki_compose" <<EOF
+    volumes:
+      - ${wiki_db_ssl_cert_file}:/etc/ssl/certs/panda-postgres-ca.crt:ro
+EOF
+  fi
+
+  if [[ -n "$wiki_publish_port" ]]; then
+    cat >> "$generated_wiki_compose" <<EOF
+    ports:
+      - "127.0.0.1:${wiki_publish_port}:3000"
+EOF
+  fi
 }
 
 export WIKI_DB_SSL_CERT_FILE="${WIKI_DB_SSL_CERT_FILE:-$(resolve_wiki_ssl_cert_file)}"

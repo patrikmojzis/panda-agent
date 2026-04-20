@@ -154,6 +154,7 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
 
     expect(result.exitCode).toBe(0);
     expect(await readFile(generatedComposePath, "utf8")).toBe("services: {}\n");
+    expect(await readFile(generatedWikiComposePath, "utf8")).not.toContain("ports:");
     expect(await readFile(logPath, "utf8")).not.toContain("panda agent ensure");
   });
 
@@ -279,5 +280,26 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     const wikiLog = await readFile(wikiLogPath, "utf8");
     expect(wikiLog).toContain("DATABASE_URL=postgresql://agent@example/panda?sslmode=verify-full&sslrootcert=/etc/ssl/certs/panda-postgres-ca.crt");
     expect(wikiLog).toContain("WIKI_DB_URL=postgresql://wiki@example/wiki?sslmode=verify-full&sslrootcert=/etc/ssl/certs/panda-postgres-ca.crt");
+  });
+
+  it("publishes wiki only when WIKI_PUBLISH_PORT is set", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "WIKI_PUBLISH_PORT=4100",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(generatedWikiComposePath, "utf8")).toContain('127.0.0.1:4100:3000');
   });
 });

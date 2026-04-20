@@ -19,8 +19,8 @@ CREDENTIALS_MASTER_KEY=
 WIKI_ADMIN_EMAIL=
 WIKI_ADMIN_PASSWORD=
 WIKI_URL=http://wiki:3000
-WIKI_HOST_PORT=3100
-WIKI_SITE_URL=http://localhost:3100
+WIKI_PUBLISH_PORT=3100
+WIKI_SITE_URL=
 WIKI_SEARCH_DICT_LANGUAGE=simple
 WIKI_DB_URL=
 WIKI_DB_SSL_CERT_FILE=
@@ -47,6 +47,18 @@ WIKI_URL=http://wiki:3000
 
 `WIKI_SITE_URL` is for host-side helper scripts like `wiki-local.sh`.
 `WIKI_URL` is for Panda runtime code talking to the Wiki.js container over the Docker network.
+
+Host publishing is opt-in.
+
+For local `./scripts/wiki-local.sh init` / `bootstrap`, the easiest path is:
+
+```dotenv
+WIKI_PUBLISH_PORT=3100
+```
+
+That binds Wiki.js only on `127.0.0.1`, not on every host interface.
+If `WIKI_SITE_URL` is empty, `wiki-local.sh` derives it as `http://127.0.0.1:${WIKI_PUBLISH_PORT}`.
+If you do not want host publishing, leave `WIKI_PUBLISH_PORT` empty and set `WIKI_SITE_URL` to some other host-reachable Wiki URL before using the helper script.
 
 For TLS with a mounted cert file, keep the container path fixed and only vary the host file when needed:
 
