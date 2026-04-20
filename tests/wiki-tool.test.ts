@@ -285,6 +285,222 @@ describe("WikiTool", () => {
     });
   });
 
+  it("lists pages under a subtree and hides archived pages by default", async () => {
+    const bindings = createBindings();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: {
+          pages: {
+            list: [
+              {
+                id: 1,
+                path: "agents/panda/finance",
+                locale: "en",
+                title: "Finance",
+                updatedAt: "2026-04-19T10:00:00.000Z",
+              },
+              {
+                id: 2,
+                path: "agents/panda/finance/ledger",
+                locale: "en",
+                title: "Ledger",
+                updatedAt: "2026-04-19T10:01:00.000Z",
+              },
+              {
+                id: 3,
+                path: "agents/panda/_archive/2026/04/finance-old",
+                locale: "en",
+                title: "Old Finance",
+                updatedAt: "2026-04-19T10:02:00.000Z",
+              },
+              {
+                id: 4,
+                path: "agents/otter/finance",
+                locale: "en",
+                title: "Otter Finance",
+                updatedAt: "2026-04-19T10:03:00.000Z",
+              },
+            ],
+          },
+        },
+      }), {
+        status: 200,
+        headers: {"content-type": "application/json"},
+      }));
+
+    const tool = new WikiTool({
+      env: {
+        WIKI_URL: "http://wiki:3000",
+      } as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings,
+    });
+
+    const result = await tool.run({
+      operation: "list",
+      path: "agents/panda/finance",
+    }, createRunContext({
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    })) as ToolResultPayload;
+
+    expect(parseToolResult(result)).toMatchObject({
+      operation: "list",
+      path: "agents/panda/finance",
+      count: 2,
+      totalPages: 2,
+      truncated: false,
+      includeArchived: false,
+      pages: [
+        expect.objectContaining({path: "agents/panda/finance"}),
+        expect.objectContaining({path: "agents/panda/finance/ledger"}),
+      ],
+    });
+    expect(getRequestBody(fetchImpl, 0)).toMatchObject({
+      variables: {
+        limit: 1000,
+        locale: "en",
+        orderBy: "PATH",
+        orderByDirection: "ASC",
+      },
+    });
+  });
+
+  it("lists from the namespace root by default and truncates to the requested limit", async () => {
+    const bindings = createBindings();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: {
+          pages: {
+            list: [
+              {
+                id: 1,
+                path: "agents/panda/alpha",
+                locale: "en",
+                title: "Alpha",
+                updatedAt: "2026-04-19T10:00:00.000Z",
+              },
+              {
+                id: 2,
+                path: "agents/panda/beta",
+                locale: "en",
+                title: "Beta",
+                updatedAt: "2026-04-19T10:01:00.000Z",
+              },
+              {
+                id: 3,
+                path: "agents/panda/gamma",
+                locale: "en",
+                title: "Gamma",
+                updatedAt: "2026-04-19T10:02:00.000Z",
+              },
+              {
+                id: 4,
+                path: "agents/panda/_archive/2026/04/old-gamma",
+                locale: "en",
+                title: "Old Gamma",
+                updatedAt: "2026-04-19T10:03:00.000Z",
+              },
+            ],
+          },
+        },
+      }), {
+        status: 200,
+        headers: {"content-type": "application/json"},
+      }));
+
+    const tool = new WikiTool({
+      env: {
+        WIKI_URL: "http://wiki:3000",
+      } as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings,
+    });
+
+    const result = await tool.run({
+      operation: "list",
+      limit: 2,
+    }, createRunContext({
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    })) as ToolResultPayload;
+
+    expect(parseToolResult(result)).toMatchObject({
+      operation: "list",
+      path: "agents/panda",
+      count: 2,
+      totalPages: 3,
+      truncated: true,
+      pages: [
+        expect.objectContaining({path: "agents/panda/alpha"}),
+        expect.objectContaining({path: "agents/panda/beta"}),
+      ],
+    });
+  });
+
+  it("includes archived pages when listing inside the archive subtree", async () => {
+    const bindings = createBindings();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: {
+          pages: {
+            list: [
+              {
+                id: 1,
+                path: "agents/panda/_archive/2026/04/finance-old",
+                locale: "en",
+                title: "Old Finance",
+                updatedAt: "2026-04-19T10:02:00.000Z",
+              },
+              {
+                id: 2,
+                path: "agents/panda/finance",
+                locale: "en",
+                title: "Finance",
+                updatedAt: "2026-04-19T10:00:00.000Z",
+              },
+            ],
+          },
+        },
+      }), {
+        status: 200,
+        headers: {"content-type": "application/json"},
+      }));
+
+    const tool = new WikiTool({
+      env: {
+        WIKI_URL: "http://wiki:3000",
+      } as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings,
+    });
+
+    const result = await tool.run({
+      operation: "list",
+      path: "agents/panda/_archive",
+    }, createRunContext({
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    })) as ToolResultPayload;
+
+    expect(parseToolResult(result)).toMatchObject({
+      operation: "list",
+      path: "agents/panda/_archive",
+      count: 1,
+      totalPages: 1,
+      includeArchived: true,
+      pages: [
+        expect.objectContaining({path: "agents/panda/_archive/2026/04/finance-old"}),
+      ],
+    });
+  });
+
   it("replaces an existing section through write_section", async () => {
     const bindings = createBindings();
     const fetchImpl = vi

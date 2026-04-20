@@ -13,6 +13,7 @@ import {
   resolveWikiUrl,
   WikiJsClient,
   type WikiPage,
+  type WikiPageListItem,
   type WikiPageSearchResult,
 } from "../../integrations/wiki/client.js";
 import {
@@ -93,6 +94,10 @@ function pluralize(count: number, singular: string, plural = `${singular}s`): st
   return count === 1 ? singular : plural;
 }
 
+const DEFAULT_LIST_LIMIT = 100;
+const MAX_LIST_LIMIT = 500;
+const INTERNAL_LIST_SCAN_LIMIT = 1000;
+
 function formatPageText(page: WikiPage): string {
   const lines = [
     `# ${page.title}`,
@@ -136,6 +141,46 @@ function formatSearchText(input: {
   return lines.join("\n");
 }
 
+function formatListText(input: {
+  path: string;
+  locale: string;
+  totalPages: number;
+  shownPages: number;
+  truncated: boolean;
+  scanLimitHit: boolean;
+  pages: Array<{
+    path: string;
+    locale: string;
+    title: string;
+    updatedAt: string;
+  }>;
+}): string {
+  const lines = [
+    `List: ${input.locale}/${input.path}`,
+    `Pages: ${input.totalPages}`,
+  ];
+
+  if (input.pages.length === 0) {
+    lines.push("", "No pages found.");
+    return lines.join("\n");
+  }
+
+  if (input.truncated) {
+    lines.push(`Showing: ${input.shownPages}`);
+  }
+
+  lines.push("");
+  for (const page of input.pages) {
+    lines.push(`- ${page.locale}/${page.path} :: ${page.title} (${page.updatedAt})`);
+  }
+
+  if (input.scanLimitHit) {
+    lines.push("", `Note: Panda scanned only the first ${INTERNAL_LIST_SCAN_LIMIT} wiki pages.`);
+  }
+
+  return lines.join("\n");
+}
+
 function filterSearchResultsToScope(
   results: WikiPageSearchResult[],
   scopePath: string,
@@ -148,20 +193,58 @@ function filterSearchResultsToScope(
   ));
 }
 
+function filterListedPagesToScope(
+  pages: WikiPageListItem[],
+  scopePath: string,
+  namespacePath: string,
+  includeArchived: boolean,
+): WikiPageListItem[] {
+  return pages.filter((page) => (
+    isWikiPathWithinNamespace(page.path, scopePath)
+    && isWikiPathWithinNamespace(page.path, namespacePath)
+    && (includeArchived || !isArchivedWikiPath(page.path, namespacePath))
+  ));
+}
+
+function normalizeListLimit(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_LIST_LIMIT;
+  }
+
+  if (!Number.isFinite(value)) {
+    return DEFAULT_LIST_LIMIT;
+  }
+
+  const normalized = Math.trunc(value);
+  if (normalized < 1) {
+    return 1;
+  }
+  if (normalized > MAX_LIST_LIMIT) {
+    return MAX_LIST_LIMIT;
+  }
+  return normalized;
+}
+
 export class WikiTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof WikiTool.schema, TContext> {
   static schema = z.object({
-    operation: z.enum(["get", "search", "write", "write_section", "move", "archive"]).describe(
-      "Read one page, search pages, replace a full page body, replace one markdown section, move a page to a new path, or archive a page by moving it under _archive.",
+    operation: z.enum(["get", "list", "search", "write", "write_section", "move", "archive"]).describe(
+      "Read one page, list pages under a subtree, search pages, replace a full page body, replace one markdown section, move a page to a new path, or archive a page by moving it under _archive.",
     ),
     path: z.string().trim().min(1).optional().describe(
-      "Wiki path without locale. It must stay inside the current agent namespace, for example agents/panda/profile. Leading slash is okay; it will be stripped. Search defaults to the agent namespace when omitted. Archived pages stay hidden unless you search inside _archive explicitly.",
+      "Wiki path without locale. It must stay inside the current agent namespace, for example agents/panda/profile. Leading slash is okay; it will be stripped. Search and list default to the agent namespace when omitted. Archived pages stay hidden unless you search/list inside _archive explicitly or opt in.",
     ),
     destinationPath: z.string().trim().min(1).optional().describe(
       "Required for move. Destination wiki path without locale. It must stay inside the current agent namespace and outside _archive.",
     ),
     locale: z.string().trim().min(1).optional().describe(
       `Wiki locale. Defaults to ${DEFAULT_WIKI_LOCALE}.`,
+    ),
+    limit: z.number().int().positive().max(MAX_LIST_LIMIT).optional().describe(
+      `Only for list. Maximum pages to return. Defaults to ${DEFAULT_LIST_LIMIT}.`,
+    ),
+    includeArchived: z.boolean().optional().describe(
+      "Only for list. Include archived pages under _archive. Defaults to false unless the path itself is inside _archive.",
     ),
     query: z.string().trim().min(1).optional().describe(
       "Search query for operation=search.",
@@ -201,6 +284,12 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       if (value.path === undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get requires path."});
       }
+      if (value.limit !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take limit."});
+      }
+      if (value.includeArchived !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take includeArchived."});
+      }
       if (value.query !== undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take query."});
       }
@@ -219,7 +308,53 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       return;
     }
 
+    if (value.operation === "list") {
+      if (value.destinationPath !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take destinationPath."});
+      }
+      if (value.query !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take query."});
+      }
+      if (value.section !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take section."});
+      }
+      if (value.title !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take title."});
+      }
+      if (value.description !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take description."});
+      }
+      if (value.content !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take content."});
+      }
+      if (value.tags !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take tags."});
+      }
+      if (value.isPublished !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take isPublished."});
+      }
+      if (value.isPrivate !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take isPrivate."});
+      }
+      if (value.createIfMissing !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take createIfMissing."});
+      }
+      if (value.rewriteLinks !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take rewriteLinks."});
+      }
+      if (value.baseUpdatedAt !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take baseUpdatedAt."});
+      }
+      return;
+    }
+
     if (value.operation === "search") {
+      if (value.limit !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search does not take limit."});
+      }
+      if (value.includeArchived !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search does not take includeArchived."});
+      }
       if (value.query === undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search requires query."});
       }
@@ -244,6 +379,12 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
     if (value.operation === "write_section") {
       if (value.path === undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section requires path."});
+      }
+      if (value.limit !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take limit."});
+      }
+      if (value.includeArchived !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take includeArchived."});
       }
       if (value.section === undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section requires section."});
@@ -278,6 +419,12 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
     if (value.operation === "move") {
       if (value.path === undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "move requires path."});
+      }
+      if (value.limit !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take limit."});
+      }
+      if (value.includeArchived !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take includeArchived."});
       }
       if (value.destinationPath === undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "move requires destinationPath."});
@@ -315,6 +462,12 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
     if (value.operation === "archive") {
       if (value.path === undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive requires path."});
+      }
+      if (value.limit !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take limit."});
+      }
+      if (value.includeArchived !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take includeArchived."});
       }
       if (value.query !== undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take query."});
@@ -355,6 +508,12 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
     if (value.path === undefined) {
       ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write requires path."});
     }
+    if (value.limit !== undefined) {
+      ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write does not take limit."});
+    }
+    if (value.includeArchived !== undefined) {
+      ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write does not take includeArchived."});
+    }
     if (value.section !== undefined) {
       ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write does not take section."});
     }
@@ -374,8 +533,9 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
 
   name = "wiki";
   description = [
-    "Read, search, write, move, and archive agent-owned Wiki.js pages.",
+    "Read, list, search, write, move, and archive agent-owned Wiki.js pages.",
     "Every path is hard-scoped to the current agent namespace. Do not read or write outside it.",
+    "list returns pages under a subtree and hides archived pages unless you explicitly include them.",
     "Write replaces the full page body; there is no line-level patching here.",
     "write_section replaces or appends one ## markdown section so agents do not have to hand-edit whole pages.",
     "move is for restructuring live pages and can rewrite inbound links plus relative links inside the moved page.",
@@ -604,6 +764,54 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
           totalHits: scopedResults.length,
           suggestions: result.suggestions,
           results: scopedResults.map((entry) => ({...entry}) satisfies JsonObject),
+        },
+      );
+    }
+
+    if (args.operation === "list") {
+      const locale = normalizeLocale(args.locale);
+      const scopePath = args.path ? normalizePath(args.path) : binding.namespacePath;
+      const limit = normalizeListLimit(args.limit);
+      const includeArchived = args.includeArchived === true || isArchivedWikiPath(scopePath, binding.namespacePath);
+      assertNamespacePath(scopePath, binding.namespacePath);
+      run.emitToolProgress({status: "listing", path: scopePath, locale, limit});
+
+      const listedPages = await client.listPages({
+        limit: INTERNAL_LIST_SCAN_LIMIT,
+        locale,
+        orderBy: "PATH",
+        orderByDirection: "ASC",
+      });
+      const filteredPages = filterListedPagesToScope(
+        listedPages,
+        scopePath,
+        binding.namespacePath,
+        includeArchived,
+      );
+      const pages = filteredPages.slice(0, limit);
+      const truncated = filteredPages.length > limit;
+      const scanLimitHit = listedPages.length >= INTERNAL_LIST_SCAN_LIMIT;
+
+      return buildTextToolPayload(
+        formatListText({
+          path: scopePath,
+          locale,
+          totalPages: filteredPages.length,
+          shownPages: pages.length,
+          truncated,
+          scanLimitHit,
+          pages,
+        }),
+        {
+          operation: "list",
+          path: scopePath,
+          locale,
+          count: pages.length,
+          totalPages: filteredPages.length,
+          truncated,
+          scanLimitHit,
+          includeArchived,
+          pages: pages.map((page) => ({...page}) satisfies JsonObject),
         },
       );
     }

@@ -138,6 +138,7 @@ Timing:
 
 When working with the wiki:
 - read before write
+- use the wiki list operation to inspect a subtree before reorganizing pages or adding new ones nearby
 - prefer updating existing pages over creating new ones
 - avoid orphan pages
 - connect related topics with links - *include mid-text links as well*
