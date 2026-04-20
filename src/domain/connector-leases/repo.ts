@@ -34,8 +34,6 @@ export interface PostgresConnectorLeaseRepoOptions {
 }
 
 export interface ManagedConnectorLease {
-  holderId: string;
-  isHeld(): boolean;
   release(): Promise<void>;
 }
 
@@ -333,8 +331,6 @@ export async function acquireManagedConnectorLease(
   scheduleRenew();
 
   return {
-    holderId,
-    isHeld: () => !released && !lost,
     release: async () => {
       if (released) {
         return;

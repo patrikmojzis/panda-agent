@@ -1,6 +1,7 @@
 import type {RuntimeRequestRecord} from "../../domain/threads/requests/index.js";
 import {acquireManagedConnectorLease, type ManagedConnectorLease} from "../../domain/connector-leases/index.js";
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../health/server.js";
+import {runCleanupSteps} from "../../lib/cleanup.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
 import {buildDaemonAlreadyActiveMessage} from "./daemon-copy.js";
 import {DAEMON_HEARTBEAT_INTERVAL_MS, type DaemonServices} from "./daemon-shared.js";
@@ -42,22 +43,70 @@ export function createDaemonLifecycle(input: {
     stopped = true;
     running = false;
     stopPromise = (async () => {
+      const unsubscribe = requestUnsubscribe;
+      requestUnsubscribe = null;
+      const resolvedHealthServer = healthServer;
+      healthServer = null;
+
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
       }
-      if (requestUnsubscribe) {
-        await requestUnsubscribe();
-        requestUnsubscribe = null;
-      }
-      await input.context.a2aOutboundWorker.stop();
-      await input.context.scheduledTaskRunner.stop();
-      await input.context.watchRunner.stop();
-      await input.context.relationshipHeartbeatRunner.stop();
-      await releaseLease();
-      await input.context.runtime.close();
-      await healthServer?.close().catch(() => undefined);
-      healthServer = null;
+
+      await runCleanupSteps([
+        {
+          label: "request-unsubscribe",
+          run: async () => {
+            await unsubscribe?.();
+          },
+        },
+        {
+          label: "a2a-outbound-worker",
+          run: async () => {
+            await input.context.a2aOutboundWorker.stop();
+          },
+        },
+        {
+          label: "scheduled-task-runner",
+          run: async () => {
+            await input.context.scheduledTaskRunner.stop();
+          },
+        },
+        {
+          label: "watch-runner",
+          run: async () => {
+            await input.context.watchRunner.stop();
+          },
+        },
+        {
+          label: "relationship-heartbeat-runner",
+          run: async () => {
+            await input.context.relationshipHeartbeatRunner.stop();
+          },
+        },
+        {
+          label: "daemon-lease",
+          run: releaseLease,
+        },
+        {
+          label: "runtime",
+          run: async () => {
+            await input.context.runtime.close();
+          },
+        },
+        {
+          label: "health-server",
+          run: async () => {
+            await resolvedHealthServer?.close();
+          },
+        },
+      ], (step, error) => {
+        console.error("Daemon cleanup failed", {
+          daemonKey: input.context.daemonKey,
+          step: step.label,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     })();
 
     return stopPromise;

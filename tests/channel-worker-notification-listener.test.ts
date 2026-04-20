@@ -73,4 +73,33 @@ describe("startPostgresNotificationListener", () => {
     expect(client.query).toHaveBeenNthCalledWith(4, `UNLISTEN ${buildActionNotificationChannel()}`);
     expect(client.release).toHaveBeenCalledTimes(1);
   });
+
+  it("still releases the LISTEN client when UNLISTEN fails during shutdown", async () => {
+    const client = {
+      on: vi.fn(),
+      off: vi.fn(),
+      query: vi.fn(async (sql: string) => {
+        if (sql.startsWith("UNLISTEN")) {
+          throw new Error("socket already dead");
+        }
+
+        return {rows: []};
+      }),
+      release: vi.fn(),
+    };
+    const pool = {
+      connect: vi.fn(async () => client),
+    };
+    const onError = vi.fn();
+
+    const handle = await startPostgresNotificationListener({
+      pool: pool as any,
+      onError,
+    });
+
+    await expect(handle.close()).resolves.toBeUndefined();
+
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
 });

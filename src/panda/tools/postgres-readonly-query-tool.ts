@@ -19,6 +19,8 @@ interface PgPoolLike {
   connect(): Promise<PoolClient>;
 }
 
+type PgPoolResolver = () => Promise<PgPoolLike> | PgPoolLike;
+
 const READONLY_VIEW_GUIDANCE = [
   "A single read-only SELECT or WITH query.",
   "Prefer session.agent_sessions for the current session row.",
@@ -35,7 +37,8 @@ const READONLY_VIEW_GUIDANCE = [
 ].join(" ");
 
 export interface PostgresReadonlyQueryToolOptions {
-  pool: PgPoolLike;
+  pool?: PgPoolLike;
+  getPool?: PgPoolResolver;
   maxRows?: number;
   maxOutputBytes?: number;
   maxStringChars?: number;
@@ -216,14 +219,21 @@ export class PostgresReadonlyQueryTool<TContext = DefaultAgentSessionContext>
   description = `Run a single read-only SQL query against Postgres. Use only SELECT or WITH. ${READONLY_VIEW_GUIDANCE} Always use LIMIT on exploratory queries.`;
   schema = PostgresReadonlyQueryTool.schema;
 
-  private readonly pool: PgPoolLike;
+  private readonly getPool: PgPoolResolver;
   private readonly maxRows: number;
   private readonly maxOutputBytes: number;
   private readonly maxStringChars: number;
 
   constructor(options: PostgresReadonlyQueryToolOptions) {
     super();
-    this.pool = options.pool;
+    if (options.getPool) {
+      this.getPool = options.getPool;
+    } else if (options.pool) {
+      const pool = options.pool;
+      this.getPool = () => pool;
+    } else {
+      throw new Error("PostgresReadonlyQueryTool requires either pool or getPool.");
+    }
     this.maxRows = options.maxRows ?? MAX_ROWS;
     this.maxOutputBytes = options.maxOutputBytes ?? MAX_OUTPUT_BYTES;
     this.maxStringChars = options.maxStringChars ?? MAX_STRING_CHARS;
@@ -240,7 +250,8 @@ export class PostgresReadonlyQueryTool<TContext = DefaultAgentSessionContext>
     const { sessionId, agentKey } = readScope(run.context);
     const sql = assertReadonlySql(args.sql);
     const limitedSql = `SELECT * FROM (${sql}) AS runtime_readonly_query LIMIT ${this.maxRows + 1}`;
-    const client = await this.pool.connect();
+    const pool = await this.getPool();
+    const client = await pool.connect();
     const startedAt = Date.now();
 
     try {

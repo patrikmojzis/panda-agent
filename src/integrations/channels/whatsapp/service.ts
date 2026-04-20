@@ -51,6 +51,7 @@ import {
   type PostgresNotificationListenerHandle,
   startPostgresNotificationListener,
 } from "../postgres-notification-listener.js";
+import {runCleanupSteps} from "../../../lib/cleanup.js";
 
 export interface WhatsAppServiceOptions {
   connectorKey: string;
@@ -684,39 +685,79 @@ export class WhatsAppService {
       this.socketWaiterResolve = null;
 
       const notificationListener = this.notificationListener;
+      const actionWorker = this.actionWorker;
+      const outboundWorker = this.outboundWorker;
+      const lease = this.lease;
+      const pool = this.pool;
+      const poolObserver = this.poolObserver;
+      const healthServer = this.healthServer;
       this.notificationListener = null;
-      if (notificationListener) {
-        await notificationListener.close();
-      }
-
-      if (this.actionWorker) {
-        await this.actionWorker.stop();
-        this.actionWorker = null;
-      }
-      if (this.outboundWorker) {
-        await this.outboundWorker.stop();
-        this.outboundWorker = null;
-      }
-
-      await this.stopSocket();
-
-      if (this.lease) {
-        await this.lease.release();
-        this.lease = null;
-      }
-
-      if (this.pool) {
-        this.poolObserver?.stop();
-        this.poolObserver = null;
-        await this.pool.end();
-        this.pool = null;
-        this.authStore = null;
-        this.stores = null;
-        this.storesPromise = null;
-      }
-
-      await this.healthServer?.close().catch(() => undefined);
+      this.actionWorker = null;
+      this.outboundWorker = null;
+      this.lease = null;
+      this.pool = null;
+      this.poolObserver = null;
       this.healthServer = null;
+      this.authStore = null;
+      this.stores = null;
+      this.storesPromise = null;
+
+      await runCleanupSteps([
+        {
+          label: "notification-listener",
+          run: async () => {
+            await notificationListener?.close();
+          },
+        },
+        {
+          label: "action-worker",
+          run: async () => {
+            await actionWorker?.stop();
+          },
+        },
+        {
+          label: "outbound-worker",
+          run: async () => {
+            await outboundWorker?.stop();
+          },
+        },
+        {
+          label: "socket",
+          run: async () => {
+            await this.stopSocket();
+          },
+        },
+        {
+          label: "connector-lease",
+          run: async () => {
+            await lease?.release();
+          },
+        },
+        {
+          label: "pool-observer",
+          run: () => {
+            poolObserver?.stop();
+          },
+        },
+        {
+          label: "pool",
+          run: async () => {
+            await pool?.end();
+          },
+        },
+        {
+          label: "health-server",
+          run: async () => {
+            await healthServer?.close();
+          },
+        },
+      ], (step, error) => {
+        this.log("shutdown_cleanup_failed", {
+          connectorKey: this.options.connectorKey,
+          step: step.label,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
     })();
 
     return this.stopPromise;

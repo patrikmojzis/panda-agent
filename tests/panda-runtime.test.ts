@@ -5,8 +5,11 @@ const runtimeMocks = vi.hoisted(() => {
   const poolInstances: Array<{
     connect: ReturnType<typeof vi.fn>;
     end: ReturnType<typeof vi.fn>;
+    off: ReturnType<typeof vi.fn>;
+    on: ReturnType<typeof vi.fn>;
     query: ReturnType<typeof vi.fn>;
   }> = [];
+  const readonlyToolOptions: unknown[] = [];
   const client = {
     off: vi.fn(),
     on: vi.fn(),
@@ -14,6 +17,11 @@ const runtimeMocks = vi.hoisted(() => {
     release: vi.fn(),
   };
   class MockPool {
+    totalCount = 0;
+    idleCount = 0;
+    waitingCount = 0;
+    on = vi.fn();
+    off = vi.fn();
     query = vi.fn(async () => ({rows: [{count: 0}]}));
     connect = vi.fn(async () => client);
     end = vi.fn(async () => {});
@@ -29,6 +37,7 @@ const runtimeMocks = vi.hoisted(() => {
     ensureSchema: vi.fn(async () => {}),
     MockPool,
     poolInstances,
+    readonlyToolOptions,
     readDatabaseUsername: vi.fn(() => "readonly_user"),
   };
 });
@@ -90,7 +99,11 @@ vi.mock("../src/domain/threads/runtime/postgres.js", () => ({
 }));
 
 vi.mock("../src/panda/tools/postgres-readonly-query-tool.js", () => ({
-  PostgresReadonlyQueryTool: class {},
+  PostgresReadonlyQueryTool: class {
+    constructor(options: unknown) {
+      runtimeMocks.readonlyToolOptions.push(options);
+    }
+  },
 }));
 
 vi.mock("../src/integrations/browser/client.js", () => ({
@@ -108,6 +121,7 @@ describe("createRuntime", () => {
     runtimeMocks.client.query.mockImplementation(async () => ({rows: []}));
     runtimeMocks.client.release.mockClear();
     runtimeMocks.poolInstances.length = 0;
+    runtimeMocks.readonlyToolOptions.length = 0;
     browserMocks.start.mockClear();
     browserMocks.close.mockClear();
     browserMocks.instances.length = 0;
@@ -152,5 +166,29 @@ describe("createRuntime", () => {
     await runtime.close();
 
     expect(browserMocks.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the readonly pool lazy until the tool actually needs it", async () => {
+    vi.stubEnv("READONLY_DATABASE_URL", "postgres://readonly:test@localhost:5432/panda");
+
+    const runtime = await createRuntime({
+      dbUrl: "postgres://panda:test@localhost:5432/panda",
+      resolveDefinition: vi.fn(),
+    });
+
+    expect(runtimeMocks.poolInstances).toHaveLength(1);
+    const readonlyOptions = runtimeMocks.readonlyToolOptions.at(-1) as {
+      getPool?: () => Promise<unknown>;
+    } | undefined;
+    expect(typeof readonlyOptions?.getPool).toBe("function");
+
+    await readonlyOptions?.getPool?.();
+
+    expect(runtimeMocks.poolInstances).toHaveLength(2);
+
+    await runtime.close();
+
+    expect(runtimeMocks.poolInstances[0]?.end).toHaveBeenCalledTimes(1);
+    expect(runtimeMocks.poolInstances[1]?.end).toHaveBeenCalledTimes(1);
   });
 });

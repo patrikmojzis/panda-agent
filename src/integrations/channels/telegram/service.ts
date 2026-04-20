@@ -36,6 +36,7 @@ import {
   type PostgresNotificationListenerHandle,
   startPostgresNotificationListener,
 } from "../postgres-notification-listener.js";
+import {runCleanupSteps} from "../../../lib/cleanup.js";
 
 type TelegramContext = Context;
 const UPDATE_RETRY_DELAY_MS = 1_000;
@@ -578,25 +579,13 @@ export class TelegramService {
     this.pollAbortController = null;
     this.stopPromise = (async () => {
       const notificationListener = this.notificationListener;
+      const actionWorker = this.actionWorker;
+      const outboundWorker = this.outboundWorker;
+      const lease = this.lease;
       this.notificationListener = null;
-      if (notificationListener) {
-        await notificationListener.close();
-      }
-
-      if (this.actionWorker) {
-        await this.actionWorker.stop();
-        this.actionWorker = null;
-      }
-
-      if (this.outboundWorker) {
-        await this.outboundWorker.stop();
-        this.outboundWorker = null;
-      }
-
-      if (this.lease) {
-        await this.lease.release();
-        this.lease = null;
-      }
+      this.actionWorker = null;
+      this.outboundWorker = null;
+      this.lease = null;
 
       const stores = this.stores;
       const storesPromise = this.storesPromise;
@@ -606,24 +595,71 @@ export class TelegramService {
       this.storesPromise = null;
       this.poolObserver = null;
       this.healthServer = null;
-      poolObserver?.stop();
 
-      if (stores) {
-        await stores.pool.end();
-        await healthServer?.close().catch(() => undefined);
-        return;
-      }
+      await runCleanupSteps([
+        {
+          label: "notification-listener",
+          run: async () => {
+            await notificationListener?.close();
+          },
+        },
+        {
+          label: "action-worker",
+          run: async () => {
+            await actionWorker?.stop();
+          },
+        },
+        {
+          label: "outbound-worker",
+          run: async () => {
+            await outboundWorker?.stop();
+          },
+        },
+        {
+          label: "connector-lease",
+          run: async () => {
+            await lease?.release();
+          },
+        },
+        {
+          label: "pool-observer",
+          run: () => {
+            poolObserver?.stop();
+          },
+        },
+        {
+          label: "pool",
+          run: async () => {
+            if (stores) {
+              await stores.pool.end();
+              return;
+            }
 
-      if (storesPromise) {
-        try {
-          const resolvedStores = await storesPromise;
-          await resolvedStores.pool.end();
-        } catch {
-          // Ignore bootstrap failures during shutdown.
-        }
-      }
+            if (!storesPromise) {
+              return;
+            }
 
-      await healthServer?.close().catch(() => undefined);
+            try {
+              const resolvedStores = await storesPromise;
+              await resolvedStores.pool.end();
+            } catch {
+              // Ignore bootstrap failures during shutdown.
+            }
+          },
+        },
+        {
+          label: "health-server",
+          run: async () => {
+            await healthServer?.close();
+          },
+        },
+      ], (step, error) => {
+        this.log("shutdown_cleanup_failed", {
+          connectorKey: this.connectorKey ?? null,
+          step: step.label,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
     })();
 
     return this.stopPromise;

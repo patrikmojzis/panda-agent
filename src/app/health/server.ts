@@ -1,4 +1,4 @@
-import {createServer, type IncomingMessage, type Server, type ServerResponse} from "node:http";
+import {createServer, type IncomingMessage, type ServerResponse} from "node:http";
 
 const DEFAULT_HEALTH_HOST = "127.0.0.1";
 
@@ -24,9 +24,6 @@ export interface HealthServerOptions extends HealthServerBinding {
 }
 
 export interface HealthServer {
-  readonly host: string;
-  readonly port: number;
-  readonly server: Server;
   close(): Promise<void>;
 }
 
@@ -105,9 +102,6 @@ export async function startHealthServer(options: HealthServerOptions): Promise<H
   });
 
   return {
-    host: options.host,
-    port: options.port,
-    server,
     close: async (): Promise<void> => {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {

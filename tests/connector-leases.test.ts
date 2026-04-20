@@ -125,6 +125,8 @@ describe("PostgresConnectorLeaseRepo", () => {
     await vi.advanceTimersByTimeAsync(10);
 
     expect(onLeaseLost).toHaveBeenCalledTimes(1);
-    expect(lease.isHeld()).toBe(false);
+    expect(repo.release).not.toHaveBeenCalled();
+    await lease.release();
+    expect(repo.release).toHaveBeenCalledTimes(1);
   });
 });

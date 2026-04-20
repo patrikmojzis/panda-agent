@@ -201,6 +201,49 @@ describe("TelegramService", () => {
     expect(stores.pool.end).toHaveBeenCalledTimes(1);
   });
 
+  it("still releases the connector lease when shutdown cleanup fails early", async () => {
+    const stores = createStores();
+    const release = vi.fn(async () => {});
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+    });
+
+    vi.spyOn(service as never, "ensureInitialized").mockImplementation(async () => {
+      (service as {stores?: unknown}).stores = stores;
+      return {
+        stores,
+        connectorKey: "42",
+        botUsername: "panda_bot",
+      };
+    });
+    vi.spyOn(service as never, "acquireConnectorLease").mockResolvedValue({release});
+    vi.spyOn(service as never, "ensureOutboundWorker").mockReturnValue({
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    });
+    vi.spyOn(service as never, "ensureActionWorker").mockReturnValue({
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    });
+    vi.spyOn(service as never, "startWorkerNotificationListener").mockResolvedValue({
+      close: vi.fn(async () => {
+        throw new Error("listener close failed");
+      }),
+    });
+
+    const bot = latestBot();
+    bot.api.getUpdates.mockImplementationOnce(async () => {
+      await service.stop();
+      return [];
+    });
+
+    await expect(service.run()).resolves.toBeUndefined();
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(stores.pool.end).toHaveBeenCalledTimes(1);
+  });
+
   it("does not start workers when lease acquisition fails", async () => {
     const stores = createStores();
     const service = new TelegramService({

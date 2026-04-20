@@ -10,7 +10,7 @@ The failure mode is simple:
 
 - Panda opens separate pools per long-running service.
 - `pg` defaults each pool to `10`.
-- Some Panda services also pin long-lived clients for `LISTEN` and advisory locks.
+- Some Panda services also keep long-lived clients around for `LISTEN` and other always-on work.
 - The database does not care about our feelings. It only cares about total open sessions.
 
 On `clankerino`, Postgres is currently:
@@ -23,17 +23,16 @@ That means a deployment can kill itself purely by letting a few services use def
 
 ## Current Cost Shape
 
-Today the expensive pieces are not just burst traffic. They are the always-on clients.
+Today the expensive pieces are not just burst traffic. They are the always-on clients that stay checked out from each pool.
 
-- `panda-core` keeps a long-lived notification listener.
-- `panda-core` may also create a separate readonly pool.
-- `panda-telegram` pins one advisory-lock client.
-- `panda-telegram` pins one action `LISTEN` client.
-- `panda-telegram` pins one delivery `LISTEN` client.
-- `panda-whatsapp` follows the same general pattern.
-- the current core Docker healthcheck opens a fresh DB pool on every run, which is cheap individually but still needless churn
+- `panda-core` keeps one long-lived runtime `LISTEN` client.
+- `panda-core` has a separate readonly pool, but it is lazy and only exists after the readonly tool is actually used.
+- `panda-telegram/<connectorKey>` keeps one shared worker `LISTEN` client.
+- `panda-whatsapp/<connectorKey>` keeps one shared worker `LISTEN` client.
+- Connector ownership uses lease rows with TTL, not pinned advisory-lock sessions.
+- Docker healthchecks hit local HTTP endpoints, not the database.
 
-So the pool max is not the whole story. The pinned clients matter.
+So the pool max is not the whole story. The pinned clients still matter, they are just much cheaper than before.
 
 ## Recommended Budget
 
@@ -56,23 +55,22 @@ That is intentionally not razor-thin and not sloppy. It gives Panda room to brea
 - Do not spend spare slots just because they exist. Save them for one-off admin work, migrations, and ugly moments.
 - Bigger per-service pools are not automatically safer. Bigger aggregate ceilings are exactly how Panda gets `53300`.
 
-## How To Spend Fewer Always-On Clients
+## What Already Landed
 
-These are the real structural wins:
+The first real fixes are in:
 
-- Collapse connector action and delivery listeners into one `LISTEN` client per connector process.
-- Stop using a dedicated session-pinning advisory-lock client if a lease row plus heartbeat can do the job cleanly.
-- Keep the readonly pool lazy and small.
-- Replace DB-heavy liveness checks with a cheap in-process health endpoint or local heartbeat file.
+- Connector action and delivery workers share one `LISTEN` client per process.
+- Connector ownership uses `runtime.connector_leases` with expiry and renewal.
+- `panda-core` no longer pays for `panda/core-ro` at boot.
+- Healthchecks are local HTTP probes instead of DB-backed pokes.
+- Long-running pools set `application_name` and emit pool stats on startup, on errors, and while waiters exist.
 
-Until those land, budget as if the pinned clients are permanent, because right now they are.
-
-## Visibility We Should Add
+## Visibility
 
 If Panda is going to use multiple pools, each client needs a name.
 
 - set `application_name` on every pool
-- include service role in the name: `panda/core`, `panda/core-ro`, `panda/telegram/<connectorKey>`, `panda/whatsapp/<connectorKey>`, `panda/health/core`
+- include service role in the name: `panda/core`, `panda/core-ro`, `panda/telegram/<connectorKey>`, `panda/whatsapp/<connectorKey>`
 - log pool stats on error and periodically: `totalCount`, `idleCount`, `waitingCount`
 - keep a canned `pg_stat_activity` query in the runbook so we can see who is hoarding connections in seconds, not after a crime scene reconstruction
 
@@ -101,16 +99,14 @@ These are worthwhile, but they are not the root fix:
 
 Restart policies help Panda recover from transient failure. They do not fix bad connection budgeting.
 
-## Open Questions
+## Remaining Questions
 
-- Should connector ownership stay on Postgres advisory locks, or move to a lease row with expiry?
-- Should channel actions and outbound deliveries share one notification channel per connector process?
-- Should the readonly pool exist at runtime startup, or only be created on first actual readonly-tool use?
-- Should small deployments expose pool limits via env vars per service, or one global budget that Panda splits internally?
+- If we add more always-on connectors, re-budget before shipping them.
+- If readonly Postgres usage becomes frequent, recheck whether a separate `panda/core-ro` pool still earns its keep.
+- If Postgres pressure returns, inspect `pg_stat_activity` first instead of guessing and cargo-culting lower pool caps.
 
 My bias:
 
-- keep the first implementation boring
-- configure per-service pool max explicitly
-- add `application_name`
-- cut the duplicate `LISTEN` clients next
+- keep explicit per-service budgets
+- keep the lazy readonly pool
+- keep connector ownership on leases, not session-pinning locks

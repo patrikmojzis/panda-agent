@@ -1,14 +1,14 @@
 import type {PoolClient} from "pg";
 
 import {
-    type ActionNotification,
-    buildActionNotificationChannel,
-    parseActionNotification,
+  type ActionNotification,
+  buildActionNotificationChannel,
+  parseActionNotification,
 } from "../../domain/channels/actions/index.js";
 import {
-    buildDeliveryNotificationChannel,
-    type DeliveryNotification,
-    parseDeliveryNotification,
+  buildDeliveryNotificationChannel,
+  type DeliveryNotification,
+  parseDeliveryNotification,
 } from "../../domain/channels/deliveries/index.js";
 
 interface PgPoolLike {
@@ -85,9 +85,9 @@ export async function startPostgresNotificationListener(
 
       try {
         if (deliveryChannel !== actionChannel) {
-          await client.query(`UNLISTEN ${deliveryChannel}`);
+          await client.query(`UNLISTEN ${deliveryChannel}`).catch(handleError);
         }
-        await client.query(`UNLISTEN ${actionChannel}`);
+        await client.query(`UNLISTEN ${actionChannel}`).catch(handleError);
       } finally {
         client.release();
       }
