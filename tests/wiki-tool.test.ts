@@ -76,6 +76,62 @@ function getRequestBody(fetchImpl: ReturnType<typeof vi.fn>, callIndex: number):
 }
 
 describe("WikiTool", () => {
+  it("exports an object-shaped tool schema for provider compatibility", () => {
+    const tool = new WikiTool();
+
+    expect(tool.piTool.parameters).toMatchObject({
+      type: "object",
+      required: ["operation"],
+      properties: {
+        operation: {
+          type: "string",
+          enum: expect.arrayContaining(["read", "list", "search"]),
+        },
+      },
+    });
+  });
+
+  it("accepts read as the canonical fetch operation", async () => {
+    const bindings = createBindings();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: {
+          pages: {
+            singleByPath: buildPage(),
+          },
+        },
+      }), {
+        status: 200,
+        headers: {"content-type": "application/json"},
+      }));
+
+    const tool = new WikiTool({
+      env: {
+        WIKI_URL: "http://wiki:3000",
+      } as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings,
+    });
+
+    const result = await tool.run({
+      operation: "read",
+      path: "agents/panda/profile",
+    }, createRunContext({
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    })) as ToolResultPayload;
+
+    expect(parseToolResult(result)).toMatchObject({
+      operation: "read",
+      found: true,
+      path: "agents/panda/profile",
+      locale: "en",
+      title: "Profile",
+    });
+  });
+
   it("creates a missing page using the agent-scoped wiki token", async () => {
     const bindings = createBindings();
 
@@ -1685,7 +1741,7 @@ describe("WikiTool", () => {
     });
 
     await expect(tool.run({
-      operation: "get",
+      operation: "read",
       path: "agents/luna/profile",
     }, createRunContext({
       agentKey: "panda",

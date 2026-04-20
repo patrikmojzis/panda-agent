@@ -427,102 +427,106 @@ function strictSchema<TShape extends z.ZodRawShape>(shape: TShape): z.ZodObject<
   return z.object(shape).strict();
 }
 
-const wikiGetSchema = strictSchema({
-  operation: z.literal("get"),
-  path: wikiPathField,
-  locale: wikiLocaleField.optional(),
-});
+const wikiOperationField = z.enum([
+  "read",
+  "list",
+  "search",
+  "write",
+  "write_section",
+  "move",
+  "archive",
+  "attach_image",
+  "fetch_asset",
+]).describe(
+  "Wiki operation. Use read to fetch one page.",
+);
 
-const wikiListSchema = strictSchema({
-  operation: z.literal("list"),
-  path: wikiPathField.optional(),
-  locale: wikiLocaleField.optional(),
-  limit: wikiLimitField.optional(),
-  includeArchived: wikiIncludeArchivedField.optional(),
-});
+function requireWikiField(
+  ctx: z.RefinementCtx,
+  data: Record<string, unknown>,
+  field: keyof typeof data,
+  operation: z.output<typeof wikiOperationField>,
+): void {
+  const value = data[field];
+  const missing = value === undefined
+    || value === null
+    || (typeof value === "string" && !value.trim());
+  if (!missing) {
+    return;
+  }
 
-const wikiSearchSchema = strictSchema({
-  operation: z.literal("search"),
-  path: wikiPathField.optional(),
-  locale: wikiLocaleField.optional(),
-  query: wikiQueryField,
-});
-
-const wikiWriteSchema = strictSchema({
-  operation: z.literal("write"),
-  path: wikiPathField,
-  locale: wikiLocaleField.optional(),
-  title: wikiTitleField.optional(),
-  description: wikiDescriptionField.optional(),
-  content: wikiContentField,
-  tags: wikiTagsField.optional(),
-  isPublished: wikiIsPublishedField.optional(),
-  isPrivate: wikiIsPrivateField.optional(),
-  createIfMissing: wikiCreateIfMissingField.optional(),
-  baseUpdatedAt: wikiBaseUpdatedAtField.optional(),
-});
-
-const wikiWriteSectionSchema = strictSchema({
-  operation: z.literal("write_section"),
-  path: wikiPathField,
-  locale: wikiLocaleField.optional(),
-  section: wikiSectionField,
-  title: wikiTitleField.optional(),
-  content: wikiContentField,
-  createIfMissing: wikiCreateIfMissingField.optional(),
-  baseUpdatedAt: wikiBaseUpdatedAtField.optional(),
-});
-
-const wikiMoveSchema = strictSchema({
-  operation: z.literal("move"),
-  path: wikiPathField,
-  destinationPath: wikiPathField.describe(
-    "Destination wiki path without locale. It must stay inside the current agent namespace and outside _archive.",
-  ),
-  locale: wikiLocaleField.optional(),
-  rewriteLinks: wikiRewriteLinksField.optional(),
-  baseUpdatedAt: wikiBaseUpdatedAtField.optional(),
-});
-
-const wikiArchiveSchema = strictSchema({
-  operation: z.literal("archive"),
-  path: wikiPathField,
-  locale: wikiLocaleField.optional(),
-  baseUpdatedAt: wikiBaseUpdatedAtField.optional(),
-});
-
-const wikiAttachImageSchema = strictSchema({
-  operation: z.literal("attach_image"),
-  path: wikiPathField,
-  locale: wikiLocaleField.optional(),
-  section: wikiSectionField,
-  slot: wikiSlotField,
-  sourcePath: wikiSourcePathField,
-  alt: wikiAltField,
-  caption: wikiCaptionField.optional(),
-  title: wikiTitleField.optional(),
-  createIfMissing: wikiCreateIfMissingField.optional(),
-  baseUpdatedAt: wikiBaseUpdatedAtField.optional(),
-});
-
-const wikiFetchAssetSchema = strictSchema({
-  operation: z.literal("fetch_asset"),
-  assetPath: wikiAssetPathField,
-});
+  ctx.addIssue({
+    code: "custom",
+    path: [field],
+    message: `wiki ${operation} requires ${String(field)}.`,
+  });
+}
 
 export class WikiTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof WikiTool.schema, TContext> {
-  static schema = z.discriminatedUnion("operation", [
-    wikiGetSchema,
-    wikiListSchema,
-    wikiSearchSchema,
-    wikiWriteSchema,
-    wikiWriteSectionSchema,
-    wikiMoveSchema,
-    wikiArchiveSchema,
-    wikiAttachImageSchema,
-    wikiFetchAssetSchema,
-  ]).describe(
+  static schema = strictSchema({
+    operation: wikiOperationField,
+    path: wikiPathField.optional(),
+    locale: wikiLocaleField.optional(),
+    limit: wikiLimitField.optional(),
+    includeArchived: wikiIncludeArchivedField.optional(),
+    query: wikiQueryField.optional(),
+    section: wikiSectionField.optional(),
+    assetPath: wikiAssetPathField.optional(),
+    slot: wikiSlotField.optional(),
+    sourcePath: wikiSourcePathField.optional(),
+    alt: wikiAltField.optional(),
+    caption: wikiCaptionField.optional(),
+    title: wikiTitleField.optional(),
+    description: wikiDescriptionField.optional(),
+    content: wikiContentField.optional(),
+    tags: wikiTagsField.optional(),
+    isPublished: wikiIsPublishedField.optional(),
+    isPrivate: wikiIsPrivateField.optional(),
+    createIfMissing: wikiCreateIfMissingField.optional(),
+    rewriteLinks: wikiRewriteLinksField.optional(),
+    baseUpdatedAt: wikiBaseUpdatedAtField.optional(),
+    destinationPath: wikiPathField.describe(
+      "Destination wiki path without locale. It must stay inside the current agent namespace and outside _archive.",
+    ).optional(),
+  }).superRefine((data, ctx) => {
+    switch (data.operation) {
+      case "read":
+      case "archive":
+        requireWikiField(ctx, data, "path", data.operation);
+        break;
+      case "search":
+        requireWikiField(ctx, data, "query", data.operation);
+        break;
+      case "write":
+        requireWikiField(ctx, data, "path", data.operation);
+        requireWikiField(ctx, data, "content", data.operation);
+        break;
+      case "write_section":
+        requireWikiField(ctx, data, "path", data.operation);
+        requireWikiField(ctx, data, "section", data.operation);
+        requireWikiField(ctx, data, "content", data.operation);
+        break;
+      case "move":
+        requireWikiField(ctx, data, "path", data.operation);
+        requireWikiField(ctx, data, "destinationPath", data.operation);
+        break;
+      case "attach_image":
+        requireWikiField(ctx, data, "path", data.operation);
+        requireWikiField(ctx, data, "section", data.operation);
+        requireWikiField(ctx, data, "slot", data.operation);
+        requireWikiField(ctx, data, "sourcePath", data.operation);
+        requireWikiField(ctx, data, "alt", data.operation);
+        break;
+      case "fetch_asset":
+        requireWikiField(ctx, data, "assetPath", data.operation);
+        break;
+      case "list":
+        break;
+      default:
+        data.operation satisfies never;
+    }
+  }).describe(
     "Read, list, search, write, move, archive, attach images, and fetch namespace-scoped assets for agent-owned Wiki.js pages.",
   );
 
@@ -553,7 +557,7 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
   }
 
   override formatCall(args: Record<string, unknown>): string {
-    const operation = typeof args.operation === "string" ? args.operation : "get";
+    const operation = typeof args.operation === "string" ? args.operation : "read";
     if (operation === "move"
       && typeof args.path === "string"
       && typeof args.destinationPath === "string") {
@@ -803,7 +807,7 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       );
     }
 
-    if (args.operation === "get") {
+    if (args.operation === "read") {
       const path = normalizePath(args.path ?? "");
       assertNamespacePath(path, binding.namespacePath);
       const locale = normalizeLocale(args.locale);
@@ -813,7 +817,7 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
         return buildTextToolPayload(
           `No wiki page found at ${locale}/${path}.`,
           {
-            operation: "get",
+            operation: "read",
             found: false,
             path,
             locale,
@@ -824,7 +828,7 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       return buildTextToolPayload(
         formatPageText(page),
         {
-          operation: "get",
+          operation: "read",
           found: true,
           ...page,
         } satisfies JsonObject,
