@@ -1,11 +1,17 @@
+import {mkdir, readFile, writeFile} from "node:fs/promises";
+import path from "node:path";
+
 import {z} from "zod";
 
+import {resolveAgentMediaDir, resolveMediaDir} from "../../app/runtime/data-dir.js";
+import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import type {WikiBindingService} from "../../domain/wiki/index.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
+import {assertPathReadable} from "../../lib/fs.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import {
@@ -17,8 +23,17 @@ import {
   type WikiPageSearchResult,
 } from "../../integrations/wiki/client.js";
 import {
+  buildMarkdownImageAssetBlock,
+  findMarkdownImageAssetPath,
+  upsertMarkdownSectionImageAsset,
+} from "../../integrations/wiki/asset-blocks.js";
+import {
   buildWikiArchiveRoot,
+  buildWikiAssetRoot,
+  buildWikiPageAssetDirectory,
+  hasUnsafeWikiPathSegments,
   isArchivedWikiPath,
+  isWikiAssetPathWithinNamespace,
   isWikiPathWithinNamespace,
   stripWikiLocalePrefix,
   trimWikiPath,
@@ -48,6 +63,9 @@ function normalizePath(value: string): string {
   if (!trimmed) {
     throw new ToolError("wiki path must not be empty.");
   }
+  if (hasUnsafeWikiPathSegments(trimmed)) {
+    throw new ToolError(`wiki path must not contain empty, '.' , or '..' segments (${value}).`);
+  }
   return trimmed;
 }
 
@@ -62,6 +80,116 @@ function normalizeSectionTitle(value: string): string {
   }
 
   return trimmed;
+}
+
+function normalizeAssetSlot(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!normalized) {
+    throw new ToolError("wiki attach_image slot must not be empty.");
+  }
+
+  return normalized;
+}
+
+function normalizeImageText(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new ToolError(`wiki attach_image ${label} must not be empty.`);
+  }
+
+  return trimmed;
+}
+
+const IMAGE_MIME_BY_EXTENSION = new Map<string, string>([
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".webp", "image/webp"],
+  [".gif", "image/gif"],
+  [".bmp", "image/bmp"],
+  [".tif", "image/tiff"],
+  [".tiff", "image/tiff"],
+]);
+
+const VIEWABLE_WIKI_ASSET_MIME_BY_EXTENSION = new Map<string, string>([
+  ...IMAGE_MIME_BY_EXTENSION.entries(),
+  [".pdf", "application/pdf"],
+]);
+
+function inferImageFile(filePath: string): {extension: string; mimeType: string} | null {
+  const extension = path.extname(filePath).toLowerCase();
+  const mimeType = IMAGE_MIME_BY_EXTENSION.get(extension);
+  if (!mimeType) {
+    return null;
+  }
+
+  return {
+    extension,
+    mimeType,
+  };
+}
+
+function inferViewableWikiAssetMimeType(assetPath: string, headerMimeType: string | undefined): string | null {
+  const normalizedHeaderMimeType = trimToUndefined(headerMimeType)?.toLowerCase();
+  if (normalizedHeaderMimeType) {
+    if (normalizedHeaderMimeType === "application/pdf" || normalizedHeaderMimeType.startsWith("image/")) {
+      return normalizedHeaderMimeType;
+    }
+
+    return null;
+  }
+
+  return VIEWABLE_WIKI_ASSET_MIME_BY_EXTENSION.get(path.extname(assetPath).toLowerCase()) ?? null;
+}
+
+function resolveWikiAssetMediaRoot(context: DefaultAgentSessionContext | undefined, env: NodeJS.ProcessEnv): string {
+  const agentKey = trimToUndefined(context?.agentKey);
+  if (agentKey) {
+    return resolveAgentMediaDir(agentKey, env);
+  }
+
+  return resolveMediaDir(env);
+}
+
+async function writeFetchedWikiAsset(
+  assetPath: string,
+  bytes: Uint8Array,
+  context: DefaultAgentSessionContext | undefined,
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  const root = path.join(resolveWikiAssetMediaRoot(context, env), "wiki", "fetched");
+  const destination = path.join(root, ...assetPath.split("/"));
+  const relative = path.relative(root, destination);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new ToolError(`Wiki asset path ${assetPath} resolved outside Panda media storage.`);
+  }
+
+  await mkdir(path.dirname(destination), {recursive: true});
+  await writeFile(destination, bytes);
+  return destination;
+}
+
+function buildWikiImageAssetFilename(slot: string, extension: string): string {
+  return `${slot}${extension}`;
+}
+
+function splitWikiAssetPath(assetPath: string): {directoryPath: string; filename: string} {
+  const separatorIndex = assetPath.lastIndexOf("/");
+  if (separatorIndex < 0) {
+    return {
+      directoryPath: "",
+      filename: assetPath,
+    };
+  }
+
+  return {
+    directoryPath: assetPath.slice(0, separatorIndex),
+    filename: assetPath.slice(separatorIndex + 1),
+  };
 }
 
 function buildArchivePath(path: string, namespacePath: string, now = new Date()): string {
@@ -86,6 +214,15 @@ function assertNamespacePath(path: string, namespacePath: string): void {
   if (!isWikiPathWithinNamespace(path, namespacePath)) {
     throw new ToolError(
       `Wiki path ${path} is outside the agent namespace ${namespacePath}. Use only ${namespacePath} or its children, for example ${namespacePath}/profile.`,
+    );
+  }
+}
+
+function assertNamespaceAssetPath(path: string, namespacePath: string): void {
+  const assetRoot = buildWikiAssetRoot(namespacePath);
+  if (!isWikiAssetPathWithinNamespace(path, namespacePath)) {
+    throw new ToolError(
+      `Wiki asset path ${path} is outside the agent asset namespace ${assetRoot}. Use only ${assetRoot} or its children.`,
     );
   }
 }
@@ -225,322 +362,182 @@ function normalizeListLimit(value: number | undefined): number {
   return normalized;
 }
 
+const wikiPathField = z.string().trim().min(1).describe(
+  "Wiki path without locale. It must stay inside the current agent namespace, for example agents/panda/profile. Leading slash is okay; it will be stripped.",
+);
+const wikiLocaleField = z.string().trim().min(1).describe(
+  `Wiki locale. Defaults to ${DEFAULT_WIKI_LOCALE}.`,
+);
+const wikiLimitField = z.number().int().positive().max(MAX_LIST_LIMIT).describe(
+  `Only for list. Maximum pages to return. Defaults to ${DEFAULT_LIST_LIMIT}.`,
+);
+const wikiIncludeArchivedField = z.boolean().describe(
+  "Only for list. Include archived pages under _archive. Defaults to false unless the path itself is inside _archive.",
+);
+const wikiQueryField = z.string().trim().min(1).describe(
+  "Search query for operation=search.",
+);
+const wikiSectionField = z.string().trim().min(1).describe(
+  "Exact markdown heading title to replace or append under a ## section.",
+);
+const wikiAssetPathField = z.string().trim().min(1).describe(
+  "Stored wiki asset path without locale, for example agents/panda/_assets/profile/photo.png.",
+);
+const wikiSlotField = z.string().trim().min(1).describe(
+  "Stable per-page image slot so Panda can replace the same managed image later instead of piling on duplicates.",
+);
+const wikiSourcePathField = z.string().trim().min(1).describe(
+  "Local image file path to upload into Wiki.js.",
+);
+const wikiAltField = z.string().trim().min(1).describe(
+  "Markdown alt text for the inserted image.",
+);
+const wikiCaptionField = z.string().describe(
+  "Optional caption rendered under the image.",
+);
+const wikiTitleField = z.string().describe(
+  "Used when creating a missing page. Optional and ignored on existing-page updates.",
+);
+const wikiDescriptionField = z.string().describe(
+  "Optional page description. When omitted on update, the current description is preserved.",
+);
+const wikiContentField = z.string().describe(
+  "Write replaces the full page body. write_section stores this as the section body under ## <section>.",
+);
+const wikiTagsField = z.array(z.string().trim().min(1)).describe(
+  "Optional tag list. When omitted on update, current tags are preserved.",
+);
+const wikiIsPublishedField = z.boolean().describe(
+  "Optional publish flag. Defaults to true for new pages; preserved on update.",
+);
+const wikiIsPrivateField = z.boolean().describe(
+  "Optional privacy flag. Defaults to false for new pages; preserved on update.",
+);
+const wikiCreateIfMissingField = z.boolean().describe(
+  "Defaults to true when creating pages through write, write_section, or attach_image.",
+);
+const wikiRewriteLinksField = z.boolean().describe(
+  "Only for move. Defaults to true. When enabled, Panda rewrites inbound links from other active pages and adjusts relative links inside the moved page itself.",
+);
+const wikiBaseUpdatedAtField = z.string().trim().min(1).describe(
+  "Optional updatedAt from an earlier read. When provided, write or attach_image aborts on concurrent edits.",
+);
+
+function strictSchema<TShape extends z.ZodRawShape>(shape: TShape): z.ZodObject<TShape> {
+  return z.object(shape).strict();
+}
+
+const wikiGetSchema = strictSchema({
+  operation: z.literal("get"),
+  path: wikiPathField,
+  locale: wikiLocaleField.optional(),
+});
+
+const wikiListSchema = strictSchema({
+  operation: z.literal("list"),
+  path: wikiPathField.optional(),
+  locale: wikiLocaleField.optional(),
+  limit: wikiLimitField.optional(),
+  includeArchived: wikiIncludeArchivedField.optional(),
+});
+
+const wikiSearchSchema = strictSchema({
+  operation: z.literal("search"),
+  path: wikiPathField.optional(),
+  locale: wikiLocaleField.optional(),
+  query: wikiQueryField,
+});
+
+const wikiWriteSchema = strictSchema({
+  operation: z.literal("write"),
+  path: wikiPathField,
+  locale: wikiLocaleField.optional(),
+  title: wikiTitleField.optional(),
+  description: wikiDescriptionField.optional(),
+  content: wikiContentField,
+  tags: wikiTagsField.optional(),
+  isPublished: wikiIsPublishedField.optional(),
+  isPrivate: wikiIsPrivateField.optional(),
+  createIfMissing: wikiCreateIfMissingField.optional(),
+  baseUpdatedAt: wikiBaseUpdatedAtField.optional(),
+});
+
+const wikiWriteSectionSchema = strictSchema({
+  operation: z.literal("write_section"),
+  path: wikiPathField,
+  locale: wikiLocaleField.optional(),
+  section: wikiSectionField,
+  title: wikiTitleField.optional(),
+  content: wikiContentField,
+  createIfMissing: wikiCreateIfMissingField.optional(),
+  baseUpdatedAt: wikiBaseUpdatedAtField.optional(),
+});
+
+const wikiMoveSchema = strictSchema({
+  operation: z.literal("move"),
+  path: wikiPathField,
+  destinationPath: wikiPathField.describe(
+    "Destination wiki path without locale. It must stay inside the current agent namespace and outside _archive.",
+  ),
+  locale: wikiLocaleField.optional(),
+  rewriteLinks: wikiRewriteLinksField.optional(),
+  baseUpdatedAt: wikiBaseUpdatedAtField.optional(),
+});
+
+const wikiArchiveSchema = strictSchema({
+  operation: z.literal("archive"),
+  path: wikiPathField,
+  locale: wikiLocaleField.optional(),
+  baseUpdatedAt: wikiBaseUpdatedAtField.optional(),
+});
+
+const wikiAttachImageSchema = strictSchema({
+  operation: z.literal("attach_image"),
+  path: wikiPathField,
+  locale: wikiLocaleField.optional(),
+  section: wikiSectionField,
+  slot: wikiSlotField,
+  sourcePath: wikiSourcePathField,
+  alt: wikiAltField,
+  caption: wikiCaptionField.optional(),
+  title: wikiTitleField.optional(),
+  createIfMissing: wikiCreateIfMissingField.optional(),
+  baseUpdatedAt: wikiBaseUpdatedAtField.optional(),
+});
+
+const wikiFetchAssetSchema = strictSchema({
+  operation: z.literal("fetch_asset"),
+  assetPath: wikiAssetPathField,
+});
+
 export class WikiTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof WikiTool.schema, TContext> {
-  static schema = z.object({
-    operation: z.enum(["get", "list", "search", "write", "write_section", "move", "archive"]).describe(
-      "Read one page, list pages under a subtree, search pages, replace a full page body, replace one markdown section, move a page to a new path, or archive a page by moving it under _archive.",
-    ),
-    path: z.string().trim().min(1).optional().describe(
-      "Wiki path without locale. It must stay inside the current agent namespace, for example agents/panda/profile. Leading slash is okay; it will be stripped. Search and list default to the agent namespace when omitted. Archived pages stay hidden unless you search/list inside _archive explicitly or opt in.",
-    ),
-    destinationPath: z.string().trim().min(1).optional().describe(
-      "Required for move. Destination wiki path without locale. It must stay inside the current agent namespace and outside _archive.",
-    ),
-    locale: z.string().trim().min(1).optional().describe(
-      `Wiki locale. Defaults to ${DEFAULT_WIKI_LOCALE}.`,
-    ),
-    limit: z.number().int().positive().max(MAX_LIST_LIMIT).optional().describe(
-      `Only for list. Maximum pages to return. Defaults to ${DEFAULT_LIST_LIMIT}.`,
-    ),
-    includeArchived: z.boolean().optional().describe(
-      "Only for list. Include archived pages under _archive. Defaults to false unless the path itself is inside _archive.",
-    ),
-    query: z.string().trim().min(1).optional().describe(
-      "Search query for operation=search.",
-    ),
-    section: z.string().trim().min(1).optional().describe(
-      "Required for write_section. Exact markdown heading title to replace or append under a ## section.",
-    ),
-    title: z.string().optional().describe(
-      "Used when creating a missing page. Optional and ignored for write_section updates on existing pages.",
-    ),
-    description: z.string().optional().describe(
-      "Optional page description. When omitted on update, the current description is preserved.",
-    ),
-    content: z.string().optional().describe(
-      "Required for write and write_section. Write replaces the full page body. write_section stores this as the section body under ## <section>.",
-    ),
-    tags: z.array(z.string().trim().min(1)).optional().describe(
-      "Optional tag list. When omitted on update, current tags are preserved.",
-    ),
-    isPublished: z.boolean().optional().describe(
-      "Optional publish flag. Defaults to true for new pages; preserved on update.",
-    ),
-    isPrivate: z.boolean().optional().describe(
-      "Optional privacy flag. Defaults to false for new pages; preserved on update.",
-    ),
-    createIfMissing: z.boolean().optional().describe(
-      "Only for write and write_section. Defaults to true.",
-    ),
-    rewriteLinks: z.boolean().optional().describe(
-      "Only for move. Defaults to true. When enabled, Panda rewrites inbound links from other active pages and adjusts relative links inside the moved page itself.",
-    ),
-    baseUpdatedAt: z.string().trim().min(1).optional().describe(
-      "Optional updatedAt from an earlier read. When provided, write aborts on concurrent edits.",
-    ),
-  }).superRefine((value, ctx) => {
-    if (value.operation === "get") {
-      if (value.path === undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get requires path."});
-      }
-      if (value.limit !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take limit."});
-      }
-      if (value.includeArchived !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take includeArchived."});
-      }
-      if (value.query !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take query."});
-      }
-      if (value.section !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take section."});
-      }
-      if (value.content !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take content."});
-      }
-      if (value.destinationPath !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take destinationPath."});
-      }
-      if (value.rewriteLinks !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take rewriteLinks."});
-      }
-      return;
-    }
-
-    if (value.operation === "list") {
-      if (value.destinationPath !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take destinationPath."});
-      }
-      if (value.query !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take query."});
-      }
-      if (value.section !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take section."});
-      }
-      if (value.title !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take title."});
-      }
-      if (value.description !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take description."});
-      }
-      if (value.content !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take content."});
-      }
-      if (value.tags !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take tags."});
-      }
-      if (value.isPublished !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take isPublished."});
-      }
-      if (value.isPrivate !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take isPrivate."});
-      }
-      if (value.createIfMissing !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take createIfMissing."});
-      }
-      if (value.rewriteLinks !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take rewriteLinks."});
-      }
-      if (value.baseUpdatedAt !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "List does not take baseUpdatedAt."});
-      }
-      return;
-    }
-
-    if (value.operation === "search") {
-      if (value.limit !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search does not take limit."});
-      }
-      if (value.includeArchived !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search does not take includeArchived."});
-      }
-      if (value.query === undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search requires query."});
-      }
-      if (value.content !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search does not take content."});
-      }
-      if (value.section !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search does not take section."});
-      }
-      if (value.title !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search does not take title."});
-      }
-      if (value.destinationPath !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search does not take destinationPath."});
-      }
-      if (value.rewriteLinks !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search does not take rewriteLinks."});
-      }
-      return;
-    }
-
-    if (value.operation === "write_section") {
-      if (value.path === undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section requires path."});
-      }
-      if (value.limit !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take limit."});
-      }
-      if (value.includeArchived !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take includeArchived."});
-      }
-      if (value.section === undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section requires section."});
-      }
-      if (value.content === undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section requires content."});
-      }
-      if (value.query !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take query."});
-      }
-      if (value.description !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take description."});
-      }
-      if (value.tags !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take tags."});
-      }
-      if (value.isPublished !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take isPublished."});
-      }
-      if (value.isPrivate !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take isPrivate."});
-      }
-      if (value.destinationPath !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take destinationPath."});
-      }
-      if (value.rewriteLinks !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take rewriteLinks."});
-      }
-      return;
-    }
-
-    if (value.operation === "move") {
-      if (value.path === undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move requires path."});
-      }
-      if (value.limit !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take limit."});
-      }
-      if (value.includeArchived !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take includeArchived."});
-      }
-      if (value.destinationPath === undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move requires destinationPath."});
-      }
-      if (value.query !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take query."});
-      }
-      if (value.section !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take section."});
-      }
-      if (value.title !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take title."});
-      }
-      if (value.description !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take description."});
-      }
-      if (value.content !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take content."});
-      }
-      if (value.tags !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take tags."});
-      }
-      if (value.isPublished !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take isPublished."});
-      }
-      if (value.isPrivate !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take isPrivate."});
-      }
-      if (value.createIfMissing !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take createIfMissing."});
-      }
-      return;
-    }
-
-    if (value.operation === "archive") {
-      if (value.path === undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive requires path."});
-      }
-      if (value.limit !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take limit."});
-      }
-      if (value.includeArchived !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take includeArchived."});
-      }
-      if (value.query !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take query."});
-      }
-      if (value.section !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take section."});
-      }
-      if (value.title !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take title."});
-      }
-      if (value.description !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take description."});
-      }
-      if (value.content !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take content."});
-      }
-      if (value.tags !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take tags."});
-      }
-      if (value.isPublished !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take isPublished."});
-      }
-      if (value.isPrivate !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take isPrivate."});
-      }
-      if (value.createIfMissing !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take createIfMissing."});
-      }
-      if (value.destinationPath !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take destinationPath."});
-      }
-      if (value.rewriteLinks !== undefined) {
-        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take rewriteLinks."});
-      }
-      return;
-    }
-
-    if (value.path === undefined) {
-      ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write requires path."});
-    }
-    if (value.limit !== undefined) {
-      ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write does not take limit."});
-    }
-    if (value.includeArchived !== undefined) {
-      ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write does not take includeArchived."});
-    }
-    if (value.section !== undefined) {
-      ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write does not take section."});
-    }
-    if (value.content === undefined) {
-      ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write requires content."});
-    }
-    if (value.query !== undefined) {
-      ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write does not take query."});
-    }
-    if (value.destinationPath !== undefined) {
-      ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write does not take destinationPath."});
-    }
-    if (value.rewriteLinks !== undefined) {
-      ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write does not take rewriteLinks."});
-    }
-  });
+  static schema = z.discriminatedUnion("operation", [
+    wikiGetSchema,
+    wikiListSchema,
+    wikiSearchSchema,
+    wikiWriteSchema,
+    wikiWriteSectionSchema,
+    wikiMoveSchema,
+    wikiArchiveSchema,
+    wikiAttachImageSchema,
+    wikiFetchAssetSchema,
+  ]).describe(
+    "Read, list, search, write, move, archive, attach images, and fetch namespace-scoped assets for agent-owned Wiki.js pages.",
+  );
 
   name = "wiki";
   description = [
-    "Read, list, search, write, move, and archive agent-owned Wiki.js pages.",
+    "Read, list, search, write, move, and archive agent-owned Wiki.js pages, plus attach and fetch namespace-scoped assets.",
     "Every path is hard-scoped to the current agent namespace. Do not read or write outside it.",
     "list returns pages under a subtree and hides archived pages unless you explicitly include them.",
     "Write replaces the full page body; there is no line-level patching here.",
     "write_section replaces or appends one ## markdown section so agents do not have to hand-edit whole pages.",
+    "attach_image uploads a local image into the page's managed _assets subtree and inserts or replaces one slot-managed markdown image block inside a section.",
     "move is for restructuring live pages and can rewrite inbound links plus relative links inside the moved page.",
     "archive moves a page under the namespace _archive tree instead of deleting it.",
-    "For safe updates, read first and pass baseUpdatedAt back into write.",
+    "fetch_asset downloads one stored asset into Panda media storage so you can inspect it with view_media.",
+    "For safe updates, read first and pass baseUpdatedAt back into write or attach_image.",
   ].join("\n");
   schema = WikiTool.schema;
 
@@ -566,6 +563,14 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       && typeof args.path === "string"
       && typeof args.section === "string") {
       return `${operation} ${args.path} :: ${args.section}`;
+    }
+    if (operation === "attach_image"
+      && typeof args.path === "string"
+      && typeof args.slot === "string") {
+      return `${operation} ${args.path} :: ${args.slot}`;
+    }
+    if (operation === "fetch_asset" && typeof args.assetPath === "string") {
+      return `${operation} ${args.assetPath}`;
     }
     if (typeof args.path === "string") {
       return `${operation} ${args.path}`;
@@ -594,6 +599,62 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
     return {
       apiToken: binding.apiToken,
       namespacePath: binding.namespacePath,
+    };
+  }
+
+  private async resolveAssetFolderId(
+    client: WikiJsClient,
+    folderPath: string,
+    assetRoot: string,
+    createIfMissing: boolean,
+  ): Promise<number | null> {
+    if (folderPath === assetRoot) {
+      return null;
+    }
+
+    const relativePath = folderPath.slice(assetRoot.length + 1);
+    const segments = relativePath.split("/").filter(Boolean);
+    let parentFolderId: number | null = null;
+
+    for (const rawSegment of segments) {
+      const expectedSlug = rawSegment;
+      const existingFolders = await client.listAssetFolders(parentFolderId);
+      let folder = existingFolders.find((entry) => entry.slug === expectedSlug);
+      if (!folder && createIfMissing) {
+        await client.createAssetFolder(expectedSlug, parentFolderId);
+        const refreshedFolders = await client.listAssetFolders(parentFolderId);
+        folder = refreshedFolders.find((entry) => entry.slug === expectedSlug);
+      }
+
+      if (!folder) {
+        return null;
+      }
+
+      parentFolderId = folder.id;
+    }
+
+    return parentFolderId;
+  }
+
+  private async findAssetByPath(client: WikiJsClient, assetPath: string, assetRoot: string): Promise<{
+    id: number;
+    filename: string;
+  } | null> {
+    const {directoryPath, filename} = splitWikiAssetPath(assetPath);
+    const folderId = await this.resolveAssetFolderId(client, directoryPath, assetRoot, false);
+    if (directoryPath !== assetRoot && folderId === null) {
+      return null;
+    }
+
+    const assets = await client.listAssets(folderId, "ALL");
+    const asset = assets.find((entry) => entry.filename === filename);
+    if (!asset) {
+      return null;
+    }
+
+    return {
+      id: asset.id,
+      filename: asset.filename,
     };
   }
 
@@ -692,11 +753,11 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       editor: existing.editor,
     });
 
-      return {
-        action: "updated",
-        page: updated,
-      };
-    }
+    return {
+      action: "updated",
+      page: updated,
+    };
+  }
 
   async handle(
     args: z.output<typeof WikiTool.schema>,
@@ -709,6 +770,38 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       baseUrl: resolveWikiUrl(this.env),
       fetchImpl: this.fetchImpl,
     });
+
+    if (args.operation === "fetch_asset") {
+      const assetPath = normalizePath(args.assetPath ?? "");
+      assertNamespaceAssetPath(assetPath, binding.namespacePath);
+      run.emitToolProgress({status: "fetching_asset", assetPath});
+
+      const downloaded = await client.downloadAsset(assetPath);
+      const mimeType = inferViewableWikiAssetMimeType(assetPath, downloaded.mimeType);
+      if (!mimeType) {
+        throw new ToolError(
+          `Wiki asset ${assetPath} is not viewable with view_media. Only images and PDFs are supported right now.`,
+        );
+      }
+
+      const localPath = await writeFetchedWikiAsset(
+        assetPath,
+        downloaded.bytes,
+        run.context as DefaultAgentSessionContext | undefined,
+        this.env,
+      );
+
+      return buildTextToolPayload(
+        `Fetched wiki asset ${assetPath} to ${localPath}. Use view_media on that local path to inspect it.`,
+        {
+          operation: "fetch_asset",
+          assetPath,
+          localPath,
+          mimeType,
+          sizeBytes: downloaded.sizeBytes ?? downloaded.bytes.byteLength,
+        },
+      );
+    }
 
     if (args.operation === "get") {
       const path = normalizePath(args.path ?? "");
@@ -816,10 +909,191 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       );
     }
 
+    if (args.operation === "attach_image") {
+      const path = normalizePath(args.path ?? "");
+      assertNamespacePath(path, binding.namespacePath);
+      if (isArchivedWikiPath(path, binding.namespacePath)) {
+        throw new ToolError(`Wiki page ${path} is archived. Do not attach images to archive history.`);
+      }
+
+      const locale = normalizeLocale(args.locale);
+      const createIfMissing = args.createIfMissing ?? true;
+      const sectionTitle = normalizeSectionTitle(args.section ?? "");
+      const slot = normalizeAssetSlot(args.slot ?? "");
+      const alt = normalizeImageText(args.alt ?? "", "alt text");
+      const caption = trimToUndefined(args.caption);
+      const sourcePath = resolveContextPath(args.sourcePath ?? "", run.context, this.env);
+      await assertPathReadable(
+        sourcePath,
+        (missingPath) => new ToolError(`No readable image file found at ${missingPath}`),
+      );
+
+      const imageFile = inferImageFile(sourcePath);
+      if (!imageFile) {
+        throw new ToolError(
+          `attach_image only supports image files that view_media can read. Unsupported file: ${sourcePath}`,
+        );
+      }
+
+      run.emitToolProgress({status: "loading_page", path, locale});
+      const existing = await client.getPageByPath(path, locale);
+      if (!existing && !createIfMissing) {
+        throw new ToolError(`Wiki page ${locale}/${path} does not exist and createIfMissing=false.`);
+      }
+      if (!existing && !trimToUndefined(args.title)) {
+        throw new ToolError("attach_image needs title when creating a new page.");
+      }
+
+      const previousAssetPath = existing
+        ? findMarkdownImageAssetPath(existing.content, slot)
+        : null;
+      const bytes = await readFile(sourcePath);
+      const assetDirectory = buildWikiPageAssetDirectory(binding.namespacePath, path);
+      const assetFilename = buildWikiImageAssetFilename(slot, imageFile.extension);
+      const assetPath = `${assetDirectory}/${assetFilename}`;
+      assertNamespaceAssetPath(assetPath, binding.namespacePath);
+
+      run.emitToolProgress({status: "ensuring_asset_folder", assetPath});
+      const assetRoot = buildWikiAssetRoot(binding.namespacePath);
+      const folderId = await this.resolveAssetFolderId(
+        client,
+        assetDirectory,
+        assetRoot,
+        true,
+      );
+      if (folderId === null && assetDirectory !== assetRoot) {
+        throw new ToolError(`Wiki.js did not return asset folder ${assetDirectory} after creating it.`);
+      }
+      run.emitToolProgress({status: "uploading_asset", assetPath});
+      await client.uploadAsset({
+        folderId,
+        filename: assetFilename,
+        bytes,
+        mimeType: imageFile.mimeType,
+      });
+
+      const block = buildMarkdownImageAssetBlock({
+        slot,
+        assetPath,
+        alt,
+        ...(caption ? {caption} : {}),
+      });
+      const sectionContent = existing
+        ? upsertMarkdownSectionImageAsset(existing.content, sectionTitle, {
+          slot,
+          assetPath,
+          alt,
+          ...(caption ? {caption} : {}),
+        })
+        : null;
+      const nextContent = existing
+        ? (sectionContent?.content ?? existing.content)
+        : buildMarkdownPageWithSection(args.title ?? "", sectionTitle, block);
+      const updatedSection = sectionContent ?? {
+        content: nextContent,
+        sectionAction: "replaced" as const,
+        blockAction: "replaced" as const,
+      };
+
+      if (existing && existing.content === nextContent) {
+        return buildTextToolPayload(
+          `Wiki page ${existing.locale}/${existing.path} already has image slot ${slot} attached.`,
+          {
+            operation: "attach_image",
+            action: "unchanged",
+            upload: "uploaded",
+            assetPath,
+            slot,
+            section: {
+              title: sectionTitle,
+              action: updatedSection.sectionAction,
+            },
+            block: {
+              slot,
+              action: updatedSection.blockAction,
+            },
+            page: {
+              id: existing.id,
+              path: existing.path,
+              locale: existing.locale,
+              title: existing.title,
+              updatedAt: existing.updatedAt,
+            },
+          },
+        );
+      }
+
+      const result = await this.writePage({
+        client,
+        existing,
+        path,
+        locale,
+        content: nextContent,
+        createIfMissing,
+        title: existing ? existing.title : args.title,
+        description: existing?.description ?? "",
+        tags: existing?.tags ?? [],
+        isPublished: existing?.isPublished,
+        isPrivate: existing?.isPrivate,
+        baseUpdatedAt: args.baseUpdatedAt,
+        missingTitleMessage: "attach_image needs title when creating a new page.",
+      }, run);
+
+      let deletedPreviousAssetPath: string | undefined;
+      let staleAssetCleanupError: string | undefined;
+      if (previousAssetPath && previousAssetPath !== assetPath) {
+        try {
+          assertNamespaceAssetPath(previousAssetPath, binding.namespacePath);
+          const previousAsset = await this.findAssetByPath(client, previousAssetPath, assetRoot);
+          if (previousAsset) {
+            await client.deleteAsset(previousAsset.id);
+            deletedPreviousAssetPath = previousAssetPath;
+          }
+        } catch (error) {
+          staleAssetCleanupError = error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      return buildTextToolPayload(
+        result.action === "created"
+          ? `Created wiki page ${result.page.locale}/${result.page.path} and attached image slot ${slot}.`
+          : previousAssetPath && previousAssetPath !== assetPath
+            ? `Updated image slot ${slot} in wiki page ${result.page.locale}/${result.page.path}.`
+            : `Attached image slot ${slot} to wiki page ${result.page.locale}/${result.page.path}.`,
+        {
+          operation: "attach_image",
+          action: result.action,
+          upload: "uploaded",
+          assetPath,
+          slot,
+          ...(deletedPreviousAssetPath ? {deletedPreviousAssetPath} : {}),
+          ...(staleAssetCleanupError ? {staleAssetCleanupError} : {}),
+          section: {
+            title: sectionTitle,
+            action: result.action === "created"
+              ? "created"
+              : updatedSection.sectionAction,
+          },
+          block: {
+            slot,
+            action: result.action === "created"
+              ? "created"
+              : updatedSection.blockAction,
+          },
+          page: {
+            id: result.page.id,
+            path: result.page.path,
+            locale: result.page.locale,
+            title: result.page.title,
+            updatedAt: result.page.updatedAt,
+          },
+        },
+      );
+    }
+
     const path = normalizePath(args.path ?? "");
     assertNamespacePath(path, binding.namespacePath);
     const locale = normalizeLocale(args.locale);
-    const createIfMissing = args.createIfMissing ?? true;
 
     run.emitToolProgress({status: "loading_page", path, locale});
     const existing = await client.getPageByPath(path, locale);
@@ -1076,6 +1350,7 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
     }
 
     if (args.operation === "write_section") {
+      const createIfMissing = args.createIfMissing ?? true;
       const sectionTitle = normalizeSectionTitle(args.section ?? "");
       const sectionContent = existing
         ? upsertMarkdownSection(existing.content, sectionTitle, args.content ?? "")
@@ -1132,6 +1407,7 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       );
     }
 
+    const createIfMissing = args.createIfMissing ?? true;
     const result = await this.writePage({
       client,
       existing,

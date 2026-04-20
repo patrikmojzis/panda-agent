@@ -1,7 +1,7 @@
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
-import {trimWikiPath} from "./paths.js";
+import {hasUnsafeWikiPathSegments, trimWikiPath,} from "./paths.js";
 
 export const DEFAULT_WIKI_URL = "http://wiki:3000";
 export const DEFAULT_WIKI_LOCALE = "en";
@@ -51,6 +51,20 @@ export interface WikiPageLinkItem {
   links: string[];
 }
 
+export interface WikiAssetFolder {
+  id: number;
+  slug: string;
+  name: string;
+}
+
+export interface WikiAssetListItem {
+  id: number;
+  filename: string;
+  ext: string;
+  kind: string;
+  fileSize?: number;
+}
+
 export interface WikiPageWriteInput {
   id?: number;
   path: string;
@@ -68,6 +82,19 @@ export interface WikiPageMoveInput {
   id: number;
   destinationPath: string;
   destinationLocale?: string;
+}
+
+export interface WikiAssetUploadInput {
+  folderId: number | null;
+  filename: string;
+  bytes: Uint8Array;
+  mimeType: string;
+}
+
+export interface WikiAssetDownloadResult {
+  bytes: Uint8Array;
+  mimeType?: string;
+  sizeBytes?: number;
 }
 
 interface GraphQlErrorShape {
@@ -89,8 +116,8 @@ function normalizeWikiPath(value: string): string {
   if (!withoutSlashes) {
     throw new ToolError("Wiki path must not be empty.");
   }
-  if (withoutSlashes.includes("//")) {
-    throw new ToolError(`Wiki path must not contain // (${value}).`);
+  if (hasUnsafeWikiPathSegments(withoutSlashes)) {
+    throw new ToolError(`Wiki path must not contain empty, '.', or '..' segments (${value}).`);
   }
   return withoutSlashes;
 }
@@ -108,17 +135,39 @@ function normalizeWikiTags(value: readonly string[] | undefined): string[] {
   )];
 }
 
-function buildGraphQlUrl(baseUrl: string): string {
+function buildWikiUrl(baseUrl: string, route: string): string {
   const url = new URL(baseUrl);
   const basePath = url.pathname.replace(/\/+$/g, "");
-  url.pathname = `${basePath}/graphql`.replace(/\/{2,}/g, "/");
+  const suffix = route.replace(/^\/+/g, "");
+  url.pathname = `${basePath}/${suffix}`.replace(/\/{2,}/g, "/");
   url.search = "";
   url.hash = "";
   return url.toString();
 }
 
+function buildGraphQlUrl(baseUrl: string): string {
+  return buildWikiUrl(baseUrl, "graphql");
+}
+
+function buildUploadUrl(baseUrl: string): string {
+  return buildWikiUrl(baseUrl, "u");
+}
+
+function buildAssetUrl(baseUrl: string, assetPath: string): string {
+  return buildWikiUrl(baseUrl, normalizeWikiPath(assetPath));
+}
+
 function pickMessage(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function pickInteger(value: unknown): number | undefined {
+  const normalized = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(normalized) ? normalized : undefined;
+}
+
+function normalizeContentType(value: string | null): string | undefined {
+  return trimToUndefined(value?.split(";")[0])?.toLowerCase();
 }
 
 function normalizeGraphQlErrors(errors: readonly GraphQlErrorShape[] | undefined): string[] {
@@ -253,6 +302,56 @@ function parseWikiPageLinks(value: unknown): WikiPageLinkItem[] {
   });
 }
 
+function parseWikiAssetFolders(value: unknown): WikiAssetFolder[] {
+  if (!Array.isArray(value)) {
+    throw new ToolError("Wiki.js returned an invalid asset folder list.");
+  }
+
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) {
+      return [];
+    }
+
+    const id = pickInteger(entry.id);
+    const slug = pickMessage(entry.slug);
+    if (id === undefined || !slug) {
+      return [];
+    }
+
+    return [{
+      id,
+      slug,
+      name: typeof entry.name === "string" ? entry.name : slug,
+    }];
+  });
+}
+
+function parseWikiAssetList(value: unknown): WikiAssetListItem[] {
+  if (!Array.isArray(value)) {
+    throw new ToolError("Wiki.js returned an invalid asset list.");
+  }
+
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) {
+      return [];
+    }
+
+    const id = pickInteger(entry.id);
+    const filename = pickMessage(entry.filename);
+    if (id === undefined || !filename) {
+      return [];
+    }
+
+    return [{
+      id,
+      filename,
+      ext: typeof entry.ext === "string" ? entry.ext : "",
+      kind: typeof entry.kind === "string" ? entry.kind : "UNKNOWN",
+      ...(pickInteger(entry.fileSize) !== undefined ? {fileSize: pickInteger(entry.fileSize)} : {}),
+    }];
+  });
+}
+
 export function resolveWikiUrl(env: NodeJS.ProcessEnv = process.env): string {
   return trimToUndefined(env.WIKI_URL) ?? DEFAULT_WIKI_URL;
 }
@@ -273,16 +372,22 @@ export class WikiJsClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
+  private buildAuthHeaders(headers: Record<string, string> = {}): Record<string, string> {
+    return {
+      authorization: `Bearer ${this.apiToken}`,
+      ...headers,
+    };
+  }
+
   private async graphQlRequest<TData>(
     query: string,
     variables: Record<string, unknown>,
   ): Promise<TData> {
     const response = await this.fetchImpl(buildGraphQlUrl(this.baseUrl), {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${this.apiToken}`,
+      headers: this.buildAuthHeaders({
         "content-type": "application/json",
-      },
+      }),
       body: JSON.stringify({
         query,
         variables,
@@ -473,6 +578,194 @@ export class WikiJsClient {
     );
 
     return parseWikiPageLinks(data.pages?.links);
+  }
+
+  async listAssetFolders(parentFolderId: number | null): Promise<WikiAssetFolder[]> {
+    const data = await this.graphQlRequest<{
+      assets?: {
+        folders?: unknown;
+      };
+    }>(
+      `query ListAssetFolders($parentFolderId: Int!) {
+        assets {
+          folders(parentFolderId: $parentFolderId) {
+            id
+            slug
+            name
+          }
+        }
+      }`,
+      {
+        parentFolderId: parentFolderId ?? 0,
+      },
+    );
+
+    return parseWikiAssetFolders(data.assets?.folders);
+  }
+
+  async createAssetFolder(slug: string, parentFolderId: number | null): Promise<void> {
+    const data = await this.graphQlRequest<{
+      assets?: {
+        createFolder?: {
+          responseResult?: WikiResponseResult;
+        };
+      };
+    }>(
+      `mutation CreateAssetFolder($slug: String!, $parentFolderId: Int!) {
+        assets {
+          createFolder(slug: $slug, parentFolderId: $parentFolderId) {
+            responseResult {
+              succeeded
+              message
+            }
+          }
+        }
+      }`,
+      {
+        slug,
+        parentFolderId: parentFolderId ?? 0,
+      },
+    );
+
+    const result = data.assets?.createFolder?.responseResult;
+    if (!result?.succeeded) {
+      throw new ToolError(result?.message ?? `Wiki.js could not create asset folder ${slug}.`);
+    }
+  }
+
+  async listAssets(
+    folderId: number | null,
+    kind: "ALL" | "IMAGE" | "BINARY" = "ALL",
+  ): Promise<WikiAssetListItem[]> {
+    const data = await this.graphQlRequest<{
+      assets?: {
+        list?: unknown;
+      };
+    }>(
+      `query ListAssets($folderId: Int!, $kind: AssetKind!) {
+        assets {
+          list(folderId: $folderId, kind: $kind) {
+            id
+            filename
+            ext
+            kind
+            fileSize
+          }
+        }
+      }`,
+      {
+        folderId: folderId ?? 0,
+        kind,
+      },
+    );
+
+    return parseWikiAssetList(data.assets?.list);
+  }
+
+  async deleteAsset(id: number): Promise<void> {
+    const data = await this.graphQlRequest<{
+      assets?: {
+        deleteAsset?: {
+          responseResult?: WikiResponseResult;
+        };
+      };
+    }>(
+      `mutation DeleteAsset($id: Int!) {
+        assets {
+          deleteAsset(id: $id) {
+            responseResult {
+              succeeded
+              message
+            }
+          }
+        }
+      }`,
+      {id},
+    );
+
+    const result = data.assets?.deleteAsset?.responseResult;
+    if (!result?.succeeded) {
+      throw new ToolError(result?.message ?? `Wiki.js could not delete asset ${id}.`);
+    }
+  }
+
+  async uploadAsset(input: WikiAssetUploadInput): Promise<void> {
+    if (/[\\/]/.test(input.filename)) {
+      throw new ToolError("Wiki.js asset upload filename must not contain path separators.");
+    }
+
+    const filename = normalizeWikiPath(input.filename);
+    if (!filename) {
+      throw new ToolError("Wiki.js asset upload requires a filename.");
+    }
+
+    const mimeType = trimToUndefined(input.mimeType) ?? "application/octet-stream";
+    const form = new FormData();
+    form.append("mediaUpload", JSON.stringify({
+      folderId: input.folderId ?? 0,
+    }));
+    form.append(
+      "mediaUpload",
+      new Blob([Buffer.from(input.bytes)], {type: mimeType}),
+      filename,
+    );
+
+    const response = await this.fetchImpl(buildUploadUrl(this.baseUrl), {
+      method: "POST",
+      headers: this.buildAuthHeaders(),
+      body: form,
+    });
+
+    if (response.ok) {
+      return;
+    }
+
+    let message: string | undefined;
+    const contentType = normalizeContentType(response.headers.get("content-type"));
+    if (contentType === "application/json") {
+      try {
+        const payload = await response.json() as {message?: unknown};
+        message = pickMessage(payload.message);
+      } catch {
+        message = undefined;
+      }
+    } else {
+      message = pickMessage(await response.text().catch(() => ""));
+    }
+
+    throw new ToolError(message ?? `Wiki.js asset upload failed with status ${response.status}.`);
+  }
+
+  async downloadAsset(assetPath: string): Promise<WikiAssetDownloadResult> {
+    const response = await this.fetchImpl(buildAssetUrl(this.baseUrl, assetPath), {
+      method: "GET",
+      headers: this.buildAuthHeaders(),
+    });
+
+    if (!response.ok) {
+      let message: string | undefined;
+      const contentType = normalizeContentType(response.headers.get("content-type"));
+      if (contentType === "application/json") {
+        try {
+          const payload = await response.json() as {message?: unknown};
+          message = pickMessage(payload.message);
+        } catch {
+          message = undefined;
+        }
+      } else {
+        message = pickMessage(await response.text().catch(() => ""));
+      }
+
+      throw new ToolError(message ?? `Wiki.js asset download failed with status ${response.status}.`);
+    }
+
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const sizeBytes = pickInteger(response.headers.get("content-length"));
+    return {
+      bytes,
+      mimeType: normalizeContentType(response.headers.get("content-type")),
+      ...(sizeBytes !== undefined ? {sizeBytes} : {}),
+    };
   }
 
   async createPage(input: WikiPageWriteInput): Promise<WikiPage> {

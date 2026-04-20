@@ -104,6 +104,7 @@ if [[ "$*" == *"/graphql"* ]]; then
       printf '%s' '{"data":{}}'
       ;;
   esac
+  printf 'curl payload %s\n' "$payload" >> "${logPath}"
   exit 0
 fi
 
@@ -174,6 +175,32 @@ exec "${jqPath}" "$@"
     expect(logs).toContain("docker compose --env-file");
     expect(logs).toContain("exec -T panda-core panda wiki binding set claw --group-id 7 --namespace agents/claw --stdin");
     expect(logs).not.toContain("pnpm");
+  });
+
+  it("grants namespace-scoped asset read, write, and manage permissions during bootstrap", async () => {
+    const logPath = path.join(await makeTempDir("panda-wiki-log-"), "commands.log");
+    const binDir = await createCommandStubs(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://agent@example/panda",
+      "CREDENTIALS_MASTER_KEY=test-master-key",
+      "PANDA_AGENTS=claw",
+      "WIKI_ADMIN_EMAIL=admin@localhost",
+      "WIKI_ADMIN_PASSWORD=secret",
+      "WIKI_PUBLISH_PORT=3100",
+      "WIKI_DB_URL=postgresql://wiki@example/wiki",
+    ].join("\n"));
+
+    const result = await runScript(["bootstrap", "claw"], {
+      envFile,
+      pathPrefix: binDir,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const logs = await readFile(logPath, "utf8");
+    expect(logs).toContain('"read:assets"');
+    expect(logs).toContain('"write:assets"');
+    expect(logs).toContain('"manage:assets"');
+    expect(logs).toContain('"path": "agents/claw"');
   });
 
   it("fails cleanly when bootstrap has no reachable host URL configured", async () => {

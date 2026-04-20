@@ -166,4 +166,127 @@ describe("WikiJsClient", () => {
 
     await expect(client.getPageByPath("agents/panda/missing", "en")).resolves.toBeNull();
   });
+
+  it("lists asset folders under a parent folder", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      data: {
+        assets: {
+          folders: [
+            {id: 12, slug: "profile", name: "profile"},
+            {id: 13, slug: "photos", name: "photos"},
+          ],
+        },
+      },
+    }), {
+      status: 200,
+      headers: {"content-type": "application/json"},
+    }));
+
+    const client = new WikiJsClient({
+      apiToken: "wiki-token",
+      baseUrl: "http://wiki.internal:3000/base",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.listAssetFolders(7)).resolves.toEqual([
+      {id: 12, slug: "profile", name: "profile"},
+      {id: 13, slug: "photos", name: "photos"},
+    ]);
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as {variables?: Record<string, unknown>};
+    expect(body.variables).toMatchObject({parentFolderId: 7});
+  });
+
+  it("uploads an asset through the raw /u endpoint", async () => {
+    const fetchImpl = vi.fn(async () => new Response("ok", {
+      status: 200,
+      headers: {"content-type": "text/plain"},
+    }));
+
+    const client = new WikiJsClient({
+      apiToken: "wiki-token",
+      baseUrl: "http://wiki.internal:3000/base",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await client.uploadAsset({
+      folderId: 12,
+      filename: "profile-photo.png",
+      bytes: Buffer.from("fake-image", "utf8"),
+      mimeType: "image/png",
+    });
+
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("http://wiki.internal:3000/base/u");
+    expect(fetchImpl.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
+      authorization: "Bearer wiki-token",
+    });
+
+    const form = fetchImpl.mock.calls[0]?.[1]?.body as FormData;
+    const parts = form.getAll("mediaUpload");
+    expect(String(parts[0])).toBe(JSON.stringify({folderId: 12}));
+
+    const file = parts[1];
+    expect(file).toBeInstanceOf(File);
+    expect((file as File).name).toBe("profile-photo.png");
+    await expect((file as File).text()).resolves.toBe("fake-image");
+  });
+
+  it("deletes an asset through the GraphQL API", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      data: {
+        assets: {
+          deleteAsset: {
+            responseResult: {
+              succeeded: true,
+              message: "deleted",
+            },
+          },
+        },
+      },
+    }), {
+      status: 200,
+      headers: {"content-type": "application/json"},
+    }));
+
+    const client = new WikiJsClient({
+      apiToken: "wiki-token",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await client.deleteAsset(91);
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as {variables?: Record<string, unknown>};
+    expect(body.variables).toMatchObject({id: 91});
+  });
+
+  it("downloads an asset from the wiki base url", async () => {
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from([1, 2, 3]), {
+      status: 200,
+      headers: {
+        "content-type": "image/png",
+        "content-length": "3",
+      },
+    }));
+
+    const client = new WikiJsClient({
+      apiToken: "wiki-token",
+      baseUrl: "http://wiki.internal:3000/base",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const downloaded = await client.downloadAsset("agents/panda/_assets/profile/profile-photo.png");
+
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "http://wiki.internal:3000/base/agents/panda/_assets/profile/profile-photo.png",
+    );
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
+      authorization: "Bearer wiki-token",
+    });
+    expect(downloaded).toMatchObject({
+      mimeType: "image/png",
+      sizeBytes: 3,
+    });
+    expect(Buffer.from(downloaded.bytes)).toEqual(Buffer.from([1, 2, 3]));
+  });
 });

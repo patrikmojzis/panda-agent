@@ -1,3 +1,7 @@
+import {mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import {describe, expect, it, vi} from "vitest";
 
 import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
@@ -1207,6 +1211,429 @@ describe("WikiTool", () => {
     expect(String(pages.get("en/agents/panda/_archive/2026/04/old-index")?.content ?? "")).toContain(
       "[Today](/agents/panda/notes/today)",
     );
+  });
+
+  it("uploads an image into page-scoped wiki assets and writes a managed block", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-wiki-attach-image-"));
+    try {
+      const sourcePath = path.join(tempDir, "profile.png");
+      await writeFile(sourcePath, Buffer.from("fake-image", "utf8"));
+
+      const bindings = createBindings();
+      const uploads: Array<{folderId: number; filename: string; bytes: string}> = [];
+      let nextFolderId = 30;
+      let rootFolders: Array<{id: number; slug: string; name: string}> = [];
+      let savedContent: string | null = null;
+
+      const jsonResponse = (body: Record<string, unknown>) => new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {"content-type": "application/json"},
+      });
+
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/u")) {
+          const form = init?.body as FormData;
+          const parts = form.getAll("mediaUpload");
+          const metadata = JSON.parse(String(parts[0])) as {folderId: number};
+          uploads.push({
+            folderId: metadata.folderId,
+            filename: (parts[1] as File).name,
+            bytes: await (parts[1] as File).text(),
+          });
+          return new Response("ok", {
+            status: 200,
+            headers: {"content-type": "text/plain"},
+          });
+        }
+
+        const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+          query?: string;
+          variables?: Record<string, unknown>;
+        };
+        const query = String(requestBody.query ?? "");
+        const variables = requestBody.variables ?? {};
+
+        if (query.includes("singleByPath")) {
+          return jsonResponse({
+            data: {
+              pages: {
+                singleByPath: buildPage({
+                  id: 44,
+                  updatedAt: savedContent ? "2026-04-19T10:09:00.000Z" : "2026-04-19T10:01:00.000Z",
+                  content: savedContent ?? [
+                    "# Profile",
+                    "",
+                    "## Facts",
+                    "",
+                    "Old facts.",
+                  ].join("\n"),
+                }),
+              },
+            },
+          });
+        }
+
+        if (query.includes("folders(parentFolderId")) {
+          return jsonResponse({
+            data: {
+              assets: {
+                folders: Number(variables.parentFolderId) === 0 ? rootFolders : [],
+              },
+            },
+          });
+        }
+
+        if (query.includes("createFolder(")) {
+          const slug = String(variables.slug ?? "");
+          const folder = {
+            id: nextFolderId,
+            slug,
+            name: slug,
+          };
+          nextFolderId += 1;
+          rootFolders = [...rootFolders, folder];
+          return jsonResponse({
+            data: {
+              assets: {
+                createFolder: {
+                  responseResult: {
+                    succeeded: true,
+                    message: "created",
+                  },
+                },
+              },
+            },
+          });
+        }
+
+        if (query.includes("list(folderId")) {
+          return jsonResponse({
+            data: {
+              assets: {
+                list: [],
+              },
+            },
+          });
+        }
+
+        if (query.includes("update(")) {
+          savedContent = String(variables.content ?? "");
+          return jsonResponse({
+            data: {
+              pages: {
+                update: {
+                  responseResult: {
+                    succeeded: true,
+                    message: "updated",
+                  },
+                  page: {id: 44},
+                },
+              },
+            },
+          });
+        }
+
+        throw new Error(`Unexpected wiki request: ${query}`);
+      });
+
+      const tool = new WikiTool({
+        env: {
+          WIKI_URL: "http://wiki:3000",
+        } as NodeJS.ProcessEnv,
+        fetchImpl: fetchImpl as typeof fetch,
+        bindings,
+      });
+
+      const result = await tool.run({
+        operation: "attach_image",
+        path: "agents/panda/profile",
+        section: "Facts",
+        slot: "profile-photo",
+        sourcePath,
+        alt: "Profile photo",
+        caption: "Freshly uploaded.",
+      }, createRunContext({
+        agentKey: "panda",
+        sessionId: "session-1",
+        threadId: "thread-1",
+      })) as ToolResultPayload;
+
+      const details = parseToolResult(result);
+      expect(details).toMatchObject({
+        operation: "attach_image",
+        action: "updated",
+        upload: "uploaded",
+        slot: "profile-photo",
+      });
+
+      const assetPath = String(details.assetPath ?? "");
+      const updatedContent = savedContent ?? "";
+      expect(assetPath).toBe("agents/panda/_assets/profile/profile-photo.png");
+      expect(updatedContent).toContain(assetPath);
+      expect(updatedContent).toContain('<!-- panda:asset slot="profile-photo"');
+      expect(updatedContent).toContain("![Profile photo]");
+      expect(updatedContent).toContain("_Freshly uploaded._");
+      expect(uploads).toEqual([{
+        folderId: 30,
+        filename: path.basename(assetPath),
+        bytes: "fake-image",
+      }]);
+    } finally {
+      await rm(tempDir, {recursive: true, force: true});
+    }
+  });
+
+  it("deletes the previous managed asset when a slot changes file extension", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-wiki-attach-image-"));
+    const sourcePath = path.join(tempDir, "profile-photo.png");
+    await writeFile(sourcePath, "fake-image", "utf8");
+
+    try {
+      const bindings = createBindings();
+      const rootFolders = [
+        {id: 30, slug: "profile", name: "profile"},
+      ];
+      const deletedAssetIds: number[] = [];
+      const uploads: Array<{folderId: number | null; filename: string}> = [];
+      let savedContent: string | null = null;
+
+      const jsonResponse = (body: unknown) => new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {"content-type": "application/json"},
+      });
+
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/u")) {
+          const form = init?.body as FormData;
+          const metadata = JSON.parse(String(form.getAll("mediaUpload")[0] ?? "{}")) as {
+            folderId?: number;
+          };
+          const file = form.getAll("mediaUpload")[1] as File;
+          uploads.push({
+            folderId: metadata.folderId ?? null,
+            filename: file.name,
+          });
+          return new Response("ok", {status: 200});
+        }
+
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          query?: string;
+          variables?: Record<string, unknown>;
+        };
+        const query = String(body.query ?? "");
+        const variables = body.variables ?? {};
+
+        if (query.includes("singleByPath")) {
+          return jsonResponse({
+            data: {
+              pages: {
+                singleByPath: buildPage({
+                  id: 44,
+                  updatedAt: savedContent ? "2026-04-19T10:09:00.000Z" : "2026-04-19T10:01:00.000Z",
+                  content: savedContent ?? [
+                    "# Profile",
+                    "",
+                    "## Facts",
+                    "",
+                    '<!-- panda:asset slot="profile-photo" path="agents/panda/_assets/profile/profile-photo.jpg" -->',
+                    "![Old photo](/agents/panda/_assets/profile/profile-photo.jpg)",
+                    "<!-- /panda:asset -->",
+                  ].join("\n"),
+                }),
+              },
+            },
+          });
+        }
+
+        if (query.includes("folders(parentFolderId")) {
+          return jsonResponse({
+            data: {
+              assets: {
+                folders: Number(variables.parentFolderId) === 0 ? rootFolders : [],
+              },
+            },
+          });
+        }
+
+        if (query.includes("list(folderId")) {
+          return jsonResponse({
+            data: {
+              assets: {
+                list: [
+                  {
+                    id: 91,
+                    filename: "profile-photo.jpg",
+                    ext: ".jpg",
+                    kind: "IMAGE",
+                    fileSize: 123,
+                  },
+                ],
+              },
+            },
+          });
+        }
+
+        if (query.includes("deleteAsset(")) {
+          deletedAssetIds.push(Number(variables.id));
+          return jsonResponse({
+            data: {
+              assets: {
+                deleteAsset: {
+                  responseResult: {
+                    succeeded: true,
+                    message: "deleted",
+                  },
+                },
+              },
+            },
+          });
+        }
+
+        if (query.includes("update(")) {
+          savedContent = String(variables.content ?? "");
+          return jsonResponse({
+            data: {
+              pages: {
+                update: {
+                  responseResult: {
+                    succeeded: true,
+                    message: "updated",
+                  },
+                  page: {id: 44},
+                },
+              },
+            },
+          });
+        }
+
+        throw new Error(`Unexpected wiki request: ${query}`);
+      });
+
+      const tool = new WikiTool({
+        env: {
+          WIKI_URL: "http://wiki:3000",
+        } as NodeJS.ProcessEnv,
+        fetchImpl: fetchImpl as typeof fetch,
+        bindings,
+      });
+
+      const result = await tool.run({
+        operation: "attach_image",
+        path: "agents/panda/profile",
+        section: "Facts",
+        slot: "profile-photo",
+        sourcePath,
+        alt: "Profile photo",
+      }, createRunContext({
+        agentKey: "panda",
+        sessionId: "session-1",
+        threadId: "thread-1",
+      })) as ToolResultPayload;
+
+      expect(parseToolResult(result)).toMatchObject({
+        operation: "attach_image",
+        assetPath: "agents/panda/_assets/profile/profile-photo.png",
+        deletedPreviousAssetPath: "agents/panda/_assets/profile/profile-photo.jpg",
+      });
+      expect(savedContent).toContain("profile-photo.png");
+      expect(deletedAssetIds).toEqual([91]);
+      expect(uploads).toEqual([{
+        folderId: 30,
+        filename: "profile-photo.png",
+      }]);
+    } finally {
+      await rm(tempDir, {recursive: true, force: true});
+    }
+  });
+
+  it("fetches a wiki asset into Panda media storage for view_media", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "panda-wiki-fetch-asset-"));
+    try {
+      const bindings = createBindings();
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        expect(String(input)).toBe("http://wiki:3000/agents/panda/_assets/profile/profile-photo.png");
+        return new Response(Buffer.from([1, 2, 3]), {
+          status: 200,
+          headers: {
+            "content-type": "image/png",
+            "content-length": "3",
+          },
+        });
+      });
+
+      const tool = new WikiTool({
+        env: {
+          WIKI_URL: "http://wiki:3000",
+          DATA_DIR: tempDir,
+        } as NodeJS.ProcessEnv,
+        fetchImpl: fetchImpl as typeof fetch,
+        bindings,
+      });
+
+      const result = await tool.run({
+        operation: "fetch_asset",
+        assetPath: "agents/panda/_assets/profile/profile-photo.png",
+      }, createRunContext({
+        agentKey: "panda",
+        sessionId: "session-1",
+        threadId: "thread-1",
+      })) as ToolResultPayload;
+
+      const details = parseToolResult(result);
+      expect(details).toMatchObject({
+        operation: "fetch_asset",
+        assetPath: "agents/panda/_assets/profile/profile-photo.png",
+        mimeType: "image/png",
+        sizeBytes: 3,
+      });
+
+      const localPath = String(details.localPath ?? "");
+      expect(localPath).toBe(
+        path.join(
+          tempDir,
+          "agents",
+          "panda",
+          "media",
+          "wiki",
+          "fetched",
+          "agents",
+          "panda",
+          "_assets",
+          "profile",
+          "profile-photo.png",
+        ),
+      );
+      await expect(readFile(localPath)).resolves.toEqual(Buffer.from([1, 2, 3]));
+    } finally {
+      await rm(tempDir, {recursive: true, force: true});
+    }
+  });
+
+  it("rejects wiki asset paths outside the stored asset namespace before fetching", async () => {
+    const bindings = createBindings();
+    const fetchImpl = vi.fn();
+
+    const tool = new WikiTool({
+      env: {
+        WIKI_URL: "http://wiki:3000",
+      } as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings,
+    });
+
+    await expect(tool.run({
+      operation: "fetch_asset",
+      assetPath: "agents/luna/_assets/profile.png",
+    }, createRunContext({
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    }))).rejects.toMatchObject({
+      message: "Wiki asset path agents/luna/_assets/profile.png is outside the agent asset namespace agents/panda/_assets. Use only agents/panda/_assets or its children.",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("rejects archiving a page that is already archived", async () => {

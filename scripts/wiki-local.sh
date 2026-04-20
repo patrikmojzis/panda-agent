@@ -448,6 +448,9 @@ update_group() {
           "write:pages",
           "manage:pages",
           "delete:pages",
+          "read:assets",
+          "write:assets",
+          "manage:assets",
           "read:source",
           "read:history"
         ],
@@ -461,6 +464,9 @@ update_group() {
               "write:pages",
               "manage:pages",
               "delete:pages",
+              "read:assets",
+              "write:assets",
+              "manage:assets",
               "read:source",
               "read:history"
             ],

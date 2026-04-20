@@ -5,21 +5,21 @@ export interface MarkdownSectionUpsertResult {
   action: "replaced" | "appended";
 }
 
-function normalizeLineEndings(value: string): string {
+export function normalizeMarkdownLineEndings(value: string): string {
   return value.replace(/\r\n?/g, "\n");
 }
 
-function trimOuterBlankLines(value: string): string {
-  return normalizeLineEndings(value)
+export function trimMarkdownOuterBlankLines(value: string): string {
+  return normalizeMarkdownLineEndings(value)
     .replace(/^(?:[ \t]*\n)+/, "")
     .replace(/(?:\n[ \t]*)+$/, "");
 }
 
-function trimLeadingBlankLines(value: string): string {
+export function trimMarkdownLeadingBlankLines(value: string): string {
   return value.replace(/^(?:[ \t]*\n)+/, "");
 }
 
-function trimTrailingBlankLines(value: string): string {
+export function trimMarkdownTrailingBlankLines(value: string): string {
   return value.replace(/(?:\n[ \t]*)+$/, "");
 }
 
@@ -32,7 +32,7 @@ function requireHeadingTitle(value: string, label: string): string {
   return trimmed;
 }
 
-function parseHeadingLine(line: string): {level: number; title: string} | null {
+export function parseMarkdownHeadingLine(line: string): {level: number; title: string} | null {
   const match = /^(#{1,6})[ \t]+(.+?)(?:[ \t]+#+[ \t]*)?$/.exec(line);
   if (!match) {
     return null;
@@ -61,7 +61,7 @@ function buildSectionHeading(section: string, level: number): string {
 
 function buildSectionBlock(section: string, content: string, level: number): string {
   const heading = buildSectionHeading(section, level);
-  const body = trimOuterBlankLines(content);
+  const body = trimMarkdownOuterBlankLines(content);
   return body ? `${heading}\n\n${body}` : heading;
 }
 
@@ -83,21 +83,21 @@ export function upsertMarkdownSection(
   level = DEFAULT_WIKI_SECTION_LEVEL,
 ): MarkdownSectionUpsertResult {
   const sectionBlock = buildSectionBlock(section, content, level);
-  const normalizedDocument = normalizeLineEndings(document);
+  const normalizedDocument = normalizeMarkdownLineEndings(document);
   const lines = normalizedDocument.split("\n");
 
   let startIndex = -1;
   let endIndex = lines.length;
 
   for (let index = 0; index < lines.length; index += 1) {
-    const headingLine = parseHeadingLine(lines[index] ?? "");
+    const headingLine = parseMarkdownHeadingLine(lines[index] ?? "");
     if (!headingLine || headingLine.level !== level || headingLine.title !== section.trim()) {
       continue;
     }
 
     startIndex = index;
     for (let nextIndex = index + 1; nextIndex < lines.length; nextIndex += 1) {
-      const nextHeading = parseHeadingLine(lines[nextIndex] ?? "");
+      const nextHeading = parseMarkdownHeadingLine(lines[nextIndex] ?? "");
       if (nextHeading && nextHeading.level <= level) {
         endIndex = nextIndex;
         break;
@@ -107,15 +107,15 @@ export function upsertMarkdownSection(
   }
 
   if (startIndex < 0) {
-    const prefix = trimTrailingBlankLines(normalizedDocument);
+    const prefix = trimMarkdownTrailingBlankLines(normalizedDocument);
     return {
       content: prefix ? `${prefix}\n\n${sectionBlock}` : sectionBlock,
       action: "appended",
     };
   }
 
-  const prefix = trimTrailingBlankLines(lines.slice(0, startIndex).join("\n"));
-  const suffix = trimLeadingBlankLines(lines.slice(endIndex).join("\n"));
+  const prefix = trimMarkdownTrailingBlankLines(lines.slice(0, startIndex).join("\n"));
+  const suffix = trimMarkdownLeadingBlankLines(lines.slice(endIndex).join("\n"));
   const parts = [
     ...(prefix ? [prefix] : []),
     sectionBlock,
