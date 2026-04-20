@@ -39,6 +39,7 @@ import {
 } from "./types.js";
 import {buildIdentityTableNames} from "../../../domain/identity/postgres-shared.js";
 import {buildSessionTableNames} from "../../../domain/sessions/postgres-shared.js";
+import {resolveThreadPromptCacheKey} from "./prompt-cache-key.js";
 
 interface PostgresThreadRuntimeStoreOptions {
   pool: PgPoolLike;
@@ -252,6 +253,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       throw new Error(`Thread ${input.id} is missing sessionId.`);
     }
     const model = input.model === undefined ? null : resolveModelSelector(input.model).canonical;
+    const promptCacheKey = resolveThreadPromptCacheKey(input.id, input.promptCacheKey);
 
     const result = await queryable.query(`
       INSERT INTO ${this.tables.threads} (
@@ -310,7 +312,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       toJson(input.context),
       toJson(input.runtimeState),
       toJson(input.inferenceProjection),
-      input.promptCacheKey ?? null,
+      promptCacheKey,
       model,
       input.temperature ?? null,
       input.thinking ?? null,

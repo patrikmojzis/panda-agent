@@ -16,6 +16,7 @@ import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {WikiBindingService} from "../../domain/wiki/index.js";
 import {isRecord} from "../../lib/records.js";
+import {resolveThreadPromptCacheKey} from "../../domain/threads/runtime/prompt-cache-key.js";
 
 const HOUR_MS = 60 * 60 * 1_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -125,6 +126,7 @@ export function createThreadDefinition(
     }),
     context,
     llmContexts,
+    promptCacheKey: resolveThreadPromptCacheKey(options.thread.id, options.thread.promptCacheKey),
     inferenceProjection: mergeInferenceProjection(
       DEFAULT_INFERENCE_PROJECTION,
       options.thread.inferenceProjection,
