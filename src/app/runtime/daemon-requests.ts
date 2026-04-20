@@ -124,6 +124,7 @@ export function createDaemonRequestProcessor(
     const media = await threads.relocateThreadMedia(thread, payload.media);
     const text = buildTelegramInboundText({
       connectorKey: payload.connectorKey,
+      sentAt: payload.sentAt ? new Date(payload.sentAt).toISOString() : undefined,
       externalConversationId: payload.externalConversationId,
       externalActorId: payload.externalActorId,
       externalMessageId: payload.externalMessageId,
@@ -140,6 +141,7 @@ export function createDaemonRequestProcessor(
     });
     const persistence = buildTelegramInboundPersistence({
       connectorKey: payload.connectorKey,
+      sentAt: payload.sentAt ? new Date(payload.sentAt).toISOString() : undefined,
       externalConversationId: payload.externalConversationId,
       externalActorId: payload.externalActorId,
       externalMessageId: payload.externalMessageId,
@@ -321,6 +323,7 @@ export function createDaemonRequestProcessor(
     const media = await threads.relocateThreadMedia(thread, payload.media);
     const text = buildWhatsAppInboundText({
       connectorKey: payload.connectorKey,
+      sentAt: payload.sentAt ? new Date(payload.sentAt).toISOString() : undefined,
       externalConversationId: payload.externalConversationId,
       externalActorId: payload.externalActorId,
       externalMessageId: payload.externalMessageId,
@@ -343,6 +346,7 @@ export function createDaemonRequestProcessor(
       message: stringToUserMessage(text),
       metadata: buildWhatsAppInboundMetadata({
         connectorKey: payload.connectorKey,
+        sentAt: payload.sentAt ? new Date(payload.sentAt).toISOString() : undefined,
         externalConversationId: payload.externalConversationId,
         externalActorId: payload.externalActorId,
         externalMessageId: payload.externalMessageId,

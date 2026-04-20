@@ -3,6 +3,7 @@ import {formatMaybeValue} from "./shared.js";
 export function renderWhatsAppInboundText(options: {
   channel: string;
   connectorKey: string;
+  sentAt?: string;
   conversationId: string;
   actorId: string;
   externalMessageId: string;
@@ -24,6 +25,7 @@ connector_key: ${options.connectorKey}
 conversation_id: ${options.conversationId}
 actor_id: ${options.actorId}
 external_message_id: ${options.externalMessageId}
+sent_at: ${formatMaybeValue(options.sentAt)}
 identity_id: ${formatMaybeValue(options.identityId)}
 identity_handle: ${formatMaybeValue(options.identityHandle)}
 remote_jid: ${options.remoteJid}

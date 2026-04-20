@@ -113,6 +113,14 @@ function parseTelegramMessageId(value: string): number {
   return parsed;
 }
 
+function readTelegramSentAtMs(message: TelegramContext["msg"] | undefined): number | undefined {
+  if (!message || typeof message.date !== "number" || !Number.isFinite(message.date) || message.date <= 0) {
+    return undefined;
+  }
+
+  return message.date * 1_000;
+}
+
 export class TelegramService {
   private readonly bot: Bot<TelegramContext>;
   private readonly token: string;
@@ -838,6 +846,7 @@ export class TelegramService {
       payload: {
         connectorKey,
         botUsername,
+        sentAt: readTelegramSentAtMs(message),
         externalConversationId,
         chatId: String(message.chat.id),
         chatType: chatType ?? "private",

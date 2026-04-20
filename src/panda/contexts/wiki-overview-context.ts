@@ -28,7 +28,6 @@ const MIN_RECENT_SCAN_LIMIT = 100;
 const RECENT_SCAN_MULTIPLIER = 10;
 
 interface WikiOverviewSnapshot {
-  fetchedAt: number;
   namespacePath: string;
   recentlyEdited: WikiOverviewRecentEntry[];
   topLinked: WikiOverviewLinkedEntry[];
@@ -46,23 +45,6 @@ export interface WikiOverviewContextOptions {
   linkedLimit?: number;
   ttlMs?: number;
   now?: Date | (() => Date);
-}
-
-function formatRelativeAge(ageMs: number): string {
-  if (ageMs < 5_000) {
-    return "just now";
-  }
-  if (ageMs < 60_000) {
-    return `${Math.floor(ageMs / 1_000)}s ago`;
-  }
-  if (ageMs < 60 * 60 * 1_000) {
-    return `${Math.floor(ageMs / 60_000)}m ago`;
-  }
-  if (ageMs < 24 * 60 * 60 * 1_000) {
-    return `${Math.floor(ageMs / (60 * 60 * 1_000))}h ago`;
-  }
-
-  return `${Math.floor(ageMs / (24 * 60 * 60 * 1_000))}d ago`;
 }
 
 function formatCompactDuration(durationMs: number): string {
@@ -214,14 +196,12 @@ function buildTopLinked(
 function renderSnapshot(
   snapshot: WikiOverviewSnapshot,
   options: {
-    now: number;
     ttlMs: number;
   },
 ): string {
   return renderWikiOverviewContext({
     namespacePath: snapshot.namespacePath,
-    lastRefreshed: formatRelativeAge(Math.max(0, options.now - snapshot.fetchedAt)),
-    cacheTtl: options.ttlMs > 0 ? formatCompactDuration(options.ttlMs) : undefined,
+    refreshCadence: options.ttlMs > 0 ? formatCompactDuration(options.ttlMs) : undefined,
     recentlyEdited: snapshot.recentlyEdited,
     topLinked: snapshot.topLinked,
   });
@@ -263,7 +243,6 @@ export class WikiOverviewContext extends LlmContext {
       const cached = overviewCache.get(cacheKey);
       if (cached && cached.expiresAt > now) {
         return renderSnapshot(cached.snapshot, {
-          now,
           ttlMs,
         });
       }
@@ -289,7 +268,6 @@ export class WikiOverviewContext extends LlmContext {
       ]);
 
       const snapshot: WikiOverviewSnapshot = {
-        fetchedAt: now,
         namespacePath,
         recentlyEdited: buildRecentlyEdited(pages, {
           locale,
@@ -304,7 +282,7 @@ export class WikiOverviewContext extends LlmContext {
       };
 
       if (ttlMs > 0) {
-        // Cache the small overview snapshot so the age line can stay truthful on cache hits.
+        // Cache the small overview snapshot so prompt content stays stable between refreshes.
         overviewCache.set(cacheKey, {
           expiresAt: now + ttlMs,
           snapshot,
@@ -312,7 +290,6 @@ export class WikiOverviewContext extends LlmContext {
       }
 
       return renderSnapshot(snapshot, {
-        now,
         ttlMs,
       });
     } catch {

@@ -10,6 +10,7 @@ import {trimToUndefined} from "../../../lib/strings.js";
 
 export interface WhatsAppInboundTextOptions {
   connectorKey: string;
+  sentAt?: string;
   externalConversationId: string;
   externalActorId: string;
   externalMessageId: string;
@@ -25,6 +26,7 @@ export interface WhatsAppInboundTextOptions {
 
 export interface WhatsAppInboundMetadataOptions {
   connectorKey: string;
+  sentAt?: string;
   externalConversationId: string;
   externalActorId: string;
   externalMessageId: string;
@@ -62,6 +64,7 @@ export function buildWhatsAppInboundText(options: WhatsAppInboundTextOptions): s
   return renderWhatsAppInboundText({
     channel: WHATSAPP_SOURCE,
     connectorKey: options.connectorKey,
+    sentAt: options.sentAt,
     conversationId: options.externalConversationId,
     actorId: options.externalActorId,
     externalMessageId: options.externalMessageId,
@@ -86,6 +89,7 @@ export function buildWhatsAppInboundMetadata(options: WhatsAppInboundMetadataOpt
       externalMessageId: options.externalMessageId,
     },
     whatsapp: {
+      sentAt: options.sentAt ?? null,
       remoteJid: options.remoteJid,
       chatType: options.chatType,
       messageId: options.externalMessageId,

@@ -84,6 +84,7 @@ export function buildA2AInboundText(payload: A2AMessageRequestPayload): string {
     conversationId: payload.fromSessionId,
     actorId: payload.fromAgentKey,
     messageId: payload.externalMessageId,
+    sentAt: new Date(payload.sentAt).toISOString(),
     fromAgentKey: payload.fromAgentKey,
     fromSessionId: payload.fromSessionId,
     attachments: attachmentDescriptions(payload.items),

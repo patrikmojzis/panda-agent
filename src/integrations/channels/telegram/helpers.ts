@@ -6,6 +6,7 @@ import {describeMediaDescriptor, serializeMediaDescriptor} from "../media-shared
 
 export interface TelegramInboundTextOptions {
   connectorKey: string;
+  sentAt?: string;
   externalConversationId: string;
   externalActorId: string;
   externalMessageId: string;
@@ -47,6 +48,7 @@ export interface TelegramReactionMetadataOptions {
 
 export interface TelegramInboundPersistenceOptions {
   connectorKey: string;
+  sentAt?: string;
   externalConversationId: string;
   externalActorId: string;
   externalMessageId: string;
@@ -111,6 +113,7 @@ export function buildTelegramInboundPersistence(
         externalMessageId: options.externalMessageId,
       },
       telegram: {
+        sentAt: options.sentAt ?? null,
         chatId: options.chatId,
         chatType: options.chatType,
         messageId: options.messageId,
@@ -145,6 +148,7 @@ export function buildTelegramInboundPersistence(
 export function buildTelegramInboundText(options: TelegramInboundTextOptions): string {
   return renderTelegramInboundText({
     connectorKey: options.connectorKey,
+    sentAt: options.sentAt,
     conversationId: options.externalConversationId,
     actorId: options.externalActorId,
     externalMessageId: options.externalMessageId,

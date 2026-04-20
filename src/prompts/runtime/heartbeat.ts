@@ -1,5 +1,7 @@
 export function renderHeartbeatPrompt(options: {
   scheduledIso: string;
+  scheduledLocalDateTime?: string;
+  timeZone?: string;
   guidance?: string | null;
 }): string {
   const heartbeatGuidance = options.guidance?.trim();
@@ -12,6 +14,9 @@ Use outbound if you intentionally want to reach the user.${heartbeatGuidance ? `
 **Heartbeat Guidance**
 ${heartbeatGuidance}` : ""}
 
-Scheduled fire time: ${options.scheduledIso}
+Canonical time hint for this wake:
+${options.scheduledLocalDateTime ? `Scheduled fire time (local): ${options.scheduledLocalDateTime}` : ""}
+${options.timeZone ? `Timezone: ${options.timeZone}` : ""}
+Scheduled fire time (ISO UTC): ${options.scheduledIso}
 `.trim();
 }

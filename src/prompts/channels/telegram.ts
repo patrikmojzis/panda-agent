@@ -2,6 +2,7 @@ import {formatMaybeValue} from "./shared.js";
 
 function buildTelegramHeaderLines(options: {
   connectorKey: string;
+  sentAt?: string;
   conversationId: string;
   actorId: string;
   externalMessageId: string;
@@ -24,6 +25,7 @@ connector_key: ${options.connectorKey}
 conversation_id: ${options.conversationId}
 actor_id: ${options.actorId}
 external_message_id: ${options.externalMessageId}
+sent_at: ${formatMaybeValue(options.sentAt)}
 identity_id: ${formatMaybeValue(options.identityId)}
 identity_handle: ${formatMaybeValue(options.identityHandle)}
 chat_id: ${options.chatId}
@@ -39,6 +41,7 @@ ${attachments}
 
 export function renderTelegramInboundText(options: {
   connectorKey: string;
+  sentAt?: string;
   conversationId: string;
   actorId: string;
   externalMessageId: string;
@@ -57,6 +60,7 @@ export function renderTelegramInboundText(options: {
   return `
 ${buildTelegramHeaderLines({
     connectorKey: options.connectorKey,
+    sentAt: options.sentAt,
     conversationId: options.conversationId,
     actorId: options.actorId,
     externalMessageId: options.externalMessageId,

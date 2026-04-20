@@ -22,7 +22,6 @@ const PROFILE_SECTIONS = new Set<AgentProfileContextSection>([
 ]);
 
 export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
-  "datetime",
   "environment",
   "wiki_overview",
   "background_jobs",

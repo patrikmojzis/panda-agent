@@ -5,6 +5,7 @@ export function renderA2AInboundText(options: {
   conversationId: string;
   actorId: string;
   messageId: string;
+  sentAt?: string;
   fromAgentKey: string;
   fromSessionId: string;
   attachments: readonly string[];
@@ -20,6 +21,7 @@ connector_key: ${options.connectorKey}
 conversation_id: ${options.conversationId}
 actor_id: ${options.actorId}
 message_id: ${options.messageId}
+sent_at: ${formatMaybeValue(options.sentAt)}
 from_agent_key: ${options.fromAgentKey}
 from_session_id: ${options.fromSessionId}
 attachments:

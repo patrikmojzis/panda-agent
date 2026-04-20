@@ -209,6 +209,25 @@ function readMediaSizeBytes(value: unknown): number | undefined {
   return undefined;
 }
 
+function readMessageSentAtMs(value: unknown): number | undefined {
+  const seconds = (() => {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      return value;
+    }
+
+    if (typeof value === "object" && value !== null && "toNumber" in value && typeof value.toNumber === "function") {
+      const numericValue = value.toNumber();
+      if (typeof numericValue === "number" && Number.isFinite(numericValue) && numericValue > 0) {
+        return numericValue;
+      }
+    }
+
+    return undefined;
+  })();
+
+  return seconds === undefined ? undefined : seconds * 1_000;
+}
+
 export class WhatsAppService {
   private readonly options: WhatsAppServiceOptions;
   private pool: Pool | null = null;
@@ -950,6 +969,7 @@ export class WhatsAppService {
         kind: "whatsapp_message",
         payload: {
           connectorKey: this.options.connectorKey,
+          sentAt: readMessageSentAtMs(message.messageTimestamp),
           externalConversationId,
           externalActorId,
           externalMessageId,

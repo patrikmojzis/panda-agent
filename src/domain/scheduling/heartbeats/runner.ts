@@ -1,5 +1,6 @@
 import {stringToUserMessage} from "../../../kernel/agent/index.js";
 import {renderHeartbeatPrompt} from "../../../prompts/runtime/heartbeat.js";
+import {resolveLocalDateTimeInfo} from "../../../lib/dates.js";
 import type {SessionHeartbeatRecord, SessionRecord, SessionStore} from "../../sessions/index.js";
 import type {ThreadRuntimeCoordinator} from "../../threads/runtime/coordinator.js";
 
@@ -10,8 +11,11 @@ const HEARTBEAT_SOURCE = "heartbeat";
 const HEARTBEAT_CLAIM_OWNER = "heartbeat-runner";
 
 function buildHeartbeatPrompt(scheduledFor: number, guidance?: string | null): string {
+  const localDateTime = resolveLocalDateTimeInfo(new Date(scheduledFor));
   return renderHeartbeatPrompt({
     scheduledIso: new Date(scheduledFor).toISOString(),
+    scheduledLocalDateTime: localDateTime.formattedDateTimeWithZone,
+    timeZone: localDateTime.timeZone,
     guidance,
   });
 }

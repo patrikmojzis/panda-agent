@@ -63,6 +63,7 @@ export interface A2AMessageRequestPayload extends BaseRuntimeRequestPayload {
 export interface TelegramMessageRequestPayload extends BaseRuntimeRequestPayload {
   connectorKey: string;
   botUsername?: string | null;
+  sentAt?: number;
   externalConversationId: string;
   chatId: string;
   chatType: string;
@@ -92,6 +93,7 @@ export interface TelegramReactionRequestPayload extends BaseRuntimeRequestPayloa
 
 export interface WhatsAppMessageRequestPayload extends BaseRuntimeRequestPayload {
   connectorKey: string;
+  sentAt?: number;
   externalConversationId: string;
   externalActorId: string;
   externalMessageId: string;

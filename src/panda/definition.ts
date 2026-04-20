@@ -8,6 +8,7 @@ import {
   PostgresReadonlyQueryTool,
   type PostgresReadonlyQueryToolOptions,
 } from "./tools/postgres-readonly-query-tool.js";
+import {CurrentDateTimeTool} from "./tools/current-datetime-tool.js";
 import {WebFetchTool} from "./tools/web-fetch-tool.js";
 import {WebResearchTool} from "./tools/web-research-tool.js";
 import {hasOpenAiApiKey, WhisperTool} from "./tools/whisper-tool.js";
@@ -26,6 +27,7 @@ export interface DefaultAgentToolRegistry {
   bashJobStatus?: BashJobStatusTool;
   bashJobWait?: BashJobWaitTool;
   bashJobCancel?: BashJobCancelTool;
+  currentDateTime: CurrentDateTimeTool;
   readFile: ReadFileTool;
   globFiles: GlobFilesTool;
   grepFiles: GrepFilesTool;
@@ -55,6 +57,7 @@ export function createDefaultAgentToolRegistry(
 ): DefaultAgentToolRegistry {
   const registry: DefaultAgentToolRegistry = {
     bash: new BashTool(options.bash),
+    currentDateTime: new CurrentDateTimeTool(),
     readFile: new ReadFileTool(),
     globFiles: new GlobFilesTool(),
     grepFiles: new GrepFilesTool(),
@@ -103,6 +106,7 @@ export function buildDefaultAgentToolsetsFromRegistry(
       registry.bashJobStatus,
       registry.bashJobWait,
       registry.bashJobCancel,
+      registry.currentDateTime,
       registry.media,
       registry.webFetch,
       registry.postgresReadonlyQuery,
@@ -112,16 +116,19 @@ export function buildDefaultAgentToolsetsFromRegistry(
       ...mainExtras,
     ]),
     workspace: compactTools([
+      registry.currentDateTime,
       registry.readFile,
       registry.globFiles,
       registry.grepFiles,
       registry.media,
     ]),
     memory: compactTools([
+      registry.currentDateTime,
       registry.postgresReadonlyQuery,
       ...memoryExtras,
     ]),
     browser: compactTools([
+      registry.currentDateTime,
       registry.readFile,
       registry.globFiles,
       registry.grepFiles,
@@ -129,6 +136,7 @@ export function buildDefaultAgentToolsetsFromRegistry(
       registry.browser,
     ]),
     skill_maintainer: compactTools([
+      registry.currentDateTime,
       registry.postgresReadonlyQuery,
       ...skillMaintainerExtras,
     ]),

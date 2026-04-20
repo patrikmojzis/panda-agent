@@ -12,17 +12,16 @@ export interface WikiOverviewLinkedEntry {
 
 export function renderWikiOverviewContext(options: {
   namespacePath: string;
-  lastRefreshed: string;
-  cacheTtl?: string;
+  refreshCadence?: string;
   recentlyEdited: WikiOverviewRecentEntry[];
   topLinked: WikiOverviewLinkedEntry[];
 }): string {
   const lines = [
     `Namespace: ${options.namespacePath}`,
     "Allowed scope: only this namespace and its child pages.",
-    options.cacheTtl
-      ? `Last refreshed: ${options.lastRefreshed} (cached up to ${options.cacheTtl})`
-      : `Last refreshed: ${options.lastRefreshed}`,
+    options.refreshCadence
+      ? `Overview snapshot refreshes every ${options.refreshCadence}.`
+      : "Overview snapshot refreshes on demand.",
     "Overview only. Read pages on demand.",
     "",
     "Recently edited:",
