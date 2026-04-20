@@ -1,25 +1,17 @@
 import {createCipheriv, createDecipheriv, createHash, randomBytes} from "node:crypto";
 
+import {trimToNull} from "../../lib/strings.js";
 import type {CredentialRecord, EncryptedCredentialValue} from "./types.js";
 
 export const CURRENT_CREDENTIAL_KEY_VERSION = 1;
 const AES_256_GCM_ALGORITHM = "aes-256-gcm";
 const AES_256_GCM_IV_BYTES = 12;
 
-function firstNonEmpty(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
 export class CredentialCrypto {
   private readonly key: Buffer;
 
   constructor(masterKey: string) {
-    const normalized = firstNonEmpty(masterKey);
+    const normalized = trimToNull(masterKey);
     if (!normalized) {
       throw new Error("CREDENTIALS_MASTER_KEY must not be empty.");
     }
@@ -65,7 +57,7 @@ export class CredentialCrypto {
 }
 
 export function resolveCredentialCrypto(env: NodeJS.ProcessEnv = process.env): CredentialCrypto | null {
-  const masterKey = firstNonEmpty(env.CREDENTIALS_MASTER_KEY);
+  const masterKey = trimToNull(env.CREDENTIALS_MASTER_KEY);
   if (!masterKey) {
     return null;
   }

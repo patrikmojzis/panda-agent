@@ -2,6 +2,9 @@ import {readFile} from "node:fs/promises";
 
 import type {ToolResultMessage} from "@mariozechner/pi-ai";
 
+import {readNonNegativeNumber, readPositiveInteger} from "../../lib/numbers.js";
+import {isRecord} from "../../lib/records.js";
+import {trimToNull} from "../../lib/strings.js";
 import type {JsonObject, JsonValue} from "./types.js";
 
 export interface ToolArtifactPreview {
@@ -25,29 +28,6 @@ export interface ToolArtifactDescriptor {
   preview?: ToolArtifactPreview;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function trimNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
-function readPositiveNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-function readPositiveInteger(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : undefined;
-}
-
 export function readToolArtifact(details: JsonValue | undefined): ToolArtifactDescriptor | null {
   if (!isRecord(details) || !isRecord(details.artifact)) {
     return null;
@@ -56,8 +36,8 @@ export function readToolArtifact(details: JsonValue | undefined): ToolArtifactDe
   const artifact = details.artifact;
   const kind = artifact.kind === "image" || artifact.kind === "pdf" ? artifact.kind : null;
   const source = artifact.source === "browser" || artifact.source === "view_media" ? artifact.source : null;
-  const path = trimNonEmptyString(artifact.path);
-  const mimeType = trimNonEmptyString(artifact.mimeType);
+  const path = trimToNull(artifact.path);
+  const mimeType = trimToNull(artifact.mimeType);
 
   if (!kind || !source || !path || !mimeType) {
     return null;
@@ -65,9 +45,9 @@ export function readToolArtifact(details: JsonValue | undefined): ToolArtifactDe
 
   let preview: ToolArtifactPreview | undefined;
   if (isRecord(artifact.preview)) {
-    const previewPath = trimNonEmptyString(artifact.preview.path);
-    const previewMimeType = trimNonEmptyString(artifact.preview.mimeType);
-    const previewBytes = readPositiveNumber(artifact.preview.bytes);
+    const previewPath = trimToNull(artifact.preview.path);
+    const previewMimeType = trimToNull(artifact.preview.mimeType);
+    const previewBytes = readNonNegativeNumber(artifact.preview.bytes);
     const previewWidth = readPositiveInteger(artifact.preview.width);
     const previewHeight = readPositiveInteger(artifact.preview.height);
     if (artifact.preview.kind === "image" && previewPath && previewMimeType) {
@@ -82,10 +62,10 @@ export function readToolArtifact(details: JsonValue | undefined): ToolArtifactDe
     }
   }
 
-  const artifactBytes = readPositiveNumber(artifact.bytes);
+  const artifactBytes = readNonNegativeNumber(artifact.bytes);
   const artifactWidth = readPositiveInteger(artifact.width);
   const artifactHeight = readPositiveInteger(artifact.height);
-  const originalPath = trimNonEmptyString(artifact.originalPath);
+  const originalPath = trimToNull(artifact.originalPath);
 
   return {
     kind,

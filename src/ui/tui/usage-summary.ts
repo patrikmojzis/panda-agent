@@ -9,18 +9,10 @@ import {
     type ThreadMessageRecord,
     type ThreadRecord,
 } from "../../domain/threads/runtime/index.js";
+import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
 import {resolveModelRuntimeBudget} from "../../kernel/models/model-context-policy.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
 import {formatThinkingLevel} from "./chat-shared.js";
-
-function readAgentKeyFromThreadContext(thread: ThreadRecord): string {
-  if (typeof thread.context !== "object" || thread.context === null || Array.isArray(thread.context)) {
-    return "unknown";
-  }
-
-  const agentKey = (thread.context as Record<string, unknown>).agentKey;
-  return typeof agentKey === "string" && agentKey.trim() ? agentKey : "unknown";
-}
 
 interface UsageCost {
   input: number;
@@ -288,7 +280,7 @@ export function collectThreadUsageSnapshot(options: {
 
   return {
     threadId: options.thread.id,
-    agentKey: readAgentKeyFromThreadContext(options.thread),
+    agentKey: readThreadAgentKey(options.thread) ?? "unknown",
     model,
     thinking: options.thinking ?? options.thread.thinking,
     runState: options.isRunning ? "thinking" : "idle",

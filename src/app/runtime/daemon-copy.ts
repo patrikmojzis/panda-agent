@@ -1,7 +1,4 @@
-import {resolveModelSelector} from "../../kernel/agent/index.js";
 import {buildTelegramPairCommand} from "../../integrations/channels/telegram/helpers.js";
-import {resolveProviderApiKey} from "../../integrations/providers/shared/auth.js";
-import {getProviderConfig} from "../../integrations/providers/shared/provider.js";
 
 export function buildDaemonAlreadyActiveMessage(daemonKey: string): string {
   return `panda run (${daemonKey}) is already active.`;
@@ -37,11 +34,4 @@ export function buildUnsupportedRuntimeRequestMessage(kind: string): string {
 
 export function buildQueuedInputCompactionMessage(): string {
   return "Wait for queued input to run before compacting.";
-}
-
-export function resolveMissingApiKeyMessage(modelSelector: string): string | null {
-  const selection = resolveModelSelector(modelSelector);
-  return resolveProviderApiKey(selection.providerName)
-    ? null
-    : getProviderConfig(selection.providerName).missingApiKeyMessage;
 }

@@ -143,6 +143,13 @@ The UI can talk to the app layer, but it should not become the runtime source of
 
 If a file touches Postgres, process env, channels, providers, threads, or persona state, it does not belong in `lib`.
 
+When a tiny helper starts showing up in multiple files, stop cloning it.
+
+- Put pure cross-cutting helpers in focused `src/lib/*` files like `strings.ts`, `records.ts`, `numbers.ts`, `json.ts`, `http.ts`, or `dates.ts`.
+- If the helper is only shared inside one subsystem, keep it next to that subsystem in a narrow `shared.ts` file instead of inventing a global dependency.
+- Do not add a catch-all `utils.ts` or `shared.ts` at repo root. That is just a junk drawer with better PR.
+- New shared helpers should carry short doc comments so the next person knows why they exist and when to reuse them.
+
 ## Explicit Calls
 
 These are not "maybe later" ideas. They are structure rules.
@@ -151,6 +158,7 @@ These are not "maybe later" ideas. They are structure rules.
 - Kill `pi` as a folder name. It says nothing.
 - Keep barrel files only at real public boundaries.
 - Do not promote code to shared/global just because two files use it.
+- Do not retype tiny helpers like `isRecord`, string trimming, truncation, JSON/http helpers, or simple validators. Search `src/lib` and the local subsystem first.
 - Do not hide long prompt text inside runners, helpers, or services.
 - Prefer fewer files when an abstraction is fake.
 

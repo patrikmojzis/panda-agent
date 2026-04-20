@@ -7,6 +7,7 @@ import type {
     FailDeliveryInput,
     OutboundDeliveryRecord
 } from "./types.js";
+import {isMatchingChannelNotification} from "../worker-shared.js";
 
 type ChannelOutboundDeliveryWorkerStore = {
   failSendingDeliveries(lookup: DeliveryWorkerLookup, error: string): Promise<number>;
@@ -28,14 +29,6 @@ export interface ChannelOutboundDeliveryWorkerOptions {
   connectorKey: string;
   canSend?: () => boolean;
   onError?: (error: unknown, deliveryId?: string) => Promise<void> | void;
-}
-
-function isMatchingNotification(
-  lookup: DeliveryWorkerLookup,
-  notification: DeliveryNotification,
-): boolean {
-  return notification.channel === lookup.channel
-    && notification.connectorKey === lookup.connectorKey;
 }
 
 function toRequest(delivery: OutboundDeliveryRecord): OutboundRequest {
@@ -80,7 +73,7 @@ export class ChannelOutboundDeliveryWorker {
       }
 
       this.unsubscribe = await this.store.listenPendingDeliveries(async (notification) => {
-        if (!isMatchingNotification(this.lookup, notification)) {
+        if (!isMatchingChannelNotification(this.lookup, notification)) {
           return;
         }
 

@@ -10,6 +10,9 @@ import {
     toMillis,
 } from "../../threads/runtime/postgres-shared.js";
 import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
+import {isRecord} from "../../../lib/records.js";
+import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
+import {normalizeChannelWorkerLookup, parseChannelNotification} from "../worker-shared.js";
 import type {OutboundItem, OutboundSentItem, OutboundTarget} from "../types.js";
 import {
     buildDeliveryNotificationChannel,
@@ -37,45 +40,29 @@ export interface PostgresOutboundDeliveryStoreOptions {
   pool: PgPoolLike;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function missingDeliveryError(id: string): Error {
   return new Error(`Unknown outbound delivery ${id}`);
 }
 
-function requireTrimmed(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`Outbound delivery ${field} must not be empty.`);
-  }
-
-  return trimmed;
-}
-
 function normalizeWorkerLookup(lookup: DeliveryWorkerLookup): DeliveryWorkerLookup {
-  return {
-    channel: requireTrimmed("channel", lookup.channel),
-    connectorKey: requireTrimmed("connector key", lookup.connectorKey),
-  };
+  return normalizeChannelWorkerLookup(lookup, "Outbound delivery");
 }
 
 function normalizeTarget(channel: string, target: OutboundTarget): OutboundTarget {
   return {
-    source: requireTrimmed("target source", target.source || channel),
-    connectorKey: requireTrimmed("target connector key", target.connectorKey),
-    externalConversationId: requireTrimmed("target conversation id", target.externalConversationId),
-    externalActorId: target.externalActorId?.trim() || undefined,
-    replyToMessageId: target.replyToMessageId?.trim() || undefined,
+    source: requireNonEmptyString(target.source || channel, "Outbound delivery target source must not be empty."),
+    connectorKey: requireNonEmptyString(target.connectorKey, "Outbound delivery target connector key must not be empty."),
+    externalConversationId: requireNonEmptyString(target.externalConversationId, "Outbound delivery target conversation id must not be empty."),
+    externalActorId: trimToUndefined(target.externalActorId),
+    replyToMessageId: trimToUndefined(target.replyToMessageId),
   };
 }
 
 function normalizeDeliveryInput(input: OutboundDeliveryInput): OutboundDeliveryInput {
-  const channel = requireTrimmed("channel", input.channel);
+  const channel = requireNonEmptyString(input.channel, "Outbound delivery channel must not be empty.");
   return {
     ...input,
-    threadId: input.threadId?.trim() || undefined,
+    threadId: trimToUndefined(input.threadId),
     channel,
     target: normalizeTarget(channel, input.target),
   };
@@ -135,21 +122,7 @@ function parseOutboundDeliveryRow(row: Record<string, unknown>): OutboundDeliver
   };
 }
 
-export function parseDeliveryNotification(payload: string): DeliveryNotification | null {
-  try {
-    const parsed = JSON.parse(payload) as Partial<DeliveryNotification>;
-    if (!parsed || typeof parsed.channel !== "string" || typeof parsed.connectorKey !== "string") {
-      return null;
-    }
-
-    return {
-      channel: parsed.channel,
-      connectorKey: parsed.connectorKey,
-    };
-  } catch {
-    return null;
-  }
-}
+export const parseDeliveryNotification = parseChannelNotification as (payload: string) => DeliveryNotification | null;
 
 export class PostgresOutboundDeliveryStore {
   private readonly pool: PgPoolLike;
@@ -281,7 +254,7 @@ export class PostgresOutboundDeliveryStore {
         FROM ${this.tables.outboundDeliveries}
         WHERE id = $1
       `,
-      [requireTrimmed("id", id)],
+      [requireNonEmptyString(id, "Outbound delivery id must not be empty.")],
     );
     const row = result.rows[0];
     if (!row) {
@@ -361,7 +334,7 @@ export class PostgresOutboundDeliveryStore {
         RETURNING *
       `,
       [
-        requireTrimmed("id", input.id),
+        requireNonEmptyString(input.id, "Outbound delivery id must not be empty."),
         JSON.stringify(input.sent),
       ],
     );
@@ -386,8 +359,8 @@ export class PostgresOutboundDeliveryStore {
         RETURNING *
       `,
       [
-        requireTrimmed("id", input.id),
-        requireTrimmed("error", input.error),
+        requireNonEmptyString(input.id, "Outbound delivery id must not be empty."),
+        requireNonEmptyString(input.error, "Outbound delivery error must not be empty."),
       ],
     );
     const row = result.rows[0];
@@ -414,7 +387,7 @@ export class PostgresOutboundDeliveryStore {
       [
         normalizedLookup.channel,
         normalizedLookup.connectorKey,
-        requireTrimmed("error", error),
+        requireNonEmptyString(error, "Outbound delivery error must not be empty."),
       ],
     );
 

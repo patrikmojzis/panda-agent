@@ -3,17 +3,18 @@ import {readFile} from "node:fs/promises";
 
 import type {JsonValue} from "../../../kernel/agent/types.js";
 import type {
-  ChannelOutboundAdapter,
-  FileSystemMediaStore,
-  OutboundRequest,
-  OutboundResult,
-  OutboundSentItem
+    ChannelOutboundAdapter,
+    FileSystemMediaStore,
+    OutboundRequest,
+    OutboundResult,
+    OutboundSentItem
 } from "../../../domain/channels/index.js";
 import type {
-  A2AMessageItem,
-  A2AMessageRequestPayload,
-  RuntimeRequestRepo
+    A2AMessageItem,
+    A2AMessageRequestPayload,
+    RuntimeRequestRepo
 } from "../../../domain/threads/requests/index.js";
+import {requireA2AString} from "../../../domain/a2a/shared.js";
 import type {SessionStore} from "../../../domain/sessions/index.js";
 import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "./config.js";
 
@@ -48,14 +49,7 @@ export interface CreateA2AOutboundAdapterOptions {
   resolveAgentMediaDir(agentKey: string): string;
 }
 
-function requireTrimmed(field: string, value: string | undefined | null): string {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    throw new Error(`A2A ${field} must not be empty.`);
-  }
-
-  return trimmed;
-}
+const requireTrimmed = requireA2AString;
 
 function requireMetadata(value: JsonValue | undefined): A2ADeliveryMetadata["a2a"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {

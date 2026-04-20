@@ -6,6 +6,7 @@ import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postg
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {IdentityRecord} from "../../domain/identity/index.js";
 import type {SessionRecord} from "../../domain/sessions/index.js";
+import {trimToUndefined} from "../../lib/strings.js";
 
 export interface ChatRuntimeOptions {
   identity?: string;
@@ -52,17 +53,8 @@ export interface ChatRuntimeServices {
   close(): Promise<void>;
 }
 
-function trimNonEmptyString(value: string | null | undefined): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
 function requireChatIdentityHandle(value: string | undefined): string {
-  const identity = trimNonEmptyString(value);
+  const identity = trimToUndefined(value);
   if (!identity) {
     throw new Error("Panda chat requires --identity <handle>. Create one with `panda identity create <handle>`.");
   }
@@ -80,7 +72,7 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
   const applyDefaults = (sessionOptions: CreateChatSessionOptions = {}): CreateChatSessionOptions => {
     return {
       sessionId: sessionOptions.sessionId,
-      agentKey: trimNonEmptyString(sessionOptions.agentKey) ?? trimNonEmptyString(options.agent),
+      agentKey: trimToUndefined(sessionOptions.agentKey) ?? trimToUndefined(options.agent),
       thinking: sessionOptions.thinking,
       ...(sessionOptions.model !== undefined ? {model: sessionOptions.model} : {}),
       ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),

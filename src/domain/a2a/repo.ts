@@ -1,21 +1,22 @@
 import type {Pool, PoolClient} from "pg";
 
+import {requireA2AString} from "./shared.js";
 import {
-  buildThreadRuntimeTableNames,
-  CREATE_RUNTIME_SCHEMA_SQL,
-  quoteIdentifier,
-  toMillis
+    buildThreadRuntimeTableNames,
+    CREATE_RUNTIME_SCHEMA_SQL,
+    quoteIdentifier,
+    toMillis
 } from "../threads/runtime/postgres-shared.js";
 import {buildOutboundDeliveryTableNames} from "../channels/deliveries/postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {addConstraint, assertIntegrityChecks} from "../../lib/postgres-integrity.js";
 import {type A2ATableNames, buildA2ATableNames} from "./postgres-shared.js";
 import type {
-  A2ASessionBindingLookup,
-  A2ASessionBindingRecord,
-  BindA2ASessionInput,
-  CountRecentA2AMessagesInput,
-  ListA2ASessionBindingsInput,
+    A2ASessionBindingLookup,
+    A2ASessionBindingRecord,
+    BindA2ASessionInput,
+    CountRecentA2AMessagesInput,
+    ListA2ASessionBindingsInput,
 } from "./types.js";
 
 interface PgQueryable {
@@ -30,14 +31,7 @@ export interface A2ASessionBindingRepoOptions {
   pool: PgPoolLike;
 }
 
-function requireTrimmed(field: string, value: string | undefined): string {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    throw new Error(`A2A ${field} must not be empty.`);
-  }
-
-  return trimmed;
-}
+const requireTrimmed = requireA2AString;
 
 function normalizeLookup(lookup: A2ASessionBindingLookup): A2ASessionBindingLookup {
   return {

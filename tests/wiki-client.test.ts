@@ -1,7 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {DEFAULT_WIKI_URL, resolveWikiUrl, WikiJsClient,} from "../src/integrations/wiki/client.js";
-import {ToolError} from "../src/index.js";
+import {ToolError} from "../src/kernel/agent/exceptions.js";
 
 describe("WikiJsClient", () => {
   it("uses WIKI_URL when configured and falls back to the docker service url", () => {

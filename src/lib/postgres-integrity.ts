@@ -1,5 +1,7 @@
 import type {Pool} from "pg";
 
+import {isDuplicateObjectError} from "./postgres-errors.js";
+
 export interface PgQueryable {
   query: Pool["query"];
 }
@@ -33,25 +35,11 @@ export async function assertIntegrityChecks(
   }
 }
 
-function looksLikeDuplicateConstraint(error: unknown): boolean {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-
-  const code = "code" in error ? String((error as {code?: unknown}).code ?? "") : "";
-  if (code === "42710" || code === "42P07") {
-    return true;
-  }
-
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("already exists");
-}
-
 export async function addConstraint(queryable: PgQueryable, sql: string): Promise<void> {
   try {
     await queryable.query(sql);
   } catch (error) {
-    if (looksLikeDuplicateConstraint(error)) {
+    if (isDuplicateObjectError(error)) {
       return;
     }
 
@@ -79,7 +67,7 @@ export async function alterIfSupported(queryable: PgQueryable, sql: string): Pro
       return false;
     }
 
-    if (looksLikeDuplicateConstraint(error)) {
+    if (isDuplicateObjectError(error)) {
       return true;
     }
 

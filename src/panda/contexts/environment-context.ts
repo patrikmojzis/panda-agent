@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 
+import {firstNonEmptyString} from "../../lib/strings.js";
 import {LlmContext} from "../../kernel/agent/llm-context.js";
 import {renderEnvironmentContext} from "../../prompts/contexts/environment.js";
 
@@ -17,21 +18,6 @@ export interface EnvironmentContextOptions {
   cpuCount?: number;
   totalMemoryBytes?: number;
   nodeVersion?: string;
-}
-
-function firstNonEmpty(...values: Array<string | null | undefined>): string | null {
-  for (const value of values) {
-    if (typeof value !== "string") {
-      continue;
-    }
-
-    const trimmed = value.trim();
-    if (trimmed) {
-      return trimmed;
-    }
-  }
-
-  return null;
 }
 
 function joinCompact(parts: Array<string | null | undefined>): string {
@@ -72,12 +58,12 @@ function formatMemory(totalMemoryBytes: number): string {
 }
 
 function resolveUsername(username?: string): string {
-  return firstNonEmpty(username, process.env.USER, process.env.USERNAME) ?? safeUserInfoUsername() ?? "unknown";
+  return firstNonEmptyString(username, process.env.USER, process.env.USERNAME) ?? safeUserInfoUsername() ?? "unknown";
 }
 
 function safeUserInfoUsername(): string | null {
   try {
-    return firstNonEmpty(os.userInfo().username);
+    return firstNonEmptyString(os.userInfo().username) ?? null;
   } catch {
     return null;
   }
@@ -103,17 +89,17 @@ export class EnvironmentContext extends LlmContext {
 
   async getContent(): Promise<string> {
     const cwd = path.resolve(this.options.cwd ?? process.cwd());
-    const hostname = firstNonEmpty(this.options.hostname, os.hostname()) ?? "unknown-host";
+    const hostname = firstNonEmptyString(this.options.hostname, os.hostname()) ?? "unknown-host";
     const username = resolveUsername(this.options.username);
     const platform = this.options.platform ?? os.platform();
-    const release = firstNonEmpty(this.options.release, os.release()) ?? "unknown";
-    const arch = firstNonEmpty(this.options.arch, os.arch()) ?? "unknown";
-    const cpuModel = firstNonEmpty(this.options.cpuModel, os.cpus()[0]?.model) ?? "unknown CPU";
+    const release = firstNonEmptyString(this.options.release, os.release()) ?? "unknown";
+    const arch = firstNonEmptyString(this.options.arch, os.arch()) ?? "unknown";
+    const cpuModel = firstNonEmptyString(this.options.cpuModel, os.cpus()[0]?.model) ?? "unknown CPU";
     const cpuCount = resolveCpuCount(this.options.cpuCount);
     const totalMemoryBytes = this.options.totalMemoryBytes ?? os.totalmem();
-    const shell = formatShellLabel(firstNonEmpty(this.options.shell, process.env.SHELL));
-    const terminalProgram = firstNonEmpty(this.options.terminalProgram, process.env.TERM_PROGRAM);
-    const nodeVersion = firstNonEmpty(this.options.nodeVersion, process.version) ?? "unknown";
+    const shell = formatShellLabel(firstNonEmptyString(this.options.shell, process.env.SHELL) ?? null);
+    const terminalProgram = firstNonEmptyString(this.options.terminalProgram, process.env.TERM_PROGRAM);
+    const nodeVersion = firstNonEmptyString(this.options.nodeVersion, process.version) ?? "unknown";
 
     return renderEnvironmentContext({
       username,

@@ -1,4 +1,5 @@
 import type {JsonObject, JsonPrimitive, JsonValue} from "../../kernel/agent/types.js";
+import {isRecord} from "../../lib/records.js";
 
 export type WatchRunStatus = "claimed" | "running" | "no_change" | "changed" | "failed" | "disabled";
 export type WatchSourceKind = "mongodb_query" | "sql_query" | "http_json" | "http_html" | "imap_mailbox";
@@ -365,10 +366,6 @@ export interface WatchEvaluationResult {
   changed: boolean;
   nextState: JsonObject;
   event?: WatchEventDraft;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function parseWatchThreadInputMetadata(value: unknown): WatchThreadInputMetadata | null {

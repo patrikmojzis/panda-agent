@@ -1,15 +1,17 @@
 import type {PoolClient} from "pg";
 
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import {sleep} from "../../lib/async.js";
+import {trimToNull, trimToUndefined} from "../../lib/strings.js";
 import {PostgresAgentStore} from "../../domain/agents/index.js";
 import {type IdentityRecord, normalizeIdentityHandle, PostgresIdentityStore,} from "../../domain/identity/index.js";
 import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {DaemonStateRepo} from "./state/repo.js";
 import {
-  buildThreadRuntimeNotificationChannel,
-  parseThreadRuntimeNotification,
-  PostgresThreadRuntimeStore,
-  type ThreadRuntimeNotification,
+    buildThreadRuntimeNotificationChannel,
+    parseThreadRuntimeNotification,
+    PostgresThreadRuntimeStore,
+    type ThreadRuntimeNotification,
 } from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {InferenceProjection, ThreadRecord, ThreadUpdate,} from "../../domain/threads/runtime/types.js";
@@ -18,21 +20,8 @@ import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY,} f
 import {createPostgresPool, requireDatabaseUrl} from "./create-runtime.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
 
-function trimNonEmptyString(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function requireRuntimeIdentityHandle(value: string | null | undefined): string {
-  const trimmed = trimNonEmptyString(value);
+  const trimmed = trimToNull(value);
   if (!trimmed) {
     throw new Error("Runtime client requires an explicit identity handle.");
   }
@@ -209,7 +198,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
         payload: {
           identityId: identity.id,
           sessionId: sessionOptions.sessionId,
-          agentKey: trimNonEmptyString(sessionOptions.agentKey) ?? undefined,
+          agentKey: trimToUndefined(sessionOptions.agentKey),
           model: sessionOptions.model,
           thinking: sessionOptions.thinking,
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
@@ -225,7 +214,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
         kind: "resolve_main_session_thread",
         payload: {
           identityId: identity.id,
-          agentKey: trimNonEmptyString(sessionOptions.agentKey) ?? undefined,
+          agentKey: trimToUndefined(sessionOptions.agentKey),
           model: sessionOptions.model,
           thinking: sessionOptions.thinking,
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
@@ -244,8 +233,8 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
         payload: {
           identityId: identity.id,
           source: "tui",
-          sessionId: trimNonEmptyString(sessionOptions.sessionId) ?? undefined,
-          agentKey: trimNonEmptyString(sessionOptions.agentKey) ?? undefined,
+          sessionId: trimToUndefined(sessionOptions.sessionId),
+          agentKey: trimToUndefined(sessionOptions.agentKey),
           model: sessionOptions.model,
           thinking: sessionOptions.thinking,
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
@@ -278,7 +267,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
         payload: {
           identityId: identity.id,
           identityHandle: identity.handle,
-          threadId: trimNonEmptyString(input.threadId) ?? undefined,
+          threadId: trimToUndefined(input.threadId),
           actorId: input.actorId,
           externalMessageId: input.externalMessageId,
           text: input.text,

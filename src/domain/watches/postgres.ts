@@ -3,6 +3,8 @@ import {randomUUID} from "node:crypto";
 import type {PoolClient} from "pg";
 
 import type {JsonObject} from "../../kernel/agent/types.js";
+import {toDateOrNull} from "../../lib/dates.js";
+import {requireNonEmptyString} from "../../lib/strings.js";
 import {buildIdentityTableNames} from "../identity/postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {PgPoolLike} from "../threads/runtime/postgres-db.js";
@@ -46,12 +48,7 @@ function missingWatchRunError(runId: string): Error {
 }
 
 function requireTrimmed(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`Watch ${field} must not be empty.`);
-  }
-
-  return trimmed;
+  return requireNonEmptyString(value, `Watch ${field} must not be empty.`);
 }
 
 function normalizeIntervalMinutes(value: number): number {
@@ -64,7 +61,7 @@ function normalizeIntervalMinutes(value: number): number {
 }
 
 function toDate(value: number | undefined): Date | null {
-  return value === undefined ? null : new Date(value);
+  return toDateOrNull(value);
 }
 
 function parseWatchRow(row: Record<string, unknown>): WatchRecord {

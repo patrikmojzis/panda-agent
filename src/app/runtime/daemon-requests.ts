@@ -1,40 +1,40 @@
 import type {
-  A2AMessageRequestPayload,
-  AbortThreadRequestPayload,
-  CompactThreadRequestPayload,
-  CreateBranchSessionRequestPayload,
-  ResetSessionRequestPayload,
-  ResolveMainSessionThreadRequestPayload,
-  ResolveThreadRunConfigRequestPayload,
-  RuntimeRequestRecord,
-  TelegramMessageRequestPayload,
-  TelegramReactionRequestPayload,
-  TuiInputRequestPayload,
-  UpdateThreadRequestPayload,
-  WhatsAppMessageRequestPayload,
+    A2AMessageRequestPayload,
+    AbortThreadRequestPayload,
+    CompactThreadRequestPayload,
+    CreateBranchSessionRequestPayload,
+    ResetSessionRequestPayload,
+    ResolveMainSessionThreadRequestPayload,
+    ResolveThreadRunConfigRequestPayload,
+    RuntimeRequestRecord,
+    TelegramMessageRequestPayload,
+    TelegramReactionRequestPayload,
+    TuiInputRequestPayload,
+    UpdateThreadRequestPayload,
+    WhatsAppMessageRequestPayload,
 } from "../../domain/threads/requests/index.js";
 import {compactThread} from "../../domain/threads/runtime/index.js";
 import {stringToUserMessage} from "../../kernel/agent/index.js";
 import {buildA2AInboundPersistence, buildA2AInboundText} from "../../integrations/channels/a2a/helpers.js";
 import {A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
 import {
-  buildTelegramInboundPersistence,
-  buildTelegramInboundText,
-  buildTelegramReactionText,
-  normalizeTelegramCommand,
+    buildTelegramInboundPersistence,
+    buildTelegramInboundText,
+    buildTelegramReactionText,
+    normalizeTelegramCommand,
 } from "../../integrations/channels/telegram/helpers.js";
 import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
 import {buildWhatsAppInboundMetadata, buildWhatsAppInboundText,} from "../../integrations/channels/whatsapp/helpers.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
+import {readMissingApiKeyMessageForModel} from "../../integrations/providers/shared/missing-api-key.js";
 import {renderTuiInboundText} from "../../prompts/channels/tui.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
 import {
-  buildQueuedInputCompactionMessage,
-  buildTelegramNewIsTuiOnlyText,
-  buildTelegramResetText,
-  buildTelegramStartText,
-  buildUnsupportedRuntimeRequestMessage,
-  resolveMissingApiKeyMessage,
+    buildQueuedInputCompactionMessage,
+    buildTelegramNewIsTuiOnlyText,
+    buildTelegramResetText,
+    buildTelegramStartText,
+    buildUnsupportedRuntimeRequestMessage,
 } from "./daemon-copy.js";
 import type {DaemonThreadHelpers} from "./daemon-threads.js";
 import {requireIdentityId} from "./daemon-shared.js";
@@ -422,7 +422,7 @@ export function createDaemonRequestProcessor(
         const thread = await context.runtime.store.getThread(payload.threadId);
         const runConfig = await context.runtime.coordinator.resolveThreadRunConfig(thread);
         const modelName = runConfig.model;
-        const apiKeyMessage = resolveMissingApiKeyMessage(modelName);
+        const apiKeyMessage = readMissingApiKeyMessageForModel(modelName);
         if (apiKeyMessage) {
           throw new Error(apiKeyMessage);
         }

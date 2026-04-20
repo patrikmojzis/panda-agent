@@ -7,14 +7,17 @@ import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-c
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
+import {isRecord} from "../../lib/records.js";
+import {trimToUndefined} from "../../lib/strings.js";
 import type {BrowserToolService} from "../../panda/tools/browser-tool.js";
 import type {BrowserAction} from "../../panda/tools/browser-types.js";
 import type {
-    BrowserRunnerActionRequest,
-    BrowserRunnerActionResponse,
-    BrowserRunnerArtifact,
-    BrowserRunnerErrorResponse,
+  BrowserRunnerActionRequest,
+  BrowserRunnerActionResponse,
+  BrowserRunnerArtifact,
+  BrowserRunnerErrorResponse,
 } from "./protocol.js";
+import {buildRunnerEndpoint, normalizeBrowserLabelValue, normalizeBrowserScopeKey, safeAgentKey,} from "./shared.js";
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
 
@@ -27,45 +30,8 @@ export interface BrowserRunnerClientOptions {
   dataDir?: string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function trimNonEmpty(value: string | null | undefined): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
-function safeAgentKey(agentKey: string): string {
-  const trimmed = agentKey.trim();
-  if (!trimmed || /[\\/]/.test(trimmed) || trimmed.includes("..")) {
-    throw new ToolError(`Unsafe agent key for browser artifact path: ${agentKey}`);
-  }
-
-  return trimmed;
-}
-
 function normalizeScopeKey(context: DefaultAgentSessionContext): {scope: "thread" | "ephemeral"; key: string} {
-  const threadId = trimNonEmpty(context.threadId);
-  if (threadId) {
-    return {
-      scope: "thread",
-      key: threadId,
-    };
-  }
-
-  return {
-    scope: "ephemeral",
-    key: `ephemeral-${randomUUID()}`,
-  };
-}
-
-function normalizeBrowserLabelValue(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "unknown";
+  return normalizeBrowserScopeKey(context);
 }
 
 function resolveBrowserMediaRoot(
@@ -73,7 +39,7 @@ function resolveBrowserMediaRoot(
   dataDir: string | undefined,
   env: NodeJS.ProcessEnv,
 ): string {
-  const agentKey = trimNonEmpty(context.agentKey);
+  const agentKey = trimToUndefined(context.agentKey);
   if (dataDir) {
     const root = path.resolve(dataDir);
     if (agentKey) {
@@ -96,15 +62,6 @@ function makeNetworkTimeoutSignal(timeoutMs: number): AbortSignal {
   return controller.signal;
 }
 
-function buildBrowserRunnerEndpoint(runnerUrl: string, endpoint: "action"): URL {
-  const url = new URL(runnerUrl);
-  const basePath = url.pathname.replace(/\/+$/, "");
-  url.pathname = `${basePath}/${endpoint}`.replace(/\/{2,}/g, "/");
-  url.search = "";
-  url.hash = "";
-  return url;
-}
-
 function resolveExtension(kind: BrowserRunnerArtifact["kind"], mimeType: string): string {
   if (kind === "pdf" || mimeType === "application/pdf") {
     return ".pdf";
@@ -119,11 +76,11 @@ function resolveExtension(kind: BrowserRunnerArtifact["kind"], mimeType: string)
 }
 
 function readRunnerUrl(env: NodeJS.ProcessEnv): string | undefined {
-  return trimNonEmpty(env.BROWSER_RUNNER_URL);
+  return trimToUndefined(env.BROWSER_RUNNER_URL);
 }
 
 function readRunnerSharedSecret(env: NodeJS.ProcessEnv): string | undefined {
-  return trimNonEmpty(env.BROWSER_RUNNER_SHARED_SECRET);
+  return trimToUndefined(env.BROWSER_RUNNER_SHARED_SECRET);
 }
 
 function parseBrowserRunnerResponse(payload: unknown): BrowserRunnerActionResponse {
@@ -194,10 +151,10 @@ export class BrowserRunnerClient<TContext = DefaultAgentSessionContext> implemen
   constructor(options: BrowserRunnerClientOptions = {}) {
     this.env = options.env ?? process.env;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.runnerUrl = trimNonEmpty(options.runnerUrl);
-    this.sharedSecret = trimNonEmpty(options.sharedSecret);
+    this.runnerUrl = trimToUndefined(options.runnerUrl);
+    this.sharedSecret = trimToUndefined(options.sharedSecret);
     this.actionTimeoutMs = options.actionTimeoutMs;
-    this.dataDir = trimNonEmpty(options.dataDir);
+    this.dataDir = trimToUndefined(options.dataDir);
   }
 
   private resolveConfig(): {runnerUrl: string; sharedSecret: string} {
@@ -241,13 +198,13 @@ export class BrowserRunnerClient<TContext = DefaultAgentSessionContext> implemen
     const timeoutMs = Math.max(1, Math.floor(("timeoutMs" in action ? action.timeoutMs : undefined) ?? this.actionTimeoutMs ?? 60_000));
     const context = (run.context ?? {}) as DefaultAgentSessionContext;
     const request: BrowserRunnerActionRequest = {
-      agentKey: trimNonEmpty(context.agentKey) ?? "",
-      ...(trimNonEmpty(context.sessionId) ? {sessionId: context.sessionId!.trim()} : {}),
-      ...(trimNonEmpty(context.threadId) ? {threadId: context.threadId!.trim()} : {}),
+      agentKey: trimToUndefined(context.agentKey) ?? "",
+      ...(trimToUndefined(context.sessionId) ? {sessionId: context.sessionId!.trim()} : {}),
+      ...(trimToUndefined(context.threadId) ? {threadId: context.threadId!.trim()} : {}),
       action,
     };
 
-    const response = await this.fetchImpl(buildBrowserRunnerEndpoint(runnerUrl, "action"), {
+    const response = await this.fetchImpl(buildRunnerEndpoint(runnerUrl, "action"), {
       method: "POST",
       headers: {
         "content-type": "application/json",

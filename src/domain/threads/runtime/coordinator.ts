@@ -31,6 +31,7 @@ import {
     projectTranscriptForInference,
 } from "../../../kernel/transcript/inference-projection.js";
 import {rehydrateProjectedToolArtifacts} from "./tool-artifact-replay.js";
+import {isRecord} from "../../../lib/records.js";
 
 export type ThreadWakeMode = "wake" | "queue";
 const ABORT_POLL_MS = 250;
@@ -94,10 +95,6 @@ function runtimeSourceForMessage(message: Message): string {
   }
 
   return message.role;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function buildCurrentInputContext(

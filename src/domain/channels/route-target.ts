@@ -1,4 +1,6 @@
 import type {JsonValue} from "../../kernel/agent/types.js";
+import {isRecord} from "../../lib/records.js";
+import {trimToUndefined} from "../../lib/strings.js";
 import type {ChannelTypingTarget} from "./types.js";
 
 interface RouteTargetCarrier {
@@ -9,19 +11,6 @@ interface RouteTargetCarrier {
 export interface ResolvedChannelRouteTarget {
   channel: string;
   target: ChannelTypingTarget;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readTrimmedString(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
 }
 
 export function resolveChannelRouteTarget(
@@ -41,9 +30,9 @@ export function resolveChannelRouteTarget(
     return null;
   }
 
-  const channel = readTrimmedString(value.source) ?? readTrimmedString(route.source);
-  const connectorKey = readTrimmedString(route.connectorKey);
-  const externalConversationId = readTrimmedString(route.externalConversationId);
+  const channel = trimToUndefined(value.source) ?? trimToUndefined(route.source);
+  const connectorKey = trimToUndefined(route.connectorKey);
+  const externalConversationId = trimToUndefined(route.externalConversationId);
   if (!channel || !connectorKey || !externalConversationId) {
     return null;
   }
@@ -54,7 +43,7 @@ export function resolveChannelRouteTarget(
       source: channel,
       connectorKey,
       externalConversationId,
-      externalActorId: readTrimmedString(route.externalActorId),
+      externalActorId: trimToUndefined(route.externalActorId),
     },
   };
 }

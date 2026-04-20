@@ -1,6 +1,9 @@
 import {describe, expect, it, vi} from "vitest";
 
-import {Agent, type DefaultAgentSessionContext, RunContext, type ToolResultPayload,} from "../src/index.js";
+import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
+import {Agent} from "../src/kernel/agent/agent.js";
+import {RunContext} from "../src/kernel/agent/run-context.js";
+import type {ToolResultPayload} from "../src/kernel/agent/types.js";
 import {WikiTool} from "../src/panda/tools/wiki-tool.js";
 
 function createRunContext(
@@ -757,6 +760,237 @@ describe("WikiTool", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("moves a page and rewrites inbound plus relative internal links by default", async () => {
+    const bindings = createBindings();
+    const pages = new Map<string, Record<string, unknown>>([
+      ["en/agents/panda/notes/today", buildPage({
+        id: 31,
+        path: "agents/panda/notes/today",
+        title: "Today",
+        content: [
+          "# Today",
+          "",
+          "[Profile](../profile)",
+        ].join("\n"),
+      })],
+      ["en/agents/panda/index", buildPage({
+        id: 32,
+        path: "agents/panda/index",
+        title: "Index",
+        content: [
+          "# Index",
+          "",
+          "[Today](notes/today)",
+        ].join("\n"),
+      })],
+      ["en/agents/panda/_archive/2026/04/old-index", buildPage({
+        id: 33,
+        path: "agents/panda/_archive/2026/04/old-index",
+        title: "Archived Index",
+        content: [
+          "# Archived",
+          "",
+          "[Today](/agents/panda/notes/today)",
+        ].join("\n"),
+      })],
+    ]);
+    const updateCalls: Array<{content: string; path: string}> = [];
+    let updatedAtCounter = 20;
+
+    const jsonResponse = (body: Record<string, unknown>) => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: {"content-type": "application/json"},
+    });
+
+    const nextUpdatedAt = () => `2026-04-19T10:${String(updatedAtCounter += 1).padStart(2, "0")}:00.000Z`;
+
+    const findPageById = (id: number): {key: string; page: Record<string, unknown>} | null => {
+      for (const [key, page] of pages.entries()) {
+        const pageId = typeof page.id === "number" ? page.id : Number(page.id);
+        if (pageId === id) {
+          return {key, page};
+        }
+      }
+      return null;
+    };
+
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+        query?: string;
+        variables?: Record<string, unknown>;
+      };
+      const query = String(requestBody.query ?? "");
+      const variables = requestBody.variables ?? {};
+
+      if (query.includes("singleByPath")) {
+        const key = `${String(variables.locale ?? "en")}/${String(variables.path ?? "").replace(/^\/+|\/+$/g, "")}`;
+        const page = pages.get(key);
+        return page
+          ? jsonResponse({data: {pages: {singleByPath: page}}})
+          : jsonResponse({errors: [{message: "Page not found"}]});
+      }
+
+      if (query.includes("move(")) {
+        const pageRecord = findPageById(Number(variables.id));
+        if (!pageRecord) {
+          return jsonResponse({data: {pages: {move: {responseResult: {succeeded: false, message: "missing"}}}}});
+        }
+
+        pages.delete(pageRecord.key);
+        const moved = {
+          ...pageRecord.page,
+          locale: String(variables.destinationLocale ?? "en"),
+          path: String(variables.destinationPath ?? ""),
+          updatedAt: nextUpdatedAt(),
+        };
+        pages.set(`${moved.locale}/${moved.path}`, moved);
+
+        return jsonResponse({
+          data: {
+            pages: {
+              move: {
+                responseResult: {
+                  succeeded: true,
+                  message: "moved",
+                },
+              },
+            },
+          },
+        });
+      }
+
+      if (query.includes("links(locale")) {
+        return jsonResponse({
+          data: {
+            pages: {
+              links: [
+                {
+                  id: 32,
+                  path: "en/agents/panda/index",
+                  title: "Index",
+                  links: ["en/agents/panda/notes/today"],
+                },
+                {
+                  id: 33,
+                  path: "en/agents/panda/_archive/2026/04/old-index",
+                  title: "Archived Index",
+                  links: ["en/agents/panda/notes/today"],
+                },
+              ],
+            },
+          },
+        });
+      }
+
+      if (query.includes("update(")) {
+        const pageRecord = findPageById(Number(variables.id));
+        if (!pageRecord) {
+          return jsonResponse({data: {pages: {update: {responseResult: {succeeded: false, message: "missing"}, page: null}}}});
+        }
+
+        pages.delete(pageRecord.key);
+        const updated = {
+          ...pageRecord.page,
+          locale: String(variables.locale ?? "en"),
+          path: String(variables.path ?? ""),
+          title: String(variables.title ?? ""),
+          description: String(variables.description ?? ""),
+          content: String(variables.content ?? ""),
+          editor: String(variables.editor ?? "markdown"),
+          isPublished: variables.isPublished === true,
+          isPrivate: variables.isPrivate === true,
+          tags: Array.isArray(variables.tags)
+            ? variables.tags.map((tag) => ({tag}))
+            : [],
+          updatedAt: nextUpdatedAt(),
+        };
+        pages.set(`${updated.locale}/${updated.path}`, updated);
+        updateCalls.push({
+          path: updated.path,
+          content: updated.content,
+        });
+
+        return jsonResponse({
+          data: {
+            pages: {
+              update: {
+                responseResult: {
+                  succeeded: true,
+                  message: "updated",
+                },
+                page: {id: updated.id},
+              },
+            },
+          },
+        });
+      }
+
+      if (query.includes("checkConflicts")) {
+        return jsonResponse({data: {pages: {checkConflicts: false}}});
+      }
+
+      throw new Error(`Unexpected wiki GraphQL query: ${query}`);
+    });
+
+    const tool = new WikiTool({
+      env: {
+        WIKI_URL: "http://wiki:3000",
+      } as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings,
+    });
+
+    const result = await tool.run({
+      operation: "move",
+      path: "agents/panda/notes/today",
+      destinationPath: "agents/panda/journal/2026/today",
+    }, createRunContext({
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    })) as ToolResultPayload;
+
+    expect(parseToolResult(result)).toMatchObject({
+      operation: "move",
+      movedFrom: "agents/panda/notes/today",
+      movedTo: "agents/panda/journal/2026/today",
+      rewriteLinks: true,
+      linkRewrite: {
+        rewrittenLinks: 2,
+        updatedPages: [
+          expect.objectContaining({path: "agents/panda/journal/2026/today", rewrittenLinks: 1}),
+          expect.objectContaining({path: "agents/panda/index", rewrittenLinks: 1}),
+        ],
+        failedPages: [],
+      },
+    });
+
+    expect(updateCalls).toEqual([
+      {
+        path: "agents/panda/journal/2026/today",
+        content: [
+          "# Today",
+          "",
+          "[Profile](../../profile)",
+        ].join("\n"),
+      },
+      {
+        path: "agents/panda/index",
+        content: [
+          "# Index",
+          "",
+          "[Today](journal/2026/today)",
+        ].join("\n"),
+      },
+    ]);
+
+    expect(pages.get("en/agents/panda/journal/2026/today")).toBeTruthy();
+    expect(pages.get("en/agents/panda/notes/today")).toBeUndefined();
+    expect(String(pages.get("en/agents/panda/_archive/2026/04/old-index")?.content ?? "")).toContain(
+      "[Today](/agents/panda/notes/today)",
+    );
   });
 
   it("rejects archiving a page that is already archived", async () => {

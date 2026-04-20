@@ -1,18 +1,10 @@
 import type {WatchJsonResultConfig, WatchRowResultConfig, WatchSourceConfig,} from "./types.js";
-
-function requireTrimmed(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`${field} must not be empty.`);
-  }
-
-  return trimmed;
-}
+import {requireNonEmptyString} from "../../lib/strings.js";
 
 const NEGATIVE_ARRAY_INDEX_PATTERN = /\[-\d+\]/;
 
 export function validateWatchPath(path: string, field: string): string {
-  const normalized = requireTrimmed(field, path);
+  const normalized = requireNonEmptyString(path, `${field} must not be empty.`);
   if (NEGATIVE_ARRAY_INDEX_PATTERN.test(normalized)) {
     throw new Error(`Negative array indices are not supported in ${field} "${normalized}". Sort/filter upstream and use [0].`);
   }

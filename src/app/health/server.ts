@@ -1,4 +1,7 @@
-import {createServer, type IncomingMessage, type ServerResponse} from "node:http";
+import {createServer, type IncomingMessage} from "node:http";
+
+import {writeJsonResponse} from "../../lib/http.js";
+import {trimToNull} from "../../lib/strings.js";
 
 const DEFAULT_HEALTH_HOST = "127.0.0.1";
 
@@ -27,15 +30,6 @@ export interface HealthServer {
   close(): Promise<void>;
 }
 
-function firstNonEmpty(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
 function parsePort(value: string, label: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) {
@@ -43,11 +37,6 @@ function parsePort(value: string, label: string): number {
   }
 
   return parsed;
-}
-
-function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {
-  response.writeHead(statusCode, {"content-type": "application/json"});
-  response.end(JSON.stringify(payload));
 }
 
 function isHealthRequest(request: IncomingMessage): boolean {
@@ -63,13 +52,13 @@ export function resolveOptionalHealthServerBinding(
   options: HealthServerBindingOptions,
 ): HealthServerBinding | null {
   const env = options.env ?? process.env;
-  const portValue = firstNonEmpty(env[options.portEnvKey]);
+  const portValue = trimToNull(env[options.portEnvKey]);
   if (!portValue) {
     return null;
   }
 
   return {
-    host: firstNonEmpty(env[options.hostEnvKey]) ?? options.defaultHost ?? DEFAULT_HEALTH_HOST,
+    host: trimToNull(env[options.hostEnvKey]) ?? options.defaultHost ?? DEFAULT_HEALTH_HOST,
     port: parsePort(portValue, options.portEnvKey),
   };
 }
@@ -84,9 +73,9 @@ export async function startHealthServer(options: HealthServerOptions): Promise<H
       }
 
       const snapshot = await options.getSnapshot();
-      writeJson(response, snapshot.ok ? 200 : 503, snapshot);
+      writeJsonResponse(response, snapshot.ok ? 200 : 503, snapshot);
     } catch (error) {
-      writeJson(response, 503, {
+      writeJsonResponse(response, 503, {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
       } satisfies HealthSnapshot);

@@ -2,22 +2,23 @@ import {randomUUID} from "node:crypto";
 
 import type {Pool, PoolClient} from "pg";
 
+import {isUniqueViolation} from "../../lib/postgres-errors.js";
 import {
-  CREATE_RUNTIME_SCHEMA_SQL,
-  quoteIdentifier,
-  toJson,
-  toMillis
+    CREATE_RUNTIME_SCHEMA_SQL,
+    quoteIdentifier,
+    toJson,
+    toMillis
 } from "../../domain/threads/runtime/postgres-shared.js";
 import {buildIdentityTableNames, type IdentityTableNames} from "./postgres-shared.js";
 import {
-  type CreateIdentityBindingInput,
-  type CreateIdentityInput,
-  type EnsureIdentityBindingInput,
-  type IdentityBindingLookup,
-  type IdentityBindingRecord,
-  type IdentityRecord,
-  normalizeIdentityHandle,
-  type UpdateIdentityInput,
+    type CreateIdentityBindingInput,
+    type CreateIdentityInput,
+    type EnsureIdentityBindingInput,
+    type IdentityBindingLookup,
+    type IdentityBindingRecord,
+    type IdentityRecord,
+    normalizeIdentityHandle,
+    type UpdateIdentityInput,
 } from "./types.js";
 import type {IdentityStore} from "./store.js";
 
@@ -111,10 +112,6 @@ function bindingBelongsToDifferentIdentityError(
   return new Error(
     `Identity binding ${describeBindingKey(lookup)} already belongs to identity ${actualIdentityId}, not ${expectedIdentityId}.`,
   );
-}
-
-function isUniqueViolation(error: unknown): error is { code: string } {
-  return !!error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "23505";
 }
 
 export class PostgresIdentityStore implements IdentityStore {

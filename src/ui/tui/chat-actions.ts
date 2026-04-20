@@ -1,6 +1,8 @@
 import {randomUUID} from "node:crypto";
 
+import {readMissingApiKeyMessageForModel} from "../../integrations/providers/shared/missing-api-key.js";
 import {resolveModelSelector, type ThinkingLevel,} from "../../kernel/agent/index.js";
+import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
 import type {ThreadRecord} from "../../domain/threads/runtime/index.js";
 import type {ChatRuntimeServices} from "./runtime.js";
 import {buildChatHelpText, describeUnknownCommand, runChatCommandLine} from "./chat-commands.js";
@@ -9,7 +11,6 @@ import {collectThreadUsageSnapshot, formatThreadUsageSnapshot,} from "./usage-su
 import {
     type EntryRole,
     formatThinkingLevel,
-    missingApiKeyMessage,
     parseThinkingCommandValue,
     thinkingCommandUsage,
     thinkingCommandValuesText
@@ -17,15 +18,6 @@ import {
 import {type NoticeState} from "./chat-view.js";
 
 type NoticeTone = NoticeState["tone"];
-
-function readAgentKeyFromThreadContext(thread: ThreadRecord): string | undefined {
-  if (typeof thread.context !== "object" || thread.context === null || Array.isArray(thread.context)) {
-    return undefined;
-  }
-
-  const agentKey = (thread.context as {agentKey?: unknown}).agentKey;
-  return typeof agentKey === "string" && agentKey.trim() ? agentKey : undefined;
-}
 
 export interface ChatCommandHost {
   getCurrentThreadId(): string;
@@ -241,7 +233,7 @@ async function handleResumeCommand(host: ChatCommandHost, value: string): Promis
   try {
     const thread = await host.requireServices().openSession(value);
     const currentAgentKey = host.getCurrentAgentKey();
-    const nextAgentKey = readAgentKeyFromThreadContext(thread);
+    const nextAgentKey = readThreadAgentKey(thread);
     if (currentAgentKey && nextAgentKey !== currentAgentKey) {
       throw new Error(`Session ${value} belongs to agent ${nextAgentKey}, not current agent ${currentAgentKey}.`);
     }
@@ -362,7 +354,7 @@ export async function submitChatUserMessage(
   message: string,
   externalMessageId: string,
 ): Promise<void> {
-  const keyMessage = missingApiKeyMessage(host.getModel());
+  const keyMessage = readMissingApiKeyMessageForModel(host.getModel());
   if (keyMessage) {
     host.removePendingLocalInput(externalMessageId);
     host.pushEntry("error", "auth", keyMessage);

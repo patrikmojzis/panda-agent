@@ -6,6 +6,10 @@
 - Prefer simple abstractions over framework-heavy architecture.
 - Keep model-facing prompt text in `src/prompts`, not buried in runtime code.
 - When adding provider support, keep provider-specific request/response shaping out of the core thread loop.
+- Before adding a tiny helper, search `src/lib` and the local subsystem for an existing one. Reuse it if it exists.
+- If a helper is pure and reused across domains, put it in a focused `src/lib/*` file. If it is only reused inside one subsystem, add a narrow local `shared.ts` there instead of another random clone.
+- Do not add catch-all `utils.ts` junk drawers.
+- New shared helpers should have short doc comments. Future-you will forget why the helper exists. Current-you is not special.
 - Avoid copying large chunks from other projects; use them for patterns and ideas, then adapt to Panda's smaller codebase.
 - Always verify each change with a live Panda agent - e.g. have u added a new tool? have Panda test it out. get a live feedback from her.
 - Use comment to write down nuance behind architecture decisions / deeper reasons why / or anything that might be unclear in the future. Use them when they matter.

@@ -1,6 +1,7 @@
 import type {Tool as PiTool, ToolResultMessage} from "@mariozechner/pi-ai";
 import {type output, ZodError, type ZodTypeAny} from "zod";
 
+import {isRecord} from "../../lib/records.js";
 import {ToolError} from "./exceptions.js";
 import {formatParameters} from "./helpers/schema.js";
 import {stringifyUnknown} from "./helpers/stringify.js";
@@ -8,10 +9,6 @@ import type {RunContext} from "./run-context.js";
 import type {JsonValue, ToolResultPayload} from "./types.js";
 
 export type ToolOutput = JsonValue | ToolResultPayload;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 export function formatToolCallFallback(args: Record<string, unknown>): string {
   return stringifyUnknown(args, { pretty: true });

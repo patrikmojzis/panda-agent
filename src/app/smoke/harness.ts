@@ -4,21 +4,24 @@ import path from "node:path";
 
 import type {Message} from "@mariozechner/pi-ai";
 
+import {sleep} from "../../lib/async.js";
+import {trimToUndefined} from "../../lib/strings.js";
 import {
-  type CreateIdentityInput,
-  type IdentityRecord,
-  normalizeIdentityHandle,
-  PostgresIdentityStore,
+    type CreateIdentityInput,
+    type IdentityRecord,
+    normalizeIdentityHandle,
+    PostgresIdentityStore,
 } from "../../domain/identity/index.js";
+import {isMissingAgentError} from "../../domain/agents/errors.js";
 import {PostgresAgentStore} from "../../domain/agents/postgres.js";
 import {DEFAULT_AGENT_DOCUMENT_TEMPLATES} from "../../domain/agents/templates.js";
 import {normalizeAgentKey} from "../../domain/agents/types.js";
 import {PostgresSessionStore} from "../../domain/sessions/index.js";
 import type {
-  ThreadBashJobRecord,
-  ThreadMessageRecord,
-  ThreadRecord,
-  ThreadRunRecord,
+    ThreadBashJobRecord,
+    ThreadMessageRecord,
+    ThreadRecord,
+    ThreadRunRecord,
 } from "../../domain/threads/runtime/index.js";
 import {readToolArtifact, type ToolArtifactDescriptor} from "../../kernel/agent/tool-artifacts.js";
 import {createRuntimeClient} from "../runtime/client.js";
@@ -28,10 +31,10 @@ import {createPostgresPool} from "../runtime/database.js";
 import {ensureSchemas, withPostgresPool} from "../runtime/postgres-bootstrap.js";
 import {DaemonStateRepo} from "../runtime/state/repo.js";
 import {
-  DEFAULT_SMOKE_TIMEOUT_MS,
-  requireSmokeDatabaseUrl,
-  resolveSmokeArtifactDirectory,
-  resolveSmokeModelSelector,
+    DEFAULT_SMOKE_TIMEOUT_MS,
+    requireSmokeDatabaseUrl,
+    resolveSmokeArtifactDirectory,
+    resolveSmokeModelSelector,
 } from "./config.js";
 import {recreateSmokeDatabase, resolveSmokeDatabaseTarget, type SmokeDatabaseTarget,} from "./database.js";
 
@@ -130,19 +133,6 @@ export interface SmokeResult {
   transcript: readonly ThreadMessageRecord[];
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function trimNonEmptyString(value: string | null | undefined): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
 const DEFAULT_SMOKE_IDENTITY_ID = "smoke";
 const DEFAULT_SMOKE_IDENTITY_HANDLE = "smoke";
 const DEFAULT_SMOKE_IDENTITY_DISPLAY_NAME = "Smoke";
@@ -154,11 +144,6 @@ function createDefaultSmokeIdentityInput(): CreateIdentityInput {
     displayName: DEFAULT_SMOKE_IDENTITY_DISPLAY_NAME,
     status: "active",
   };
-}
-
-function isMissingAgentError(error: unknown, agentKey: string): boolean {
-  return error instanceof Error
-    && error.message === `Unknown agent ${agentKey}. Create it with \`panda agent create ${agentKey}\`.`;
 }
 
 function isMissingIdentityHandleError(error: unknown, handle: string): boolean {
@@ -382,7 +367,7 @@ async function bootstrapSmokeFixtures(input: {
     await ensureSchemas([identityStore, agentStore, sessionStore]);
 
     const identity = await ensureSmokeIdentity(identityStore, input.identityHandle);
-    const requestedSessionId = trimNonEmptyString(input.sessionId);
+    const requestedSessionId = trimToUndefined(input.sessionId);
     if (requestedSessionId) {
       const session = await sessionStore.getSession(requestedSessionId);
       if (input.agentKey && input.agentKey !== session.agentKey) {
@@ -539,10 +524,10 @@ async function writeSmokeArtifacts(result: SmokeResult): Promise<void> {
 export async function runSmoke(input: SmokeInput): Promise<SmokeResult> {
   const startedAt = Date.now();
   const cwd = path.resolve(input.cwd ?? process.cwd());
-  const requestedAgentKey = trimNonEmptyString(input.agentKey)
+  const requestedAgentKey = trimToUndefined(input.agentKey)
     ? normalizeAgentKey(input.agentKey!)
     : undefined;
-  const requestedSessionId = trimNonEmptyString(input.sessionId);
+  const requestedSessionId = trimToUndefined(input.sessionId);
   const timeoutMs = input.timeoutMs ?? DEFAULT_SMOKE_TIMEOUT_MS;
   const artifactDir = resolveSmokeArtifactDirectory({
     agentKey: requestedAgentKey ?? requestedSessionId ?? "session",

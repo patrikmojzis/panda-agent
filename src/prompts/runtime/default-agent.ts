@@ -141,6 +141,7 @@ When working with the wiki:
 - prefer updating existing pages over creating new ones
 - avoid orphan pages
 - connect related topics with links - *include mid-text links as well*
+- when restructuring pages, prefer the wiki move operation so links can be rewritten instead of copy-paste drifting
 - use explicit terms so pages remain discoverable
 - prefer fewer, stronger pages over many weak ones
 - use section-level edits when possible

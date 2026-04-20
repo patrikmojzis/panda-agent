@@ -1,46 +1,44 @@
 import type {Pool} from "pg";
 import {
-  addTransactionCapability,
-  type AuthenticationState,
-  type BaileysEventMap,
-  Browsers,
-  type ConnectionState,
-  DisconnectReason,
-  isJidBroadcast,
-  isJidGroup,
-  isJidNewsletter,
-  isJidStatusBroadcast,
-  jidNormalizedUser,
-  makeCacheableSignalKeyStore,
-  makeWASocket,
-  type WAMessage,
-  type WASocket,
+    addTransactionCapability,
+    type AuthenticationState,
+    type BaileysEventMap,
+    Browsers,
+    type ConnectionState,
+    DisconnectReason,
+    isJidBroadcast,
+    isJidGroup,
+    isJidNewsletter,
+    isJidStatusBroadcast,
+    jidNormalizedUser,
+    makeCacheableSignalKeyStore,
+    makeWASocket,
+    type WAMessage,
+    type WASocket,
 } from "baileys";
 import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../app/health/server.js";
 import {ChannelActionWorker} from "../../../domain/channels/actions/index.js";
 import {
-  acquireManagedConnectorLease,
-  type ManagedConnectorLease,
-  PostgresConnectorLeaseRepo
+    acquireManagedConnectorLease,
+    type ManagedConnectorLease,
+    PostgresConnectorLeaseRepo
 } from "../../../domain/connector-leases/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
 import {
-  createPostgresPool,
-  DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
-  DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
-  observePostgresPool,
-  type PostgresPoolObserver,
-  readPositiveIntegerEnv,
-  requireDatabaseUrl,
+    buildObservedPoolConfig,
+    createPostgresPool,
+    observePostgresPool,
+    type PostgresPoolObserver,
+    requireDatabaseUrl,
 } from "../../../app/runtime/database.js";
 import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {
-  ChannelOutboundDeliveryWorker,
-  PostgresOutboundDeliveryStore
+    ChannelOutboundDeliveryWorker,
+    PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/index.js";
 import {WHATSAPP_SOURCE} from "./config.js";
 import {PostgresWhatsAppAuthStore} from "./auth-store.js";
@@ -48,9 +46,10 @@ import {extractWhatsAppMessageText, extractWhatsAppQuotedMessageId} from "./help
 import {createWhatsAppOutboundAdapter} from "./outbound.js";
 import {createWhatsAppTypingAdapter} from "./typing.js";
 import {
-  type PostgresNotificationListenerHandle,
-  startPostgresNotificationListener,
+    type PostgresNotificationListenerHandle,
+    startPostgresNotificationListener,
 } from "../postgres-notification-listener.js";
+import {sleep} from "../../../lib/async.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 
 export interface WhatsAppServiceOptions {
@@ -128,30 +127,6 @@ function toWhoamiResult(connectorKey: string, creds: AuthenticationState["creds"
     phoneNumber: creds.me?.phoneNumber?.trim() || undefined,
     name: creds.me?.name?.trim() || creds.me?.notify?.trim() || undefined,
   };
-}
-
-function buildWhatsAppPoolConfig(connectorKey: string): {
-  applicationName: string;
-  max: number;
-  idleTimeoutMillis: number;
-  waitingLogIntervalMs: number;
-} {
-  return {
-    applicationName: `panda/whatsapp/${connectorKey}`,
-    max: readPositiveIntegerEnv("PANDA_WHATSAPP_DB_POOL_MAX", WHATSAPP_POOL_MAX_FALLBACK),
-    idleTimeoutMillis: readPositiveIntegerEnv(
-      "PANDA_DB_POOL_IDLE_TIMEOUT_MS",
-      DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
-    ),
-    waitingLogIntervalMs: readPositiveIntegerEnv(
-      "PANDA_DB_POOL_WAITING_LOG_INTERVAL_MS",
-      DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
-    ),
-  };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function extractDisconnectStatusCode(error: unknown): number | null {
@@ -274,7 +249,11 @@ export class WhatsAppService {
       return this.authStore;
     }
 
-    const poolConfig = buildWhatsAppPoolConfig(this.options.connectorKey);
+    const poolConfig = buildObservedPoolConfig(
+      `panda/whatsapp/${this.options.connectorKey}`,
+      "PANDA_WHATSAPP_DB_POOL_MAX",
+      WHATSAPP_POOL_MAX_FALLBACK,
+    );
     const pool = createPostgresPool({
       connectionString: requireDatabaseUrl(this.options.dbUrl),
       applicationName: poolConfig.applicationName,

@@ -1,4 +1,7 @@
 import {ToolError} from "../../kernel/agent/exceptions.js";
+import {isRecord} from "../../lib/records.js";
+import {trimToNull} from "../../lib/strings.js";
+import {readResponseError} from "./http.js";
 
 const OPENAI_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses";
 const DEFAULT_WEB_RESEARCH_MODEL = "gpt-5";
@@ -64,32 +67,6 @@ type ResponseOutputTextBlock = {
   annotations: readonly ResponseAnnotation[];
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function trimNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
-function truncateText(value: string, maxChars: number): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-
-  return `${value.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
-}
-
-async function readResponseError(response: Response): Promise<string> {
-  const text = (await response.text()).trim();
-  return truncateText(text, MAX_ERROR_CHARS);
-}
-
 function buildResearchPrompt(query: string): string {
   return [
     "Research the user query on the public web and answer directly.",
@@ -107,13 +84,13 @@ function parseResponseAnnotation(value: unknown): ResponseAnnotation | null {
     return null;
   }
 
-  const url = trimNonEmptyString(value.url) ?? undefined;
+  const url = trimToNull(value.url) ?? undefined;
   if (!url) {
     return null;
   }
 
   return {
-    title: trimNonEmptyString(value.title) ?? undefined,
+    title: trimToNull(value.title) ?? undefined,
     url,
     startIndex: typeof value.start_index === "number" ? Math.trunc(value.start_index) : undefined,
     endIndex: typeof value.end_index === "number" ? Math.trunc(value.end_index) : undefined,
@@ -164,13 +141,13 @@ function parseSource(value: unknown): WebResearchSource | null {
     return null;
   }
 
-  const url = trimNonEmptyString(value.url);
+  const url = trimToNull(value.url);
   if (!url) {
     return null;
   }
 
   return {
-    title: trimNonEmptyString(value.title),
+    title: trimToNull(value.title),
     url,
   };
 }
@@ -241,7 +218,7 @@ function buildInlineCitations(
   const insertions = new Map<number, string[]>();
 
   for (const annotation of annotations) {
-    const url = trimNonEmptyString(annotation.url);
+    const url = trimToNull(annotation.url);
     if (!url) {
       continue;
     }
@@ -252,7 +229,7 @@ function buildInlineCitations(
       citationNumberByUrl.set(url, citationNumber);
       citations.push({
         index: citationNumber,
-        title: trimNonEmptyString(annotation.title),
+        title: trimToNull(annotation.title),
         url,
       });
     }
@@ -336,7 +313,7 @@ function parseWebResearchPayload(
     throw new ToolError("OpenAI web research response was not valid JSON.");
   }
 
-  const status = trimNonEmptyString(payload.status);
+  const status = trimToNull(payload.status);
   if (!status) {
     throw new ToolError("OpenAI web research response did not include a valid status.");
   }
@@ -348,18 +325,18 @@ function parseWebResearchPayload(
   const topLevelOutputText = typeof payload.output_text === "string" ? payload.output_text : "";
   const finalMessageBlock = getFinalMessageOutputTextBlock(payload.output);
   const messageText = finalMessageBlock?.text ?? "";
-  const baseText = trimNonEmptyString(topLevelOutputText) ?? trimNonEmptyString(messageText);
+  const baseText = trimToNull(topLevelOutputText) ?? trimToNull(messageText);
 
   if (!baseText) {
     throw new ToolError("OpenAI web research response did not include final answer text.");
   }
 
   const preferTopLevelText = Boolean(
-    trimNonEmptyString(topLevelOutputText)
-      && trimNonEmptyString(messageText)
+    trimToNull(topLevelOutputText)
+      && trimToNull(messageText)
       && topLevelOutputText.trim() === messageText.trim(),
   );
-  const citationBaseText = preferTopLevelText || !trimNonEmptyString(messageText)
+  const citationBaseText = preferTopLevelText || !trimToNull(messageText)
     ? (topLevelOutputText || baseText)
     : (messageText || baseText);
   const formattedAnswer = finalMessageBlock
@@ -378,7 +355,7 @@ function parseWebResearchPayload(
     query,
     provider: "openai",
     model,
-    responseId: trimNonEmptyString(payload.id),
+    responseId: trimToNull(payload.id),
     status,
     elapsedMs,
     answer: formattedAnswer.text || baseText,
@@ -392,14 +369,14 @@ export async function performWebResearch(
   query: string,
   options: PerformWebResearchOptions = {},
 ): Promise<PerformWebResearchResult> {
-  const apiKey = trimNonEmptyString(options.apiKey) ?? trimNonEmptyString(options.env?.OPENAI_API_KEY);
+  const apiKey = trimToNull(options.apiKey) ?? trimToNull(options.env?.OPENAI_API_KEY);
   if (!apiKey) {
     throw new ToolError("OPENAI_API_KEY is not configured.");
   }
 
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_WEB_RESEARCH_TIMEOUT_MS;
-  const model = trimNonEmptyString(options.model) ?? DEFAULT_WEB_RESEARCH_MODEL;
+  const model = trimToNull(options.model) ?? DEFAULT_WEB_RESEARCH_MODEL;
   const reasoningEffort = options.reasoningEffort ?? DEFAULT_WEB_RESEARCH_REASONING_EFFORT;
 
   options.onProgress?.({
@@ -435,12 +412,12 @@ export async function performWebResearch(
     });
 
     if (!response.ok) {
-      const detail = await readResponseError(response);
+      const detail = await readResponseError(response, MAX_ERROR_CHARS);
       throw new ToolError(`OpenAI web research API error (${response.status}): ${detail || response.statusText}`);
     }
 
     const payload = await response.json();
-    const responseId = isRecord(payload) ? (trimNonEmptyString(payload.id) ?? undefined) : undefined;
+    const responseId = isRecord(payload) ? (trimToNull(payload.id) ?? undefined) : undefined;
     options.onProgress?.({
       status: "formatting",
       query,

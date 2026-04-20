@@ -1,11 +1,9 @@
+import {clamp} from "../../lib/numbers.js";
+
 export interface ComposerState {
   value: string;
   cursor: number;
   preferredColumn: number | null;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
 }
 
 function lineStarts(value: string): number[] {

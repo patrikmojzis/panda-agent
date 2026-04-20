@@ -48,25 +48,15 @@ import {ThinkingSetTool} from "../../panda/tools/thinking-set-tool.js";
 import {DefaultAgentSubagentService} from "../../panda/subagents/service.js";
 import {BashJobService} from "../../integrations/shell/bash-job-service.js";
 import {
+    buildObservedPoolConfig,
     createPostgresPool,
-    DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
-    DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
     observePostgresPool,
     type PostgresPoolObserver,
-    readPositiveIntegerEnv,
 } from "./database.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
+import {trimToNull} from "../../lib/strings.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
 import type {RuntimeOptions} from "./create-runtime.js";
-
-function trimNonEmptyString(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_READONLY_POSTGRES_APPLICATION_NAME = "panda/core-ro";
@@ -80,26 +70,6 @@ function logRuntimeEvent(event: string, payload: Record<string, unknown>): void 
     timestamp: new Date().toISOString(),
     ...payload,
   })}\n`);
-}
-
-function buildRuntimePoolConfig(applicationName: string, maxEnvKey: string, fallbackMax: number): {
-  applicationName: string;
-  max: number;
-  idleTimeoutMillis: number;
-  waitingLogIntervalMs: number;
-} {
-  return {
-    applicationName,
-    max: readPositiveIntegerEnv(maxEnvKey, fallbackMax),
-    idleTimeoutMillis: readPositiveIntegerEnv(
-      "PANDA_DB_POOL_IDLE_TIMEOUT_MS",
-      DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
-    ),
-    waitingLogIntervalMs: readPositiveIntegerEnv(
-      "PANDA_DB_POOL_WAITING_LOG_INTERVAL_MS",
-      DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
-    ),
-  };
 }
 
 export interface RuntimeBootstrapOptions extends Omit<RuntimeOptions, "dbUrl"> {
@@ -226,8 +196,8 @@ export async function bootstrapRuntime(
   options: RuntimeBootstrapOptions,
 ): Promise<RuntimeBootstrapResult> {
   const readOnlyDbUrl =
-    trimNonEmptyString(options.readOnlyDbUrl)
-    ?? trimNonEmptyString(process.env.READONLY_DATABASE_URL);
+    trimToNull(options.readOnlyDbUrl)
+    ?? trimToNull(process.env.READONLY_DATABASE_URL);
 
   const readonlyPoolState: ObservedPoolState = {
     pool: null,
@@ -239,7 +209,7 @@ export async function bootstrapRuntime(
   let notificationChannel: string | null = null;
   let browserService: BrowserRunnerClient | null = null;
   const maxSubagentDepth = options.maxSubagentDepth ?? 1;
-  const postgresPoolConfig = buildRuntimePoolConfig(
+  const postgresPoolConfig = buildObservedPoolConfig(
     CORE_POSTGRES_APPLICATION_NAME,
     "PANDA_CORE_DB_POOL_MAX",
     CORE_POSTGRES_POOL_MAX_FALLBACK,
@@ -265,7 +235,7 @@ export async function bootstrapRuntime(
     idleTimeoutMillis: postgresPoolConfig.idleTimeoutMillis,
   });
   const readonlyPoolConfig = readOnlyDbUrl
-    ? buildRuntimePoolConfig(
+    ? buildObservedPoolConfig(
       CORE_READONLY_POSTGRES_APPLICATION_NAME,
       "PANDA_CORE_READONLY_DB_POOL_MAX",
       CORE_READONLY_POSTGRES_POOL_MAX_FALLBACK,
@@ -404,8 +374,8 @@ export async function bootstrapRuntime(
       store: agentStore,
     });
     const wikiEnabled = Boolean(
-      trimNonEmptyString(process.env.WIKI_DB_URL)
-      || trimNonEmptyString(process.env.WIKI_URL),
+      trimToNull(process.env.WIKI_DB_URL)
+      || trimToNull(process.env.WIKI_URL),
     );
     const wikiBindingService = credentialCrypto
       ? new WikiBindingService({

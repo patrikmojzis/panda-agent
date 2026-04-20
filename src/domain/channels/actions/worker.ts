@@ -1,4 +1,5 @@
 import type {ActionNotification, ActionWorkerLookup, ChannelActionRecord} from "./types.js";
+import {isMatchingChannelNotification} from "../worker-shared.js";
 
 type ChannelActionWorkerStore = {
   failSendingActions(lookup: ActionWorkerLookup, error: string): Promise<number>;
@@ -19,14 +20,6 @@ export interface ChannelActionWorkerOptions {
   lookup: ActionWorkerLookup;
   dispatch(action: ChannelActionRecord): Promise<void>;
   onError?: (error: unknown, actionId?: string) => Promise<void> | void;
-}
-
-function isMatchingNotification(
-  lookup: ActionWorkerLookup,
-  notification: ActionNotification,
-): boolean {
-  return notification.channel === lookup.channel
-    && notification.connectorKey === lookup.connectorKey;
 }
 
 export class ChannelActionWorker {
@@ -55,7 +48,7 @@ export class ChannelActionWorker {
       }
 
       this.unsubscribe = await this.store.listenPendingActions(async (notification) => {
-        if (!isMatchingNotification(this.lookup, notification)) {
+        if (!isMatchingChannelNotification(this.lookup, notification)) {
           return;
         }
 

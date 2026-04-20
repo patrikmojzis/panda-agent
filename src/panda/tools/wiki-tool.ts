@@ -6,6 +6,8 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
+import {isRecord} from "../../lib/records.js";
+import {trimToUndefined} from "../../lib/strings.js";
 import {
   DEFAULT_WIKI_LOCALE,
   resolveWikiUrl,
@@ -13,16 +15,21 @@ import {
   type WikiPage,
   type WikiPageSearchResult,
 } from "../../integrations/wiki/client.js";
+import {
+  buildWikiArchiveRoot,
+  isArchivedWikiPath,
+  isWikiPathWithinNamespace,
+  stripWikiLocalePrefix,
+  trimWikiPath,
+} from "../../integrations/wiki/paths.js";
+import {retargetWikiLinks, rewriteRelativeWikiLinksForMovedPage,} from "../../integrations/wiki/link-rewrite.js";
 import {buildMarkdownPageWithSection, upsertMarkdownSection,} from "../../integrations/wiki/markdown-sections.js";
+import {buildTextToolPayload} from "./shared.js";
 
 export interface WikiToolOptions {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   bindings?: Pick<WikiBindingService, "getBinding">;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readScope(context: unknown): {agentKey: string} {
@@ -35,17 +42,8 @@ function readScope(context: unknown): {agentKey: string} {
   };
 }
 
-function trimNonEmpty(value: string | null | undefined): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
 function normalizePath(value: string): string {
-  const trimmed = value.trim().replace(/^\/+|\/+$/g, "");
+  const trimmed = trimWikiPath(value);
   if (!trimmed) {
     throw new ToolError("wiki path must not be empty.");
   }
@@ -53,7 +51,7 @@ function normalizePath(value: string): string {
 }
 
 function normalizeLocale(value: string | undefined): string {
-  return trimNonEmpty(value) ?? DEFAULT_WIKI_LOCALE;
+  return trimToUndefined(value) ?? DEFAULT_WIKI_LOCALE;
 }
 
 function normalizeSectionTitle(value: string): string {
@@ -65,21 +63,8 @@ function normalizeSectionTitle(value: string): string {
   return trimmed;
 }
 
-function isPathWithinNamespace(path: string, namespacePath: string): boolean {
-  return path === namespacePath || path.startsWith(`${namespacePath}/`);
-}
-
-function buildArchiveRoot(namespacePath: string): string {
-  return `${namespacePath}/_archive`;
-}
-
-function isArchivedPath(path: string, namespacePath: string): boolean {
-  const archiveRoot = buildArchiveRoot(namespacePath);
-  return path === archiveRoot || path.startsWith(`${archiveRoot}/`);
-}
-
 function buildArchivePath(path: string, namespacePath: string, now = new Date()): string {
-  if (isArchivedPath(path, namespacePath)) {
+  if (isArchivedWikiPath(path, namespacePath)) {
     throw new ToolError(`Wiki page ${path} is already archived.`);
   }
 
@@ -93,25 +78,19 @@ function buildArchivePath(path: string, namespacePath: string, now = new Date())
     .replace(/\.\d{3}Z$/, "z")
     .toLowerCase();
 
-  return `${buildArchiveRoot(namespacePath)}/${year}/${month}/${safeLeaf}-${timestamp}`;
+  return `${buildWikiArchiveRoot(namespacePath)}/${year}/${month}/${safeLeaf}-${timestamp}`;
 }
 
 function assertNamespacePath(path: string, namespacePath: string): void {
-  if (!isPathWithinNamespace(path, namespacePath)) {
+  if (!isWikiPathWithinNamespace(path, namespacePath)) {
     throw new ToolError(
       `Wiki path ${path} is outside the agent namespace ${namespacePath}. Use only ${namespacePath} or its children, for example ${namespacePath}/profile.`,
     );
   }
 }
 
-function buildPayload(details: JsonObject, text: string): ToolResultPayload {
-  return {
-    content: [{
-      type: "text",
-      text,
-    }],
-    details,
-  };
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return count === 1 ? singular : plural;
 }
 
 function formatPageText(page: WikiPage): string {
@@ -162,21 +141,24 @@ function filterSearchResultsToScope(
   scopePath: string,
   namespacePath: string,
 ): WikiPageSearchResult[] {
-  const includeArchived = isArchivedPath(scopePath, namespacePath);
+  const includeArchived = isArchivedWikiPath(scopePath, namespacePath);
   return results.filter((entry) => (
-    isPathWithinNamespace(entry.path, scopePath)
-    && (includeArchived || !isArchivedPath(entry.path, namespacePath))
+    isWikiPathWithinNamespace(entry.path, scopePath)
+    && (includeArchived || !isArchivedWikiPath(entry.path, namespacePath))
   ));
 }
 
 export class WikiTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof WikiTool.schema, TContext> {
   static schema = z.object({
-    operation: z.enum(["get", "search", "write", "write_section", "archive"]).describe(
-      "Read one page, search pages, replace a full page body, replace one markdown section, or archive a page by moving it under _archive.",
+    operation: z.enum(["get", "search", "write", "write_section", "move", "archive"]).describe(
+      "Read one page, search pages, replace a full page body, replace one markdown section, move a page to a new path, or archive a page by moving it under _archive.",
     ),
     path: z.string().trim().min(1).optional().describe(
       "Wiki path without locale. It must stay inside the current agent namespace, for example agents/panda/profile. Leading slash is okay; it will be stripped. Search defaults to the agent namespace when omitted. Archived pages stay hidden unless you search inside _archive explicitly.",
+    ),
+    destinationPath: z.string().trim().min(1).optional().describe(
+      "Required for move. Destination wiki path without locale. It must stay inside the current agent namespace and outside _archive.",
     ),
     locale: z.string().trim().min(1).optional().describe(
       `Wiki locale. Defaults to ${DEFAULT_WIKI_LOCALE}.`,
@@ -208,6 +190,9 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
     createIfMissing: z.boolean().optional().describe(
       "Only for write and write_section. Defaults to true.",
     ),
+    rewriteLinks: z.boolean().optional().describe(
+      "Only for move. Defaults to true. When enabled, Panda rewrites inbound links from other active pages and adjusts relative links inside the moved page itself.",
+    ),
     baseUpdatedAt: z.string().trim().min(1).optional().describe(
       "Optional updatedAt from an earlier read. When provided, write aborts on concurrent edits.",
     ),
@@ -225,6 +210,12 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       if (value.content !== undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take content."});
       }
+      if (value.destinationPath !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take destinationPath."});
+      }
+      if (value.rewriteLinks !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Get does not take rewriteLinks."});
+      }
       return;
     }
 
@@ -240,6 +231,12 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       }
       if (value.title !== undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search does not take title."});
+      }
+      if (value.destinationPath !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search does not take destinationPath."});
+      }
+      if (value.rewriteLinks !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "Search does not take rewriteLinks."});
       }
       return;
     }
@@ -268,6 +265,49 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       }
       if (value.isPrivate !== undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take isPrivate."});
+      }
+      if (value.destinationPath !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take destinationPath."});
+      }
+      if (value.rewriteLinks !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "write_section does not take rewriteLinks."});
+      }
+      return;
+    }
+
+    if (value.operation === "move") {
+      if (value.path === undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move requires path."});
+      }
+      if (value.destinationPath === undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move requires destinationPath."});
+      }
+      if (value.query !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take query."});
+      }
+      if (value.section !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take section."});
+      }
+      if (value.title !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take title."});
+      }
+      if (value.description !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take description."});
+      }
+      if (value.content !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take content."});
+      }
+      if (value.tags !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take tags."});
+      }
+      if (value.isPublished !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take isPublished."});
+      }
+      if (value.isPrivate !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take isPrivate."});
+      }
+      if (value.createIfMissing !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "move does not take createIfMissing."});
       }
       return;
     }
@@ -303,6 +343,12 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       if (value.createIfMissing !== undefined) {
         ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take createIfMissing."});
       }
+      if (value.destinationPath !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take destinationPath."});
+      }
+      if (value.rewriteLinks !== undefined) {
+        ctx.addIssue({code: z.ZodIssueCode.custom, message: "archive does not take rewriteLinks."});
+      }
       return;
     }
 
@@ -318,14 +364,21 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
     if (value.query !== undefined) {
       ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write does not take query."});
     }
+    if (value.destinationPath !== undefined) {
+      ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write does not take destinationPath."});
+    }
+    if (value.rewriteLinks !== undefined) {
+      ctx.addIssue({code: z.ZodIssueCode.custom, message: "Write does not take rewriteLinks."});
+    }
   });
 
   name = "wiki";
   description = [
-    "Read, search, write, and archive agent-owned Wiki.js pages.",
+    "Read, search, write, move, and archive agent-owned Wiki.js pages.",
     "Every path is hard-scoped to the current agent namespace. Do not read or write outside it.",
     "Write replaces the full page body; there is no line-level patching here.",
     "write_section replaces or appends one ## markdown section so agents do not have to hand-edit whole pages.",
+    "move is for restructuring live pages and can rewrite inbound links plus relative links inside the moved page.",
     "archive moves a page under the namespace _archive tree instead of deleting it.",
     "For safe updates, read first and pass baseUpdatedAt back into write.",
   ].join("\n");
@@ -344,6 +397,11 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
 
   override formatCall(args: Record<string, unknown>): string {
     const operation = typeof args.operation === "string" ? args.operation : "get";
+    if (operation === "move"
+      && typeof args.path === "string"
+      && typeof args.destinationPath === "string") {
+      return `${operation} ${args.path} -> ${args.destinationPath}`;
+    }
     if (operation === "write_section"
       && typeof args.path === "string"
       && typeof args.section === "string") {
@@ -420,7 +478,7 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       if (!createIfMissing) {
         throw new ToolError(`Wiki page ${locale}/${path} does not exist and createIfMissing=false.`);
       }
-      if (!trimNonEmpty(title)) {
+      if (!trimToUndefined(title)) {
         throw new ToolError(missingTitleMessage);
       }
 
@@ -474,11 +532,11 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       editor: existing.editor,
     });
 
-    return {
-      action: "updated",
-      page: updated,
-    };
-  }
+      return {
+        action: "updated",
+        page: updated,
+      };
+    }
 
   async handle(
     args: z.output<typeof WikiTool.schema>,
@@ -499,24 +557,24 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       run.emitToolProgress({status: "reading", path, locale});
       const page = await client.getPageByPath(path, locale);
       if (!page) {
-        return buildPayload(
+        return buildTextToolPayload(
+          `No wiki page found at ${locale}/${path}.`,
           {
             operation: "get",
             found: false,
             path,
             locale,
           },
-          `No wiki page found at ${locale}/${path}.`,
         );
       }
 
-      return buildPayload(
+      return buildTextToolPayload(
+        formatPageText(page),
         {
           operation: "get",
           found: true,
           ...page,
         } satisfies JsonObject,
-        formatPageText(page),
       );
     }
 
@@ -533,7 +591,12 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
         scopePath,
         binding.namespacePath,
       );
-      return buildPayload(
+      return buildTextToolPayload(
+        formatSearchText({
+          query: args.query ?? "",
+          totalHits: scopedResults.length,
+          results: scopedResults,
+        }),
         {
           operation: "search",
           query: args.query ?? "",
@@ -542,11 +605,6 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
           suggestions: result.suggestions,
           results: scopedResults.map((entry) => ({...entry}) satisfies JsonObject),
         },
-        formatSearchText({
-          query: args.query ?? "",
-          totalHits: scopedResults.length,
-          results: scopedResults,
-        }),
       );
     }
 
@@ -557,6 +615,208 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
 
     run.emitToolProgress({status: "loading_page", path, locale});
     const existing = await client.getPageByPath(path, locale);
+
+    if (args.operation === "move") {
+      if (!existing) {
+        throw new ToolError(`Wiki page ${locale}/${path} does not exist.`);
+      }
+
+      if (isArchivedWikiPath(path, binding.namespacePath)) {
+        throw new ToolError(`Wiki page ${path} is archived. Use archive paths only for history, not live moves.`);
+      }
+
+      const destinationPath = normalizePath(args.destinationPath ?? "");
+      assertNamespacePath(destinationPath, binding.namespacePath);
+      if (isArchivedWikiPath(destinationPath, binding.namespacePath)) {
+        throw new ToolError(`Wiki move destination ${destinationPath} is inside _archive. Use archive instead.`);
+      }
+      if (destinationPath === path) {
+        throw new ToolError(`Wiki move destination ${destinationPath} is the same as the current path.`);
+      }
+
+      const destinationExisting = await client.getPageByPath(destinationPath, locale);
+      if (destinationExisting) {
+        throw new ToolError(`Wiki page ${locale}/${destinationPath} already exists.`);
+      }
+
+      if (args.baseUpdatedAt) {
+        const hasConflict = await client.checkPageConflicts(existing.id, args.baseUpdatedAt);
+        if (hasConflict) {
+          const latest = await client.getConflictLatest(existing.id);
+          throw new ToolError(
+            `Wiki page ${latest.locale}/${latest.path} changed since ${args.baseUpdatedAt}. Read the latest page before moving it.`,
+            {
+              details: {
+                pageId: latest.id,
+                path: latest.path,
+                locale: latest.locale,
+                updatedAt: latest.updatedAt,
+                title: latest.title,
+              },
+            },
+          );
+        }
+      }
+
+      run.emitToolProgress({status: "moving", path, locale, destinationPath});
+      let moved = await client.movePage({
+        id: existing.id,
+        destinationPath,
+        destinationLocale: locale,
+      });
+
+      const rewriteLinks = args.rewriteLinks ?? true;
+      const updatedPages: Array<JsonObject> = [];
+      const failedPages: Array<JsonObject> = [];
+      let rewrittenLinks = 0;
+
+      if (rewriteLinks) {
+        const movedRelativeLinks = rewriteRelativeWikiLinksForMovedPage(existing.content, {
+          destinationPagePath: moved.path,
+          locale,
+          sourcePagePath: path,
+        });
+        const movedRetargetedLinks = retargetWikiLinks(movedRelativeLinks.content, {
+          fromPath: path,
+          locale,
+          sourcePagePath: moved.path,
+          toPath: moved.path,
+        });
+        const movedContent = movedRetargetedLinks.content;
+        const movedLinkRewrites = movedRelativeLinks.rewrittenLinks + movedRetargetedLinks.rewrittenLinks;
+
+        if (movedContent !== moved.content) {
+          try {
+            moved = await client.updatePage({
+              id: moved.id,
+              path: moved.path,
+              locale: moved.locale,
+              title: moved.title,
+              description: moved.description,
+              content: movedContent,
+              tags: moved.tags,
+              editor: moved.editor,
+              isPublished: moved.isPublished,
+              isPrivate: moved.isPrivate,
+            });
+            rewrittenLinks += movedLinkRewrites;
+            updatedPages.push({
+              path: moved.path,
+              locale: moved.locale,
+              rewrittenLinks: movedLinkRewrites,
+            });
+          } catch (error) {
+            failedPages.push({
+              path: moved.path,
+              locale: moved.locale,
+              reason: error instanceof Error ? error.message : "unknown error",
+            });
+          }
+        }
+
+        const sourceFullPath = `${locale}/${path}`;
+        const linkItems = await client.listPageLinks(locale);
+        for (const item of linkItems) {
+          if (!item.links.includes(sourceFullPath)) {
+            continue;
+          }
+
+          const referencingPath = stripWikiLocalePrefix(item.path, locale);
+          if (
+            referencingPath === moved.path
+            || !isWikiPathWithinNamespace(referencingPath, binding.namespacePath)
+            || isArchivedWikiPath(referencingPath, binding.namespacePath)
+          ) {
+            continue;
+          }
+
+          const referencingPage = await client.getPageByPath(referencingPath, locale);
+          if (!referencingPage) {
+            failedPages.push({
+              path: referencingPath,
+              locale,
+              reason: "page disappeared before link rewrite",
+            });
+            continue;
+          }
+
+          const rewritten = retargetWikiLinks(referencingPage.content, {
+            fromPath: path,
+            locale,
+            sourcePagePath: referencingPath,
+            toPath: moved.path,
+          });
+          if (rewritten.rewrittenLinks === 0 || rewritten.content === referencingPage.content) {
+            continue;
+          }
+
+          try {
+            const updated = await client.updatePage({
+              id: referencingPage.id,
+              path: referencingPage.path,
+              locale: referencingPage.locale,
+              title: referencingPage.title,
+              description: referencingPage.description,
+              content: rewritten.content,
+              tags: referencingPage.tags,
+              editor: referencingPage.editor,
+              isPublished: referencingPage.isPublished,
+              isPrivate: referencingPage.isPrivate,
+            });
+            rewrittenLinks += rewritten.rewrittenLinks;
+            updatedPages.push({
+              path: updated.path,
+              locale: updated.locale,
+              rewrittenLinks: rewritten.rewrittenLinks,
+            });
+          } catch (error) {
+            failedPages.push({
+              path: referencingPath,
+              locale,
+              reason: error instanceof Error ? error.message : "unknown error",
+            });
+          }
+        }
+      }
+
+      const messageParts = [`Moved wiki page ${locale}/${path} to ${moved.locale}/${moved.path}.`];
+      if (rewriteLinks) {
+        if (rewrittenLinks > 0) {
+          messageParts.push(
+            `Rewrote ${rewrittenLinks} ${pluralize(rewrittenLinks, "link")} across ${updatedPages.length} ${pluralize(updatedPages.length, "page")}.`,
+          );
+        } else {
+          messageParts.push("No wiki links needed rewriting.");
+        }
+        if (failedPages.length > 0) {
+          messageParts.push(
+            `${failedPages.length} ${pluralize(failedPages.length, "page")} could not be rewritten automatically.`,
+          );
+        }
+      }
+
+      return buildTextToolPayload(
+        messageParts.join(" "),
+        {
+          operation: "move",
+          movedFrom: path,
+          movedTo: moved.path,
+          rewriteLinks,
+          linkRewrite: {
+            rewrittenLinks,
+            updatedPages,
+            failedPages,
+          },
+          page: {
+            id: moved.id,
+            path: moved.path,
+            locale: moved.locale,
+            title: moved.title,
+            updatedAt: moved.updatedAt,
+          },
+        },
+      );
+    }
 
     if (args.operation === "archive") {
       if (!existing) {
@@ -590,7 +850,8 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
         destinationLocale: locale,
       });
 
-      return buildPayload(
+      return buildTextToolPayload(
+        `Archived wiki page ${locale}/${path} to ${archived.locale}/${archived.path}.`,
         {
           operation: "archive",
           archivedFrom: path,
@@ -603,7 +864,6 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
             updatedAt: archived.updatedAt,
           },
         },
-        `Archived wiki page ${locale}/${path} to ${archived.locale}/${archived.path}.`,
       );
     }
 
@@ -615,7 +875,7 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
           if (!createIfMissing) {
             throw new ToolError(`Wiki page ${locale}/${path} does not exist and createIfMissing=false.`);
           }
-          if (!trimNonEmpty(args.title)) {
+          if (!trimToUndefined(args.title)) {
             throw new ToolError("write_section needs title when creating a new page.");
           }
 
@@ -640,7 +900,12 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
         missingTitleMessage: "write_section needs title when creating a new page.",
       }, run);
 
-      return buildPayload(
+      return buildTextToolPayload(
+        result.action === "created"
+          ? `Created wiki page ${result.page.locale}/${result.page.path} with section ${sectionTitle}.`
+          : sectionContent.action === "appended"
+            ? `Added section ${sectionTitle} to wiki page ${result.page.locale}/${result.page.path}.`
+            : `Updated section ${sectionTitle} in wiki page ${result.page.locale}/${result.page.path}.`,
         {
           operation: "write_section",
           action: result.action,
@@ -656,11 +921,6 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
             updatedAt: result.page.updatedAt,
           },
         },
-        result.action === "created"
-          ? `Created wiki page ${result.page.locale}/${result.page.path} with section ${sectionTitle}.`
-          : sectionContent.action === "appended"
-            ? `Added section ${sectionTitle} to wiki page ${result.page.locale}/${result.page.path}.`
-            : `Updated section ${sectionTitle} in wiki page ${result.page.locale}/${result.page.path}.`,
       );
     }
 
@@ -680,7 +940,10 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
       missingTitleMessage: "Write needs title when creating a new page.",
     }, run);
 
-    return buildPayload(
+    return buildTextToolPayload(
+      result.action === "created"
+        ? `Created wiki page ${result.page.locale}/${result.page.path}.`
+        : `Updated wiki page ${result.page.locale}/${result.page.path}.`,
       {
         operation: "write",
         action: result.action,
@@ -692,9 +955,6 @@ export class WikiTool<TContext = DefaultAgentSessionContext>
           updatedAt: result.page.updatedAt,
         },
       },
-      result.action === "created"
-        ? `Created wiki page ${result.page.locale}/${result.page.path}.`
-        : `Updated wiki page ${result.page.locale}/${result.page.path}.`,
     );
   }
 }

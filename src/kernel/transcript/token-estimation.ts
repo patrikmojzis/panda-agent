@@ -3,6 +3,7 @@ import type {Message, ToolResultMessage} from "@mariozechner/pi-ai";
 import {estimateTokensFromString, type TokenCounter} from "../agent/helpers/token-count.js";
 import {readToolArtifact} from "../agent/tool-artifacts.js";
 import type {JsonValue} from "../agent/types.js";
+import {clamp, readPositiveInteger} from "../../lib/numbers.js";
 
 const MIN_IMAGE_TOKENS = 85;
 const MAX_IMAGE_TOKENS = 1_600;
@@ -16,10 +17,6 @@ interface ImageDimensions {
   height?: number;
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
 function estimateStructuredValueTokens(value: unknown, estimateTextTokens: TokenCounter): number {
   if (value === undefined) {
     return 0;
@@ -30,15 +27,6 @@ function estimateStructuredValueTokens(value: unknown, estimateTextTokens: Token
   }
 
   return estimateTextTokens(JSON.stringify(value));
-}
-
-function readPositiveInteger(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return undefined;
-  }
-
-  const normalized = Math.floor(value);
-  return normalized > 0 ? normalized : undefined;
 }
 
 function decodeBase64Prefix(data: string, maxBytes: number): Buffer | null {

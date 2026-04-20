@@ -1,6 +1,6 @@
 import {execFile} from "node:child_process";
 import {createHash, randomUUID} from "node:crypto";
-import {access, mkdir, mkdtemp, readdir, readFile, rm, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, readdir, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {promisify} from "node:util";
@@ -16,6 +16,8 @@ import {stripToolArtifactInlineImages, withArtifactDetails} from "../../kernel/a
 import type {JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
+import {trimToNull} from "../../lib/strings.js";
+import {assertPathReadable} from "../../lib/fs.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_PDF_PREVIEW_SIZE = 1600;
@@ -34,17 +36,8 @@ export interface MediaToolOptions {
   pdfPreviewSize?: number;
 }
 
-function trimNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
 function resolveMediaArtifactRoot(context: DefaultAgentSessionContext | undefined, env: NodeJS.ProcessEnv): string {
-  const agentKey = trimNonEmptyString(context?.agentKey);
+  const agentKey = trimToNull(context?.agentKey);
   if (agentKey) {
     return resolveAgentMediaDir(agentKey, env);
   }
@@ -76,14 +69,6 @@ async function writeDurablePdfPreview(
     path: destination,
     bytes,
   };
-}
-
-async function ensureReadableFile(filePath: string): Promise<void> {
-  try {
-    await access(filePath);
-  } catch {
-    throw new ToolError(`No readable file found at ${filePath}`);
-  }
 }
 
 async function readImageMetadata(filePath: string): Promise<{ width?: number; height?: number }> {
@@ -266,7 +251,7 @@ export class MediaTool<TContext = DefaultAgentSessionContext> extends Tool<typeo
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
     const resolvedPath = resolveContextPath(args.path, run.context);
-    await ensureReadableFile(resolvedPath);
+    await assertPathReadable(resolvedPath, (missingPath) => new ToolError(`No readable file found at ${missingPath}`));
 
     const extension = path.extname(resolvedPath).toLowerCase();
     const mimeType = IMAGE_EXTENSIONS.get(extension);

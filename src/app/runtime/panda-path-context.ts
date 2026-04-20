@@ -1,27 +1,16 @@
 import path from "node:path";
 
 import {mapRunnerAgentPathToHost} from "../../integrations/shell/path-mapping.js";
+import {isRecord} from "../../lib/records.js";
+import {trimToNull, trimToUndefined} from "../../lib/strings.js";
 import type {ShellSession} from "../../integrations/shell/types.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function trimNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
 
 function readContextAgentKey(context: unknown): string | null {
   if (!isRecord(context)) {
     return null;
   }
 
-  return trimNonEmptyString(context.agentKey);
+  return trimToNull(context.agentKey);
 }
 
 function resolveMountedAgentPath(
@@ -107,7 +96,7 @@ export function readCurrentInputIdentityId(context: unknown): string | undefined
     return undefined;
   }
 
-  return trimNonEmptyString(currentInput.identityId) ?? undefined;
+  return trimToUndefined(currentInput.identityId);
 }
 
 export function resolveContextPath(

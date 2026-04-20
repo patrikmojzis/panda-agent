@@ -1,4 +1,5 @@
 import type {WikiBindingService} from "../../domain/wiki/index.js";
+import {trimToUndefined} from "../../lib/strings.js";
 import {
     DEFAULT_WIKI_LOCALE,
     resolveWikiUrl,
@@ -6,12 +7,19 @@ import {
     type WikiPageLinkItem,
     type WikiPageListItem,
 } from "../../integrations/wiki/client.js";
+import {
+    isArchivedWikiPath,
+    isWikiPathWithinNamespace,
+    stripWikiLocalePrefix,
+    trimWikiPath,
+} from "../../integrations/wiki/paths.js";
 import {LlmContext} from "../../kernel/agent/llm-context.js";
 import {
     renderWikiOverviewContext,
     type WikiOverviewLinkedEntry,
     type WikiOverviewRecentEntry,
 } from "../../prompts/contexts/wiki-overview.js";
+import {resolveNow} from "./shared.js";
 
 const DEFAULT_RECENT_LIMIT = 10;
 const DEFAULT_LINK_LIMIT = 10;
@@ -38,36 +46,6 @@ export interface WikiOverviewContextOptions {
   linkedLimit?: number;
   ttlMs?: number;
   now?: Date | (() => Date);
-}
-
-function trimNonEmpty(value: string | null | undefined): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
-function normalizePath(value: string): string {
-  return value.trim().replace(/^\/+|\/+$/g, "");
-}
-
-function isPathWithinNamespace(path: string, namespacePath: string): boolean {
-  return path === namespacePath || path.startsWith(`${namespacePath}/`);
-}
-
-function isArchivedPath(path: string, namespacePath: string): boolean {
-  const archiveRoot = `${namespacePath}/_archive`;
-  return path === archiveRoot || path.startsWith(`${archiveRoot}/`);
-}
-
-function resolveNow(now?: Date | (() => Date)): Date {
-  if (typeof now === "function") {
-    return now();
-  }
-
-  return now ?? new Date();
 }
 
 function formatRelativeAge(ageMs: number): string {
@@ -122,11 +100,6 @@ function buildCacheKey(options: {
   ].join("::");
 }
 
-function fullPathToNamespacePath(fullPath: string, locale: string): string {
-  const prefix = `${locale}/`;
-  return fullPath.startsWith(prefix) ? fullPath.slice(prefix.length) : fullPath;
-}
-
 function fallbackTitle(path: string): string {
   const parts = path.split("/").filter(Boolean);
   return parts.at(-1) ?? path;
@@ -168,13 +141,13 @@ function buildRecentlyEdited(
   return pages
     .filter((page) => (
       page.locale === options.locale
-      && isPathWithinNamespace(page.path, options.namespacePath)
-      && !isArchivedPath(page.path, options.namespacePath)
+      && isWikiPathWithinNamespace(page.path, options.namespacePath)
+      && !isArchivedWikiPath(page.path, options.namespacePath)
     ))
     .sort(compareUpdatedAtDescending)
     .slice(0, options.limit)
     .map((page) => ({
-      title: trimNonEmpty(page.title) ?? fallbackTitle(page.path),
+      title: trimToUndefined(page.title) ?? fallbackTitle(page.path),
       path: page.path,
       updatedAt: page.updatedAt,
     }));
@@ -200,7 +173,7 @@ function buildTopLinked(
   const inboundCounts = new Map<string, number>();
 
   for (const item of linkItems) {
-    if (isWithinNamespace(item.path) && !isArchivedPath(fullPathToNamespacePath(item.path, options.locale), options.namespacePath)) {
+    if (isWithinNamespace(item.path) && !isArchivedWikiPath(stripWikiLocalePrefix(item.path, options.locale), options.namespacePath)) {
       titleByFullPath.set(item.path, item.title);
     }
   }
@@ -208,7 +181,7 @@ function buildTopLinked(
   for (const item of linkItems) {
     if (
       !isWithinNamespace(item.path)
-      || isArchivedPath(fullPathToNamespacePath(item.path, options.locale), options.namespacePath)
+      || isArchivedWikiPath(stripWikiLocalePrefix(item.path, options.locale), options.namespacePath)
     ) {
       continue;
     }
@@ -216,7 +189,7 @@ function buildTopLinked(
     for (const linkedPath of item.links) {
       if (
         !isWithinNamespace(linkedPath)
-        || isArchivedPath(fullPathToNamespacePath(linkedPath, options.locale), options.namespacePath)
+        || isArchivedWikiPath(stripWikiLocalePrefix(linkedPath, options.locale), options.namespacePath)
       ) {
         continue;
       }
@@ -227,9 +200,9 @@ function buildTopLinked(
 
   return [...inboundCounts.entries()]
     .map(([fullPath, inboundLinks]) => {
-      const path = fullPathToNamespacePath(fullPath, options.locale);
+      const path = stripWikiLocalePrefix(fullPath, options.locale);
       return {
-        title: trimNonEmpty(titleByFullPath.get(fullPath)) ?? fallbackTitle(path),
+        title: trimToUndefined(titleByFullPath.get(fullPath)) ?? fallbackTitle(path),
         path,
         inboundLinks,
       };
@@ -270,8 +243,8 @@ export class WikiOverviewContext extends LlmContext {
       return "";
     }
 
-    const locale = trimNonEmpty(this.options.locale) ?? DEFAULT_WIKI_LOCALE;
-    const namespacePath = normalizePath(binding.namespacePath);
+    const locale = trimToUndefined(this.options.locale) ?? DEFAULT_WIKI_LOCALE;
+    const namespacePath = trimWikiPath(binding.namespacePath);
     const baseUrl = resolveWikiUrl(this.options.env);
     const recentLimit = this.options.recentLimit ?? DEFAULT_RECENT_LIMIT;
     const linkedLimit = this.options.linkedLimit ?? DEFAULT_LINK_LIMIT;

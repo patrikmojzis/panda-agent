@@ -3,19 +3,18 @@ import type {ThinkingLevel, ToolResultMessage} from "@mariozechner/pi-ai";
 
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
+import {stringifyUnknown} from "../../kernel/agent/helpers/stringify.js";
+import type {JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {isRecord} from "../../lib/records.js";
+import {buildJsonToolPayload} from "./shared.js";
 
 const thinkingSetToolSchema = z.object({
   level: z.enum(["off", "low", "medium", "high", "xhigh"]),
   persist: z.boolean().optional().default(false),
   reason: z.string().trim().min(1).optional(),
 });
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function readThreadId(context: unknown): string | null {
   if (!isRecord(context) || typeof context.threadId !== "string") {
@@ -24,20 +23,6 @@ function readThreadId(context: unknown): string | null {
 
   const trimmed = context.threadId.trim();
   return trimmed || null;
-}
-
-function buildPayload(details: JsonObject): ToolResultPayload {
-  return {
-    content: [{
-      type: "text",
-      text: JSON.stringify(details, null, 2),
-    }],
-    details,
-  };
-}
-
-function stringifyError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function normalizeThinkingLevel(
@@ -51,7 +36,7 @@ function assertThinkingControlAvailable<TContext>(run: RunContext<TContext>): vo
     const currentThinking = run.getThinking();
     run.setThinking(currentThinking);
   } catch (error) {
-    throw new ToolError(`Live thinking control is unavailable in this runtime: ${stringifyError(error)}`);
+    throw new ToolError(`Live thinking control is unavailable in this runtime: ${stringifyUnknown(error, {preferErrorMessage: true})}`);
   }
 }
 
@@ -70,7 +55,7 @@ function applyLiveThinking<TContext>(
 
     return liveThinking;
   } catch (error) {
-    throw new ToolError(`Failed to update live thinking: ${stringifyError(error)}`);
+    throw new ToolError(`Failed to update live thinking: ${stringifyUnknown(error, {preferErrorMessage: true})}`);
   }
 }
 
@@ -128,7 +113,7 @@ export class ThinkingSetTool<TContext = DefaultAgentSessionContext>
 
     if (!args.persist) {
       const liveThinking = applyLiveThinking(run, nextThinking);
-      return buildPayload({
+      return buildJsonToolPayload({
         requestedLevel: args.level,
         liveThinking: liveThinking ?? null,
         persistRequested: false,
@@ -153,11 +138,11 @@ export class ThinkingSetTool<TContext = DefaultAgentSessionContext>
       const persisted = await this.persistence.updateThreadThinking(threadId, nextThinking ?? null);
       storedThinking = persisted.thinking;
     } catch (error) {
-      throw new ToolError(`Failed to persist thinking: ${stringifyError(error)}`);
+      throw new ToolError(`Failed to persist thinking: ${stringifyUnknown(error, {preferErrorMessage: true})}`);
     }
 
     const liveThinking = applyLiveThinking(run, nextThinking);
-    return buildPayload({
+    return buildJsonToolPayload({
       requestedLevel: args.level,
       liveThinking: liveThinking ?? null,
       persistRequested: true,

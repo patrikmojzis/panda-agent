@@ -1,4 +1,7 @@
 import {ToolError} from "../../kernel/agent/exceptions.js";
+import {isRecord} from "../../lib/records.js";
+import {trimToUndefined} from "../../lib/strings.js";
+import {trimWikiPath} from "./paths.js";
 
 export const DEFAULT_WIKI_URL = "http://wiki:3000";
 export const DEFAULT_WIKI_LOCALE = "en";
@@ -81,18 +84,8 @@ interface WikiResponseResult {
   message?: string;
 }
 
-function trimNonEmpty(value: string | null | undefined): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
 function normalizeWikiPath(value: string): string {
-  const trimmed = value.trim();
-  const withoutSlashes = trimmed.replace(/^\/+|\/+$/g, "");
+  const withoutSlashes = trimWikiPath(value);
   if (!withoutSlashes) {
     throw new ToolError("Wiki path must not be empty.");
   }
@@ -103,7 +96,7 @@ function normalizeWikiPath(value: string): string {
 }
 
 function normalizeWikiLocale(value: string | undefined): string {
-  const locale = trimNonEmpty(value) ?? DEFAULT_WIKI_LOCALE;
+  const locale = trimToUndefined(value) ?? DEFAULT_WIKI_LOCALE;
   return locale;
 }
 
@@ -136,10 +129,6 @@ function normalizeGraphQlErrors(errors: readonly GraphQlErrorShape[] | undefined
 
 function isMissingPageMessage(message: string): boolean {
   return /not found|does not exist/i.test(message);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseWikiPage(value: unknown): WikiPage {
@@ -265,7 +254,7 @@ function parseWikiPageLinks(value: unknown): WikiPageLinkItem[] {
 }
 
 export function resolveWikiUrl(env: NodeJS.ProcessEnv = process.env): string {
-  return trimNonEmpty(env.WIKI_URL) ?? DEFAULT_WIKI_URL;
+  return trimToUndefined(env.WIKI_URL) ?? DEFAULT_WIKI_URL;
 }
 
 export class WikiJsClient {
@@ -274,13 +263,13 @@ export class WikiJsClient {
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: WikiJsClientOptions) {
-    const apiToken = trimNonEmpty(options.apiToken);
+    const apiToken = trimToUndefined(options.apiToken);
     if (!apiToken) {
       throw new ToolError("Wiki.js client requires an API token.");
     }
 
     this.apiToken = apiToken;
-    this.baseUrl = trimNonEmpty(options.baseUrl) ?? DEFAULT_WIKI_URL;
+    this.baseUrl = trimToUndefined(options.baseUrl) ?? DEFAULT_WIKI_URL;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -533,7 +522,7 @@ export class WikiJsClient {
       {
         content: input.content,
         description: input.description,
-        editor: trimNonEmpty(input.editor) ?? DEFAULT_WIKI_EDITOR,
+        editor: trimToUndefined(input.editor) ?? DEFAULT_WIKI_EDITOR,
         isPublished: input.isPublished ?? true,
         isPrivate: input.isPrivate ?? false,
         locale,
@@ -604,7 +593,7 @@ export class WikiJsClient {
         id: input.id,
         content: input.content,
         description: input.description,
-        editor: trimNonEmpty(input.editor) ?? DEFAULT_WIKI_EDITOR,
+        editor: trimToUndefined(input.editor) ?? DEFAULT_WIKI_EDITOR,
         isPublished: input.isPublished ?? true,
         isPrivate: input.isPrivate ?? false,
         locale,

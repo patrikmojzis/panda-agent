@@ -1,9 +1,8 @@
-import path from "node:path";
-
 import type {JsonObject} from "../../../kernel/agent/types.js";
 import type {MediaDescriptor, RememberedRoute} from "../../../domain/channels/types.js";
 import {renderTelegramInboundText, renderTelegramReactionText,} from "../../../prompts/channels/telegram.js";
 import {TELEGRAM_SOURCE} from "./config.js";
+import {describeMediaDescriptor, serializeMediaDescriptor} from "../media-shared.js";
 
 export interface TelegramInboundTextOptions {
   connectorKey: string;
@@ -94,31 +93,6 @@ export function buildTelegramPairCommand(
   identityHandle = "<identity-handle>",
 ): string {
   return `panda telegram pair --identity ${identityHandle} --actor ${actorId}`;
-}
-
-function describeMediaDescriptor(descriptor: MediaDescriptor): string {
-  const filename = descriptor.originalFilename ?? path.basename(descriptor.localPath);
-  return [
-    "- id: " + descriptor.id,
-    `  filename: ${filename}`,
-    `  mime_type: ${descriptor.mimeType}`,
-    `  size_bytes: ${descriptor.sizeBytes}`,
-    `  path: ${descriptor.localPath}`,
-  ].join("\n");
-}
-
-function serializeMediaDescriptor(descriptor: MediaDescriptor): JsonObject {
-  return {
-    id: descriptor.id,
-    source: descriptor.source,
-    connectorKey: descriptor.connectorKey,
-    mimeType: descriptor.mimeType,
-    sizeBytes: descriptor.sizeBytes,
-    localPath: descriptor.localPath,
-    originalFilename: descriptor.originalFilename ?? null,
-    metadata: descriptor.metadata ?? null,
-    createdAt: descriptor.createdAt,
-  };
 }
 
 export function buildTelegramInboundPersistence(

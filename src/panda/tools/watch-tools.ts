@@ -9,20 +9,21 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {
-  getCompactWatchDetectorEnvelopeSchema,
-  getCompactWatchSourceEnvelopeSchema,
-  getWatchDetectorExample,
-  getWatchDetectorKindSchema,
-  getWatchDetectorNotes,
-  getWatchDetectorSchema,
-  getWatchSourceExample,
-  getWatchSourceKindSchema,
-  getWatchSourceNotes,
-  getWatchSourceSchema,
-  parseWatchDetectorConfig,
-  parseWatchSourceConfig,
-  requireSchemaGetSelection,
+    getCompactWatchDetectorEnvelopeSchema,
+    getCompactWatchSourceEnvelopeSchema,
+    getWatchDetectorExample,
+    getWatchDetectorKindSchema,
+    getWatchDetectorNotes,
+    getWatchDetectorSchema,
+    getWatchSourceExample,
+    getWatchSourceKindSchema,
+    getWatchSourceNotes,
+    getWatchSourceSchema,
+    parseWatchDetectorConfig,
+    parseWatchSourceConfig,
+    requireSchemaGetSelection,
 } from "./watch-schema-catalog.js";
+import {rethrowAsToolError} from "./shared.js";
 
 function readWatchScope(context: unknown): {
   agentKey: string;
@@ -46,15 +47,6 @@ function readWatchScope(context: unknown): {
     sessionId: (context as {sessionId: string}).sessionId,
     createdByIdentityId: readCurrentInputIdentityId(context),
   };
-}
-
-function wrapWatchError(error: unknown): never {
-  if (error instanceof ToolError) {
-    throw error;
-  }
-
-  const message = error instanceof Error ? error.message : String(error);
-  throw new ToolError(message);
 }
 
 export interface WatchToolOptions {
@@ -173,7 +165,7 @@ export class WatchCreateTool<TContext = DefaultAgentSessionContext>
         watchId: watch.id,
       };
     } catch (error) {
-      wrapWatchError(error);
+      rethrowAsToolError(error);
     }
   }
 }
@@ -221,7 +213,7 @@ export class WatchUpdateTool<TContext = DefaultAgentSessionContext>
         updated: true,
       };
     } catch (error) {
-      wrapWatchError(error);
+      rethrowAsToolError(error);
     }
   }
 }
@@ -261,7 +253,7 @@ export class WatchDisableTool<TContext = DefaultAgentSessionContext>
         disabled: true,
       };
     } catch (error) {
-      wrapWatchError(error);
+      rethrowAsToolError(error);
     }
   }
 }

@@ -1,9 +1,4 @@
-import {
-  getProviderConfig,
-  resolveModelSelector,
-  resolveProviderApiKey,
-  type ThinkingLevel,
-} from "../../kernel/agent/index.js";
+import {type ThinkingLevel} from "../../kernel/agent/index.js";
 import type {TranscriptLine} from "./chat-view.js";
 import type {SessionRecord} from "../../domain/sessions/index.js";
 
@@ -98,11 +93,4 @@ export function thinkingCommandUsage(): string {
 
 export function thinkingCommandValuesText(): string {
   return `${THINKING_LEVELS.join(", ")}, or off`;
-}
-
-export function missingApiKeyMessage(modelSelector: string): string | null {
-  const selection = resolveModelSelector(modelSelector);
-  return resolveProviderApiKey(selection.providerName)
-    ? null
-    : getProviderConfig(selection.providerName).missingApiKeyMessage;
 }

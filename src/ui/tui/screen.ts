@@ -1,3 +1,4 @@
+export {clamp} from "../../lib/numbers.js";
 import {stripAnsi} from "./theme.js";
 
 export const ALT_SCREEN_ON = "\u001b[?1049h";
@@ -5,10 +6,6 @@ export const ALT_SCREEN_OFF = "\u001b[?1049l";
 export const CLEAR_SCREEN = "\u001b[2J\u001b[H";
 export const HIDE_CURSOR = "\u001b[?25l";
 export const SHOW_CURSOR = "\u001b[?25h";
-
-export function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
 
 export function cursorTo(row: number, column: number): string {
   return `\u001b[${row};${column}H`;

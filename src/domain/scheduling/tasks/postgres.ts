@@ -2,6 +2,7 @@ import {randomUUID} from "node:crypto";
 
 import type {PoolClient} from "pg";
 
+import {toDateOrNull} from "../../../lib/dates.js";
 import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import type {PgPoolLike} from "../../threads/runtime/postgres-db.js";
@@ -14,6 +15,7 @@ import {
 import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
 import {computeInitialNextFireAt, normalizeScheduledTaskSchedule} from "./schedule.js";
 import {buildScheduledTaskTableNames, type ScheduledTaskTableNames} from "./postgres-shared.js";
+import {requireScheduledTaskString} from "./shared.js";
 import type {ScheduledTaskStore} from "./store.js";
 import type {
     CancelScheduledTaskInput,
@@ -41,18 +43,8 @@ function missingTaskRunError(runId: string): Error {
   return new Error(`Unknown scheduled task run ${runId}`);
 }
 
-function requireTrimmed(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`Scheduled task ${field} must not be empty.`);
-  }
-
-  return trimmed;
-}
-
-function toDate(value: number | undefined): Date | null {
-  return value === undefined ? null : new Date(value);
-}
+const requireTrimmed = requireScheduledTaskString;
+const toDate = toDateOrNull;
 
 function parseTaskRow(row: Record<string, unknown>): ScheduledTaskRecord {
   const scheduleKind = String(row.schedule_kind) as ScheduledTaskRecord["schedule"]["kind"];

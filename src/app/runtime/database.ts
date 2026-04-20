@@ -1,5 +1,8 @@
 import {Pool} from "pg";
 
+import {isDuplicateObjectError} from "../../lib/postgres-errors.js";
+import {trimToNull} from "../../lib/strings.js";
+
 export const DEFAULT_POSTGRES_POOL_MAX = 10;
 export const DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS = 30_000;
 export const DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS = 60_000;
@@ -24,19 +27,10 @@ export interface PostgresPoolObserver {
   stop(): void;
 }
 
-function trimNonEmptyString(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
 export function resolveDatabaseUrl(explicitDbUrl?: string): string | null {
   return (
-    trimNonEmptyString(explicitDbUrl)
-    ?? trimNonEmptyString(process.env.DATABASE_URL)
+    trimToNull(explicitDbUrl)
+    ?? trimToNull(process.env.DATABASE_URL)
   );
 }
 
@@ -50,7 +44,7 @@ export function requireDatabaseUrl(explicitDbUrl?: string): string {
 }
 
 export function readPositiveIntegerEnv(name: string, fallback: number): number {
-  const rawValue = trimNonEmptyString(process.env[name]);
+  const rawValue = trimToNull(process.env[name]);
   if (!rawValue) {
     return fallback;
   }
@@ -61,6 +55,30 @@ export function readPositiveIntegerEnv(name: string, fallback: number): number {
   }
 
   return parsed;
+}
+
+/**
+ * Builds the standard observed Postgres pool config using Panda's shared env
+ * knobs for max connections, idle timeout, and waiting-queue logging.
+ */
+export function buildObservedPoolConfig(applicationName: string, maxEnvKey: string, fallbackMax: number): {
+  applicationName: string;
+  max: number;
+  idleTimeoutMillis: number;
+  waitingLogIntervalMs: number;
+} {
+  return {
+    applicationName,
+    max: readPositiveIntegerEnv(maxEnvKey, fallbackMax),
+    idleTimeoutMillis: readPositiveIntegerEnv(
+      "PANDA_DB_POOL_IDLE_TIMEOUT_MS",
+      DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
+    ),
+    waitingLogIntervalMs: readPositiveIntegerEnv(
+      "PANDA_DB_POOL_WAITING_LOG_INTERVAL_MS",
+      DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
+    ),
+  };
 }
 
 function buildPoolStats(options: {
@@ -154,25 +172,47 @@ export function observePostgresPool(options: PostgresPoolObserverOptions): Postg
   };
   options.pool.on("error", handlePoolError);
 
-  const originalConnect = options.pool.connect.bind(options.pool) as () => Promise<unknown>;
+  const originalConnect = options.pool.connect.bind(options.pool) as (...args: unknown[]) => unknown;
   const originalQuery = options.pool.query.bind(options.pool) as (...args: unknown[]) => unknown;
 
-  options.pool.connect = (async () => {
-    try {
-      return await originalConnect();
-    } catch (error) {
+  // `pg.Pool.query()` internally calls `pool.connect(callback)`, so the observer
+  // must preserve both the callback and promise overloads here.
+  options.pool.connect = ((...args: unknown[]) => {
+    const callback = args[0];
+    if (typeof callback === "function") {
+      return originalConnect((error: unknown, client: unknown, done: unknown) => {
+        if (error) {
+          logError("connect", error);
+        }
+        callback(error, client, done);
+      });
+    }
+
+    const result = originalConnect();
+    if (!result || typeof (result as {catch?: unknown}).catch !== "function") {
+      return result;
+    }
+
+    return (result as Promise<unknown>).catch((error) => {
       logError("connect", error);
       throw error;
-    }
+    });
   }) as Pool["connect"];
 
   options.pool.query = ((...args: unknown[]) => {
     const result = originalQuery(...args);
-    if (typeof args.at(-1) === "function" || !(result instanceof Promise)) {
+    if (
+      typeof args.at(-1) === "function"
+      || !result
+      || typeof (result as {catch?: unknown}).catch !== "function"
+    ) {
       return result;
     }
 
-    return result.catch((error) => {
+    return (result as Promise<unknown>).catch((error) => {
+      if (isDuplicateObjectError(error)) {
+        throw error;
+      }
       logError("query", error);
       throw error;
     });

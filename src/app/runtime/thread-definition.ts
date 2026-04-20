@@ -15,6 +15,7 @@ import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js
 import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {WikiBindingService} from "../../domain/wiki/index.js";
+import {isRecord} from "../../lib/records.js";
 
 const HOUR_MS = 60 * 60 * 1_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -53,10 +54,6 @@ export interface CreateThreadDefinitionOptions {
     DefaultAgentSessionContext,
     "cwd" | "threadId" | "sessionId" | "agentKey" | "subagentDepth"
   >;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function hasStoredShellCwd(value: Record<string, unknown>): boolean {

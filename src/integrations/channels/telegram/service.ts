@@ -6,23 +6,21 @@ import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer
 import {ChannelActionWorker, type TelegramReactionActionPayload} from "../../../domain/channels/actions/index.js";
 import {ChannelCursorRepo} from "../../../domain/channels/cursors/repo.js";
 import {
-  acquireManagedConnectorLease,
-  type ManagedConnectorLease,
-  PostgresConnectorLeaseRepo
+    acquireManagedConnectorLease,
+    type ManagedConnectorLease,
+    PostgresConnectorLeaseRepo
 } from "../../../domain/connector-leases/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
 import {
-  ChannelOutboundDeliveryWorker,
-  PostgresOutboundDeliveryStore
+    ChannelOutboundDeliveryWorker,
+    PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/index.js";
 import {
-  createPostgresPool,
-  DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
-  DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
-  observePostgresPool,
-  type PostgresPoolObserver,
-  readPositiveIntegerEnv,
-  requireDatabaseUrl,
+    buildObservedPoolConfig,
+    createPostgresPool,
+    observePostgresPool,
+    type PostgresPoolObserver,
+    requireDatabaseUrl,
 } from "../../../app/runtime/database.js";
 import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
@@ -33,8 +31,8 @@ import {parseTelegramConversationId} from "./conversation-id.js";
 import {createTelegramTypingAdapter} from "./typing.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {
-  type PostgresNotificationListenerHandle,
-  startPostgresNotificationListener,
+    type PostgresNotificationListenerHandle,
+    startPostgresNotificationListener,
 } from "../postgres-notification-listener.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 
@@ -90,26 +88,6 @@ interface TelegramWorkerStores {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
-}
-
-function buildTelegramPoolConfig(connectorKey: string): {
-  applicationName: string;
-  max: number;
-  idleTimeoutMillis: number;
-  waitingLogIntervalMs: number;
-} {
-  return {
-    applicationName: `panda/telegram/${connectorKey}`,
-    max: readPositiveIntegerEnv("PANDA_TELEGRAM_DB_POOL_MAX", TELEGRAM_POOL_MAX_FALLBACK),
-    idleTimeoutMillis: readPositiveIntegerEnv(
-      "PANDA_DB_POOL_IDLE_TIMEOUT_MS",
-      DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
-    ),
-    waitingLogIntervalMs: readPositiveIntegerEnv(
-      "PANDA_DB_POOL_WAITING_LOG_INTERVAL_MS",
-      DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
-    ),
-  };
 }
 
 function messageTextLength(message: TelegramContext["msg"] | undefined): number {
@@ -217,7 +195,11 @@ export class TelegramService {
 
     if (!this.storesPromise) {
       this.storesPromise = (async () => {
-        const poolConfig = buildTelegramPoolConfig(connectorKey);
+        const poolConfig = buildObservedPoolConfig(
+          `panda/telegram/${connectorKey}`,
+          "PANDA_TELEGRAM_DB_POOL_MAX",
+          TELEGRAM_POOL_MAX_FALLBACK,
+        );
         const pool = createPostgresPool({
           connectionString: requireDatabaseUrl(this.options.dbUrl),
           applicationName: poolConfig.applicationName,

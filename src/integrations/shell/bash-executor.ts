@@ -1,15 +1,18 @@
 import {randomUUID} from "node:crypto";
 
+import {buildEndpointUrl} from "../../lib/http.js";
+import {isRecord} from "../../lib/records.js";
+import {trimToNull} from "../../lib/strings.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {executeBashCommand} from "./bash-execution.js";
 import type {
-    BashExecutionResult,
-    BashRunnerAbortRequest,
-    BashRunnerAbortResponse,
-    BashRunnerErrorResponse,
-    BashRunnerExecRequest,
-    BashRunnerResponse,
+  BashExecutionResult,
+  BashRunnerAbortRequest,
+  BashRunnerAbortResponse,
+  BashRunnerErrorResponse,
+  BashRunnerExecRequest,
+  BashRunnerResponse,
 } from "./bash-protocol.js";
 import {RUNNER_AGENT_KEY_HEADER, RUNNER_EXPECTED_PATH_HEADER, RUNNER_PATH_SCOPED_HEADER,} from "./bash-protocol.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
@@ -52,10 +55,6 @@ export interface RemoteShellExecutorOptions {
   runnerUrlTemplate?: string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function readAgentKey(context: ShellExecutionContext | undefined): string {
   const agentKey = context?.agentKey;
   if (!agentKey?.trim()) {
@@ -65,25 +64,16 @@ function readAgentKey(context: ShellExecutionContext | undefined): string {
   return agentKey;
 }
 
-function firstNonEmpty(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
 export function resolveBashExecutionMode(env: NodeJS.ProcessEnv = process.env): BashExecutionMode {
-  return firstNonEmpty(env.BASH_EXECUTION_MODE) === "remote" ? "remote" : "local";
+  return trimToNull(env.BASH_EXECUTION_MODE) === "remote" ? "remote" : "local";
 }
 
 export function resolveRunnerUrlTemplate(env: NodeJS.ProcessEnv = process.env): string | null {
-  return firstNonEmpty(env.RUNNER_URL_TEMPLATE);
+  return trimToNull(env.RUNNER_URL_TEMPLATE);
 }
 
 export function resolveRunnerCwdTemplate(env: NodeJS.ProcessEnv = process.env): string | null {
-  return firstNonEmpty(env.RUNNER_CWD_TEMPLATE);
+  return trimToNull(env.RUNNER_CWD_TEMPLATE);
 }
 
 function resolveAgentTemplateValue(template: string, agentKey: string): string {
@@ -155,17 +145,7 @@ export function makeNetworkTimeoutSignal(timeoutMs: number): AbortSignal {
   return controller.signal;
 }
 
-export function buildRunnerEndpoint(
-  runnerUrl: string,
-  endpoint: "exec" | "abort" | "jobs/start" | "jobs/status" | "jobs/wait" | "jobs/cancel",
-): URL {
-  const url = new URL(runnerUrl);
-  const basePath = url.pathname.replace(/\/+$/, "");
-  url.pathname = `${basePath}/${endpoint}`.replace(/\/{2,}/g, "/");
-  url.search = "";
-  url.hash = "";
-  return url;
-}
+export const buildRunnerEndpoint = buildEndpointUrl;
 
 export async function parseRunnerResponse(response: Response): Promise<BashRunnerResponse> {
   const payload = await response.json();

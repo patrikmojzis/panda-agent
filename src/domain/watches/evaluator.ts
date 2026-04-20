@@ -1,5 +1,6 @@
 import {createHash} from "node:crypto";
 
+import {stableStringify} from "../../lib/json.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
 import type {
     WatchCollectionItem,
@@ -33,25 +34,6 @@ interface PercentChangeState {
   identityToken?: string;
   baseline: number;
   lastValue: number;
-}
-
-function stableStringify(value: JsonValue): string {
-  if (value === null || typeof value === "number" || typeof value === "boolean") {
-    return JSON.stringify(value);
-  }
-
-  if (typeof value === "string") {
-    return JSON.stringify(value);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
-  }
-
-  const entries = Object.keys(value)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key] as JsonValue)}`);
-  return `{${entries.join(",")}}`;
 }
 
 function hashValue(value: JsonValue | string): string {

@@ -2,6 +2,7 @@ import type {Pool, PoolClient} from "pg";
 
 import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
 import {buildSessionTableNames} from "../postgres-shared.js";
+import {isUniqueViolation} from "../../../lib/postgres-errors.js";
 import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
 import {buildConversationSessionTableNames, type ConversationSessionTableNames} from "./postgres-shared.js";
 import type {BindConversationInput, BindConversationResult, ConversationBinding, ConversationLookup,} from "./types.js";
@@ -56,10 +57,6 @@ function parseConversationBinding(row: Record<string, unknown>): ConversationBin
     createdAt: toMillis(row.created_at),
     updatedAt: toMillis(row.updated_at),
   };
-}
-
-function isUniqueViolation(error: unknown): error is { code: string } {
-  return !!error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "23505";
 }
 
 export class ConversationRepo {

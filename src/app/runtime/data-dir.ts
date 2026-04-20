@@ -1,14 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-
-function trimNonEmptyString(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
+import {trimToNull} from "../../lib/strings.js";
 
 function requireSafeAgentPathKey(agentKey: string): string {
   const trimmed = agentKey.trim();
@@ -20,7 +12,7 @@ function requireSafeAgentPathKey(agentKey: string): string {
 }
 
 export function resolveDataDir(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = trimNonEmptyString(env.DATA_DIR);
+  const configured = trimToNull(env.DATA_DIR);
   if (!configured) {
     return path.join(os.homedir(), ".panda");
   }

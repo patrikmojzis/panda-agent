@@ -4,6 +4,9 @@ import {readFile} from "node:fs/promises";
 import {z} from "zod";
 
 import {normalizeAgentKey} from "../../domain/agents/types.js";
+import {writeJsonResponse} from "../../lib/http.js";
+import {isRecord} from "../../lib/records.js";
+import {trimToNull} from "../../lib/strings.js";
 import {Agent} from "../../kernel/agent/agent.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {RunContext} from "../../kernel/agent/run-context.js";
@@ -46,19 +49,6 @@ export interface BrowserRunner {
   close(): Promise<void>;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function firstNonEmpty(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
 function parsePort(value: string | null, fallback: number): number {
   if (!value) {
     return fallback;
@@ -86,7 +76,7 @@ function parseOptionalPositiveInt(value: string | null | undefined, label: strin
 }
 
 function validateSharedSecret(value: string | null | undefined): string {
-  const trimmed = firstNonEmpty(value);
+  const trimmed = trimToNull(value);
   if (!trimmed) {
     throw new Error("Browser runner shared secret must not be empty.");
   }
@@ -95,16 +85,10 @@ function validateSharedSecret(value: string | null | undefined): string {
 }
 
 function unauthorized(response: ServerResponse, statusCode: number, error: string): void {
-  response.writeHead(statusCode, {"content-type": "application/json"});
-  response.end(JSON.stringify({
+  writeJsonResponse(response, statusCode, {
     ok: false,
     error,
-  } satisfies BrowserRunnerActionResponse));
-}
-
-function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {
-  response.writeHead(statusCode, {"content-type": "application/json"});
-  response.end(JSON.stringify(payload));
+  } satisfies BrowserRunnerActionResponse);
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -127,7 +111,7 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
 }
 
 function requireAuthorization(request: IncomingMessage, sharedSecret: string): void {
-  const header = firstNonEmpty(request.headers.authorization ?? null);
+  const header = trimToNull(request.headers.authorization ?? null);
   if (!header) {
     throw new ToolError("Missing Authorization header.", {details: {statusCode: 401}});
   }
@@ -191,13 +175,13 @@ async function buildRunnerResponse(payload: ToolResultPayload): Promise<BrowserR
 export function resolveBrowserRunnerOptions(env: NodeJS.ProcessEnv = process.env): BrowserRunnerOptions {
   return {
     env,
-    host: firstNonEmpty(env.BROWSER_RUNNER_HOST) ?? DEFAULT_BROWSER_RUNNER_HOST,
-    port: parsePort(firstNonEmpty(env.BROWSER_RUNNER_PORT), DEFAULT_BROWSER_RUNNER_PORT),
+    host: trimToNull(env.BROWSER_RUNNER_HOST) ?? DEFAULT_BROWSER_RUNNER_HOST,
+    port: parsePort(trimToNull(env.BROWSER_RUNNER_PORT), DEFAULT_BROWSER_RUNNER_PORT),
     sharedSecret: validateSharedSecret(env.BROWSER_RUNNER_SHARED_SECRET),
-    dataDir: firstNonEmpty(env.BROWSER_RUNNER_DATA_DIR) ?? undefined,
-    actionTimeoutMs: parseOptionalPositiveInt(firstNonEmpty(env.BROWSER_ACTION_TIMEOUT_MS), "BROWSER_ACTION_TIMEOUT_MS"),
-    sessionIdleTtlMs: parseOptionalPositiveInt(firstNonEmpty(env.BROWSER_SESSION_IDLE_TTL_MS), "BROWSER_SESSION_IDLE_TTL_MS"),
-    sessionMaxAgeMs: parseOptionalPositiveInt(firstNonEmpty(env.BROWSER_SESSION_MAX_AGE_MS), "BROWSER_SESSION_MAX_AGE_MS"),
+    dataDir: trimToNull(env.BROWSER_RUNNER_DATA_DIR) ?? undefined,
+    actionTimeoutMs: parseOptionalPositiveInt(trimToNull(env.BROWSER_ACTION_TIMEOUT_MS), "BROWSER_ACTION_TIMEOUT_MS"),
+    sessionIdleTtlMs: parseOptionalPositiveInt(trimToNull(env.BROWSER_SESSION_IDLE_TTL_MS), "BROWSER_SESSION_IDLE_TTL_MS"),
+    sessionMaxAgeMs: parseOptionalPositiveInt(trimToNull(env.BROWSER_SESSION_MAX_AGE_MS), "BROWSER_SESSION_MAX_AGE_MS"),
   };
 }
 
@@ -217,7 +201,7 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
 
       const requestUrl = new URL(request.url, `http://${request.headers.host ?? "runner.local"}`);
       if (request.method === "GET" && requestUrl.pathname === "/health") {
-        writeJson(response, 200, {
+        writeJsonResponse(response, 200, {
           ok: true,
           status: "ok",
         } satisfies BrowserRunnerHealthResponse);
@@ -249,7 +233,7 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
         },
       }));
 
-      writeJson(response, 200, await buildRunnerResponse(payload));
+      writeJsonResponse(response, 200, await buildRunnerResponse(payload));
     } catch (error) {
       if (error instanceof ToolError) {
         const statusCode = isRecord(error.details) && typeof error.details.statusCode === "number"
@@ -262,7 +246,7 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
         const details = isRecord(error.details) && !("statusCode" in error.details)
           ? error.details as JsonObject
           : undefined;
-        writeJson(response, statusCode, {
+        writeJsonResponse(response, statusCode, {
           ok: false,
           error: error.message,
           ...(details ? {details} : {}),
@@ -271,7 +255,7 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
       }
 
       const message = error instanceof Error ? error.message : String(error);
-      writeJson(response, 500, {
+      writeJsonResponse(response, 500, {
         ok: false,
         error: message,
       } satisfies BrowserRunnerActionResponse);

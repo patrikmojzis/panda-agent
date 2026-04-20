@@ -3,12 +3,14 @@ import path from "node:path";
 
 import {z} from "zod";
 
+import {trimToNull} from "../../lib/strings.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
+import {readResponseError} from "./http.js";
 
 const OPENAI_TRANSCRIPTION_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions";
 const DEFAULT_MODEL = "whisper-1";
@@ -33,28 +35,6 @@ export interface WhisperToolOptions {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
-}
-
-function trimNonEmptyString(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
-function truncateText(value: string, maxChars: number): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-
-  return `${value.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
-}
-
-async function readResponseError(response: Response): Promise<string> {
-  const text = (await response.text()).trim();
-  return truncateText(text, MAX_ERROR_CHARS);
 }
 
 async function ensureReadableFile(filePath: string): Promise<number> {
@@ -109,7 +89,7 @@ function parseTranscriptPayload(
 }
 
 export function hasOpenAiApiKey(env: NodeJS.ProcessEnv = process.env): boolean {
-  return trimNonEmptyString(env.OPENAI_API_KEY) !== null;
+  return trimToNull(env.OPENAI_API_KEY) !== null;
 }
 
 export class WhisperTool<TContext = DefaultAgentSessionContext> extends Tool<typeof WhisperTool.schema, TContext> {
@@ -132,7 +112,7 @@ export class WhisperTool<TContext = DefaultAgentSessionContext> extends Tool<typ
 
   constructor(options: WhisperToolOptions = {}) {
     super();
-    this.apiKey = trimNonEmptyString(options.apiKey) ?? undefined;
+    this.apiKey = trimToNull(options.apiKey) ?? undefined;
     this.env = options.env ?? process.env;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -146,7 +126,7 @@ export class WhisperTool<TContext = DefaultAgentSessionContext> extends Tool<typ
     args: z.output<typeof WhisperTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
-    const apiKey = this.apiKey ?? trimNonEmptyString(this.env.OPENAI_API_KEY);
+    const apiKey = this.apiKey ?? trimToNull(this.env.OPENAI_API_KEY);
     if (!apiKey) {
       throw new ToolError("OPENAI_API_KEY is not configured.");
     }
@@ -190,7 +170,7 @@ export class WhisperTool<TContext = DefaultAgentSessionContext> extends Tool<typ
       });
 
       if (!response.ok) {
-        const detail = await readResponseError(response);
+        const detail = await readResponseError(response, MAX_ERROR_CHARS);
         throw new ToolError(
           `OpenAI transcription API error (${response.status}): ${detail || response.statusText}`,
         );

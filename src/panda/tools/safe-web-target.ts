@@ -5,6 +5,7 @@ import {isIP} from "node:net";
 import ipaddr from "ipaddr.js";
 
 import {ToolError} from "../../kernel/agent/exceptions.js";
+import {trimToUndefined} from "../../lib/strings.js";
 
 const BLOCKED_HOSTNAMES = new Set([
   "localhost",
@@ -99,12 +100,7 @@ const EMBEDDED_IPV4_SENTINEL_RULES: Array<{
 ];
 
 export function trimNonEmptyString(value: string | null | undefined): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
+  return trimToUndefined(value);
 }
 
 function normalizeHostname(hostname: string): string {

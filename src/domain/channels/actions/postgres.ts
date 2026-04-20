@@ -3,6 +3,8 @@ import {randomUUID} from "node:crypto";
 import type {Pool, PoolClient} from "pg";
 
 import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toMillis} from "../../threads/runtime/postgres-shared.js";
+import {normalizeChannelWorkerLookup, parseChannelNotification} from "../worker-shared.js";
+import {requireNonEmptyString} from "../../../lib/strings.js";
 import {
     buildActionNotificationChannel,
     buildChannelActionTableNames,
@@ -22,37 +24,11 @@ export interface PostgresChannelActionStoreOptions {
   pool: PgPoolLike;
 }
 
-function requireTrimmed(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`Channel action ${field} must not be empty.`);
-  }
-
-  return trimmed;
-}
-
 function normalizeLookup(lookup: ActionWorkerLookup): ActionWorkerLookup {
-  return {
-    channel: requireTrimmed("channel", lookup.channel),
-    connectorKey: requireTrimmed("connector key", lookup.connectorKey),
-  };
+  return normalizeChannelWorkerLookup(lookup, "Channel action");
 }
 
-export function parseActionNotification(payload: string): ActionNotification | null {
-  try {
-    const parsed = JSON.parse(payload) as Partial<ActionNotification>;
-    if (!parsed || typeof parsed.channel !== "string" || typeof parsed.connectorKey !== "string") {
-      return null;
-    }
-
-    return {
-      channel: parsed.channel,
-      connectorKey: parsed.connectorKey,
-    };
-  } catch {
-    return null;
-  }
-}
+export const parseActionNotification = parseChannelNotification as (payload: string) => ActionNotification | null;
 
 function parseRecord(row: Record<string, unknown>): ChannelActionRecord {
   return {
@@ -138,8 +114,8 @@ export class PostgresChannelActionStore {
   }
 
   async enqueueAction(input: ChannelActionInput): Promise<ChannelActionRecord> {
-    const channel = requireTrimmed("channel", input.channel);
-    const connectorKey = requireTrimmed("connector key", input.connectorKey);
+    const channel = requireNonEmptyString(input.channel, "Channel action channel must not be empty.");
+    const connectorKey = requireNonEmptyString(input.connectorKey, "Channel action connector key must not be empty.");
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.channelActions} (
         id,
@@ -242,7 +218,7 @@ export class PostgresChannelActionStore {
           last_error = NULL
       WHERE id = $1
       RETURNING *
-    `, [requireTrimmed("id", id)]);
+    `, [requireNonEmptyString(id, "Channel action id must not be empty.")]);
     return parseRecord(result.rows[0] as Record<string, unknown>);
   }
 
@@ -256,7 +232,7 @@ export class PostgresChannelActionStore {
       WHERE id = $1
       RETURNING *
     `, [
-      requireTrimmed("id", id),
+      requireNonEmptyString(id, "Channel action id must not be empty."),
       error,
     ]);
     return parseRecord(result.rows[0] as Record<string, unknown>);

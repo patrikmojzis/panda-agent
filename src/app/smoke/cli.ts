@@ -4,6 +4,7 @@ import {Command, InvalidArgumentError} from "commander";
 
 import {parseAgentKey} from "../../domain/agents/cli.js";
 import {parseIdentityHandle} from "../../domain/identity/cli.js";
+import {parsePositiveIntegerOption, parseSessionIdOption} from "../../lib/cli.js";
 import {requireSmokeDatabaseUrl} from "./config.js";
 import {startSmokeFollowUpRepl} from "./follow-up.js";
 import {runSmoke} from "./harness.js";
@@ -28,24 +29,6 @@ interface SmokeCliOptions {
 
 function collectOption(value: string, previous: string[] = []): string[] {
   return [...previous, value];
-}
-
-function parsePositiveInt(value: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new InvalidArgumentError("Expected a positive integer.");
-  }
-
-  return parsed;
-}
-
-function parseSessionId(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new InvalidArgumentError("Session id must not be empty.");
-  }
-
-  return trimmed;
 }
 
 function renderSmokeText(result: Awaited<ReturnType<typeof runSmoke>>): string {
@@ -130,12 +113,12 @@ export function registerSmokeCommand(program: Command): void {
     .command("smoke")
     .description("Run a headless live Panda smoke against a disposable Postgres database")
     .option("--agent <agentKey>", "Agent key to smoke", parseAgentKey)
-    .option("--session <sessionId>", "Existing session id to target directly", parseSessionId)
+    .option("--session <sessionId>", "Existing session id to target directly", parseSessionIdOption)
     .option("--input <text>", "Input text to send to Panda (repeatable)", collectOption, [])
     .option("--model <selector-or-alias>", "Model selector override")
     .option("--identity <handle>", "Identity handle to use (defaults to smoke)", parseIdentityHandle)
     .option("--db-url <url>", "Postgres connection string for live smoke (or TEST_DATABASE_URL)")
-    .option("--timeout-ms <ms>", "Run timeout in milliseconds", parsePositiveInt)
+    .option("--timeout-ms <ms>", "Run timeout in milliseconds", parsePositiveIntegerOption)
     .option("--expect-text <text>", "Expected transcript substring (repeatable)", collectOption, [])
     .option("--expect-tool <toolName>", "Expected tool name (repeatable)", collectOption, [])
     .option("--forbid-tool-error", "Fail if any tool result is marked as an error")

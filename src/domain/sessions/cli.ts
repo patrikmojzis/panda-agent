@@ -1,12 +1,13 @@
 import process from "node:process";
 
-import {Command, InvalidArgumentError} from "commander";
+import {Command} from "commander";
 import type {Pool} from "pg";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
 import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY} from "../../app/runtime/daemon.js";
 import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
 import {DaemonStateRepo} from "../../app/runtime/state/repo.js";
+import {parsePositiveIntegerOption} from "../../lib/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {RuntimeRequestRepo} from "../threads/requests/repo.js";
 import {ConversationRepo} from "./conversations/repo.js";
@@ -46,15 +47,6 @@ function createSessionCliStores(pool: Pool): WithSessionStores & {
     daemonState: new DaemonStateRepo({pool}),
     conversations: new ConversationRepo({pool}),
   };
-}
-
-function parsePositiveInt(value: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new InvalidArgumentError("Expected a positive integer.");
-  }
-
-  return parsed;
 }
 
 async function withSessionStores<T>(
@@ -249,7 +241,7 @@ export function registerSessionCommands(program: Command): void {
     .argument("<sessionId>", "Session id")
     .option("--enable", "Enable heartbeat")
     .option("--disable", "Disable heartbeat")
-    .option("--every <minutes>", "Heartbeat interval in minutes", parsePositiveInt)
+    .option("--every <minutes>", "Heartbeat interval in minutes", parsePositiveIntegerOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sessionId: string, options: HeartbeatCliOptions) => {
       return heartbeatCommand(sessionId, options);

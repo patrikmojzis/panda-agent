@@ -2,21 +2,12 @@ import {z} from "zod";
 
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {DEFAULT_AGENT_SUBAGENT_ROLES, type DefaultAgentSubagentRole} from "../subagents/policy.js";
 import {DefaultAgentSubagentService} from "../subagents/service.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
-
-function buildPayload(details: JsonObject): ToolResultPayload {
-  return {
-    content: [{
-      type: "text",
-      text: JSON.stringify(details, null, 2),
-    }],
-    details,
-  };
-}
+import {buildJsonToolPayload} from "./shared.js";
 
 export interface SpawnSubagentToolOptions {
   service: DefaultAgentSubagentService;
@@ -68,7 +59,7 @@ export class SpawnSubagentTool<TContext = DefaultAgentSessionContext>
         model: args.model,
       });
 
-      return buildPayload({
+      return buildJsonToolPayload({
         role: result.role,
         finalMessage: result.finalMessage,
         toolCallCount: result.toolCallCount,

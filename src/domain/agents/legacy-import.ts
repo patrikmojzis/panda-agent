@@ -3,6 +3,7 @@ import {access, copyFile, mkdir, readdir, readFile} from "node:fs/promises";
 import path from "node:path";
 
 import {resolveAgentDir} from "../../app/runtime/data-dir.js";
+import {trimToNull} from "../../lib/strings.js";
 import type {CredentialService} from "../credentials/index.js";
 import {createSessionWithInitialThread, PostgresSessionStore} from "../sessions/index.js";
 import type {SessionStore} from "../sessions/store.js";
@@ -110,12 +111,7 @@ export interface ImportedLegacyAgentResult {
 }
 
 function trimNonEmpty(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
+  return trimToNull(value);
 }
 
 async function pathExists(targetPath: string): Promise<boolean> {

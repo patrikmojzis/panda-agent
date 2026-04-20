@@ -7,17 +7,16 @@ import {stringToUserMessage} from "../agent/helpers/input.js";
 import {resolveModelRuntimeBudget} from "../models/model-context-policy.js";
 import {resolveModelSelector} from "../models/model-selector.js";
 import {renderCompactionPrompt} from "../../prompts/runtime/compaction.js";
-import {getProviderConfig, type ProviderName} from "../../integrations/providers/shared/provider.js";
-import {resolveProviderApiKey} from "../../integrations/providers/shared/auth.js";
+import {readMissingApiKeyMessage} from "../../integrations/providers/shared/missing-api-key.js";
 import type {JsonObject, JsonValue} from "../agent/types.js";
 import type {LlmRuntime} from "../agent/runtime.js";
 import {estimateReplayMessageTokens, estimateVisibleMessageTokens} from "./token-estimation.js";
 import type {
-  AutoCompactionRuntimeState,
-  ThreadMessageRecord,
-  ThreadRecord,
-  ThreadRuntimeMessagePayload,
-  ThreadRuntimeState,
+    AutoCompactionRuntimeState,
+    ThreadMessageRecord,
+    ThreadRecord,
+    ThreadRuntimeMessagePayload,
+    ThreadRuntimeState,
 } from "../../domain/threads/runtime/types.js";
 
 export const DEFAULT_COMPACT_PRESERVED_USER_TURNS = 6;
@@ -297,10 +296,6 @@ export function createCompactBoundaryMessage(summary: string): ReturnType<typeof
   return stringToUserMessage(buildCompactSummaryMessage(summary));
 }
 
-function missingCompactionApiKeyMessage(providerName: ProviderName): string | null {
-  return resolveProviderApiKey(providerName) ? null : getProviderConfig(providerName).missingApiKeyMessage;
-}
-
 async function requestCompactSummary(options: {
   model: string;
   thinking?: ThinkingLevel;
@@ -404,7 +399,7 @@ export function shouldAutoCompactThread(options: {
 
 export async function compactThread(options: CompactThreadOptions): Promise<CompactThreadResult | null> {
   const modelSelection = resolveModelSelector(options.model);
-  const apiKeyMessage = missingCompactionApiKeyMessage(modelSelection.providerName);
+  const apiKeyMessage = readMissingApiKeyMessage(modelSelection.providerName);
   if (apiKeyMessage) {
     throw new Error(apiKeyMessage);
   }

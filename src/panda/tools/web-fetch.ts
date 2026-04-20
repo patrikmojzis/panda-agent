@@ -5,6 +5,7 @@ import {Readability} from "@mozilla/readability";
 import {parseHTML} from "linkedom";
 
 import {ToolError} from "../../kernel/agent/exceptions.js";
+import {normalizeTextBlockWhitespace, stripInvisibleUnicode, truncateTextWithStatus} from "../../lib/strings.js";
 import {
     defaultLookupHostname,
     type LookupHostname,
@@ -30,9 +31,6 @@ const HIDDEN_CLASS_NAMES = new Set([
   "screen-reader-only",
   "visually-hidden",
 ]);
-const INVISIBLE_UNICODE_RE =
-  /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u206A-\u206F\uFEFF\u{E0000}-\u{E007F}]/gu;
-
 export type WebFetchProgressStatus = "validating" | "fetching" | "extracting";
 export type WebFetchProgress = {
   status: WebFetchProgressStatus;
@@ -150,17 +148,6 @@ function getTextDecoder(contentType: string | null): TextDecoder {
   return new TextDecoder("utf-8");
 }
 
-function truncateText(value: string, maxChars: number): {text: string; truncated: boolean} {
-  if (value.length <= maxChars) {
-    return {text: value, truncated: false};
-  }
-
-  return {
-    text: value.slice(0, maxChars).trimEnd(),
-    truncated: true,
-  };
-}
-
 function decodeEntities(value: string): string {
   return value
     .replace(/&nbsp;/gi, " ")
@@ -175,19 +162,6 @@ function decodeEntities(value: string): string {
 
 function stripTags(value: string): string {
   return decodeEntities(value.replace(/<[^>]+>/g, ""));
-}
-
-function normalizeWhitespace(value: string): string {
-  return value
-    .replace(/\r/g, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
-}
-
-function stripInvisibleUnicode(value: string): string {
-  return value.replace(INVISIBLE_UNICODE_RE, "");
 }
 
 function looksLikeHtml(value: string): boolean {
@@ -407,12 +381,12 @@ async function readResponseText(
 }
 
 function sanitizeErrorSnippet(value: string): string {
-  const trimmed = normalizeWhitespace(stripInvisibleUnicode(stripTags(value)));
+  const trimmed = normalizeTextBlockWhitespace(stripInvisibleUnicode(stripTags(value)));
   if (!trimmed) {
     return "";
   }
 
-  return truncateText(trimmed, 4_000).text;
+  return truncateTextWithStatus(trimmed, 4_000).text;
 }
 
 function absolutizeUrl(rawUrl: string, baseUrl: string): string | null {
@@ -456,23 +430,23 @@ function htmlToMarkdown(html: string, baseUrl: string): string {
     .replace(/<noscript[\s\S]*?<\/noscript>/gi, "");
 
   text = text.replace(/<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, href, body) => {
-    const label = normalizeWhitespace(stripTags(body));
+    const label = normalizeTextBlockWhitespace(stripTags(body));
     return label ? `[${label}](${href})` : href;
   });
   text = text.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level, body) => {
     const prefix = "#".repeat(Math.max(1, Math.min(6, Number.parseInt(level, 10))));
-    const label = normalizeWhitespace(stripTags(body));
+    const label = normalizeTextBlockWhitespace(stripTags(body));
     return label ? `\n${prefix} ${label}\n` : "\n";
   });
   text = text.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, body) => {
-    const label = normalizeWhitespace(stripTags(body));
+    const label = normalizeTextBlockWhitespace(stripTags(body));
     return label ? `\n- ${label}` : "";
   });
   text = text
     .replace(/<(br|hr)\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|section|article|header|footer|main|aside|table|tr|ul|ol|blockquote|pre)>/gi, "\n");
 
-  return normalizeWhitespace(stripInvisibleUnicode(stripTags(text)));
+  return normalizeTextBlockWhitespace(stripInvisibleUnicode(stripTags(text)));
 }
 
 function readMetaContent(
@@ -576,7 +550,7 @@ function extractLinks(html: string, baseUrl: string): readonly WebFetchLink[] {
       continue;
     }
 
-    const text = normalizeWhitespace(stripInvisibleUnicode(anchor.textContent ?? "")) || absolute;
+    const text = normalizeTextBlockWhitespace(stripInvisibleUnicode(anchor.textContent ?? "")) || absolute;
     seen.add(absolute);
     links.push({text, url: absolute});
     if (links.length >= 20) {
@@ -807,7 +781,7 @@ export async function fetchReadableWebPage(
       html: body,
       url: currentUrl.toString(),
     });
-    const truncated = truncateText(extracted.content, maxContentChars);
+    const truncated = truncateTextWithStatus(extracted.content, maxContentChars);
 
     return {
       url,

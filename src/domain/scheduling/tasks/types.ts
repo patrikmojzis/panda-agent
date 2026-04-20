@@ -1,4 +1,5 @@
 import type {JsonObject} from "../../../kernel/agent/types.js";
+import {isRecord} from "../../../lib/records.js";
 
 export type ScheduledTaskScheduleKind = "once" | "recurring";
 export type ScheduledTaskFireKind = "execute" | "deliver";
@@ -129,10 +130,6 @@ export interface ScheduledTaskThreadInputMetadataValue extends JsonObject {
 
 export interface ScheduledTaskThreadInputMetadata extends JsonObject {
   scheduledTask: ScheduledTaskThreadInputMetadataValue;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function parseScheduledTaskThreadInputMetadata(value: unknown): ScheduledTaskThreadInputMetadata | null {

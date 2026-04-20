@@ -7,6 +7,7 @@ import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
+import {isRecord} from "../../lib/records.js";
 import type {OutboundFileItem, OutboundImageItem, OutboundItem} from "../../domain/channels/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
@@ -46,10 +47,6 @@ const messageAgentToolSchema = z.object({
     });
   }
 });
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function ensureMessageAgent(context: DefaultAgentSessionContext | undefined): NonNullable<DefaultAgentSessionContext["messageAgent"]> {
   const service = context?.messageAgent;

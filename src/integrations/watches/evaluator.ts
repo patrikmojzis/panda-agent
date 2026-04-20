@@ -20,6 +20,8 @@ import type {
     WatchSourceEvaluation,
     WatchSourceKind,
 } from "../../domain/watches/types.js";
+import {stableStringify} from "../../lib/json.js";
+import {collapseWhitespace, requireNonEmptyString} from "../../lib/strings.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
 import {
     extractReadableContentFromHtml,
@@ -59,38 +61,6 @@ interface HtmlQueryRoot {
     getAttribute(name: string): string | null;
     textContent: string | null;
   } | null;
-}
-
-function normalizeWhitespace(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function requireTrimmed(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`${field} must not be empty.`);
-  }
-
-  return trimmed;
-}
-
-function stableStringify(value: JsonValue): string {
-  if (value === null || typeof value === "number" || typeof value === "boolean") {
-    return JSON.stringify(value);
-  }
-
-  if (typeof value === "string") {
-    return JSON.stringify(value);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
-  }
-
-  const entries = Object.keys(value)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key] as JsonValue)}`);
-  return `{${entries.join(",")}}`;
 }
 
 function normalizeUnknownJson(value: unknown): JsonValue {
@@ -174,7 +144,7 @@ function readPath(value: JsonValue | undefined, path?: string): JsonValue | unde
 
 function readString(value: JsonValue | undefined): string | undefined {
   if (typeof value === "string") {
-    const normalized = normalizeWhitespace(value);
+    const normalized = collapseWhitespace(value);
     return normalized || undefined;
   }
 
@@ -397,10 +367,10 @@ function readHtmlField(root: HtmlQueryRoot, field: WatchHtmlFieldSelector): stri
 
   if (field.attribute) {
     const value = element.getAttribute(field.attribute);
-    return value ? normalizeWhitespace(value) : undefined;
+    return value ? collapseWhitespace(value) : undefined;
   }
 
-  return normalizeWhitespace(element.textContent ?? "") || undefined;
+  return collapseWhitespace(element.textContent ?? "") || undefined;
 }
 
 function extractHtmlObservation(
@@ -423,8 +393,8 @@ function extractHtmlObservation(
 
     const {document} = parseHTML(html);
     const text = result.selector
-      ? normalizeWhitespace(document.querySelector(result.selector)?.textContent ?? "")
-      : normalizeWhitespace(document.body?.textContent ?? "");
+      ? collapseWhitespace(document.querySelector(result.selector)?.textContent ?? "")
+      : collapseWhitespace(document.body?.textContent ?? "");
     if (!text) {
       throw new Error("HTML snapshot selector did not produce any text.");
     }
@@ -515,7 +485,7 @@ async function resolveHttpHeaders(
 ): Promise<Record<string, string>> {
   const resolved: Record<string, string> = {};
   for (const header of headers) {
-    const name = requireTrimmed("header name", header.name);
+    const name = requireNonEmptyString(header.name, "header name must not be empty.");
     if (header.credentialEnvKey) {
       resolved[name] = await resolveCredentialValue(
         watch,
@@ -818,7 +788,7 @@ async function resolveImapMailboxSource(
 
             return entry.address ?? entry.name ?? "";
           }).filter(Boolean) ?? [];
-          const summary = normalizeWhitespace(latest.envelope?.subject ?? "") || undefined;
+          const summary = collapseWhitespace(latest.envelope?.subject ?? "") || undefined;
           const data: JsonObject = {};
           if (summary) {
             data.subject = summary;
@@ -853,7 +823,7 @@ async function resolveImapMailboxSource(
 
             return entry.address ?? entry.name ?? "";
           }).filter(Boolean) ?? [];
-          const summary = normalizeWhitespace(message.envelope?.subject ?? "") || undefined;
+          const summary = collapseWhitespace(message.envelope?.subject ?? "") || undefined;
           const data: JsonObject = {};
           if (summary) {
             data.subject = summary;

@@ -1,16 +1,8 @@
 import path from "node:path";
+import {trimToNull} from "../../lib/strings.js";
 
 export const DEFAULT_SMOKE_TIMEOUT_MS = 120_000;
 export const DEFAULT_SMOKE_ARTIFACT_ROOT = ".temp/runtime-smoke";
-
-function trimNonEmptyString(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
 
 function normalizeArtifactSlug(value: string): string {
   const slug = value
@@ -26,7 +18,7 @@ export function resolveSmokeDatabaseUrl(
   explicitDbUrl?: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  return trimNonEmptyString(explicitDbUrl) ?? trimNonEmptyString(env.TEST_DATABASE_URL);
+  return trimToNull(explicitDbUrl) ?? trimToNull(env.TEST_DATABASE_URL);
 }
 
 export function requireSmokeDatabaseUrl(
@@ -45,7 +37,7 @@ export function resolveSmokeModelSelector(
   explicitModel?: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  return trimNonEmptyString(explicitModel) ?? trimNonEmptyString(env.TEST_MODEL) ?? undefined;
+  return trimToNull(explicitModel) ?? trimToNull(env.TEST_MODEL) ?? undefined;
 }
 
 export function resolveSmokeArtifactDirectory(input: {
@@ -55,7 +47,7 @@ export function resolveSmokeArtifactDirectory(input: {
   now?: Date;
 }): string {
   const cwd = path.resolve(input.cwd ?? process.cwd());
-  const explicitArtifactsDir = trimNonEmptyString(input.artifactsDir);
+  const explicitArtifactsDir = trimToNull(input.artifactsDir);
   if (explicitArtifactsDir) {
     return path.resolve(cwd, explicitArtifactsDir);
   }

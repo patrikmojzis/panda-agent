@@ -6,6 +6,8 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {isRecord} from "../../lib/records.js";
+import {truncateText} from "../../lib/strings.js";
 
 const MAX_ROWS = 50;
 const MAX_OUTPUT_BYTES = 32_000;
@@ -44,10 +46,6 @@ export interface PostgresReadonlyQueryToolOptions {
   maxStringChars?: number;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function trimSql(value: string): string {
   return value.trim().replace(/;+$/, "").trim();
 }
@@ -67,14 +65,6 @@ function assertReadonlySql(sql: string): string {
   }
 
   return normalized;
-}
-
-function truncateText(value: string, maxChars: number): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-
-  return `${value.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
 type TruncationReason = "row_cap" | "output_cap" | "cell_cap";

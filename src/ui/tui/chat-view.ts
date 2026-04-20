@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import {collapseWhitespace} from "../../lib/strings.js";
 import type {SlashCompletionContext} from "./commands.js";
 import {COMPOSER_NEWLINE_HINT, WELCOME_NEWLINE_KEYS,} from "./input.js";
 import {clamp, formatDuration, padAnsiEnd, truncatePlainText,} from "./screen.js";
@@ -194,9 +195,7 @@ function wrapWordText(text: string, width: number): string[] {
   return lines;
 }
 
-export function normalizeInlineText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
+export const normalizeInlineText = collapseWhitespace;
 
 function homeRelativePath(value: string): string {
   const home = process.env.HOME;

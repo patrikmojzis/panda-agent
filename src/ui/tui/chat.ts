@@ -4,6 +4,7 @@ import {type ThinkingLevel, Tool,} from "../../kernel/agent/index.js";
 import {buildDefaultAgentTools} from "../../panda/definition.js";
 import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
 import {type ChatRuntimeServices, createChatRuntime,} from "./runtime.js";
+import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
 import {runChatActionsCommandLine, submitChatComposer, submitChatUserMessage,} from "./chat-actions.js";
 import {buildChatScreenFrame, buildChatView} from "./chat-render.js";
 import {
@@ -90,15 +91,6 @@ import {
 import type {ThreadRecord,} from "../../domain/threads/runtime/index.js";
 
 export type {ChatCliOptions, ChatCliResult} from "./chat-shared.js";
-
-function readAgentKeyFromThreadContext(thread: ThreadRecord): string {
-  if (typeof thread.context !== "object" || thread.context === null || Array.isArray(thread.context)) {
-    return "unknown";
-  }
-
-  const agentKey = (thread.context as Record<string, unknown>).agentKey;
-  return typeof agentKey === "string" && agentKey.trim() ? agentKey : "unknown";
-}
 
 export class ChatApp {
   private model: string;
@@ -403,7 +395,7 @@ export class ChatApp {
     const displayConfig = resolveStoredChatDisplayConfig(thread);
     this.currentThread = thread;
     this.currentThreadId = thread.id;
-    this.currentAgentLabel = readAgentKeyFromThreadContext(thread);
+    this.currentAgentLabel = readThreadAgentKey(thread) ?? "unknown";
     this.model = displayConfig.model;
     this.thinking = displayConfig.thinking;
     this.runPhase = "idle";
@@ -522,7 +514,7 @@ export class ChatApp {
     const displayConfig = resolveStoredChatDisplayConfig(thread);
     this.currentThread = thread;
     this.currentThreadId = thread.id;
-    this.currentAgentLabel = readAgentKeyFromThreadContext(thread);
+    this.currentAgentLabel = readThreadAgentKey(thread) ?? "unknown";
     this.model = displayConfig.model;
     this.thinking = displayConfig.thinking;
     this.refreshToolCatalog();
@@ -558,7 +550,7 @@ export class ChatApp {
     await refreshChatSessionPicker({
       sessionPicker: this.sessionPicker,
       getCurrentSessionId: () => this.currentThread?.sessionId ?? "",
-      getCurrentAgentKey: () => this.currentThread ? readAgentKeyFromThreadContext(this.currentThread) : "",
+      getCurrentAgentKey: () => this.currentThread ? (readThreadAgentKey(this.currentThread) ?? "") : "",
       isRunning: () => this.isRunning,
       requireServices: () => this.requireServices(),
       switchThread: (thread) => this.switchThread(thread),
@@ -579,7 +571,7 @@ export class ChatApp {
     await openChatSessionPicker({
       sessionPicker: this.sessionPicker,
       getCurrentSessionId: () => this.currentThread?.sessionId ?? "",
-      getCurrentAgentKey: () => this.currentThread ? readAgentKeyFromThreadContext(this.currentThread) : "",
+      getCurrentAgentKey: () => this.currentThread ? (readThreadAgentKey(this.currentThread) ?? "") : "",
       isRunning: () => this.isRunning,
       requireServices: () => this.requireServices(),
       switchThread: (thread) => this.switchThread(thread),
@@ -610,7 +602,7 @@ export class ChatApp {
     await selectChatSessionPickerEntry({
       sessionPicker: this.sessionPicker,
       getCurrentSessionId: () => this.currentThread?.sessionId ?? "",
-      getCurrentAgentKey: () => this.currentThread ? readAgentKeyFromThreadContext(this.currentThread) : "",
+      getCurrentAgentKey: () => this.currentThread ? (readThreadAgentKey(this.currentThread) ?? "") : "",
       isRunning: () => this.isRunning,
       requireServices: () => this.requireServices(),
       switchThread: (thread) => this.switchThread(thread),
@@ -863,7 +855,7 @@ export class ChatApp {
     return await runChatActionsCommandLine(commandLine, {
       getCurrentThreadId: () => this.currentThreadId,
       getCurrentSessionId: () => this.currentThread?.sessionId ?? "",
-      getCurrentAgentKey: () => this.currentThread ? readAgentKeyFromThreadContext(this.currentThread) : "",
+      getCurrentAgentKey: () => this.currentThread ? (readThreadAgentKey(this.currentThread) ?? "") : "",
       getModel: () => this.model,
       getThinking: () => this.thinking,
       isRunning: () => this.isRunning,

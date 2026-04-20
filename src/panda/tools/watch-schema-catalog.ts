@@ -6,6 +6,7 @@ import type {
     WatchSourceConfig,
     WatchSourceKind,
 } from "../../domain/watches/types.js";
+import {isRecord} from "../../lib/records.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {formatParameters} from "../../kernel/agent/helpers/schema.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
@@ -357,10 +358,6 @@ const compactWatchSourceEnvelopeSchema = z.looseObject({
 const compactWatchDetectorEnvelopeSchema = z.looseObject({
   kind: watchDetectorKindSchema,
 });
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function throwIssues(prefix: string, issues: readonly string[]): never {
   const message = issues.length === 1

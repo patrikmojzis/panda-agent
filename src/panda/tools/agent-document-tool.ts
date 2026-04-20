@@ -5,6 +5,7 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {AgentStore} from "../../domain/agents/store.js";
+import {isRecord} from "../../lib/records.js";
 import {resolveDateTimeContextOptions} from "../contexts/datetime-context.js";
 import type {
     AgentDiaryRecord,
@@ -14,6 +15,7 @@ import type {
     AgentPromptSlug,
 } from "../../domain/agents/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {buildJsonToolPayload} from "./shared.js";
 
 const AGENT_PROMPT_SLUGS = ["agent", "heartbeat"] as const;
 const AGENT_DOCUMENT_SLUGS = ["memory"] as const;
@@ -52,10 +54,6 @@ interface Scope {
 interface Token {
   type: "identifier" | "number" | "string" | "symbol";
   value: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readScope(context: unknown): Scope {
@@ -239,16 +237,6 @@ function validateTransformExpression(expression: string): string {
   return expression.trim();
 }
 
-function buildPayload(details: JsonObject): ToolResultPayload {
-  return {
-    content: [{
-      type: "text",
-      text: JSON.stringify(details, null, 2),
-    }],
-    details,
-  };
-}
-
 function slugForTarget(target: AgentDocumentToolTarget, slug: string | undefined): AgentPromptSlug | AgentDocumentSlug | undefined {
   if (target === "agent") {
     if (!slug || !AGENT_PROMPT_SLUGS.includes(slug as AgentPromptSlug)) {
@@ -300,7 +288,7 @@ function recordPayload(
     details.updatedAt = record.updatedAt;
   }
 
-  return buildPayload(details);
+  return buildJsonToolPayload(details);
 }
 
 export interface AgentDocumentToolOptions {

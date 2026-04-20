@@ -1,4 +1,5 @@
 import type {ScheduledTaskOnceSchedule, ScheduledTaskRecurringSchedule, ScheduledTaskSchedule} from "./types.js";
+import {requireScheduledTaskString} from "./shared.js";
 
 const ABSOLUTE_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
 const MINUTE_MS = 60_000;
@@ -38,14 +39,7 @@ interface ZonedDateTimeParts {
 
 const formatterCache = new Map<string, Intl.DateTimeFormat>();
 
-function requireTrimmed(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`Scheduled task ${field} must not be empty.`);
-  }
-
-  return trimmed;
-}
+const requireTrimmed = requireScheduledTaskString;
 
 function requireInteger(field: string, value: string): number {
   if (!/^\d+$/.test(value)) {

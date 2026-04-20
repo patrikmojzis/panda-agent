@@ -1,6 +1,7 @@
 import type {Message} from "@mariozechner/pi-ai";
 
 import {isCompactBoundaryRecord} from "./compaction.js";
+import {readPositiveInteger} from "../../lib/numbers.js";
 import type {
     InferenceProjection,
     InferenceProjectionRule,
@@ -48,15 +49,6 @@ export function mergeInferenceProjection(
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
-function normalizeCount(value: number | undefined): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return undefined;
-  }
-
-  const normalized = Math.floor(value);
-  return normalized > 0 ? normalized : undefined;
-}
-
 function normalizeCutoffTime(now: number, olderThanMs: number | undefined): number | undefined {
   if (typeof olderThanMs !== "number" || !Number.isFinite(olderThanMs)) {
     return undefined;
@@ -82,8 +74,8 @@ function buildRuleWindow(
   now: number,
 ): RuleWindow {
   const protectedIndexes = new Set<number>();
-  const preserveTailMessages = normalizeCount(rule.preserveTailMessages);
-  const preserveRecentUserTurns = normalizeCount(rule.preserveRecentUserTurns);
+  const preserveTailMessages = readPositiveInteger(rule.preserveTailMessages);
+  const preserveRecentUserTurns = readPositiveInteger(rule.preserveRecentUserTurns);
 
   if (preserveTailMessages) {
     const start = Math.max(0, records.length - preserveTailMessages);

@@ -1,10 +1,11 @@
 import process from "node:process";
 
-import {Command, InvalidArgumentError} from "commander";
+import {Command} from "commander";
 import type {Pool} from "pg";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
 import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
+import {parseSessionIdOption} from "../../lib/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {parseAgentKey} from "../agents/cli.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
@@ -33,15 +34,6 @@ interface A2AStores {
   bindings: A2ASessionBindingRepo;
   identityStore: PostgresIdentityStore;
   sessionStore: PostgresSessionStore;
-}
-
-function parseSessionId(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new InvalidArgumentError("Session id must not be empty.");
-  }
-
-  return trimmed;
 }
 
 function createA2AStores(pool: Pool): A2AStores {
@@ -227,8 +219,8 @@ export function registerA2ACommands(program: Command): void {
   a2aProgram
     .command("bind")
     .description("Allow two sessions to message each other")
-    .argument("[fromSessionId]", "Sender session id", parseSessionId)
-    .argument("[toSessionId]", "Recipient session id", parseSessionId)
+    .argument("[fromSessionId]", "Sender session id", parseSessionIdOption)
+    .argument("[toSessionId]", "Recipient session id", parseSessionIdOption)
     .option("--from-agent <agentKey>", "Resolve sender from an agent's main session", parseAgentKey)
     .option("--to-agent <agentKey>", "Resolve recipient from an agent's main session", parseAgentKey)
     .option("--one-way", "Create only sender -> recipient")
@@ -240,8 +232,8 @@ export function registerA2ACommands(program: Command): void {
   a2aProgram
     .command("unbind")
     .description("Remove session-to-session A2A bindings")
-    .argument("[fromSessionId]", "Sender session id", parseSessionId)
-    .argument("[toSessionId]", "Recipient session id", parseSessionId)
+    .argument("[fromSessionId]", "Sender session id", parseSessionIdOption)
+    .argument("[toSessionId]", "Recipient session id", parseSessionIdOption)
     .option("--from-agent <agentKey>", "Resolve sender from an agent's main session", parseAgentKey)
     .option("--to-agent <agentKey>", "Resolve recipient from an agent's main session", parseAgentKey)
     .option("--one-way", "Remove only sender -> recipient")
@@ -253,8 +245,8 @@ export function registerA2ACommands(program: Command): void {
   a2aProgram
     .command("list")
     .description("List A2A bindings")
-    .option("--from-session <sessionId>", "Filter by sender session", parseSessionId)
-    .option("--to-session <sessionId>", "Filter by recipient session", parseSessionId)
+    .option("--from-session <sessionId>", "Filter by sender session", parseSessionIdOption)
+    .option("--to-session <sessionId>", "Filter by recipient session", parseSessionIdOption)
     .option("--from-agent <agentKey>", "Filter by sender agent main session", parseAgentKey)
     .option("--to-agent <agentKey>", "Filter by recipient agent main session", parseAgentKey)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)

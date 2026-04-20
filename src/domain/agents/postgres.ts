@@ -1,30 +1,31 @@
 import type {Pool, PoolClient} from "pg";
 
+import {isUniqueViolation} from "../../lib/postgres-errors.js";
 import {
-  CREATE_RUNTIME_SCHEMA_SQL,
-  quoteIdentifier,
-  toJson,
-  toMillis
+    CREATE_RUNTIME_SCHEMA_SQL,
+    quoteIdentifier,
+    toJson,
+    toMillis
 } from "../../domain/threads/runtime/postgres-shared.js";
 import {buildIdentityTableNames} from "../identity/postgres-shared.js";
 import {type AgentTableNames, buildAgentTableNames} from "./postgres-shared.js";
 import type {AgentStore} from "./store.js";
 import type {
-  AgentDiaryRecord,
-  AgentDocumentRecord,
-  AgentDocumentSlug,
-  AgentPairingRecord,
-  AgentPromptRecord,
-  AgentPromptSlug,
-  AgentRecord,
-  AgentSkillRecord,
-  BootstrapAgentInput,
+    AgentDiaryRecord,
+    AgentDocumentRecord,
+    AgentDocumentSlug,
+    AgentPairingRecord,
+    AgentPromptRecord,
+    AgentPromptSlug,
+    AgentRecord,
+    AgentSkillRecord,
+    BootstrapAgentInput,
 } from "./types.js";
 import {
-  normalizeAgentKey,
-  normalizeAgentSkillContent,
-  normalizeAgentSkillDescription,
-  normalizeSkillKey,
+    normalizeAgentKey,
+    normalizeAgentSkillContent,
+    normalizeAgentSkillDescription,
+    normalizeSkillKey,
 } from "./types.js";
 
 interface PgQueryable {
@@ -138,10 +139,6 @@ function requireEntryDate(value: string): string {
 
 function missingAgentError(agentKey: string): Error {
   return new Error(`Unknown agent ${agentKey}. Create it with \`panda agent create ${agentKey}\`.`);
-}
-
-function isUniqueViolation(error: unknown): error is { code: string } {
-  return !!error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "23505";
 }
 
 const AGENT_PROMPT_SLUG_SET = new Set<AgentPromptSlug>(["agent", "heartbeat"]);

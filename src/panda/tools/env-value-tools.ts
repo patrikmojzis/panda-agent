@@ -2,21 +2,12 @@ import {z} from "zod";
 
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {CredentialService} from "../../domain/credentials/index.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
-
-function buildPayload(details: JsonObject): ToolResultPayload {
-  return {
-    content: [{
-      type: "text",
-      text: JSON.stringify(details, null, 2),
-    }],
-    details,
-  };
-}
+import {buildJsonToolPayload} from "./shared.js";
 
 function readScope(context: unknown): { agentKey: string; identityId?: string } {
   if (typeof context !== "object" || context === null || Array.isArray(context)) {
@@ -105,7 +96,7 @@ export class SetEnvValueTool<TContext = DefaultAgentSessionContext> extends Tool
     });
     const resolvedAgentKey = record.agentKey ?? agentKey;
 
-    return buildPayload({
+    return buildJsonToolPayload({
       ok: true,
       action: "set",
       envKey: record.envKey,
@@ -164,7 +155,7 @@ export class ClearEnvValueTool<TContext = DefaultAgentSessionContext> extends To
       ...(scope === "relationship" ? {identityId} : {}),
     });
 
-    return buildPayload({
+    return buildJsonToolPayload({
       ok: true,
       action: "clear",
       envKey: args.key,

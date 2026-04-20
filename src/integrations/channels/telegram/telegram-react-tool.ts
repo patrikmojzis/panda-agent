@@ -5,6 +5,8 @@ import {Tool} from "../../../kernel/agent/tool.js";
 import {ToolError} from "../../../kernel/agent/exceptions.js";
 import type {JsonObject} from "../../../kernel/agent/types.js";
 import type {DefaultAgentSessionContext} from "../../../app/runtime/panda-session-context.js";
+import {isRecord} from "../../../lib/records.js";
+import {trimToUndefined} from "../../../lib/strings.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 import {parseTelegramConversationId} from "./conversation-id.js";
 
@@ -111,19 +113,6 @@ interface TelegramReactionTarget {
   conversationId: string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readTrimmedString(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
 function parseTelegramMessageId(value: string): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -166,10 +155,10 @@ function readCurrentTelegramTarget(context: DefaultAgentSessionContext | undefin
     return null;
   }
 
-  const connectorKey = readTrimmedString(route.connectorKey);
+  const connectorKey = trimToUndefined(route.connectorKey);
   const conversationId =
-    readTrimmedString(route.externalConversationId)
-    ?? readTrimmedString(context.currentInput.channelId);
+    trimToUndefined(route.externalConversationId)
+    ?? trimToUndefined(context.currentInput.channelId);
   if (!connectorKey || !conversationId) {
     return null;
   }
@@ -185,7 +174,7 @@ function readCurrentTelegramExternalMessageId(context: DefaultAgentSessionContex
     return undefined;
   }
 
-  return readTrimmedString(context.currentInput.externalMessageId);
+  return trimToUndefined(context.currentInput.externalMessageId);
 }
 
 function readReactionTargetMessageId(context: DefaultAgentSessionContext | undefined): string | undefined {
@@ -208,7 +197,7 @@ function readReactionTargetMessageId(context: DefaultAgentSessionContext | undef
     return undefined;
   }
 
-  return readTrimmedString(reaction.targetMessageId);
+  return trimToUndefined(reaction.targetMessageId);
 }
 
 function resolveTelegramMessageId(
@@ -216,7 +205,7 @@ function resolveTelegramMessageId(
   context: DefaultAgentSessionContext | undefined,
 ): string | undefined {
   return (
-    readTrimmedString(args.messageId)
+    trimToUndefined(args.messageId)
     ?? readReactionTargetMessageId(context)
     ?? readCurrentTelegramExternalMessageId(context)
   );

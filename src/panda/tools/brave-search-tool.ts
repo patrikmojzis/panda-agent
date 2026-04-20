@@ -2,11 +2,13 @@ import {z} from "zod";
 
 import type {ToolResultMessage} from "@mariozechner/pi-ai";
 
+import {trimToNull} from "../../lib/strings.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {formatToolResultFallback, Tool, type ToolOutput} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {readResponseError} from "./http.js";
 
 const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 const DEFAULT_COUNT = 5;
@@ -136,14 +138,6 @@ export interface BraveSearchToolOptions {
   defaultCount?: number;
 }
 
-function truncateText(value: string, maxChars: number): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-
-  return `${value.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
-}
-
 function resolveSiteName(url: string): string | undefined {
   try {
     return new URL(url).hostname;
@@ -152,22 +146,8 @@ function resolveSiteName(url: string): string | undefined {
   }
 }
 
-function trimNonEmptyString(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
-async function readResponseError(response: Response): Promise<string> {
-  const text = (await response.text()).trim();
-  return truncateText(text, MAX_ERROR_CHARS);
-}
-
 function normalizeBraveCountry(value: string | undefined): string | undefined {
-  const trimmed = trimNonEmptyString(value);
+  const trimmed = trimToNull(value);
   if (!trimmed) {
     return undefined;
   }
@@ -177,7 +157,7 @@ function normalizeBraveCountry(value: string | undefined): string | undefined {
 }
 
 function normalizeBraveSearchLang(value: string | undefined): string | undefined {
-  const trimmed = trimNonEmptyString(value);
+  const trimmed = trimToNull(value);
   if (!trimmed) {
     return undefined;
   }
@@ -191,7 +171,7 @@ function normalizeBraveSearchLang(value: string | undefined): string | undefined
 }
 
 export function hasBraveSearchApiKey(env: NodeJS.ProcessEnv = process.env): boolean {
-  return trimNonEmptyString(env.BRAVE_API_KEY) !== null;
+  return trimToNull(env.BRAVE_API_KEY) !== null;
 }
 
 export class BraveSearchTool<TContext = DefaultAgentSessionContext>
@@ -216,7 +196,7 @@ export class BraveSearchTool<TContext = DefaultAgentSessionContext>
 
   constructor(options: BraveSearchToolOptions = {}) {
     super();
-    this.apiKey = trimNonEmptyString(options.apiKey) ?? undefined;
+    this.apiKey = trimToNull(options.apiKey) ?? undefined;
     this.env = options.env ?? process.env;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.defaultCount = Math.max(1, Math.min(MAX_COUNT, options.defaultCount ?? DEFAULT_COUNT));
@@ -265,7 +245,7 @@ export class BraveSearchTool<TContext = DefaultAgentSessionContext>
     args: z.output<typeof BraveSearchTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolOutput> {
-    const apiKey = this.apiKey ?? trimNonEmptyString(this.env.BRAVE_API_KEY);
+    const apiKey = this.apiKey ?? trimToNull(this.env.BRAVE_API_KEY);
     if (!apiKey) {
       throw new ToolError("BRAVE_API_KEY is not configured.");
     }
@@ -313,7 +293,7 @@ export class BraveSearchTool<TContext = DefaultAgentSessionContext>
       });
 
       if (!response.ok) {
-        const detail = await readResponseError(response);
+        const detail = await readResponseError(response, MAX_ERROR_CHARS);
         throw new ToolError(
           `Brave Search API error (${response.status}): ${detail || response.statusText}`,
         );

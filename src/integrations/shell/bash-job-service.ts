@@ -19,7 +19,9 @@ import {
     resolveRunnerUrlTemplate,
 } from "./bash-executor.js";
 import {ManagedBashJob} from "./bash-background-job.js";
+import {redactSecretsInString} from "./redaction.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
+import {readThreadId} from "./runtime-context.js";
 import type {
     BashJobSnapshot,
     BashRunnerJobCancelRequest,
@@ -73,15 +75,6 @@ function isTerminalStatus(status: ThreadBashJobStatus | BashJobSnapshot["status"
   return status !== "running";
 }
 
-function readThreadId(context: BashJobContext | undefined): string {
-  const threadId = context?.threadId?.trim();
-  if (!threadId) {
-    throw new ToolError("Background bash jobs require the current runtime session thread.");
-  }
-
-  return threadId;
-}
-
 function readAgentKey(context: BashJobContext | undefined): string {
   const agentKey = context?.agentKey?.trim();
   if (!agentKey) {
@@ -89,19 +82,6 @@ function readAgentKey(context: BashJobContext | undefined): string {
   }
 
   return agentKey;
-}
-
-function redactSecretsInString(value: string, secrets: readonly string[]): string {
-  let redacted = value;
-  for (const secret of secrets) {
-    if (!secret) {
-      continue;
-    }
-
-    redacted = redacted.split(secret).join("[redacted]");
-  }
-
-  return redacted;
 }
 
 function sanitizeSnapshot(snapshot: BashJobSnapshot, secrets: readonly string[]): BashJobSnapshot {

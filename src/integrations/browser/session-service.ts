@@ -1,14 +1,14 @@
 import {randomUUID} from "node:crypto";
-import {access, mkdir, rm, writeFile} from "node:fs/promises";
+import {mkdir, rm, writeFile} from "node:fs/promises";
 import path from "node:path";
 
 import {
-  type Browser,
-  type BrowserContext,
-  chromium,
-  type LaunchOptions,
-  type Locator,
-  type Page
+    type Browser,
+    type BrowserContext,
+    chromium,
+    type LaunchOptions,
+    type Locator,
+    type Page
 } from "playwright-core";
 
 import {resolveDataDir} from "../../app/runtime/data-dir.js";
@@ -17,30 +17,28 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {withArtifactDetails} from "../../kernel/agent/tool-artifacts.js";
 import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
+import {pathExists} from "../../lib/fs.js";
+import {trimToUndefined, truncateTextWithStatus} from "../../lib/strings.js";
 import {
-  buildRefSelector,
-  getSnapshotScript,
-  normalizeSnapshotResult,
-  renderBrowserSnapshot,
-  SNAPSHOT_REF_ATTRIBUTE,
-  type SnapshotScriptResult,
+    buildRefSelector,
+    getSnapshotScript,
+    normalizeSnapshotResult,
+    renderBrowserSnapshot,
+    SNAPSHOT_REF_ATTRIBUTE,
+    type SnapshotScriptResult,
 } from "../../panda/tools/browser-snapshot.js";
 import {buildBrowserExternalContentDetails, wrapBrowserExternalContent,} from "../../panda/tools/browser-output.js";
 import type {
-  BrowserAction,
-  BrowserProgressStatus,
-  BrowserSessionScope,
-  BrowserSnapshot,
-  BrowserSnapshotChanges,
-  BrowserSnapshotElement,
-  BrowserSnapshotMode,
+    BrowserAction,
+    BrowserProgressStatus,
+    BrowserSessionScope,
+    BrowserSnapshot,
+    BrowserSnapshotChanges,
+    BrowserSnapshotElement,
+    BrowserSnapshotMode,
 } from "../../panda/tools/browser-types.js";
-import {
-  defaultLookupHostname,
-  type LookupHostname,
-  resolveSafeHttpTarget,
-  trimNonEmptyString,
-} from "../../panda/tools/safe-web-target.js";
+import {defaultLookupHostname, type LookupHostname, resolveSafeHttpTarget,} from "../../panda/tools/safe-web-target.js";
+import {normalizeBrowserLabelValue, normalizeBrowserScopeKey, safeAgentKey,} from "./shared.js";
 
 const DEFAULT_BROWSER_ACTION_TIMEOUT_MS = 60_000;
 const DEFAULT_BROWSER_SESSION_IDLE_TTL_MS = 10 * 60_000;
@@ -104,29 +102,6 @@ export interface BrowserSessionServiceOptions {
   reaperIntervalMs?: number;
 }
 
-function trimNonEmpty(value: string | null | undefined): string | undefined {
-  return trimNonEmptyString(value);
-}
-
-function truncateText(value: string, maxChars: number): {text: string; truncated: boolean} {
-  if (value.length <= maxChars) {
-    return {text: value, truncated: false};
-  }
-  return {
-    text: value.slice(0, maxChars).trimEnd(),
-    truncated: true,
-  };
-}
-
-async function pathExists(filePath: string): Promise<boolean> {
-  try {
-    await access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return await new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -147,10 +122,10 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
 }
 
 function formatActionTarget(action: BrowserAction): string | undefined {
-  if ("ref" in action && trimNonEmpty(action.ref)) {
+  if ("ref" in action && trimToUndefined(action.ref)) {
     return action.ref;
   }
-  if ("selector" in action && trimNonEmpty(action.selector)) {
+  if ("selector" in action && trimToUndefined(action.selector)) {
     return action.selector;
   }
   if (action.action === "navigate") {
@@ -163,12 +138,8 @@ function normalizeBuffer(bytes: Buffer | Uint8Array): Buffer {
   return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
 }
 
-function normalizeBrowserLabelValue(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "unknown";
-}
-
 function resolveBrowserRunnerRoot(dataDir: string | undefined, env: NodeJS.ProcessEnv): string {
-  const configured = trimNonEmpty(dataDir);
+  const configured = trimToUndefined(dataDir);
   if (configured) {
     return path.resolve(configured);
   }
@@ -177,17 +148,7 @@ function resolveBrowserRunnerRoot(dataDir: string | undefined, env: NodeJS.Proce
 }
 
 function normalizeScopeKey(context: DefaultAgentSessionContext): {scope: BrowserSessionScope; key: string} {
-  if (trimNonEmpty(context.threadId)) {
-    return {
-      scope: "thread",
-      key: context.threadId!.trim(),
-    };
-  }
-
-  return {
-    scope: "ephemeral",
-    key: `ephemeral-${randomUUID()}`,
-  };
+  return normalizeBrowserScopeKey(context);
 }
 
 function resolveSessionContext(context: DefaultAgentSessionContext | undefined): DefaultAgentSessionContext {
@@ -219,21 +180,13 @@ function getEvaluateScriptSource(): string {
   `;
 }
 
-function safeAgentKey(agentKey: string): string {
-  const trimmed = agentKey.trim();
-  if (!trimmed || /[\\/]/.test(trimmed) || trimmed.includes("..")) {
-    throw new ToolError(`Unsafe agent key for browser artifact path: ${agentKey}`);
-  }
-  return trimmed;
-}
-
 function resolveBrowserSessionRoot(
   context: DefaultAgentSessionContext,
   dataDir: string | undefined,
   env: NodeJS.ProcessEnv,
 ): string {
   const root = resolveBrowserRunnerRoot(dataDir, env);
-  const agentKey = trimNonEmpty(context.agentKey);
+  const agentKey = trimToUndefined(context.agentKey);
   if (agentKey) {
     return path.join(root, "agents", safeAgentKey(agentKey));
   }
@@ -370,7 +323,7 @@ function resolveTargetSnapshotElement(
   if (!("ref" in action)) {
     return undefined;
   }
-  const ref = trimNonEmpty(action.ref);
+  const ref = trimToUndefined(action.ref);
   if (!ref) {
     return undefined;
   }
@@ -432,10 +385,10 @@ function buildSnapshotChanges(params: {
     const beforeSummary = summarizeSnapshotElement(beforeTarget);
     const afterSummary = summarizeSnapshotElement(afterTarget);
     changes.target = {
-      ...("ref" in params.action && trimNonEmpty(params.action.ref)
+      ...("ref" in params.action && trimToUndefined(params.action.ref)
         ? {ref: params.action.ref?.trim()}
         : {}),
-      ...("selector" in params.action && trimNonEmpty(params.action.selector)
+      ...("selector" in params.action && trimToUndefined(params.action.selector)
         ? {selector: params.action.selector?.trim()}
         : {}),
       ...(beforeSummary ? {before: beforeSummary} : {}),
@@ -517,7 +470,7 @@ export class BrowserSessionService {
     this.maxEvaluateResultChars = Math.max(1, Math.floor(
       options.maxEvaluateResultChars ?? DEFAULT_BROWSER_MAX_EVALUATE_RESULT_CHARS,
     ));
-    this.dataDir = trimNonEmpty(options.dataDir);
+    this.dataDir = trimToUndefined(options.dataDir);
     this.lookupHostname = options.lookupHostname ?? defaultLookupHostname;
     this.launchBrowserImpl = options.launchBrowserImpl ?? defaultLaunchBrowserImpl;
     this.launchOptions = options.launchOptions;
@@ -619,7 +572,7 @@ export class BrowserSessionService {
       browser = await this.launchBrowserImpl(this.launchOptions);
       context = await this.createBrowserContext(browser, storageStatePath);
       await context.route("**/*", async (route) => {
-        const requestUrl = trimNonEmpty(route.request().url());
+        const requestUrl = trimToUndefined(route.request().url());
         if (!requestUrl || !requestUrl.startsWith("http://") && !requestUrl.startsWith("https://")) {
           await route.continue();
           return;
@@ -721,7 +674,7 @@ export class BrowserSessionService {
   }
 
   private async ensureSafeFinalUrl(page: Page): Promise<void> {
-    const currentUrl = trimNonEmpty(page.url());
+    const currentUrl = trimToUndefined(page.url());
     if (!currentUrl || !/^https?:/i.test(currentUrl)) {
       return;
     }
@@ -733,8 +686,8 @@ export class BrowserSessionService {
     action: BrowserElementAction,
     timeoutMs: number,
   ): Promise<Locator> {
-    const ref = trimNonEmpty(action.ref);
-    const target = ref ? buildRefSelector(ref) : trimNonEmpty(action.selector);
+    const ref = trimToUndefined(action.ref);
+    const target = ref ? buildRefSelector(ref) : trimToUndefined(action.selector);
     if (!target) {
       throw new ToolError(`browser ${action.action} requires ref or selector.`);
     }
@@ -884,7 +837,7 @@ export class BrowserSessionService {
       action.timeoutMs ?? this.actionTimeoutMs,
       "browser evaluate",
     );
-    const serialized = trimNonEmpty(raw.json) ?? trimNonEmpty(raw.text);
+    const serialized = trimToUndefined(raw.json) ?? trimToUndefined(raw.text);
     if (!serialized) {
       return {
         content: [
@@ -902,7 +855,7 @@ export class BrowserSessionService {
         } satisfies JsonObject,
       };
     }
-    const truncated = truncateText(serialized, this.maxEvaluateResultChars);
+    const truncated = truncateTextWithStatus(serialized, this.maxEvaluateResultChars);
     return {
       content: [
         {
@@ -1000,7 +953,7 @@ export class BrowserSessionService {
     timeoutMs: number,
   ): Promise<ToolResultPayload> {
     const page = await this.ensureActivePage(session);
-    const target = trimNonEmpty(action.ref) || trimNonEmpty(action.selector);
+    const target = trimToUndefined(action.ref) || trimToUndefined(action.selector);
     if (target && action.fullPage) {
       throw new ToolError("browser screenshot does not support fullPage with ref or selector.");
     }
@@ -1039,7 +992,7 @@ export class BrowserSessionService {
     const title = await page.title().catch(() => "");
     const textLines = [
       `Browser screenshot saved to ${filePath}`,
-      ...(trimNonEmpty(title) ? [`Page title: ${title}`] : []),
+      ...(trimToUndefined(title) ? [`Page title: ${title}`] : []),
       `Page URL: ${page.url()}`,
     ];
     const text = action.labels && labeledSnapshot
@@ -1095,7 +1048,7 @@ export class BrowserSessionService {
           type: "text",
           text: [
             `Browser PDF saved to ${filePath}`,
-            ...(trimNonEmpty(title) ? [`Page title: ${title}`] : []),
+            ...(trimToUndefined(title) ? [`Page title: ${title}`] : []),
             `Page URL: ${page.url()}`,
           ].join("\n"),
         },
@@ -1292,7 +1245,7 @@ export class BrowserSessionService {
         case "press": {
           const baseline = await this.captureActionBaseline(session);
           this.emitProgress(run, "acting", {action: "press", key: action.key});
-          if (trimNonEmpty(action.ref) || trimNonEmpty(action.selector)) {
+          if (trimToUndefined(action.ref) || trimToUndefined(action.selector)) {
             await (await this.targetLocator(page, action, timeoutMs)).press(action.key, {
               timeout: timeoutMs,
             });

@@ -2,21 +2,12 @@ import type {ToolResultMessage} from "@mariozechner/pi-ai";
 import {z} from "zod";
 
 import {Tool, type ToolOutput} from "../../kernel/agent/tool.js";
-import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {ThreadBashJobRecord} from "../../domain/threads/runtime/types.js";
 import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
+import {readThreadId} from "../../integrations/shell/runtime-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
-
-function readThreadId(context: DefaultAgentSessionContext | undefined): string {
-  const threadId = context?.threadId?.trim();
-  if (!threadId) {
-    throw new ToolError("Background bash jobs require the current runtime session thread.");
-  }
-
-  return threadId;
-}
 
 function readString(details: Record<string, unknown>, key: string): string {
   return typeof details[key] === "string" ? String(details[key]).trim() : "";

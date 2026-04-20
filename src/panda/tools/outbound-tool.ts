@@ -1,5 +1,3 @@
-import {access} from "node:fs/promises";
-
 import type {ToolResultMessage} from "@mariozechner/pi-ai";
 import {z} from "zod";
 
@@ -7,6 +5,8 @@ import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
+import {isRecord} from "../../lib/records.js";
+import {assertPathReadable} from "../../lib/fs.js";
 import {resolveChannelRouteTarget} from "../../domain/channels/route-target.js";
 import type {
   OutboundFileItem,
@@ -63,10 +63,6 @@ const outboundToolSchema = z.object({
     });
   }
 });
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 async function readRememberedTarget(context: DefaultAgentSessionContext | undefined): Promise<{
   channel: string;
@@ -156,20 +152,12 @@ function buildExplicitTarget(
   };
 }
 
-async function ensureReadableResolvedPath(filePath: string): Promise<void> {
-  try {
-    await access(filePath);
-  } catch {
-    throw new ToolError(`No readable file found at ${filePath}`);
-  }
-}
-
 async function resolveOutboundItemPath<TItem extends OutboundImageItem | OutboundFileItem>(
   item: TItem,
   run: RunContext<DefaultAgentSessionContext>,
 ): Promise<TItem> {
   const resolvedPath = resolveContextPath(item.path, run.context);
-  await ensureReadableResolvedPath(resolvedPath);
+  await assertPathReadable(resolvedPath, (missingPath) => new ToolError(`No readable file found at ${missingPath}`));
   return {
     ...item,
     path: resolvedPath,
@@ -273,7 +261,7 @@ export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<ty
       throw new ToolError("No outbound channel was provided and no current inbound route is available.");
     }
     if (channel === A2A_SOURCE) {
-      throw new ToolError("Use message_agent for A2A messages.");
+      throw new ToolError("Use message_agent for Panda A2A messages.");
     }
 
     const target = buildExplicitTarget(channel, args.target) ?? defaultRoute?.target;

@@ -1,6 +1,8 @@
 import type {Pool, PoolClient} from "pg";
 
 import type {RememberedRoute} from "../../../domain/channels/types.js";
+import {isUniqueViolation} from "../../../lib/postgres-errors.js";
+import {trimToUndefined} from "../../../lib/strings.js";
 import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
 import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
 import {buildSessionTableNames} from "../postgres-shared.js";
@@ -20,38 +22,29 @@ export interface SessionRouteRepoOptions {
   pool: PgPoolLike;
 }
 
-function requireTrimmed(field: string, value: string | undefined | null): string {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    throw new Error(`Session route ${field} must not be empty.`);
-  }
-
-  return trimmed;
-}
-
 function normalizeLookup(lookup: SessionRouteLookup): SessionRouteLookup {
   return {
-    sessionId: requireTrimmed("session id", lookup.sessionId),
-    identityId: lookup.identityId?.trim() || undefined,
-    channel: lookup.channel?.trim() || undefined,
+    sessionId: lookup.sessionId?.trim() || (() => { throw new Error("Session route session id must not be empty."); })(),
+    identityId: trimToUndefined(lookup.identityId),
+    channel: trimToUndefined(lookup.channel),
   };
 }
 
 function normalizeRoute(route: RememberedRoute): RememberedRoute {
   return {
-    source: requireTrimmed("source", route.source),
-    connectorKey: requireTrimmed("connector key", route.connectorKey),
-    externalConversationId: requireTrimmed("conversation id", route.externalConversationId),
-    externalActorId: route.externalActorId?.trim() || undefined,
-    externalMessageId: route.externalMessageId?.trim() || undefined,
+    source: route.source?.trim() || (() => { throw new Error("Session route source must not be empty."); })(),
+    connectorKey: route.connectorKey?.trim() || (() => { throw new Error("Session route connector key must not be empty."); })(),
+    externalConversationId: route.externalConversationId?.trim() || (() => { throw new Error("Session route conversation id must not be empty."); })(),
+    externalActorId: trimToUndefined(route.externalActorId),
+    externalMessageId: trimToUndefined(route.externalMessageId),
     capturedAt: route.capturedAt,
   };
 }
 
 function normalizeInput(input: SessionRouteInput): SessionRouteInput {
   return {
-    sessionId: requireTrimmed("session id", input.sessionId),
-    identityId: input.identityId?.trim() || undefined,
+    sessionId: input.sessionId?.trim() || (() => { throw new Error("Session route session id must not be empty."); })(),
+    identityId: trimToUndefined(input.identityId),
     route: normalizeRoute(input.route),
   };
 }
@@ -77,10 +70,6 @@ function parseRecord(row: Record<string, unknown>): SessionRouteRecord {
     createdAt: toMillis(row.created_at),
     updatedAt: toMillis(row.updated_at),
   };
-}
-
-function isUniqueViolation(error: unknown): error is { code: string } {
-  return !!error && typeof error === "object" && "code" in error && (error as {code?: unknown}).code === "23505";
 }
 
 export class SessionRouteRepo {

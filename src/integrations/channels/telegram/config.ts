@@ -1,18 +1,10 @@
 import {resolveMediaDir} from "../../../app/runtime/data-dir.js";
+import {trimToNull} from "../../../lib/strings.js";
 
 export { resolveDataDir } from "../../../app/runtime/data-dir.js";
 
-function trimNonEmptyString(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
 export function requireTelegramBotToken(env: NodeJS.ProcessEnv = process.env): string {
-  const token = trimNonEmptyString(env.TELEGRAM_BOT_TOKEN);
+  const token = trimToNull(env.TELEGRAM_BOT_TOKEN);
   if (token) {
     return token;
   }
@@ -20,9 +12,7 @@ export function requireTelegramBotToken(env: NodeJS.ProcessEnv = process.env): s
   throw new Error("Telegram requires TELEGRAM_BOT_TOKEN in .env.");
 }
 
-export function resolveTelegramMediaDir(env: NodeJS.ProcessEnv = process.env): string {
-  return resolveMediaDir(env);
-}
+export const resolveTelegramMediaDir = resolveMediaDir;
 
 export const TELEGRAM_SOURCE = "telegram";
 export const TELEGRAM_UPDATES_CURSOR_KEY = "updates";

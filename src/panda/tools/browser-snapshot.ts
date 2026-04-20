@@ -1,4 +1,5 @@
 import {ToolError} from "../../kernel/agent/exceptions.js";
+import {normalizeTextBlockWhitespace, stripInvisibleUnicode, truncateTextWithStatus,} from "../../lib/strings.js";
 import {wrapBrowserExternalContent} from "./browser-output.js";
 import type {
     BrowserPageSignal,
@@ -36,30 +37,6 @@ export type SnapshotScriptResult = {
     section?: "page" | "dialog";
   }>;
 };
-
-function normalizeWhitespace(value: string): string {
-  return value
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
-    .replace(/\r/g, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
-}
-
-function truncateText(value: string, maxChars: number): {text: string; truncated: boolean} {
-  if (value.length <= maxChars) {
-    return {
-      text: value,
-      truncated: false,
-    };
-  }
-
-  return {
-    text: value.slice(0, maxChars).trimEnd(),
-    truncated: true,
-  };
-}
 
 export function buildRefSelector(ref: string): string {
   if (!/^e\d+$/.test(ref)) {
@@ -180,8 +157,14 @@ function buildExternalSnapshotBody(
   const dialogWeight = snapshot.dialogText ? (mode === "full" ? 0.35 : 0.5) : 0;
   const dialogBudget = snapshot.dialogText ? Math.max(120, Math.floor(reservedTextBudget * dialogWeight)) : 0;
   const pageBudget = Math.max(120, reservedTextBudget - dialogBudget);
-  const dialogText = truncateText(normalizeWhitespace(snapshot.dialogText), dialogBudget);
-  const pageText = truncateText(normalizeWhitespace(snapshot.pageText), pageBudget);
+  const dialogText = truncateTextWithStatus(
+    normalizeTextBlockWhitespace(stripInvisibleUnicode(snapshot.dialogText)),
+    dialogBudget,
+  );
+  const pageText = truncateTextWithStatus(
+    normalizeTextBlockWhitespace(stripInvisibleUnicode(snapshot.pageText)),
+    pageBudget,
+  );
   const parts: string[] = [];
 
   if (dialogText.text) {
@@ -559,20 +542,20 @@ export function normalizeSnapshotResult(
   },
 ): {snapshot: BrowserSnapshot; truncated: boolean; text: string} {
   const snapshot: BrowserSnapshot = {
-    url: normalizeWhitespace(value.url),
-    title: normalizeWhitespace(value.title),
-    text: normalizeWhitespace(value.text),
-    pageText: normalizeWhitespace(value.pageText),
-    dialogText: normalizeWhitespace(value.dialogText),
+    url: normalizeTextBlockWhitespace(stripInvisibleUnicode(value.url)),
+    title: normalizeTextBlockWhitespace(stripInvisibleUnicode(value.title)),
+    text: normalizeTextBlockWhitespace(stripInvisibleUnicode(value.text)),
+    pageText: normalizeTextBlockWhitespace(stripInvisibleUnicode(value.pageText)),
+    dialogText: normalizeTextBlockWhitespace(stripInvisibleUnicode(value.dialogText)),
     signals: value.signals.map((signal) => signal) as BrowserPageSignal[],
     elements: value.elements.map((element) => ({
-      ref: normalizeWhitespace(element.ref),
-      tag: normalizeWhitespace(element.tag),
-      role: normalizeWhitespace(element.role),
-      text: normalizeWhitespace(element.text),
-      ...(element.type ? {type: normalizeWhitespace(element.type)} : {}),
+      ref: normalizeTextBlockWhitespace(stripInvisibleUnicode(element.ref)),
+      tag: normalizeTextBlockWhitespace(stripInvisibleUnicode(element.tag)),
+      role: normalizeTextBlockWhitespace(stripInvisibleUnicode(element.role)),
+      text: normalizeTextBlockWhitespace(stripInvisibleUnicode(element.text)),
+      ...(element.type ? {type: normalizeTextBlockWhitespace(stripInvisibleUnicode(element.type))} : {}),
       ...(element.disabled !== undefined ? {disabled: element.disabled} : {}),
-      ...(element.value ? {value: normalizeWhitespace(element.value)} : {}),
+      ...(element.value ? {value: normalizeTextBlockWhitespace(stripInvisibleUnicode(element.value))} : {}),
       ...(element.checked !== undefined ? {checked: element.checked} : {}),
       ...(element.selected !== undefined ? {selected: element.selected} : {}),
       ...(element.expanded !== undefined ? {expanded: element.expanded} : {}),
@@ -580,7 +563,7 @@ export function normalizeSnapshotResult(
       ...(element.required !== undefined ? {required: element.required} : {}),
       ...(element.invalid !== undefined ? {invalid: element.invalid} : {}),
       ...(element.readonly !== undefined ? {readonly: element.readonly} : {}),
-      ...(element.href ? {href: normalizeWhitespace(element.href)} : {}),
+      ...(element.href ? {href: normalizeTextBlockWhitespace(stripInvisibleUnicode(element.href))} : {}),
       ...(element.section ? {section: element.section} : {}),
     })),
   };

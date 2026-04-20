@@ -1,20 +1,19 @@
-import {createServer, type IncomingMessage, type Server, type ServerResponse} from "node:http";
+import {createServer, type IncomingMessage, type Server} from "node:http";
 import os from "node:os";
 import path from "node:path";
 
 import {normalizeAgentKey} from "../../domain/agents/types.js";
+import {writeJsonResponse} from "../../lib/http.js";
+import {isRecord} from "../../lib/records.js";
+import {trimToNull} from "../../lib/strings.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject} from "../../kernel/agent/types.js";
 import type {
     BashExecutionResult,
     BashRunnerAbortRequest,
-    BashRunnerAbortResponse,
-    BashRunnerErrorResponse,
     BashRunnerExecRequest,
-    BashRunnerExecResponse,
     BashRunnerJobCancelRequest,
     BashRunnerJobQueryRequest,
-    BashRunnerJobResponse,
     BashRunnerJobStartRequest,
     BashRunnerJobWaitRequest,
 } from "./bash-protocol.js";
@@ -47,19 +46,6 @@ export interface BashRunner {
   close(): Promise<void>;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function firstNonEmpty(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
 function parsePort(value: string | null, fallback: number): number {
   if (!value) {
     return fallback;
@@ -78,9 +64,9 @@ function validateExecRequest(value: unknown): BashRunnerExecRequest {
     throw new ToolError("Runner request body must be an object.");
   }
 
-  const requestId = firstNonEmpty(typeof value.requestId === "string" ? value.requestId : null);
-  const command = firstNonEmpty(typeof value.command === "string" ? value.command : null);
-  const cwd = firstNonEmpty(typeof value.cwd === "string" ? value.cwd : null);
+  const requestId = trimToNull(typeof value.requestId === "string" ? value.requestId : null);
+  const command = trimToNull(typeof value.command === "string" ? value.command : null);
+  const cwd = trimToNull(typeof value.cwd === "string" ? value.cwd : null);
   const timeoutMs = typeof value.timeoutMs === "number" ? value.timeoutMs : NaN;
   const maxOutputChars = typeof value.maxOutputChars === "number" ? value.maxOutputChars : NaN;
   const trackedEnvKeys = Array.isArray(value.trackedEnvKeys)
@@ -132,7 +118,7 @@ function validateAbortRequest(value: unknown): BashRunnerAbortRequest {
     throw new ToolError("Abort request body must be an object.");
   }
 
-  const requestId = firstNonEmpty(typeof value.requestId === "string" ? value.requestId : null);
+  const requestId = trimToNull(typeof value.requestId === "string" ? value.requestId : null);
   if (!requestId) {
     throw new ToolError("Abort requestId must not be empty.");
   }
@@ -145,9 +131,9 @@ function validateJobStartRequest(value: unknown): BashRunnerJobStartRequest {
     throw new ToolError("Background job start body must be an object.");
   }
 
-  const jobId = firstNonEmpty(typeof value.jobId === "string" ? value.jobId : null);
-  const command = firstNonEmpty(typeof value.command === "string" ? value.command : null);
-  const cwd = firstNonEmpty(typeof value.cwd === "string" ? value.cwd : null);
+  const jobId = trimToNull(typeof value.jobId === "string" ? value.jobId : null);
+  const command = trimToNull(typeof value.command === "string" ? value.command : null);
+  const cwd = trimToNull(typeof value.cwd === "string" ? value.cwd : null);
   const timeoutMs = typeof value.timeoutMs === "number" ? value.timeoutMs : NaN;
   const maxOutputChars = typeof value.maxOutputChars === "number" ? value.maxOutputChars : NaN;
   const trackedEnvKeys = Array.isArray(value.trackedEnvKeys)
@@ -215,7 +201,7 @@ function validateJobQueryRequest(value: unknown): BashRunnerJobQueryRequest {
     throw new ToolError("Background job request body must be an object.");
   }
 
-  const jobId = firstNonEmpty(typeof value.jobId === "string" ? value.jobId : null);
+  const jobId = trimToNull(typeof value.jobId === "string" ? value.jobId : null);
   if (!jobId) {
     throw new ToolError("Background job jobId must not be empty.");
   }
@@ -263,16 +249,6 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-function writeJson(
-  response: ServerResponse,
-  statusCode: number,
-  payload: BashRunnerExecResponse | BashRunnerAbortResponse | BashRunnerJobResponse | BashRunnerErrorResponse,
-): void {
-  response.statusCode = statusCode;
-  response.setHeader("content-type", "application/json");
-  response.end(JSON.stringify(payload));
-}
-
 function matchesEndpoint(
   rawUrl: string | undefined,
   endpoint: "health" | "exec" | "abort" | "jobs/start" | "jobs/status" | "jobs/wait" | "jobs/cancel",
@@ -287,10 +263,10 @@ function matchesEndpoint(
 
 function readHeaderValue(value: string | string[] | undefined): string | null {
   if (Array.isArray(value)) {
-    return firstNonEmpty(value[0]);
+    return trimToNull(value[0]);
   }
 
-  return firstNonEmpty(value);
+  return trimToNull(value);
 }
 
 function readRequestPathSegments(rawUrl: string | undefined): string[] {
@@ -402,11 +378,11 @@ function buildAbortedResult(request: BashRunnerExecRequest, shell: string, reaso
 }
 
 export function resolveBashRunnerOptions(env: NodeJS.ProcessEnv = process.env): BashRunnerOptions {
-  const agentKey = normalizeAgentKey(firstNonEmpty(env.RUNNER_AGENT_KEY) ?? "");
+  const agentKey = normalizeAgentKey(trimToNull(env.RUNNER_AGENT_KEY) ?? "");
   return {
     agentKey,
-    port: parsePort(firstNonEmpty(env.RUNNER_PORT), DEFAULT_RUNNER_PORT),
-    host: firstNonEmpty(env.RUNNER_HOST) ?? DEFAULT_RUNNER_HOST,
+    port: parsePort(trimToNull(env.RUNNER_PORT), DEFAULT_RUNNER_PORT),
+    host: trimToNull(env.RUNNER_HOST) ?? DEFAULT_RUNNER_HOST,
     env,
   };
 }
@@ -482,7 +458,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         const active = activeRequests.get(parsed.requestId);
         if (active) {
           active.controller.abort(new Error("Command aborted."));
-          writeJson(response, 200, {
+          writeJsonResponse(response, 200, {
             ok: true,
             aborted: true,
           });
@@ -490,7 +466,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         }
 
         rememberPendingAbort(parsed.requestId);
-        writeJson(response, 200, {
+        writeJsonResponse(response, 200, {
           ok: true,
           aborted: true,
         });
@@ -511,7 +487,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         }
 
         if (consumePendingAbort(parsed.requestId)) {
-          writeJson(response, 200, {
+          writeJsonResponse(response, 200, {
             ok: true,
             ...buildAbortedResult(parsed, shell, "Command aborted."),
           });
@@ -547,7 +523,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           });
 
           if (outcome.spawnErrorMessage) {
-            writeJson(response, 500, {
+            writeJsonResponse(response, 500, {
               ok: false,
               error: `Failed to spawn shell: ${outcome.spawnErrorMessage}`,
               details: outcome.spawnErrorDetails,
@@ -555,7 +531,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
             return;
           }
 
-          writeJson(response, 200, {
+          writeJsonResponse(response, 200, {
             ok: true,
             ...outcome.result,
           });
@@ -600,7 +576,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         const snapshot = job.snapshot();
         evictTerminalJob(parsed.jobId, snapshot);
 
-        writeJson(response, 200, {
+        writeJsonResponse(response, 200, {
           ok: true,
           ...snapshot,
         });
@@ -612,7 +588,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         const parsed = validateJobQueryRequest(await readJsonBody(request));
         const job = backgroundJobs.get(parsed.jobId);
         if (!job) {
-          writeJson(response, 404, {
+          writeJsonResponse(response, 404, {
             ok: false,
             error: `Unknown background job ${parsed.jobId}.`,
           });
@@ -622,7 +598,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         const snapshot = job.snapshot();
         evictTerminalJob(parsed.jobId, snapshot);
 
-        writeJson(response, 200, {
+        writeJsonResponse(response, 200, {
           ok: true,
           ...snapshot,
         });
@@ -634,7 +610,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         const parsed = validateJobWaitRequest(await readJsonBody(request));
         const job = backgroundJobs.get(parsed.jobId);
         if (!job) {
-          writeJson(response, 404, {
+          writeJsonResponse(response, 404, {
             ok: false,
             error: `Unknown background job ${parsed.jobId}.`,
           });
@@ -644,7 +620,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         const snapshot = await job.wait(parsed.timeoutMs ?? 15_000);
         evictTerminalJob(parsed.jobId, snapshot);
 
-        writeJson(response, 200, {
+        writeJsonResponse(response, 200, {
           ok: true,
           ...snapshot,
         });
@@ -656,7 +632,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         const parsed = validateJobCancelRequest(await readJsonBody(request));
         const job = backgroundJobs.get(parsed.jobId);
         if (!job) {
-          writeJson(response, 404, {
+          writeJsonResponse(response, 404, {
             ok: false,
             error: `Unknown background job ${parsed.jobId}.`,
           });
@@ -666,20 +642,20 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         const snapshot = await job.cancel(parsed.timeoutMs ?? 1_000);
         evictTerminalJob(parsed.jobId, snapshot);
 
-        writeJson(response, 200, {
+        writeJsonResponse(response, 200, {
           ok: true,
           ...snapshot,
         });
         return;
       }
 
-      writeJson(response, 404, {
+      writeJsonResponse(response, 404, {
         ok: false,
         error: "Not found.",
       });
     } catch (error) {
       if (error instanceof ToolError) {
-        writeJson(response, 400, {
+        writeJsonResponse(response, 400, {
           ok: false,
           error: error.message,
           details: error.details as JsonObject | undefined,
@@ -688,7 +664,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       const message = error instanceof Error ? error.message : "Unknown runner error.";
-      writeJson(response, 500, {
+      writeJsonResponse(response, 500, {
         ok: false,
         error: message,
       });

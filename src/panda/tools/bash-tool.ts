@@ -13,6 +13,7 @@ import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-c
 import {ensureShellSession, readBaseCwd, readCurrentInputIdentityId,} from "../../app/runtime/panda-path-context.js";
 import {type BashExecutor, createDefaultBashExecutor,} from "../../integrations/shell/bash-executor.js";
 import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
+import {redactSecretsInJson} from "../../integrations/shell/redaction.js";
 import {applyPersistedEnv, collectTrackedEnvKeys, resolveCommandCwd,} from "../../integrations/shell/bash-session.js";
 import type {PersistedEnvEntry} from "../../integrations/shell/bash-protocol.js";
 import type {ShellSession} from "../../integrations/shell/types.js";
@@ -50,37 +51,6 @@ function formatBashStatus(details: Record<string, unknown>): string {
   }
 
   return "command failed";
-}
-
-function redactSecretsInString(value: string, secrets: readonly string[]): string {
-  let redacted = value;
-  for (const secret of secrets) {
-    if (!secret) {
-      continue;
-    }
-
-    redacted = redacted.split(secret).join("[redacted]");
-  }
-
-  return redacted;
-}
-
-function redactSecretsInJson(value: JsonValue, secrets: readonly string[]): JsonValue {
-  if (typeof value === "string") {
-    return redactSecretsInString(value, secrets);
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((entry) => redactSecretsInJson(entry, secrets));
-  }
-
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, redactSecretsInJson(entry as JsonValue, secrets)]),
-    ) as JsonObject;
-  }
-
-  return value;
 }
 
 function collectSecretValues(...envSets: Array<Record<string, string> | undefined>): string[] {

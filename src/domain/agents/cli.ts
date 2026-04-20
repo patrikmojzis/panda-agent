@@ -14,6 +14,7 @@ import {isMissingThreadError, PostgresThreadRuntimeStore} from "../threads/runti
 import {parseIdentityHandle} from "../identity/cli.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {createSessionWithInitialThread, PostgresSessionStore, resetSessionCurrentThread} from "../sessions/index.js";
+import {isMissingAgentError} from "./errors.js";
 import {
     discoverLegacyAgentSourceDirs,
     type ImportedLegacyAgentResult,
@@ -132,11 +133,6 @@ export function parseAgentKey(value: string): string {
 
     throw error;
   }
-}
-
-function isMissingAgentError(error: unknown, agentKey: string): boolean {
-  return error instanceof Error
-    && error.message === `Unknown agent ${agentKey}. Create it with \`panda agent create ${agentKey}\`.`;
 }
 
 function buildMainThreadContext(agentKey: string, sessionId: string, env: NodeJS.ProcessEnv): {

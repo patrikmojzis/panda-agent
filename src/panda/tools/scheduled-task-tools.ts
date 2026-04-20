@@ -6,6 +6,7 @@ import {Tool} from "../../kernel/agent/tool.js";
 import {normalizeScheduledTaskSchedule, type ScheduledTaskStore} from "../../domain/scheduling/tasks/index.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
+import {rethrowAsToolError} from "./shared.js";
 
 const onceScheduleSchema = z.object({
   kind: z.literal("once"),
@@ -43,15 +44,6 @@ function readTaskScope(context: unknown): {
     sessionId: (context as {sessionId: string}).sessionId,
     createdByIdentityId: readCurrentInputIdentityId(context),
   };
-}
-
-function wrapScheduledTaskError(error: unknown): never {
-  if (error instanceof ToolError) {
-    throw error;
-  }
-
-  const message = error instanceof Error ? error.message : String(error);
-  throw new ToolError(message);
 }
 
 export interface ScheduledTaskToolOptions {
@@ -97,7 +89,7 @@ export class ScheduledTaskCreateTool<TContext = DefaultAgentSessionContext>
         taskId: task.id,
       };
     } catch (error) {
-      wrapScheduledTaskError(error);
+      rethrowAsToolError(error);
     }
   }
 }
@@ -144,7 +136,7 @@ export class ScheduledTaskUpdateTool<TContext = DefaultAgentSessionContext>
         updated: true,
       };
     } catch (error) {
-      wrapScheduledTaskError(error);
+      rethrowAsToolError(error);
     }
   }
 }
@@ -184,7 +176,7 @@ export class ScheduledTaskCancelTool<TContext = DefaultAgentSessionContext>
         cancelled: true,
       };
     } catch (error) {
-      wrapScheduledTaskError(error);
+      rethrowAsToolError(error);
     }
   }
 }

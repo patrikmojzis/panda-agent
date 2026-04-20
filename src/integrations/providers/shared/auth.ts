@@ -2,16 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import {trimToUndefined} from "../../../lib/strings.js";
 import {getProviderConfig, type ProviderAuthKind, type ProviderName} from "./provider.js";
-
-function trimNonEmptyString(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
 
 const OPENAI_CODEX_OAUTH_ENV_VARS = ["OPENAI_OAUTH_TOKEN"] as const;
 const ANTHROPIC_OAUTH_ENV_VARS = [
@@ -21,7 +13,7 @@ const ANTHROPIC_OAUTH_ENV_VARS = [
 ] as const;
 
 export function resolveCodexHome(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = trimNonEmptyString(env.CODEX_HOME);
+  const configured = trimToUndefined(env.CODEX_HOME);
   if (!configured) {
     return path.join(os.homedir(), ".codex");
   }
@@ -65,7 +57,7 @@ export function resolveOpenAICodexOauthToken(options: {
   const env = options.env ?? process.env;
 
   for (const key of OPENAI_CODEX_OAUTH_ENV_VARS) {
-    const value = trimNonEmptyString(env[key]);
+    const value = trimToUndefined(env[key]);
     if (value) {
       return value;
     }
@@ -76,7 +68,7 @@ export function resolveOpenAICodexOauthToken(options: {
     return null;
   }
 
-  return trimNonEmptyString(authFile.tokens?.access_token) ?? null;
+  return trimToUndefined(authFile.tokens?.access_token) ?? null;
 }
 
 export function hasOpenAICodexOauthToken(options: {
@@ -88,7 +80,7 @@ export function hasOpenAICodexOauthToken(options: {
 
 export function resolveAnthropicAccessToken(env: NodeJS.ProcessEnv = process.env): string | null {
   for (const key of ANTHROPIC_OAUTH_ENV_VARS) {
-    const value = trimNonEmptyString(env[key]);
+    const value = trimToUndefined(env[key]);
     if (value) {
       return value;
     }
@@ -102,12 +94,12 @@ export function hasAnthropicOauthToken(env: NodeJS.ProcessEnv = process.env): bo
 }
 
 const AUTH_RESOLVERS: Record<ProviderAuthKind, (env: NodeJS.ProcessEnv) => string | undefined> = {
-  "openai-api-key": (env) => trimNonEmptyString(env.OPENAI_API_KEY),
+  "openai-api-key": (env) => trimToUndefined(env.OPENAI_API_KEY),
   "openai-codex-oauth": (env) => resolveOpenAICodexOauthToken({env}) ?? undefined,
   "anthropic-api-key-or-oauth": (env) => {
     return (
       resolveAnthropicAccessToken(env) ??
-      trimNonEmptyString(env.ANTHROPIC_API_KEY)
+      trimToUndefined(env.ANTHROPIC_API_KEY)
     );
   },
   "anthropic-oauth": (env) => resolveAnthropicAccessToken(env) ?? undefined,

@@ -1,40 +1,12 @@
-import path from "node:path";
-
 import type {JsonObject} from "../../../kernel/agent/types.js";
-import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import type {A2AMessageItem, A2AMessageRequestPayload} from "../../../domain/threads/requests/index.js";
 import {
-  renderA2AAttachmentCaption,
-  renderA2AInboundFallbackBody,
-  renderA2AInboundText
+    renderA2AAttachmentCaption,
+    renderA2AInboundFallbackBody,
+    renderA2AInboundText
 } from "../../../prompts/channels/a2a.js";
 import {A2A_SOURCE} from "./config.js";
-
-function describeMediaDescriptor(descriptor: MediaDescriptor, caption?: string): string {
-  const filename = descriptor.originalFilename ?? path.basename(descriptor.localPath);
-  return [
-    "- id: " + descriptor.id,
-    `  filename: ${filename}`,
-    `  mime_type: ${descriptor.mimeType}`,
-    `  size_bytes: ${descriptor.sizeBytes}`,
-    `  path: ${descriptor.localPath}`,
-    `  ${renderA2AAttachmentCaption(caption)}`,
-  ].join("\n");
-}
-
-function serializeMediaDescriptor(descriptor: MediaDescriptor): JsonObject {
-  return {
-    id: descriptor.id,
-    source: descriptor.source,
-    connectorKey: descriptor.connectorKey,
-    mimeType: descriptor.mimeType,
-    sizeBytes: descriptor.sizeBytes,
-    localPath: descriptor.localPath,
-    originalFilename: descriptor.originalFilename ?? null,
-    metadata: descriptor.metadata ?? null,
-    createdAt: descriptor.createdAt,
-  };
-}
+import {describeMediaDescriptor, serializeMediaDescriptor} from "../media-shared.js";
 
 function serializeItem(item: A2AMessageItem): JsonObject {
   switch (item.type) {
@@ -77,9 +49,9 @@ function attachmentDescriptions(items: readonly A2AMessageItem[]): string[] {
       case "text":
         return [];
       case "image":
-        return [describeMediaDescriptor(item.media, item.caption)];
+        return [describeMediaDescriptor(item.media, [renderA2AAttachmentCaption(item.caption)])];
       case "file":
-        return [describeMediaDescriptor(item.media, item.caption)];
+        return [describeMediaDescriptor(item.media, [renderA2AAttachmentCaption(item.caption)])];
     }
   });
 }

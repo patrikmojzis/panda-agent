@@ -1,6 +1,4 @@
-function formatMaybeValue(value: string | undefined): string {
-  return value?.trim() || "null";
-}
+import {formatMaybeValue} from "./shared.js";
 
 function buildTelegramHeaderLines(options: {
   connectorKey: string;
