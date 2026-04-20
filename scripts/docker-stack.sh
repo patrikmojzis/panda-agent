@@ -90,15 +90,16 @@ generated_wiki_compose="$generated_dir/docker-compose.wiki.ssl.yml"
 docker_bin="${PANDA_DOCKER_BIN:-docker}"
 wiki_local_script="${PANDA_WIKI_LOCAL_SCRIPT:-$repo_root/scripts/wiki-local.sh}"
 wait_timeout_sec="${PANDA_STACK_WAIT_TIMEOUT_SEC:-120}"
+env_loader="$script_dir/lib/load-env-file.sh"
 
 [[ -f "$env_file" ]] || die "env file not found: $env_file"
 [[ -f "$base_compose" ]] || die "base compose file not found: $base_compose"
+[[ -f "$env_loader" ]] || die "env loader not found: $env_loader"
 command -v "$docker_bin" >/dev/null 2>&1 || die "$docker_bin is not installed or not on PATH."
 
 # shellcheck source=/dev/null
-set -a
-source "$env_file"
-set +a
+source "$env_loader"
+load_env_file "$env_file"
 
 declare -a normalized_agents=()
 

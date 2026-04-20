@@ -217,7 +217,7 @@ export async function bootstrapRuntime(
       store: agentStore,
     });
     const wikiEnabled = Boolean(
-      trimNonEmptyString(process.env.WIKI_DB)
+      trimNonEmptyString(process.env.WIKI_DB_URL)
       || trimNonEmptyString(process.env.WIKI_URL),
     );
     const wikiBindingService = credentialCrypto
@@ -227,7 +227,7 @@ export async function bootstrapRuntime(
       })
       : null;
     if (wikiEnabled && !wikiBindingService) {
-      throw new Error("Wiki bindings require CREDENTIALS_MASTER_KEY when WIKI_URL or WIKI_DB is set.");
+      throw new Error("Wiki bindings require CREDENTIALS_MASTER_KEY when WIKI_URL or WIKI_DB_URL is set.");
     }
     const wikiTool = wikiEnabled && wikiBindingService
       ? new WikiTool({

@@ -27,14 +27,9 @@ Optional env:
   WIKI_HOST_PORT=3100
   WIKI_SITE_URL=http://localhost:3100
   WIKI_SEARCH_DICT_LANGUAGE=simple
-  WIKI_DB=postgresql://user:pass@host:5432/panda_wiki
+  WIKI_DB_URL=postgresql://user:pass@host:5432/panda_wiki
   WIKI_DB_SSL_CERT_FILE=/path/to/ca.crt
   WIKI_DB_SSL_CA=<single-line certificate body>
-  WIKI_DB_HOST=host.docker.internal
-  WIKI_DB_PORT=5432
-  WIKI_DB_NAME=panda_wiki
-  WIKI_DB_USER=<current macOS user>
-  WIKI_DB_PASS=
 EOF
 }
 
@@ -104,28 +99,23 @@ generated_dir="$repo_root/.generated/wiki"
 generated_compose="$generated_dir/docker-compose.wiki.ssl.yml"
 docker_bin="${WIKI_DOCKER_BIN:-docker}"
 project_name="${WIKI_PROJECT_NAME:-panda-wiki}"
+env_loader="$script_dir/lib/load-env-file.sh"
 
 [[ -f "$compose_file" ]] || die "compose file not found: $compose_file"
+[[ -f "$env_loader" ]] || die "env loader not found: $env_loader"
 command -v "$docker_bin" >/dev/null 2>&1 || die "$docker_bin is not installed or not on PATH."
 require_command curl
 require_command jq
 
-if [[ -f "$env_file" ]]; then
-  # shellcheck source=/dev/null
-  set -a
-  source "$env_file"
-  set +a
-fi
+# shellcheck source=/dev/null
+source "$env_loader"
+load_env_file "$env_file"
 
 export WIKI_IMAGE="${WIKI_IMAGE:-ghcr.io/requarks/wiki:2}"
 export WIKI_HOST_PORT="${WIKI_HOST_PORT:-3100}"
 export WIKI_SITE_URL="${WIKI_SITE_URL:-http://localhost:${WIKI_HOST_PORT}}"
 export WIKI_SEARCH_DICT_LANGUAGE="${WIKI_SEARCH_DICT_LANGUAGE:-simple}"
-export WIKI_DB_HOST="${WIKI_DB_HOST:-host.docker.internal}"
-export WIKI_DB_PORT="${WIKI_DB_PORT:-5432}"
-export WIKI_DB_NAME="${WIKI_DB_NAME:-panda_wiki}"
-export WIKI_DB_USER="${WIKI_DB_USER:-$(id -un)}"
-export WIKI_DB_PASS="${WIKI_DB_PASS:-}"
+export WIKI_DB_URL="${WIKI_DB_URL:-}"
 
 declare -a normalized_agents=()
 
@@ -193,6 +183,11 @@ render_generated_compose
 compose_args=(
   "$docker_bin" compose
   --project-name "$project_name"
+)
+if [[ -f "$env_file" ]]; then
+  compose_args+=(--env-file "$env_file")
+fi
+compose_args+=(
   -f "$compose_file"
   -f "$generated_compose"
 )

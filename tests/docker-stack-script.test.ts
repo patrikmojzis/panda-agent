@@ -66,6 +66,8 @@ esac
     await writeFile(stubPath, `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "${logPath}"
+printf 'DATABASE_URL=%s\\n' "\${DATABASE_URL-}" >> "${logPath}"
+printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
 `, {mode: 0o755});
     return stubPath;
   }
@@ -119,6 +121,7 @@ printf '%s\\n' "$*" >> "${logPath}"
     const dockerBin = await createDockerStub(logPath);
     const envFile = await createEnvFile([
       "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "PANDA_AGENTS=Claw,claw",
     ].join("\n"));
@@ -138,6 +141,7 @@ printf '%s\\n' "$*" >> "${logPath}"
     const dockerBin = await createDockerStub(logPath);
     const envFile = await createEnvFile([
       "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "PANDA_AGENTS=",
     ].join("\n"));
@@ -158,6 +162,7 @@ printf '%s\\n' "$*" >> "${logPath}"
     const dockerBin = await createDockerStub(logPath);
     const envFile = await createEnvFile([
       "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "TELEGRAM_BOT_TOKEN=telegram-token",
       "PANDA_AGENTS=claw,Luna",
@@ -197,6 +202,7 @@ printf '%s\\n' "$*" >> "${logPath}"
     const dockerBin = await createDockerStub(logPath);
     const envFile = await createEnvFile([
       "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "PANDA_AGENTS=",
     ].join("\n"));
@@ -228,6 +234,7 @@ printf '%s\\n' "$*" >> "${logPath}"
     const wikiLocalScript = await createWikiLocalStub(wikiLogPath);
     const envFile = await createEnvFile([
       "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "PANDA_AGENTS=claw,Luna",
       "WIKI_ADMIN_EMAIL=admin@localhost",
@@ -244,5 +251,33 @@ printf '%s\\n' "$*" >> "${logPath}"
 
     expect(upResult.exitCode).toBe(0);
     expect(await readFile(wikiLogPath, "utf8")).toContain("bootstrap claw luna");
+  });
+
+  it("loads env files without shell-breaking URLs and passes them intact to wiki bootstrap", async () => {
+    const dockerLogPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const wikiLogPath = path.join(await makeTempDir("panda-wiki-log-"), "wiki.log");
+    const dockerBin = await createDockerStub(dockerLogPath);
+    const wikiLocalScript = await createWikiLocalStub(wikiLogPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://agent@example/panda?sslmode=verify-full&sslrootcert=/etc/ssl/certs/panda-postgres-ca.crt",
+      "WIKI_DB_URL=postgresql://wiki@example/wiki?sslmode=verify-full&sslrootcert=/etc/ssl/certs/panda-postgres-ca.crt",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw",
+      "WIKI_ADMIN_EMAIL=admin@localhost",
+      "WIKI_ADMIN_PASSWORD=secret",
+    ].join("\n"));
+
+    const homeDir = await makeTempDir("panda-home-");
+    const upResult = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir,
+      wikiLocalScript,
+    });
+
+    expect(upResult.exitCode).toBe(0);
+    const wikiLog = await readFile(wikiLogPath, "utf8");
+    expect(wikiLog).toContain("DATABASE_URL=postgresql://agent@example/panda?sslmode=verify-full&sslrootcert=/etc/ssl/certs/panda-postgres-ca.crt");
+    expect(wikiLog).toContain("WIKI_DB_URL=postgresql://wiki@example/wiki?sslmode=verify-full&sslrootcert=/etc/ssl/certs/panda-postgres-ca.crt");
   });
 });
