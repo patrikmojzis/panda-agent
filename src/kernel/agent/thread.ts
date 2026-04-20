@@ -2,20 +2,20 @@ import type {AssistantMessage, Message, ThinkingLevel, ToolCall, ToolResultMessa
 
 import type {Agent} from "./agent.js";
 import {
-  InvalidJSONResponseError,
-  InvalidSchemaResponseError,
-  MaxTurnsReachedError,
-  StreamingFailedError,
-  ToolError,
+    InvalidJSONResponseError,
+    InvalidSchemaResponseError,
+    MaxTurnsReachedError,
+    StreamingFailedError,
+    ToolError,
 } from "./exceptions.js";
 import {stringifyUnknown} from "./helpers/stringify.js";
 import {estimateTokensFromString, type TokenCounter} from "./helpers/token-count.js";
 import {gatherContexts, type LlmContext} from "./llm-context.js";
 import type {Hook} from "./hook.js";
 import {
-  buildConversationContext,
-  buildToolResultMessage,
-  collectAssistantToolCalls,
+    buildConversationContext,
+    buildToolResultMessage,
+    collectAssistantToolCalls,
 } from "../../integrations/providers/shared/messages.js";
 import {isCompactSummaryMessage} from "./helpers/compact.js";
 import {PiAiRuntime} from "../../integrations/providers/shared/runtime.js";
@@ -29,6 +29,7 @@ import {throwIfAborted} from "./abort.js";
 import type {ThreadCheckpointDecision, ThreadCheckpointHandler} from "./thread-checkpoint.js";
 import {isToolResultPayload} from "./tool.js";
 import type {JsonValue, ThreadRunEvent, ThreadStreamEvent, ToolProgressEvent, ToolResultContent,} from "./types.js";
+import {buildReplaySegments, trimReplaySegmentsToBudget,} from "../transcript/replay-segments.js";
 
 export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   agent: Agent<TOutput>;
@@ -414,39 +415,28 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     const pinnedMessage = firstMessage && isCompactSummaryMessage(firstMessage)
       ? firstMessage
       : null;
-    const pinnedTokens = pinnedMessage
-      ? this.countTokens(JSON.stringify(pinnedMessage))
-      : 0;
+    const historyOffset = pinnedMessage ? 1 : 0;
+    const segments = buildReplaySegments(this.history.slice(historyOffset));
+    const malformedSegments = segments.filter((segment) => segment.issues.length > 0);
 
-    if (pinnedMessage && pinnedTokens >= this.contextWindowTokens) {
-      return [pinnedMessage];
+    if (malformedSegments.length > 0) {
+      console.warn("Replay transcript contained malformed tool segments; keeping best-effort atomic groups.", {
+        issues: malformedSegments.map((segment) => ({
+          kind: segment.kind,
+          startIndex: segment.startIndex + historyOffset,
+          endIndex: segment.endIndex + historyOffset,
+          issues: segment.issues,
+        })),
+      });
     }
 
-    const trimmedMessages: Message[] = [];
-    let currentTokens = 0;
-    const budget = this.contextWindowTokens - pinnedTokens;
-    const stopIndex = pinnedMessage ? 1 : 0;
-
-    for (let index = this.history.length - 1; index >= stopIndex; index -= 1) {
-      const message = this.history[index];
-      if (!message) {
-        continue;
-      }
-
-      const messageTokens = this.countTokens(JSON.stringify(message));
-      if (currentTokens + messageTokens > budget) {
-        break;
-      }
-
-      trimmedMessages.unshift(message);
-      currentTokens += messageTokens;
-    }
-
-    if (pinnedMessage) {
-      trimmedMessages.unshift(pinnedMessage);
-    }
-
-    return trimmedMessages;
+    return trimReplaySegmentsToBudget({
+      ...(pinnedMessage ? {pinnedMessage} : {}),
+      segments,
+      budgetTokens: this.contextWindowTokens,
+      estimateMessageTokens: (message) => this.countTokens(JSON.stringify(message)),
+      keepNewestOversizedSegment: true,
+    });
   }
 
   async parseStructuredOutput(output: AssistantMessage): Promise<TOutput> {

@@ -1,12 +1,14 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
+import type {AssistantMessage, ToolResultMessage} from "@mariozechner/pi-ai";
 import {Agent, buildCompactSummaryMessage, PiAiRuntime, stringToUserMessage, Thread,} from "../src/index.js";
 import {
-  compactThread,
-  createCompactBoundaryMessage,
-  formatTranscriptForCompaction,
-  projectTranscriptForRun,
-  splitTranscriptForCompaction,
+    compactThread,
+    createCompactBoundaryMessage,
+    formatTranscriptForCompaction,
+    projectTranscriptForRun,
+    splitTranscriptForCompaction,
 } from "../src/domain/threads/runtime/index.js";
+import {buildReplaySegments,} from "../src/kernel/transcript/replay-segments.js";
 
 const TEST_MODELS = vi.hoisted(() => ({
   window350: "openai/panda-test-window-350",
@@ -69,6 +71,41 @@ function assistant(text: string) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
     stopReason: "stop" as const,
+    timestamp: Date.now(),
+  };
+}
+
+function assistantWithToolCalls(...toolCallIds: string[]): AssistantMessage {
+  return {
+    role: "assistant",
+    content: toolCallIds.map((id) => ({
+      type: "toolCall" as const,
+      id,
+      name: "echo",
+      arguments: {message: id},
+    })),
+    api: "openai-responses",
+    model: "openai/gpt-5.1",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0},
+    },
+    stopReason: "toolUse",
+    timestamp: Date.now(),
+  };
+}
+
+function toolResult(toolCallId: string): ToolResultMessage {
+  return {
+    role: "toolResult",
+    toolCallId,
+    toolName: "echo",
+    content: [{type: "text", text: toolCallId}],
+    isError: false,
     timestamp: Date.now(),
   };
 }
@@ -538,5 +575,206 @@ describe("Thread.getRunInput compact pinning", () => {
 
     expect(runInput[0]).toEqual(compactSummary);
     expect(runInput).toContainEqual(messages[3]!);
+  });
+
+  it("groups tool exchanges atomically and records malformed runs without repairing them", () => {
+    const segments = buildReplaySegments([
+      stringToUserMessage("before"),
+      assistantWithToolCalls("call-1", "call-2"),
+      toolResult("call-1"),
+      toolResult("call-1"),
+      toolResult("call-x"),
+      assistant("separator"),
+      toolResult("orphan-1"),
+      toolResult("orphan-2"),
+      assistant("after"),
+    ]);
+
+    expect(segments).toMatchObject([
+      {
+        kind: "message",
+        startIndex: 0,
+        endIndex: 0,
+        issues: [],
+      },
+      {
+        kind: "tool_exchange",
+        startIndex: 1,
+        endIndex: 4,
+        issues: ["duplicate_tool_result", "unexpected_tool_result", "missing_tool_results"],
+      },
+      {
+        kind: "message",
+        startIndex: 5,
+        endIndex: 5,
+        issues: [],
+      },
+      {
+        kind: "orphan_tool_results",
+        startIndex: 6,
+        endIndex: 7,
+        issues: ["orphan_tool_results"],
+      },
+      {
+        kind: "message",
+        startIndex: 8,
+        endIndex: 8,
+        issues: [],
+      },
+    ]);
+  });
+
+  it("drops an older tool exchange whole when only part of it would fit the replay window", async () => {
+    const messages = [
+      stringToUserMessage("before"),
+      assistantWithToolCalls("call-old"),
+      toolResult("call-old"),
+      assistant("after tool"),
+      stringToUserMessage("latest"),
+    ];
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "segment-trim-test",
+        instructions: "Reply briefly",
+      }),
+      messages,
+      model: TEST_MODEL_WINDOW_350,
+      countTokens: (serialized) => {
+        if (serialized.includes("\"toolCallId\":\"call-old\"")) {
+          return 300;
+        }
+
+        if (serialized.includes("\"id\":\"call-old\"")) {
+          return 70;
+        }
+
+        if (serialized.includes("\"after tool\"")) {
+          return 80;
+        }
+
+        if (serialized.includes("\"latest\"")) {
+          return 100;
+        }
+
+        return 40;
+      },
+    });
+
+    const runInput = await thread.getRunInput();
+
+    expect(runInput).toEqual([
+      messages[3],
+      messages[4],
+    ]);
+  });
+
+  it("keeps the newest oversized tool exchange whole for now", async () => {
+    const messages = [
+      stringToUserMessage("before"),
+      assistantWithToolCalls("call-new"),
+      toolResult("call-new"),
+    ];
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "segment-trim-test",
+        instructions: "Reply briefly",
+      }),
+      messages,
+      model: TEST_MODEL_WINDOW_350,
+      countTokens: (serialized) => {
+        if (serialized.includes("\"toolCallId\":\"call-new\"")) {
+          return 250;
+        }
+
+        if (serialized.includes("\"id\":\"call-new\"")) {
+          return 200;
+        }
+
+        return 40;
+      },
+    });
+
+    const runInput = await thread.getRunInput();
+
+    expect(runInput).toEqual([
+      messages[1],
+      messages[2],
+    ]);
+  });
+
+  it("warns on malformed replay segments and still keeps best-effort atomic groups", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const messages = [
+      stringToUserMessage("before"),
+      assistantWithToolCalls("call-1", "call-2"),
+      toolResult("call-1"),
+      toolResult("call-1"),
+      toolResult("call-x"),
+      assistant("after"),
+    ];
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "segment-warning-test",
+        instructions: "Reply briefly",
+      }),
+      messages,
+      model: TEST_MODEL_WINDOW_600,
+    });
+
+    const runInput = await thread.getRunInput();
+
+    expect(runInput).toEqual(messages);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Replay transcript contained malformed tool segments; keeping best-effort atomic groups.",
+      {
+        issues: [{
+          kind: "tool_exchange",
+          startIndex: 1,
+          endIndex: 4,
+          issues: ["duplicate_tool_result", "unexpected_tool_result", "missing_tool_results"],
+        }],
+      },
+    );
+  });
+
+  it("warns with transcript indexes when a compact summary is pinned", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const compactSummary = buildCompactSummaryMessage("summary");
+    const messages = [
+      compactSummary,
+      stringToUserMessage("before"),
+      assistantWithToolCalls("call-1", "call-2"),
+      toolResult("call-1"),
+      toolResult("call-1"),
+      toolResult("call-x"),
+      assistant("after"),
+    ];
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "segment-warning-pinned-test",
+        instructions: "Reply briefly",
+      }),
+      messages,
+      model: TEST_MODEL_WINDOW_600,
+    });
+
+    const runInput = await thread.getRunInput();
+
+    expect(runInput).toEqual(messages);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Replay transcript contained malformed tool segments; keeping best-effort atomic groups.",
+      {
+        issues: [{
+          kind: "tool_exchange",
+          startIndex: 2,
+          endIndex: 5,
+          issues: ["duplicate_tool_result", "unexpected_tool_result", "missing_tool_results"],
+        }],
+      },
+    );
   });
 });
