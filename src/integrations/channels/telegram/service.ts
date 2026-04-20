@@ -4,6 +4,7 @@ import {AbortController} from "abort-controller";
 import {Bot, type Context} from "grammy";
 import type {Pool} from "pg";
 
+import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../app/health/server.js";
 import {ChannelActionWorker, type TelegramReactionActionPayload} from "../../../domain/channels/actions/index.js";
 import {ChannelCursorRepo} from "../../../domain/channels/cursors/repo.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
@@ -32,6 +33,7 @@ import {PostgresChannelActionStore} from "../../../domain/channels/actions/postg
 type TelegramContext = Context;
 const UPDATE_RETRY_DELAY_MS = 1_000;
 const TELEGRAM_POOL_MAX_FALLBACK = 5;
+const TELEGRAM_HEALTH_POLL_STALE_AFTER_MS = (TELEGRAM_POLL_TIMEOUT_SECONDS * 1_000) + 15_000;
 
 export interface TelegramServiceOptions {
   token: string;
@@ -147,6 +149,11 @@ export class TelegramService {
   private outboundWorker: ChannelOutboundDeliveryWorker | null = null;
   private actionWorker: ChannelActionWorker | null = null;
   private poolObserver: PostgresPoolObserver | null = null;
+  private healthServer: HealthServer | null = null;
+  private healthInitialized = false;
+  private healthLockHeld = false;
+  private healthListenersActive = false;
+  private lastPollActivityAt = 0;
   private stopping = false;
 
   constructor(options: TelegramServiceOptions) {
@@ -371,9 +378,38 @@ export class TelegramService {
 
     try {
       const {stores, connectorKey, botUsername} = await this.ensureInitialized();
+      this.healthServer = await (async () => {
+        const binding = resolveOptionalHealthServerBinding({
+          hostEnvKey: "PANDA_TELEGRAM_HEALTH_HOST",
+          portEnvKey: "PANDA_TELEGRAM_HEALTH_PORT",
+        });
+        if (!binding) {
+          return null;
+        }
+
+        return startHealthServer({
+          ...binding,
+          getSnapshot: () => ({
+            ok: this.healthInitialized
+              && this.healthLockHeld
+              && this.healthListenersActive
+              && !this.stopping
+              && (Date.now() - this.lastPollActivityAt) <= TELEGRAM_HEALTH_POLL_STALE_AFTER_MS,
+            connectorKey,
+            initialized: this.healthInitialized,
+            lockHeld: this.healthLockHeld,
+            listenersActive: this.healthListenersActive,
+            stopping: this.stopping,
+            lastPollActivityAt: this.lastPollActivityAt || null,
+          }),
+        });
+      })();
+      this.healthInitialized = true;
       this.lock = await this.acquireConnectorLock(connectorKey, stores.pool);
+      this.healthLockHeld = true;
       await this.ensureOutboundWorker(stores, connectorKey).start();
       await this.ensureActionWorker(stores, connectorKey).start();
+      this.healthListenersActive = true;
       await this.bot.api.setMyCommands([
         {command: "start", description: "Pair this Telegram account with Panda"},
         {command: "reset", description: "Reset Panda to a fresh empty session"},
@@ -387,6 +423,7 @@ export class TelegramService {
       while (!this.stopping) {
         const nextOffset = await this.readNextUpdateOffset(stores, connectorKey);
         this.pollAbortController = new AbortController();
+        this.lastPollActivityAt = Date.now();
 
         let updates;
         try {
@@ -413,6 +450,7 @@ export class TelegramService {
         } finally {
           this.pollAbortController = null;
         }
+        this.lastPollActivityAt = Date.now();
 
         if (updates.length > 0) {
           this.log("updates_received", {
@@ -457,6 +495,9 @@ export class TelegramService {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.healthListenersActive = false;
+    this.healthLockHeld = false;
+    this.healthInitialized = false;
     this.pollAbortController?.abort();
     this.pollAbortController = null;
 
@@ -478,13 +519,16 @@ export class TelegramService {
     const stores = this.stores;
     const storesPromise = this.storesPromise;
     const poolObserver = this.poolObserver;
+    const healthServer = this.healthServer;
     this.stores = null;
     this.storesPromise = null;
     this.poolObserver = null;
+    this.healthServer = null;
     poolObserver?.stop();
 
     if (stores) {
       await stores.pool.end();
+      await healthServer?.close().catch(() => undefined);
       return;
     }
 
@@ -496,6 +540,8 @@ export class TelegramService {
         // Ignore bootstrap failures during shutdown.
       }
     }
+
+    await healthServer?.close().catch(() => undefined);
   }
 
   private async acquireConnectorLock(connectorKey: string, pool: Pool): Promise<ConnectorLock> {

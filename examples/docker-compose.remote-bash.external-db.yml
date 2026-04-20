@@ -10,6 +10,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       READONLY_DATABASE_URL: ${READONLY_DATABASE_URL:-}
+      PANDA_CORE_HEALTH_PORT: ${PANDA_CORE_HEALTH_PORT:-8090}
       BASH_EXECUTION_MODE: remote
       RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
       RUNNER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
@@ -26,30 +27,11 @@ services:
       - runner_net
       - wiki_net
     healthcheck:
-      test:
-        - CMD
-        - node
-        - --input-type=module
-        - -e
-        - |
-          import { DaemonStateRepo } from "/app/dist/app/runtime/state/repo.js";
-          import { createPostgresPool } from "/app/dist/app/runtime/database.js";
-          import { DEFAULT_DAEMON_KEY, DAEMON_STALE_AFTER_MS } from "/app/dist/app/runtime/daemon-shared.js";
-          const pool = createPostgresPool({
-            connectionString: process.env.DATABASE_URL,
-            applicationName: "panda/health/core",
-            max: 1,
-          });
-          const store = new DaemonStateRepo({ pool });
-          const state = await store.readState(DEFAULT_DAEMON_KEY);
-          await pool.end();
-          if (!state || Date.now() - state.heartbeatAt > DAEMON_STALE_AFTER_MS) {
-            process.exit(1);
-          }
-      interval: 10s
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${PANDA_CORE_HEALTH_PORT:-8090}/health"]
+      interval: 30s
       timeout: 5s
-      retries: 10
-      start_period: 20s
+      retries: 3
+      start_period: 30s
 
   panda-browser-runner:
     build:
@@ -88,6 +70,7 @@ services:
       - ../.env
     environment:
       DATABASE_URL: ${DATABASE_URL}
+      PANDA_TELEGRAM_HEALTH_PORT: ${PANDA_TELEGRAM_HEALTH_PORT:-8091}
     volumes:
       - ${HOME}/.panda:/root/.panda
       - /etc/ssl/certs/panda-postgres-ca.crt:/etc/ssl/certs/panda-postgres-ca.crt:ro
@@ -96,6 +79,12 @@ services:
         condition: service_healthy
     networks:
       - runner_net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${PANDA_TELEGRAM_HEALTH_PORT:-8091}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
 
 networks:
   runner_net:

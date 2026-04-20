@@ -20,6 +20,7 @@ import {
 } from "baileys";
 import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
+import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../app/health/server.js";
 import {ChannelActionWorker} from "../../../domain/channels/actions/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
 import {
@@ -78,6 +79,7 @@ const TRANSACTION_OPTIONS = {
 } as const;
 const RECONNECT_DELAY_MS = 1_000;
 const WHATSAPP_POOL_MAX_FALLBACK = 5;
+const WHATSAPP_HEALTH_RECONNECT_GRACE_MS = 30_000;
 
 interface ConnectorLock {
   release(): Promise<void>;
@@ -104,6 +106,8 @@ export interface WhatsAppPairResult extends WhatsAppWhoamiResult {
   pairingCode?: string;
   alreadyPaired: boolean;
 }
+
+type WhatsAppSocketHealthState = "idle" | "connecting" | "open" | "reconnecting" | "closed" | "stopped";
 
 function describeAccountId(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -241,6 +245,12 @@ export class WhatsAppService {
   private outboundWorker: ChannelOutboundDeliveryWorker | null = null;
   private actionWorker: ChannelActionWorker | null = null;
   private poolObserver: PostgresPoolObserver | null = null;
+  private healthServer: HealthServer | null = null;
+  private healthInitialized = false;
+  private healthLockHeld = false;
+  private healthListenersActive = false;
+  private socketHealthState: WhatsAppSocketHealthState = "idle";
+  private socketHealthStateAt = 0;
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
   private socketWaiterResolve: (() => void) | null = null;
@@ -508,6 +518,8 @@ export class WhatsAppService {
   async run(): Promise<void> {
     this.stopping = false;
     this.stopPromise = null;
+    this.socketHealthState = "idle";
+    this.socketHealthStateAt = Date.now();
 
     try {
       const identity = await this.whoami();
@@ -518,9 +530,47 @@ export class WhatsAppService {
       }
 
       const stores = await this.ensureStores();
+      this.healthServer = await (async () => {
+        const binding = resolveOptionalHealthServerBinding({
+          hostEnvKey: "PANDA_WHATSAPP_HEALTH_HOST",
+          portEnvKey: "PANDA_WHATSAPP_HEALTH_PORT",
+        });
+        if (!binding) {
+          return null;
+        }
+
+        return startHealthServer({
+          ...binding,
+          getSnapshot: () => {
+            const socketHealthy = this.socketHealthState === "open"
+              || (
+                this.socketHealthState === "reconnecting"
+                && (Date.now() - this.socketHealthStateAt) <= WHATSAPP_HEALTH_RECONNECT_GRACE_MS
+              );
+
+            return {
+              ok: this.healthInitialized
+                && this.healthLockHeld
+                && this.healthListenersActive
+                && socketHealthy
+                && !this.stopping,
+              connectorKey: this.options.connectorKey,
+              initialized: this.healthInitialized,
+              lockHeld: this.healthLockHeld,
+              listenersActive: this.healthListenersActive,
+              socketState: this.socketHealthState,
+              socketStateAt: this.socketHealthStateAt || null,
+              stopping: this.stopping,
+            };
+          },
+        });
+      })();
+      this.healthInitialized = true;
       this.lock = await this.acquireConnectorLock(this.options.connectorKey);
+      this.healthLockHeld = true;
       await this.ensureOutboundWorker(stores).start();
       await this.ensureActionWorker(stores).start();
+      this.healthListenersActive = true;
       this.log("run_started", {
         connectorKey: this.options.connectorKey,
         accountId: identity.accountId,
@@ -529,11 +579,15 @@ export class WhatsAppService {
       });
 
       while (!this.stopping) {
+        this.socketHealthState = "connecting";
+        this.socketHealthStateAt = Date.now();
         const outcome = await this.runSocketCycle(stores);
         if (!outcome.reconnect || this.stopping) {
           break;
         }
 
+        this.socketHealthState = "reconnecting";
+        this.socketHealthStateAt = Date.now();
         this.log("reconnect_scheduled", {
           connectorKey: this.options.connectorKey,
           reason: outcome.reason,
@@ -552,6 +606,11 @@ export class WhatsAppService {
     }
 
     this.stopping = true;
+    this.healthListenersActive = false;
+    this.healthLockHeld = false;
+    this.healthInitialized = false;
+    this.socketHealthState = "stopped";
+    this.socketHealthStateAt = Date.now();
     this.stopPromise = (async () => {
       this.socketWaiterResolve?.();
       this.socketWaiterResolve = null;
@@ -581,6 +640,9 @@ export class WhatsAppService {
         this.stores = null;
         this.storesPromise = null;
       }
+
+      await this.healthServer?.close().catch(() => undefined);
+      this.healthServer = null;
     })();
 
     return this.stopPromise;
@@ -684,6 +746,13 @@ export class WhatsAppService {
 
         const onConnectionUpdate = (update: Partial<ConnectionState>) => {
           if (update.connection) {
+            if (update.connection === "open") {
+              this.socketHealthState = "open";
+              this.socketHealthStateAt = Date.now();
+            } else if (update.connection === "close" && !this.stopping) {
+              this.socketHealthState = "closed";
+              this.socketHealthStateAt = Date.now();
+            }
             this.log("connection_update", {
               connectorKey: this.options.connectorKey,
               connection: update.connection,

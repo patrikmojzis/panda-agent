@@ -1,9 +1,12 @@
 import type {PoolClient} from "pg";
 
 import type {RuntimeRequestRecord} from "../../domain/threads/requests/index.js";
+import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../health/server.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
 import {buildDaemonAlreadyActiveMessage} from "./daemon-copy.js";
 import {DAEMON_HEARTBEAT_INTERVAL_MS, type DaemonServices, hashLockKey,} from "./daemon-shared.js";
+
+const DAEMON_HEALTH_STALE_AFTER_MS = DAEMON_HEARTBEAT_INTERVAL_MS * 3;
 
 export function createDaemonLifecycle(input: {
   context: DaemonContext;
@@ -11,9 +14,13 @@ export function createDaemonLifecycle(input: {
 }): DaemonServices {
   let requestUnsubscribe: (() => Promise<void>) | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
+  let healthServer: HealthServer | null = null;
   let lockClient: PoolClient | null = null;
   let drainPromise: Promise<void> | null = null;
   let pendingDrain = false;
+  let lastHeartbeatAt = 0;
+  let running = false;
+  let shuttingDown = false;
   let stopped = false;
 
   const acquireLock = async (): Promise<void> => {
@@ -48,6 +55,7 @@ export function createDaemonLifecycle(input: {
   };
 
   const heartbeat = async (): Promise<void> => {
+    lastHeartbeatAt = Date.now();
     await input.context.daemonState.heartbeat(input.context.daemonKey);
   };
 
@@ -94,10 +102,36 @@ export function createDaemonLifecycle(input: {
   return {
     run: async () => {
       stopped = false;
+      shuttingDown = false;
+      healthServer = await (async () => {
+        const binding = resolveOptionalHealthServerBinding({
+          hostEnvKey: "PANDA_CORE_HEALTH_HOST",
+          portEnvKey: "PANDA_CORE_HEALTH_PORT",
+        });
+        if (!binding) {
+          return null;
+        }
+
+        return startHealthServer({
+          ...binding,
+          getSnapshot: () => ({
+            ok: running && !shuttingDown && (Date.now() - lastHeartbeatAt) <= DAEMON_HEALTH_STALE_AFTER_MS,
+            daemonKey: input.context.daemonKey,
+            running,
+            shuttingDown,
+            lastHeartbeatAt: lastHeartbeatAt || null,
+          }),
+        });
+      })();
       await acquireLock();
       await heartbeat();
       heartbeatTimer = setInterval(() => {
-        void heartbeat();
+        void heartbeat().catch((error) => {
+          console.error("Daemon heartbeat failed", {
+            daemonKey: input.context.daemonKey,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       }, DAEMON_HEARTBEAT_INTERVAL_MS);
       requestUnsubscribe = await input.context.requests.listenPendingRequests(async () => {
         await triggerDrain();
@@ -107,6 +141,7 @@ export function createDaemonLifecycle(input: {
       await input.context.watchRunner.start();
       await input.context.relationshipHeartbeatRunner.start();
       await input.context.runtime.coordinator.recoverOrphanedRuns("Run marked failed before recovery.");
+      running = true;
       await triggerDrain();
 
       while (!stopped) {
@@ -114,7 +149,9 @@ export function createDaemonLifecycle(input: {
       }
     },
     stop: async () => {
+      shuttingDown = true;
       stopped = true;
+      running = false;
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
@@ -129,6 +166,8 @@ export function createDaemonLifecycle(input: {
       await input.context.relationshipHeartbeatRunner.stop();
       await releaseLock();
       await input.context.runtime.close();
+      await healthServer?.close().catch(() => undefined);
+      healthServer = null;
     },
   };
 }
