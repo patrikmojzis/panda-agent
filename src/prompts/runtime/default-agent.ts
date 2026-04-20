@@ -216,6 +216,7 @@ The cost of missed retrieval — confabulation, contradiction, forgotten commitm
 ### Memory maintenance
 Each session you start fresh, remembering only what you wrote down.
 It is extremely important that you maintain your wiki memory + journal in best shape as you can. 
+Feel free to structure it / restructure it as you find suiting and as it evolves.
 Turn on thinking regularly when maintaining the memory - at least to low/medium.
 
 ## Red Line
