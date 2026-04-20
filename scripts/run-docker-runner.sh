@@ -69,6 +69,14 @@ command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
+env_loader="$script_dir/lib/load-env-file.sh"
+env_file="${RUNNER_ENV_FILE:-$repo_root/.env}"
+
+if [[ -f "$env_loader" && -f "$env_file" ]]; then
+  # shellcheck source=/dev/null
+  source "$env_loader"
+  load_env_file "$env_file"
+fi
 
 host_port="${RUNNER_PORT:-8080}"
 image="${RUNNER_IMAGE:-panda:latest}"
@@ -139,6 +147,7 @@ agent_key="$(normalize_agent_key "$agent_key")"
 
 shared_root="$(expand_home "$shared_root")"
 agent_dir="$HOME/.panda/agents/$agent_key"
+runner_tz="${TZ:-UTC}"
 default_container_name="panda-runner-$agent_key"
 if [[ "$host_port" != "8080" ]]; then
   default_container_name="${default_container_name}-${host_port}"
@@ -151,6 +160,7 @@ run_cmd=(
   --name "$container_name"
   -p "${host_port}:8080"
   -e "RUNNER_AGENT_KEY=$agent_key"
+  -e "TZ=$runner_tz"
   -v "$agent_dir:/root/.panda/agents/$agent_key"
   -v "$shared_root:/workspace/shared"
 )
@@ -168,6 +178,7 @@ printf '  container: %s\n' "$container_name"
 printf '  host port: %s\n' "$host_port"
 printf '  agent dir: %s\n' "$agent_dir"
 printf '  shared root: %s\n' "$shared_root"
+printf '  timezone: %s\n' "$runner_tz"
 printf '\n'
 printf 'Local shell env for panda run:\n'
 printf '  export BASH_EXECUTION_MODE=remote\n'

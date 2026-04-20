@@ -6,6 +6,7 @@ ARG UBUNTU_MIRROR
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SHELL=/bin/bash
+ENV TZ=UTC
 WORKDIR /app
 
 RUN set -eux; \
@@ -48,6 +49,7 @@ RUN set -eux; \
     ripgrep \
     sqlite3 \
     tree \
+    tzdata \
     unzip \
     wget \
     whois \

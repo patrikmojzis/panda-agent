@@ -26,6 +26,7 @@ services:
       DATABASE_URL: postgres://panda_app:app_pw@db:5432/panda
       BASH_EXECUTION_MODE: remote
       RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
+      TZ: ${TZ:-UTC}
     volumes:
       - ${HOME}/.panda:/root/.panda
       - ${SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
@@ -72,6 +73,7 @@ services:
     environment:
       RUNNER_AGENT_KEY: panda
       RUNNER_PORT: 8080
+      TZ: ${TZ:-UTC}
     volumes:
       - ${HOME}/.panda/agents/panda:/root/.panda/agents/panda
       - ${SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
@@ -91,6 +93,7 @@ services:
     environment:
       RUNNER_AGENT_KEY: ops
       RUNNER_PORT: 8080
+      TZ: ${TZ:-UTC}
     volumes:
       - ${HOME}/.panda/agents/ops:/root/.panda/agents/ops
       - ${SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared

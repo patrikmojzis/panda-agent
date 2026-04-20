@@ -16,6 +16,7 @@ services:
       RUNNER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
       BROWSER_RUNNER_URL: http://panda-browser-runner:8080
       BROWSER_RUNNER_SHARED_SECRET: ${BROWSER_RUNNER_SHARED_SECRET}
+      TZ: ${TZ:-UTC}
     volumes:
       - ${HOME}/.panda:/root/.panda
       - ${SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
@@ -48,6 +49,7 @@ services:
       BROWSER_RUNNER_PORT: 8080
       BROWSER_RUNNER_SHARED_SECRET: ${BROWSER_RUNNER_SHARED_SECRET}
       BROWSER_RUNNER_DATA_DIR: /home/pwuser/.panda/browser-runner
+      TZ: ${TZ:-UTC}
     volumes:
       - ${BROWSER_RUNNER_ROOT:-${HOME}/.panda-browser-runner}:/home/pwuser/.panda/browser-runner
     networks:
@@ -71,6 +73,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       PANDA_TELEGRAM_HEALTH_PORT: ${PANDA_TELEGRAM_HEALTH_PORT:-8091}
+      TZ: ${TZ:-UTC}
     volumes:
       - ${HOME}/.panda:/root/.panda
       - /etc/ssl/certs/panda-postgres-ca.crt:/etc/ssl/certs/panda-postgres-ca.crt:ro

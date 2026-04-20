@@ -248,6 +248,7 @@ EOF
     environment:
       RUNNER_AGENT_KEY: $agent_key
       RUNNER_PORT: 8080
+      TZ: \${TZ:-UTC}
     volumes:
       - \${HOME}/.panda/agents/$agent_key:/root/.panda/agents/$agent_key
       - \${SHARED_ROOT:-\${HOME}/.panda/shared}:/workspace/shared
