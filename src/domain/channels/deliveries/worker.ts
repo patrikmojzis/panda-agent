@@ -1,22 +1,26 @@
 import type {ChannelOutboundAdapter} from "../outbound.js";
 import type {OutboundRequest} from "../types.js";
 import type {
-  CompleteDeliveryInput,
-  DeliveryNotification,
-  DeliveryWorkerLookup,
-  FailDeliveryInput,
-  OutboundDeliveryRecord
+    CompleteDeliveryInput,
+    DeliveryNotification,
+    DeliveryWorkerLookup,
+    FailDeliveryInput,
+    OutboundDeliveryRecord
 } from "./types.js";
 
 type ChannelOutboundDeliveryWorkerStore = {
   failSendingDeliveries(lookup: DeliveryWorkerLookup, error: string): Promise<number>;
-  listenPendingDeliveries(
+  listenPendingDeliveries?(
     listener: (notification: DeliveryNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>>;
   claimNextPendingDelivery(lookup: DeliveryWorkerLookup): Promise<OutboundDeliveryRecord | null>;
   markDeliverySent(input: CompleteDeliveryInput): Promise<OutboundDeliveryRecord>;
   markDeliveryFailed(input: FailDeliveryInput): Promise<OutboundDeliveryRecord>;
 };
+
+export interface ChannelOutboundDeliveryWorkerStartOptions {
+  subscribeToNotifications?: boolean;
+}
 
 export interface ChannelOutboundDeliveryWorkerOptions {
   store: ChannelOutboundDeliveryWorkerStore;
@@ -65,18 +69,24 @@ export class ChannelOutboundDeliveryWorker {
     this.onError = options.onError;
   }
 
-  async start(): Promise<void> {
+  async start(options: ChannelOutboundDeliveryWorkerStartOptions = {}): Promise<void> {
     this.stopped = false;
     // Callers must already hold connector ownership before starting the worker.
     // start() immediately recovers stale `sending` rows and may drain pending work.
     await this.store.failSendingDeliveries(this.lookup, "Delivery worker stopped before completion.");
-    this.unsubscribe = await this.store.listenPendingDeliveries(async (notification) => {
-      if (!isMatchingNotification(this.lookup, notification)) {
-        return;
+    if (options.subscribeToNotifications ?? true) {
+      if (!this.store.listenPendingDeliveries) {
+        throw new Error("Outbound delivery worker store does not support pending-delivery subscriptions.");
       }
 
-      await this.triggerDrain();
-    });
+      this.unsubscribe = await this.store.listenPendingDeliveries(async (notification) => {
+        if (!isMatchingNotification(this.lookup, notification)) {
+          return;
+        }
+
+        await this.triggerDrain();
+      });
+    }
     await this.triggerDrain();
   }
 

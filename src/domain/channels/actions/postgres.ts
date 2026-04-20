@@ -38,7 +38,7 @@ function normalizeLookup(lookup: ActionWorkerLookup): ActionWorkerLookup {
   };
 }
 
-function parseNotification(payload: string): ActionNotification | null {
+export function parseActionNotification(payload: string): ActionNotification | null {
   try {
     const parsed = JSON.parse(payload) as Partial<ActionNotification>;
     if (!parsed || typeof parsed.channel !== "string" || typeof parsed.connectorKey !== "string") {
@@ -290,7 +290,7 @@ export class PostgresChannelActionStore {
         return;
       }
 
-      const parsed = parseNotification(message.payload);
+      const parsed = parseActionNotification(message.payload);
       if (!parsed) {
         return;
       }

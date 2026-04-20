@@ -1,5 +1,3 @@
-import {createHash} from "node:crypto";
-
 import {AbortController} from "abort-controller";
 import {Bot, type Context} from "grammy";
 import type {Pool} from "pg";
@@ -7,6 +5,11 @@ import type {Pool} from "pg";
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../app/health/server.js";
 import {ChannelActionWorker, type TelegramReactionActionPayload} from "../../../domain/channels/actions/index.js";
 import {ChannelCursorRepo} from "../../../domain/channels/cursors/repo.js";
+import {
+  acquireManagedConnectorLease,
+  type ManagedConnectorLease,
+  PostgresConnectorLeaseRepo
+} from "../../../domain/connector-leases/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
 import {
   ChannelOutboundDeliveryWorker,
@@ -29,6 +32,10 @@ import {createTelegramOutboundAdapter} from "./outbound.js";
 import {parseTelegramConversationId} from "./conversation-id.js";
 import {createTelegramTypingAdapter} from "./typing.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
+import {
+  type PostgresNotificationListenerHandle,
+  startPostgresNotificationListener,
+} from "../postgres-notification-listener.js";
 
 type TelegramContext = Context;
 const UPDATE_RETRY_DELAY_MS = 1_000;
@@ -39,10 +46,6 @@ export interface TelegramServiceOptions {
   token: string;
   dataDir: string;
   dbUrl?: string;
-}
-
-interface ConnectorLock {
-  release(): Promise<void>;
 }
 
 interface TelegramReactionUpdateUser {
@@ -79,17 +82,13 @@ interface TelegramWorkerStores {
   channelCursors: ChannelCursorRepo;
   outboundDeliveries: PostgresOutboundDeliveryStore;
   channelActions: PostgresChannelActionStore;
+  connectorLeases: PostgresConnectorLeaseRepo;
   requests: RuntimeRequestRepo;
   mediaStore: FileSystemMediaStore;
 }
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
-}
-
-function hashConnectorLockKey(source: string, connectorKey: string): readonly [number, number] {
-  const digest = createHash("sha256").update(`${source}:${connectorKey}`).digest();
-  return [digest.readInt32BE(0), digest.readInt32BE(4)] as const;
 }
 
 function buildTelegramPoolConfig(connectorKey: string): {
@@ -144,7 +143,8 @@ export class TelegramService {
   private botId: string | null = null;
   private connectorKey: string | null = null;
   private botUsername: string | null = null;
-  private lock: ConnectorLock | null = null;
+  private lease: ManagedConnectorLease | null = null;
+  private notificationListener: PostgresNotificationListenerHandle | null = null;
   private pollAbortController: AbortController | null = null;
   private outboundWorker: ChannelOutboundDeliveryWorker | null = null;
   private actionWorker: ChannelActionWorker | null = null;
@@ -155,6 +155,7 @@ export class TelegramService {
   private healthListenersActive = false;
   private lastPollActivityAt = 0;
   private stopping = false;
+  private stopPromise: Promise<void> | null = null;
 
   constructor(options: TelegramServiceOptions) {
     this.token = options.token;
@@ -242,6 +243,9 @@ export class TelegramService {
         const channelActions = new PostgresChannelActionStore({
           pool,
         });
+        const connectorLeases = new PostgresConnectorLeaseRepo({
+          pool,
+        });
         const requests = new RuntimeRequestRepo({
           pool,
         });
@@ -250,6 +254,7 @@ export class TelegramService {
             channelCursors,
             outboundDeliveries,
             channelActions,
+            connectorLeases,
             requests,
           ]);
           this.poolObserver = poolObserver;
@@ -265,6 +270,7 @@ export class TelegramService {
             channelCursors,
             outboundDeliveries,
             channelActions,
+            connectorLeases,
             requests,
             mediaStore: new FileSystemMediaStore({
               rootDir: this.options.dataDir,
@@ -346,6 +352,66 @@ export class TelegramService {
     return this.actionWorker;
   }
 
+  private async startWorkerNotificationListener(
+    stores: TelegramWorkerStores,
+    connectorKey: string,
+  ): Promise<PostgresNotificationListenerHandle> {
+    const outboundWorker = this.ensureOutboundWorker(stores, connectorKey);
+    const actionWorker = this.ensureActionWorker(stores, connectorKey);
+
+    return startPostgresNotificationListener({
+      pool: stores.pool,
+      onActionNotification: async (notification) => {
+        if (notification.channel !== TELEGRAM_SOURCE || notification.connectorKey !== connectorKey) {
+          return;
+        }
+
+        await actionWorker.triggerDrain();
+      },
+      onDeliveryNotification: async (notification) => {
+        if (notification.channel !== TELEGRAM_SOURCE || notification.connectorKey !== connectorKey) {
+          return;
+        }
+
+        await outboundWorker.triggerDrain();
+      },
+      onError: async (error) => {
+        this.log("worker_notification_listener_failed", {
+          connectorKey,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        this.healthListenersActive = false;
+        await this.stop();
+      },
+    });
+  }
+
+  private async acquireConnectorLease(
+    connectorKey: string,
+    stores: TelegramWorkerStores,
+  ): Promise<ManagedConnectorLease> {
+    return acquireManagedConnectorLease({
+      repo: stores.connectorLeases,
+      source: TELEGRAM_SOURCE,
+      connectorKey,
+      alreadyHeldMessage: `Telegram connector ${connectorKey} is already running.`,
+      onError: async (error) => {
+        this.log("connector_lease_renew_failed", {
+          connectorKey,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      },
+      onLeaseLost: async (error) => {
+        this.log("connector_lease_lost", {
+          connectorKey,
+          message: error.message,
+        });
+        this.healthLockHeld = false;
+        await this.stop();
+      },
+    });
+  }
+
   private async ensureInitialized(): Promise<{
     stores: TelegramWorkerStores;
     connectorKey: string;
@@ -375,6 +441,7 @@ export class TelegramService {
 
   async run(): Promise<void> {
     this.stopping = false;
+    this.stopPromise = null;
 
     try {
       const {stores, connectorKey, botUsername} = await this.ensureInitialized();
@@ -405,10 +472,15 @@ export class TelegramService {
         });
       })();
       this.healthInitialized = true;
-      this.lock = await this.acquireConnectorLock(connectorKey, stores.pool);
+      this.lease = await this.acquireConnectorLease(connectorKey, stores);
       this.healthLockHeld = true;
-      await this.ensureOutboundWorker(stores, connectorKey).start();
-      await this.ensureActionWorker(stores, connectorKey).start();
+      await this.ensureOutboundWorker(stores, connectorKey).start({
+        subscribeToNotifications: false,
+      });
+      await this.ensureActionWorker(stores, connectorKey).start({
+        subscribeToNotifications: false,
+      });
+      this.notificationListener = await this.startWorkerNotificationListener(stores, connectorKey);
       this.healthListenersActive = true;
       await this.bot.api.setMyCommands([
         {command: "start", description: "Pair this Telegram account with Panda"},
@@ -494,89 +566,67 @@ export class TelegramService {
   }
 
   async stop(): Promise<void> {
+    if (this.stopPromise) {
+      return this.stopPromise;
+    }
+
     this.stopping = true;
     this.healthListenersActive = false;
     this.healthLockHeld = false;
     this.healthInitialized = false;
     this.pollAbortController?.abort();
     this.pollAbortController = null;
+    this.stopPromise = (async () => {
+      const notificationListener = this.notificationListener;
+      this.notificationListener = null;
+      if (notificationListener) {
+        await notificationListener.close();
+      }
 
-    if (this.actionWorker) {
-      await this.actionWorker.stop();
-      this.actionWorker = null;
-    }
+      if (this.actionWorker) {
+        await this.actionWorker.stop();
+        this.actionWorker = null;
+      }
 
-    if (this.outboundWorker) {
-      await this.outboundWorker.stop();
-      this.outboundWorker = null;
-    }
+      if (this.outboundWorker) {
+        await this.outboundWorker.stop();
+        this.outboundWorker = null;
+      }
 
-    if (this.lock) {
-      await this.lock.release();
-      this.lock = null;
-    }
+      if (this.lease) {
+        await this.lease.release();
+        this.lease = null;
+      }
 
-    const stores = this.stores;
-    const storesPromise = this.storesPromise;
-    const poolObserver = this.poolObserver;
-    const healthServer = this.healthServer;
-    this.stores = null;
-    this.storesPromise = null;
-    this.poolObserver = null;
-    this.healthServer = null;
-    poolObserver?.stop();
+      const stores = this.stores;
+      const storesPromise = this.storesPromise;
+      const poolObserver = this.poolObserver;
+      const healthServer = this.healthServer;
+      this.stores = null;
+      this.storesPromise = null;
+      this.poolObserver = null;
+      this.healthServer = null;
+      poolObserver?.stop();
 
-    if (stores) {
-      await stores.pool.end();
+      if (stores) {
+        await stores.pool.end();
+        await healthServer?.close().catch(() => undefined);
+        return;
+      }
+
+      if (storesPromise) {
+        try {
+          const resolvedStores = await storesPromise;
+          await resolvedStores.pool.end();
+        } catch {
+          // Ignore bootstrap failures during shutdown.
+        }
+      }
+
       await healthServer?.close().catch(() => undefined);
-      return;
-    }
+    })();
 
-    if (storesPromise) {
-      try {
-        const resolvedStores = await storesPromise;
-        await resolvedStores.pool.end();
-      } catch {
-        // Ignore bootstrap failures during shutdown.
-      }
-    }
-
-    await healthServer?.close().catch(() => undefined);
-  }
-
-  private async acquireConnectorLock(connectorKey: string, pool: Pool): Promise<ConnectorLock> {
-    const client = await pool.connect();
-    const [keyA, keyB] = hashConnectorLockKey(TELEGRAM_SOURCE, connectorKey);
-
-    try {
-      const result = await client.query(
-        "SELECT pg_try_advisory_lock($1, $2) AS acquired",
-        [keyA, keyB],
-      );
-      const acquired = Boolean((result.rows[0] as Record<string, unknown> | undefined)?.acquired);
-      if (!acquired) {
-        throw new Error(`Telegram connector ${connectorKey} is already running.`);
-      }
-
-      let released = false;
-      return {
-        release: async () => {
-          if (released) {
-            return;
-          }
-
-          released = true;
-          try {
-            await client.query("SELECT pg_advisory_unlock($1, $2)", [keyA, keyB]);
-          } finally {
-            client.release();
-          }
-        },
-      };
-    } catch (error) {
-      client.release();
-      throw error;
-    }
+    return this.stopPromise;
   }
 
   private async readNextUpdateOffset(stores: TelegramWorkerStores, connectorKey: string): Promise<number | undefined> {

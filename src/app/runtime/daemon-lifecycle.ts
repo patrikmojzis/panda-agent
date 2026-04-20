@@ -1,10 +1,9 @@
-import type {PoolClient} from "pg";
-
 import type {RuntimeRequestRecord} from "../../domain/threads/requests/index.js";
+import {acquireManagedConnectorLease, type ManagedConnectorLease} from "../../domain/connector-leases/index.js";
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../health/server.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
 import {buildDaemonAlreadyActiveMessage} from "./daemon-copy.js";
-import {DAEMON_HEARTBEAT_INTERVAL_MS, type DaemonServices, hashLockKey,} from "./daemon-shared.js";
+import {DAEMON_HEARTBEAT_INTERVAL_MS, type DaemonServices} from "./daemon-shared.js";
 
 const DAEMON_HEALTH_STALE_AFTER_MS = DAEMON_HEARTBEAT_INTERVAL_MS * 3;
 
@@ -15,43 +14,75 @@ export function createDaemonLifecycle(input: {
   let requestUnsubscribe: (() => Promise<void>) | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
   let healthServer: HealthServer | null = null;
-  let lockClient: PoolClient | null = null;
+  let lease: ManagedConnectorLease | null = null;
   let drainPromise: Promise<void> | null = null;
   let pendingDrain = false;
   let lastHeartbeatAt = 0;
   let running = false;
   let shuttingDown = false;
   let stopped = false;
+  let stopPromise: Promise<void> | null = null;
 
-  const acquireLock = async (): Promise<void> => {
-    const client = await input.context.runtime.pool.connect();
-    const [keyA, keyB] = hashLockKey(`panda-daemon:${input.context.daemonKey}`);
-    const result = await client.query(
-      "SELECT pg_try_advisory_lock($1, $2) AS acquired",
-      [keyA, keyB],
-    );
-    const acquired = Boolean((result.rows[0] as Record<string, unknown> | undefined)?.acquired);
-    if (!acquired) {
-      client.release();
-      throw new Error(buildDaemonAlreadyActiveMessage(input.context.daemonKey));
-    }
-
-    lockClient = client;
-  };
-
-  const releaseLock = async (): Promise<void> => {
-    if (!lockClient) {
+  const releaseLease = async (): Promise<void> => {
+    if (!lease) {
       return;
     }
 
-    const client = lockClient;
-    lockClient = null;
-    const [keyA, keyB] = hashLockKey(`panda-daemon:${input.context.daemonKey}`);
-    try {
-      await client.query("SELECT pg_advisory_unlock($1, $2)", [keyA, keyB]);
-    } finally {
-      client.release();
+    const handle = lease;
+    lease = null;
+    await handle.release();
+  };
+
+  const stop = async (): Promise<void> => {
+    if (stopPromise) {
+      return stopPromise;
     }
+
+    shuttingDown = true;
+    stopped = true;
+    running = false;
+    stopPromise = (async () => {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+      if (requestUnsubscribe) {
+        await requestUnsubscribe();
+        requestUnsubscribe = null;
+      }
+      await input.context.a2aOutboundWorker.stop();
+      await input.context.scheduledTaskRunner.stop();
+      await input.context.watchRunner.stop();
+      await input.context.relationshipHeartbeatRunner.stop();
+      await releaseLease();
+      await input.context.runtime.close();
+      await healthServer?.close().catch(() => undefined);
+      healthServer = null;
+    })();
+
+    return stopPromise;
+  };
+
+  const acquireLease = async (): Promise<void> => {
+    lease = await acquireManagedConnectorLease({
+      repo: input.context.connectorLeases,
+      source: "daemon",
+      connectorKey: input.context.daemonKey,
+      alreadyHeldMessage: buildDaemonAlreadyActiveMessage(input.context.daemonKey),
+      onError: async (error) => {
+        console.error("Daemon lease renew failed", {
+          daemonKey: input.context.daemonKey,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      onLeaseLost: async (error) => {
+        console.error("Daemon lease lost", {
+          daemonKey: input.context.daemonKey,
+          error: error.message,
+        });
+        await stop();
+      },
+    });
   };
 
   const heartbeat = async (): Promise<void> => {
@@ -103,6 +134,7 @@ export function createDaemonLifecycle(input: {
     run: async () => {
       stopped = false;
       shuttingDown = false;
+      stopPromise = null;
       healthServer = await (async () => {
         const binding = resolveOptionalHealthServerBinding({
           hostEnvKey: "PANDA_CORE_HEALTH_HOST",
@@ -123,7 +155,7 @@ export function createDaemonLifecycle(input: {
           }),
         });
       })();
-      await acquireLock();
+      await acquireLease();
       await heartbeat();
       heartbeatTimer = setInterval(() => {
         void heartbeat().catch((error) => {
@@ -148,26 +180,6 @@ export function createDaemonLifecycle(input: {
         await new Promise((resolve) => setTimeout(resolve, DAEMON_HEARTBEAT_INTERVAL_MS));
       }
     },
-    stop: async () => {
-      shuttingDown = true;
-      stopped = true;
-      running = false;
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-      }
-      if (requestUnsubscribe) {
-        await requestUnsubscribe();
-        requestUnsubscribe = null;
-      }
-      await input.context.a2aOutboundWorker.stop();
-      await input.context.scheduledTaskRunner.stop();
-      await input.context.watchRunner.stop();
-      await input.context.relationshipHeartbeatRunner.stop();
-      await releaseLock();
-      await input.context.runtime.close();
-      await healthServer?.close().catch(() => undefined);
-      healthServer = null;
-    },
+    stop,
   };
 }

@@ -2,6 +2,7 @@ import {A2ASessionBindingRepo} from "../../domain/a2a/index.js";
 import {ChannelTypingDispatcher, FileSystemMediaStore} from "../../domain/channels/index.js";
 import {PostgresChannelActionStore} from "../../domain/channels/actions/index.js";
 import {ChannelOutboundDeliveryWorker, PostgresOutboundDeliveryStore} from "../../domain/channels/deliveries/index.js";
+import {PostgresConnectorLeaseRepo} from "../../domain/connector-leases/index.js";
 import {HeartbeatRunner} from "../../domain/scheduling/heartbeats/runner.js";
 import {ScheduledTaskRunner} from "../../domain/scheduling/tasks/index.js";
 import {ConversationRepo, SessionRouteRepo} from "../../domain/sessions/index.js";
@@ -34,6 +35,7 @@ export interface DaemonContext {
   sessionRoutes: SessionRouteRepo;
   outboundDeliveries: PostgresOutboundDeliveryStore;
   channelActions: PostgresChannelActionStore;
+  connectorLeases: PostgresConnectorLeaseRepo;
   requests: RuntimeRequestRepo;
   daemonState: DaemonStateRepo;
   scheduledTaskRunner: ScheduledTaskRunner;
@@ -52,6 +54,7 @@ export async function bootstrapDaemonContext(
   let sessionRoutes!: SessionRouteRepo;
   let outboundDeliveries!: PostgresOutboundDeliveryStore;
   let channelActions!: PostgresChannelActionStore;
+  let connectorLeases!: PostgresConnectorLeaseRepo;
   let a2aBindings!: A2ASessionBindingRepo;
   let a2aMessagingService!: A2AMessagingService;
 
@@ -150,6 +153,10 @@ export async function bootstrapDaemonContext(
       pool: runtime.pool,
     });
 
+    connectorLeases = new PostgresConnectorLeaseRepo({
+      pool: runtime.pool,
+    });
+
     const requests = new RuntimeRequestRepo({
       pool: runtime.pool,
     });
@@ -163,6 +170,7 @@ export async function bootstrapDaemonContext(
       outboundDeliveries,
       a2aBindings,
       channelActions,
+      connectorLeases,
       requests,
       daemonState,
     ]);
@@ -233,6 +241,7 @@ export async function bootstrapDaemonContext(
       sessionRoutes,
       outboundDeliveries,
       channelActions,
+      connectorLeases,
       requests,
       daemonState,
       scheduledTaskRunner,

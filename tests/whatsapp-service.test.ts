@@ -105,9 +105,10 @@ describe("WhatsAppService", () => {
     whatsappServiceMocks.makeWASocket.mockClear();
   });
 
-  it("starts workers only after acquiring the connector lock", async () => {
+  it("starts workers only after acquiring the connector lease", async () => {
     const stores = createStores();
     const release = vi.fn(async () => {});
+    const closeListener = vi.fn(async () => {});
     const order: string[] = [];
     const service = new WhatsAppService({
       connectorKey: "main",
@@ -121,8 +122,8 @@ describe("WhatsAppService", () => {
       accountId: "acct-1",
     });
     vi.spyOn(service as never, "ensureStores").mockResolvedValue(stores);
-    vi.spyOn(service as never, "acquireConnectorLock").mockImplementation(async () => {
-      order.push("lock");
+    vi.spyOn(service as never, "acquireConnectorLease").mockImplementation(async () => {
+      order.push("lease");
       return {release};
     });
     vi.spyOn(service as never, "ensureOutboundWorker").mockReturnValue({
@@ -137,6 +138,10 @@ describe("WhatsAppService", () => {
       }),
       stop: vi.fn(async () => {}),
     });
+    vi.spyOn(service as never, "startWorkerNotificationListener").mockImplementation(async () => {
+      order.push("listener");
+      return {close: closeListener};
+    });
     vi.spyOn(service as never, "runSocketCycle").mockImplementation(async () => {
       order.push("cycle");
       return {reconnect: false};
@@ -144,12 +149,13 @@ describe("WhatsAppService", () => {
 
     await expect(service.run()).resolves.toBeUndefined();
 
-    expect(order).toEqual(["lock", "outbound", "action", "cycle"]);
+    expect(order).toEqual(["lease", "outbound", "action", "listener", "cycle"]);
     expect(release).toHaveBeenCalledTimes(1);
+    expect(closeListener).toHaveBeenCalledTimes(1);
     expect(stores.pool.end).toHaveBeenCalledTimes(1);
   });
 
-  it("does not start workers when lock acquisition fails", async () => {
+  it("does not start workers when lease acquisition fails", async () => {
     const stores = createStores();
     const service = new WhatsAppService({
       connectorKey: "main",
@@ -162,7 +168,7 @@ describe("WhatsAppService", () => {
       accountId: "acct-1",
     });
     vi.spyOn(service as never, "ensureStores").mockResolvedValue(stores);
-    vi.spyOn(service as never, "acquireConnectorLock").mockRejectedValue(new Error("WhatsApp connector main is already running."));
+    vi.spyOn(service as never, "acquireConnectorLease").mockRejectedValue(new Error("WhatsApp connector main is already running."));
     const ensureOutboundWorker = vi.spyOn(service as never, "ensureOutboundWorker");
     const ensureActionWorker = vi.spyOn(service as never, "ensureActionWorker");
 
@@ -172,7 +178,7 @@ describe("WhatsAppService", () => {
     expect(ensureActionWorker).not.toHaveBeenCalled();
   });
 
-  it("releases the connector lock when worker startup fails", async () => {
+  it("releases the connector lease when worker startup fails", async () => {
     const stores = createStores();
     const release = vi.fn(async () => {});
     const service = new WhatsAppService({
@@ -187,7 +193,7 @@ describe("WhatsAppService", () => {
       accountId: "acct-1",
     });
     vi.spyOn(service as never, "ensureStores").mockResolvedValue(stores);
-    vi.spyOn(service as never, "acquireConnectorLock").mockResolvedValue({release});
+    vi.spyOn(service as never, "acquireConnectorLease").mockResolvedValue({release});
     vi.spyOn(service as never, "ensureOutboundWorker").mockReturnValue({
       start: vi.fn(async () => {
         throw new Error("worker bootstrap failed");

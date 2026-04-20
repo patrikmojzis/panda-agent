@@ -1,5 +1,3 @@
-import {createHash} from "node:crypto";
-
 import type {Pool} from "pg";
 import {
   addTransactionCapability,
@@ -22,6 +20,11 @@ import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/m
 
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../app/health/server.js";
 import {ChannelActionWorker} from "../../../domain/channels/actions/index.js";
+import {
+  acquireManagedConnectorLease,
+  type ManagedConnectorLease,
+  PostgresConnectorLeaseRepo
+} from "../../../domain/connector-leases/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
 import {
   createPostgresPool,
@@ -44,6 +47,10 @@ import {PostgresWhatsAppAuthStore} from "./auth-store.js";
 import {extractWhatsAppMessageText, extractWhatsAppQuotedMessageId} from "./helpers.js";
 import {createWhatsAppOutboundAdapter} from "./outbound.js";
 import {createWhatsAppTypingAdapter} from "./typing.js";
+import {
+  type PostgresNotificationListenerHandle,
+  startPostgresNotificationListener,
+} from "../postgres-notification-listener.js";
 
 export interface WhatsAppServiceOptions {
   connectorKey: string;
@@ -81,15 +88,12 @@ const RECONNECT_DELAY_MS = 1_000;
 const WHATSAPP_POOL_MAX_FALLBACK = 5;
 const WHATSAPP_HEALTH_RECONNECT_GRACE_MS = 30_000;
 
-interface ConnectorLock {
-  release(): Promise<void>;
-}
-
 interface WhatsAppWorkerStores {
   pool: Pool;
   authStore: PostgresWhatsAppAuthStore;
   outboundDeliveries: PostgresOutboundDeliveryStore;
   channelActions: PostgresChannelActionStore;
+  connectorLeases: PostgresConnectorLeaseRepo;
   requests: RuntimeRequestRepo;
   mediaStore: FileSystemMediaStore;
 }
@@ -123,11 +127,6 @@ function toWhoamiResult(connectorKey: string, creds: AuthenticationState["creds"
     phoneNumber: creds.me?.phoneNumber?.trim() || undefined,
     name: creds.me?.name?.trim() || creds.me?.notify?.trim() || undefined,
   };
-}
-
-function hashConnectorLockKey(source: string, connectorKey: string): readonly [number, number] {
-  const digest = createHash("sha256").update(`${source}:${connectorKey}`).digest();
-  return [digest.readInt32BE(0), digest.readInt32BE(4)] as const;
 }
 
 function buildWhatsAppPoolConfig(connectorKey: string): {
@@ -241,7 +240,8 @@ export class WhatsAppService {
   private storesPromise: Promise<WhatsAppWorkerStores> | null = null;
   private stores: WhatsAppWorkerStores | null = null;
   private socket: WASocket | null = null;
-  private lock: ConnectorLock | null = null;
+  private lease: ManagedConnectorLease | null = null;
+  private notificationListener: PostgresNotificationListenerHandle | null = null;
   private outboundWorker: ChannelOutboundDeliveryWorker | null = null;
   private actionWorker: ChannelActionWorker | null = null;
   private poolObserver: PostgresPoolObserver | null = null;
@@ -332,12 +332,16 @@ export class WhatsAppService {
         const channelActions = new PostgresChannelActionStore({
           pool: this.pool,
         });
+        const connectorLeases = new PostgresConnectorLeaseRepo({
+          pool: this.pool,
+        });
         const requests = new RuntimeRequestRepo({
           pool: this.pool,
         });
         await ensureSchemas([
           outboundDeliveries,
           channelActions,
+          connectorLeases,
           requests,
         ]);
 
@@ -346,6 +350,7 @@ export class WhatsAppService {
           authStore,
           outboundDeliveries,
           channelActions,
+          connectorLeases,
           requests,
           mediaStore: new FileSystemMediaStore({
             rootDir: this.options.dataDir,
@@ -452,6 +457,64 @@ export class WhatsAppService {
     });
 
     return this.actionWorker;
+  }
+
+  private async startWorkerNotificationListener(
+    stores: WhatsAppWorkerStores,
+  ): Promise<PostgresNotificationListenerHandle> {
+    const outboundWorker = this.ensureOutboundWorker(stores);
+    const actionWorker = this.ensureActionWorker(stores);
+
+    return startPostgresNotificationListener({
+      pool: stores.pool,
+      onActionNotification: async (notification) => {
+        if (notification.channel !== WHATSAPP_SOURCE || notification.connectorKey !== this.options.connectorKey) {
+          return;
+        }
+
+        await actionWorker.triggerDrain();
+      },
+      onDeliveryNotification: async (notification) => {
+        if (notification.channel !== WHATSAPP_SOURCE || notification.connectorKey !== this.options.connectorKey) {
+          return;
+        }
+
+        await outboundWorker.triggerDrain();
+      },
+      onError: async (error) => {
+        this.log("worker_notification_listener_failed", {
+          connectorKey: this.options.connectorKey,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        this.healthListenersActive = false;
+        await this.stop();
+      },
+    });
+  }
+
+  private async acquireConnectorLease(
+    stores: WhatsAppWorkerStores,
+  ): Promise<ManagedConnectorLease> {
+    return acquireManagedConnectorLease({
+      repo: stores.connectorLeases,
+      source: WHATSAPP_SOURCE,
+      connectorKey: this.options.connectorKey,
+      alreadyHeldMessage: `WhatsApp connector ${this.options.connectorKey} is already running.`,
+      onError: async (error) => {
+        this.log("connector_lease_renew_failed", {
+          connectorKey: this.options.connectorKey,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      },
+      onLeaseLost: async (error) => {
+        this.log("connector_lease_lost", {
+          connectorKey: this.options.connectorKey,
+          message: error.message,
+        });
+        this.healthLockHeld = false;
+        await this.stop();
+      },
+    });
   }
 
   async whoami(): Promise<WhatsAppWhoamiResult> {
@@ -566,10 +629,15 @@ export class WhatsAppService {
         });
       })();
       this.healthInitialized = true;
-      this.lock = await this.acquireConnectorLock(this.options.connectorKey);
+      this.lease = await this.acquireConnectorLease(stores);
       this.healthLockHeld = true;
-      await this.ensureOutboundWorker(stores).start();
-      await this.ensureActionWorker(stores).start();
+      await this.ensureOutboundWorker(stores).start({
+        subscribeToNotifications: false,
+      });
+      await this.ensureActionWorker(stores).start({
+        subscribeToNotifications: false,
+      });
+      this.notificationListener = await this.startWorkerNotificationListener(stores);
       this.healthListenersActive = true;
       this.log("run_started", {
         connectorKey: this.options.connectorKey,
@@ -615,6 +683,12 @@ export class WhatsAppService {
       this.socketWaiterResolve?.();
       this.socketWaiterResolve = null;
 
+      const notificationListener = this.notificationListener;
+      this.notificationListener = null;
+      if (notificationListener) {
+        await notificationListener.close();
+      }
+
       if (this.actionWorker) {
         await this.actionWorker.stop();
         this.actionWorker = null;
@@ -626,9 +700,9 @@ export class WhatsAppService {
 
       await this.stopSocket();
 
-      if (this.lock) {
-        await this.lock.release();
-        this.lock = null;
+      if (this.lease) {
+        await this.lease.release();
+        this.lease = null;
       }
 
       if (this.pool) {
@@ -646,45 +720,6 @@ export class WhatsAppService {
     })();
 
     return this.stopPromise;
-  }
-
-  private async acquireConnectorLock(connectorKey: string): Promise<ConnectorLock> {
-    await this.ensureAuthStore();
-    const client = await this.pool?.connect();
-    if (!client) {
-      throw new Error("WhatsApp connector lock requires an initialized Postgres pool.");
-    }
-    const [keyA, keyB] = hashConnectorLockKey(WHATSAPP_SOURCE, connectorKey);
-
-    try {
-      const result = await client.query(
-        "SELECT pg_try_advisory_lock($1, $2) AS acquired",
-        [keyA, keyB],
-      );
-      const acquired = Boolean((result.rows[0] as Record<string, unknown> | undefined)?.acquired);
-      if (!acquired) {
-        throw new Error(`WhatsApp connector ${connectorKey} is already running.`);
-      }
-
-      let released = false;
-      return {
-        release: async () => {
-          if (released) {
-            return;
-          }
-
-          released = true;
-          try {
-            await client.query("SELECT pg_advisory_unlock($1, $2)", [keyA, keyB]);
-          } finally {
-            client.release();
-          }
-        },
-      };
-    } catch (error) {
-      client.release();
-      throw error;
-    }
   }
 
   private async runSocketCycle(stores: WhatsAppWorkerStores): Promise<{reconnect: boolean; reason?: string}> {

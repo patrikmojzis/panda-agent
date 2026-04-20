@@ -336,4 +336,32 @@ describe("ChannelActionWorker", () => {
       attemptCount: 1,
     });
   });
+
+  it("can start without owning the notification subscription", async () => {
+    const store = new MemoryActionStore();
+    await store.enqueueAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "typing",
+      payload: createTypingPayload("telegram", "bot-1"),
+    });
+
+    const dispatch = vi.fn(async () => {});
+    const worker = new ChannelActionWorker({
+      store,
+      lookup: {
+        channel: "telegram",
+        connectorKey: "bot-1",
+      },
+      dispatch,
+    });
+
+    await worker.start({
+      subscribeToNotifications: false,
+    });
+    await worker.stop();
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(store.listener).toBeNull();
+  });
 });

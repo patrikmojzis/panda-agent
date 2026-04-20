@@ -136,7 +136,7 @@ describe("TelegramService", () => {
     vi.restoreAllMocks();
   });
 
-  it("starts workers only after acquiring the connector lock", async () => {
+  it("starts workers only after acquiring the connector lease", async () => {
     const stores = createStores();
     const outboundWorker = {
       start: vi.fn(async () => {}),
@@ -147,6 +147,7 @@ describe("TelegramService", () => {
       stop: vi.fn(async () => {}),
     };
     const release = vi.fn(async () => {});
+    const closeListener = vi.fn(async () => {});
     const order: string[] = [];
     const service = new TelegramService({
       token: "telegram-token",
@@ -161,8 +162,8 @@ describe("TelegramService", () => {
         botUsername: "panda_bot",
       };
     });
-    vi.spyOn(service as never, "acquireConnectorLock").mockImplementation(async () => {
-      order.push("lock");
+    vi.spyOn(service as never, "acquireConnectorLease").mockImplementation(async () => {
+      order.push("lease");
       return {release};
     });
     vi.spyOn(service as never, "ensureOutboundWorker").mockReturnValue({
@@ -177,6 +178,10 @@ describe("TelegramService", () => {
         order.push("action");
       }),
     });
+    vi.spyOn(service as never, "startWorkerNotificationListener").mockImplementation(async () => {
+      order.push("listener");
+      return {close: closeListener};
+    });
 
     const bot = latestBot();
     bot.api.setMyCommands.mockImplementationOnce(async () => {
@@ -190,12 +195,13 @@ describe("TelegramService", () => {
 
     await expect(service.run()).resolves.toBeUndefined();
 
-    expect(order).toEqual(["lock", "outbound", "action", "commands", "poll"]);
+    expect(order).toEqual(["lease", "outbound", "action", "listener", "commands", "poll"]);
     expect(release).toHaveBeenCalledTimes(1);
+    expect(closeListener).toHaveBeenCalledTimes(1);
     expect(stores.pool.end).toHaveBeenCalledTimes(1);
   });
 
-  it("does not start workers when lock acquisition fails", async () => {
+  it("does not start workers when lease acquisition fails", async () => {
     const stores = createStores();
     const service = new TelegramService({
       token: "telegram-token",
@@ -207,7 +213,7 @@ describe("TelegramService", () => {
       connectorKey: "42",
       botUsername: "panda_bot",
     });
-    vi.spyOn(service as never, "acquireConnectorLock").mockRejectedValue(new Error("Telegram connector 42 is already running."));
+    vi.spyOn(service as never, "acquireConnectorLease").mockRejectedValue(new Error("Telegram connector 42 is already running."));
     const ensureOutboundWorker = vi.spyOn(service as never, "ensureOutboundWorker");
     const ensureActionWorker = vi.spyOn(service as never, "ensureActionWorker");
 
@@ -217,7 +223,7 @@ describe("TelegramService", () => {
     expect(ensureActionWorker).not.toHaveBeenCalled();
   });
 
-  it("releases the connector lock when worker startup fails", async () => {
+  it("releases the connector lease when worker startup fails", async () => {
     const stores = createStores();
     const release = vi.fn(async () => {});
     const service = new TelegramService({
@@ -233,7 +239,7 @@ describe("TelegramService", () => {
         botUsername: "panda_bot",
       };
     });
-    vi.spyOn(service as never, "acquireConnectorLock").mockResolvedValue({release});
+    vi.spyOn(service as never, "acquireConnectorLease").mockResolvedValue({release});
     vi.spyOn(service as never, "ensureOutboundWorker").mockReturnValue({
       start: vi.fn(async () => {
         throw new Error("worker bootstrap failed");

@@ -2,13 +2,17 @@ import type {ActionNotification, ActionWorkerLookup, ChannelActionRecord} from "
 
 type ChannelActionWorkerStore = {
   failSendingActions(lookup: ActionWorkerLookup, error: string): Promise<number>;
-  listenPendingActions(
+  listenPendingActions?(
     listener: (notification: ActionNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>>;
   claimNextPendingAction(lookup: ActionWorkerLookup): Promise<ChannelActionRecord | null>;
   markActionSent(id: string): Promise<ChannelActionRecord>;
   markActionFailed(id: string, error: string): Promise<ChannelActionRecord>;
 };
+
+export interface ChannelActionWorkerStartOptions {
+  subscribeToNotifications?: boolean;
+}
 
 export interface ChannelActionWorkerOptions {
   store: ChannelActionWorkerStore;
@@ -42,16 +46,22 @@ export class ChannelActionWorker {
     this.onError = options.onError;
   }
 
-  async start(): Promise<void> {
+  async start(options: ChannelActionWorkerStartOptions = {}): Promise<void> {
     this.stopped = false;
     await this.store.failSendingActions(this.lookup, "Channel action worker stopped before completion.");
-    this.unsubscribe = await this.store.listenPendingActions(async (notification) => {
-      if (!isMatchingNotification(this.lookup, notification)) {
-        return;
+    if (options.subscribeToNotifications ?? true) {
+      if (!this.store.listenPendingActions) {
+        throw new Error("Channel action worker store does not support pending-action subscriptions.");
       }
 
-      await this.triggerDrain();
-    });
+      this.unsubscribe = await this.store.listenPendingActions(async (notification) => {
+        if (!isMatchingNotification(this.lookup, notification)) {
+          return;
+        }
+
+        await this.triggerDrain();
+      });
+    }
     await this.triggerDrain();
   }
 

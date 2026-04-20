@@ -310,4 +310,41 @@ describe("ChannelOutboundDeliveryWorker", () => {
       attemptCount: 1,
     });
   });
+
+  it("can start without owning the notification subscription", async () => {
+    const store = new MemoryDeliveryStore();
+    await store.enqueueDelivery({
+      threadId: "thread-1",
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-1",
+        externalConversationId: "chat-1",
+      },
+      items: [{ type: "text", text: "hello" }],
+    });
+
+    const send = vi.fn(async (request: OutboundRequest): Promise<OutboundResult> => ({
+      ok: true,
+      channel: request.channel,
+      target: request.target,
+      sent: [{ type: "text", externalMessageId: "101" }],
+    }));
+    const worker = new ChannelOutboundDeliveryWorker({
+      store,
+      adapter: {
+        channel: "telegram",
+        send,
+      },
+      connectorKey: "bot-1",
+    });
+
+    await worker.start({
+      subscribeToNotifications: false,
+    });
+    await worker.stop();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(store.listener).toBeNull();
+  });
 });

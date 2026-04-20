@@ -1,4 +1,5 @@
 export {
+  parseActionNotification,
   PostgresChannelActionStore,
   type PostgresChannelActionStoreOptions,
 } from "./postgres.js";
