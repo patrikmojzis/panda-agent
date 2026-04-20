@@ -54,12 +54,18 @@ RUN set -eux; \
     xz-utils \
     zip; \
   mkdir -p /etc/apt/keyrings; \
+  curl -fsSL https://pgp.mongodb.com/server-8.0.asc \
+    | gpg --dearmor -o /etc/apt/keyrings/mongodb-server-8.0.gpg; \
+  echo "deb [ arch=amd64,arm64 signed-by=/etc/apt/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" \
+    > /etc/apt/sources.list.d/mongodb-org-8.0.list; \
   curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg; \
   echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
     > /etc/apt/sources.list.d/nodesource.list; \
   apt_retry apt-get update; \
-  apt_retry apt-get install -y --no-install-recommends nodejs; \
+  apt_retry apt-get install -y --no-install-recommends \
+    mongodb-mongosh \
+    nodejs; \
   corepack enable; \
   corepack prepare pnpm@10.33.0 --activate; \
   rm -rf /var/lib/apt/lists/*
