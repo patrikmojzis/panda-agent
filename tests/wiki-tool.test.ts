@@ -76,7 +76,7 @@ function getRequestBody(fetchImpl: ReturnType<typeof vi.fn>, callIndex: number):
 }
 
 describe("WikiTool", () => {
-  it("exports an object-shaped tool schema for provider compatibility", () => {
+  it("exports a provider-safe object schema and does not mention get", () => {
     const tool = new WikiTool();
 
     expect(tool.piTool.parameters).toMatchObject({
@@ -89,6 +89,21 @@ describe("WikiTool", () => {
         },
       },
     });
+    expect(JSON.stringify(tool.piTool.parameters)).not.toContain("\"get\"");
+  });
+
+  it("enforces operation-specific required fields at runtime", async () => {
+    const tool = new WikiTool();
+
+    await expect(tool.run({
+      operation: "write_section",
+      path: "agents/panda/profile",
+      content: "# missing section",
+    }, createRunContext({
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    }))).rejects.toThrow(/expected string/i);
   });
 
   it("accepts read as the canonical fetch operation", async () => {
