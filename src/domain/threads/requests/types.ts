@@ -110,6 +110,7 @@ export interface TuiInputRequestPayload extends BaseRuntimeRequestPayload {
   actorId: string;
   externalMessageId: string;
   identityHandle?: string;
+  sentAt?: number;
   text: string;
 }
 
