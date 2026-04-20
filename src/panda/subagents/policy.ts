@@ -58,7 +58,7 @@ export const DEFAULT_AGENT_SUBAGENT_ROLE_POLICIES: Record<DefaultAgentSubagentRo
     role: "memory",
     prompt: MEMORY_SUBAGENT_PROMPT,
     toolset: "memory",
-    visibleContextSections: ["datetime", "environment"],
+    visibleContextSections: ["datetime", "environment", "wiki_overview"],
     thinking: "medium",
     maySpawnSubagents: false,
   },

@@ -38,6 +38,7 @@ const EXPECTED_PERSONA_EXPORTS = [
   "WebFetchTool",
   "WebResearchTool",
   "WhisperTool",
+  "WikiTool",
   "buildBashJobPayload",
   "buildDefaultAgentLlmContexts",
   "buildDefaultAgentTools",

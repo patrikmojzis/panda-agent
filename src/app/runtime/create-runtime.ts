@@ -10,6 +10,7 @@ import type {ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads
 import type {ThreadRuntimeEvent} from "../../domain/threads/runtime/coordinator.js";
 import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
+import type {WikiBindingService} from "../../domain/wiki/index.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {CredentialResolver} from "../../domain/credentials/index.js";
 import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
@@ -43,6 +44,7 @@ export interface DefinitionResolverContext {
   identityStore: IdentityStore;
   sessionStore: SessionStore;
   store: ThreadRuntimeStore;
+  wikiBindingService: WikiBindingService | null;
   mainTools: readonly Tool[];
 }
 
@@ -89,6 +91,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     identityStore: runtime.identityStore,
     sessionStore: runtime.sessionStore,
     store: runtime.store,
+    wikiBindingService: runtime.wikiBindingService,
     mainTools: runtime.mainTools,
   };
 

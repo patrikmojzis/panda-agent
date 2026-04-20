@@ -1,0 +1,15 @@
+services:
+  wiki:
+    image: ${WIKI_IMAGE}
+    restart: unless-stopped
+    environment:
+      DB_TYPE: postgres
+      DATABASE_URL: ${WIKI_DB:-}
+      DB_HOST: ${WIKI_DB_HOST}
+      DB_PORT: ${WIKI_DB_PORT}
+      DB_USER: ${WIKI_DB_USER}
+      DB_PASS: ${WIKI_DB_PASS}
+      DB_NAME: ${WIKI_DB_NAME}
+      DB_SSL_CA: ${WIKI_DB_SSL_CA:-}
+    ports:
+      - "${WIKI_HOST_PORT}:3000"

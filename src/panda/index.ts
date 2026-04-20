@@ -98,6 +98,10 @@ export {
   type WebResearchToolOptions,
 } from "./tools/web-research-tool.js";
 export {
+  WikiTool,
+  type WikiToolOptions,
+} from "./tools/wiki-tool.js";
+export {
   filterToolsForSubagentRole,
   getDefaultAgentSubagentRolePolicy,
   DEFAULT_AGENT_SUBAGENT_ROLE_POLICIES,

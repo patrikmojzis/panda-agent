@@ -14,6 +14,7 @@ import type {BrowserToolOptions} from "../../panda/tools/browser-tool.js";
 import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js";
 import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js";
 import type {Tool} from "../../kernel/agent/tool.js";
+import type {WikiBindingService} from "../../domain/wiki/index.js";
 
 const HOUR_MS = 60 * 60 * 1_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -42,6 +43,7 @@ export interface CreateThreadDefinitionOptions {
   fallbackContext: Pick<DefaultAgentSessionContext, "cwd">;
   agentStore?: AgentStore;
   threadStore?: Pick<ThreadRuntimeStore, "listBashJobs">;
+  wikiBindings?: Pick<WikiBindingService, "getBinding">;
   bashToolOptions?: BashToolOptions;
   browserToolOptions?: BrowserToolOptions;
   tools?: readonly Tool[];
@@ -108,6 +110,7 @@ export function createThreadDefinition(
     context,
     agentStore: options.agentStore,
     threadStore: options.threadStore,
+    wikiBindings: options.wikiBindings,
     agentKey: session.agentKey,
     threadId: options.thread.id,
     sections: options.llmContextSections,

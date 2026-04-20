@@ -12,6 +12,10 @@ const generatedComposePath = path.join(
   repoRoot,
   ".generated/docker-compose.remote-bash.external-db.runners.yml",
 );
+const generatedWikiComposePath = path.join(
+  repoRoot,
+  ".generated/docker-compose.wiki.ssl.yml",
+);
 
 interface ScriptResult {
   exitCode: number;
@@ -28,6 +32,7 @@ describe.sequential("docker-stack.sh", () => {
     }
 
     await rm(generatedComposePath, {force: true});
+    await rm(generatedWikiComposePath, {force: true});
   });
 
   async function makeTempDir(prefix: string): Promise<string> {
@@ -56,6 +61,15 @@ esac
     return stubPath;
   }
 
+  async function createWikiLocalStub(logPath: string): Promise<string> {
+    const stubPath = path.join(await makeTempDir("panda-wiki-local-stub-"), "wiki-local.sh");
+    await writeFile(stubPath, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${logPath}"
+`, {mode: 0o755});
+    return stubPath;
+  }
+
   async function createEnvFile(contents: string): Promise<string> {
     const envPath = path.join(await makeTempDir("panda-stack-env-"), ".env");
     await writeFile(envPath, contents);
@@ -66,6 +80,7 @@ esac
     envFile: string;
     dockerBin: string;
     homeDir?: string;
+    wikiLocalScript?: string;
   }): Promise<ScriptResult> {
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
@@ -78,6 +93,7 @@ esac
           HOME: options.homeDir ?? process.env.HOME,
           PANDA_DOCKER_BIN: options.dockerBin,
           PANDA_STACK_ENV_FILE: options.envFile,
+          PANDA_WIKI_LOCAL_SCRIPT: options.wikiLocalScript ?? process.env.PANDA_WIKI_LOCAL_SCRIPT,
         },
       });
 
@@ -174,5 +190,59 @@ esac
     });
     expect(logsResult.exitCode).toBe(0);
     expect(await readFile(logPath, "utf8")).toContain("logs -f panda-runner-luna");
+  });
+
+  it("always includes the wiki compose file and maps wiki logs", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const homeDir = await makeTempDir("panda-home-");
+    const upResult = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+
+    expect(upResult.exitCode).toBe(0);
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents).toContain("docker-compose.wiki.yml");
+
+    const logsResult = await runScript(["logs", "wiki"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+    expect(logsResult.exitCode).toBe(0);
+    expect(await readFile(logPath, "utf8")).toContain("logs -f wiki");
+  });
+
+  it("bootstraps wiki for all declared agents when admin credentials are set", async () => {
+    const dockerLogPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const wikiLogPath = path.join(await makeTempDir("panda-wiki-log-"), "wiki.log");
+    const dockerBin = await createDockerStub(dockerLogPath);
+    const wikiLocalScript = await createWikiLocalStub(wikiLogPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw,Luna",
+      "WIKI_ADMIN_EMAIL=admin@localhost",
+      "WIKI_ADMIN_PASSWORD=secret",
+    ].join("\n"));
+
+    const homeDir = await makeTempDir("panda-home-");
+    const upResult = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir,
+      wikiLocalScript,
+    });
+
+    expect(upResult.exitCode).toBe(0);
+    expect(await readFile(wikiLogPath, "utf8")).toContain("bootstrap claw luna");
   });
 });

@@ -11,6 +11,7 @@ import {parseAgentKey, registerAgentCommands} from "../domain/agents/cli.js";
 import {registerCredentialCommands} from "../domain/credentials/cli.js";
 import {parseIdentityHandle, registerIdentityCommands} from "../domain/identity/cli.js";
 import {registerSessionCommands} from "../domain/sessions/cli.js";
+import {registerWikiCommands} from "../domain/wiki/index.js";
 import {registerTelegramCommands} from "../integrations/channels/telegram/cli.js";
 import {type ChatCliOptions, runChatCli} from "../ui/tui/chat.js";
 import {renderResumeHint} from "../ui/tui/exit-hint.js";
@@ -252,6 +253,7 @@ registerA2ACommands(program);
 registerCredentialCommands(program);
 registerIdentityCommands(program);
 registerSessionCommands(program);
+registerWikiCommands(program);
 registerTelegramCommands(program);
 registerWhatsAppCommands(program);
 

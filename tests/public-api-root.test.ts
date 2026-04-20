@@ -60,6 +60,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "WebFetchTool",
   "WebResearchTool",
   "WhisperTool",
+  "WikiTool",
   "assertProviderName",
   "buildBashJobPayload",
   "buildCanonicalModelSelector",

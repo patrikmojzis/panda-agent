@@ -8,17 +8,20 @@ Usage:
   ./scripts/docker-stack.sh up [--build]
   ./scripts/docker-stack.sh down
   ./scripts/docker-stack.sh ps
-  ./scripts/docker-stack.sh logs [core|browser|telegram|<agentKey>|<service>]
+  ./scripts/docker-stack.sh logs [core|browser|telegram|wiki|<agentKey>|<service>]
   ./scripts/docker-stack.sh restart
 
 Primary flow:
   1. Set PANDA_AGENTS=claw,luna in .env
-  2. Run ./scripts/docker-stack.sh up --build
+  2. Set WIKI_ADMIN_EMAIL and WIKI_ADMIN_PASSWORD in .env
+  3. Run ./scripts/docker-stack.sh up --build
 
 Notes:
   - One bash runner container is created per agent in PANDA_AGENTS.
   - The browser runner is shared.
   - Telegram polling is auto-enabled when TELEGRAM_BOT_TOKEN is set in .env.
+  - Wiki.js is part of the stack.
+  - Wiki bootstrap follows PANDA_AGENTS.
 EOF
 }
 
@@ -80,9 +83,12 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 env_file="${PANDA_STACK_ENV_FILE:-$repo_root/.env}"
 base_compose="$repo_root/examples/docker-compose.remote-bash.external-db.yml"
+wiki_compose="$repo_root/examples/docker-compose.wiki.yml"
 generated_dir="$repo_root/.generated"
 generated_compose="$generated_dir/docker-compose.remote-bash.external-db.runners.yml"
+generated_wiki_compose="$generated_dir/docker-compose.wiki.ssl.yml"
 docker_bin="${PANDA_DOCKER_BIN:-docker}"
+wiki_local_script="${PANDA_WIKI_LOCAL_SCRIPT:-$repo_root/scripts/wiki-local.sh}"
 wait_timeout_sec="${PANDA_STACK_WAIT_TIMEOUT_SEC:-120}"
 
 [[ -f "$env_file" ]] || die "env file not found: $env_file"
@@ -118,6 +124,48 @@ parse_agents() {
 
 parse_agents
 
+resolve_wiki_ssl_cert_file() {
+  local explicit
+  explicit="$(trim "${WIKI_DB_SSL_CERT_FILE:-}")"
+  if [[ -n "$explicit" ]]; then
+    printf '%s\n' "$explicit"
+    return 0
+  fi
+
+  if [[ -f /etc/ssl/certs/panda-postgres-ca.crt ]]; then
+    printf '/etc/ssl/certs/panda-postgres-ca.crt\n'
+    return 0
+  fi
+
+  if [[ -f "$HOME/.panda/ca.crt" ]]; then
+    printf '%s\n' "$HOME/.panda/ca.crt"
+    return 0
+  fi
+
+  printf '\n'
+}
+
+render_generated_wiki_compose() {
+  mkdir -p "$generated_dir"
+
+  if [[ -z "${WIKI_DB_SSL_CERT_FILE:-}" ]]; then
+    cat > "$generated_wiki_compose" <<'EOF'
+services: {}
+EOF
+    return 0
+  fi
+
+  cat > "$generated_wiki_compose" <<EOF
+services:
+  wiki:
+    volumes:
+      - ${WIKI_DB_SSL_CERT_FILE}:/etc/ssl/certs/panda-postgres-ca.crt:ro
+EOF
+}
+
+export WIKI_DB_SSL_CERT_FILE="${WIKI_DB_SSL_CERT_FILE:-$(resolve_wiki_ssl_cert_file)}"
+render_generated_wiki_compose
+
 agents_declared() {
   [[ -n "$(trim "${PANDA_AGENTS:-}")" ]]
 }
@@ -133,6 +181,9 @@ compose_args=(
   -f "$base_compose"
   -f "$generated_compose"
 )
+[[ -f "$wiki_compose" ]] || die "wiki compose file not found: $wiki_compose"
+compose_args+=(-f "$wiki_compose")
+compose_args+=(-f "$generated_wiki_compose")
 if (( enable_telegram_profile )); then
   compose_args+=(--profile telegram)
 fi
@@ -214,6 +265,10 @@ resolve_service_name() {
       printf 'panda-browser-runner\n'
       return
       ;;
+    wiki)
+      printf 'wiki\n'
+      return
+      ;;
     telegram|panda-telegram)
       printf 'panda-telegram\n'
       return
@@ -275,6 +330,25 @@ ensure_declared_agents() {
   done
 }
 
+bootstrap_wiki_if_configured() {
+  if [[ -z "$(trim "${WIKI_ADMIN_EMAIL:-}")" ]] || [[ -z "$(trim "${WIKI_ADMIN_PASSWORD:-}")" ]]; then
+    printf 'Wiki.js is running but not bootstrapped yet.\n'
+    printf 'Set WIKI_ADMIN_EMAIL and WIKI_ADMIN_PASSWORD in %s, then run:\n' "$env_file"
+    printf '  WIKI_ENV_FILE=%s %s bootstrap\n' "$env_file" "$wiki_local_script"
+    return
+  fi
+
+  if ! agents_declared; then
+    printf 'Wiki.js is running, but PANDA_AGENTS is empty, so agent wiki bootstrap was skipped.\n'
+    return
+  fi
+
+  (
+    cd "$repo_root"
+    WIKI_ENV_FILE="$env_file" "$wiki_local_script" bootstrap "${normalized_agents[@]}"
+  )
+}
+
 print_up_summary() {
   local agent_key
   printf 'Stack is up.\n'
@@ -287,6 +361,7 @@ print_up_summary() {
   printf '  ./scripts/docker-stack.sh ps\n'
   printf '  ./scripts/docker-stack.sh logs core\n'
   printf '  ./scripts/docker-stack.sh logs browser\n'
+  printf '  ./scripts/docker-stack.sh logs wiki\n'
   if (( enable_telegram_profile )); then
     printf '  ./scripts/docker-stack.sh logs telegram\n'
   fi
@@ -310,6 +385,7 @@ run_up() {
   fi
   wait_for_core_health
   ensure_declared_agents
+  bootstrap_wiki_if_configured
   print_up_summary
 }
 

@@ -7,13 +7,14 @@ import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ThreadDefinitionResolver} from "../../domain/threads/runtime/types.js";
 import {renderSubagentHandoff} from "../../prompts/runtime/subagents.js";
 import {
-  resolveDefaultAgentBrowserSubagentModelSelector,
-  resolveDefaultAgentMemorySubagentModelSelector,
-  resolveDefaultAgentSkillMaintainerSubagentModelSelector,
-  resolveDefaultAgentWorkspaceSubagentModelSelector,
+    resolveDefaultAgentBrowserSubagentModelSelector,
+    resolveDefaultAgentMemorySubagentModelSelector,
+    resolveDefaultAgentSkillMaintainerSubagentModelSelector,
+    resolveDefaultAgentWorkspaceSubagentModelSelector,
 } from "../defaults.js";
 import {buildDefaultAgentLlmContexts} from "../contexts/builder.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {WikiBindingService} from "../../domain/wiki/index.js";
 import type {DefaultAgentToolsets} from "../definition.js";
 import {type DefaultAgentSubagentRole, getDefaultAgentSubagentRolePolicy,} from "./policy.js";
 
@@ -37,6 +38,7 @@ export interface DefaultAgentSubagentServiceOptions {
   resolveDefinition: ThreadDefinitionResolver;
   toolsets: Pick<DefaultAgentToolsets, "workspace" | "memory" | "browser" | "skill_maintainer">;
   agentStore?: AgentStore;
+  wikiBindings?: Pick<WikiBindingService, "getBinding">;
   maxSubagentDepth?: number;
 }
 
@@ -86,6 +88,7 @@ export class DefaultAgentSubagentService {
   private readonly resolveDefinition: ThreadDefinitionResolver;
   private readonly toolsets: Pick<DefaultAgentToolsets, "workspace" | "memory" | "browser" | "skill_maintainer">;
   private readonly agentStore?: DefaultAgentSubagentServiceOptions["agentStore"];
+  private readonly wikiBindings?: DefaultAgentSubagentServiceOptions["wikiBindings"];
   private readonly maxSubagentDepth: number;
 
   constructor(options: DefaultAgentSubagentServiceOptions) {
@@ -93,6 +96,7 @@ export class DefaultAgentSubagentService {
     this.resolveDefinition = options.resolveDefinition;
     this.toolsets = options.toolsets;
     this.agentStore = options.agentStore;
+    this.wikiBindings = options.wikiBindings;
     this.maxSubagentDepth = options.maxSubagentDepth ?? 1;
   }
 
@@ -135,6 +139,7 @@ export class DefaultAgentSubagentService {
         context: childContext,
         agentStore: this.agentStore,
         threadStore,
+        wikiBindings: this.wikiBindings,
         agentKey: childContext.agentKey,
         threadId,
         sections: policy.visibleContextSections,

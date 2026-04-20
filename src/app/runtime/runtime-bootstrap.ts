@@ -13,6 +13,7 @@ import {PostgresScheduledTaskStore, type ScheduledTaskStore,} from "../../domain
 import {PostgresSessionStore, type SessionStore} from "../../domain/sessions/index.js";
 import {WatchMutationService} from "../../domain/watches/mutation-service.js";
 import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.js";
+import {PostgresWikiBindingStore, WikiBindingService} from "../../domain/wiki/index.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/index.js";
 import {
     buildThreadRuntimeNotificationChannel,
@@ -30,6 +31,7 @@ import {AgentSkillTool} from "../../panda/tools/agent-skill-tool.js";
 import {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
+import {WikiTool} from "../../panda/tools/wiki-tool.js";
 import {
     ScheduledTaskCancelTool,
     ScheduledTaskCreateTool,
@@ -72,6 +74,7 @@ export interface RuntimeBootstrapResult {
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
   watches: WatchStore;
+  wikiBindingService: WikiBindingService | null;
   mainTools: readonly Tool[];
   pool: Pool;
   close(): Promise<void>;
@@ -153,6 +156,9 @@ export async function bootstrapRuntime(
     const credentialStore = new PostgresCredentialStore({
       pool: postgresPool,
     });
+    const wikiBindingStore = new PostgresWikiBindingStore({
+      pool: postgresPool,
+    });
 
     const credentialCrypto = resolveCredentialCrypto();
     const credentialResolver = new CredentialResolver({
@@ -183,6 +189,7 @@ export async function bootstrapRuntime(
       credentialStore,
       scheduledTasks,
       watches,
+      wikiBindingStore,
     ]);
 
     await ensureReadonlySessionQuerySchema({
@@ -209,6 +216,25 @@ export async function bootstrapRuntime(
     const agentSkillTool = new AgentSkillTool({
       store: agentStore,
     });
+    const wikiEnabled = Boolean(
+      trimNonEmptyString(process.env.WIKI_DB)
+      || trimNonEmptyString(process.env.WIKI_URL),
+    );
+    const wikiBindingService = credentialCrypto
+      ? new WikiBindingService({
+        store: wikiBindingStore,
+        crypto: credentialCrypto,
+      })
+      : null;
+    if (wikiEnabled && !wikiBindingService) {
+      throw new Error("Wiki bindings require CREDENTIALS_MASTER_KEY when WIKI_URL or WIKI_DB is set.");
+    }
+    const wikiTool = wikiEnabled && wikiBindingService
+      ? new WikiTool({
+        env: process.env,
+        bindings: wikiBindingService,
+      })
+      : null;
     const subagentToolsets = buildDefaultAgentToolsetsFromRegistry(
       toolRegistry,
       [],
@@ -226,6 +252,7 @@ export async function bootstrapRuntime(
         identityStore,
         sessionStore,
         store,
+        wikiBindingService,
         mainTools,
       }),
       toolsets: {
@@ -235,6 +262,7 @@ export async function bootstrapRuntime(
         skill_maintainer: subagentToolsets.skill_maintainer,
       },
       agentStore,
+      wikiBindings: wikiBindingService ?? undefined,
       maxSubagentDepth,
     });
 
@@ -255,6 +283,7 @@ export async function bootstrapRuntime(
       new AgentDocumentTool({
         store: agentStore,
       }),
+      ...(wikiTool ? [wikiTool] : []),
       agentSkillTool,
       ...(credentialService
         ? [
@@ -320,6 +349,7 @@ export async function bootstrapRuntime(
       store,
       scheduledTasks,
       watches,
+      wikiBindingService,
       mainTools,
       pool: postgresPool,
       close: createCloseRuntime({

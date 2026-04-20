@@ -89,6 +89,20 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).not.toContain("Alice likes tea.");
   });
 
+  it("instantiates the wiki overview context when bindings are configured", async () => {
+    const contexts = buildDefaultAgentLlmContexts({
+      context: {
+        cwd: "/workspace/panda",
+      },
+      agentKey: "panda",
+      wikiBindings: {
+        getBinding: async () => null,
+      },
+    });
+
+    expect(contexts.some((context) => context.name === "Wiki Overview")).toBe(true);
+  });
+
   it("shows running background bash jobs in the default Panda contexts when available", async () => {
     const threadStore = new TestThreadRuntimeStore();
     await threadStore.createThread({
