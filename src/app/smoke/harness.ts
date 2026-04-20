@@ -5,20 +5,20 @@ import path from "node:path";
 import type {Message} from "@mariozechner/pi-ai";
 
 import {
-    type CreateIdentityInput,
-    type IdentityRecord,
-    normalizeIdentityHandle,
-    PostgresIdentityStore,
+  type CreateIdentityInput,
+  type IdentityRecord,
+  normalizeIdentityHandle,
+  PostgresIdentityStore,
 } from "../../domain/identity/index.js";
 import {PostgresAgentStore} from "../../domain/agents/postgres.js";
 import {DEFAULT_AGENT_DOCUMENT_TEMPLATES} from "../../domain/agents/templates.js";
 import {normalizeAgentKey} from "../../domain/agents/types.js";
 import {PostgresSessionStore} from "../../domain/sessions/index.js";
 import type {
-    ThreadBashJobRecord,
-    ThreadMessageRecord,
-    ThreadRecord,
-    ThreadRunRecord,
+  ThreadBashJobRecord,
+  ThreadMessageRecord,
+  ThreadRecord,
+  ThreadRunRecord,
 } from "../../domain/threads/runtime/index.js";
 import {readToolArtifact, type ToolArtifactDescriptor} from "../../kernel/agent/tool-artifacts.js";
 import {createRuntimeClient} from "../runtime/client.js";
@@ -28,10 +28,10 @@ import {createPostgresPool} from "../runtime/database.js";
 import {ensureSchemas, withPostgresPool} from "../runtime/postgres-bootstrap.js";
 import {DaemonStateRepo} from "../runtime/state/repo.js";
 import {
-    DEFAULT_SMOKE_TIMEOUT_MS,
-    requireSmokeDatabaseUrl,
-    resolveSmokeArtifactDirectory,
-    resolveSmokeModelSelector,
+  DEFAULT_SMOKE_TIMEOUT_MS,
+  requireSmokeDatabaseUrl,
+  resolveSmokeArtifactDirectory,
+  resolveSmokeModelSelector,
 } from "./config.js";
 import {recreateSmokeDatabase, resolveSmokeDatabaseTarget, type SmokeDatabaseTarget,} from "./database.js";
 
@@ -431,7 +431,11 @@ async function waitForDaemonOnline(input: {
   getDaemonError: () => Error | null;
 }): Promise<void> {
   const deadline = Date.now() + input.timeoutMs;
-  const pool = createPostgresPool(input.dbUrl);
+  const pool = createPostgresPool({
+    connectionString: input.dbUrl,
+    applicationName: "panda/smoke-wait",
+    max: 1,
+  });
   const daemonState = new DaemonStateRepo({pool});
 
   try {

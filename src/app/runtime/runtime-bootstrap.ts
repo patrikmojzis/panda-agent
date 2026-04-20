@@ -2,10 +2,10 @@ import {Pool, type PoolClient} from "pg";
 
 import {type AgentStore, PostgresAgentStore} from "../../domain/agents/index.js";
 import {
-    CredentialResolver,
-    CredentialService,
-    PostgresCredentialStore,
-    resolveCredentialCrypto,
+  CredentialResolver,
+  CredentialService,
+  PostgresCredentialStore,
+  resolveCredentialCrypto,
 } from "../../domain/credentials/index.js";
 import {PostgresIdentityStore} from "../../domain/identity/index.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
@@ -16,12 +16,12 @@ import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.j
 import {PostgresWikiBindingStore, WikiBindingService} from "../../domain/wiki/index.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/index.js";
 import {
-    buildThreadRuntimeNotificationChannel,
-    parseThreadRuntimeNotification,
+  buildThreadRuntimeNotificationChannel,
+  parseThreadRuntimeNotification,
 } from "../../domain/threads/runtime/postgres.js";
 import {
-    ensureReadonlySessionQuerySchema,
-    readDatabaseUsername,
+  ensureReadonlySessionQuerySchema,
+  readDatabaseUsername,
 } from "../../domain/threads/runtime/postgres-readonly.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
@@ -33,21 +33,28 @@ import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
 import {WikiTool} from "../../panda/tools/wiki-tool.js";
 import {
-    ScheduledTaskCancelTool,
-    ScheduledTaskCreateTool,
-    ScheduledTaskUpdateTool,
+  ScheduledTaskCancelTool,
+  ScheduledTaskCreateTool,
+  ScheduledTaskUpdateTool,
 } from "../../panda/tools/scheduled-task-tools.js";
 import {
-    WatchCreateTool,
-    WatchDisableTool,
-    WatchSchemaGetTool,
-    WatchUpdateTool,
+  WatchCreateTool,
+  WatchDisableTool,
+  WatchSchemaGetTool,
+  WatchUpdateTool,
 } from "../../panda/tools/watch-tools.js";
 import {SpawnSubagentTool} from "../../panda/tools/spawn-subagent-tool.js";
 import {ThinkingSetTool} from "../../panda/tools/thinking-set-tool.js";
 import {DefaultAgentSubagentService} from "../../panda/subagents/service.js";
 import {BashJobService} from "../../integrations/shell/bash-job-service.js";
-import {createPostgresPool} from "./database.js";
+import {
+  createPostgresPool,
+  DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
+  DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
+  observePostgresPool,
+  type PostgresPoolObserver,
+  readPositiveIntegerEnv,
+} from "./database.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
 import type {RuntimeOptions} from "./create-runtime.js";
 
@@ -58,6 +65,40 @@ function trimNonEmptyString(value: string | null | undefined): string | null {
 
   const trimmed = value.trim();
   return trimmed || null;
+}
+
+const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
+const CORE_READONLY_POSTGRES_APPLICATION_NAME = "panda/core-ro";
+const CORE_POSTGRES_POOL_MAX_FALLBACK = 7;
+const CORE_READONLY_POSTGRES_POOL_MAX_FALLBACK = 2;
+
+function logRuntimeEvent(event: string, payload: Record<string, unknown>): void {
+  process.stdout.write(`${JSON.stringify({
+    source: "runtime",
+    event,
+    timestamp: new Date().toISOString(),
+    ...payload,
+  })}\n`);
+}
+
+function buildRuntimePoolConfig(applicationName: string, maxEnvKey: string, fallbackMax: number): {
+  applicationName: string;
+  max: number;
+  idleTimeoutMillis: number;
+  waitingLogIntervalMs: number;
+} {
+  return {
+    applicationName,
+    max: readPositiveIntegerEnv(maxEnvKey, fallbackMax),
+    idleTimeoutMillis: readPositiveIntegerEnv(
+      "PANDA_DB_POOL_IDLE_TIMEOUT_MS",
+      DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
+    ),
+    waitingLogIntervalMs: readPositiveIntegerEnv(
+      "PANDA_DB_POOL_WAITING_LOG_INTERVAL_MS",
+      DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
+    ),
+  };
 }
 
 export interface RuntimeBootstrapOptions extends Omit<RuntimeOptions, "dbUrl"> {
@@ -88,6 +129,7 @@ function createCloseRuntime(options: {
   notificationClient: PoolClient | null;
   notificationChannel: string | null;
   notificationHandler: ((message: { channel: string; payload?: string }) => void) | null;
+  poolObservers: readonly PostgresPoolObserver[];
 }): () => Promise<void> {
   return async () => {
     await options.browserService?.close().catch(() => undefined);
@@ -100,6 +142,10 @@ function createCloseRuntime(options: {
       } finally {
         options.notificationClient.release();
       }
+    }
+
+    for (const observer of options.poolObservers) {
+      observer.stop();
     }
 
     if (options.readonlyPool) {
@@ -117,13 +163,37 @@ export async function bootstrapRuntime(
     ?? trimNonEmptyString(process.env.READONLY_DATABASE_URL);
 
   let readonlyPool: Pool | null = null;
+  let readonlyPoolObserver: PostgresPoolObserver | null = null;
   let notificationClient: PoolClient | null = null;
   let notificationHandler: ((message: { channel: string; payload?: string }) => void) | null = null;
   let notificationChannel: string | null = null;
   let browserService: BrowserRunnerClient | null = null;
   const maxSubagentDepth = options.maxSubagentDepth ?? 1;
+  const postgresPoolConfig = buildRuntimePoolConfig(
+    CORE_POSTGRES_APPLICATION_NAME,
+    "PANDA_CORE_DB_POOL_MAX",
+    CORE_POSTGRES_POOL_MAX_FALLBACK,
+  );
+  const postgresPool = createPostgresPool({
+    connectionString: options.dbUrl,
+    applicationName: postgresPoolConfig.applicationName,
+    max: postgresPoolConfig.max,
+    idleTimeoutMillis: postgresPoolConfig.idleTimeoutMillis,
+  });
+  const postgresPoolObserver = observePostgresPool({
+    pool: postgresPool,
+    applicationName: postgresPoolConfig.applicationName,
+    max: postgresPoolConfig.max,
+    idleTimeoutMillis: postgresPoolConfig.idleTimeoutMillis,
+    waitingLogIntervalMs: postgresPoolConfig.waitingLogIntervalMs,
+    log: logRuntimeEvent,
+  });
 
-  const postgresPool = createPostgresPool(options.dbUrl);
+  logRuntimeEvent("postgres_pool_ready", {
+    applicationName: postgresPoolConfig.applicationName,
+    max: postgresPoolConfig.max,
+    idleTimeoutMillis: postgresPoolConfig.idleTimeoutMillis,
+  });
 
   try {
     const identityStore = new PostgresIdentityStore({
@@ -198,7 +268,30 @@ export async function bootstrapRuntime(
     });
 
     if (readOnlyDbUrl) {
-      readonlyPool = createPostgresPool(readOnlyDbUrl);
+      const readonlyPoolConfig = buildRuntimePoolConfig(
+        CORE_READONLY_POSTGRES_APPLICATION_NAME,
+        "PANDA_CORE_READONLY_DB_POOL_MAX",
+        CORE_READONLY_POSTGRES_POOL_MAX_FALLBACK,
+      );
+      readonlyPool = createPostgresPool({
+        connectionString: readOnlyDbUrl,
+        applicationName: readonlyPoolConfig.applicationName,
+        max: readonlyPoolConfig.max,
+        idleTimeoutMillis: readonlyPoolConfig.idleTimeoutMillis,
+      });
+      readonlyPoolObserver = observePostgresPool({
+        pool: readonlyPool,
+        applicationName: readonlyPoolConfig.applicationName,
+        max: readonlyPoolConfig.max,
+        idleTimeoutMillis: readonlyPoolConfig.idleTimeoutMillis,
+        waitingLogIntervalMs: readonlyPoolConfig.waitingLogIntervalMs,
+        log: logRuntimeEvent,
+      });
+      logRuntimeEvent("postgres_pool_ready", {
+        applicationName: readonlyPoolConfig.applicationName,
+        max: readonlyPoolConfig.max,
+        idleTimeoutMillis: readonlyPoolConfig.idleTimeoutMillis,
+      });
     }
 
     const toolRegistry = createDefaultAgentToolRegistry({
@@ -360,6 +453,10 @@ export async function bootstrapRuntime(
         notificationClient,
         notificationChannel,
         notificationHandler,
+        poolObservers: [
+          postgresPoolObserver,
+          ...(readonlyPoolObserver ? [readonlyPoolObserver] : []),
+        ],
       }),
     };
   } catch (error) {
@@ -371,6 +468,10 @@ export async function bootstrapRuntime(
       notificationClient,
       notificationChannel,
       notificationHandler,
+      poolObservers: [
+        postgresPoolObserver,
+        ...(readonlyPoolObserver ? [readonlyPoolObserver] : []),
+      ],
     })().catch(() => undefined);
     throw error;
   }

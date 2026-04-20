@@ -8,10 +8,18 @@ import {ChannelActionWorker, type TelegramReactionActionPayload} from "../../../
 import {ChannelCursorRepo} from "../../../domain/channels/cursors/repo.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
 import {
-    ChannelOutboundDeliveryWorker,
-    PostgresOutboundDeliveryStore
+  ChannelOutboundDeliveryWorker,
+  PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/index.js";
-import {createPostgresPool, requireDatabaseUrl} from "../../../app/runtime/create-runtime.js";
+import {
+  createPostgresPool,
+  DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
+  DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
+  observePostgresPool,
+  type PostgresPoolObserver,
+  readPositiveIntegerEnv,
+  requireDatabaseUrl,
+} from "../../../app/runtime/database.js";
 import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
 import {TELEGRAM_POLL_TIMEOUT_SECONDS, TELEGRAM_SOURCE, TELEGRAM_UPDATES_CURSOR_KEY} from "./config.js";
@@ -23,6 +31,7 @@ import {PostgresChannelActionStore} from "../../../domain/channels/actions/postg
 
 type TelegramContext = Context;
 const UPDATE_RETRY_DELAY_MS = 1_000;
+const TELEGRAM_POOL_MAX_FALLBACK = 5;
 
 export interface TelegramServiceOptions {
   token: string;
@@ -81,6 +90,26 @@ function hashConnectorLockKey(source: string, connectorKey: string): readonly [n
   return [digest.readInt32BE(0), digest.readInt32BE(4)] as const;
 }
 
+function buildTelegramPoolConfig(connectorKey: string): {
+  applicationName: string;
+  max: number;
+  idleTimeoutMillis: number;
+  waitingLogIntervalMs: number;
+} {
+  return {
+    applicationName: `panda/telegram/${connectorKey}`,
+    max: readPositiveIntegerEnv("PANDA_TELEGRAM_DB_POOL_MAX", TELEGRAM_POOL_MAX_FALLBACK),
+    idleTimeoutMillis: readPositiveIntegerEnv(
+      "PANDA_DB_POOL_IDLE_TIMEOUT_MS",
+      DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
+    ),
+    waitingLogIntervalMs: readPositiveIntegerEnv(
+      "PANDA_DB_POOL_WAITING_LOG_INTERVAL_MS",
+      DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
+    ),
+  };
+}
+
 function messageTextLength(message: TelegramContext["msg"] | undefined): number {
   const text = message?.text ?? message?.caption ?? "";
   return text.trim().length;
@@ -117,6 +146,7 @@ export class TelegramService {
   private pollAbortController: AbortController | null = null;
   private outboundWorker: ChannelOutboundDeliveryWorker | null = null;
   private actionWorker: ChannelActionWorker | null = null;
+  private poolObserver: PostgresPoolObserver | null = null;
   private stopping = false;
 
   constructor(options: TelegramServiceOptions) {
@@ -171,14 +201,31 @@ export class TelegramService {
     };
   }
 
-  private async ensureStores(): Promise<TelegramWorkerStores> {
+  private async ensureStores(connectorKey: string): Promise<TelegramWorkerStores> {
     if (this.stores) {
       return this.stores;
     }
 
     if (!this.storesPromise) {
       this.storesPromise = (async () => {
-        const pool = createPostgresPool(requireDatabaseUrl(this.options.dbUrl));
+        const poolConfig = buildTelegramPoolConfig(connectorKey);
+        const pool = createPostgresPool({
+          connectionString: requireDatabaseUrl(this.options.dbUrl),
+          applicationName: poolConfig.applicationName,
+          max: poolConfig.max,
+          idleTimeoutMillis: poolConfig.idleTimeoutMillis,
+        });
+        const poolObserver = observePostgresPool({
+          pool,
+          applicationName: poolConfig.applicationName,
+          max: poolConfig.max,
+          idleTimeoutMillis: poolConfig.idleTimeoutMillis,
+          waitingLogIntervalMs: poolConfig.waitingLogIntervalMs,
+          log: (event, payload) => this.log(event, {
+            connectorKey,
+            ...payload,
+          }),
+        });
         const channelCursors = new ChannelCursorRepo({
           pool,
         });
@@ -191,23 +238,36 @@ export class TelegramService {
         const requests = new RuntimeRequestRepo({
           pool,
         });
-        await ensureSchemas([
-          channelCursors,
-          outboundDeliveries,
-          channelActions,
-          requests,
-        ]);
+        try {
+          await ensureSchemas([
+            channelCursors,
+            outboundDeliveries,
+            channelActions,
+            requests,
+          ]);
+          this.poolObserver = poolObserver;
+          this.log("postgres_pool_ready", {
+            connectorKey,
+            applicationName: poolConfig.applicationName,
+            max: poolConfig.max,
+            idleTimeoutMillis: poolConfig.idleTimeoutMillis,
+          });
 
-        return {
-          pool,
-          channelCursors,
-          outboundDeliveries,
-          channelActions,
-          requests,
-          mediaStore: new FileSystemMediaStore({
-            rootDir: this.options.dataDir,
-          }),
-        };
+          return {
+            pool,
+            channelCursors,
+            outboundDeliveries,
+            channelActions,
+            requests,
+            mediaStore: new FileSystemMediaStore({
+              rootDir: this.options.dataDir,
+            }),
+          };
+        } catch (error) {
+          poolObserver.stop();
+          await pool.end().catch(() => undefined);
+          throw error;
+        }
       })();
     }
 
@@ -285,7 +345,7 @@ export class TelegramService {
     botUsername: string | null;
   }> {
     const {connectorKey, botUsername} = await this.ensureBotIdentity();
-    const stores = await this.ensureStores();
+    const stores = await this.ensureStores(connectorKey);
     return {
       stores,
       connectorKey,
@@ -417,8 +477,11 @@ export class TelegramService {
 
     const stores = this.stores;
     const storesPromise = this.storesPromise;
+    const poolObserver = this.poolObserver;
     this.stores = null;
     this.storesPromise = null;
+    this.poolObserver = null;
+    poolObserver?.stop();
 
     if (stores) {
       await stores.pool.end();

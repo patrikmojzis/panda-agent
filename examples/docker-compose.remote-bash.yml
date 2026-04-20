@@ -49,7 +49,11 @@ services:
           import { PostgresPandaDaemonStateStore } from "/app/dist/features/daemon-state/index.js";
           import { createPostgresPool } from "/app/dist/features/panda/runtime.js";
           import { DEFAULT_DAEMON_KEY, DAEMON_STALE_AFTER_MS } from "/app/dist/features/panda/daemon.js";
-          const pool = createPostgresPool(process.env.DATABASE_URL);
+          const pool = createPostgresPool({
+            connectionString: process.env.DATABASE_URL,
+            applicationName: "panda/health/core",
+            max: 1,
+          });
           const store = new PostgresPandaDaemonStateStore({ pool });
           const state = await store.readState(DEFAULT_DAEMON_KEY);
           await pool.end();

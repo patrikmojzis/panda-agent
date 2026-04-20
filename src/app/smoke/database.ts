@@ -1,6 +1,5 @@
-import {Pool} from "pg";
-
 import {quoteIdentifier} from "../../domain/threads/runtime/postgres-shared.js";
+import {createPostgresPool} from "../runtime/database.js";
 
 export interface SmokeDatabaseTarget {
   adminConnectionString: string;
@@ -46,8 +45,9 @@ export async function recreateSmokeDatabase(
     );
   }
 
-  const pool = new Pool({
+  const pool = createPostgresPool({
     connectionString: target.adminConnectionString,
+    applicationName: "panda/smoke-admin",
     max: 1,
   });
 

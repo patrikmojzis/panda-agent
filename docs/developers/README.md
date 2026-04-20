@@ -15,6 +15,7 @@ Start here:
 - [Credentials](./credentials.md)
 - [DB Integrity](./db-integrity.md)
 - [DB Integrity Plan](./db-integrity-plan.md)
+- [Postgres Pool Sizing](./pg-pool-size.md)
 - [OpenClaw Import](./openclaw-import.md)
 - [Heartbeat](./heartbeat.md)
 - [Watches](./watches.md)

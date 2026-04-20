@@ -2,33 +2,41 @@ import {createHash} from "node:crypto";
 
 import type {Pool} from "pg";
 import {
-    addTransactionCapability,
-    type AuthenticationState,
-    type BaileysEventMap,
-    Browsers,
-    type ConnectionState,
-    DisconnectReason,
-    isJidBroadcast,
-    isJidGroup,
-    isJidNewsletter,
-    isJidStatusBroadcast,
-    jidNormalizedUser,
-    makeCacheableSignalKeyStore,
-    makeWASocket,
-    type WAMessage,
-    type WASocket,
+  addTransactionCapability,
+  type AuthenticationState,
+  type BaileysEventMap,
+  Browsers,
+  type ConnectionState,
+  DisconnectReason,
+  isJidBroadcast,
+  isJidGroup,
+  isJidNewsletter,
+  isJidStatusBroadcast,
+  jidNormalizedUser,
+  makeCacheableSignalKeyStore,
+  makeWASocket,
+  type WAMessage,
+  type WASocket,
 } from "baileys";
 import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
 import {ChannelActionWorker} from "../../../domain/channels/actions/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
-import {createPostgresPool, requireDatabaseUrl} from "../../../app/runtime/create-runtime.js";
+import {
+  createPostgresPool,
+  DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
+  DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
+  observePostgresPool,
+  type PostgresPoolObserver,
+  readPositiveIntegerEnv,
+  requireDatabaseUrl,
+} from "../../../app/runtime/database.js";
 import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {
-    ChannelOutboundDeliveryWorker,
-    PostgresOutboundDeliveryStore
+  ChannelOutboundDeliveryWorker,
+  PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/index.js";
 import {WHATSAPP_SOURCE} from "./config.js";
 import {PostgresWhatsAppAuthStore} from "./auth-store.js";
@@ -69,6 +77,7 @@ const TRANSACTION_OPTIONS = {
   delayBetweenTriesMs: 200,
 } as const;
 const RECONNECT_DELAY_MS = 1_000;
+const WHATSAPP_POOL_MAX_FALLBACK = 5;
 
 interface ConnectorLock {
   release(): Promise<void>;
@@ -115,6 +124,26 @@ function toWhoamiResult(connectorKey: string, creds: AuthenticationState["creds"
 function hashConnectorLockKey(source: string, connectorKey: string): readonly [number, number] {
   const digest = createHash("sha256").update(`${source}:${connectorKey}`).digest();
   return [digest.readInt32BE(0), digest.readInt32BE(4)] as const;
+}
+
+function buildWhatsAppPoolConfig(connectorKey: string): {
+  applicationName: string;
+  max: number;
+  idleTimeoutMillis: number;
+  waitingLogIntervalMs: number;
+} {
+  return {
+    applicationName: `panda/whatsapp/${connectorKey}`,
+    max: readPositiveIntegerEnv("PANDA_WHATSAPP_DB_POOL_MAX", WHATSAPP_POOL_MAX_FALLBACK),
+    idleTimeoutMillis: readPositiveIntegerEnv(
+      "PANDA_DB_POOL_IDLE_TIMEOUT_MS",
+      DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS,
+    ),
+    waitingLogIntervalMs: readPositiveIntegerEnv(
+      "PANDA_DB_POOL_WAITING_LOG_INTERVAL_MS",
+      DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
+    ),
+  };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -211,6 +240,7 @@ export class WhatsAppService {
   private lock: ConnectorLock | null = null;
   private outboundWorker: ChannelOutboundDeliveryWorker | null = null;
   private actionWorker: ChannelActionWorker | null = null;
+  private poolObserver: PostgresPoolObserver | null = null;
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
   private socketWaiterResolve: (() => void) | null = null;
@@ -233,14 +263,44 @@ export class WhatsAppService {
       return this.authStore;
     }
 
-    const pool = createPostgresPool(requireDatabaseUrl(this.options.dbUrl));
+    const poolConfig = buildWhatsAppPoolConfig(this.options.connectorKey);
+    const pool = createPostgresPool({
+      connectionString: requireDatabaseUrl(this.options.dbUrl),
+      applicationName: poolConfig.applicationName,
+      max: poolConfig.max,
+      idleTimeoutMillis: poolConfig.idleTimeoutMillis,
+    });
+    const poolObserver = observePostgresPool({
+      pool,
+      applicationName: poolConfig.applicationName,
+      max: poolConfig.max,
+      idleTimeoutMillis: poolConfig.idleTimeoutMillis,
+      waitingLogIntervalMs: poolConfig.waitingLogIntervalMs,
+      log: (event, payload) => this.log(event, {
+        connectorKey: this.options.connectorKey,
+        ...payload,
+      }),
+    });
     const authStore = new PostgresWhatsAppAuthStore({
       pool,
     });
-    await ensureSchemas([authStore]);
+    try {
+      await ensureSchemas([authStore]);
+    } catch (error) {
+      poolObserver.stop();
+      await pool.end().catch(() => undefined);
+      throw error;
+    }
 
     this.pool = pool;
+    this.poolObserver = poolObserver;
     this.authStore = authStore;
+    this.log("postgres_pool_ready", {
+      connectorKey: this.options.connectorKey,
+      applicationName: poolConfig.applicationName,
+      max: poolConfig.max,
+      idleTimeoutMillis: poolConfig.idleTimeoutMillis,
+    });
     return authStore;
   }
 
@@ -513,6 +573,8 @@ export class WhatsAppService {
       }
 
       if (this.pool) {
+        this.poolObserver?.stop();
+        this.poolObserver = null;
         await this.pool.end();
         this.pool = null;
         this.authStore = null;

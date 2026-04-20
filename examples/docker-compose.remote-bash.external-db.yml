@@ -33,7 +33,11 @@ services:
           import { DaemonStateRepo } from "/app/dist/app/runtime/state/repo.js";
           import { createPostgresPool } from "/app/dist/app/runtime/database.js";
           import { DEFAULT_DAEMON_KEY, DAEMON_STALE_AFTER_MS } from "/app/dist/app/runtime/daemon-shared.js";
-          const pool = createPostgresPool(process.env.DATABASE_URL);
+          const pool = createPostgresPool({
+            connectionString: process.env.DATABASE_URL,
+            applicationName: "panda/health/core",
+            max: 1,
+          });
           const store = new DaemonStateRepo({ pool });
           const state = await store.readState(DEFAULT_DAEMON_KEY);
           await pool.end();

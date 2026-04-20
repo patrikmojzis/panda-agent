@@ -10,7 +10,11 @@ export async function withPostgresPool<T>(
   dbUrl: string | undefined,
   fn: (pool: Pool) => Promise<T>,
 ): Promise<T> {
-  const pool = createPostgresPool(requireDatabaseUrl(dbUrl));
+  const pool = createPostgresPool({
+    connectionString: requireDatabaseUrl(dbUrl),
+    applicationName: "panda/cli",
+    max: 1,
+  });
 
   try {
     return await fn(pool);

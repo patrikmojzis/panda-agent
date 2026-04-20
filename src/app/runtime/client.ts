@@ -6,10 +6,10 @@ import {type IdentityRecord, normalizeIdentityHandle, PostgresIdentityStore,} fr
 import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {DaemonStateRepo} from "./state/repo.js";
 import {
-    buildThreadRuntimeNotificationChannel,
-    parseThreadRuntimeNotification,
-    PostgresThreadRuntimeStore,
-    type ThreadRuntimeNotification,
+  buildThreadRuntimeNotificationChannel,
+  parseThreadRuntimeNotification,
+  PostgresThreadRuntimeStore,
+  type ThreadRuntimeNotification,
 } from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {InferenceProjection, ThreadRecord, ThreadUpdate,} from "../../domain/threads/runtime/types.js";
@@ -142,7 +142,11 @@ async function listenThreadNotifications(options: {
 }
 
 export async function createRuntimeClient(options: RuntimeClientOptions): Promise<RuntimeClient> {
-  const pool = createPostgresPool(requireDatabaseUrl(options.dbUrl));
+  const pool = createPostgresPool({
+    connectionString: requireDatabaseUrl(options.dbUrl),
+    applicationName: "panda/runtime-client",
+    max: 3,
+  });
 
   const identityStore = new PostgresIdentityStore({
     pool,
