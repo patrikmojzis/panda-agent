@@ -3,7 +3,7 @@ import {assertProviderName, type ProviderName} from "../../integrations/provider
 
 const MODEL_SELECTOR_ALIASES = {
   gpt: "openai-codex/gpt-5.4",
-  opus: "anthropic-oauth/claude-opus-4-6",
+  opus: "anthropic-oauth/claude-opus-4-7",
 } as const satisfies Record<string, string>;
 
 export interface ResolvedModelSelector {

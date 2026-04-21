@@ -37,11 +37,11 @@ describe("model context policy", () => {
   });
 
   it("falls back to family prefixes by model id regardless of provider", () => {
-    const resolved = resolveModelContextPolicy("anthropic-oauth/claude-opus-4-6");
+    const resolved = resolveModelContextPolicy("anthropic-oauth/claude-opus-4-7");
 
     expect(resolved.matchKind).toBe("prefix");
     expect(resolved.match).toBe("claude-opus-4");
-    expect(resolved.modelId).toBe("claude-opus-4-6");
+    expect(resolved.modelId).toBe("claude-opus-4-7");
     expect(resolved.operatingWindow).toBe(200_000);
     expect(resolved.compactAtPercent).toBe(90);
   });

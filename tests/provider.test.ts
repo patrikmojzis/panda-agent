@@ -1,19 +1,19 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-    Agent,
-    assertProviderName,
-    ConfigurationError,
-    parseProviderName,
-    resolveModelSelector,
-    Thread,
+  Agent,
+  assertProviderName,
+  ConfigurationError,
+  parseProviderName,
+  resolveModelSelector,
+  Thread,
 } from "../src/index.js";
 import {resolveProviderModel} from "../src/integrations/providers/shared/model.js";
 import {
-    resolveDefaultAgentBrowserSubagentModelSelector,
-    resolveDefaultAgentMemorySubagentModelSelector,
-    resolveDefaultAgentModelSelector,
-    resolveDefaultAgentWorkspaceSubagentModelSelector,
+  resolveDefaultAgentBrowserSubagentModelSelector,
+  resolveDefaultAgentMemorySubagentModelSelector,
+  resolveDefaultAgentModelSelector,
+  resolveDefaultAgentWorkspaceSubagentModelSelector,
 } from "../src/panda/defaults.js";
 
 describe("model selector", () => {
@@ -47,9 +47,9 @@ describe("model selector", () => {
     });
 
     expect(resolveModelSelector("opus")).toEqual({
-      canonical: "anthropic-oauth/claude-opus-4-6",
+      canonical: "anthropic-oauth/claude-opus-4-7",
       providerName: "anthropic-oauth",
-      modelId: "claude-opus-4-6",
+      modelId: "claude-opus-4-7",
     });
   });
 
@@ -94,7 +94,7 @@ describe("model selector", () => {
   });
 
   it("uses the environment default when a thread has no explicit model", () => {
-    vi.stubEnv("DEFAULT_MODEL", "anthropic-oauth/claude-opus-4-6");
+    vi.stubEnv("DEFAULT_MODEL", "anthropic-oauth/claude-opus-4-7");
 
     const thread = new Thread({
       agent: new Agent({
@@ -103,13 +103,13 @@ describe("model selector", () => {
       }),
     });
 
-    expect(thread.model).toBe("anthropic-oauth/claude-opus-4-6");
+    expect(thread.model).toBe("anthropic-oauth/claude-opus-4-7");
   });
 
   it("resolves the workspace subagent selector from WORKSPACE_SUBAGENT_MODEL", () => {
     expect(resolveDefaultAgentWorkspaceSubagentModelSelector({
       WORKSPACE_SUBAGENT_MODEL: "opus",
-    })).toBe("anthropic-oauth/claude-opus-4-6");
+    })).toBe("anthropic-oauth/claude-opus-4-7");
 
     expect(resolveDefaultAgentWorkspaceSubagentModelSelector({})).toBeUndefined();
   });
@@ -125,7 +125,7 @@ describe("model selector", () => {
   it("resolves the browser subagent selector from BROWSER_SUBAGENT_MODEL", () => {
     expect(resolveDefaultAgentBrowserSubagentModelSelector({
       BROWSER_SUBAGENT_MODEL: "opus",
-    })).toBe("anthropic-oauth/claude-opus-4-6");
+    })).toBe("anthropic-oauth/claude-opus-4-7");
 
     expect(resolveDefaultAgentBrowserSubagentModelSelector({})).toBeUndefined();
   });

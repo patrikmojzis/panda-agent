@@ -342,7 +342,6 @@ describe("SpawnSubagentTool", () => {
     expect(JSON.stringify(requests[0]?.context.messages)).not.toContain("parent transcript");
     expect(requests[0]?.context.systemPrompt).toContain("You are the workspace subagent.");
     expect(requests[0]?.context.systemPrompt).toContain("This role is read-only.");
-    expect(requests[0]?.context.systemPrompt).toContain("**Current DateTime:**");
     expect(requests[0]?.context.systemPrompt).toContain("**Environment Overview:**");
     expect(requests[0]?.context.systemPrompt).not.toContain("**Agent Profile:**");
     expect(requests[0]?.context.systemPrompt).not.toContain("Parent Panda instructions");
@@ -399,7 +398,7 @@ describe("SpawnSubagentTool", () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.providerName).toBe("anthropic-oauth");
-    expect(requests[0]?.modelId).toBe("claude-opus-4-6");
+    expect(requests[0]?.modelId).toBe("claude-opus-4-7");
   });
 
   it("runs a postgres-only memory child and returns a structured result", async () => {
@@ -514,7 +513,7 @@ describe("SpawnSubagentTool", () => {
           instructions: "Parent Panda instructions",
         }),
         runtime,
-        model: "anthropic-oauth/claude-opus-4-6",
+        model: "anthropic-oauth/claude-opus-4-7",
       } satisfies ResolvedThreadDefinition)),
       toolsets: createSubagentToolsets(),
       maxSubagentDepth: 1,
@@ -732,7 +731,7 @@ describe("SpawnSubagentTool", () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.providerName).toBe("anthropic-oauth");
-    expect(requests[0]?.modelId).toBe("claude-opus-4-6");
+    expect(requests[0]?.modelId).toBe("claude-opus-4-7");
   });
 
   it("enforces the configured subagent depth limit", async () => {

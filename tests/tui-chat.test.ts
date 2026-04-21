@@ -56,7 +56,7 @@ function assistantWithUsage(
     content: [{type: "text" as const, text}],
     api: "openai-responses" as const,
     provider: overrides.provider ?? "anthropic",
-    model: overrides.model ?? "claude-opus-4-6",
+    model: overrides.model ?? "claude-opus-4-7",
     usage: overrides.usage ?? {
       input: 3,
       output: 42,
@@ -329,7 +329,7 @@ describe("ChatApp thinking command", () => {
       updatedAt: 2,
     }));
     const resolveThreadRunConfig = vi.fn(async () => ({
-      model: "anthropic-oauth/claude-opus-4-6",
+      model: "anthropic-oauth/claude-opus-4-7",
       thinking: undefined,
     }));
     const app = new ChatApp() as any;
@@ -353,11 +353,11 @@ describe("ChatApp thinking command", () => {
     expect(updateThread).toHaveBeenCalledWith("thread-config", {model: null});
     expect(resolveThreadRunConfig).toHaveBeenCalledWith("thread-config");
     expect(app.currentThread.model).toBeUndefined();
-    expect(app.model).toBe("anthropic-oauth/claude-opus-4-6");
+    expect(app.model).toBe("anthropic-oauth/claude-opus-4-7");
   });
 
   it("falls back to the stored default when /model default cannot resolve live config", async () => {
-    vi.stubEnv("DEFAULT_MODEL", "anthropic-oauth/claude-opus-4-6");
+    vi.stubEnv("DEFAULT_MODEL", "anthropic-oauth/claude-opus-4-7");
     try {
       const updateThread = vi.fn(async () => ({
         id: "thread-config",
@@ -390,7 +390,7 @@ describe("ChatApp thinking command", () => {
 
       expect(updateThread).toHaveBeenCalledWith("thread-config", {model: null});
       expect(resolveThreadRunConfig).toHaveBeenCalledWith("thread-config");
-      expect(app.model).toBe("anthropic-oauth/claude-opus-4-6");
+      expect(app.model).toBe("anthropic-oauth/claude-opus-4-7");
     } finally {
       vi.unstubAllEnvs();
     }
@@ -556,7 +556,7 @@ describe("ChatApp fresh-session agent selection", () => {
     }));
     const createNewApp = () => {
       const app = new ChatApp() as any;
-      app.model = "anthropic-oauth/claude-opus-4-6";
+      app.model = "anthropic-oauth/claude-opus-4-7";
       app.currentThreadId = "thread-current";
       app.currentThread = {
         id: "thread-current",
@@ -839,7 +839,7 @@ describe("thread usage snapshots", () => {
       id: "thread-usage",
       identityId: "test-user",
       agentKey: "panda",
-      model: "anthropic/claude-opus-4-6",
+      model: "anthropic/claude-opus-4-7",
       thinking: "high" as const,
       createdAt: 1,
       updatedAt: 2,
@@ -961,7 +961,7 @@ describe("ChatApp usage command", () => {
       id: "thread-usage",
       identityId: "test-user",
       agentKey: "panda",
-      model: "anthropic/claude-opus-4-6",
+      model: "anthropic/claude-opus-4-7",
       thinking: "high" as const,
       createdAt: 1,
       updatedAt: 2,
@@ -1022,7 +1022,7 @@ describe("ChatApp usage command", () => {
       id: "thread-usage",
       identityId: "test-user",
       agentKey: "panda",
-      model: "anthropic/claude-opus-4-6",
+      model: "anthropic/claude-opus-4-7",
       thinking: "high" as const,
       createdAt: 1,
       updatedAt: 2,
@@ -1069,7 +1069,7 @@ describe("ChatApp usage command", () => {
     expect(getThread).toHaveBeenCalledWith("thread-usage");
     expect(loadTranscript).toHaveBeenCalledWith("thread-usage");
     expect(resolveThreadRunConfig).toHaveBeenCalledWith("thread-usage");
-    expect(app.transcript.at(-1)?.body).toContain("`anthropic/claude-opus-4-6`");
+    expect(app.transcript.at(-1)?.body).toContain("`anthropic/claude-opus-4-7`");
     expect(app.transcript.at(-1)?.body).toContain("thinking `high`");
   });
 });

@@ -250,11 +250,11 @@ describe("createDaemonThreadHelpers", () => {
 
     const updated = await helpers.openMainSession({
       identityId: identity.id,
-      model: "anthropic-oauth/claude-opus-4-6",
+      model: "anthropic-oauth/claude-opus-4-7",
     });
 
     expect(updated.id).toBe(initial.id);
-    expect(updated.model).toBe("anthropic-oauth/claude-opus-4-6");
+    expect(updated.model).toBe("anthropic-oauth/claude-opus-4-7");
   });
 
   it("cancels old-thread background jobs during session reset", async () => {
