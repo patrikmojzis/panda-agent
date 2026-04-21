@@ -5,8 +5,8 @@ export function renderScheduledTaskPrompt(options: {
   prepareOnly: boolean;
 }): string {
   const deliveryInstruction = options.prepareOnly
-    ? "This is a scheduled task in prepare-only mode. The user is not actively watching. Do the work now and leave the final result in the current session history. Do not use outbound yet. Delivery is scheduled later."
-    : "This is scheduled work triggered by the runtime. The user is not actively watching this session right now. Write the final response you want delivered. If outbound is available you can use it, but a plain final assistant reply is still useful.";
+    ? "This is a scheduled task in prepare-only mode. The user is not actively watching. Assistant replies here are private scratchpad, not delivery. Do the work now and leave the result in the current session history or other durable state. Do not use outbound yet. Delivery is scheduled later."
+    : "This is scheduled work triggered by the runtime, not a live human message. The user is not actively watching this session right now. Assistant replies here are private scratchpad, not automatic delivery. Do the work, record what matters, and use outbound only if this task should intentionally notify the user now.";
 
   return `
 [Scheduled Task] ${options.title}

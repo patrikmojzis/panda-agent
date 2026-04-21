@@ -8,8 +8,11 @@ export function renderHeartbeatPrompt(options: {
   return `
 [Heartbeat]
 This is a periodic runtime wake.
-Review if something needs attention, otherwise keep it quiet and move on.
-Use outbound if you intentionally want to reach the user.${heartbeatGuidance ? `
+Treat it as reclaimed time, not a ceremonial ping.
+Review open loops, promises, pending follow-ups, scheduled work, recent conversation momentum, and memory candidates.
+If one concrete useful action is obvious, do it.
+Assistant replies here are private scratchpad. If a human should actually be notified now, use outbound intentionally.
+${heartbeatGuidance ? `
 
 **Heartbeat Guidance**
 ${heartbeatGuidance}` : ""}
