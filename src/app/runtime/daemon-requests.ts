@@ -1,40 +1,40 @@
 import type {
-  A2AMessageRequestPayload,
-  AbortThreadRequestPayload,
-  CompactThreadRequestPayload,
-  CreateBranchSessionRequestPayload,
-  ResetSessionRequestPayload,
-  ResolveMainSessionThreadRequestPayload,
-  ResolveThreadRunConfigRequestPayload,
-  RuntimeRequestRecord,
-  TelegramMessageRequestPayload,
-  TelegramReactionRequestPayload,
-  TuiInputRequestPayload,
-  UpdateThreadRequestPayload,
-  WhatsAppMessageRequestPayload,
+    A2AMessageRequestPayload,
+    AbortThreadRequestPayload,
+    CompactThreadRequestPayload,
+    CreateBranchSessionRequestPayload,
+    ResetSessionRequestPayload,
+    ResolveMainSessionThreadRequestPayload,
+    ResolveThreadRunConfigRequestPayload,
+    RuntimeRequestRecord,
+    TelegramMessageRequestPayload,
+    TelegramReactionRequestPayload,
+    TuiInputRequestPayload,
+    UpdateThreadRequestPayload,
+    WhatsAppMessageRequestPayload,
 } from "../../domain/threads/requests/index.js";
 import {compactThread} from "../../domain/threads/runtime/index.js";
 import {stringToUserMessage} from "../../kernel/agent/index.js";
 import {buildA2AInboundPersistence, buildA2AInboundText} from "../../integrations/channels/a2a/helpers.js";
 import {A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
 import {
-  buildTelegramInboundPersistence,
-  buildTelegramInboundText,
-  buildTelegramReactionText,
-  normalizeTelegramCommand,
+    buildTelegramInboundPersistence,
+    buildTelegramInboundText,
+    buildTelegramReactionText,
+    normalizeTelegramCommand,
 } from "../../integrations/channels/telegram/helpers.js";
 import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
+import {buildTuiInboundPersistence, buildTuiInboundText, TUI_SOURCE,} from "../../integrations/channels/tui/helpers.js";
 import {buildWhatsAppInboundMetadata, buildWhatsAppInboundText,} from "../../integrations/channels/whatsapp/helpers.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {readMissingApiKeyMessageForModel} from "../../integrations/providers/shared/missing-api-key.js";
-import {renderTuiInboundText} from "../../prompts/channels/tui.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
 import {
-  buildQueuedInputCompactionMessage,
-  buildTelegramNewIsTuiOnlyText,
-  buildTelegramResetText,
-  buildTelegramStartText,
-  buildUnsupportedRuntimeRequestMessage,
+    buildQueuedInputCompactionMessage,
+    buildTelegramNewIsTuiOnlyText,
+    buildTelegramResetText,
+    buildTelegramStartText,
+    buildUnsupportedRuntimeRequestMessage,
 } from "./daemon-copy.js";
 import type {DaemonThreadHelpers} from "./daemon-threads.js";
 import {requireIdentityId} from "./daemon-shared.js";
@@ -380,20 +380,32 @@ export function createDaemonRequestProcessor(
       : await threads.openMainSession({
         identityId: requireIdentityId(payload.identityId, "tui_input"),
       });
+    const sentAt = payload.sentAt ? new Date(payload.sentAt).toISOString() : undefined;
+    const persistence = buildTuiInboundPersistence({
+      sentAt,
+      actorId: payload.actorId,
+      externalMessageId: payload.externalMessageId,
+    });
     await context.runtime.coordinator.submitInput(thread.id, {
-      message: stringToUserMessage(renderTuiInboundText({
+      message: stringToUserMessage(buildTuiInboundText({
         actorId: payload.actorId,
         externalMessageId: payload.externalMessageId,
         identityId: payload.identityId,
         identityHandle: payload.identityHandle,
-        sentAt: payload.sentAt ? new Date(payload.sentAt).toISOString() : undefined,
+        sentAt,
         body: payload.text,
       })),
-      source: "tui",
+      source: TUI_SOURCE,
       channelId: "terminal",
       externalMessageId: payload.externalMessageId,
       actorId: payload.actorId,
       identityId: payload.identityId,
+      metadata: persistence.metadata,
+    });
+    await context.sessionRoutes.saveLastRoute({
+      sessionId: thread.sessionId,
+      identityId: requireIdentityId(payload.identityId, "tui_input"),
+      route: persistence.rememberedRoute,
     });
     return {status: "queued", threadId: thread.id};
   };

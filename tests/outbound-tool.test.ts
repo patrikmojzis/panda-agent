@@ -118,6 +118,50 @@ describe("OutboundTool", () => {
     });
   });
 
+  it("can target the current TUI route just like any other channel lane", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      currentInput: {
+        source: "tui",
+        channelId: "terminal",
+        metadata: {
+          route: {
+            source: "tui",
+            connectorKey: "local-tui",
+            externalConversationId: "terminal",
+            externalActorId: "local-user",
+          },
+        },
+      },
+    });
+
+    const result = await tool.run({
+      items: [{ type: "text", text: "back to terminal" }],
+    }, createRunContext(context));
+
+    expect(context.queued).toEqual([{
+      threadId: "thread-1",
+      channel: "tui",
+      target: {
+        source: "tui",
+        connectorKey: "local-tui",
+        externalConversationId: "terminal",
+        externalActorId: "local-user",
+      },
+      items: [{ type: "text", text: "back to terminal" }],
+    }]);
+    expect(result).toMatchObject({
+      status: "queued",
+      channel: "tui",
+      target: {
+        source: "tui",
+        connectorKey: "local-tui",
+        externalConversationId: "terminal",
+        externalActorId: "local-user",
+      },
+    });
+  });
+
   it("resolves relative file paths before queueing", async () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), "runtime-outbound-tool-"));
     const relativeFile = "report.txt";
