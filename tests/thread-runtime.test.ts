@@ -5,29 +5,29 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {
-    Agent,
-    BashJobStatusTool,
-    BashJobWaitTool,
-    BashTool,
-    type LlmRuntime,
-    OutboundTool,
-    PiAiRuntime,
-    RunContext,
-    stringToUserMessage,
-    Thread,
-    Tool,
-    z,
+  Agent,
+  BashJobStatusTool,
+  BashJobWaitTool,
+  BashTool,
+  type LlmRuntime,
+  OutboundTool,
+  PiAiRuntime,
+  RunContext,
+  stringToUserMessage,
+  Thread,
+  Tool,
+  z,
 } from "../src/index.js";
 import {buildBackgroundBashThreadInput} from "../src/app/runtime/background-bash-thread-input.js";
 import {
-    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-    createCompactBoundaryMessage,
-    type CreateThreadInput,
-    type ResolvedThreadDefinition,
-    type ThreadDefinitionResolver,
-    type ThreadMessageRecord,
-    type ThreadRecord,
-    ThreadRuntimeCoordinator,
+  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+  createCompactBoundaryMessage,
+  type CreateThreadInput,
+  type ResolvedThreadDefinition,
+  type ThreadDefinitionResolver,
+  type ThreadMessageRecord,
+  type ThreadRecord,
+  ThreadRuntimeCoordinator,
 } from "../src/domain/threads/runtime/index.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
@@ -453,6 +453,137 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(updated.thinking).toBeUndefined();
     expect((await store.getThread("thread-thinking")).thinking).toBeUndefined();
+  });
+
+  it("grants one extra idle reroll before letting a run go idle", async () => {
+    const responses = [
+      message("first reply"),
+      message("second pass"),
+    ];
+    const runtime: LlmRuntime & { complete: ReturnType<typeof vi.fn> } = {
+      complete: vi.fn().mockImplementation(async (request) => {
+        const lastMessage = request.context.messages.at(-1);
+        if (lastMessage?.role === "assistant") {
+          throw new Error("assistant-prefill not allowed");
+        }
+
+        const response = responses.shift();
+        if (!response) {
+          throw new Error("No more mock responses queued");
+        }
+
+        return response;
+      }),
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("idle-reroll", {
+      agent: new Agent({
+        name: "idle-reroll",
+        instructions: "Reply plainly.",
+      }),
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-idle-reroll",
+      agentKey: "idle-reroll",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-idle-reroll", {
+      message: stringToUserMessage("start"),
+      source: "tui",
+    });
+
+    await coordinator.waitForIdle("thread-idle-reroll");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    expect(runtime.complete.mock.calls[1]?.[0].context.messages.at(-1)?.role).toBe("user");
+    expect(String(runtime.complete.mock.calls[0]?.[0].context.messages.at(-1)?.content ?? "")).not.toContain("<runtime-autonomy-context>");
+    expect(String(runtime.complete.mock.calls[1]?.[0].context.messages.at(-1)?.content ?? "")).toContain("<runtime-autonomy-context>");
+    expect(String(runtime.complete.mock.calls[1]?.[0].context.messages.at(-1)?.content ?? "")).toContain("No new external input arrived.");
+
+    const transcript = await store.loadTranscript("thread-idle-reroll");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "tui",
+      "assistant",
+      "runtime",
+      "assistant",
+    ]);
+  });
+
+  it("re-arms the idle reroll when a new input lands during the extra pass", async () => {
+    const runtime = new DeferredRuntime();
+    const extraPass = createDeferred<AssistantMessage>();
+    runtime.queue(message("first wave reply"));
+    runtime.queue(extraPass.promise);
+    runtime.queue(message("second wave reply"));
+    runtime.queue(message("second wave extra pass"));
+
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("idle-reroll-reset", {
+      agent: new Agent({
+        name: "idle-reroll-reset",
+        instructions: "Reply plainly.",
+      }),
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-idle-reroll-reset",
+      agentKey: "idle-reroll-reset",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-idle-reroll-reset", {
+      message: stringToUserMessage("first wave"),
+      source: "tui",
+    });
+
+    await waitFor(() => runtime.complete.mock.calls.length === 2);
+
+    await coordinator.submitInput("thread-idle-reroll-reset", {
+      message: stringToUserMessage("second wave"),
+      source: "telegram",
+      channelId: "chat-2",
+      externalMessageId: "msg-2",
+      actorId: "user-2",
+    });
+
+    extraPass.resolve(message("first wave extra pass"));
+
+    await coordinator.waitForIdle("thread-idle-reroll-reset");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(4);
+    expect(String(runtime.complete.mock.calls[0]?.[0].context.messages.at(-1)?.content ?? "")).not.toContain("<runtime-autonomy-context>");
+    expect(String(runtime.complete.mock.calls[1]?.[0].context.messages.at(-1)?.content ?? "")).toContain("<runtime-autonomy-context>");
+    expect(String(runtime.complete.mock.calls[2]?.[0].context.messages.at(-1)?.content ?? "")).toContain("second wave");
+    expect(String(runtime.complete.mock.calls[3]?.[0].context.messages.at(-1)?.content ?? "")).toContain("<runtime-autonomy-context>");
+
+    const transcript = await store.loadTranscript("thread-idle-reroll-reset");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "tui",
+      "assistant",
+      "runtime",
+      "assistant",
+      "telegram",
+      "assistant",
+      "runtime",
+      "assistant",
+    ]);
   });
 
   it("keeps background bash records across later runs in the same thread and marks unfinished jobs lost on startup", async () => {

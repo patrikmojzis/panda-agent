@@ -1,37 +1,39 @@
 import type {Message} from "@mariozechner/pi-ai";
 
 import {runThreadStep, Thread, type ThreadResumeState, type ThreadStepResult} from "../../../kernel/agent/thread.js";
+import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {resolveModelRuntimeBudget} from "../../../kernel/models/model-context-policy.js";
 import {resolveRuntimeDefaultModelSelector} from "../../../kernel/models/default-model.js";
 import type {ThreadRunEvent} from "../../../kernel/agent/types.js";
 import {stringifyUnknown} from "../../../kernel/agent/helpers/stringify.js";
 import type {
-    AutoCompactionRuntimeState,
-    ResolvedThreadDefinition,
-    ThreadDefinitionResolver,
-    ThreadInputPayload,
-    ThreadMessageRecord,
-    ThreadRecord,
-    ThreadRunRecord,
+  AutoCompactionRuntimeState,
+  ResolvedThreadDefinition,
+  ThreadDefinitionResolver,
+  ThreadInputPayload,
+  ThreadMessageRecord,
+  ThreadRecord,
+  ThreadRunRecord,
 } from "./types.js";
 import type {ThreadInputApplyScope, ThreadRuntimeStore} from "./store.js";
 import {
-    appendCompactionFailureNotice,
-    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-    AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
-    compactThread,
-    estimateTranscriptTokens,
-    projectTranscriptForRun,
-    readAutoCompactionRuntimeState,
-    shouldAutoCompactThread,
-    updateAutoCompactionRuntimeState,
+  appendCompactionFailureNotice,
+  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+  AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
+  compactThread,
+  estimateTranscriptTokens,
+  projectTranscriptForRun,
+  readAutoCompactionRuntimeState,
+  shouldAutoCompactThread,
+  updateAutoCompactionRuntimeState,
 } from "../../../kernel/transcript/compaction.js";
 import {
-    applyImageProjectionForInference,
-    projectTranscriptForInference,
+  applyImageProjectionForInference,
+  projectTranscriptForInference,
 } from "../../../kernel/transcript/inference-projection.js";
 import {rehydrateProjectedToolArtifacts} from "./tool-artifact-replay.js";
 import {isRecord} from "../../../lib/records.js";
+import {renderRuntimeAutonomyContext} from "../../../prompts/runtime/autonomy-context.js";
 
 export type ThreadWakeMode = "wake" | "queue";
 const ABORT_POLL_MS = 250;
@@ -643,11 +645,19 @@ export class ThreadRuntimeCoordinator {
     let skippedRun = false;
     let resumeState: ThreadResumeState | undefined;
     let inputApplyScope: ThreadInputApplyScope = "all";
+    // Stop once is a bit too eager for Panda's current autonomy model.
+    // This flag gives each applied input wave one blind extra step before we
+    // finally let the run go idle. If we tune or replace the behavior later,
+    // this is the seam to revisit.
+    let idleRerollAvailable = true;
 
     try {
       while (true) {
         const appliedInputs = await this.store.applyPendingInputs(threadId, inputApplyScope);
         if (appliedInputs.length > 0) {
+          // New real input re-arms the one-step idle reroll for that wave.
+          // We only reset on applied inputs, not on tool churn or pending wake.
+          idleRerollAvailable = true;
           await this.emit({
             type: "inputs_applied",
             threadId,
@@ -725,11 +735,35 @@ export class ThreadRuntimeCoordinator {
         resumeState = stepResult?.resumeState;
         const boundary = await this.takeBoundaryState(threadId);
         const continueForWakeCycle = this.shouldContinueFromBoundary(boundary);
-        if (!(stepResult?.needsAnotherTurn ?? false) && !continueForWakeCycle) {
-          break;
+        const continueForThread = stepResult?.needsAnotherTurn ?? false;
+        if (continueForThread || continueForWakeCycle) {
+          inputApplyScope = continueForWakeCycle ? "all" : "runnable";
+          continue;
         }
 
-        inputApplyScope = continueForWakeCycle ? "all" : "runnable";
+        if (idleRerollAvailable) {
+          // Continuation turns need a real transcript-visible delta. Anthropic
+          // happily accepts the step without one, but in practice often returns
+          // an empty stop. A machine-generated runtime user message gives the
+          // model an explicit continuation event while keeping the source honest.
+          idleRerollAvailable = false;
+          await this.store.appendRuntimeMessage(threadId, {
+            message: stringToUserMessage(renderRuntimeAutonomyContext()),
+            source: "runtime",
+            runId: run.id,
+            metadata: {
+              autonomy: {
+                kind: "idle_reroll",
+              },
+            },
+          });
+          inputApplyScope = "runnable";
+          continue;
+        }
+
+        if (!continueForThread && !continueForWakeCycle) {
+          break;
+        }
       }
 
       if (!skippedRun) {
