@@ -4,13 +4,28 @@ import type {LlmRuntime, LlmRuntimeRequest} from "../../../kernel/agent/runtime.
 import {resolveProviderApiKey} from "./auth.js";
 import {resolveProviderModel} from "./model.js";
 
+const DEFAULT_MODEL_TIMEOUT_MS = 180_000;
+
+function resolveModelTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.MODEL_TIMEOUT_MS?.trim();
+  if (!raw) {
+    return DEFAULT_MODEL_TIMEOUT_MS;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error("MODEL_TIMEOUT_MS must be a positive integer.");
+  }
+
+  return parsed;
+}
+
 function buildRuntimeOptions(request: LlmRuntimeRequest): SimpleStreamOptions {
   const apiKey = resolveProviderApiKey(request.providerName);
   const options: SimpleStreamOptions = {};
+  const timeoutSignal = AbortSignal.timeout(resolveModelTimeoutMs());
 
-  if (request.signal) {
-    options.signal = request.signal;
-  }
+  options.signal = request.signal ? AbortSignal.any([request.signal, timeoutSignal]) : timeoutSignal;
 
   if (request.temperature !== undefined) {
     options.temperature = request.temperature;
