@@ -175,6 +175,8 @@ That wrapper:
 - auto-runs `panda agent ensure <agentKey>` inside core after startup
 - auto-enables the `panda-telegram` worker when `TELEGRAM_BOT_TOKEN` is set
 
+For `openai-codex`, the Docker examples mount a host Codex home read-only into `panda-core` and set `CODEX_HOME=/root/.codex` inside the container. That is better than baking `OPENAI_OAUTH_TOKEN` into the image or env because Panda reads the token from `auth.json` at request time, while a raw env token goes stale and then just sits there like a brick.
+
 The base compose file it builds on is still [examples/docker-compose.remote-bash.external-db.yml](../../examples/docker-compose.remote-bash.external-db.yml).
 
 ## External Postgres

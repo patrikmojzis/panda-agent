@@ -12,6 +12,7 @@ services:
       READONLY_DATABASE_URL: ${READONLY_DATABASE_URL:-}
       PANDA_CORE_HEALTH_PORT: ${PANDA_CORE_HEALTH_PORT:-8090}
       BASH_EXECUTION_MODE: remote
+      CODEX_HOME: /root/.codex
       RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
       RUNNER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
       BROWSER_RUNNER_URL: http://panda-browser-runner:8080
@@ -19,6 +20,7 @@ services:
       TZ: ${TZ:-UTC}
     volumes:
       - ${HOME}/.panda:/root/.panda
+      - ${CODEX_HOST_HOME:-${HOME}/.codex}:/root/.codex:ro
       - ${SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
       - /etc/ssl/certs/panda-postgres-ca.crt:/etc/ssl/certs/panda-postgres-ca.crt:ro
     depends_on:

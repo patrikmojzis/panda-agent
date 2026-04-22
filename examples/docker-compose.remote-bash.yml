@@ -25,10 +25,12 @@ services:
     environment:
       DATABASE_URL: postgres://panda_app:app_pw@db:5432/panda
       BASH_EXECUTION_MODE: remote
+      CODEX_HOME: /root/.codex
       RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
       TZ: ${TZ:-UTC}
     volumes:
       - ${HOME}/.panda:/root/.panda
+      - ${CODEX_HOST_HOME:-${HOME}/.codex}:/root/.codex:ro
       - ${SHARED_ROOT:-${HOME}/.panda/shared}:/workspace/shared
     depends_on:
       db:
