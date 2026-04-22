@@ -1,5 +1,3 @@
-import type {PoolClient} from "pg";
-
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {sleep} from "../../lib/async.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
@@ -8,8 +6,6 @@ import {type IdentityRecord, normalizeIdentityHandle, PostgresIdentityStore,} fr
 import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {DaemonStateRepo} from "./state/repo.js";
 import {
-  buildThreadRuntimeNotificationChannel,
-  parseThreadRuntimeNotification,
   PostgresThreadRuntimeStore,
   type ThreadRuntimeNotification,
 } from "../../domain/threads/runtime/postgres.js";
@@ -19,6 +15,7 @@ import {PostgresSessionStore, type SessionRecord} from "../../domain/sessions/in
 import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY,} from "./daemon.js";
 import {createPostgresPool, requireDatabaseUrl} from "./create-runtime.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
+import {listenThreadRuntimeNotifications} from "./store-notifications.js";
 
 function requireRuntimeIdentityHandle(value: string | null | undefined): string {
   const trimmed = trimToNull(value);
@@ -98,38 +95,6 @@ async function waitForRequestResult<T>(
   throw new Error(`Timed out waiting for runtime request ${requestId}.`);
 }
 
-async function listenThreadNotifications(options: {
-  pool: { connect(): Promise<PoolClient> };
-  listener: (notification: ThreadRuntimeNotification) => Promise<void> | void;
-}): Promise<() => Promise<void>> {
-  const client = await options.pool.connect();
-  const channel = buildThreadRuntimeNotificationChannel();
-  const handleNotification = (message: { channel: string; payload?: string }) => {
-    if (message.channel !== channel || typeof message.payload !== "string") {
-      return;
-    }
-
-    const notification = parseThreadRuntimeNotification(message.payload);
-    if (!notification) {
-      return;
-    }
-
-    void options.listener(notification);
-  };
-
-  client.on("notification", handleNotification);
-  await client.query(`LISTEN ${channel}`);
-
-  return async () => {
-    client.off("notification", handleNotification);
-    try {
-      await client.query(`UNLISTEN ${channel}`);
-    } finally {
-      client.release();
-    }
-  };
-}
-
 export async function createRuntimeClient(options: RuntimeClientOptions): Promise<RuntimeClient> {
   const pool = createPostgresPool({
     connectionString: requireDatabaseUrl(options.dbUrl),
@@ -171,7 +136,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
     const identity = await identityStore.getIdentityByHandle(requireRuntimeIdentityHandle(options.identity));
 
     if (options.onStoreNotification) {
-      unsubscribe = await listenThreadNotifications({
+      unsubscribe = await listenThreadRuntimeNotifications({
         pool,
         listener: options.onStoreNotification,
       });

@@ -223,6 +223,7 @@ describe("WatchRunner", () => {
 
     const transcript = await harness.threadStore.loadTranscript("session-thread");
     const input = transcript.find((entry) => entry.origin === "input" && entry.source === "watch_event");
+    expect(input?.identityId).toBe(harness.alice.id);
     expect(input?.message.role).toBe("user");
     expect(JSON.stringify(input?.message)).toContain("[Watch Event] Registrations");
     expect(JSON.stringify(input?.message)).toContain("If this session is connected to an external channel");

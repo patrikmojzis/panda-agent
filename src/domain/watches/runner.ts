@@ -241,6 +241,7 @@ export class WatchRunner {
         })),
         source: WATCH_EVENT_SOURCE,
         externalMessageId: event.event.id,
+        identityId: claim.watch.createdByIdentityId ?? session.createdByIdentityId,
         metadata: buildWatchEventMetadata(claim, event.event.id),
       });
     } catch (error) {

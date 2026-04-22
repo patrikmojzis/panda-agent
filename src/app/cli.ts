@@ -18,6 +18,7 @@ import {renderResumeHint} from "../ui/tui/exit-hint.js";
 import {registerWhatsAppCommands} from "../integrations/channels/whatsapp/cli.js";
 import {resolveBrowserRunnerOptions, startBrowserRunner} from "../integrations/browser/index.js";
 import {resolveBashRunnerOptions, startBashRunner} from "../integrations/shell/index.js";
+import {registerObserveCommand} from "../ui/observe/cli.js";
 import {registerSmokeCommand} from "./smoke/cli.js";
 
 try {
@@ -216,6 +217,7 @@ configureChatCommand(
     .command("chat")
     .description("Launch the Panda chat TUI"),
 );
+registerObserveCommand(program);
 
 program
   .command("run")

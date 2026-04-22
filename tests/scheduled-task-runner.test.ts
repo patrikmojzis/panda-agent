@@ -107,7 +107,16 @@ async function createHarness(options: {
     });
   }
 
-  const runtime = createMockRuntime(createAssistantMessage(options.responseText));
+  const runtime = createMockRuntime(
+    createAssistantMessage(options.responseText),
+    createAssistantMessage(options.responseText),
+    createAssistantMessage(options.responseText),
+    createAssistantMessage(options.responseText),
+    createAssistantMessage(options.responseText),
+    createAssistantMessage(options.responseText),
+    createAssistantMessage(options.responseText),
+    createAssistantMessage(options.responseText),
+  );
   const coordinator = new ThreadRuntimeCoordinator({
     store: threadStore,
     leaseManager: new SelectiveLeaseManager(),
@@ -193,6 +202,7 @@ describe("ScheduledTaskRunner", () => {
 
     const transcript = await harness.threadStore.loadTranscript("session-thread");
     const input = transcript.find((entry) => entry.origin === "input" && entry.source === "scheduled_task");
+    expect(input?.identityId).toBe(harness.alice.id);
     expect(JSON.stringify(input?.message)).toContain("The user is not actively watching this session right now.");
 
     const delivery = await harness.outboundDeliveries.claimNextPendingDelivery({
@@ -267,7 +277,7 @@ describe("ScheduledTaskRunner", () => {
     expect(updated.nextFireAt).toBe(Date.parse(deliverAt));
     const executeTranscript = await harness.threadStore.loadTranscript("session-thread");
     const executeInput = executeTranscript.find((entry) => entry.origin === "input" && entry.source === "scheduled_task");
-    expect(JSON.stringify(executeInput?.message)).toContain("leave the final result in the current session history");
+    expect(JSON.stringify(executeInput?.message)).toContain("leave the result in the current session history or other durable state");
     expect(await harness.outboundDeliveries.claimNextPendingDelivery({
       channel: "telegram",
       connectorKey: "bot-1",

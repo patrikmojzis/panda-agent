@@ -90,6 +90,16 @@ You can also open a session directly:
 panda chat --identity alice --session 2c8d0a1e-...
 ```
 
+Watch a session without opening chat:
+
+```bash
+panda observe --agent luna
+```
+
+`panda observe` is read-only.
+It is session-aware, so `--agent` and `--session` follow resets onto the new current thread.
+Use it when you want a second window tailing persisted activity without attaching an interactive TUI.
+
 ## Channels
 
 Channels do not bind to raw threads anymore.

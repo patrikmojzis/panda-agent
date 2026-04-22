@@ -1,11 +1,16 @@
-import type {ThinkingLevel, Tool} from "../../kernel/agent/index.js";
-import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord,} from "../../domain/threads/runtime/index.js";
-import {resolveStoredContext} from "../../app/runtime/create-runtime.js";
-import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
+import type {ThinkingLevel} from "../../kernel/agent/index.js";
+import type {ThreadRecord} from "../../domain/threads/runtime/index.js";
 import type {ChatRuntimeServices} from "./runtime.js";
-import {type EntryRole, type PendingLocalInput, type RunPhase, type TranscriptEntry,} from "./chat-shared.js";
-import {renderTranscriptEntries} from "./transcript.js";
+import {type PendingLocalInput,} from "./chat-shared.js";
 import type {SessionRecord} from "../../domain/sessions/index.js";
+import {
+  appendStoredTranscriptMessages,
+  createStoredTranscriptEntry,
+  loadStoredThreadSnapshot,
+  observeLatestStoredRun,
+  resolveStoredThreadDisplayConfig,
+  resolveStoredThreadDisplayedCwd,
+} from "../shared/stored-thread.js";
 
 export interface ChatSessionDefaults {
   sessionId?: string;
@@ -14,24 +19,7 @@ export interface ChatSessionDefaults {
   thinking?: ThinkingLevel;
 }
 
-export function resolveChatDisplayedCwd(
-  thread: ThreadRecord | null,
-  fallbackCwd: string,
-): string {
-  const context = thread?.context;
-  if (!context || typeof context !== "object" || Array.isArray(context)) {
-    return fallbackCwd;
-  }
-
-  const agentKey = typeof (context as {agentKey?: unknown}).agentKey === "string"
-    ? (context as {agentKey: string}).agentKey
-    : undefined;
-  return resolveStoredContext(
-    context,
-    {cwd: fallbackCwd},
-    agentKey,
-  ).cwd ?? fallbackCwd;
-}
+export const resolveChatDisplayedCwd = resolveStoredThreadDisplayedCwd;
 
 export function buildChatSessionDefaults(input: {
   defaultAgentKey?: string;
@@ -47,15 +35,7 @@ export function buildChatSessionDefaults(input: {
   };
 }
 
-export function resolveStoredChatDisplayConfig(thread: Pick<ThreadRecord, "model" | "thinking">): {
-  model: string;
-  thinking?: ThinkingLevel;
-} {
-  return {
-    model: thread.model ?? resolveDefaultAgentModelSelector(),
-    thinking: thread.thinking,
-  };
-}
+export const resolveStoredChatDisplayConfig = resolveStoredThreadDisplayConfig;
 
 export async function resolveInitialChatSessionThread(input: {
   services: ChatRuntimeServices;
@@ -69,65 +49,9 @@ export async function resolveInitialChatSessionThread(input: {
   return await input.services.openMainSession(input.defaults);
 }
 
-export function createChatTranscriptEntry(input: {
-  nextEntryId: number;
-  role: EntryRole;
-  title: string;
-  body: string;
-}): {entry: TranscriptEntry; nextEntryId: number} {
-  return {
-    entry: {
-      id: input.nextEntryId,
-      role: input.role,
-      title: input.title,
-      body: input.body,
-    },
-    nextEntryId: input.nextEntryId + 1,
-  };
-}
+export const createChatTranscriptEntry = createStoredTranscriptEntry;
 
-export function appendStoredChatMessages(input: {
-  records: readonly ThreadMessageRecord[];
-  visibleStoredMessageIds: Set<string>;
-  currentTools: readonly Tool[];
-  nextEntryId: number;
-}): {
-  entries: TranscriptEntry[];
-  nextEntryId: number;
-  acknowledgedPendingInputIds: string[];
-} {
-  const entries: TranscriptEntry[] = [];
-  const acknowledgedPendingInputIds: string[] = [];
-  let nextEntryId = input.nextEntryId;
-
-  for (const record of input.records) {
-    if (input.visibleStoredMessageIds.has(record.id)) {
-      continue;
-    }
-
-    input.visibleStoredMessageIds.add(record.id);
-    if (record.source === "tui" && record.actorId === "local-user" && record.externalMessageId) {
-      acknowledgedPendingInputIds.push(record.externalMessageId);
-    }
-
-    for (const entry of renderTranscriptEntries(record.message, record, input.currentTools)) {
-      const created = createChatTranscriptEntry({
-        nextEntryId,
-        role: entry.role,
-        title: entry.title,
-        body: entry.body,
-      });
-      entries.push(created.entry);
-      nextEntryId = created.nextEntryId;
-    }
-  }
-
-  return {
-    entries,
-    nextEntryId,
-    acknowledgedPendingInputIds,
-  };
-}
+export const appendStoredChatMessages = appendStoredTranscriptMessages;
 
 export function queuePendingChatInput(
   pendingLocalInputs: PendingLocalInput[],
@@ -163,62 +87,7 @@ export function pendingChatInputsForThread(
   return pendingLocalInputs.filter((entry) => entry.threadId === threadId);
 }
 
-export function observeLatestChatRun(input: {
-  runs: readonly ThreadRunRecord[];
-  lastObservedRunStatusKey: string | null;
-  currentRunStartedAt: number;
-}): {
-  changed: boolean;
-  lastObservedRunStatusKey: string | null;
-  runPhase: RunPhase;
-  runStartedAt: number;
-  errorNotice?: string;
-  shouldScheduleCloseAfterRun: boolean;
-} {
-  const latestRun = input.runs.at(-1);
-  const runKey = latestRun ? `${latestRun.id}:${latestRun.status}` : null;
-
-  if (runKey === input.lastObservedRunStatusKey) {
-    return {
-      changed: false,
-      lastObservedRunStatusKey: input.lastObservedRunStatusKey,
-      runPhase: latestRun?.status === "running" ? "thinking" : "idle",
-      runStartedAt: latestRun?.status === "running"
-        ? latestRun.startedAt
-        : input.currentRunStartedAt,
-      shouldScheduleCloseAfterRun: latestRun?.status !== "running",
-    };
-  }
-
-  if (!latestRun) {
-    return {
-      changed: true,
-      lastObservedRunStatusKey: null,
-      runPhase: "idle",
-      runStartedAt: input.currentRunStartedAt,
-      shouldScheduleCloseAfterRun: true,
-    };
-  }
-
-  if (latestRun.status === "running") {
-    return {
-      changed: true,
-      lastObservedRunStatusKey: runKey,
-      runPhase: "thinking",
-      runStartedAt: latestRun.startedAt,
-      shouldScheduleCloseAfterRun: false,
-    };
-  }
-
-  return {
-    changed: true,
-    lastObservedRunStatusKey: runKey,
-    runPhase: "idle",
-    runStartedAt: input.currentRunStartedAt,
-    errorNotice: latestRun.status === "failed" ? latestRun.error : undefined,
-    shouldScheduleCloseAfterRun: true,
-  };
-}
+export const observeLatestChatRun = observeLatestStoredRun;
 
 export function resolveSessionPickerSelection(input: {
   sessions: readonly SessionRecord[];
@@ -241,21 +110,9 @@ export function resolveSessionPickerSelection(input: {
 export async function loadChatThreadSnapshot(input: {
   services: ChatRuntimeServices;
   threadId: string;
-}): Promise<{
-  thread: ThreadRecord;
-  transcript: readonly ThreadMessageRecord[];
-  runs: readonly ThreadRunRecord[];
-}> {
-  const store = input.services.store;
-  const [thread, transcript, runs] = await Promise.all([
-    store.getThread(input.threadId),
-    store.loadTranscript(input.threadId),
-    store.listRuns(input.threadId),
-  ]);
-
-  return {
-    thread,
-    transcript,
-    runs,
-  };
+}) {
+  return loadStoredThreadSnapshot({
+    store: input.services.store,
+    threadId: input.threadId,
+  });
 }

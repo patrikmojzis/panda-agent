@@ -117,6 +117,7 @@ async function executeScheduledTaskThreadRun(options: {
   await options.coordinator.submitInput(options.threadId, {
     message: stringToUserMessage(buildScheduledTaskPrompt(options.task, options.run.scheduledFor)),
     source: SCHEDULED_TASK_SOURCE,
+    identityId: options.task.createdByIdentityId,
     metadata: buildScheduledTaskMetadata(options.task, options.run.fireKind, options.run.scheduledFor),
   });
   await options.coordinator.waitForIdle(options.threadId);

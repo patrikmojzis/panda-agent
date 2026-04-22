@@ -155,6 +155,7 @@ export class HeartbeatRunner {
       await this.coordinator.submitInput(session.currentThreadId, {
         message: stringToUserMessage(buildHeartbeatPrompt(heartbeat.nextFireAt, guidance)),
         source: HEARTBEAT_SOURCE,
+        identityId: session.createdByIdentityId,
         metadata: {
           heartbeat: {
             kind: "interval",
