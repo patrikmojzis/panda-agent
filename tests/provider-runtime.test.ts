@@ -26,7 +26,7 @@ describe("PiAiRuntime", () => {
   });
 
   it("adds a hard timeout signal to provider completions", async () => {
-    vi.stubEnv("PANDA_MODEL_TIMEOUT_MS", "10");
+    vi.stubEnv("MODEL_TIMEOUT_MS", "10");
     mocks.completeSimple.mockResolvedValue({
       role: "assistant",
       content: [],
@@ -78,5 +78,21 @@ describe("PiAiRuntime", () => {
 
     expect(options?.signal.aborted).toBe(true);
     expect(options?.signal.reason).toEqual(controller.signal.reason);
+  });
+
+  it("does not apply the hard timeout to streaming requests", () => {
+    mocks.streamSimple.mockReturnValue({} as never);
+
+    const controller = new AbortController();
+    const runtime = new PiAiRuntime();
+    runtime.stream({
+      providerName: "anthropic",
+      modelId: "claude-opus-4-7",
+      context: [] as never,
+      signal: controller.signal,
+    });
+
+    const options = mocks.streamSimple.mock.calls[0]?.[2];
+    expect(options?.signal).toBe(controller.signal);
   });
 });

@@ -5,29 +5,29 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {
-  Agent,
-  BashJobStatusTool,
-  BashJobWaitTool,
-  BashTool,
-  type LlmRuntime,
-  OutboundTool,
-  PiAiRuntime,
-  RunContext,
-  stringToUserMessage,
-  Thread,
-  Tool,
-  z,
+    Agent,
+    BashJobStatusTool,
+    BashJobWaitTool,
+    BashTool,
+    type LlmRuntime,
+    OutboundTool,
+    PiAiRuntime,
+    RunContext,
+    stringToUserMessage,
+    Thread,
+    Tool,
+    z,
 } from "../src/index.js";
 import {buildBackgroundBashThreadInput} from "../src/app/runtime/background-bash-thread-input.js";
 import {
-  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-  createCompactBoundaryMessage,
-  type CreateThreadInput,
-  type ResolvedThreadDefinition,
-  type ThreadDefinitionResolver,
-  type ThreadMessageRecord,
-  type ThreadRecord,
-  ThreadRuntimeCoordinator,
+    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+    createCompactBoundaryMessage,
+    type CreateThreadInput,
+    type ResolvedThreadDefinition,
+    type ThreadDefinitionResolver,
+    type ThreadMessageRecord,
+    type ThreadRecord,
+    ThreadRuntimeCoordinator,
 } from "../src/domain/threads/runtime/index.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
@@ -2310,6 +2310,74 @@ describe("ThreadRuntimeCoordinator", () => {
       "telegram",
       "assistant",
       "tool:echo",
+    ]);
+  });
+
+  it("fails a timed out complete call without wedging the thread for later inputs", async () => {
+    const runtime = new DeferredRuntime();
+    runtime.queue(new Promise<AssistantMessage>((_resolve, reject) => {
+      setTimeout(() => {
+        reject(new Error("Provider request timed out after 20ms."));
+      }, 20);
+    }));
+    runtime.queue(message("recovered reply"));
+    runtime.queue(message("recovered extra pass"));
+
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("provider-timeout-agent", {
+      agent: new Agent({
+        name: "provider-timeout-agent",
+        instructions: "Reply plainly.",
+      }),
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-provider-timeout",
+      agentKey: "provider-timeout-agent",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-provider-timeout", {
+      message: stringToUserMessage("first try"),
+      source: "telegram",
+    });
+
+    await expect(coordinator.waitForIdle("thread-provider-timeout")).rejects.toThrow(
+      "Provider request timed out after 20ms.",
+    );
+
+    let runs = await store.listRuns("thread-provider-timeout");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.error).toContain("Provider request timed out after 20ms.");
+    expect(await store.listRunningRuns()).toEqual([]);
+
+    await coordinator.submitInput("thread-provider-timeout", {
+      message: stringToUserMessage("second try"),
+      source: "tui",
+    });
+
+    await coordinator.waitForIdle("thread-provider-timeout");
+
+    runs = await store.listRuns("thread-provider-timeout");
+    expect(runs).toHaveLength(2);
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[1]?.status).toBe("completed");
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
+
+    const transcript = await store.loadTranscript("thread-provider-timeout");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "telegram",
+      "tui",
+      "assistant",
+      "runtime",
+      "assistant",
     ]);
   });
 });

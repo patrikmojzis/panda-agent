@@ -20,40 +20,55 @@ function resolveModelTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   return parsed;
 }
 
-function buildRuntimeOptions(request: LlmRuntimeRequest): SimpleStreamOptions {
+function buildRuntimeOptions(
+  request: LlmRuntimeRequest,
+  options: {
+    applyHardTimeout: boolean;
+  },
+): SimpleStreamOptions {
   const apiKey = resolveProviderApiKey(request.providerName);
-  const options: SimpleStreamOptions = {};
-  const timeoutSignal = AbortSignal.timeout(resolveModelTimeoutMs());
+  const runtimeOptions: SimpleStreamOptions = {};
 
-  options.signal = request.signal ? AbortSignal.any([request.signal, timeoutSignal]) : timeoutSignal;
+  if (options.applyHardTimeout) {
+    // Keep the hard wall-clock deadline on complete() only. Streaming calls can
+    // stay healthy for a long time as long as events keep flowing.
+    const timeoutSignal = AbortSignal.timeout(resolveModelTimeoutMs());
+    runtimeOptions.signal = request.signal ? AbortSignal.any([request.signal, timeoutSignal]) : timeoutSignal;
+  } else if (request.signal) {
+    runtimeOptions.signal = request.signal;
+  }
 
   if (request.temperature !== undefined) {
-    options.temperature = request.temperature;
+    runtimeOptions.temperature = request.temperature;
   }
 
   if (request.thinking) {
-    options.reasoning = request.thinking;
+    runtimeOptions.reasoning = request.thinking;
   }
 
   if (request.promptCacheKey) {
-    options.sessionId = request.promptCacheKey;
+    runtimeOptions.sessionId = request.promptCacheKey;
   }
 
   if (apiKey) {
-    options.apiKey = apiKey;
+    runtimeOptions.apiKey = apiKey;
   }
 
-  return options;
+  return runtimeOptions;
 }
 
 export class PiAiRuntime implements LlmRuntime {
   async complete(request: LlmRuntimeRequest) {
     const model = resolveProviderModel(request.providerName, request.modelId);
-    return completeSimple(model, request.context, buildRuntimeOptions(request));
+    return completeSimple(model, request.context, buildRuntimeOptions(request, {
+      applyHardTimeout: true,
+    }));
   }
 
   stream(request: LlmRuntimeRequest) {
     const model = resolveProviderModel(request.providerName, request.modelId);
-    return streamSimple(model, request.context, buildRuntimeOptions(request));
+    return streamSimple(model, request.context, buildRuntimeOptions(request, {
+      applyHardTimeout: false,
+    }));
   }
 }
