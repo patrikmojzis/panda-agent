@@ -22,6 +22,11 @@ async function loadSummary() {
     : "Freshly stale in the best possible way.";
 }
 
+async function bootstrapApp() {
+  const bootstrap = await window.panda.bootstrap();
+  window.panda.setContext(bootstrap.context ?? {});
+}
+
 async function runAction(actionName, input, successMessage) {
   setBusy(true);
   setStatus("Working...");
@@ -53,7 +58,8 @@ for (const button of buttons) {
 }
 
 setBusy(true);
-loadSummary()
+bootstrapApp()
+  .then(() => loadSummary())
   .then(() => setStatus("Ready."))
   .catch((error) => {
     setStatus(error instanceof Error ? error.message : String(error));

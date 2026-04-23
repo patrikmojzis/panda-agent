@@ -1,0 +1,107 @@
+{
+  "open_incident": {
+    "description": "Open a shared incident, record an activity event, and wake Panda.",
+    "mode": "native+wake",
+    "wakeMessage": "A {{input.severity}} incident was opened: {{input.title}}. Owner {{input.owner}}. Source {{input.source}}. Follow up only if coordination would help.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["opened_at", "title", "severity"],
+      "properties": {
+        "opened_at": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "description": "Date in YYYY-MM-DD format."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 140
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"]
+        },
+        "owner": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "source": {
+          "type": "string",
+          "enum": ["user", "watch", "integration", "manual"]
+        },
+        "due_on": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10
+        },
+        "details": {
+          "type": "string",
+          "maxLength": 900
+        }
+      }
+    },
+    "sql": [
+      "insert into incidents (opened_at, due_on, title, severity, status, owner, source, details, created_at) values (:opened_at, coalesce(nullif(:due_on, ''), date(:now, '+1 day')), :title, :severity, 'investigating', nullif(:owner, ''), coalesce(nullif(:source, ''), 'manual'), nullif(:details, ''), :now)",
+      "insert into incident_events (incident_id, event_type, note, created_at) values (last_insert_rowid(), 'opened', coalesce(nullif(:details, ''), :title), :now)"
+    ]
+  },
+  "triage_incident": {
+    "description": "Update incident status, owner, and due date without waking Panda.",
+    "mode": "native",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": ["investigating", "watching", "mitigated", "resolved"]
+        },
+        "owner": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "due_on": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10
+        }
+      }
+    },
+    "sql": [
+      "update incidents set status = :status, owner = coalesce(nullif(:owner, ''), owner), due_on = coalesce(nullif(:due_on, ''), due_on), resolved_at = case when :status = 'resolved' then :now else resolved_at end where id = :id",
+      "insert into incident_events (incident_id, event_type, note, created_at) values (:id, 'triaged', 'status=' || :status, :now)"
+    ]
+  },
+  "resolve_incident": {
+    "description": "Resolve one incident and wake Panda with the outcome.",
+    "mode": "native+wake",
+    "wakeMessage": "Incident {{input.id}} was resolved. Outcome: {{input.note}}",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "note"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "note": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        }
+      }
+    },
+    "sql": [
+      "update incidents set status = 'resolved', resolved_at = :now where id = :id",
+      "insert into incident_events (incident_id, event_type, note, created_at) values (:id, 'resolved', :note, :now)"
+    ]
+  }
+}

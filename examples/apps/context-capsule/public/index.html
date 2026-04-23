@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Context Capsule</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./app.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Personal Context</p>
+          <h1>Context Capsule</h1>
+          <p class="lede">Capture durable memory cards without making chat carry every tiny fact by hand.</p>
+        </div>
+        <div class="identity-chip" data-identity-chip>identity: --</div>
+      </section>
+
+      <section class="missing hidden" data-missing-identity>
+        <h2>Identity missing</h2>
+        <p>Use a local dev URL with <code>?identityId=demo-identity</code>, or open a signed link from <code>app_link_create</code>.</p>
+      </section>
+
+      <section class="dashboard" data-dashboard>
+        <section class="stats" data-summary-cards></section>
+
+        <section class="grid">
+          <section class="panel">
+            <div class="section-head">
+              <h2>Search Cards</h2>
+              <p>Find active cards by title, details, or tag.</p>
+            </div>
+            <form class="search-form" data-search-form>
+              <label>
+                <span>Query</span>
+                <input name="query" type="search" placeholder="micro-app, style, project">
+              </label>
+              <label>
+                <span>Tag</span>
+                <select name="tag">
+                  <option value="">Any tag</option>
+                  <option value="work">Work</option>
+                  <option value="home">Home</option>
+                  <option value="taste">Taste</option>
+                  <option value="health">Health</option>
+                  <option value="people">People</option>
+                  <option value="project">Project</option>
+                  <option value="follow-up">Follow-up</option>
+                  <option value="style">Style</option>
+                </select>
+              </label>
+              <button type="submit">Search</button>
+            </form>
+            <div class="card-list" data-card-list></div>
+            <div class="list-actions">
+              <button type="button" class="ghost" data-load-more>Load More</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <h2>Capture</h2>
+              <p>Save facts Panda can use later when they matter.</p>
+            </div>
+            <form data-capture-form>
+              <label>
+                <span>Date</span>
+                <input name="captured_on" type="date" required>
+              </label>
+              <label>
+                <span>Kind</span>
+                <select name="kind" required>
+                  <option value="fact">Fact</option>
+                  <option value="preference">Preference</option>
+                  <option value="project">Project</option>
+                  <option value="reminder">Reminder</option>
+                </select>
+              </label>
+              <label>
+                <span>Title</span>
+                <input name="title" required minlength="3" maxlength="120" placeholder="What should Panda remember?">
+              </label>
+              <label>
+                <span>Details</span>
+                <textarea name="details" rows="4" maxlength="900" placeholder="Optional nuance."></textarea>
+              </label>
+              <label>
+                <span>Confidence <strong data-confidence-value>4</strong>/5</span>
+                <input name="confidence" type="range" min="1" max="5" step="1" value="4">
+              </label>
+              <fieldset>
+                <legend>Tags</legend>
+                <div class="check-grid">
+                  <label><input type="checkbox" name="tags" value="work"> Work</label>
+                  <label><input type="checkbox" name="tags" value="home"> Home</label>
+                  <label><input type="checkbox" name="tags" value="taste"> Taste</label>
+                  <label><input type="checkbox" name="tags" value="health"> Health</label>
+                  <label><input type="checkbox" name="tags" value="people"> People</label>
+                  <label><input type="checkbox" name="tags" value="project"> Project</label>
+                  <label><input type="checkbox" name="tags" value="follow-up"> Follow-up</label>
+                  <label><input type="checkbox" name="tags" value="style"> Style</label>
+                </div>
+              </fieldset>
+              <label>
+                <span>Review On</span>
+                <input name="review_on" type="date">
+              </label>
+              <div class="form-actions">
+                <button type="submit">Capture Card</button>
+                <p class="status" data-form-status>Ready.</p>
+              </div>
+            </form>
+          </section>
+        </section>
+
+        <section class="grid lower-grid">
+          <section class="panel">
+            <div class="section-head">
+              <h2>Due Review</h2>
+              <p>Cards that need a quick freshness check.</p>
+            </div>
+            <div class="card-list compact" data-review-list></div>
+          </section>
+          <section class="panel">
+            <div class="section-head">
+              <h2>Kind Breakdown</h2>
+              <p>A quick read on what this identity remembers.</p>
+            </div>
+            <div class="bars" data-kind-breakdown></div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/panda-app-sdk.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,89 @@
+{
+  "capture_card": {
+    "description": "Capture one memory card for the current identity and wake Panda.",
+    "mode": "native+wake",
+    "wakeMessage": "The user captured a {{input.kind}} memory card titled {{input.title}} with tags {{input.tags}} and confidence {{input.confidence}}/5. Use it only if it helps future context.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["captured_on", "kind", "title", "confidence"],
+      "properties": {
+        "captured_on": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "description": "Date in YYYY-MM-DD format."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["fact", "preference", "project", "reminder"]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "details": {
+          "type": "string",
+          "maxLength": 900
+        },
+        "confidence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["work", "home", "taste", "health", "people", "project", "follow-up", "style"]
+          },
+          "maxItems": 5
+        },
+        "review_on": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10
+        }
+      }
+    },
+    "sql": "insert into memory_cards (identity_id, captured_on, kind, title, details, confidence, tags_json, review_on, created_at) values (:identityId, :captured_on, :kind, :title, nullif(:details, ''), :confidence, coalesce(:tags, '[]'), coalesce(nullif(:review_on, ''), date(:now, '+14 days')), :now)"
+  },
+  "archive_card": {
+    "description": "Archive one memory card for the current identity.",
+    "mode": "native",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "sql": "update memory_cards set archived_at = :now where id = :id and identity_id = :identityId"
+  },
+  "snooze_review": {
+    "description": "Move a card's review date forward and wake Panda with a tiny note.",
+    "mode": "native+wake",
+    "wakeMessage": "The user snoozed memory card {{input.id}} for {{input.days}} days. No follow-up needed unless this changes an active plan.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "days"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "days": {
+          "type": "integer",
+          "enum": [7, 14, 30]
+        }
+      }
+    },
+    "sql": "update memory_cards set review_on = date(:now, '+' || :days || ' days') where id = :id and identity_id = :identityId"
+  }
+}

@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ops Radar</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./app.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Operations Board</p>
+          <h1>Ops Radar</h1>
+          <p class="lede">One shared incident board for tracking watches, regressions, and follow-up.</p>
+        </div>
+        <div class="app-chip" data-app-chip>loading...</div>
+      </section>
+
+      <section class="stats" data-summary-cards></section>
+
+      <section class="layout">
+        <section class="panel incidents">
+          <div class="section-head">
+            <h2>Incidents</h2>
+            <p>Filter active work by state, severity, or text.</p>
+          </div>
+
+          <form class="filters" data-filter-form>
+            <label>
+              <span>Status</span>
+              <select name="status">
+                <option value="">Any</option>
+                <option value="investigating">Investigating</option>
+                <option value="watching">Watching</option>
+                <option value="mitigated">Mitigated</option>
+                <option value="resolved">Resolved</option>
+              </select>
+            </label>
+            <label>
+              <span>Severity</span>
+              <select name="severity">
+                <option value="">Any</option>
+                <option value="critical">Critical</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+            </label>
+            <label>
+              <span>Search</span>
+              <input name="query" type="search" placeholder="csrf, telegram, report">
+            </label>
+            <button type="submit">Apply</button>
+          </form>
+
+          <div class="incident-list" data-incident-list></div>
+          <div class="list-actions">
+            <button type="button" class="ghost" data-load-more>Load More</button>
+          </div>
+        </section>
+
+        <aside class="side">
+          <section class="panel">
+            <div class="section-head">
+              <h2>Open Incident</h2>
+              <p>Create a record when something needs attention.</p>
+            </div>
+            <form data-open-form>
+              <label>
+                <span>Opened</span>
+                <input name="opened_at" type="date" required>
+              </label>
+              <label>
+                <span>Title</span>
+                <input name="title" required minlength="4" maxlength="140" placeholder="What needs attention?">
+              </label>
+              <label>
+                <span>Severity</span>
+                <select name="severity" required>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="critical">Critical</option>
+                  <option value="low">Low</option>
+                </select>
+              </label>
+              <label>
+                <span>Owner</span>
+                <input name="owner" maxlength="80" placeholder="Panda">
+              </label>
+              <label>
+                <span>Source</span>
+                <select name="source">
+                  <option value="manual">Manual</option>
+                  <option value="user">User</option>
+                  <option value="watch">Watch</option>
+                  <option value="integration">Integration</option>
+                </select>
+              </label>
+              <label>
+                <span>Due</span>
+                <input name="due_on" type="date">
+              </label>
+              <label>
+                <span>Details</span>
+                <textarea name="details" rows="4" maxlength="900" placeholder="What changed, and what should happen next?"></textarea>
+              </label>
+              <div class="form-actions">
+                <button type="submit">Open</button>
+                <p class="status" data-form-status>Ready.</p>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <h2>Severity Lanes</h2>
+              <p>Active work grouped by urgency.</p>
+            </div>
+            <div class="bars" data-severity-lanes></div>
+          </section>
+        </aside>
+      </section>
+
+      <section class="panel activity">
+        <div class="section-head">
+          <h2>Activity</h2>
+          <p>Recent changes across the board.</p>
+        </div>
+        <div class="activity-list" data-activity-list></div>
+      </section>
+    </main>
+
+    <script src="/panda-app-sdk.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

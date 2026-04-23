@@ -1,0 +1,5 @@
+{
+  "name": "Context Capsule",
+  "description": "Identity-scoped memory cards with search, tags, review queues, pagination, and wake-backed capture.",
+  "identityScoped": true
+}

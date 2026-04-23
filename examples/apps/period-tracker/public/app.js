@@ -327,9 +327,14 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-form.elements.namedItem("logged_on").value = todayValue();
-energyValueNode.textContent = energyInput.value;
+async function main() {
+  const bootstrap = await window.panda.bootstrap();
+  window.panda.setContext(bootstrap.context ?? {});
+  form.elements.namedItem("logged_on").value = todayValue();
+  energyValueNode.textContent = energyInput.value;
+  await refreshDashboard();
+}
 
-refreshDashboard().catch((error) => {
+main().catch((error) => {
   setFormStatus(error instanceof Error ? error.message : String(error));
 });

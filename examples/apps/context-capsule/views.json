@@ -1,0 +1,32 @@
+{
+  "summary": {
+    "description": "Return memory-card counts for one identity.",
+    "sql": "select count(*) as total_cards, sum(case when archived_at is null then 1 else 0 end) as active_cards, sum(case when archived_at is null and kind = 'preference' then 1 else 0 end) as preferences, sum(case when archived_at is null and review_on <= date(:now) then 1 else 0 end) as due_for_review from memory_cards where identity_id = :identityId"
+  },
+  "kind_breakdown": {
+    "description": "Return active card counts by kind for one identity.",
+    "sql": "select kind, count(*) as count from memory_cards where identity_id = :identityId and archived_at is null group by kind order by case kind when 'fact' then 1 when 'preference' then 2 when 'project' then 3 when 'reminder' then 4 else 99 end"
+  },
+  "review_queue": {
+    "description": "Return active cards due for review, optionally filtered by kind.",
+    "sql": "select id, captured_on, kind, title, details, confidence, tags_json, review_on from memory_cards where identity_id = :identityId and archived_at is null and review_on <= date(:now) and (:kind is null or :kind = '' or kind = :kind) order by review_on asc, confidence asc, id desc",
+    "pagination": {
+      "mode": "offset",
+      "defaultPageSize": 6,
+      "maxPageSize": 18
+    }
+  },
+  "search_cards": {
+    "description": "Search active memory cards by text and optional tag.",
+    "sql": "select id, captured_on, kind, title, details, confidence, tags_json, review_on from memory_cards where identity_id = :identityId and archived_at is null and (:query is null or :query = '' or lower(title || ' ' || coalesce(details, '')) like '%' || lower(:query) || '%') and (:tag is null or :tag = '' or exists (select 1 from json_each(memory_cards.tags_json) where value = :tag)) order by captured_on desc, id desc",
+    "pagination": {
+      "mode": "offset",
+      "defaultPageSize": 8,
+      "maxPageSize": 24
+    }
+  },
+  "recent_cards": {
+    "description": "Return recently captured active memory cards.",
+    "sql": "select id, captured_on, kind, title, details, confidence, tags_json, review_on from memory_cards where identity_id = :identityId and archived_at is null order by captured_on desc, id desc limit 10"
+  }
+}

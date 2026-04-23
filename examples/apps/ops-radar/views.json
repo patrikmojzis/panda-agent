@@ -1,0 +1,28 @@
+{
+  "summary": {
+    "description": "Return top-line shared incident counts.",
+    "sql": "select count(*) as total_incidents, sum(case when status != 'resolved' then 1 else 0 end) as active_incidents, sum(case when status = 'watching' then 1 else 0 end) as watching, sum(case when severity = 'critical' and status != 'resolved' then 1 else 0 end) as active_critical from incidents"
+  },
+  "severity_lanes": {
+    "description": "Return active incident counts grouped by severity.",
+    "sql": "select severity, count(*) as count from incidents where status != 'resolved' group by severity order by case severity when 'critical' then 1 when 'high' then 2 when 'medium' then 3 when 'low' then 4 else 99 end"
+  },
+  "incident_list": {
+    "description": "Return incidents with optional status, severity, and text filters.",
+    "sql": "select id, opened_at, due_on, title, severity, status, owner, source, details from incidents where (:status is null or :status = '' or status = :status) and (:severity is null or :severity = '' or severity = :severity) and (:query is null or :query = '' or lower(title || ' ' || coalesce(details, '') || ' ' || coalesce(owner, '')) like '%' || lower(:query) || '%') order by case status when 'investigating' then 1 when 'watching' then 2 when 'mitigated' then 3 when 'resolved' then 4 else 99 end, case severity when 'critical' then 1 when 'high' then 2 when 'medium' then 3 when 'low' then 4 else 99 end, opened_at desc, id desc",
+    "pagination": {
+      "mode": "offset",
+      "defaultPageSize": 7,
+      "maxPageSize": 21
+    }
+  },
+  "activity_feed": {
+    "description": "Return recent incident activity with offset pagination.",
+    "sql": "select e.id, e.incident_id, i.title, e.event_type, e.note, e.created_at from incident_events e join incidents i on i.id = e.incident_id order by e.created_at desc, e.id desc",
+    "pagination": {
+      "mode": "offset",
+      "defaultPageSize": 8,
+      "maxPageSize": 32
+    }
+  }
+}

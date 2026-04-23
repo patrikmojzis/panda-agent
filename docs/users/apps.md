@@ -420,6 +420,8 @@ In-repo examples live at:
 
 - `examples/apps/counter`
 - `examples/apps/period-tracker`
+- `examples/apps/context-capsule`
+- `examples/apps/ops-radar`
 
 ## Current Limits
 

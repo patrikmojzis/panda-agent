@@ -2,7 +2,8 @@
 
 This is the first non-toy app in the repo.
 
-It is identity-scoped, so open it with a query string like `?identityHandle=angelina`.
+It is identity-scoped. For deterministic local demo data, open it with `?identityId=angelina`.
+For real human use, create an app link with `app_link_create`; the signed app session carries the current input identity.
 The `log_entry` action uses `native+wake`, so HTTP writes can also wake Panda's main session for a short follow-up.
 
 Bootstrap the SQLite file:

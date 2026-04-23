@@ -20,6 +20,10 @@
   "reset": {
     "description": "Reset the counter to zero.",
     "mode": "native",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false
+    },
     "sql": "update counter set value = 0, updated_at = :now"
   }
 }
