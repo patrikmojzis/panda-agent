@@ -91,12 +91,34 @@ export interface AgentAppDefinition {
   description?: string;
   identityScoped: boolean;
   appDir: string;
+  manifestPath: string;
+  viewsPath: string;
+  actionsPath: string;
   publicDir: string;
   entryHtmlPath: string;
   hasUi: boolean;
   dbPath: string;
   views: Readonly<Record<string, AgentAppViewDefinition>>;
   actions: Readonly<Record<string, AgentAppActionDefinition>>;
+}
+
+export interface AgentAppDiagnosticIssue {
+  file: string;
+  path?: string;
+  message: string;
+}
+
+export interface AgentAppCheckResult {
+  appSlug: string;
+  appDir: string;
+  ok: boolean;
+  errors: readonly AgentAppDiagnosticIssue[];
+  warnings: readonly AgentAppDiagnosticIssue[];
+}
+
+export interface AgentAppInspectionResult {
+  apps: readonly AgentAppDefinition[];
+  brokenApps: readonly AgentAppCheckResult[];
 }
 
 export interface AgentAppViewPage {

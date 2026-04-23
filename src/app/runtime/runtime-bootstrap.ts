@@ -33,7 +33,7 @@ import {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
-import {AppActionTool, AppCreateTool, AppListTool, AppViewTool} from "../../panda/tools/app-tools.js";
+import {AppActionTool, AppCheckTool, AppCreateTool, AppListTool, AppViewTool} from "../../panda/tools/app-tools.js";
 import {WikiTool} from "../../panda/tools/wiki-tool.js";
 import {
   resolveTelepathyEnabled,
@@ -414,6 +414,7 @@ export async function bootstrapRuntime(
     });
     const appCreateTool = new AppCreateTool(apps);
     const appListTool = new AppListTool(apps);
+    const appCheckTool = new AppCheckTool(apps);
     const appViewTool = new AppViewTool(apps);
     const appActionTool = new AppActionTool(apps);
     const wikiEnabled = Boolean(
@@ -487,6 +488,7 @@ export async function bootstrapRuntime(
       }),
       appCreateTool,
       appListTool,
+      appCheckTool,
       appViewTool,
       appActionTool,
       ...(wikiTool ? [wikiTool] : []),

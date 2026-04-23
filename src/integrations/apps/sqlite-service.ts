@@ -7,13 +7,20 @@ import type {
   AgentAppActionInputSchema,
   AgentAppActionMode,
   AgentAppActionResult,
+  AgentAppCheckResult,
+  AgentAppDiagnosticIssue,
   AgentAppDefinition,
   AgentAppInputField,
+  AgentAppInspectionResult,
   AgentAppScalarInputField,
   AgentAppViewResult,
 } from "../../domain/apps/types.js";
 import {normalizeAgentAppSlug, readAgentAppRequiredInputKeys} from "../../domain/apps/types.js";
-import {FileSystemAgentAppRegistry, type FileSystemAgentAppRegistryOptions,} from "./fs-registry.js";
+import {
+  AgentAppDefinitionError,
+  FileSystemAgentAppRegistry,
+  type FileSystemAgentAppRegistryOptions,
+} from "./fs-registry.js";
 
 const RESERVED_PARAM_KEYS = new Set([
   "agentKey",
@@ -538,6 +545,7 @@ function buildBlankReadme(input: {
     "",
     "## Current State",
     "",
+    "- This README is scaffold-time guidance. After you edit the app, trust the actual files over this checklist.",
     identityLine.trimEnd(),
     schemaLine.trimEnd(),
     "- `views.json` is empty.",
@@ -550,8 +558,9 @@ function buildBlankReadme(input: {
     "2. Apply that schema to `data/app.sqlite`.",
     "3. Add readonly queries to `views.json`.",
     "4. Add fixed actions to `actions.json`. Prefer `inputSchema` over loose payloads.",
-    "5. Replace the placeholder UI in `public/`.",
-    "6. Start Panda with `panda run`. The app server starts automatically with the daemon.",
+    "5. Run `app_check` if Panda says the app is invalid or the UI/tool contract feels weird.",
+    "6. Replace the placeholder UI in `public/`.",
+    "7. Start Panda with `panda run`. The app server starts automatically with the daemon.",
     "",
     "## Apply Schema",
     "",
@@ -623,6 +632,27 @@ export class AgentAppService {
 
   async listApps(agentKey: string): Promise<readonly AgentAppDefinition[]> {
     return this.registry.listApps(agentKey);
+  }
+
+  async inspectApps(agentKey: string): Promise<AgentAppInspectionResult> {
+    return this.registry.inspectApps(agentKey);
+  }
+
+  async checkApps(
+    agentKey: string,
+    options: {
+      appSlug?: string;
+    } = {},
+  ): Promise<readonly AgentAppCheckResult[]> {
+    const inspection = options.appSlug
+      ? await this.inspectSingleApp(agentKey, options.appSlug)
+      : await this.registry.inspectApps(agentKey);
+    const checks = await Promise.all([
+      ...inspection.apps.map((app) => this.checkLoadedApp(app)),
+      ...inspection.brokenApps.map((brokenApp) => Promise.resolve(brokenApp)),
+    ]);
+
+    return checks.sort((left, right) => left.appSlug.localeCompare(right.appSlug));
   }
 
   async getApp(agentKey: string, appSlug: string): Promise<AgentAppDefinition> {
@@ -899,5 +929,107 @@ export class AgentAppService {
     ];
 
     return lines.filter((line): line is string => Boolean(line)).join("\n");
+  }
+
+  private async inspectSingleApp(
+    agentKey: string,
+    appSlug: string,
+  ): Promise<AgentAppInspectionResult> {
+    const normalizedSlug = normalizeAgentAppSlug(appSlug);
+    const appDir = path.join(this.registry.resolveAppsDir(agentKey), normalizedSlug);
+    try {
+      const app = await this.registry.getApp(agentKey, normalizedSlug);
+      return {
+        apps: [app],
+        brokenApps: [],
+      };
+    } catch (error) {
+      return {
+        apps: [],
+        brokenApps: [{
+          appSlug: normalizedSlug,
+          appDir,
+          ok: false,
+          errors: error instanceof AgentAppDefinitionError
+            ? error.issues
+            : [{
+              file: appDir,
+              message: error instanceof Error ? error.message : String(error),
+            }],
+          warnings: [],
+        }],
+      };
+    }
+  }
+
+  private async checkLoadedApp(app: AgentAppDefinition): Promise<AgentAppCheckResult> {
+    const errors: AgentAppDiagnosticIssue[] = [];
+    const warnings: AgentAppDiagnosticIssue[] = [];
+    const schemaPath = path.join(app.appDir, "schema.sql");
+    if (!await pathExists(schemaPath)) {
+      warnings.push({
+        file: schemaPath,
+        message: "schema.sql is missing.",
+      });
+    }
+
+    if (!await pathExists(app.dbPath)) {
+      warnings.push({
+        file: app.dbPath,
+        message: "data/app.sqlite is missing, so SQL prepare checks were skipped.",
+      });
+      return {
+        appSlug: app.slug,
+        appDir: app.appDir,
+        ok: errors.length === 0,
+        errors,
+        warnings,
+      };
+    }
+
+    const db = openAppDatabase(app);
+    try {
+      db.exec("PRAGMA foreign_keys = ON;");
+      for (const [viewName, definition] of Object.entries(app.views)) {
+        try {
+          if (definition.pagination?.mode === "offset") {
+            db.prepare(`SELECT * FROM (${definition.sql}) AS app_view LIMIT :limit_plus_one OFFSET :offset`);
+          } else {
+            db.prepare(definition.sql);
+          }
+        } catch (error) {
+          errors.push({
+            file: app.viewsPath,
+            path: `${viewName}.sql`,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      for (const [actionName, definition] of Object.entries(app.actions)) {
+        const statements = readActionStatements(definition);
+        for (const [index, statement] of statements.entries()) {
+          try {
+            db.prepare(statement);
+          } catch (error) {
+            errors.push({
+              file: app.actionsPath,
+              path: statements.length === 1 ? `${actionName}.sql` : `${actionName}.sql[${index}]`,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
+    } finally {
+      db.close();
+    }
+
+    return {
+      appSlug: app.slug,
+      appDir: app.appDir,
+      ok: errors.length === 0,
+      errors,
+      warnings,
+    };
   }
 }
