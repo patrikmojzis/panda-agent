@@ -17,11 +17,15 @@ export const APP_SESSION_COOKIE_PREFIX = "panda_app_session_";
 export const DEFAULT_APP_LAUNCH_TOKEN_TTL_MS = 10 * 60 * 1000;
 export const DEFAULT_APP_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
+function buildCookieNameSuffix(agentKey: string, appSlug: string): string {
+  return `${agentKey.length}_${agentKey}_${appSlug.length}_${appSlug}`.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
 export function buildAgentAppCookieNames(agentKey: string, appSlug: string): {
   csrf: string;
   session: string;
 } {
-  const suffix = `${agentKey}_${appSlug}`.replace(/[^A-Za-z0-9_-]/g, "_");
+  const suffix = buildCookieNameSuffix(agentKey, appSlug);
   return {
     csrf: `${APP_CSRF_COOKIE_PREFIX}${suffix}`,
     session: `${APP_SESSION_COOKIE_PREFIX}${suffix}`,

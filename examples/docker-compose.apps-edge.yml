@@ -1,9 +1,25 @@
 services:
+  panda-core:
+    environment:
+      PANDA_APPS_AUTH: required
+      PANDA_APPS_BASE_URL: ${PANDA_APPS_BASE_URL:?PANDA_APPS_BASE_URL is required when exposing public apps}
+    networks:
+      - apps_edge_net
+
   caddy:
     image: caddy:2
     restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
     environment:
-      PANDA_APPS_PUBLIC_HOST: ${PANDA_APPS_PUBLIC_HOST:-panda.patrikmojzis.com}
+      PANDA_APPS_PUBLIC_HOST: ${PANDA_APPS_PUBLIC_HOST:?PANDA_APPS_PUBLIC_HOST is required when exposing public apps}
     ports:
       - "80:80"
       - "443:443"
@@ -15,10 +31,10 @@ services:
       panda-core:
         condition: service_healthy
     networks:
-      - runner_net
+      - apps_edge_net
 
 networks:
-  runner_net:
+  apps_edge_net:
 
 volumes:
   caddy_data:

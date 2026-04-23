@@ -1,7 +1,7 @@
 import {randomUUID} from "node:crypto";
 import {createServer, type IncomingMessage, type Server} from "node:http";
 import path from "node:path";
-import {access, readFile} from "node:fs/promises";
+import {access, readFile, realpath, stat} from "node:fs/promises";
 
 import type {IdentityStore} from "../../domain/identity/store.js";
 import type {SessionRecord} from "../../domain/sessions/types.js";
@@ -58,7 +58,11 @@ function parsePort(value: string, label: string): number {
 }
 
 function splitPathname(pathname: string): string[] {
-  return pathname.split("/").filter(Boolean).map((segment) => decodeURIComponent(segment));
+  try {
+    return pathname.split("/").filter(Boolean).map((segment) => decodeURIComponent(segment));
+  } catch {
+    throw new AgentAppRequestError(400, "Malformed request path.");
+  }
 }
 
 function contentTypeForFile(filePath: string): string {
@@ -82,6 +86,29 @@ function ensureContainedPath(baseDir: string, relativePath: string): string {
   }
 
   return resolved;
+}
+
+function isContainedPath(baseDir: string, targetPath: string): boolean {
+  const relative = path.relative(baseDir, targetPath);
+  return !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+async function ensureRealContainedPath(rootDir: string, baseDir: string, targetPath: string): Promise<string> {
+  const [realRootDir, realBaseDir, realTargetPath] = await Promise.all([
+    realpath(rootDir),
+    realpath(baseDir),
+    realpath(targetPath),
+  ]);
+  if (!isContainedPath(realRootDir, realBaseDir) || !isContainedPath(realBaseDir, realTargetPath)) {
+    throw new AgentAppRequestError(404, "Static asset not found.");
+  }
+
+  const targetStats = await stat(realTargetPath);
+  if (!targetStats.isFile() || targetStats.nlink > 1) {
+    throw new AgentAppRequestError(404, "Static asset not found.");
+  }
+
+  return realTargetPath;
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -118,7 +145,7 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
     return JSON.parse(raw) as unknown;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Request body must be valid JSON: ${message}`);
+    throw new AgentAppRequestError(400, `Request body must be valid JSON: ${message}`);
   }
 }
 
@@ -144,6 +171,47 @@ function ensureBaseUrl(baseUrl: string): string {
 
 function joinBaseUrl(baseUrl: string, relativePath: string): string {
   return new URL(relativePath.replace(/^\/+/, ""), ensureBaseUrl(baseUrl)).toString();
+}
+
+function isLocalAppsHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return normalized === "localhost"
+    || normalized.endsWith(".localhost")
+    || normalized === "127.0.0.1"
+    || normalized === "::1";
+}
+
+function readPublicAppsBaseUrl(env: NodeJS.ProcessEnv): URL | null {
+  const raw = trimToNull(env.PANDA_APPS_BASE_URL);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return new URL(raw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid PANDA_APPS_BASE_URL value: ${message}`);
+  }
+}
+
+function assertSafePublicAppsBaseUrl(env: NodeJS.ProcessEnv): void {
+  const publicBaseUrl = readPublicAppsBaseUrl(env);
+  if (!publicBaseUrl) {
+    return;
+  }
+  if (
+    publicBaseUrl.username
+    || publicBaseUrl.password
+    || publicBaseUrl.search
+    || publicBaseUrl.hash
+    || publicBaseUrl.pathname !== "/"
+  ) {
+    throw new Error("PANDA_APPS_BASE_URL must be a plain origin like https://apps.example.com.");
+  }
+  if (publicBaseUrl.protocol !== "https:" && !isLocalAppsHostname(publicBaseUrl.hostname)) {
+    throw new Error("PANDA_APPS_BASE_URL must use https:// for non-local app hosts.");
+  }
 }
 
 function escapeHtml(value: string): string {
@@ -211,18 +279,22 @@ export function resolveAgentAppAuthMode(env: NodeJS.ProcessEnv = process.env): A
 }
 
 function resolveCookieSecure(env: NodeJS.ProcessEnv): boolean {
+  const publicBaseUrl = readPublicAppsBaseUrl(env);
   const raw = trimToNull(env.PANDA_APPS_COOKIE_SECURE)?.toLowerCase();
   if (raw) {
     if (["true", "1", "on"].includes(raw)) {
       return true;
     }
     if (["false", "0", "off"].includes(raw)) {
+      if (publicBaseUrl && !isLocalAppsHostname(publicBaseUrl.hostname)) {
+        throw new Error("PANDA_APPS_COOKIE_SECURE=false is only allowed for local app hosts.");
+      }
       return false;
     }
     throw new Error(`Invalid PANDA_APPS_COOKIE_SECURE value: ${raw}`);
   }
 
-  return trimToNull(env.PANDA_APPS_BASE_URL)?.startsWith("https://") ?? false;
+  return publicBaseUrl?.protocol === "https:" || false;
 }
 
 function resolveSessionTtlMs(env: NodeJS.ProcessEnv): number {
@@ -276,9 +348,23 @@ function parseAppUiPath(parts: readonly string[]): {
 }
 
 function setAppSecurityHeaders(response: import("node:http").ServerResponse): void {
+  response.setHeader("cache-control", "no-store");
   response.setHeader("x-content-type-options", "nosniff");
   response.setHeader("referrer-policy", "no-referrer");
   response.setHeader("x-frame-options", "DENY");
+  response.setHeader(
+    "permissions-policy",
+    [
+      "camera=()",
+      "microphone=()",
+      "geolocation=()",
+      "payment=()",
+      "usb=()",
+      "serial=()",
+      "bluetooth=()",
+      "clipboard-read=()",
+    ].join(", "),
+  );
   response.setHeader(
     "content-security-policy",
     [
@@ -288,6 +374,10 @@ function setAppSecurityHeaders(response: import("node:http").ServerResponse): vo
       "script-src 'self'",
       "style-src 'self' 'unsafe-inline'",
       "font-src 'self' data:",
+      "worker-src 'none'",
+      "child-src 'none'",
+      "frame-src 'none'",
+      "manifest-src 'none'",
       "base-uri 'none'",
       "form-action 'self'",
       "frame-ancestors 'none'",
@@ -340,15 +430,8 @@ function serializeCookie(input: {
 }
 
 function readClientKey(request: IncomingMessage): string {
-  const forwarded = request.headers["x-forwarded-for"];
-  const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-  // Caddy is configured to overwrite X-Forwarded-For with one remote host.
-  // If a proxy appends a chain instead, fall back to the socket address rather
-  // than trusting a client-controlled first value.
-  const forwardedAddress = forwardedValue?.trim();
-  if (forwardedAddress && !forwardedAddress.includes(",")) {
-    return forwardedAddress;
-  }
+  // Do not trust X-Forwarded-For here. If 8092 is accidentally exposed, client
+  // supplied forwarding headers must not become a rate-limit bypass.
   return request.socket.remoteAddress || "unknown";
 }
 
@@ -392,7 +475,7 @@ function createRateLimiter(maxPerMinute: number): (key: string) => boolean {
 function buildSdkScript(): string {
   return `(() => {
   const trim = (value) => typeof value === "string" && value.trim() ? value.trim() : undefined;
-  const cookieSuffix = (agentKey, appSlug) => \`\${agentKey}_\${appSlug}\`.replace(/[^A-Za-z0-9_-]/g, "_");
+  const cookieSuffix = (agentKey, appSlug) => \`\${agentKey.length}_\${agentKey}_\${appSlug.length}_\${appSlug}\`.replace(/[^A-Za-z0-9_-]/g, "_");
   const readCookie = (name) => {
     const prefix = \`\${name}=\`;
     const match = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix));
@@ -671,6 +754,7 @@ export function resolveAgentAppUrls(input: {
   binding?: AgentAppServerBinding;
 }): AgentAppUrls {
   const env = input.env ?? process.env;
+  assertSafePublicAppsBaseUrl(env);
   const binding = input.binding ?? resolveOptionalAgentAppServerBinding({
     hostEnvKey: "PANDA_APPS_HOST",
     portEnvKey: "PANDA_APPS_PORT",
@@ -701,6 +785,7 @@ export function resolveAgentAppUrls(input: {
 
 export async function startAgentAppServer(options: AgentAppServerOptions): Promise<AgentAppServer> {
   const env = options.env ?? process.env;
+  assertSafePublicAppsBaseUrl(env);
   const authMode = options.authMode ?? resolveAgentAppAuthMode(env);
   if (authMode === "required" && !options.auth) {
     throw new Error("PANDA_APPS_AUTH requires an app auth service.");
@@ -715,7 +800,7 @@ export async function startAgentAppServer(options: AgentAppServerOptions): Promi
       if (!rateLimitAllows(readClientKey(request))) {
         throw new AgentAppRequestError(429, "Too many app requests. Try again in a minute.");
       }
-      const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "apps.local"}`);
+      const requestUrl = new URL(request.url ?? "/", "http://apps.local");
       const parts = splitPathname(requestUrl.pathname);
 
       if (request.method === "GET" && requestUrl.pathname === "/health") {
@@ -815,8 +900,9 @@ export async function startAgentAppServer(options: AgentAppServerOptions): Promi
           return;
         }
 
-        const bytes = await readFile(targetPath);
-        response.writeHead(200, {"content-type": contentTypeForFile(targetPath)});
+        const safeTargetPath = await ensureRealContainedPath(app.appDir, app.publicDir, targetPath);
+        const bytes = await readFile(safeTargetPath);
+        response.writeHead(200, {"content-type": contentTypeForFile(safeTargetPath)});
         response.end(bytes);
         return;
       }

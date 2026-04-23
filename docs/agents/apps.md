@@ -66,6 +66,21 @@ If not, Panda creates an empty database and a placeholder `schema.sql`.
 - `schema.sql`: bootstrap SQL. Panda does not auto-run it later.
 - `public/`: the human UI. You have freedom here.
 
+## Filesystem And SQL Safety
+
+Keep app files boring:
+
+- `public/` assets must be real files inside the app directory
+- do not use symlinks or hardlinks for served UI assets
+- `data/app.sqlite` must be a real app-local SQLite file, not a symlink
+- `views.json`, `actions.json`, and `schema.sql` must not use `ATTACH`, `DETACH`, `VACUUM INTO`, or `load_extension()`
+
+Views are opened against SQLite in readonly mode.
+Even if a view tries `insert ... returning`, Panda rejects it before data changes.
+
+Actions can write to the app database, but they cannot mount another SQLite database, export the DB to an arbitrary path, or load native SQLite extensions.
+If you need shared data later, model it intentionally instead of using SQLite file escape hatches.
+
 ## Action Rules
 
 Prefer `inputSchema`.
@@ -155,7 +170,7 @@ If the app is identity-scoped:
 - views and actions require `identityId`
 - local/dev browser links can use `?identityHandle=<handle>`
 - public app links should use `app_link_create`; the signed app session carries the identity
-- `app_link_create` cannot choose another identity; it always uses the human currently talking
+- app tools cannot choose another identity; they always use the human currently talking
 
 Do not hardcode fake human handles as if they were identity ids.
 If the app is not identity-scoped, do not force `identityHandle` into the URL just because it exists.
@@ -172,6 +187,8 @@ The Panda SDK is available at `/panda-app-sdk.js`.
 The daemon serves apps automatically.
 Keep JavaScript in `public/app.js`, not inline `<script>` tags. Public app auth uses a strict CSP and inline scripts are blocked.
 Use the SDK for API calls. In public auth mode, the SDK adds the app-scoped CSRF header that Panda requires for `bootstrap`, `view`, and `action`.
+Do not install or serve app UI code you do not trust yet.
+The current path-based URL model is secure for Panda-built first-party apps, but it is not a hostile third-party JavaScript sandbox. Use separate origins later if apps become an app-store thing.
 
 Current surface:
 

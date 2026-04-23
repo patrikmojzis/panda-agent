@@ -1,4 +1,4 @@
-{$PANDA_APPS_PUBLIC_HOST:panda.patrikmojzis.com} {
+{$PANDA_APPS_PUBLIC_HOST} {
   encode zstd gzip
 
   header {

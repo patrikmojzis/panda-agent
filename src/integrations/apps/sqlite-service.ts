@@ -1,4 +1,5 @@
 import path from "node:path";
+import {lstatSync, realpathSync} from "node:fs";
 import {access, mkdir, rm, writeFile} from "node:fs/promises";
 import {DatabaseSync, type StatementSync} from "node:sqlite";
 
@@ -312,7 +313,76 @@ function statementReturnsRows(statement: StatementSync): boolean {
   return statement.columns().length > 0;
 }
 
+// App SQL is allowed to shape its own database, but not to mount or export
+// other files through SQLite escape hatches.
+function stripSqlTextLiteralsAndComments(sql: string): string {
+  let output = "";
+  let index = 0;
+  while (index < sql.length) {
+    const char = sql[index];
+    const next = sql[index + 1];
+
+    if (char === "-" && next === "-") {
+      output += "  ";
+      index += 2;
+      while (index < sql.length && sql[index] !== "\n") {
+        output += " ";
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      output += "  ";
+      index += 2;
+      while (index < sql.length) {
+        if (sql[index] === "*" && sql[index + 1] === "/") {
+          output += "  ";
+          index += 2;
+          break;
+        }
+        output += " ";
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === "'" || char === "\"" || char === "`") {
+      const quote = char;
+      output += " ";
+      index += 1;
+      while (index < sql.length) {
+        output += " ";
+        if (sql[index] === quote) {
+          if (sql[index + 1] === quote) {
+            output += " ";
+            index += 2;
+            continue;
+          }
+          index += 1;
+          break;
+        }
+        index += 1;
+      }
+      continue;
+    }
+
+    output += char;
+    index += 1;
+  }
+
+  return output;
+}
+
+function assertSqlStaysInAppDatabase(sql: string): void {
+  const normalized = stripSqlTextLiteralsAndComments(sql).toLowerCase();
+  if (/\battach\b|\bdetach\b|\bvacuum\s+into\b|\bload_extension\s*\(/.test(normalized)) {
+    throw new Error("App SQL must not use ATTACH, DETACH, VACUUM INTO, or load_extension().");
+  }
+}
+
 function prepareStatement(db: DatabaseSync, sql: string): StatementSync {
+  assertSqlStaysInAppDatabase(sql);
   const statement = db.prepare(sql);
   statement.setAllowUnknownNamedParameters(true);
   return statement;
@@ -347,6 +417,11 @@ function stringifyJson(value: unknown): string {
 
 function ensureTrailingNewline(value: string): string {
   return value.endsWith("\n") ? value : `${value}\n`;
+}
+
+function isContainedPath(baseDir: string, targetPath: string): boolean {
+  const relative = path.relative(baseDir, targetPath);
+  return !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 function escapeHtml(value: string): string {
@@ -553,6 +628,13 @@ function buildBlankReadme(input: {
     "- `actions.json` is empty.",
     "- `public/` still contains the default placeholder UI.",
     "",
+    "## Safety Rules",
+    "",
+    "- Views run against SQLite in readonly mode.",
+    "- App SQL must not use `ATTACH`, `DETACH`, `VACUUM INTO`, or `load_extension()`.",
+    "- `data/app.sqlite` must not be a symlink.",
+    "- Served files in `public/` must be normal app-local files, not symlinks or hardlinks.",
+    "",
     "## Next Steps",
     "",
     `1. Define the schema you actually want in \`schema.sql\` for \`${input.appSlug}\`.`,
@@ -584,8 +666,32 @@ function buildBlankReadme(input: {
   ].join("\n");
 }
 
-function openAppDatabase(app: AgentAppDefinition): DatabaseSync {
-  return new DatabaseSync(app.dbPath);
+function assertAppDatabasePath(app: AgentAppDefinition): void {
+  const realAppDir = realpathSync(app.appDir);
+  const realDbParent = realpathSync(path.dirname(app.dbPath));
+  if (!isContainedPath(realAppDir, realDbParent)) {
+    throw new Error(`App database path for ${app.slug} must stay inside the app directory.`);
+  }
+
+  const dbPathStat = lstatSync(app.dbPath, {throwIfNoEntry: false});
+  if (!dbPathStat) {
+    return;
+  }
+  if (dbPathStat.isSymbolicLink()) {
+    throw new Error(`App database path for ${app.slug} must not be a symlink.`);
+  }
+
+  const realDbPath = realpathSync(app.dbPath);
+  if (!isContainedPath(realAppDir, realDbPath)) {
+    throw new Error(`App database path for ${app.slug} must stay inside the app directory.`);
+  }
+}
+
+function openAppDatabase(app: AgentAppDefinition, options: {readOnly?: boolean} = {}): DatabaseSync {
+  assertAppDatabasePath(app);
+  return options.readOnly
+    ? new DatabaseSync(app.dbPath, {readOnly: true})
+    : new DatabaseSync(app.dbPath);
 }
 
 export interface CreateBlankAgentAppOptions {
@@ -714,6 +820,7 @@ export class AgentAppService {
       try {
         db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
         if (schemaSql) {
+          assertSqlStaysInAppDatabase(schemaSql);
           db.exec(schemaSql);
         }
       } finally {
@@ -761,9 +868,9 @@ export class AgentAppService {
     }
 
     await mkdir(path.dirname(app.dbPath), {recursive: true});
-    const db = openAppDatabase(app);
+    const db = openAppDatabase(app, {readOnly: true});
     try {
-      db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+      db.exec("PRAGMA foreign_keys = ON;");
       const boundParams = buildBoundParams({
         app,
         params: options.params,
@@ -996,9 +1103,9 @@ export class AgentAppService {
       for (const [viewName, definition] of Object.entries(app.views)) {
         try {
           if (definition.pagination?.mode === "offset") {
-            db.prepare(`SELECT * FROM (${definition.sql}) AS app_view LIMIT :limit_plus_one OFFSET :offset`);
+            prepareStatement(db, `SELECT * FROM (${definition.sql}) AS app_view LIMIT :limit_plus_one OFFSET :offset`);
           } else {
-            db.prepare(definition.sql);
+            prepareStatement(db, definition.sql);
           }
         } catch (error) {
           errors.push({
@@ -1013,7 +1120,7 @@ export class AgentAppService {
         const statements = readActionStatements(definition);
         for (const [index, statement] of statements.entries()) {
           try {
-            db.prepare(statement);
+            prepareStatement(db, statement);
           } catch (error) {
             errors.push({
               file: app.actionsPath,

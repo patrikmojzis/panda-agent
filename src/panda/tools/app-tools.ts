@@ -280,7 +280,6 @@ export class AppViewTool<TContext = DefaultAgentSessionContext>
   static schema = z.object({
     appSlug: z.string().trim().min(1),
     viewName: z.string().trim().min(1),
-    identityId: z.string().trim().min(1).optional(),
     params: looseRecordSchema.optional(),
     pageSize: z.number().int().positive().optional(),
     offset: z.number().int().min(0).optional(),
@@ -288,7 +287,7 @@ export class AppViewTool<TContext = DefaultAgentSessionContext>
 
   name = "app_view";
   description =
-    "Run one readonly view from an installed micro-app. Use app_list first to discover available view names and descriptions. Pass params when the app view expects them.";
+    "Run one readonly view from an installed micro-app for the current input identity. Use app_list first to discover available view names and descriptions. Pass params when the app view expects them.";
   schema = AppViewTool.schema;
 
   constructor(private readonly service: AgentAppService) {
@@ -310,7 +309,7 @@ export class AppViewTool<TContext = DefaultAgentSessionContext>
     try {
       const scope = readAppScope(run.context);
       const result = await this.service.executeView(scope.agentKey, args.appSlug, args.viewName, {
-        identityId: args.identityId ?? scope.identityId,
+        identityId: scope.identityId,
         params: args.params,
         pageSize: args.pageSize,
         offset: args.offset,
@@ -333,13 +332,12 @@ export class AppActionTool<TContext = DefaultAgentSessionContext>
   static schema = z.object({
     appSlug: z.string().trim().min(1),
     actionName: z.string().trim().min(1),
-    identityId: z.string().trim().min(1).optional(),
     input: looseRecordSchema.optional(),
   });
 
   name = "app_action";
   description =
-    "Run one declared micro-app action. Use app_list first to discover action names, descriptions, modes, requiredInputKeys, and inputSchema. If the action needs values, pass them through the input object. This is for fixed app actions, not arbitrary SQL.";
+    "Run one declared micro-app action for the current input identity. Use app_list first to discover action names, descriptions, modes, requiredInputKeys, and inputSchema. If the action needs values, pass them through the input object. This is for fixed app actions, not arbitrary SQL.";
   schema = AppActionTool.schema;
 
   constructor(private readonly service: AgentAppService) {
@@ -361,7 +359,7 @@ export class AppActionTool<TContext = DefaultAgentSessionContext>
     try {
       const scope = readAppScope(run.context);
       const result = await this.service.executeAction(scope.agentKey, args.appSlug, args.actionName, {
-        identityId: args.identityId ?? scope.identityId,
+        identityId: scope.identityId,
         input: args.input,
         sessionId: scope.sessionId,
       });
