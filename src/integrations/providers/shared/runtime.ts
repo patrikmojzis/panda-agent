@@ -4,7 +4,7 @@ import type {LlmRuntime, LlmRuntimeRequest} from "../../../kernel/agent/runtime.
 import {resolveProviderApiKey} from "./auth.js";
 import {resolveProviderModel} from "./model.js";
 
-const DEFAULT_MODEL_TIMEOUT_MS = 180_000;
+const DEFAULT_MODEL_TIMEOUT_MS = 600_000;
 
 function resolveModelTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.MODEL_TIMEOUT_MS?.trim();
