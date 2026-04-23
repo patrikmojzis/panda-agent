@@ -7,3 +7,13 @@ dist/
 todo/
 todo.md
 .temp
+
+# Swift / Xcode
+apps/panda-receiver-macos/.build/
+apps/panda-receiver-macos/.swiftpm/
+DerivedData/
+*.xcuserstate
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+.DS_Store
