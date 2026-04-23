@@ -22,7 +22,56 @@ struct Config: Codable {
     let token: String
     let label: String?
     let reconnectDelaySeconds: UInt64
+    let allowPullScreenshots: Bool
+    let pushToTalkShortcuts: PushToTalkShortcutBindings
     let tunnel: TunnelConfig?
+
+    private enum CodingKeys: String, CodingKey {
+        case serverURL
+        case agentKey
+        case deviceId
+        case token
+        case label
+        case reconnectDelaySeconds
+        case allowPullScreenshots
+        case pushToTalkShortcuts
+        case tunnel
+    }
+
+    init(
+        serverURL: URL,
+        agentKey: String,
+        deviceId: String,
+        token: String,
+        label: String?,
+        reconnectDelaySeconds: UInt64,
+        allowPullScreenshots: Bool = true,
+        pushToTalkShortcuts: PushToTalkShortcutBindings = .defaults,
+        tunnel: TunnelConfig?
+    ) {
+        self.serverURL = serverURL
+        self.agentKey = agentKey
+        self.deviceId = deviceId
+        self.token = token
+        self.label = label
+        self.reconnectDelaySeconds = reconnectDelaySeconds
+        self.allowPullScreenshots = allowPullScreenshots
+        self.pushToTalkShortcuts = pushToTalkShortcuts
+        self.tunnel = tunnel
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        serverURL = try container.decode(URL.self, forKey: .serverURL)
+        agentKey = try container.decode(String.self, forKey: .agentKey)
+        deviceId = try container.decode(String.self, forKey: .deviceId)
+        token = try container.decode(String.self, forKey: .token)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+        reconnectDelaySeconds = try container.decode(UInt64.self, forKey: .reconnectDelaySeconds)
+        allowPullScreenshots = try container.decodeIfPresent(Bool.self, forKey: .allowPullScreenshots) ?? true
+        pushToTalkShortcuts = try container.decodeIfPresent(PushToTalkShortcutBindings.self, forKey: .pushToTalkShortcuts) ?? .defaults
+        tunnel = try container.decodeIfPresent(TunnelConfig.self, forKey: .tunnel)
+    }
 
     var displayName: String {
         let trimmedLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -56,7 +105,9 @@ struct Config: Codable {
         tunnelHostRaw: String,
         tunnelUserRaw: String,
         tunnelPortRaw: String,
-        tunnelLocalPortRaw: String
+        tunnelLocalPortRaw: String,
+        allowPullScreenshots: Bool = true,
+        pushToTalkShortcuts: PushToTalkShortcutBindings = .defaults
     ) throws -> Config {
         let serverTrimmed = serverURLRaw.trimmingCharacters(in: .whitespacesAndNewlines)
         let agentTrimmed = agentKeyRaw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -90,6 +141,15 @@ struct Config: Codable {
             reconnectDelaySeconds = parsed
         } else {
             throw ReceiverError("Reconnect delay must be a positive number")
+        }
+
+        guard pushToTalkShortcuts.voiceOnly.hasRequiredModifiers,
+              pushToTalkShortcuts.voiceWithScreenshot.hasRequiredModifiers else {
+            throw ReceiverError("Each push-to-talk shortcut needs at least one modifier key")
+        }
+
+        guard pushToTalkShortcuts.voiceOnly != pushToTalkShortcuts.voiceWithScreenshot else {
+            throw ReceiverError("Voice shortcuts must be different")
         }
 
         let tunnelConfig: TunnelConfig?
@@ -129,6 +189,8 @@ struct Config: Codable {
             token: tokenTrimmed,
             label: labelTrimmed.isEmpty ? nil : labelTrimmed,
             reconnectDelaySeconds: reconnectDelaySeconds,
+            allowPullScreenshots: allowPullScreenshots,
+            pushToTalkShortcuts: pushToTalkShortcuts,
             tunnel: tunnelConfig
         )
     }
@@ -259,6 +321,8 @@ struct Config: Codable {
             token: token,
             label: label,
             reconnectDelaySeconds: reconnectDelaySeconds,
+            allowPullScreenshots: savedConfig?.allowPullScreenshots ?? true,
+            pushToTalkShortcuts: savedConfig?.pushToTalkShortcuts ?? .defaults,
             tunnel: tunnelHost.map { host in
                 TunnelConfig(
                     host: host,
@@ -401,6 +465,14 @@ extension ReceiverError {
 
     static let microphoneDenied = ReceiverError(
         "Microphone permission is denied. Re-enable \(AppIdentity.appDisplayName) in System Settings -> Privacy & Security -> Microphone, then retry."
+    )
+
+    static let telepathyPaused = ReceiverError(
+        "\(AppIdentity.appDisplayName) is paused from the menu bar toggle."
+    )
+
+    static let pullScreenshotsDisabled = ReceiverError(
+        "Agent screenshot requests are disabled in \(AppIdentity.appDisplayName) settings."
     )
 }
 

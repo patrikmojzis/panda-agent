@@ -53,6 +53,10 @@ final class GlobalHotkeyService {
         teardown()
     }
 
+    func invalidate() {
+        teardown()
+    }
+
     private func register(shortcuts: [Shortcut]) throws {
         for shortcut in shortcuts {
             var hotKeyRef: EventHotKeyRef?
@@ -66,6 +70,10 @@ final class GlobalHotkeyService {
                 &hotKeyRef
             )
             guard status == noErr, let hotKeyRef else {
+                if status == eventHotKeyExistsErr {
+                    throw ReceiverError("That push-to-talk shortcut is already in use. Pick a different combo in Settings.")
+                }
+
                 throw ReceiverError("Could not register Panda Telepathy hotkey \(shortcut.id) (status \(status))")
             }
 

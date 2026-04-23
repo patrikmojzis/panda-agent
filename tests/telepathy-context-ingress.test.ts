@@ -175,4 +175,77 @@ describe("telepathy context ingress", () => {
     await expect(readFile(audio!.localPath, "utf8")).resolves.toBe("voice-note");
     await expect(readFile(image!.localPath, "utf8")).resolves.toBe("screen-shot");
   });
+
+  it("rejects pushed media when declared byte count does not match decoded bytes", async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "runtime-telepathy-context-"));
+    tempDirs.push(dataDir);
+
+    const ingress = new TelepathyContextIngress({
+      coordinator: {
+        submitInput: async () => {
+          throw new Error("should not wake agent for invalid media");
+        },
+      } as never,
+      env: {
+        ...process.env,
+        DATA_DIR: dataDir,
+      },
+      fallbackContext: {
+        cwd: "/workspace/panda-agent",
+      },
+      pool: {} as never,
+      sessionStore: {
+        ensureSchema: async () => {},
+        createSession: async (input) => input as never,
+        getSession: async () => {
+          throw new Error("not used");
+        },
+        getMainSession: async () => ({
+          id: "session-1",
+          agentKey: "panda",
+          kind: "main",
+          currentThreadId: "thread-1",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }) as never,
+        listAgentSessions: async () => [],
+        updateCurrentThread: async () => {
+          throw new Error("not used");
+        },
+        getHeartbeat: async () => null,
+        listDueHeartbeats: async () => [],
+        claimHeartbeat: async () => null,
+        recordHeartbeatResult: async () => {
+          throw new Error("not used");
+        },
+        updateHeartbeatConfig: async () => {
+          throw new Error("not used");
+        },
+      },
+      store: {
+        getThread: async () => ({
+          id: "thread-1",
+          sessionId: "session-1",
+          context: {},
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }) as never,
+      } as never,
+    });
+
+    await expect(ingress.ingest({
+      agentKey: "panda",
+      deviceId: "tunnel-mac-patrik",
+      requestId: "ctx-bad-bytes",
+      mode: "push_to_talk",
+      items: [
+        {
+          type: "audio",
+          mimeType: "audio/m4a",
+          data: Buffer.from("voice-note").toString("base64"),
+          bytes: 999,
+        },
+      ],
+    })).rejects.toThrow(/declared 999 bytes/);
+  });
 });

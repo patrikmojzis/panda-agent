@@ -5,6 +5,7 @@ import Foundation
 
 struct PushToTalkStatus {
     let detail: String
+    let isPreparing: Bool
     let isRecording: Bool
     let isSending: Bool
 }
@@ -65,23 +66,8 @@ enum PushToTalkShortcutMode: CaseIterable {
         }
     }
 
-    var shortcutLabel: String {
-        switch self {
-        case .voiceOnly:
-            return "Ctrl+Opt+Cmd+V"
-        case .voiceWithScreenshot:
-            return "Ctrl+Opt+Cmd+S"
-        }
-    }
-
-    var shortcut: GlobalHotkeyService.Shortcut {
-        let modifiers = UInt32(controlKey | optionKey | cmdKey)
-        switch self {
-        case .voiceOnly:
-            return .init(id: id, keyCode: UInt32(kVK_ANSI_V), modifiers: modifiers)
-        case .voiceWithScreenshot:
-            return .init(id: id, keyCode: UInt32(kVK_ANSI_S), modifiers: modifiers)
-        }
+    func shortcut(in bindings: PushToTalkShortcutBindings) -> GlobalHotkeyService.Shortcut {
+        bindings.shortcut(for: self).toHotkey(id: id)
     }
 
     static func from(shortcutId: UInt32) -> PushToTalkShortcutMode? {
@@ -116,6 +102,8 @@ private struct RecordedPushToTalkAudio {
     let data: Data
     let durationMs: Int
 }
+
+private let minimumPushToTalkDurationMs = 750
 
 @MainActor
 private final class PushToTalkRecorder {
@@ -180,37 +168,42 @@ final class PushToTalkController {
     private let onError: (Error) -> Void
     private let onStatusChanged: (PushToTalkStatus) -> Void
     private let receiverProvider: () -> ReceiverService?
+    private let shortcutBindings: PushToTalkShortcutBindings
     private var phase: PushToTalkPhase = .idle
     private var startTask: Task<Void, Never>?
 
     init(
+        shortcutBindings: PushToTalkShortcutBindings,
         receiverProvider: @escaping () -> ReceiverService?,
         onStatusChanged: @escaping (PushToTalkStatus) -> Void,
         onError: @escaping (Error) -> Void
     ) throws {
+        self.shortcutBindings = shortcutBindings
         self.receiverProvider = receiverProvider
         self.onStatusChanged = onStatusChanged
         self.onError = onError
         self.hotkeys = try GlobalHotkeyService(
-            shortcuts: PushToTalkShortcutMode.allCases.map(\.shortcut)
+            shortcuts: PushToTalkShortcutMode.allCases.map { $0.shortcut(in: shortcutBindings) }
         ) { [weak self] shortcutId, isPressed in
             self?.handleHotkey(shortcutId: shortcutId, isPressed: isPressed)
         }
 
-        onStatusChanged(PushToTalkController.idleStatus())
+        onStatusChanged(idleStatus())
     }
 
     func cancel() {
         startTask?.cancel()
         startTask = nil
         recorder.cancel()
+        hotkeys?.invalidate()
+        hotkeys = nil
         phase = .idle
-        onStatusChanged(Self.idleStatus())
+        onStatusChanged(idleStatus())
     }
 
     func shortcutsDescription() -> String {
         PushToTalkShortcutMode.allCases
-            .map { "\($0.label): \($0.shortcutLabel)" }
+            .map { "\($0.label): \(shortcutBindings.shortcut(for: $0).displayLabel)" }
             .joined(separator: " | ")
     }
 
@@ -233,7 +226,7 @@ final class PushToTalkController {
 
         guard receiverProvider() != nil else {
             onError(ReceiverError("Panda Telepathy is not configured"))
-            onStatusChanged(Self.idleStatus(detail: "Receiver is not configured"))
+            onStatusChanged(idleStatus(detail: "Receiver is not configured"))
             return
         }
 
@@ -243,6 +236,7 @@ final class PushToTalkController {
         phase = .starting(mode)
         onStatusChanged(PushToTalkStatus(
             detail: "Preparing \(mode.detail)…",
+            isPreparing: true,
             isRecording: false,
             isSending: false
         ))
@@ -259,6 +253,7 @@ final class PushToTalkController {
                 phase = .recording(mode)
                 onStatusChanged(PushToTalkStatus(
                     detail: "Recording \(mode.detail)…",
+                    isPreparing: false,
                     isRecording: true,
                     isSending: false
                 ))
@@ -271,7 +266,7 @@ final class PushToTalkController {
                 }
 
                 phase = .idle
-                onStatusChanged(Self.idleStatus())
+                onStatusChanged(self.idleStatus())
                 onError(error)
             }
         }
@@ -284,7 +279,7 @@ final class PushToTalkController {
             startTask = nil
             recorder.cancel()
             phase = .idle
-            onStatusChanged(Self.idleStatus())
+            onStatusChanged(idleStatus())
             return
         case .recording(let activeMode) where activeMode == mode:
             phase = .sending(mode)
@@ -298,20 +293,27 @@ final class PushToTalkController {
             recordedAudio = try recorder.finish()
         } catch {
             phase = .idle
-            onStatusChanged(Self.idleStatus())
+            onStatusChanged(idleStatus())
             onError(error)
+            return
+        }
+
+        guard recordedAudio.durationMs >= minimumPushToTalkDurationMs else {
+            phase = .idle
+            onStatusChanged(idleStatus(detail: "Voice clip too short, not sent"))
             return
         }
 
         guard let receiver = receiverProvider() else {
             phase = .idle
-            onStatusChanged(Self.idleStatus(detail: "Receiver is not configured"))
+            onStatusChanged(idleStatus(detail: "Receiver is not configured"))
             onError(ReceiverError("Panda Telepathy is not configured"))
             return
         }
 
         onStatusChanged(PushToTalkStatus(
             detail: "Sending \(mode.detail)…",
+            isPreparing: false,
             isRecording: false,
             isSending: true
         ))
@@ -346,18 +348,19 @@ final class PushToTalkController {
                     timeStyle: .medium
                 )
                 phase = .idle
-                onStatusChanged(Self.idleStatus(detail: "Last sent \(mode.detail) at \(time)"))
+                onStatusChanged(self.idleStatus(detail: "Last sent \(mode.detail) at \(time)"))
             } catch {
                 phase = .idle
-                onStatusChanged(Self.idleStatus())
+                onStatusChanged(self.idleStatus())
                 onError(error)
             }
         }
     }
 
-    private static func idleStatus(detail: String? = nil) -> PushToTalkStatus {
+    private func idleStatus(detail: String? = nil) -> PushToTalkStatus {
         PushToTalkStatus(
-            detail: detail ?? "Ready: \(PushToTalkShortcutMode.voiceOnly.shortcutLabel) / \(PushToTalkShortcutMode.voiceWithScreenshot.shortcutLabel)",
+            detail: detail ?? "Ready: \(shortcutBindings.voiceOnly.displayLabel) / \(shortcutBindings.voiceWithScreenshot.displayLabel)",
+            isPreparing: false,
             isRecording: false,
             isSending: false
         )

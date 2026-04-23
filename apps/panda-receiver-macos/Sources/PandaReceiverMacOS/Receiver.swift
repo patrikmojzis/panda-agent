@@ -34,18 +34,26 @@ private enum RequestErrorDisposition {
 actor ReceiverService {
     private let config: Config
     private let statusContinuation: AsyncStream<ReceiverStatus>.Continuation
+    private let onPullScreenshot: @MainActor @Sendable () -> Void
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private var isEnabled = true
+    private var allowPullScreenshots: Bool
     private var runTask: Task<Void, Never>?
     private var currentSocket: URLSessionWebSocketTask?
     private var currentTunnel: TunnelSupervisor?
     private var hasConnectedOnce = false
     private var pendingContextAcks: [String: PendingContextAck] = [:]
 
-    init(config: Config, statusContinuation: AsyncStream<ReceiverStatus>.Continuation) {
+    init(
+        config: Config,
+        statusContinuation: AsyncStream<ReceiverStatus>.Continuation,
+        onPullScreenshot: @escaping @MainActor @Sendable () -> Void = {}
+    ) {
         self.config = config
         self.statusContinuation = statusContinuation
+        self.onPullScreenshot = onPullScreenshot
+        self.allowPullScreenshots = config.allowPullScreenshots
     }
 
     func start() {
@@ -73,9 +81,13 @@ actor ReceiverService {
         await stopRunning(reportDisabled: true)
     }
 
+    func setPullScreenshotsEnabled(_ enabled: Bool) {
+        allowPullScreenshots = enabled
+    }
+
     func captureTestScreenshot() async throws -> URL {
         guard isEnabled else {
-            throw ReceiverError("Capture is disabled by the kill switch")
+            throw ReceiverError.telepathyPaused
         }
 
         let screenshotData = try await captureScreenshotData()
@@ -84,7 +96,7 @@ actor ReceiverService {
 
     func makeScreenshotContextItem() async throws -> ContextSubmitItem {
         guard isEnabled else {
-            throw ReceiverError("Capture is disabled by the kill switch")
+            throw ReceiverError.telepathyPaused
         }
 
         let screenshotData = try await captureScreenshotData()
@@ -102,7 +114,7 @@ actor ReceiverService {
         metadata: ContextSubmitMetadata?
     ) async throws {
         guard isEnabled else {
-            throw ReceiverError("Capture is disabled by the kill switch")
+            throw ReceiverError.telepathyPaused
         }
 
         guard let socket = currentSocket else {
@@ -273,7 +285,11 @@ actor ReceiverService {
                 await publish(.connected, connectedLabel())
             } catch {
                 let issue = normalizeReceiverIssue(error, serverURL: config.serverURL)
-                await publish(issue.state, issue.message)
+                if issue.message == ReceiverError.pullScreenshotsDisabled.message {
+                    await publish(.connected, connectedLabel())
+                } else {
+                    await publish(issue.state, issue.message)
+                }
                 try await send(ScreenshotFailure(
                     requestId: request.requestId,
                     error: issue.message
@@ -332,15 +348,20 @@ actor ReceiverService {
         failAllPendingContextAcks(error: ReceiverError("Panda Telepathy stopped"))
 
         if reportDisabled {
-            await publish(.disabled, "Capture disabled by the kill switch")
+            await publish(.disabled, ReceiverError.telepathyPaused.message)
         }
     }
 
     private func captureScreenshot(for requestId: String) async throws -> ScreenshotSuccess {
         guard isEnabled else {
-            throw ReceiverError("Capture is disabled by the kill switch")
+            throw ReceiverError.telepathyPaused
         }
 
+        guard allowPullScreenshots else {
+            throw ReceiverError.pullScreenshotsDisabled
+        }
+
+        await onPullScreenshot()
         let screenshotData = try await captureScreenshotData()
 
         return ScreenshotSuccess(

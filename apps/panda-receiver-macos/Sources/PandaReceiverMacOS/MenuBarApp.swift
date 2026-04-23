@@ -19,7 +19,8 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     private let pushStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let shortcutMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let launchAtLoginStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private lazy var enableCaptureItem = NSMenuItem(title: "Capture Enabled", action: #selector(toggleCaptureEnabled), keyEquivalent: "")
+    private lazy var enableCaptureItem = NSMenuItem(title: "Telepathy Enabled", action: #selector(toggleCaptureEnabled), keyEquivalent: "")
+    private lazy var allowPullScreenshotsItem = NSMenuItem(title: "Allow Agent Screenshots", action: #selector(toggleAllowPullScreenshots), keyEquivalent: "")
     private lazy var launchAtLoginToggleItem = NSMenuItem(title: "Open At Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "l")
     private lazy var requestAccessItem = NSMenuItem(title: "Request Screen Recording Access", action: #selector(requestScreenRecordingAccess), keyEquivalent: "")
     private lazy var requestMicrophoneAccessItem = NSMenuItem(title: "Request Microphone Access", action: #selector(requestMicrophoneAccess), keyEquivalent: "")
@@ -28,10 +29,11 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     private lazy var revealConfigItem = NSMenuItem(title: "Reveal Saved Config", action: #selector(revealSavedConfig), keyEquivalent: "")
     private lazy var quitItem = NSMenuItem(title: "Quit \(AppIdentity.appDisplayName)", action: #selector(quit), keyEquivalent: "q")
     private var latestStatus = ReceiverStatus(state: .starting, detail: "Starting receiver")
-    private var latestPushStatus = PushToTalkStatus(detail: "Starting push-to-talk", isRecording: false, isSending: false)
+    private var latestPushStatus = PushToTalkStatus(detail: "Starting push-to-talk", isPreparing: false, isRecording: false, isSending: false)
     private var statusTask: Task<Void, Never>?
     private var settingsWindowController: SettingsWindowController?
     private var pushToTalkController: PushToTalkController?
+    private let pushFeedback = PushToTalkFeedbackController()
 
     init(config: Config?) {
         self.currentConfig = config
@@ -46,41 +48,7 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         buildMenu()
-        do {
-            pushToTalkController = try PushToTalkController(
-                receiverProvider: { [weak self] in self?.receiver },
-                onStatusChanged: { [weak self] status in
-                    guard let self else {
-                        return
-                    }
-
-                    self.latestPushStatus = status
-                    self.apply(status: self.latestStatus)
-                },
-                onError: { [weak self] error in
-                    guard let self else {
-                        return
-                    }
-
-                    let normalizedError = normalizeReceiverError(error)
-                    if normalizedError.message == ReceiverError.microphoneDenied.message {
-                        self.presentMicrophoneDeniedAlert(message: normalizedError.message)
-                    } else if normalizedError.message == ReceiverError.screenRecordingDenied.message {
-                        self.presentScreenRecordingDeniedAlert(message: normalizedError.message)
-                    } else {
-                        self.presentAlert(
-                            title: "Push-to-Talk Failed",
-                            message: normalizedError.message
-                        )
-                    }
-                }
-            )
-        } catch {
-            presentAlert(
-                title: "Push-to-Talk Failed",
-                message: String(describing: error)
-            )
-        }
+        rebuildPushToTalkController()
         statusTask = Task {
             for await status in statusStream {
                 latestStatus = status
@@ -119,6 +87,7 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         launchAtLoginStatusItem.isEnabled = false
 
         enableCaptureItem.target = self
+        allowPullScreenshotsItem.target = self
         launchAtLoginToggleItem.target = self
         requestAccessItem.target = self
         requestMicrophoneAccessItem.target = self
@@ -137,6 +106,7 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         menu.addItem(launchAtLoginStatusItem)
         menu.addItem(.separator())
         menu.addItem(enableCaptureItem)
+        menu.addItem(allowPullScreenshotsItem)
         menu.addItem(launchAtLoginToggleItem)
         menu.addItem(requestAccessItem)
         menu.addItem(requestMicrophoneAccessItem)
@@ -168,6 +138,8 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         shortcutMenuItem.title = "Shortcuts: \(pushToTalkController?.shortcutsDescription() ?? "Unavailable")"
         enableCaptureItem.state = status.state == .disabled ? .off : .on
         enableCaptureItem.isEnabled = currentConfig != nil
+        allowPullScreenshotsItem.state = (currentConfig?.allowPullScreenshots ?? true) ? .on : .off
+        allowPullScreenshotsItem.isEnabled = currentConfig != nil && status.state != .disabled
         testScreenshotItem.isEnabled = currentConfig != nil && status.state != .disabled
         revealConfigItem.isEnabled = currentConfig != nil
         refreshLaunchAtLoginState()
@@ -180,7 +152,9 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         }
 
         let symbolName: String
-        if latestPushStatus.isRecording {
+        if latestPushStatus.isPreparing {
+            symbolName = "mic.circle.fill"
+        } else if latestPushStatus.isRecording {
             symbolName = "mic.fill"
         } else if latestPushStatus.isSending {
             symbolName = "waveform.circle"
@@ -288,6 +262,49 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     }
 
     @objc
+    private func toggleAllowPullScreenshots() {
+        guard let currentConfig else {
+            openSettings(nil)
+            return
+        }
+
+        let shouldAllow = allowPullScreenshotsItem.state == .off
+        allowPullScreenshotsItem.isEnabled = false
+
+        Task {
+            let updatedConfig = Config(
+                serverURL: currentConfig.serverURL,
+                agentKey: currentConfig.agentKey,
+                deviceId: currentConfig.deviceId,
+                token: currentConfig.token,
+                label: currentConfig.label,
+                reconnectDelaySeconds: currentConfig.reconnectDelaySeconds,
+                allowPullScreenshots: shouldAllow,
+                pushToTalkShortcuts: currentConfig.pushToTalkShortcuts,
+                tunnel: currentConfig.tunnel
+            )
+
+            do {
+                try ConfigStore.save(updatedConfig)
+                await receiver?.setPullScreenshotsEnabled(shouldAllow)
+                await MainActor.run {
+                    self.currentConfig = updatedConfig
+                    self.apply(status: self.latestStatus)
+                    self.allowPullScreenshotsItem.isEnabled = true
+                }
+            } catch {
+                await MainActor.run {
+                    self.allowPullScreenshotsItem.isEnabled = true
+                    self.presentAlert(
+                        title: "Privacy Toggle Failed",
+                        message: String(describing: error)
+                    )
+                }
+            }
+        }
+    }
+
+    @objc
     private func toggleLaunchAtLogin() {
         let shouldEnable = launchAtLoginToggleItem.state == .off
         launchAtLoginToggleItem.isEnabled = false
@@ -371,19 +388,30 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
 
     @objc
     private func openSettings(_ sender: Any?) {
-        if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController(initialConfig: currentConfig) { [weak self] config in
-                Task { @MainActor in
-                    guard let self else {
-                        return
-                    }
-
-                    await self.applySavedConfig(config)
-                }
-            }
+        if let settingsWindowController,
+           settingsWindowController.window?.isVisible == true {
+            settingsWindowController.showWindow(sender)
+            return
         }
 
-        settingsWindowController?.showWindow(sender)
+        pausePushToTalkForSettings()
+        let controller = SettingsWindowController(
+            initialConfig: currentConfig,
+            onSave: { [weak self] config in
+                guard let self else {
+                    return
+                }
+
+                await self.applySavedConfig(config)
+            },
+            onClose: { [weak self] in
+                Task { @MainActor in
+                    self?.resumePushToTalkAfterSettings()
+                }
+            }
+        )
+        settingsWindowController = controller
+        controller.showWindow(sender)
     }
 
     @objc
@@ -414,6 +442,7 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     private func applySavedConfig(_ config: Config) async {
         currentConfig = config
         settingsWindowController = nil
+        rebuildPushToTalkController()
         await replaceReceiver(with: config)
     }
 
@@ -425,9 +454,83 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         latestStatus = ReceiverStatus(state: .starting, detail: "Starting receiver")
         apply(status: latestStatus)
 
-        let newReceiver = ReceiverService(config: config, statusContinuation: statusContinuation)
+        let newReceiver = ReceiverService(
+            config: config,
+            statusContinuation: statusContinuation,
+            onPullScreenshot: { [weak self] in
+                self?.pushFeedback.presentPullScreenshot()
+            }
+        )
         receiver = newReceiver
         await newReceiver.start()
+    }
+
+    private func rebuildPushToTalkController() {
+        let oldController = pushToTalkController
+        pushToTalkController = nil
+        oldController?.cancel()
+        do {
+            pushToTalkController = try PushToTalkController(
+                shortcutBindings: currentConfig?.pushToTalkShortcuts ?? .defaults,
+                receiverProvider: { [weak self] in self?.receiver },
+                onStatusChanged: { [weak self] status in
+                    guard let self else {
+                        return
+                    }
+
+                    self.latestPushStatus = status
+                    self.pushFeedback.handle(status: status)
+                    self.apply(status: self.latestStatus)
+                },
+                onError: { [weak self] error in
+                    guard let self else {
+                        return
+                    }
+
+                    let normalizedError = normalizeReceiverError(error)
+                    self.pushFeedback.presentError(normalizedError.message)
+                    if normalizedError.message == ReceiverError.microphoneDenied.message {
+                        self.presentMicrophoneDeniedAlert(message: normalizedError.message)
+                    } else if normalizedError.message == ReceiverError.screenRecordingDenied.message {
+                        self.presentScreenRecordingDeniedAlert(message: normalizedError.message)
+                    } else {
+                        self.presentAlert(
+                            title: "Push-to-Talk Failed",
+                            message: normalizedError.message
+                        )
+                    }
+                }
+            )
+        } catch {
+            pushToTalkController = nil
+            presentAlert(
+                title: "Push-to-Talk Failed",
+                message: String(describing: error)
+            )
+        }
+    }
+
+    private func pausePushToTalkForSettings() {
+        let oldController = pushToTalkController
+        pushToTalkController = nil
+        oldController?.cancel()
+        latestPushStatus = PushToTalkStatus(
+            detail: "Paused while Settings is open",
+            isPreparing: false,
+            isRecording: false,
+            isSending: false
+        )
+        apply(status: latestStatus)
+    }
+
+    private func resumePushToTalkAfterSettings() {
+        settingsWindowController = nil
+        guard currentConfig != nil, pushToTalkController == nil else {
+            return
+        }
+
+        rebuildPushToTalkController()
+        apply(status: latestStatus)
     }
 
     private func presentAlert(title: String, message: String) {
