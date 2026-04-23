@@ -8,6 +8,7 @@ Current MVP:
 - app data lives in SQLite
 - UI is optional and served locally by Panda
 - this is localhost/dev shape, not production auth shape
+- the app is another front door into the same agent, not a separate product brain
 
 ## Folder Shape
 
@@ -113,6 +114,7 @@ Example:
     "mode": "native+wake",
     "inputSchema": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["flow"],
       "properties": {
         "flow": {
@@ -136,6 +138,13 @@ Supported keys:
 - `requiredInputKeys`: optional lightweight fallback for older or simpler apps
 - `wakeMessage`: optional text used when the action wakes Panda. It can use simple placeholders like `{{input.flow}}`, `{{input.notes}}`, `{{app.name}}`, `{{action.name}}`, `{{result.changes}}`, or `{{result.lastInsertRowid}}`.
 
+For user-facing writes, prefer `native+wake`.
+That keeps the app aligned with Panda’s real model: the UI is another way to talk to the same agent.
+If a person logs something in the app, Panda should usually see that write too so it can react, remember, and follow up when useful.
+
+Use plain `native` when the action should be intentionally silent.
+Use `wake` when you want follow-up without a DB write.
+
 ### `inputSchema`
 
 Current MVP supports a small JSON-schema-ish subset:
@@ -150,6 +159,8 @@ Current MVP supports a small JSON-schema-ish subset:
   - objects: `required`, `additionalProperties`
 
 This is enough for forms, agent guidance, and catching dumb payloads without turning Panda into AJV fan fiction.
+Prefer `inputSchema.required` over `requiredInputKeys` when you have a real schema.
+`requiredInputKeys` is now the lightweight fallback, not the preferred mental model.
 
 It is not full JSON Schema.
 Not supported:
@@ -175,6 +186,8 @@ Supported placeholders:
 
 Arrays render as comma-separated values.
 If a placeholder is missing, Panda just leaves it blank instead of throwing a tantrum.
+Good wake messages are short and restrained.
+Tell Panda what happened and only invite follow-up when it might actually help.
 
 ## Runtime Params
 
@@ -215,6 +228,12 @@ Important:
 - `bootstrap()` returns bootstrap data, not a second SDK object
 - `view()` returns `{ ok, appSlug, viewName, items, page? }`
 - `action()` returns `{ ok, appSlug, actionName, changes, ... }`
+
+The important mental model:
+
+- `view()` is "show me state"
+- `action()` is "do the thing"
+- `native+wake` actions are the closest thing to "the user told Panda something through the UI"
 
 Minimal example:
 

@@ -9,6 +9,7 @@ Current lane:
 - app data lives in SQLite
 - UI is just static files in `public/`
 - Panda owns the runtime API and wake path
+- the app is another surface into the same Panda, not a separate backend brain
 
 Do not invent a template system in your head. We do not have one yet.
 
@@ -67,6 +68,8 @@ If not, Panda creates an empty database and a placeholder `schema.sql`.
 
 Prefer `inputSchema`.
 It keeps the tool calls and browser payloads from going off the rails.
+Prefer `inputSchema.required` over `requiredInputKeys`.
+`requiredInputKeys` still exists as a lightweight fallback, but it is not the main lane anymore.
 
 This is a small JSON-schema-ish subset, not full JSON Schema.
 Supported field types are only:
@@ -87,6 +90,18 @@ Use:
 - `wake` for pure follow-up without a DB write
 - `native+wake` when the app writes data and Panda should react
 
+Default to `native+wake` for user-facing writes.
+That is the normal app shape now.
+If a human logs something in the UI, Panda should usually get the same event and be able to notice, react, remember, correlate, or follow up.
+Think of the app as "chat with Panda, but through UI" rather than a detached CRUD toy.
+
+Use plain `native` only when the action is intentionally inert and no follow-up matters.
+Examples:
+
+- harmless counters
+- internal utility actions
+- silent cache or maintenance writes
+
 If you use `wakeMessage`, keep it short and useful.
 Use placeholders like:
 
@@ -96,6 +111,8 @@ Use placeholders like:
 - `{{result.changes}}`
 
 Do not dump raw JSON into the wake unless you enjoy making the model read garbage.
+Good wake messages are short, templated, and restraint-oriented.
+Tell Panda what happened and only invite follow-up when it might actually help.
 
 ## Identity Rules
 
@@ -145,6 +162,32 @@ await window.panda.action("log_entry", {
   flow: "medium",
   notes: "rough afternoon",
 });
+```
+
+For a user-facing write, prefer an action shaped like:
+
+```json
+{
+  "log_entry": {
+    "mode": "native+wake",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["flow"],
+      "properties": {
+        "flow": {
+          "type": "string",
+          "enum": ["light", "medium", "heavy"]
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "sql": "insert into cycle_logs (identity_id, flow, notes) values (:identityId, :flow, :notes)",
+    "wakeMessage": "The user logged a cycle entry with flow {{input.flow}} and notes {{input.notes}}. Reflect only if something useful stands out."
+  }
+}
 ```
 
 Do not make the app mutate data on page load. That is cursed.
