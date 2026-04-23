@@ -1,0 +1,5 @@
+{
+  "name": "Period Tracker",
+  "description": "Identity-scoped cycle logging with a custom dashboard and paginated history.",
+  "identityScoped": true
+}

@@ -1,0 +1,6 @@
+{
+  "summary": {
+    "description": "Return the current counter value.",
+    "sql": "select value as count, updated_at from counter limit 1"
+  }
+}

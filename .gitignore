@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 .generated/
 .env
@@ -7,3 +7,4 @@ dist/
 todo/
 todo.md
 .temp
+.playwright-cli/

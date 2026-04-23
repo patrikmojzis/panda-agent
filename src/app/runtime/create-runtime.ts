@@ -15,6 +15,7 @@ import type {Tool} from "../../kernel/agent/tool.js";
 import type {CredentialResolver} from "../../domain/credentials/index.js";
 import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
 import type {BrowserRunnerClient} from "../../integrations/browser/client.js";
+import type {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundBashThreadInput} from "./background-bash-thread-input.js";
@@ -62,6 +63,7 @@ export interface RuntimeOptions {
 
 export interface RuntimeServices {
   agentStore: AgentStore;
+  apps: AgentAppService;
   bashJobService: BashJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -108,6 +110,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
 
   return {
     agentStore: runtime.agentStore,
+    apps: runtime.apps,
     bashJobService: runtime.bashJobService,
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,

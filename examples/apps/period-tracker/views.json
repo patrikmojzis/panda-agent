@@ -1,0 +1,23 @@
+{
+  "summary": {
+    "description": "Return top-line stats for one identity.",
+    "sql": "select count(*) as entry_count, max(logged_on) as last_logged_on, round(avg(energy), 1) as avg_energy, sum(case when flow = 'heavy' then 1 else 0 end) as heavy_days from cycle_logs where identity_id = :identityId"
+  },
+  "flow_breakdown": {
+    "description": "Return counts by flow level for one identity.",
+    "sql": "select flow, count(*) as count from cycle_logs where identity_id = :identityId group by flow order by case flow when 'spotting' then 1 when 'light' then 2 when 'medium' then 3 when 'heavy' then 4 else 99 end"
+  },
+  "energy_trend": {
+    "description": "Return recent energy scores for the sparkline.",
+    "sql": "select logged_on, energy from cycle_logs where identity_id = :identityId and energy is not null order by logged_on desc, id desc limit 12"
+  },
+  "recent_entries": {
+    "description": "Return recent entries with offset pagination.",
+    "sql": "select id, logged_on, flow, coalesce(mood, '') as mood, energy, coalesce(symptoms_json, '[]') as symptoms_json, coalesce(notes, '') as notes from cycle_logs where identity_id = :identityId order by logged_on desc, id desc",
+    "pagination": {
+      "mode": "offset",
+      "defaultPageSize": 8,
+      "maxPageSize": 24
+    }
+  }
+}

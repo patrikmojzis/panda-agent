@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Counter Demo</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./app.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="panel hero">
+        <p class="eyebrow">Micro-App Demo</p>
+        <h1>Counter Demo</h1>
+        <p class="lede">This one does one thing and, crucially, does not mutate just because the page refreshed.</p>
+      </section>
+
+      <section class="panel stat-panel">
+        <p class="label">Current value</p>
+        <p class="count" data-count>--</p>
+        <p class="timestamp" data-updated-at></p>
+      </section>
+
+      <section class="panel actions">
+        <div class="button-row">
+          <button type="button" data-amount="1">+1</button>
+          <button type="button" data-amount="2">+2</button>
+          <button type="button" data-amount="5">+5</button>
+          <button type="button" class="ghost" data-reset>Reset</button>
+        </div>
+        <p class="status" data-status>Ready.</p>
+      </section>
+    </main>
+
+    <script src="/panda-app-sdk.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -100,6 +100,7 @@ export interface BrowserSessionServiceOptions {
   launchOptions?: LaunchOptions;
   now?: () => number;
   reaperIntervalMs?: number;
+  allowPrivateHostnames?: readonly string[];
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -145,6 +146,25 @@ function resolveBrowserRunnerRoot(dataDir: string | undefined, env: NodeJS.Proce
   }
 
   return path.join(resolveDataDir(env), DEFAULT_BROWSER_RUNNER_SUBDIR);
+}
+
+function readAllowedPrivateHostnames(
+  env: NodeJS.ProcessEnv,
+  explicit: readonly string[] | undefined,
+): readonly string[] {
+  if (explicit?.length) {
+    return explicit;
+  }
+
+  const raw = trimToUndefined(env.BROWSER_ALLOW_PRIVATE_HOSTS);
+  if (!raw) {
+    return [];
+  }
+
+  return raw
+    .split(",")
+    .map((value) => trimToUndefined(value))
+    .filter((value): value is string => Boolean(value));
 }
 
 function normalizeScopeKey(context: DefaultAgentSessionContext): {scope: BrowserSessionScope; key: string} {
@@ -450,6 +470,7 @@ export class BrowserSessionService {
   private readonly launchOptions?: LaunchOptions;
   private readonly now: () => number;
   private readonly reaperIntervalMs: number;
+  private readonly allowPrivateHostnames: readonly string[];
   private readonly sessions = new Map<string, BrowserSessionRecord>();
   private reaper: NodeJS.Timeout | null = null;
   private startPromise: Promise<void> | null = null;
@@ -476,6 +497,7 @@ export class BrowserSessionService {
     this.launchOptions = options.launchOptions;
     this.now = options.now ?? Date.now;
     this.reaperIntervalMs = Math.max(1_000, Math.floor(options.reaperIntervalMs ?? DEFAULT_BROWSER_REAPER_INTERVAL_MS));
+    this.allowPrivateHostnames = readAllowedPrivateHostnames(this.env, options.allowPrivateHostnames);
   }
 
   async start(): Promise<void> {
@@ -578,7 +600,9 @@ export class BrowserSessionService {
           return;
         }
         try {
-          await resolveSafeHttpTarget(new URL(requestUrl), this.lookupHostname, "browser");
+          await resolveSafeHttpTarget(new URL(requestUrl), this.lookupHostname, "browser", {
+            allowPrivateHostnames: this.allowPrivateHostnames,
+          });
           await route.continue();
         } catch {
           await route.abort("blockedbyclient");
@@ -678,7 +702,9 @@ export class BrowserSessionService {
     if (!currentUrl || !/^https?:/i.test(currentUrl)) {
       return;
     }
-    await resolveSafeHttpTarget(new URL(currentUrl), this.lookupHostname, "browser");
+    await resolveSafeHttpTarget(new URL(currentUrl), this.lookupHostname, "browser", {
+      allowPrivateHostnames: this.allowPrivateHostnames,
+    });
   }
 
   private async targetLocator(
@@ -1142,7 +1168,9 @@ export class BrowserSessionService {
         scope: scope.scope,
         url: action.url,
       });
-      await resolveSafeHttpTarget(new URL(action.url), this.lookupHostname, "browser");
+      await resolveSafeHttpTarget(new URL(action.url), this.lookupHostname, "browser", {
+        allowPrivateHostnames: this.allowPrivateHostnames,
+      });
     }
 
     let session: BrowserSessionRecord | null = null;

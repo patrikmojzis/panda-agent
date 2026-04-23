@@ -11,6 +11,9 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       READONLY_DATABASE_URL: ${READONLY_DATABASE_URL:-}
       PANDA_CORE_HEALTH_PORT: ${PANDA_CORE_HEALTH_PORT:-8090}
+      PANDA_APPS_HOST: ${PANDA_APPS_HOST:-0.0.0.0}
+      PANDA_APPS_PORT: ${PANDA_APPS_PORT:-8092}
+      PANDA_APPS_INTERNAL_BASE_URL: ${PANDA_APPS_INTERNAL_BASE_URL:-http://panda-core:${PANDA_APPS_PORT:-8092}}
       BASH_EXECUTION_MODE: remote
       RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
       RUNNER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
@@ -49,6 +52,7 @@ services:
       BROWSER_RUNNER_PORT: 8080
       BROWSER_RUNNER_SHARED_SECRET: ${BROWSER_RUNNER_SHARED_SECRET}
       BROWSER_RUNNER_DATA_DIR: /home/pwuser/.panda/browser-runner
+      BROWSER_ALLOW_PRIVATE_HOSTS: ${BROWSER_ALLOW_PRIVATE_HOSTS:-panda-core}
       TZ: ${TZ:-UTC}
     volumes:
       - ${BROWSER_RUNNER_ROOT:-${HOME}/.panda-browser-runner}:/home/pwuser/.panda/browser-runner

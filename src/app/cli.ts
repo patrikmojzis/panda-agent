@@ -33,6 +33,8 @@ const program = new Command();
 program.enablePositionalOptions();
 
 interface RunCliOptions {
+  appsHost?: string;
+  appsPort?: number;
   cwd?: string;
   dbUrl?: string;
   readOnlyDbUrl?: string;
@@ -74,6 +76,13 @@ async function runChatCommand(options: ChatCliOptions): Promise<void> {
 }
 
 async function runRuntimeCommand(options: RunCliOptions): Promise<void> {
+  if (options.appsHost) {
+    process.env.PANDA_APPS_HOST = options.appsHost;
+  }
+  if (options.appsPort !== undefined) {
+    process.env.PANDA_APPS_PORT = String(options.appsPort);
+  }
+
   const daemon = await createDaemon({
     cwd: path.resolve(options.cwd ?? process.cwd()),
     dbUrl: options.dbUrl,
@@ -223,6 +232,8 @@ program
   .command("run")
   .description("Run the singular Panda runtime daemon")
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
+  .option("--apps-host <host>", "Host to bind the local micro-app server")
+  .option("--apps-port <port>", "Port to bind the local micro-app server", parsePort)
   .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
   .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
   .action((options: RunCliOptions) => {

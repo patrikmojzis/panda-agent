@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Period Tracker</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./app.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Micro-App Demo</p>
+          <h1>Period Tracker</h1>
+          <p class="lede">A thin UI over an identity-scoped SQLite app, with real data, pagination, and zero chat required for quick logs.</p>
+        </div>
+        <div class="identity-chip" data-identity-chip>identity: --</div>
+      </section>
+
+      <section class="missing hidden" data-missing-identity>
+        <h2>Identity missing</h2>
+        <p>Open this app with <code>?identityHandle=angelina</code> or set one through <code>window.panda.setContext()</code>. Otherwise the runtime should absolutely refuse to read or write private data.</p>
+      </section>
+
+      <section class="dashboard" data-dashboard>
+        <section class="panel cards" data-summary-cards></section>
+
+        <section class="grid">
+          <section class="panel">
+            <div class="section-head">
+              <h2>Flow Breakdown</h2>
+              <p>Counts by logged flow.</p>
+            </div>
+            <div class="bars" data-flow-breakdown></div>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <h2>Energy Trend</h2>
+              <p>Recent logged energy, because eyeballing matters.</p>
+            </div>
+            <div class="sparkline-wrap" data-energy-trend></div>
+          </section>
+        </section>
+
+        <section class="grid grid-form">
+          <section class="panel">
+            <div class="section-head">
+              <h2>Quick Log</h2>
+              <p>One tap later, the data is already in SQLite.</p>
+            </div>
+
+            <form data-entry-form>
+              <label>
+                <span>Date</span>
+                <input name="logged_on" type="date" required>
+              </label>
+
+              <label>
+                <span>Flow</span>
+                <select name="flow" required>
+                  <option value="spotting">Spotting</option>
+                  <option value="light">Light</option>
+                  <option value="medium" selected>Medium</option>
+                  <option value="heavy">Heavy</option>
+                </select>
+              </label>
+
+              <label>
+                <span>Mood</span>
+                <select name="mood">
+                  <option value="">Skip it</option>
+                  <option value="calm">Calm</option>
+                  <option value="flat">Flat</option>
+                  <option value="irritable">Irritable</option>
+                  <option value="tender">Tender</option>
+                  <option value="wired">Wired</option>
+                </select>
+              </label>
+
+              <label>
+                <span>Energy <strong data-energy-value>3</strong>/5</span>
+                <input name="energy" type="range" min="1" max="5" step="1" value="3">
+              </label>
+
+              <fieldset>
+                <legend>Symptoms</legend>
+                <div class="check-grid">
+                  <label><input type="checkbox" name="symptoms" value="cramps"> Cramps</label>
+                  <label><input type="checkbox" name="symptoms" value="bloating"> Bloating</label>
+                  <label><input type="checkbox" name="symptoms" value="headache"> Headache</label>
+                  <label><input type="checkbox" name="symptoms" value="cravings"> Cravings</label>
+                  <label><input type="checkbox" name="symptoms" value="backache"> Backache</label>
+                  <label><input type="checkbox" name="symptoms" value="breakouts"> Breakouts</label>
+                </div>
+              </fieldset>
+
+              <label>
+                <span>Notes</span>
+                <textarea name="notes" rows="4" maxlength="600" placeholder="Anything worth remembering."></textarea>
+              </label>
+
+              <div class="form-actions">
+                <button type="submit">Log Entry</button>
+                <p class="status" data-form-status>Ready.</p>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <h2>Recent Entries</h2>
+              <p>Offset pagination for now. It is boring and it works.</p>
+            </div>
+            <div class="entry-list" data-entry-list></div>
+            <div class="list-actions">
+              <button type="button" class="ghost" data-load-more>Load More</button>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/panda-app-sdk.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
