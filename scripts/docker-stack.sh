@@ -204,6 +204,37 @@ telepathy_publish_enabled() {
   esac
 }
 
+extract_https_url_host() {
+  local value without_scheme host
+  value="$(trim "$1")"
+  [[ "$value" == https://* ]] || return 1
+  without_scheme="${value#https://}"
+  [[ "$without_scheme" != *"@"* ]] || return 1
+  [[ "$without_scheme" != *"?"* ]] || return 1
+  [[ "$without_scheme" != *"#"* ]] || return 1
+  host="${without_scheme%%/*}"
+  [[ "$without_scheme" == "$host" || "$without_scheme" == "$host/" ]] || return 1
+  host="${host%%:*}"
+  [[ -n "$host" ]] || return 1
+  printf '%s\n' "$host"
+}
+
+validate_apps_edge_config() {
+  local base_url public_host base_host
+  if (( ! enable_apps_edge )); then
+    return
+  fi
+
+  base_url="$(trim "${PANDA_APPS_BASE_URL:-}")"
+  public_host="$(trim "${PANDA_APPS_PUBLIC_HOST:-}")"
+  base_host="$(extract_https_url_host "$base_url")" \
+    || die "PANDA_APPS_BASE_URL must be a plain https:// origin when exposing public apps."
+  [[ -n "$public_host" ]] \
+    || die "PANDA_APPS_PUBLIC_HOST is required when exposing public apps."
+  [[ "$base_host" == "$public_host" ]] \
+    || die "PANDA_APPS_PUBLIC_HOST must match PANDA_APPS_BASE_URL host ($base_host)."
+}
+
 enable_telegram_profile=0
 if [[ -n "$(trim "${TELEGRAM_BOT_TOKEN:-}")" ]]; then
   enable_telegram_profile=1
@@ -213,6 +244,7 @@ enable_apps_edge=0
 if [[ -n "$(trim "${PANDA_APPS_BASE_URL:-}")" ]]; then
   enable_apps_edge=1
 fi
+validate_apps_edge_config
 
 compose_args=(
   "$docker_bin" compose

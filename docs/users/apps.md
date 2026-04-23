@@ -99,6 +99,7 @@ That is a separate access-control feature for later.
 ## `views.json`
 
 Views are readonly SQL queries the runtime exposes through `app_view` and the local HTTP API.
+Panda opens the app database in SQLite readonly mode for views, so row-returning writes like `insert ... returning` are rejected.
 
 Example:
 
@@ -240,6 +241,18 @@ App-provided params must not override those names.
 If `identityScoped` is `true`, `identityId` is required.
 If it is `false`, apps can work without any identity context at all.
 
+## Filesystem And SQL Boundaries
+
+Each app is intentionally boring on disk:
+
+- static UI serving only follows real files inside `public/`
+- symlinked or hardlinked UI assets are rejected
+- `data/app.sqlite` must stay inside the app directory and must not be a symlink
+- app SQL cannot use `ATTACH`, `DETACH`, `VACUUM INTO`, or `load_extension()`
+
+Those rules protect the "one app, one SQLite DB" contract.
+If you need data shared between apps, build that as an explicit feature instead of smuggling another database file into SQLite.
+
 ## UI
 
 If `public/index.html` exists, Panda serves the app through the daemon automatically.
@@ -320,13 +333,19 @@ Put Caddy or another reverse proxy in front of Panda and keep `panda-core:8092` 
 
 Set:
 
-- `PANDA_APPS_BASE_URL=https://panda.patrikmojzis.com`
+- `PANDA_APPS_BASE_URL=https://your-domain.example`
+- `PANDA_APPS_PUBLIC_HOST=your-domain.example`
 - `PANDA_APPS_AUTH=required`
 - optional `PANDA_APPS_RATE_LIMIT_PER_MINUTE=300`
 - optional `PANDA_APPS_SESSION_TTL_HOURS=24`
 - optional `PANDA_APPS_COOKIE_SECURE=false` only for local HTTP debugging
 
 When `PANDA_APPS_BASE_URL` is set, Panda requires app auth by default unless you explicitly set `PANDA_APPS_AUTH=off`.
+`PANDA_APPS_BASE_URL` should be a plain origin, like `https://your-domain.example`, with no path, query, fragment, username, or password.
+For non-local hosts, `PANDA_APPS_BASE_URL` must use `https://`.
+For non-local hosts, Panda refuses `PANDA_APPS_COOKIE_SECURE=false`.
+The public Caddy compose also forces `PANDA_APPS_AUTH=required` and refuses to start without `PANDA_APPS_BASE_URL` and `PANDA_APPS_PUBLIC_HOST`.
+When using `scripts/docker-stack.sh`, `PANDA_APPS_PUBLIC_HOST` must match the hostname in `PANDA_APPS_BASE_URL`.
 
 The secure open flow is:
 
@@ -358,7 +377,8 @@ So deployment stays the normal command:
 ./scripts/docker-stack.sh up --build
 ```
 
-The edge service joins the same `runner_net` Docker network and proxies to `panda-core:8092`.
+Caddy joins a small `apps_edge_net` shared only with `panda-core`.
+Caddy also runs with a read-only root filesystem, no-new-privileges, and only `NET_BIND_SERVICE`.
 Do not add a host port publish for `8092`.
 
 Security notes:
@@ -367,10 +387,15 @@ Security notes:
 - link previews cannot consume launch tokens because only POST redeems them
 - app sessions are scoped to one `agentKey + appSlug + identityId`
 - app API calls require an app-scoped CSRF token, so one app UI cannot use another app's session
-- `app_link_create` signs in the current input identity only
+- app rate limiting keys on the direct TCP peer; keep `8092` private so the only public peer is Caddy
+- `app_link_create`, `app_view`, and `app_action` use the current input identity only
+- views are enforced readonly at SQLite level
+- app SQL cannot attach, detach, export other database files, or load native SQLite extensions
+- static app serving rejects symlink and hardlink escapes
 - identity scoping is still data partitioning, not authorization
 - group/role authorization is not implemented yet
 - the default CSP blocks third-party scripts and network calls from app UIs
+- path-based app URLs are not a hostile third-party JavaScript sandbox; do not install untrusted app UI code as if it were isolated
 
 ## Agent Tools
 

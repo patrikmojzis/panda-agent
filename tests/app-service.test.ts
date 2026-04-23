@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import {access, mkdir, mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
+import {access, mkdir, mkdtemp, readFile, rm, symlink, writeFile} from "node:fs/promises";
 import {DatabaseSync} from "node:sqlite";
 
 import {afterEach, describe, expect, it} from "vitest";
@@ -150,6 +150,118 @@ describe("agent app service", () => {
     expect(result.items).toEqual([{flow: "light"}]);
   });
 
+  it("refuses to open app databases through symlinks that escape the app", async () => {
+    const fixture = await createAgentAppFixture();
+    fixtures.push(fixture);
+
+    const outsideDbPath = path.join(fixture.dataDir, "outside.sqlite");
+    const outsideDb = new DatabaseSync(outsideDbPath);
+    try {
+      outsideDb.exec("create table counter (value integer not null); insert into counter (value) values (999);");
+    } finally {
+      outsideDb.close();
+    }
+
+    await rm(fixture.dbPath, {force: true});
+    await symlink(outsideDbPath, fixture.dbPath);
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+
+    await expect(
+      service.executeView(fixture.agentKey, fixture.appSlug, "summary"),
+    ).rejects.toThrow("must not be a symlink");
+  });
+
+  it("runs app views against SQLite in readonly mode", async () => {
+    const fixture = await createAgentAppFixture({
+      views: {
+        sneaky_write: {
+          sql: "insert into counter (value) values (999) returning value as count",
+        },
+        summary: {
+          sql: "select value as count from counter order by value desc limit 1",
+        },
+      },
+    });
+    fixtures.push(fixture);
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+
+    await expect(
+      service.executeView(fixture.agentKey, fixture.appSlug, "sneaky_write"),
+    ).rejects.toThrow(/readonly|read-only|attempt to write/i);
+
+    const summary = await service.executeView(fixture.agentKey, fixture.appSlug, "summary");
+    expect(summary.items).toEqual([{count: 1}]);
+  });
+
+  it("blocks app SQL from attaching or exporting other database files", async () => {
+    const fixture = await createAgentAppFixture({
+      actions: {
+        attach_other_db: {
+          mode: "native",
+          sql: "attach database '/tmp/other.sqlite' as other",
+        },
+        export_db: {
+          mode: "native",
+          sql: "vacuum into '/tmp/app-copy.sqlite'",
+        },
+        load_native_extension: {
+          mode: "native",
+          sql: "select load_extension('/tmp/nope')",
+        },
+      },
+      views: {
+        harmless_label: {
+          sql: "select 'attach database is blocked as SQL, not as text' as note",
+        },
+      },
+    });
+    fixtures.push(fixture);
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+
+    await expect(
+      service.executeAction(fixture.agentKey, fixture.appSlug, "attach_other_db"),
+    ).rejects.toThrow("App SQL must not use ATTACH");
+    await expect(
+      service.executeAction(fixture.agentKey, fixture.appSlug, "export_db"),
+    ).rejects.toThrow("App SQL must not use ATTACH");
+    await expect(
+      service.executeAction(fixture.agentKey, fixture.appSlug, "load_native_extension"),
+    ).rejects.toThrow("App SQL must not use ATTACH");
+    await expect(
+      service.executeView(fixture.agentKey, fixture.appSlug, "harmless_label"),
+    ).resolves.toMatchObject({
+      items: [{note: "attach database is blocked as SQL, not as text"}],
+    });
+
+    const checks = await service.checkApps(fixture.agentKey, {
+      appSlug: fixture.appSlug,
+    });
+    expect(checks[0]?.ok).toBe(false);
+    expect(checks[0]?.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: "attach_other_db.sql",
+        message: "App SQL must not use ATTACH, DETACH, VACUUM INTO, or load_extension().",
+      }),
+      expect.objectContaining({
+        path: "export_db.sql",
+        message: "App SQL must not use ATTACH, DETACH, VACUUM INTO, or load_extension().",
+      }),
+      expect.objectContaining({
+        path: "load_native_extension.sql",
+        message: "App SQL must not use ATTACH, DETACH, VACUUM INTO, or load_extension().",
+      }),
+    ]));
+  });
+
   it("creates a blank app scaffold with placeholder files", async () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "panda-app-create-"));
     tempDirs.push(dataDir);
@@ -210,6 +322,24 @@ describe("agent app service", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("blocks app_create schema SQL from using SQLite file escape hatches", async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "panda-app-schema-guard-"));
+    tempDirs.push(dataDir);
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: dataDir},
+    });
+
+    await expect(service.createBlankApp("panda", {
+      slug: "bad-schema",
+      name: "Bad Schema",
+      schemaSql: "attach database '/tmp/other.sqlite' as other;",
+    })).rejects.toThrow("App SQL must not use ATTACH");
+
+    const apps = await service.listApps("panda");
+    expect(apps).toEqual([]);
   });
 
   it("surfaces structured diagnostics for broken app definitions without hiding valid apps", async () => {

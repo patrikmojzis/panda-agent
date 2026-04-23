@@ -1,3 +1,6 @@
+import path from "node:path";
+import {link, mkdir, rm, symlink, writeFile} from "node:fs/promises";
+
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
@@ -57,6 +60,56 @@ describe("agent app server", () => {
       localAppUrl: "http://127.0.0.1:8092/panda/apps/period-tracker/",
       internalAppUrl: "http://panda-core:8092/panda/apps/period-tracker/",
     });
+  });
+
+  it("rejects unsafe public app URL and cookie settings", async () => {
+    expect(buildAgentAppCookieNames("a_b", "c")).not.toEqual(buildAgentAppCookieNames("a", "b_c"));
+
+    expect(() => resolveAgentAppUrls({
+      agentKey: "panda",
+      appSlug: "period-tracker",
+      env: {
+        PANDA_APPS_BASE_URL: "http://panda.example.com",
+      },
+    })).toThrow("PANDA_APPS_BASE_URL must use https://");
+
+    expect(() => resolveAgentAppUrls({
+      agentKey: "panda",
+      appSlug: "period-tracker",
+      env: {
+        PANDA_APPS_BASE_URL: "https://panda.example.com/nested",
+      },
+    })).toThrow("PANDA_APPS_BASE_URL must be a plain origin");
+
+    const fixture = await createAgentAppFixture();
+    fixtures.push(fixture);
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+
+    await expect(startAgentAppServer({
+      host: "127.0.0.1",
+      port: 0,
+      service,
+      auth: {
+        createLaunchToken: vi.fn(),
+        redeemLaunchToken: vi.fn(),
+        getSessionByToken: vi.fn(),
+        verifyCsrfToken: vi.fn(),
+      },
+      env: {
+        PANDA_APPS_BASE_URL: "https://panda.example.com",
+        PANDA_APPS_COOKIE_SECURE: "false",
+      },
+    })).rejects.toThrow("PANDA_APPS_COOKIE_SECURE=false is only allowed for local app hosts");
+
+    expect(resolveAgentAppUrls({
+      agentKey: "panda",
+      appSlug: "period-tracker",
+      env: {
+        PANDA_APPS_BASE_URL: "http://127.0.0.1:8092",
+      },
+    }).appUrl).toBe("http://127.0.0.1:8092/panda/apps/period-tracker/");
   });
 
   it("serves ui assets, bootstrap data, and wakes the main session for wake actions", async () => {
@@ -126,6 +179,7 @@ describe("agent app server", () => {
 
     const bootstrap = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/bootstrap`);
     expect(bootstrap.status).toBe(200);
+    expect(bootstrap.headers.get("cache-control")).toBe("no-store");
     await expect(bootstrap.json()).resolves.toMatchObject({
       ok: true,
       app: {
@@ -226,6 +280,117 @@ describe("agent app server", () => {
       ok: false,
       error: "App request body is too large.",
     });
+  });
+
+  it("does not serve static assets through symlinks that escape public", async () => {
+    const fixture = await createAgentAppFixture();
+    fixtures.push(fixture);
+
+    const secretPath = path.join(fixture.appDir, "secret.txt");
+    await writeFile(secretPath, "not for static serving");
+    await symlink(secretPath, path.join(fixture.appDir, "public", "leak.txt"));
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+    const server = await startAgentAppServer({
+      host: "127.0.0.1",
+      port: 0,
+      service,
+    });
+    servers.push(server);
+
+    const baseUrl = `http://${server.host}:${server.port}`;
+    const leaked = await fetch(`${baseUrl}/${fixture.agentKey}/apps/${fixture.appSlug}/leak.txt`);
+    expect(leaked.status).toBe(404);
+    await expect(leaked.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Static asset not found.",
+    });
+  });
+
+  it("does not serve apps whose public directory symlink escapes the app", async () => {
+    const fixture = await createAgentAppFixture({appSlug: "symlink-public"});
+    fixtures.push(fixture);
+
+    const publicDir = path.join(fixture.appDir, "public");
+    const outsidePublicDir = path.join(fixture.dataDir, "outside-public");
+    await rm(publicDir, {recursive: true, force: true});
+    await mkdir(outsidePublicDir, {recursive: true});
+    await writeFile(path.join(outsidePublicDir, "index.html"), "<!doctype html><p>escaped</p>");
+    await symlink(outsidePublicDir, publicDir, "dir");
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+    const server = await startAgentAppServer({
+      host: "127.0.0.1",
+      port: 0,
+      service,
+    });
+    servers.push(server);
+
+    const baseUrl = `http://${server.host}:${server.port}`;
+    const escaped = await fetch(`${baseUrl}/${fixture.agentKey}/apps/${fixture.appSlug}/`);
+    expect(escaped.status).toBe(404);
+    await expect(escaped.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Static asset not found.",
+    });
+  });
+
+  it("does not serve static assets through hardlinks to files outside public", async () => {
+    const fixture = await createAgentAppFixture();
+    fixtures.push(fixture);
+
+    const secretPath = path.join(fixture.appDir, "hardlink-secret.txt");
+    await writeFile(secretPath, "not for static serving");
+    await link(secretPath, path.join(fixture.appDir, "public", "hardlink.txt"));
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+    const server = await startAgentAppServer({
+      host: "127.0.0.1",
+      port: 0,
+      service,
+    });
+    servers.push(server);
+
+    const baseUrl = `http://${server.host}:${server.port}`;
+    const leaked = await fetch(`${baseUrl}/${fixture.agentKey}/apps/${fixture.appSlug}/hardlink.txt`);
+    expect(leaked.status).toBe(404);
+    await expect(leaked.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Static asset not found.",
+    });
+  });
+
+  it("does not let X-Forwarded-For spoof app rate limits", async () => {
+    const fixture = await createAgentAppFixture();
+    fixtures.push(fixture);
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+    const server = await startAgentAppServer({
+      host: "127.0.0.1",
+      port: 0,
+      service,
+      rateLimitPerMinute: 1,
+    });
+    servers.push(server);
+
+    const baseUrl = `http://${server.host}:${server.port}`;
+    const first = await fetch(`${baseUrl}/health`, {
+      headers: {"x-forwarded-for": "198.51.100.1"},
+    });
+    expect(first.status).toBe(200);
+
+    const spoofed = await fetch(`${baseUrl}/health`, {
+      headers: {"x-forwarded-for": "198.51.100.2"},
+    });
+    expect(spoofed.status).toBe(429);
   });
 
   it("rejects explicit sessions that belong to a different agent", async () => {

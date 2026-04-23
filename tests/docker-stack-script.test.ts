@@ -297,7 +297,16 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     expect(logContents).toContain("docker-compose.apps-edge.yml");
     const appsCompose = await readFile(appsEdgeComposePath, "utf8");
     expect(appsCompose).not.toContain("env_file:");
+    expect(appsCompose).toContain("PANDA_APPS_AUTH: required");
+    expect(appsCompose).toContain("PANDA_APPS_BASE_URL is required when exposing public apps");
+    expect(appsCompose).toContain("PANDA_APPS_PUBLIC_HOST is required when exposing public apps");
+    expect(appsCompose).toContain("apps_edge_net");
+    expect(appsCompose).not.toContain("runner_net");
+    expect(appsCompose).toContain("read_only: true");
+    expect(appsCompose).toContain("no-new-privileges:true");
+    expect(appsCompose).toContain("NET_BIND_SERVICE");
     const caddyfile = await readFile(appsCaddyfilePath, "utf8");
+    expect(caddyfile).not.toContain("panda.patrikmojzis.com");
     expect(caddyfile).toContain("header_up X-Forwarded-For {remote_host}");
 
     const logsResult = await runScript(["logs", "apps"], {
@@ -307,6 +316,45 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     });
     expect(logsResult.exitCode).toBe(0);
     expect(await readFile(logPath, "utf8")).toContain("logs -f caddy");
+  });
+
+  it("rejects unsafe or mismatched public apps edge settings", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const homeDir = await makeTempDir("panda-home-");
+    const httpEnvFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_APPS_BASE_URL=http://panda.example.com",
+      "PANDA_APPS_PUBLIC_HOST=panda.example.com",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const httpResult = await runScript(["up"], {
+      envFile: httpEnvFile,
+      dockerBin,
+      homeDir,
+    });
+    expect(httpResult.exitCode).not.toBe(0);
+    expect(httpResult.stderr).toContain("PANDA_APPS_BASE_URL must be a plain https:// origin");
+
+    const mismatchEnvFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_APPS_BASE_URL=https://panda.example.com",
+      "PANDA_APPS_PUBLIC_HOST=other.example.com",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const mismatchResult = await runScript(["up"], {
+      envFile: mismatchEnvFile,
+      dockerBin,
+      homeDir,
+    });
+    expect(mismatchResult.exitCode).not.toBe(0);
+    expect(mismatchResult.stderr).toContain("PANDA_APPS_PUBLIC_HOST must match PANDA_APPS_BASE_URL host");
   });
 
   it("bootstraps wiki for all declared agents when admin credentials are set", async () => {
