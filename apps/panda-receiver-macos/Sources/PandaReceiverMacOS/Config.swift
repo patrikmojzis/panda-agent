@@ -73,6 +73,18 @@ struct Config: Codable {
         tunnel = try container.decodeIfPresent(TunnelConfig.self, forKey: .tunnel)
     }
 
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(serverURL, forKey: .serverURL)
+        try container.encode(agentKey, forKey: .agentKey)
+        try container.encode(deviceId, forKey: .deviceId)
+        try container.encodeIfPresent(label, forKey: .label)
+        try container.encode(reconnectDelaySeconds, forKey: .reconnectDelaySeconds)
+        try container.encode(allowPullScreenshots, forKey: .allowPullScreenshots)
+        try container.encode(pushToTalkShortcuts, forKey: .pushToTalkShortcuts)
+        try container.encodeIfPresent(tunnel, forKey: .tunnel)
+    }
+
     var displayName: String {
         let trimmedLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmedLabel.isEmpty ? deviceId : trimmedLabel
