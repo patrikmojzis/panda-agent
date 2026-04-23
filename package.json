@@ -111,11 +111,13 @@
     "mysql2": "^3.22.0",
     "pg": "^8.20.0",
     "playwright-core": "^1.59.1",
+    "ws": "^8.20.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
     "@types/pg": "^8.20.0",
+    "@types/ws": "^8.18.1",
     "pg-mem": "^3.0.14",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2",

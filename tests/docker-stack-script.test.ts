@@ -158,6 +158,49 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     expect(await readFile(logPath, "utf8")).not.toContain("panda agent ensure");
   });
 
+  it("publishes telepathy on localhost only through the generated override", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "TELEPATHY_PORT=8787",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(generatedComposePath, "utf8")).toContain('127.0.0.1:8787:8787');
+  });
+
+  it("does not publish telepathy when it is explicitly disabled", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "TELEPATHY_ENABLED=false",
+      "TELEPATHY_PORT=8787",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(generatedComposePath, "utf8")).not.toContain('127.0.0.1:8787:8787');
+  });
+
   it("renders one runner per agent, enables telegram automatically, and maps agent logs to runner services", async () => {
     const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
     const dockerBin = await createDockerStub(logPath);

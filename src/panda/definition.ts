@@ -9,6 +9,10 @@ import {
   type PostgresReadonlyQueryToolOptions,
 } from "./tools/postgres-readonly-query-tool.js";
 import {CurrentDateTimeTool} from "./tools/current-datetime-tool.js";
+import {
+  TelepathyScreenshotTool,
+  type TelepathyScreenshotToolOptions,
+} from "./tools/telepathy-screenshot-tool.js";
 import {WebFetchTool} from "./tools/web-fetch-tool.js";
 import {WebResearchTool} from "./tools/web-research-tool.js";
 import {hasOpenAiApiKey, WhisperTool} from "./tools/whisper-tool.js";
@@ -18,6 +22,7 @@ export interface BuildDefaultAgentToolsOptions {
   bash?: BashToolOptions;
   browser?: BrowserToolOptions;
   postgresReadonly?: PostgresReadonlyQueryToolOptions;
+  telepathy?: TelepathyScreenshotToolOptions;
 }
 
 export type DefaultAgentToolsetKey = "main" | "workspace" | "memory" | "browser" | "skill_maintainer";
@@ -32,6 +37,7 @@ export interface DefaultAgentToolRegistry {
   globFiles: GlobFilesTool;
   grepFiles: GrepFilesTool;
   media: MediaTool;
+  telepathy?: TelepathyScreenshotTool;
   webFetch: WebFetchTool;
   browser: BrowserTool;
   braveSearch?: BraveSearchTool;
@@ -62,6 +68,11 @@ export function createDefaultAgentToolRegistry(
     globFiles: new GlobFilesTool(),
     grepFiles: new GrepFilesTool(),
     media: new MediaTool(),
+    ...(options.telepathy
+      ? {
+        telepathy: new TelepathyScreenshotTool(options.telepathy),
+      }
+      : {}),
     webFetch: new WebFetchTool(),
     browser: new BrowserTool(options.browser),
   };
@@ -108,6 +119,7 @@ export function buildDefaultAgentToolsetsFromRegistry(
       registry.bashJobCancel,
       registry.currentDateTime,
       registry.media,
+      registry.telepathy,
       registry.webFetch,
       registry.postgresReadonlyQuery,
       registry.webResearch,

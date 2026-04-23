@@ -88,7 +88,7 @@ export async function bootstrapDaemonContext(
     readOnlyDbUrl: options.readOnlyDbUrl,
     maxSubagentDepth: options.maxSubagentDepth,
     onEvent: createChannelTypingEventHandler(typingDispatcher),
-    resolveDefinition: async (thread, {agentStore, bashJobService, browserService, credentialResolver, sessionStore, store, wikiBindingService, mainTools}) => {
+    resolveDefinition: async (thread, {agentStore, bashJobService, browserService, credentialResolver, sessionStore, store, telepathyService, wikiBindingService, mainTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
       return createThreadDefinition({
         thread,
@@ -104,6 +104,13 @@ export async function bootstrapDaemonContext(
         browserToolOptions: {
           service: browserService,
         },
+        ...(telepathyService
+          ? {
+            telepathyToolOptions: {
+              service: telepathyService,
+            },
+          }
+          : {}),
         tools: [...mainTools, new OutboundTool(), new MessageAgentTool(), new TelegramReactTool()],
         extraContext: {
           routeMemory: {

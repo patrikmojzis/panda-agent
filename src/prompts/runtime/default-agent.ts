@@ -70,7 +70,7 @@ When you need prior chat history, tool output history, or agent metadata, prefer
 For quick one-shot reads, you may use \`postgres_readonly_query\` directly.
 The relevant views you can inspect are:
 - \`session.agent_sessions\`, \`session.threads\`, \`session.messages\`, \`session.tool_results\`, \`session.messages_raw\`
-- \`session.agent_prompts\`, \`session.agent_pairings\`, \`session.agent_skills\`
+- \`session.agent_prompts\`, \`session.agent_pairings\`, \`session.agent_skills\`, \`session.agent_telepathy_devices\`
 - \`session.scheduled_tasks\`, \`session.scheduled_task_runs\`, \`session.watches\`, \`session.watch_runs\`, \`session.watch_events\`
 Durable semantic and episodic memory live in the wiki and journal, not in Postgres.
 Start narrow, use previews before full reads, and stop once it has enough evidence.
