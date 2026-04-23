@@ -398,6 +398,10 @@ extension ReceiverError {
     static let screenRecordingDenied = ReceiverError(
         "Screen Recording permission is denied. Re-enable \(AppIdentity.appDisplayName) in System Settings -> Privacy & Security -> Screen Recording, then retry."
     )
+
+    static let microphoneDenied = ReceiverError(
+        "Microphone permission is denied. Re-enable \(AppIdentity.appDisplayName) in System Settings -> Privacy & Security -> Microphone, then retry."
+    )
 }
 
 struct NormalizedReceiverIssue: Sendable {
@@ -476,6 +480,11 @@ struct DeviceReady: Decodable {
     let deviceId: String
 }
 
+struct ContextAccepted: Decodable {
+    let type: String
+    let requestId: String
+}
+
 struct ScreenshotRequest: Decodable {
     let type: String
     let requestId: String
@@ -501,6 +510,63 @@ struct RequestError: Decodable {
     let type: String
     let requestId: String?
     let error: String
+}
+
+enum TelepathyContextMode: String, Sendable {
+    case pushToTalk = "push_to_talk"
+}
+
+struct ContextSubmitMetadata: Encodable, Sendable {
+    let submittedAt: Int64
+    let frontmostApp: String?
+    let windowTitle: String?
+    let trigger: String?
+}
+
+struct ContextTextItem: Encodable, Sendable {
+    let type = "text"
+    let text: String
+}
+
+struct ContextAudioItem: Encodable, Sendable {
+    let type = "audio"
+    let mimeType: String
+    let data: String
+    let bytes: Int
+    let filename: String?
+}
+
+struct ContextImageItem: Encodable, Sendable {
+    let type = "image"
+    let mimeType: String
+    let data: String
+    let bytes: Int
+    let filename: String?
+}
+
+enum ContextSubmitItem: Encodable, Sendable {
+    case text(ContextTextItem)
+    case audio(ContextAudioItem)
+    case image(ContextImageItem)
+
+    func encode(to encoder: Encoder) throws {
+        switch self {
+        case .text(let item):
+            try item.encode(to: encoder)
+        case .audio(let item):
+            try item.encode(to: encoder)
+        case .image(let item):
+            try item.encode(to: encoder)
+        }
+    }
+}
+
+struct ContextSubmit: Encodable, Sendable {
+    let type = "context.submit"
+    let requestId: String
+    let mode: String
+    let items: [ContextSubmitItem]
+    let metadata: ContextSubmitMetadata?
 }
 
 struct MessageEnvelope: Decodable {

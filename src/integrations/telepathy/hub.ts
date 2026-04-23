@@ -9,6 +9,8 @@ import {telepathyTokenMatches} from "../../domain/telepathy/index.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {trimToNull} from "../../lib/strings.js";
 import type {
+  TelepathyContextItem,
+  TelepathyContextSubmit,
   TelepathyReceiverMessage,
   TelepathyServerMessage,
   TelepathyScreenshotResult,
@@ -63,10 +65,32 @@ export interface TelepathyConnectedDeviceInfo {
 export interface TelepathyHubOptions {
   env?: NodeJS.ProcessEnv;
   host?: string;
+  onContextSubmit?: TelepathyContextSubmitHandler;
   path?: string;
   port?: number;
   store: TelepathyDeviceStore;
 }
+
+export interface TelepathyContextSubmitMetadata {
+  submittedAt?: number;
+  frontmostApp?: string;
+  windowTitle?: string;
+  trigger?: string;
+}
+
+export interface TelepathyContextSubmitInput {
+  agentKey: string;
+  deviceId: string;
+  label?: string;
+  requestId: string;
+  mode: string;
+  items: readonly TelepathyContextItem[];
+  metadata?: TelepathyContextSubmitMetadata;
+}
+
+export type TelepathyContextSubmitHandler = (
+  input: TelepathyContextSubmitInput,
+) => Promise<void> | void;
 
 function normalizePath(value: string): string {
   const trimmed = value.trim();
@@ -157,6 +181,7 @@ function resolveTelepathyPath(env: NodeJS.ProcessEnv = process.env): string {
 
 export class TelepathyHub {
   private readonly host: string;
+  private onContextSubmit: TelepathyContextSubmitHandler | null;
   private readonly path: string;
   private readonly port: number;
   private readonly store: TelepathyDeviceStore;
@@ -170,6 +195,7 @@ export class TelepathyHub {
   constructor(options: TelepathyHubOptions) {
     const env = options.env ?? process.env;
     this.host = options.host ?? resolveTelepathyHost(env);
+    this.onContextSubmit = options.onContextSubmit ?? null;
     this.path = options.path ? normalizePath(options.path) : resolveTelepathyPath(env);
     this.port = options.port ?? resolveTelepathyPort(env);
     this.store = options.store;
@@ -184,6 +210,10 @@ export class TelepathyHub {
     return typeof address === "object" && address !== null
       ? (address as AddressInfo).port
       : this.port;
+  }
+
+  setContextSubmitHandler(handler: TelepathyContextSubmitHandler | null): void {
+    this.onContextSubmit = handler;
   }
 
   listConnectedDevices(agentKey?: string): readonly TelepathyConnectedDeviceInfo[] {
@@ -463,6 +493,11 @@ export class TelepathyHub {
       device.lastSeenAt = Date.now();
       await this.store.touchLastSeen(device.agentKey, device.deviceId);
 
+      if (message.type === "context.submit") {
+        await this.handleContextSubmit(device, message, socket);
+        return;
+      }
+
       this.handleScreenshotResult(device, message);
     });
 
@@ -484,6 +519,43 @@ export class TelepathyHub {
     socket.on("error", () => {
       // Close handling does the real cleanup.
     });
+  }
+
+  private async handleContextSubmit(
+    device: ConnectedDevice,
+    message: TelepathyContextSubmit,
+    socket: WebSocket,
+  ): Promise<void> {
+    if (!this.onContextSubmit) {
+      await sendJson(socket, {
+        type: "request.error",
+        requestId: message.requestId,
+        error: "Telepathy context submit is not configured on the server.",
+      });
+      return;
+    }
+
+    try {
+      await this.onContextSubmit({
+        agentKey: device.agentKey,
+        deviceId: device.deviceId,
+        ...(device.label ? {label: device.label} : {}),
+        requestId: message.requestId,
+        mode: message.mode,
+        items: message.items,
+        ...(message.metadata ? {metadata: message.metadata} : {}),
+      });
+      await sendJson(socket, {
+        type: "context.accepted",
+        requestId: message.requestId,
+      });
+    } catch (error) {
+      await sendJson(socket, {
+        type: "request.error",
+        requestId: message.requestId,
+        error: error instanceof Error ? error.message : "Telepathy context submit failed.",
+      });
+    }
   }
 
   private handleScreenshotResult(device: ConnectedDevice, message: TelepathyScreenshotResult): void {

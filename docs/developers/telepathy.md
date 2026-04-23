@@ -1,26 +1,57 @@
 # Telepathy
 
-Telepathy is Panda's screen bridge for a paired Mac.
+Telepathy is Panda's desktop bridge for a paired Mac.
 
 The shape is intentionally boring:
 
 - Panda runtime owns a localhost-only WebSocket hub
 - a detached macOS receiver connects to that hub
-- the receiver captures a screenshot on demand
-- Panda stores the result as a normal artifact
+- the receiver either responds to agent pull requests or pushes user-triggered context
+- Panda stores screenshots, voice notes, and other telepathy payloads as normal artifacts
 - device discovery happens through `session.agent_telepathy_devices`, not another tool
 
-That last bit matters. We are trying to keep tool count low, so `telepathy_screenshot` is the action tool and Postgres is the discovery surface.
+That last bit matters. We are trying to keep tool count low, so `telepathy_screenshot` stays the action tool and Postgres stays the discovery surface.
+
+## Transport Shape
+
+Telepathy now has two lanes:
+
+- pull: Panda asks the device for something and gets a direct response back
+- push: the device sends Panda context because you triggered it locally
+
+Current contracts:
+
+- pull: `screenshot.request` / `screenshot.result`
+- push: `context.submit`
+
+`context.submit` is modular on purpose. It carries typed `items[]`, so voice and screenshots are separate concepts that can travel together or alone.
+
+Current item types:
+
+- `audio`
+- `image`
+- `text`
+
+That gives us sane long-term flexibility:
+
+- push-to-talk voice only
+- push-to-talk voice + screenshot
+- future screen-only or clipboard pushes without inventing a new protocol every time
 
 ## Current Scope
 
 Implemented now:
 
 - `telepathy_screenshot(deviceId)`
+- `context.submit` push ingress for telepathy-triggered context
 - per-device durable token registry in Postgres
 - `session.agent_telepathy_devices` readonly view for discovery
 - screenshot artifact persistence under Panda media paths
+- pushed audio and screenshot artifact persistence under Panda media paths
 - macOS Swift menu bar receiver with connection status, kill switch, and test screenshot
+- global push-to-talk hotkeys:
+  - `Ctrl+Opt+Cmd+V` for voice only
+  - `Ctrl+Opt+Cmd+S` for voice + screenshot
 - first-run onboarding/settings window for local config
 - saved config under `~/Library/Application Support/Panda Telepathy/config.json`
 - packaged `.app` bundle builder
@@ -30,10 +61,14 @@ Implemented now:
 - bundled panda app icon
 - Developer ID signing auto-pick in the bundle build script
 - explicit receiver states for waiting, reconnecting, connected, and screen-recording denial
+- microphone permission state and request flow in the menu bar app
 
 Not implemented yet:
 
 - command execution
+- configurable shortcuts
+- spoken reply
+- local transcription
 - notarized distribution polish
 - nicer receiver diagnostics
 
@@ -44,6 +79,10 @@ Panda runtime:
 - `src/domain/telepathy/`
 - `src/integrations/telepathy/protocol.ts`
 - `src/integrations/telepathy/hub.ts`
+- `src/integrations/telepathy/config.ts`
+- `src/integrations/telepathy/helpers.ts`
+- `src/prompts/channels/telepathy.ts`
+- `src/app/runtime/telepathy-context-ingress.ts`
 - `src/panda/tools/telepathy-screenshot-tool.ts`
 
 macOS receiver:
@@ -51,6 +90,8 @@ macOS receiver:
 - `apps/panda-receiver-macos/Package.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Config.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/ConfigStore.swift`
+- `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/GlobalHotkeyService.swift`
+- `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/PushToTalkController.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Receiver.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/TunnelSupervisor.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/LaunchAtLogin.swift`
@@ -132,7 +173,11 @@ Running the binary launches a menu bar app. The menu shows:
 - current connection state
 - device label and id
 - screen recording permission state
+- microphone permission state
+- push-to-talk status
+- shortcut summary
 - a `Capture Enabled` kill switch
+- `Request Microphone Access`
 - `Take Test Screenshot`
 - `Settings…`
 - `Open At Login`
@@ -145,6 +190,8 @@ The raw debug binary is for development, smoke tests, and swearing at Apple.
 If no saved config exists, the app opens a settings window on launch instead of failing.
 
 On macOS 14 and newer, the receiver uses `ScreenCaptureKit` to capture the primary display, which fixes fullscreen Spaces. On macOS 13, it falls back to `/usr/sbin/screencapture`.
+
+Push-to-talk uses `AVAudioRecorder` and the app bundle now declares `NSMicrophoneUsageDescription`, so the packaged app can request mic access cleanly instead of dying in a ditch.
 
 If you leave the SSH tunnel fields empty, the receiver connects directly to the server URL.
 
@@ -177,6 +224,8 @@ dist/panda-telepathy-macos/Panda Telepathy.app
 ```
 
 The script prefers a `Developer ID Application: ...` identity when one exists. Until the bundle is notarized, `spctl` will still reject it. That is normal.
+
+The bundle also includes `NSMicrophoneUsageDescription`, because without that push-to-talk is just decorative fiction.
 
 For local login-item testing, install it into `/Applications`:
 
@@ -228,6 +277,28 @@ ssh -NT -L 127.0.0.1:43190:127.0.0.1:8787 patrik@clankerino
 ```
 
 The WebSocket then connects to the forwarded local port instead of talking to Panda directly.
+
+## Push-To-Talk
+
+The first push feature is intentionally simple:
+
+- hold `Ctrl+Opt+Cmd+V` to record a voice note
+- hold `Ctrl+Opt+Cmd+S` to record a voice note and attach a fresh screenshot
+- release the keys to stop recording and send the context
+
+When the receiver sends pushed context, Panda stores every item separately as normal telepathy media and wakes the agent's `main` session with one inbound telepathy message.
+
+That means Panda can:
+
+- use `whisper` on audio attachment paths
+- use `view_media` on screenshot attachment paths
+- answer with real desktop context instead of guessing what "this" means
+
+The push lane is event-based. It does not replace `telepathy_screenshot(deviceId)`.
+It sits next to it:
+
+- pull: Panda asks the device for a screenshot
+- push: the device sends Panda user-triggered context
 
 ## Local Verification
 
