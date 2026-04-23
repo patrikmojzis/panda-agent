@@ -12,6 +12,7 @@ Current lane:
 - the app is another surface into the same Panda, not a separate backend brain
 
 Do not invent a template system in your head. We do not have one yet.
+If you need a concrete reference, inspect `/app/examples/apps` in Docker or `examples/apps` in a source checkout.
 
 ## Use The Right Flow
 

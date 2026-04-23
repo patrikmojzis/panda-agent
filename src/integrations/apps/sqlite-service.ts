@@ -3,23 +3,23 @@ import {access, mkdir, rm, writeFile} from "node:fs/promises";
 import {DatabaseSync, type StatementSync} from "node:sqlite";
 
 import type {
-  AgentAppActionDefinition,
-  AgentAppActionInputSchema,
-  AgentAppActionMode,
-  AgentAppActionResult,
-  AgentAppCheckResult,
-  AgentAppDiagnosticIssue,
-  AgentAppDefinition,
-  AgentAppInputField,
-  AgentAppInspectionResult,
-  AgentAppScalarInputField,
-  AgentAppViewResult,
+    AgentAppActionDefinition,
+    AgentAppActionInputSchema,
+    AgentAppActionMode,
+    AgentAppActionResult,
+    AgentAppCheckResult,
+    AgentAppDefinition,
+    AgentAppDiagnosticIssue,
+    AgentAppInputField,
+    AgentAppInspectionResult,
+    AgentAppScalarInputField,
+    AgentAppViewResult,
 } from "../../domain/apps/types.js";
 import {normalizeAgentAppSlug, readAgentAppRequiredInputKeys} from "../../domain/apps/types.js";
 import {
-  AgentAppDefinitionError,
-  FileSystemAgentAppRegistry,
-  type FileSystemAgentAppRegistryOptions,
+    AgentAppDefinitionError,
+    FileSystemAgentAppRegistry,
+    type FileSystemAgentAppRegistryOptions,
 } from "./fs-registry.js";
 
 const RESERVED_PARAM_KEYS = new Set([
@@ -532,7 +532,8 @@ function buildBlankReadme(input: {
     `# ${input.appName}`,
     "",
     `${descriptionLine}This is a blank Panda app scaffold.`,
-    "Read `docs/agents/apps.md` in the Panda repo for the global contract and tool guidance.",
+    "Read `/app/docs/agents/apps.md` in Docker or `docs/agents/apps.md` in a source checkout for the global contract and tool guidance.",
+    "If you need a concrete reference, inspect `/app/examples/apps` in Docker or `examples/apps` in a source checkout.",
     "",
     "## Files",
     "",

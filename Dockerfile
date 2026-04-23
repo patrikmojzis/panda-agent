@@ -86,6 +86,8 @@ FROM base AS runtime
 COPY package.json pnpm-lock.yaml ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY docs/agents ./docs/agents
+COPY examples/apps ./examples/apps
 
 RUN ln -sf /app/dist/app/cli.js /usr/local/bin/panda \
   && chmod +x /app/dist/app/cli.js
