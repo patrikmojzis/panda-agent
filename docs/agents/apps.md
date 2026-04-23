@@ -5,6 +5,7 @@ Use this when you need to create or edit a filesystem-backed micro-app for the c
 Current lane:
 
 - `app_create` makes a blank scaffold
+- `app_link_create` makes a short-lived browser launch link for the current input identity
 - the app lives under `~/.panda/agents/<agentKey>/apps/<appSlug>/`
 - app data lives in SQLite
 - UI is just static files in `public/`
@@ -22,7 +23,7 @@ If you need a concrete reference, inspect `/app/examples/apps` in Docker or `exa
 4. Use `app_list` to confirm Panda sees the app.
 5. If Panda seems confused, use `app_check` for exact file/path/message diagnostics.
 6. Use `app_view` and `app_action` to test the contract.
-7. If the app has a UI, use the URL from `app_create` or `app_list` and open it in a browser.
+7. If the app has a UI and a human wants to open it, use `app_link_create`.
 
 ## Folder Shape
 
@@ -152,8 +153,9 @@ That is an access-control problem for later, not a reason to misuse identity sco
 If the app is identity-scoped:
 
 - views and actions require `identityId`
-- browser links should usually use `?identityHandle=<handle>`
-- the app host resolves the handle to the real identity id server-side
+- local/dev browser links can use `?identityHandle=<handle>`
+- public app links should use `app_link_create`; the signed app session carries the identity
+- `app_link_create` cannot choose another identity; it always uses the human currently talking
 
 Do not hardcode fake human handles as if they were identity ids.
 If the app is not identity-scoped, do not force `identityHandle` into the URL just because it exists.
@@ -168,6 +170,8 @@ You can edit:
 
 The Panda SDK is available at `/panda-app-sdk.js`.
 The daemon serves apps automatically.
+Keep JavaScript in `public/app.js`, not inline `<script>` tags. Public app auth uses a strict CSP and inline scripts are blocked.
+Use the SDK for API calls. In public auth mode, the SDK adds the app-scoped CSRF header that Panda requires for `bootstrap`, `view`, and `action`.
 
 Current surface:
 
@@ -227,6 +231,22 @@ For a user-facing write, prefer an action shaped like:
 Do not make the app mutate data on page load. That is cursed.
 Writes should happen on explicit click or submit.
 
+## Opening Apps
+
+For humans, prefer:
+
+1. `app_link_create`
+2. give the returned `openUrl`
+3. the browser shows a tiny Continue page
+4. the Continue submit signs the browser in and redirects to the clean app URL
+
+The launch URL is one-time and short-lived.
+It signs that browser into one app as the current input identity.
+When public app auth is required, direct app URLs without that cookie return `401`.
+
+Do not paste raw `identityId` or `identityHandle` into public URLs.
+Those query params are a local/dev convenience, not the secure lane.
+
 ## Testing
 
 Basic contract test:
@@ -240,13 +260,13 @@ Basic contract test:
 UI test:
 
 ```text
-http://127.0.0.1:8092/apps/<agentKey>/<appSlug>/
+http://127.0.0.1:8092/<agentKey>/apps/<appSlug>/
 ```
 
-For identity-scoped apps:
+For local/dev identity-scoped apps:
 
 ```text
-http://127.0.0.1:8092/apps/<agentKey>/<appSlug>/?identityHandle=smoke
+http://127.0.0.1:8092/<agentKey>/apps/<appSlug>/?identityHandle=smoke
 ```
 
 If `app_list` returns `internalAppUrl`, prefer that for browser-runner or browser subagent testing inside Docker.
@@ -256,5 +276,5 @@ If `app_list` returns `brokenApps`, Panda could not load those apps cleanly yet.
 
 - no migrations system yet
 - no custom app-local backend code
-- no production auth story yet
+- no group/role authorization yet
 - no scaffolding templates beyond blank

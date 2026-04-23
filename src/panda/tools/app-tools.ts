@@ -2,12 +2,13 @@ import {z} from "zod";
 
 import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {AgentAppAuthService} from "../../domain/apps/auth.js";
 import {readAgentAppRequiredInputKeys} from "../../domain/apps/types.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import type {JsonObject} from "../../kernel/agent/types.js";
-import {resolveAgentAppUrls} from "../../integrations/apps/http-server.js";
+import {buildAgentAppOpenPath, resolveAgentAppUrls} from "../../integrations/apps/http-server.js";
 import {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import {buildJsonToolPayload, buildTextToolPayload, rethrowAsToolError} from "./shared.js";
 
@@ -157,6 +158,79 @@ export class AppListTool<TContext = DefaultAgentSessionContext>
           warnings: app.warnings,
         })),
       } as unknown as JsonObject);
+    } catch (error) {
+      rethrowAsToolError(error);
+    }
+  }
+}
+
+export class AppLinkCreateTool<TContext = DefaultAgentSessionContext>
+  extends Tool<typeof AppLinkCreateTool.schema, TContext> {
+  static schema = z.object({
+    appSlug: z.string().trim().min(1),
+    expiresInMinutes: z.number().int().positive().max(60).optional()
+      .describe("Launch link lifetime. Defaults to 10 minutes and is capped at 60."),
+  });
+
+  name = "app_link_create";
+  description =
+    "Create a short-lived one-time browser launch link for a micro-app UI. Use this when the current human asks to open an app. The link signs the browser into that one app as the current input identity.";
+  schema = AppLinkCreateTool.schema;
+
+  constructor(
+    private readonly service: AgentAppService,
+    private readonly auth: AgentAppAuthService,
+  ) {
+    super();
+  }
+
+  override formatCall(args: Record<string, unknown>): string {
+    return typeof args.appSlug === "string" ? args.appSlug : super.formatCall(args);
+  }
+
+  async handle(
+    args: z.output<typeof AppLinkCreateTool.schema>,
+    run: RunContext<TContext>,
+  ) {
+    try {
+      const scope = readAppScope(run.context);
+      const app = await this.service.getApp(scope.agentKey, args.appSlug);
+      if (!app.hasUi) {
+        throw new ToolError(`App ${app.slug} does not expose a UI.`);
+      }
+
+      const identityId = scope.identityId;
+      if (!identityId) {
+        throw new ToolError("app_link_create needs an identity. Ask the user to chat through an identity-bound channel first.");
+      }
+
+      const launch = await this.auth.createLaunchToken({
+        agentKey: scope.agentKey,
+        appSlug: app.slug,
+        identityId,
+        sessionId: scope.sessionId,
+        expiresInMs: (args.expiresInMinutes ?? 10) * 60 * 1000,
+      });
+      const urls = resolveAgentAppUrls({
+        agentKey: app.agentKey,
+        appSlug: app.slug,
+      });
+      const openUrl = new URL(buildAgentAppOpenPath(launch.token), urls.appUrl).toString();
+
+      return buildTextToolPayload(
+        `Created one-time app link for ${app.slug}.`,
+        {
+          agentKey: app.agentKey,
+          appSlug: app.slug,
+          identityId,
+          openUrl,
+          expiresAt: new Date(launch.expiresAt).toISOString(),
+          appUrl: urls.appUrl,
+          localAppUrl: urls.localAppUrl,
+          ...(urls.internalAppUrl ? {internalAppUrl: urls.internalAppUrl} : {}),
+          ...(urls.publicAppUrl ? {publicAppUrl: urls.publicAppUrl} : {}),
+        } as JsonObject,
+      );
     } catch (error) {
       rethrowAsToolError(error);
     }

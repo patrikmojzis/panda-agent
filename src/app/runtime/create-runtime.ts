@@ -16,6 +16,7 @@ import type {CredentialResolver} from "../../domain/credentials/index.js";
 import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
 import type {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import type {AgentAppService} from "../../integrations/apps/sqlite-service.js";
+import type {AgentAppAuthService} from "../../domain/apps/auth.js";
 import type {TelepathyHub} from "../../integrations/telepathy/hub.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
@@ -66,6 +67,7 @@ export interface RuntimeOptions {
 export interface RuntimeServices {
   agentStore: AgentStore;
   apps: AgentAppService;
+  appAuth: AgentAppAuthService;
   bashJobService: BashJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -115,6 +117,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
   return {
     agentStore: runtime.agentStore,
     apps: runtime.apps,
+    appAuth: runtime.appAuth,
     bashJobService: runtime.bashJobService,
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,

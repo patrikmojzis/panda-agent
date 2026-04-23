@@ -7,7 +7,7 @@ Current MVP:
 - app source of truth lives under `~/.panda/agents/<agentKey>/apps/<appSlug>/`
 - app data lives in SQLite
 - UI is optional and served locally by Panda
-- this is localhost/dev shape, not production auth shape
+- public access uses short-lived app links plus app-scoped cookies
 - the app is another front door into the same agent, not a separate product brain
 
 ## Folder Shape
@@ -246,7 +246,7 @@ If `public/index.html` exists, Panda serves the app through the daemon automatic
 Default local URL:
 
 ```text
-http://127.0.0.1:8092/apps/<agentKey>/<appSlug>/
+http://127.0.0.1:8092/<agentKey>/apps/<appSlug>/
 ```
 
 The app SDK is available at `/panda-app-sdk.js`.
@@ -272,6 +272,9 @@ The important mental model:
 - `action()` is "do the thing"
 - `native+wake` actions are the closest thing to "the user told Panda something through the UI"
 
+Keep JavaScript in `public/app.js`.
+The default public CSP blocks inline `<script>` tags and third-party script URLs.
+
 Minimal example:
 
 ```js
@@ -288,7 +291,7 @@ await window.panda.action("log_entry", {
 For browser URLs, prefer `identityHandle` in query params for human-facing links, for example:
 
 ```text
-/apps/panda/period-tracker/?identityHandle=angelina
+/panda/apps/period-tracker/?identityHandle=angelina
 ```
 
 The app host resolves that handle to the real `identityId` before touching the database or wake pipeline.
@@ -310,18 +313,79 @@ For Docker/browser-runner setups, set:
 - `PANDA_APPS_INTERNAL_BASE_URL=http://panda-core:8092`
 - `BROWSER_ALLOW_PRIVATE_HOSTS=panda-core`
 
+### Public App Links
+
+Do not publish `8092` directly.
+Put Caddy or another reverse proxy in front of Panda and keep `panda-core:8092` on the Docker network.
+
+Set:
+
+- `PANDA_APPS_BASE_URL=https://panda.patrikmojzis.com`
+- `PANDA_APPS_AUTH=required`
+- optional `PANDA_APPS_RATE_LIMIT_PER_MINUTE=300`
+- optional `PANDA_APPS_SESSION_TTL_HOURS=24`
+- optional `PANDA_APPS_COOKIE_SECURE=false` only for local HTTP debugging
+
+When `PANDA_APPS_BASE_URL` is set, Panda requires app auth by default unless you explicitly set `PANDA_APPS_AUTH=off`.
+
+The secure open flow is:
+
+1. The agent calls `app_link_create`.
+2. Panda returns a one-time `openUrl` for the current input identity.
+3. The browser opens `/apps/open?token=...` and sees a tiny Continue page.
+4. The Continue submit consumes the token, sets app-scoped cookies, and redirects to `/<agent>/apps/<app>/`.
+5. Static files, views, and actions use the app session cookie.
+6. API calls also require the SDK's app-scoped CSRF header.
+
+The session cookie is `HttpOnly`.
+The CSRF cookie is readable by app JavaScript so `/panda-app-sdk.js` can echo it in `x-panda-app-csrf`.
+
+Recommended edge shape:
+
+```text
+Internet -> Caddy :443 -> panda-core:8092 on Docker network -> Panda app auth -> app files/API
+```
+
+Example files:
+
+- `examples/Caddyfile.apps`
+- `examples/docker-compose.apps-edge.yml`
+
+With `scripts/docker-stack.sh`, the Caddy edge is auto-enabled when `PANDA_APPS_BASE_URL` is set.
+So deployment stays the normal command:
+
+```sh
+./scripts/docker-stack.sh up --build
+```
+
+The edge service joins the same `runner_net` Docker network and proxies to `panda-core:8092`.
+Do not add a host port publish for `8092`.
+
+Security notes:
+
+- launch links are one-time and short-lived
+- link previews cannot consume launch tokens because only POST redeems them
+- app sessions are scoped to one `agentKey + appSlug + identityId`
+- app API calls require an app-scoped CSRF token, so one app UI cannot use another app's session
+- `app_link_create` signs in the current input identity only
+- identity scoping is still data partitioning, not authorization
+- group/role authorization is not implemented yet
+- the default CSP blocks third-party scripts and network calls from app UIs
+
 ## Agent Tools
 
 Panda can inspect and use installed apps through:
 
 - `app_create`
 - `app_list`
+- `app_link_create`
 - `app_check`
 - `app_view`
 - `app_action`
 
 Use `app_create` to scaffold a blank app.
 Use `app_list` first when you need to inspect an existing one.
+Use `app_link_create` when a human asks to open an app UI.
 Use `app_check` when Panda says an app is invalid or the UI/tool contract feels weird.
 It returns action descriptions, `inputSchema`, and effective `requiredInputKeys`, which matters because otherwise the model will absolutely manage to do something dumb.
 
@@ -337,5 +401,5 @@ In-repo examples live at:
 - no migrations yet
 - no custom server code inside app folders
 - no arbitrary SQL from the browser
-- no production auth story yet
+- no group/role app authorization yet
 - no cross-app access

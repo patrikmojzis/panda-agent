@@ -22,6 +22,7 @@ Notes:
   - Telegram polling is auto-enabled when TELEGRAM_BOT_TOKEN is set in .env.
   - Wiki.js is part of the stack.
   - Wiki bootstrap follows PANDA_AGENTS.
+  - Public Apps Caddy edge is auto-enabled when PANDA_APPS_BASE_URL is set.
 EOF
 }
 
@@ -84,6 +85,7 @@ repo_root="$(cd "$script_dir/.." && pwd -P)"
 env_file="${PANDA_STACK_ENV_FILE:-$repo_root/.env}"
 base_compose="$repo_root/examples/docker-compose.remote-bash.external-db.yml"
 wiki_compose="$repo_root/examples/docker-compose.wiki.yml"
+apps_edge_compose="$repo_root/examples/docker-compose.apps-edge.yml"
 generated_dir="$repo_root/.generated"
 generated_compose="$generated_dir/docker-compose.remote-bash.external-db.runners.yml"
 generated_wiki_compose="$generated_dir/docker-compose.wiki.ssl.yml"
@@ -207,6 +209,11 @@ if [[ -n "$(trim "${TELEGRAM_BOT_TOKEN:-}")" ]]; then
   enable_telegram_profile=1
 fi
 
+enable_apps_edge=0
+if [[ -n "$(trim "${PANDA_APPS_BASE_URL:-}")" ]]; then
+  enable_apps_edge=1
+fi
+
 compose_args=(
   "$docker_bin" compose
   --env-file "$env_file"
@@ -216,6 +223,10 @@ compose_args=(
 [[ -f "$wiki_compose" ]] || die "wiki compose file not found: $wiki_compose"
 compose_args+=(-f "$wiki_compose")
 compose_args+=(-f "$generated_wiki_compose")
+if (( enable_apps_edge )); then
+  [[ -f "$apps_edge_compose" ]] || die "apps edge compose file not found: $apps_edge_compose"
+  compose_args+=(-f "$apps_edge_compose")
+fi
 if (( enable_telegram_profile )); then
   compose_args+=(--profile telegram)
 fi
@@ -313,6 +324,10 @@ resolve_service_name() {
       printf 'wiki\n'
       return
       ;;
+    apps|app|edge|caddy)
+      printf 'caddy\n'
+      return
+      ;;
     telegram|panda-telegram)
       printf 'panda-telegram\n'
       return
@@ -406,6 +421,9 @@ print_up_summary() {
   printf '  ./scripts/docker-stack.sh logs core\n'
   printf '  ./scripts/docker-stack.sh logs browser\n'
   printf '  ./scripts/docker-stack.sh logs wiki\n'
+  if (( enable_apps_edge )); then
+    printf '  ./scripts/docker-stack.sh logs apps\n'
+  fi
   if (( enable_telegram_profile )); then
     printf '  ./scripts/docker-stack.sh logs telegram\n'
   fi

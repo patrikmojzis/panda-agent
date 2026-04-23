@@ -16,6 +16,7 @@ import {WatchMutationService} from "../../domain/watches/mutation-service.js";
 import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.js";
 import {PostgresWikiBindingStore, WikiBindingService} from "../../domain/wiki/index.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/index.js";
+import {PostgresAgentAppAuthService, type AgentAppAuthService} from "../../domain/apps/auth.js";
 import {
   buildThreadRuntimeNotificationChannel,
   parseThreadRuntimeNotification,
@@ -33,7 +34,14 @@ import {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
-import {AppActionTool, AppCheckTool, AppCreateTool, AppListTool, AppViewTool} from "../../panda/tools/app-tools.js";
+import {
+  AppActionTool,
+  AppCheckTool,
+  AppCreateTool,
+  AppLinkCreateTool,
+  AppListTool,
+  AppViewTool,
+} from "../../panda/tools/app-tools.js";
 import {WikiTool} from "../../panda/tools/wiki-tool.js";
 import {
   resolveTelepathyEnabled,
@@ -86,6 +94,7 @@ export interface RuntimeBootstrapOptions extends Omit<RuntimeOptions, "dbUrl"> {
 export interface RuntimeBootstrapResult {
   agentStore: AgentStore;
   apps: AgentAppService;
+  appAuth: AgentAppAuthService;
   bashJobService: BashJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -345,6 +354,9 @@ export async function bootstrapRuntime(
     const apps = new AgentAppService({
       env: process.env,
     });
+    const appAuth = new PostgresAgentAppAuthService({
+      pool: postgresPool,
+    });
     const wikiBindingStore = new PostgresWikiBindingStore({
       pool: postgresPool,
     });
@@ -376,6 +388,7 @@ export async function bootstrapRuntime(
     });
     await ensureSchemas([
       credentialStore,
+      appAuth,
       scheduledTasks,
       watches,
       wikiBindingStore,
@@ -414,6 +427,7 @@ export async function bootstrapRuntime(
     });
     const appCreateTool = new AppCreateTool(apps);
     const appListTool = new AppListTool(apps);
+    const appLinkCreateTool = new AppLinkCreateTool(apps, appAuth);
     const appCheckTool = new AppCheckTool(apps);
     const appViewTool = new AppViewTool(apps);
     const appActionTool = new AppActionTool(apps);
@@ -488,6 +502,7 @@ export async function bootstrapRuntime(
       }),
       appCreateTool,
       appListTool,
+      appLinkCreateTool,
       appCheckTool,
       appViewTool,
       appActionTool,
@@ -550,6 +565,7 @@ export async function bootstrapRuntime(
     return {
       agentStore,
       apps,
+      appAuth,
       bashJobService,
       browserService: resolvedBrowserService,
       credentialResolver,

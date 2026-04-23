@@ -522,7 +522,7 @@ function buildBlankReadme(input: {
     ? `${input.description.trim()}\n\n`
     : "";
   const identityLine = input.identityScoped
-    ? "- This app is identity-scoped. Browser links should usually use `?identityHandle=<handle>`.\n"
+    ? "- This app is identity-scoped. Local/dev browser links can use `?identityHandle=<handle>`; public links should come from `app_link_create`, which uses the current input identity.\n"
     : "- This app is not identity-scoped.\n";
   const schemaLine = input.schemaApplied
     ? "- `schema.sql` was applied to `data/app.sqlite` during scaffold creation.\n"
@@ -560,7 +560,7 @@ function buildBlankReadme(input: {
     "3. Add readonly queries to `views.json`.",
     "4. Add fixed actions to `actions.json`. Prefer `inputSchema` over loose payloads.",
     "5. Run `app_check` if Panda says the app is invalid or the UI/tool contract feels weird.",
-    "6. Replace the placeholder UI in `public/`.",
+    "6. Replace the placeholder UI in `public/`. Keep JavaScript in `public/app.js`; public app auth blocks inline scripts.",
     "7. Start Panda with `panda run`. The app server starts automatically with the daemon.",
     "",
     "## Apply Schema",
@@ -574,10 +574,12 @@ function buildBlankReadme(input: {
     "## Local URL",
     "",
     "- `app_create` and `app_list` return the current app URL when Panda knows it.",
-    `- Path: \`/apps/<agentKey>/${input.appSlug}/\``,
+    "- For human-facing public access, use `app_link_create` and send the returned `openUrl`.",
+    "- Use `/panda-app-sdk.js` for API calls; public app auth requires the SDK's app-scoped CSRF header.",
+    `- Path: \`/<agentKey>/apps/${input.appSlug}/\``,
     input.identityScoped
-      ? "- Example: `/apps/panda/" + input.appSlug + "/?identityHandle=smoke`"
-      : `- Example: \`/apps/panda/${input.appSlug}/\``,
+      ? "- Example: `/panda/apps/" + input.appSlug + "/?identityHandle=smoke`"
+      : `- Example: \`/panda/apps/${input.appSlug}/\``,
     "",
   ].join("\n");
 }
