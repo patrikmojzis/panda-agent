@@ -7,5 +7,6 @@ Use it when the question is not "what does the feature do?" but "how should the 
 Start here:
 
 - [A2A](./a2a.md)
+- [Apps](./apps.md)
 - [Browser](./browser.md)
 - [Watches](./watches.md)

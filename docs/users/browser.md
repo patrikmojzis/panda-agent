@@ -67,6 +67,12 @@ BROWSER_RUNNER_SHARED_SECRET=change-me
 BROWSER_RUNNER_DATA_DIR=/home/pwuser/.panda/browser-runner
 ```
 
+Optional exact-host allowlist for Panda-owned private services:
+
+```bash
+BROWSER_ALLOW_PRIVATE_HOSTS=panda-core
+```
+
 Optional tuning:
 
 - `BROWSER_ACTION_TIMEOUT_MS`
@@ -134,6 +140,20 @@ The normal flow is:
 PANDA_AGENTS=claw,luna
 
 ./scripts/docker-stack.sh up --build
+```
+
+If you want the browser lane to inspect Panda-hosted apps inside Docker, set these on `panda-core`:
+
+```bash
+PANDA_APPS_HOST=0.0.0.0
+PANDA_APPS_PORT=8092
+PANDA_APPS_INTERNAL_BASE_URL=http://panda-core:8092
+```
+
+And set this on `browser-runner`:
+
+```bash
+BROWSER_ALLOW_PRIVATE_HOSTS=panda-core
 ```
 
 Run that from the repo root, or set `BROWSER_RUNNER_SECCOMP_PROFILE` to an absolute host path for `assets/playwright-seccomp-profile.json`.

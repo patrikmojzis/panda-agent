@@ -15,6 +15,9 @@ services:
       TELEPATHY_HOST: ${TELEPATHY_HOST:-0.0.0.0}
       TELEPATHY_PORT: ${TELEPATHY_PORT:-}
       TELEPATHY_PATH: ${TELEPATHY_PATH:-/telepathy}
+      PANDA_APPS_HOST: ${PANDA_APPS_HOST:-0.0.0.0}
+      PANDA_APPS_PORT: ${PANDA_APPS_PORT:-8092}
+      PANDA_APPS_INTERNAL_BASE_URL: ${PANDA_APPS_INTERNAL_BASE_URL:-http://panda-core:${PANDA_APPS_PORT:-8092}}
       BASH_EXECUTION_MODE: remote
       CODEX_HOME: /root/.codex
       RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
@@ -55,6 +58,7 @@ services:
       BROWSER_RUNNER_PORT: 8080
       BROWSER_RUNNER_SHARED_SECRET: ${BROWSER_RUNNER_SHARED_SECRET}
       BROWSER_RUNNER_DATA_DIR: /home/pwuser/.panda/browser-runner
+      BROWSER_ALLOW_PRIVATE_HOSTS: ${BROWSER_ALLOW_PRIVATE_HOSTS:-panda-core}
       TZ: ${TZ:-UTC}
     volumes:
       - ${BROWSER_RUNNER_ROOT:-${HOME}/.panda-browser-runner}:/home/pwuser/.panda/browser-runner

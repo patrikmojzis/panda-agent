@@ -39,6 +39,10 @@ export interface SafeHttpTarget {
   lookup: PinnedLookup;
 }
 
+export interface SafeHttpTargetOptions {
+  allowPrivateHostnames?: readonly string[];
+}
+
 const BLOCKED_IPV4_SPECIAL_USE_RANGES = new Set<Ipv4Range>([
   "unspecified",
   "broadcast",
@@ -105,6 +109,16 @@ export function trimNonEmptyString(value: string | null | undefined): string | u
 
 function normalizeHostname(hostname: string): string {
   return hostname.trim().replace(/\.+$/, "").toLowerCase();
+}
+
+function normalizeAllowedHostnames(
+  hostnames: readonly string[] | undefined,
+): Set<string> {
+  return new Set(
+    (hostnames ?? [])
+      .map((hostname) => normalizeHostname(hostname))
+      .filter(Boolean),
+  );
 }
 
 function stripIpv6Brackets(value: string): string {
@@ -407,6 +421,7 @@ export async function resolveSafeHttpTarget(
   url: URL,
   lookupHostname: LookupHostname,
   toolName: string,
+  options: SafeHttpTargetOptions = {},
 ): Promise<SafeHttpTarget> {
   if (!["http:", "https:"].includes(url.protocol)) {
     throw new ToolError(`${toolName} only supports http:// and https:// URLs.`);
@@ -416,20 +431,24 @@ export async function resolveSafeHttpTarget(
   }
 
   const hostname = normalizeHostname(url.hostname);
+  const allowedPrivateHostnames = normalizeAllowedHostnames(options.allowPrivateHostnames);
+  const allowPrivateTarget = allowedPrivateHostnames.has(hostname);
   if (!hostname) {
     throw new ToolError(`${toolName} requires a valid hostname.`);
   }
-  if (isBlockedHostname(hostname)) {
+  if (!allowPrivateTarget && isBlockedHostname(hostname)) {
     throw new ToolError(`${toolName} blocked a private hostname: ${hostname}`);
   }
 
   const addresses = await resolveAddresses(hostname, lookupHostname, toolName);
-  const blockedAddress = addresses.find((address) => {
-    const normalized = normalizeIpParseInput(address);
-    return !normalized || isBlockedIpAddress(normalized);
-  });
-  if (blockedAddress) {
-    throw new ToolError(`${toolName} blocked a private address for ${hostname}: ${blockedAddress}`);
+  if (!allowPrivateTarget) {
+    const blockedAddress = addresses.find((address) => {
+      const normalized = normalizeIpParseInput(address);
+      return !normalized || isBlockedIpAddress(normalized);
+    });
+    if (blockedAddress) {
+      throw new ToolError(`${toolName} blocked a private address for ${hostname}: ${blockedAddress}`);
+    }
   }
 
   return {

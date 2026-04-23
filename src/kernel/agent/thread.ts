@@ -31,6 +31,7 @@ import {isToolResultPayload} from "./tool.js";
 import type {JsonValue, ThreadRunEvent, ThreadStreamEvent, ToolProgressEvent, ToolResultContent,} from "./types.js";
 import {buildReplaySegments, trimReplaySegmentsToBudget,} from "../transcript/replay-segments.js";
 import {estimateVisibleMessageTokens} from "../transcript/token-estimation.js";
+import {isRecord} from "../../lib/records.js";
 
 export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   agent: Agent<TOutput>;
@@ -77,6 +78,38 @@ function stringifyJson(value: JsonValue): string {
   }
 
   return JSON.stringify(value);
+}
+
+function readContextStringField(context: unknown, key: string): string | undefined {
+  if (!isRecord(context)) {
+    return undefined;
+  }
+
+  const value = context[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readContextIntegerField(context: unknown, key: string): number | undefined {
+  if (!isRecord(context)) {
+    return undefined;
+  }
+
+  const value = context[key];
+  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : undefined;
+}
+
+function buildRuntimeRequestMetadata(
+  context: unknown,
+  turn: number,
+): LlmRuntimeRequest["metadata"] {
+  return {
+    runId: readContextStringField(context, "runId"),
+    threadId: readContextStringField(context, "threadId"),
+    sessionId: readContextStringField(context, "sessionId"),
+    agentKey: readContextStringField(context, "agentKey"),
+    subagentDepth: readContextIntegerField(context, "subagentDepth"),
+    turn,
+  };
 }
 
 function extractMessageText(message: AssistantMessage): string {
@@ -523,6 +556,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       thinking: this.effectiveThinking,
       promptCacheKey: this.promptCacheKey,
       signal: this.signal,
+      metadata: buildRuntimeRequestMetadata(this.context, this.turnCount),
       context: buildConversationContext({
         agent: this.agent,
         messages: runMessages,

@@ -1,0 +1,25 @@
+{
+  "increment": {
+    "description": "Increment the counter by the provided amount.",
+    "mode": "native",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount"],
+      "properties": {
+        "amount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How much to increment the counter by."
+        }
+      }
+    },
+    "sql": "update counter set value = value + :amount, updated_at = :now"
+  },
+  "reset": {
+    "description": "Reset the counter to zero.",
+    "mode": "native",
+    "sql": "update counter set value = 0, updated_at = :now"
+  }
+}

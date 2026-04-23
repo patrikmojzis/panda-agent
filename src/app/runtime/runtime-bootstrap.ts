@@ -30,8 +30,10 @@ import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry,} 
 import {AgentPromptTool} from "../../panda/tools/agent-prompt-tool.js";
 import {AgentSkillTool} from "../../panda/tools/agent-skill-tool.js";
 import {BrowserRunnerClient} from "../../integrations/browser/client.js";
+import {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
+import {AppActionTool, AppCreateTool, AppListTool, AppViewTool} from "../../panda/tools/app-tools.js";
 import {WikiTool} from "../../panda/tools/wiki-tool.js";
 import {
   resolveTelepathyEnabled,
@@ -83,6 +85,7 @@ export interface RuntimeBootstrapOptions extends Omit<RuntimeOptions, "dbUrl"> {
 
 export interface RuntimeBootstrapResult {
   agentStore: AgentStore;
+  apps: AgentAppService;
   bashJobService: BashJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -339,6 +342,9 @@ export async function bootstrapRuntime(
     const credentialStore = new PostgresCredentialStore({
       pool: postgresPool,
     });
+    const apps = new AgentAppService({
+      env: process.env,
+    });
     const wikiBindingStore = new PostgresWikiBindingStore({
       pool: postgresPool,
     });
@@ -406,6 +412,10 @@ export async function bootstrapRuntime(
     const agentSkillTool = new AgentSkillTool({
       store: agentStore,
     });
+    const appCreateTool = new AppCreateTool(apps);
+    const appListTool = new AppListTool(apps);
+    const appViewTool = new AppViewTool(apps);
+    const appActionTool = new AppActionTool(apps);
     const wikiEnabled = Boolean(
       trimToNull(process.env.WIKI_DB_URL)
       || trimToNull(process.env.WIKI_URL),
@@ -475,6 +485,10 @@ export async function bootstrapRuntime(
       new AgentPromptTool({
         store: agentStore,
       }),
+      appCreateTool,
+      appListTool,
+      appViewTool,
+      appActionTool,
       ...(wikiTool ? [wikiTool] : []),
       agentSkillTool,
       ...(credentialService
@@ -533,6 +547,7 @@ export async function bootstrapRuntime(
 
     return {
       agentStore,
+      apps,
       bashJobService,
       browserService: resolvedBrowserService,
       credentialResolver,

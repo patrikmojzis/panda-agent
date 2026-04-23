@@ -5,6 +5,7 @@ export {
   InvalidJSONResponseError,
   InvalidSchemaResponseError,
   MaxTurnsReachedError,
+  ProviderRuntimeError,
   RefusalError,
   StreamingFailedError,
   ToolError,

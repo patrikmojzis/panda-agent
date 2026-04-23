@@ -73,6 +73,9 @@ Set this in `panda-core`:
 BASH_EXECUTION_MODE=remote
 RUNNER_URL_TEMPLATE=http://panda-runner-{agentKey}:8080
 RUNNER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
+PANDA_APPS_HOST=0.0.0.0
+PANDA_APPS_PORT=8092
+PANDA_APPS_INTERNAL_BASE_URL=http://panda-core:8092
 ```
 
 `RUNNER_URL_TEMPLATE` can be:
@@ -99,6 +102,12 @@ RUNNER_PORT=8080
 ```
 
 The runner serves one agent. Container mounts and sandboxing decide what files it can touch.
+
+If you also want the browser lane to inspect Panda-hosted micro-apps inside Docker, set this on `browser-runner`:
+
+```bash
+BROWSER_ALLOW_PRIVATE_HOSTS=panda-core
+```
 
 ## Setup A: Local Core, Docker Runner
 

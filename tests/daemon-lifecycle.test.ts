@@ -207,4 +207,112 @@ describe("createDaemonLifecycle", () => {
       "runtime-close",
     ]);
   });
+
+  it("acquires and releases the lease if app server startup fails after binding resolution", async () => {
+    const previousAppsPort = process.env.PANDA_APPS_PORT;
+    const previousHealthPort = process.env.PANDA_CORE_HEALTH_PORT;
+    process.env.PANDA_APPS_PORT = "nope";
+    delete process.env.PANDA_CORE_HEALTH_PORT;
+
+    const order: string[] = [];
+    const context = {
+      daemonKey: "primary",
+      connectorLeases: {
+        tryAcquire: vi.fn(async () => {
+          order.push("lease");
+          return {
+            source: "daemon",
+            connectorKey: "primary",
+            holderId: "holder-a",
+            leasedUntil: Date.now() + 30_000,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+        }),
+        renew: vi.fn(async () => null),
+        release: vi.fn(async () => {
+          order.push("release");
+          return true;
+        }),
+      },
+      daemonState: {
+        heartbeat: vi.fn(async () => ({
+          daemonKey: "primary",
+          heartbeatAt: Date.now(),
+          startedAt: Date.now(),
+          updatedAt: Date.now(),
+        })),
+      },
+      requests: {
+        claimNextPendingRequest: vi.fn(async () => null),
+        listenPendingRequests: vi.fn(async () => async () => undefined),
+      },
+      a2aOutboundWorker: {
+        start: vi.fn(async () => {}),
+        stop: vi.fn(async () => {
+          order.push("a2a-stop");
+        }),
+      },
+      scheduledTaskRunner: {
+        start: vi.fn(async () => {}),
+        stop: vi.fn(async () => {
+          order.push("tasks-stop");
+        }),
+      },
+      watchRunner: {
+        start: vi.fn(async () => {}),
+        stop: vi.fn(async () => {
+          order.push("watch-stop");
+        }),
+      },
+      relationshipHeartbeatRunner: {
+        start: vi.fn(async () => {}),
+        stop: vi.fn(async () => {
+          order.push("heartbeat-stop");
+        }),
+      },
+      runtime: {
+        close: vi.fn(async () => {
+          order.push("runtime-close");
+        }),
+        apps: {},
+        identityStore: {},
+        sessionStore: {},
+        coordinator: {
+          recoverOrphanedRuns: vi.fn(async () => undefined),
+        },
+      },
+    } as any;
+
+    const lifecycle = createDaemonLifecycle({
+      context,
+      processRequest: vi.fn(async () => undefined),
+    });
+
+    try {
+      await expect(lifecycle.run()).rejects.toThrow("Invalid PANDA_APPS_PORT: nope");
+    } finally {
+      if (previousAppsPort === undefined) {
+        delete process.env.PANDA_APPS_PORT;
+      } else {
+        process.env.PANDA_APPS_PORT = previousAppsPort;
+      }
+
+      if (previousHealthPort === undefined) {
+        delete process.env.PANDA_CORE_HEALTH_PORT;
+      } else {
+        process.env.PANDA_CORE_HEALTH_PORT = previousHealthPort;
+      }
+    }
+
+    expect(order).toEqual([
+      "lease",
+      "a2a-stop",
+      "tasks-stop",
+      "watch-stop",
+      "heartbeat-stop",
+      "release",
+      "runtime-close",
+    ]);
+  });
 });

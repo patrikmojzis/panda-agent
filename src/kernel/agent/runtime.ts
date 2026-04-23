@@ -2,6 +2,15 @@ import type {AssistantMessage, AssistantMessageEventStream, Context, ThinkingLev
 
 import type {ProviderName} from "./types.js";
 
+export interface LlmRuntimeRequestMetadata {
+  runId?: string;
+  threadId?: string;
+  sessionId?: string;
+  agentKey?: string;
+  subagentDepth?: number;
+  turn?: number;
+}
+
 export interface LlmRuntimeRequest {
   providerName: ProviderName;
   modelId: string;
@@ -9,6 +18,7 @@ export interface LlmRuntimeRequest {
   thinking?: ThinkingLevel;
   promptCacheKey?: string;
   signal?: AbortSignal;
+  metadata?: LlmRuntimeRequestMetadata;
   context: Context;
 }
 

@@ -470,6 +470,31 @@ describe("BrowserTool", () => {
     expect(launchBrowserImpl).not.toHaveBeenCalled();
   });
 
+  it("allows explicitly trusted private hosts for Panda-owned internal services", async () => {
+    const page = new FakePage();
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
+    tempDirs.push(tempDir);
+    const launchBrowserImpl = vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any);
+    const service = new BrowserSessionService({
+      launchBrowserImpl: launchBrowserImpl as any,
+      lookupHostname: async (hostname) => hostname === "panda-core" ? ["172.22.0.5"] : ["93.184.216.34"],
+      allowPrivateHostnames: ["panda-core"],
+      dataDir: tempDir,
+    });
+    services.push(service);
+
+    const result = await service.handle(
+      {action: "navigate", url: "http://panda-core:8092/apps/panda/period-tracker/"},
+      createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
+    );
+
+    expect(launchBrowserImpl).toHaveBeenCalledTimes(1);
+    expect(page.url()).toBe("http://panda-core:8092/apps/panda/period-tracker/");
+    expect(result.details).toMatchObject({
+      action: "navigate",
+    });
+  });
+
   it("blocks redirects that land on a private final URL", async () => {
     const page = new FakePage();
     page.nextGotoUrl = "http://169.254.169.254/latest/meta-data";

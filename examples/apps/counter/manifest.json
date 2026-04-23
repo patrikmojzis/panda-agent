@@ -1,0 +1,4 @@
+{
+  "name": "Counter Demo",
+  "description": "Tiny sample app that proves the SDK and action flow without mutating on load."
+}

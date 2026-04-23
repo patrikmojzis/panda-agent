@@ -1,0 +1,62 @@
+{
+  "log_entry": {
+    "description": "Insert one cycle log row for the current identity.",
+    "mode": "native+wake",
+    "wakeMessage": "The user logged a period entry for {{input.logged_on}} with flow {{input.flow}}, mood {{input.mood}}, energy {{input.energy}}/5, symptoms {{input.symptoms}}, and notes {{input.notes}}. Reflect only if there is a short, useful follow-up, pattern, or reminder.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logged_on", "flow"],
+      "properties": {
+        "logged_on": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "description": "Date in YYYY-MM-DD format."
+        },
+        "flow": {
+          "type": "string",
+          "enum": ["spotting", "light", "medium", "heavy"]
+        },
+        "mood": {
+          "type": "string",
+          "enum": ["calm", "flat", "irritable", "tender", "wired"]
+        },
+        "energy": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "symptoms": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["cramps", "bloating", "headache", "cravings", "backache", "breakouts"]
+          },
+          "maxItems": 6
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 600
+        }
+      }
+    },
+    "sql": "insert into cycle_logs (identity_id, logged_on, flow, mood, energy, symptoms_json, notes, created_at) values (:identityId, :logged_on, :flow, nullif(:mood, ''), :energy, coalesce(:symptoms, '[]'), nullif(:notes, ''), :now)"
+  },
+  "delete_entry": {
+    "description": "Delete one cycle log row for the current identity.",
+    "mode": "native",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "sql": "delete from cycle_logs where id = :id and identity_id = :identityId"
+  }
+}
