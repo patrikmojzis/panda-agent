@@ -8,6 +8,7 @@ import WebSocket from "ws";
 import {hashTelepathyToken} from "../src/domain/telepathy/index.js";
 import {Agent, type DefaultAgentSessionContext, RunContext} from "../src/index.js";
 import {TelepathyHub} from "../src/integrations/telepathy/hub.js";
+import {parseTelepathyReceiverMessage} from "../src/integrations/telepathy/protocol.js";
 import {TelepathyScreenshotTool} from "../src/panda/tools/telepathy-screenshot-tool.js";
 
 function createAgent() {
@@ -434,6 +435,26 @@ describe("telepathy hub", () => {
     });
   });
 
+  it("rejects unsafe screenshot result payloads", () => {
+    expect(() => parseTelepathyReceiverMessage({
+      type: "screenshot.result",
+      requestId: "shot-1",
+      ok: true,
+      mimeType: "text/html",
+      data: Buffer.from("<script>").toString("base64"),
+      bytes: 8,
+    })).toThrow(/Invalid telepathy receiver message/);
+
+    expect(() => parseTelepathyReceiverMessage({
+      type: "screenshot.result",
+      requestId: "shot-2",
+      ok: true,
+      mimeType: "image/jpeg",
+      data: "not base64!",
+      bytes: 10,
+    })).toThrow(/Invalid base64 payload/);
+  });
+
   it("persists screenshot artifacts into Panda media paths", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-telepathy-tool-"));
     tempDirs.push(tempDir);
@@ -472,5 +493,34 @@ describe("telepathy hub", () => {
     expect(screenshotPath).toContain(path.join("agents", "panda", "media", "telepathy", "thread-1", "home-mac"));
     await expect(stat(screenshotPath)).resolves.toBeTruthy();
     await expect(readFile(screenshotPath, "utf8")).resolves.toBe("telepathy-image");
+  });
+
+  it("rejects screenshot artifacts when declared byte count does not match decoded bytes", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-telepathy-tool-"));
+    tempDirs.push(tempDir);
+    const tool = new TelepathyScreenshotTool({
+      env: {
+        ...process.env,
+        DATA_DIR: tempDir,
+      },
+      service: {
+        requestScreenshot: async () => ({
+          deviceId: "home-mac",
+          label: "Home Mac",
+          mimeType: "image/jpeg",
+          data: Buffer.from("telepathy-image").toString("base64"),
+          bytes: 999,
+        }),
+      },
+    });
+
+    await expect(tool.handle({
+      deviceId: "home-mac",
+    }, createRunContext({
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+      cwd: "/workspace/panda",
+    }))).rejects.toThrow(/declared 999 bytes/);
   });
 });
