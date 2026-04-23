@@ -298,6 +298,7 @@ describe("Env value tools", () => {
         },
       }]),
       createAssistantMessage([{type: "text", text: "Saved it."}]),
+      createAssistantMessage([{type: "text", text: "Nothing else to do."}]),
     );
     const store = new TestThreadRuntimeStore();
     await store.createThread({

@@ -509,7 +509,7 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(runtime.complete.mock.calls[1]?.[0].context.messages.at(-1)?.role).toBe("user");
     expect(String(runtime.complete.mock.calls[0]?.[0].context.messages.at(-1)?.content ?? "")).not.toContain("<runtime-autonomy-context>");
     expect(String(runtime.complete.mock.calls[1]?.[0].context.messages.at(-1)?.content ?? "")).toContain("<runtime-autonomy-context>");
-    expect(String(runtime.complete.mock.calls[1]?.[0].context.messages.at(-1)?.content ?? "")).toContain("No new external input arrived.");
+    expect(String(runtime.complete.mock.calls[1]?.[0].context.messages.at(-1)?.content ?? "")).toContain("new_external_input: no");
 
     const transcript = await store.loadTranscript("thread-idle-reroll");
     expect(transcript.map((entry) => entry.source)).toEqual([
@@ -734,6 +734,10 @@ describe("ThreadRuntimeCoordinator", () => {
             return message("noticed the background completion");
           }
 
+          if (callCount === 5) {
+            return message("Nothing else to do.");
+          }
+
           throw new Error(`Unexpected runtime call ${callCount}.`);
         }),
         stream: vi.fn(() => {
@@ -785,11 +789,11 @@ describe("ThreadRuntimeCoordinator", () => {
       const transcript = await store.loadTranscript("thread-bg-autowake");
       expect(transcript.filter((entry) => entry.source === "background_bash")).toHaveLength(2);
       expect(transcript.filter((entry) => entry.source === "background_bash").every((entry) => entry.origin === "input")).toBe(true);
-      expect(runtime.complete).toHaveBeenCalledTimes(4);
-      expect(transcript.at(-1)?.message).toMatchObject({
-        role: "assistant",
-        content: [{ type: "text", text: "noticed the background completion" }],
-      });
+      expect(runtime.complete).toHaveBeenCalledTimes(5);
+      expect(transcript.some((entry) => {
+        return entry.message.role === "assistant"
+          && entry.message.content.some((block) => block.type === "text" && block.text === "noticed the background completion");
+      })).toBe(true);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -826,6 +830,10 @@ describe("ThreadRuntimeCoordinator", () => {
               && entry.content.includes("[Background Bash Event]");
           })).toBe(true);
           return message("noticed wake from another coordinator");
+        }
+
+        if (callCount === 3) {
+          return message("Nothing else to do.");
         }
 
         throw new Error(`Unexpected runtime call ${callCount}.`);
@@ -891,12 +899,12 @@ describe("ThreadRuntimeCoordinator", () => {
     release.resolve({ done: "released" });
     await ownerCoordinator.waitForIdle("thread-cross-process-wake");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
     const transcript = await store.loadTranscript("thread-cross-process-wake");
-    expect(transcript.at(-1)?.message).toMatchObject({
-      role: "assistant",
-      content: [{ type: "text", text: "noticed wake from another coordinator" }],
-    });
+    expect(transcript.some((entry) => {
+      return entry.message.role === "assistant"
+        && entry.message.content.some((block) => block.type === "text" && block.text === "noticed wake from another coordinator");
+    })).toBe(true);
   });
 
   it("waits for pending durable wakes before reporting idle", async () => {
@@ -909,6 +917,7 @@ describe("ThreadRuntimeCoordinator", () => {
     const runtime = createMockRuntime(
       message("processed pending wake"),
       message("settled after pending wake"),
+      message("Nothing else to do."),
     );
     const registry = new TestThreadDefinitionRegistry().register("pending-wake-agent", {
       agent: new Agent({
@@ -953,17 +962,17 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await coordinator.waitForIdle("thread-pending-wake-idle");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
     const transcript = await store.loadTranscript("thread-pending-wake-idle");
     expect(transcript.some((entry) => entry.origin === "input" && entry.source === "background_bash")).toBe(true);
     expect(transcript.some((entry) => {
       return entry.message.role === "assistant"
         && entry.message.content.some((block) => block.type === "text" && block.text === "processed pending wake");
     })).toBe(true);
-    expect(transcript.at(-1)?.message).toMatchObject({
-      role: "assistant",
-      content: [{ type: "text", text: "settled after pending wake" }],
-    });
+    expect(transcript.some((entry) => {
+      return entry.message.role === "assistant"
+        && entry.message.content.some((block) => block.type === "text" && block.text === "settled after pending wake");
+    })).toBe(true);
   });
 
   it("treats pending durable wakes as busy", async () => {
@@ -989,7 +998,10 @@ describe("ThreadRuntimeCoordinator", () => {
   });
 
   it("queues wakes until they are flushed", async () => {
-    const runtime = createMockRuntime(message("queued reply"));
+    const runtime = createMockRuntime(
+      message("queued reply"),
+      message("Nothing else to do."),
+    );
     const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("queued-agent", {
       agent: new Agent({
@@ -1026,11 +1038,13 @@ describe("ThreadRuntimeCoordinator", () => {
     await coordinator.flushQueued("thread-queued");
     await coordinator.waitForIdle("thread-queued");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(1);
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
 
     const transcript = await store.loadTranscript("thread-queued");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
+      "assistant",
+      "runtime",
       "assistant",
     ]);
   });
@@ -1048,7 +1062,9 @@ describe("ThreadRuntimeCoordinator", () => {
         },
       ]),
       message("finished current plan"),
+      message("Nothing else to do."),
       message("processed after flush"),
+      message("Nothing else to do."),
     );
 
     const store = new TestThreadRuntimeStore();
@@ -1091,7 +1107,7 @@ describe("ThreadRuntimeCoordinator", () => {
     release.resolve({ done: "first" });
     await coordinator.waitForIdle("thread-queued-during-run");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
     expect(await store.hasPendingInputs("thread-queued-during-run")).toBe(true);
     expect(await store.hasRunnableInputs("thread-queued-during-run")).toBe(false);
 
@@ -1101,25 +1117,34 @@ describe("ThreadRuntimeCoordinator", () => {
       "assistant",
       "tool:slow",
       "assistant",
+      "runtime",
+      "assistant",
     ]);
 
     await coordinator.flushQueued("thread-queued-during-run");
     await coordinator.waitForIdle("thread-queued-during-run");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(3);
+    expect(runtime.complete).toHaveBeenCalledTimes(5);
     transcript = await store.loadTranscript("thread-queued-during-run");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
       "tool:slow",
       "assistant",
+      "runtime",
+      "assistant",
       "tui",
+      "assistant",
+      "runtime",
       "assistant",
     ]);
   });
 
   it("restarts wake inputs that arrive during exclusive work once the lease is released", async () => {
-    const runtime = createMockRuntime(message("processed after exclusive work"));
+    const runtime = createMockRuntime(
+      message("processed after exclusive work"),
+      message("Nothing else to do."),
+    );
     const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("exclusive-agent", {
       agent: new Agent({
@@ -1152,9 +1177,11 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await coordinator.waitForIdle("thread-exclusive");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(1);
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
     expect((await store.loadTranscript("thread-exclusive")).map((entry) => entry.source)).toEqual([
       "tui",
+      "assistant",
+      "runtime",
       "assistant",
     ]);
   });
@@ -1178,6 +1205,7 @@ describe("ThreadRuntimeCoordinator", () => {
         },
       ]),
       message("replanned"),
+      message("Nothing else to do."),
     );
 
     const store = new TestThreadRuntimeStore();
@@ -1227,7 +1255,7 @@ describe("ThreadRuntimeCoordinator", () => {
     await Promise.all([firstWake, secondWake]);
     await coordinator.waitForIdle("thread-replan");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
 
     const transcript = await store.loadTranscript("thread-replan");
     expect(transcript.map((entry) => entry.source)).toEqual([
@@ -1236,6 +1264,8 @@ describe("ThreadRuntimeCoordinator", () => {
       "tool:slow",
       "tool:echo",
       "tui",
+      "assistant",
+      "runtime",
       "assistant",
     ]);
 
@@ -1254,6 +1284,7 @@ describe("ThreadRuntimeCoordinator", () => {
     const firstResponse = createDeferred<AssistantMessage>();
     runtime.queue(firstResponse.promise);
     runtime.queue(message("replanned after assistant"));
+    runtime.queue(message("Nothing else to do."));
     const slowHandle = vi.fn(async () => ({ echoed: "should not run" }));
     class SpiedEchoTool extends Tool<typeof EchoTool.schema> {
       name = "echo";
@@ -1319,6 +1350,8 @@ describe("ThreadRuntimeCoordinator", () => {
       "tool:echo",
       "tui",
       "assistant",
+      "runtime",
+      "assistant",
     ]);
     expect(transcript[2]?.message).toMatchObject({
       role: "toolResult",
@@ -1334,6 +1367,7 @@ describe("ThreadRuntimeCoordinator", () => {
     const firstResponse = createDeferred<AssistantMessage>();
     runtime.queue(firstResponse.promise);
     runtime.queue(message("followed up after the new telegram message"));
+    runtime.queue(message("Nothing else to do."));
 
     const enqueueDelivery = vi.fn(async (input) => ({
       id: "delivery-1",
@@ -1441,6 +1475,8 @@ describe("ThreadRuntimeCoordinator", () => {
       "tool:outbound",
       "telegram",
       "assistant",
+      "runtime",
+      "assistant",
     ]);
     expect(transcript[2]?.message).toMatchObject({
       role: "toolResult",
@@ -1472,6 +1508,7 @@ describe("ThreadRuntimeCoordinator", () => {
         },
       ]),
       message("responded after the A2A ping"),
+      message("Nothing else to do."),
     );
 
     const store = new TestThreadRuntimeStore();
@@ -1513,7 +1550,7 @@ describe("ThreadRuntimeCoordinator", () => {
     release.resolve({ done: "first" });
     await coordinator.waitForIdle("thread-a2a-turn-boundary");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
 
     const transcript = await store.loadTranscript("thread-a2a-turn-boundary");
     expect(transcript.map((entry) => entry.source)).toEqual([
@@ -1522,6 +1559,8 @@ describe("ThreadRuntimeCoordinator", () => {
       "tool:slow",
       "tool:echo",
       "a2a",
+      "assistant",
+      "runtime",
       "assistant",
     ]);
     expect(transcript[3]?.message).toMatchObject({
@@ -1600,7 +1639,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await coordinator.waitForIdle("thread-boundary-race");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
     expect(runtime.complete.mock.calls[1]?.[0].context.messages.some((entry: { role: string; content: unknown }) => {
       return entry.role === "user" && entry.content === "late ping";
     })).toBe(true);
@@ -1611,6 +1650,8 @@ describe("ThreadRuntimeCoordinator", () => {
       "assistant",
       "tool:echo",
       "telegram",
+      "assistant",
+      "runtime",
       "assistant",
     ]);
   });
@@ -1674,7 +1715,7 @@ describe("ThreadRuntimeCoordinator", () => {
     release.resolve({ done: "released" });
     await coordinator.waitForIdle("thread-wake-drain");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
 
     const transcript = await store.loadTranscript("thread-wake-drain");
     expect(transcript.map((entry) => entry.source)).toEqual([
@@ -1683,15 +1724,20 @@ describe("ThreadRuntimeCoordinator", () => {
       "tool:slow",
       "telegram",
       "assistant",
+      "runtime",
+      "assistant",
     ]);
-    expect(transcript.at(-1)?.message).toMatchObject({
-      role: "assistant",
-      content: [{ type: "text", text: "handled the late ping once" }],
-    });
+    expect(transcript.some((entry) => {
+      return entry.message.role === "assistant"
+        && entry.message.content.some((block) => block.type === "text" && block.text === "handled the late ping once");
+    })).toBe(true);
   });
 
   it("rebuilds model context from the latest compact boundary plus later messages", async () => {
-    const runtime = createMockRuntime(message("after compact"));
+    const runtime = createMockRuntime(
+      message("after compact"),
+      message("Nothing else to do."),
+    );
     const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("compact-agent", {
       agent: new Agent({
@@ -1747,7 +1793,7 @@ describe("ThreadRuntimeCoordinator", () => {
     });
     await coordinator.waitForIdle("thread-compact-context");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(1);
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
     const request = runtime.complete.mock.calls[0]?.[0];
     const sentMessages = request?.context.messages;
     expect(sentMessages).toHaveLength(4);
@@ -1772,7 +1818,10 @@ describe("ThreadRuntimeCoordinator", () => {
     const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
       message("<summary>\nIntent:\n- should not run\n</summary>"),
     );
-    const runtime = createMockRuntime(message("small thread reply"));
+    const runtime = createMockRuntime(
+      message("small thread reply"),
+      message("Nothing else to do."),
+    );
     const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("small-agent", {
       agent: new Agent({
@@ -1801,7 +1850,7 @@ describe("ThreadRuntimeCoordinator", () => {
     await coordinator.waitForIdle("thread-auto-compact-under");
 
     expect(compactRuntime).not.toHaveBeenCalled();
-    expect(runtime.complete).toHaveBeenCalledTimes(1);
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
   });
 
   it("auto-compacts risky threads before the model call", async () => {
@@ -1810,7 +1859,10 @@ describe("ThreadRuntimeCoordinator", () => {
     const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
       message("<summary>\nIntent:\n- continue the recent work\n</summary>"),
     );
-    const runtime = createMockRuntime(message("after auto compact"));
+    const runtime = createMockRuntime(
+      message("after auto compact"),
+      message("Nothing else to do."),
+    );
     const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("auto-compact-agent", {
       agent: new Agent({
@@ -1840,7 +1892,7 @@ describe("ThreadRuntimeCoordinator", () => {
     await coordinator.waitForIdle("thread-auto-compact");
 
     expect(compactRuntime).toHaveBeenCalledTimes(1);
-    expect(runtime.complete).toHaveBeenCalledTimes(1);
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
 
     const request = runtime.complete.mock.calls[0]?.[0];
     const sentMessages = request?.context.messages;
@@ -1931,7 +1983,10 @@ describe("ThreadRuntimeCoordinator", () => {
     const releaseFailRun = createDeferred<void>();
     const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete")
       .mockResolvedValueOnce(message(`<summary>\nIntent:\n- ${"x".repeat(8_000)}\n</summary>`));
-    const runtime = createMockRuntime(message("after retry"));
+    const runtime = createMockRuntime(
+      message("after retry"),
+      message("Nothing else to do."),
+    );
     const store = new FailRunBlockingStore(enteredFailRun, releaseFailRun);
     let retryModel = TEST_MODEL_WINDOW_620;
     const registry = new TestThreadDefinitionRegistry().register("auto-compact-retry-agent", () => ({
@@ -1972,17 +2027,17 @@ describe("ThreadRuntimeCoordinator", () => {
     await coordinator.waitForIdle("thread-auto-compact-retry");
 
     expect(compactRuntime).toHaveBeenCalledTimes(1);
-    expect(runtime.complete).toHaveBeenCalledTimes(1);
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
 
     const runs = await store.listRuns("thread-auto-compact-retry");
     expect(runs.map((run) => run.status)).toEqual(["failed", "completed"]);
 
     const transcript = await store.loadTranscript("thread-auto-compact-retry");
     expect(transcript.some((entry) => entry.origin === "input" && entry.source === "telegram")).toBe(true);
-    expect(transcript.at(-1)?.message).toMatchObject({
-      role: "assistant",
-      content: [{ type: "text", text: "after retry" }],
-    });
+    expect(transcript.some((entry) => {
+      return entry.message.role === "assistant"
+        && entry.message.content.some((block) => block.type === "text" && block.text === "after retry");
+    })).toBe(true);
     expect(await store.hasRunnableInputs("thread-auto-compact-retry")).toBe(false);
   });
 
@@ -2150,6 +2205,7 @@ describe("ThreadRuntimeCoordinator", () => {
     await started.promise;
 
     expect(await observer.abort("thread-abort", "Stop from observer")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 300));
     release.resolve({ done: "late" });
 
     await waitFor(async () => (await store.getRun((await store.listRuns("thread-abort"))[0]!.id)).status === "failed");
@@ -2164,7 +2220,9 @@ describe("ThreadRuntimeCoordinator", () => {
     const releaseCompleteRun = createDeferred<void>();
     const runtime = createMockRuntime(
       message("first"),
+      message("Nothing else to do."),
       message("second"),
+      message("Nothing else to do."),
     );
 
     const store = new CompleteRunBlockingStore(enteredCompleteRun, releaseCompleteRun);
@@ -2202,12 +2260,16 @@ describe("ThreadRuntimeCoordinator", () => {
     releaseCompleteRun.resolve();
     await coordinator.waitForIdle("thread-completion-race");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    expect(runtime.complete).toHaveBeenCalledTimes(4);
     const transcript = await store.loadTranscript("thread-completion-race");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
+      "runtime",
+      "assistant",
       "tui",
+      "assistant",
+      "runtime",
       "assistant",
     ]);
   });

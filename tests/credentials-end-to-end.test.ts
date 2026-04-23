@@ -147,6 +147,7 @@ describe("credentials end-to-end", () => {
         },
       }]),
       createAssistantMessage([{type: "text", text: "Stored and verified."}]),
+      createAssistantMessage([{type: "text", text: "Nothing else to do."}]),
     );
     const store = new TestThreadRuntimeStore();
     await store.createThread({
@@ -208,6 +209,8 @@ describe("credentials end-to-end", () => {
       "assistant",
       "tool:bash",
       "assistant",
+      "runtime",
+      "assistant",
     ]);
     expect(JSON.stringify(transcript[2]?.message)).not.toContain("notion-secret");
     expect(transcript[4]?.message).toMatchObject({
@@ -240,6 +243,7 @@ describe("credentials end-to-end", () => {
         },
       }]),
       createAssistantMessage([{type: "text", text: "Done."}]),
+      createAssistantMessage([{type: "text", text: "Nothing else to do."}]),
     );
     const store = new TestThreadRuntimeStore();
     await store.createThread({

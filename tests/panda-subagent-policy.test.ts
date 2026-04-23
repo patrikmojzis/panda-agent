@@ -82,6 +82,7 @@ describe("default agent subagent policy", () => {
     const toolsets = createBaseToolsets();
 
     expect(toolsets.workspace.map((tool) => tool.name)).toEqual([
+      "current_datetime",
       "read_file",
       "glob_files",
       "grep_files",
@@ -93,6 +94,7 @@ describe("default agent subagent policy", () => {
     const toolsets = createBaseToolsets();
 
     expect(toolsets.memory.map((tool) => tool.name)).toEqual([
+      "current_datetime",
       "postgres_readonly_query",
     ]);
   });
@@ -103,6 +105,7 @@ describe("default agent subagent policy", () => {
     });
 
     expect(toolsets.memory.map((tool) => tool.name)).toEqual([
+      "current_datetime",
       "postgres_readonly_query",
       "wiki",
     ]);
@@ -112,6 +115,7 @@ describe("default agent subagent policy", () => {
     const toolsets = createBaseToolsets();
 
     expect(toolsets.browser.map((tool) => tool.name)).toEqual([
+      "current_datetime",
       "read_file",
       "glob_files",
       "grep_files",
@@ -126,6 +130,7 @@ describe("default agent subagent policy", () => {
     });
 
     expect(toolsets.skill_maintainer.map((tool) => tool.name)).toEqual([
+      "current_datetime",
       "postgres_readonly_query",
       "agent_skill",
     ]);

@@ -296,9 +296,14 @@ describe("projectTranscriptForInference", () => {
 
 describe("ThreadRuntimeCoordinator inference projection", () => {
   it("shrinks replayed model context without mutating stored transcript", async () => {
-    const runtime = createMockRuntime(createAssistantMessage([
-      {type: "text", text: "fresh reply"},
-    ]));
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {type: "text", text: "fresh reply"},
+      ]),
+      createAssistantMessage([
+        {type: "text", text: "Nothing else to do."},
+      ]),
+    );
     const store = new TestThreadRuntimeStore();
 
     await store.createThread({
@@ -353,7 +358,7 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
     ]);
 
     const storedTranscript = await store.loadTranscript("thread-inference-projection");
-    expect(storedTranscript.map((record) => record.sequence)).toEqual([1, 2, 3, 4]);
+    expect(storedTranscript.map((record) => record.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(storedTranscript[0]?.message).toMatchObject({
       role: "user",
       content: "old request",
@@ -380,6 +385,12 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
       ]),
       createAssistantMessage([
         {type: "text", text: "looked at the saved screenshot again"},
+      ]),
+      createAssistantMessage([
+        {type: "text", text: "Nothing else to do."},
+      ]),
+      createAssistantMessage([
+        {type: "text", text: "Nothing else to do."},
       ]),
     );
     const store = new TestThreadRuntimeStore();
@@ -501,6 +512,12 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
       createAssistantMessage([
         {type: "text", text: "image stayed dropped"},
       ]),
+      createAssistantMessage([
+        {type: "text", text: "Nothing else to do."},
+      ]),
+      createAssistantMessage([
+        {type: "text", text: "Nothing else to do."},
+      ]),
     );
     const store = new TestThreadRuntimeStore();
     const screenshotPath = path.join(directory, "shot.png");
@@ -589,9 +606,14 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
   });
 
   it("fails soft when a persisted artifact path is missing", async () => {
-    const runtime = createMockRuntime(createAssistantMessage([
-      {type: "text", text: "still fine"},
-    ]));
+    const runtime = createMockRuntime(
+      createAssistantMessage([
+        {type: "text", text: "still fine"},
+      ]),
+      createAssistantMessage([
+        {type: "text", text: "Nothing else to do."},
+      ]),
+    );
     const store = new TestThreadRuntimeStore();
 
     await store.createThread({

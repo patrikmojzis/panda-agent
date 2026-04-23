@@ -4,6 +4,11 @@ import {createDaemonLifecycle} from "../src/app/runtime/daemon-lifecycle.js";
 
 describe("createDaemonLifecycle", () => {
   it("acquires the daemon lease before starting workers and releases it on stop", async () => {
+    const previousAppsPort = process.env.PANDA_APPS_PORT;
+    const previousHealthPort = process.env.PANDA_CORE_HEALTH_PORT;
+    process.env.PANDA_APPS_PORT = "0";
+    delete process.env.PANDA_CORE_HEALTH_PORT;
+
     const order: string[] = [];
     const processRequest = vi.fn(async () => undefined);
     let lifecycle!: ReturnType<typeof createDaemonLifecycle>;
@@ -97,29 +102,48 @@ describe("createDaemonLifecycle", () => {
       processRequest,
     });
 
-    await lifecycle.run();
+    try {
+      await lifecycle.run();
 
-    expect(order).toEqual([
-      "lease",
-      "heartbeat",
-      "listen",
-      "a2a-start",
-      "tasks-start",
-      "watch-start",
-      "heartbeat-start",
-      "recover",
-      "unlisten",
-      "a2a-stop",
-      "tasks-stop",
-      "watch-stop",
-      "heartbeat-stop",
-      "release",
-      "runtime-close",
-    ]);
-    expect(processRequest).not.toHaveBeenCalled();
+      expect(order).toEqual([
+        "lease",
+        "heartbeat",
+        "listen",
+        "a2a-start",
+        "tasks-start",
+        "watch-start",
+        "heartbeat-start",
+        "recover",
+        "unlisten",
+        "a2a-stop",
+        "tasks-stop",
+        "watch-stop",
+        "heartbeat-stop",
+        "release",
+        "runtime-close",
+      ]);
+      expect(processRequest).not.toHaveBeenCalled();
+    } finally {
+      if (previousAppsPort === undefined) {
+        delete process.env.PANDA_APPS_PORT;
+      } else {
+        process.env.PANDA_APPS_PORT = previousAppsPort;
+      }
+
+      if (previousHealthPort === undefined) {
+        delete process.env.PANDA_CORE_HEALTH_PORT;
+      } else {
+        process.env.PANDA_CORE_HEALTH_PORT = previousHealthPort;
+      }
+    }
   });
 
   it("keeps cleaning up even when an earlier shutdown step fails", async () => {
+    const previousAppsPort = process.env.PANDA_APPS_PORT;
+    const previousHealthPort = process.env.PANDA_CORE_HEALTH_PORT;
+    process.env.PANDA_APPS_PORT = "0";
+    delete process.env.PANDA_CORE_HEALTH_PORT;
+
     const order: string[] = [];
     let lifecycle!: ReturnType<typeof createDaemonLifecycle>;
     const context = {
@@ -196,16 +220,30 @@ describe("createDaemonLifecycle", () => {
       processRequest: vi.fn(async () => undefined),
     });
 
-    await expect(lifecycle.run()).resolves.toBeUndefined();
-    expect(order).toEqual([
-      "unlisten",
-      "a2a-stop",
-      "tasks-stop",
-      "watch-stop",
-      "heartbeat-stop",
-      "release",
-      "runtime-close",
-    ]);
+    try {
+      await expect(lifecycle.run()).resolves.toBeUndefined();
+      expect(order).toEqual([
+        "unlisten",
+        "a2a-stop",
+        "tasks-stop",
+        "watch-stop",
+        "heartbeat-stop",
+        "release",
+        "runtime-close",
+      ]);
+    } finally {
+      if (previousAppsPort === undefined) {
+        delete process.env.PANDA_APPS_PORT;
+      } else {
+        process.env.PANDA_APPS_PORT = previousAppsPort;
+      }
+
+      if (previousHealthPort === undefined) {
+        delete process.env.PANDA_CORE_HEALTH_PORT;
+      } else {
+        process.env.PANDA_CORE_HEALTH_PORT = previousHealthPort;
+      }
+    }
   });
 
   it("acquires and releases the lease if app server startup fails after binding resolution", async () => {

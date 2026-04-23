@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {DEFAULT_AGENT_PROMPT_TEMPLATES,} from "../src/domain/agents/index.js";
+import {PostgresTelepathyDeviceStore} from "../src/domain/telepathy/index.js";
 import {ensureReadonlySessionQuerySchema} from "../src/domain/threads/runtime/index.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
@@ -216,6 +217,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
       agentPrompts: "\"session\".\"agent_prompts\"",
       agentPairings: "\"session\".\"agent_pairings\"",
       agentSkills: "\"session\".\"agent_skills\"",
+      agentTelepathyDevices: "\"session\".\"agent_telepathy_devices\"",
       scheduledTasks: "\"session\".\"scheduled_tasks\"",
       scheduledTaskRuns: "\"session\".\"scheduled_task_runs\"",
       watches: "\"session\".\"watches\"",
@@ -231,6 +233,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_prompts\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_pairings\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_skills\"");
+    expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_telepathy_devices\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"scheduled_tasks\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"scheduled_task_runs\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"watches\"");
@@ -243,7 +246,8 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("prompt.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("pairing.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("skill.agent_key = current_setting('runtime.agent_key', true)");
-    expect(queryable.queries[1]).toContain("GRANT SELECT ON \"session\".\"agent_sessions\", \"session\".\"threads\", \"session\".\"messages\", \"session\".\"messages_raw\", \"session\".\"tool_results\", \"session\".\"inputs\", \"session\".\"runs\", \"session\".\"agent_prompts\", \"session\".\"agent_pairings\", \"session\".\"agent_skills\", \"session\".\"scheduled_tasks\", \"session\".\"scheduled_task_runs\", \"session\".\"watches\", \"session\".\"watch_runs\", \"session\".\"watch_events\"");
+    expect(queryable.queries[0]).toContain("device.agent_key = current_setting('runtime.agent_key', true)");
+    expect(queryable.queries[1]).toContain("GRANT SELECT ON \"session\".\"agent_sessions\", \"session\".\"threads\", \"session\".\"messages\", \"session\".\"messages_raw\", \"session\".\"tool_results\", \"session\".\"inputs\", \"session\".\"runs\", \"session\".\"agent_prompts\", \"session\".\"agent_pairings\", \"session\".\"agent_skills\", \"session\".\"agent_telepathy_devices\", \"session\".\"scheduled_tasks\", \"session\".\"scheduled_task_runs\", \"session\".\"watches\", \"session\".\"watch_runs\", \"session\".\"watch_events\"");
   });
 
   it("filters readonly threads by session when multiple identities share an agent", async () => {
@@ -251,6 +255,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     pools.push(pool);
 
     const {agentStore, identityStore, sessionStore, threadStore: store} = await createRuntimeStores(pool);
+    await new PostgresTelepathyDeviceStore({ pool }).ensureSchema();
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
 
@@ -318,6 +323,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     pools.push(pool);
 
     const {agentStore, identityStore, sessionStore, threadStore: store} = await createRuntimeStores(pool);
+    await new PostgresTelepathyDeviceStore({ pool }).ensureSchema();
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
 
@@ -380,6 +386,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     pools.push(pool);
 
     const {agentStore} = await createRuntimeStores(pool);
+    await new PostgresTelepathyDeviceStore({ pool }).ensureSchema();
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
     await agentStore.bootstrapAgent({
@@ -418,6 +425,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     pools.push(pool);
 
     const {agentStore} = await createRuntimeStores(pool);
+    await new PostgresTelepathyDeviceStore({ pool }).ensureSchema();
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
     await agentStore.bootstrapAgent({
@@ -464,6 +472,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     pools.push(pool);
 
     const {agentStore, identityStore} = await createRuntimeStores(pool);
+    await new PostgresTelepathyDeviceStore({ pool }).ensureSchema();
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
     const alice = await identityStore.createIdentity({

@@ -68,10 +68,11 @@ describe("Panda feature surface", () => {
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       'Do not leak sensitive details through "just a summary," paraphrase, excerpt, or forwarding the emotional gist.',
     );
-    expect(tools).toHaveLength(3);
+    expect(tools).toHaveLength(4);
     expect(tools[0]).toBeInstanceOf(BashTool);
-    expect(tools[1]).toBeInstanceOf(MediaTool);
-    expect(tools[2]).toBeInstanceOf(WebFetchTool);
+    expect(tools[1]?.name).toBe("current_datetime");
+    expect(tools[2]).toBeInstanceOf(MediaTool);
+    expect(tools[3]).toBeInstanceOf(WebFetchTool);
   });
 
   it("adds Brave search when BRAVE_API_KEY is configured", () => {
@@ -79,8 +80,8 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildDefaultAgentTools();
 
-    expect(tools).toHaveLength(4);
-    expect(tools[3]).toBeInstanceOf(BraveSearchTool);
+    expect(tools).toHaveLength(5);
+    expect(tools[4]).toBeInstanceOf(BraveSearchTool);
   });
 
   it("adds Whisper when OPENAI_API_KEY is configured", () => {
@@ -88,9 +89,9 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     const tools = buildDefaultAgentTools();
 
-    expect(tools).toHaveLength(5);
-    expect(tools[3]).toBeInstanceOf(WebResearchTool);
-    expect(tools[4]).toBeInstanceOf(WhisperTool);
+    expect(tools).toHaveLength(6);
+    expect(tools[4]).toBeInstanceOf(WebResearchTool);
+    expect(tools[5]).toBeInstanceOf(WhisperTool);
   });
 
   it("appends extra tools without adding hidden defaults", () => {
@@ -99,8 +100,8 @@ describe("Panda feature surface", () => {
     const extraTool = { name: "extra-tool" } as any;
     const tools = buildDefaultAgentTools([extraTool]);
 
-    expect(tools).toHaveLength(4);
-    expect(tools[3]).toBe(extraTool);
+    expect(tools).toHaveLength(5);
+    expect(tools[4]).toBe(extraTool);
   });
 
   it("builds explicit specialist toolsets and keeps workspace/browser tools off the main agent", () => {
@@ -114,6 +115,7 @@ describe("Panda feature surface", () => {
 
     expect(toolsets.main.map((tool) => tool.name)).toEqual([
       "bash",
+      "current_datetime",
       "view_media",
       "web_fetch",
       "postgres_readonly_query",
@@ -121,15 +123,18 @@ describe("Panda feature surface", () => {
     expect(toolsets.main.some((tool) => tool instanceof PostgresReadonlyQueryTool)).toBe(true);
     expect(toolsets.main.some((tool) => tool instanceof BrowserTool)).toBe(false);
     expect(toolsets.workspace.map((tool) => tool.name)).toEqual([
+      "current_datetime",
       "read_file",
       "glob_files",
       "grep_files",
       "view_media",
     ]);
     expect(toolsets.memory.map((tool) => tool.name)).toEqual([
+      "current_datetime",
       "postgres_readonly_query",
     ]);
     expect(toolsets.browser.map((tool) => tool.name)).toEqual([
+      "current_datetime",
       "read_file",
       "glob_files",
       "grep_files",
@@ -137,6 +142,7 @@ describe("Panda feature surface", () => {
       "browser",
     ]);
     expect(toolsets.skill_maintainer.map((tool) => tool.name)).toEqual([
+      "current_datetime",
       "postgres_readonly_query",
     ]);
   });

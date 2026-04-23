@@ -135,11 +135,11 @@ describe("WikiOverviewContext", () => {
 
     expect(first).toContain("Namespace: agents/panda");
     expect(first).toContain("Allowed scope: only this namespace and its child pages.");
-    expect(first).toContain("Last refreshed: just now (cached up to 5m)");
+    expect(first).toContain("Overview snapshot refreshes every 5m.");
     expect(first).toContain("- Project Alpha :: agents/panda/project-alpha (updated 2026-04-19T11:10:00.000Z)");
     expect(first).toContain("- Profile :: agents/panda/profile (2 inbound links)");
     expect(first).toContain("- Project Alpha :: agents/panda/project-alpha (1 inbound link)");
-    expect(second).toContain("Last refreshed: 2m ago (cached up to 5m)");
+    expect(second).toBe(first);
     expect(first).not.toContain("Otter Notes");
     expect(first).not.toContain("Old Profile");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -170,7 +170,7 @@ describe("WikiOverviewContext", () => {
 
     expect(content).toContain("Namespace: agents/panda");
     expect(content).toContain("Allowed scope: only this namespace and its child pages.");
-    expect(content).toContain("Last refreshed: just now");
+    expect(content).toContain("Overview snapshot refreshes on demand.");
     expect(content).toContain("- No pages yet.");
     expect(content).toContain("- No inbound links yet.");
   });
@@ -219,7 +219,7 @@ describe("WikiOverviewContext", () => {
 
     const content = await context.getContent();
 
-    expect(content).toContain("Last refreshed: just now");
+    expect(content).toContain("Overview snapshot refreshes on demand.");
     expect(content).toContain("- untitled :: agents/panda/untitled (1 inbound link)");
   });
 
