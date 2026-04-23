@@ -1,0 +1,869 @@
+{
+  "builtTestProducts" : [
+    {
+      "binaryPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.xctest/Contents/MacOS/PandaReceiverMacOSPackageTests",
+      "packagePath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos",
+      "productName" : "PandaReceiverMacOSPackageTests"
+    }
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.PandaReceiverMacOS-arm64-apple-macosx15.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/sources",
+      "importPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/AppIdentity.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Config.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/ConfigStore.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/LaunchAtLogin.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/MenuBarApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Receiver.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/SettingsWindow.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/TunnelSupervisor.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/main.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "PandaReceiverMacOS",
+      "moduleOutputPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules/PandaReceiverMacOS.swiftmodule",
+      "objects" : [
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/AppIdentity.swift.o",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/Config.swift.o",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/ConfigStore.swift.o",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/LaunchAtLogin.swift.o",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/MenuBarApp.swift.o",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/Receiver.swift.o",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/SettingsWindow.swift.o",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/TunnelSupervisor.swift.o",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/main.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx13.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "PandaReceiverMacOS_main",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "panda_receiver_macos"
+      ],
+      "outputFileMapPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/AppIdentity.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/Config.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/ConfigStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/LaunchAtLogin.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/MenuBarApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/Receiver.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/SettingsWindow.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/TunnelSupervisor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/main.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules/PandaReceiverMacOS.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/AppIdentity.swift",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Config.swift",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/ConfigStore.swift",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/LaunchAtLogin.swift",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/MenuBarApp.swift",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Receiver.swift",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/SettingsWindow.swift",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/TunnelSupervisor.swift",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/main.swift"
+      ],
+      "tempsPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.PandaReceiverMacOSPackageTests-arm64-apple-macosx15.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.build/sources",
+      "importPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.derived/runner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules/PandaReceiverMacOSTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "PandaReceiverMacOSPackageTests",
+      "moduleOutputPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules/PandaReceiverMacOSPackageTests.swiftmodule",
+      "objects" : [
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.build/runner.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx13.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.build/include/PandaReceiverMacOSPackageTests-Swift.h",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "panda_receiver_macos"
+      ],
+      "outputFileMapPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules/PandaReceiverMacOSPackageTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.derived/runner.swift"
+      ],
+      "tempsPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.PandaReceiverMacOSTests-arm64-apple-macosx15.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSTests.build/sources",
+      "importPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Tests/PandaReceiverMacOSTests/ConfigTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Tests/PandaReceiverMacOSTests/ReceiverErrorTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/panda-receiver-macos"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "PandaReceiverMacOSTests",
+      "moduleOutputPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules/PandaReceiverMacOSTests.swiftmodule",
+      "objects" : [
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSTests.build/ConfigTests.swift.o",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSTests.build/ReceiverErrorTests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "panda_receiver_macos"
+      ],
+      "outputFileMapPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSTests.build/ConfigTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSTests.build/ReceiverErrorTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules/PandaReceiverMacOSTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Tests/PandaReceiverMacOSTests/ConfigTests.swift",
+        "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Tests/PandaReceiverMacOSTests/ReceiverErrorTests.swift"
+      ],
+      "tempsPath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSTests.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "PandaReceiverMacOS" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "PandaReceiverMacOS",
+      "-package-name",
+      "panda_receiver_macos",
+      "-c",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/AppIdentity.swift",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Config.swift",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/ConfigStore.swift",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/LaunchAtLogin.swift",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/MenuBarApp.swift",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Receiver.swift",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/SettingsWindow.swift",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/TunnelSupervisor.swift",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/main.swift",
+      "-I",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx13.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "PandaReceiverMacOS_main",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "panda_receiver_macos",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "PandaReceiverMacOSPackageTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "PandaReceiverMacOSPackageTests",
+      "-package-name",
+      "panda_receiver_macos",
+      "-c",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.derived/runner.swift",
+      "-I",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx13.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.build/include/PandaReceiverMacOSPackageTests-Swift.h",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "panda_receiver_macos",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "PandaReceiverMacOSTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "PandaReceiverMacOSTests",
+      "-package-name",
+      "panda_receiver_macos",
+      "-c",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Tests/PandaReceiverMacOSTests/ConfigTests.swift",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Tests/PandaReceiverMacOSTests/ReceiverErrorTests.swift",
+      "-I",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "panda_receiver_macos",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "PandaReceiverMacOS" : [
+
+    ],
+    "PandaReceiverMacOSPackageTests" : [
+      "PandaReceiverMacOSTests",
+      "PandaReceiverMacOS"
+    ],
+    "PandaReceiverMacOSTests" : [
+      "PandaReceiverMacOS"
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+    "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.derived/runner.swift" : {
+      "inputs" : [
+
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.derived/runner.swift"
+        }
+      ]
+    }
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/AppIdentity.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Config.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/ConfigStore.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/LaunchAtLogin.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/MenuBarApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Receiver.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/SettingsWindow.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/TunnelSupervisor.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/main.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/sources"
+    },
+    "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.derived/runner.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.build/sources"
+    },
+    "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/AppIdentity.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/Config.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/ConfigStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/LaunchAtLogin.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/MenuBarApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/Receiver.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/SettingsWindow.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/TunnelSupervisor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/main.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSTests.build/ConfigTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSTests.build/ReceiverErrorTests.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSPackageTests.product/Objects.LinkFileList"
+    },
+    "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Tests/PandaReceiverMacOSTests/ConfigTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Tests/PandaReceiverMacOSTests/ReceiverErrorTests.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOSTests.build/sources"
+    },
+    "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/panda-receiver-macos-entitlement.plist" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<entitlement-plist>"
+        },
+        {
+          "kind" : "virtual",
+          "name" : "<com.apple.security.get-task-allow>"
+        }
+      ],
+      "outputFilePath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/panda-receiver-macos-entitlement.plist"
+    },
+    "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/panda-receiver-macos.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/AppIdentity.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/Config.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/ConfigStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/LaunchAtLogin.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/MenuBarApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/Receiver.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/SettingsWindow.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/TunnelSupervisor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/PandaReceiverMacOS.build/main.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/panda-receiver-macos.product/Objects.LinkFileList"
+    },
+    "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}

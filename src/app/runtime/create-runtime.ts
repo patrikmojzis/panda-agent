@@ -15,6 +15,7 @@ import type {Tool} from "../../kernel/agent/tool.js";
 import type {CredentialResolver} from "../../domain/credentials/index.js";
 import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
 import type {BrowserRunnerClient} from "../../integrations/browser/client.js";
+import type {TelepathyHub} from "../../integrations/telepathy/hub.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundBashThreadInput} from "./background-bash-thread-input.js";
@@ -44,6 +45,7 @@ export interface DefinitionResolverContext {
   identityStore: IdentityStore;
   sessionStore: SessionStore;
   store: ThreadRuntimeStore;
+  telepathyService: TelepathyHub | null;
   wikiBindingService: WikiBindingService | null;
   mainTools: readonly Tool[];
 }
@@ -69,6 +71,7 @@ export interface RuntimeServices {
   sessionStore: SessionStore;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
+  telepathyService: TelepathyHub | null;
   watches: WatchStore;
   coordinator: ThreadRuntimeCoordinator;
   mainTools: readonly Tool[];
@@ -91,6 +94,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     identityStore: runtime.identityStore,
     sessionStore: runtime.sessionStore,
     store: runtime.store,
+    telepathyService: runtime.telepathyService,
     wikiBindingService: runtime.wikiBindingService,
     mainTools: runtime.mainTools,
   };
@@ -115,6 +119,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     sessionStore: runtime.sessionStore,
     store: runtime.store,
     scheduledTasks: runtime.scheduledTasks,
+    telepathyService: runtime.telepathyService,
     watches: runtime.watches,
     coordinator,
     mainTools: runtime.mainTools,

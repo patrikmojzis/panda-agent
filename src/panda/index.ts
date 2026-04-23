@@ -59,6 +59,10 @@ export {
   type PostgresReadonlyQueryToolOptions,
 } from "./tools/postgres-readonly-query-tool.js";
 export {
+  TelepathyScreenshotTool,
+  type TelepathyScreenshotToolOptions,
+} from "./tools/telepathy-screenshot-tool.js";
+export {
   GlobFilesTool,
   GrepFilesTool,
   ReadFileTool,

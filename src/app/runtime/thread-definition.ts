@@ -11,6 +11,7 @@ import {DEFAULT_AGENT_INSTRUCTIONS} from "../../panda/prompt.js";
 import type {DefaultAgentSessionContext} from "./panda-session-context.js";
 import type {BashToolOptions} from "../../panda/tools/bash-tool.js";
 import type {BrowserToolOptions} from "../../panda/tools/browser-tool.js";
+import type {TelepathyScreenshotToolOptions} from "../../panda/tools/telepathy-screenshot-tool.js";
 import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js";
 import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js";
 import type {Tool} from "../../kernel/agent/tool.js";
@@ -48,6 +49,7 @@ export interface CreateThreadDefinitionOptions {
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   bashToolOptions?: BashToolOptions;
   browserToolOptions?: BrowserToolOptions;
+  telepathyToolOptions?: TelepathyScreenshotToolOptions;
   tools?: readonly Tool[];
   extraLlmContexts?: readonly LlmContext[];
   llmContextSections?: readonly DefaultAgentLlmContextSection[];
@@ -122,6 +124,7 @@ export function createThreadDefinition(
       tools: options.tools ?? buildDefaultAgentTools([], {
         bash: options.bashToolOptions,
         browser: options.browserToolOptions,
+        telepathy: options.telepathyToolOptions,
       }),
     }),
     context,

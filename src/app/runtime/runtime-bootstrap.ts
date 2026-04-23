@@ -11,6 +11,7 @@ import {PostgresIdentityStore} from "../../domain/identity/index.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import {PostgresScheduledTaskStore, type ScheduledTaskStore,} from "../../domain/scheduling/tasks/index.js";
 import {PostgresSessionStore, type SessionStore} from "../../domain/sessions/index.js";
+import {PostgresTelepathyDeviceStore} from "../../domain/telepathy/index.js";
 import {WatchMutationService} from "../../domain/watches/mutation-service.js";
 import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.js";
 import {PostgresWikiBindingStore, WikiBindingService} from "../../domain/wiki/index.js";
@@ -32,6 +33,10 @@ import {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
 import {WikiTool} from "../../panda/tools/wiki-tool.js";
+import {
+  resolveTelepathyEnabled,
+  TelepathyHub,
+} from "../../integrations/telepathy/hub.js";
 import {
   ScheduledTaskCancelTool,
   ScheduledTaskCreateTool,
@@ -85,6 +90,7 @@ export interface RuntimeBootstrapResult {
   sessionStore: SessionStore;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
+  telepathyService: TelepathyHub | null;
   watches: WatchStore;
   wikiBindingService: WikiBindingService | null;
   mainTools: readonly Tool[];
@@ -101,6 +107,7 @@ interface ObservedPoolState {
 function createCloseRuntime(options: {
   bashJobService: BashJobService | null;
   browserService: BrowserRunnerClient | null;
+  telepathyService: TelepathyHub | null;
   postgresPool: Pool;
   postgresPoolObserver: PostgresPoolObserver;
   readonlyPoolState: ObservedPoolState;
@@ -126,6 +133,12 @@ function createCloseRuntime(options: {
     };
 
     await runCleanupSteps([
+      {
+        label: "telepathy-service",
+        run: async () => {
+          await options.telepathyService?.close();
+        },
+      },
       {
         label: "browser-service",
         run: async () => {
@@ -208,6 +221,7 @@ export async function bootstrapRuntime(
   let notificationHandler: ((message: { channel: string; payload?: string }) => void) | null = null;
   let notificationChannel: string | null = null;
   let browserService: BrowserRunnerClient | null = null;
+  let telepathyService: TelepathyHub | null = null;
   const maxSubagentDepth = options.maxSubagentDepth ?? 1;
   const postgresPoolConfig = buildObservedPoolConfig(
     CORE_POSTGRES_APPLICATION_NAME,
@@ -292,6 +306,9 @@ export async function bootstrapRuntime(
     const sessionStore = new PostgresSessionStore({
       pool: postgresPool,
     });
+    const telepathyDeviceStore = new PostgresTelepathyDeviceStore({
+      pool: postgresPool,
+    });
     const store = new PostgresThreadRuntimeStore({
       pool: postgresPool,
     });
@@ -299,6 +316,7 @@ export async function bootstrapRuntime(
       identityStore,
       agentStore,
       sessionStore,
+      telepathyDeviceStore,
       store,
     ]);
     await store.markRunningBashJobsLost();
@@ -309,6 +327,14 @@ export async function bootstrapRuntime(
       env: process.env,
     });
     const resolvedBrowserService = browserService;
+    const telepathyEnabled = resolveTelepathyEnabled(process.env);
+    telepathyService = telepathyEnabled
+      ? new TelepathyHub({
+        env: process.env,
+        store: telepathyDeviceStore,
+      })
+      : null;
+    await telepathyService?.start();
 
     const credentialStore = new PostgresCredentialStore({
       pool: postgresPool,
@@ -362,6 +388,13 @@ export async function bootstrapRuntime(
       browser: {
         service: resolvedBrowserService,
       },
+      ...(telepathyService
+        ? {
+          telepathy: {
+            service: telepathyService,
+          },
+        }
+        : {}),
       postgresReadonly: readOnlyDbUrl
         ? {
           getPool: getReadonlyPool,
@@ -410,6 +443,7 @@ export async function bootstrapRuntime(
         identityStore,
         sessionStore,
         store,
+        telepathyService,
         wikiBindingService,
         mainTools,
       }),
@@ -506,6 +540,7 @@ export async function bootstrapRuntime(
       sessionStore,
       store,
       scheduledTasks,
+      telepathyService,
       watches,
       wikiBindingService,
       mainTools,
@@ -513,6 +548,7 @@ export async function bootstrapRuntime(
       close: createCloseRuntime({
         bashJobService,
         browserService: resolvedBrowserService,
+        telepathyService,
         postgresPool,
         postgresPoolObserver,
         readonlyPoolState,
@@ -525,6 +561,7 @@ export async function bootstrapRuntime(
     await createCloseRuntime({
       bashJobService: null,
       browserService,
+      telepathyService,
       postgresPool,
       postgresPoolObserver,
       readonlyPoolState,

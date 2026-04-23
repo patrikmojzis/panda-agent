@@ -186,6 +186,22 @@ agents_declared() {
   [[ -n "$(trim "${PANDA_AGENTS:-}")" ]]
 }
 
+telepathy_publish_enabled() {
+  local enabled_raw
+  enabled_raw="$(trim "${TELEPATHY_ENABLED:-}")"
+  case "$enabled_raw" in
+    "" )
+      return 0
+      ;;
+    1|true|TRUE|True|yes|YES|Yes|on|ON|On)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 enable_telegram_profile=0
 if [[ -n "$(trim "${TELEGRAM_BOT_TOKEN:-}")" ]]; then
   enable_telegram_profile=1
@@ -228,10 +244,11 @@ ensure_host_dirs() {
 }
 
 render_generated_compose() {
-  local agent_key
+  local agent_key telepathy_port
   mkdir -p "$generated_dir"
+  telepathy_port="$(trim "${TELEPATHY_PORT:-}")"
 
-  if ! agents_declared; then
+  if ! agents_declared && [[ -z "$telepathy_port" ]]; then
     cat > "$generated_compose" <<'EOF'
 services: {}
 EOF
@@ -240,8 +257,17 @@ EOF
 
   {
     printf 'services:\n'
-    for agent_key in "${normalized_agents[@]}"; do
+    if [[ -n "$telepathy_port" ]] && telepathy_publish_enabled; then
       cat <<EOF
+  panda-core:
+    ports:
+      - "127.0.0.1:${telepathy_port}:${telepathy_port}"
+EOF
+    fi
+
+    if agents_declared; then
+      for agent_key in "${normalized_agents[@]}"; do
+        cat <<EOF
   panda-runner-$agent_key:
     image: panda:latest
     command: ["runner"]
@@ -261,7 +287,8 @@ EOF
       retries: 10
       start_period: 5s
 EOF
-    done
+      done
+    fi
   } > "$generated_compose"
 }
 

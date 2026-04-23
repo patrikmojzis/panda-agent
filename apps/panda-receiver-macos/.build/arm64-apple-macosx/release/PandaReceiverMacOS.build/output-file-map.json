@@ -1,0 +1,61 @@
+{
+  "": {
+    "dependencies": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/PandaReceiverMacOS.d",
+    "object": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/PandaReceiverMacOS.o",
+    "swift-dependencies": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/master.swiftdeps"
+  },
+  "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/AppIdentity.swift": {
+    "object": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/AppIdentity.swift.o",
+    "swiftmodule": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/AppIdentity~partial.swiftmodule",
+    "swift-dependencies": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/AppIdentity.swiftdeps",
+    "diagnostics": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/AppIdentity.dia"
+  },
+  "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Config.swift": {
+    "object": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/Config.swift.o",
+    "swiftmodule": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/Config~partial.swiftmodule",
+    "swift-dependencies": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/Config.swiftdeps",
+    "diagnostics": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/Config.dia"
+  },
+  "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/ConfigStore.swift": {
+    "object": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/ConfigStore.swift.o",
+    "swiftmodule": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/ConfigStore~partial.swiftmodule",
+    "swift-dependencies": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/ConfigStore.swiftdeps",
+    "diagnostics": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/ConfigStore.dia"
+  },
+  "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/LaunchAtLogin.swift": {
+    "object": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/LaunchAtLogin.swift.o",
+    "swiftmodule": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/LaunchAtLogin~partial.swiftmodule",
+    "swift-dependencies": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/LaunchAtLogin.swiftdeps",
+    "diagnostics": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/LaunchAtLogin.dia"
+  },
+  "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/MenuBarApp.swift": {
+    "object": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/MenuBarApp.swift.o",
+    "swiftmodule": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/MenuBarApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/MenuBarApp.swiftdeps",
+    "diagnostics": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/MenuBarApp.dia"
+  },
+  "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Receiver.swift": {
+    "object": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/Receiver.swift.o",
+    "swiftmodule": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/Receiver~partial.swiftmodule",
+    "swift-dependencies": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/Receiver.swiftdeps",
+    "diagnostics": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/Receiver.dia"
+  },
+  "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/SettingsWindow.swift": {
+    "object": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/SettingsWindow.swift.o",
+    "swiftmodule": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/SettingsWindow~partial.swiftmodule",
+    "swift-dependencies": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/SettingsWindow.swiftdeps",
+    "diagnostics": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/SettingsWindow.dia"
+  },
+  "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/TunnelSupervisor.swift": {
+    "object": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/TunnelSupervisor.swift.o",
+    "swiftmodule": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/TunnelSupervisor~partial.swiftmodule",
+    "swift-dependencies": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/TunnelSupervisor.swiftdeps",
+    "diagnostics": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/TunnelSupervisor.dia"
+  },
+  "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/Sources/PandaReceiverMacOS/main.swift": {
+    "object": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/main.swift.o",
+    "swiftmodule": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/main.swiftdeps",
+    "diagnostics": "/Users/patrikmojzis/.codex/worktrees/544d/panda-agent/apps/panda-receiver-macos/.build/arm64-apple-macosx/release/PandaReceiverMacOS.build/main.dia"
+  }
+}

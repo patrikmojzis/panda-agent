@@ -145,6 +145,7 @@ Treat these views as the public interface:
 - `session.inputs`
 - `session.runs`
 - `session.agent_skills`
+- `session.agent_telepathy_devices`
 - `session.scheduled_tasks`
 - `session.scheduled_task_runs`
 - `session.watches`
