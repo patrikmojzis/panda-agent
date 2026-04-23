@@ -116,6 +116,38 @@ Tell Panda what happened and only invite follow-up when it might actually help.
 
 ## Identity Rules
 
+`identityScoped` controls data partitioning, not audience control.
+
+Use `identityScoped: true` when the app's rows are private per person.
+Good fits:
+
+- period tracker
+- calorie tracker
+- injections tracker
+- private sleep or health logs
+- anything where one identity should not see another identity's rows
+
+Do not use identity scoping when the app is meant to show shared agent-wide data.
+Good fits:
+
+- company dashboards
+- sales reports
+- shared CRM views
+- internal team tools
+- any app where multiple identities should see the same rows
+
+If two or more identities should see the same dashboard, leave `identityScoped` off.
+Right now Panda can do:
+
+- personal data per identity
+- shared data for everyone who can open the app
+
+Right now Panda cannot cleanly do:
+
+- shared data, but only for a selected subset of identities
+
+That is an access-control problem for later, not a reason to misuse identity scoping now.
+
 If the app is identity-scoped:
 
 - views and actions require `identityId`
@@ -123,6 +155,7 @@ If the app is identity-scoped:
 - the app host resolves the handle to the real identity id server-side
 
 Do not hardcode fake human handles as if they were identity ids.
+If the app is not identity-scoped, do not force `identityHandle` into the URL just because it exists.
 
 ## UI Rules
 

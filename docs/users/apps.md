@@ -53,12 +53,48 @@ Supported keys:
 
 - `name`: required display name
 - `description`: optional short summary
-- `identityScoped`: when `true`, views and actions require `identityId`
+- `identityScoped`: when `true`, views and actions require `identityId` and data is partitioned per identity
 - `publicDir`: defaults to `public`
 - `entryHtml`: defaults to `public/index.html`
 - `viewsPath`: defaults to `views.json`
 - `actionsPath`: defaults to `actions.json`
 - `dbPath`: defaults to `data/app.sqlite`
+
+### When To Use `identityScoped`
+
+Use `identityScoped: true` for personal or private apps where each identity should only see their own rows.
+Examples:
+
+- period tracker
+- calorie tracker
+- injections tracker
+- private health or sleep logs
+
+Do not use `identityScoped` for shared dashboards or shared internal tools.
+Examples:
+
+- company report dashboards
+- sales dashboards
+- shared CRM views
+- internal team utilities
+
+Important:
+
+- `identityScoped` is about data partitioning
+- it is not access control
+
+So if multiple identities should see the same dashboard, leave `identityScoped` off.
+
+Current runtime can do:
+
+- personal data per identity
+- shared data for everyone who can open the app
+
+Current runtime cannot yet cleanly do:
+
+- shared data, but only for a selected subset of identities
+
+That is a separate access-control feature for later.
 
 ## `views.json`
 
@@ -202,6 +238,7 @@ Panda injects these named params into views and actions:
 App-provided params must not override those names.
 
 If `identityScoped` is `true`, `identityId` is required.
+If it is `false`, apps can work without any identity context at all.
 
 ## UI
 
@@ -255,6 +292,7 @@ For browser URLs, prefer `identityHandle` in query params for human-facing links
 ```
 
 The app host resolves that handle to the real `identityId` before touching the database or wake pipeline.
+For non-identity-scoped apps, do not bother passing `identityHandle` unless the UI specifically wants viewer context for something cosmetic.
 
 ### URL Hints
 
