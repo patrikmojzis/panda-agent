@@ -162,12 +162,6 @@ Basic contract test:
 
 UI test:
 
-```sh
-panda run
-```
-
-Then open:
-
 ```text
 http://127.0.0.1:8092/apps/<agentKey>/<appSlug>/
 ```
