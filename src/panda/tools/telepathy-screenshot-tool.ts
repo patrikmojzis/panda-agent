@@ -14,6 +14,7 @@ import {Tool} from "../../kernel/agent/tool.js";
 import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
 import type {TelepathyHub, TelepathyScreenshotCapture} from "../../integrations/telepathy/hub.js";
+import {decodeTelepathyMediaPayload} from "../../integrations/telepathy/protocol.js";
 import {readTelepathyAgentKey} from "./telepathy-shared.js";
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -43,6 +44,19 @@ function resolveMediaRoot(context: DefaultAgentSessionContext, env: NodeJS.Proce
   }
 
   return resolveMediaDir(env);
+}
+
+function screenshotExtension(mimeType: string): string {
+  switch (mimeType) {
+    case "image/jpeg":
+      return ".jpg";
+    case "image/png":
+      return ".png";
+    case "image/webp":
+      return ".webp";
+    default:
+      throw new ToolError(`Unsupported telepathy screenshot MIME type: ${mimeType}`);
+  }
 }
 
 function rewriteDetails(
@@ -141,9 +155,13 @@ export class TelepathyScreenshotTool<TContext = DefaultAgentSessionContext>
     );
     await mkdir(artifactDir, {recursive: true});
 
-    const extension = capture.mimeType === "image/png" ? ".png" : ".jpg";
+    const extension = screenshotExtension(capture.mimeType);
     const persistedPath = path.join(artifactDir, `${Date.now()}-${randomUUID()}${extension}`);
-    const bytes = Buffer.from(capture.data, "base64");
+    const bytes = decodeTelepathyMediaPayload({
+      data: capture.data,
+      ...(capture.bytes !== undefined ? {bytes: capture.bytes} : {}),
+      kind: "screenshot",
+    });
     await writeFile(persistedPath, bytes);
 
     const details = rewriteDetails({

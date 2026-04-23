@@ -17,6 +17,7 @@ import type {
   TelepathyScreenshotResult,
 } from "./protocol.js";
 import {
+  TELEPATHY_MAX_WEBSOCKET_PAYLOAD_BYTES,
   parseTelepathyReceiverMessage,
 } from "./protocol.js";
 
@@ -28,6 +29,9 @@ const DEFAULT_TELEPATHY_DEVICE_WAIT_MS = 3_000;
 const DEVICE_WAIT_POLL_MS = 100;
 const RECEIVER_CLOSE_CODE_POLICY_VIOLATION = 1008;
 const RECEIVER_CLOSE_CODE_TRY_AGAIN = 1013;
+const MESSAGE_RATE_WINDOW_MS = 10_000;
+const MAX_MESSAGES_PER_WINDOW = 60;
+const MAX_BYTES_PER_WINDOW = TELEPATHY_MAX_WEBSOCKET_PAYLOAD_BYTES * 2;
 
 interface ConnectedDevice {
   agentKey: string;
@@ -129,8 +133,89 @@ function isUpgradeRequestForPath(request: IncomingMessage, expectedPath: string)
   return pathname === normalizedExpectedPath;
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
+}
+
+function isAllowedUpgradeOrigin(request: IncomingMessage): boolean {
+  const origin = request.headers.origin;
+  if (origin === undefined) {
+    return true;
+  }
+
+  if (Array.isArray(origin)) {
+    return false;
+  }
+
+  try {
+    return isLoopbackHostname(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function rawMessageByteLength(message: WebSocket.RawData): number {
+  if (typeof message === "string") {
+    return Buffer.byteLength(message, "utf8");
+  }
+
+  if (Array.isArray(message)) {
+    return message.reduce((total, chunk) => total + chunk.byteLength, 0);
+  }
+
+  return message.byteLength;
+}
+
+function createSocketBudget(): (message: WebSocket.RawData) => string | null {
+  let windowStartedAt = Date.now();
+  let messageCount = 0;
+  let byteCount = 0;
+
+  return (message) => {
+    const now = Date.now();
+    if (now - windowStartedAt > MESSAGE_RATE_WINDOW_MS) {
+      windowStartedAt = now;
+      messageCount = 0;
+      byteCount = 0;
+    }
+
+    const messageBytes = rawMessageByteLength(message);
+    if (messageBytes > TELEPATHY_MAX_WEBSOCKET_PAYLOAD_BYTES) {
+      return "Telepathy message is too large.";
+    }
+
+    messageCount += 1;
+    byteCount += messageBytes;
+    if (messageCount > MAX_MESSAGES_PER_WINDOW) {
+      return "Telepathy message rate limit exceeded.";
+    }
+
+    if (byteCount > MAX_BYTES_PER_WINDOW) {
+      return "Telepathy message byte rate limit exceeded.";
+    }
+
+    return null;
+  };
+}
+
+function rawMessageToUtf8Text(message: WebSocket.RawData): string {
+  if (typeof message === "string") {
+    return message;
+  }
+
+  if (Array.isArray(message)) {
+    return Buffer.concat(message).toString("utf8");
+  }
+
+  if (Buffer.isBuffer(message)) {
+    return message.toString("utf8");
+  }
+
+  return Buffer.from(new Uint8Array(message)).toString("utf8");
+}
+
 function safeJsonParse(message: WebSocket.RawData): unknown {
-  const text = typeof message === "string" ? message : message.toString("utf8");
+  const text = rawMessageToUtf8Text(message);
   try {
     return JSON.parse(text) as unknown;
   } catch {
@@ -416,9 +501,12 @@ export class TelepathyHub {
       response.end();
     });
 
-    const wsServer = new WebSocketServer({noServer: true});
+    const wsServer = new WebSocketServer({
+      maxPayload: TELEPATHY_MAX_WEBSOCKET_PAYLOAD_BYTES,
+      noServer: true,
+    });
     server.on("upgrade", (request, socket, head) => {
-      if (!isUpgradeRequestForPath(request, this.path)) {
+      if (!isUpgradeRequestForPath(request, this.path) || !isAllowedUpgradeOrigin(request)) {
         socket.destroy();
         return;
       }
@@ -445,11 +533,18 @@ export class TelepathyHub {
 
   private attachSocket(socket: WebSocket): void {
     let currentKey: string | null = null;
+    const consumeSocketBudget = createSocketBudget();
 
     socket.on("message", async (rawMessage: WebSocket.RawData) => {
       let message: TelepathyReceiverMessage;
       let parsedMessage: unknown;
       try {
+        const budgetError = consumeSocketBudget(rawMessage);
+        if (budgetError) {
+          await closeSocket(socket, RECEIVER_CLOSE_CODE_POLICY_VIOLATION, budgetError);
+          return;
+        }
+
         parsedMessage = safeJsonParse(rawMessage);
         message = parseTelepathyReceiverMessage(parsedMessage);
       } catch (error) {

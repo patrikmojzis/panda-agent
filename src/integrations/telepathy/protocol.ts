@@ -10,7 +10,21 @@ const maxTextItemLength = 16_000;
 const maxMetadataStringLength = 256;
 const maxFilenameLength = 180;
 const maxContextItems = 4;
-const maxBase64PayloadLength = 32 * 1024 * 1024;
+export const TELEPATHY_MAX_MEDIA_BYTES = 24 * 1024 * 1024;
+export const TELEPATHY_MAX_BASE64_PAYLOAD_LENGTH = 32 * 1024 * 1024;
+export const TELEPATHY_MAX_WEBSOCKET_PAYLOAD_BYTES = 36 * 1024 * 1024;
+const base64PayloadSchema = trimmedString
+  .max(TELEPATHY_MAX_BASE64_PAYLOAD_LENGTH)
+  .refine((value) => /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value), {
+    message: "Invalid base64 payload.",
+  });
+const telepathyImageMimeTypeSchema = trimmedString
+  .transform((value) => value.toLowerCase())
+  .pipe(z.enum([
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+  ]));
 const telepathyDeviceHelloSchema = z.object({
   type: z.literal("device.hello"),
   agentKey: trimmedString,
@@ -23,8 +37,8 @@ const telepathyScreenshotResultSuccessSchema = z.object({
   type: z.literal("screenshot.result"),
   requestId: trimmedString.max(maxRequestIdLength),
   ok: z.literal(true),
-  mimeType: trimmedString,
-  data: trimmedString,
+  mimeType: telepathyImageMimeTypeSchema,
+  data: base64PayloadSchema,
   bytes: z.number().int().positive().optional(),
 });
 
@@ -51,19 +65,15 @@ const telepathyContextAudioItemSchema = z.object({
     "audio/wav",
     "audio/webm",
   ])),
-  data: trimmedString.max(maxBase64PayloadLength),
+  data: base64PayloadSchema,
   bytes: z.number().int().positive().optional(),
   filename: trimmedString.max(maxFilenameLength).optional(),
 });
 
 const telepathyContextImageItemSchema = z.object({
   type: z.literal("image"),
-  mimeType: trimmedString.transform((value) => value.toLowerCase()).pipe(z.enum([
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-  ])),
-  data: trimmedString.max(maxBase64PayloadLength),
+  mimeType: telepathyImageMimeTypeSchema,
+  data: base64PayloadSchema,
   bytes: z.number().int().positive().optional(),
   filename: trimmedString.max(maxFilenameLength).optional(),
 });
@@ -137,6 +147,23 @@ export type TelepathyServerMessage =
   | TelepathyDeviceReady
   | TelepathyRequestError
   | TelepathyScreenshotRequest;
+
+export function decodeTelepathyMediaPayload(input: {
+  data: string;
+  bytes?: number;
+  kind: string;
+}): Buffer {
+  const bytes = Buffer.from(input.data, "base64");
+  if (input.bytes !== undefined && input.bytes !== bytes.length) {
+    throw new ToolError(`Telepathy ${input.kind} item declared ${input.bytes} bytes but decoded to ${bytes.length} bytes.`);
+  }
+
+  if (bytes.length > TELEPATHY_MAX_MEDIA_BYTES) {
+    throw new ToolError(`Telepathy ${input.kind} item is too large (${bytes.length} bytes).`);
+  }
+
+  return bytes;
+}
 
 function formatZodIssues(error: ZodError): string {
   const messages = error.issues

@@ -14,6 +14,7 @@ import type {
   TelepathyContextImageItem,
   TelepathyContextItem,
 } from "../../integrations/telepathy/protocol.js";
+import {decodeTelepathyMediaPayload} from "../../integrations/telepathy/protocol.js";
 import {buildTelepathyInboundMetadata, buildTelepathyInboundText} from "../../integrations/telepathy/helpers.js";
 import {TELEPATHY_SOURCE} from "../../integrations/telepathy/config.js";
 
@@ -29,7 +30,6 @@ const EXTENSIONS_BY_MIME_TYPE = new Map<string, string>([
   ["image/png", ".png"],
   ["image/webp", ".webp"],
 ]);
-const MAX_CONTEXT_MEDIA_BYTES = 24 * 1024 * 1024;
 
 export interface TelepathyContextIngressOptions {
   coordinator: Pick<ThreadRuntimeCoordinator, "submitInput">;
@@ -57,16 +57,11 @@ function buildHintFilename(
 }
 
 function decodeContextMedia(item: TelepathyContextAudioItem | TelepathyContextImageItem): Buffer {
-  const bytes = Buffer.from(item.data, "base64");
-  if (item.bytes !== undefined && item.bytes !== bytes.length) {
-    throw new Error(`Telepathy ${item.type} item declared ${item.bytes} bytes but decoded to ${bytes.length} bytes.`);
-  }
-
-  if (bytes.length > MAX_CONTEXT_MEDIA_BYTES) {
-    throw new Error(`Telepathy ${item.type} item is too large (${bytes.length} bytes).`);
-  }
-
-  return bytes;
+  return decodeTelepathyMediaPayload({
+    data: item.data,
+    ...(item.bytes !== undefined ? {bytes: item.bytes} : {}),
+    kind: item.type,
+  });
 }
 
 function buildInitialThreadInput(options: {

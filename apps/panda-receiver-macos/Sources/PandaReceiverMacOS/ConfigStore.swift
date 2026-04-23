@@ -1,6 +1,9 @@
 import Foundation
 
 enum ConfigStore {
+    private static let configDirectoryPermissions = 0o700
+    private static let configFilePermissions = 0o600
+
     private static func applicationSupportURL() throws -> URL {
         let fileManager = FileManager.default
         guard let applicationSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
@@ -41,12 +44,24 @@ enum ConfigStore {
     static func save(_ config: Config) throws -> URL {
         let configURL = try defaultURL()
         let directoryURL = configURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: configDirectoryPermissions]
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: configDirectoryPermissions],
+            ofItemAtPath: directoryURL.path()
+        )
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(config)
         try data.write(to: configURL, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: configFilePermissions],
+            ofItemAtPath: configURL.path()
+        )
         return configURL
     }
 
