@@ -20,6 +20,17 @@ struct ReceiverStatus: Sendable {
     let detail: String
 }
 
+private struct PendingContextAck {
+    let continuation: CheckedContinuation<Void, Error>
+    let timeoutTask: Task<Void, Never>
+}
+
+private enum RequestErrorDisposition {
+    case failPending(requestId: String)
+    case ignoreStale(requestId: String)
+    case fatal
+}
+
 actor ReceiverService {
     private let config: Config
     private let statusContinuation: AsyncStream<ReceiverStatus>.Continuation
@@ -30,6 +41,7 @@ actor ReceiverService {
     private var currentSocket: URLSessionWebSocketTask?
     private var currentTunnel: TunnelSupervisor?
     private var hasConnectedOnce = false
+    private var pendingContextAcks: [String: PendingContextAck] = [:]
 
     init(config: Config, statusContinuation: AsyncStream<ReceiverStatus>.Continuation) {
         self.config = config
@@ -68,6 +80,66 @@ actor ReceiverService {
 
         let screenshotData = try await captureScreenshotData()
         return try saveJPEGData(screenshotData, prefix: "telepathy-test")
+    }
+
+    func makeScreenshotContextItem() async throws -> ContextSubmitItem {
+        guard isEnabled else {
+            throw ReceiverError("Capture is disabled by the kill switch")
+        }
+
+        let screenshotData = try await captureScreenshotData()
+        return .image(ContextImageItem(
+            mimeType: "image/jpeg",
+            data: screenshotData.base64EncodedString(),
+            bytes: screenshotData.count,
+            filename: "telepathy-screenshot.jpg"
+        ))
+    }
+
+    func submitContext(
+        mode: TelepathyContextMode,
+        items: [ContextSubmitItem],
+        metadata: ContextSubmitMetadata?
+    ) async throws {
+        guard isEnabled else {
+            throw ReceiverError("Capture is disabled by the kill switch")
+        }
+
+        guard let socket = currentSocket else {
+            throw ReceiverError("Panda Telepathy is not connected")
+        }
+
+        let requestId = UUID().uuidString
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let timeoutTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                await self?.failPendingContextAck(
+                    requestId: requestId,
+                    error: ReceiverError("Panda Telepathy did not acknowledge the pushed context in time")
+                )
+            }
+            pendingContextAcks[requestId] = PendingContextAck(
+                continuation: continuation,
+                timeoutTask: timeoutTask
+            )
+
+            Task { [weak self] in
+                guard let self else {
+                    return
+                }
+
+                do {
+                    try await self.send(ContextSubmit(
+                        requestId: requestId,
+                        mode: mode.rawValue,
+                        items: items,
+                        metadata: metadata
+                    ), over: socket)
+                } catch {
+                    await self.failPendingContextAck(requestId: requestId, error: error)
+                }
+            }
+        }
     }
 
     func shutdown() async {
@@ -114,6 +186,7 @@ actor ReceiverService {
         currentSocket = nil
         currentTunnel?.stop()
         currentTunnel = nil
+        failAllPendingContextAcks(error: ReceiverError("Panda Telepathy connection closed"))
         runTask = nil
     }
 
@@ -173,13 +246,25 @@ actor ReceiverService {
         let envelope = try decoder.decode(MessageEnvelope.self, from: data)
 
         switch envelope.type {
+        case "context.accepted":
+            let accepted = try decoder.decode(ContextAccepted.self, from: data)
+            resolvePendingContextAck(requestId: accepted.requestId)
         case "device.ready":
             let ready = try decoder.decode(DeviceReady.self, from: data)
             hasConnectedOnce = true
             await publish(.connected, connectedLabel(agentKey: ready.agentKey, deviceId: ready.deviceId))
         case "request.error":
             let error = try decoder.decode(RequestError.self, from: data)
-            throw ReceiverError("Hub rejected request: \(error.error)")
+            switch classifyRequestError(error) {
+            case .failPending(let requestId):
+                _ = failPendingContextAck(requestId: requestId, error: ReceiverError(error.error))
+                return
+            case .ignoreStale(let requestId):
+                fputs("[telepathy] ignoring stale request error for \(requestId): \(error.error)\n", stderr)
+                return
+            case .fatal:
+                throw ReceiverError("Hub rejected request: \(error.error)")
+            }
         case "screenshot.request":
             let request = try decoder.decode(ScreenshotRequest.self, from: data)
             do {
@@ -244,6 +329,7 @@ actor ReceiverService {
         currentTunnel?.stop()
         currentTunnel = nil
         hasConnectedOnce = false
+        failAllPendingContextAcks(error: ReceiverError("Panda Telepathy stopped"))
 
         if reportDisabled {
             await publish(.disabled, "Capture disabled by the kill switch")
@@ -364,6 +450,50 @@ actor ReceiverService {
         }
 
         return screenshotURL
+    }
+
+    private func resolvePendingContextAck(requestId: String) {
+        guard let pending = pendingContextAcks.removeValue(forKey: requestId) else {
+            return
+        }
+
+        pending.timeoutTask.cancel()
+        pending.continuation.resume()
+    }
+
+    @discardableResult
+    private func failPendingContextAck(requestId: String, error: Error) -> Bool {
+        guard let pending = pendingContextAcks.removeValue(forKey: requestId) else {
+            return false
+        }
+
+        pending.timeoutTask.cancel()
+        pending.continuation.resume(throwing: error)
+        return true
+    }
+
+    private func failAllPendingContextAcks(error: Error) {
+        let pending = pendingContextAcks
+        pendingContextAcks.removeAll()
+        for entry in pending.values {
+            entry.timeoutTask.cancel()
+            entry.continuation.resume(throwing: error)
+        }
+    }
+
+    private func classifyRequestError(_ error: RequestError) -> RequestErrorDisposition {
+        guard let requestId = error.requestId else {
+            return .fatal
+        }
+
+        if pendingContextAcks[requestId] != nil {
+            return .failPending(requestId: requestId)
+        }
+
+        // Push requests time out client-side. If the hub reports a late error
+        // after we already gave up on that request, treat it as stale noise
+        // instead of tearing down the whole socket.
+        return .ignoreStale(requestId: requestId)
     }
 
     private func publish(_ state: ReceiverConnectionState, _ detail: String) async {

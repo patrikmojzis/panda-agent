@@ -24,6 +24,7 @@ import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
 import {OutboundTool} from "../../panda/tools/outbound-tool.js";
 import {MessageAgentTool} from "../../panda/tools/message-agent-tool.js";
+import {TelepathyContextIngress} from "./telepathy-context-ingress.js";
 
 export interface DaemonContext {
   fallbackContext: {cwd: string};
@@ -237,6 +238,14 @@ export async function bootstrapDaemonContext(
         });
       },
     });
+    const telepathyContextIngress = new TelepathyContextIngress({
+      coordinator: runtime.coordinator,
+      fallbackContext,
+      pool: runtime.pool,
+      sessionStore: runtime.sessionStore,
+      store: runtime.store,
+    });
+    runtime.telepathyService?.setContextSubmitHandler((input) => telepathyContextIngress.ingest(input));
 
     return {
       fallbackContext,

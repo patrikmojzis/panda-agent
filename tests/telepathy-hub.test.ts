@@ -297,6 +297,87 @@ describe("telepathy hub", () => {
     });
   });
 
+  it("accepts pushed context items from an authenticated device", async () => {
+    const submitted: Array<Record<string, unknown>> = [];
+    const telepathyStore = createFakeTelepathyStore();
+    await telepathyStore.registerDevice({
+      agentKey: "panda",
+      deviceId: "voice-mac",
+      tokenHash: hashTelepathyToken("secret-123"),
+      label: "Voice Mac",
+    });
+    const hub = new TelepathyHub({
+      host: "127.0.0.1",
+      port: 0,
+      path: "/telepathy",
+      store: telepathyStore,
+      onContextSubmit: async (input) => {
+        submitted.push(input as unknown as Record<string, unknown>);
+      },
+    });
+    hubs.push(hub);
+    await hub.start();
+
+    const socket = new WebSocket(`ws://127.0.0.1:${hub.boundPort}/telepathy`);
+    sockets.push(socket);
+    await waitForOpen(socket);
+    socket.send(JSON.stringify({
+      type: "device.hello",
+      agentKey: "panda",
+      deviceId: "voice-mac",
+      token: "secret-123",
+      label: "Voice Mac",
+    }));
+
+    await expect(waitForMessage(socket)).resolves.toMatchObject({
+      type: "device.ready",
+      agentKey: "panda",
+      deviceId: "voice-mac",
+    });
+
+    socket.send(JSON.stringify({
+      type: "context.submit",
+      requestId: "ctx-1",
+      mode: "push_to_talk",
+      metadata: {
+        submittedAt: Date.now(),
+        frontmostApp: "Telegram",
+        trigger: "voice_with_screenshot_hotkey",
+      },
+      items: [
+        {
+          type: "audio",
+          mimeType: "audio/m4a",
+          data: Buffer.from("audio-bytes").toString("base64"),
+          bytes: 11,
+        },
+        {
+          type: "image",
+          mimeType: "image/jpeg",
+          data: Buffer.from("image-bytes").toString("base64"),
+          bytes: 11,
+        },
+      ],
+    }));
+
+    await expect(waitForMessage(socket)).resolves.toMatchObject({
+      type: "context.accepted",
+      requestId: "ctx-1",
+    });
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]).toMatchObject({
+      agentKey: "panda",
+      deviceId: "voice-mac",
+      label: "Voice Mac",
+      requestId: "ctx-1",
+      mode: "push_to_talk",
+      metadata: {
+        frontmostApp: "Telegram",
+        trigger: "voice_with_screenshot_hotkey",
+      },
+    });
+  });
+
   it("persists screenshot artifacts into Panda media paths", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-telepathy-tool-"));
     tempDirs.push(tempDir);

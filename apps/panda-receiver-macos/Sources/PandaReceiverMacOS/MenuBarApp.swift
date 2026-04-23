@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import CoreGraphics
 import Foundation
 
@@ -14,17 +15,23 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     private let statusMenuItem = NSMenuItem(title: "Status: Starting", action: nil, keyEquivalent: "")
     private let deviceMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let permissionMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let microphoneMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let pushStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let shortcutMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let launchAtLoginStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private lazy var enableCaptureItem = NSMenuItem(title: "Capture Enabled", action: #selector(toggleCaptureEnabled), keyEquivalent: "")
     private lazy var launchAtLoginToggleItem = NSMenuItem(title: "Open At Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "l")
     private lazy var requestAccessItem = NSMenuItem(title: "Request Screen Recording Access", action: #selector(requestScreenRecordingAccess), keyEquivalent: "")
+    private lazy var requestMicrophoneAccessItem = NSMenuItem(title: "Request Microphone Access", action: #selector(requestMicrophoneAccess), keyEquivalent: "")
     private lazy var testScreenshotItem = NSMenuItem(title: "Take Test Screenshot", action: #selector(takeTestScreenshot), keyEquivalent: "t")
     private lazy var settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
     private lazy var revealConfigItem = NSMenuItem(title: "Reveal Saved Config", action: #selector(revealSavedConfig), keyEquivalent: "")
     private lazy var quitItem = NSMenuItem(title: "Quit \(AppIdentity.appDisplayName)", action: #selector(quit), keyEquivalent: "q")
     private var latestStatus = ReceiverStatus(state: .starting, detail: "Starting receiver")
+    private var latestPushStatus = PushToTalkStatus(detail: "Starting push-to-talk", isRecording: false, isSending: false)
     private var statusTask: Task<Void, Never>?
     private var settingsWindowController: SettingsWindowController?
+    private var pushToTalkController: PushToTalkController?
 
     init(config: Config?) {
         self.currentConfig = config
@@ -39,6 +46,41 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         buildMenu()
+        do {
+            pushToTalkController = try PushToTalkController(
+                receiverProvider: { [weak self] in self?.receiver },
+                onStatusChanged: { [weak self] status in
+                    guard let self else {
+                        return
+                    }
+
+                    self.latestPushStatus = status
+                    self.apply(status: self.latestStatus)
+                },
+                onError: { [weak self] error in
+                    guard let self else {
+                        return
+                    }
+
+                    let normalizedError = normalizeReceiverError(error)
+                    if normalizedError.message == ReceiverError.microphoneDenied.message {
+                        self.presentMicrophoneDeniedAlert(message: normalizedError.message)
+                    } else if normalizedError.message == ReceiverError.screenRecordingDenied.message {
+                        self.presentScreenRecordingDeniedAlert(message: normalizedError.message)
+                    } else {
+                        self.presentAlert(
+                            title: "Push-to-Talk Failed",
+                            message: normalizedError.message
+                        )
+                    }
+                }
+            )
+        } catch {
+            presentAlert(
+                title: "Push-to-Talk Failed",
+                message: String(describing: error)
+            )
+        }
         statusTask = Task {
             for await status in statusStream {
                 latestStatus = status
@@ -60,6 +102,7 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         statusTask?.cancel()
         statusContinuation.finish()
+        pushToTalkController?.cancel()
         Task {
             await receiver?.shutdown()
         }
@@ -70,11 +113,15 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         statusMenuItem.isEnabled = false
         deviceMenuItem.isEnabled = false
         permissionMenuItem.isEnabled = false
+        microphoneMenuItem.isEnabled = false
+        pushStatusItem.isEnabled = false
+        shortcutMenuItem.isEnabled = false
         launchAtLoginStatusItem.isEnabled = false
 
         enableCaptureItem.target = self
         launchAtLoginToggleItem.target = self
         requestAccessItem.target = self
+        requestMicrophoneAccessItem.target = self
         testScreenshotItem.target = self
         settingsItem.target = self
         revealConfigItem.target = self
@@ -84,11 +131,15 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         menu.addItem(statusMenuItem)
         menu.addItem(deviceMenuItem)
         menu.addItem(permissionMenuItem)
+        menu.addItem(microphoneMenuItem)
+        menu.addItem(pushStatusItem)
+        menu.addItem(shortcutMenuItem)
         menu.addItem(launchAtLoginStatusItem)
         menu.addItem(.separator())
         menu.addItem(enableCaptureItem)
         menu.addItem(launchAtLoginToggleItem)
         menu.addItem(requestAccessItem)
+        menu.addItem(requestMicrophoneAccessItem)
         menu.addItem(testScreenshotItem)
         menu.addItem(settingsItem)
         menu.addItem(revealConfigItem)
@@ -112,6 +163,9 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
             deviceMenuItem.title = "Device: Not configured"
         }
         permissionMenuItem.title = screenRecordingLabel()
+        microphoneMenuItem.title = microphoneLabel()
+        pushStatusItem.title = "Push-to-Talk: \(latestPushStatus.detail)"
+        shortcutMenuItem.title = "Shortcuts: \(pushToTalkController?.shortcutsDescription() ?? "Unavailable")"
         enableCaptureItem.state = status.state == .disabled ? .off : .on
         enableCaptureItem.isEnabled = currentConfig != nil
         testScreenshotItem.isEnabled = currentConfig != nil && status.state != .disabled
@@ -126,29 +180,35 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         }
 
         let symbolName: String
-        switch status.state {
-        case .starting:
-            symbolName = "sparkle"
-        case .connecting:
-            symbolName = "arrow.triangle.2.circlepath"
-        case .waitingForPanda:
-            symbolName = "hourglass.circle"
-        case .reconnecting:
-            symbolName = "arrow.clockwise.circle"
-        case .connected:
-            symbolName = "dot.radiowaves.left.and.right"
-        case .screenRecordingDenied:
-            symbolName = "eye.slash"
-        case .disabled:
-            symbolName = "pause.circle"
-        case .error:
-            symbolName = "exclamationmark.triangle"
+        if latestPushStatus.isRecording {
+            symbolName = "mic.fill"
+        } else if latestPushStatus.isSending {
+            symbolName = "waveform.circle"
+        } else {
+            switch status.state {
+            case .starting:
+                symbolName = "sparkle"
+            case .connecting:
+                symbolName = "arrow.triangle.2.circlepath"
+            case .waitingForPanda:
+                symbolName = "hourglass.circle"
+            case .reconnecting:
+                symbolName = "arrow.clockwise.circle"
+            case .connected:
+                symbolName = "dot.radiowaves.left.and.right"
+            case .screenRecordingDenied:
+                symbolName = "eye.slash"
+            case .disabled:
+                symbolName = "pause.circle"
+            case .error:
+                symbolName = "exclamationmark.triangle"
+            }
         }
 
         let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: AppIdentity.appDisplayName)
         image?.isTemplate = true
         button.image = image
-        button.toolTip = "\(AppIdentity.appDisplayName)\n\(status.detail)"
+        button.toolTip = "\(AppIdentity.appDisplayName)\n\(status.detail)\n\(latestPushStatus.detail)"
     }
 
     private func menuLabel(for status: ReceiverStatus) -> String {
@@ -187,6 +247,19 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         }
 
         return "Screen Recording: Missing"
+    }
+
+    private func microphoneLabel() -> String {
+        switch MicrophoneAccess.status() {
+        case .authorized:
+            return "Microphone: Granted"
+        case .denied, .restricted:
+            return "Microphone: Denied"
+        case .notDetermined:
+            return "Microphone: Missing"
+        @unknown default:
+            return "Microphone: Unknown"
+        }
     }
 
     private func refreshLaunchAtLoginState() {
@@ -244,6 +317,18 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
 
         if !granted, let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(settingsURL)
+        }
+    }
+
+    @objc
+    private func requestMicrophoneAccess() {
+        Task { @MainActor in
+            let granted = await MicrophoneAccess.requestIfNeeded()
+            self.microphoneMenuItem.title = self.microphoneLabel()
+            if !granted,
+               let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+                NSWorkspace.shared.open(settingsURL)
+            }
         }
     }
 
@@ -366,6 +451,21 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         let response = alert.runModal()
         if response == .alertFirstButtonReturn,
            let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(settingsURL)
+        }
+    }
+
+    private func presentMicrophoneDeniedAlert(message: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Microphone Needed"
+        alert.informativeText = message
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Cancel")
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn,
+           let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
             NSWorkspace.shared.open(settingsURL)
         }
     }

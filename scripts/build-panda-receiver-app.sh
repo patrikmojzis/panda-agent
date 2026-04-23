@@ -87,6 +87,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
   <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Panda Telepathy records short push-to-talk voice notes that you explicitly trigger with a keyboard shortcut.</string>
 </dict>
 </plist>
 EOF

@@ -29,18 +29,64 @@ const telepathyScreenshotResultErrorSchema = z.object({
   error: trimmedString,
 });
 
+const telepathyContextTextItemSchema = z.object({
+  type: z.literal("text"),
+  text: trimmedString,
+});
+
+const telepathyContextAudioItemSchema = z.object({
+  type: z.literal("audio"),
+  mimeType: trimmedString,
+  data: trimmedString,
+  bytes: z.number().int().positive().optional(),
+  filename: trimmedString.optional(),
+});
+
+const telepathyContextImageItemSchema = z.object({
+  type: z.literal("image"),
+  mimeType: trimmedString,
+  data: trimmedString,
+  bytes: z.number().int().positive().optional(),
+  filename: trimmedString.optional(),
+});
+
+const telepathyContextItemSchema = z.discriminatedUnion("type", [
+  telepathyContextTextItemSchema,
+  telepathyContextAudioItemSchema,
+  telepathyContextImageItemSchema,
+]);
+
+const telepathyContextSubmitSchema = z.object({
+  type: z.literal("context.submit"),
+  requestId: trimmedString,
+  mode: trimmedString,
+  items: z.array(telepathyContextItemSchema).min(1),
+  metadata: z.object({
+    submittedAt: z.number().int().positive().optional(),
+    frontmostApp: trimmedString.optional(),
+    windowTitle: trimmedString.optional(),
+    trigger: trimmedString.optional(),
+  }).optional(),
+});
+
 const telepathyReceiverMessageSchema = z.discriminatedUnion("type", [
   telepathyDeviceHelloSchema,
   z.discriminatedUnion("ok", [
     telepathyScreenshotResultSuccessSchema,
     telepathyScreenshotResultErrorSchema,
   ]),
+  telepathyContextSubmitSchema,
 ]);
 
 export const telepathyDeviceReadySchema = z.object({
   type: z.literal("device.ready"),
   agentKey: trimmedString,
   deviceId: trimmedString,
+});
+
+export const telepathyContextAcceptedSchema = z.object({
+  type: z.literal("context.accepted"),
+  requestId: trimmedString,
 });
 
 export const telepathyRequestErrorSchema = z.object({
@@ -56,13 +102,23 @@ export const telepathyScreenshotRequestSchema = z.object({
 
 export type TelepathyDeviceHello = z.output<typeof telepathyDeviceHelloSchema>;
 export type TelepathyDeviceReady = z.output<typeof telepathyDeviceReadySchema>;
+export type TelepathyContextAccepted = z.output<typeof telepathyContextAcceptedSchema>;
+export type TelepathyContextTextItem = z.output<typeof telepathyContextTextItemSchema>;
+export type TelepathyContextAudioItem = z.output<typeof telepathyContextAudioItemSchema>;
+export type TelepathyContextImageItem = z.output<typeof telepathyContextImageItemSchema>;
+export type TelepathyContextItem = z.output<typeof telepathyContextItemSchema>;
+export type TelepathyContextSubmit = z.output<typeof telepathyContextSubmitSchema>;
 export type TelepathyRequestError = z.output<typeof telepathyRequestErrorSchema>;
 export type TelepathyScreenshotRequest = z.output<typeof telepathyScreenshotRequestSchema>;
 export type TelepathyScreenshotResultSuccess = z.output<typeof telepathyScreenshotResultSuccessSchema>;
 export type TelepathyScreenshotResultError = z.output<typeof telepathyScreenshotResultErrorSchema>;
 export type TelepathyScreenshotResult = TelepathyScreenshotResultSuccess | TelepathyScreenshotResultError;
 export type TelepathyReceiverMessage = z.output<typeof telepathyReceiverMessageSchema>;
-export type TelepathyServerMessage = TelepathyDeviceReady | TelepathyRequestError | TelepathyScreenshotRequest;
+export type TelepathyServerMessage =
+  | TelepathyContextAccepted
+  | TelepathyDeviceReady
+  | TelepathyRequestError
+  | TelepathyScreenshotRequest;
 
 function formatZodIssues(error: ZodError): string {
   const messages = error.issues
@@ -92,6 +148,10 @@ export function parseTelepathyScreenshotRequest(value: unknown): TelepathyScreen
   return parseSchema(telepathyScreenshotRequestSchema, value, "Invalid telepathy screenshot request");
 }
 
+export function parseTelepathyContextAccepted(value: unknown): TelepathyContextAccepted {
+  return parseSchema(telepathyContextAcceptedSchema, value, "Invalid telepathy context accepted message");
+}
+
 export function parseTelepathyRequestError(value: unknown): TelepathyRequestError {
   return parseSchema(telepathyRequestErrorSchema, value, "Invalid telepathy error message");
 }
@@ -102,6 +162,8 @@ export function parseTelepathyServerMessage(value: unknown): TelepathyServerMess
   }
 
   switch (value.type) {
+    case "context.accepted":
+      return parseTelepathyContextAccepted(value);
     case "device.ready":
       return parseSchema(telepathyDeviceReadySchema, value, "Invalid telepathy ready message");
     case "request.error":
