@@ -16,6 +16,8 @@ const generatedWikiComposePath = path.join(
   repoRoot,
   ".generated/docker-compose.wiki.ssl.yml",
 );
+const appsEdgeComposePath = path.join(repoRoot, "examples/docker-compose.apps-edge.yml");
+const appsCaddyfilePath = path.join(repoRoot, "examples/Caddyfile.apps");
 
 interface ScriptResult {
   exitCode: number;
@@ -269,6 +271,42 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     });
     expect(logsResult.exitCode).toBe(0);
     expect(await readFile(logPath, "utf8")).toContain("logs -f wiki");
+  });
+
+  it("auto-includes the apps edge compose when PANDA_APPS_BASE_URL is set", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_APPS_BASE_URL=https://panda.patrikmojzis.com",
+      "PANDA_APPS_PUBLIC_HOST=panda.patrikmojzis.com",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const homeDir = await makeTempDir("panda-home-");
+    const upResult = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+
+    expect(upResult.exitCode).toBe(0);
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents).toContain("docker-compose.apps-edge.yml");
+    const appsCompose = await readFile(appsEdgeComposePath, "utf8");
+    expect(appsCompose).not.toContain("env_file:");
+    const caddyfile = await readFile(appsCaddyfilePath, "utf8");
+    expect(caddyfile).toContain("header_up X-Forwarded-For {remote_host}");
+
+    const logsResult = await runScript(["logs", "apps"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+    expect(logsResult.exitCode).toBe(0);
+    expect(await readFile(logPath, "utf8")).toContain("logs -f caddy");
   });
 
   it("bootstraps wiki for all declared agents when admin credentials are set", async () => {

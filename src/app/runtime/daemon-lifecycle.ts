@@ -5,6 +5,7 @@ import {
   DEFAULT_APPS_PORT,
   type AgentAppServer,
   resolveOptionalAgentAppServerBinding,
+  resolveAgentAppAuthMode,
   startAgentAppServer,
 } from "../../integrations/apps/http-server.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
@@ -233,6 +234,8 @@ export function createDaemonLifecycle(input: {
           return startAgentAppServer({
             ...binding,
             service: input.context.runtime.apps,
+            auth: input.context.runtime.appAuth,
+            authMode: resolveAgentAppAuthMode(process.env),
             identityStore: input.context.runtime.identityStore,
             sessionStore: input.context.runtime.sessionStore,
             coordinator: input.context.runtime.coordinator,

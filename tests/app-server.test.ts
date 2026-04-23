@@ -6,6 +6,7 @@ import {
   resolveOptionalAgentAppServerBinding,
   startAgentAppServer,
 } from "../src/integrations/apps/http-server.js";
+import {buildAgentAppCookieNames, type AgentAppSessionRecord} from "../src/domain/apps/auth.js";
 import {AgentAppService} from "../src/integrations/apps/sqlite-service.js";
 import {createAgentAppFixture, type AgentAppFixture} from "./helpers/app-fixture.js";
 
@@ -37,9 +38,9 @@ describe("agent app server", () => {
       env: {},
       binding,
     })).toEqual({
-      appPath: "/apps/panda/period-tracker/",
-      appUrl: "http://127.0.0.1:8092/apps/panda/period-tracker/",
-      localAppUrl: "http://127.0.0.1:8092/apps/panda/period-tracker/",
+      appPath: "/panda/apps/period-tracker/",
+      appUrl: "http://127.0.0.1:8092/panda/apps/period-tracker/",
+      localAppUrl: "http://127.0.0.1:8092/panda/apps/period-tracker/",
     });
 
     expect(resolveAgentAppUrls({
@@ -51,10 +52,10 @@ describe("agent app server", () => {
         PANDA_APPS_INTERNAL_BASE_URL: "http://panda-core:8092",
       },
     })).toEqual({
-      appPath: "/apps/panda/period-tracker/",
-      appUrl: "http://panda-core:8092/apps/panda/period-tracker/",
-      localAppUrl: "http://127.0.0.1:8092/apps/panda/period-tracker/",
-      internalAppUrl: "http://panda-core:8092/apps/panda/period-tracker/",
+      appPath: "/panda/apps/period-tracker/",
+      appUrl: "http://panda-core:8092/panda/apps/period-tracker/",
+      localAppUrl: "http://127.0.0.1:8092/panda/apps/period-tracker/",
+      internalAppUrl: "http://panda-core:8092/panda/apps/period-tracker/",
     });
   });
 
@@ -115,7 +116,7 @@ describe("agent app server", () => {
 
     const baseUrl = `http://${server.host}:${server.port}`;
 
-    const html = await fetch(`${baseUrl}/apps/${fixture.agentKey}/${fixture.appSlug}/`);
+    const html = await fetch(`${baseUrl}/${fixture.agentKey}/apps/${fixture.appSlug}/`);
     expect(html.status).toBe(200);
     expect(await html.text()).toContain("Counter");
 
@@ -192,6 +193,41 @@ describe("agent app server", () => {
     });
   });
 
+  it("rejects oversized app API JSON bodies before parsing them", async () => {
+    const fixture = await createAgentAppFixture();
+    fixtures.push(fixture);
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+    const server = await startAgentAppServer({
+      host: "127.0.0.1",
+      port: 0,
+      service,
+    });
+    servers.push(server);
+
+    const baseUrl = `http://${server.host}:${server.port}`;
+    const action = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/actions/increment`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        input: {
+          amount: 1,
+          blob: "x".repeat(300_000),
+        },
+      }),
+    });
+
+    expect(action.status).toBe(413);
+    await expect(action.json()).resolves.toMatchObject({
+      ok: false,
+      error: "App request body is too large.",
+    });
+  });
+
   it("rejects explicit sessions that belong to a different agent", async () => {
     const fixture = await createAgentAppFixture();
     fixtures.push(fixture);
@@ -255,5 +291,189 @@ describe("agent app server", () => {
 
     expect(getSession).toHaveBeenCalledTimes(2);
     expect(getMainSession).not.toHaveBeenCalled();
+  });
+
+  it("can require one-time app links, app cookies, and csrf for public mode", async () => {
+    const fixture = await createAgentAppFixture();
+    fixtures.push(fixture);
+    const otherFixture = await createAgentAppFixture({
+      dataDir: fixture.dataDir,
+      appSlug: "journal",
+      name: "Journal",
+    });
+    fixtures.push(otherFixture);
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+    const session: AgentAppSessionRecord = {
+      id: "app-session-1",
+      agentKey: fixture.agentKey,
+      appSlug: fixture.appSlug,
+      identityId: "identity-patrik",
+      sessionId: "session-main",
+      csrfTokenHash: "fake-hash",
+      expiresAt: Date.now() + 60_000,
+      createdAt: Date.now(),
+      lastSeenAt: Date.now(),
+    };
+    const otherSession: AgentAppSessionRecord = {
+      ...session,
+      id: "app-session-2",
+      appSlug: otherFixture.appSlug,
+      csrfTokenHash: "fake-hash-2",
+    };
+    const auth = {
+      createLaunchToken: vi.fn(),
+      redeemLaunchToken: vi.fn(async () => ({
+        session,
+        sessionToken: "session-token",
+        csrfToken: "csrf-token",
+      })),
+      getSessionByToken: vi.fn(async (token: string) => {
+        if (token === "session-token") {
+          return session;
+        }
+        if (token === "other-session-token") {
+          return otherSession;
+        }
+        return null;
+      }),
+      verifyCsrfToken: vi.fn((record: AgentAppSessionRecord, token: string) => {
+        return record.id === otherSession.id ? token === "other-csrf-token" : token === "csrf-token";
+      }),
+    };
+    const server = await startAgentAppServer({
+      host: "127.0.0.1",
+      port: 0,
+      service,
+      auth,
+      authMode: "required",
+      cookieSecure: false,
+      sessionStore: {
+        getMainSession: async () => ({
+          id: "session-main",
+          agentKey: fixture.agentKey,
+          kind: "main",
+          currentThreadId: "thread-main",
+          createdAt: 1,
+          updatedAt: 1,
+        }),
+        getSession: async (sessionId: string) => ({
+          id: sessionId,
+          agentKey: fixture.agentKey,
+          kind: "main",
+          currentThreadId: "thread-main",
+          createdAt: 1,
+          updatedAt: 1,
+        }),
+      },
+    });
+    servers.push(server);
+
+    const baseUrl = `http://${server.host}:${server.port}`;
+    const appPath = `/${fixture.agentKey}/apps/${fixture.appSlug}/`;
+    const cookieNames = buildAgentAppCookieNames(fixture.agentKey, fixture.appSlug);
+    const otherCookieNames = buildAgentAppCookieNames(otherFixture.agentKey, otherFixture.appSlug);
+
+    const denied = await fetch(`${baseUrl}${appPath}`);
+    expect(denied.status).toBe(401);
+
+    const preview = await fetch(`${baseUrl}/apps/open?token=launch-token`, {
+      redirect: "manual",
+    });
+    expect(preview.status).toBe(200);
+    expect(await preview.text()).toContain("Open Panda app");
+    expect(auth.redeemLaunchToken).not.toHaveBeenCalled();
+
+    const opened = await fetch(`${baseUrl}/apps/open?token=launch-token`, {
+      method: "POST",
+      redirect: "manual",
+    });
+    expect(opened.status).toBe(302);
+    expect(opened.headers.get("location")).toBe(appPath);
+    expect(opened.headers.get("set-cookie")).toContain(cookieNames.session);
+    expect(opened.headers.get("set-cookie")).toContain(cookieNames.csrf);
+    expect(opened.headers.get("set-cookie")).toContain(`Path=/${fixture.agentKey}/apps/${fixture.appSlug}`);
+    expect(auth.redeemLaunchToken).toHaveBeenCalledTimes(1);
+
+    const cookie = `${cookieNames.session}=session-token; ${cookieNames.csrf}=csrf-token`;
+    const html = await fetch(`${baseUrl}${appPath}`, {
+      headers: {cookie},
+    });
+    expect(html.status).toBe(200);
+
+    const missingBootstrapCsrf = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/bootstrap`, {
+      headers: {cookie},
+    });
+    expect(missingBootstrapCsrf.status).toBe(403);
+
+    const bootstrap = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/bootstrap`, {
+      headers: {
+        "x-panda-app-csrf": "csrf-token",
+        cookie,
+      },
+    });
+    expect(bootstrap.status).toBe(200);
+    await expect(bootstrap.json()).resolves.toMatchObject({
+      ok: true,
+      context: {
+        authenticated: true,
+        identityId: "identity-patrik",
+        sessionId: "session-main",
+      },
+    });
+
+    const missingCsrf = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/actions/increment`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie,
+      },
+      body: JSON.stringify({
+        input: {amount: 1},
+      }),
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const crossAppCookie = `${cookie}; ${otherCookieNames.session}=other-session-token`;
+    const crossAppView = await fetch(`${baseUrl}/api/apps/${otherFixture.agentKey}/${otherFixture.appSlug}/views/summary`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-panda-app-csrf": "csrf-token",
+        cookie: crossAppCookie,
+      },
+      body: JSON.stringify({}),
+    });
+    expect(crossAppView.status).toBe(403);
+
+    const otherView = await fetch(`${baseUrl}/api/apps/${otherFixture.agentKey}/${otherFixture.appSlug}/views/summary`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-panda-app-csrf": "other-csrf-token",
+        cookie: `${otherCookieNames.session}=other-session-token; ${otherCookieNames.csrf}=other-csrf-token`,
+      },
+      body: JSON.stringify({}),
+    });
+    expect(otherView.status).toBe(200);
+
+    const action = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/actions/increment`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-panda-app-csrf": "csrf-token",
+        cookie,
+      },
+      body: JSON.stringify({
+        input: {amount: 2},
+      }),
+    });
+    expect(action.status).toBe(200);
+    await expect(action.json()).resolves.toMatchObject({
+      ok: true,
+      changes: 1,
+    });
   });
 });

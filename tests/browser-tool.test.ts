@@ -484,12 +484,12 @@ describe("BrowserTool", () => {
     services.push(service);
 
     const result = await service.handle(
-      {action: "navigate", url: "http://panda-core:8092/apps/panda/period-tracker/"},
+      {action: "navigate", url: "http://panda-core:8092/panda/apps/period-tracker/"},
       createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
     );
 
     expect(launchBrowserImpl).toHaveBeenCalledTimes(1);
-    expect(page.url()).toBe("http://panda-core:8092/apps/panda/period-tracker/");
+    expect(page.url()).toBe("http://panda-core:8092/panda/apps/period-tracker/");
     expect(result.details).toMatchObject({
       action: "navigate",
     });

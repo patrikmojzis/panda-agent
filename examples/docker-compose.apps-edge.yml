@@ -1,0 +1,25 @@
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      PANDA_APPS_PUBLIC_HOST: ${PANDA_APPS_PUBLIC_HOST:-panda.patrikmojzis.com}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.apps:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      panda-core:
+        condition: service_healthy
+    networks:
+      - runner_net
+
+networks:
+  runner_net:
+
+volumes:
+  caddy_data:
+  caddy_config:
