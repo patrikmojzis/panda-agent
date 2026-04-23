@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@mariozechner/pi-ai':
-        specifier: ^0.69.0
-        version: 0.69.0(ws@8.20.0)(zod@4.3.6)
+        specifier: ^0.70.0
+        version: 0.70.0(ws@8.20.0)(zod@4.3.6)
       '@mozilla/readability':
         specifier: ^0.6.0
         version: 0.6.0
@@ -594,8 +594,8 @@ packages:
   '@keyv/serialize@1.1.1':
     resolution: {integrity: sha512-dXn3FZhPv0US+7dtJsIi2R+c7qWYiReoEh5zUntWCf4oSpMNib8FDhSoed6m3QyZdx5hK7iLFkYk3rNxwt8vTA==}
 
-  '@mariozechner/pi-ai@0.69.0':
-    resolution: {integrity: sha512-bl838sr57zx/apkiTeNPFQgbBkGXN4HHhm2oghzSRohJIBrR+H001bTeco7Osuke+EZTxO3V5Aev2qlZdUa2xw==}
+  '@mariozechner/pi-ai@0.70.0':
+    resolution: {integrity: sha512-lVT9bb0eFkNr5YXvZ5r00TNA5r110fOO8uJV9VLCQ5GdtunWIjcptWitzIjjl2MF0/NDs7Kb2EwZctXQWWP7eA==}
     engines: {node: '>=20.0.0'}
     hasBin: true
 
@@ -2773,7 +2773,7 @@ snapshots:
 
   '@keyv/serialize@1.1.1': {}
 
-  '@mariozechner/pi-ai@0.69.0(ws@8.20.0)(zod@4.3.6)':
+  '@mariozechner/pi-ai@0.70.0(ws@8.20.0)(zod@4.3.6)':
     dependencies:
       '@anthropic-ai/sdk': 0.90.0(zod@4.3.6)
       '@aws-sdk/client-bedrock-runtime': 3.1033.0
