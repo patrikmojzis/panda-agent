@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import {access, mkdtemp, readFile, rm} from "node:fs/promises";
+import {access, mkdir, mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
 import {DatabaseSync} from "node:sqlite";
 
 import {afterEach, describe, expect, it} from "vitest";
@@ -210,5 +210,95 @@ describe("agent app service", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("surfaces structured diagnostics for broken app definitions without hiding valid apps", async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "panda-app-diagnostics-"));
+    tempDirs.push(dataDir);
+
+    const fixture = await createAgentAppFixture({
+      dataDir,
+      agentKey: "panda",
+      appSlug: "counter",
+    });
+    fixtures.push(fixture);
+
+    const brokenDir = path.join(dataDir, "agents", "panda", "apps", "broken-tracker");
+    await mkdir(path.join(brokenDir, "data"), {recursive: true});
+    await writeFile(path.join(brokenDir, "manifest.json"), JSON.stringify({
+      name: "Broken Tracker",
+    }, null, 2));
+    await writeFile(path.join(brokenDir, "views.json"), "{}\n");
+    await writeFile(path.join(brokenDir, "actions.json"), JSON.stringify({
+      log_entry: {
+        mode: "native",
+        sql: "select 1",
+        inputSchema: {
+          type: "object",
+          properties: {
+            notes: {
+              type: ["string", "null"],
+            },
+          },
+        },
+      },
+    }, null, 2));
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: dataDir},
+    });
+
+    const apps = await service.listApps("panda");
+    expect(apps.map((app) => app.slug)).toEqual(["counter"]);
+
+    const inspection = await service.inspectApps("panda");
+    expect(inspection.apps.map((app) => app.slug)).toEqual(["counter"]);
+    expect(inspection.brokenApps).toHaveLength(1);
+    expect(inspection.brokenApps[0]).toMatchObject({
+      appSlug: "broken-tracker",
+      ok: false,
+    });
+    expect(inspection.brokenApps[0]?.errors).toContainEqual(expect.objectContaining({
+      path: "log_entry.inputSchema.properties.notes",
+      message: expect.stringContaining("Union types like [\"string\", \"null\"] are not supported"),
+    }));
+    expect(inspection.brokenApps[0]?.errors.some((issue) => issue.message === "Invalid input")).toBe(false);
+  });
+
+  it("checks prepared SQL for loaded apps", async () => {
+    const fixture = await createAgentAppFixture({
+      views: {
+        summary: {
+          sql: "select count(*) as count from missing_table",
+        },
+      },
+      actions: {
+        increment: {
+          mode: "native",
+          sql: "update missing_table set value = 1",
+        },
+      },
+    });
+    fixtures.push(fixture);
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+
+    const checks = await service.checkApps(fixture.agentKey, {
+      appSlug: fixture.appSlug,
+    });
+    expect(checks).toHaveLength(1);
+    expect(checks[0]?.ok).toBe(false);
+    expect(checks[0]?.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        file: fixture.appDir + "/views.json",
+        path: "summary.sql",
+      }),
+      expect.objectContaining({
+        file: fixture.appDir + "/actions.json",
+        path: "increment.sql",
+      }),
+    ]));
   });
 });

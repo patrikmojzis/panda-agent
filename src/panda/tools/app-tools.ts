@@ -120,7 +120,8 @@ export class AppListTool<TContext = DefaultAgentSessionContext>
   ) {
     try {
       const scope = readAppScope(run.context);
-      const apps = await this.service.listApps(scope.agentKey);
+      const inspection = await this.service.inspectApps(scope.agentKey);
+      const apps = inspection.apps;
       return buildJsonToolPayload({
         apps: apps.map((app) => ({
           slug: app.slug,
@@ -149,6 +150,50 @@ export class AppListTool<TContext = DefaultAgentSessionContext>
             ...(definition.inputSchema ? {inputSchema: definition.inputSchema} : {}),
           })),
         })),
+        brokenApps: inspection.brokenApps.map((app) => ({
+          slug: app.appSlug,
+          appDir: app.appDir,
+          errors: app.errors,
+          warnings: app.warnings,
+        })),
+      } as unknown as JsonObject);
+    } catch (error) {
+      rethrowAsToolError(error);
+    }
+  }
+}
+
+export class AppCheckTool<TContext = DefaultAgentSessionContext>
+  extends Tool<typeof AppCheckTool.schema, TContext> {
+  static schema = z.object({
+    appSlug: z.string().trim().min(1).optional(),
+  });
+
+  name = "app_check";
+  description =
+    "Check whether one micro-app, or all micro-apps for the current agent, can be loaded cleanly by Panda. Returns exact file/path/message diagnostics and lightweight SQL prepare checks. Use this when app_list or the UI feels confused.";
+  schema = AppCheckTool.schema;
+
+  constructor(private readonly service: AgentAppService) {
+    super();
+  }
+
+  override formatCall(args: Record<string, unknown>): string {
+    return typeof args.appSlug === "string" ? args.appSlug : super.formatCall(args);
+  }
+
+  async handle(
+    args: z.output<typeof AppCheckTool.schema>,
+    run: RunContext<TContext>,
+  ) {
+    try {
+      const scope = readAppScope(run.context);
+      const apps = await this.service.checkApps(scope.agentKey, {
+        appSlug: args.appSlug,
+      });
+      return buildJsonToolPayload({
+        ok: apps.every((app) => app.ok),
+        apps,
       } as unknown as JsonObject);
     } catch (error) {
       rethrowAsToolError(error);

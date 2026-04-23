@@ -18,8 +18,9 @@ Do not invent a template system in your head. We do not have one yet.
 2. Read the generated `README.md` inside that app folder.
 3. Edit `schema.sql`, `views.json`, `actions.json`, and `public/`.
 4. Use `app_list` to confirm Panda sees the app.
-5. Use `app_view` and `app_action` to test the contract.
-6. If the app has a UI, use the URL from `app_create` or `app_list` and open it in a browser.
+5. If Panda seems confused, use `app_check` for exact file/path/message diagnostics.
+6. Use `app_view` and `app_action` to test the contract.
+7. If the app has a UI, use the URL from `app_create` or `app_list` and open it in a browser.
 
 ## Folder Shape
 
@@ -67,6 +68,19 @@ If not, Panda creates an empty database and a placeholder `schema.sql`.
 Prefer `inputSchema`.
 It keeps the tool calls and browser payloads from going off the rails.
 
+This is a small JSON-schema-ish subset, not full JSON Schema.
+Supported field types are only:
+
+- `string`
+- `integer`
+- `number`
+- `boolean`
+- `array`
+
+Arrays can only contain scalar item types.
+Do not use unions like `["string", "null"]`.
+If a field is optional, omit it from the payload instead of sending `null`.
+
 Use:
 
 - `native` for pure SQLite work
@@ -112,6 +126,27 @@ Current surface:
 - `window.panda.getContext()`
 - `window.panda.setContext({ identityId, identityHandle, sessionId })`
 
+Important:
+
+- `window.panda` is the SDK client
+- `await window.panda.bootstrap()` returns bootstrap data, not a second SDK object
+- `await window.panda.view(...)` returns `{ ok, appSlug, viewName, items, page? }`
+- `await window.panda.action(...)` returns `{ ok, appSlug, actionName, changes, ... }`
+
+Minimal working pattern:
+
+```js
+const bootstrap = await window.panda.bootstrap();
+const {context} = bootstrap;
+const summary = await window.panda.view("summary");
+console.log(summary.items);
+
+await window.panda.action("log_entry", {
+  flow: "medium",
+  notes: "rough afternoon",
+});
+```
+
 Do not make the app mutate data on page load. That is cursed.
 Writes should happen on explicit click or submit.
 
@@ -121,8 +156,9 @@ Basic contract test:
 
 1. `app_create`
 2. `app_list`
-3. `app_view`
-4. `app_action`
+3. `app_check`
+4. `app_view`
+5. `app_action`
 
 UI test:
 
@@ -143,6 +179,7 @@ http://127.0.0.1:8092/apps/<agentKey>/<appSlug>/?identityHandle=smoke
 ```
 
 If `app_list` returns `internalAppUrl`, prefer that for browser-runner or browser subagent testing inside Docker.
+If `app_list` returns `brokenApps`, Panda could not load those apps cleanly yet.
 
 ## Current Limits
 

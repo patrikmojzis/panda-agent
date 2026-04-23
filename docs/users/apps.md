@@ -151,6 +151,14 @@ Current MVP supports a small JSON-schema-ish subset:
 
 This is enough for forms, agent guidance, and catching dumb payloads without turning Panda into AJV fan fiction.
 
+It is not full JSON Schema.
+Not supported:
+
+- union field types like `["string", "null"]`
+- nested object fields inside `inputSchema.properties`
+
+If a field is optional, leave it out of the payload instead of sending `null`.
+
 ### Wake Templates
 
 `wakeMessage` is template-aware.
@@ -201,6 +209,26 @@ Current SDK surface:
 - `window.panda.getContext()`
 - `window.panda.setContext({ identityId, identityHandle, sessionId })`
 
+Important:
+
+- `window.panda` is the client
+- `bootstrap()` returns bootstrap data, not a second SDK object
+- `view()` returns `{ ok, appSlug, viewName, items, page? }`
+- `action()` returns `{ ok, appSlug, actionName, changes, ... }`
+
+Minimal example:
+
+```js
+const bootstrap = await window.panda.bootstrap();
+const summary = await window.panda.view("summary");
+console.log(bootstrap.context, summary.items);
+
+await window.panda.action("log_entry", {
+  flow: "medium",
+  notes: "rough afternoon"
+});
+```
+
 For browser URLs, prefer `identityHandle` in query params for human-facing links, for example:
 
 ```text
@@ -231,11 +259,13 @@ Panda can inspect and use installed apps through:
 
 - `app_create`
 - `app_list`
+- `app_check`
 - `app_view`
 - `app_action`
 
 Use `app_create` to scaffold a blank app.
 Use `app_list` first when you need to inspect an existing one.
+Use `app_check` when Panda says an app is invalid or the UI/tool contract feels weird.
 It returns action descriptions, `inputSchema`, and effective `requiredInputKeys`, which matters because otherwise the model will absolutely manage to do something dumb.
 
 ## Example Apps
