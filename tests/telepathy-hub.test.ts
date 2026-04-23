@@ -378,6 +378,62 @@ describe("telepathy hub", () => {
     });
   });
 
+  it("rejects unsupported pushed context media types", async () => {
+    const telepathyStore = createFakeTelepathyStore();
+    await telepathyStore.registerDevice({
+      agentKey: "panda",
+      deviceId: "voice-mac",
+      tokenHash: hashTelepathyToken("secret-123"),
+      label: "Voice Mac",
+    });
+    const hub = new TelepathyHub({
+      host: "127.0.0.1",
+      port: 0,
+      path: "/telepathy",
+      store: telepathyStore,
+      onContextSubmit: async () => {
+        throw new Error("should not ingest invalid context");
+      },
+    });
+    hubs.push(hub);
+    await hub.start();
+
+    const socket = new WebSocket(`ws://127.0.0.1:${hub.boundPort}/telepathy`);
+    sockets.push(socket);
+    await waitForOpen(socket);
+    socket.send(JSON.stringify({
+      type: "device.hello",
+      agentKey: "panda",
+      deviceId: "voice-mac",
+      token: "secret-123",
+      label: "Voice Mac",
+    }));
+
+    await expect(waitForMessage(socket)).resolves.toMatchObject({
+      type: "device.ready",
+      agentKey: "panda",
+      deviceId: "voice-mac",
+    });
+
+    socket.send(JSON.stringify({
+      type: "context.submit",
+      requestId: "ctx-invalid",
+      mode: "push_to_talk",
+      items: [
+        {
+          type: "audio",
+          mimeType: "application/octet-stream",
+          data: Buffer.from("audio-bytes").toString("base64"),
+        },
+      ],
+    }));
+
+    await expect(waitForMessage(socket)).resolves.toMatchObject({
+      type: "request.error",
+      error: expect.stringContaining("Invalid telepathy receiver message"),
+    });
+  });
+
   it("persists screenshot artifacts into Panda media paths", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-telepathy-tool-"));
     tempDirs.push(tempDir);

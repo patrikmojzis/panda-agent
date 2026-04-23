@@ -4,7 +4,13 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import {isRecord} from "../../lib/records.js";
 
 const trimmedString = z.string().trim().min(1);
-
+const maxRequestIdLength = 120;
+const maxModeLength = 64;
+const maxTextItemLength = 16_000;
+const maxMetadataStringLength = 256;
+const maxFilenameLength = 180;
+const maxContextItems = 4;
+const maxBase64PayloadLength = 32 * 1024 * 1024;
 const telepathyDeviceHelloSchema = z.object({
   type: z.literal("device.hello"),
   agentKey: trimmedString,
@@ -15,7 +21,7 @@ const telepathyDeviceHelloSchema = z.object({
 
 const telepathyScreenshotResultSuccessSchema = z.object({
   type: z.literal("screenshot.result"),
-  requestId: trimmedString,
+  requestId: trimmedString.max(maxRequestIdLength),
   ok: z.literal(true),
   mimeType: trimmedString,
   data: trimmedString,
@@ -24,30 +30,42 @@ const telepathyScreenshotResultSuccessSchema = z.object({
 
 const telepathyScreenshotResultErrorSchema = z.object({
   type: z.literal("screenshot.result"),
-  requestId: trimmedString,
+  requestId: trimmedString.max(maxRequestIdLength),
   ok: z.literal(false),
   error: trimmedString,
 });
 
 const telepathyContextTextItemSchema = z.object({
   type: z.literal("text"),
-  text: trimmedString,
+  text: trimmedString.max(maxTextItemLength),
 });
 
 const telepathyContextAudioItemSchema = z.object({
   type: z.literal("audio"),
-  mimeType: trimmedString,
-  data: trimmedString,
+  mimeType: trimmedString.transform((value) => value.toLowerCase()).pipe(z.enum([
+    "audio/m4a",
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/ogg",
+    "audio/opus",
+    "audio/wav",
+    "audio/webm",
+  ])),
+  data: trimmedString.max(maxBase64PayloadLength),
   bytes: z.number().int().positive().optional(),
-  filename: trimmedString.optional(),
+  filename: trimmedString.max(maxFilenameLength).optional(),
 });
 
 const telepathyContextImageItemSchema = z.object({
   type: z.literal("image"),
-  mimeType: trimmedString,
-  data: trimmedString,
+  mimeType: trimmedString.transform((value) => value.toLowerCase()).pipe(z.enum([
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+  ])),
+  data: trimmedString.max(maxBase64PayloadLength),
   bytes: z.number().int().positive().optional(),
-  filename: trimmedString.optional(),
+  filename: trimmedString.max(maxFilenameLength).optional(),
 });
 
 const telepathyContextItemSchema = z.discriminatedUnion("type", [
@@ -58,14 +76,14 @@ const telepathyContextItemSchema = z.discriminatedUnion("type", [
 
 const telepathyContextSubmitSchema = z.object({
   type: z.literal("context.submit"),
-  requestId: trimmedString,
-  mode: trimmedString,
-  items: z.array(telepathyContextItemSchema).min(1),
+  requestId: trimmedString.max(maxRequestIdLength),
+  mode: trimmedString.max(maxModeLength),
+  items: z.array(telepathyContextItemSchema).min(1).max(maxContextItems),
   metadata: z.object({
     submittedAt: z.number().int().positive().optional(),
-    frontmostApp: trimmedString.optional(),
-    windowTitle: trimmedString.optional(),
-    trigger: trimmedString.optional(),
+    frontmostApp: trimmedString.max(maxMetadataStringLength).optional(),
+    windowTitle: trimmedString.max(maxMetadataStringLength).optional(),
+    trigger: trimmedString.max(maxMetadataStringLength).optional(),
   }).optional(),
 });
 

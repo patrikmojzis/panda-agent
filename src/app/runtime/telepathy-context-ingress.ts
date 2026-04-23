@@ -29,6 +29,7 @@ const EXTENSIONS_BY_MIME_TYPE = new Map<string, string>([
   ["image/png", ".png"],
   ["image/webp", ".webp"],
 ]);
+const MAX_CONTEXT_MEDIA_BYTES = 24 * 1024 * 1024;
 
 export interface TelepathyContextIngressOptions {
   coordinator: Pick<ThreadRuntimeCoordinator, "submitInput">;
@@ -53,6 +54,19 @@ function buildHintFilename(
   }
 
   return `${requestId}-${item.type}-${index + 1}${inferExtension(item.mimeType)}`;
+}
+
+function decodeContextMedia(item: TelepathyContextAudioItem | TelepathyContextImageItem): Buffer {
+  const bytes = Buffer.from(item.data, "base64");
+  if (item.bytes !== undefined && item.bytes !== bytes.length) {
+    throw new Error(`Telepathy ${item.type} item declared ${item.bytes} bytes but decoded to ${bytes.length} bytes.`);
+  }
+
+  if (bytes.length > MAX_CONTEXT_MEDIA_BYTES) {
+    throw new Error(`Telepathy ${item.type} item is too large (${bytes.length} bytes).`);
+  }
+
+  return bytes;
 }
 
 function buildInitialThreadInput(options: {
@@ -157,8 +171,9 @@ async function persistContextItems(options: {
       continue;
     }
 
+    const bytes = decodeContextMedia(item);
     const descriptor = await mediaStore.writeMedia({
-      bytes: Buffer.from(item.data, "base64"),
+      bytes,
       source: TELEPATHY_SOURCE,
       connectorKey: options.deviceId,
       mimeType: item.mimeType,

@@ -7,6 +7,7 @@ import {WebSocketServer, type WebSocket} from "ws";
 import type {TelepathyDeviceStore} from "../../domain/telepathy/index.js";
 import {telepathyTokenMatches} from "../../domain/telepathy/index.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
+import {isRecord} from "../../lib/records.js";
 import {trimToNull} from "../../lib/strings.js";
 import type {
   TelepathyContextItem,
@@ -150,12 +151,30 @@ function sendJson(socket: WebSocket, payload: TelepathyServerMessage): Promise<v
   });
 }
 
+function compactCloseReason(reason: string): string {
+  const maxBytes = 120;
+  const bytes = Buffer.from(reason, "utf8");
+  if (bytes.length <= maxBytes) {
+    return reason;
+  }
+
+  return `${bytes.subarray(0, maxBytes - 1).toString("utf8").replace(/\uFFFD+$/u, "")}…`;
+}
+
 async function closeSocket(socket: WebSocket, code: number, reason: string): Promise<void> {
   if (socket.readyState === socket.CLOSING || socket.readyState === socket.CLOSED) {
     return;
   }
 
-  socket.close(code, reason);
+  socket.close(code, compactCloseReason(reason));
+}
+
+function readOptionalRequestId(value: unknown): string | undefined {
+  if (!isRecord(value) || typeof value.requestId !== "string") {
+    return undefined;
+  }
+
+  return trimToNull(value.requestId) ?? undefined;
 }
 
 export function resolveTelepathyEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -429,14 +448,23 @@ export class TelepathyHub {
 
     socket.on("message", async (rawMessage: WebSocket.RawData) => {
       let message: TelepathyReceiverMessage;
+      let parsedMessage: unknown;
       try {
-        message = parseTelepathyReceiverMessage(safeJsonParse(rawMessage));
+        parsedMessage = safeJsonParse(rawMessage);
+        message = parseTelepathyReceiverMessage(parsedMessage);
       } catch (error) {
-        await closeSocket(
-          socket,
-          RECEIVER_CLOSE_CODE_POLICY_VIOLATION,
-          error instanceof Error ? error.message : "Invalid telepathy message",
-        );
+        const errorMessage = error instanceof Error ? error.message : "Invalid telepathy message";
+        if (currentKey) {
+          const requestId = readOptionalRequestId(parsedMessage);
+          await sendJson(socket, {
+            type: "request.error",
+            ...(requestId ? {requestId} : {}),
+            error: errorMessage,
+          });
+          return;
+        }
+
+        await closeSocket(socket, RECEIVER_CLOSE_CODE_POLICY_VIOLATION, "Invalid telepathy message");
         return;
       }
 
