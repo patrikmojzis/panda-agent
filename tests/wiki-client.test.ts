@@ -91,6 +91,31 @@ describe("WikiJsClient", () => {
     })).rejects.toEqual(new ToolError("Page empty content"));
   });
 
+  it("wraps Wiki.js transport failures as tool errors", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    const client = new WikiJsClient({
+      apiToken: "wiki-token",
+      fetchImpl,
+    });
+
+    await expect(client.listPages()).rejects.toEqual(
+      new ToolError("Wiki.js request failed before receiving a response: fetch failed"),
+    );
+    await expect(client.uploadAsset({
+      folderId: 12,
+      filename: "profile-photo.png",
+      bytes: Buffer.from("fake-image", "utf8"),
+      mimeType: "image/png",
+    })).rejects.toEqual(
+      new ToolError("Wiki.js asset upload failed before receiving a response: fetch failed"),
+    );
+    await expect(client.downloadAsset("agents/panda/_assets/profile/profile-photo.png")).rejects.toEqual(
+      new ToolError("Wiki.js asset download failed before receiving a response: fetch failed"),
+    );
+  });
+
   it("moves a page and reloads it from the destination path", async () => {
     const fetchImpl = vi
       .fn()

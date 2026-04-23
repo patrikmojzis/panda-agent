@@ -1,4 +1,5 @@
 import {ToolError} from "../../kernel/agent/exceptions.js";
+import {stringifyUnknown} from "../../kernel/agent/helpers/stringify.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import {hasUnsafeWikiPathSegments, trimWikiPath,} from "./paths.js";
@@ -155,6 +156,23 @@ function buildUploadUrl(baseUrl: string): string {
 
 function buildAssetUrl(baseUrl: string, assetPath: string): string {
   return buildWikiUrl(baseUrl, normalizeWikiPath(assetPath));
+}
+
+function formatTransportError(error: unknown): string {
+  return stringifyUnknown(error, {preferErrorMessage: true});
+}
+
+async function fetchWiki(
+  fetchImpl: typeof fetch,
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+  label: string,
+): Promise<Response> {
+  try {
+    return await fetchImpl(input, init);
+  } catch (error) {
+    throw new ToolError(`${label} failed before receiving a response: ${formatTransportError(error)}`);
+  }
 }
 
 function pickMessage(value: unknown): string | undefined {
@@ -383,7 +401,7 @@ export class WikiJsClient {
     query: string,
     variables: Record<string, unknown>,
   ): Promise<TData> {
-    const response = await this.fetchImpl(buildGraphQlUrl(this.baseUrl), {
+    const response = await fetchWiki(this.fetchImpl, buildGraphQlUrl(this.baseUrl), {
       method: "POST",
       headers: this.buildAuthHeaders({
         "content-type": "application/json",
@@ -392,7 +410,7 @@ export class WikiJsClient {
         query,
         variables,
       }),
-    });
+    }, "Wiki.js request");
 
     let payload: GraphQlEnvelope<TData> | null = null;
     try {
@@ -710,11 +728,11 @@ export class WikiJsClient {
       filename,
     );
 
-    const response = await this.fetchImpl(buildUploadUrl(this.baseUrl), {
+    const response = await fetchWiki(this.fetchImpl, buildUploadUrl(this.baseUrl), {
       method: "POST",
       headers: this.buildAuthHeaders(),
       body: form,
-    });
+    }, "Wiki.js asset upload");
 
     if (response.ok) {
       return;
@@ -737,10 +755,10 @@ export class WikiJsClient {
   }
 
   async downloadAsset(assetPath: string): Promise<WikiAssetDownloadResult> {
-    const response = await this.fetchImpl(buildAssetUrl(this.baseUrl, assetPath), {
+    const response = await fetchWiki(this.fetchImpl, buildAssetUrl(this.baseUrl, assetPath), {
       method: "GET",
       headers: this.buildAuthHeaders(),
-    });
+    }, "Wiki.js asset download");
 
     if (!response.ok) {
       let message: string | undefined;
