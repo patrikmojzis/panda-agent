@@ -551,6 +551,17 @@ describe("agent app server", () => {
     expect(await preview.text()).toContain("Open Panda app");
     expect(auth.redeemLaunchToken).not.toHaveBeenCalled();
 
+    auth.redeemLaunchToken.mockRejectedValueOnce(new Error("App launch link is invalid, expired, or already used."));
+    const invalidOpen = await fetch(`${baseUrl}/apps/open?token=bad-launch-token`, {
+      method: "POST",
+      redirect: "manual",
+    });
+    expect(invalidOpen.status).toBe(401);
+    await expect(invalidOpen.json()).resolves.toMatchObject({
+      ok: false,
+      error: "App launch link is invalid, expired, or already used.",
+    });
+
     const opened = await fetch(`${baseUrl}/apps/open?token=launch-token`, {
       method: "POST",
       redirect: "manual",
@@ -560,7 +571,7 @@ describe("agent app server", () => {
     expect(opened.headers.get("set-cookie")).toContain(cookieNames.session);
     expect(opened.headers.get("set-cookie")).toContain(cookieNames.csrf);
     expect(opened.headers.get("set-cookie")).toContain(`Path=/${fixture.agentKey}/apps/${fixture.appSlug}`);
-    expect(auth.redeemLaunchToken).toHaveBeenCalledTimes(1);
+    expect(auth.redeemLaunchToken).toHaveBeenCalledTimes(2);
 
     const cookie = `${cookieNames.session}=session-token; ${cookieNames.csrf}=csrf-token`;
     const html = await fetch(`${baseUrl}${appPath}`, {
