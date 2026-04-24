@@ -105,10 +105,17 @@ private struct RecordedPushToTalkAudio {
 
 private let minimumPushToTalkDurationMs = 750
 
+/// AVAudioRecorder.currentTime can be unreliable after stop/route changes, so
+/// push-to-talk length uses the app's own wall-clock interval.
+func pushToTalkDurationMs(startedAt: Date, endedAt: Date = Date()) -> Int {
+    max(1, Int(endedAt.timeIntervalSince(startedAt) * 1_000))
+}
+
 @MainActor
 private final class PushToTalkRecorder {
     private var recorder: AVAudioRecorder?
     private var recordingURL: URL?
+    private var recordingStartedAt: Date?
 
     func start() async throws {
         let granted = await MicrophoneAccess.requestIfNeeded()
@@ -132,19 +139,22 @@ private final class PushToTalkRecorder {
         }
 
         self.recordingURL = fileURL
+        self.recordingStartedAt = Date()
         self.recorder = recorder
     }
 
     func finish() throws -> RecordedPushToTalkAudio {
-        guard let recorder, let recordingURL else {
+        guard let recorder, let recordingURL, let recordingStartedAt else {
             throw ReceiverError("No active push-to-talk recording")
         }
 
+        let recordingEndedAt = Date()
         recorder.stop()
         self.recorder = nil
         self.recordingURL = nil
+        self.recordingStartedAt = nil
 
-        let durationMs = max(1, Int(recorder.currentTime * 1_000))
+        let durationMs = pushToTalkDurationMs(startedAt: recordingStartedAt, endedAt: recordingEndedAt)
         let data = try Data(contentsOf: recordingURL)
         try? FileManager.default.removeItem(at: recordingURL)
         return RecordedPushToTalkAudio(data: data, durationMs: durationMs)
@@ -158,6 +168,7 @@ private final class PushToTalkRecorder {
 
         recorder = nil
         recordingURL = nil
+        recordingStartedAt = nil
     }
 }
 
@@ -300,6 +311,7 @@ final class PushToTalkController {
 
         guard recordedAudio.durationMs >= minimumPushToTalkDurationMs else {
             phase = .idle
+            logPushToTalkTooShort(recordedAudio)
             onStatusChanged(idleStatus(detail: "Voice clip too short, not sent"))
             return
         }
@@ -364,5 +376,12 @@ final class PushToTalkController {
             isRecording: false,
             isSending: false
         )
+    }
+}
+
+private func logPushToTalkTooShort(_ audio: RecordedPushToTalkAudio) {
+    let line = "[telepathy] voice clip too short: durationMs=\(audio.durationMs) bytes=\(audio.data.count)\n"
+    if let data = line.data(using: .utf8) {
+        FileHandle.standardError.write(data)
     }
 }
