@@ -307,6 +307,8 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     expect(appsCompose).toContain("NET_BIND_SERVICE");
     const caddyfile = await readFile(appsCaddyfilePath, "utf8");
     expect(caddyfile).not.toContain("panda.patrikmojzis.com");
+    expect(caddyfile).toContain("@unsafeDotSegments vars_regexp {http.request.orig_uri.path}");
+    expect(caddyfile).toContain("respond \"Bad request\" 400");
     expect(caddyfile).toContain("header_up X-Forwarded-For {remote_host}");
 
     const logsResult = await runScript(["logs", "apps"], {

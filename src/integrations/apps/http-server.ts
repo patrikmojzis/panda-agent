@@ -12,10 +12,10 @@ import {trimToNull} from "../../lib/strings.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
 import {readAgentAppRequiredInputKeys} from "../../domain/apps/types.js";
 import {
-  buildAgentAppCookieNames,
-  DEFAULT_APP_SESSION_TTL_MS,
   type AgentAppAuthService,
   type AgentAppSessionRecord,
+  buildAgentAppCookieNames,
+  DEFAULT_APP_SESSION_TTL_MS,
 } from "../../domain/apps/auth.js";
 import {AgentAppService} from "./sqlite-service.js";
 
@@ -62,6 +62,43 @@ function splitPathname(pathname: string): string[] {
     return pathname.split("/").filter(Boolean).map((segment) => decodeURIComponent(segment));
   } catch {
     throw new AgentAppRequestError(400, "Malformed request path.");
+  }
+}
+
+function readRawRequestPathname(requestTarget: string): string {
+  const withoutFragment = requestTarget.split("#", 1)[0] ?? "";
+  if (withoutFragment.startsWith("/")) {
+    return withoutFragment.split("?", 1)[0] || "/";
+  }
+
+  const absoluteForm = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*(\/[^?#]*)?/.exec(withoutFragment);
+  if (absoluteForm) {
+    return absoluteForm[1] || "/";
+  }
+
+  return withoutFragment.split("?", 1)[0] || "/";
+}
+
+function assertNoRawPathDotSegments(requestTarget: string): void {
+  for (const segment of readRawRequestPathname(requestTarget).split("/")) {
+    if (!segment) {
+      continue;
+    }
+
+    let decodedSegment: string;
+    try {
+      decodedSegment = decodeURIComponent(segment);
+    } catch {
+      throw new AgentAppRequestError(400, "Malformed request path.");
+    }
+
+    if (decodedSegment.includes("/") || decodedSegment.includes("\\")) {
+      throw new AgentAppRequestError(400, "Encoded path separators are not allowed.");
+    }
+
+    if (decodedSegment === "." || decodedSegment === "..") {
+      throw new AgentAppRequestError(400, "Path dot segments are not allowed.");
+    }
   }
 }
 
@@ -804,7 +841,9 @@ export async function startAgentAppServer(options: AgentAppServerOptions): Promi
       if (!rateLimitAllows(readClientKey(request))) {
         throw new AgentAppRequestError(429, "Too many app requests. Try again in a minute.");
       }
-      const requestUrl = new URL(request.url ?? "/", "http://apps.local");
+      const requestTarget = request.url ?? "/";
+      assertNoRawPathDotSegments(requestTarget);
+      const requestUrl = new URL(requestTarget, "http://apps.local");
       const parts = splitPathname(requestUrl.pathname);
 
       if (request.method === "GET" && requestUrl.pathname === "/health") {

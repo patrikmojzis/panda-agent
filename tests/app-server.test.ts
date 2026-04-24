@@ -1,5 +1,6 @@
 import path from "node:path";
 import {link, mkdir, rm, symlink, writeFile} from "node:fs/promises";
+import {request as httpRequest} from "node:http";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
@@ -9,9 +10,38 @@ import {
   resolveOptionalAgentAppServerBinding,
   startAgentAppServer,
 } from "../src/integrations/apps/http-server.js";
-import {buildAgentAppCookieNames, type AgentAppSessionRecord} from "../src/domain/apps/auth.js";
+import {type AgentAppSessionRecord, buildAgentAppCookieNames} from "../src/domain/apps/auth.js";
 import {AgentAppService} from "../src/integrations/apps/sqlite-service.js";
-import {createAgentAppFixture, type AgentAppFixture} from "./helpers/app-fixture.js";
+import {type AgentAppFixture, createAgentAppFixture} from "./helpers/app-fixture.js";
+
+async function requestRawPath(baseUrl: string, requestPath: string): Promise<{
+  body: string;
+  status: number;
+}> {
+  const url = new URL(baseUrl);
+  return await new Promise((resolve, reject) => {
+    const request = httpRequest({
+      hostname: url.hostname,
+      method: "GET",
+      path: requestPath,
+      port: url.port,
+      protocol: url.protocol,
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      response.on("end", () => {
+        resolve({
+          body: Buffer.concat(chunks).toString("utf8"),
+          status: response.statusCode ?? 0,
+        });
+      });
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
 
 describe("agent app server", () => {
   const fixtures: AgentAppFixture[] = [];
@@ -280,6 +310,52 @@ describe("agent app server", () => {
       ok: false,
       error: "App request body is too large.",
     });
+  });
+
+  it("rejects literal and encoded dot segments before route normalization", async () => {
+    const fixture = await createAgentAppFixture();
+    fixtures.push(fixture);
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+    const server = await startAgentAppServer({
+      host: "127.0.0.1",
+      port: 0,
+      service,
+    });
+    servers.push(server);
+
+    const baseUrl = `http://${server.host}:${server.port}`;
+    await expect(requestRawPath(baseUrl, "/health")).resolves.toMatchObject({
+      status: 200,
+      body: "{\"ok\":true}",
+    });
+
+    for (const requestPath of [
+      `/${fixture.agentKey}/apps/${fixture.appSlug}/../../health`,
+      `/${fixture.agentKey}/apps/${fixture.appSlug}/%2e%2e/%2e%2e/health`,
+      `/${fixture.agentKey}/apps/${fixture.appSlug}/%2E/%2E%2E/health`,
+    ]) {
+      const response = await requestRawPath(baseUrl, requestPath);
+      expect(response.status).toBe(400);
+      expect(JSON.parse(response.body)).toMatchObject({
+        ok: false,
+        error: "Path dot segments are not allowed.",
+      });
+    }
+
+    for (const requestPath of [
+      `/${fixture.agentKey}/apps/${fixture.appSlug}/%2e%2e%2f%2e%2e%2fhealth`,
+      `/${fixture.agentKey}/apps/${fixture.appSlug}/%2e%2e%5c%2e%2e%5chealth`,
+    ]) {
+      const response = await requestRawPath(baseUrl, requestPath);
+      expect(response.status).toBe(400);
+      expect(JSON.parse(response.body)).toMatchObject({
+        ok: false,
+        error: "Encoded path separators are not allowed.",
+      });
+    }
   });
 
   it("does not serve static assets through symlinks that escape public", async () => {
