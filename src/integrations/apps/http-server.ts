@@ -613,6 +613,10 @@ function readAgentAppRequestStatus(error: unknown): number {
   return error instanceof AgentAppRequestError ? error.statusCode : 500;
 }
 
+function isInvalidLaunchTokenError(error: unknown): boolean {
+  return error instanceof Error && error.message === "App launch link is invalid, expired, or already used.";
+}
+
 async function resolveAppHttpSession(input: {
   auth?: AgentAppAuthService;
   authMode: AgentAppAuthMode;
@@ -837,7 +841,12 @@ export async function startAgentAppServer(options: AgentAppServerOptions): Promi
           throw new AgentAppRequestError(405, "Use GET or POST for app launch links.");
         }
 
-        const redeemed = await options.auth.redeemLaunchToken(token, {sessionTtlMs});
+        const redeemed = await options.auth.redeemLaunchToken(token, {sessionTtlMs}).catch((error: unknown) => {
+          if (isInvalidLaunchTokenError(error)) {
+            throw new AgentAppRequestError(401, "App launch link is invalid, expired, or already used.");
+          }
+          throw error;
+        });
         const app = await options.service.getApp(redeemed.session.agentKey, redeemed.session.appSlug);
         if (!app.hasUi) {
           throw new AgentAppRequestError(404, `App ${app.slug} does not expose a UI.`);
