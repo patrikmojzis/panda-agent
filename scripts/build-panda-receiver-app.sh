@@ -11,6 +11,27 @@ OUTPUT_DIR="${1:-$ROOT_DIR/dist/panda-telepathy-macos}"
 BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-release}"
 SOURCE_ICON="$ASSETS_DIR/panda-icon.png"
 
+build_swift_package() {
+  local build_log
+  build_log=$(mktemp)
+
+  if swift build --package-path "$PACKAGE_DIR" -c "$BUILD_CONFIGURATION" 2>&1 | tee "$build_log"; then
+    rm -f "$build_log"
+    return 0
+  fi
+
+  if rg -q "PCH was compiled with module cache path|missing required module 'SwiftShims'" "$build_log"; then
+    echo "[telepathy] Swift build cache is stale; cleaning package artifacts and retrying"
+    swift package --package-path "$PACKAGE_DIR" clean
+    rm -f "$build_log"
+    swift build --package-path "$PACKAGE_DIR" -c "$BUILD_CONFIGURATION"
+    return 0
+  fi
+
+  rm -f "$build_log"
+  return 1
+}
+
 if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
   DETECTED_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -n 1)
   if [[ -z "$DETECTED_IDENTITY" ]]; then
@@ -20,7 +41,7 @@ if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
 fi
 
 echo "[telepathy] building Swift package ($BUILD_CONFIGURATION)"
-swift build --package-path "$PACKAGE_DIR" -c "$BUILD_CONFIGURATION"
+build_swift_package
 
 EXECUTABLE_PATH=$(find "$PACKAGE_DIR/.build" -type f -name "panda-receiver-macos" -perm -111 | rg "/$BUILD_CONFIGURATION/" | head -n 1)
 if [[ -z "$EXECUTABLE_PATH" ]]; then
