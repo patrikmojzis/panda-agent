@@ -208,6 +208,7 @@ describe("ObserveApp", () => {
     expect(output.buffer).not.toContain("oldest");
     expect(output.buffer).toContain("middle");
     expect(output.buffer).toContain("latest");
+    expect(output.buffer).toContain("last 2 stored messages on initial snapshot");
   });
 
   it("prints only new transcript entries after the initial snapshot", async () => {

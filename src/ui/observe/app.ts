@@ -4,17 +4,22 @@ import {createPostgresPool, requireDatabaseUrl} from "../../app/runtime/create-r
 import {listenThreadRuntimeNotifications} from "../../app/runtime/store-notifications.js";
 import {PostgresSessionStore, type SessionStore} from "../../domain/sessions/index.js";
 import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
-import {PostgresThreadRuntimeStore, type ThreadMessageRecord, type ThreadRecord, type ThreadRunRecord,} from "../../domain/threads/runtime/index.js";
+import {
+    PostgresThreadRuntimeStore,
+    type ThreadMessageRecord,
+    type ThreadRecord,
+    type ThreadRunRecord,
+} from "../../domain/threads/runtime/index.js";
 import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {buildDefaultAgentTools} from "../../panda/definition.js";
 import {buildStoredTranscriptLines} from "../shared/transcript-lines.js";
 import {
-  appendStoredTranscriptMessages,
-  loadStoredThreadSnapshot,
-  observeLatestStoredRun,
-  resolveStoredThreadDisplayConfig,
-  resolveStoredThreadDisplayedCwd,
+    appendStoredTranscriptMessages,
+    loadStoredThreadSnapshot,
+    observeLatestStoredRun,
+    resolveStoredThreadDisplayConfig,
+    resolveStoredThreadDisplayedCwd,
 } from "../shared/stored-thread.js";
 import {formatThinkingLevel, type TranscriptLineCacheEntry,} from "../tui/chat-shared.js";
 import {stripAnsi, theme} from "../tui/theme.js";
@@ -435,11 +440,18 @@ export class ObserveApp {
       this.renderHeaderLine("thinking", formatThinkingLevel(displayConfig.thinking)),
       this.renderHeaderLine("cwd", resolveStoredThreadDisplayedCwd(thread, this.fallbackCwd)),
       this.renderHeaderLine("run", latestRun?.status ?? "idle"),
+      this.renderHeaderLine("tail", this.formatTailDescription()),
     ], {trailingBlank: true});
   }
 
   private renderHeaderLine(label: string, value: string): string {
     return `${theme.bold(theme.gold(label.padEnd(8)))} ${theme.slate(">")} ${theme.white(value)}`;
+  }
+
+  private formatTailDescription(): string {
+    const tailCount = Math.max(1, this.tail);
+    const noun = tailCount === 1 ? "message" : "messages";
+    return `last ${tailCount} stored ${noun} on initial snapshot`;
   }
 
   private renderStatusLine(message: string, tone: "info" | "error"): string {
