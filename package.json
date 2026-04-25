@@ -96,6 +96,14 @@
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.33.0",
+  "overrides": {
+    "protobufjs": "7.5.5"
+  },
+  "pnpm": {
+    "overrides": {
+      "protobufjs": "7.5.5"
+    }
+  },
   "dependencies": {
     "@mariozechner/pi-ai": "^0.70.2",
     "@mozilla/readability": "^0.6.0",
