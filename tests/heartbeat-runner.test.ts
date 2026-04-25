@@ -161,7 +161,7 @@ describe("HeartbeatRunner", () => {
     });
     expect(heartbeatInput?.message).toMatchObject({
       role: "user",
-      content: expect.stringContaining("This is a periodic runtime wake."),
+      content: expect.stringContaining("This is a periodic system heartbeat wake."),
     });
     expect(harness.runtime.complete).toHaveBeenCalledTimes(1);
 

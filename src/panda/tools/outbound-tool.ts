@@ -15,7 +15,6 @@ import type {
   OutboundTarget,
   RememberedRoute,
 } from "../../domain/channels/types.js";
-import {parseScheduledTaskThreadInputMetadata} from "../../domain/scheduling/tasks/index.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
 import {A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
@@ -237,11 +236,6 @@ export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<ty
     run: RunContext<TContext>,
   ): Promise<JsonObject> {
     const sessionContext = run.context as DefaultAgentSessionContext | undefined;
-    const scheduledTask = parseScheduledTaskThreadInputMetadata(sessionContext?.currentInput?.metadata)?.scheduledTask;
-    if (scheduledTask?.phase === "execute" && scheduledTask.deliveryMode === "deferred") {
-      throw new ToolError("Outbound is disabled during prepare-only scheduled task execution.");
-    }
-
     const queue = ensureOutboundQueue(sessionContext);
     const currentRoute = resolveChannelRouteTarget(sessionContext?.currentInput);
     const hasExplicitTarget = Boolean(args.target);

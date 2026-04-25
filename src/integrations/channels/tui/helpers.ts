@@ -48,7 +48,6 @@ export function buildTuiInboundPersistence(options: {
 export function buildTuiInboundText(options: {
   actorId: string;
   externalMessageId: string;
-  identityId?: string;
   identityHandle?: string;
   sentAt?: string;
   body: string;
@@ -59,7 +58,6 @@ export function buildTuiInboundText(options: {
     conversationId: TUI_CONVERSATION_ID,
     actorId: options.actorId,
     externalMessageId: options.externalMessageId,
-    identityId: options.identityId,
     identityHandle: options.identityHandle,
     sentAt: options.sentAt,
     body: options.body,

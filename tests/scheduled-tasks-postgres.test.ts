@@ -72,7 +72,6 @@ class PgMemReadonlySchemaQueryable {
             scheduled_task_runs.task_id,
             scheduled_task_runs.session_id,
             scheduled_task_runs.status,
-            scheduled_task_runs.delivery_status,
             scheduled_task_runs.created_at
           FROM "runtime"."scheduled_task_runs" AS scheduled_task_runs
           WHERE scheduled_task_runs.session_id = current_setting('runtime.session_id', true)
@@ -227,7 +226,6 @@ describe("PostgresScheduledTaskStore", () => {
       schedule: {
         kind: "once",
         runAt: "2026-04-11T03:00:00+02:00",
-        deliverAt: "2026-04-11T08:00:00+02:00",
       },
     });
 
@@ -238,9 +236,7 @@ describe("PostgresScheduledTaskStore", () => {
       schedule: {
         kind: "once",
         runAt: "2026-04-11T01:00:00.000Z",
-        deliverAt: "2026-04-11T06:00:00.000Z",
       },
-      nextFireKind: "execute",
     });
 
     const updated = await scheduledTasks.updateTask({
@@ -275,6 +271,25 @@ describe("PostgresScheduledTaskStore", () => {
 
     expect(cancelled.cancelledAt).toBeDefined();
     expect(cancelled.nextFireAt).toBeUndefined();
+  });
+
+  it("keeps scheduled-task delivery columns out of the schema", async () => {
+    const {pool} = createScopedPool();
+    pools.push(pool);
+
+    await createRuntimeStores(pool);
+    const scheduledTasks = new PostgresScheduledTaskStore({pool});
+    await scheduledTasks.ensureSchema();
+
+    const columns = await pool.query(`
+      SELECT table_name, column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'runtime'
+        AND table_name IN ('scheduled_tasks', 'scheduled_task_runs')
+        AND column_name IN ('deliver_at', 'next_fire_kind', 'fire_kind', 'delivery_status')
+      ORDER BY table_name, column_name
+    `);
+    expect(columns.rows).toEqual([]);
   });
 
   it("exposes scoped readonly scheduled-task views and resolves home targets dynamically", async () => {
@@ -361,7 +376,6 @@ describe("PostgresScheduledTaskStore", () => {
       runId: claim!.run.id,
       resolvedThreadId: "home-a",
       threadRunId: threadRun.id,
-      deliveryStatus: "sent",
     });
 
     setScope({
@@ -383,14 +397,13 @@ describe("PostgresScheduledTaskStore", () => {
     }]);
 
     const runsResult = await pool.query(`
-      SELECT task_id, status, delivery_status
+      SELECT task_id, status
       FROM "session"."scheduled_task_runs"
       ORDER BY created_at
     `);
     expect(runsResult.rows).toEqual([{
       task_id: aliceTask.id,
       status: "succeeded",
-      delivery_status: "sent",
     }]);
 
     await sessionStore.updateCurrentThread({

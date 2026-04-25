@@ -210,8 +210,6 @@ export async function bootstrapDaemonContext(
     const scheduledTaskRunner = new ScheduledTaskRunner({
       tasks: runtime.scheduledTasks,
       sessions: runtime.sessionStore,
-      sessionRoutes,
-      outboundDeliveries,
       threadStore: runtime.store,
       coordinator: runtime.coordinator,
     });

@@ -24,8 +24,6 @@ export interface ScheduledTaskStore {
   completeTaskRun(input: CompleteScheduledTaskRunInput): Promise<ScheduledTaskRunRecord>;
   failTaskRun(input: FailScheduledTaskRunInput): Promise<ScheduledTaskRunRecord>;
   clearTaskClaim(taskId: string): Promise<ScheduledTaskRecord>;
-  markTaskWaitingDelivery(taskId: string): Promise<ScheduledTaskRecord>;
   markTaskCompleted(taskId: string): Promise<ScheduledTaskRecord>;
   markTaskFailed(taskId: string): Promise<ScheduledTaskRecord>;
-  getLatestTaskRun(taskId: string, fireKind?: ScheduledTaskRunRecord["fireKind"]): Promise<ScheduledTaskRunRecord | null>;
 }

@@ -37,34 +37,29 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildDefaultAgentTools();
 
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("## Channels & Inner Monologue");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("No outbound call = no message delivered.");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Use `role=\"workspace\"` for read-only workspace inspection, file search, and local PDF/image/sketch inspection.");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Use `role=\"browser\"` for browser automation and website inspection.");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Use `role=\"skill_maintainer\"` after the user-facing answer is ready");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("For quick one-shot reads, you may use `postgres_readonly_query` directly.");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain('load it with `agent_skill(operation="load")` before improvising.');
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`reusable_artifact_produced`");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("<channels_vs_inner_monologue>");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("no outbound call = no message delivered.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`role=\"workspace\"` for read-only workspace inspection, file search");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`role=\"browser\"` for browser automation and website inspection");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`role=\"skill_maintainer\"` to distill reusable learning");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("you may use `postgres_readonly_query` directly.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain('Load it with `agent_skill(operation="load")`.');
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("a reusable artifact was produced");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
-      'Use `agent_skill(operation="set")` or `agent_skill(operation="delete")` only for direct skill edits you are intentionally making yourself',
+      'Use `agent_skill(operation="set")` for direct skill edits you are intentionally making yourself.',
     );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
-      "Foreground bash mutates the shared shell session. The working directory persists across foreground bash calls, and simple export/unset environment changes persist across foreground bash calls in both local and remote mode.",
+      "**Foreground bash** shares one persistent shell session.",
     );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
-      "Stored credentials and values saved with `set_env_value` are injected into `bash` as normal environment variables.",
+      "Values stored via `set_env_value` are injected into bash as normal env vars",
     );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
-      "Use normal shell expansion like `$API_KEY` or `$BASE_URL` inside bash commands. This is bash-only, not a guarantee that every tool can read those values.",
+      "use `$API_KEY`, `$BASE_URL`, etc.",
     );
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Background bash is isolated.");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Running background bash jobs may appear in context");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("the runtime may queue a machine-generated background event as external input on the next cycle");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Treat A2A as sharing, not as an internal loophole.");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
-      "If recalling memory makes it feel vivid, emotionally charged, or like it happened in this session, that changes nothing.",
-    );
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Memory is an extension of the self, not a clearance upgrade.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("**Background bash** is isolated.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("the runtime may inject a machine-generated event on the next cycle");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Ask first before sending private material anywhere new");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       'Do not leak sensitive details through "just a summary," paraphrase, excerpt, or forwarding the emotional gist.',
     );
@@ -144,6 +139,10 @@ describe("Panda feature surface", () => {
     expect(toolsets.skill_maintainer.map((tool) => tool.name)).toEqual([
       "current_datetime",
       "postgres_readonly_query",
+      "read_file",
+      "glob_files",
+      "grep_files",
+      "view_media",
     ]);
   });
 

@@ -124,7 +124,7 @@ describe("default agent subagent policy", () => {
     ]);
   });
 
-  it("gives the skill maintainer Postgres plus agent_skill only", () => {
+  it("gives the skill maintainer Postgres, skill editing, and readonly workspace inspection", () => {
     const toolsets = createToolsetsWithExtras({
       skillMaintainerExtras: [new FakeAgentSkillTool()],
     });
@@ -132,6 +132,10 @@ describe("default agent subagent policy", () => {
     expect(toolsets.skill_maintainer.map((tool) => tool.name)).toEqual([
       "current_datetime",
       "postgres_readonly_query",
+      "read_file",
+      "glob_files",
+      "grep_files",
+      "view_media",
       "agent_skill",
     ]);
   });

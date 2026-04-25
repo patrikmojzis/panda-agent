@@ -6,7 +6,6 @@ function buildTelegramHeaderLines(options: {
   conversationId: string;
   actorId: string;
   externalMessageId: string;
-  identityId?: string;
   identityHandle?: string;
   chatId: string;
   chatType: string;
@@ -26,7 +25,6 @@ conversation_id: ${options.conversationId}
 actor_id: ${options.actorId}
 external_message_id: ${options.externalMessageId}
 sent_at: ${formatMaybeValue(options.sentAt)}
-identity_id: ${formatMaybeValue(options.identityId)}
 identity_handle: ${formatMaybeValue(options.identityHandle)}
 chat_id: ${options.chatId}
 chat_type: ${options.chatType}
@@ -45,7 +43,6 @@ export function renderTelegramInboundText(options: {
   conversationId: string;
   actorId: string;
   externalMessageId: string;
-  identityId?: string;
   identityHandle?: string;
   chatId: string;
   chatType: string;
@@ -64,7 +61,6 @@ ${buildTelegramHeaderLines({
     conversationId: options.conversationId,
     actorId: options.actorId,
     externalMessageId: options.externalMessageId,
-    identityId: options.identityId,
     identityHandle: options.identityHandle,
     chatId: options.chatId,
     chatType: options.chatType,
@@ -86,7 +82,6 @@ export function renderTelegramReactionText(options: {
   conversationId: string;
   actorId: string;
   externalMessageId: string;
-  identityId?: string;
   identityHandle?: string;
   chatId: string;
   chatType: string;
@@ -102,7 +97,6 @@ ${buildTelegramHeaderLines({
     conversationId: options.conversationId,
     actorId: options.actorId,
     externalMessageId: options.externalMessageId,
-    identityId: options.identityId,
     identityHandle: options.identityHandle,
     chatId: options.chatId,
     chatType: options.chatType,

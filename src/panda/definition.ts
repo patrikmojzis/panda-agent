@@ -5,14 +5,11 @@ import {BraveSearchTool, hasBraveSearchApiKey} from "./tools/brave-search-tool.j
 import {BrowserTool, type BrowserToolOptions} from "./tools/browser-tool.js";
 import {MediaTool} from "./tools/media-tool.js";
 import {
-  PostgresReadonlyQueryTool,
-  type PostgresReadonlyQueryToolOptions,
+    PostgresReadonlyQueryTool,
+    type PostgresReadonlyQueryToolOptions,
 } from "./tools/postgres-readonly-query-tool.js";
 import {CurrentDateTimeTool} from "./tools/current-datetime-tool.js";
-import {
-  TelepathyScreenshotTool,
-  type TelepathyScreenshotToolOptions,
-} from "./tools/telepathy-screenshot-tool.js";
+import {TelepathyScreenshotTool, type TelepathyScreenshotToolOptions,} from "./tools/telepathy-screenshot-tool.js";
 import {WebFetchTool} from "./tools/web-fetch-tool.js";
 import {WebResearchTool} from "./tools/web-research-tool.js";
 import {hasOpenAiApiKey, WhisperTool} from "./tools/whisper-tool.js";
@@ -150,6 +147,10 @@ export function buildDefaultAgentToolsetsFromRegistry(
     skill_maintainer: compactTools([
       registry.currentDateTime,
       registry.postgresReadonlyQuery,
+      registry.readFile,
+      registry.globFiles,
+      registry.grepFiles,
+      registry.media,
       ...skillMaintainerExtras,
     ]),
   };

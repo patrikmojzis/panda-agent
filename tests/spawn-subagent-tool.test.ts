@@ -2,18 +2,18 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 
 import {
-  Agent,
-  type DefaultAgentSessionContext,
-  type LlmRuntime,
-  type LlmRuntimeRequest,
-  type ResolvedThreadDefinition,
-  RunContext,
-  SpawnSubagentTool,
-  stringToUserMessage,
-  type ThreadRecord,
-  Tool,
-  ToolError,
-  z,
+    Agent,
+    type DefaultAgentSessionContext,
+    type LlmRuntime,
+    type LlmRuntimeRequest,
+    type ResolvedThreadDefinition,
+    RunContext,
+    SpawnSubagentTool,
+    stringToUserMessage,
+    type ThreadRecord,
+    Tool,
+    ToolError,
+    z,
 } from "../src/index.js";
 import {DefaultAgentSubagentService} from "../src/panda/subagents/service.js";
 
@@ -255,6 +255,10 @@ function createSubagentToolsets() {
     ],
     skill_maintainer: [
       new FakePostgresReadonlyQueryTool(),
+      new FakeReadFileTool(),
+      new FakeGlobFilesTool(),
+      new FakeGrepFilesTool(),
+      new FakeMediaTool(),
       new FakeAgentSkillTool(),
     ],
   } as const;
@@ -609,7 +613,7 @@ describe("SpawnSubagentTool", () => {
     ]);
   });
 
-  it("runs a skill maintainer child with Postgres plus agent_skill only", async () => {
+  it("runs a skill maintainer child with Postgres, skill editing, and readonly workspace inspection", async () => {
     const requests: LlmRuntimeRequest[] = [];
     const runtime: LlmRuntime = {
       complete: vi.fn().mockImplementation(async (request: LlmRuntimeRequest) => {
@@ -681,8 +685,14 @@ describe("SpawnSubagentTool", () => {
     expect(requests[0]?.context.systemPrompt).toContain("You are the skill maintainer subagent.");
     expect(requests[0]?.context.systemPrompt).toContain("Start with the current thread.");
     expect(requests[0]?.context.systemPrompt).toContain("agent_skill with operation=\"load\"");
+    expect(requests[0]?.context.systemPrompt).toContain("verify those references with the read-only workspace tools");
+    expect(requests[0]?.context.systemPrompt).toContain("Prune old practices, commands, file paths, and script references");
     expect(requests[0]?.context.tools?.map((toolDef) => toolDef.name)).toEqual([
       "postgres_readonly_query",
+      "read_file",
+      "glob_files",
+      "grep_files",
+      "view_media",
       "agent_skill",
     ]);
   });

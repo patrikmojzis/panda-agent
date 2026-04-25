@@ -4,9 +4,7 @@ import {DataType, newDb} from "pg-mem";
 
 import {Agent,} from "../src/index.js";
 import {PostgresScheduledTaskStore, ScheduledTaskRunner,} from "../src/domain/scheduling/tasks/index.js";
-import {SessionRouteRepo} from "../src/domain/sessions/index.js";
 import {ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
-import {PostgresOutboundDeliveryStore,} from "../src/domain/channels/deliveries/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
@@ -55,8 +53,6 @@ class SelectiveLeaseManager {
 
 async function createHarness(options: {
   responseText: string;
-  routeSource?: string;
-  routeConnectorKey?: string;
 }) {
   const db = newDb();
   db.public.registerFunction({
@@ -71,10 +67,6 @@ async function createHarness(options: {
   const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
   const scheduledTasks = new PostgresScheduledTaskStore({pool});
   await scheduledTasks.ensureSchema();
-  const sessionRoutes = new SessionRouteRepo({pool});
-  await sessionRoutes.ensureSchema();
-  const outboundDeliveries = new PostgresOutboundDeliveryStore({pool});
-  await outboundDeliveries.ensureSchema();
 
   const alice = await identityStore.createIdentity({
     id: "alice-id",
@@ -92,20 +84,6 @@ async function createHarness(options: {
     id: "session-thread",
     sessionId: "session-main",
   });
-
-  if (options.routeSource) {
-    await sessionRoutes.saveLastRoute({
-      sessionId: "session-main",
-      identityId: alice.id,
-      route: {
-        source: options.routeSource,
-        connectorKey: options.routeConnectorKey ?? "connector-1",
-        externalConversationId: "conversation-1",
-        externalActorId: "actor-1",
-        capturedAt: Date.now(),
-      },
-    });
-  }
 
   const runtime = createMockRuntime(
     createAssistantMessage(options.responseText),
@@ -132,8 +110,6 @@ async function createHarness(options: {
   const runner = new ScheduledTaskRunner({
     tasks: scheduledTasks,
     sessions: sessionStore,
-    sessionRoutes,
-    outboundDeliveries,
     threadStore,
     coordinator,
   });
@@ -144,8 +120,6 @@ async function createHarness(options: {
     threadStore,
     sessionStore,
     scheduledTasks,
-    sessionRoutes,
-    outboundDeliveries,
     coordinator,
     runner,
     runtime,
@@ -168,11 +142,9 @@ describe("ScheduledTaskRunner", () => {
     }
   });
 
-  it("completes a once task and queues a delivery", async () => {
+  it("completes a once task without auto-delivering assistant text", async () => {
     const harness = await createHarness({
       responseText: "Buy apples tomorrow.",
-      routeSource: "telegram",
-      routeConnectorKey: "bot-1",
     });
     pools.push(harness.pool);
 
@@ -194,32 +166,21 @@ describe("ScheduledTaskRunner", () => {
     expect(updated.completedAt).toBeDefined();
     expect(updated.nextFireAt).toBeUndefined();
 
-    const run = await harness.scheduledTasks.getLatestTaskRun(task.id);
-    expect(run).toMatchObject({
-      status: "succeeded",
-      deliveryStatus: "sent",
-    });
+    const runs = await harness.pool.query(
+      `SELECT status FROM "runtime"."scheduled_task_runs" WHERE task_id = $1`,
+      [task.id],
+    );
+    expect(runs.rows).toEqual([{status: "succeeded"}]);
 
     const transcript = await harness.threadStore.loadTranscript("session-thread");
     const input = transcript.find((entry) => entry.origin === "input" && entry.source === "scheduled_task");
     expect(input?.identityId).toBe(harness.alice.id);
     expect(JSON.stringify(input?.message)).toContain("The user is not actively watching this session right now.");
-
-    const delivery = await harness.outboundDeliveries.claimNextPendingDelivery({
-      channel: "telegram",
-      connectorKey: "bot-1",
-    });
-    expect(delivery).toMatchObject({
-      channel: "telegram",
-      items: [{type: "text", text: "Buy apples tomorrow."}],
-    });
   });
 
   it("advances recurring tasks before execution and keeps them active after success", async () => {
     const harness = await createHarness({
       responseText: "Here is your morning report.",
-      routeSource: "telegram",
-      routeConnectorKey: "bot-1",
     });
     pools.push(harness.pool);
 
@@ -248,67 +209,7 @@ describe("ScheduledTaskRunner", () => {
     expect(updated.claimedAt).toBeUndefined();
   });
 
-  it("transitions delayed once tasks from execute to deliver and then completes them", async () => {
-    const harness = await createHarness({
-      responseText: "Bee research is ready.",
-      routeSource: "telegram",
-      routeConnectorKey: "bot-1",
-    });
-    pools.push(harness.pool);
-    const deliverAt = new Date(Date.now() + 60_000).toISOString();
-
-    const task = await harness.scheduledTasks.createTask({
-      sessionId: "session-main",
-      createdByIdentityId: harness.alice.id,
-      title: "Bee research",
-      instruction: "Research bees and prepare a report.",
-      schedule: {
-        kind: "once",
-        runAt: new Date(Date.now() - 60_000).toISOString(),
-        deliverAt,
-      },
-    });
-
-    await harness.runner.start();
-    await harness.runner.stop();
-
-    let updated = await harness.scheduledTasks.getTask(task.id);
-    expect(updated.nextFireKind).toBe("deliver");
-    expect(updated.nextFireAt).toBe(Date.parse(deliverAt));
-    const executeTranscript = await harness.threadStore.loadTranscript("session-thread");
-    const executeInput = executeTranscript.find((entry) => entry.origin === "input" && entry.source === "scheduled_task");
-    expect(JSON.stringify(executeInput?.message)).toContain("leave the result in the current session history or other durable state");
-    expect(await harness.outboundDeliveries.claimNextPendingDelivery({
-      channel: "telegram",
-      connectorKey: "bot-1",
-    })).toBeNull();
-
-    await harness.pool.query(
-      `UPDATE "runtime"."scheduled_tasks" SET next_fire_at = $2 WHERE id = $1`,
-      [task.id, new Date(Date.now() - 1_000)],
-    );
-    await harness.runner.start();
-    await harness.runner.stop();
-
-    updated = await harness.scheduledTasks.getTask(task.id);
-    expect(updated.completedAt).toBeDefined();
-    expect(updated.nextFireAt).toBeUndefined();
-
-    const runs = [
-      await harness.scheduledTasks.getLatestTaskRun(task.id, "execute"),
-      await harness.scheduledTasks.getLatestTaskRun(task.id, "deliver"),
-    ];
-    expect(runs[0]).toMatchObject({
-      status: "succeeded",
-      deliveryStatus: "not_requested",
-    });
-    expect(runs[1]).toMatchObject({
-      status: "succeeded",
-      deliveryStatus: "sent",
-    });
-  });
-
-  it("still executes due tasks when there is no remembered route, but marks delivery unavailable", async () => {
+  it("still executes due tasks when there is no channel route", async () => {
     const harness = await createHarness({
       responseText: "This should stay in the thread.",
     });
@@ -331,14 +232,10 @@ describe("ScheduledTaskRunner", () => {
     const updated = await harness.scheduledTasks.getTask(task.id);
     expect(updated.completedAt).toBeDefined();
 
-    const run = await harness.scheduledTasks.getLatestTaskRun(task.id);
-    expect(run).toMatchObject({
-      status: "succeeded",
-      deliveryStatus: "unavailable",
-    });
-    expect(await harness.outboundDeliveries.claimNextPendingDelivery({
-      channel: "telegram",
-      connectorKey: "bot-1",
-    })).toBeNull();
+    const runs = await harness.pool.query(
+      `SELECT status FROM "runtime"."scheduled_task_runs" WHERE task_id = $1`,
+      [task.id],
+    );
+    expect(runs.rows).toEqual([{status: "succeeded"}]);
   });
 });

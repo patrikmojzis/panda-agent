@@ -107,7 +107,7 @@ Do not use it for:
 
 - exact scheduling
 - isolated jobs
-- delayed delivery workflows
+- outbound delivery orchestration
 - anything that must run even if the session thread is busy
 
 If you are changing heartbeat internals, use the developer doc:

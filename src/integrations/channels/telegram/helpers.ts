@@ -10,7 +10,6 @@ export interface TelegramInboundTextOptions {
   externalConversationId: string;
   externalActorId: string;
   externalMessageId: string;
-  identityId?: string;
   identityHandle?: string;
   chatId: string;
   chatType: string;
@@ -27,7 +26,6 @@ export interface TelegramReactionTextOptions {
   externalConversationId: string;
   externalActorId: string;
   externalMessageId: string;
-  identityId?: string;
   identityHandle?: string;
   chatId: string;
   chatType: string;
@@ -152,7 +150,6 @@ export function buildTelegramInboundText(options: TelegramInboundTextOptions): s
     conversationId: options.externalConversationId,
     actorId: options.externalActorId,
     externalMessageId: options.externalMessageId,
-    identityId: options.identityId,
     identityHandle: options.identityHandle,
     chatId: options.chatId,
     chatType: options.chatType,
@@ -171,7 +168,6 @@ export function buildTelegramReactionText(options: TelegramReactionTextOptions):
     conversationId: options.externalConversationId,
     actorId: options.externalActorId,
     externalMessageId: options.externalMessageId,
-    identityId: options.identityId,
     identityHandle: options.identityHandle,
     chatId: options.chatId,
     chatType: options.chatType,

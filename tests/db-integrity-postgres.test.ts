@@ -258,14 +258,12 @@ describe("Database integrity hardening", () => {
         id,
         task_id,
         session_id,
-        fire_kind,
         scheduled_for,
         status
       ) VALUES (
         '00000000-0000-4000-8000-000000000001',
         $1,
         'session-b',
-        'execute',
         NOW(),
         'claimed'
       )
@@ -288,7 +286,6 @@ describe("Database integrity hardening", () => {
       runId: claim!.run.id,
       resolvedThreadId: "thread-a",
       threadRunId: threadRun.id,
-      deliveryStatus: "sent",
     })).rejects.toThrow();
   });
 

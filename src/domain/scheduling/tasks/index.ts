@@ -15,7 +15,6 @@ export {
 export {ScheduledTaskRunner, type ScheduledTaskRunnerOptions} from "./runner.js";
 export type {ScheduledTaskStore} from "./store.js";
 export {
-  parseScheduledTaskThreadInputMetadata,
   type CancelScheduledTaskInput,
   type ClaimScheduledTaskInput,
   type ClaimScheduledTaskResult,
@@ -23,8 +22,6 @@ export {
   type CreateScheduledTaskInput,
   type FailScheduledTaskRunInput,
   type ListDueScheduledTasksInput,
-  type ScheduledTaskDeliveryStatus,
-  type ScheduledTaskFireKind,
   type ScheduledTaskRecord,
   type ScheduledTaskRecurringSchedule,
   type ScheduledTaskRunRecord,

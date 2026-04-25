@@ -237,18 +237,10 @@ export function normalizeScheduledTaskSchedule(schedule: ScheduledTaskSchedule):
   switch (schedule.kind) {
     case "once": {
       const runAt = normalizeAbsoluteTimestamp("runAt", schedule.runAt);
-      const deliverAt = schedule.deliverAt === undefined
-        ? undefined
-        : normalizeAbsoluteTimestamp("deliverAt", schedule.deliverAt);
-
-      if (deliverAt && Date.parse(deliverAt) <= Date.parse(runAt)) {
-        throw new Error("Scheduled task deliverAt must be later than runAt.");
-      }
 
       return {
         kind: "once",
         runAt,
-        deliverAt,
       } satisfies ScheduledTaskOnceSchedule;
     }
     case "recurring":

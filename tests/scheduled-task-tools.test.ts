@@ -36,7 +36,6 @@ function createStoreMock(): ScheduledTaskStore {
       schedule: input.schedule,
       enabled: input.enabled ?? true,
       nextFireAt: Date.parse(input.schedule.kind === "once" ? input.schedule.runAt : "2026-04-10T08:00:00.000Z"),
-      nextFireKind: "execute",
       createdAt: 1,
       updatedAt: 1,
     })),
@@ -51,7 +50,6 @@ function createStoreMock(): ScheduledTaskStore {
       },
       enabled: input.enabled ?? true,
       nextFireAt: 1,
-      nextFireKind: "execute",
       createdAt: 1,
       updatedAt: 1,
     })),
@@ -65,7 +63,6 @@ function createStoreMock(): ScheduledTaskStore {
         runAt: "2026-04-11T09:00:00.000Z",
       },
       enabled: true,
-      nextFireKind: "execute",
       cancelledAt: 1,
       createdAt: 1,
       updatedAt: 1,
@@ -77,10 +74,8 @@ function createStoreMock(): ScheduledTaskStore {
     completeTaskRun: vi.fn(),
     failTaskRun: vi.fn(),
     clearTaskClaim: vi.fn(),
-    markTaskWaitingDelivery: vi.fn(),
     markTaskCompleted: vi.fn(),
     markTaskFailed: vi.fn(),
-    getLatestTaskRun: vi.fn(),
   };
 }
 
@@ -123,22 +118,6 @@ describe("scheduled task Panda tools", () => {
     }));
   });
 
-  it("rejects once schedules whose deliverAt is not later than runAt", async () => {
-    const tool = new ScheduledTaskCreateTool({
-      store: createStoreMock(),
-    });
-
-    await expect(tool.run({
-      title: "Bad reminder",
-      instruction: "This should fail.",
-      schedule: {
-        kind: "once",
-        runAt: "2026-04-11T09:00:00+02:00",
-        deliverAt: "2026-04-11T09:00:00+02:00",
-      },
-    }, createRunContext(context))).rejects.toBeInstanceOf(ToolError);
-  });
-
   it("requires recurring schedules to include both cron and timezone", async () => {
     const tool = new ScheduledTaskCreateTool({
       store: createStoreMock(),
@@ -152,6 +131,24 @@ describe("scheduled task Panda tools", () => {
         cron: "0 8 * * *",
       } as any,
     }, createRunContext(context))).rejects.toBeInstanceOf(ToolError);
+  });
+
+  it("rejects stale deliverAt once schedule fields", async () => {
+    const store = createStoreMock();
+    const tool = new ScheduledTaskCreateTool({
+      store,
+    });
+
+    await expect(tool.run({
+      title: "Old delayed reminder",
+      instruction: "This should fail instead of silently dropping deliverAt.",
+      schedule: {
+        kind: "once",
+        runAt: "2026-04-11T09:00:00+02:00",
+        deliverAt: "2026-04-11T10:00:00+02:00",
+      },
+    }, createRunContext(context))).rejects.toBeInstanceOf(ToolError);
+    expect(store.createTask).not.toHaveBeenCalled();
   });
 
   it("updates a task within the current session", async () => {

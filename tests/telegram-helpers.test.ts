@@ -47,7 +47,6 @@ describe("telegram helpers", () => {
       externalConversationId: "123",
       externalActorId: "456",
       externalMessageId: "789",
-      identityId: "alice-id",
       identityHandle: "alice",
       chatId: "123",
       chatType: "private",
@@ -59,7 +58,6 @@ describe("telegram helpers", () => {
       externalConversationId: "123",
       externalActorId: "456",
       externalMessageId: "789",
-      identityId: "alice-id",
       identityHandle: "alice",
       chatId: "123",
       chatType: "private",
@@ -70,7 +68,6 @@ describe("telegram helpers", () => {
       externalConversationId: "123",
       externalActorId: "456",
       externalMessageId: "789",
-      identityId: "alice-id",
       identityHandle: "alice",
       chatId: "123",
       chatType: "private",
@@ -86,7 +83,6 @@ describe("telegram helpers", () => {
       externalConversationId: "123",
       externalActorId: "456",
       externalMessageId: "789",
-      identityId: "alice-id",
       identityHandle: "alice",
       chatId: "123",
       chatType: "private",
@@ -101,7 +97,6 @@ describe("telegram helpers", () => {
       externalConversationId: "123",
       externalActorId: "456",
       externalMessageId: "telegram-reaction:789",
-      identityId: "alice-id",
       identityHandle: "alice",
       chatId: "123",
       chatType: "private",
@@ -113,7 +108,7 @@ describe("telegram helpers", () => {
     });
 
     expect(text).toContain("reaction_target_message_id: 777");
-    expect(text).toContain("identity_id: alice-id");
+    expect(text).not.toContain("identity_id:");
     expect(text).toContain("identity_handle: alice");
     expect(text).toContain("reaction_added_emojis: 🔥, 👍");
     expect(text).toContain("reaction_actor_id: 456");

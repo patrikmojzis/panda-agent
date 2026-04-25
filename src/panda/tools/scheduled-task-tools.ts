@@ -8,14 +8,12 @@ import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-c
 import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
 import {rethrowAsToolError} from "./shared.js";
 
-const onceScheduleSchema = z.object({
+const onceScheduleSchema = z.strictObject({
   kind: z.literal("once"),
   runAt: z.string().trim().min(1).describe("Absolute ISO timestamp with timezone, for example 2026-04-11T03:00:00+02:00."),
-  deliverAt: z.string().trim().min(1).optional()
-    .describe("Optional absolute ISO timestamp with timezone. Only valid for once tasks and must be later than runAt."),
 });
 
-const recurringScheduleSchema = z.object({
+const recurringScheduleSchema = z.strictObject({
   kind: z.literal("recurring"),
   cron: z.string().trim().min(1).describe("Five-field cron expression such as 0 8 * * *."),
   timezone: z.string().trim().min(1).describe("IANA timezone such as Europe/Bratislava."),

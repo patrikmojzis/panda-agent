@@ -349,7 +349,6 @@ describe("OutboundTool", () => {
     }, createRunContext(context))).rejects.toThrow(
       "No outbound target was provided and no current inbound route is available.",
     );
-    });
   });
 
   it("rejects A2A fallback routes", async () => {
@@ -375,7 +374,7 @@ describe("OutboundTool", () => {
     );
   });
 
-  it("rejects outbound during prepare-only scheduled execution", async () => {
+  it("allows scheduled tasks to call outbound through the remembered route", async () => {
     const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext({
       currentInput: {
@@ -384,18 +383,34 @@ describe("OutboundTool", () => {
           scheduledTask: {
             taskId: "task-1",
             title: "Bee research",
-            phase: "execute",
-            deliveryMode: "deferred",
             runAt: "2026-04-10T03:00:00.000Z",
-            deliverAt: "2026-04-10T08:00:00.000Z",
           },
+        },
+      },
+      routeMemory: {
+        getLastRoute: async (channel) => {
+          context.routeLookups.push(channel);
+          return {
+            source: "telegram",
+            connectorKey: "telegram-bot",
+            externalConversationId: "chat-1",
+            capturedAt: 123,
+          };
+        },
+        saveLastRoute: async (route) => {
+          context.rememberedRoutes.push(route);
         },
       },
     });
 
-    await expect(tool.run({
-      items: [{ type: "text", text: "too early" }],
-    }, createRunContext(context))).rejects.toThrow(
-      "Outbound is disabled during prepare-only scheduled task execution.",
-    );
+    await tool.run({
+      items: [{ type: "text", text: "scheduled hello" }],
+    }, createRunContext(context));
+
+    expect(context.routeLookups).toEqual([undefined]);
+    expect(context.queued).toMatchObject([{
+      channel: "telegram",
+      items: [{ type: "text", text: "scheduled hello" }],
+    }]);
   });
+});

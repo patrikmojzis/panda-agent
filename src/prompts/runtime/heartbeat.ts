@@ -8,7 +8,7 @@ export function renderHeartbeatPrompt(options: {
   return `
 💗 This is a periodic system heartbeat wake.
 
-Review open loops, promises, pending follow-ups, recent conversation momentum, and memory candidates. If one concrete action is obvious, do it.
+Review open loops, pending follow-ups, recent conversation momentum, or memory candidates. If one concrete action is obvious, do it.
 ${heartbeatGuidance ? `
 Heartbeat prompt:
 ${heartbeatGuidance}` : ""}

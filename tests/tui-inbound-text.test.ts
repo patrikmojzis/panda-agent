@@ -16,7 +16,6 @@ describe("tui inbound text", () => {
       conversationId: TUI_CONVERSATION_ID,
       actorId: "local-user",
       externalMessageId: "msg-1",
-      identityId: "patrik-id",
       identityHandle: "patrik",
       sentAt: "2026-04-21T18:22:00.000Z",
       body: "hello from terminal",
@@ -28,7 +27,7 @@ describe("tui inbound text", () => {
     expect(text).toContain("conversation_id: terminal");
     expect(text).toContain("actor_id: local-user");
     expect(text).toContain("external_message_id: msg-1");
-    expect(text).toContain("identity_id: patrik-id");
+    expect(text).not.toContain("identity_id:");
     expect(text).toContain("identity_handle: patrik");
     expect(text).toContain("attachments:");
     expect(text).toContain("- none");

@@ -14,7 +14,6 @@ export interface WhatsAppInboundTextOptions {
   externalConversationId: string;
   externalActorId: string;
   externalMessageId: string;
-  identityId?: string;
   identityHandle?: string;
   remoteJid: string;
   chatType: string;
@@ -68,7 +67,6 @@ export function buildWhatsAppInboundText(options: WhatsAppInboundTextOptions): s
     conversationId: options.externalConversationId,
     actorId: options.externalActorId,
     externalMessageId: options.externalMessageId,
-    identityId: options.identityId,
     identityHandle: options.identityHandle,
     remoteJid: options.remoteJid,
     chatType: options.chatType,
