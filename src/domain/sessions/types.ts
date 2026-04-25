@@ -66,4 +66,4 @@ export interface UpdateSessionHeartbeatConfigInput {
   asOf?: number;
 }
 
-export const DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES = 30;
+export const DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES = 60;
