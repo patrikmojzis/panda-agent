@@ -25,15 +25,15 @@ const DAY_MS = 24 * HOUR_MS;
 export const DEFAULT_INFERENCE_PROJECTION: InferenceProjection = {
   dropToolCalls: {
     olderThanMs: 4 * HOUR_MS,
-    preserveRecentUserTurns: 14,
+    preserveRecentUserTurns: 20,
   },
   dropThinking: {
     olderThanMs: 4 * HOUR_MS,
-    preserveRecentUserTurns: 14,
+    preserveRecentUserTurns: 10,
   },
   dropImages: {
-    olderThanMs: 4 * HOUR_MS,
-    preserveRecentUserTurns: 14,
+    olderThanMs: 8 * HOUR_MS,
+    preserveRecentUserTurns: 20,
   },
   dropMessages: {
     olderThanMs: 2 * DAY_MS,
