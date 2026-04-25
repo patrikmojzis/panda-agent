@@ -214,7 +214,7 @@ export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<ty
 
   name = "outbound";
   description =
-    "Send a reply, image, or file back to an external channel. If no target is provided, it replies to the current inbound channel route.";
+    "Always use this tool to message human. Send a reply, image, or file to an external channel. If no target is provided, it replies to the latest inbound channel route.";
   schema = OutboundTool.schema;
 
   override formatCall(args: Record<string, unknown>): string {
