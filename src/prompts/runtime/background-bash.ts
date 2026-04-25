@@ -21,7 +21,7 @@ export function renderBackgroundBashEventPrompt(options: {
     "[Background Bash Event]",
     "This is a machine-generated runtime event from background bash, not a live human message.",
     "A background bash job reached a terminal state outside the foreground tool loop.",
-    "Decide whether any follow-up is useful. If nothing useful should happen, keep it quiet.",
+    "Decide whether any follow-up is useful.",
     `Job ID: ${options.jobId}`,
     `Status: ${options.status}`,
     `Command: ${truncatePreview(options.command, 160)}`,
