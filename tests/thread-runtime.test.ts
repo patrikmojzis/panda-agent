@@ -5,29 +5,29 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {
-    Agent,
-    BashJobStatusTool,
-    BashJobWaitTool,
-    BashTool,
-    type LlmRuntime,
-    OutboundTool,
-    PiAiRuntime,
-    RunContext,
-    stringToUserMessage,
-    Thread,
-    Tool,
-    z,
+  Agent,
+  BashJobStatusTool,
+  BashJobWaitTool,
+  BashTool,
+  type LlmRuntime,
+  OutboundTool,
+  PiAiRuntime,
+  RunContext,
+  stringToUserMessage,
+  Thread,
+  Tool,
+  z,
 } from "../src/index.js";
 import {buildBackgroundBashThreadInput} from "../src/app/runtime/background-bash-thread-input.js";
 import {
-    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-    createCompactBoundaryMessage,
-    type CreateThreadInput,
-    type ResolvedThreadDefinition,
-    type ThreadDefinitionResolver,
-    type ThreadMessageRecord,
-    type ThreadRecord,
-    ThreadRuntimeCoordinator,
+  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+  createCompactBoundaryMessage,
+  type CreateThreadInput,
+  type ResolvedThreadDefinition,
+  type ThreadDefinitionResolver,
+  type ThreadMessageRecord,
+  type ThreadRecord,
+  ThreadRuntimeCoordinator,
 } from "../src/domain/threads/runtime/index.js";
 import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
@@ -516,6 +516,49 @@ describe("ThreadRuntimeCoordinator", () => {
       "tui",
       "assistant",
       "runtime",
+      "assistant",
+    ]);
+  });
+
+  it("does not grant an idle reroll for heartbeat inputs", async () => {
+    const runtime = createMockRuntime(message("heartbeat handled"));
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("heartbeat-no-reroll", {
+      agent: new Agent({
+        name: "heartbeat-no-reroll",
+        instructions: "Reply plainly.",
+      }),
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-heartbeat-no-reroll",
+      agentKey: "heartbeat-no-reroll",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-heartbeat-no-reroll", {
+      message: stringToUserMessage("[Heartbeat]"),
+      source: "heartbeat",
+      metadata: {
+        heartbeat: {
+          kind: "interval",
+        },
+      },
+    });
+
+    await coordinator.waitForIdle("thread-heartbeat-no-reroll");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(1);
+
+    const transcript = await store.loadTranscript("thread-heartbeat-no-reroll");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "heartbeat",
       "assistant",
     ]);
   });

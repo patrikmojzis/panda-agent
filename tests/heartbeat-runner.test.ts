@@ -85,8 +85,7 @@ async function createHarness(options: {
     sessionId: "session-main",
   });
 
-  const rerollRuntime = createMockRuntime(
-    createAssistantMessage(options.responseText ?? "Heartbeat handled."),
+  const runtime = createMockRuntime(
     createAssistantMessage(options.responseText ?? "Heartbeat handled."),
   );
   const coordinator = new ThreadRuntimeCoordinator({
@@ -97,7 +96,7 @@ async function createHarness(options: {
         name: "panda",
         instructions: "Reply briefly.",
       }),
-      runtime: rerollRuntime,
+      runtime,
     }),
   });
 
@@ -114,7 +113,7 @@ async function createHarness(options: {
     sessionStore,
     coordinator,
     runner,
-    runtime: rerollRuntime,
+    runtime,
   };
 }
 
@@ -164,7 +163,7 @@ describe("HeartbeatRunner", () => {
       role: "user",
       content: expect.stringContaining("This is a periodic runtime wake."),
     });
-    expect(harness.runtime.complete).toHaveBeenCalledTimes(2);
+    expect(harness.runtime.complete).toHaveBeenCalledTimes(1);
 
     const heartbeat = await harness.sessionStore.getHeartbeat("session-main");
     expect(heartbeat?.lastFireAt).toBeDefined();

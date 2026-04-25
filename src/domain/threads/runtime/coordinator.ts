@@ -83,6 +83,10 @@ interface ThreadBoundaryState {
   hadPendingWake: boolean;
 }
 
+const IDLE_REROLL_SUPPRESSED_INPUT_SOURCES = new Set([
+  "heartbeat",
+]);
+
 function isPersistedThreadMessage(event: ThreadRunEvent): event is Extract<ThreadRunEvent, { role: string }> {
   return "role" in event && (event.role === "assistant" || event.role === "toolResult");
 }
@@ -97,6 +101,10 @@ function runtimeSourceForMessage(message: Message): string {
   }
 
   return message.role;
+}
+
+function grantsIdleReroll(input: Pick<ThreadMessageRecord, "source">): boolean {
+  return !IDLE_REROLL_SUPPRESSED_INPUT_SOURCES.has(input.source);
 }
 
 function buildCurrentInputContext(
@@ -646,18 +654,17 @@ export class ThreadRuntimeCoordinator {
     let resumeState: ThreadResumeState | undefined;
     let inputApplyScope: ThreadInputApplyScope = "all";
     // Stop once is a bit too eager for Panda's current autonomy model.
-    // This flag gives each applied input wave one blind extra step before we
-    // finally let the run go idle. If we tune or replace the behavior later,
-    // this is the seam to revisit.
-    let idleRerollAvailable = true;
+    // Eligible input waves get one blind extra step before we finally let the
+    // run go idle. Keep the source denylist small and intentional.
+    let idleRerollAvailable = false;
 
     try {
       while (true) {
         const appliedInputs = await this.store.applyPendingInputs(threadId, inputApplyScope);
         if (appliedInputs.length > 0) {
-          // New real input re-arms the one-step idle reroll for that wave.
+          // New eligible input re-arms the one-step idle reroll for that wave.
           // We only reset on applied inputs, not on tool churn or pending wake.
-          idleRerollAvailable = true;
+          idleRerollAvailable = appliedInputs.some(grantsIdleReroll);
           await this.emit({
             type: "inputs_applied",
             threadId,
