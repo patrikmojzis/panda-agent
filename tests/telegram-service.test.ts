@@ -13,6 +13,9 @@ const telegramServiceMocks = vi.hoisted(() => {
       })),
       setMyCommands: vi.fn(async () => {}),
       getUpdates: vi.fn(async () => []),
+      getFile: vi.fn(async () => ({
+        file_path: "documents/file.zip",
+      })),
       setMessageReaction: vi.fn(async () => {}),
     };
     readonly on = vi.fn((event: string, handler: (ctx: unknown) => Promise<void> | void) => {
@@ -308,7 +311,10 @@ describe("TelegramService", () => {
       connectorKey: "42",
       botUsername: "panda_bot",
     });
-    vi.spyOn(service as never, "downloadSupportedMedia").mockResolvedValue([]);
+    vi.spyOn(service as never, "downloadSupportedMedia").mockResolvedValue({
+      media: [],
+      unavailable: [],
+    });
 
     await (service as never).handleMessage(createTelegramContext());
 
@@ -330,6 +336,51 @@ describe("TelegramService", () => {
         media: [],
       },
     });
+  });
+
+  it("turns oversized Telegram documents into an inbound unavailable-attachment notice", async () => {
+    const stores = createStores();
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+    });
+
+    vi.spyOn(service as never, "ensureInitialized").mockResolvedValue({
+      stores,
+      connectorKey: "42",
+      botUsername: "panda_bot",
+    });
+
+    const bot = latestBot();
+    await (service as never).handleMessage({
+      ...createTelegramContext(),
+      msg: {
+        message_id: 556,
+        chat: {
+          id: 777,
+        },
+        document: {
+          file_id: "big-file",
+          file_name: "archive.zip",
+          mime_type: "application/zip",
+          file_size: 35 * 1024 * 1024,
+        },
+      },
+    });
+
+    expect(bot.api.getFile).not.toHaveBeenCalled();
+    expect(stores.requests.enqueueRequest).toHaveBeenCalledTimes(1);
+    expect(stores.requests.enqueueRequest).toHaveBeenCalledWith({
+      kind: "telegram_message",
+      payload: expect.objectContaining({
+        externalMessageId: "556",
+        media: [],
+        text: expect.stringContaining("Telegram attachment unavailable:"),
+      }),
+    });
+    const request = stores.requests.enqueueRequest.mock.calls[0]?.[0];
+    expect(request?.payload.text).toContain("filename: archive.zip");
+    expect(request?.payload.text).toContain("size_bytes: 36700160");
   });
 
   it("drops unsupported non-private messages before enqueuing runtime work", async () => {

@@ -6,21 +6,21 @@ import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer
 import {ChannelActionWorker, type TelegramReactionActionPayload} from "../../../domain/channels/actions/index.js";
 import {ChannelCursorRepo} from "../../../domain/channels/cursors/repo.js";
 import {
-    acquireManagedConnectorLease,
-    type ManagedConnectorLease,
-    PostgresConnectorLeaseRepo
+  acquireManagedConnectorLease,
+  type ManagedConnectorLease,
+  PostgresConnectorLeaseRepo
 } from "../../../domain/connector-leases/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
 import {
-    ChannelOutboundDeliveryWorker,
-    PostgresOutboundDeliveryStore
+  ChannelOutboundDeliveryWorker,
+  PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/index.js";
 import {
-    buildObservedPoolConfig,
-    createPostgresPool,
-    observePostgresPool,
-    type PostgresPoolObserver,
-    requireDatabaseUrl,
+  buildObservedPoolConfig,
+  createPostgresPool,
+  observePostgresPool,
+  type PostgresPoolObserver,
+  requireDatabaseUrl,
 } from "../../../app/runtime/database.js";
 import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
@@ -31,8 +31,8 @@ import {parseTelegramConversationId} from "./conversation-id.js";
 import {createTelegramTypingAdapter} from "./typing.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {
-    type PostgresNotificationListenerHandle,
-    startPostgresNotificationListener,
+  type PostgresNotificationListenerHandle,
+  startPostgresNotificationListener,
 } from "../postgres-notification-listener.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 
@@ -40,6 +40,7 @@ type TelegramContext = Context;
 const UPDATE_RETRY_DELAY_MS = 1_000;
 const TELEGRAM_POOL_MAX_FALLBACK = 5;
 const TELEGRAM_HEALTH_POLL_STALE_AFTER_MS = (TELEGRAM_POLL_TIMEOUT_SECONDS * 1_000) + 15_000;
+const TELEGRAM_BOT_API_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024;
 
 export interface TelegramServiceOptions {
   token: string;
@@ -86,13 +87,70 @@ interface TelegramWorkerStores {
   mediaStore: FileSystemMediaStore;
 }
 
+interface TelegramUnavailableMedia {
+  kind: "photo" | "document" | "voice";
+  mimeType: string;
+  sizeBytes?: number;
+  filename?: string;
+  reason: string;
+}
+
+interface TelegramMediaDownloadResult {
+  media: readonly MediaDescriptor[];
+  unavailable: readonly TelegramUnavailableMedia[];
+}
+
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
+}
+
+function isTelegramFileTooBigError(error: unknown): boolean {
+  return error instanceof Error && /file is too big/i.test(error.message);
 }
 
 function messageTextLength(message: TelegramContext["msg"] | undefined): number {
   const text = message?.text ?? message?.caption ?? "";
   return text.trim().length;
+}
+
+function shouldSkipTelegramDownload(sizeBytes: number | undefined): boolean {
+  return typeof sizeBytes === "number"
+    && Number.isFinite(sizeBytes)
+    && sizeBytes > TELEGRAM_BOT_API_DOWNLOAD_LIMIT_BYTES;
+}
+
+function renderUnavailableMediaNotice(items: readonly TelegramUnavailableMedia[]): string {
+  if (items.length === 0) {
+    return "";
+  }
+
+  const lines = items.map((item) => {
+    const details = [
+      item.filename ? `filename: ${item.filename}` : undefined,
+      `mime_type: ${item.mimeType}`,
+      item.sizeBytes === undefined ? undefined : `size_bytes: ${item.sizeBytes}`,
+      `reason: ${item.reason}`,
+    ].filter((line): line is string => Boolean(line));
+
+    return `- ${item.kind}\n  ${details.join("\n  ")}`;
+  });
+
+  return [
+    "Telegram attachment unavailable:",
+    ...lines,
+  ].join("\n");
+}
+
+function mergeTextWithUnavailableMediaNotice(
+  text: string,
+  unavailable: readonly TelegramUnavailableMedia[],
+): string {
+  const notice = renderUnavailableMediaNotice(unavailable);
+  if (!notice) {
+    return text;
+  }
+
+  return [text, notice].filter(Boolean).join("\n\n");
 }
 
 function isTelegramEmojiReaction(value: unknown): value is TelegramEmojiReaction {
@@ -828,9 +886,10 @@ export class TelegramService {
       return;
     }
 
-    const media = await this.downloadSupportedMedia(message, stores);
+    const mediaDownload = await this.downloadSupportedMedia(message, stores);
     const rawText = (message.text ?? message.caption)?.trim() ?? "";
-    if (!rawText && media.length === 0) {
+    const text = mergeTextWithUnavailableMediaNotice(rawText, mediaDownload.unavailable);
+    if (!text && mediaDownload.media.length === 0) {
       this.log("message_dropped", {
         connectorKey,
         externalActorId: actorId,
@@ -852,14 +911,14 @@ export class TelegramService {
         chatType: chatType ?? "private",
         externalActorId: actorId,
         externalMessageId: String(message.message_id),
-        text: rawText,
+        text,
         username: ctx.from?.username,
         firstName: ctx.from?.first_name,
         lastName: ctx.from?.last_name,
         replyToMessageId: message.reply_to_message?.message_id
           ? String(message.reply_to_message.message_id)
           : undefined,
-        media,
+        media: mediaDownload.media,
       },
     });
 
@@ -869,7 +928,8 @@ export class TelegramService {
       externalConversationId,
       chatType,
       externalMessageId: String(message.message_id),
-      mediaCount: media.length,
+      mediaCount: mediaDownload.media.length,
+      unavailableMediaCount: mediaDownload.unavailable.length,
       textLength: messageTextLength(message),
       requestId: request.id,
     });
@@ -878,43 +938,114 @@ export class TelegramService {
   private async downloadSupportedMedia(
     message: TelegramContext["msg"],
     stores: TelegramWorkerStores,
-  ): Promise<readonly MediaDescriptor[]> {
+  ): Promise<TelegramMediaDownloadResult> {
     if (!message) {
-      return [];
+      return {
+        media: [],
+        unavailable: [],
+      };
     }
 
-    const descriptors: MediaDescriptor[] = [];
+    const media: MediaDescriptor[] = [];
+    const unavailable: TelegramUnavailableMedia[] = [];
+    const addDownload = async (input: {
+      kind: TelegramUnavailableMedia["kind"];
+      fileId: string;
+      mimeType: string;
+      sizeBytes?: number;
+      hintFilename?: string;
+    }): Promise<void> => {
+      const result = await this.downloadFileOrUnavailable({
+        stores,
+        ...input,
+      });
+      if ("media" in result) {
+        media.push(result.media);
+        return;
+      }
+
+      unavailable.push(result.unavailable);
+    };
 
     const photo = message.photo?.at(-1);
     if (photo) {
-      descriptors.push(await this.downloadFile({
-        stores,
+      await addDownload({
+        kind: "photo",
         fileId: photo.file_id,
         mimeType: "image/jpeg",
         sizeBytes: photo.file_size,
-      }));
+      });
     }
 
     if (message.document) {
-      descriptors.push(await this.downloadFile({
-        stores,
+      await addDownload({
+        kind: "document",
         fileId: message.document.file_id,
         mimeType: message.document.mime_type ?? "application/octet-stream",
         sizeBytes: message.document.file_size,
         hintFilename: message.document.file_name,
-      }));
+      });
     }
 
     if (message.voice) {
-      descriptors.push(await this.downloadFile({
-        stores,
+      await addDownload({
+        kind: "voice",
         fileId: message.voice.file_id,
         mimeType: message.voice.mime_type ?? "audio/ogg",
         sizeBytes: message.voice.file_size,
-      }));
+      });
     }
 
-    return descriptors;
+    return {
+      media,
+      unavailable,
+    };
+  }
+
+  private async downloadFileOrUnavailable(options: {
+    stores: TelegramWorkerStores;
+    kind: TelegramUnavailableMedia["kind"];
+    fileId: string;
+    mimeType: string;
+    sizeBytes?: number;
+    hintFilename?: string;
+  }): Promise<{media: MediaDescriptor} | {unavailable: TelegramUnavailableMedia}> {
+    const unavailable = (reason: string): {unavailable: TelegramUnavailableMedia} => {
+      this.log("media_download_skipped", {
+        connectorKey: this.connectorKey ?? "unknown",
+        kind: options.kind,
+        mimeType: options.mimeType,
+        sizeBytes: options.sizeBytes ?? null,
+        filename: options.hintFilename ?? null,
+        reason,
+      });
+
+      return {
+        unavailable: {
+          kind: options.kind,
+          mimeType: options.mimeType,
+          sizeBytes: options.sizeBytes,
+          filename: options.hintFilename,
+          reason,
+        },
+      };
+    };
+
+    if (shouldSkipTelegramDownload(options.sizeBytes)) {
+      return unavailable("Telegram Bot API only exposes bot-downloadable files up to 20 MB.");
+    }
+
+    try {
+      return {
+        media: await this.downloadFile(options),
+      };
+    } catch (error) {
+      if (isTelegramFileTooBigError(error)) {
+        return unavailable("Telegram Bot API refused to expose this file because it is too big.");
+      }
+
+      throw error;
+    }
   }
 
   private async downloadFile(options: {
