@@ -312,7 +312,8 @@ For non-identity-scoped apps, do not bother passing `identityHandle` unless the 
 
 ### URL Hints
 
-`app_create` and `app_list` now return UI URLs when `hasUi` is true:
+`app_create` returns UI URLs when `hasUi` is true.
+`app_list` keeps its default output compact; use `app_list({"appSlug": "...", "detail": "full"})` when you need raw UI URLs:
 
 - `appUrl`: best current URL for Panda to use
 - `localAppUrl`: local default, usually `127.0.0.1`
@@ -409,10 +410,11 @@ Panda can inspect and use installed apps through:
 - `app_action`
 
 Use `app_create` to scaffold a blank app.
-Use `app_list` first when you need to inspect an existing one.
+Use `app_list` when you need to discover installed app, view, or action names.
+By default it returns a compact index without action schemas.
+Use `app_list({"appSlug": "...", "detail": "full"})` when you need action descriptions, `inputSchema`, effective `requiredInputKeys`, or raw UI URLs for one app.
 Use `app_link_create` when a human asks to open an app UI.
 Use `app_check` when Panda says an app is invalid or the UI/tool contract feels weird.
-It returns action descriptions, `inputSchema`, and effective `requiredInputKeys`, which matters because otherwise the model will absolutely manage to do something dumb.
 
 ## Example Apps
 

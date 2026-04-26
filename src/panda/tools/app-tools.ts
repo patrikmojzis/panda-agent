@@ -3,7 +3,11 @@ import {z} from "zod";
 import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import type {AgentAppAuthService} from "../../domain/apps/auth.js";
-import {readAgentAppRequiredInputKeys} from "../../domain/apps/types.js";
+import {
+    type AgentAppCheckResult,
+    type AgentAppDefinition,
+    readAgentAppRequiredInputKeys,
+} from "../../domain/apps/types.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
@@ -37,6 +41,69 @@ function readAppScope(context: unknown): {
 }
 
 const looseRecordSchema = z.record(z.string(), z.unknown());
+const appListDetailSchema = z.enum(["summary", "full"]);
+
+function serializeAppSummary(app: AgentAppDefinition): JsonObject {
+  return {
+    slug: app.slug,
+    name: app.name,
+    ...(app.description ? {description: app.description} : {}),
+    identityScoped: app.identityScoped,
+    hasUi: app.hasUi,
+    viewNames: Object.keys(app.views),
+    actionNames: Object.keys(app.actions),
+  } as JsonObject;
+}
+
+function serializeBrokenAppSummary(app: AgentAppCheckResult): JsonObject {
+  return {
+    slug: app.appSlug,
+    errorCount: app.errors.length,
+    warningCount: app.warnings.length,
+    ...(app.errors[0] ? {firstError: app.errors[0].message} : {}),
+    ...(app.warnings[0] ? {firstWarning: app.warnings[0].message} : {}),
+  } as JsonObject;
+}
+
+function serializeAppFull(app: AgentAppDefinition): JsonObject {
+  return {
+    slug: app.slug,
+    name: app.name,
+    ...(app.description ? {description: app.description} : {}),
+    identityScoped: app.identityScoped,
+    hasUi: app.hasUi,
+    ...(app.hasUi ? resolveAgentAppUrls({
+      agentKey: app.agentKey,
+      appSlug: app.slug,
+    }) : {}),
+    viewNames: Object.keys(app.views),
+    actionNames: Object.keys(app.actions),
+    views: Object.entries(app.views).map(([name, definition]) => ({
+      name,
+      ...(definition.description ? {description: definition.description} : {}),
+      paginated: Boolean(definition.pagination),
+    })),
+    actions: Object.entries(app.actions).map(([name, definition]) => {
+      const requiredInputKeys = readAgentAppRequiredInputKeys(definition);
+      return {
+        name,
+        mode: definition.mode ?? "native",
+        ...(definition.description ? {description: definition.description} : {}),
+        ...(requiredInputKeys?.length ? {requiredInputKeys} : {}),
+        ...(definition.inputSchema ? {inputSchema: definition.inputSchema} : {}),
+      };
+    }),
+  } as unknown as JsonObject;
+}
+
+function serializeBrokenAppFull(app: AgentAppCheckResult): JsonObject {
+  return {
+    slug: app.appSlug,
+    appDir: app.appDir,
+    errors: app.errors,
+    warnings: app.warnings,
+  } as unknown as JsonObject;
+}
 
 export class AppCreateTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof AppCreateTool.schema, TContext> {
@@ -104,59 +171,57 @@ export class AppCreateTool<TContext = DefaultAgentSessionContext>
 
 export class AppListTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof AppListTool.schema, TContext> {
-  static schema = z.object({});
+  static schema = z.object({
+    appSlug: z.string().trim().min(1).optional()
+      .describe("Optional app slug to filter to one installed micro-app."),
+    detail: appListDetailSchema.optional()
+      .describe("Defaults to summary. Use full only for one app when you need action inputSchema metadata or raw UI URLs."),
+  });
 
   name = "app_list";
   description =
-    "List filesystem-backed micro-apps installed for the current agent, including available views, actions, descriptions, UI URLs, inputSchema metadata, required input keys, and whether the app expects identity-scoped data. Use this before app_view or app_action.";
+    "List filesystem-backed micro-apps installed for the current agent. Defaults to a compact discovery index with app/view/action names. Pass appSlug plus detail=\"full\" only when you need one app's action inputSchema metadata or raw UI URLs.";
   schema = AppListTool.schema;
 
   constructor(private readonly service: AgentAppService) {
     super();
   }
 
+  override formatCall(args: Record<string, unknown>): string {
+    if (typeof args.appSlug === "string") {
+      return args.detail === "full" ? `${args.appSlug} full` : args.appSlug;
+    }
+
+    return super.formatCall(args);
+  }
+
   async handle(
-    _args: z.output<typeof AppListTool.schema>,
+    args: z.output<typeof AppListTool.schema>,
     run: RunContext<TContext>,
   ) {
     try {
+      if (args.detail === "full" && !args.appSlug) {
+        throw new ToolError("app_list detail=\"full\" requires appSlug so the full manifest dump stays scoped.");
+      }
+
       const scope = readAppScope(run.context);
       const inspection = await this.service.inspectApps(scope.agentKey);
-      const apps = inspection.apps;
+      const apps = args.appSlug
+        ? inspection.apps.filter((app) => app.slug === args.appSlug)
+        : inspection.apps;
+      const brokenApps = args.appSlug
+        ? inspection.brokenApps.filter((app) => app.appSlug === args.appSlug)
+        : inspection.brokenApps;
+
+      if (args.appSlug && apps.length === 0 && brokenApps.length === 0) {
+        throw new ToolError(`No installed micro-app found for slug ${args.appSlug}.`);
+      }
+
+      const detail = args.detail ?? "summary";
       return buildJsonToolPayload({
-        apps: apps.map((app) => ({
-          slug: app.slug,
-          name: app.name,
-          ...(app.description ? {description: app.description} : {}),
-          identityScoped: app.identityScoped,
-          hasUi: app.hasUi,
-          ...(app.hasUi ? resolveAgentAppUrls({
-            agentKey: app.agentKey,
-            appSlug: app.slug,
-          }) : {}),
-          viewNames: Object.keys(app.views),
-          actionNames: Object.keys(app.actions),
-          views: Object.entries(app.views).map(([name, definition]) => ({
-            name,
-            ...(definition.description ? {description: definition.description} : {}),
-            paginated: Boolean(definition.pagination),
-          })),
-          actions: Object.entries(app.actions).map(([name, definition]) => ({
-            name,
-            mode: definition.mode ?? "native",
-            ...(definition.description ? {description: definition.description} : {}),
-            ...(readAgentAppRequiredInputKeys(definition)?.length
-              ? {requiredInputKeys: readAgentAppRequiredInputKeys(definition)}
-              : {}),
-            ...(definition.inputSchema ? {inputSchema: definition.inputSchema} : {}),
-          })),
-        })),
-        brokenApps: inspection.brokenApps.map((app) => ({
-          slug: app.appSlug,
-          appDir: app.appDir,
-          errors: app.errors,
-          warnings: app.warnings,
-        })),
+        detail,
+        apps: apps.map((app) => detail === "full" ? serializeAppFull(app) : serializeAppSummary(app)),
+        brokenApps: brokenApps.map((app) => detail === "full" ? serializeBrokenAppFull(app) : serializeBrokenAppSummary(app)),
       } as unknown as JsonObject);
     } catch (error) {
       rethrowAsToolError(error);
@@ -287,7 +352,7 @@ export class AppViewTool<TContext = DefaultAgentSessionContext>
 
   name = "app_view";
   description =
-    "Run one readonly view from an installed micro-app for the current input identity. Use app_list first to discover available view names and descriptions. Pass params when the app view expects them.";
+    "Run one readonly view from an installed micro-app for the current input identity. If you do not know the app or view name, call app_list first for the compact discovery index. Pass params when the app view expects them.";
   schema = AppViewTool.schema;
 
   constructor(private readonly service: AgentAppService) {
@@ -337,7 +402,7 @@ export class AppActionTool<TContext = DefaultAgentSessionContext>
 
   name = "app_action";
   description =
-    "Run one declared micro-app action for the current input identity. Use app_list first to discover action names, descriptions, modes, requiredInputKeys, and inputSchema. If the action needs values, pass them through the input object. This is for fixed app actions, not arbitrary SQL.";
+    "Run one declared micro-app action for the current input identity. If you do not know the app or action name, call app_list first for the compact discovery index. Use app_list with appSlug and detail=\"full\" only when you need inputSchema details. If the action needs values, pass them through the input object. This is for fixed app actions, not arbitrary SQL.";
   schema = AppActionTool.schema;
 
   constructor(private readonly service: AgentAppService) {

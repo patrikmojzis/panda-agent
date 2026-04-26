@@ -655,7 +655,7 @@ function buildBlankReadme(input: {
     "",
     "## Local URL",
     "",
-    "- `app_create` and `app_list` return the current app URL when Panda knows it.",
+    `- \`app_create\` returns the current app URL when Panda knows it; \`app_list({"appSlug":"${input.appSlug}","detail":"full"})\` can show it later.`,
     "- For human-facing public access, use `app_link_create` and send the returned `openUrl`.",
     "- Use `/panda-app-sdk.js` for API calls; public app auth requires the SDK's app-scoped CSRF header.",
     `- Path: \`/<agentKey>/apps/${input.appSlug}/\``,

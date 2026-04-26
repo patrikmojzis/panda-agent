@@ -286,8 +286,8 @@ For local/dev identity-scoped apps:
 http://127.0.0.1:8092/<agentKey>/apps/<appSlug>/?identityHandle=smoke
 ```
 
-If `app_list` returns `internalAppUrl`, prefer that for browser-runner or browser subagent testing inside Docker.
-If `app_list` returns `brokenApps`, Panda could not load those apps cleanly yet.
+If you need `internalAppUrl`, use `app_list({"appSlug": "...", "detail": "full"})` and prefer that URL for browser-runner or browser subagent testing inside Docker.
+If `app_list` returns `brokenApps`, Panda could not load those apps cleanly yet. The default output is compact; use `detail: "full"` for exact diagnostics on one broken app.
 
 ## Current Limits
 
