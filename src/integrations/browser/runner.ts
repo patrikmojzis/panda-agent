@@ -1,4 +1,5 @@
 import {createServer, type IncomingMessage, type Server, type ServerResponse} from "node:http";
+import {randomUUID} from "node:crypto";
 import {readFile} from "node:fs/promises";
 
 import {z} from "zod";
@@ -35,6 +36,29 @@ const runnerAgent = new Agent({
   name: "browser-runner",
   instructions: "Internal browser runner.",
 });
+
+function logBrowserRunnerEvent(event: string, fields: Record<string, unknown>): void {
+  console.log(JSON.stringify({
+    source: "browser-runner",
+    event,
+    timestamp: new Date().toISOString(),
+    ...fields,
+  }));
+}
+
+function buildActionLogFields(parsed: BrowserRunnerActionRequest): Record<string, unknown> {
+  const action = parsed.action;
+  return {
+    agentKey: parsed.agentKey,
+    sessionId: parsed.sessionId,
+    threadId: parsed.threadId,
+    action: action.action,
+    ...("url" in action ? {url: action.url} : {}),
+    ...("ref" in action ? {ref: action.ref} : {}),
+    ...("selector" in action ? {selector: action.selector} : {}),
+    ...("timeoutMs" in action ? {timeoutMs: action.timeoutMs} : {}),
+  };
+}
 
 export interface BrowserRunnerOptions extends BrowserSessionServiceOptions {
   host?: string;
@@ -217,23 +241,47 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
       requireAuthorization(request, sharedSecret);
       const body = await readJsonBody(request);
       const parsed = validateActionRequest(body);
+      const requestId = randomUUID();
+      const actionStartedAt = Date.now();
+      const actionLogFields = buildActionLogFields(parsed);
+      logBrowserRunnerEvent("browser_action_start", {
+        requestId,
+        ...actionLogFields,
+      });
       const controller = new AbortController();
       request.on("close", () => controller.abort());
 
-      const payload = await service.handle(parsed.action, new RunContext({
-        agent: runnerAgent,
-        turn: 1,
-        maxTurns: 1,
-        messages: [],
-        signal: controller.signal,
-        context: {
-          agentKey: parsed.agentKey,
-          sessionId: parsed.sessionId ?? "",
-          threadId: parsed.threadId ?? "",
-        },
-      }));
-
-      writeJsonResponse(response, 200, await buildRunnerResponse(payload));
+      try {
+        const payload = await service.handle(parsed.action, new RunContext({
+          agent: runnerAgent,
+          turn: 1,
+          maxTurns: 1,
+          messages: [],
+          signal: controller.signal,
+          context: {
+            agentKey: parsed.agentKey,
+            sessionId: parsed.sessionId ?? "",
+            threadId: parsed.threadId ?? "",
+          },
+        }));
+        const runnerResponse = await buildRunnerResponse(payload);
+        logBrowserRunnerEvent("browser_action_end", {
+          requestId,
+          durationMs: Date.now() - actionStartedAt,
+          ok: true,
+          ...actionLogFields,
+        });
+        writeJsonResponse(response, 200, runnerResponse);
+      } catch (error) {
+        logBrowserRunnerEvent("browser_action_error", {
+          requestId,
+          durationMs: Date.now() - actionStartedAt,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          ...actionLogFields,
+        });
+        throw error;
+      }
     } catch (error) {
       if (error instanceof ToolError) {
         const statusCode = isRecord(error.details) && typeof error.details.statusCode === "number"

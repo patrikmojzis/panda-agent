@@ -103,11 +103,37 @@ export interface BrowserSessionServiceOptions {
   allowPrivateHostnames?: readonly string[];
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+function buildTimeoutError(label: string, timeoutMs: number, details: JsonObject = {}): ToolError {
+  return new ToolError(`${label} timed out after ${timeoutMs}ms.`, {
+    details: {
+      ...details,
+      timedOut: true,
+      timeoutMs,
+    },
+  });
+}
+
+function isTimeoutToolError(error: unknown): boolean {
+  if (!(error instanceof ToolError)) {
+    return false;
+  }
+  return typeof error.details === "object"
+    && error.details !== null
+    && !Array.isArray(error.details)
+    && (error.details as {timedOut?: unknown}).timedOut === true;
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+  details: JsonObject = {},
+): Promise<T> {
   return await new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new ToolError(`${label} timed out after ${timeoutMs}ms.`));
+      reject(buildTimeoutError(label, timeoutMs, details));
     }, timeoutMs);
+    timer.unref?.();
 
     promise.then(
       (value) => {
@@ -472,6 +498,7 @@ export class BrowserSessionService {
   private readonly reaperIntervalMs: number;
   private readonly allowPrivateHostnames: readonly string[];
   private readonly sessions = new Map<string, BrowserSessionRecord>();
+  private readonly invalidatedScopeVersions = new Map<string, number>();
   private reaper: NodeJS.Timeout | null = null;
   private startPromise: Promise<void> | null = null;
   private started = false;
@@ -543,6 +570,55 @@ export class BrowserSessionService {
     return Math.max(1, Math.floor(actionTimeout ?? this.actionTimeoutMs));
   }
 
+  private readScopeVersion(scopeKey: string): number {
+    return this.invalidatedScopeVersions.get(scopeKey) ?? 0;
+  }
+
+  private invalidateScope(scopeKey: string): void {
+    this.invalidatedScopeVersions.set(scopeKey, this.readScopeVersion(scopeKey) + 1);
+  }
+
+  private isScopeInvalidated(scopeKey: string, version: number): boolean {
+    return this.readScopeVersion(scopeKey) !== version;
+  }
+
+  private async runWithActionTimeout<T>(
+    action: BrowserAction,
+    scopeKey: string,
+    timeoutMs: number,
+    operation: (scopeVersion: number) => Promise<T>,
+  ): Promise<T> {
+    let timedOut = false;
+    let timer: NodeJS.Timeout | null = null;
+    const scopeVersion = this.readScopeVersion(scopeKey);
+    const actionPromise = operation(scopeVersion);
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(buildTimeoutError(`browser action ${action.action}`, timeoutMs, {
+          action: action.action,
+        }));
+      }, timeoutMs);
+      timer.unref?.();
+    });
+
+    try {
+      return await Promise.race([actionPromise, timeoutPromise]);
+    } catch (error) {
+      if (timedOut || isTimeoutToolError(error)) {
+        this.invalidateScope(scopeKey);
+        // Remove the dirty session immediately; the async close may continue in
+        // the background, but future actions must not reuse a wedged page.
+        void this.closeSession(scopeKey).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
   private async createBrowserContext(
     browser: Browser,
     storageStatePath?: string,
@@ -575,6 +651,7 @@ export class BrowserSessionService {
     scope: {scope: BrowserSessionScope; key: string},
     run: RunContext<TContext>,
     _timeoutMs: number,
+    scopeVersion: number,
   ): Promise<BrowserSessionRecord> {
     const startedAtMs = this.now();
     const sessionRoot = path.join(
@@ -628,6 +705,12 @@ export class BrowserSessionService {
       browser.on?.("disconnected", () => {
         session.disconnected = true;
       });
+      if (this.isScopeInvalidated(scope.key, scopeVersion)) {
+        throw buildTimeoutError("browser session startup", _timeoutMs, {
+          action: "start",
+          scope: scope.scope,
+        });
+      }
       this.sessions.set(scope.key, session);
       return session;
     } catch (error) {
@@ -669,10 +752,11 @@ export class BrowserSessionService {
     scope: {scope: BrowserSessionScope; key: string},
     run: RunContext<TContext>,
     timeoutMs: number,
+    scopeVersion: number,
   ): Promise<BrowserSessionRecord> {
     const existing = this.sessions.get(scope.key);
     if (!existing) {
-      return await this.startSession(scope, run, timeoutMs);
+      return await this.startSession(scope, run, timeoutMs, scopeVersion);
     }
     const now = this.now();
     if (
@@ -681,7 +765,7 @@ export class BrowserSessionService {
       now - existing.createdAtMs >= this.sessionMaxAgeMs
     ) {
       await this.closeSession(scope.key).catch(() => undefined);
-      return await this.startSession(scope, run, timeoutMs);
+      return await this.startSession(scope, run, timeoutMs, scopeVersion);
     }
     existing.lastUsedAtMs = now;
     return existing;
@@ -737,21 +821,31 @@ export class BrowserSessionService {
     params: {
       mode: BrowserSnapshotMode;
       changes?: BrowserSnapshotChanges | null;
+      timeoutMs?: number;
     },
   ): Promise<BrowserSnapshotCapture> {
     const page = await this.ensureActivePage(session);
-    const raw = await page.evaluate(
-      ((input: unknown) => {
-        const payload = input as {script?: unknown; maxChars?: unknown};
-        const script = typeof payload.script === "string" ? payload.script : "";
-        const runner = new Function("maxChars", script);
-        return runner(payload.maxChars);
-      }) as unknown as string,
+    const timeoutMs = Math.max(1, Math.floor(params.timeoutMs ?? this.actionTimeoutMs));
+    const raw = await withTimeout(
+      page.evaluate(
+        ((input: unknown) => {
+          const payload = input as {script?: unknown; maxChars?: unknown};
+          const script = typeof payload.script === "string" ? payload.script : "";
+          const runner = new Function("maxChars", script);
+          return runner(payload.maxChars);
+        }) as unknown as string,
+        {
+          script: getSnapshotScript(),
+          maxChars: this.maxSnapshotChars,
+        },
+      ) as Promise<SnapshotScriptResult>,
+      timeoutMs,
+      "browser snapshot",
       {
-        script: getSnapshotScript(),
-        maxChars: this.maxSnapshotChars,
+        action: "snapshot",
+        scope: session.scope,
       },
-    ) as SnapshotScriptResult;
+    );
     const normalized = normalizeSnapshotResult(raw, {
       maxChars: this.maxSnapshotChars,
       mode: params.mode,
@@ -765,10 +859,11 @@ export class BrowserSessionService {
     };
   }
 
-  private async captureActionBaseline(session: BrowserSessionRecord): Promise<BrowserActionBaseline> {
+  private async captureActionBaseline(session: BrowserSessionRecord, timeoutMs: number): Promise<BrowserActionBaseline> {
     const page = await this.ensureActivePage(session);
     const snapshot = await this.takeSnapshot(session, {
       mode: "compact",
+      timeoutMs,
     });
     return {
       page,
@@ -821,12 +916,14 @@ export class BrowserSessionService {
     mode: BrowserSnapshotMode,
     changes?: BrowserSnapshotChanges | null,
     capture?: BrowserSnapshotCapture,
+    timeoutMs?: number,
   ): Promise<ToolResultPayload> {
     const snapshot = capture
       ? this.renderSnapshotCapture(capture, mode, changes)
       : await this.takeSnapshot(session, {
           mode,
           changes,
+          timeoutMs,
         });
     return {
       content: [
@@ -991,6 +1088,7 @@ export class BrowserSessionService {
     if (action.labels) {
       labeledSnapshot = await this.takeSnapshot(session, {
         mode: "compact",
+        timeoutMs,
       });
     }
 
@@ -1140,6 +1238,21 @@ export class BrowserSessionService {
 
     const scope = normalizeScopeKey(resolveSessionContext(run.context));
     const timeoutMs = this.resolveActionTimeout(action);
+    return await this.runWithActionTimeout(
+      action,
+      scope.key,
+      timeoutMs,
+      (scopeVersion) => this.handleAction(action, run, scope, timeoutMs, scopeVersion),
+    );
+  }
+
+  private async handleAction<TContext extends DefaultAgentSessionContext>(
+    action: BrowserAction,
+    run: RunContext<TContext>,
+    scope: {scope: BrowserSessionScope; key: string},
+    timeoutMs: number,
+    scopeVersion: number,
+  ): Promise<ToolResultPayload> {
     const snapshotMode = "snapshotMode" in action ? action.snapshotMode ?? "compact" : "compact";
     const persistent = scope.scope === "thread";
     const scopeKey = scope.key;
@@ -1179,12 +1292,12 @@ export class BrowserSessionService {
         this.emitProgress(run, "starting", {scope: scope.scope, scopeKey});
       }
       this.emitProgress(run, "connecting", {scope: scope.scope, scopeKey});
-      session = await this.resolveSession(scope, run, timeoutMs);
+      session = await this.resolveSession(scope, run, timeoutMs, scopeVersion);
       const page = await this.ensureActivePage(session);
 
       switch (action.action) {
         case "navigate": {
-          const baseline = await this.captureActionBaseline(session);
+          const baseline = await this.captureActionBaseline(session, timeoutMs);
           await baseline.page.goto(action.url, {
             waitUntil: "domcontentloaded",
             timeout: timeoutMs,
@@ -1194,6 +1307,7 @@ export class BrowserSessionService {
           this.emitProgress(run, "snapshotting", {action: "navigate"});
           const capture = await this.takeSnapshot(session, {
             mode: snapshotMode,
+            timeoutMs,
           });
           const changes = buildSnapshotChanges({
             before: baseline.snapshot,
@@ -1205,9 +1319,9 @@ export class BrowserSessionService {
         }
         case "snapshot":
           this.emitProgress(run, "snapshotting", {action: "snapshot"});
-          return await this.buildSnapshotPayload(session, "snapshot", snapshotMode);
+          return await this.buildSnapshotPayload(session, "snapshot", snapshotMode, undefined, undefined, timeoutMs);
         case "click": {
-          const baseline = await this.captureActionBaseline(session);
+          const baseline = await this.captureActionBaseline(session, timeoutMs);
           const target = formatActionTarget(action);
           this.emitProgress(run, "acting", {
             action: "click",
@@ -1222,6 +1336,7 @@ export class BrowserSessionService {
           this.emitProgress(run, "snapshotting", {action: "click"});
           const capture = await this.takeSnapshot(session, {
             mode: snapshotMode,
+            timeoutMs,
           });
           const changes = buildSnapshotChanges({
             before: baseline.snapshot,
@@ -1232,7 +1347,7 @@ export class BrowserSessionService {
           return await this.buildSnapshotPayload(session, "click", snapshotMode, changes, capture);
         }
         case "type": {
-          const baseline = await this.captureActionBaseline(session);
+          const baseline = await this.captureActionBaseline(session, timeoutMs);
           const target = formatActionTarget(action);
           this.emitProgress(run, "acting", {
             action: "type",
@@ -1261,6 +1376,7 @@ export class BrowserSessionService {
           this.emitProgress(run, "snapshotting", {action: "type"});
           const capture = await this.takeSnapshot(session, {
             mode: snapshotMode,
+            timeoutMs,
           });
           const changes = buildSnapshotChanges({
             before: baseline.snapshot,
@@ -1271,7 +1387,7 @@ export class BrowserSessionService {
           return await this.buildSnapshotPayload(session, "type", snapshotMode, changes, capture);
         }
         case "press": {
-          const baseline = await this.captureActionBaseline(session);
+          const baseline = await this.captureActionBaseline(session, timeoutMs);
           this.emitProgress(run, "acting", {action: "press", key: action.key});
           if (trimToUndefined(action.ref) || trimToUndefined(action.selector)) {
             await (await this.targetLocator(page, action, timeoutMs)).press(action.key, {
@@ -1285,6 +1401,7 @@ export class BrowserSessionService {
           this.emitProgress(run, "snapshotting", {action: "press"});
           const capture = await this.takeSnapshot(session, {
             mode: snapshotMode,
+            timeoutMs,
           });
           const changes = buildSnapshotChanges({
             before: baseline.snapshot,
@@ -1295,7 +1412,7 @@ export class BrowserSessionService {
           return await this.buildSnapshotPayload(session, "press", snapshotMode, changes, capture);
         }
         case "select": {
-          const baseline = await this.captureActionBaseline(session);
+          const baseline = await this.captureActionBaseline(session, timeoutMs);
           const target = formatActionTarget(action);
           this.emitProgress(run, "acting", {
             action: "select",
@@ -1317,6 +1434,7 @@ export class BrowserSessionService {
           this.emitProgress(run, "snapshotting", {action: "select"});
           const capture = await this.takeSnapshot(session, {
             mode: snapshotMode,
+            timeoutMs,
           });
           const changes = buildSnapshotChanges({
             before: baseline.snapshot,
@@ -1327,7 +1445,7 @@ export class BrowserSessionService {
           return await this.buildSnapshotPayload(session, "select", snapshotMode, changes, capture);
         }
         case "wait": {
-          const baseline = await this.captureActionBaseline(session);
+          const baseline = await this.captureActionBaseline(session, timeoutMs);
           this.emitProgress(run, "acting", {action: buildWaitLabel(action)});
           if (action.loadState) {
             await page.waitForLoadState(action.loadState, {
@@ -1358,6 +1476,7 @@ export class BrowserSessionService {
           this.emitProgress(run, "snapshotting", {action: "wait"});
           const capture = await this.takeSnapshot(session, {
             mode: snapshotMode,
+            timeoutMs,
           });
           const changes = buildSnapshotChanges({
             before: baseline.snapshot,

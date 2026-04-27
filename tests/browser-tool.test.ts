@@ -212,6 +212,21 @@ class FakePage {
   }
 }
 
+class HangingSnapshotPage extends FakePage {
+  override async evaluate(pageFunction: unknown, arg?: unknown): Promise<unknown> {
+    if (
+      arg
+      && typeof arg === "object"
+      && "script" in arg
+      && "maxChars" in arg
+    ) {
+      return await new Promise(() => undefined);
+    }
+
+    return super.evaluate(pageFunction, arg);
+  }
+}
+
 class FakeBrowserContext {
   private readonly pageQueue: FakePage[];
   private readonly pagesList: FakePage[] = [];
@@ -274,6 +289,17 @@ class FakeBrowserContext {
   emitPage(page: FakePage): void {
     this.pagesList.push(page);
     this.pageListener?.(page);
+  }
+}
+
+class SlowNewPageContext extends FakeBrowserContext {
+  releaseNewPage: (() => void) | null = null;
+
+  override async newPage(): Promise<FakePage> {
+    await new Promise<void>((resolve) => {
+      this.releaseNewPage = resolve;
+    });
+    return super.newPage();
   }
 }
 
@@ -947,5 +973,51 @@ describe("BrowserTool", () => {
 
     expect(result.details).toMatchObject({action: "close", closed: true});
     expect(browser.closed).toBe(true);
+  });
+
+  it("times out hung snapshots and discards the dirty session", async () => {
+    const firstBrowser = new FakeBrowser(new FakeBrowserContext(new HangingSnapshotPage()));
+    const secondBrowser = new FakeBrowser(new FakeBrowserContext(new FakePage()));
+    const launchBrowserImpl = vi.fn()
+      .mockResolvedValueOnce(firstBrowser as any)
+      .mockResolvedValueOnce(secondBrowser as any);
+    const service = new BrowserSessionService({
+      launchBrowserImpl: launchBrowserImpl as any,
+      actionTimeoutMs: 10,
+    });
+    services.push(service);
+
+    const run = createRunContext({cwd: "/workspace/panda", threadId: "thread-1"});
+    await expect(service.handle({action: "snapshot"}, run))
+      .rejects.toThrow(/browser (action snapshot|snapshot) timed out after 10ms/);
+
+    await service.handle({action: "snapshot"}, run);
+
+    expect(launchBrowserImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retain a session that finishes opening after action timeout", async () => {
+    const slowContext = new SlowNewPageContext(new FakePage());
+    const firstBrowser = new FakeBrowser(slowContext);
+    const secondBrowser = new FakeBrowser(new FakeBrowserContext(new FakePage()));
+    const launchBrowserImpl = vi.fn()
+      .mockResolvedValueOnce(firstBrowser as any)
+      .mockResolvedValueOnce(secondBrowser as any);
+    const service = new BrowserSessionService({
+      launchBrowserImpl: launchBrowserImpl as any,
+      actionTimeoutMs: 10,
+    });
+    services.push(service);
+
+    const run = createRunContext({cwd: "/workspace/panda", threadId: "thread-1"});
+    await expect(service.handle({action: "snapshot"}, run))
+      .rejects.toThrow("browser action snapshot timed out after 10ms");
+
+    slowContext.releaseNewPage?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await service.handle({action: "snapshot"}, run);
+
+    expect(firstBrowser.closed).toBe(true);
+    expect(launchBrowserImpl).toHaveBeenCalledTimes(2);
   });
 });
