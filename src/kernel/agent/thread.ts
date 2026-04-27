@@ -2,20 +2,20 @@ import type {AssistantMessage, Message, ThinkingLevel, ToolCall, ToolResultMessa
 
 import type {Agent} from "./agent.js";
 import {
-    InvalidJSONResponseError,
-    InvalidSchemaResponseError,
-    MaxTurnsReachedError,
-    StreamingFailedError,
-    ToolError,
+  InvalidJSONResponseError,
+  InvalidSchemaResponseError,
+  MaxTurnsReachedError,
+  StreamingFailedError,
+  ToolError,
 } from "./exceptions.js";
 import {stringifyUnknown} from "./helpers/stringify.js";
 import {estimateTokensFromString, type TokenCounter} from "./helpers/token-count.js";
 import {gatherContexts, type LlmContext} from "./llm-context.js";
 import type {Hook} from "./hook.js";
 import {
-    buildConversationContext,
-    buildToolResultMessage,
-    collectAssistantToolCalls,
+  buildConversationContext,
+  buildToolResultMessage,
+  collectAssistantToolCalls,
 } from "../../integrations/providers/shared/messages.js";
 import {isCompactSummaryMessage} from "./helpers/compact.js";
 import {PiAiRuntime} from "../../integrations/providers/shared/runtime.js";
@@ -178,7 +178,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
 
   constructor(options: ThreadOptions<TContext, TOutput>) {
     this.agent = options.agent;
-    this.maxTurns = options.maxTurns ?? 100;
+    this.maxTurns = options.maxTurns ?? 200;
     this.turnCount = options.resumeState?.turnCount ?? 0;
     this.history = [...(options.messages ?? [])];
     this.systemPrompt = options.systemPrompt;
