@@ -5,10 +5,11 @@ import {BraveSearchTool, hasBraveSearchApiKey} from "./tools/brave-search-tool.j
 import {BrowserTool, type BrowserToolOptions} from "./tools/browser-tool.js";
 import {MediaTool} from "./tools/media-tool.js";
 import {
-    PostgresReadonlyQueryTool,
-    type PostgresReadonlyQueryToolOptions,
+  PostgresReadonlyQueryTool,
+  type PostgresReadonlyQueryToolOptions,
 } from "./tools/postgres-readonly-query-tool.js";
 import {CurrentDateTimeTool} from "./tools/current-datetime-tool.js";
+import {ImageGenerateTool, type ImageGenerateToolOptions} from "./tools/image-generate-tool.js";
 import {TelepathyScreenshotTool, type TelepathyScreenshotToolOptions,} from "./tools/telepathy-screenshot-tool.js";
 import {WebFetchTool} from "./tools/web-fetch-tool.js";
 import {WebResearchTool} from "./tools/web-research-tool.js";
@@ -18,6 +19,7 @@ import {GlobFilesTool, GrepFilesTool, ReadFileTool} from "./tools/workspace-read
 export interface BuildDefaultAgentToolsOptions {
   bash?: BashToolOptions;
   browser?: BrowserToolOptions;
+  imageGenerate?: ImageGenerateToolOptions;
   postgresReadonly?: PostgresReadonlyQueryToolOptions;
   telepathy?: TelepathyScreenshotToolOptions;
 }
@@ -33,6 +35,7 @@ export interface DefaultAgentToolRegistry {
   readFile: ReadFileTool;
   globFiles: GlobFilesTool;
   grepFiles: GrepFilesTool;
+  imageGenerate: ImageGenerateTool;
   media: MediaTool;
   telepathy?: TelepathyScreenshotTool;
   webFetch: WebFetchTool;
@@ -64,6 +67,7 @@ export function createDefaultAgentToolRegistry(
     readFile: new ReadFileTool(),
     globFiles: new GlobFilesTool(),
     grepFiles: new GrepFilesTool(),
+    imageGenerate: new ImageGenerateTool(options.imageGenerate),
     media: new MediaTool(),
     ...(options.telepathy
       ? {
@@ -116,6 +120,7 @@ export function buildDefaultAgentToolsetsFromRegistry(
       registry.bashJobCancel,
       registry.currentDateTime,
       registry.media,
+      registry.imageGenerate,
       registry.telepathy,
       registry.webFetch,
       registry.postgresReadonlyQuery,

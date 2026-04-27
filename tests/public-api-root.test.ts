@@ -24,6 +24,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "GlobFilesTool",
   "GrepFilesTool",
   "Hook",
+  "ImageGenerateTool",
   "InvalidJSONResponseError",
   "InvalidSchemaResponseError",
   "LlmContext",

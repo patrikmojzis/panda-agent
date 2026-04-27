@@ -18,7 +18,7 @@ export interface ToolArtifactPreview {
 
 export interface ToolArtifactDescriptor {
   kind: "image" | "pdf";
-  source: "browser" | "telepathy" | "view_media";
+  source: "browser" | "telepathy" | "view_media" | "image_generate";
   path: string;
   mimeType: string;
   bytes?: number;
@@ -35,7 +35,10 @@ export function readToolArtifact(details: JsonValue | undefined): ToolArtifactDe
 
   const artifact = details.artifact;
   const kind = artifact.kind === "image" || artifact.kind === "pdf" ? artifact.kind : null;
-  const source = artifact.source === "browser" || artifact.source === "telepathy" || artifact.source === "view_media"
+  const source = artifact.source === "browser"
+    || artifact.source === "telepathy"
+    || artifact.source === "view_media"
+    || artifact.source === "image_generate"
     ? artifact.source
     : null;
   const path = trimToNull(artifact.path);

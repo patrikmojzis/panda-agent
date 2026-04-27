@@ -51,6 +51,10 @@ export {
   SetEnvValueTool,
   type EnvValueToolOptions,
 } from "./tools/env-value-tools.js";
+export {
+  ImageGenerateTool,
+  type ImageGenerateToolOptions,
+} from "./tools/image-generate-tool.js";
 export {MediaTool, type MediaToolOptions} from "./tools/media-tool.js";
 export {MessageAgentTool} from "./tools/message-agent-tool.js";
 export {OutboundTool} from "./tools/outbound-tool.js";

@@ -18,6 +18,7 @@ const EXPECTED_PERSONA_EXPORTS = [
   "EnvironmentContext",
   "GlobFilesTool",
   "GrepFilesTool",
+  "ImageGenerateTool",
   "MediaTool",
   "MessageAgentTool",
   "OutboundTool",

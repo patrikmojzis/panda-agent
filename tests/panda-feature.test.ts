@@ -1,22 +1,23 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-    BashTool,
-    BraveSearchTool,
-    BrowserTool,
-    DateTimeContext,
-    DEFAULT_AGENT_INSTRUCTIONS,
-    EnvironmentContext,
-    MediaTool,
-    PostgresReadonlyQueryTool,
-    WebFetchTool,
-    WebResearchTool,
-    WhisperTool,
+  BashTool,
+  BraveSearchTool,
+  BrowserTool,
+  DateTimeContext,
+  DEFAULT_AGENT_INSTRUCTIONS,
+  EnvironmentContext,
+  ImageGenerateTool,
+  MediaTool,
+  PostgresReadonlyQueryTool,
+  WebFetchTool,
+  WebResearchTool,
+  WhisperTool,
 } from "../src/index.js";
 import {
-    buildDefaultAgentTools,
-    buildDefaultAgentToolsetsFromRegistry,
-    createDefaultAgentToolRegistry,
+  buildDefaultAgentTools,
+  buildDefaultAgentToolsetsFromRegistry,
+  createDefaultAgentToolRegistry,
 } from "../src/panda/definition.js";
 import {resolveStoredContext} from "../src/app/runtime/create-runtime.js";
 import {resolveRemoteInitialCwd} from "../src/integrations/shell/bash-executor.js";
@@ -63,11 +64,12 @@ describe("Panda feature surface", () => {
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       'Do not leak sensitive details through "just a summary," paraphrase, excerpt, or forwarding the emotional gist.',
     );
-    expect(tools).toHaveLength(4);
+    expect(tools).toHaveLength(5);
     expect(tools[0]).toBeInstanceOf(BashTool);
     expect(tools[1]?.name).toBe("current_datetime");
     expect(tools[2]).toBeInstanceOf(MediaTool);
-    expect(tools[3]).toBeInstanceOf(WebFetchTool);
+    expect(tools[3]).toBeInstanceOf(ImageGenerateTool);
+    expect(tools[4]).toBeInstanceOf(WebFetchTool);
   });
 
   it("adds Brave search when BRAVE_API_KEY is configured", () => {
@@ -75,8 +77,8 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildDefaultAgentTools();
 
-    expect(tools).toHaveLength(5);
-    expect(tools[4]).toBeInstanceOf(BraveSearchTool);
+    expect(tools).toHaveLength(6);
+    expect(tools[5]).toBeInstanceOf(BraveSearchTool);
   });
 
   it("adds Whisper when OPENAI_API_KEY is configured", () => {
@@ -84,9 +86,9 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     const tools = buildDefaultAgentTools();
 
-    expect(tools).toHaveLength(6);
-    expect(tools[4]).toBeInstanceOf(WebResearchTool);
-    expect(tools[5]).toBeInstanceOf(WhisperTool);
+    expect(tools).toHaveLength(7);
+    expect(tools[5]).toBeInstanceOf(WebResearchTool);
+    expect(tools[6]).toBeInstanceOf(WhisperTool);
   });
 
   it("appends extra tools without adding hidden defaults", () => {
@@ -95,8 +97,8 @@ describe("Panda feature surface", () => {
     const extraTool = { name: "extra-tool" } as any;
     const tools = buildDefaultAgentTools([extraTool]);
 
-    expect(tools).toHaveLength(5);
-    expect(tools[4]).toBe(extraTool);
+    expect(tools).toHaveLength(6);
+    expect(tools[5]).toBe(extraTool);
   });
 
   it("builds explicit specialist toolsets and keeps workspace/browser tools off the main agent", () => {
@@ -112,6 +114,7 @@ describe("Panda feature surface", () => {
       "bash",
       "current_datetime",
       "view_media",
+      "image_generate",
       "web_fetch",
       "postgres_readonly_query",
     ]);
