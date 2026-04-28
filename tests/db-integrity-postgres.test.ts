@@ -204,13 +204,12 @@ describe("Database integrity hardening", () => {
       runId: run.id,
     })).rejects.toThrow();
 
-    await expect(threadStore.createBashJob({
+    await expect(threadStore.createToolJob({
       id: "job-1",
       threadId: "thread-b",
       runId: run.id,
-      command: "echo hi",
-      mode: "local",
-      initialCwd: "/tmp",
+      kind: "bash",
+      summary: "echo hi",
     })).rejects.toThrow();
   });
 

@@ -15,5 +15,5 @@ Start here:
 - [Skills](./skills.md)
 - [Heartbeat](./heartbeat.md)
 - [Watches](./watches.md)
-- [Background Bash](./background-bash.md)
+- [Background Jobs](./background-bash.md)
 - [Remote Bash](./remote-bash.md)

@@ -1,8 +1,6 @@
 import type {
-    CreateThreadBashJobInput,
     CreateThreadInput,
-    ThreadBashJobRecord,
-    ThreadBashJobUpdate,
+    CreateThreadToolJobInput,
     ThreadInputDeliveryMode,
     ThreadInputPayload,
     ThreadInputRecord,
@@ -11,6 +9,8 @@ import type {
     ThreadRunRecord,
     ThreadRuntimeMessagePayload,
     ThreadSummaryRecord,
+    ThreadToolJobRecord,
+    ThreadToolJobUpdate,
     ThreadUpdate,
 } from "./types.js";
 
@@ -53,11 +53,11 @@ export interface ThreadRuntimeStore {
   failRunIfRunning(runId: string, error?: string): Promise<ThreadRunRecord | null>;
   listRuns(threadId: string): Promise<readonly ThreadRunRecord[]>;
   listRunningRuns(): Promise<readonly ThreadRunRecord[]>;
-  createBashJob(input: CreateThreadBashJobInput): Promise<ThreadBashJobRecord>;
-  getBashJob(jobId: string): Promise<ThreadBashJobRecord>;
-  listBashJobs(threadId: string): Promise<readonly ThreadBashJobRecord[]>;
-  updateBashJob(jobId: string, update: ThreadBashJobUpdate): Promise<ThreadBashJobRecord>;
-  markRunningBashJobsLost(reason?: string): Promise<number>;
+  createToolJob(input: CreateThreadToolJobInput): Promise<ThreadToolJobRecord>;
+  getToolJob(jobId: string): Promise<ThreadToolJobRecord>;
+  listToolJobs(threadId: string): Promise<readonly ThreadToolJobRecord[]>;
+  updateToolJob(jobId: string, update: ThreadToolJobUpdate): Promise<ThreadToolJobRecord>;
+  markRunningToolJobsLost(reason?: string): Promise<number>;
   listPendingInputs(threadId: string): Promise<readonly ThreadInputRecord[]>;
   requestRunAbort(threadId: string, reason?: string): Promise<ThreadRunRecord | null>;
 }

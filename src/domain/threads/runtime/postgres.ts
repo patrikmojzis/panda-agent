@@ -4,38 +4,38 @@ import {resolveModelSelector} from "../../../kernel/models/model-selector.js";
 import {addConstraint, alterIfSupported, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
 import type {ThreadLease, ThreadLeaseManager} from "./coordinator.js";
 import {
-  buildThreadRuntimeTableNames,
-  CREATE_RUNTIME_SCHEMA_SQL,
-  quoteIdentifier,
-  type ThreadRuntimeTableNames,
-  toJson,
-  validateIdentifier,
+    buildThreadRuntimeTableNames,
+    CREATE_RUNTIME_SCHEMA_SQL,
+    quoteIdentifier,
+    type ThreadRuntimeTableNames,
+    toJson,
+    validateIdentifier,
 } from "./postgres-shared.js";
 import {buildThreadRuntimeSchemaSql} from "./postgres-schema.js";
-import {parseBashJobRow, parseInputRow, parseMessageRow, parseRunRow, parseThreadRow} from "./postgres-rows.js";
+import {parseInputRow, parseMessageRow, parseRunRow, parseThreadRow, parseToolJobRow} from "./postgres-rows.js";
 import {
-  applyPendingThreadInputs,
-  discardPendingThreadInputs,
-  enqueueThreadInput,
-  promoteQueuedThreadInputs,
+    applyPendingThreadInputs,
+    discardPendingThreadInputs,
+    enqueueThreadInput,
+    promoteQueuedThreadInputs,
 } from "./postgres-inputs.js";
 import type {PgPoolLike, PgQueryable} from "./postgres-db.js";
 import type {ThreadEnqueueResult, ThreadInputApplyScope, ThreadRuntimeStore} from "./store.js";
 import {
-  type CreateThreadBashJobInput,
-  type CreateThreadInput,
-  missingThreadError,
-  type ThreadBashJobRecord,
-  type ThreadBashJobUpdate,
-  type ThreadInputDeliveryMode,
-  type ThreadInputPayload,
-  type ThreadInputRecord,
-  type ThreadMessageRecord,
-  type ThreadRecord,
-  type ThreadRunRecord,
-  type ThreadRuntimeMessagePayload,
-  type ThreadSummaryRecord,
-  type ThreadUpdate,
+    type CreateThreadInput,
+    type CreateThreadToolJobInput,
+    missingThreadError,
+    type ThreadInputDeliveryMode,
+    type ThreadInputPayload,
+    type ThreadInputRecord,
+    type ThreadMessageRecord,
+    type ThreadRecord,
+    type ThreadRunRecord,
+    type ThreadRuntimeMessagePayload,
+    type ThreadSummaryRecord,
+    type ThreadToolJobRecord,
+    type ThreadToolJobUpdate,
+    type ThreadUpdate,
 } from "./types.js";
 import {buildIdentityTableNames} from "../../../domain/identity/postgres-shared.js";
 import {buildSessionTableNames} from "../../../domain/sessions/postgres-shared.js";
@@ -146,6 +146,17 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         `,
       },
       {
+        label: "tool_jobs.run_id bound to a run from another thread",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.toolJobs} AS job
+          INNER JOIN ${this.tables.runs} AS run
+            ON run.id = job.run_id
+          WHERE job.run_id IS NOT NULL
+            AND run.thread_id <> job.thread_id
+        `,
+      },
+      {
         label: "bash_jobs.run_id bound to a run from another thread",
         sql: `
           SELECT COUNT(*)::INTEGER AS count
@@ -172,6 +183,23 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         AND (
           ${this.tables.messages}.run_thread_id IS NULL
           OR ${this.tables.messages}.run_thread_id <> run.thread_id
+        )
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.toolJobs}
+      SET run_thread_id = NULL
+      WHERE run_id IS NULL
+        AND run_thread_id IS NOT NULL
+    `);
+    await this.pool.query(`
+      UPDATE ${this.tables.toolJobs}
+      SET run_thread_id = run.thread_id
+      FROM ${this.tables.runs} AS run
+      WHERE ${this.tables.toolJobs}.run_id IS NOT NULL
+        AND run.id = ${this.tables.toolJobs}.run_id
+        AND (
+          ${this.tables.toolJobs}.run_thread_id IS NULL
+          OR ${this.tables.toolJobs}.run_thread_id <> run.thread_id
         )
     `);
     await this.pool.query(`
@@ -214,6 +242,26 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     await addConstraint(this.pool, `
       ALTER TABLE ${this.tables.messages}
       ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_messages_run_scope_fk`)}
+      FOREIGN KEY (run_thread_id, run_id)
+      REFERENCES ${this.tables.runs}(thread_id, id)
+      ON DELETE SET NULL
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.toolJobs}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_tool_jobs_run_scope_check`)}
+      CHECK (
+        (
+          run_id IS NULL
+          AND run_thread_id IS NULL
+        ) OR (
+          run_id IS NOT NULL
+          AND run_thread_id = thread_id
+        )
+      )
+    `);
+    await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.toolJobs}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_tool_jobs_run_scope_fk`)}
       FOREIGN KEY (run_thread_id, run_id)
       REFERENCES ${this.tables.runs}(thread_id, id)
       ON DELETE SET NULL
@@ -786,32 +834,22 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     return result.rows.map((row) => parseRunRow(row as Record<string, unknown>));
   }
 
-  async createBashJob(input: CreateThreadBashJobInput): Promise<ThreadBashJobRecord> {
+  async createToolJob(input: CreateThreadToolJobInput): Promise<ThreadToolJobRecord> {
     const startedAt = input.startedAt ?? Date.now();
     const result = await this.pool.query(`
-      INSERT INTO ${this.tables.bashJobs} (
+      INSERT INTO ${this.tables.toolJobs} (
         id,
         thread_id,
         run_id,
         run_thread_id,
+        kind,
         status,
-        command,
-        mode,
-        initial_cwd,
+        summary,
         started_at,
-        timed_out,
-        stdout,
-        stderr,
-        stdout_chars,
-        stderr_chars,
-        stdout_truncated,
-        stderr_truncated,
-        stdout_persisted,
-        stderr_persisted,
-        stdout_path,
-        stderr_path,
-        tracked_env_keys,
-        status_reason
+        result,
+        error,
+        status_reason,
+        progress
       ) VALUES (
         $1,
         $2,
@@ -821,20 +859,10 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         $6,
         $7,
         $8,
-        $9,
+        $9::jsonb,
         $10,
         $11,
-        $12,
-        $13,
-        $14,
-        $15,
-        $16,
-        $17,
-        $18,
-        $19,
-        $20,
-        $21::jsonb,
-        $22
+        $12::jsonb
       )
       RETURNING *
     `, [
@@ -842,57 +870,47 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       input.threadId,
       input.runId ?? null,
       input.runId ? input.threadId : null,
+      input.kind,
       input.status ?? "running",
-      input.command,
-      input.mode,
-      input.initialCwd,
+      input.summary ?? "",
       new Date(startedAt),
-      input.timedOut ?? false,
-      input.stdout ?? "",
-      input.stderr ?? "",
-      input.stdoutChars ?? 0,
-      input.stderrChars ?? 0,
-      input.stdoutTruncated ?? false,
-      input.stderrTruncated ?? false,
-      input.stdoutPersisted ?? false,
-      input.stderrPersisted ?? false,
-      input.stdoutPath ?? null,
-      input.stderrPath ?? null,
-      toJson(input.trackedEnvKeys ?? []),
+      toJson(input.result),
+      input.error ?? null,
       input.statusReason ?? null,
+      toJson(input.progress),
     ]);
 
     await this.touchThread(input.threadId);
 
-    const record = parseBashJobRow(result.rows[0] as Record<string, unknown>);
+    const record = parseToolJobRow(result.rows[0] as Record<string, unknown>);
     await this.notifyThreadChanged(record.threadId);
     return record;
   }
 
-  async getBashJob(jobId: string): Promise<ThreadBashJobRecord> {
+  async getToolJob(jobId: string): Promise<ThreadToolJobRecord> {
     const result = await this.pool.query(
-      `SELECT * FROM ${this.tables.bashJobs} WHERE id = $1`,
+      `SELECT * FROM ${this.tables.toolJobs} WHERE id = $1`,
       [jobId],
     );
 
     const row = result.rows[0];
     if (!row) {
-      throw new Error(`Unknown bash job ${jobId}`);
+      throw new Error(`Unknown tool job ${jobId}`);
     }
 
-    return parseBashJobRow(row as Record<string, unknown>);
+    return parseToolJobRow(row as Record<string, unknown>);
   }
 
-  async listBashJobs(threadId: string): Promise<readonly ThreadBashJobRecord[]> {
+  async listToolJobs(threadId: string): Promise<readonly ThreadToolJobRecord[]> {
     const result = await this.pool.query(
-      `SELECT * FROM ${this.tables.bashJobs} WHERE thread_id = $1 ORDER BY started_at ASC`,
+      `SELECT * FROM ${this.tables.toolJobs} WHERE thread_id = $1 ORDER BY started_at ASC`,
       [threadId],
     );
 
-    return result.rows.map((row) => parseBashJobRow(row as Record<string, unknown>));
+    return result.rows.map((row) => parseToolJobRow(row as Record<string, unknown>));
   }
 
-  async updateBashJob(jobId: string, update: ThreadBashJobUpdate): Promise<ThreadBashJobRecord> {
+  async updateToolJob(jobId: string, update: ThreadToolJobUpdate): Promise<ThreadToolJobRecord> {
     const assignments: string[] = [];
     const values: unknown[] = [jobId];
     let index = 2;
@@ -912,11 +930,8 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     if (update.status !== undefined) {
       push("status", update.status);
     }
-    if (update.initialCwd !== undefined) {
-      push("initial_cwd", update.initialCwd);
-    }
-    if (update.finalCwd !== undefined) {
-      push("final_cwd", update.finalCwd ?? null);
+    if (update.summary !== undefined) {
+      push("summary", update.summary);
     }
     if (update.startedAt !== undefined) {
       push("started_at", new Date(update.startedAt));
@@ -927,75 +942,42 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     if (update.durationMs !== undefined) {
       push("duration_ms", update.durationMs ?? null);
     }
-    if (update.exitCode !== undefined) {
-      push("exit_code", update.exitCode ?? null);
+    if (update.result !== undefined) {
+      push("result", update.result === null ? null : toJson(update.result), "::jsonb");
     }
-    if (update.signal !== undefined) {
-      push("signal", update.signal ?? null);
-    }
-    if (update.timedOut !== undefined) {
-      push("timed_out", update.timedOut);
-    }
-    if (update.stdout !== undefined) {
-      push("stdout", update.stdout);
-    }
-    if (update.stderr !== undefined) {
-      push("stderr", update.stderr);
-    }
-    if (update.stdoutChars !== undefined) {
-      push("stdout_chars", update.stdoutChars);
-    }
-    if (update.stderrChars !== undefined) {
-      push("stderr_chars", update.stderrChars);
-    }
-    if (update.stdoutTruncated !== undefined) {
-      push("stdout_truncated", update.stdoutTruncated);
-    }
-    if (update.stderrTruncated !== undefined) {
-      push("stderr_truncated", update.stderrTruncated);
-    }
-    if (update.stdoutPersisted !== undefined) {
-      push("stdout_persisted", update.stdoutPersisted);
-    }
-    if (update.stderrPersisted !== undefined) {
-      push("stderr_persisted", update.stderrPersisted);
-    }
-    if (update.stdoutPath !== undefined) {
-      push("stdout_path", update.stdoutPath ?? null);
-    }
-    if (update.stderrPath !== undefined) {
-      push("stderr_path", update.stderrPath ?? null);
-    }
-    if (update.trackedEnvKeys !== undefined) {
-      push("tracked_env_keys", toJson(update.trackedEnvKeys ?? []), "::jsonb");
+    if (update.error !== undefined) {
+      push("error", update.error ?? null);
     }
     if (update.statusReason !== undefined) {
       push("status_reason", update.statusReason ?? null);
     }
+    if (update.progress !== undefined) {
+      push("progress", update.progress === null ? null : toJson(update.progress), "::jsonb");
+    }
 
     if (assignments.length === 0) {
-      return this.getBashJob(jobId);
+      return this.getToolJob(jobId);
     }
 
     const result = await this.pool.query(
-      `UPDATE ${this.tables.bashJobs} SET ${assignments.join(", ")} WHERE id = $1 RETURNING *`,
+      `UPDATE ${this.tables.toolJobs} SET ${assignments.join(", ")} WHERE id = $1 RETURNING *`,
       values,
     );
 
     const row = result.rows[0];
     if (!row) {
-      throw new Error(`Unknown bash job ${jobId}`);
+      throw new Error(`Unknown tool job ${jobId}`);
     }
 
-    const record = parseBashJobRow(row as Record<string, unknown>);
+    const record = parseToolJobRow(row as Record<string, unknown>);
     await this.touchThread(record.threadId);
     await this.notifyThreadChanged(record.threadId);
     return record;
   }
 
-  async markRunningBashJobsLost(reason = "The runtime restarted before the background bash job finished."): Promise<number> {
+  async markRunningToolJobsLost(reason = "The runtime restarted before the background tool job finished."): Promise<number> {
     const runningResult = await this.pool.query(
-      `SELECT id, thread_id, started_at FROM ${this.tables.bashJobs} WHERE status = 'running'`,
+      `SELECT id, thread_id, started_at FROM ${this.tables.toolJobs} WHERE status = 'running'`,
     );
     if (runningResult.rows.length === 0) {
       return 0;
@@ -1012,7 +994,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       threadIds.add(threadId);
 
       await this.pool.query(`
-        UPDATE ${this.tables.bashJobs}
+        UPDATE ${this.tables.toolJobs}
         SET
           status = 'lost',
           finished_at = $2,

@@ -1,8 +1,8 @@
-# Background Bash Smoke Recipe
+# Background Jobs Smoke Recipe
 
 This is a manual developer smoke test. It is not CI.
 
-Start with [Live Smoke](./live-smoke.md) if you just need a headless real-runtime check. Use this recipe when you specifically need to watch interactive background bash behavior over multiple turns.
+Start with [Live Smoke](./live-smoke.md) if you just need a headless real-runtime check. Use this recipe when you specifically need to watch interactive background job behavior over multiple turns.
 
 ## Goal
 
@@ -103,7 +103,7 @@ Start another short background job and keep chatting instead of polling.
 Expected:
 
 - Panda gets a machine-generated background event when the job finishes
-- Panda can react without an explicit `bash_job_status`
+- Panda can react without an explicit `background_job_status`
 
 5. Cancel the long job.
 
@@ -146,6 +146,6 @@ Expected:
 
 - background jobs must never update shared cwd
 - background jobs must never export or unset shared env vars
-- explicit `bash_job_*` tools should be used instead of shell polling loops
+- explicit `background_job_*` tools should be used instead of shell polling loops
 - auto-wake should queue a durable background event through thread input, not append an assistant message mid-run
 - remote mode should behave the same as local mode from Panda’s point of view

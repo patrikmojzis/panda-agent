@@ -11,6 +11,7 @@ import {DEFAULT_AGENT_INSTRUCTIONS} from "../../panda/prompt.js";
 import type {DefaultAgentSessionContext} from "./panda-session-context.js";
 import type {BashToolOptions} from "../../panda/tools/bash-tool.js";
 import type {BrowserToolOptions} from "../../panda/tools/browser-tool.js";
+import type {ImageGenerateToolOptions} from "../../panda/tools/image-generate-tool.js";
 import type {TelepathyScreenshotToolOptions} from "../../panda/tools/telepathy-screenshot-tool.js";
 import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js";
 import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js";
@@ -45,10 +46,11 @@ export interface CreateThreadDefinitionOptions {
   session: Pick<SessionRecord, "id" | "agentKey">;
   fallbackContext: Pick<DefaultAgentSessionContext, "cwd">;
   agentStore?: AgentStore;
-  threadStore?: Pick<ThreadRuntimeStore, "listBashJobs">;
+  threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   bashToolOptions?: BashToolOptions;
   browserToolOptions?: BrowserToolOptions;
+  imageGenerateToolOptions?: ImageGenerateToolOptions;
   telepathyToolOptions?: TelepathyScreenshotToolOptions;
   tools?: readonly Tool[];
   extraLlmContexts?: readonly LlmContext[];
@@ -124,6 +126,7 @@ export function createThreadDefinition(
       tools: options.tools ?? buildDefaultAgentTools([], {
         bash: options.bashToolOptions,
         browser: options.browserToolOptions,
+        imageGenerate: options.imageGenerateToolOptions,
         telepathy: options.telepathyToolOptions,
       }),
     }),

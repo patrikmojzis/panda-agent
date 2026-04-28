@@ -24,6 +24,7 @@ export interface DefaultAgentSubagentRunInput {
   task: string;
   context?: string;
   model?: string;
+  signal?: AbortSignal;
 }
 
 export interface DefaultAgentSubagentRunResult {
@@ -121,7 +122,7 @@ export class DefaultAgentSubagentService {
     const childContext = buildSubagentContext(parentContext, currentDepth + 1);
     const childMessages: Message[] = [stringToUserMessage(renderSubagentHandoff(input.task, input.context))];
     const childTools = this.toolsets[policy.toolset];
-    const threadStore = typeof this.store.listBashJobs === "function" ? this.store : undefined;
+    const threadStore = typeof this.store.listToolJobs === "function" ? this.store : undefined;
     const defaultRoleModel = resolveDefaultSubagentModelSelector(input.role);
     const childThread = new Thread<DefaultAgentSessionContext>({
       agent: new Agent({
@@ -151,7 +152,7 @@ export class DefaultAgentSubagentService {
       thinking: policy.thinking,
       runtime: parentDefinition.runtime,
       countTokens: parentDefinition.countTokens,
-      signal: input.run.signal,
+      signal: input.signal ?? input.run.signal,
     });
 
     const startedAt = Date.now();

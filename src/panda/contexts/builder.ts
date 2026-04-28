@@ -32,7 +32,7 @@ export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContext
 export interface BuildDefaultAgentLlmContextsOptions {
   context?: DefaultAgentSessionContext;
   agentStore?: AgentStore;
-  threadStore?: Pick<ThreadRuntimeStore, "listBashJobs">;
+  threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   agentKey?: string;
   threadId?: string;

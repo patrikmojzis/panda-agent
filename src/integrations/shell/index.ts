@@ -1,12 +1,11 @@
 export {
-  BashJobService,
-  type BashJobServiceOptions,
-  type BashJobServiceStartOptions,
-} from "./bash-job-service.js";
-export {
   ManagedBashJob,
   type ManagedBashJobOptions,
 } from "./bash-background-job.js";
+export {
+  startBashBackgroundJob,
+  type StartBashBackgroundJobOptions,
+} from "./bash-background-runner.js";
 export {
   startBashRunner,
   resolveBashRunnerOptions,

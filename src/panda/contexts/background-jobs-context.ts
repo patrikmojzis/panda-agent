@@ -37,7 +37,7 @@ function formatElapsedDuration(startedAt: number, now: number): string {
 }
 
 export interface BackgroundJobsContextOptions {
-  store: Pick<ThreadRuntimeStore, "listBashJobs">;
+  store: Pick<ThreadRuntimeStore, "listToolJobs">;
   threadId: string;
   now?: Date | (() => Date);
 }
@@ -51,9 +51,9 @@ function resolveNow(now?: Date | (() => Date)): Date {
 }
 
 export class BackgroundJobsContext extends LlmContext {
-  override name = "Background Bash Jobs";
+  override name = "Background Jobs";
 
-  private readonly store: Pick<ThreadRuntimeStore, "listBashJobs">;
+  private readonly store: Pick<ThreadRuntimeStore, "listToolJobs">;
   private readonly threadId: string;
   private readonly now?: Date | (() => Date);
 
@@ -66,16 +66,15 @@ export class BackgroundJobsContext extends LlmContext {
 
   async getContent(): Promise<string> {
     const now = resolveNow(this.now).getTime();
-    const runningJobs = (await this.store.listBashJobs(this.threadId))
+    const runningJobs = (await this.store.listToolJobs(this.threadId))
       .filter((job) => job.status === "running");
 
     return renderBackgroundJobsContext(runningJobs.map((job) => ({
       jobId: job.id,
-      mode: job.mode,
+      kind: job.kind,
       startedAt: new Date(job.startedAt).toISOString(),
       elapsed: formatElapsedDuration(job.startedAt, now),
-      initialCwd: job.initialCwd,
-      command: truncatePreview(job.command, COMMAND_PREVIEW_CHARS),
+      summary: truncatePreview(job.summary, COMMAND_PREVIEW_CHARS),
     })));
   }
 }

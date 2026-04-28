@@ -46,7 +46,7 @@ Agent bootstrap creates:
 
 - keeps the same `session_id`
 - aborts the old thread if needed
-- cancels old-thread bash jobs
+- cancels old-thread background jobs
 - drops old-thread pending inputs
 - creates a fresh thread
 - updates `session.current_thread_id`

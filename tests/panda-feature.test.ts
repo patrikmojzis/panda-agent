@@ -1,26 +1,30 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-  BashTool,
-  BraveSearchTool,
-  BrowserTool,
-  DateTimeContext,
-  DEFAULT_AGENT_INSTRUCTIONS,
-  EnvironmentContext,
-  ImageGenerateTool,
-  MediaTool,
-  PostgresReadonlyQueryTool,
-  WebFetchTool,
-  WebResearchTool,
-  WhisperTool,
+    Agent,
+    BashTool,
+    BraveSearchTool,
+    BrowserTool,
+    DateTimeContext,
+    DEFAULT_AGENT_INSTRUCTIONS,
+    EnvironmentContext,
+    ImageGenerateTool,
+    MediaTool,
+    PostgresReadonlyQueryTool,
+    RunContext,
+    WebFetchTool,
+    WebResearchTool,
+    WhisperTool,
 } from "../src/index.js";
 import {
-  buildDefaultAgentTools,
-  buildDefaultAgentToolsetsFromRegistry,
-  createDefaultAgentToolRegistry,
+    buildDefaultAgentTools,
+    buildDefaultAgentToolsetsFromRegistry,
+    createDefaultAgentToolRegistry,
 } from "../src/panda/definition.js";
+import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {resolveStoredContext} from "../src/app/runtime/create-runtime.js";
 import {resolveRemoteInitialCwd} from "../src/integrations/shell/bash-executor.js";
+import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 class FakeReadonlyPool {
   async connect(): Promise<never> {
@@ -64,12 +68,97 @@ describe("Panda feature surface", () => {
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       'Do not leak sensitive details through "just a summary," paraphrase, excerpt, or forwarding the emotional gist.',
     );
-    expect(tools).toHaveLength(5);
+    expect(tools).toHaveLength(4);
     expect(tools[0]).toBeInstanceOf(BashTool);
     expect(tools[1]?.name).toBe("current_datetime");
     expect(tools[2]).toBeInstanceOf(MediaTool);
-    expect(tools[3]).toBeInstanceOf(ImageGenerateTool);
-    expect(tools[4]).toBeInstanceOf(WebFetchTool);
+    expect(tools[3]).toBeInstanceOf(WebFetchTool);
+  });
+
+  it("adds image generation only when background jobs are available", () => {
+    vi.stubEnv("BRAVE_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "");
+    const jobService = {} as any;
+    const tools = buildDefaultAgentTools([], {
+      imageGenerate: {
+        jobService,
+      },
+    });
+
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "bash",
+      "background_job_status",
+      "background_job_wait",
+      "background_job_cancel",
+      "current_datetime",
+      "view_media",
+      "image_generate",
+      "web_fetch",
+    ]);
+    expect(tools[6]).toBeInstanceOf(ImageGenerateTool);
+  });
+
+  it("reuses the bash background job service for image generation", () => {
+    vi.stubEnv("BRAVE_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "");
+    const tools = buildDefaultAgentTools([], {
+      bash: {
+        jobService: {} as any,
+      },
+    });
+
+    expect(tools.map((tool) => tool.name)).toContain("image_generate");
+  });
+
+  it("reuses the image generation background job service for background bash", async () => {
+    vi.stubEnv("BRAVE_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "");
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-1",
+      sessionId: "session-main",
+    });
+    const jobService = new BackgroundToolJobService({store});
+    const tools = buildDefaultAgentTools([], {
+      imageGenerate: {
+        jobService,
+      },
+    });
+    const bash = tools.find((tool) => tool.name === "bash") as BashTool | undefined;
+    expect(bash).toBeInstanceOf(BashTool);
+    const agent = new Agent({
+      name: "panda",
+      instructions: "test",
+      tools,
+    });
+
+    const started = await bash!.run({
+      command: "printf ok",
+      background: true,
+    }, new RunContext({
+      agent,
+      turn: 1,
+      maxTurns: 5,
+      messages: [],
+      context: {
+        threadId: "thread-1",
+        sessionId: "session-main",
+        agentKey: "panda",
+        cwd: process.cwd(),
+      },
+    })) as Record<string, unknown>;
+
+    expect(started).toMatchObject({
+      kind: "bash",
+      status: "running",
+    });
+    const finished = await jobService.wait("thread-1", String(started.jobId), 1_000);
+    expect(finished).toMatchObject({
+      status: "completed",
+      result: {
+        stdout: "ok",
+      },
+    });
   });
 
   it("adds Brave search when BRAVE_API_KEY is configured", () => {
@@ -77,8 +166,8 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildDefaultAgentTools();
 
-    expect(tools).toHaveLength(6);
-    expect(tools[5]).toBeInstanceOf(BraveSearchTool);
+    expect(tools).toHaveLength(5);
+    expect(tools[4]).toBeInstanceOf(BraveSearchTool);
   });
 
   it("adds Whisper when OPENAI_API_KEY is configured", () => {
@@ -86,9 +175,21 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     const tools = buildDefaultAgentTools();
 
-    expect(tools).toHaveLength(7);
-    expect(tools[5]).toBeInstanceOf(WebResearchTool);
-    expect(tools[6]).toBeInstanceOf(WhisperTool);
+    expect(tools).toHaveLength(5);
+    expect(tools[4]).toBeInstanceOf(WhisperTool);
+  });
+
+  it("adds web research only when OpenAI and background jobs are available", () => {
+    vi.stubEnv("BRAVE_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
+    const tools = buildDefaultAgentTools([], {
+      bash: {
+        jobService: {} as any,
+      },
+    });
+
+    expect(tools.map((tool) => tool.name)).toContain("web_research");
+    expect(tools.find((tool) => tool.name === "web_research")).toBeInstanceOf(WebResearchTool);
   });
 
   it("appends extra tools without adding hidden defaults", () => {
@@ -97,8 +198,8 @@ describe("Panda feature surface", () => {
     const extraTool = { name: "extra-tool" } as any;
     const tools = buildDefaultAgentTools([extraTool]);
 
-    expect(tools).toHaveLength(6);
-    expect(tools[5]).toBe(extraTool);
+    expect(tools).toHaveLength(5);
+    expect(tools[4]).toBe(extraTool);
   });
 
   it("builds explicit specialist toolsets and keeps workspace/browser tools off the main agent", () => {
@@ -114,7 +215,6 @@ describe("Panda feature surface", () => {
       "bash",
       "current_datetime",
       "view_media",
-      "image_generate",
       "web_fetch",
       "postgres_readonly_query",
     ]);

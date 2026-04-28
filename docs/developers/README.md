@@ -21,5 +21,5 @@ Start here:
 - [Heartbeat](./heartbeat.md)
 - [Watches](./watches.md)
 - [Live Smoke](./live-smoke.md)
-- [Background Bash Smoke Recipe](./background-bash-smoke.md)
+- [Background Jobs Smoke Recipe](./background-bash-smoke.md)
 - [WhatsApp](./whatsapp.md)

@@ -6,15 +6,15 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
     Agent,
-    BashJobCancelTool,
-    BashJobStatusTool,
-    BashJobWaitTool,
+    BackgroundJobCancelTool,
+    BackgroundJobStatusTool,
+    BackgroundJobWaitTool,
     BashTool,
     type DefaultAgentSessionContext,
     RunContext,
     ToolError,
 } from "../src/index.js";
-import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
+import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {RemoteShellExecutor, resolveRunnerUrl,} from "../src/integrations/shell/bash-executor.js";
 import {type BashRunner, startBashRunner,} from "../src/integrations/shell/bash-runner.js";
 import {
@@ -107,7 +107,7 @@ describe("remote bash runner", () => {
         agentKey: "panda",
       },
     });
-    const service = new BashJobService({
+    const service = new BackgroundToolJobService({
       store,
       env: {
         ...process.env,
@@ -123,9 +123,9 @@ describe("remote bash runner", () => {
       outputDirectory: path.join(workspace, "tool-results"),
       jobService: service,
     });
-    const status = new BashJobStatusTool({ service });
-    const wait = new BashJobWaitTool({ service });
-    const cancel = new BashJobCancelTool({ service });
+    const status = new BackgroundJobStatusTool({ service });
+    const wait = new BackgroundJobWaitTool({ service });
+    const cancel = new BackgroundJobCancelTool({ service });
     const context: DefaultAgentSessionContext = {
       sessionId,
       threadId: "thread-bg-remote",
@@ -605,9 +605,11 @@ describe("remote bash runner", () => {
     await waitFor(() => completedJobIds.includes(jobId));
 
     expect(completedJobIds).toEqual([jobId]);
-    await expect(store.getBashJob(jobId)).resolves.toMatchObject({
+    await expect(store.getToolJob(jobId)).resolves.toMatchObject({
       status: "completed",
-      stdout: "remote-done",
+      result: {
+        stdout: "remote-done",
+      },
     });
   });
 
@@ -630,20 +632,13 @@ describe("remote bash runner", () => {
         "content-type": "application/json",
       },
     }));
-    const service = new BashJobService({
-      store,
-      fetchImpl: fetchImpl as typeof fetch,
-      env: {
-        ...process.env,
-        BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: "http://runner.local/{agentKey}",
-      },
-    });
+    const service = new BackgroundToolJobService({store});
     const bash = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
         RUNNER_URL_TEMPLATE: "http://runner.local/{agentKey}",
       },
+      fetchImpl: fetchImpl as typeof fetch,
       jobService: service,
     });
     const context: DefaultAgentSessionContext = {
@@ -661,8 +656,8 @@ describe("remote bash runner", () => {
       createRunContext(context),
     )).rejects.toBeInstanceOf(ToolError);
 
-    await expect(store.listBashJobs("thread-bg-remote")).resolves.toHaveLength(0);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await expect(store.listToolJobs("thread-bg-remote")).resolves.toHaveLength(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("returns a clean error for unknown remote background jobs", async () => {
@@ -761,7 +756,7 @@ describe("remote bash runner", () => {
       createRunContext(context),
     )).rejects.toThrow(`Requested cwd does not exist inside the remote bash runner: ${missingCwd}`);
 
-    await expect(store.listBashJobs("thread-bg-remote")).resolves.toHaveLength(0);
+    await expect(store.listToolJobs("thread-bg-remote")).resolves.toHaveLength(0);
   });
 
   it("routes runner urls by agent key", async () => {

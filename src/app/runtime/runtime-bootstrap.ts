@@ -2,10 +2,10 @@ import {Pool, type PoolClient} from "pg";
 
 import {type AgentStore, PostgresAgentStore} from "../../domain/agents/index.js";
 import {
-  CredentialResolver,
-  CredentialService,
-  PostgresCredentialStore,
-  resolveCredentialCrypto,
+    CredentialResolver,
+    CredentialService,
+    PostgresCredentialStore,
+    resolveCredentialCrypto,
 } from "../../domain/credentials/index.js";
 import {PostgresIdentityStore} from "../../domain/identity/index.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
@@ -16,14 +16,14 @@ import {WatchMutationService} from "../../domain/watches/mutation-service.js";
 import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.js";
 import {PostgresWikiBindingStore, WikiBindingService} from "../../domain/wiki/index.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/index.js";
-import {PostgresAgentAppAuthService, type AgentAppAuthService} from "../../domain/apps/auth.js";
+import {type AgentAppAuthService, PostgresAgentAppAuthService} from "../../domain/apps/auth.js";
 import {
-  buildThreadRuntimeNotificationChannel,
-  parseThreadRuntimeNotification,
+    buildThreadRuntimeNotificationChannel,
+    parseThreadRuntimeNotification,
 } from "../../domain/threads/runtime/postgres.js";
 import {
-  ensureReadonlySessionQuerySchema,
-  readDatabaseUsername,
+    ensureReadonlySessionQuerySchema,
+    readDatabaseUsername,
 } from "../../domain/threads/runtime/postgres-readonly.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
@@ -35,38 +35,35 @@ import {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
 import {
-  AppActionTool,
-  AppCheckTool,
-  AppCreateTool,
-  AppLinkCreateTool,
-  AppListTool,
-  AppViewTool,
+    AppActionTool,
+    AppCheckTool,
+    AppCreateTool,
+    AppLinkCreateTool,
+    AppListTool,
+    AppViewTool,
 } from "../../panda/tools/app-tools.js";
 import {WikiTool} from "../../panda/tools/wiki-tool.js";
+import {resolveTelepathyEnabled, TelepathyHub,} from "../../integrations/telepathy/hub.js";
 import {
-  resolveTelepathyEnabled,
-  TelepathyHub,
-} from "../../integrations/telepathy/hub.js";
-import {
-  ScheduledTaskCancelTool,
-  ScheduledTaskCreateTool,
-  ScheduledTaskUpdateTool,
+    ScheduledTaskCancelTool,
+    ScheduledTaskCreateTool,
+    ScheduledTaskUpdateTool,
 } from "../../panda/tools/scheduled-task-tools.js";
 import {
-  WatchCreateTool,
-  WatchDisableTool,
-  WatchSchemaGetTool,
-  WatchUpdateTool,
+    WatchCreateTool,
+    WatchDisableTool,
+    WatchSchemaGetTool,
+    WatchUpdateTool,
 } from "../../panda/tools/watch-tools.js";
 import {SpawnSubagentTool} from "../../panda/tools/spawn-subagent-tool.js";
 import {ThinkingSetTool} from "../../panda/tools/thinking-set-tool.js";
 import {DefaultAgentSubagentService} from "../../panda/subagents/service.js";
-import {BashJobService} from "../../integrations/shell/bash-job-service.js";
+import {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import {
-  buildObservedPoolConfig,
-  createPostgresPool,
-  observePostgresPool,
-  type PostgresPoolObserver,
+    buildObservedPoolConfig,
+    createPostgresPool,
+    observePostgresPool,
+    type PostgresPoolObserver,
 } from "./database.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import {trimToNull} from "../../lib/strings.js";
@@ -95,7 +92,7 @@ export interface RuntimeBootstrapResult {
   agentStore: AgentStore;
   apps: AgentAppService;
   appAuth: AgentAppAuthService;
-  bashJobService: BashJobService;
+  backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
@@ -117,7 +114,7 @@ interface ObservedPoolState {
 }
 
 function createCloseRuntime(options: {
-  bashJobService: BashJobService | null;
+  backgroundJobService: BackgroundToolJobService | null;
   browserService: BrowserRunnerClient | null;
   telepathyService: TelepathyHub | null;
   postgresPool: Pool;
@@ -158,9 +155,9 @@ function createCloseRuntime(options: {
         },
       },
       {
-        label: "bash-job-service",
+        label: "background-job-service",
         run: async () => {
-          await options.bashJobService?.close();
+          await options.backgroundJobService?.close();
         },
       },
       {
@@ -331,8 +328,8 @@ export async function bootstrapRuntime(
       telepathyDeviceStore,
       store,
     ]);
-    await store.markRunningBashJobsLost();
-    const bashJobService = new BashJobService({
+    await store.markRunningToolJobsLost();
+    const backgroundJobService = new BackgroundToolJobService({
       store,
     });
     browserService = new BrowserRunnerClient({
@@ -401,8 +398,11 @@ export async function bootstrapRuntime(
 
     const toolRegistry = createDefaultAgentToolRegistry({
       bash: {
-        jobService: bashJobService,
+        jobService: backgroundJobService,
         credentialResolver,
+      },
+      imageGenerate: {
+        jobService: backgroundJobService,
       },
       browser: {
         service: resolvedBrowserService,
@@ -462,7 +462,7 @@ export async function bootstrapRuntime(
       store,
       resolveDefinition: (thread) => options.resolveDefinition(thread, {
         agentStore,
-        bashJobService,
+        backgroundJobService,
         browserService: resolvedBrowserService,
         credentialResolver,
         identityStore,
@@ -496,6 +496,7 @@ export async function bootstrapRuntime(
       }),
       new SpawnSubagentTool({
         service: subagentService,
+        jobService: backgroundJobService,
       }),
       new AgentPromptTool({
         store: agentStore,
@@ -566,7 +567,7 @@ export async function bootstrapRuntime(
       agentStore,
       apps,
       appAuth,
-      bashJobService,
+      backgroundJobService,
       browserService: resolvedBrowserService,
       credentialResolver,
       identityStore,
@@ -579,7 +580,7 @@ export async function bootstrapRuntime(
       mainTools,
       pool: postgresPool,
       close: createCloseRuntime({
-        bashJobService,
+        backgroundJobService,
         browserService: resolvedBrowserService,
         telepathyService,
         postgresPool,
@@ -592,7 +593,7 @@ export async function bootstrapRuntime(
     };
   } catch (error) {
     await createCloseRuntime({
-      bashJobService: null,
+        backgroundJobService: null,
       browserService,
       telepathyService,
       postgresPool,

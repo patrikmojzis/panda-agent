@@ -108,20 +108,18 @@ describe("buildDefaultAgentLlmContexts", () => {
         agentKey: "panda",
       },
     });
-    await threadStore.createBashJob({
+    await threadStore.createToolJob({
       id: "job-running",
       threadId: "thread-bg-context",
-      command: "sleep 10 && printf running",
-      mode: "local",
-      initialCwd: "/workspace/panda",
+      kind: "bash",
+      summary: "sleep 10 && printf running",
       startedAt: Date.now() - 1_500,
     });
-    await threadStore.createBashJob({
+    await threadStore.createToolJob({
       id: "job-done",
       threadId: "thread-bg-context",
-      command: "printf done",
-      mode: "local",
-      initialCwd: "/workspace/panda",
+      kind: "bash",
+      summary: "printf done",
       startedAt: Date.now() - 5_000,
       status: "completed",
     });
@@ -134,7 +132,7 @@ describe("buildDefaultAgentLlmContexts", () => {
       threadId: "thread-bg-context",
     }));
 
-    expect(dump).toContain("**Background Bash Jobs:**");
+    expect(dump).toContain("**Background Jobs:**");
     expect(dump).toContain("job-running");
     expect(dump).toContain("sleep 10 && printf running");
     expect(dump).not.toContain("job-done");
@@ -150,12 +148,11 @@ describe("buildDefaultAgentLlmContexts", () => {
         agentKey: "panda",
       },
     });
-    await threadStore.createBashJob({
+    await threadStore.createToolJob({
       id: "job-done",
       threadId: "thread-no-bg-context",
-      command: "printf done",
-      mode: "local",
-      initialCwd: "/workspace/panda",
+      kind: "bash",
+      summary: "printf done",
       startedAt: Date.now() - 5_000,
       status: "completed",
     });

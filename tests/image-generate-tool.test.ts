@@ -6,14 +6,16 @@ import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-  Agent,
-  type DefaultAgentSessionContext,
-  ImageGenerateTool,
-  RunContext,
-  stringToUserMessage,
-  type ToolResultPayload,
+    Agent,
+    type DefaultAgentSessionContext,
+    ImageGenerateTool,
+    RunContext,
+    stringToUserMessage,
+    type ToolResultPayload,
 } from "../src/index.js";
+import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import type {GenerateOpenAIImageRequest} from "../src/integrations/providers/openai-image/client.js";
+import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6p6WQAAAAASUVORK5CYII=";
@@ -91,6 +93,12 @@ describe("ImageGenerateTool", () => {
       const runtime = {
         complete: vi.fn().mockResolvedValue(assistantText("Mascot: red scarf, bright friendly style.")),
       };
+      const store = new TestThreadRuntimeStore();
+      await store.createThread({
+        id: "thread-1",
+        sessionId: "session-1",
+      });
+      const jobService = new BackgroundToolJobService({store});
       const tool = new ImageGenerateTool({
         env: {
           ...process.env,
@@ -99,9 +107,10 @@ describe("ImageGenerateTool", () => {
         },
         client,
         runtime,
+        jobService,
       });
 
-      const result = await tool.run({
+      const started = await tool.run({
         prompt: "Generate a square sticker.",
         images: ["reference.png"],
         size: "auto",
@@ -112,7 +121,21 @@ describe("ImageGenerateTool", () => {
         agentKey: "panda",
         sessionId: "session-1",
         threadId: "thread-1",
-      })) as ToolResultPayload;
+      })) as Record<string, unknown>;
+      expect(started).toMatchObject({
+        kind: "image_generate",
+        status: "running",
+      });
+
+      const record = await jobService.wait("thread-1", String(started.jobId), 1_000);
+      expect(record.status).toBe("completed");
+      const result = {
+        content: [{
+          type: "text" as const,
+          text: String(record.result?.contentText ?? ""),
+        }],
+        details: record.result?.details,
+      } as ToolResultPayload;
 
       expect(capturedRequest?.prompt).toContain("Conversation brief:");
       expect(capturedRequest?.prompt).toContain("red scarf");
@@ -143,7 +166,7 @@ describe("ImageGenerateTool", () => {
       ));
       await expect(stat(details.artifact.path)).resolves.toBeTruthy();
       await expect(readFile(details.artifact.path, "utf8")).resolves.toBe("generated-image");
-      expect(result.content.some((part) => part.type === "image")).toBe(true);
+      expect(result.content.some((part) => part.type === "image")).toBe(false);
 
       const redacted = tool.redactResultMessage({
         role: "toolResult",
@@ -168,9 +191,15 @@ describe("ImageGenerateTool", () => {
       const client = {
         generate: vi.fn(),
       };
-      const tool = new ImageGenerateTool({client});
+      const store = new TestThreadRuntimeStore();
+      await store.createThread({
+        id: "thread-1",
+        sessionId: "session-1",
+      });
+      const jobService = new BackgroundToolJobService({store});
+      const tool = new ImageGenerateTool({client, jobService});
 
-      await expect(tool.run({
+      const started = await tool.run({
         prompt: "Generate from this reference.",
         images: ["missing.png"],
       }, createRunContext({
@@ -178,7 +207,10 @@ describe("ImageGenerateTool", () => {
         agentKey: "panda",
         sessionId: "session-1",
         threadId: "thread-1",
-      }))).rejects.toThrow(/No readable reference image/);
+      })) as Record<string, unknown>;
+      const record = await jobService.wait("thread-1", String(started.jobId), 1_000);
+      expect(record.status).toBe("failed");
+      expect(record.error).toMatch(/No readable reference image/);
       expect(client.generate).not.toHaveBeenCalled();
     } finally {
       await rm(workspace, {recursive: true, force: true});
@@ -186,10 +218,16 @@ describe("ImageGenerateTool", () => {
   });
 
   it("enforces output count and compression caps in the schema/options", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-1",
+      sessionId: "session-1",
+    });
     const tool = new ImageGenerateTool({
       client: {
         generate: vi.fn(),
       },
+      jobService: new BackgroundToolJobService({store}),
     });
 
     await expect(tool.run({

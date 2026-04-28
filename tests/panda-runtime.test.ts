@@ -81,7 +81,7 @@ vi.mock("../src/domain/threads/runtime/index.js", () => ({
       await runtimeMocks.ensureSchema();
     }
 
-    async markRunningBashJobsLost(): Promise<number> {
+    async markRunningToolJobsLost(): Promise<number> {
       return 0;
     }
   },

@@ -2,35 +2,35 @@ import {randomUUID} from "node:crypto";
 
 import type {IdentityStore} from "../../src/domain/identity/store.js";
 import {
-  type CreateIdentityBindingInput,
-  type CreateIdentityInput,
-  type EnsureIdentityBindingInput,
-  type IdentityBindingLookup,
-  type IdentityBindingRecord,
-  type IdentityRecord,
-  normalizeIdentityHandle,
+    type CreateIdentityBindingInput,
+    type CreateIdentityInput,
+    type EnsureIdentityBindingInput,
+    type IdentityBindingLookup,
+    type IdentityBindingRecord,
+    type IdentityRecord,
+    normalizeIdentityHandle,
 } from "../../src/domain/identity/types.js";
 import type {
-  ThreadEnqueueResult,
-  ThreadInputApplyScope,
-  ThreadRuntimeStore,
+    ThreadEnqueueResult,
+    ThreadInputApplyScope,
+    ThreadRuntimeStore,
 } from "../../src/domain/threads/runtime/store.js";
 import {
-  type CreateThreadBashJobInput,
-  type CreateThreadInput,
-  matchesThreadInputIdentity,
-  missingThreadError,
-  type ThreadBashJobRecord,
-  type ThreadBashJobUpdate,
-  type ThreadInputDeliveryMode,
-  type ThreadInputPayload,
-  type ThreadInputRecord,
-  type ThreadMessageRecord,
-  type ThreadRecord,
-  type ThreadRunRecord,
-  type ThreadRuntimeMessagePayload,
-  type ThreadSummaryRecord,
-  type ThreadUpdate,
+    type CreateThreadInput,
+    type CreateThreadToolJobInput,
+    matchesThreadInputIdentity,
+    missingThreadError,
+    type ThreadInputDeliveryMode,
+    type ThreadInputPayload,
+    type ThreadInputRecord,
+    type ThreadMessageRecord,
+    type ThreadRecord,
+    type ThreadRunRecord,
+    type ThreadRuntimeMessagePayload,
+    type ThreadSummaryRecord,
+    type ThreadToolJobRecord,
+    type ThreadToolJobUpdate,
+    type ThreadUpdate,
 } from "../../src/domain/threads/runtime/types.js";
 
 function cloneRecord<T extends object>(record: T): T {
@@ -141,7 +141,7 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
   readonly identityStore: IdentityStore;
   private readonly threads = new Map<string, TestThreadState>();
   private readonly runs = new Map<string, ThreadRunRecord>();
-  private readonly bashJobs = new Map<string, ThreadBashJobRecord>();
+  private readonly toolJobs = new Map<string, ThreadToolJobRecord>();
 
   constructor(options: TestThreadRuntimeStoreOptions = {}) {
     this.identityStore = options.identityStore ?? new TestIdentityStore();
@@ -580,88 +580,73 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       .map((run) => cloneRecord(run));
   }
 
-  async createBashJob(input: CreateThreadBashJobInput): Promise<ThreadBashJobRecord> {
+  async createToolJob(input: CreateThreadToolJobInput): Promise<ThreadToolJobRecord> {
     const thread = this.threads.get(input.threadId);
     if (!thread) {
       throw missingThreadError(input.threadId);
     }
 
-    if (this.bashJobs.has(input.id)) {
-      throw new Error(`Bash job ${input.id} already exists.`);
+    if (this.toolJobs.has(input.id)) {
+      throw new Error(`Tool job ${input.id} already exists.`);
     }
 
-    const record: ThreadBashJobRecord = {
+    const record: ThreadToolJobRecord = {
       id: input.id,
       threadId: input.threadId,
       runId: input.runId,
+      kind: input.kind,
       status: input.status ?? "running",
-      command: input.command,
-      mode: input.mode,
-      initialCwd: input.initialCwd,
+      summary: input.summary ?? "",
       startedAt: input.startedAt ?? Date.now(),
-      timedOut: input.timedOut ?? false,
-      stdout: input.stdout ?? "",
-      stderr: input.stderr ?? "",
-      stdoutChars: input.stdoutChars ?? 0,
-      stderrChars: input.stderrChars ?? 0,
-      stdoutTruncated: input.stdoutTruncated ?? false,
-      stderrTruncated: input.stderrTruncated ?? false,
-      stdoutPersisted: input.stdoutPersisted ?? false,
-      stderrPersisted: input.stderrPersisted ?? false,
-      stdoutPath: input.stdoutPath,
-      stderrPath: input.stderrPath,
-      trackedEnvKeys: [...(input.trackedEnvKeys ?? [])],
+      result: input.result,
+      error: input.error,
       statusReason: input.statusReason,
+      progress: input.progress,
     };
 
     thread.thread.updatedAt = Date.now();
-    this.bashJobs.set(record.id, record);
+    this.toolJobs.set(record.id, record);
     return cloneRecord(record);
   }
 
-  async getBashJob(jobId: string): Promise<ThreadBashJobRecord> {
-    const record = this.bashJobs.get(jobId);
+  async getToolJob(jobId: string): Promise<ThreadToolJobRecord> {
+    const record = this.toolJobs.get(jobId);
     if (!record) {
-      throw new Error(`Unknown bash job ${jobId}`);
+      throw new Error(`Unknown tool job ${jobId}`);
     }
 
     return cloneRecord(record);
   }
 
-  async listBashJobs(threadId: string): Promise<readonly ThreadBashJobRecord[]> {
+  async listToolJobs(threadId: string): Promise<readonly ThreadToolJobRecord[]> {
     if (!this.threads.has(threadId)) {
       throw missingThreadError(threadId);
     }
 
-    return [...this.bashJobs.values()]
+    return [...this.toolJobs.values()]
       .filter((job) => job.threadId === threadId)
       .sort((left, right) => left.startedAt - right.startedAt)
       .map((job) => cloneRecord(job));
   }
 
-  async updateBashJob(jobId: string, update: ThreadBashJobUpdate): Promise<ThreadBashJobRecord> {
-    const record = this.bashJobs.get(jobId);
+  async updateToolJob(jobId: string, update: ThreadToolJobUpdate): Promise<ThreadToolJobRecord> {
+    const record = this.toolJobs.get(jobId);
     if (!record) {
-      throw new Error(`Unknown bash job ${jobId}`);
+      throw new Error(`Unknown tool job ${jobId}`);
     }
 
-    const next: ThreadBashJobRecord = {
+    const next: ThreadToolJobRecord = {
       ...record,
       ...update,
-      finalCwd: update.finalCwd === undefined ? record.finalCwd : update.finalCwd ?? undefined,
       finishedAt: update.finishedAt === undefined ? record.finishedAt : update.finishedAt ?? undefined,
       durationMs: update.durationMs === undefined ? record.durationMs : update.durationMs ?? undefined,
-      exitCode: update.exitCode === undefined ? record.exitCode : update.exitCode ?? undefined,
-      signal: update.signal === undefined ? record.signal : update.signal ?? undefined,
-      stdoutPath: update.stdoutPath === undefined ? record.stdoutPath : update.stdoutPath ?? undefined,
-      stderrPath: update.stderrPath === undefined ? record.stderrPath : update.stderrPath ?? undefined,
-      trackedEnvKeys: update.trackedEnvKeys === undefined
-        ? record.trackedEnvKeys
-        : [...(update.trackedEnvKeys ?? [])],
+      result: update.result === undefined ? record.result : update.result ?? undefined,
+      error: update.error === undefined ? record.error : update.error ?? undefined,
       statusReason: update.statusReason === undefined ? record.statusReason : update.statusReason ?? undefined,
+      progress: update.progress === undefined ? record.progress : update.progress ?? undefined,
     };
 
-    this.bashJobs.set(jobId, next);
+    this.toolJobs.set(jobId, next);
     const thread = this.threads.get(record.threadId);
     if (thread) {
       thread.thread.updatedAt = Date.now();
@@ -669,11 +654,11 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     return cloneRecord(next);
   }
 
-  async markRunningBashJobsLost(reason = "The runtime restarted before the background bash job finished."): Promise<number> {
+  async markRunningToolJobsLost(reason = "The runtime restarted before the background tool job finished."): Promise<number> {
     let count = 0;
     const finishedAt = Date.now();
 
-    for (const record of this.bashJobs.values()) {
+    for (const record of this.toolJobs.values()) {
       if (record.status !== "running") {
         continue;
       }

@@ -1,10 +1,9 @@
 export interface RenderBackgroundJobsContextJob {
   jobId: string;
-  mode: string;
+  kind: string;
   startedAt: string;
   elapsed: string;
-  initialCwd: string;
-  command: string;
+  summary: string;
 }
 
 export function renderBackgroundJobsContext(jobs: readonly RenderBackgroundJobsContextJob[]): string {
@@ -13,9 +12,9 @@ export function renderBackgroundJobsContext(jobs: readonly RenderBackgroundJobsC
   }
 
   return [
-    "Background bash jobs currently running in this thread:",
+    "Background jobs currently running in this thread:",
     ...jobs.map((job) => {
-      return `- ${job.jobId} | ${job.mode} | started ${job.startedAt} | elapsed ${job.elapsed} | cwd ${job.initialCwd} | ${job.command}`;
+      return `- ${job.jobId} | ${job.kind} | started ${job.startedAt} | elapsed ${job.elapsed} | ${job.summary}`;
     }),
   ].join("\n");
 }

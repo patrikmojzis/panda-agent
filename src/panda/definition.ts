@@ -1,18 +1,22 @@
 import type {Tool} from "../kernel/agent/tool.js";
 import {BashTool, type BashToolOptions} from "./tools/bash-tool.js";
-import {BashJobCancelTool, BashJobStatusTool, BashJobWaitTool,} from "./tools/bash-job-tools.js";
+import {
+    BackgroundJobCancelTool,
+    BackgroundJobStatusTool,
+    BackgroundJobWaitTool,
+} from "./tools/background-job-tools.js";
 import {BraveSearchTool, hasBraveSearchApiKey} from "./tools/brave-search-tool.js";
 import {BrowserTool, type BrowserToolOptions} from "./tools/browser-tool.js";
 import {MediaTool} from "./tools/media-tool.js";
 import {
-  PostgresReadonlyQueryTool,
-  type PostgresReadonlyQueryToolOptions,
+    PostgresReadonlyQueryTool,
+    type PostgresReadonlyQueryToolOptions,
 } from "./tools/postgres-readonly-query-tool.js";
 import {CurrentDateTimeTool} from "./tools/current-datetime-tool.js";
 import {ImageGenerateTool, type ImageGenerateToolOptions} from "./tools/image-generate-tool.js";
 import {TelepathyScreenshotTool, type TelepathyScreenshotToolOptions,} from "./tools/telepathy-screenshot-tool.js";
 import {WebFetchTool} from "./tools/web-fetch-tool.js";
-import {WebResearchTool} from "./tools/web-research-tool.js";
+import {WebResearchTool, type WebResearchToolOptions} from "./tools/web-research-tool.js";
 import {hasOpenAiApiKey, WhisperTool} from "./tools/whisper-tool.js";
 import {GlobFilesTool, GrepFilesTool, ReadFileTool} from "./tools/workspace-readonly-tools.js";
 
@@ -22,20 +26,21 @@ export interface BuildDefaultAgentToolsOptions {
   imageGenerate?: ImageGenerateToolOptions;
   postgresReadonly?: PostgresReadonlyQueryToolOptions;
   telepathy?: TelepathyScreenshotToolOptions;
+  webResearch?: WebResearchToolOptions;
 }
 
 export type DefaultAgentToolsetKey = "main" | "workspace" | "memory" | "browser" | "skill_maintainer";
 
 export interface DefaultAgentToolRegistry {
   bash: BashTool;
-  bashJobStatus?: BashJobStatusTool;
-  bashJobWait?: BashJobWaitTool;
-  bashJobCancel?: BashJobCancelTool;
+  backgroundJobStatus?: BackgroundJobStatusTool;
+  backgroundJobWait?: BackgroundJobWaitTool;
+  backgroundJobCancel?: BackgroundJobCancelTool;
   currentDateTime: CurrentDateTimeTool;
   readFile: ReadFileTool;
   globFiles: GlobFilesTool;
   grepFiles: GrepFilesTool;
-  imageGenerate: ImageGenerateTool;
+  imageGenerate?: ImageGenerateTool;
   media: MediaTool;
   telepathy?: TelepathyScreenshotTool;
   webFetch: WebFetchTool;
@@ -61,14 +66,23 @@ function compactTools(tools: ReadonlyArray<Tool | undefined>): readonly Tool[] {
 export function createDefaultAgentToolRegistry(
   options: BuildDefaultAgentToolsOptions = {},
 ): DefaultAgentToolRegistry {
+  const jobService = options.bash?.jobService ?? options.imageGenerate?.jobService ?? options.webResearch?.jobService;
+  const bashOptions = jobService ? {...options.bash, jobService} : options.bash;
   const registry: DefaultAgentToolRegistry = {
-    bash: new BashTool(options.bash),
+    bash: new BashTool(bashOptions),
     currentDateTime: new CurrentDateTimeTool(),
     readFile: new ReadFileTool(),
     globFiles: new GlobFilesTool(),
     grepFiles: new GrepFilesTool(),
-    imageGenerate: new ImageGenerateTool(options.imageGenerate),
     media: new MediaTool(),
+    ...(jobService
+      ? {
+        imageGenerate: new ImageGenerateTool({
+          ...options.imageGenerate,
+          jobService,
+        }),
+      }
+      : {}),
     ...(options.telepathy
       ? {
         telepathy: new TelepathyScreenshotTool(options.telepathy),
@@ -78,20 +92,25 @@ export function createDefaultAgentToolRegistry(
     browser: new BrowserTool(options.browser),
   };
 
-  if (options.bash?.jobService) {
-    registry.bashJobStatus = new BashJobStatusTool({
-      service: options.bash.jobService,
+  if (jobService) {
+    registry.backgroundJobStatus = new BackgroundJobStatusTool({
+      service: jobService,
     });
-    registry.bashJobWait = new BashJobWaitTool({
-      service: options.bash.jobService,
+    registry.backgroundJobWait = new BackgroundJobWaitTool({
+      service: jobService,
     });
-    registry.bashJobCancel = new BashJobCancelTool({
-      service: options.bash.jobService,
+    registry.backgroundJobCancel = new BackgroundJobCancelTool({
+      service: jobService,
     });
   }
 
   if (hasOpenAiApiKey()) {
-    registry.webResearch = new WebResearchTool();
+    if (jobService) {
+      registry.webResearch = new WebResearchTool({
+        ...options.webResearch,
+        jobService,
+      });
+    }
     registry.whisper = new WhisperTool();
   }
 
@@ -115,9 +134,9 @@ export function buildDefaultAgentToolsetsFromRegistry(
   return {
     main: compactTools([
       registry.bash,
-      registry.bashJobStatus,
-      registry.bashJobWait,
-      registry.bashJobCancel,
+      registry.backgroundJobStatus,
+      registry.backgroundJobWait,
+      registry.backgroundJobCancel,
       registry.currentDateTime,
       registry.media,
       registry.imageGenerate,

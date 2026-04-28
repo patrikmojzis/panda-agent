@@ -1,20 +1,28 @@
-# Background Bash
+# Background Jobs
 
-Panda now supports first-class background bash jobs.
+Panda supports first-class background tool jobs.
 
-Use this when you want a shell command to keep running while Panda does other work.
+Use this when work should keep running while Panda continues the conversation.
+
+Current background job kinds:
+
+- `bash` when called with `background: true`
+- `image_generate`
+- `spawn_subagent`
+- `web_research`
 
 ## Mental Model
 
 - foreground `bash` mutates the shared shell session
 - background `bash` is an isolated snapshot
+- `image_generate`, `spawn_subagent`, and `web_research` always start background jobs
 - background jobs never merge cwd or env back into the shared shell session
 - running jobs can appear in Panda's context while they are active
 - completion may arrive as a machine-generated background event, but status/wait/cancel are still the explicit control tools
 
 That means background bash is good for long-running work, but bad for “change directory here and keep using it later.” Foreground bash still owns shared shell state.
 
-## Start A Background Job
+## Start A Background Bash Job
 
 ```json
 {
@@ -35,7 +43,7 @@ The `bash` tool returns immediately with a job handle:
 
 ## Check Status
 
-Use `bash_job_status` with the `jobId`:
+Use `background_job_status` with the `jobId`:
 
 ```json
 {
@@ -47,7 +55,7 @@ This returns the current job state plus the latest stdout/stderr preview.
 
 ## Wait For Completion
 
-Use `bash_job_wait` when you want Panda to pause for a bit and see whether the job finishes:
+Use `background_job_wait` when you want Panda to pause for a bit and see whether the job finishes:
 
 ```json
 {
@@ -61,7 +69,7 @@ If it is still running, you get the current running snapshot back.
 
 ## Cancel A Job
 
-Use `bash_job_cancel` to request cancellation:
+Use `background_job_cancel` to request cancellation:
 
 ```json
 {
@@ -74,12 +82,12 @@ Panda asks the job to stop, waits briefly, and returns the final or current stat
 ## Auto-Wake And Context
 
 - Panda may see active background jobs in context during later turns
-- when a watcher-owned background job finishes on its own, Panda may receive a queued background event and see it at the next turn boundary without manual polling
-- `bash_job_status` and `bash_job_wait` are still the right tools when Panda needs the full latest state on demand
+- when a background job finishes on its own, Panda receives a queued background event and wakes the session
+- `background_job_status` and `background_job_wait` are still the right tools when Panda needs the full latest state on demand
 
 ## What Comes Back
 
-Background job tool results include:
+Background bash job results include:
 
 - `jobId`, `status`, `command`, `mode`
 - `initialCwd`, optional `finalCwd`
@@ -94,6 +102,8 @@ Background job tool results include:
 - `sessionStateIsolated: true`
 
 Panda reports tracked env key names only. It does not expose exported env values from background jobs.
+
+Image generation jobs return generated image paths and artifact metadata without inline image data. Subagent jobs return the child role, final message, tool-call count, and duration. Web research jobs return the cited answer and source metadata.
 
 ## Isolation Rules
 
@@ -112,9 +122,7 @@ Panda reports tracked env key names only. It does not expose exported env values
 
 V1 is intentionally small:
 
-- bash only
 - same thread only
-- no stdin
-- no tty
+- bash background jobs have no stdin or tty
 - no resume or merge-back
-- no `bash_job_list`
+- no `background_job_list`

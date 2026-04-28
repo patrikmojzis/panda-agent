@@ -13,14 +13,14 @@ import type {IdentityStore} from "../../domain/identity/store.js";
 import type {WikiBindingService} from "../../domain/wiki/index.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {CredentialResolver} from "../../domain/credentials/index.js";
-import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
+import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import type {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import type {AgentAppAuthService} from "../../domain/apps/auth.js";
 import type {TelepathyHub} from "../../integrations/telepathy/hub.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
-import {buildBackgroundBashThreadInput} from "./background-bash-thread-input.js";
+import {buildBackgroundToolThreadInput} from "./background-tool-thread-input.js";
 import {
     createThreadDefinition,
     type CreateThreadDefinitionOptions,
@@ -41,7 +41,7 @@ export type {CreateThreadDefinitionOptions};
 
 export interface DefinitionResolverContext {
   agentStore: AgentStore;
-  bashJobService: BashJobService;
+  backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
@@ -68,7 +68,7 @@ export interface RuntimeServices {
   agentStore: AgentStore;
   apps: AgentAppService;
   appAuth: AgentAppAuthService;
-  bashJobService: BashJobService;
+  backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
@@ -92,7 +92,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
 
   const resolverContext: DefinitionResolverContext = {
     agentStore: runtime.agentStore,
-    bashJobService: runtime.bashJobService,
+    backgroundJobService: runtime.backgroundJobService,
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,
     identityStore: runtime.identityStore,
@@ -109,8 +109,8 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     resolveDefinition: (thread) => options.resolveDefinition(thread, resolverContext),
     onEvent: options.onEvent,
   });
-  runtime.bashJobService.setBackgroundCompletionHandler(async (record) => {
-    await coordinator.submitInput(record.threadId, buildBackgroundBashThreadInput(record), "queue");
+  runtime.backgroundJobService.setBackgroundCompletionHandler(async (record) => {
+    await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "queue");
     await coordinator.wake(record.threadId);
   });
 
@@ -118,7 +118,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     agentStore: runtime.agentStore,
     apps: runtime.apps,
     appAuth: runtime.appAuth,
-    bashJobService: runtime.bashJobService,
+    backgroundJobService: runtime.backgroundJobService,
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,
     identityStore: runtime.identityStore,

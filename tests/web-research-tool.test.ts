@@ -1,6 +1,17 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {Agent, type DefaultAgentSessionContext, RunContext, ToolError, WebResearchTool,} from "../src/index.js";
+import {
+  Agent,
+  BackgroundJobWaitTool,
+  type DefaultAgentSessionContext,
+  RunContext,
+  type ToolResultPayload,
+  WebResearchTool,
+} from "../src/index.js";
+import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
+import type {ThreadToolJobRecord} from "../src/domain/threads/runtime/types.js";
+import type {WebResearchToolOptions} from "../src/panda/tools/web-research-tool.js";
+import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createAgent() {
   return new Agent({
@@ -10,10 +21,9 @@ function createAgent() {
 }
 
 function createRunContext(
-  context: DefaultAgentSessionContext,
+  context: Partial<DefaultAgentSessionContext> = {},
   options: {
     signal?: AbortSignal;
-    onToolProgress?: (progress: Record<string, unknown>) => void;
   } = {},
 ): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
@@ -21,10 +31,68 @@ function createRunContext(
     turn: 1,
     maxTurns: 5,
     messages: [],
-    context,
+    context: {
+      threadId: "thread-1",
+      sessionId: "session-main",
+      agentKey: "panda",
+      cwd: "/workspace/panda",
+      ...context,
+    },
     signal: options.signal,
-    onToolProgress: options.onToolProgress as any,
   });
+}
+
+async function createWebResearchHarness(options: Omit<WebResearchToolOptions, "jobService"> = {}): Promise<{
+  jobService: BackgroundToolJobService;
+  run: RunContext<DefaultAgentSessionContext>;
+  tool: WebResearchTool;
+  waitTool: BackgroundJobWaitTool;
+}> {
+  const store = new TestThreadRuntimeStore();
+  await store.createThread({
+    id: "thread-1",
+    sessionId: "session-main",
+  });
+  const jobService = new BackgroundToolJobService({store});
+  return {
+    jobService,
+    run: createRunContext(),
+    tool: new WebResearchTool({
+      ...options,
+      jobService,
+    }),
+    waitTool: new BackgroundJobWaitTool({
+      service: jobService,
+      defaultWaitTimeoutMs: 1_000,
+    }),
+  };
+}
+
+async function runAndWait(params: {
+  query: string;
+  jobService: BackgroundToolJobService;
+  run: RunContext<DefaultAgentSessionContext>;
+  tool: WebResearchTool;
+  waitTool: BackgroundJobWaitTool;
+  timeoutMs?: number;
+}): Promise<{
+  output: ToolResultPayload;
+  record: ThreadToolJobRecord;
+  started: Record<string, unknown>;
+}> {
+  const started = await params.tool.run({query: params.query}, params.run) as Record<string, unknown>;
+  expect(started).toMatchObject({
+    kind: "web_research",
+    status: "running",
+    summary: params.query,
+  });
+  const jobId = String(started.jobId);
+  const record = await params.jobService.wait("thread-1", jobId, params.timeoutMs ?? 1_000);
+  const output = await params.waitTool.run({
+    jobId,
+    timeoutMs: 0,
+  }, params.run) as ToolResultPayload;
+  return {output, record, started};
 }
 
 describe("WebResearchTool", () => {
@@ -34,9 +102,8 @@ describe("WebResearchTool", () => {
     vi.unstubAllEnvs();
   });
 
-  it("returns a cited answer, parsed sources, and progress events", async () => {
+  it("starts a background job and materializes a cited answer through background_job_wait", async () => {
     const answerText = "Otters won a tiny scientific victory today.";
-    const progress: Array<Record<string, unknown>> = [];
     const fetchMock = vi.fn(async (_input: string | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       expect(body).toMatchObject({
@@ -92,22 +159,28 @@ describe("WebResearchTool", () => {
       });
     });
 
-    const tool = new WebResearchTool({
+    const harness = await createWebResearchHarness({
       env: {OPENAI_API_KEY: "openai-test-key"} as NodeJS.ProcessEnv,
       fetchImpl: fetchMock as typeof fetch,
     });
 
-    const result = await tool.run(
-      {query: "otter science news"},
-      createRunContext(
-        {cwd: "/workspace/panda"},
-        {onToolProgress: (entry) => progress.push(entry)},
-      ),
-    );
+    const {output, record} = await runAndWait({
+      query: "otter science news",
+      ...harness,
+    });
 
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(progress.map((entry) => entry.status)).toEqual(["researching", "formatting"]);
-    expect(result.details).toMatchObject({
+    expect(record).toMatchObject({
+      kind: "web_research",
+      status: "completed",
+      progress: {
+        status: "formatting",
+        query: "otter science news",
+        model: "gpt-5",
+        responseId: "resp_123",
+      },
+    });
+    expect(output.details).toMatchObject({
       query: "otter science news",
       provider: "openai",
       model: "gpt-5",
@@ -122,18 +195,18 @@ describe("WebResearchTool", () => {
         {title: "Science Desk", url: "https://example.com/b"},
       ],
     });
-    expect(result.content[0]).toMatchObject({
+    expect(output.content[0]).toMatchObject({
       type: "text",
       text: expect.stringContaining("Otters won a tiny scientific victory today. [[1]](https://example.com/a) [[2]](https://example.com/b)"),
     });
-    expect(result.content[0]).toMatchObject({
+    expect(output.content[0]).toMatchObject({
       type: "text",
       text: expect.stringContaining("Sources:\n- [Otter Times](<https://example.com/a>)\n- [Science Desk](<https://example.com/b>)"),
     });
   });
 
   it("wraps source URLs in angle brackets so markdown survives parentheses", async () => {
-    const tool = new WebResearchTool({
+    const harness = await createWebResearchHarness({
       env: {OPENAI_API_KEY: "openai-test-key"} as NodeJS.ProcessEnv,
       fetchImpl: vi.fn(async () => new Response(JSON.stringify({
         id: "resp_paren",
@@ -159,19 +232,19 @@ describe("WebResearchTool", () => {
       })) as typeof fetch,
     });
 
-    const result = await tool.run(
-      {query: "paren link"},
-      createRunContext({cwd: "/workspace/panda"}),
-    );
+    const {output} = await runAndWait({
+      query: "paren link",
+      ...harness,
+    });
 
-    expect(result.content[0]).toMatchObject({
+    expect(output.content[0]).toMatchObject({
       type: "text",
       text: expect.stringContaining("- [Paren Source](<https://example.com/path_(with_parens)>)"),
     });
   });
 
   it("falls back to the final message output text when top-level output_text is missing", async () => {
-    const tool = new WebResearchTool({
+    const harness = await createWebResearchHarness({
       env: {OPENAI_API_KEY: "openai-test-key"} as NodeJS.ProcessEnv,
       fetchImpl: vi.fn(async () => new Response(JSON.stringify({
         id: "resp_456",
@@ -192,16 +265,16 @@ describe("WebResearchTool", () => {
       })) as typeof fetch,
     });
 
-    const result = await tool.run(
-      {query: "fallback query"},
-      createRunContext({cwd: "/workspace/panda"}),
-    );
+    const {output} = await runAndWait({
+      query: "fallback query",
+      ...harness,
+    });
 
-    expect(result.content[0]).toMatchObject({
+    expect(output.content[0]).toMatchObject({
       type: "text",
       text: "Fallback answer from the message block.",
     });
-    expect(result.details).toMatchObject({
+    expect(output.details).toMatchObject({
       citations: [],
       sources: [],
     });
@@ -215,7 +288,7 @@ describe("WebResearchTool", () => {
       start_index: 0,
       end_index: answerText.length,
     }));
-    const tool = new WebResearchTool({
+    const harness = await createWebResearchHarness({
       env: {OPENAI_API_KEY: "openai-test-key"} as NodeJS.ProcessEnv,
       fetchImpl: vi.fn(async () => new Response(JSON.stringify({
         id: "resp_789",
@@ -237,37 +310,38 @@ describe("WebResearchTool", () => {
       })) as typeof fetch,
     });
 
-    const result = await tool.run(
-      {query: "many sources"},
-      createRunContext({cwd: "/workspace/panda"}),
-    );
+    const {output} = await runAndWait({
+      query: "many sources",
+      ...harness,
+    });
 
-    expect(result.details).toMatchObject({
+    expect(output.details).toMatchObject({
       sources: Array.from({length: 20}, (_, index) => ({
         title: `Source ${index + 1}`,
         url: `https://example.com/source-${index + 1}`,
       })),
     });
-    const lines = (result.content[0] as {type: string; text: string}).text.split("\n");
+    const lines = (output.content[0] as {type: string; text: string}).text.split("\n");
     expect(lines.filter((line) => line.startsWith("- ["))).toHaveLength(10);
   });
 
   it("fails fast when OPENAI_API_KEY is missing", async () => {
-    const tool = new WebResearchTool({
+    const harness = await createWebResearchHarness({
       env: {},
       fetchImpl: vi.fn() as typeof fetch,
     });
 
-    await expect(tool.run(
-      {query: "missing key"},
-      createRunContext({cwd: "/workspace/panda"}),
-    )).rejects.toMatchObject({
-      message: "OPENAI_API_KEY is not configured.",
+    const started = await harness.tool.run({query: "missing key"}, harness.run) as Record<string, unknown>;
+    const record = await harness.jobService.wait("thread-1", String(started.jobId), 1_000);
+
+    expect(record).toMatchObject({
+      status: "failed",
+      error: "OPENAI_API_KEY is not configured.",
     });
   });
 
   it("surfaces OpenAI API errors", async () => {
-    const tool = new WebResearchTool({
+    const harness = await createWebResearchHarness({
       env: {OPENAI_API_KEY: "openai-test-key"} as NodeJS.ProcessEnv,
       fetchImpl: vi.fn(async () => new Response("rate limit", {
         status: 429,
@@ -275,17 +349,18 @@ describe("WebResearchTool", () => {
       })) as typeof fetch,
     });
 
-    await expect(tool.run(
-      {query: "rate limited"},
-      createRunContext({cwd: "/workspace/panda"}),
-    )).rejects.toMatchObject({
-      message: "OpenAI web research API error (429): rate limit",
+    const started = await harness.tool.run({query: "rate limited"}, harness.run) as Record<string, unknown>;
+    const record = await harness.jobService.wait("thread-1", String(started.jobId), 1_000);
+
+    expect(record).toMatchObject({
+      status: "failed",
+      error: "OpenAI web research API error (429): rate limit",
     });
   });
 
   it("times out stalled responses", async () => {
     vi.useFakeTimers();
-    const tool = new WebResearchTool({
+    const harness = await createWebResearchHarness({
       env: {OPENAI_API_KEY: "openai-test-key"} as NodeJS.ProcessEnv,
       timeoutMs: 25,
       fetchImpl: vi.fn(async (_input, init) => await new Promise<Response>((_resolve, reject) => {
@@ -298,20 +373,18 @@ describe("WebResearchTool", () => {
       })) as typeof fetch,
     });
 
-    const promise = tool.run(
-      {query: "slow query"},
-      createRunContext({cwd: "/workspace/panda"}),
-    );
+    const started = await harness.tool.run({query: "slow query"}, harness.run) as Record<string, unknown>;
     await vi.advanceTimersByTimeAsync(30);
+    const record = await harness.jobService.wait("thread-1", String(started.jobId), 1_000);
 
-    await expect(promise).rejects.toBeInstanceOf(ToolError);
-    await expect(promise).rejects.toMatchObject({
-      message: "web_research timed out after 25ms.",
+    expect(record).toMatchObject({
+      status: "failed",
+      error: "web_research timed out after 25ms.",
     });
   });
 
   it("rejects incomplete OpenAI responses", async () => {
-    const tool = new WebResearchTool({
+    const harness = await createWebResearchHarness({
       env: {OPENAI_API_KEY: "openai-test-key"} as NodeJS.ProcessEnv,
       fetchImpl: vi.fn(async () => new Response(JSON.stringify({
         id: "resp_in_progress",
@@ -324,16 +397,17 @@ describe("WebResearchTool", () => {
       })) as typeof fetch,
     });
 
-    await expect(tool.run(
-      {query: "in progress"},
-      createRunContext({cwd: "/workspace/panda"}),
-    )).rejects.toMatchObject({
-      message: "OpenAI web research did not complete successfully (status: in_progress).",
+    const started = await harness.tool.run({query: "in progress"}, harness.run) as Record<string, unknown>;
+    const record = await harness.jobService.wait("thread-1", String(started.jobId), 1_000);
+
+    expect(record).toMatchObject({
+      status: "failed",
+      error: "OpenAI web research did not complete successfully (status: in_progress).",
     });
   });
 
   it("rejects malformed successful responses that contain no final answer", async () => {
-    const tool = new WebResearchTool({
+    const harness = await createWebResearchHarness({
       env: {OPENAI_API_KEY: "openai-test-key"} as NodeJS.ProcessEnv,
       fetchImpl: vi.fn(async () => new Response(JSON.stringify({
         id: "resp_empty",
@@ -347,11 +421,12 @@ describe("WebResearchTool", () => {
       })) as typeof fetch,
     });
 
-    await expect(tool.run(
-      {query: "empty answer"},
-      createRunContext({cwd: "/workspace/panda"}),
-    )).rejects.toMatchObject({
-      message: "OpenAI web research response did not include final answer text.",
+    const started = await harness.tool.run({query: "empty answer"}, harness.run) as Record<string, unknown>;
+    const record = await harness.jobService.wait("thread-1", String(started.jobId), 1_000);
+
+    expect(record).toMatchObject({
+      status: "failed",
+      error: "OpenAI web research response did not include final answer text.",
     });
   });
 });

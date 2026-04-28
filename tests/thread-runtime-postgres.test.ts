@@ -439,53 +439,68 @@ describe("PostgresThreadRuntimeStore", () => {
     });
     const run = await store.createRun("pg-thread-bash-job");
 
-    const created = await store.createBashJob({
+    const created = await store.createToolJob({
       id: "00000000-0000-4000-8000-000000000001",
       threadId: "pg-thread-bash-job",
       runId: run.id,
-      command: "sleep 1 && printf hi",
-      mode: "local",
-      initialCwd: "/workspace",
-      trackedEnvKeys: ["TEST_VAR"],
+      kind: "bash",
+      summary: "sleep 1 && printf hi",
+      result: {
+        command: "sleep 1 && printf hi",
+        mode: "local",
+        initialCwd: "/workspace",
+        trackedEnvKeys: ["TEST_VAR"],
+      },
     });
 
     expect(created).toMatchObject({
       threadId: "pg-thread-bash-job",
       runId: run.id,
       status: "running",
-      trackedEnvKeys: ["TEST_VAR"],
+      result: {
+        trackedEnvKeys: ["TEST_VAR"],
+      },
     });
 
-    const finished = await store.updateBashJob(created.id, {
+    const finished = await store.updateToolJob(created.id, {
       status: "completed",
-      finalCwd: "/workspace/nested",
       finishedAt: created.startedAt + 250,
       durationMs: 250,
-      exitCode: 0,
-      stdout: "hello",
-      stderr: "",
-      stdoutChars: 5,
-      stderrChars: 0,
-      stdoutTruncated: false,
-      stderrTruncated: false,
-      stdoutPersisted: true,
-      stderrPersisted: false,
-      stdoutPath: "/tmp/stdout.txt",
-      trackedEnvKeys: ["TEST_VAR"],
+      result: {
+        command: "sleep 1 && printf hi",
+        mode: "local",
+        initialCwd: "/workspace",
+        finalCwd: "/workspace/nested",
+        exitCode: 0,
+        stdout: "hello",
+        stderr: "",
+        stdoutChars: 5,
+        stderrChars: 0,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        stdoutPersisted: true,
+        stderrPersisted: false,
+        stdoutPath: "/tmp/stdout.txt",
+        trackedEnvKeys: ["TEST_VAR"],
+      },
     });
 
     expect(finished).toMatchObject({
       status: "completed",
-      finalCwd: "/workspace/nested",
-      stdout: "hello",
-      stdoutPersisted: true,
-      stdoutPath: "/tmp/stdout.txt",
+      result: {
+        finalCwd: "/workspace/nested",
+        stdout: "hello",
+        stdoutPersisted: true,
+        stdoutPath: "/tmp/stdout.txt",
+      },
     });
-    expect(await store.getBashJob(created.id)).toMatchObject({
+    expect(await store.getToolJob(created.id)).toMatchObject({
       status: "completed",
-      stdout: "hello",
+      result: {
+        stdout: "hello",
+      },
     });
-    expect(await store.listBashJobs("pg-thread-bash-job")).toHaveLength(1);
+    expect(await store.listToolJobs("pg-thread-bash-job")).toHaveLength(1);
   });
 
   it("marks orphaned running background bash jobs as lost", async () => {
@@ -514,17 +529,16 @@ describe("PostgresThreadRuntimeStore", () => {
         sessionId: "session-lost-job",
       },
     });
-    const created = await store.createBashJob({
+    const created = await store.createToolJob({
       id: "00000000-0000-4000-8000-000000000002",
       threadId: "pg-thread-lost-job",
-      command: "sleep 5",
-      mode: "local",
-      initialCwd: "/workspace",
+      kind: "bash",
+      summary: "sleep 5",
     });
 
-    expect(await store.markRunningBashJobsLost("runtime restarted")).toBe(1);
+    expect(await store.markRunningToolJobsLost("runtime restarted")).toBe(1);
 
-    const lost = await store.getBashJob(created.id);
+    const lost = await store.getToolJob(created.id);
     expect(lost.status).toBe("lost");
     expect(lost.statusReason).toBe("runtime restarted");
     expect(lost.finishedAt).toBeDefined();

@@ -6,7 +6,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {createDaemonThreadHelpers} from "../src/app/runtime/daemon-threads.js";
 import {Agent, BashTool, RunContext,} from "../src/index.js";
-import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
+import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {TEST_IDENTITY_ID, TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createRunContext(context: Record<string, unknown>): RunContext<Record<string, unknown>> {
@@ -51,7 +51,7 @@ describe("createDaemonThreadHelpers", () => {
     currentThreadId?: string;
     createdByIdentityId?: string;
     getIdentity?: (identityId: string) => Promise<ReturnType<typeof createIdentity>>;
-    bashJobService?: { cancelThreadJobs(threadId: string): Promise<void> };
+    backgroundJobService?: { cancelThreadJobs(threadId: string): Promise<void> };
     coordinator?: {
       abort(threadId: string, reason?: string): Promise<boolean>;
       waitForCurrentRun(threadId: string): Promise<void>;
@@ -79,7 +79,7 @@ describe("createDaemonThreadHelpers", () => {
         daemonKey: "panda-daemon",
         runtime: {
           store,
-          bashJobService: options.bashJobService ?? {
+          backgroundJobService: options.backgroundJobService ?? {
             cancelThreadJobs: vi.fn(async () => undefined),
           },
           coordinator: options.coordinator ?? {
@@ -273,10 +273,10 @@ describe("createDaemonThreadHelpers", () => {
       },
     } as any);
 
-    const bashJobService = new BashJobService({ store });
+    const backgroundJobService = new BackgroundToolJobService({ store });
     const bash = new BashTool({
       outputDirectory: path.join(workspace, "tool-results"),
-      jobService: bashJobService,
+      jobService: backgroundJobService,
     });
     const started = await bash.run(
       { command: "sleep 10", background: true },
@@ -292,14 +292,14 @@ describe("createDaemonThreadHelpers", () => {
     const jobId = String((started as {jobId: string}).jobId);
 
     const onTerminalJob = vi.fn();
-    bashJobService.setBackgroundCompletionHandler(onTerminalJob);
+    backgroundJobService.setBackgroundCompletionHandler(onTerminalJob);
     const {helpers, identity} = createHelpers({
       store,
       workspace,
       pairings: [{agentKey: "panda"}],
       currentThreadId: "thread-old-home",
       createdByIdentityId: TEST_IDENTITY_ID,
-      bashJobService,
+      backgroundJobService,
     });
 
     const result = await helpers.handleResetSession({
@@ -310,7 +310,7 @@ describe("createDaemonThreadHelpers", () => {
 
     expect(result.previousThreadId).toBe("thread-old-home");
     expect(result.threadId).not.toBe("thread-old-home");
-    await expect(store.getBashJob(jobId)).resolves.toMatchObject({
+    await expect(store.getToolJob(jobId)).resolves.toMatchObject({
       status: "cancelled",
     });
     expect(onTerminalJob).not.toHaveBeenCalled();

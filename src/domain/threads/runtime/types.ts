@@ -4,7 +4,7 @@ import type {Agent} from "../../../kernel/agent/agent.js";
 import type {TokenCounter} from "../../../kernel/agent/helpers/token-count.js";
 import type {Hook} from "../../../kernel/agent/hook.js";
 import type {LlmContext} from "../../../kernel/agent/llm-context.js";
-import type {JsonValue} from "../../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../../kernel/agent/types.js";
 import type {LlmRuntime} from "../../../kernel/agent/runtime.js";
 import type {RunPipeline} from "../../../kernel/agent/run-pipeline.js";
 
@@ -174,72 +174,46 @@ export interface ThreadRunRecord {
   abortReason?: string;
 }
 
-export type ThreadBashJobStatus = "running" | "completed" | "failed" | "cancelled" | "lost";
-export type ThreadBashJobMode = "local" | "remote";
+export type ThreadToolJobKind = "bash" | "image_generate" | "spawn_subagent" | "web_research";
+export type ThreadToolJobStatus = "running" | "completed" | "failed" | "cancelled" | "lost";
 
-export interface ThreadBashJobRecord {
+export interface ThreadToolJobRecord {
   id: string;
   threadId: string;
   runId?: string;
-  status: ThreadBashJobStatus;
-  command: string;
-  mode: ThreadBashJobMode;
-  initialCwd: string;
-  finalCwd?: string;
+  kind: ThreadToolJobKind;
+  status: ThreadToolJobStatus;
+  summary: string;
   startedAt: number;
   finishedAt?: number;
   durationMs?: number;
-  exitCode?: number | null;
-  signal?: NodeJS.Signals | null;
-  timedOut: boolean;
-  stdout: string;
-  stderr: string;
-  stdoutChars: number;
-  stderrChars: number;
-  stdoutTruncated: boolean;
-  stderrTruncated: boolean;
-  stdoutPersisted: boolean;
-  stderrPersisted: boolean;
-  stdoutPath?: string;
-  stderrPath?: string;
-  trackedEnvKeys: string[];
+  result?: JsonObject;
+  error?: string;
   statusReason?: string;
+  progress?: JsonObject;
 }
 
-export interface CreateThreadBashJobInput {
+export interface CreateThreadToolJobInput {
   id: string;
   threadId: string;
   runId?: string;
-  status?: ThreadBashJobStatus;
-  command: string;
-  mode: ThreadBashJobMode;
-  initialCwd: string;
+  kind: ThreadToolJobKind;
+  status?: ThreadToolJobStatus;
+  summary?: string;
   startedAt?: number;
-  timedOut?: boolean;
-  stdout?: string;
-  stderr?: string;
-  stdoutChars?: number;
-  stderrChars?: number;
-  stdoutTruncated?: boolean;
-  stderrTruncated?: boolean;
-  stdoutPersisted?: boolean;
-  stderrPersisted?: boolean;
-  stdoutPath?: string;
-  stderrPath?: string;
-  trackedEnvKeys?: string[];
+  result?: JsonObject;
+  error?: string;
   statusReason?: string;
+  progress?: JsonObject;
 }
 
-export type ThreadBashJobUpdate = Partial<
-  Omit<CreateThreadBashJobInput, "id" | "threadId" | "command" | "mode" | "stdoutPath" | "stderrPath" | "trackedEnvKeys" | "statusReason">
+export type ThreadToolJobUpdate = Partial<
+  Omit<CreateThreadToolJobInput, "id" | "threadId" | "kind" | "result" | "error" | "statusReason" | "progress">
 > & {
-  finalCwd?: string | null;
   finishedAt?: number | null;
   durationMs?: number | null;
-  exitCode?: number | null;
-  signal?: NodeJS.Signals | null;
-  stdoutPath?: string | null;
-  stderrPath?: string | null;
-  trackedEnvKeys?: string[] | null;
+  result?: JsonObject | null;
+  error?: string | null;
   statusReason?: string | null;
+  progress?: JsonObject | null;
 };

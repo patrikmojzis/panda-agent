@@ -63,7 +63,7 @@ Background jobs follow the same split:
 - the runner owns the live process
 - Panda stores durable job metadata
 - active jobs can show up in Panda context while they run
-- watcher-owned completions may wake Panda with a queued background event, while `bash_job_status` / `bash_job_wait` remain the explicit control tools
+- watcher-owned completions may wake Panda with a queued background event, while `background_job_status` / `background_job_wait` remain the explicit control tools
 
 ## Core Env
 
@@ -242,9 +242,9 @@ If that is not exactly `remote`, Panda falls back to local in-process bash.
 Remote mode supports the same background bash interface as local mode:
 
 - start with `bash(background=true)`
-- inspect with `bash_job_status`
-- wait with `bash_job_wait`
-- stop with `bash_job_cancel`
+- inspect with `background_job_status`
+- wait with `background_job_wait`
+- stop with `background_job_cancel`
 
 The important rule stays the same:
 

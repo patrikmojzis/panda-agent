@@ -24,12 +24,13 @@ export {
 } from "./tools/agent-skill-tool.js";
 export {BashTool, type BashToolOptions} from "./tools/bash-tool.js";
 export {
-  BashJobCancelTool,
-  BashJobStatusTool,
-  BashJobWaitTool,
-  buildBashJobPayload,
-  type BashJobToolOptions,
-} from "./tools/bash-job-tools.js";
+  BackgroundJobCancelTool,
+  BackgroundJobStatusTool,
+  BackgroundJobWaitTool,
+  buildBackgroundJobOutput,
+  buildBackgroundJobPayload,
+  type BackgroundJobToolOptions,
+} from "./tools/background-job-tools.js";
 export {
   BraveSearchTool,
   type BraveSearchToolOptions,

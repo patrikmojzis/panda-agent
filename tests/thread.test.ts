@@ -6,24 +6,24 @@ import {describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 
 import {
-  Agent,
-  BashJobWaitTool,
-  BashTool,
-  Hook,
-  type LlmRuntime,
-  type LlmRuntimeRequest,
-  type RunContext,
-  RunPipeline,
-  StreamingFailedError,
-  stringToUserMessage,
-  Thread,
-  type ThreadRunEvent,
-  Tool,
-  type ToolResultPayload,
-  z,
+    Agent,
+    BackgroundJobWaitTool,
+    BashTool,
+    Hook,
+    type LlmRuntime,
+    type LlmRuntimeRequest,
+    type RunContext,
+    RunPipeline,
+    StreamingFailedError,
+    stringToUserMessage,
+    Thread,
+    type ThreadRunEvent,
+    Tool,
+    type ToolResultPayload,
+    z,
 } from "../src/index.js";
 import {runThreadStep, type ThreadStepResult} from "../src/kernel/agent/thread.js";
-import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
+import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 class EchoTool extends Tool<typeof EchoTool.schema> {
@@ -286,7 +286,7 @@ describe("Thread", () => {
           agentKey: "panda",
         },
       });
-      const service = new BashJobService({ store });
+      const service = new BackgroundToolJobService({ store });
       let turn = 0;
       const runtime: LlmRuntime = {
         complete: vi.fn().mockImplementation(async (request) => {
@@ -317,13 +317,13 @@ describe("Thread", () => {
           }
 
           if (turn === 3) {
-            const jobId = (await store.listBashJobs("thread-bg"))[0]?.id ?? "";
+            const jobId = (await store.listToolJobs("thread-bg"))[0]?.id ?? "";
 
             return createAssistantMessage([
               {
                 type: "toolCall",
                 id: "call_wait",
-                name: "bash_job_wait",
+                name: "background_job_wait",
                 arguments: {
                   jobId,
                   timeoutMs: 1_000,
@@ -348,7 +348,7 @@ describe("Thread", () => {
               outputDirectory: path.join(workspace, "tool-results"),
               jobService: service,
             }),
-            new BashJobWaitTool({ service }),
+            new BackgroundJobWaitTool({ service }),
             new EchoTool(),
           ],
         }),
@@ -394,7 +394,7 @@ describe("Thread", () => {
       });
       expect(outputs[5]).toMatchObject({
         role: "toolResult",
-        toolName: "bash_job_wait",
+        toolName: "background_job_wait",
         details: {
           status: "completed",
           stdout: "hello",

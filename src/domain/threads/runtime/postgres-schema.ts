@@ -115,6 +115,32 @@ export function buildThreadRuntimeSchemaSql(
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_runs_thread_id_id_idx`)}
     ON ${tables.runs} (thread_id, id);
 
+    CREATE TABLE IF NOT EXISTS ${tables.toolJobs} (
+      id UUID PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES ${tables.threads}(id) ON DELETE CASCADE,
+      run_id UUID REFERENCES ${tables.runs}(id) ON DELETE SET NULL,
+      run_thread_id TEXT,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      started_at TIMESTAMPTZ NOT NULL,
+      finished_at TIMESTAMPTZ,
+      duration_ms BIGINT,
+      result JSONB,
+      error TEXT,
+      status_reason TEXT,
+      progress JSONB
+    );
+
+    ALTER TABLE ${tables.toolJobs}
+    ADD COLUMN IF NOT EXISTS run_thread_id TEXT;
+
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_tool_jobs_thread_started_idx`)}
+    ON ${tables.toolJobs} (thread_id, started_at);
+
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_tool_jobs_status_idx`)}
+    ON ${tables.toolJobs} (status, started_at);
+
     CREATE TABLE IF NOT EXISTS ${tables.bashJobs} (
       id UUID PRIMARY KEY,
       thread_id TEXT NOT NULL REFERENCES ${tables.threads}(id) ON DELETE CASCADE,

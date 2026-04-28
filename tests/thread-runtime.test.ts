@@ -5,31 +5,31 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {
-  Agent,
-  BashJobStatusTool,
-  BashJobWaitTool,
-  BashTool,
-  type LlmRuntime,
-  OutboundTool,
-  PiAiRuntime,
-  RunContext,
-  stringToUserMessage,
-  Thread,
-  Tool,
-  z,
+    Agent,
+    BackgroundJobStatusTool,
+    BackgroundJobWaitTool,
+    BashTool,
+    type LlmRuntime,
+    OutboundTool,
+    PiAiRuntime,
+    RunContext,
+    stringToUserMessage,
+    Thread,
+    Tool,
+    z,
 } from "../src/index.js";
-import {buildBackgroundBashThreadInput} from "../src/app/runtime/background-bash-thread-input.js";
+import {buildBackgroundToolThreadInput} from "../src/app/runtime/background-tool-thread-input.js";
 import {
-  AUTO_COMPACT_BREAKER_COOLDOWN_MS,
-  createCompactBoundaryMessage,
-  type CreateThreadInput,
-  type ResolvedThreadDefinition,
-  type ThreadDefinitionResolver,
-  type ThreadMessageRecord,
-  type ThreadRecord,
-  ThreadRuntimeCoordinator,
+    AUTO_COMPACT_BREAKER_COOLDOWN_MS,
+    createCompactBoundaryMessage,
+    type CreateThreadInput,
+    type ResolvedThreadDefinition,
+    type ThreadDefinitionResolver,
+    type ThreadMessageRecord,
+    type ThreadRecord,
+    ThreadRuntimeCoordinator,
 } from "../src/domain/threads/runtime/index.js";
-import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
+import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 const TEST_MODELS = vi.hoisted(() => ({
@@ -637,13 +637,13 @@ describe("ThreadRuntimeCoordinator", () => {
         id: "thread-bg-runtime",
         agentKey: "panda",
       });
-      const service = new BashJobService({ store });
+      const service = new BackgroundToolJobService({ store });
       const bash = new BashTool({
         outputDirectory: path.join(workspace, "tool-results"),
         jobService: service,
       });
-      const wait = new BashJobWaitTool({ service });
-      const status = new BashJobStatusTool({ service });
+      const wait = new BackgroundJobWaitTool({ service });
+      const status = new BackgroundJobStatusTool({ service });
 
       const runContext = (context: Record<string, unknown>) => new RunContext({
         agent: new Agent({
@@ -689,8 +689,8 @@ describe("ThreadRuntimeCoordinator", () => {
 
       expect((completedLater as {status: string; stdout: string}).status).toBe("completed");
       expect((completedLater as {stdout: string}).stdout).toBe("hello");
-      expect(await store.listBashJobs("thread-bg-runtime")).toHaveLength(1);
-      expect((await store.getBashJob(jobId)).runId).toBe("run-1");
+      expect(await store.listToolJobs("thread-bg-runtime")).toHaveLength(1);
+      expect((await store.getToolJob(jobId)).runId).toBe("run-1");
 
       const orphan = await bash.run(
         { command: "sleep 10", background: true },
@@ -698,7 +698,7 @@ describe("ThreadRuntimeCoordinator", () => {
       );
       const orphanJobId = String((orphan as {jobId: string}).jobId);
 
-      expect(await store.markRunningBashJobsLost("runtime restarted")).toBe(1);
+      expect(await store.markRunningToolJobsLost("runtime restarted")).toBe(1);
 
       const lost = await status.run(
         { jobId: orphanJobId },
@@ -722,7 +722,7 @@ describe("ThreadRuntimeCoordinator", () => {
         agentKey: "bg-autowake-agent",
       });
 
-      const service = new BashJobService({ store });
+      const service = new BackgroundToolJobService({ store });
       const bash = new BashTool({
         outputDirectory: path.join(workspace, "tool-results"),
         jobService: service,
@@ -772,7 +772,7 @@ describe("ThreadRuntimeCoordinator", () => {
             expect(request.context.messages.some((entry) => {
               return entry.role === "user"
                 && typeof entry.content === "string"
-                && entry.content.includes("[Background Bash Event]");
+                && entry.content.includes("[Background Tool Event]");
             })).toBe(true);
             return message("noticed the background completion");
           }
@@ -811,7 +811,7 @@ describe("ThreadRuntimeCoordinator", () => {
         resolveDefinition: (thread) => registry.resolve(thread),
       });
       service.setBackgroundCompletionHandler(async (record) => {
-        await coordinator.submitInput(record.threadId, buildBackgroundBashThreadInput(record), "queue");
+        await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "queue");
         await coordinator.wake(record.threadId);
       });
 
@@ -823,15 +823,15 @@ describe("ThreadRuntimeCoordinator", () => {
       await started.promise;
       await waitFor(async () => {
         const pendingInputs = await store.listPendingInputs("thread-bg-autowake");
-        return pendingInputs.filter((entry) => entry.source === "background_bash").length === 2;
+        return pendingInputs.filter((entry) => entry.source === "background_tool").length === 2;
       });
 
       release.resolve({ done: "released" });
       await coordinator.waitForIdle("thread-bg-autowake");
 
       const transcript = await store.loadTranscript("thread-bg-autowake");
-      expect(transcript.filter((entry) => entry.source === "background_bash")).toHaveLength(2);
-      expect(transcript.filter((entry) => entry.source === "background_bash").every((entry) => entry.origin === "input")).toBe(true);
+      expect(transcript.filter((entry) => entry.source === "background_tool")).toHaveLength(2);
+      expect(transcript.filter((entry) => entry.source === "background_tool").every((entry) => entry.origin === "input")).toBe(true);
       expect(runtime.complete).toHaveBeenCalledTimes(5);
       expect(transcript.some((entry) => {
         return entry.message.role === "assistant"
@@ -870,7 +870,7 @@ describe("ThreadRuntimeCoordinator", () => {
           expect(request.context.messages.some((entry) => {
             return entry.role === "user"
               && typeof entry.content === "string"
-              && entry.content.includes("[Background Bash Event]");
+              && entry.content.includes("[Background Tool Event]");
           })).toBe(true);
           return message("noticed wake from another coordinator");
         }
@@ -914,7 +914,7 @@ describe("ThreadRuntimeCoordinator", () => {
     await started.promise;
     await otherCoordinator.submitInput(
       "thread-cross-process-wake",
-      buildBackgroundBashThreadInput({
+      buildBackgroundToolThreadInput({
         id: "job-cross-wake",
         threadId: "thread-cross-process-wake",
         status: "completed",
@@ -978,7 +978,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await store.enqueueInput(
       "thread-pending-wake-idle",
-      buildBackgroundBashThreadInput({
+      buildBackgroundToolThreadInput({
         id: "job-pending-wake-idle",
         threadId: "thread-pending-wake-idle",
         status: "completed",
@@ -1007,7 +1007,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(runtime.complete).toHaveBeenCalledTimes(3);
     const transcript = await store.loadTranscript("thread-pending-wake-idle");
-    expect(transcript.some((entry) => entry.origin === "input" && entry.source === "background_bash")).toBe(true);
+    expect(transcript.some((entry) => entry.origin === "input" && entry.source === "background_tool")).toBe(true);
     expect(transcript.some((entry) => {
       return entry.message.role === "assistant"
         && entry.message.content.some((block) => block.type === "text" && block.text === "processed pending wake");

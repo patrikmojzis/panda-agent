@@ -9,15 +9,17 @@ import {Tool, type ToolOutput} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
 import type {CredentialResolver} from "../../domain/credentials/index.js";
+import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {ensureShellSession, readBaseCwd, readCurrentInputIdentityId,} from "../../app/runtime/panda-path-context.js";
 import {type BashExecutor, createDefaultBashExecutor,} from "../../integrations/shell/bash-executor.js";
-import type {BashJobService} from "../../integrations/shell/bash-job-service.js";
+import {startBashBackgroundJob} from "../../integrations/shell/bash-background-runner.js";
+import {readThreadId} from "../../integrations/shell/runtime-context.js";
 import {redactSecretsInJson} from "../../integrations/shell/redaction.js";
 import {applyPersistedEnv, collectTrackedEnvKeys, resolveCommandCwd,} from "../../integrations/shell/bash-session.js";
 import type {PersistedEnvEntry} from "../../integrations/shell/bash-protocol.js";
 import type {ShellSession} from "../../integrations/shell/types.js";
-import {buildBashJobPayload, formatBashJobResult} from "./bash-job-tools.js";
+import {buildBackgroundJobPayload, formatBackgroundJobResult} from "./background-job-tools.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 8_000;
@@ -117,7 +119,7 @@ export interface BashToolOptions {
   executor?: BashExecutor;
   fetchImpl?: typeof fetch;
   credentialResolver?: CredentialResolver;
-  jobService?: BashJobService;
+  jobService?: BackgroundToolJobService;
 }
 
 export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof BashTool.schema, TContext> {
@@ -131,7 +133,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
 
   name = "bash";
   description =
-    "Run a shell command. Foreground bash mutates the shared shell cwd and simple export/unset env state across calls. Background bash starts an isolated snapshot job, returns immediately, never mutates the shared shell session, and may later surface as a machine-generated runtime event; use bash_job_status, bash_job_wait, and bash_job_cancel for follow-up.";
+    "Run a shell command. Foreground bash mutates the shared shell cwd and simple export/unset env state across calls. Background bash starts an isolated snapshot job, returns immediately, never mutates the shared shell session, and may later surface as a machine-generated runtime event; use background_job_status, background_job_wait, and background_job_cancel for follow-up.";
   schema = BashTool.schema;
 
   private readonly defaultTimeoutMs: number;
@@ -140,13 +142,19 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
   private readonly progressIntervalMs: number;
   private readonly progressTailChars: number;
   private readonly outputDirectory: string;
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly shell?: string;
+  private readonly fetchImpl?: typeof fetch;
   private readonly executor: BashExecutor;
   private readonly credentialResolver?: CredentialResolver;
-  private readonly jobService?: BashJobService;
+  private readonly jobService?: BackgroundToolJobService;
 
   constructor(options: BashToolOptions = {}) {
     super();
     const env = options.env ?? process.env;
+    this.env = env;
+    this.shell = options.shell;
+    this.fetchImpl = options.fetchImpl;
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxOutputChars = options.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
     this.persistOutputThresholdChars =
@@ -182,8 +190,12 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       return text || super.formatResult(message);
     }
 
+    if (details.kind === "bash" && typeof details.status === "string") {
+      return formatBackgroundJobResult(message);
+    }
+
     if (details.sessionStateIsolated === true && typeof details.status === "string") {
-      return formatBashJobResult(message);
+      return formatBackgroundJobResult(message);
     }
 
     const stdout = typeof details.stdout === "string" ? details.stdout.trim() : "";
@@ -241,21 +253,32 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
         throw new ToolError("Background bash is not available in this runtime.");
       }
 
+      const context = run.context as DefaultAgentSessionContext | undefined;
       const job = await this.jobService.start({
-        command: args.command,
-        cwd,
-        timeoutMs,
-        trackedEnvKeys,
-        maxOutputChars: this.maxOutputChars,
-        persistOutputThresholdChars: this.persistOutputThresholdChars,
-        outputDirectory: this.outputDirectory,
-        env: args.env,
-        resolvedEnv: resolvedCredentialEnv,
-        secretValues: knownSecretValues,
-        run: run as RunContext<DefaultAgentSessionContext>,
+        threadId: readThreadId(context),
+        runId: context?.runId,
+        kind: "bash",
+        summary: args.command,
+        start: ({jobId}) => startBashBackgroundJob({
+          jobId,
+          command: args.command,
+          cwd,
+          timeoutMs,
+          trackedEnvKeys,
+          maxOutputChars: this.maxOutputChars,
+          persistOutputThresholdChars: this.persistOutputThresholdChars,
+          outputDirectory: this.outputDirectory,
+          env: args.env,
+          resolvedEnv: resolvedCredentialEnv,
+          secretValues: knownSecretValues,
+          context,
+          processEnv: this.env,
+          shell: this.shell,
+          fetchImpl: this.fetchImpl,
+        }),
       });
 
-      return buildBashJobPayload(job);
+      return buildBackgroundJobPayload(job);
     }
     const result = await this.executor.execute({
       command: args.command,

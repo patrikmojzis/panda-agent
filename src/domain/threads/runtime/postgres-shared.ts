@@ -4,6 +4,7 @@ export interface ThreadRuntimeTableNames {
   messages: string;
   inputs: string;
   runs: string;
+  toolJobs: string;
   bashJobs: string;
 }
 
@@ -65,6 +66,7 @@ export function buildThreadRuntimeTableNames(): ThreadRuntimeTableNames {
     messages: "messages",
     inputs: "inputs",
     runs: "runs",
+    toolJobs: "tool_jobs",
     bashJobs: "bash_jobs",
   });
 }

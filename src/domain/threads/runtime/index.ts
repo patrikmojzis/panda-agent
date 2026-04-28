@@ -39,7 +39,7 @@ export {
 export {
   type AutoCompactionRuntimeState,
   type CreateThreadInput,
-  type CreateThreadBashJobInput,
+  type CreateThreadToolJobInput,
   type InferenceProjection,
   type InferenceProjectionRule,
   isMissingThreadError,
@@ -57,10 +57,19 @@ export {
   type ThreadSummaryRecord,
   type ThreadRunRecord,
   type ThreadRunStatus,
-  type ThreadBashJobMode,
-  type ThreadBashJobRecord,
-  type ThreadBashJobStatus,
-  type ThreadBashJobUpdate,
+  type ThreadToolJobKind,
+  type ThreadToolJobRecord,
+  type ThreadToolJobStatus,
+  type ThreadToolJobUpdate,
   type ThreadRuntimeMessagePayload,
   type ThreadUpdate,
 } from "./types.js";
+export {
+  BackgroundToolJobService,
+  type BackgroundToolJobCompletion,
+  type BackgroundToolJobHandle,
+  type BackgroundToolJobSnapshot,
+  type BackgroundToolJobStartContext,
+  type BackgroundToolJobStartOptions,
+  type BackgroundToolJobTerminalHandler,
+} from "./tool-job-service.js";

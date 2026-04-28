@@ -178,7 +178,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
 
   constructor(options: ThreadOptions<TContext, TOutput>) {
     this.agent = options.agent;
-    this.maxTurns = options.maxTurns ?? 200;
+    this.maxTurns = options.maxTurns ?? 300;
     this.turnCount = options.resumeState?.turnCount ?? 0;
     this.history = [...(options.messages ?? [])];
     this.systemPrompt = options.systemPrompt;

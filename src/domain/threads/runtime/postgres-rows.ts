@@ -1,11 +1,11 @@
 import {toMillis, toOrderNumber} from "./postgres-shared.js";
 import type {
-  ThreadBashJobRecord,
-  ThreadInputDeliveryMode,
-  ThreadInputRecord,
-  ThreadMessageRecord,
-  ThreadRecord,
-  ThreadRunRecord,
+    ThreadInputDeliveryMode,
+    ThreadInputRecord,
+    ThreadMessageRecord,
+    ThreadRecord,
+    ThreadRunRecord,
+    ThreadToolJobRecord,
 } from "./types.js";
 
 export function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
@@ -75,35 +75,20 @@ export function parseRunRow(row: Record<string, unknown>): ThreadRunRecord {
   };
 }
 
-export function parseBashJobRow(row: Record<string, unknown>): ThreadBashJobRecord {
+export function parseToolJobRow(row: Record<string, unknown>): ThreadToolJobRecord {
   return {
     id: String(row.id),
     threadId: String(row.thread_id),
     runId: row.run_id === null ? undefined : String(row.run_id),
-    status: String(row.status) as ThreadBashJobRecord["status"],
-    command: String(row.command),
-    mode: String(row.mode) as ThreadBashJobRecord["mode"],
-    initialCwd: String(row.initial_cwd),
-    finalCwd: row.final_cwd === null ? undefined : String(row.final_cwd),
+    kind: String(row.kind) as ThreadToolJobRecord["kind"],
+    status: String(row.status) as ThreadToolJobRecord["status"],
+    summary: row.summary === null ? "" : String(row.summary),
     startedAt: toMillis(row.started_at),
     finishedAt: row.finished_at === null ? undefined : toMillis(row.finished_at),
     durationMs: row.duration_ms === null ? undefined : Number(row.duration_ms),
-    exitCode: row.exit_code === null ? undefined : Number(row.exit_code),
-    signal: row.signal === null ? undefined : String(row.signal) as NodeJS.Signals,
-    timedOut: Boolean(row.timed_out),
-    stdout: row.stdout === null ? "" : String(row.stdout),
-    stderr: row.stderr === null ? "" : String(row.stderr),
-    stdoutChars: Number(row.stdout_chars ?? 0),
-    stderrChars: Number(row.stderr_chars ?? 0),
-    stdoutTruncated: Boolean(row.stdout_truncated),
-    stderrTruncated: Boolean(row.stderr_truncated),
-    stdoutPersisted: Boolean(row.stdout_persisted),
-    stderrPersisted: Boolean(row.stderr_persisted),
-    stdoutPath: row.stdout_path === null ? undefined : String(row.stdout_path),
-    stderrPath: row.stderr_path === null ? undefined : String(row.stderr_path),
-    trackedEnvKeys: Array.isArray(row.tracked_env_keys)
-      ? row.tracked_env_keys.filter((entry): entry is string => typeof entry === "string")
-      : [],
+    result: row.result === null ? undefined : (row.result as ThreadToolJobRecord["result"]),
+    error: row.error === null ? undefined : String(row.error),
     statusReason: row.status_reason === null ? undefined : String(row.status_reason),
+    progress: row.progress === null ? undefined : (row.progress as ThreadToolJobRecord["progress"]),
   };
 }

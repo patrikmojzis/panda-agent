@@ -8,19 +8,19 @@ import {sleep} from "../../lib/async.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore,} from "../../domain/agents/index.js";
 import {
-  type CreateIdentityInput,
-  type IdentityRecord,
-  normalizeIdentityHandle,
-  PostgresIdentityStore,
+    type CreateIdentityInput,
+    type IdentityRecord,
+    normalizeIdentityHandle,
+    PostgresIdentityStore,
 } from "../../domain/identity/index.js";
 import {isMissingAgentError} from "../../domain/agents/errors.js";
 import {normalizeAgentKey} from "../../domain/agents/types.js";
 import {PostgresSessionStore} from "../../domain/sessions/index.js";
 import type {
-  ThreadBashJobRecord,
-  ThreadMessageRecord,
-  ThreadRecord,
-  ThreadRunRecord,
+    ThreadMessageRecord,
+    ThreadRecord,
+    ThreadRunRecord,
+    ThreadToolJobRecord,
 } from "../../domain/threads/runtime/index.js";
 import {readToolArtifact, type ToolArtifactDescriptor} from "../../kernel/agent/tool-artifacts.js";
 import {createRuntimeClient} from "../runtime/client.js";
@@ -30,10 +30,10 @@ import {createPostgresPool} from "../runtime/database.js";
 import {ensureSchemas, withPostgresPool} from "../runtime/postgres-bootstrap.js";
 import {DaemonStateRepo} from "../runtime/state/repo.js";
 import {
-  DEFAULT_SMOKE_TIMEOUT_MS,
-  requireSmokeDatabaseUrl,
-  resolveSmokeArtifactDirectory,
-  resolveSmokeModelSelector,
+    DEFAULT_SMOKE_TIMEOUT_MS,
+    requireSmokeDatabaseUrl,
+    resolveSmokeArtifactDirectory,
+    resolveSmokeModelSelector,
 } from "./config.js";
 import {recreateSmokeDatabase, resolveSmokeDatabaseTarget, type SmokeDatabaseTarget,} from "./database.js";
 
@@ -89,7 +89,7 @@ export interface SmokeBashArtifactEntry {
   command: string;
   jobId: string;
   runId?: string;
-  status: ThreadBashJobRecord["status"];
+  status: ThreadToolJobRecord["status"];
   stderrPath?: string;
   stdoutPath?: string;
 }
@@ -198,7 +198,7 @@ function collectObservedTools(transcript: readonly ThreadMessageRecord[]): Set<s
 
 function collectToolArtifacts(
   transcript: readonly ThreadMessageRecord[],
-  bashJobs: readonly ThreadBashJobRecord[],
+  toolJobs: readonly ThreadToolJobRecord[],
 ): SmokeToolArtifacts {
   const toolArtifacts: SmokeToolArtifactEntry[] = [];
   for (const entry of transcript) {
@@ -220,18 +220,21 @@ function collectToolArtifacts(
     });
   }
 
-  const bashArtifacts = bashJobs.flatMap((job) => {
-    if (!job.stdoutPath && !job.stderrPath) {
+  const bashArtifacts = toolJobs.flatMap((job) => {
+    const stdoutPath = typeof job.result?.stdoutPath === "string" ? job.result.stdoutPath : undefined;
+    const stderrPath = typeof job.result?.stderrPath === "string" ? job.result.stderrPath : undefined;
+    if (job.kind !== "bash" || (!stdoutPath && !stderrPath)) {
       return [];
     }
 
+    const command = typeof job.result?.command === "string" ? job.result.command : job.summary;
     return [{
-      command: job.command,
+      command,
       jobId: job.id,
       runId: job.runId,
       status: job.status,
-      ...(job.stdoutPath ? {stdoutPath: job.stdoutPath} : {}),
-      ...(job.stderrPath ? {stderrPath: job.stderrPath} : {}),
+      ...(stdoutPath ? {stdoutPath} : {}),
+      ...(stderrPath ? {stderrPath} : {}),
     } satisfies SmokeBashArtifactEntry];
   });
 
@@ -485,26 +488,26 @@ async function loadSmokeRecords(input: {
   client: Awaited<ReturnType<typeof createRuntimeClient>> | null;
   thread: ThreadRecord | null;
 }): Promise<{
-  bashJobs: readonly ThreadBashJobRecord[];
+  toolJobs: readonly ThreadToolJobRecord[];
   runs: readonly ThreadRunRecord[];
   transcript: readonly ThreadMessageRecord[];
 }> {
   if (!input.client || !input.thread) {
     return {
-      bashJobs: [],
+      toolJobs: [],
       runs: [],
       transcript: [],
     };
   }
 
-  const [transcript, runs, bashJobs] = await Promise.all([
+  const [transcript, runs, toolJobs] = await Promise.all([
     input.client.store.loadTranscript(input.thread.id),
     input.client.store.listRuns(input.thread.id),
-    input.client.store.listBashJobs(input.thread.id),
+    input.client.store.listToolJobs(input.thread.id),
   ]);
 
   return {
-    bashJobs,
+    toolJobs,
     runs,
     transcript,
   };
@@ -552,7 +555,7 @@ export async function runSmoke(input: SmokeInput): Promise<SmokeResult> {
   let thread: ThreadRecord | null = null;
   let transcript: readonly ThreadMessageRecord[] = [];
   let runs: readonly ThreadRunRecord[] = [];
-  let bashJobs: readonly ThreadBashJobRecord[] = [];
+  let toolJobs: readonly ThreadToolJobRecord[] = [];
   let assertions: readonly SmokeAssertion[] = [];
   let toolArtifacts: SmokeToolArtifacts = {
     bashArtifacts: [],
@@ -644,11 +647,11 @@ export async function runSmoke(input: SmokeInput): Promise<SmokeResult> {
     }
 
     stage = "collect";
-    ({bashJobs, runs, transcript} = await loadSmokeRecords({
+    ({toolJobs, runs, transcript} = await loadSmokeRecords({
       client,
       thread,
     }));
-    toolArtifacts = collectToolArtifacts(transcript, bashJobs);
+    toolArtifacts = collectToolArtifacts(transcript, toolJobs);
 
     stage = "assertions";
     assertions = evaluateAssertions({
@@ -698,11 +701,11 @@ export async function runSmoke(input: SmokeInput): Promise<SmokeResult> {
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    ({bashJobs, runs, transcript} = await loadSmokeRecords({
+    ({toolJobs, runs, transcript} = await loadSmokeRecords({
       client,
       thread,
     }));
-    toolArtifacts = collectToolArtifacts(transcript, bashJobs);
+    toolArtifacts = collectToolArtifacts(transcript, toolJobs);
     if (assertions.length === 0) {
       assertions = evaluateAssertions({
         expectText: input.expectText ?? [],

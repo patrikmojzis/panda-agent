@@ -358,7 +358,7 @@ export function createDaemonThreadHelpers(
     const previousThread = await context.runtime.store.getThread(session.currentThreadId);
     await context.runtime.coordinator.abort(previousThread.id, `Reset requested from ${input.source}.`);
     await context.runtime.coordinator.waitForCurrentRun(previousThread.id);
-    await context.runtime.bashJobService.cancelThreadJobs(previousThread.id);
+    await context.runtime.backgroundJobService.cancelThreadJobs(previousThread.id);
     await context.runtime.store.discardPendingInputs(previousThread.id);
 
     const nextThread = buildInitialSessionThreadInput({

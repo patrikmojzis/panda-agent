@@ -6,9 +6,9 @@ import {describe, expect, it} from "vitest";
 
 import {
     Agent,
-    BashJobCancelTool,
-    BashJobStatusTool,
-    BashJobWaitTool,
+    BackgroundJobCancelTool,
+    BackgroundJobStatusTool,
+    BackgroundJobWaitTool,
     BashTool,
     type DefaultAgentSessionContext,
     type JsonObject,
@@ -16,7 +16,7 @@ import {
     ToolError,
     type ToolResultMessage,
 } from "../src/index.js";
-import {BashJobService} from "../src/integrations/shell/bash-job-service.js";
+import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createAgent() {
@@ -55,20 +55,20 @@ async function createBackgroundHarness(workspace: string) {
       agentKey: "panda",
     },
   });
-  const service = new BashJobService({
+  const service = new BackgroundToolJobService({
     store,
   });
   const bash = new BashTool({
     outputDirectory: path.join(workspace, "tool-results"),
     jobService: service,
   });
-  const status = new BashJobStatusTool({
+  const status = new BackgroundJobStatusTool({
     service,
   });
-  const wait = new BashJobWaitTool({
+  const wait = new BackgroundJobWaitTool({
     service,
   });
-  const cancel = new BashJobCancelTool({
+  const cancel = new BackgroundJobCancelTool({
     service,
   });
   const context: DefaultAgentSessionContext = {
@@ -469,7 +469,7 @@ describe("BashTool", () => {
       expect(context.shell?.cwd).toBe(workspace);
 
       const jobId = String(startedOutput.jobId);
-      expect((await store.getBashJob(jobId)).status).toBe("running");
+      expect((await store.getToolJob(jobId)).status).toBe("running");
 
       const finished = await wait.run(
         { jobId, timeoutMs: 1_000 },
@@ -497,11 +497,9 @@ describe("BashTool", () => {
           agentKey: "panda",
         },
       });
-      const service = new BashJobService({
-        store,
-        shell: path.join(workspace, "missing-shell"),
-      });
+      const service = new BackgroundToolJobService({store});
       const bash = new BashTool({
+        shell: path.join(workspace, "missing-shell"),
         outputDirectory: path.join(workspace, "tool-results"),
         jobService: service,
       });
@@ -521,7 +519,7 @@ describe("BashTool", () => {
         createRunContext(context),
       )).rejects.toBeInstanceOf(Error);
 
-      await expect(store.listBashJobs("thread-bg")).resolves.toHaveLength(0);
+      await expect(store.listToolJobs("thread-bg")).resolves.toHaveLength(0);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -659,14 +657,14 @@ describe("BashTool", () => {
           agentKey: "panda",
         },
       });
-      const service = new BashJobService({ store });
+      const service = new BackgroundToolJobService({ store });
       const bash = new BashTool({
         outputDirectory: path.join(workspace, "tool-results"),
         maxOutputChars: 8,
         persistOutputThresholdChars: 8,
         jobService: service,
       });
-      const wait = new BashJobWaitTool({ service });
+      const wait = new BackgroundJobWaitTool({ service });
       const context: DefaultAgentSessionContext = {
         sessionId: "session-bg",
         agentKey: "panda",
