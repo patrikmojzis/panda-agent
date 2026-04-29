@@ -92,7 +92,7 @@ COPY examples/apps ./examples/apps
 RUN ln -sf /app/dist/app/cli.js /usr/local/bin/panda \
   && chmod +x /app/dist/app/cli.js
 
-EXPOSE 8080
+EXPOSE 8080 8094
 
 ENTRYPOINT ["panda"]
 CMD ["--help"]

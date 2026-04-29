@@ -174,6 +174,23 @@ describe("Panda gateway", () => {
     });
   }
 
+  async function waitForEventStatus(
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    eventId: string,
+    status: string,
+  ): Promise<void> {
+    const deadline = Date.now() + 500;
+    while (Date.now() < deadline) {
+      const event = await harness.gatewayStore.getEvent(eventId);
+      if (event.status === status) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const event = await harness.gatewayStore.getEvent(eventId);
+    expect(event.status).toBe(status);
+  }
+
   it("accepts OAuth client-credential events and delivers wrapped raw text to Panda", async () => {
     const harness = await createHarness();
     try {
@@ -485,6 +502,73 @@ describe("Panda gateway", () => {
     }
   });
 
+  it("keeps unrelated sources moving while one source guard is slow", async () => {
+    let releaseSlowGuard!: () => void;
+    let resolveSlowGuardStarted!: () => void;
+    const slowGuardReleased = new Promise<void>((resolve) => {
+      releaseSlowGuard = resolve;
+    });
+    const slowGuardStarted = new Promise<void>((resolve) => {
+      resolveSlowGuardStarted = resolve;
+    });
+    const guard: GatewayGuard = {
+      score: async ({event}) => {
+        if (event.sourceId === "work-prod") {
+          resolveSlowGuardStarted();
+          await slowGuardReleased;
+        }
+        return {riskScore: 0.01};
+      },
+    };
+    const harness = await createHarness({guard});
+    try {
+      await harness.gatewayStore.createSource({
+        sourceId: "other-prod",
+        agentKey: "panda",
+        identityId: "identity-1",
+      });
+      await harness.gatewayStore.upsertEventType({
+        sourceId: "other-prod",
+        type: "meeting.transcript",
+        delivery: "wake",
+      });
+      const firstText = "Slow source.";
+      const secondText = "Fast source.";
+      const first = await harness.gatewayStore.storeEvent({
+        sourceId: "work-prod",
+        type: "meeting.transcript",
+        deliveryRequested: "wake",
+        deliveryEffective: "wake",
+        idempotencyKey: "slow-source",
+        text: firstText,
+        textBytes: Buffer.byteLength(firstText, "utf8"),
+        textSha256: createHash("sha256").update(firstText, "utf8").digest("hex"),
+      });
+      const second = await harness.gatewayStore.storeEvent({
+        sourceId: "other-prod",
+        type: "meeting.transcript",
+        deliveryRequested: "wake",
+        deliveryEffective: "wake",
+        idempotencyKey: "fast-source",
+        text: secondText,
+        textBytes: Buffer.byteLength(secondText, "utf8"),
+        textSha256: createHash("sha256").update(secondText, "utf8").digest("hex"),
+      });
+
+      harness.worker.poke();
+      await slowGuardStarted;
+      await waitForEventStatus(harness, second.event.id, "delivered");
+      await expect(harness.gatewayStore.getEvent(first.event.id)).resolves.toMatchObject({
+        status: "processing",
+      });
+      releaseSlowGuard();
+      await waitForEventStatus(harness, first.event.id, "delivered");
+    } finally {
+      releaseSlowGuard();
+      await closeHarness(harness);
+    }
+  });
+
   it("leaves reserved delivery unquarantined when the delivery commit is ambiguous", async () => {
     const harness = await createHarness();
     try {
@@ -522,6 +606,7 @@ describe("Panda gateway", () => {
   it("does not reclaim stale delivering events through the guard path", async () => {
     const harness = await createHarness();
     try {
+      await harness.worker.close();
       const text = "Reserved delivery should not be guarded again.";
       const stored = await harness.gatewayStore.storeEvent({
         sourceId: "work-prod",

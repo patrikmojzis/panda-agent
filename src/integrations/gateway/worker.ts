@@ -10,6 +10,7 @@ export const DEFAULT_GATEWAY_GUARD_THRESHOLD = 0.85;
 export const DEFAULT_GATEWAY_GUARD_TIMEOUT_MS = 120_000;
 const DEFAULT_WORKER_POLL_MS = 1_000;
 const DEFAULT_WORKER_BATCH_SIZE = 10;
+const DEFAULT_WORKER_CONCURRENCY = 4;
 const STRIKE_WINDOW_MS = 10 * 60_000;
 const STRIKE_THRESHOLD = 3;
 
@@ -21,6 +22,7 @@ export interface GatewayWorkerOptions {
   store: PostgresGatewayStore;
   sessionStore: PostgresSessionStore;
   threadStore: PostgresThreadRuntimeStore;
+  workerConcurrency?: number;
 }
 
 async function shouldLeaveDeliveryStateAlone(
@@ -206,6 +208,62 @@ async function processGatewayEvent(options: GatewayWorkerOptions, event: Gateway
   });
 }
 
+function groupEventsBySource(events: readonly GatewayEventRecord[]): GatewayEventRecord[][] {
+  const groups = new Map<string, GatewayEventRecord[]>();
+  for (const event of events) {
+    const group = groups.get(event.sourceId);
+    if (group) {
+      group.push(event);
+    } else {
+      groups.set(event.sourceId, [event]);
+    }
+  }
+  return [...groups.values()];
+}
+
+async function processClaimedGatewayEvent(
+  options: GatewayWorkerOptions,
+  event: GatewayEventRecord,
+): Promise<void> {
+  try {
+    await processGatewayEvent(options, event);
+  } catch (error) {
+    if (await shouldLeaveDeliveryStateAlone(options, event).catch(() => false)) {
+      return;
+    }
+    await options.store.markEventQuarantined({
+      eventId: event.id,
+      claimId: event.claimId,
+      riskScore: 1,
+      reason: error instanceof Error ? error.message : "gateway worker failed",
+      metadata: {gateway: {workerFailed: true}},
+    }).catch(() => undefined);
+  }
+}
+
+async function processSourceGroups(
+  options: GatewayWorkerOptions,
+  groups: readonly GatewayEventRecord[][],
+): Promise<void> {
+  let nextIndex = 0;
+  const concurrency = Math.max(
+    1,
+    Math.min(groups.length, Math.floor(options.workerConcurrency ?? DEFAULT_WORKER_CONCURRENCY)),
+  );
+  await Promise.all(Array.from({length: concurrency}, async () => {
+    while (nextIndex < groups.length) {
+      const group = groups[nextIndex];
+      nextIndex += 1;
+      if (!group) {
+        continue;
+      }
+      for (const event of group) {
+        await processClaimedGatewayEvent(options, event);
+      }
+    }
+  }));
+}
+
 export function startGatewayWorker(options: GatewayWorkerOptions): GatewayWorker {
   let closed = false;
   let running: Promise<void> | null = null;
@@ -228,22 +286,7 @@ export function startGatewayWorker(options: GatewayWorkerOptions): GatewayWorker
     }
     running = (async () => {
       const events = await options.store.claimPendingEvents(DEFAULT_WORKER_BATCH_SIZE);
-      for (const event of events) {
-        try {
-          await processGatewayEvent(options, event);
-        } catch (error) {
-          if (await shouldLeaveDeliveryStateAlone(options, event).catch(() => false)) {
-            continue;
-          }
-          await options.store.markEventQuarantined({
-            eventId: event.id,
-            claimId: event.claimId,
-            riskScore: 1,
-            reason: error instanceof Error ? error.message : "gateway worker failed",
-            metadata: {gateway: {workerFailed: true}},
-          }).catch(() => undefined);
-        }
-      }
+      await processSourceGroups(options, groupEventsBySource(events));
     })().finally(() => {
       running = null;
       schedule(options.pollMs ?? DEFAULT_WORKER_POLL_MS);

@@ -84,3 +84,34 @@ panda gateway source suspend work-prod --reason "compromised"
 panda gateway source resume work-prod # also rotates and prints a new client secret
 panda gateway event-list --source work-prod
 ```
+
+## Docker Stack
+
+The stack runs gateway as its own process:
+
+- `panda-gateway` handles `/oauth/token`, `/v1/events`, and `/health`
+- Caddy terminates TLS on the public URL
+- `panda-gateway` and Caddy share `gateway_edge_net`
+- `panda-gateway` never joins `runner_net`
+
+Minimal `.env` shape:
+
+```bash
+PANDA_GATEWAY_BASE_URL=https://gateway.example.com
+PANDA_GATEWAY_PUBLIC_HOST=gateway.example.com
+PANDA_GATEWAY_EDGE_SUBNET=172.31.94.0/24
+
+GATEWAY_HOST=0.0.0.0
+GATEWAY_PORT=8094
+GATEWAY_IP_ALLOWLIST=203.0.113.10/32
+GATEWAY_GUARD_MODEL=openai-codex/gpt-5.5
+```
+
+`docker-stack.sh` sets `GATEWAY_TRUSTED_PROXY_IPS` to `PANDA_GATEWAY_EDGE_SUBNET` when it is not explicit. Keep the allowlist on the real client IPs; Caddy replaces `X-Forwarded-For` with `{remote_host}` before proxying.
+
+Run:
+
+```bash
+./scripts/docker-stack.sh up --build
+./scripts/docker-stack.sh logs gateway
+```
