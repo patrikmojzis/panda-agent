@@ -37,6 +37,7 @@ import {renderRuntimeAutonomyContext} from "../../../prompts/runtime/autonomy-co
 
 export type ThreadWakeMode = "wake" | "queue";
 const ABORT_POLL_MS = 250;
+const LEASE_RETRY_BACKOFF_MS = 250;
 
 export interface ThreadLease {
   threadId: string;
@@ -81,6 +82,11 @@ export type ThreadRuntimeEvent =
 interface ThreadBoundaryState {
   hasRunnableInputs: boolean;
   hadPendingWake: boolean;
+}
+
+interface ThreadRunAttemptResult {
+  restartRequested: boolean;
+  acquiredLease: boolean;
 }
 
 const IDLE_REROLL_SUPPRESSED_INPUT_SOURCES = new Set([
@@ -216,7 +222,7 @@ export class ThreadRuntimeCoordinator {
   private readonly resolveDefinition: ThreadDefinitionResolver;
   private readonly leaseManager: ThreadLeaseManager;
   private readonly onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
-  private readonly activeRuns = new Map<string, Promise<void>>();
+  private readonly activeRuns = new Map<string, Promise<ThreadRunAttemptResult>>();
   private readonly activeSignals = new Map<string, AbortController>();
 
   constructor(options: ThreadRuntimeCoordinatorOptions) {
@@ -289,11 +295,40 @@ export class ThreadRuntimeCoordinator {
     return requestedRun !== null || controller !== undefined;
   }
 
+  async poke(threadId: string): Promise<void> {
+    if (this.activeRuns.has(threadId)) {
+      return;
+    }
+
+    if (!(await this.store.hasRunnableInputs(threadId)) && !(await this.store.hasPendingWake(threadId))) {
+      return;
+    }
+
+    const attempt = this.ensureRunning(threadId);
+    if (!attempt) {
+      return;
+    }
+
+    const result = await attempt;
+    if (result.acquiredLease) {
+      return;
+    }
+
+    await this.sleep(LEASE_RETRY_BACKOFF_MS);
+    if (!this.activeRuns.has(threadId)
+      && ((await this.store.hasRunnableInputs(threadId)) || (await this.store.hasPendingWake(threadId)))) {
+      this.ensureRunning(threadId);
+    }
+  }
+
   async waitForIdle(threadId: string): Promise<void> {
     while (true) {
       const activeRun = this.activeRuns.get(threadId);
       if (activeRun) {
-        await activeRun;
+        const result = await activeRun;
+        if (!result.acquiredLease) {
+          await this.sleep(LEASE_RETRY_BACKOFF_MS);
+        }
         continue;
       }
 
@@ -301,7 +336,10 @@ export class ThreadRuntimeCoordinator {
         return;
       }
 
-      this.ensureRunning(threadId);
+      const result = await this.ensureRunning(threadId);
+      if (result && !result.acquiredLease) {
+        await this.sleep(LEASE_RETRY_BACKOFF_MS);
+      }
     }
   }
 
@@ -368,6 +406,10 @@ export class ThreadRuntimeCoordinator {
     await this.onEvent?.(event);
   }
 
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   private shouldContinueFromBoundary(boundary: ThreadBoundaryState): boolean {
     return boundary.hasRunnableInputs || boundary.hadPendingWake;
   }
@@ -381,9 +423,9 @@ export class ThreadRuntimeCoordinator {
     };
   }
 
-  private ensureRunning(threadId: string): void {
+  private ensureRunning(threadId: string): Promise<ThreadRunAttemptResult> | null {
     if (this.activeRuns.has(threadId)) {
-      return;
+      return null;
     }
 
     const promise = this.runUntilIdle(threadId)
@@ -392,6 +434,7 @@ export class ThreadRuntimeCoordinator {
         if (acquiredLease && (restartRequested || this.shouldContinueFromBoundary(await this.takeBoundaryState(threadId)))) {
           this.ensureRunning(threadId);
         }
+        return {restartRequested, acquiredLease};
       })
       .catch((error) => {
         this.activeRuns.delete(threadId);
@@ -402,6 +445,7 @@ export class ThreadRuntimeCoordinator {
     void promise.catch(() => {
       // The run already persisted failure state and emitted run_finished; avoid unhandled rejections.
     });
+    return promise;
   }
 
   private startAbortWatcher(run: ThreadRunRecord, controller: AbortController): () => void {
@@ -629,7 +673,7 @@ export class ThreadRuntimeCoordinator {
     }
   }
 
-  private async runUntilIdle(threadId: string): Promise<{ restartRequested: boolean; acquiredLease: boolean }> {
+  private async runUntilIdle(threadId: string): Promise<ThreadRunAttemptResult> {
     const lease = await this.leaseManager.tryAcquire(threadId);
     if (!lease) {
       return {

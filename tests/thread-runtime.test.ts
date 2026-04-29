@@ -319,6 +319,15 @@ class SharedLeaseManager {
   }
 }
 
+class BlockedCountingLeaseManager {
+  attempts = 0;
+
+  async tryAcquire() {
+    this.attempts += 1;
+    return null;
+  }
+}
+
 class TestThreadDefinitionRegistry {
   private readonly resolvers = new Map<string, ThreadDefinitionResolver>();
 
@@ -1016,6 +1025,83 @@ describe("ThreadRuntimeCoordinator", () => {
       return entry.message.role === "assistant"
         && entry.message.content.some((block) => block.type === "text" && block.text === "settled after pending wake");
     })).toBe(true);
+  });
+
+  it("pokes externally enqueued wake inputs", async () => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, {
+      id: "thread-external-poke",
+      agentKey: "external-poke-agent",
+    });
+
+    const runtime = createMockRuntime(
+      message("processed external wake"),
+      message("Nothing else to do."),
+    );
+    const registry = new TestThreadDefinitionRegistry().register("external-poke-agent", {
+      agent: new Agent({
+        name: "external-poke-agent",
+        instructions: "React to external events.",
+        tools: [],
+      }),
+      runtime,
+    });
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await store.enqueueInput(
+      "thread-external-poke",
+      {
+        message: stringToUserMessage("external gateway wake"),
+        source: "gateway",
+      },
+      "wake",
+    );
+
+    await coordinator.poke("thread-external-poke");
+    await coordinator.waitForIdle("thread-external-poke");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    const transcript = await store.loadTranscript("thread-external-poke");
+    expect(transcript.some((entry) => entry.origin === "input" && entry.source === "gateway")).toBe(true);
+    expect(transcript.some((entry) => {
+      return entry.message.role === "assistant"
+        && entry.message.content.some((block) => block.type === "text" && block.text === "processed external wake");
+    })).toBe(true);
+  });
+
+  it("backs off a poke when another coordinator owns the lease", async () => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, {
+      id: "thread-poke-held-lease",
+      agentKey: "held-lease-agent",
+    });
+
+    const leaseManager = new BlockedCountingLeaseManager();
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager,
+      resolveDefinition: async () => {
+        throw new Error("resolveDefinition should not be called without a lease");
+      },
+    });
+
+    await store.enqueueInput(
+      "thread-poke-held-lease",
+      {
+        message: stringToUserMessage("external wake while leased elsewhere"),
+        source: "gateway",
+      },
+      "wake",
+    );
+
+    await coordinator.poke("thread-poke-held-lease");
+
+    expect(leaseManager.attempts).toBeLessThanOrEqual(2);
+    expect(await store.hasRunnableInputs("thread-poke-held-lease")).toBe(true);
   });
 
   it("treats pending durable wakes as busy", async () => {

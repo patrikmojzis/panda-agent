@@ -58,6 +58,8 @@ export async function bootstrapDaemonContext(
   let connectorLeases!: PostgresConnectorLeaseRepo;
   let a2aBindings!: A2ASessionBindingRepo;
   let a2aMessagingService!: A2AMessagingService;
+  let runtimeForNotifications: RuntimeServices | undefined;
+  const notificationPokesInFlight = new Set<string>();
 
   const typingDispatcher = new ChannelTypingDispatcher([
     {
@@ -89,6 +91,24 @@ export async function bootstrapDaemonContext(
     readOnlyDbUrl: options.readOnlyDbUrl,
     maxSubagentDepth: options.maxSubagentDepth,
     onEvent: createChannelTypingEventHandler(typingDispatcher),
+    onStoreNotification: (notification) => {
+      const runtime = runtimeForNotifications;
+      if (!runtime || notificationPokesInFlight.has(notification.threadId)) {
+        return;
+      }
+
+      notificationPokesInFlight.add(notification.threadId);
+      void runtime.coordinator.poke(notification.threadId)
+        .catch((error) => {
+          console.error("Daemon failed to poke thread from store notification", {
+            threadId: notification.threadId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        })
+        .finally(() => {
+          notificationPokesInFlight.delete(notification.threadId);
+        });
+    },
     resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, calendarService, credentialResolver, sessionStore, store, telepathyService, wikiBindingService, mainTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
       return createThreadDefinition({
@@ -143,6 +163,7 @@ export async function bootstrapDaemonContext(
       });
     },
   });
+  runtimeForNotifications = runtime;
 
   try {
     const conversationBindings = new ConversationRepo({
