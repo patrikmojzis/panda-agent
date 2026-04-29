@@ -1,5 +1,5 @@
 import {spawn} from "node:child_process";
-import {mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
+import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
@@ -15,6 +15,10 @@ const generatedComposePath = path.join(
 const generatedWikiComposePath = path.join(
   repoRoot,
   ".generated/docker-compose.wiki.ssl.yml",
+);
+const generatedCalendarComposePath = path.join(
+  repoRoot,
+  ".generated/docker-compose.radicale.core.yml",
 );
 const generatedPublicCaddyfilePath = path.join(repoRoot, ".generated/Caddyfile.public-edge");
 const appsEdgeComposePath = path.join(repoRoot, "examples/docker-compose.apps-edge.yml");
@@ -36,6 +40,7 @@ describe.sequential("docker-stack.sh", () => {
     await rm(generatedComposePath, {force: true});
     await rm(generatedWikiComposePath, {force: true});
     await rm(generatedPublicCaddyfilePath, {force: true});
+    await rm(generatedCalendarComposePath, {force: true});
   });
 
   async function makeTempDir(prefix: string): Promise<string> {
@@ -243,6 +248,70 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     });
     expect(logsResult.exitCode).toBe(0);
     expect(await readFile(logPath, "utf8")).toContain("logs -f panda-runner-luna");
+  });
+
+  it("bootstraps one private Radicale calendar per declared agent", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw,Luna",
+    ].join("\n"));
+
+    const homeDir = await makeTempDir("panda-home-");
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const generatedCalendarCompose = await readFile(generatedCalendarComposePath, "utf8");
+    expect(generatedCalendarCompose).toContain("PANDA_CALENDAR_URL");
+    expect(generatedCalendarCompose).toContain(`UID: ${process.getuid?.() ?? 0}`);
+    expect(generatedCalendarCompose).toContain(`GID: ${process.getgid?.() ?? 0}`);
+    expect(await readFile(logPath, "utf8")).toContain("docker-compose.radicale.yml");
+    const usersPath = path.join(homeDir, ".panda/radicale/config/users");
+    const usersFile = await readFile(usersPath, "utf8");
+    expect(usersFile).toMatch(/^claw:.+/m);
+    expect(usersFile).toMatch(/^luna:.+/m);
+    expect((await stat(usersPath)).mode & 0o777).toBe(0o600);
+    await expect(readFile(
+      path.join(homeDir, ".panda/radicale/data/collections/collection-root/claw/calendar/.Radicale.props"),
+      "utf8",
+    )).resolves.toBe('{"tag":"VCALENDAR"}\n');
+
+    const logsResult = await runScript(["logs", "calendar"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+    expect(logsResult.exitCode).toBe(0);
+    expect(await readFile(logPath, "utf8")).toContain("logs -f radicale");
+  });
+
+  it("skips Radicale when calendar is disabled", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw",
+      "PANDA_CALENDAR_ENABLED=false",
+    ].join("\n"));
+
+    const homeDir = await makeTempDir("panda-home-");
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(logPath, "utf8")).not.toContain("docker-compose.radicale.yml");
   });
 
   it("always includes the wiki compose file and maps wiki logs", async () => {

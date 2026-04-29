@@ -18,6 +18,7 @@ import type {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import type {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import type {AgentAppAuthService} from "../../domain/apps/auth.js";
 import type {TelepathyHub} from "../../integrations/telepathy/hub.js";
+import type {AgentCalendarService} from "../../integrations/calendar/types.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundToolThreadInput} from "./background-tool-thread-input.js";
@@ -49,6 +50,7 @@ export interface DefinitionResolverContext {
   store: ThreadRuntimeStore;
   telepathyService: TelepathyHub | null;
   wikiBindingService: WikiBindingService | null;
+  calendarService: AgentCalendarService | null;
   mainTools: readonly Tool[];
 }
 
@@ -77,6 +79,7 @@ export interface RuntimeServices {
   scheduledTasks: ScheduledTaskStore;
   telepathyService: TelepathyHub | null;
   watches: WatchStore;
+  calendarService: AgentCalendarService | null;
   coordinator: ThreadRuntimeCoordinator;
   mainTools: readonly Tool[];
   pool: Pool;
@@ -100,6 +103,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     store: runtime.store,
     telepathyService: runtime.telepathyService,
     wikiBindingService: runtime.wikiBindingService,
+    calendarService: runtime.calendarService,
     mainTools: runtime.mainTools,
   };
 
@@ -127,6 +131,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     scheduledTasks: runtime.scheduledTasks,
     telepathyService: runtime.telepathyService,
     watches: runtime.watches,
+    calendarService: runtime.calendarService,
     coordinator,
     mainTools: runtime.mainTools,
     pool: runtime.pool,

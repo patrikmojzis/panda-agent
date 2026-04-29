@@ -8,6 +8,27 @@ export function toDateOrNull(value: number | undefined): Date | null {
   return value === undefined ? null : new Date(value);
 }
 
+/**
+ * Returns the Monday-start local week boundary for agenda-style date ranges.
+ */
+export function startOfLocalWeek(date = new Date()): Date {
+  const start = new Date(date);
+  const day = start.getDay();
+  const daysSinceMonday = (day + 6) % 7;
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - daysSinceMonday);
+  return start;
+}
+
+/**
+ * Adds calendar days in local time, preserving wall-clock boundaries across DST.
+ */
+export function addLocalDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
 export interface LocalDateTimeInfo extends JsonObject {
   isoTimestamp: string;
   formattedDateTime: string;

@@ -15,6 +15,10 @@ export {
   type DefaultAgentLlmContextSection,
 } from "./contexts/builder.js";
 export {
+  CalendarAgendaContext,
+  type CalendarAgendaContextOptions,
+} from "./contexts/builder.js";
+export {
   AgentPromptTool,
   type AgentPromptToolOptions,
 } from "./tools/agent-prompt-tool.js";
@@ -52,6 +56,10 @@ export {
   SetEnvValueTool,
   type EnvValueToolOptions,
 } from "./tools/env-value-tools.js";
+export {
+  CalendarTool,
+  type CalendarToolOptions,
+} from "./tools/calendar-tool.js";
 export {
   ImageGenerateTool,
   type ImageGenerateToolOptions,
