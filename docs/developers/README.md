@@ -20,6 +20,7 @@ Start here:
 - [OpenClaw Import](./openclaw-import.md)
 - [Heartbeat](./heartbeat.md)
 - [Watches](./watches.md)
+- [Calendar](./calendar.md)
 - [Live Smoke](./live-smoke.md)
 - [Background Jobs Smoke Recipe](./background-bash-smoke.md)
 - [WhatsApp](./whatsapp.md)

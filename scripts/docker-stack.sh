@@ -22,6 +22,7 @@ Notes:
   - Telegram polling is auto-enabled when TELEGRAM_BOT_TOKEN is set in .env.
   - Wiki.js is part of the stack.
   - Wiki bootstrap follows PANDA_AGENTS.
+  - Agent calendars are auto-enabled when PANDA_AGENTS is set unless PANDA_CALENDAR_ENABLED=false.
   - Public Apps Caddy edge is auto-enabled when PANDA_APPS_BASE_URL is set.
 EOF
 }
@@ -85,10 +86,12 @@ repo_root="$(cd "$script_dir/.." && pwd -P)"
 env_file="${PANDA_STACK_ENV_FILE:-$repo_root/.env}"
 base_compose="$repo_root/examples/docker-compose.remote-bash.external-db.yml"
 wiki_compose="$repo_root/examples/docker-compose.wiki.yml"
+calendar_compose="$repo_root/examples/docker-compose.radicale.yml"
 apps_edge_compose="$repo_root/examples/docker-compose.apps-edge.yml"
 generated_dir="$repo_root/.generated"
 generated_compose="$generated_dir/docker-compose.remote-bash.external-db.runners.yml"
 generated_wiki_compose="$generated_dir/docker-compose.wiki.ssl.yml"
+generated_calendar_compose="$generated_dir/docker-compose.radicale.core.yml"
 docker_bin="${PANDA_DOCKER_BIN:-docker}"
 wiki_local_script="${PANDA_WIKI_LOCAL_SCRIPT:-$repo_root/scripts/wiki-local.sh}"
 wait_timeout_sec="${PANDA_STACK_WAIT_TIMEOUT_SEC:-120}"
@@ -184,17 +187,127 @@ EOF
 export WIKI_DB_SSL_CERT_FILE="${WIKI_DB_SSL_CERT_FILE:-$(resolve_wiki_ssl_cert_file)}"
 render_generated_wiki_compose
 
+generate_calendar_password() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+    return
+  fi
+
+  printf '%s-%s-%s\n' "${1:-agent}" "$(date +%s)" "$RANDOM" | shasum | awk '{print $1}'
+}
+
+read_calendar_password() {
+  local users_file agent_key
+  users_file=$1
+  agent_key=$2
+  if [[ ! -f "$users_file" ]]; then
+    return 1
+  fi
+
+  awk -F: -v key="$agent_key" '$1 == key {print $2; found=1; exit} END {exit found ? 0 : 1}' "$users_file"
+}
+
+ensure_calendar_bootstrap() {
+  local calendar_root config_dir data_root users_file agent_key password calendar_name collection_root calendar_dir
+  if (( ! enable_calendar )); then
+    rm -f "$generated_calendar_compose"
+    return
+  fi
+
+  if ! agents_declared; then
+    die "PANDA_CALENDAR_ENABLED requires PANDA_AGENTS."
+  fi
+
+  calendar_root="$HOME/.panda/radicale"
+  config_dir="$calendar_root/config"
+  data_root="$calendar_root/data"
+  users_file="$config_dir/users"
+  calendar_name="$(trim "${PANDA_CALENDAR_NAME:-calendar}")"
+  [[ -n "$calendar_name" ]] || die "PANDA_CALENDAR_NAME must not be empty."
+  [[ "$calendar_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] \
+    || die "PANDA_CALENDAR_NAME must use letters, numbers, hyphens, or underscores."
+
+  mkdir -p "$config_dir" "$data_root/collections/collection-root"
+
+  cat > "$config_dir/config" <<EOF
+[server]
+hosts = 0.0.0.0:5232
+
+[auth]
+type = htpasswd
+htpasswd_filename = /config/users
+htpasswd_encryption = plain
+
+[rights]
+type = owner_only
+
+[storage]
+filesystem_folder = /data/collections
+EOF
+
+  touch "$users_file"
+  for agent_key in "${normalized_agents[@]}"; do
+    if ! password="$(read_calendar_password "$users_file" "$agent_key")"; then
+      password="$(generate_calendar_password "$agent_key")"
+      printf '%s:%s\n' "$agent_key" "$password" >> "$users_file"
+    fi
+
+    collection_root="$data_root/collections/collection-root/$agent_key"
+    calendar_dir="$collection_root/$calendar_name"
+    mkdir -p "$calendar_dir"
+    printf '{"tag":"VCALENDAR"}\n' > "$calendar_dir/.Radicale.props"
+  done
+
+  chmod 755 "$calendar_root" "$config_dir" "$data_root" "$data_root/collections" "$data_root/collections/collection-root"
+  chmod 644 "$config_dir/config"
+  chmod 600 "$users_file"
+}
+
+render_generated_calendar_compose() {
+  local radicale_uid radicale_gid
+  mkdir -p "$generated_dir"
+  if (( ! enable_calendar )); then
+    cat > "$generated_calendar_compose" <<'EOF'
+services: {}
+EOF
+    return
+  fi
+
+  radicale_uid="$(trim "${PANDA_RADICALE_UID:-}")"
+  radicale_gid="$(trim "${PANDA_RADICALE_GID:-}")"
+  radicale_uid="${radicale_uid:-$(id -u)}"
+  radicale_gid="${radicale_gid:-$(id -g)}"
+  [[ "$radicale_uid" =~ ^[0-9]+$ ]] || die "PANDA_RADICALE_UID must be numeric."
+  [[ "$radicale_gid" =~ ^[0-9]+$ ]] || die "PANDA_RADICALE_GID must be numeric."
+
+  cat > "$generated_calendar_compose" <<EOF
+services:
+  radicale:
+    environment:
+      UID: ${radicale_uid}
+      GID: ${radicale_gid}
+EOF
+
+  cat >> "$generated_calendar_compose" <<'EOF'
+  panda-core:
+    environment:
+      PANDA_CALENDAR_URL: ${PANDA_CALENDAR_URL:-http://radicale:5232}
+      PANDA_CALENDAR_USERS_FILE: ${PANDA_CALENDAR_USERS_FILE:-/root/.panda/radicale/config/users}
+      PANDA_CALENDAR_NAME: ${PANDA_CALENDAR_NAME:-calendar}
+    depends_on:
+      radicale:
+        condition: service_healthy
+EOF
+}
+
 agents_declared() {
   [[ -n "$(trim "${PANDA_AGENTS:-}")" ]]
 }
 
-telepathy_publish_enabled() {
+env_truthy() {
   local enabled_raw
-  enabled_raw="$(trim "${TELEPATHY_ENABLED:-}")"
+  enabled_raw="$(trim "$1")"
   case "$enabled_raw" in
-    "" )
-      return 0
-      ;;
     1|true|TRUE|True|yes|YES|Yes|on|ON|On)
       return 0
       ;;
@@ -202,6 +315,31 @@ telepathy_publish_enabled() {
       return 1
       ;;
   esac
+}
+
+env_falsey() {
+  local enabled_raw
+  enabled_raw="$(trim "$1")"
+  case "$enabled_raw" in
+    0|false|FALSE|False|no|NO|No|off|OFF|Off)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+telepathy_publish_enabled() {
+  [[ -z "$(trim "${TELEPATHY_ENABLED:-}")" ]] || env_truthy "${TELEPATHY_ENABLED:-}"
+}
+
+calendar_enabled() {
+  if env_falsey "${PANDA_CALENDAR_ENABLED:-}"; then
+    return 1
+  fi
+
+  env_truthy "${PANDA_CALENDAR_ENABLED:-}" || agents_declared
 }
 
 extract_https_url_host() {
@@ -246,6 +384,11 @@ if [[ -n "$(trim "${PANDA_APPS_BASE_URL:-}")" ]]; then
 fi
 validate_apps_edge_config
 
+enable_calendar=0
+if calendar_enabled; then
+  enable_calendar=1
+fi
+
 compose_args=(
   "$docker_bin" compose
   --env-file "$env_file"
@@ -255,6 +398,11 @@ compose_args=(
 [[ -f "$wiki_compose" ]] || die "wiki compose file not found: $wiki_compose"
 compose_args+=(-f "$wiki_compose")
 compose_args+=(-f "$generated_wiki_compose")
+if (( enable_calendar )); then
+  [[ -f "$calendar_compose" ]] || die "calendar compose file not found: $calendar_compose"
+  compose_args+=(-f "$calendar_compose")
+  compose_args+=(-f "$generated_calendar_compose")
+fi
 if (( enable_apps_edge )); then
   [[ -f "$apps_edge_compose" ]] || die "apps edge compose file not found: $apps_edge_compose"
   compose_args+=(-f "$apps_edge_compose")
@@ -346,6 +494,10 @@ resolve_service_name() {
   case "$input" in
     core|panda-core)
       printf 'panda-core\n'
+      return
+      ;;
+    calendar|radicale)
+      printf 'radicale\n'
       return
       ;;
     browser|panda-browser-runner)
@@ -453,6 +605,9 @@ print_up_summary() {
   printf '  ./scripts/docker-stack.sh logs core\n'
   printf '  ./scripts/docker-stack.sh logs browser\n'
   printf '  ./scripts/docker-stack.sh logs wiki\n'
+  if (( enable_calendar )); then
+    printf '  ./scripts/docker-stack.sh logs calendar\n'
+  fi
   if (( enable_apps_edge )); then
     printf '  ./scripts/docker-stack.sh logs apps\n'
   fi
@@ -471,7 +626,9 @@ print_up_summary() {
 run_up() {
   local build_flag=$1
   ensure_host_dirs
+  ensure_calendar_bootstrap
   render_generated_compose
+  render_generated_calendar_compose
   if (( build_flag )); then
     run_compose up -d --build --remove-orphans
   else
@@ -485,17 +642,20 @@ run_up() {
 
 run_down() {
   render_generated_compose
+  render_generated_calendar_compose
   run_compose down --remove-orphans
 }
 
 run_ps() {
   render_generated_compose
+  render_generated_calendar_compose
   run_compose ps
 }
 
 run_logs() {
   local service_name
   render_generated_compose
+  render_generated_calendar_compose
   service_name="$(resolve_service_name "${1:-}")"
   if [[ -n "$service_name" ]]; then
     run_compose logs -f "$service_name"

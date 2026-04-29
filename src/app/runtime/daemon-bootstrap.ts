@@ -89,7 +89,7 @@ export async function bootstrapDaemonContext(
     readOnlyDbUrl: options.readOnlyDbUrl,
     maxSubagentDepth: options.maxSubagentDepth,
     onEvent: createChannelTypingEventHandler(typingDispatcher),
-    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, sessionStore, store, telepathyService, wikiBindingService, mainTools}) => {
+    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, calendarService, credentialResolver, sessionStore, store, telepathyService, wikiBindingService, mainTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
       return createThreadDefinition({
         thread,
@@ -98,6 +98,7 @@ export async function bootstrapDaemonContext(
         agentStore,
         threadStore: store,
         wikiBindings: wikiBindingService ?? undefined,
+        calendarService,
         bashToolOptions: {
           jobService: backgroundJobService,
           credentialResolver,
