@@ -52,6 +52,7 @@ services:
       target: browser-runner
     image: panda-browser-runner:latest
     command: ["browser-runner"]
+    restart: unless-stopped
     init: true
     user: pwuser
     ipc: host

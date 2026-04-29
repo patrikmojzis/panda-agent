@@ -314,6 +314,7 @@ EOF
   panda-runner-$agent_key:
     image: panda:latest
     command: ["runner"]
+    restart: unless-stopped
     environment:
       RUNNER_AGENT_KEY: $agent_key
       RUNNER_PORT: 8080

@@ -225,6 +225,7 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     const generatedCompose = await readFile(generatedComposePath, "utf8");
     expect(generatedCompose).toContain("panda-runner-claw");
     expect(generatedCompose).toContain("panda-runner-luna");
+    expect(generatedCompose.match(/restart: unless-stopped/g)).toHaveLength(2);
     expect(generatedCompose).not.toContain("panda-runner-Luna");
 
     const logContents = await readFile(logPath, "utf8");
