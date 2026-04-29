@@ -9,6 +9,7 @@ import {createDaemon} from "./runtime/index.js";
 import {registerA2ACommands} from "../domain/a2a/cli.js";
 import {parseAgentKey, registerAgentCommands} from "../domain/agents/cli.js";
 import {registerCredentialCommands} from "../domain/credentials/cli.js";
+import {registerGatewayCommands} from "../domain/gateway/cli.js";
 import {parseIdentityHandle, registerIdentityCommands} from "../domain/identity/cli.js";
 import {registerSessionCommands} from "../domain/sessions/cli.js";
 import {registerTelepathyCommands} from "../domain/telepathy/index.js";
@@ -265,6 +266,7 @@ program
 registerAgentCommands(program);
 registerA2ACommands(program);
 registerCredentialCommands(program);
+registerGatewayCommands(program);
 registerIdentityCommands(program);
 registerSessionCommands(program);
 registerTelepathyCommands(program);
