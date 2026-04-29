@@ -345,7 +345,7 @@ When `PANDA_APPS_BASE_URL` is set, Panda requires app auth by default unless you
 `PANDA_APPS_BASE_URL` should be a plain origin, like `https://your-domain.example`, with no path, query, fragment, username, or password.
 For non-local hosts, `PANDA_APPS_BASE_URL` must use `https://`.
 For non-local hosts, Panda refuses `PANDA_APPS_COOKIE_SECURE=false`.
-The public Caddy compose also forces `PANDA_APPS_AUTH=required` and refuses to start without `PANDA_APPS_BASE_URL` and `PANDA_APPS_PUBLIC_HOST`.
+The generated public edge override also forces `PANDA_APPS_AUTH=required` and refuses to start without `PANDA_APPS_BASE_URL` and `PANDA_APPS_PUBLIC_HOST`.
 When using `scripts/docker-stack.sh`, `PANDA_APPS_PUBLIC_HOST` must match the hostname in `PANDA_APPS_BASE_URL`.
 
 The secure open flow is:
@@ -366,9 +366,8 @@ Recommended edge shape:
 Internet -> Caddy :443 -> panda-core:8092 on Docker network -> Panda app auth -> app files/API
 ```
 
-Example files:
+Example file:
 
-- `examples/Caddyfile.apps`
 - `examples/docker-compose.apps-edge.yml`
 
 With `scripts/docker-stack.sh`, the Caddy edge is auto-enabled when `PANDA_APPS_BASE_URL` is set.
@@ -379,6 +378,7 @@ So deployment stays the normal command:
 ```
 
 Caddy joins a small `apps_edge_net` shared only with `panda-core`.
+The rendered Caddyfile lives at `.generated/Caddyfile.public-edge`.
 Caddy also runs with a read-only root filesystem, no-new-privileges, and only `NET_BIND_SERVICE`.
 Do not add a host port publish for `8092`.
 

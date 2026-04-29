@@ -1,11 +1,5 @@
+# Shared public Caddy edge. scripts/docker-stack.sh renders the actual routes.
 services:
-  panda-core:
-    environment:
-      PANDA_APPS_AUTH: required
-      PANDA_APPS_BASE_URL: ${PANDA_APPS_BASE_URL:?PANDA_APPS_BASE_URL is required when exposing public apps}
-    networks:
-      - apps_edge_net
-
   caddy:
     image: caddy:2
     restart: unless-stopped
@@ -18,23 +12,13 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp
-    environment:
-      PANDA_APPS_PUBLIC_HOST: ${PANDA_APPS_PUBLIC_HOST:?PANDA_APPS_PUBLIC_HOST is required when exposing public apps}
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./Caddyfile.apps:/etc/caddy/Caddyfile:ro
+      - ../.generated/Caddyfile.public-edge:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    depends_on:
-      panda-core:
-        condition: service_healthy
-    networks:
-      - apps_edge_net
-
-networks:
-  apps_edge_net:
 
 volumes:
   caddy_data:

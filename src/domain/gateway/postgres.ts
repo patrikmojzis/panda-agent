@@ -1,6 +1,6 @@
 import {createHash, randomBytes, randomUUID, timingSafeEqual} from "node:crypto";
 
-import type {Pool, PoolClient} from "pg";
+import type {Pool} from "pg";
 
 import {isUniqueViolation} from "../../lib/postgres-errors.js";
 import {
@@ -30,9 +30,7 @@ interface PgQueryable {
   query: Pool["query"];
 }
 
-interface PgPoolLike extends PgQueryable {
-  connect(): Promise<PoolClient>;
-}
+type PgPoolLike = PgQueryable;
 
 const ACCESS_TOKEN_PREFIX = "pga";
 const CLIENT_ID_PREFIX = "pgc";
