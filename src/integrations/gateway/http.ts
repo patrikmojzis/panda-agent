@@ -6,11 +6,11 @@ import ipaddr from "ipaddr.js";
 import {z} from "zod";
 
 import {
-  GatewayEventConflictError,
-  type GatewayDeliveryMode,
-  type GatewaySourceRecord,
-  normalizeGatewayEventType,
-  type PostgresGatewayStore,
+    type GatewayDeliveryMode,
+    GatewayEventConflictError,
+    type GatewaySourceRecord,
+    normalizeGatewayEventType,
+    type PostgresGatewayStore,
 } from "../../domain/gateway/index.js";
 import {writeJsonResponse} from "../../lib/http.js";
 import {isRecord} from "../../lib/records.js";
@@ -369,6 +369,8 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
           expiresInMs: tokenTtlMs,
           maxActiveTokens: maxActiveTokensPerSource,
         });
+        response.setHeader("cache-control", "no-store");
+        response.setHeader("pragma", "no-cache");
         writeJsonResponse(response, 200, {
           access_token: access.token,
           token_type: "Bearer",

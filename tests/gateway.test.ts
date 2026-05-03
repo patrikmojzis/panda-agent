@@ -142,6 +142,8 @@ describe("Panda gateway", () => {
       }),
     });
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("pragma")).toBe("no-cache");
     const body = await response.json() as {access_token?: string};
     expect(body.access_token).toBeTruthy();
     return body.access_token ?? "";
