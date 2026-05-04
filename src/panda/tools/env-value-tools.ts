@@ -7,7 +7,7 @@ import type {RunContext} from "../../kernel/agent/run-context.js";
 import {CredentialService} from "../../domain/credentials/index.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
-import {buildJsonToolPayload} from "./shared.js";
+import {buildJsonToolPayload, rethrowAsToolError} from "./shared.js";
 
 function readScope(context: unknown): { agentKey: string; identityId?: string } {
   if (typeof context !== "object" || context === null || Array.isArray(context)) {
@@ -93,7 +93,7 @@ export class SetEnvValueTool<TContext = DefaultAgentSessionContext> extends Tool
       scope,
       agentKey,
       ...(scope === "relationship" ? {identityId} : {}),
-    });
+    }).catch((error: unknown) => rethrowAsToolError(error));
     const resolvedAgentKey = record.agentKey ?? agentKey;
 
     return buildJsonToolPayload({
@@ -153,7 +153,7 @@ export class ClearEnvValueTool<TContext = DefaultAgentSessionContext> extends To
       scope,
       agentKey,
       ...(scope === "relationship" ? {identityId} : {}),
-    });
+    }).catch((error: unknown) => rethrowAsToolError(error));
 
     return buildJsonToolPayload({
       ok: true,

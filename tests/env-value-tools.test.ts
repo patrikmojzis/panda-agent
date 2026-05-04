@@ -5,10 +5,10 @@ import {DataType, newDb} from "pg-mem";
 import {Agent, RunContext, stringToUserMessage, ToolError,} from "../src/index.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {
-    CredentialCrypto,
-    CredentialResolver,
-    CredentialService,
-    PostgresCredentialStore,
+  CredentialCrypto,
+  CredentialResolver,
+  CredentialService,
+  PostgresCredentialStore,
 } from "../src/domain/credentials/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
@@ -243,6 +243,74 @@ describe("Env value tools", () => {
       scope: "agent",
       agentKey: "panda",
     })).resolves.toBeNull();
+  });
+
+  it("returns reserved env key errors as tool results so the run can recover", async () => {
+    const {service} = await createHarness();
+    const runtime = createMockRuntime(
+      createAssistantMessage([{
+        type: "toolCall",
+        id: "call_set_reserved",
+        name: "set_env_value",
+        arguments: {
+          key: "PANDA_CAPITAL_GITHUB_PAT",
+          value: "github_pat_secret",
+        },
+      }]),
+      createAssistantMessage([{type: "text", text: "Use GITHUB_PAT instead."}]),
+      createAssistantMessage([{type: "text", text: "Nothing else to do."}]),
+    );
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-credentials-tool-error",
+      sessionId: "session-credentials-tool-error",
+      context: {
+        sessionId: "session-credentials-tool-error",
+        agentKey: "panda",
+      },
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new LeaseManager(),
+      resolveDefinition: async () => ({
+        agent: new Agent({
+          name: "panda",
+          instructions: "Use tools.",
+          tools: [new SetEnvValueTool({service})],
+        }),
+        context: {
+          ...createContext(),
+        },
+        runtime,
+      }),
+    });
+
+    await coordinator.submitInput("thread-credentials-tool-error", {
+      message: stringToUserMessage("Save this token"),
+      source: "tui",
+      identityId: "alice-id",
+    });
+    await coordinator.waitForIdle("thread-credentials-tool-error");
+
+    const runs = await store.listRuns("thread-credentials-tool-error");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      status: "completed",
+    });
+
+    const transcript = await store.loadTranscript("thread-credentials-tool-error");
+    const toolResult = transcript.find((record) => record.message.role === "toolResult")?.message;
+
+    expect(toolResult).toMatchObject({
+      role: "toolResult",
+      toolName: "set_env_value",
+      isError: true,
+    });
+    expect(JSON.stringify(toolResult)).toContain(
+      "Credential env key PANDA_CAPITAL_GITHUB_PAT is reserved for runtime configuration.",
+    );
+    expect(JSON.stringify(toolResult)).not.toContain("github_pat_secret");
   });
 
   it("uses currentInput.identityId for relationship scope and fails clearly when none is active", async () => {
