@@ -24,6 +24,7 @@ export interface EmailSendMailInput {
     host: string;
     port: number;
     secure: boolean;
+    requireTLS: boolean;
     user: string;
     pass: string;
   };
@@ -115,6 +116,7 @@ async function defaultSendMail(input: EmailSendMailInput): Promise<EmailSendMail
     host: input.account.host,
     port: input.account.port,
     secure: input.account.secure,
+    requireTLS: input.account.requireTLS,
     auth: {
       user: input.account.user,
       pass: input.account.pass,
@@ -191,6 +193,7 @@ export function createEmailOutboundAdapter(options: CreateEmailOutboundAdapterOp
         account.smtp.passwordCredentialEnvKey,
       );
       const smtpPort = account.smtp.port ?? (account.smtp.secure === false ? 587 : 465);
+      const smtpSecure = account.smtp.secure ?? smtpPort === 465;
       const accountFromPayload: EmailSendPayload = {
         ...payload,
         fromAddress: account.fromAddress,
@@ -200,7 +203,8 @@ export function createEmailOutboundAdapter(options: CreateEmailOutboundAdapterOp
         account: {
           host: account.smtp.host,
           port: smtpPort,
-          secure: account.smtp.secure ?? smtpPort === 465,
+          secure: smtpSecure,
+          requireTLS: !smtpSecure,
           user,
           pass,
         },

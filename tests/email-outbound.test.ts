@@ -157,6 +157,9 @@ describe("Email outbound adapter", () => {
     expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
       account: expect.objectContaining({
         host: "smtp.example.com",
+        port: 465,
+        secure: true,
+        requireTLS: false,
         user: "SMTP_USER-value",
         pass: "SMTP_PASS-value",
       }),
@@ -175,6 +178,56 @@ describe("Email outbound adapter", () => {
       ],
     })]);
     expect(result.sent).toEqual([{type: "text", externalMessageId: "<sent@example.com>"}]);
+  });
+
+  it("requires STARTTLS for SMTP submission on 587", async () => {
+    const store = new MemoryEmailStore();
+    store.account = {
+      ...store.account,
+      smtp: {
+        ...store.account.smtp,
+        port: 587,
+        secure: false,
+      },
+    };
+    const sendMail = vi.fn(async () => ({messageId: "<sent@example.com>"}));
+    const adapter = createEmailOutboundAdapter({
+      store,
+      credentialResolver: fakeResolver(),
+      sendMail,
+    });
+
+    await adapter.send({
+      channel: "email",
+      target: {
+        source: "email",
+        connectorKey: "smtp",
+        externalConversationId: "work",
+      },
+      items: [{type: "text", text: "Hello"}],
+      metadata: {
+        email: {
+          kind: "email_send",
+          agentKey: "panda",
+          accountKey: "work",
+          fromAddress: "panda@example.com",
+          to: [{address: "alice@example.com"}],
+          cc: [],
+          subject: "Hello",
+          text: "Hello",
+          attachments: [],
+          threadKey: "Hello",
+        },
+      },
+    });
+
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      account: expect.objectContaining({
+        port: 587,
+        secure: false,
+        requireTLS: true,
+      }),
+    }));
   });
 
   it("checks the allowlist again in the adapter", async () => {
