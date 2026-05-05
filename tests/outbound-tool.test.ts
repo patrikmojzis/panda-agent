@@ -6,33 +6,64 @@ import {describe, expect, it} from "vitest";
 
 import {Agent, RunContext} from "../src/kernel/agent/index.js";
 import {OutboundTool} from "../src/panda/index.js";
-import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
+import type {
+  DefaultAgentRouteMemoryLookup,
+  DefaultAgentRouteMemorySaveOptions,
+  DefaultAgentSessionContext,
+} from "../src/app/runtime/panda-session-context.js";
+import type {IdentityRecord} from "../src/domain/identity/index.js";
+
+function createIdentity(id: string, handle: string): IdentityRecord {
+  return {
+    id,
+    handle,
+    displayName: handle,
+    status: "active",
+    createdAt: 123,
+    updatedAt: 123,
+  };
+}
 
 function createContext(
   overrides: Partial<DefaultAgentSessionContext> = {},
 ): DefaultAgentSessionContext & {
-  routeLookups: Array<string | undefined>;
+  identityLookups: string[];
+  routeLookups: Array<DefaultAgentRouteMemoryLookup | undefined>;
   queued: unknown[];
   rememberedRoutes: unknown[];
+  rememberedRouteOptions: Array<DefaultAgentRouteMemorySaveOptions | undefined>;
 } {
-  const routeLookups: Array<string | undefined> = [];
+  const identityLookups: string[] = [];
+  const routeLookups: Array<DefaultAgentRouteMemoryLookup | undefined> = [];
   const queued: unknown[] = [];
   const rememberedRoutes: unknown[] = [];
+  const rememberedRouteOptions: Array<DefaultAgentRouteMemorySaveOptions | undefined> = [];
   let deliveryCount = 0;
 
   return {
     cwd: process.cwd(),
+    agentKey: "panda",
+    sessionId: "session-1",
     threadId: "thread-1",
+    identityLookups,
     routeLookups,
     queued,
     rememberedRoutes,
+    rememberedRouteOptions,
+    identityDirectory: {
+      getIdentityByHandle: async (handle) => {
+        identityLookups.push(handle);
+        throw new Error(`Unknown identity handle ${handle}`);
+      },
+    },
     routeMemory: {
-      getLastRoute: async (channel) => {
-        routeLookups.push(channel);
+      getLastRoute: async (lookup) => {
+        routeLookups.push(lookup);
         return null;
       },
-      saveLastRoute: async (route) => {
+      saveLastRoute: async (route, options) => {
         rememberedRoutes.push(route);
+        rememberedRouteOptions.push(options);
       },
     },
     outboundQueue: {
@@ -70,6 +101,7 @@ describe("OutboundTool", () => {
       currentInput: {
         source: "telegram",
         channelId: "1615376408",
+        identityId: "identity-patrik",
         metadata: {
           route: {
             source: "telegram",
@@ -96,26 +128,18 @@ describe("OutboundTool", () => {
       },
       items: [{ type: "text", text: "hello back" }],
     }]);
-    expect(context.rememberedRoutes).toEqual([{
-      source: "telegram",
-      connectorKey: "8669743878",
-      externalConversationId: "1615376408",
-      externalActorId: "1615376408",
-      capturedAt: expect.any(Number),
-    }]);
+    expect(context.rememberedRouteOptions).toEqual([{identityId: "identity-patrik"}]);
     expect(result).toEqual({
       ok: true,
       status: "queued",
       deliveryId: "delivery-1",
-      channel: "telegram",
-      target: {
-        source: "telegram",
-        connectorKey: "8669743878",
-        externalConversationId: "1615376408",
-        externalActorId: "1615376408",
-        replyToMessageId: null,
+      to: {
+        channel: "telegram",
       },
     });
+    expect(JSON.stringify(result)).not.toContain("connectorKey");
+    expect(JSON.stringify(result)).not.toContain("externalConversationId");
+    expect(JSON.stringify(result)).not.toContain("externalActorId");
   });
 
   it("can target the current TUI route just like any other channel lane", async () => {
@@ -150,14 +174,12 @@ describe("OutboundTool", () => {
       },
       items: [{ type: "text", text: "back to terminal" }],
     }]);
-    expect(result).toMatchObject({
+    expect(result).toEqual({
+      ok: true,
       status: "queued",
-      channel: "tui",
-      target: {
-        source: "tui",
-        connectorKey: "local-tui",
-        externalConversationId: "terminal",
-        externalActorId: "local-user",
+      deliveryId: "delivery-1",
+      to: {
+        channel: "tui",
       },
     });
   });
@@ -199,46 +221,44 @@ describe("OutboundTool", () => {
     }]);
   });
 
-  it("uses the remembered route for a requested different channel", async () => {
+  it("uses an identity's newest remembered route when channel is omitted", async () => {
     const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const identity = createIdentity("identity-angelina", "angelina");
     const context = createContext({
-      currentInput: {
-        source: "telegram",
-        metadata: {
-          route: {
-            source: "telegram",
-            connectorKey: "telegram-bot",
-            externalConversationId: "telegram-chat",
-          },
+      identityDirectory: {
+        getIdentityByHandle: async (handle) => {
+          context.identityLookups.push(handle);
+          return identity;
         },
       },
       routeMemory: {
-        getLastRoute: async (channel) => {
-          context.routeLookups.push(channel);
-          if (channel === "whatsapp") {
-            return {
+        getLastRoute: async (lookup) => {
+          context.routeLookups.push(lookup);
+          return lookup?.identityId === "identity-angelina" && !lookup.channel
+            ? {
               source: "whatsapp",
               connectorKey: "whatsapp-connector",
               externalConversationId: "555@s.whatsapp.net",
               externalActorId: "555@s.whatsapp.net",
               capturedAt: 123,
-            };
-          }
-
-          return null;
+            }
+            : null;
         },
-        saveLastRoute: async (route) => {
+        saveLastRoute: async (route, options) => {
           context.rememberedRoutes.push(route);
+          context.rememberedRouteOptions.push(options);
         },
       },
     });
 
     const result = await tool.run({
-      channel: "whatsapp",
+      to: { identityHandle: "angelina" },
       items: [{ type: "text", text: "switch lanes" }],
     }, createRunContext(context));
 
-    expect(context.routeLookups).toEqual(["whatsapp"]);
+    expect(context.identityLookups).toEqual(["angelina"]);
+    expect(context.routeLookups).toEqual([{identityId: "identity-angelina"}]);
+    expect(context.rememberedRoutes).toEqual([]);
     expect(context.queued).toEqual([{
       threadId: "thread-1",
       channel: "whatsapp",
@@ -250,104 +270,179 @@ describe("OutboundTool", () => {
       },
       items: [{ type: "text", text: "switch lanes" }],
     }]);
-    expect(result).toMatchObject({
+    expect(result).toEqual({
+      ok: true,
       status: "queued",
-      channel: "whatsapp",
-      target: {
-        source: "whatsapp",
-        connectorKey: "whatsapp-connector",
+      deliveryId: "delivery-1",
+      to: {
+        identityHandle: "angelina",
+        channel: "whatsapp",
       },
     });
   });
 
-  it("falls back to the newest remembered route when there is no current inbound message", async () => {
+  it("uses an identity's remembered route for a requested channel", async () => {
     const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const identity = createIdentity("identity-patrik", "patrik_mojzis");
     const context = createContext({
-      routeMemory: {
-        getLastRoute: async (channel) => {
-          context.routeLookups.push(channel);
-          return {
-            source: "telegram",
-            connectorKey: "8669743878",
-            externalConversationId: "1615376408",
-            externalActorId: "1615376408",
-            capturedAt: Date.now(),
-          };
+      identityDirectory: {
+        getIdentityByHandle: async (handle) => {
+          context.identityLookups.push(handle);
+          return identity;
         },
-        saveLastRoute: async (route) => {
+      },
+      routeMemory: {
+        getLastRoute: async (lookup) => {
+          context.routeLookups.push(lookup);
+          return lookup?.identityId === "identity-patrik" && lookup.channel === "telegram"
+            ? {
+              source: "telegram",
+              connectorKey: "telegram-bot",
+              externalConversationId: "chat-1",
+              externalActorId: "actor-1",
+              capturedAt: 123,
+            }
+            : null;
+        },
+        saveLastRoute: async (route, options) => {
           context.rememberedRoutes.push(route);
+          context.rememberedRouteOptions.push(options);
         },
       },
     });
 
     await tool.run({
-      items: [{ type: "text", text: "scheduled hello" }],
+      to: {
+        identityHandle: "patrik_mojzis",
+        channel: "telegram",
+      },
+      items: [{ type: "text", text: "telegram hello" }],
     }, createRunContext(context));
 
-    expect(context.routeLookups).toEqual([undefined]);
-    expect(context.queued).toEqual([{
-      threadId: "thread-1",
+    expect(context.identityLookups).toEqual(["patrik_mojzis"]);
+    expect(context.routeLookups).toEqual([{
+      identityId: "identity-patrik",
+      channel: "telegram",
+    }]);
+    expect(context.queued).toMatchObject([{
       channel: "telegram",
       target: {
-        source: "telegram",
-        connectorKey: "8669743878",
-        externalConversationId: "1615376408",
-        externalActorId: "1615376408",
+        connectorKey: "telegram-bot",
+        externalConversationId: "chat-1",
+        externalActorId: "actor-1",
       },
-      items: [{ type: "text", text: "scheduled hello" }],
     }]);
   });
 
-  it("does not rewrite the remembered route when an explicit target override is used", async () => {
-    const tool = new OutboundTool<DefaultAgentSessionContext>();
-    const context = createContext({
-      routeMemory: {
-        getLastRoute: async (channel) => {
-          context.routeLookups.push(channel);
-          return {
-            source: "telegram",
-            connectorKey: "8669743878",
-            externalConversationId: "1615376408",
-            capturedAt: Date.now(),
-          };
-        },
-        saveLastRoute: async (route) => {
-          context.rememberedRoutes.push(route);
-        },
-      },
-    });
-
-    await tool.run({
-      channel: "telegram",
-      target: {
-        connectorKey: "override-bot",
-        conversationId: "override-chat",
-      },
-      items: [{ type: "text", text: "one-off" }],
-    }, createRunContext(context));
-
-    expect(context.rememberedRoutes).toEqual([]);
-    expect(context.queued).toEqual([{
-      threadId: "thread-1",
-      channel: "telegram",
-      target: {
-        source: "telegram",
-        connectorKey: "override-bot",
-        externalConversationId: "override-chat",
-      },
-      items: [{ type: "text", text: "one-off" }],
-    }]);
-  });
-
-  it("errors when a requested channel has no current or remembered route", async () => {
+  it("errors clearly for unknown outbound identities", async () => {
     const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext();
 
     await expect(tool.run({
-      channel: "whatsapp",
-      items: [{ type: "text", text: "no route" }],
+      to: { identityHandle: "patrik_mojzis" },
+      items: [{ type: "text", text: "hello" }],
     }, createRunContext(context))).rejects.toThrow(
-      "No outbound target was provided and no current inbound route is available.",
+      "Unknown outbound identity patrik_mojzis.",
+    );
+  });
+
+  it("errors clearly when an identity has no remembered route", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      identityDirectory: {
+        getIdentityByHandle: async () => createIdentity("identity-patrik", "patrik_mojzis"),
+      },
+    });
+
+    await expect(tool.run({
+      to: { identityHandle: "patrik_mojzis" },
+      items: [{ type: "text", text: "hello" }],
+    }, createRunContext(context))).rejects.toThrow(
+      "No remembered outbound route for patrik_mojzis.",
+    );
+  });
+
+  it("errors clearly when an identity has no remembered route for a requested channel", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      identityDirectory: {
+        getIdentityByHandle: async () => createIdentity("identity-patrik", "patrik_mojzis"),
+      },
+    });
+
+    await expect(tool.run({
+      to: {
+        identityHandle: "patrik_mojzis",
+        channel: "telegram",
+      },
+      items: [{ type: "text", text: "hello" }],
+    }, createRunContext(context))).rejects.toThrow(
+      "No remembered telegram route for patrik_mojzis.",
+    );
+  });
+
+  it("falls back to the active identity remembered route when there is no current inbound message", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      currentInput: {
+        source: "scheduled_task",
+        identityId: "identity-1",
+        metadata: {
+          scheduledTask: {
+            taskId: "task-1",
+            title: "Ping",
+            runAt: "2026-04-10T03:00:00.000Z",
+          },
+        },
+      },
+      routeMemory: {
+        getLastRoute: async (lookup) => {
+          context.routeLookups.push(lookup);
+          return lookup?.identityId === "identity-1"
+            ? {
+              source: "telegram",
+              connectorKey: "telegram-bot",
+              externalConversationId: "chat-identity-1",
+              externalActorId: "actor-identity-1",
+              capturedAt: 123,
+            }
+            : null;
+        },
+        saveLastRoute: async (route, options) => {
+          context.rememberedRoutes.push(route);
+          context.rememberedRouteOptions.push(options);
+        },
+      },
+    });
+
+    await tool.run({
+      items: [{ type: "text", text: "identity scoped hello" }],
+    }, createRunContext(context));
+
+    expect(context.routeLookups).toEqual([{identityId: "identity-1"}]);
+    expect(context.rememberedRouteOptions).toEqual([{identityId: "identity-1"}]);
+    expect(context.queued).toMatchObject([{
+      channel: "telegram",
+      target: {
+        externalConversationId: "chat-identity-1",
+        externalActorId: "actor-identity-1",
+      },
+    }]);
+  });
+
+  it("rejects raw transport routing keys", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext();
+
+    await expect(tool.run({
+      channel: "telegram",
+      target: {
+        connectorKey: "connector",
+        conversationId: "chat",
+      },
+      items: [{ type: "text", text: "nope" }],
+    }, createRunContext(context))).rejects.toThrow(
+      "Unrecognized",
     );
   });
 
@@ -376,57 +471,33 @@ describe("OutboundTool", () => {
 
   it("rejects email routes", async () => {
     const tool = new OutboundTool<DefaultAgentSessionContext>();
-    const context = createContext();
-
-    await expect(tool.run({
-      channel: "email",
-      target: {
-        connectorKey: "smtp",
-        conversationId: "work",
-      },
-      items: [{ type: "text", text: "nope" }],
-    }, createRunContext(context))).rejects.toThrow(
-      "Use email_send for email.",
-    );
-  });
-
-  it("allows scheduled tasks to call outbound through the remembered route", async () => {
-    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const identity = createIdentity("identity-patrik", "patrik_mojzis");
     const context = createContext({
-      currentInput: {
-        source: "scheduled_task",
-        metadata: {
-          scheduledTask: {
-            taskId: "task-1",
-            title: "Bee research",
-            runAt: "2026-04-10T03:00:00.000Z",
-          },
-        },
+      identityDirectory: {
+        getIdentityByHandle: async () => identity,
       },
       routeMemory: {
-        getLastRoute: async (channel) => {
-          context.routeLookups.push(channel);
+        getLastRoute: async (lookup) => {
+          context.routeLookups.push(lookup);
           return {
-            source: "telegram",
-            connectorKey: "telegram-bot",
-            externalConversationId: "chat-1",
+            source: "email",
+            connectorKey: "smtp",
+            externalConversationId: "work",
             capturedAt: 123,
           };
         },
-        saveLastRoute: async (route) => {
+        saveLastRoute: async (route, options) => {
           context.rememberedRoutes.push(route);
+          context.rememberedRouteOptions.push(options);
         },
       },
     });
 
-    await tool.run({
-      items: [{ type: "text", text: "scheduled hello" }],
-    }, createRunContext(context));
-
-    expect(context.routeLookups).toEqual([undefined]);
-    expect(context.queued).toMatchObject([{
-      channel: "telegram",
-      items: [{ type: "text", text: "scheduled hello" }],
-    }]);
+    await expect(tool.run({
+      to: { identityHandle: "patrik_mojzis" },
+      items: [{ type: "text", text: "nope" }],
+    }, createRunContext(context))).rejects.toThrow(
+      "Use email_send for email.",
+    );
   });
 });

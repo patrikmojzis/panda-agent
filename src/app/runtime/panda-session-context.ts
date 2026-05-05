@@ -2,15 +2,29 @@ import type {JsonValue} from "../../kernel/agent/types.js";
 import type {OutboundDeliveryInput, OutboundDeliveryRecord,} from "../../domain/channels/deliveries/types.js";
 import type {ChannelActionInput, ChannelActionRecord,} from "../../domain/channels/actions/types.js";
 import type {OutboundItem, RememberedRoute} from "../../domain/channels/types.js";
+import type {IdentityRecord} from "../../domain/identity/types.js";
 import type {ShellExecutionContext, ShellSession} from "../../integrations/shell/types.js";
 
+export interface DefaultAgentRouteMemoryLookup {
+  channel?: string;
+  identityId?: string;
+}
+
+export interface DefaultAgentRouteMemorySaveOptions {
+  identityId?: string;
+}
+
 export interface DefaultAgentRouteMemory {
-  getLastRoute(channel?: string): Promise<RememberedRoute | null>;
-  saveLastRoute(route: RememberedRoute): Promise<void>;
+  getLastRoute(lookup?: DefaultAgentRouteMemoryLookup): Promise<RememberedRoute | null>;
+  saveLastRoute(route: RememberedRoute, options?: DefaultAgentRouteMemorySaveOptions): Promise<void>;
 }
 
 export interface DefaultAgentOutboundQueue {
   enqueueDelivery(input: OutboundDeliveryInput): Promise<OutboundDeliveryRecord>;
+}
+
+export interface DefaultAgentIdentityDirectory {
+  getIdentityByHandle(handle: string): Promise<IdentityRecord>;
 }
 
 export interface DefaultAgentChannelActionQueue {
@@ -51,6 +65,7 @@ export interface DefaultAgentSessionContext extends ShellExecutionContext {
     metadata?: JsonValue;
   };
   routeMemory?: DefaultAgentRouteMemory;
+  identityDirectory?: DefaultAgentIdentityDirectory;
   outboundQueue?: DefaultAgentOutboundQueue;
   channelActionQueue?: DefaultAgentChannelActionQueue;
   messageAgent?: DefaultAgentMessageAgentService;

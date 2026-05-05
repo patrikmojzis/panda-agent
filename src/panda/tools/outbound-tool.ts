@@ -43,32 +43,46 @@ const outboundItemSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-const outboundToolSchema = z.object({
+const outboundDestinationSchema = z.strictObject({
+  identityHandle: z.string().trim().min(1)
+    .describe("Identity handle of the person to message, for example patrik_mojzis."),
   channel: z.string().trim().min(1).optional()
-    .describe("Destination channel. Omit to reply on the current inbound channel."),
-  target: z.object({
-    connectorKey: z.string().trim().min(1),
-    conversationId: z.string().trim().min(1),
-    actorId: z.string().trim().min(1).optional(),
-    replyToMessageId: z.string().trim().min(1).optional(),
-  }).optional()
-    .describe("Explicit destination override. Omit to use the current inbound route."),
-  items: z.array(outboundItemSchema).min(1).max(10),
-}).superRefine((value, ctx) => {
-  if (value.target && !value.channel) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["channel"],
-      message: "channel is required when target is provided",
-    });
-  }
+    .describe("Optional channel override, for example telegram or whatsapp. Omit to use this person's latest active route."),
 });
 
-async function readRememberedTarget(context: DefaultAgentSessionContext | undefined): Promise<{
+const outboundToolSchema = z.strictObject({
+  to: outboundDestinationSchema.optional()
+    .describe("Optional person/channel destination. Omit to reply on the current inbound conversation."),
+  items: z.array(outboundItemSchema).min(1).max(10),
+});
+
+type OutboundDestination = z.output<typeof outboundDestinationSchema>;
+
+interface ResolvedOutboundTarget {
   channel: string;
   target: OutboundTarget;
-} | null> {
-  const route = await context?.routeMemory?.getLastRoute();
+  identityHandle?: string;
+}
+
+function buildRouteMemoryLookup(channel?: string, identityId?: string): {
+  channel?: string;
+  identityId?: string;
+} | undefined {
+  if (!channel && !identityId) {
+    return undefined;
+  }
+
+  return {
+    ...(channel ? {channel} : {}),
+    ...(identityId ? {identityId} : {}),
+  };
+}
+
+async function readRememberedTarget(
+  context: DefaultAgentSessionContext | undefined,
+  identityId?: string,
+): Promise<ResolvedOutboundTarget | null> {
+  const route = await context?.routeMemory?.getLastRoute(buildRouteMemoryLookup(undefined, identityId));
   if (!route) {
     return null;
   }
@@ -87,11 +101,9 @@ async function readRememberedTarget(context: DefaultAgentSessionContext | undefi
 async function readRememberedTargetForChannel(
   context: DefaultAgentSessionContext | undefined,
   channel?: string,
-): Promise<{
-  channel: string;
-  target: OutboundTarget;
-} | null> {
-  const route = await context?.routeMemory?.getLastRoute(channel);
+  identityId?: string,
+): Promise<ResolvedOutboundTarget | null> {
+  const route = await context?.routeMemory?.getLastRoute(buildRouteMemoryLookup(channel, identityId));
   if (!route) {
     return null;
   }
@@ -104,6 +116,52 @@ async function readRememberedTargetForChannel(
       externalConversationId: route.externalConversationId,
       externalActorId: route.externalActorId,
     },
+  };
+}
+
+async function resolveDestinationIdentity(
+  context: DefaultAgentSessionContext | undefined,
+  destination: OutboundDestination,
+): Promise<{identityId: string; identityHandle: string}> {
+  const directory = context?.identityDirectory;
+  if (!directory) {
+    throw new ToolError("Outbound identity routing is unavailable in this runtime.");
+  }
+
+  try {
+    const identity = await directory.getIdentityByHandle(destination.identityHandle);
+    return {
+      identityId: identity.id,
+      identityHandle: identity.handle,
+    };
+  } catch (error) {
+    if (
+      error instanceof Error
+      && !error.message.startsWith("Unknown identity handle ")
+      && !error.message.startsWith("Identity handle must ")
+    ) {
+      throw error;
+    }
+
+    throw new ToolError(`Unknown outbound identity ${destination.identityHandle}.`);
+  }
+}
+
+async function resolveDestinationTarget(
+  context: DefaultAgentSessionContext | undefined,
+  destination: OutboundDestination,
+): Promise<ResolvedOutboundTarget> {
+  const identity = await resolveDestinationIdentity(context, destination);
+  const resolved = await readRememberedTargetForChannel(context, destination.channel, identity.identityId);
+  if (!resolved) {
+    throw new ToolError(destination.channel
+      ? `No remembered ${destination.channel} route for ${identity.identityHandle}.`
+      : `No remembered outbound route for ${identity.identityHandle}.`);
+  }
+
+  return {
+    ...resolved,
+    identityHandle: identity.identityHandle,
   };
 }
 
@@ -133,23 +191,6 @@ function requireThreadId(context: DefaultAgentSessionContext | undefined): strin
   }
 
   return threadId;
-}
-
-function buildExplicitTarget(
-  channel: string,
-  target: z.output<typeof outboundToolSchema>["target"],
-): OutboundTarget | null {
-  if (!target) {
-    return null;
-  }
-
-  return {
-    source: channel,
-    connectorKey: target.connectorKey,
-    externalConversationId: target.conversationId,
-    externalActorId: target.actorId,
-    replyToMessageId: target.replyToMessageId,
-  };
 }
 
 async function resolveOutboundItemPath<TItem extends OutboundImageItem | OutboundFileItem>(
@@ -192,19 +233,15 @@ async function resolveOutboundItems(
 function serializeQueuedDelivery(delivery: {
   id: string;
   channel: string;
-  target: OutboundTarget;
+  identityHandle?: string;
 }): JsonObject {
   return {
     ok: true,
     status: "queued",
     deliveryId: delivery.id,
-    channel: delivery.channel,
-    target: {
-      source: delivery.target.source,
-      connectorKey: delivery.target.connectorKey,
-      externalConversationId: delivery.target.externalConversationId,
-      externalActorId: delivery.target.externalActorId ?? null,
-      replyToMessageId: delivery.target.replyToMessageId ?? null,
+    to: {
+      ...(delivery.identityHandle ? {identityHandle: delivery.identityHandle} : {}),
+      channel: delivery.channel,
     },
   };
 }
@@ -214,13 +251,15 @@ export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<ty
 
   name = "outbound";
   description =
-    "Always use this tool to message human. Send a reply, image, or file to an external channel. If no target is provided, it replies to the latest inbound channel route.";
+    "Always use this tool to message a human. Omit `to` to reply on the current conversation. Use `to.identityHandle` for a person; add `to.channel` only when choosing a specific channel.";
   schema = OutboundTool.schema;
 
   override formatCall(args: Record<string, unknown>): string {
     const itemCount = Array.isArray(args.items) ? args.items.length : 0;
-    const channel = typeof args.channel === "string" ? args.channel : "current";
-    return `${channel} (${itemCount} item${itemCount === 1 ? "" : "s"})`;
+    const destination = isRecord(args.to) && typeof args.to.identityHandle === "string"
+      ? `${args.to.identityHandle}${typeof args.to.channel === "string" ? `/${args.to.channel}` : ""}`
+      : "current";
+    return `${destination} (${itemCount} item${itemCount === 1 ? "" : "s"})`;
   }
 
   override formatResult(message: ToolResultMessage<JsonValue>): string {
@@ -239,19 +278,18 @@ export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<ty
     const sessionContext = run.context as DefaultAgentSessionContext | undefined;
     const queue = ensureOutboundQueue(sessionContext);
     const currentRoute = resolveChannelRouteTarget(sessionContext?.currentInput);
-    const hasExplicitTarget = Boolean(args.target);
-    const requestedChannel = args.channel;
+    const currentIdentityId = sessionContext?.currentInput?.identityId;
 
-    let defaultRoute = null;
-    if (currentRoute && (!requestedChannel || currentRoute.channel === requestedChannel)) {
-      defaultRoute = currentRoute;
-    } else if (requestedChannel) {
-      defaultRoute = await readRememberedTargetForChannel(sessionContext, requestedChannel);
-    } else {
-      defaultRoute = await readRememberedTarget(sessionContext);
-    }
+    const resolvedRoute: ResolvedOutboundTarget | null = args.to
+      ? await resolveDestinationTarget(sessionContext, args.to)
+      : currentRoute
+        ? {
+          channel: currentRoute.channel,
+          target: currentRoute.target,
+        }
+        : await readRememberedTarget(sessionContext, currentIdentityId);
 
-    const channel = requestedChannel ?? defaultRoute?.channel;
+    const channel = resolvedRoute?.channel;
     if (!channel) {
       throw new ToolError("No outbound channel was provided and no current inbound route is available.");
     }
@@ -262,7 +300,7 @@ export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<ty
       throw new ToolError("Use email_send for email.");
     }
 
-    const target = buildExplicitTarget(channel, args.target) ?? defaultRoute?.target;
+    const target = resolvedRoute?.target;
     if (!target) {
       throw new ToolError("No outbound target was provided and no current inbound route is available.");
     }
@@ -274,14 +312,16 @@ export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<ty
       target,
       items,
     });
-    if (!hasExplicitTarget) {
-      await sessionContext?.routeMemory?.saveLastRoute(rememberRouteFromTarget(target));
+    if (!args.to) {
+      await sessionContext?.routeMemory?.saveLastRoute(rememberRouteFromTarget(target), {
+        identityId: currentIdentityId,
+      });
     }
 
     return serializeQueuedDelivery({
       id: delivery.id,
       channel: delivery.channel,
-      target: delivery.target,
+      identityHandle: resolvedRoute.identityHandle,
     });
   }
 }
