@@ -251,6 +251,7 @@ export class EmailSendTool<TContext = DefaultAgentSessionContext> extends Tool<t
     "Send a fresh email or reply from a configured Panda email account.",
     "Recipients must be exact allowlist matches.",
     "For replies, pass replyToEmailId and let Panda derive recipients, subject, and thread headers.",
+    "Pass decoded human-readable strings for subject, text, and html. Use real newlines and Unicode characters; do not double-escape JSON values as literal \\n, \\u00ed, or \\ud83d\\udc3c.",
   ].join("\n");
   schema = EmailSendTool.schema;
 

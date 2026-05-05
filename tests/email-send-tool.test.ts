@@ -138,6 +138,14 @@ function createRunContext(context: DefaultAgentSessionContext): RunContext<Defau
 }
 
 describe("EmailSendTool", () => {
+  it("tells the model not to double-escape email strings", () => {
+    const tool = new EmailSendTool<DefaultAgentSessionContext>({store: new MemoryEmailStore()});
+
+    expect(tool.description).toContain("do not double-escape JSON values");
+    expect(tool.description).toContain("\\n");
+    expect(tool.description).toContain("\\u00ed");
+  });
+
   it("queues a fresh allowlisted email", async () => {
     const store = new MemoryEmailStore();
     await store.addAllowedRecipient("panda", "work", "alice@example.com");
