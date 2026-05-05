@@ -23,6 +23,7 @@ const whatsappServiceMocks = vi.hoisted(() => {
 
 vi.mock("baileys", () => ({
   addTransactionCapability: (value: unknown) => value,
+  bytesToCrockford: vi.fn(() => "ABCDEFGH"),
   Browsers: {
     macOS: vi.fn(() => ["Panda"]),
   },
@@ -409,7 +410,7 @@ describe("WhatsAppService", () => {
 
     await vi.advanceTimersByTimeAsync(1_500);
 
-    expect(whatsappServiceMocks.socket.requestPairingCode).toHaveBeenCalledWith("421944478544");
+    expect(whatsappServiceMocks.socket.requestPairingCode).toHaveBeenCalledWith("421944478544", undefined);
     expect(pairingCodes).toEqual(["123-456"]);
 
     connectionHandler({connection: "open"});
@@ -464,60 +465,49 @@ describe("WhatsAppService", () => {
     await expect(cycle).resolves.toEqual({
       reconnect: true,
       reason: "428",
-      pairingCodeIssued: false,
     });
     expect(whatsappServiceMocks.socket.end).toHaveBeenCalledTimes(1);
   });
 
-  it("marks reconnects after a pairing code was issued", async () => {
-    vi.useFakeTimers();
-
+  it("reuses one WhatsApp pairing code across reconnects", async () => {
     const service = new WhatsAppService({
       connectorKey: "main",
       dataDir: "/tmp/panda",
     });
+    const pairingCodes: string[] = [];
 
-    vi.spyOn(service as never, "createSocket").mockResolvedValue({
-      authHandle: {
-        state: {
-          creds: {},
-          keys: {},
-        },
-        saveCreds: vi.fn(async () => {}),
-      },
-      socket: whatsappServiceMocks.socket,
+    vi.spyOn(service as never, "ensureAuthStore").mockResolvedValue({
+      loadCreds: vi.fn(async () => ({
+        registered: false,
+      })),
     });
-    (service as {socket?: unknown}).socket = whatsappServiceMocks.socket;
-
-    const cycle = (service as never).runPairSocketCycle("421944478544");
-    await Promise.resolve();
-
-    const connectionHandler = whatsappServiceMocks.socket.ev.on.mock.calls.find(([event]) => {
-      return event === "connection.update";
-    })?.[1];
-    expect(connectionHandler).toBeTypeOf("function");
-
-    connectionHandler({connection: "connecting"});
-    await vi.advanceTimersByTimeAsync(1_500);
-    await Promise.resolve();
-
-    connectionHandler({
-      connection: "close",
-      lastDisconnect: {
-        error: {
-          output: {
-            statusCode: 405,
+    const runPairSocketCycle = vi.spyOn(service as never, "runPairSocketCycle")
+      .mockImplementationOnce(async (_phoneNumber, onPairingCode, pairingCode) => {
+        onPairingCode(pairingCode);
+        return {reconnect: true, reason: "405"};
+      })
+      .mockImplementationOnce(async (_phoneNumber, onPairingCode, pairingCode) => {
+        onPairingCode(pairingCode);
+        return {
+          pairedIdentity: {
+            connectorKey: "main",
+            registered: true,
+            accountId: "421944478544@s.whatsapp.net",
           },
-        },
-      },
+        };
+      });
+
+    await expect(service.pair("421944478544", (code) => pairingCodes.push(code))).resolves.toEqual({
+      connectorKey: "main",
+      registered: true,
+      accountId: "421944478544@s.whatsapp.net",
+      pairingCode: undefined,
+      alreadyPaired: false,
     });
 
-    await expect(cycle).resolves.toEqual({
-      reconnect: true,
-      reason: "405",
-      pairingCodeIssued: true,
-    });
-    expect(whatsappServiceMocks.socket.end).toHaveBeenCalledTimes(1);
+    expect(pairingCodes).toEqual(["ABCDEFGH"]);
+    expect(runPairSocketCycle).toHaveBeenNthCalledWith(1, "421944478544", expect.any(Function), "ABCDEFGH");
+    expect(runPairSocketCycle).toHaveBeenNthCalledWith(2, "421944478544", expect.any(Function), "ABCDEFGH");
   });
 
   it("enqueues private notify messages for Panda", async () => {

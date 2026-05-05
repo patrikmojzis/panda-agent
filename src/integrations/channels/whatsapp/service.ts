@@ -1,9 +1,11 @@
+import {randomBytes} from "node:crypto";
 import type {Pool} from "pg";
 import {
   addTransactionCapability,
   type AuthenticationState,
   type BaileysEventMap,
   Browsers,
+  bytesToCrockford,
   type ConnectionState,
   DisconnectReason,
   isJidBroadcast,
@@ -87,7 +89,6 @@ const TRANSACTION_OPTIONS = {
 const WHATSAPP_BROWSER_NAME = "Google Chrome";
 const WHATSAPP_TRANSIENT_REJECTION_STATUS = 405;
 const PAIRING_CODE_REQUEST_DELAY_MS = 1_500;
-const PAIRING_CODE_RETRY_DELAY_MS = 60_000;
 const RECONNECT_DELAY_MS = 1_000;
 const WHATSAPP_POOL_MAX_FALLBACK = 5;
 const WHATSAPP_HEALTH_RECONNECT_GRACE_MS = 30_000;
@@ -117,7 +118,7 @@ export interface WhatsAppPairResult extends WhatsAppWhoamiResult {
 
 type WhatsAppPairSocketCycleResult =
   | {pairedIdentity: WhatsAppWhoamiResult}
-  | {reconnect: true; reason: string; pairingCodeIssued: boolean};
+  | {reconnect: true; reason: string};
 
 type WhatsAppSocketHealthState = "idle" | "connecting" | "open" | "reconnecting" | "closed" | "stopped";
 
@@ -546,8 +547,19 @@ export class WhatsAppService {
       };
     }
 
+    const pairingCode = bytesToCrockford(randomBytes(5));
+    let pairingCodeAnnounced = false;
+    const announcePairingCode = (code: string) => {
+      if (pairingCodeAnnounced) {
+        return;
+      }
+
+      pairingCodeAnnounced = true;
+      onPairingCode?.(code);
+    };
+
     while (!this.stopping) {
-      const outcome = await this.runPairSocketCycle(phoneNumber, onPairingCode);
+      const outcome = await this.runPairSocketCycle(phoneNumber, announcePairingCode, pairingCode);
       if ("pairedIdentity" in outcome) {
         return {
           ...outcome.pairedIdentity,
@@ -556,14 +568,12 @@ export class WhatsAppService {
         };
       }
 
-      const delayMs = outcome.pairingCodeIssued ? PAIRING_CODE_RETRY_DELAY_MS : RECONNECT_DELAY_MS;
       this.log("pairing_reconnect_scheduled", {
         connectorKey: this.options.connectorKey,
         reason: outcome.reason,
-        pairingCodeIssued: outcome.pairingCodeIssued,
-        delayMs,
+        delayMs: RECONNECT_DELAY_MS,
       });
-      await sleep(delayMs);
+      await sleep(RECONNECT_DELAY_MS);
     }
 
     throw new Error(`WhatsApp connector ${this.options.connectorKey} pairing stopped before login completed.`);
@@ -572,13 +582,13 @@ export class WhatsAppService {
   private async runPairSocketCycle(
     phoneNumber: string,
     onPairingCode?: (code: string) => void,
+    pairingCode?: string,
   ): Promise<WhatsAppPairSocketCycleResult> {
     const {authHandle, socket} = await this.createSocket();
     try {
       return await new Promise<WhatsAppPairSocketCycleResult>((resolve, reject) => {
         let settled = false;
         let pairingCodeRequested = false;
-        let pairingCodeIssued = false;
         let pairingCodeTimer: ReturnType<typeof setTimeout> | null = null;
 
         const finish = (outcome: WhatsAppPairSocketCycleResult) => {
@@ -607,18 +617,17 @@ export class WhatsAppService {
           }
 
           pairingCodeRequested = true;
-          socket.requestPairingCode(phoneNumber)
-            .then((pairingCode) => {
+          socket.requestPairingCode(phoneNumber, pairingCode)
+            .then((issuedPairingCode) => {
               if (!settled) {
-                pairingCodeIssued = true;
-                onPairingCode?.(pairingCode);
+                onPairingCode?.(issuedPairingCode);
               }
             })
             .catch((error) => {
               const statusCode = extractDisconnectStatusCode(error);
               const reason = describeDisconnectStatus(statusCode);
               if (shouldReconnect(statusCode)) {
-                finish({reconnect: true, reason, pairingCodeIssued});
+                finish({reconnect: true, reason});
                 return;
               }
 
@@ -659,7 +668,7 @@ export class WhatsAppService {
             const statusCode = extractDisconnectStatusCode(update.lastDisconnect?.error);
             const reason = describeDisconnectStatus(statusCode);
             if (shouldReconnect(statusCode)) {
-              finish({reconnect: true, reason, pairingCodeIssued});
+              finish({reconnect: true, reason});
               return;
             }
 
