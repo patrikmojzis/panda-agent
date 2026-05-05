@@ -52,8 +52,22 @@ export interface ThreadRuntimeCoordinatorOptions {
   store: ThreadRuntimeStore;
   resolveDefinition: ThreadDefinitionResolver;
   leaseManager: ThreadLeaseManager;
+  beforeRunStep?: ThreadRuntimeBeforeRunStepHook;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
 }
+
+export interface ThreadRuntimeBeforeRunStepInput {
+  run: ThreadRunRecord;
+  thread: ThreadRecord;
+  definition: ResolvedThreadDefinition;
+  appliedInputs: readonly ThreadMessageRecord[];
+  transcript: readonly ThreadMessageRecord[];
+  signal: AbortSignal;
+}
+
+export type ThreadRuntimeBeforeRunStepHook = (
+  input: ThreadRuntimeBeforeRunStepInput,
+) => Promise<void> | void;
 
 export type ThreadRuntimeEvent =
   | {
@@ -91,6 +105,10 @@ interface ThreadRunAttemptResult {
 
 const IDLE_REROLL_SUPPRESSED_INPUT_SOURCES = new Set([
   "heartbeat",
+  "intuition_sidecar",
+]);
+const CURRENT_INPUT_SUPPRESSED_INPUT_SOURCES = new Set([
+  "intuition_sidecar",
 ]);
 
 function isPersistedThreadMessage(event: ThreadRunEvent): event is Extract<ThreadRunEvent, { role: string }> {
@@ -126,6 +144,9 @@ function buildCurrentInputContext(
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const entry = messages[index];
     if (!entry || entry.origin !== "input") {
+      continue;
+    }
+    if (CURRENT_INPUT_SUPPRESSED_INPUT_SOURCES.has(entry.source)) {
       continue;
     }
 
@@ -221,6 +242,7 @@ export class ThreadRuntimeCoordinator {
   private readonly store: ThreadRuntimeStore;
   private readonly resolveDefinition: ThreadDefinitionResolver;
   private readonly leaseManager: ThreadLeaseManager;
+  private readonly beforeRunStep?: ThreadRuntimeBeforeRunStepHook;
   private readonly onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   private readonly activeRuns = new Map<string, Promise<ThreadRunAttemptResult>>();
   private readonly activeSignals = new Map<string, AbortController>();
@@ -229,6 +251,7 @@ export class ThreadRuntimeCoordinator {
     this.store = options.store;
     this.resolveDefinition = options.resolveDefinition;
     this.leaseManager = options.leaseManager;
+    this.beforeRunStep = options.beforeRunStep;
     this.onEvent = options.onEvent;
   }
 
@@ -404,6 +427,22 @@ export class ThreadRuntimeCoordinator {
 
   private async emit(event: ThreadRuntimeEvent): Promise<void> {
     await this.onEvent?.(event);
+  }
+
+  private async applyRunnableInputsForCurrentRun(options: {
+    threadId: string;
+    run: ThreadRunRecord;
+  }): Promise<readonly ThreadMessageRecord[]> {
+    const appliedInputs = await this.store.applyPendingInputs(options.threadId, "runnable");
+    if (appliedInputs.length > 0) {
+      await this.emit({
+        type: "inputs_applied",
+        threadId: options.threadId,
+        runId: options.run.id,
+        messages: appliedInputs,
+      });
+    }
+    return appliedInputs;
   }
 
   private async sleep(ms: number): Promise<void> {
@@ -735,6 +774,32 @@ export class ThreadRuntimeCoordinator {
             ?? await this.store.getRun(run.id);
           skippedRun = true;
           break;
+        }
+
+        if (this.beforeRunStep && appliedInputs.length > 0) {
+          try {
+            await this.beforeRunStep({
+              run,
+              thread: preflight.thread,
+              definition,
+              appliedInputs,
+              transcript,
+              signal: controller.signal,
+            });
+          } catch {
+            // Before-run hooks are opportunistic. A broken sidecar should
+            // disappear for the turn, not fail Panda's main run.
+          }
+
+          const sidecarInputs = await this.applyRunnableInputsForCurrentRun({
+            threadId,
+            run,
+          });
+          if (sidecarInputs.length > 0) {
+            idleRerollAvailable = idleRerollAvailable || sidecarInputs.some(grantsIdleReroll);
+            inputApplyScope = "runnable";
+            continue;
+          }
         }
 
         const inferenceProjection = definition.inferenceProjection ?? preflight.thread.inferenceProjection;

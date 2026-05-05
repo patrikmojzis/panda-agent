@@ -569,6 +569,72 @@ const wikiProviderSchema = strictSchema({
   ).optional(),
 }).describe(WIKI_SCHEMA_DESCRIPTION);
 
+const WIKI_READONLY_OPERATIONS = [
+  "read",
+  "list",
+  "search",
+  "fetch_asset",
+] as const;
+const wikiReadonlyOperationSchemas = [
+  wikiReadSchema,
+  wikiListSchema,
+  wikiSearchSchema,
+  wikiFetchAssetSchema,
+] as const;
+const WIKI_READONLY_SCHEMA_DESCRIPTION =
+  "Read, list, search, and fetch namespace-scoped assets for agent-owned Wiki.js pages. This tool cannot write, move, archive, or attach images.";
+const wikiReadonlyProviderSchema = strictSchema({
+  operation: z.enum(WIKI_READONLY_OPERATIONS).describe(
+    "Wiki operation. Required fields by operation: read(path), list(path optional), search(query), fetch_asset(assetPath).",
+  ),
+  path: wikiPathField.optional(),
+  locale: wikiLocaleField.optional(),
+  limit: wikiLimitField.optional(),
+  includeArchived: wikiIncludeArchivedField.optional(),
+  query: wikiQueryField.optional(),
+  assetPath: wikiAssetPathField.optional(),
+}).describe(WIKI_READONLY_SCHEMA_DESCRIPTION);
+
+export class WikiReadonlyTool<TContext = DefaultAgentSessionContext>
+  extends Tool<typeof WikiReadonlyTool.schema, TContext> {
+  static schema = z.discriminatedUnion("operation", wikiReadonlyOperationSchemas)
+    .describe(WIKI_READONLY_SCHEMA_DESCRIPTION);
+
+  name = "wiki";
+  description = [
+    "Read-only access to agent-owned Wiki.js pages and namespace-scoped assets.",
+    "Every path is hard-scoped to the current agent namespace.",
+    "Use read, list, search, or fetch_asset only.",
+  ].join("\n");
+  schema = WikiReadonlyTool.schema;
+
+  private readonly delegate: WikiTool<TContext>;
+
+  constructor(options: WikiToolOptions = {}) {
+    super();
+    this.delegate = new WikiTool<TContext>(options);
+  }
+
+  override get piTool(): PiTool {
+    return {
+      name: this.name,
+      description: this.description,
+      parameters: formatParameters(wikiReadonlyProviderSchema) as PiTool["parameters"],
+    };
+  }
+
+  override formatCall(args: Record<string, unknown>): string {
+    return this.delegate.formatCall(args);
+  }
+
+  async handle(
+    args: z.output<typeof WikiReadonlyTool.schema>,
+    run: RunContext<TContext>,
+  ): Promise<ToolResultPayload> {
+    return this.delegate.handle(args as z.output<typeof WikiTool.schema>, run);
+  }
+}
+
 export class WikiTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof WikiTool.schema, TContext> {
   static schema = z.discriminatedUnion("operation", wikiOperationSchemas).describe(WIKI_SCHEMA_DESCRIPTION);
