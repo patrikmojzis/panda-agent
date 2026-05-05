@@ -2,6 +2,8 @@ export {
   ThreadRuntimeCoordinator,
   type ThreadLease,
   type ThreadLeaseManager,
+  type ThreadRuntimeBeforeRunStepHook,
+  type ThreadRuntimeBeforeRunStepInput,
   type ThreadRuntimeCoordinatorOptions,
   type ThreadRuntimeEvent,
   type ThreadWakeMode,

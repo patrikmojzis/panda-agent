@@ -29,6 +29,7 @@ import {
     DEFAULT_INFERENCE_PROJECTION,
     resolveStoredContext,
 } from "./thread-definition.js";
+import {IntuitionSidecarService} from "./intuition-sidecar.js";
 
 export {
   createPostgresPool,
@@ -60,6 +61,7 @@ export interface RuntimeOptions {
   dbUrl?: string;
   readOnlyDbUrl?: string;
   maxSubagentDepth?: number;
+  intuitionSidecar?: boolean;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
   resolveDefinition: (
@@ -84,6 +86,7 @@ export interface RuntimeServices {
   watches: WatchStore;
   calendarService: AgentCalendarService | null;
   coordinator: ThreadRuntimeCoordinator;
+  intuitionSidecar: IntuitionSidecarService | null;
   mainTools: readonly Tool[];
   pool: Pool;
   close(): Promise<void>;
@@ -111,10 +114,33 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     mainTools: runtime.mainTools,
   };
 
-  const coordinator = new ThreadRuntimeCoordinator({
+  let coordinator!: ThreadRuntimeCoordinator;
+  const intuitionSidecar = options.intuitionSidecar === false
+    ? null
+    : new IntuitionSidecarService({
+      sessionStore: runtime.sessionStore,
+      threadStore: runtime.store,
+      runtime: {
+        submitInput: (threadId, payload, mode) => coordinator.submitInput(threadId, payload, mode),
+      },
+      pool: runtime.pool,
+      agentStore: runtime.agentStore,
+      wikiBindings: runtime.wikiBindingService ?? undefined,
+      env: process.env,
+    });
+
+  coordinator = new ThreadRuntimeCoordinator({
     store: runtime.store,
     leaseManager: new PostgresThreadLeaseManager(runtime.pool),
-    resolveDefinition: (thread) => options.resolveDefinition(thread, resolverContext),
+    resolveDefinition: async (thread) => {
+      const session = await runtime.sessionStore.getSession(thread.sessionId);
+      if (session.kind === "sidecar" && intuitionSidecar?.isSidecarThread(thread)) {
+        return intuitionSidecar.resolveDefinition(thread, session);
+      }
+
+      return options.resolveDefinition(thread, resolverContext);
+    },
+    beforeRunStep: (input) => intuitionSidecar?.beforeRunStep(input),
     onEvent: options.onEvent,
   });
   runtime.backgroundJobService.setBackgroundCompletionHandler(async (record) => {
@@ -138,6 +164,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     watches: runtime.watches,
     calendarService: runtime.calendarService,
     coordinator,
+    intuitionSidecar,
     mainTools: runtime.mainTools,
     pool: runtime.pool,
     close: runtime.close,
