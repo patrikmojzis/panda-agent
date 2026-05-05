@@ -36,8 +36,11 @@ The helper scripts auto-detect the host cert file in this order:
 Preferred setup is a single URI:
 
 ```dotenv
-WIKI_DB_URL=postgresql://user:pass@host:5432/panda_wiki
+WIKI_DB_URL=postgresql://panda_wiki:wiki_pw@host:5432/panda_wiki
 ```
+
+Use a dedicated Wiki.js database role.
+Do not point `WIKI_DB_URL` at the `panda_app` role; Wiki.js owns its own schema and should not be able to touch Panda runtime tables.
 
 For Panda runtime inside Docker, use:
 
@@ -64,7 +67,7 @@ For TLS with a mounted cert file, keep the container path fixed and only vary th
 
 ```dotenv
 WIKI_DB_SSL_CERT_FILE=/Users/patrikmojzis/.panda/ca.crt
-WIKI_DB_URL=postgresql://user:pass@host:25060/panda_wiki?sslmode=verify-full&sslrootcert=/etc/ssl/certs/panda-postgres-ca.crt
+WIKI_DB_URL=postgresql://panda_wiki:wiki_pw@host:25060/panda_wiki?sslmode=verify-full&sslrootcert=/etc/ssl/certs/panda-postgres-ca.crt
 ```
 
 On the VPS, the current path already is `/etc/ssl/certs/panda-postgres-ca.crt`, so you likely do not need to set `WIKI_DB_SSL_CERT_FILE` at all.
@@ -74,7 +77,7 @@ This matches the current Panda stack shape: the host cert file is bind-mounted i
 If you prefer not to use `sslrootcert`, Wiki.js also accepts the CA body inline:
 
 ```dotenv
-WIKI_DB_URL=postgresql://user:pass@host:25060/panda_wiki?sslmode=verify-full
+WIKI_DB_URL=postgresql://panda_wiki:wiki_pw@host:25060/panda_wiki?sslmode=verify-full
 WIKI_DB_SSL_CA=<single-line certificate body without BEGIN/END lines>
 ```
 
