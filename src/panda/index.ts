@@ -124,9 +124,12 @@ export {
 } from "./subagents/policy.js";
 export type {
   DefaultAgentChannelActionQueue,
+  DefaultAgentIdentityDirectory,
   DefaultAgentMessageAgentService,
   DefaultAgentOutboundQueue,
   DefaultAgentRouteMemory,
+  DefaultAgentRouteMemoryLookup,
+  DefaultAgentRouteMemorySaveOptions,
   DefaultAgentSessionContext,
   DefaultAgentShellSession,
 } from "../app/runtime/panda-session-context.js";

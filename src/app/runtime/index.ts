@@ -26,9 +26,12 @@ export {
 } from "./create-runtime.js";
 export type {
   DefaultAgentChannelActionQueue,
+  DefaultAgentIdentityDirectory,
   DefaultAgentMessageAgentService,
   DefaultAgentOutboundQueue,
   DefaultAgentRouteMemory,
+  DefaultAgentRouteMemoryLookup,
+  DefaultAgentRouteMemorySaveOptions,
   DefaultAgentSessionContext,
   DefaultAgentShellSession,
 } from "./panda-session-context.js";

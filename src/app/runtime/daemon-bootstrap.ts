@@ -151,16 +151,21 @@ export async function bootstrapDaemonContext(
         ],
         extraContext: {
           routeMemory: {
-            getLastRoute: (channel) => sessionRoutes.getLastRoute({
+            getLastRoute: (lookup) => sessionRoutes.getLastRoute({
               sessionId: thread.sessionId,
-              channel,
+              identityId: lookup?.identityId,
+              channel: lookup?.channel,
             }),
-            saveLastRoute: async (route) => {
+            saveLastRoute: async (route, options) => {
               await sessionRoutes.saveLastRoute({
                 sessionId: thread.sessionId,
+                identityId: options?.identityId,
                 route,
               });
             },
+          },
+          identityDirectory: {
+            getIdentityByHandle: (handle) => runtime.identityStore.getIdentityByHandle(handle),
           },
           outboundQueue: {
             enqueueDelivery: (input) => outboundDeliveries.enqueueDelivery(input),
