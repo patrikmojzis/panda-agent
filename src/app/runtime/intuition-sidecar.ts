@@ -91,6 +91,10 @@ function buildSidecarThreadId(parentSessionId: string): string {
   return `${buildSidecarSessionId(parentSessionId)}-thread`;
 }
 
+function buildSidecarPromptCacheKey(parentSessionId: string): string {
+  return `sidecar:${parentSessionId}`;
+}
+
 function buildSidecarMetadata(parentSessionId: string) {
   return {
     intuitionSidecar: {
@@ -258,6 +262,7 @@ export class IntuitionSidecarService implements IntuitionWhisperSink {
       }),
       context,
       llmContexts,
+      promptCacheKey: buildSidecarPromptCacheKey(binding.parentSessionId),
       model: resolveDefaultAgentIntuitionSidecarModelSelector(this.env)
         ?? thread.model
         ?? resolveRuntimeDefaultModelSelector(this.env),
@@ -314,6 +319,7 @@ export class IntuitionSidecarService implements IntuitionWhisperSink {
     const threadInput = {
       id: threadId,
       sessionId,
+      promptCacheKey: buildSidecarPromptCacheKey(parentSession.id),
       context: buildSidecarThreadContext({
         sessionId,
         agentKey: parentSession.agentKey,
@@ -348,6 +354,7 @@ export class IntuitionSidecarService implements IntuitionWhisperSink {
     const thread = await this.threadStore.createThread({
       id: `${session.id}-thread-${randomUUID()}`,
       sessionId: session.id,
+      promptCacheKey: buildSidecarPromptCacheKey(parentThread.sessionId),
       context: buildSidecarThreadContext({
         sessionId: session.id,
         agentKey: session.agentKey,

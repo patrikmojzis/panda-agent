@@ -473,6 +473,8 @@ describe("Intuition sidecar", () => {
     );
 
     expect(resolved.model).toBe("openai-codex/gpt-5.4");
+    expect(resolved.promptCacheKey).toBe("sidecar:session-main");
+    expect(resolved.promptCacheKey?.length).toBeLessThanOrEqual(64);
     expect(resolved.agent.tools.map((tool) => tool.name).sort()).toEqual([
       "brave_search",
       "current_datetime",
