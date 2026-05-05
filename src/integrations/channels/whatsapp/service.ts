@@ -1,56 +1,56 @@
 import {randomBytes} from "node:crypto";
 import type {Pool} from "pg";
 import {
-    addTransactionCapability,
-    type AuthenticationState,
-    type BaileysEventMap,
-    Browsers,
-    bytesToCrockford,
-    type ConnectionState,
-    DisconnectReason,
-    fetchLatestWaWebVersion,
-    isJidBroadcast,
-    isJidGroup,
-    isJidNewsletter,
-    isJidStatusBroadcast,
-    jidNormalizedUser,
-    makeCacheableSignalKeyStore,
-    makeWASocket,
-    type WAMessage,
-    type WASocket,
+  addTransactionCapability,
+  type AuthenticationState,
+  type BaileysEventMap,
+  Browsers,
+  bytesToCrockford,
+  type ConnectionState,
+  DisconnectReason,
+  fetchLatestWaWebVersion,
+  isJidBroadcast,
+  isJidGroup,
+  isJidNewsletter,
+  isJidStatusBroadcast,
+  jidNormalizedUser,
+  makeCacheableSignalKeyStore,
+  makeWASocket,
+  type WAMessage,
+  type WASocket,
 } from "baileys";
 import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../app/health/server.js";
 import {ChannelActionWorker} from "../../../domain/channels/actions/index.js";
 import {
-    acquireManagedConnectorLease,
-    type ManagedConnectorLease,
-    PostgresConnectorLeaseRepo
+  acquireManagedConnectorLease,
+  type ManagedConnectorLease,
+  PostgresConnectorLeaseRepo
 } from "../../../domain/connector-leases/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
 import {
-    buildObservedPoolConfig,
-    createPostgresPool,
-    observePostgresPool,
-    type PostgresPoolObserver,
-    requireDatabaseUrl,
+  buildObservedPoolConfig,
+  createPostgresPool,
+  observePostgresPool,
+  type PostgresPoolObserver,
+  requireDatabaseUrl,
 } from "../../../app/runtime/database.js";
 import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {
-    ChannelOutboundDeliveryWorker,
-    PostgresOutboundDeliveryStore
+  ChannelOutboundDeliveryWorker,
+  PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/index.js";
 import {resolveWhatsAppSocketVersion, WHATSAPP_SOURCE} from "./config.js";
 import {PostgresWhatsAppAuthStore, type WhatsAppAuthStateHandle} from "./auth-store.js";
-import {extractWhatsAppMessageText, extractWhatsAppQuotedMessageId} from "./helpers.js";
+import {describeWhatsAppMessageShape, extractWhatsAppMessageText, extractWhatsAppQuotedMessageId} from "./helpers.js";
 import {createWhatsAppOutboundAdapter} from "./outbound.js";
 import {createWhatsAppTypingAdapter} from "./typing.js";
 import {
-    type PostgresNotificationListenerHandle,
-    startPostgresNotificationListener,
+  type PostgresNotificationListenerHandle,
+  startPostgresNotificationListener,
 } from "../postgres-notification-listener.js";
 import {sleep} from "../../../lib/async.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
@@ -208,6 +208,21 @@ function resolveChatType(remoteJid: string | undefined): "private" | "group" | "
 
 function extractMessageTextLength(message: WAMessage): number {
   return extractWhatsAppMessageText(message).length;
+}
+
+function extractWhatsAppReaction(message: WAMessage): {emoji: string; targetMessageId: string} | null {
+  const content = normalizeMessageContent(message.message);
+  const reaction = content?.reactionMessage;
+  const emoji = reaction?.text?.trim();
+  const targetMessageId = reaction?.key?.id?.trim();
+  if (!emoji || !targetMessageId) {
+    return null;
+  }
+
+  return {
+    emoji,
+    targetMessageId,
+  };
 }
 
 function readMediaSizeBytes(value: unknown): number | undefined {
@@ -1110,6 +1125,49 @@ export class WhatsAppService {
         continue;
       }
 
+      const reaction = extractWhatsAppReaction(message);
+      if (reaction) {
+        const request = await stores.requests.enqueueRequest({
+          kind: "whatsapp_reaction",
+          payload: {
+            connectorKey: this.options.connectorKey,
+            sentAt: readMessageSentAtMs(message.messageTimestamp),
+            externalConversationId,
+            externalActorId,
+            externalMessageId,
+            remoteJid,
+            chatType,
+            targetMessageId: reaction.targetMessageId,
+            emoji: reaction.emoji,
+            pushName: message.pushName ?? undefined,
+          },
+        });
+
+        this.log("reaction_ingested", {
+          connectorKey: this.options.connectorKey,
+          externalConversationId,
+          externalActorId,
+          chatType,
+          externalMessageId,
+          targetMessageId: reaction.targetMessageId,
+          emoji: reaction.emoji,
+          requestId: request.id,
+        });
+        continue;
+      }
+
+      if (normalizeMessageContent(message.message)?.reactionMessage) {
+        this.log("reaction_ignored", {
+          connectorKey: this.options.connectorKey,
+          externalConversationId,
+          externalActorId,
+          chatType,
+          externalMessageId,
+          reason: "empty_reaction",
+        });
+        continue;
+      }
+
       const rawText = extractWhatsAppMessageText(message);
       const media = await this.downloadSupportedMedia(message, stores);
       if (!rawText && media.length === 0) {
@@ -1119,6 +1177,7 @@ export class WhatsAppService {
           externalActorId,
           chatType,
           reason: "unsupported_message_shape",
+          messageShape: describeWhatsAppMessageShape(message),
         });
         continue;
       }
@@ -1172,11 +1231,32 @@ export class WhatsAppService {
       }));
     }
 
+    if (content.videoMessage) {
+      descriptors.push(await this.downloadMedia(message, stores, {
+        mimeType: content.videoMessage.mimetype ?? "video/mp4",
+        sizeBytes: readMediaSizeBytes(content.videoMessage.fileLength),
+        metadata: {
+          whatsappMediaKind: "video",
+        },
+      }));
+    }
+
     if (content.documentMessage) {
       descriptors.push(await this.downloadMedia(message, stores, {
         mimeType: content.documentMessage.mimetype ?? "application/octet-stream",
         sizeBytes: readMediaSizeBytes(content.documentMessage.fileLength),
         hintFilename: content.documentMessage.fileName ?? undefined,
+      }));
+    }
+
+    if (content.stickerMessage) {
+      descriptors.push(await this.downloadMedia(message, stores, {
+        mimeType: content.stickerMessage.mimetype ?? "image/webp",
+        sizeBytes: readMediaSizeBytes(content.stickerMessage.fileLength),
+        metadata: {
+          whatsappMediaKind: "sticker",
+          isAnimated: content.stickerMessage.isAnimated ?? null,
+        },
       }));
     }
 

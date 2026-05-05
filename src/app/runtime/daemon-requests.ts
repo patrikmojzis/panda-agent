@@ -1,40 +1,46 @@
 import type {
-    A2AMessageRequestPayload,
-    AbortThreadRequestPayload,
-    CompactThreadRequestPayload,
-    CreateBranchSessionRequestPayload,
-    ResetSessionRequestPayload,
-    ResolveMainSessionThreadRequestPayload,
-    ResolveThreadRunConfigRequestPayload,
-    RuntimeRequestRecord,
-    TelegramMessageRequestPayload,
-    TelegramReactionRequestPayload,
-    TuiInputRequestPayload,
-    UpdateThreadRequestPayload,
-    WhatsAppMessageRequestPayload,
+  A2AMessageRequestPayload,
+  AbortThreadRequestPayload,
+  CompactThreadRequestPayload,
+  CreateBranchSessionRequestPayload,
+  ResetSessionRequestPayload,
+  ResolveMainSessionThreadRequestPayload,
+  ResolveThreadRunConfigRequestPayload,
+  RuntimeRequestRecord,
+  TelegramMessageRequestPayload,
+  TelegramReactionRequestPayload,
+  TuiInputRequestPayload,
+  UpdateThreadRequestPayload,
+  WhatsAppMessageRequestPayload,
+  WhatsAppReactionRequestPayload,
 } from "../../domain/threads/requests/index.js";
 import {compactThread} from "../../domain/threads/runtime/index.js";
 import {stringToUserMessage} from "../../kernel/agent/index.js";
 import {buildA2AInboundPersistence, buildA2AInboundText} from "../../integrations/channels/a2a/helpers.js";
 import {A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
 import {
-    buildTelegramInboundPersistence,
-    buildTelegramInboundText,
-    buildTelegramReactionText,
-    normalizeTelegramCommand,
+  buildTelegramInboundPersistence,
+  buildTelegramInboundText,
+  buildTelegramReactionText,
+  normalizeTelegramCommand,
 } from "../../integrations/channels/telegram/helpers.js";
 import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
 import {buildTuiInboundPersistence, buildTuiInboundText, TUI_SOURCE,} from "../../integrations/channels/tui/helpers.js";
-import {buildWhatsAppInboundMetadata, buildWhatsAppInboundText,} from "../../integrations/channels/whatsapp/helpers.js";
+import {
+  buildWhatsAppInboundMetadata,
+  buildWhatsAppInboundText,
+  buildWhatsAppReactionMetadata,
+  buildWhatsAppReactionText,
+} from "../../integrations/channels/whatsapp/helpers.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {readMissingApiKeyMessageForModel} from "../../integrations/providers/shared/missing-api-key.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
 import {
-    buildQueuedInputCompactionMessage,
-    buildTelegramNewIsTuiOnlyText,
-    buildTelegramResetText,
-    buildTelegramStartText,
-    buildUnsupportedRuntimeRequestMessage,
+  buildQueuedInputCompactionMessage,
+  buildTelegramNewIsTuiOnlyText,
+  buildTelegramResetText,
+  buildTelegramStartText,
+  buildUnsupportedRuntimeRequestMessage,
 } from "./daemon-copy.js";
 import type {DaemonThreadHelpers} from "./daemon-threads.js";
 import {requireIdentityId} from "./daemon-shared.js";
@@ -369,6 +375,83 @@ export function createDaemonRequestProcessor(
     return {status: "queued", threadId: thread.id};
   };
 
+  const handleWhatsAppReaction = async (
+    payload: WhatsAppReactionRequestPayload,
+  ): Promise<Record<string, unknown>> => {
+    const binding = await context.runtime.identityStore.resolveIdentityBinding({
+      source: WHATSAPP_SOURCE,
+      connectorKey: payload.connectorKey,
+      externalActorId: payload.externalActorId,
+    });
+    if (!binding) {
+      return {status: "dropped", reason: "unpaired_actor"};
+    }
+
+    const identity = await context.runtime.identityStore.getIdentity(binding.identityId);
+    const thread = await threads.resolveOrCreateConversationThread({
+      identityId: binding.identityId,
+      source: WHATSAPP_SOURCE,
+      connectorKey: payload.connectorKey,
+      externalConversationId: payload.externalConversationId,
+      context: {
+        source: WHATSAPP_SOURCE,
+        remoteJid: payload.remoteJid,
+      },
+    });
+    if (!thread) {
+      return {status: "dropped", reason: "conversation_identity_mismatch"};
+    }
+
+    const sentAt = payload.sentAt ? new Date(payload.sentAt).toISOString() : undefined;
+    const text = buildWhatsAppReactionText({
+      connectorKey: payload.connectorKey,
+      sentAt,
+      externalConversationId: payload.externalConversationId,
+      externalActorId: payload.externalActorId,
+      externalMessageId: payload.externalMessageId,
+      identityHandle: identity.handle,
+      remoteJid: payload.remoteJid,
+      chatType: payload.chatType,
+      pushName: payload.pushName,
+      targetMessageId: payload.targetMessageId,
+      emoji: payload.emoji,
+    });
+
+    await context.runtime.coordinator.submitInput(thread.id, {
+      source: WHATSAPP_SOURCE,
+      channelId: payload.externalConversationId,
+      externalMessageId: payload.externalMessageId,
+      actorId: payload.externalActorId,
+      identityId: binding.identityId,
+      message: stringToUserMessage(text),
+      metadata: buildWhatsAppReactionMetadata({
+        connectorKey: payload.connectorKey,
+        sentAt,
+        externalConversationId: payload.externalConversationId,
+        externalActorId: payload.externalActorId,
+        externalMessageId: payload.externalMessageId,
+        remoteJid: payload.remoteJid,
+        chatType: payload.chatType,
+        pushName: payload.pushName,
+        targetMessageId: payload.targetMessageId,
+        emoji: payload.emoji,
+      }),
+    });
+    await context.sessionRoutes.saveLastRoute({
+      sessionId: thread.sessionId,
+      identityId: binding.identityId,
+      route: {
+        source: WHATSAPP_SOURCE,
+        connectorKey: payload.connectorKey,
+        externalConversationId: payload.externalConversationId,
+        externalActorId: payload.externalActorId,
+        externalMessageId: payload.externalMessageId,
+        capturedAt: Date.now(),
+      },
+    });
+    return {status: "queued", threadId: thread.id};
+  };
+
   const handleTuiInput = async (
     payload: TuiInputRequestPayload,
   ): Promise<Record<string, unknown>> => {
@@ -492,6 +575,8 @@ export function createDaemonRequestProcessor(
         return handleTelegramReaction(request.payload as TelegramReactionRequestPayload);
       case "whatsapp_message":
         return handleWhatsAppMessage(request.payload as WhatsAppMessageRequestPayload);
+      case "whatsapp_reaction":
+        return handleWhatsAppReaction(request.payload as WhatsAppReactionRequestPayload);
       case "tui_input":
         return handleTuiInput(request.payload as TuiInputRequestPayload);
       case "create_branch_session":

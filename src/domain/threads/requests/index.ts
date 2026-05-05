@@ -21,4 +21,5 @@ export type {
   TuiInputRequestPayload,
   UpdateThreadRequestPayload,
   WhatsAppMessageRequestPayload,
+  WhatsAppReactionRequestPayload,
 } from "./types.js";

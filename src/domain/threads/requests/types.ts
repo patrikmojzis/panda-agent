@@ -8,6 +8,7 @@ export type RuntimeRequestKind =
   | "telegram_message"
   | "telegram_reaction"
   | "whatsapp_message"
+  | "whatsapp_reaction"
   | "tui_input"
   | "create_branch_session"
   | "resolve_main_session_thread"
@@ -105,6 +106,19 @@ export interface WhatsAppMessageRequestPayload extends BaseRuntimeRequestPayload
   media: readonly MediaDescriptor[];
 }
 
+export interface WhatsAppReactionRequestPayload extends BaseRuntimeRequestPayload {
+  connectorKey: string;
+  sentAt?: number;
+  externalConversationId: string;
+  externalActorId: string;
+  externalMessageId: string;
+  remoteJid: string;
+  chatType: string;
+  targetMessageId: string;
+  emoji: string;
+  pushName?: string;
+}
+
 export interface TuiInputRequestPayload extends BaseRuntimeRequestPayload {
   threadId?: string;
   actorId: string;
@@ -167,6 +181,7 @@ export type RuntimeRequestPayload =
   | TelegramMessageRequestPayload
   | TelegramReactionRequestPayload
   | WhatsAppMessageRequestPayload
+  | WhatsAppReactionRequestPayload
   | TuiInputRequestPayload
   | CreateBranchSessionRequestPayload
   | ResolveMainSessionThreadRequestPayload

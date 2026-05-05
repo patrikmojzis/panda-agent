@@ -836,4 +836,272 @@ describe("WhatsAppService", () => {
       }),
     }));
   });
+
+  it("downloads video-only messages and enqueues them as media", async () => {
+    const stores = createStores();
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+
+    (service as {socket?: unknown}).socket = whatsappServiceMocks.socket;
+
+    await (service as never).handleMessagesUpsert(stores, {
+      type: "notify",
+      messages: [createPrivateMessage({
+        message: {
+          videoMessage: {
+            fileLength: 1024,
+          },
+        },
+      })],
+    });
+
+    expect(whatsappServiceMocks.downloadMediaMessage).toHaveBeenCalledTimes(1);
+    expect(stores.mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({
+      source: "whatsapp",
+      connectorKey: "main",
+      mimeType: "video/mp4",
+      sizeBytes: 1024,
+      metadata: expect.objectContaining({
+        whatsappMediaKind: "video",
+      }),
+    }));
+    expect(stores.requests.enqueueRequest).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "whatsapp_message",
+      payload: expect.objectContaining({
+        text: "",
+        media: [expect.objectContaining({
+          mimeType: "video/mp4",
+          sizeBytes: 1024,
+        })],
+      }),
+    }));
+  });
+
+  it("downloads sticker-only messages and enqueues them as media", async () => {
+    const stores = createStores();
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+
+    (service as {socket?: unknown}).socket = whatsappServiceMocks.socket;
+
+    await (service as never).handleMessagesUpsert(stores, {
+      type: "notify",
+      messages: [createPrivateMessage({
+        message: {
+          stickerMessage: {
+            fileLength: 256,
+            isAnimated: true,
+          },
+        },
+      })],
+    });
+
+    expect(whatsappServiceMocks.downloadMediaMessage).toHaveBeenCalledTimes(1);
+    expect(stores.mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({
+      mimeType: "image/webp",
+      sizeBytes: 256,
+      metadata: expect.objectContaining({
+        whatsappMediaKind: "sticker",
+        isAnimated: true,
+      }),
+    }));
+    expect(stores.requests.enqueueRequest).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "whatsapp_message",
+      payload: expect.objectContaining({
+        media: [expect.objectContaining({
+          mimeType: "image/webp",
+          sizeBytes: 256,
+        })],
+      }),
+    }));
+  });
+
+  it("enqueues contact-only messages as structured text", async () => {
+    const stores = createStores();
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+
+    await (service as never).handleMessagesUpsert(stores, {
+      type: "notify",
+      messages: [createPrivateMessage({
+        message: {
+          contactMessage: {
+            displayName: "Alice Example",
+            vcard: "BEGIN:VCARD\nFN:Alice Example\nTEL:+421900000000\nEND:VCARD",
+          },
+        },
+      })],
+    });
+
+    expect(whatsappServiceMocks.downloadMediaMessage).not.toHaveBeenCalled();
+    expect(stores.requests.enqueueRequest).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "whatsapp_message",
+      payload: expect.objectContaining({
+        media: [],
+        text: expect.stringContaining("WhatsApp contact:"),
+      }),
+    }));
+    const request = stores.requests.enqueueRequest.mock.calls[0]?.[0];
+    expect(request?.payload.text).toContain("Alice Example");
+    expect(request?.payload.text).toContain("BEGIN:VCARD");
+  });
+
+  it("enqueues contacts array messages as structured text", async () => {
+    const stores = createStores();
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+
+    await (service as never).handleMessagesUpsert(stores, {
+      type: "notify",
+      messages: [createPrivateMessage({
+        message: {
+          contactsArrayMessage: {
+            contacts: [
+              {
+                displayName: "Alice",
+                vcard: "BEGIN:VCARD\nFN:Alice\nEND:VCARD",
+              },
+              {
+                displayName: "Bob",
+                vcard: "BEGIN:VCARD\nFN:Bob\nEND:VCARD",
+              },
+            ],
+          },
+        },
+      })],
+    });
+
+    const request = stores.requests.enqueueRequest.mock.calls[0]?.[0];
+    expect(request?.payload.text).toContain("WhatsApp contact 1:");
+    expect(request?.payload.text).toContain("Alice");
+    expect(request?.payload.text).toContain("WhatsApp contact 2:");
+    expect(request?.payload.text).toContain("Bob");
+  });
+
+  it("enqueues location-only messages as structured text with a map link", async () => {
+    const stores = createStores();
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+
+    await (service as never).handleMessagesUpsert(stores, {
+      type: "notify",
+      messages: [createPrivateMessage({
+        message: {
+          locationMessage: {
+            name: "Office",
+            address: "Main Street 1",
+            degreesLatitude: 48.1486,
+            degreesLongitude: 17.1077,
+          },
+        },
+      })],
+    });
+
+    const request = stores.requests.enqueueRequest.mock.calls[0]?.[0];
+    expect(request?.payload.text).toContain("WhatsApp location:");
+    expect(request?.payload.text).toContain("Office");
+    expect(request?.payload.text).toContain("https://maps.google.com/?q=48.1486,17.1077");
+  });
+
+  it("enqueues WhatsApp reactions separately from messages", async () => {
+    const stores = createStores();
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+
+    await (service as never).handleMessagesUpsert(stores, {
+      type: "notify",
+      messages: [createPrivateMessage({
+        key: {
+          remoteJid: "123@s.whatsapp.net",
+          participant: undefined,
+          id: "reaction-1",
+          fromMe: false,
+        },
+        message: {
+          reactionMessage: {
+            text: "👍",
+            key: {
+              id: "target-1",
+            },
+          },
+        },
+      })],
+    });
+
+    expect(stores.requests.enqueueRequest).toHaveBeenCalledWith({
+      kind: "whatsapp_reaction",
+      payload: expect.objectContaining({
+        connectorKey: "main",
+        externalConversationId: "123@s.whatsapp.net",
+        externalActorId: "123@s.whatsapp.net",
+        externalMessageId: "reaction-1",
+        targetMessageId: "target-1",
+        emoji: "👍",
+      }),
+    });
+  });
+
+  it("ignores WhatsApp reaction removals", async () => {
+    const stores = createStores();
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+
+    await (service as never).handleMessagesUpsert(stores, {
+      type: "notify",
+      messages: [createPrivateMessage({
+        message: {
+          reactionMessage: {
+            text: "",
+            key: {
+              id: "target-1",
+            },
+          },
+        },
+      })],
+    });
+
+    expect(stores.requests.enqueueRequest).not.toHaveBeenCalled();
+  });
+
+  it("logs unsupported WhatsApp message shapes before dropping", async () => {
+    const stores = createStores();
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await (service as never).handleMessagesUpsert(stores, {
+      type: "notify",
+      messages: [createPrivateMessage({
+        message: {
+          pollCreationMessage: {
+            name: "Which one?",
+          },
+        },
+      })],
+    });
+
+    expect(stores.requests.enqueueRequest).not.toHaveBeenCalled();
+    const logs = write.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
+    expect(logs).toContainEqual(expect.objectContaining({
+      event: "message_dropped",
+      reason: "unsupported_message_shape",
+      messageShape: "pollCreationMessage",
+    }));
+  });
 });
