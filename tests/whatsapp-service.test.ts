@@ -464,6 +464,58 @@ describe("WhatsAppService", () => {
     await expect(cycle).resolves.toEqual({
       reconnect: true,
       reason: "428",
+      pairingCodeIssued: false,
+    });
+    expect(whatsappServiceMocks.socket.end).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks reconnects after a pairing code was issued", async () => {
+    vi.useFakeTimers();
+
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+
+    vi.spyOn(service as never, "createSocket").mockResolvedValue({
+      authHandle: {
+        state: {
+          creds: {},
+          keys: {},
+        },
+        saveCreds: vi.fn(async () => {}),
+      },
+      socket: whatsappServiceMocks.socket,
+    });
+    (service as {socket?: unknown}).socket = whatsappServiceMocks.socket;
+
+    const cycle = (service as never).runPairSocketCycle("421944478544");
+    await Promise.resolve();
+
+    const connectionHandler = whatsappServiceMocks.socket.ev.on.mock.calls.find(([event]) => {
+      return event === "connection.update";
+    })?.[1];
+    expect(connectionHandler).toBeTypeOf("function");
+
+    connectionHandler({connection: "connecting"});
+    await vi.advanceTimersByTimeAsync(1_500);
+    await Promise.resolve();
+
+    connectionHandler({
+      connection: "close",
+      lastDisconnect: {
+        error: {
+          output: {
+            statusCode: 405,
+          },
+        },
+      },
+    });
+
+    await expect(cycle).resolves.toEqual({
+      reconnect: true,
+      reason: "405",
+      pairingCodeIssued: true,
     });
     expect(whatsappServiceMocks.socket.end).toHaveBeenCalledTimes(1);
   });

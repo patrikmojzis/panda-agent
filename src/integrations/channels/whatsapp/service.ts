@@ -87,6 +87,7 @@ const TRANSACTION_OPTIONS = {
 const WHATSAPP_BROWSER_NAME = "Google Chrome";
 const WHATSAPP_TRANSIENT_REJECTION_STATUS = 405;
 const PAIRING_CODE_REQUEST_DELAY_MS = 1_500;
+const PAIRING_CODE_RETRY_DELAY_MS = 60_000;
 const RECONNECT_DELAY_MS = 1_000;
 const WHATSAPP_POOL_MAX_FALLBACK = 5;
 const WHATSAPP_HEALTH_RECONNECT_GRACE_MS = 30_000;
@@ -116,7 +117,7 @@ export interface WhatsAppPairResult extends WhatsAppWhoamiResult {
 
 type WhatsAppPairSocketCycleResult =
   | {pairedIdentity: WhatsAppWhoamiResult}
-  | {reconnect: true; reason: string};
+  | {reconnect: true; reason: string; pairingCodeIssued: boolean};
 
 type WhatsAppSocketHealthState = "idle" | "connecting" | "open" | "reconnecting" | "closed" | "stopped";
 
@@ -555,12 +556,14 @@ export class WhatsAppService {
         };
       }
 
+      const delayMs = outcome.pairingCodeIssued ? PAIRING_CODE_RETRY_DELAY_MS : RECONNECT_DELAY_MS;
       this.log("pairing_reconnect_scheduled", {
         connectorKey: this.options.connectorKey,
         reason: outcome.reason,
-        delayMs: RECONNECT_DELAY_MS,
+        pairingCodeIssued: outcome.pairingCodeIssued,
+        delayMs,
       });
-      await sleep(RECONNECT_DELAY_MS);
+      await sleep(delayMs);
     }
 
     throw new Error(`WhatsApp connector ${this.options.connectorKey} pairing stopped before login completed.`);
@@ -575,6 +578,7 @@ export class WhatsAppService {
       return await new Promise<WhatsAppPairSocketCycleResult>((resolve, reject) => {
         let settled = false;
         let pairingCodeRequested = false;
+        let pairingCodeIssued = false;
         let pairingCodeTimer: ReturnType<typeof setTimeout> | null = null;
 
         const finish = (outcome: WhatsAppPairSocketCycleResult) => {
@@ -606,6 +610,7 @@ export class WhatsAppService {
           socket.requestPairingCode(phoneNumber)
             .then((pairingCode) => {
               if (!settled) {
+                pairingCodeIssued = true;
                 onPairingCode?.(pairingCode);
               }
             })
@@ -613,7 +618,7 @@ export class WhatsAppService {
               const statusCode = extractDisconnectStatusCode(error);
               const reason = describeDisconnectStatus(statusCode);
               if (shouldReconnect(statusCode)) {
-                finish({reconnect: true, reason});
+                finish({reconnect: true, reason, pairingCodeIssued});
                 return;
               }
 
@@ -654,7 +659,7 @@ export class WhatsAppService {
             const statusCode = extractDisconnectStatusCode(update.lastDisconnect?.error);
             const reason = describeDisconnectStatus(statusCode);
             if (shouldReconnect(statusCode)) {
-              finish({reconnect: true, reason});
+              finish({reconnect: true, reason, pairingCodeIssued});
               return;
             }
 
