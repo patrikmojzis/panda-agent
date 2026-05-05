@@ -87,7 +87,7 @@ Expected:
 Ask Panda to call:
 
 ```json
-{"jobId":"<short-job-id>","timeoutMs":15000}
+{"jobId":"<short-job-id>","timeoutMs":300000}
 ```
 
 Expected:

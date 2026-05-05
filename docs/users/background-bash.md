@@ -60,7 +60,7 @@ Use `background_job_wait` when you want Panda to pause for a bit and see whether
 ```json
 {
   "jobId": "...",
-  "timeoutMs": 15000
+  "timeoutMs": 300000
 }
 ```
 

@@ -5,7 +5,7 @@ import type {JsonObject} from "../../../kernel/agent/types.js";
 import type {ThreadRuntimeStore} from "./store.js";
 import type {ThreadToolJobKind, ThreadToolJobRecord, ThreadToolJobStatus, ThreadToolJobUpdate,} from "./types.js";
 
-const DEFAULT_WAIT_TIMEOUT_MS = 15_000;
+const DEFAULT_WAIT_TIMEOUT_MS = 300_000;
 const DEFAULT_CANCEL_WAIT_TIMEOUT_MS = 1_000;
 
 export interface BackgroundToolJobSnapshot {

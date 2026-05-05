@@ -10,7 +10,7 @@ import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/
 import {isRecord} from "../../lib/records.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 
-const DEFAULT_WAIT_TIMEOUT_MS = 15_000;
+const DEFAULT_WAIT_TIMEOUT_MS = 300_000;
 
 function readString(details: Record<string, unknown>, key: string): string {
   return typeof details[key] === "string" ? String(details[key]).trim() : "";

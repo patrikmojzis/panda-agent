@@ -5,18 +5,19 @@ import path from "node:path";
 import {describe, expect, it} from "vitest";
 
 import {
-    Agent,
-    BackgroundJobCancelTool,
-    BackgroundJobStatusTool,
-    BackgroundJobWaitTool,
-    BashTool,
-    type DefaultAgentSessionContext,
-    type JsonObject,
-    RunContext,
-    ToolError,
-    type ToolResultMessage,
+  Agent,
+  BackgroundJobCancelTool,
+  BackgroundJobStatusTool,
+  BackgroundJobWaitTool,
+  BashTool,
+  type DefaultAgentSessionContext,
+  type JsonObject,
+  RunContext,
+  ToolError,
+  type ToolResultMessage,
 } from "../src/index.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
+import type {ThreadToolJobRecord} from "../src/domain/threads/runtime/types.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createAgent() {
@@ -483,6 +484,42 @@ describe("BashTool", () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  it("defaults background job waits to five minutes", async () => {
+    class CapturingJobService extends BackgroundToolJobService {
+      capturedTimeoutMs?: number;
+
+      constructor() {
+        super({ store: new TestThreadRuntimeStore() });
+      }
+
+      override async wait(threadId: string, jobId: string, timeoutMs?: number): Promise<ThreadToolJobRecord> {
+        this.capturedTimeoutMs = timeoutMs;
+        return {
+          id: jobId,
+          threadId,
+          kind: "spawn_subagent",
+          status: "running",
+          summary: "captured wait default",
+          startedAt: 0,
+        };
+      }
+    }
+
+    const service = new CapturingJobService();
+    const wait = new BackgroundJobWaitTool({ service });
+
+    await wait.run(
+      { jobId: "job-default" },
+      createRunContext({
+        sessionId: "session-bg",
+        agentKey: "panda",
+        threadId: "thread-bg",
+      }),
+    );
+
+    expect(service.capturedTimeoutMs).toBe(300_000);
   });
 
   it("does not leave a durable job behind when local background spawn fails", async () => {
