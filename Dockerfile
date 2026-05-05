@@ -40,6 +40,7 @@ RUN set -eux; \
     gnupg \
     jq \
     less \
+    libreoffice-nogui \
     netcat-openbsd \
     poppler-utils \
     python3 \
