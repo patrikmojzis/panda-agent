@@ -21,6 +21,7 @@ const generatedCalendarComposePath = path.join(
   ".generated/docker-compose.radicale.core.yml",
 );
 const generatedPublicCaddyfilePath = path.join(repoRoot, ".generated/Caddyfile.public-edge");
+const baseComposePath = path.join(repoRoot, "examples/docker-compose.remote-bash.external-db.yml");
 const appsEdgeComposePath = path.join(repoRoot, "examples/docker-compose.apps-edge.yml");
 
 interface ScriptResult {
@@ -166,6 +167,31 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     expect(await readFile(logPath, "utf8")).not.toContain("panda agent ensure");
   });
 
+  it("builds only app and browser images when no agents are declared", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const result = await runScript(["up", "--build"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents.match(/build --target app -t panda-app:latest/g)).toHaveLength(1);
+    expect(logContents.match(/build --target browser-runner -t panda-browser-runner:latest/g)).toHaveLength(1);
+    expect(logContents).not.toContain("build --target runner -t panda-runner:latest");
+    expect(logContents).toContain("up -d --no-build --remove-orphans");
+    expect(logContents).not.toContain("up -d --build --remove-orphans");
+  });
+
   it("publishes telepathy on localhost only through the generated override", async () => {
     const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
     const dockerBin = await createDockerStub(logPath);
@@ -231,13 +257,25 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     const generatedCompose = await readFile(generatedComposePath, "utf8");
     expect(generatedCompose).toContain("panda-runner-claw");
     expect(generatedCompose).toContain("panda-runner-luna");
+    expect(generatedCompose).toContain("image: panda-runner:latest");
     expect(generatedCompose.match(/restart: unless-stopped/g)).toHaveLength(2);
     expect(generatedCompose).not.toContain("panda-runner-Luna");
+    expect(generatedCompose).not.toContain("image: panda:latest");
+
+    const baseCompose = await readFile(baseComposePath, "utf8");
+    expect(baseCompose).toContain("  panda-telegram:\n    image: panda-app:latest");
+    expect(baseCompose).toContain("  panda-whatsapp:\n    image: panda-app:latest");
+    expect(baseCompose).not.toContain("  panda-telegram:\n    build:");
+    expect(baseCompose).not.toContain("  panda-whatsapp:\n    build:");
 
     const logContents = await readFile(logPath, "utf8");
     expect(logContents).toContain("--profile telegram");
     expect(logContents).toContain("compose --env-file");
-    expect(logContents).toContain("up -d --build --remove-orphans");
+    expect(logContents.match(/build --target app -t panda-app:latest/g)).toHaveLength(1);
+    expect(logContents.match(/build --target browser-runner -t panda-browser-runner:latest/g)).toHaveLength(1);
+    expect(logContents.match(/build --target runner -t panda-runner:latest/g)).toHaveLength(1);
+    expect(logContents).toContain("up -d --no-build --remove-orphans");
+    expect(logContents).not.toContain("up -d --build --remove-orphans");
     expect(logContents).toContain("exec -T panda-core panda agent ensure claw");
     expect(logContents).toContain("exec -T panda-core panda agent ensure luna");
 
@@ -488,7 +526,9 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     expect(logContents).toContain("docker-compose.apps-edge.yml");
     const generatedCompose = await readFile(generatedComposePath, "utf8");
     expect(generatedCompose).toContain("panda-gateway:");
+    expect(generatedCompose).toContain("panda-gateway:\n    image: panda-app:latest");
     expect(generatedCompose).toContain('command: ["gateway", "run"]');
+    expect(generatedCompose).not.toContain("panda-gateway:\n    build:");
     expect(generatedCompose).toContain("read_only: true");
     expect(generatedCompose).toContain("cap_drop:");
     expect(generatedCompose).toContain("      - ALL");

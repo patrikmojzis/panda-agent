@@ -154,7 +154,7 @@ if [[ "$host_port" != "8080" ]]; then
 fi
 container_name="${container_name:-$default_container_name}"
 
-build_cmd=(docker build -t "$image" "$repo_root")
+build_cmd=(env "DOCKER_BUILDKIT=${DOCKER_BUILDKIT:-1}" docker build --target runner -t "$image" "$repo_root")
 run_cmd=(
   docker run --rm
   --name "$container_name"

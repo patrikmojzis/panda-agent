@@ -565,6 +565,21 @@ run_compose() {
   )
 }
 
+run_docker_build() {
+  (
+    cd "$repo_root"
+    DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}" "$docker_bin" build "$@"
+  )
+}
+
+build_stack_images() {
+  run_docker_build --target app -t panda-app:latest "$repo_root"
+  run_docker_build --target browser-runner -t panda-browser-runner:latest "$repo_root"
+  if agents_declared; then
+    run_docker_build --target runner -t panda-runner:latest "$repo_root"
+  fi
+}
+
 ensure_host_dirs() {
   local core_root shared_root browser_root agent_key
   core_root="$HOME/.panda"
@@ -624,8 +639,7 @@ EOF
     if (( enable_gateway_edge )); then
       cat <<EOF
   panda-gateway:
-    build: ..
-    image: panda:latest
+    image: panda-app:latest
     command: ["gateway", "run"]
     restart: unless-stopped
     read_only: true
@@ -713,7 +727,7 @@ EOF
       for agent_key in "${normalized_agents[@]}"; do
         cat <<EOF
   panda-runner-$agent_key:
-    image: panda:latest
+    image: panda-runner:latest
     command: ["runner"]
     restart: unless-stopped
     environment:
@@ -916,7 +930,8 @@ run_up() {
   render_generated_compose
   render_generated_calendar_compose
   if (( build_flag )); then
-    run_compose up -d --build --remove-orphans
+    build_stack_images
+    run_compose up -d --no-build --remove-orphans
   else
     run_compose up -d --remove-orphans
   fi
