@@ -223,6 +223,11 @@ describe("ensureReadonlySessionQuerySchema", () => {
       watches: "\"session\".\"watches\"",
       watchRuns: "\"session\".\"watch_runs\"",
       watchEvents: "\"session\".\"watch_events\"",
+      emailAccounts: "\"session\".\"email_accounts\"",
+      emailAllowedRecipients: "\"session\".\"email_allowed_recipients\"",
+      emailMessages: "\"session\".\"email_messages\"",
+      emailMessageRecipients: "\"session\".\"email_message_recipients\"",
+      emailAttachments: "\"session\".\"email_attachments\"",
     });
 
     expect(queryable.queries).toHaveLength(2);
@@ -239,6 +244,8 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"watches\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"watch_runs\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"watch_events\"");
+    expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"email_accounts\"");
+    expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"email_messages\"");
     expect(queryable.queries[0]).toContain("FROM \"session\".\"messages_raw\" AS raw");
     expect(queryable.queries[0]).toContain("WHERE raw.role IN ('user', 'assistant')");
     expect(queryable.queries[0]).toContain("t.inference_projection");
@@ -507,6 +514,136 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(result.rows).toEqual([
       {
         identity_handle: "alice",
+      },
+    ]);
+  });
+
+  it("exposes readonly email history by agent key", async () => {
+    const { pool, setScope } = createScopedPool();
+    pools.push(pool);
+
+    const {agentStore, emailStore} = await createRuntimeStores(pool);
+    await new PostgresTelepathyDeviceStore({ pool }).ensureSchema();
+    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
+    await new PostgresWatchStore({ pool }).ensureSchema();
+    await agentStore.bootstrapAgent({
+      agentKey: "ops",
+      displayName: "Ops",
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
+    });
+
+    const endpoint = {
+      host: "mail.example.com",
+      usernameCredentialEnvKey: "MAIL_USER",
+      passwordCredentialEnvKey: "MAIL_PASS",
+    };
+    await emailStore.upsertAccount({
+      agentKey: "panda",
+      accountKey: "work",
+      fromAddress: "panda@example.com",
+      imap: endpoint,
+      smtp: endpoint,
+    });
+    await emailStore.upsertAccount({
+      agentKey: "ops",
+      accountKey: "work",
+      fromAddress: "ops@example.com",
+      imap: endpoint,
+      smtp: endpoint,
+    });
+    await emailStore.addAllowedRecipient("panda", "work", "alice@example.com");
+
+    const visibleMessage = await emailStore.recordMessage({
+      agentKey: "panda",
+      accountKey: "work",
+      direction: "inbound",
+      mailbox: "INBOX",
+      uid: 1,
+      uidValidity: "uidv",
+      subject: "Visible",
+      fromAddress: "alice@example.com",
+      bodyText: "Hello Panda",
+      authenticationResults: "mx.example; spf=fail smtp.mailfrom=bad.example; dmarc=fail",
+      authSpf: "fail",
+      authDmarc: "fail",
+      recipients: [
+        {role: "from", address: "alice@example.com"},
+        {role: "to", address: "panda@example.com"},
+      ],
+      attachments: [
+        {
+          filename: "brief.txt",
+          mimeType: "text/plain",
+          sizeBytes: 42,
+        },
+      ],
+    });
+    await emailStore.recordMessage({
+      agentKey: "ops",
+      accountKey: "work",
+      direction: "inbound",
+      mailbox: "INBOX",
+      uid: 2,
+      uidValidity: "uidv",
+      subject: "Hidden",
+      fromAddress: "alice@example.com",
+    });
+
+    setScope({
+      sessionId: "panda-session",
+      agentKey: "panda",
+    });
+    await ensureReadonlySessionQuerySchema({
+      queryable: new PgMemReadonlySchemaQueryable(pool),
+    });
+
+    const accountsResult = await pool.query(
+      "SELECT account_key, from_address FROM \"session\".\"email_accounts\" ORDER BY account_key",
+    );
+    expect(accountsResult.rows).toEqual([
+      {
+        account_key: "work",
+        from_address: "panda@example.com",
+      },
+    ]);
+
+    const messagesResult = await pool.query(
+      "SELECT id, account_key, subject, body_text, auth_spf, auth_dmarc, auth_summary FROM \"session\".\"email_messages\" ORDER BY subject",
+    );
+    expect(messagesResult.rows).toEqual([
+      {
+        id: visibleMessage.message.id,
+        account_key: "work",
+        subject: "Visible",
+        body_text: "=====EXTERNAL CONTENT=====\nHello Panda\n=====EXTERNAL CONTENT=====",
+        auth_spf: "fail",
+        auth_dmarc: "fail",
+        auth_summary: "suspicious",
+      },
+    ]);
+
+    const recipientsResult = await pool.query(
+      "SELECT role, address FROM \"session\".\"email_message_recipients\" ORDER BY role",
+    );
+    expect(recipientsResult.rows).toEqual([
+      {
+        role: "from",
+        address: "alice@example.com",
+      },
+      {
+        role: "to",
+        address: "panda@example.com",
+      },
+    ]);
+
+    const attachmentsResult = await pool.query(
+      "SELECT filename, mime_type, size_bytes FROM \"session\".\"email_attachments\"",
+    );
+    expect(attachmentsResult.rows).toEqual([
+      {
+        filename: "brief.txt",
+        mime_type: "text/plain",
+        size_bytes: 42,
       },
     ]);
   });

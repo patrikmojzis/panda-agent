@@ -12,6 +12,7 @@ import type {IdentityStore} from "../../domain/identity/store.js";
 import {PostgresScheduledTaskStore, type ScheduledTaskStore,} from "../../domain/scheduling/tasks/index.js";
 import {PostgresSessionStore, type SessionStore} from "../../domain/sessions/index.js";
 import {PostgresTelepathyDeviceStore} from "../../domain/telepathy/index.js";
+import {type EmailStore, PostgresEmailStore} from "../../domain/email/index.js";
 import {WatchMutationService} from "../../domain/watches/mutation-service.js";
 import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.js";
 import {PostgresWikiBindingStore, WikiBindingService} from "../../domain/wiki/index.js";
@@ -103,6 +104,7 @@ export interface RuntimeBootstrapResult {
   sessionStore: SessionStore;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
+  email: EmailStore;
   telepathyService: TelepathyHub | null;
   watches: WatchStore;
   wikiBindingService: WikiBindingService | null;
@@ -379,6 +381,10 @@ export async function bootstrapRuntime(
       pool: postgresPool,
     });
 
+    const email = new PostgresEmailStore({
+      pool: postgresPool,
+    });
+
     const watches = new PostgresWatchStore({
       pool: postgresPool,
     });
@@ -391,6 +397,7 @@ export async function bootstrapRuntime(
     await ensureSchemas([
       credentialStore,
       appAuth,
+      email,
       scheduledTasks,
       watches,
       wikiBindingStore,
@@ -473,6 +480,7 @@ export async function bootstrapRuntime(
         identityStore,
         sessionStore,
         store,
+        email,
         telepathyService,
         wikiBindingService,
         calendarService,
@@ -588,6 +596,7 @@ export async function bootstrapRuntime(
       sessionStore,
       store,
       scheduledTasks,
+      email,
       telepathyService,
       watches,
       wikiBindingService,

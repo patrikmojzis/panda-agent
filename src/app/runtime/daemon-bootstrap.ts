@@ -18,10 +18,14 @@ import type {DaemonOptions} from "./daemon-shared.js";
 import {DEFAULT_DAEMON_KEY} from "./daemon-shared.js";
 import {A2A_CONNECTOR_KEY, resolveA2AMaxMessagesPerHour} from "../../integrations/channels/a2a/config.js";
 import {createA2AOutboundAdapter} from "../../integrations/channels/a2a/outbound.js";
+import {EMAIL_CONNECTOR_KEY} from "../../domain/email/index.js";
+import {createEmailOutboundAdapter} from "../../integrations/channels/email/outbound.js";
+import {EmailSyncRunner} from "../../integrations/channels/email/sync-runner.js";
 import {TELEGRAM_SOURCE,} from "../../integrations/channels/telegram/config.js";
 import {TelegramReactTool} from "../../integrations/channels/telegram/telegram-react-tool.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
+import {EmailSendTool} from "../../panda/tools/email-send-tool.js";
 import {OutboundTool} from "../../panda/tools/outbound-tool.js";
 import {MessageAgentTool} from "../../panda/tools/message-agent-tool.js";
 import {TelepathyContextIngress} from "./telepathy-context-ingress.js";
@@ -32,6 +36,8 @@ export interface DaemonContext {
   runtime: RuntimeServices;
   a2aBindings: A2ASessionBindingRepo;
   a2aOutboundWorker: ChannelOutboundDeliveryWorker;
+  emailOutboundWorker: ChannelOutboundDeliveryWorker;
+  emailSyncRunner: EmailSyncRunner;
   conversationBindings: ConversationRepo;
   sessionRoutes: SessionRouteRepo;
   outboundDeliveries: PostgresOutboundDeliveryStore;
@@ -136,7 +142,13 @@ export async function bootstrapDaemonContext(
             },
           }
           : {}),
-        tools: [...mainTools, new OutboundTool(), new MessageAgentTool(), new TelegramReactTool()],
+        tools: [
+          ...mainTools,
+          new EmailSendTool({store: runtime.email}),
+          new OutboundTool(),
+          new MessageAgentTool(),
+          new TelegramReactTool(),
+        ],
         extraContext: {
           routeMemory: {
             getLastRoute: (channel) => sessionRoutes.getLastRoute({
@@ -232,6 +244,21 @@ export async function bootstrapDaemonContext(
       },
     });
 
+    const emailOutboundWorker = new ChannelOutboundDeliveryWorker({
+      store: outboundDeliveries,
+      adapter: createEmailOutboundAdapter({
+        store: runtime.email,
+        credentialResolver: runtime.credentialResolver,
+      }),
+      connectorKey: EMAIL_CONNECTOR_KEY,
+      onError: (error, deliveryId) => {
+        console.error("Email outbound delivery failed", {
+          deliveryId: deliveryId ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+
     const scheduledTaskRunner = new ScheduledTaskRunner({
       tasks: runtime.scheduledTasks,
       sessions: runtime.sessionStore,
@@ -246,6 +273,18 @@ export async function bootstrapDaemonContext(
       sessions: runtime.sessionStore,
       coordinator: runtime.coordinator,
       evaluateWatch,
+    });
+    const emailSyncRunner = new EmailSyncRunner({
+      store: runtime.email,
+      sessions: runtime.sessionStore,
+      coordinator: runtime.coordinator,
+      credentialResolver: runtime.credentialResolver,
+      onError: (error, accountKey) => {
+        console.error("Email sync failed", {
+          accountKey: accountKey ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
     });
     const relationshipHeartbeatRunner = new HeartbeatRunner({
       sessions: runtime.sessionStore,
@@ -276,6 +315,8 @@ export async function bootstrapDaemonContext(
       runtime,
       a2aBindings,
       a2aOutboundWorker,
+      emailOutboundWorker,
+      emailSyncRunner,
       conversationBindings,
       sessionRoutes,
       outboundDeliveries,

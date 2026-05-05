@@ -18,6 +18,7 @@ import type {
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
 import {A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
+import {EMAIL_SOURCE} from "../../domain/email/index.js";
 
 const outboundItemSchema = z.discriminatedUnion("type", [
   z.object({
@@ -256,6 +257,9 @@ export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<ty
     }
     if (channel === A2A_SOURCE) {
       throw new ToolError("Use message_agent for Panda A2A messages.");
+    }
+    if (channel === EMAIL_SOURCE) {
+      throw new ToolError("Use email_send for email.");
     }
 
     const target = buildExplicitTarget(channel, args.target) ?? defaultRoute?.target;

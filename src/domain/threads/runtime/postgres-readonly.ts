@@ -6,6 +6,7 @@ import {buildScheduledTaskTableNames} from "../../../domain/scheduling/tasks/pos
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import {buildTelepathyTableNames} from "../../../domain/telepathy/postgres-shared.js";
 import {buildWatchTableNames} from "../../../domain/watches/postgres-shared.js";
+import {buildEmailTableNames} from "../../../domain/email/postgres-shared.js";
 import {
     buildSessionRelationNames,
     buildThreadRuntimeTableNames,
@@ -35,6 +36,11 @@ export interface ReadonlySessionViewNames {
   watches: string;
   watchRuns: string;
   watchEvents: string;
+  emailAccounts: string;
+  emailAllowedRecipients: string;
+  emailMessages: string;
+  emailMessageRecipients: string;
+  emailAttachments: string;
 }
 
 export interface EnsureReadonlySessionQuerySchemaOptions {
@@ -66,7 +72,8 @@ export async function ensureReadonlySessionQuerySchema(
   const telepathyTables = buildTelepathyTableNames();
   const scheduledTaskTables = buildScheduledTaskTableNames();
   const watchTables = buildWatchTableNames();
-  const { agentSessions, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentPairings, agentSkills, agentTelepathyDevices, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents } = buildSessionRelationNames({
+  const emailTables = buildEmailTableNames();
+  const { agentSessions, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentPairings, agentSkills, agentTelepathyDevices, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents, emailAccounts, emailAllowedRecipients, emailMessages, emailMessageRecipients, emailAttachments } = buildSessionRelationNames({
     agentSessions: "agent_sessions",
     threads: "threads",
     messages: "messages",
@@ -83,6 +90,11 @@ export async function ensureReadonlySessionQuerySchema(
     watches: "watches",
     watchRuns: "watch_runs",
     watchEvents: "watch_events",
+    emailAccounts: "email_accounts",
+    emailAllowedRecipients: "email_allowed_recipients",
+    emailMessages: "email_messages",
+    emailMessageRecipients: "email_message_recipients",
+    emailAttachments: "email_attachments",
   });
   const views: ReadonlySessionViewNames = {
     agentSessions,
@@ -101,6 +113,11 @@ export async function ensureReadonlySessionQuerySchema(
     watches,
     watchRuns,
     watchEvents,
+    emailAccounts,
+    emailAllowedRecipients,
+    emailMessages,
+    emailMessageRecipients,
+    emailAttachments,
   };
   const messageTextSql = `
     CASE
@@ -139,6 +156,11 @@ export async function ensureReadonlySessionQuerySchema(
     DROP VIEW IF EXISTS ${views.watchEvents};
     DROP VIEW IF EXISTS ${views.watchRuns};
     DROP VIEW IF EXISTS ${views.watches};
+    DROP VIEW IF EXISTS ${views.emailAttachments};
+    DROP VIEW IF EXISTS ${views.emailMessageRecipients};
+    DROP VIEW IF EXISTS ${views.emailMessages};
+    DROP VIEW IF EXISTS ${views.emailAllowedRecipients};
+    DROP VIEW IF EXISTS ${views.emailAccounts};
     DROP VIEW IF EXISTS ${views.agentTelepathyDevices};
     DROP VIEW IF EXISTS ${views.agentPairings};
     DROP VIEW IF EXISTS ${views.agentPrompts};
@@ -513,13 +535,101 @@ export async function ensureReadonlySessionQuerySchema(
     FROM ${watchTables.watchEvents} AS event
     LEFT JOIN ${identityTables.identities} AS creator ON creator.id = event.created_by_identity_id
     WHERE event.session_id = current_setting('runtime.session_id', true);
+
+    CREATE VIEW ${views.emailAccounts}
+    WITH (security_barrier = true) AS
+    SELECT
+      account.agent_key,
+      account.account_key,
+      account.from_address,
+      account.from_name,
+      account.mailboxes,
+      account.enabled,
+      account.created_at,
+      account.updated_at
+    FROM ${emailTables.emailAccounts} AS account
+    WHERE account.agent_key = current_setting('runtime.agent_key', true);
+
+    CREATE VIEW ${views.emailAllowedRecipients}
+    WITH (security_barrier = true) AS
+    SELECT
+      recipient.agent_key,
+      recipient.account_key,
+      recipient.address,
+      recipient.created_at
+    FROM ${emailTables.emailAllowedRecipients} AS recipient
+    WHERE recipient.agent_key = current_setting('runtime.agent_key', true);
+
+    CREATE VIEW ${views.emailMessages}
+    WITH (security_barrier = true) AS
+    SELECT
+      message.id,
+      message.agent_key,
+      message.account_key,
+      message.direction,
+      message.mailbox,
+      message.uid,
+      message.message_id_header,
+      message.in_reply_to,
+      message.references_header,
+      message.thread_key,
+      message.subject,
+      message.from_name,
+      message.from_address,
+      message.reply_to_address,
+      message.sent_at,
+      message.received_at,
+      message.body_text,
+      message.body_excerpt,
+      message.authentication_results,
+      message.auth_spf,
+      message.auth_dkim,
+      message.auth_dmarc,
+      message.auth_summary,
+      message.has_attachments,
+      message.source_delivery_id,
+      message.created_at
+    FROM ${emailTables.emailMessages} AS message
+    WHERE message.agent_key = current_setting('runtime.agent_key', true);
+
+    CREATE VIEW ${views.emailMessageRecipients}
+    WITH (security_barrier = true) AS
+    SELECT
+      recipient.id,
+      recipient.message_id,
+      message.agent_key,
+      message.account_key,
+      recipient.role,
+      recipient.address,
+      recipient.name,
+      recipient.created_at
+    FROM ${emailTables.emailMessageRecipients} AS recipient
+    INNER JOIN ${emailTables.emailMessages} AS message ON message.id = recipient.message_id
+    WHERE message.agent_key = current_setting('runtime.agent_key', true);
+
+    CREATE VIEW ${views.emailAttachments}
+    WITH (security_barrier = true) AS
+    SELECT
+      attachment.id,
+      attachment.message_id,
+      message.agent_key,
+      message.account_key,
+      attachment.filename,
+      attachment.mime_type,
+      attachment.size_bytes,
+      attachment.local_path,
+      attachment.content_id,
+      attachment.created_at
+    FROM ${emailTables.emailAttachments} AS attachment
+    INNER JOIN ${emailTables.emailMessages} AS message ON message.id = attachment.message_id
+    WHERE message.agent_key = current_setting('runtime.agent_key', true);
   `);
 
   if (options.readonlyRole) {
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA ${quoteIdentifier(SESSION_SCHEMA)} TO ${readonlyRole};
-      GRANT SELECT ON ${views.agentSessions}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.agentTelepathyDevices}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents} TO ${readonlyRole};
+      GRANT SELECT ON ${views.agentSessions}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.agentTelepathyDevices}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents}, ${views.emailAccounts}, ${views.emailAllowedRecipients}, ${views.emailMessages}, ${views.emailMessageRecipients}, ${views.emailAttachments} TO ${readonlyRole};
     `);
   }
 

@@ -33,6 +33,8 @@ export interface ChannelOutboundDeliveryWorkerOptions {
 
 function toRequest(delivery: OutboundDeliveryRecord): OutboundRequest {
   return {
+    deliveryId: delivery.id,
+    threadId: delivery.threadId,
     channel: delivery.channel,
     target: delivery.target,
     items: delivery.items,

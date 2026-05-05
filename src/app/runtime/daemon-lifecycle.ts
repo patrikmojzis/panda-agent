@@ -2,11 +2,11 @@ import type {RuntimeRequestRecord} from "../../domain/threads/requests/index.js"
 import {acquireManagedConnectorLease, type ManagedConnectorLease} from "../../domain/connector-leases/index.js";
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../health/server.js";
 import {
-  DEFAULT_APPS_PORT,
-  type AgentAppServer,
-  resolveOptionalAgentAppServerBinding,
-  resolveAgentAppAuthMode,
-  startAgentAppServer,
+    type AgentAppServer,
+    DEFAULT_APPS_PORT,
+    resolveAgentAppAuthMode,
+    resolveOptionalAgentAppServerBinding,
+    startAgentAppServer,
 } from "../../integrations/apps/http-server.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
@@ -74,6 +74,18 @@ export function createDaemonLifecycle(input: {
           label: "a2a-outbound-worker",
           run: async () => {
             await input.context.a2aOutboundWorker.stop();
+          },
+        },
+        {
+          label: "email-outbound-worker",
+          run: async () => {
+            await input.context.emailOutboundWorker.stop();
+          },
+        },
+        {
+          label: "email-sync-runner",
+          run: async () => {
+            await input.context.emailSyncRunner.stop();
           },
         },
         {
@@ -254,6 +266,8 @@ export function createDaemonLifecycle(input: {
           await triggerDrain();
         });
         await input.context.a2aOutboundWorker.start();
+        await input.context.emailOutboundWorker.start();
+        await input.context.emailSyncRunner.start();
         await input.context.scheduledTaskRunner.start();
         await input.context.watchRunner.start();
         await input.context.relationshipHeartbeatRunner.start();

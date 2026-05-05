@@ -67,6 +67,8 @@ export type OutboundItem =
   | OutboundFileItem;
 
 export interface OutboundRequest {
+  deliveryId?: string;
+  threadId?: string;
   channel: string;
   target: OutboundTarget;
   items: readonly OutboundItem[];

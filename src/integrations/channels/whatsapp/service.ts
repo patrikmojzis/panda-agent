@@ -587,7 +587,7 @@ export class WhatsAppService {
       const identity = await this.whoami();
       if (!identity.accountId) {
         throw new Error(
-          `WhatsApp connector ${this.options.connectorKey} is not paired yet. Run \`panda whatsapp pair --phone <number>\` first.`,
+          `WhatsApp connector ${this.options.connectorKey} is not linked yet. Run \`panda whatsapp link --phone <number>\` first.`,
         );
       }
 

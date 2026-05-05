@@ -1,8 +1,13 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {whatsappPairCommand, whatsappWhoamiCommand} from "../src/integrations/channels/whatsapp/cli.js";
+import {
+    whatsappLinkCommand,
+    whatsappPairCommand,
+    whatsappWhoamiCommand
+} from "../src/integrations/channels/whatsapp/cli.js";
 
 const whatsappCliMocks = vi.hoisted(() => {
   const serviceInstances: MockWhatsAppService[] = [];
+  const identityStoreInstances: MockPostgresIdentityStore[] = [];
 
   class MockWhatsAppService {
     readonly whoami = vi.fn(async () => ({
@@ -29,11 +34,51 @@ const whatsappCliMocks = vi.hoisted(() => {
     }
   }
 
+  class MockPostgresIdentityStore {
+    readonly getIdentityByHandle = vi.fn(async (handle: string) => ({
+      id: `identity-${handle}`,
+      handle,
+      displayName: handle,
+      status: "active",
+      createdAt: 0,
+      updatedAt: 0,
+    }));
+    readonly ensureIdentityBinding = vi.fn(async (input: {
+      source: string;
+      connectorKey: string;
+      externalActorId: string;
+      identityId: string;
+      metadata?: unknown;
+    }) => ({
+      id: "binding-1",
+      ...input,
+      createdAt: 0,
+      updatedAt: 0,
+    }));
+
+    constructor(_options: unknown) {
+      identityStoreInstances.push(this);
+    }
+  }
+
   return {
+    MockPostgresIdentityStore,
     MockWhatsAppService,
+    identityStoreInstances,
     serviceInstances,
   };
 });
+
+vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
+  ensureSchemas: vi.fn(async () => {}),
+  withPostgresPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: unknown) => Promise<unknown>) => {
+    return fn({});
+  }),
+}));
+
+vi.mock("../src/domain/identity/index.js", () => ({
+  PostgresIdentityStore: whatsappCliMocks.MockPostgresIdentityStore,
+}));
 
 vi.mock("../src/integrations/channels/whatsapp/service.js", () => ({
   WhatsAppService: whatsappCliMocks.MockWhatsAppService,
@@ -48,8 +93,18 @@ function latestService(): InstanceType<typeof whatsappCliMocks.MockWhatsAppServi
   return service;
 }
 
+function latestIdentityStore(): InstanceType<typeof whatsappCliMocks.MockPostgresIdentityStore> {
+  const store = whatsappCliMocks.identityStoreInstances.at(-1);
+  if (!store) {
+    throw new Error("Expected a mocked identity store instance.");
+  }
+
+  return store;
+}
+
 describe("WhatsApp CLI", () => {
   afterEach(() => {
+    whatsappCliMocks.identityStoreInstances.length = 0;
     whatsappCliMocks.serviceInstances.length = 0;
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
@@ -75,10 +130,10 @@ describe("WhatsApp CLI", () => {
     );
   });
 
-  it("prints the pairing code and success details", async () => {
+  it("prints the linking code and success details", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
-    await whatsappPairCommand({
+    await whatsappLinkCommand({
       phone: "421900000000",
       connector: "main",
       dbUrl: "postgres://wa-db",
@@ -96,9 +151,38 @@ describe("WhatsApp CLI", () => {
     );
     expect(write).toHaveBeenCalledWith(
       [
-        "Paired WhatsApp connector main.",
+        "Linked WhatsApp connector main.",
         "account 421900000000:12@s.whatsapp.net",
         "name Panda",
+      ].join("\n") + "\n",
+    );
+  });
+
+  it("pairs a WhatsApp sender phone to an identity through the pair command", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await whatsappPairCommand({
+      actor: "421911111111@s.whatsapp.net",
+      identity: "alice",
+      connector: "main",
+      dbUrl: "postgres://wa-db",
+    });
+
+    expect(latestIdentityStore().getIdentityByHandle).toHaveBeenCalledWith("alice");
+    expect(latestIdentityStore().ensureIdentityBinding).toHaveBeenCalledWith({
+      source: "whatsapp",
+      connectorKey: "main",
+      externalActorId: "421911111111@s.whatsapp.net",
+      identityId: "identity-alice",
+      metadata: {
+        pairedVia: "whatsapp-cli",
+      },
+    });
+    expect(write).toHaveBeenCalledWith(
+      [
+        "Paired WhatsApp actor 421911111111@s.whatsapp.net.",
+        "identity identity-alice",
+        "connector main",
       ].join("\n") + "\n",
     );
   });

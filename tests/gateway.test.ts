@@ -203,7 +203,7 @@ describe("Panda gateway", () => {
       expect(body.delivery).toBe("wake");
 
       harness.worker.poke();
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await waitForEventStatus(harness, body.eventId, "delivered");
 
       const event = await harness.gatewayStore.getEvent(body.eventId);
       expect(event.status).toBe("delivered");

@@ -374,6 +374,22 @@ describe("OutboundTool", () => {
     );
   });
 
+  it("rejects email routes", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext();
+
+    await expect(tool.run({
+      channel: "email",
+      target: {
+        connectorKey: "smtp",
+        conversationId: "work",
+      },
+      items: [{ type: "text", text: "nope" }],
+    }, createRunContext(context))).rejects.toThrow(
+      "Use email_send for email.",
+    );
+  });
+
   it("allows scheduled tasks to call outbound through the remembered route", async () => {
     const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext({

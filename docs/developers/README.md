@@ -13,6 +13,7 @@ Start here:
 - [Chat Vision](./chat-vision.md)
 - [Identity](./identity.md)
 - [Credentials](./credentials.md)
+- [Email](./email.md)
 - [DB Integrity](./db-integrity.md)
 - [DB Integrity Plan](./db-integrity-plan.md)
 - [Prompt Caching](./caching.md)

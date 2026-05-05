@@ -8,7 +8,8 @@ Usage:
   ./scripts/docker-stack.sh up [--build]
   ./scripts/docker-stack.sh down
   ./scripts/docker-stack.sh ps
-  ./scripts/docker-stack.sh logs [core|browser|gateway|telegram|wiki|<agentKey>|<service>]
+  ./scripts/docker-stack.sh logs [core|browser|gateway|telegram|whatsapp|wiki|<agentKey>|<service>]
+  ./scripts/docker-stack.sh panda <panda args...>
   ./scripts/docker-stack.sh restart
 
 Primary flow:
@@ -20,6 +21,7 @@ Notes:
   - One bash runner container is created per agent in PANDA_AGENTS.
   - The browser runner is shared.
   - Telegram polling is auto-enabled when TELEGRAM_BOT_TOKEN is set in .env.
+  - WhatsApp polling is enabled when WHATSAPP_ENABLED=true in .env.
   - Wiki.js is part of the stack.
   - Wiki bootstrap follows PANDA_AGENTS.
   - Public Caddy edge is auto-enabled when PANDA_APPS_BASE_URL or PANDA_GATEWAY_BASE_URL is set.
@@ -505,6 +507,11 @@ if [[ -n "$(trim "${TELEGRAM_BOT_TOKEN:-}")" ]]; then
   enable_telegram_profile=1
 fi
 
+enable_whatsapp_profile=0
+if is_truthy "${WHATSAPP_ENABLED:-}"; then
+  enable_whatsapp_profile=1
+fi
+
 enable_apps_edge=0
 if [[ -n "$(trim "${PANDA_APPS_BASE_URL:-}")" ]]; then
   enable_apps_edge=1
@@ -546,6 +553,9 @@ if (( enable_public_edge )); then
 fi
 if (( enable_telegram_profile )); then
   compose_args+=(--profile telegram)
+fi
+if (( enable_whatsapp_profile )); then
+  compose_args+=(--profile whatsapp)
 fi
 
 run_compose() {
@@ -781,6 +791,10 @@ resolve_service_name() {
       printf 'panda-telegram\n'
       return
       ;;
+    whatsapp|panda-whatsapp)
+      printf 'panda-whatsapp\n'
+      return
+      ;;
   esac
 
   if ! agents_declared; then
@@ -882,6 +896,9 @@ print_up_summary() {
   if (( enable_telegram_profile )); then
     printf '  ./scripts/docker-stack.sh logs telegram\n'
   fi
+  if (( enable_whatsapp_profile )); then
+    printf '  ./scripts/docker-stack.sh logs whatsapp\n'
+  fi
   if ! agents_declared; then
     return
   fi
@@ -937,6 +954,13 @@ run_logs() {
   run_compose logs -f
 }
 
+run_panda() {
+  render_generated_public_caddyfile
+  render_generated_compose
+  render_generated_calendar_compose
+  run_compose exec -T panda-core panda "$@"
+}
+
 run_restart() {
   run_up 0
 }
@@ -977,6 +1001,11 @@ case "$command_name" in
     shift || true
     [[ $# -le 1 ]] || die "logs accepts at most one service or agent key."
     run_logs "${1:-}"
+    ;;
+  panda)
+    shift || true
+    [[ $# -gt 0 ]] || die "panda requires arguments."
+    run_panda "$@"
     ;;
   restart)
     shift || true

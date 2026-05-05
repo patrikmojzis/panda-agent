@@ -9,4 +9,5 @@ Start here:
 - [A2A](./a2a.md)
 - [Apps](./apps.md)
 - [Browser](./browser.md)
+- [Email](./email.md)
 - [Watches](./watches.md)

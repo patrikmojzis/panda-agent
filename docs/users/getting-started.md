@@ -274,12 +274,16 @@ WhatsApp example:
 
 ```bash
 panda whatsapp whoami
-panda whatsapp pair --phone 421900000000
+panda whatsapp link --phone 421900000000
+panda whatsapp pair --identity alice --actor 421911111111
 panda whatsapp run
 ```
 
 Channel workers handle I/O.
 `panda run` still owns routing, sessions, and inference.
+
+For WhatsApp, `link --phone` links the connector account itself.
+`pair --identity --actor` authorizes a sender phone number to speak as a Panda identity.
 
 For a brand-new channel conversation:
 

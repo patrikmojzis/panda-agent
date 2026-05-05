@@ -17,6 +17,7 @@ const EXPECTED_PERSONA_EXPORTS = [
   "ClearEnvValueTool",
   "DEFAULT_AGENT_LLM_CONTEXT_SECTIONS",
   "DateTimeContext",
+  "EmailSendTool",
   "EnvironmentContext",
   "GlobFilesTool",
   "GrepFilesTool",

@@ -22,6 +22,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "DEFAULT_DAEMON_KEY",
   "DEFAULT_AGENT_LLM_CONTEXT_SECTIONS",
   "DateTimeContext",
+  "EmailSendTool",
   "EnvironmentContext",
   "GlobFilesTool",
   "GrepFilesTool",

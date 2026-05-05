@@ -250,6 +250,73 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     expect(await readFile(logPath, "utf8")).toContain("logs -f panda-runner-luna");
   });
 
+  it("enables whatsapp explicitly and maps whatsapp logs", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "WHATSAPP_ENABLED=true",
+      "WHATSAPP_CONNECTOR_KEY=main",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const homeDir = await makeTempDir("panda-home-");
+    const upResult = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+
+    expect(upResult.exitCode).toBe(0);
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents).toContain("--profile whatsapp");
+    expect(upResult.stdout).toContain("./scripts/docker-stack.sh logs whatsapp");
+
+    const logsResult = await runScript(["logs", "whatsapp"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+    expect(logsResult.exitCode).toBe(0);
+    expect(await readFile(logPath, "utf8")).toContain("logs -f panda-whatsapp");
+
+    const linkResult = await runScript([
+      "panda",
+      "whatsapp",
+      "link",
+      "--phone",
+      "421900000000",
+    ], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+    expect(linkResult.exitCode).toBe(0);
+    expect(await readFile(logPath, "utf8")).toContain(
+      "exec -T panda-core panda whatsapp link --phone 421900000000",
+    );
+
+    const pandaResult = await runScript([
+      "panda",
+      "whatsapp",
+      "pair",
+      "--identity",
+      "alice",
+      "--actor",
+      "421911111111",
+    ], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+    expect(pandaResult.exitCode).toBe(0);
+    expect(await readFile(logPath, "utf8")).toContain(
+      "exec -T panda-core panda whatsapp pair --identity alice --actor 421911111111",
+    );
+  });
+
   it("bootstraps one private Radicale calendar per declared agent", async () => {
     const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
     const dockerBin = await createDockerStub(logPath);

@@ -60,6 +60,22 @@ describe("createDaemonLifecycle", () => {
           order.push("a2a-stop");
         }),
       },
+      emailOutboundWorker: {
+        start: vi.fn(async () => {
+          order.push("email-outbound-start");
+        }),
+        stop: vi.fn(async () => {
+          order.push("email-outbound-stop");
+        }),
+      },
+      emailSyncRunner: {
+        start: vi.fn(async () => {
+          order.push("email-sync-start");
+        }),
+        stop: vi.fn(async () => {
+          order.push("email-sync-stop");
+        }),
+      },
       scheduledTaskRunner: {
         start: vi.fn(async () => {
           order.push("tasks-start");
@@ -110,12 +126,16 @@ describe("createDaemonLifecycle", () => {
         "heartbeat",
         "listen",
         "a2a-start",
+        "email-outbound-start",
+        "email-sync-start",
         "tasks-start",
         "watch-start",
         "heartbeat-start",
         "recover",
         "unlisten",
         "a2a-stop",
+        "email-outbound-stop",
+        "email-sync-stop",
         "tasks-stop",
         "watch-stop",
         "heartbeat-stop",
@@ -185,6 +205,18 @@ describe("createDaemonLifecycle", () => {
           throw new Error("a2a blew up");
         }),
       },
+      emailOutboundWorker: {
+        start: vi.fn(async () => {}),
+        stop: vi.fn(async () => {
+          order.push("email-outbound-stop");
+        }),
+      },
+      emailSyncRunner: {
+        start: vi.fn(async () => {}),
+        stop: vi.fn(async () => {
+          order.push("email-sync-stop");
+        }),
+      },
       scheduledTaskRunner: {
         start: vi.fn(async () => {}),
         stop: vi.fn(async () => {
@@ -225,6 +257,8 @@ describe("createDaemonLifecycle", () => {
       expect(order).toEqual([
         "unlisten",
         "a2a-stop",
+        "email-outbound-stop",
+        "email-sync-stop",
         "tasks-stop",
         "watch-stop",
         "heartbeat-stop",
@@ -291,6 +325,18 @@ describe("createDaemonLifecycle", () => {
           order.push("a2a-stop");
         }),
       },
+      emailOutboundWorker: {
+        start: vi.fn(async () => {}),
+        stop: vi.fn(async () => {
+          order.push("email-outbound-stop");
+        }),
+      },
+      emailSyncRunner: {
+        start: vi.fn(async () => {}),
+        stop: vi.fn(async () => {
+          order.push("email-sync-stop");
+        }),
+      },
       scheduledTaskRunner: {
         start: vi.fn(async () => {}),
         stop: vi.fn(async () => {
@@ -346,6 +392,8 @@ describe("createDaemonLifecycle", () => {
     expect(order).toEqual([
       "lease",
       "a2a-stop",
+      "email-outbound-stop",
+      "email-sync-stop",
       "tasks-stop",
       "watch-stop",
       "heartbeat-stop",

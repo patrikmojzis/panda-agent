@@ -4,6 +4,7 @@ import {type AgentStore} from "../../domain/agents/index.js";
 import type {SessionStore} from "../../domain/sessions/index.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/index.js";
 import type {WatchStore} from "../../domain/watches/index.js";
+import type {EmailStore} from "../../domain/email/index.js";
 import {PostgresThreadLeaseManager, ThreadRuntimeCoordinator,} from "../../domain/threads/runtime/index.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
@@ -48,6 +49,7 @@ export interface DefinitionResolverContext {
   identityStore: IdentityStore;
   sessionStore: SessionStore;
   store: ThreadRuntimeStore;
+  email: EmailStore;
   telepathyService: TelepathyHub | null;
   wikiBindingService: WikiBindingService | null;
   calendarService: AgentCalendarService | null;
@@ -77,6 +79,7 @@ export interface RuntimeServices {
   sessionStore: SessionStore;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
+  email: EmailStore;
   telepathyService: TelepathyHub | null;
   watches: WatchStore;
   calendarService: AgentCalendarService | null;
@@ -101,6 +104,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     identityStore: runtime.identityStore,
     sessionStore: runtime.sessionStore,
     store: runtime.store,
+    email: runtime.email,
     telepathyService: runtime.telepathyService,
     wikiBindingService: runtime.wikiBindingService,
     calendarService: runtime.calendarService,
@@ -129,6 +133,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     sessionStore: runtime.sessionStore,
     store: runtime.store,
     scheduledTasks: runtime.scheduledTasks,
+    email: runtime.email,
     telepathyService: runtime.telepathyService,
     watches: runtime.watches,
     calendarService: runtime.calendarService,

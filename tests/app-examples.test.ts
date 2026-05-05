@@ -9,6 +9,7 @@ describe("example apps", () => {
   const servers: Array<{close(): Promise<void>}> = [];
 
   afterEach(async () => {
+    vi.useRealTimers();
     await Promise.all(servers.splice(0).map((server) => server.close()));
     await Promise.all(fixtures.splice(0).map((fixture) => fixture.cleanup()));
   });
@@ -95,6 +96,8 @@ describe("example apps", () => {
       slug: "context-capsule",
     });
     fixtures.push(fixture);
+    vi.useFakeTimers({toFake: ["Date"]});
+    vi.setSystemTime(new Date("2026-04-24T12:00:00.000Z"));
 
     const service = new AgentAppService({
       env: {...process.env, DATA_DIR: fixture.dataDir},

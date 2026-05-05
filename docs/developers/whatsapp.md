@@ -39,6 +39,20 @@ The worker is a long-lived Baileys process with:
 Keep it one worker per linked account.
 Do not invent webhooks or clustering until there is a real reason.
 
+Docker stack support is profile-gated:
+
+- set `WHATSAPP_ENABLED=true` to run `panda-whatsapp`
+- set `WHATSAPP_CONNECTOR_KEY=main` unless you need multiple linked accounts
+- link the connector once with `panda whatsapp link --phone <connector-phone>`
+- authorize sender identities with `panda whatsapp pair --identity <handle> --actor <sender-phone>`
+
+In the Docker stack, run those CLI commands through the core container:
+
+```bash
+./scripts/docker-stack.sh panda whatsapp link --phone <connector-phone>
+./scripts/docker-stack.sh panda whatsapp pair --identity <handle> --actor <sender-phone>
+```
+
 ## Inbound Shape
 
 Inbound normalization should fit Panda's channel model, not drag provider junk into the core loop.

@@ -103,6 +103,35 @@ services:
       retries: 3
       start_period: 45s
 
+  panda-whatsapp:
+    build: ..
+    image: panda:latest
+    command: ["whatsapp", "run"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    profiles: ["whatsapp"]
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      WHATSAPP_CONNECTOR_KEY: ${WHATSAPP_CONNECTOR_KEY:-main}
+      PANDA_WHATSAPP_HEALTH_PORT: ${PANDA_WHATSAPP_HEALTH_PORT:-8093}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ${HOME}/.panda:/root/.panda
+      - /etc/ssl/certs/panda-postgres-ca.crt:/etc/ssl/certs/panda-postgres-ca.crt:ro
+    depends_on:
+      panda-core:
+        condition: service_healthy
+    networks:
+      - runner_net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${PANDA_WHATSAPP_HEALTH_PORT:-8093}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
 networks:
   runner_net:
   wiki_net:

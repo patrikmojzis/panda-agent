@@ -3,7 +3,10 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../../app/cli-shared.js";
-import {resolveWhatsAppConnectorKey, resolveWhatsAppDataDir} from "./config.js";
+import {ensureSchemas, withPostgresPool} from "../../../app/runtime/postgres-bootstrap.js";
+import {PostgresIdentityStore} from "../../../domain/identity/index.js";
+import {parseIdentityHandle} from "../../../domain/identity/cli.js";
+import {resolveWhatsAppConnectorKey, resolveWhatsAppDataDir, WHATSAPP_SOURCE} from "./config.js";
 import {WhatsAppService} from "./service.js";
 
 interface WhatsAppCliOptions {
@@ -13,8 +16,13 @@ interface WhatsAppCliOptions {
 
 type WhatsAppRunCliOptions = WhatsAppCliOptions;
 
-interface WhatsAppPairCliOptions extends WhatsAppCliOptions {
+interface WhatsAppLinkCliOptions extends WhatsAppCliOptions {
   phone: string;
+}
+
+interface WhatsAppPairCliOptions extends WhatsAppCliOptions {
+  actor: string;
+  identity: string;
 }
 
 function parseWhatsAppConnectorKey(value: string): string {
@@ -35,11 +43,33 @@ function parseWhatsAppPhoneNumber(value: string): string {
   return digits;
 }
 
+function parseWhatsAppActorPhone(value: string): string {
+  const trimmed = value.trim();
+  const jidMatch = trimmed.match(/^(\d{8,15})@s\.whatsapp\.net$/i);
+  const digits = jidMatch?.[1] ?? value.replace(/[^\d]/g, "");
+  if (digits.length < 8 || digits.length > 15) {
+    throw new InvalidArgumentError("WhatsApp identity phone must contain 8-15 digits.");
+  }
+
+  return `${digits}@s.whatsapp.net`;
+}
+
 function createWhatsAppService(options: WhatsAppRunCliOptions = {}): WhatsAppService {
   return new WhatsAppService({
     connectorKey: options.connector ?? resolveWhatsAppConnectorKey(),
     dataDir: resolveWhatsAppDataDir(),
     dbUrl: options.dbUrl,
+  });
+}
+
+async function withWhatsAppIdentityStore<T>(
+  options: WhatsAppCliOptions,
+  fn: (store: PostgresIdentityStore) => Promise<T>,
+): Promise<T> {
+  return withPostgresPool(options.dbUrl, async (pool) => {
+    const store = new PostgresIdentityStore({pool});
+    await ensureSchemas([store]);
+    return fn(store);
   });
 }
 
@@ -61,7 +91,7 @@ export async function whatsappWhoamiCommand(options: WhatsAppCliOptions = {}): P
   }
 }
 
-export async function whatsappPairCommand(options: WhatsAppPairCliOptions): Promise<void> {
+export async function whatsappLinkCommand(options: WhatsAppLinkCliOptions): Promise<void> {
   const service = createWhatsAppService(options);
 
   try {
@@ -79,7 +109,7 @@ export async function whatsappPairCommand(options: WhatsAppPairCliOptions): Prom
     if (result.alreadyPaired) {
       process.stdout.write(
         [
-          `WhatsApp connector ${result.connectorKey} is already paired.`,
+          `WhatsApp connector ${result.connectorKey} is already linked.`,
           `account ${result.accountId ?? "unknown"}`,
           `name ${result.name ?? "-"}`,
         ].join("\n") + "\n",
@@ -89,7 +119,7 @@ export async function whatsappPairCommand(options: WhatsAppPairCliOptions): Prom
 
     process.stdout.write(
       [
-        `Paired WhatsApp connector ${result.connectorKey}.`,
+        `Linked WhatsApp connector ${result.connectorKey}.`,
         `account ${result.accountId ?? "unknown"}`,
         `name ${result.name ?? "-"}`,
       ].join("\n") + "\n",
@@ -97,6 +127,32 @@ export async function whatsappPairCommand(options: WhatsAppPairCliOptions): Prom
   } finally {
     await service.stop();
   }
+}
+
+export async function whatsappPairCommand(options: WhatsAppPairCliOptions): Promise<void> {
+  const connectorKey = options.connector ?? resolveWhatsAppConnectorKey();
+  const externalActorId = parseWhatsAppActorPhone(options.actor);
+
+  await withWhatsAppIdentityStore(options, async (store) => {
+    const identity = await store.getIdentityByHandle(options.identity);
+    const binding = await store.ensureIdentityBinding({
+      source: WHATSAPP_SOURCE,
+      connectorKey,
+      externalActorId,
+      identityId: identity.id,
+      metadata: {
+        pairedVia: "whatsapp-cli",
+      },
+    });
+
+    process.stdout.write(
+      [
+        `Paired WhatsApp actor ${binding.externalActorId}.`,
+        `identity ${binding.identityId}`,
+        `connector ${binding.connectorKey}`,
+      ].join("\n") + "\n",
+    );
+  });
 }
 
 export async function whatsappRunCommand(options: WhatsAppRunCliOptions): Promise<void> {
@@ -139,9 +195,20 @@ export function registerWhatsAppCommands(program: Command): void {
     });
 
   whatsappProgram
+    .command("link")
+    .description("Link the WhatsApp connector account using a phone-number pairing code")
+    .requiredOption("--phone <number>", "Connector phone number to link (digits only or E.164)", parseWhatsAppPhoneNumber)
+    .option("--connector <key>", "Connector key override", parseWhatsAppConnectorKey)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((options: WhatsAppLinkCliOptions) => {
+      return whatsappLinkCommand(options);
+    });
+
+  whatsappProgram
     .command("pair")
-    .description("Pair the WhatsApp connector using a phone-number pairing code")
-    .requiredOption("--phone <number>", "Phone number to pair (digits only or E.164)", parseWhatsAppPhoneNumber)
+    .description("Pair a WhatsApp sender to a Panda identity")
+    .requiredOption("--identity <handle>", "Identity handle to pair", parseIdentityHandle)
+    .requiredOption("--actor <number>", "WhatsApp sender phone number or @s.whatsapp.net JID", parseWhatsAppActorPhone)
     .option("--connector <key>", "Connector key override", parseWhatsAppConnectorKey)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: WhatsAppPairCliOptions) => {
