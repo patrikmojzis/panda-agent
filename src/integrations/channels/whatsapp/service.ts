@@ -1,44 +1,44 @@
 import type {Pool} from "pg";
 import {
-    addTransactionCapability,
-    type AuthenticationState,
-    type BaileysEventMap,
-    Browsers,
-    type ConnectionState,
-    DisconnectReason,
-    isJidBroadcast,
-    isJidGroup,
-    isJidNewsletter,
-    isJidStatusBroadcast,
-    jidNormalizedUser,
-    makeCacheableSignalKeyStore,
-    makeWASocket,
-    type WAMessage,
-    type WASocket,
+  addTransactionCapability,
+  type AuthenticationState,
+  type BaileysEventMap,
+  Browsers,
+  type ConnectionState,
+  DisconnectReason,
+  isJidBroadcast,
+  isJidGroup,
+  isJidNewsletter,
+  isJidStatusBroadcast,
+  jidNormalizedUser,
+  makeCacheableSignalKeyStore,
+  makeWASocket,
+  type WAMessage,
+  type WASocket,
 } from "baileys";
 import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../app/health/server.js";
 import {ChannelActionWorker} from "../../../domain/channels/actions/index.js";
 import {
-    acquireManagedConnectorLease,
-    type ManagedConnectorLease,
-    PostgresConnectorLeaseRepo
+  acquireManagedConnectorLease,
+  type ManagedConnectorLease,
+  PostgresConnectorLeaseRepo
 } from "../../../domain/connector-leases/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
 import {
-    buildObservedPoolConfig,
-    createPostgresPool,
-    observePostgresPool,
-    type PostgresPoolObserver,
-    requireDatabaseUrl,
+  buildObservedPoolConfig,
+  createPostgresPool,
+  observePostgresPool,
+  type PostgresPoolObserver,
+  requireDatabaseUrl,
 } from "../../../app/runtime/database.js";
 import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {
-    ChannelOutboundDeliveryWorker,
-    PostgresOutboundDeliveryStore
+  ChannelOutboundDeliveryWorker,
+  PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/index.js";
 import {WHATSAPP_SOURCE} from "./config.js";
 import {PostgresWhatsAppAuthStore} from "./auth-store.js";
@@ -46,8 +46,8 @@ import {extractWhatsAppMessageText, extractWhatsAppQuotedMessageId} from "./help
 import {createWhatsAppOutboundAdapter} from "./outbound.js";
 import {createWhatsAppTypingAdapter} from "./typing.js";
 import {
-    type PostgresNotificationListenerHandle,
-    startPostgresNotificationListener,
+  type PostgresNotificationListenerHandle,
+  startPostgresNotificationListener,
 } from "../postgres-notification-listener.js";
 import {sleep} from "../../../lib/async.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
@@ -84,6 +84,8 @@ const TRANSACTION_OPTIONS = {
   maxCommitRetries: 5,
   delayBetweenTriesMs: 200,
 } as const;
+const WHATSAPP_BROWSER_NAME = "Google Chrome";
+const WHATSAPP_TRANSIENT_REJECTION_STATUS = 405;
 const RECONNECT_DELAY_MS = 1_000;
 const WHATSAPP_POOL_MAX_FALLBACK = 5;
 const WHATSAPP_HEALTH_RECONNECT_GRACE_MS = 30_000;
@@ -155,6 +157,7 @@ function shouldReconnect(statusCode: number | null): boolean {
     case DisconnectReason.timedOut:
     case DisconnectReason.restartRequired:
     case DisconnectReason.unavailableService:
+    case WHATSAPP_TRANSIENT_REJECTION_STATUS:
       return true;
     default:
       return false;
@@ -378,7 +381,7 @@ export class WhatsAppService {
         ),
       },
       logger: WHATSAPP_LOGGER,
-      browser: Browsers.macOS("Panda"),
+      browser: Browsers.macOS(WHATSAPP_BROWSER_NAME),
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
       markOnlineOnConnect: false,

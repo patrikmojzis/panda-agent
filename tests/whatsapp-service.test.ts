@@ -247,6 +247,70 @@ describe("WhatsAppService", () => {
     expect(stores.pool.end).toHaveBeenCalledTimes(1);
   });
 
+  it("uses a standard browser identity for WhatsApp sockets", async () => {
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+    const saveCreds = vi.fn(async () => {});
+
+    vi.spyOn(service as never, "ensureAuthStore").mockResolvedValue({
+      createAuthState: vi.fn(async () => ({
+        state: {
+          creds: {},
+          keys: {},
+        },
+        saveCreds,
+      })),
+    });
+
+    await (service as never).createSocket();
+
+    expect(whatsappServiceMocks.makeWASocket).toHaveBeenCalledWith(expect.objectContaining({
+      browser: ["Panda"],
+    }));
+    expect((await import("baileys")).Browsers.macOS).toHaveBeenCalledWith("Google Chrome");
+  });
+
+  it("treats WhatsApp 405 closes as reconnectable", async () => {
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+    const saveCreds = vi.fn(async () => {});
+
+    vi.spyOn(service as never, "createSocket").mockResolvedValue({
+      authHandle: {saveCreds},
+      socket: whatsappServiceMocks.socket,
+    });
+    (service as {socket?: unknown}).socket = whatsappServiceMocks.socket;
+
+    const cycle = (service as never).runSocketCycle(createStores());
+    await Promise.resolve();
+
+    const connectionHandler = whatsappServiceMocks.socket.ev.on.mock.calls.find(([event]) => {
+      return event === "connection.update";
+    })?.[1];
+    expect(connectionHandler).toBeTypeOf("function");
+
+    connectionHandler({
+      connection: "close",
+      lastDisconnect: {
+        error: {
+          output: {
+            statusCode: 405,
+          },
+        },
+      },
+    });
+
+    await expect(cycle).resolves.toEqual({
+      reconnect: true,
+      reason: "405",
+    });
+    expect(whatsappServiceMocks.socket.end).toHaveBeenCalledTimes(1);
+  });
+
   it("enqueues private notify messages for Panda", async () => {
     const stores = createStores();
     const service = new WhatsAppService({
