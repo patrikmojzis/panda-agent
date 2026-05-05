@@ -43,6 +43,7 @@ Docker stack support is profile-gated:
 
 - set `WHATSAPP_ENABLED=true` to run `panda-whatsapp`
 - set `WHATSAPP_CONNECTOR_KEY=main` unless you need multiple linked accounts
+- set `PANDA_WHATSAPP_VERSION=2.3000.1035194821` only if WhatsApp rejects Baileys' bundled login version
 - link the connector once with `panda whatsapp link --phone <connector-phone>`
 - authorize sender identities with `panda whatsapp pair --identity <handle> --actor <sender-phone>`
 

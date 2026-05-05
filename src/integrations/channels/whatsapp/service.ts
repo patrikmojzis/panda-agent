@@ -40,7 +40,7 @@ import {
   ChannelOutboundDeliveryWorker,
   PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/index.js";
-import {WHATSAPP_SOURCE} from "./config.js";
+import {resolveWhatsAppSocketVersion, WHATSAPP_SOURCE} from "./config.js";
 import {PostgresWhatsAppAuthStore} from "./auth-store.js";
 import {extractWhatsAppMessageText, extractWhatsAppQuotedMessageId} from "./helpers.js";
 import {createWhatsAppOutboundAdapter} from "./outbound.js";
@@ -86,6 +86,7 @@ const TRANSACTION_OPTIONS = {
 } as const;
 const WHATSAPP_BROWSER_NAME = "Google Chrome";
 const WHATSAPP_TRANSIENT_REJECTION_STATUS = 405;
+const PAIRING_CODE_REQUEST_DELAY_MS = 1_500;
 const RECONNECT_DELAY_MS = 1_000;
 const WHATSAPP_POOL_MAX_FALLBACK = 5;
 const WHATSAPP_HEALTH_RECONNECT_GRACE_MS = 30_000;
@@ -125,13 +126,14 @@ function describeAccountId(value: string | undefined): string | undefined {
 }
 
 function toWhoamiResult(connectorKey: string, creds: AuthenticationState["creds"]): WhatsAppWhoamiResult {
-  const accountId = describeAccountId(creds.me?.id);
+  const registered = creds.registered === true;
+  const accountId = registered ? describeAccountId(creds.me?.id) : undefined;
   return {
     connectorKey,
-    registered: creds.registered,
+    registered,
     accountId,
-    phoneNumber: creds.me?.phoneNumber?.trim() || undefined,
-    name: creds.me?.name?.trim() || creds.me?.notify?.trim() || undefined,
+    phoneNumber: registered ? creds.me?.phoneNumber?.trim() || undefined : undefined,
+    name: registered ? creds.me?.name?.trim() || creds.me?.notify?.trim() || undefined : undefined,
   };
 }
 
@@ -375,6 +377,7 @@ export class WhatsAppService {
   }> {
     const authStore = await this.ensureAuthStore();
     const authHandle = await authStore.createAuthState(this.options.connectorKey);
+    const socketVersion = resolveWhatsAppSocketVersion();
     const socket = makeWASocket({
       auth: {
         creds: authHandle.state.creds,
@@ -386,6 +389,7 @@ export class WhatsAppService {
       },
       logger: WHATSAPP_LOGGER,
       browser: Browsers.macOS(WHATSAPP_BROWSER_NAME),
+      ...(socketVersion ? {version: socketVersion} : {}),
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
       markOnlineOnConnect: false,
@@ -568,8 +572,10 @@ export class WhatsAppService {
   ): Promise<WhatsAppPairSocketCycleResult> {
     const {authHandle, socket} = await this.createSocket();
     try {
-      return await new Promise<WhatsAppPairSocketCycleResult>(async (resolve, reject) => {
+      return await new Promise<WhatsAppPairSocketCycleResult>((resolve, reject) => {
         let settled = false;
+        let pairingCodeRequested = false;
+        let pairingCodeTimer: ReturnType<typeof setTimeout> | null = null;
 
         const finish = (outcome: WhatsAppPairSocketCycleResult) => {
           if (settled) {
@@ -591,7 +597,46 @@ export class WhatsAppService {
           reject(error);
         };
 
+        const requestPairingCodeOnce = () => {
+          if (pairingCodeRequested || settled) {
+            return;
+          }
+
+          pairingCodeRequested = true;
+          socket.requestPairingCode(phoneNumber)
+            .then((pairingCode) => {
+              if (!settled) {
+                onPairingCode?.(pairingCode);
+              }
+            })
+            .catch((error) => {
+              const statusCode = extractDisconnectStatusCode(error);
+              const reason = describeDisconnectStatus(statusCode);
+              if (shouldReconnect(statusCode)) {
+                finish({reconnect: true, reason});
+                return;
+              }
+
+              fail(error instanceof Error ? error : new Error(String(error)));
+            });
+        };
+
+        const schedulePairingCodeRequest = () => {
+          if (pairingCodeTimer || pairingCodeRequested || settled) {
+            return;
+          }
+
+          pairingCodeTimer = setTimeout(() => {
+            pairingCodeTimer = null;
+            requestPairingCodeOnce();
+          }, PAIRING_CODE_REQUEST_DELAY_MS);
+        };
+
         const onConnectionUpdate = (update: Partial<ConnectionState>) => {
+          if (update.connection === "connecting" || update.qr) {
+            schedulePairingCodeRequest();
+          }
+
           if (update.connection === "open") {
             authHandle.saveCreds()
               .then(() => {
@@ -620,17 +665,15 @@ export class WhatsAppService {
         };
 
         const cleanup = () => {
+          if (pairingCodeTimer) {
+            clearTimeout(pairingCodeTimer);
+            pairingCodeTimer = null;
+          }
           socket.ev.off("connection.update", onConnectionUpdate);
         };
 
         socket.ev.on("connection.update", onConnectionUpdate);
-
-        try {
-          const pairingCode = await socket.requestPairingCode(phoneNumber);
-          onPairingCode?.(pairingCode);
-        } catch (error) {
-          fail(error instanceof Error ? error : new Error(String(error)));
-        }
+        schedulePairingCodeRequest();
       });
     } finally {
       await this.stopSocket();
