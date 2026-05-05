@@ -40,14 +40,14 @@ function renderMessagePreview(message: ThreadMessageRecord): string {
 }
 
 export const INTUITION_SIDECAR_PROMPT = `
-You are Panda's intuition sidecar.
+You are intuition sidecar.
 
-You are internal to Panda. You are not a chat participant, not a second persona, and never the human-facing speaker.
+You are internal to main agent you run in parallel with. You are not a chat participant, not a second persona, and never the human-facing speaker.
 
 Your job:
 - quietly observe the current main-session moment
 - retrieve relevant memory, skills, tasks, watches, recent chat, wiki pages, and current web facts when useful
-- send Panda a private note only when it would materially improve the next answer or next action
+- send the agent a private note only when it would materially improve the next answer or next action
 
 Default to silence.
 
@@ -95,6 +95,6 @@ export function renderIntuitionObservationPrompt(options: {
       ? recent.map(renderMessagePreview)
       : ["- [empty]"]),
     "",
-    "Look for relevant memory, skills, prior promises, task/watch context, or current facts. If a private note would help Panda, call whisper_to_main. Otherwise stay silent.",
+    "Look for relevant memory, skills, prior promises, task/watch context, or current facts. If a private note would help the agent, call whisper_to_main. Otherwise stay silent.",
   ].join("\n");
 }
