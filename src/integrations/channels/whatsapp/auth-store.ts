@@ -40,6 +40,10 @@ export interface WhatsAppAuthStateHandle {
   saveCreds(): Promise<void>;
 }
 
+export interface TransientWhatsAppAuthStateHandle extends WhatsAppAuthStateHandle {
+  promoteTo(connectorKey: string): Promise<void>;
+}
+
 export interface WhatsAppAuthCredsRecord {
   connectorKey: string;
   creds: AuthenticationCreds;
@@ -319,6 +323,70 @@ export class PostgresWhatsAppAuthStore {
       },
       saveCreds: async () => {
         await this.saveCreds(normalizedConnectorKey, creds);
+      },
+    };
+  }
+
+  createTransientAuthState(): TransientWhatsAppAuthStateHandle {
+    const creds = initAuthCreds();
+    const keyStore = new Map<keyof SignalDataTypeMap, Map<string, SignalDataTypeMap[keyof SignalDataTypeMap]>>();
+
+    return {
+      state: {
+        creds,
+        keys: {
+          get: async (type, ids) => {
+            const values = keyStore.get(type);
+            const result: Record<string, SignalDataTypeMap[typeof type] | undefined> = {};
+            for (const id of ids) {
+              result[id] = values?.get(id) as SignalDataTypeMap[typeof type] | undefined;
+            }
+
+            return result as { [id: string]: SignalDataTypeMap[typeof type] };
+          },
+          set: async (data) => {
+            for (const [category, entries] of Object.entries(data) as Array<[keyof SignalDataTypeMap, SignalDataSet[keyof SignalDataTypeMap]]>) {
+              if (!entries) {
+                continue;
+              }
+
+              let values = keyStore.get(category);
+              if (!values) {
+                values = new Map();
+                keyStore.set(category, values);
+              }
+
+              for (const [id, value] of Object.entries(entries)) {
+                if (value === null) {
+                  values.delete(id);
+                  continue;
+                }
+
+                values.set(id, value as SignalDataTypeMap[keyof SignalDataTypeMap]);
+              }
+            }
+          },
+        },
+      },
+      saveCreds: async () => {},
+      promoteTo: async (connectorKey) => {
+        const normalizedConnectorKey = requireTrimmedConnectorKey(connectorKey);
+        await this.saveCreds(normalizedConnectorKey, creds);
+
+        for (const [category, values] of keyStore.entries()) {
+          if (values.size === 0) {
+            continue;
+          }
+
+          const entries: Record<string, SignalDataTypeMap[keyof SignalDataTypeMap]> = {};
+          for (const [id, value] of values.entries()) {
+            entries[id] = value;
+          }
+
+          await this.saveSignalKeys(normalizedConnectorKey, {
+            [category]: entries,
+          } as SignalDataSet);
+        }
       },
     };
   }

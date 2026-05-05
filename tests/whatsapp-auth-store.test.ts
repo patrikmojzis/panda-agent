@@ -119,4 +119,41 @@ describe("PostgresWhatsAppAuthStore", () => {
     const sessions = await store.loadSignalKeys("wa-main", "session", ["session-2"]);
     expect(Buffer.from(sessions["session-2"] ?? []).toString()).toBe("pong");
   });
+
+  it("keeps transient pairing auth out of Postgres until promotion", async () => {
+    const db = newDb();
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const store = new PostgresWhatsAppAuthStore({ pool });
+    await store.ensureSchema();
+
+    const handle = store.createTransientAuthState();
+    handle.state.creds.registered = true;
+    handle.state.creds.pairingCode = "PAIR1234";
+    await handle.state.keys.set({
+      session: {
+        "session-3": Buffer.from("transient"),
+      },
+    });
+    await handle.saveCreds();
+
+    await expect(store.loadCreds("wa-main")).resolves.toMatchObject({
+      registered: false,
+      pairingCode: undefined,
+    });
+    await expect(store.loadSignalKeys("wa-main", "session", ["session-3"])).resolves.toEqual({
+      "session-3": undefined,
+    });
+
+    await handle.promoteTo("wa-main");
+
+    await expect(store.loadCreds("wa-main")).resolves.toMatchObject({
+      registered: true,
+      pairingCode: "PAIR1234",
+    });
+    const sessions = await store.loadSignalKeys("wa-main", "session", ["session-3"]);
+    expect(Buffer.from(sessions["session-3"] ?? []).toString()).toBe("transient");
+  });
 });

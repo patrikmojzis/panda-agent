@@ -1,55 +1,56 @@
 import {randomBytes} from "node:crypto";
 import type {Pool} from "pg";
 import {
-  addTransactionCapability,
-  type AuthenticationState,
-  type BaileysEventMap,
-  Browsers,
-  bytesToCrockford,
-  type ConnectionState,
-  DisconnectReason,
-  isJidBroadcast,
-  isJidGroup,
-  isJidNewsletter,
-  isJidStatusBroadcast,
-  jidNormalizedUser,
-  makeCacheableSignalKeyStore,
-  makeWASocket,
-  type WAMessage,
-  type WASocket,
+    addTransactionCapability,
+    type AuthenticationState,
+    type BaileysEventMap,
+    Browsers,
+    bytesToCrockford,
+    type ConnectionState,
+    DisconnectReason,
+    fetchLatestWaWebVersion,
+    isJidBroadcast,
+    isJidGroup,
+    isJidNewsletter,
+    isJidStatusBroadcast,
+    jidNormalizedUser,
+    makeCacheableSignalKeyStore,
+    makeWASocket,
+    type WAMessage,
+    type WASocket,
 } from "baileys";
 import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../app/health/server.js";
 import {ChannelActionWorker} from "../../../domain/channels/actions/index.js";
 import {
-  acquireManagedConnectorLease,
-  type ManagedConnectorLease,
-  PostgresConnectorLeaseRepo
+    acquireManagedConnectorLease,
+    type ManagedConnectorLease,
+    PostgresConnectorLeaseRepo
 } from "../../../domain/connector-leases/index.js";
 import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
 import {
-  buildObservedPoolConfig,
-  createPostgresPool,
-  observePostgresPool,
-  type PostgresPoolObserver,
-  requireDatabaseUrl,
+    buildObservedPoolConfig,
+    createPostgresPool,
+    observePostgresPool,
+    type PostgresPoolObserver,
+    requireDatabaseUrl,
 } from "../../../app/runtime/database.js";
 import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {
-  ChannelOutboundDeliveryWorker,
-  PostgresOutboundDeliveryStore
+    ChannelOutboundDeliveryWorker,
+    PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/index.js";
 import {resolveWhatsAppSocketVersion, WHATSAPP_SOURCE} from "./config.js";
-import {PostgresWhatsAppAuthStore} from "./auth-store.js";
+import {PostgresWhatsAppAuthStore, type WhatsAppAuthStateHandle} from "./auth-store.js";
 import {extractWhatsAppMessageText, extractWhatsAppQuotedMessageId} from "./helpers.js";
 import {createWhatsAppOutboundAdapter} from "./outbound.js";
 import {createWhatsAppTypingAdapter} from "./typing.js";
 import {
-  type PostgresNotificationListenerHandle,
-  startPostgresNotificationListener,
+    type PostgresNotificationListenerHandle,
+    startPostgresNotificationListener,
 } from "../postgres-notification-listener.js";
 import {sleep} from "../../../lib/async.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
@@ -86,7 +87,7 @@ const TRANSACTION_OPTIONS = {
   maxCommitRetries: 5,
   delayBetweenTriesMs: 200,
 } as const;
-const WHATSAPP_BROWSER_NAME = "Google Chrome";
+const WHATSAPP_BROWSER_NAME = "Chrome";
 const WHATSAPP_TRANSIENT_REJECTION_STATUS = 405;
 const PAIRING_CODE_REQUEST_DELAY_MS = 1_500;
 const RECONNECT_DELAY_MS = 1_000;
@@ -170,6 +171,10 @@ function shouldReconnect(statusCode: number | null): boolean {
     default:
       return false;
   }
+}
+
+function shouldReconnectPairing(statusCode: number | null): boolean {
+  return shouldReconnect(statusCode) || statusCode === DisconnectReason.loggedOut;
 }
 
 function describeDisconnectStatus(statusCode: number | null): string {
@@ -373,13 +378,17 @@ export class WhatsAppService {
     return this.stores;
   }
 
-  private async createSocket(): Promise<{
-    authHandle: Awaited<ReturnType<PostgresWhatsAppAuthStore["createAuthState"]>>;
+  private async createSocket(options: {
+    authHandle?: WhatsAppAuthStateHandle;
+    persistCredsOnUpdate?: boolean;
+  } = {}): Promise<{
+    authHandle: WhatsAppAuthStateHandle;
     socket: WASocket;
   }> {
     const authStore = await this.ensureAuthStore();
-    const authHandle = await authStore.createAuthState(this.options.connectorKey);
-    const socketVersion = resolveWhatsAppSocketVersion();
+    const authHandle = options.authHandle ?? await authStore.createAuthState(this.options.connectorKey);
+    const persistCredsOnUpdate = options.persistCredsOnUpdate ?? true;
+    const socketVersion = await this.resolveSocketVersion();
     const socket = makeWASocket({
       auth: {
         creds: authHandle.state.creds,
@@ -390,7 +399,7 @@ export class WhatsAppService {
         ),
       },
       logger: WHATSAPP_LOGGER,
-      browser: Browsers.macOS(WHATSAPP_BROWSER_NAME),
+      browser: Browsers.ubuntu(WHATSAPP_BROWSER_NAME),
       ...(socketVersion ? {version: socketVersion} : {}),
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
@@ -399,14 +408,33 @@ export class WhatsAppService {
     });
 
     this.socket = socket;
-    socket.ev.on("creds.update", async () => {
-      await authHandle.saveCreds();
-    });
+    if (persistCredsOnUpdate) {
+      socket.ev.on("creds.update", async () => {
+        await authHandle.saveCreds();
+      });
+    }
 
     return {
       authHandle,
       socket,
     };
+  }
+
+  private async resolveSocketVersion(): Promise<ReturnType<typeof resolveWhatsAppSocketVersion>> {
+    const configuredVersion = resolveWhatsAppSocketVersion();
+    if (configuredVersion) {
+      return configuredVersion;
+    }
+
+    try {
+      return (await fetchLatestWaWebVersion()).version;
+    } catch (error) {
+      this.log("socket_version_fetch_failed", {
+        connectorKey: this.options.connectorKey,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
   }
 
   private ensureOutboundWorker(stores: WhatsAppWorkerStores): ChannelOutboundDeliveryWorker {
@@ -584,7 +612,12 @@ export class WhatsAppService {
     onPairingCode?: (code: string) => void,
     pairingCode?: string,
   ): Promise<WhatsAppPairSocketCycleResult> {
-    const {authHandle, socket} = await this.createSocket();
+    const authStore = await this.ensureAuthStore();
+    const authHandle = authStore.createTransientAuthState();
+    const {socket} = await this.createSocket({
+      authHandle,
+      persistCredsOnUpdate: false,
+    });
     try {
       return await new Promise<WhatsAppPairSocketCycleResult>((resolve, reject) => {
         let settled = false;
@@ -611,6 +644,18 @@ export class WhatsAppService {
           reject(error);
         };
 
+        const finishPaired = () => {
+          authHandle.promoteTo(this.options.connectorKey)
+            .then(() => {
+              finish({
+                pairedIdentity: toWhoamiResult(this.options.connectorKey, authHandle.state.creds),
+              });
+            })
+            .catch((error) => {
+              fail(error instanceof Error ? error : new Error(String(error)));
+            });
+        };
+
         const requestPairingCodeOnce = () => {
           if (pairingCodeRequested || settled) {
             return;
@@ -626,7 +671,7 @@ export class WhatsAppService {
             .catch((error) => {
               const statusCode = extractDisconnectStatusCode(error);
               const reason = describeDisconnectStatus(statusCode);
-              if (shouldReconnect(statusCode)) {
+              if (shouldReconnectPairing(statusCode)) {
                 finish({reconnect: true, reason});
                 return;
               }
@@ -651,23 +696,20 @@ export class WhatsAppService {
             schedulePairingCodeRequest();
           }
 
+          if (update.isNewLogin === true && authHandle.state.creds.registered) {
+            finishPaired();
+            return;
+          }
+
           if (update.connection === "open") {
-            authHandle.saveCreds()
-              .then(() => {
-                finish({
-                  pairedIdentity: toWhoamiResult(this.options.connectorKey, authHandle.state.creds),
-                });
-              })
-              .catch((error) => {
-                fail(error instanceof Error ? error : new Error(String(error)));
-              });
+            finishPaired();
             return;
           }
 
           if (update.connection === "close") {
             const statusCode = extractDisconnectStatusCode(update.lastDisconnect?.error);
             const reason = describeDisconnectStatus(statusCode);
-            if (shouldReconnect(statusCode)) {
+            if (shouldReconnectPairing(statusCode)) {
               finish({reconnect: true, reason});
               return;
             }
