@@ -1,6 +1,10 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {TELEGRAM_SOURCE} from "../src/integrations/channels/telegram/config.js";
-import {telegramPairCommand, telegramWhoamiCommand} from "../src/integrations/channels/telegram/cli.js";
+import {
+    telegramPairCommand,
+    telegramUnpairCommand,
+    telegramWhoamiCommand
+} from "../src/integrations/channels/telegram/cli.js";
 
 const telegramCliMocks = vi.hoisted(() => {
   const botInstances: MockBot[] = [];
@@ -8,6 +12,7 @@ const telegramCliMocks = vi.hoisted(() => {
   const pool = {
     end: vi.fn(async () => {}),
   };
+  let deleteIdentityBindingResult = true;
   const serviceConstructor = vi.fn();
 
   class MockBot {
@@ -49,6 +54,11 @@ const telegramCliMocks = vi.hoisted(() => {
       createdAt: 1,
       updatedAt: 1,
     }));
+    readonly deleteIdentityBinding = vi.fn(async (_lookup: {
+      source: string;
+      connectorKey: string;
+      externalActorId: string;
+    }) => deleteIdentityBindingResult);
 
     constructor(_options: unknown) {
       storeInstances.push(this);
@@ -75,6 +85,9 @@ const telegramCliMocks = vi.hoisted(() => {
     storeInstances,
     pool,
     serviceConstructor,
+    setDeleteIdentityBindingResult: (result: boolean) => {
+      deleteIdentityBindingResult = result;
+    },
     withPostgresPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
       try {
         return await fn(pool);
@@ -128,6 +141,7 @@ describe("Telegram CLI", () => {
     telegramCliMocks.serviceConstructor.mockClear();
     telegramCliMocks.ensureSchemas.mockClear();
     telegramCliMocks.withPostgresPool.mockClear();
+    telegramCliMocks.setDeleteIdentityBindingResult(true);
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
@@ -197,5 +211,47 @@ describe("Telegram CLI", () => {
     })).rejects.toThrow("Unknown identity handle missing-user");
 
     expect(latestStore().ensureIdentityBinding).not.toHaveBeenCalled();
+  });
+
+  it("unpairs directly through the identity store without booting the runtime", async () => {
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "telegram-token");
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await telegramUnpairCommand({
+      actor: "123",
+      dbUrl: "postgres://telegram-db",
+    });
+
+    const store = latestStore();
+    expect(telegramCliMocks.serviceConstructor).not.toHaveBeenCalled();
+    expect(store.deleteIdentityBinding).toHaveBeenCalledWith({
+      source: TELEGRAM_SOURCE,
+      connectorKey: "42",
+      externalActorId: "123",
+    });
+    expect(write).toHaveBeenCalledWith(
+      [
+        "Unpaired Telegram actor 123.",
+        "connector 42",
+      ].join("\n") + "\n",
+    );
+  });
+
+  it("reports when a Telegram actor had no pairing", async () => {
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "telegram-token");
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    telegramCliMocks.setDeleteIdentityBindingResult(false);
+
+    await telegramUnpairCommand({
+      actor: "123",
+      dbUrl: "postgres://telegram-db",
+    });
+
+    expect(write).toHaveBeenCalledWith(
+      [
+        "No Telegram pairing found for actor 123.",
+        "connector 42",
+      ].join("\n") + "\n",
+    );
   });
 });

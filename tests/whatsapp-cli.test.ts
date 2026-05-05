@@ -2,12 +2,14 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {
     whatsappLinkCommand,
     whatsappPairCommand,
+    whatsappUnpairCommand,
     whatsappWhoamiCommand
 } from "../src/integrations/channels/whatsapp/cli.js";
 
 const whatsappCliMocks = vi.hoisted(() => {
   const serviceInstances: MockWhatsAppService[] = [];
   const identityStoreInstances: MockPostgresIdentityStore[] = [];
+  let deleteIdentityBindingResult = true;
 
   class MockWhatsAppService {
     readonly whoami = vi.fn(async () => ({
@@ -55,6 +57,11 @@ const whatsappCliMocks = vi.hoisted(() => {
       createdAt: 0,
       updatedAt: 0,
     }));
+    readonly deleteIdentityBinding = vi.fn(async (_lookup: {
+      source: string;
+      connectorKey: string;
+      externalActorId: string;
+    }) => deleteIdentityBindingResult);
 
     constructor(_options: unknown) {
       identityStoreInstances.push(this);
@@ -66,6 +73,9 @@ const whatsappCliMocks = vi.hoisted(() => {
     MockWhatsAppService,
     identityStoreInstances,
     serviceInstances,
+    setDeleteIdentityBindingResult: (result: boolean) => {
+      deleteIdentityBindingResult = result;
+    },
   };
 });
 
@@ -106,6 +116,7 @@ describe("WhatsApp CLI", () => {
   afterEach(() => {
     whatsappCliMocks.identityStoreInstances.length = 0;
     whatsappCliMocks.serviceInstances.length = 0;
+    whatsappCliMocks.setDeleteIdentityBindingResult(true);
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
@@ -207,6 +218,46 @@ describe("WhatsApp CLI", () => {
       [
         "Paired WhatsApp actor 246664333885442@lid.",
         "identity identity-alice",
+        "connector main",
+      ].join("\n") + "\n",
+    );
+  });
+
+  it("unpairs a WhatsApp actor through the identity store", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await whatsappUnpairCommand({
+      actor: "421911111111",
+      connector: "main",
+      dbUrl: "postgres://wa-db",
+    });
+
+    expect(latestIdentityStore().deleteIdentityBinding).toHaveBeenCalledWith({
+      source: "whatsapp",
+      connectorKey: "main",
+      externalActorId: "421911111111@s.whatsapp.net",
+    });
+    expect(write).toHaveBeenCalledWith(
+      [
+        "Unpaired WhatsApp actor 421911111111@s.whatsapp.net.",
+        "connector main",
+      ].join("\n") + "\n",
+    );
+  });
+
+  it("reports when a WhatsApp actor had no pairing", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    whatsappCliMocks.setDeleteIdentityBindingResult(false);
+
+    await whatsappUnpairCommand({
+      actor: "246664333885442@lid",
+      connector: "main",
+      dbUrl: "postgres://wa-db",
+    });
+
+    expect(write).toHaveBeenCalledWith(
+      [
+        "No WhatsApp pairing found for actor 246664333885442@lid.",
         "connector main",
       ].join("\n") + "\n",
     );

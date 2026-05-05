@@ -267,6 +267,7 @@ Telegram example:
 ```bash
 panda telegram whoami
 panda telegram pair --identity alice --actor 123456789
+panda telegram unpair --actor 123456789
 panda telegram run
 ```
 
@@ -276,6 +277,7 @@ WhatsApp example:
 panda whatsapp whoami
 panda whatsapp link --phone 421900000000
 panda whatsapp pair --identity alice --actor 421911111111
+panda whatsapp unpair --actor 421911111111
 panda whatsapp run
 ```
 

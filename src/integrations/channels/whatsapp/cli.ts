@@ -25,6 +25,10 @@ interface WhatsAppPairCliOptions extends WhatsAppCliOptions {
   identity: string;
 }
 
+interface WhatsAppUnpairCliOptions extends WhatsAppCliOptions {
+  actor: string;
+}
+
 function parseWhatsAppConnectorKey(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -161,6 +165,28 @@ export async function whatsappPairCommand(options: WhatsAppPairCliOptions): Prom
   });
 }
 
+export async function whatsappUnpairCommand(options: WhatsAppUnpairCliOptions): Promise<void> {
+  const connectorKey = options.connector ?? resolveWhatsAppConnectorKey();
+  const externalActorId = parseWhatsAppActorId(options.actor);
+
+  await withWhatsAppIdentityStore(options, async (store) => {
+    const deleted = await store.deleteIdentityBinding({
+      source: WHATSAPP_SOURCE,
+      connectorKey,
+      externalActorId,
+    });
+
+    process.stdout.write(
+      [
+        deleted
+          ? `Unpaired WhatsApp actor ${externalActorId}.`
+          : `No WhatsApp pairing found for actor ${externalActorId}.`,
+        `connector ${connectorKey}`,
+      ].join("\n") + "\n",
+    );
+  });
+}
+
 export async function whatsappRunCommand(options: WhatsAppRunCliOptions): Promise<void> {
   const service = createWhatsAppService(options);
 
@@ -219,6 +245,16 @@ export function registerWhatsAppCommands(program: Command): void {
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: WhatsAppPairCliOptions) => {
       return whatsappPairCommand(options);
+    });
+
+  whatsappProgram
+    .command("unpair")
+    .description("Remove a WhatsApp sender identity pairing")
+    .requiredOption("--actor <actor>", "WhatsApp sender phone number, @s.whatsapp.net JID, or @lid JID", parseWhatsAppActorId)
+    .option("--connector <key>", "Connector key override", parseWhatsAppConnectorKey)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((options: WhatsAppUnpairCliOptions) => {
+      return whatsappUnpairCommand(options);
     });
 
   whatsappProgram

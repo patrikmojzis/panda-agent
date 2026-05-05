@@ -21,6 +21,10 @@ interface TelegramPairCliOptions extends TelegramIdentityCliOptions {
   actor: string;
 }
 
+interface TelegramUnpairCliOptions extends TelegramIdentityCliOptions {
+  actor: string;
+}
+
 function parseTelegramActorId(value: string): string {
   const trimmed = value.trim();
   if (!/^\d+$/.test(trimmed)) {
@@ -100,6 +104,27 @@ export async function telegramPairCommand(options: TelegramPairCliOptions): Prom
   });
 }
 
+export async function telegramUnpairCommand(options: TelegramUnpairCliOptions): Promise<void> {
+  const botIdentity = await resolveTelegramBotIdentity();
+
+  await withTelegramIdentityStore(options, async (store) => {
+    const deleted = await store.deleteIdentityBinding({
+      source: TELEGRAM_SOURCE,
+      connectorKey: botIdentity.connectorKey,
+      externalActorId: options.actor,
+    });
+
+    process.stdout.write(
+      [
+        deleted
+          ? `Unpaired Telegram actor ${options.actor}.`
+          : `No Telegram pairing found for actor ${options.actor}.`,
+        `connector ${botIdentity.connectorKey}`,
+      ].join("\n") + "\n",
+    );
+  });
+}
+
 export async function telegramRunCommand(options: TelegramRunCliOptions): Promise<void> {
   const service = createTelegramRunService(options);
 
@@ -145,6 +170,15 @@ export function registerTelegramCommands(program: Command): void {
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: TelegramPairCliOptions) => {
       return telegramPairCommand(options);
+    });
+
+  telegramProgram
+    .command("unpair")
+    .description("Remove a Telegram user identity pairing")
+    .requiredOption("--actor <telegramUserId>", "Telegram user id to unpair", parseTelegramActorId)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((options: TelegramUnpairCliOptions) => {
+      return telegramUnpairCommand(options);
     });
 
   telegramProgram

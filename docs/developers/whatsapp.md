@@ -46,12 +46,14 @@ Docker stack support is profile-gated:
 - leave `PANDA_WHATSAPP_VERSION` empty unless you need to pin a specific WhatsApp Web version
 - link the connector once with `panda whatsapp link --phone <connector-phone>`
 - authorize sender identities with `panda whatsapp pair --identity <handle> --actor <sender-phone>`
+- remove stale sender bindings with `panda whatsapp unpair --actor <sender-phone-or-jid>`
 
 In the Docker stack, run those CLI commands through the core container:
 
 ```bash
 ./scripts/docker-stack.sh panda whatsapp link --phone <connector-phone>
 ./scripts/docker-stack.sh panda whatsapp pair --identity <handle> --actor <sender-phone>
+./scripts/docker-stack.sh panda whatsapp unpair --actor <sender-phone-or-jid>
 ```
 
 ## Inbound Shape
