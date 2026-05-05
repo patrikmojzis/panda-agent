@@ -113,6 +113,10 @@ export interface WhatsAppPairResult extends WhatsAppWhoamiResult {
   alreadyPaired: boolean;
 }
 
+type WhatsAppPairSocketCycleResult =
+  | {pairedIdentity: WhatsAppWhoamiResult}
+  | {reconnect: true; reason: string};
+
 type WhatsAppSocketHealthState = "idle" | "connecting" | "open" | "reconnecting" | "closed" | "stopped";
 
 function describeAccountId(value: string | undefined): string | undefined {
@@ -537,19 +541,81 @@ export class WhatsAppService {
       };
     }
 
+    while (!this.stopping) {
+      const outcome = await this.runPairSocketCycle(phoneNumber, onPairingCode);
+      if ("pairedIdentity" in outcome) {
+        return {
+          ...outcome.pairedIdentity,
+          pairingCode: undefined,
+          alreadyPaired: false,
+        };
+      }
+
+      this.log("pairing_reconnect_scheduled", {
+        connectorKey: this.options.connectorKey,
+        reason: outcome.reason,
+        delayMs: RECONNECT_DELAY_MS,
+      });
+      await sleep(RECONNECT_DELAY_MS);
+    }
+
+    throw new Error(`WhatsApp connector ${this.options.connectorKey} pairing stopped before login completed.`);
+  }
+
+  private async runPairSocketCycle(
+    phoneNumber: string,
+    onPairingCode?: (code: string) => void,
+  ): Promise<WhatsAppPairSocketCycleResult> {
     const {authHandle, socket} = await this.createSocket();
     try {
-      const pairedIdentity = await new Promise<WhatsAppWhoamiResult>(async (resolve, reject) => {
+      return await new Promise<WhatsAppPairSocketCycleResult>(async (resolve, reject) => {
+        let settled = false;
+
+        const finish = (outcome: WhatsAppPairSocketCycleResult) => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+          cleanup();
+          resolve(outcome);
+        };
+
+        const fail = (error: Error) => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+          cleanup();
+          reject(error);
+        };
+
         const onConnectionUpdate = (update: Partial<ConnectionState>) => {
           if (update.connection === "open") {
-            cleanup();
-            resolve(toWhoamiResult(this.options.connectorKey, authHandle.state.creds));
+            authHandle.saveCreds()
+              .then(() => {
+                finish({
+                  pairedIdentity: toWhoamiResult(this.options.connectorKey, authHandle.state.creds),
+                });
+              })
+              .catch((error) => {
+                fail(error instanceof Error ? error : new Error(String(error)));
+              });
             return;
           }
 
           if (update.connection === "close") {
-            cleanup();
-            reject(update.lastDisconnect?.error ?? new Error("WhatsApp pairing closed before login completed."));
+            const statusCode = extractDisconnectStatusCode(update.lastDisconnect?.error);
+            const reason = describeDisconnectStatus(statusCode);
+            if (shouldReconnect(statusCode)) {
+              finish({reconnect: true, reason});
+              return;
+            }
+
+            fail(update.lastDisconnect?.error instanceof Error
+              ? update.lastDisconnect.error
+              : new Error(`WhatsApp pairing closed before login completed (${reason}).`));
           }
         };
 
@@ -563,18 +629,9 @@ export class WhatsAppService {
           const pairingCode = await socket.requestPairingCode(phoneNumber);
           onPairingCode?.(pairingCode);
         } catch (error) {
-          cleanup();
-          reject(error);
+          fail(error instanceof Error ? error : new Error(String(error)));
         }
       });
-
-      await authHandle.saveCreds();
-
-      return {
-        ...pairedIdentity,
-        pairingCode: undefined,
-        alreadyPaired: false,
-      };
     } finally {
       await this.stopSocket();
     }
