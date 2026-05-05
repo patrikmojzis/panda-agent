@@ -1,7 +1,9 @@
+# syntax=docker/dockerfile:1.7
+
 ARG PLAYWRIGHT_VERSION=1.59.1
 ARG UBUNTU_MIRROR=http://mirrors.digitalocean.com/ubuntu
 
-FROM ubuntu:24.04 AS base
+FROM ubuntu:24.04 AS node-base
 ARG UBUNTU_MIRROR
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -9,7 +11,9 @@ ENV SHELL=/bin/bash
 ENV TZ=UTC
 WORKDIR /app
 
-RUN set -eux; \
+RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,id=panda-apt-lists,target=/var/lib/apt/lists,sharing=locked \
+  set -eux; \
   apt_retry() { \
     attempts=0; \
     until "$@"; do \
@@ -21,6 +25,7 @@ RUN set -eux; \
       sleep 5; \
     done; \
   }; \
+  rm -f /etc/apt/apt.conf.d/docker-clean; \
   if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
     sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources; \
   elif [ -f /etc/apt/sources.list ]; then \
@@ -29,60 +34,53 @@ RUN set -eux; \
   apt_retry apt-get update; \
   apt_retry apt-get install -y --no-install-recommends \
     bash \
-    bc \
-    build-essential \
     ca-certificates \
     curl \
-    dnsutils \
-    ffmpeg \
-    file \
-    git \
     gnupg \
-    jq \
-    less \
-    libreoffice-nogui \
-    netcat-openbsd \
-    poppler-utils \
-    python3 \
-    python-is-python3 \
-    python3-pip \
-    python3-venv \
-    ripgrep \
-    sqlite3 \
-    tree \
     tzdata \
-    unzip \
-    wget \
-    whois \
-    xz-utils \
-    zip; \
+    xz-utils; \
   mkdir -p /etc/apt/keyrings; \
-  curl -fsSL https://pgp.mongodb.com/server-8.0.asc \
-    | gpg --dearmor -o /etc/apt/keyrings/mongodb-server-8.0.gpg; \
-  echo "deb [ arch=amd64,arm64 signed-by=/etc/apt/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" \
-    > /etc/apt/sources.list.d/mongodb-org-8.0.list; \
   curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg; \
   echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
     > /etc/apt/sources.list.d/nodesource.list; \
   apt_retry apt-get update; \
-  apt_retry apt-get install -y --no-install-recommends \
-    mongodb-mongosh \
-    nodejs; \
+  apt_retry apt-get install -y --no-install-recommends nodejs; \
   corepack enable; \
-  corepack prepare pnpm@10.33.0 --activate; \
-  rm -rf /var/lib/apt/lists/*
+  corepack prepare pnpm@10.33.0 --activate
 
-FROM base AS build
+FROM node-base AS build
+
+RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,id=panda-apt-lists,target=/var/lib/apt/lists,sharing=locked \
+  set -eux; \
+  apt_retry() { \
+    attempts=0; \
+    until "$@"; do \
+      attempts=$((attempts + 1)); \
+      if [ "$attempts" -ge 5 ]; then \
+        return 1; \
+      fi; \
+      echo "apt command failed, retrying in 5s ($attempts/5)..." >&2; \
+      sleep 5; \
+    done; \
+  }; \
+  apt_retry apt-get update; \
+  apt_retry apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    python3
 
 COPY package.json pnpm-lock.yaml tsconfig.json ./
-RUN pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=panda-pnpm-store,target=/pnpm/store,sharing=locked \
+  pnpm install --frozen-lockfile --store-dir /pnpm/store
 
 COPY src ./src
-RUN pnpm build \
-  && pnpm prune --prod
+RUN --mount=type=cache,id=panda-pnpm-store,target=/pnpm/store,sharing=locked \
+  pnpm build \
+  && CI=true npm_config_store_dir=/pnpm/store pnpm prune --prod
 
-FROM base AS runtime
+FROM node-base AS app
 
 COPY package.json pnpm-lock.yaml ./
 COPY --from=build /app/node_modules ./node_modules
@@ -97,6 +95,53 @@ EXPOSE 8080 8094
 
 ENTRYPOINT ["panda"]
 CMD ["--help"]
+
+FROM app AS runner
+
+RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,id=panda-apt-lists,target=/var/lib/apt/lists,sharing=locked \
+  set -eux; \
+  apt_retry() { \
+    attempts=0; \
+    until "$@"; do \
+      attempts=$((attempts + 1)); \
+      if [ "$attempts" -ge 5 ]; then \
+        return 1; \
+      fi; \
+      echo "apt command failed, retrying in 5s ($attempts/5)..." >&2; \
+      sleep 5; \
+    done; \
+  }; \
+  mkdir -p /etc/apt/keyrings; \
+  curl -fsSL https://pgp.mongodb.com/server-8.0.asc \
+    | gpg --dearmor -o /etc/apt/keyrings/mongodb-server-8.0.gpg; \
+  echo "deb [ arch=amd64,arm64 signed-by=/etc/apt/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" \
+    > /etc/apt/sources.list.d/mongodb-org-8.0.list; \
+  apt_retry apt-get update; \
+  apt_retry apt-get install -y --no-install-recommends \
+    bc \
+    build-essential \
+    dnsutils \
+    ffmpeg \
+    file \
+    git \
+    jq \
+    less \
+    libreoffice-nogui \
+    mongodb-mongosh \
+    netcat-openbsd \
+    poppler-utils \
+    python3 \
+    python-is-python3 \
+    python3-pip \
+    python3-venv \
+    ripgrep \
+    sqlite3 \
+    tree \
+    unzip \
+    wget \
+    whois \
+    zip
 
 FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble AS browser-runner
 
@@ -118,4 +163,4 @@ EXPOSE 8080
 ENTRYPOINT ["panda"]
 CMD ["browser-runner"]
 
-FROM runtime AS final
+FROM runner AS final

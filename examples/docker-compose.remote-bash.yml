@@ -17,8 +17,10 @@ services:
       start_period: 5s
 
   panda-core:
-    build: ..
-    image: panda:latest
+    build:
+      context: ..
+      target: app
+    image: panda-app:latest
     command: ["run"]
     env_file:
       - ../.env
@@ -69,8 +71,10 @@ services:
       start_period: 20s
 
   panda-runner-panda:
-    build: ..
-    image: panda:latest
+    build:
+      context: ..
+      target: runner
+    image: panda-runner:latest
     command: ["runner"]
     restart: unless-stopped
     environment:
@@ -90,8 +94,7 @@ services:
       start_period: 5s
 
   panda-runner-ops:
-    build: ..
-    image: panda:latest
+    image: panda-runner:latest
     command: ["runner"]
     restart: unless-stopped
     environment:

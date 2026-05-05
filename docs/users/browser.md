@@ -90,7 +90,8 @@ This is the nicest dev setup now:
 Build images:
 
 ```bash
-docker build -t panda:latest .
+docker build --target app -t panda-app:latest .
+docker build --target runner -t panda-runner:latest .
 docker build --target browser-runner -t panda-browser-runner:latest .
 ```
 

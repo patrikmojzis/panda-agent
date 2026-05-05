@@ -1,7 +1,9 @@
 services:
   panda-core:
-    build: ..
-    image: panda:latest
+    build:
+      context: ..
+      target: app
+    image: panda-app:latest
     command: ["run"]
     restart: unless-stopped
     stop_grace_period: 30s
@@ -76,8 +78,7 @@ services:
       start_period: 5s
 
   panda-telegram:
-    build: ..
-    image: panda:latest
+    image: panda-app:latest
     command: ["telegram", "run"]
     restart: unless-stopped
     stop_grace_period: 30s
@@ -104,8 +105,7 @@ services:
       start_period: 45s
 
   panda-whatsapp:
-    build: ..
-    image: panda:latest
+    image: panda-app:latest
     command: ["whatsapp", "run"]
     restart: unless-stopped
     stop_grace_period: 30s
