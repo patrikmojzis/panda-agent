@@ -741,4 +741,99 @@ describe("WhatsAppService", () => {
       }),
     }));
   });
+
+  it("downloads voice-only audio messages and enqueues them as media", async () => {
+    const stores = createStores();
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    (service as {socket?: unknown}).socket = whatsappServiceMocks.socket;
+
+    await (service as never).handleMessagesUpsert(stores, {
+      type: "notify",
+      messages: [createPrivateMessage({
+        key: {
+          remoteJid: "123@s.whatsapp.net",
+          participant: undefined,
+          id: "msg-voice",
+          fromMe: false,
+        },
+        message: {
+          audioMessage: {
+            fileLength: 321,
+            ptt: true,
+          },
+        },
+      })],
+    });
+
+    expect(whatsappServiceMocks.downloadMediaMessage).toHaveBeenCalledTimes(1);
+    expect(stores.mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({
+      source: "whatsapp",
+      connectorKey: "main",
+      mimeType: "audio/ogg",
+      sizeBytes: 321,
+      metadata: {
+        whatsappMessageId: "msg-voice",
+        whatsappRemoteJid: "123@s.whatsapp.net",
+        whatsappMediaKind: "audio",
+        ptt: true,
+      },
+    }));
+    expect(stores.requests.enqueueRequest).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "whatsapp_message",
+      payload: expect.objectContaining({
+        text: "",
+        media: [expect.objectContaining({
+          id: "media-1",
+          mimeType: "audio/ogg",
+          sizeBytes: 321,
+        })],
+      }),
+    }));
+    expect(write.mock.calls.map((call) => String(call[0])).join("\n")).not.toContain("unsupported_message_shape");
+  });
+
+  it("preserves explicit WhatsApp audio MIME types", async () => {
+    const stores = createStores();
+    const service = new WhatsAppService({
+      connectorKey: "main",
+      dataDir: "/tmp/panda",
+    });
+
+    (service as {socket?: unknown}).socket = whatsappServiceMocks.socket;
+
+    await (service as never).handleMessagesUpsert(stores, {
+      type: "notify",
+      messages: [createPrivateMessage({
+        message: {
+          audioMessage: {
+            mimetype: "audio/opus",
+            fileLength: 456,
+            ptt: false,
+          },
+        },
+      })],
+    });
+
+    expect(stores.mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({
+      mimeType: "audio/opus",
+      sizeBytes: 456,
+      metadata: expect.objectContaining({
+        whatsappMediaKind: "audio",
+        ptt: false,
+      }),
+    }));
+    expect(stores.requests.enqueueRequest).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({
+        media: [expect.objectContaining({
+          mimeType: "audio/opus",
+          sizeBytes: 456,
+        })],
+      }),
+    }));
+  });
 });

@@ -1180,6 +1180,17 @@ export class WhatsAppService {
       }));
     }
 
+    if (content.audioMessage) {
+      descriptors.push(await this.downloadMedia(message, stores, {
+        mimeType: content.audioMessage.mimetype ?? "audio/ogg",
+        sizeBytes: readMediaSizeBytes(content.audioMessage.fileLength),
+        metadata: {
+          whatsappMediaKind: "audio",
+          ptt: content.audioMessage.ptt ?? null,
+        },
+      }));
+    }
+
     return descriptors;
   }
 
@@ -1190,6 +1201,7 @@ export class WhatsAppService {
       mimeType: string;
       sizeBytes?: number;
       hintFilename?: string;
+      metadata?: Record<string, unknown>;
     },
   ): Promise<MediaDescriptor> {
     if (!this.socket) {
@@ -1211,6 +1223,7 @@ export class WhatsAppService {
       metadata: {
         whatsappMessageId: message.key.id ?? null,
         whatsappRemoteJid: message.key.remoteJid ?? null,
+        ...options.metadata,
       },
     });
   }
