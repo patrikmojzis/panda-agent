@@ -43,12 +43,18 @@ function parseWhatsAppPhoneNumber(value: string): string {
   return digits;
 }
 
-function parseWhatsAppActorPhone(value: string): string {
+function parseWhatsAppActorId(value: string): string {
   const trimmed = value.trim();
-  const jidMatch = trimmed.match(/^(\d{8,15})@s\.whatsapp\.net$/i);
-  const digits = jidMatch?.[1] ?? value.replace(/[^\d]/g, "");
+  const jidMatch = trimmed.match(/^(\d{8,20})(?::\d+)?@(s\.whatsapp\.net|lid)$/i);
+  const jidDigits = jidMatch?.[1];
+  const jidDomain = jidMatch?.[2];
+  if (jidDigits && jidDomain) {
+    return `${jidDigits}@${jidDomain.toLowerCase()}`;
+  }
+
+  const digits = value.replace(/[^\d]/g, "");
   if (digits.length < 8 || digits.length > 15) {
-    throw new InvalidArgumentError("WhatsApp identity phone must contain 8-15 digits.");
+    throw new InvalidArgumentError("WhatsApp actor must be a phone number, @s.whatsapp.net JID, or @lid JID.");
   }
 
   return `${digits}@s.whatsapp.net`;
@@ -131,7 +137,7 @@ export async function whatsappLinkCommand(options: WhatsAppLinkCliOptions): Prom
 
 export async function whatsappPairCommand(options: WhatsAppPairCliOptions): Promise<void> {
   const connectorKey = options.connector ?? resolveWhatsAppConnectorKey();
-  const externalActorId = parseWhatsAppActorPhone(options.actor);
+  const externalActorId = parseWhatsAppActorId(options.actor);
 
   await withWhatsAppIdentityStore(options, async (store) => {
     const identity = await store.getIdentityByHandle(options.identity);
@@ -208,7 +214,7 @@ export function registerWhatsAppCommands(program: Command): void {
     .command("pair")
     .description("Pair a WhatsApp sender to a Panda identity")
     .requiredOption("--identity <handle>", "Identity handle to pair", parseIdentityHandle)
-    .requiredOption("--actor <number>", "WhatsApp sender phone number or @s.whatsapp.net JID", parseWhatsAppActorPhone)
+    .requiredOption("--actor <actor>", "WhatsApp sender phone number, @s.whatsapp.net JID, or @lid JID", parseWhatsAppActorId)
     .option("--connector <key>", "Connector key override", parseWhatsAppConnectorKey)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: WhatsAppPairCliOptions) => {

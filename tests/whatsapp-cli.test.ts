@@ -186,4 +186,29 @@ describe("WhatsApp CLI", () => {
       ].join("\n") + "\n",
     );
   });
+
+  it("pairs a WhatsApp LID actor to an identity through the pair command", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await whatsappPairCommand({
+      actor: "246664333885442@lid",
+      identity: "alice",
+      connector: "main",
+      dbUrl: "postgres://wa-db",
+    });
+
+    expect(latestIdentityStore().ensureIdentityBinding).toHaveBeenCalledWith(expect.objectContaining({
+      source: "whatsapp",
+      connectorKey: "main",
+      externalActorId: "246664333885442@lid",
+      identityId: "identity-alice",
+    }));
+    expect(write).toHaveBeenCalledWith(
+      [
+        "Paired WhatsApp actor 246664333885442@lid.",
+        "identity identity-alice",
+        "connector main",
+      ].join("\n") + "\n",
+    );
+  });
 });
