@@ -1039,9 +1039,7 @@ export async function importLegacyAgent(
       await options.credentialService.setCredential({
         envKey: credential.envKey,
         value: credential.value,
-        scope: options.identityId ? "relationship" : "agent",
         agentKey: plan.agentKey,
-        identityId: options.identityId,
       });
       credentialCount += 1;
     }

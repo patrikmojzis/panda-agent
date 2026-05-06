@@ -3,16 +3,21 @@ import {randomUUID} from "node:crypto";
 import type {Pool, PoolClient} from "pg";
 
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
-import {buildIdentityTableNames} from "../identity/postgres-shared.js";
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toMillis} from "../threads/runtime/postgres-shared.js";
+import {
+  CREATE_RUNTIME_SCHEMA_SQL,
+  quoteIdentifier,
+  quoteQualifiedIdentifier,
+  RUNTIME_SCHEMA,
+  toMillis,
+} from "../threads/runtime/postgres-shared.js";
 import {buildCredentialTableNames, type CredentialTableNames} from "./postgres-shared.js";
 import {
-    type CredentialListFilter,
-    type CredentialRecord,
-    type CredentialResolutionContext,
-    normalizeCredentialEnvKey,
-    normalizeCredentialScopeInput,
-    type SetCredentialInput,
+  type CredentialListFilter,
+  type CredentialRecord,
+  type CredentialResolutionContext,
+  normalizeCredentialAgentKey,
+  normalizeCredentialEnvKey,
+  type SetCredentialInput,
 } from "./types.js";
 
 interface PgQueryable {
@@ -26,6 +31,13 @@ interface PgPoolLike extends PgQueryable {
 export interface PostgresCredentialStoreOptions {
   pool: PgPoolLike;
 }
+
+const OLD_CREDENTIAL_INDEXES = [
+  "runtime_credentials_relationship_unique_idx",
+  "runtime_credentials_agent_unique_idx",
+  "runtime_credentials_identity_unique_idx",
+  "runtime_credentials_lookup_idx",
+] as const;
 
 function toBuffer(value: unknown): Buffer {
   if (Buffer.isBuffer(value)) {
@@ -51,9 +63,7 @@ function parseCredentialRow(row: Record<string, unknown>): CredentialRecord {
   return {
     id: String(row.id),
     envKey: String(row.env_key),
-    scope: String(row.scope) as CredentialRecord["scope"],
-    agentKey: typeof row.agent_key === "string" ? row.agent_key : undefined,
-    identityId: typeof row.identity_id === "string" ? row.identity_id : undefined,
+    agentKey: String(row.agent_key),
     valueCiphertext: toBuffer(row.value_ciphertext),
     valueIv: toBuffer(row.value_iv),
     valueTag: toBuffer(row.value_tag),
@@ -63,41 +73,40 @@ function parseCredentialRow(row: Record<string, unknown>): CredentialRecord {
   };
 }
 
-function buildExactScopeWhere(
+function isDuplicateTableError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && (
+      (error as {code?: unknown}).code === "42P07"
+      || /relation ".+" already exists/i.test(String((error as {message?: unknown}).message ?? error))
+    );
+}
+
+function isMissingRelationOrColumnError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && (
+      (error as {code?: unknown}).code === "42P01"
+      || (error as {code?: unknown}).code === "42703"
+      || /relation ".+" does not exist/i.test(String((error as {message?: unknown}).message ?? error))
+      || /column ".+" does not exist/i.test(String((error as {message?: unknown}).message ?? error))
+    );
+}
+
+function buildCredentialWhere(
   envKey: string,
-  scopeInput: CredentialRecord | SetCredentialInput | CredentialListFilter,
+  input: {agentKey: string},
   startIndex = 1,
 ): {
   sql: string;
   values: unknown[];
 } {
   const normalizedEnvKey = normalizeCredentialEnvKey(envKey);
-  const normalizedScope = normalizeCredentialScopeInput({
-    scope: scopeInput.scope!,
-    agentKey: scopeInput.agentKey,
-    identityId: scopeInput.identityId,
-  });
-
-  const values: unknown[] = [normalizedEnvKey, normalizedScope.scope];
-  const parts = [`env_key = $${startIndex}`, `scope = $${startIndex + 1}`];
-
-  if (normalizedScope.scope === "relationship") {
-    values.push(normalizedScope.agentKey, normalizedScope.identityId);
-    parts.push(
-      `agent_key = $${startIndex + 2}`,
-      `identity_id = $${startIndex + 3}`,
-    );
-  } else if (normalizedScope.scope === "agent") {
-    values.push(normalizedScope.agentKey);
-    parts.push(`agent_key = $${startIndex + 2}`, "identity_id IS NULL");
-  } else {
-    values.push(normalizedScope.identityId);
-    parts.push("agent_key IS NULL", `identity_id = $${startIndex + 2}`);
-  }
+  const normalizedAgentKey = normalizeCredentialAgentKey(input.agentKey);
 
   return {
-    sql: parts.join(" AND "),
-    values,
+    sql: `env_key = $${startIndex} AND agent_key = $${startIndex + 1}`,
+    values: [normalizedEnvKey, normalizedAgentKey],
   };
 }
 
@@ -105,56 +114,101 @@ export class PostgresCredentialStore {
   private readonly pool: PgPoolLike;
   private readonly tables: CredentialTableNames;
   private readonly agentTables: ReturnType<typeof buildAgentTableNames>;
-  private readonly identityTables: ReturnType<typeof buildIdentityTableNames>;
 
   constructor(options: PostgresCredentialStoreOptions) {
     this.pool = options.pool;
     this.tables = buildCredentialTableNames();
     this.agentTables = buildAgentTableNames();
-    this.identityTables = buildIdentityTableNames();
   }
 
   async ensureSchema(): Promise<void> {
     await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
+    if (!(await this.credentialTableExists())) {
+      try {
+        await this.pool.query(`
+          CREATE TABLE ${this.tables.credentials} (
+            id UUID PRIMARY KEY,
+            env_key TEXT NOT NULL,
+            agent_key TEXT NOT NULL REFERENCES ${this.agentTables.agents}(agent_key) ON DELETE CASCADE,
+            value_ciphertext BYTEA NOT NULL,
+            value_iv BYTEA NOT NULL,
+            value_tag BYTEA NOT NULL,
+            key_version SMALLINT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+      } catch (error) {
+        if (!isDuplicateTableError(error)) {
+          throw error;
+        }
+      }
+    }
+    await this.migrateAgentOnlySchema();
     await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.credentials} (
-        id UUID PRIMARY KEY,
-        env_key TEXT NOT NULL,
-        scope TEXT NOT NULL,
-        agent_key TEXT REFERENCES ${this.agentTables.agents}(agent_key) ON DELETE CASCADE,
-        identity_id TEXT REFERENCES ${this.identityTables.identities}(id) ON DELETE CASCADE,
-        value_ciphertext BYTEA NOT NULL,
-        value_iv BYTEA NOT NULL,
-        value_tag BYTEA NOT NULL,
-        key_version SMALLINT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        CHECK (scope IN ('relationship', 'agent', 'identity')),
-        CHECK (
-          (scope = 'relationship' AND agent_key IS NOT NULL AND identity_id IS NOT NULL)
-          OR (scope = 'agent' AND agent_key IS NOT NULL AND identity_id IS NULL)
-          OR (scope = 'identity' AND agent_key IS NULL AND identity_id IS NOT NULL)
-        )
-      )
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_credentials_relationship_unique_idx`)}
-      ON ${this.tables.credentials} (identity_id, agent_key, env_key)
-      WHERE scope = 'relationship'
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_credentials_agent_unique_idx`)}
+      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_credentials_agent_env_unique_idx`)}
       ON ${this.tables.credentials} (agent_key, env_key)
-      WHERE scope = 'agent'
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_credentials_identity_unique_idx`)}
-      ON ${this.tables.credentials} (identity_id, env_key)
-      WHERE scope = 'identity'
     `);
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_credentials_lookup_idx`)}
-      ON ${this.tables.credentials} (env_key, scope, agent_key, identity_id)
+      ON ${this.tables.credentials} (env_key, agent_key)
+    `);
+  }
+
+  private async credentialTableExists(): Promise<boolean> {
+    try {
+      await this.pool.query(`SELECT 1 FROM ${this.tables.credentials} LIMIT 0`);
+      return true;
+    } catch (error) {
+      if (isMissingRelationOrColumnError(error)) {
+        return false;
+      }
+
+      throw error;
+    }
+  }
+
+  private async credentialColumnExists(columnName: string): Promise<boolean> {
+    try {
+      await this.pool.query(`SELECT ${quoteIdentifier(columnName)} FROM ${this.tables.credentials} LIMIT 0`);
+      return true;
+    } catch (error) {
+      if (isMissingRelationOrColumnError(error)) {
+        return false;
+      }
+
+      throw error;
+    }
+  }
+
+  private async migrateAgentOnlySchema(): Promise<void> {
+    const hasScopeColumn = await this.credentialColumnExists("scope");
+
+    if (hasScopeColumn) {
+      await this.pool.query(`
+        DELETE FROM ${this.tables.credentials}
+        WHERE scope <> 'agent' OR scope IS NULL
+      `);
+      for (const indexName of OLD_CREDENTIAL_INDEXES) {
+        await this.pool.query(`DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(RUNTIME_SCHEMA, indexName)}`);
+      }
+    }
+    await this.pool.query(`
+      DELETE FROM ${this.tables.credentials}
+      WHERE agent_key IS NULL OR agent_key = ''
+    `);
+
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.credentials}
+      DROP COLUMN IF EXISTS scope
+    `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.credentials}
+      DROP COLUMN IF EXISTS identity_id
+    `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.credentials}
+      ALTER COLUMN agent_key SET NOT NULL
     `);
   }
 
@@ -167,19 +221,9 @@ export class PostgresCredentialStore {
       conditions.push(`env_key = $${values.length}`);
     }
 
-    if (filter.scope !== undefined) {
-      values.push(filter.scope);
-      conditions.push(`scope = $${values.length}`);
-    }
-
     if (filter.agentKey !== undefined) {
-      values.push(filter.agentKey.trim());
+      values.push(normalizeCredentialAgentKey(filter.agentKey));
       conditions.push(`agent_key = $${values.length}`);
-    }
-
-    if (filter.identityId !== undefined) {
-      values.push(filter.identityId.trim());
-      conditions.push(`identity_id = $${values.length}`);
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -187,18 +231,18 @@ export class PostgresCredentialStore {
       SELECT *
       FROM ${this.tables.credentials}
       ${where}
-      ORDER BY env_key ASC, scope ASC, updated_at DESC
+      ORDER BY env_key ASC, agent_key ASC
     `, values);
 
     return result.rows.map((row) => parseCredentialRow(row as Record<string, unknown>));
   }
 
-  async getCredentialExact(
+  async getCredential(
     envKey: string,
-    scopeInput: SetCredentialInput | CredentialRecord | CredentialListFilter,
+    input: {agentKey: string},
     queryable: PgQueryable = this.pool,
   ): Promise<CredentialRecord | null> {
-    const where = buildExactScopeWhere(envKey, scopeInput);
+    const where = buildCredentialWhere(envKey, input);
     const result = await queryable.query(`
       SELECT *
       FROM ${this.tables.credentials}
@@ -211,13 +255,13 @@ export class PostgresCredentialStore {
   }
 
   async setCredential(input: SetCredentialInput): Promise<CredentialRecord> {
-    const normalizedScope = normalizeCredentialScopeInput(input);
+    const normalizedAgentKey = normalizeCredentialAgentKey(input.agentKey);
     const normalizedEnvKey = normalizeCredentialEnvKey(input.envKey);
     const client = await this.pool.connect();
 
     try {
       await client.query("BEGIN");
-      const existing = await this.getCredentialExact(normalizedEnvKey, normalizedScope, client);
+      const existing = await this.getCredential(normalizedEnvKey, {agentKey: normalizedAgentKey}, client);
 
       if (existing) {
         const updated = await client.query(`
@@ -246,9 +290,7 @@ export class PostgresCredentialStore {
         INSERT INTO ${this.tables.credentials} (
           id,
           env_key,
-          scope,
           agent_key,
-          identity_id,
           value_ciphertext,
           value_iv,
           value_tag,
@@ -260,17 +302,13 @@ export class PostgresCredentialStore {
           $4,
           $5,
           $6,
-          $7,
-          $8,
-          $9
+          $7
         )
         RETURNING *
       `, [
         randomUUID(),
         normalizedEnvKey,
-        normalizedScope.scope,
-        normalizedScope.agentKey ?? null,
-        normalizedScope.identityId ?? null,
+        normalizedAgentKey,
         input.encryptedValue.ciphertext,
         input.encryptedValue.iv,
         input.encryptedValue.tag,
@@ -289,9 +327,9 @@ export class PostgresCredentialStore {
 
   async deleteCredential(
     envKey: string,
-    scopeInput: CredentialRecord | SetCredentialInput | CredentialListFilter,
+    input: {agentKey: string},
   ): Promise<boolean> {
-    const where = buildExactScopeWhere(envKey, scopeInput);
+    const where = buildCredentialWhere(envKey, input);
     const result = await this.pool.query(`
       DELETE FROM ${this.tables.credentials}
       WHERE ${where.sql}
@@ -302,42 +340,11 @@ export class PostgresCredentialStore {
 
   async listResolvableCredentials(context: CredentialResolutionContext): Promise<readonly CredentialRecord[]> {
     const agentKey = context.agentKey?.trim();
-    const identityId = context.identityId?.trim();
-    const values: unknown[] = [];
-    const parts: string[] = [];
-
-    if (agentKey && identityId) {
-      values.push(agentKey, identityId, agentKey, identityId);
-      parts.push(
-        `(scope = 'relationship' AND agent_key = $1 AND identity_id = $2)`,
-        `(scope = 'agent' AND agent_key = $3)`,
-        `(scope = 'identity' AND identity_id = $4)`,
-      );
-    } else if (agentKey) {
-      values.push(agentKey);
-      parts.push(`(scope = 'agent' AND agent_key = $1)`);
-    } else if (identityId) {
-      values.push(identityId);
-      parts.push(`(scope = 'identity' AND identity_id = $1)`);
-    } else {
+    if (!agentKey) {
       return [];
     }
 
-    const result = await this.pool.query(`
-      SELECT *
-      FROM ${this.tables.credentials}
-      WHERE ${parts.join(" OR ")}
-      ORDER BY
-        env_key ASC,
-        CASE scope
-          WHEN 'relationship' THEN 0
-          WHEN 'agent' THEN 1
-          ELSE 2
-        END ASC,
-        updated_at DESC
-    `, values);
-
-    return result.rows.map((row) => parseCredentialRow(row as Record<string, unknown>));
+    return this.listCredentials({agentKey});
   }
 
   async resolveCredential(
@@ -346,24 +353,7 @@ export class PostgresCredentialStore {
   ): Promise<CredentialRecord | null> {
     const normalizedEnvKey = normalizeCredentialEnvKey(envKey);
     const agentKey = context.agentKey?.trim();
-    const identityId = context.identityId?.trim();
-    const values: unknown[] = [normalizedEnvKey];
-    const parts: string[] = [];
-
-    if (agentKey && identityId) {
-      values.push(agentKey, identityId, agentKey, identityId);
-      parts.push(
-        `(scope = 'relationship' AND agent_key = $2 AND identity_id = $3)`,
-        `(scope = 'agent' AND agent_key = $4)`,
-        `(scope = 'identity' AND identity_id = $5)`,
-      );
-    } else if (agentKey) {
-      values.push(agentKey);
-      parts.push(`(scope = 'agent' AND agent_key = $2)`);
-    } else if (identityId) {
-      values.push(identityId);
-      parts.push(`(scope = 'identity' AND identity_id = $2)`);
-    } else {
+    if (!agentKey) {
       return null;
     }
 
@@ -371,16 +361,9 @@ export class PostgresCredentialStore {
       SELECT *
       FROM ${this.tables.credentials}
       WHERE env_key = $1
-        AND (${parts.join(" OR ")})
-      ORDER BY
-        CASE scope
-          WHEN 'relationship' THEN 0
-          WHEN 'agent' THEN 1
-          ELSE 2
-        END ASC,
-        updated_at DESC
+        AND agent_key = $2
       LIMIT 1
-    `, values);
+    `, [normalizedEnvKey, normalizeCredentialAgentKey(agentKey)]);
 
     const row = result.rows[0];
     return row ? parseCredentialRow(row as Record<string, unknown>) : null;

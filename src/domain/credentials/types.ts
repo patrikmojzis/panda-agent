@@ -1,15 +1,6 @@
-export const CREDENTIAL_SCOPES = ["relationship", "agent", "identity"] as const;
-
-export type CredentialScope = typeof CREDENTIAL_SCOPES[number];
-
-export interface CredentialScopeInput {
-  scope: CredentialScope;
-  agentKey?: string;
-  identityId?: string;
-}
-
-export interface CredentialRecord extends CredentialScopeInput {
+export interface CredentialRecord {
   id: string;
+  agentKey: string;
   envKey: string;
   valueCiphertext: Buffer;
   valueIv: Buffer;
@@ -19,13 +10,13 @@ export interface CredentialRecord extends CredentialScopeInput {
   updatedAt: number;
 }
 
-export interface CredentialListFilter extends Partial<CredentialScopeInput> {
+export interface CredentialListFilter {
+  agentKey?: string;
   envKey?: string;
 }
 
 export interface CredentialResolutionContext {
   agentKey?: string;
-  identityId?: string;
 }
 
 export interface EncryptedCredentialValue {
@@ -35,13 +26,15 @@ export interface EncryptedCredentialValue {
   keyVersion: number;
 }
 
-export interface SetCredentialInput extends CredentialScopeInput {
+export interface SetCredentialInput {
+  agentKey: string;
   envKey: string;
   encryptedValue: EncryptedCredentialValue;
 }
 
-export interface DecryptedCredentialRecord extends CredentialScopeInput {
+export interface DecryptedCredentialRecord {
   id: string;
+  agentKey: string;
   envKey: string;
   value: string;
   keyVersion: number;
@@ -125,43 +118,8 @@ export function normalizeCredentialEnvKey(value: string): string {
   return normalized;
 }
 
-export function normalizeCredentialScopeInput<T extends CredentialScopeInput>(input: T): T {
-  const scope = input.scope;
-  const agentKey = input.agentKey?.trim() || undefined;
-  const identityId = input.identityId?.trim() || undefined;
-
-  if (scope === "relationship") {
-    return {
-      ...input,
-      scope,
-      agentKey: requireTrimmed("Relationship credential agent key", agentKey),
-      identityId: requireTrimmed("Relationship credential identity id", identityId),
-    };
-  }
-
-  if (scope === "agent") {
-    if (identityId) {
-      throw new Error("Agent credentials do not take identityId.");
-    }
-
-    return {
-      ...input,
-      scope,
-      agentKey: requireTrimmed("Agent credential agent key", agentKey),
-      identityId: undefined,
-    };
-  }
-
-  if (agentKey) {
-    throw new Error("Identity credentials do not take agentKey.");
-  }
-
-  return {
-    ...input,
-    scope,
-    agentKey: undefined,
-    identityId: requireTrimmed("Identity credential identity id", identityId),
-  };
+export function normalizeCredentialAgentKey(value: string | undefined): string {
+  return requireTrimmed("Credential agent key", value);
 }
 
 export function maskCredentialValue(value: string): string {

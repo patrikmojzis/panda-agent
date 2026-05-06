@@ -172,8 +172,6 @@ function createCredentialResolver() {
       id: envKey,
       envKey,
       value: `secret-for-${envKey}`,
-      scope: "relationship",
-      identityId: "identity-1",
       agentKey: "panda",
       keyVersion: 1,
       createdAt: 1,
@@ -185,11 +183,9 @@ function createCredentialResolver() {
 function createWatch(overrides: Partial<WatchRecord>): WatchRecord {
   return {
     id: "watch-1",
-    identityId: "identity-1",
-    agentKey: "panda",
+    sessionId: "session-1",
     title: "watch",
     intervalMinutes: 5,
-    targetKind: "home",
     source: {
       kind: "mongodb_query",
       credentialEnvKey: "SOURCE_SECRET",
@@ -259,6 +255,7 @@ describe("watch adapters", () => {
 
     const result = await evaluateWatch(watch, {
       credentialResolver: credentialResolver as any,
+      credentialContext: {agentKey: "panda"},
     });
 
     expect(result.changed).toBe(true);
@@ -309,6 +306,7 @@ describe("watch adapters", () => {
 
     const postgresResult = await evaluateWatch(postgresWatch, {
       credentialResolver: credentialResolver as any,
+      credentialContext: {agentKey: "panda"},
     });
     expect(postgresResult.changed).toBe(true);
     expect(postgresResult.event?.payload).toMatchObject({
@@ -352,6 +350,7 @@ describe("watch adapters", () => {
 
     const mysqlResult = await evaluateWatch(mysqlWatch, {
       credentialResolver: credentialResolver as any,
+      credentialContext: {agentKey: "panda"},
     });
     expect(mysqlResult.changed).toBe(true);
     expect(mysqlResult.event?.payload).toMatchObject({
@@ -409,6 +408,7 @@ describe("watch adapters", () => {
 
     const first = await evaluateWatch(watch, {
       credentialResolver: credentialResolver as any,
+      credentialContext: {agentKey: "panda"},
     });
     expect(first.changed).toBe(false);
     expect(first.nextState).toMatchObject({
@@ -472,6 +472,7 @@ describe("watch adapters", () => {
       state: first.nextState,
     }, {
       credentialResolver: credentialResolver as any,
+      credentialContext: {agentKey: "panda"},
     });
     expect(second.changed).toBe(true);
     expect(second.event?.payload).toMatchObject({

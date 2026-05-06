@@ -1,27 +1,10 @@
 # Credentials
 
-Panda v1 can store secret env values in Postgres and inject them into `bash`.
+Panda can store secret env values in Postgres and inject them into `bash`.
 
-This is for bash only in v1. Not every tool gets these values.
+Credentials belong to one agent. There is no per-human credential layer.
 
-## Scope Model
-
-Panda supports three scopes:
-
-- `relationship`: one identity talking to one agent. This is the default and the recommended path.
-- `agent`: one agent across identities. Use this for service-account style creds or agent-owned bot tokens.
-- `identity`: one identity across agents. Supported in the CLI, but not writable by the model in v1.
-
-UX copy stays human:
-
-- `--identity` means "who owns this credential?"
-- `--agent` means "which persona should receive it?"
-
-Scope mapping is explicit:
-
-- `--agent` + `--identity` = `relationship`
-- `--agent` only = `agent`
-- `--identity` only = `identity`
+This is for bash and credential-using adapters in v1. Not every tool gets these values.
 
 ## Use The CLI
 
@@ -30,24 +13,24 @@ Human-entered secrets should go through the CLI, not chat text. Chat is not a hi
 Prefer `--stdin` or the hidden prompt:
 
 ```bash
-panda credentials set NOTION_API_KEY --agent panda --identity patrik
-printf '%s' "$GITHUB_TOKEN" | panda credentials set GITHUB_TOKEN --stdin --agent work --identity patrik
+panda credentials set NOTION_API_KEY --agent panda
+printf '%s' "$GITHUB_TOKEN" | panda credentials set GITHUB_TOKEN --stdin --agent work
 printf '%s' "$SLACK_BOT_TOKEN" | panda credentials set SLACK_BOT_TOKEN --stdin --agent slack-bot
 ```
 
 Inline values work, but they are convenience-only:
 
 ```bash
-panda credentials set OPENAI_API_KEY sk-example --agent panda --identity patrik
+panda credentials set OPENAI_API_KEY sk-example --agent panda
 ```
 
 Useful commands:
 
 ```bash
 panda credentials list
-panda credentials list --agent panda --identity patrik
-panda credentials resolve NOTION_API_KEY --agent panda --identity patrik
-panda credentials clear NOTION_API_KEY --agent panda --identity patrik
+panda credentials list --agent panda
+panda credentials resolve NOTION_API_KEY --agent panda
+panda credentials clear NOTION_API_KEY --agent panda
 ```
 
 ## Resolve Command
@@ -66,14 +49,6 @@ That means:
 - if it finds nothing, local bash may still fall back to Panda process env
 - remote bash does not fall back to runner host env
 
-## Precedence
-
-Stored credential precedence is:
-
-`relationship > agent > identity`
-
-If two stored scopes define the same key, the more specific one wins.
-
 ## How Bash Sees It
 
 Local bash merges env in this order:
@@ -90,28 +65,21 @@ Remote runners do not inherit the host env and do not own static secrets.
 
 This trips people up, so here it is plainly:
 
-- `panda credentials clear KEY ...` deletes the stored credential for one exact scope.
+- `panda credentials clear KEY --agent AGENT` deletes the stored credential.
 - `unset KEY` inside bash does not delete the stored credential.
 
 If a stored credential still exists, Panda will inject it again on the next bash call.
 
 After a clear:
 
-- if another stored scope still has that key, that scope wins next
-- if no stored scope has that key, local bash may still fall back to Panda process env
+- if no stored credential has that key, local bash may still fall back to Panda process env
 - remote bash does not fall back to runner host env
 
 ## Agent Tools
 
 Panda also gets two tools:
 
-- `set_env_value(key, value, scope?)`
-- `clear_env_value(key, scope?)`
-
-Defaults:
-
-- default scope is `relationship`
-- explicit `scope: "agent"` is allowed
-- `identity` writes are CLI-only in v1
+- `set_env_value(key, value)`
+- `clear_env_value(key)`
 
 The model should use these only for values it already has. Humans should still prefer the CLI.

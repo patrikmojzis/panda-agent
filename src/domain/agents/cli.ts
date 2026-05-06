@@ -575,7 +575,7 @@ export function registerAgentCommands(program: Command): void {
     .description("Import OpenClaw agents into Panda")
     .argument("<sourcePath>", "OpenClaw agent directory or parent directory containing agent folders")
     .option("--dry-run", "Show the migration plan without writing to Postgres")
-    .option("--identity <handle>", "Identity handle to scope credentials and imported user messages", parseIdentityHandle)
+    .option("--identity <handle>", "Identity handle for imported user messages and agent pairing", parseIdentityHandle)
     .option("--include-messages", "Import lossy legacy user/assistant transcript pairs into the main Panda thread")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sourcePath: string, options: ImportLegacyAgentCliOptions) => {

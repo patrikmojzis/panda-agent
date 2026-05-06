@@ -28,7 +28,7 @@ Remote runners do not own static secrets.
 
 In credentials v1, `panda-core` may still send short-lived env values with a single `/exec` request:
 
-- stored credentials resolved for the current session/thread context
+- stored credentials resolved for the current agent
 - persisted shell session env
 - explicit `bash.env` values for that call
 

@@ -285,12 +285,8 @@ describe("legacy agent import", () => {
 
     const credential = await harness.credentialService.resolveCredential("NOTION_API_KEY", {
       agentKey: "luna",
-      identityId: identity.id,
     });
     expect(credential?.value).toBe("shh");
-    await expect(harness.credentialService.resolveCredential("NOTION_API_KEY", {
-      agentKey: "luna",
-    })).resolves.toBeNull();
 
     const session = await harness.sessionStore.getMainSession("luna");
     expect(session).toMatchObject({

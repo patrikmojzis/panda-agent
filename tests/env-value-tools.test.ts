@@ -2,7 +2,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {DataType, newDb} from "pg-mem";
 
-import {Agent, RunContext, stringToUserMessage, ToolError,} from "../src/index.js";
+import {Agent, RunContext, stringToUserMessage} from "../src/index.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {
   CredentialCrypto,
@@ -10,7 +10,6 @@ import {
   CredentialService,
   PostgresCredentialStore,
 } from "../src/domain/credentials/index.js";
-import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../src/panda/index.js";
 import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
@@ -37,18 +36,11 @@ describe("Env value tools", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const identityStore = new PostgresIdentityStore({pool});
     const agentStore = new PostgresAgentStore({pool});
     const credentialStore = new PostgresCredentialStore({pool});
-    await identityStore.ensureSchema();
-    await agentStore.ensureSchema();
+    await agentStore.ensureAgentTableSchema();
     await credentialStore.ensureSchema();
 
-    await identityStore.createIdentity({
-      id: "alice-id",
-      handle: "alice",
-      displayName: "Alice",
-    });
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
@@ -146,7 +138,7 @@ describe("Env value tools", () => {
     }
   }
 
-  it("defaults to relationship scope and allows explicit agent scope", async () => {
+  it("stores and clears agent credentials", async () => {
     const {credentialStore, resolver, service} = await createHarness();
     const setTool = new SetEnvValueTool({service});
     const clearTool = new ClearEnvValueTool({service});
@@ -159,61 +151,40 @@ describe("Env value tools", () => {
     await setTool.run(
       {
         key: "NOTION_API_KEY",
-        value: "relationship-secret",
+        value: "notion-secret",
       },
       createRunContext(createContext(), agent),
     );
     await setTool.run(
       {
         key: "SLACK_BOT_TOKEN",
-        value: "agent-secret",
-        scope: "agent",
+        value: "slack-secret",
+      },
+      createRunContext(createContext(), agent),
+    );
+    await clearTool.run(
+      {
+        key: "SLACK_BOT_TOKEN",
       },
       createRunContext(createContext(), agent),
     );
 
-    await expect(credentialStore.getCredentialExact("NOTION_API_KEY", {
-      scope: "relationship",
-      agentKey: "panda",
-      identityId: "alice-id",
-    })).resolves.toMatchObject({
-      scope: "relationship",
-    });
-    await expect(credentialStore.getCredentialExact("SLACK_BOT_TOKEN", {
-      scope: "agent",
+    await expect(credentialStore.getCredential("NOTION_API_KEY", {
       agentKey: "panda",
     })).resolves.toMatchObject({
-      scope: "agent",
+      agentKey: "panda",
     });
+    await expect(credentialStore.getCredential("SLACK_BOT_TOKEN", {
+      agentKey: "panda",
+    })).resolves.toBeNull();
     await expect(resolver.resolveEnvironment({
       agentKey: "panda",
-      identityId: "alice-id",
     })).resolves.toEqual({
-      NOTION_API_KEY: "relationship-secret",
-      SLACK_BOT_TOKEN: "agent-secret",
+      NOTION_API_KEY: "notion-secret",
     });
   });
 
-  it("rejects identity scope from the agent tool surface", async () => {
-    const {service} = await createHarness();
-    const setTool = new SetEnvValueTool({service});
-    const agent = new Agent({
-      name: "tool-agent",
-      instructions: "Use tools.",
-      tools: [setTool],
-    });
-
-    await expect(setTool.run(
-      {
-        key: "OPENAI_API_KEY",
-        value: "sk-live-123",
-        scope: "identity",
-      } as never,
-      createRunContext(createContext(), agent),
-    )).rejects.toBeInstanceOf(ToolError);
-  });
-
-  it("allows agent-scoped credential writes with no active identity", async () => {
+  it("allows credential writes with no active identity", async () => {
     const {credentialStore, service} = await createHarness();
     const setTool = new SetEnvValueTool({service});
     const clearTool = new ClearEnvValueTool({service});
@@ -227,20 +198,17 @@ describe("Env value tools", () => {
       {
         key: "OPENAI_API_KEY",
         value: "agent-secret",
-        scope: "agent",
       },
       createRunContext(createContext({currentInput: undefined}), agent),
     );
     await clearTool.run(
       {
         key: "OPENAI_API_KEY",
-        scope: "agent",
       },
       createRunContext(createContext({currentInput: undefined}), agent),
     );
 
-    await expect(credentialStore.getCredentialExact("OPENAI_API_KEY", {
-      scope: "agent",
+    await expect(credentialStore.getCredential("OPENAI_API_KEY", {
       agentKey: "panda",
     })).resolves.toBeNull();
   });
@@ -313,8 +281,8 @@ describe("Env value tools", () => {
     expect(JSON.stringify(toolResult)).not.toContain("github_pat_secret");
   });
 
-  it("uses currentInput.identityId for relationship scope and fails clearly when none is active", async () => {
-    const {credentialStore, service} = await createHarness();
+  it("requires agentKey in runtime context", async () => {
+    const {service} = await createHarness();
     const setTool = new SetEnvValueTool({service});
     const agent = new Agent({
       name: "tool-agent",
@@ -322,35 +290,13 @@ describe("Env value tools", () => {
       tools: [setTool],
     });
 
-    await setTool.run(
-      {
-        key: "NOTION_API_KEY",
-        value: "relationship-secret",
-      },
-      createRunContext(createContext({
-        currentInput: {
-          source: "tui",
-          identityId: "alice-id",
-        },
-      }), agent),
-    );
-
-    await expect(credentialStore.getCredentialExact("NOTION_API_KEY", {
-      scope: "relationship",
-      agentKey: "panda",
-      identityId: "alice-id",
-    })).resolves.toMatchObject({
-      scope: "relationship",
-      identityId: "alice-id",
-    });
-
     await expect(setTool.run(
       {
-        key: "MISSING_IDENTITY_SECRET",
+        key: "MISSING_AGENT_SECRET",
         value: "oops",
       },
-      createRunContext(createContext({currentInput: undefined}), agent),
-    )).rejects.toThrow("Relationship-scoped credentials need an active identity.");
+      createRunContext(createContext({agentKey: ""}), agent),
+    )).rejects.toThrow("Credential tools require agentKey");
   });
 
   it("redacts secret tool call arguments before they hit the transcript", async () => {

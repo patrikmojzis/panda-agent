@@ -16,7 +16,6 @@ export type WatchEvaluator = (
   watch: WatchRecord,
   context: {
     agentKey: string;
-    identityId?: string;
   },
 ) => Promise<WatchEvaluationResult>;
 
@@ -206,7 +205,6 @@ export class WatchRunner {
     try {
       evaluation = await this.evaluateWatchFn(claim.watch, {
         agentKey: session.agentKey,
-        identityId: claim.watch.createdByIdentityId ?? session.createdByIdentityId,
       });
     } catch (error) {
       await this.watches.failWatchRun({

@@ -38,17 +38,14 @@ For example:
 
 - Prefer the CLI for human-entered secrets.
 - Use `set_env_value` only when the agent already has the secret value in context.
-- Default scope should be `relationship`.
-- Use `scope: "agent"` only for agent-wide service credentials.
-- `identity` writes are CLI-only in v1.
+- Stored env credentials belong to the current agent.
 
 Examples:
 
 ```json
 {
   "key": "DATABASE_URL",
-  "value": "postgres://user:pass@db.example.com:5432/app",
-  "scope": "relationship"
+  "value": "postgres://user:pass@db.example.com:5432/app"
 }
 ```
 
@@ -59,7 +56,7 @@ Tool:
 Or via CLI:
 
 ```bash
-panda credentials set DATABASE_URL --agent panda --identity patrik
+panda credentials set DATABASE_URL --agent panda
 ```
 
 ## Source Credential Fields
@@ -77,8 +74,7 @@ Store credential:
 ```json
 {
   "key": "MONGO_URI",
-  "value": "mongodb+srv://user:pass@cluster.example/app",
-  "scope": "relationship"
+  "value": "mongodb+srv://user:pass@cluster.example/app"
 }
 ```
 
@@ -129,8 +125,7 @@ Store credential:
 ```json
 {
   "key": "DATABASE_URL",
-  "value": "postgres://user:pass@db.example.com:5432/app",
-  "scope": "relationship"
+  "value": "postgres://user:pass@db.example.com:5432/app"
 }
 ```
 
@@ -181,8 +176,7 @@ Store credential:
 ```json
 {
   "key": "COINAPI_TOKEN",
-  "value": "token-goes-here",
-  "scope": "relationship"
+  "value": "token-goes-here"
 }
 ```
 
@@ -254,8 +248,7 @@ Store credential if needed:
 ```json
 {
   "key": "LISTINGS_COOKIE",
-  "value": "session=abc123",
-  "scope": "relationship"
+  "value": "session=abc123"
 }
 ```
 
@@ -340,8 +333,7 @@ Store credentials:
 ```json
 {
   "key": "IMAP_USERNAME",
-  "value": "alerts@example.com",
-  "scope": "relationship"
+  "value": "alerts@example.com"
 }
 ```
 
@@ -352,8 +344,7 @@ Tool:
 ```json
 {
   "key": "IMAP_PASSWORD",
-  "value": "super-secret-password",
-  "scope": "relationship"
+  "value": "super-secret-password"
 }
 ```
 

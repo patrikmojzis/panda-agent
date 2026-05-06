@@ -9,8 +9,6 @@ function createCredentialResolver() {
       id: envKey,
       envKey,
       value: `${envKey}-value`,
-      scope: "relationship",
-      identityId: "identity-1",
       agentKey: "panda",
       keyVersion: 1,
       createdAt: 1,
@@ -22,11 +20,9 @@ function createCredentialResolver() {
 function createWatch(overrides: Partial<WatchRecord>): WatchRecord {
   return {
     id: "watch-1",
-    identityId: "identity-1",
-    agentKey: "panda",
+    sessionId: "session-1",
     title: "watch",
     intervalMinutes: 5,
-    targetKind: "home",
     source: {
       kind: "http_json",
       url: "https://example.com/data",
@@ -87,6 +83,7 @@ describe("evaluateWatch HTTP sources", () => {
 
     const first = await evaluateWatch(watch, {
       credentialResolver: credentialResolver as any,
+      credentialContext: {agentKey: "panda"},
       fetchImpl,
       lookupHostname,
     });
@@ -102,6 +99,7 @@ describe("evaluateWatch HTTP sources", () => {
       state: first.nextState,
     }, {
       credentialResolver: credentialResolver as any,
+      credentialContext: {agentKey: "panda"},
       fetchImpl,
       lookupHostname,
     });
@@ -116,6 +114,7 @@ describe("evaluateWatch HTTP sources", () => {
       state: second.nextState,
     }, {
       credentialResolver: credentialResolver as any,
+      credentialContext: {agentKey: "panda"},
       fetchImpl,
       lookupHostname,
     });
@@ -136,6 +135,7 @@ describe("evaluateWatch HTTP sources", () => {
       state: third.nextState,
     }, {
       credentialResolver: credentialResolver as any,
+      credentialContext: {agentKey: "panda"},
       fetchImpl,
       lookupHostname,
     });
@@ -176,6 +176,7 @@ describe("evaluateWatch HTTP sources", () => {
 
     const first = await evaluateWatch(watch, {
       credentialResolver: credentialResolver as any,
+      credentialContext: {agentKey: "panda"},
       fetchImpl,
       lookupHostname,
     });
@@ -190,6 +191,7 @@ describe("evaluateWatch HTTP sources", () => {
       state: first.nextState,
     }, {
       credentialResolver: credentialResolver as any,
+      credentialContext: {agentKey: "panda"},
       fetchImpl,
       lookupHostname,
     });

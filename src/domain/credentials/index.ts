@@ -10,15 +10,12 @@ export type {
   CredentialListFilter,
   CredentialRecord,
   CredentialResolutionContext,
-  CredentialScope,
-  CredentialScopeInput,
   DecryptedCredentialRecord,
   EncryptedCredentialValue,
   SetCredentialInput,
 } from "./types.js";
 export {
-  CREDENTIAL_SCOPES,
   maskCredentialValue,
+  normalizeCredentialAgentKey,
   normalizeCredentialEnvKey,
-  normalizeCredentialScopeInput,
 } from "./types.js";

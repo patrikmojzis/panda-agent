@@ -13,9 +13,7 @@ const credentialCliMocks = vi.hoisted(() => {
       envKey: "NOTION_API_KEY",
       value: "secret-notion",
       valuePreview: "secr...tion",
-      scope: "agent" as const,
       agentKey: "panda",
-      identityId: undefined,
       keyVersion: 1,
       createdAt: 1,
       updatedAt: 2,
@@ -24,46 +22,19 @@ const credentialCliMocks = vi.hoisted(() => {
       envKey: string;
       value: string;
       valuePreview: string;
-      scope: "agent";
       agentKey: string;
-      identityId: undefined;
       keyVersion: number;
       createdAt: number;
       updatedAt: number;
     } | null,
   };
 
-  const identityStoreInstances: MockPostgresIdentityStore[] = [];
   const agentStoreInstances: MockPostgresAgentStore[] = [];
   const credentialStoreInstances: MockPostgresCredentialStore[] = [];
   const credentialServiceInstances: MockCredentialService[] = [];
 
-  class MockPostgresIdentityStore {
-    readonly ensureSchema = vi.fn(async () => {});
-    readonly getIdentity = vi.fn(async (identityId: string) => ({
-      id: identityId,
-      handle: identityId === "test-user-id" ? "test-user" : "alice",
-      displayName: identityId,
-      status: "active" as const,
-      createdAt: 1,
-      updatedAt: 1,
-    }));
-    readonly getIdentityByHandle = vi.fn(async (handle: string) => ({
-      id: handle === "test-user" ? "test-user-id" : `${handle}-id`,
-      handle,
-      displayName: handle,
-      status: "active" as const,
-      createdAt: 1,
-      updatedAt: 1,
-    }));
-
-    constructor(_options: unknown) {
-      identityStoreInstances.push(this);
-    }
-  }
-
   class MockPostgresAgentStore {
-    readonly ensureSchema = vi.fn(async () => {});
+    readonly ensureAgentTableSchema = vi.fn(async () => {});
     readonly getAgent = vi.fn(async (agentKey: string) => ({
       agentKey,
       displayName: agentKey,
@@ -92,9 +63,7 @@ const credentialCliMocks = vi.hoisted(() => {
       envKey: String(input.envKey),
       value: String(input.value),
       valuePreview: "sk-l...8484",
-      scope: input.scope,
       agentKey: input.agentKey,
-      identityId: input.identityId,
       keyVersion: 1,
       createdAt: 1,
       updatedAt: 2,
@@ -106,9 +75,7 @@ const credentialCliMocks = vi.hoisted(() => {
         envKey: "OPENAI_API_KEY",
         value: "sk-live-339398484",
         valuePreview: "sk-l...8484",
-        scope: "relationship" as const,
         agentKey: "panda",
-        identityId: "test-user-id",
         keyVersion: 1,
         createdAt: 1,
         updatedAt: 2,
@@ -125,19 +92,12 @@ const credentialCliMocks = vi.hoisted(() => {
     agentStoreInstances,
     credentialServiceInstances,
     credentialStoreInstances,
-    ensureSchemas: vi.fn(async (resources: Array<{ ensureSchema(): Promise<void> }>) => {
-      for (const resource of resources) {
-        await resource.ensureSchema();
-      }
-    }),
-    identityStoreInstances,
     pool,
     resolveCredentialResult,
     resolveCredentialCrypto: vi.fn(() => ({kind: "crypto"})),
     MockCredentialService,
     MockPostgresAgentStore,
     MockPostgresCredentialStore,
-    MockPostgresIdentityStore,
     withPostgresPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
       try {
         return await fn(pool);
@@ -147,10 +107,6 @@ const credentialCliMocks = vi.hoisted(() => {
     }),
   };
 });
-
-vi.mock("../src/domain/identity/postgres.js", () => ({
-  PostgresIdentityStore: credentialCliMocks.MockPostgresIdentityStore,
-}));
 
 vi.mock("../src/domain/agents/postgres.js", () => ({
   PostgresAgentStore: credentialCliMocks.MockPostgresAgentStore,
@@ -169,7 +125,6 @@ vi.mock("../src/domain/credentials/crypto.js", () => ({
 }));
 
 vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
-  ensureSchemas: credentialCliMocks.ensureSchemas,
   withPostgresPool: credentialCliMocks.withPostgresPool,
 }));
 
@@ -199,21 +154,17 @@ function latestCredentialStore(): InstanceType<typeof credentialCliMocks.MockPos
 
 describe("Credential CLI", () => {
   afterEach(() => {
-    credentialCliMocks.identityStoreInstances.length = 0;
     credentialCliMocks.agentStoreInstances.length = 0;
     credentialCliMocks.credentialStoreInstances.length = 0;
     credentialCliMocks.credentialServiceInstances.length = 0;
     credentialCliMocks.pool.end.mockClear();
-    credentialCliMocks.ensureSchemas.mockClear();
     credentialCliMocks.resolveCredentialCrypto.mockClear();
     credentialCliMocks.resolveCredentialResult.current = {
       id: "credential-2",
       envKey: "NOTION_API_KEY",
       value: "secret-notion",
       valuePreview: "secr...tion",
-      scope: "agent",
       agentKey: "panda",
-      identityId: undefined,
       keyVersion: 1,
       createdAt: 1,
       updatedAt: 2,
@@ -222,7 +173,7 @@ describe("Credential CLI", () => {
     vi.restoreAllMocks();
   });
 
-  it("maps agent plus identity to relationship scope when setting a credential", async () => {
+  it("sets a credential for one agent", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     await createProgram().parseAsync(
@@ -233,8 +184,6 @@ describe("Credential CLI", () => {
         "sk-live-339398484",
         "--agent",
         "panda",
-        "--identity",
-        "test-user",
         "--db-url",
         "postgres://credentials-db",
       ],
@@ -244,22 +193,18 @@ describe("Credential CLI", () => {
     expect(latestService().setCredential).toHaveBeenCalledWith({
       envKey: "OPENAI_API_KEY",
       value: "sk-live-339398484",
-      scope: "relationship",
       agentKey: "panda",
-      identityId: "test-user-id",
     });
     expect(write).toHaveBeenCalledWith(
       [
         "Stored OPENAI_API_KEY.",
-        "scope relationship",
         "agent panda",
-        "identity test-user",
         "value sk-l...8484",
       ].join("\n") + "\n",
     );
   });
 
-  it("clears one exact scope instead of guessing", async () => {
+  it("clears one agent credential", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     await createProgram().parseAsync(
@@ -276,13 +221,11 @@ describe("Credential CLI", () => {
     );
 
     expect(latestCredentialStore().deleteCredential).toHaveBeenCalledWith("NOTION_API_KEY", {
-      scope: "agent",
       agentKey: "panda",
     });
     expect(write).toHaveBeenCalledWith(
       [
         "Cleared NOTION_API_KEY.",
-        "scope agent",
         "agent panda",
       ].join("\n") + "\n",
     );
@@ -299,8 +242,6 @@ describe("Credential CLI", () => {
         "OPENAI_API_KEY",
         "--agent",
         "panda",
-        "--identity",
-        "test-user",
         "--db-url",
         "postgres://credentials-db",
       ],
@@ -309,16 +250,12 @@ describe("Credential CLI", () => {
 
     expect(credentialCliMocks.credentialServiceInstances).toHaveLength(0);
     expect(latestCredentialStore().deleteCredential).toHaveBeenCalledWith("OPENAI_API_KEY", {
-      scope: "relationship",
       agentKey: "panda",
-      identityId: "test-user-id",
     });
     expect(write).toHaveBeenCalledWith(
       [
         "Cleared OPENAI_API_KEY.",
-        "scope relationship",
         "agent panda",
-        "identity test-user",
       ].join("\n") + "\n",
     );
   });
@@ -338,8 +275,6 @@ describe("Credential CLI", () => {
         "NOTION_API_KEY",
         "--agent",
         "panda",
-        "--identity",
-        "test-user",
         "--db-url",
         "postgres://credentials-db",
       ],
@@ -349,14 +284,11 @@ describe("Credential CLI", () => {
     expect(listService.listCredentials).toHaveBeenCalledWith({});
     expect(latestService().resolveCredential).toHaveBeenCalledWith("NOTION_API_KEY", {
       agentKey: "panda",
-      identityId: "test-user-id",
     });
     expect(write).toHaveBeenCalledWith(
       [
         "OPENAI_API_KEY",
-        "  scope relationship",
         "  agent panda",
-        "  identity test-user",
         "  value sk-l...8484",
         "  updated 1970-01-01T00:00:00.002Z",
       ].join("\n") + "\n",
@@ -364,7 +296,6 @@ describe("Credential CLI", () => {
     expect(write).toHaveBeenCalledWith(
       [
         "Stored winner for NOTION_API_KEY.",
-        "scope agent",
         "agent panda",
         "value secr...tion",
         "Note: this inspects stored credentials only.",
@@ -383,8 +314,6 @@ describe("Credential CLI", () => {
         "OPENAI_API_KEY",
         "--agent",
         "panda",
-        "--identity",
-        "test-user",
         "--db-url",
         "postgres://credentials-db",
       ],

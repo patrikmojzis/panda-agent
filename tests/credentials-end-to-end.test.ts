@@ -8,12 +8,11 @@ import path from "node:path";
 import {Agent, BashTool, stringToUserMessage,} from "../src/index.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {
-    CredentialCrypto,
-    CredentialResolver,
-    CredentialService,
-    PostgresCredentialStore,
+  CredentialCrypto,
+  CredentialResolver,
+  CredentialService,
+  PostgresCredentialStore,
 } from "../src/domain/credentials/index.js";
-import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
 import {SetEnvValueTool} from "../src/panda/index.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
@@ -44,18 +43,11 @@ describe("credentials end-to-end", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const identityStore = new PostgresIdentityStore({pool});
     const agentStore = new PostgresAgentStore({pool});
     const credentialStore = new PostgresCredentialStore({pool});
-    await identityStore.ensureSchema();
-    await agentStore.ensureSchema();
+    await agentStore.ensureAgentTableSchema();
     await credentialStore.ensureSchema();
 
-    await identityStore.createIdentity({
-      id: "alice-id",
-      handle: "alice",
-      displayName: "Alice",
-    });
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
@@ -193,12 +185,10 @@ describe("credentials end-to-end", () => {
     });
     await coordinator.waitForIdle("thread-credentials-e2e");
 
-    await expect(credentialStore.getCredentialExact("NOTION_API_KEY", {
-      scope: "relationship",
+    await expect(credentialStore.getCredential("NOTION_API_KEY", {
       agentKey: "panda",
-      identityId: "alice-id",
     })).resolves.toMatchObject({
-      scope: "relationship",
+      agentKey: "panda",
     });
 
     const transcript = await store.loadTranscript("thread-credentials-e2e");

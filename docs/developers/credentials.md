@@ -2,34 +2,25 @@
 
 `src/domain/credentials` is Panda runtime plumbing. It is intentionally not a public package export.
 
-## v1 Shape
+## Shape
 
-One Postgres table stores all scopes:
+One Postgres table stores agent-owned env credentials:
 
 - `id UUID`
-- `env_key TEXT`
-- `scope TEXT`
-- `agent_key TEXT NULL`
-- `identity_id TEXT NULL`
-- `value_ciphertext BYTEA`
-- `value_iv BYTEA`
-- `value_tag BYTEA`
-- `key_version SMALLINT`
+- `agent_key TEXT NOT NULL`
+- `env_key TEXT NOT NULL`
+- `value_ciphertext BYTEA NOT NULL`
+- `value_iv BYTEA NOT NULL`
+- `value_tag BYTEA NOT NULL`
+- `key_version SMALLINT NOT NULL`
 - `created_at`
 - `updated_at`
 
-Constraints do the boring but important work:
+There is one value per `(agent_key, env_key)`.
 
-- `scope` is limited to `relationship | agent | identity`
-- `relationship` requires both `agent_key` and `identity_id`
-- `agent` requires `agent_key` and forbids `identity_id`
-- `identity` requires `identity_id` and forbids `agent_key`
+## Migration
 
-Partial unique indexes enforce one value per exact scope:
-
-- `relationship`: `(identity_id, agent_key, env_key)`
-- `agent`: `(agent_key, env_key)`
-- `identity`: `(identity_id, env_key)`
+`PostgresCredentialStore.ensureSchema()` migrates the old table shape by keeping old agent-owned rows and deleting rows that cannot map to a single agent credential. The final schema has no owner dimension beyond `agent_key`.
 
 ## Encryption
 
@@ -57,42 +48,26 @@ Blocked names include runtime-owned or dangerous keys such as:
 - `NODE_OPTIONS`
 - `LD_PRELOAD`
 
-## Resolution Order
-
-Stored credential precedence is:
-
-`relationship > agent > identity`
-
-`CredentialResolver.resolveEnvironment()` returns only stored credentials. The final bash env merge happens later:
-
-- local bash: `process env -> stored credentials -> persisted shell session env -> bash.env`
-- remote bash: `stored credentials -> persisted shell session env -> bash.env`
-
-Remote intentionally does not inherit core host env or runner host env. If it did, the runner boundary would be fake.
-
 ## Runtime Wiring
 
 `createRuntime()` does the setup:
 
 - ensures the credentials schema
-- builds a `CredentialResolver` for bash
+- builds a `CredentialResolver` for bash and credential-using adapters
 - builds a `CredentialService` only when `CREDENTIALS_MASTER_KEY` exists
 - registers `set_env_value` and `clear_env_value` only when decryption is actually possible
 
-`BashTool` resolves credentials on every execution using thread `agentKey` and `identityId`.
+`BashTool` resolves credentials on every execution using the thread `agentKey`.
 
-Remote mode stays stateless for secrets:
+Local bash merges env in this order:
 
-- the runner has no DB
-- the runner has no credential files
-- the runner does not keep static secret env
-- the core sends short-lived env on each `/exec` request
+`process env -> stored credentials -> persisted shell session env -> bash.env`
 
-That per-request env may include:
+Remote bash merges env in this order:
 
-- resolved stored credentials
-- persisted shell session env
-- explicit `bash.env`
+`stored credentials -> persisted shell session env -> bash.env`
+
+Remote intentionally does not inherit core host env or runner host env. If it did, the runner boundary would be fake.
 
 ## Redaction
 

@@ -11,7 +11,7 @@ import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
 import type {CredentialResolver} from "../../domain/credentials/index.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
-import {ensureShellSession, readBaseCwd, readCurrentInputIdentityId,} from "../../app/runtime/panda-path-context.js";
+import {ensureShellSession, readBaseCwd} from "../../app/runtime/panda-path-context.js";
 import {type BashExecutor, createDefaultBashExecutor,} from "../../integrations/shell/bash-executor.js";
 import {startBashBackgroundJob} from "../../integrations/shell/bash-background-runner.js";
 import {readThreadId} from "../../integrations/shell/runtime-context.js";
@@ -243,7 +243,6 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
         agentKey: typeof run.context === "object" && run.context !== null && "agentKey" in run.context
           ? (run.context as {agentKey?: string}).agentKey
           : undefined,
-        identityId: readCurrentInputIdentityId(run.context),
       })
       : {};
     const knownSecretValues = collectSecretValues(resolvedCredentialEnv, args.env, priorSecretSessionEnv);

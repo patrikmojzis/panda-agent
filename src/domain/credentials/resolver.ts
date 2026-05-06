@@ -1,14 +1,17 @@
 import {CredentialCrypto} from "./crypto.js";
 import {PostgresCredentialStore} from "./postgres.js";
 import type {
-    CredentialListEntry,
-    CredentialListFilter,
-    CredentialRecord,
-    CredentialResolutionContext,
-    CredentialScopeInput,
-    DecryptedCredentialRecord,
+  CredentialListEntry,
+  CredentialListFilter,
+  CredentialRecord,
+  CredentialResolutionContext,
+  DecryptedCredentialRecord,
 } from "./types.js";
-import {maskCredentialValue, normalizeCredentialEnvKey, normalizeCredentialScopeInput,} from "./types.js";
+import {
+  maskCredentialValue,
+  normalizeCredentialAgentKey,
+  normalizeCredentialEnvKey,
+} from "./types.js";
 
 function decryptRecord(
   record: CredentialRecord,
@@ -17,9 +20,7 @@ function decryptRecord(
   return {
     id: record.id,
     envKey: record.envKey,
-    scope: record.scope,
     agentKey: record.agentKey,
-    identityId: record.identityId,
     value: crypto.decrypt(record),
     keyVersion: record.keyVersion,
     createdAt: record.createdAt,
@@ -54,10 +55,6 @@ export class CredentialResolver {
     const resolved: Record<string, string> = {};
 
     for (const record of records) {
-      if (record.envKey in resolved) {
-        continue;
-      }
-
       resolved[record.envKey] = crypto.decrypt(record);
     }
 
@@ -91,26 +88,26 @@ export class CredentialService {
   async setCredential(input: {
     envKey: string;
     value: string;
-  } & CredentialScopeInput): Promise<DecryptedCredentialRecord> {
-    const normalizedScope = normalizeCredentialScopeInput(input);
+    agentKey: string;
+  }): Promise<DecryptedCredentialRecord> {
+    const normalizedAgentKey = normalizeCredentialAgentKey(input.agentKey);
     const normalizedEnvKey = normalizeCredentialEnvKey(input.envKey);
     const record = await this.store.setCredential({
-      ...normalizedScope,
+      agentKey: normalizedAgentKey,
       envKey: normalizedEnvKey,
       encryptedValue: this.crypto.encrypt(input.value),
     });
 
-    return {
-      ...decryptRecord(record, this.crypto),
-    };
+    return decryptRecord(record, this.crypto);
   }
 
   async clearCredential(input: {
     envKey: string;
-  } & CredentialScopeInput): Promise<boolean> {
-    const normalizedScope = normalizeCredentialScopeInput(input);
+    agentKey: string;
+  }): Promise<boolean> {
+    const normalizedAgentKey = normalizeCredentialAgentKey(input.agentKey);
     const normalizedEnvKey = normalizeCredentialEnvKey(input.envKey);
-    return this.store.deleteCredential(normalizedEnvKey, normalizedScope);
+    return this.store.deleteCredential(normalizedEnvKey, {agentKey: normalizedAgentKey});
   }
 
   async listCredentials(filter: CredentialListFilter = {}): Promise<readonly CredentialListEntry[]> {

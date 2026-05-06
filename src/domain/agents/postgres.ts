@@ -106,7 +106,7 @@ export class PostgresAgentStore implements AgentStore {
     this.identityTables = buildIdentityTableNames();
   }
 
-  async ensureSchema(): Promise<void> {
+  async ensureAgentTableSchema(): Promise<void> {
     await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.agents} (
@@ -118,6 +118,10 @@ export class PostgresAgentStore implements AgentStore {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
+  }
+
+  async ensureSchema(): Promise<void> {
+    await this.ensureAgentTableSchema();
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.tables.agentPairings} (
         agent_key TEXT NOT NULL REFERENCES ${this.tables.agents}(agent_key) ON DELETE CASCADE,

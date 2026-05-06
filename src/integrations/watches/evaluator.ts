@@ -36,9 +36,8 @@ const SQL_WATCH_IDLE_TX_TIMEOUT_MS = 5_000;
 
 export interface WatchEvaluationOptions {
   credentialResolver: CredentialResolver;
-  credentialScope?: {
+  credentialContext?: {
     agentKey: string;
-    identityId?: string;
   };
   fetchImpl?: FetchImpl;
   lookupHostname?: LookupHostname;
@@ -456,20 +455,16 @@ function extractHtmlObservation(
 async function resolveCredentialValue(
   watch: WatchRecord,
   resolver: CredentialResolver,
-  scope: WatchEvaluationOptions["credentialScope"],
+  context: WatchEvaluationOptions["credentialContext"],
   envKey: string,
 ): Promise<string> {
-  const agentKey = scope?.agentKey
-    ?? ((watch as WatchRecord & {agentKey?: string}).agentKey?.trim() || undefined);
+  const agentKey = context?.agentKey;
   if (!agentKey) {
-    throw new Error(`Watch ${watch.id} is missing agent scope for credential ${envKey}.`);
+    throw new Error(`Watch ${watch.id} is missing agent context for credential ${envKey}.`);
   }
 
-  const identityId = scope?.identityId
-    ?? ((watch as WatchRecord & {identityId?: string}).identityId?.trim() || undefined);
   const resolved = await resolver.resolveCredential(envKey, {
     agentKey,
-    identityId,
   });
   if (!resolved) {
     throw new Error(`Missing credential ${envKey} for watch ${watch.id}.`);
@@ -490,7 +485,7 @@ async function resolveHttpHeaders(
       resolved[name] = await resolveCredentialValue(
         watch,
         options.credentialResolver,
-        options.credentialScope,
+        options.credentialContext,
         header.credentialEnvKey,
       );
       continue;
@@ -538,7 +533,7 @@ async function resolveMongoSource(
     throw new Error("Expected mongodb_query source.");
   }
 
-  const uri = await resolveCredentialValue(watch, options.credentialResolver, options.credentialScope, source.credentialEnvKey);
+  const uri = await resolveCredentialValue(watch, options.credentialResolver, options.credentialContext, source.credentialEnvKey);
   const client = new MongoClient(uri);
 
   try {
@@ -587,7 +582,7 @@ async function resolveSqlSource(
   const connectionString = await resolveCredentialValue(
     watch,
     options.credentialResolver,
-    options.credentialScope,
+    options.credentialContext,
     source.credentialEnvKey,
   );
   const query = validateReadOnlySqlQuery(source.query);
@@ -661,7 +656,7 @@ async function resolveHttpJsonSource(
     headers.Authorization = `Bearer ${await resolveCredentialValue(
       watch,
       options.credentialResolver,
-      options.credentialScope,
+      options.credentialContext,
       source.auth.credentialEnvKey,
     )}`;
   }
@@ -694,7 +689,7 @@ async function resolveHttpHtmlSource(
     headers.Authorization = `Bearer ${await resolveCredentialValue(
       watch,
       options.credentialResolver,
-      options.credentialScope,
+      options.credentialContext,
       source.auth.credentialEnvKey,
     )}`;
   }
@@ -720,7 +715,7 @@ async function resolveImapMailboxSource(
     ? await resolveCredentialValue(
       watch,
       options.credentialResolver,
-      options.credentialScope,
+      options.credentialContext,
       source.usernameCredentialEnvKey,
     )
     : source.username;
@@ -738,7 +733,7 @@ async function resolveImapMailboxSource(
       pass: await resolveCredentialValue(
         watch,
         options.credentialResolver,
-        options.credentialScope,
+        options.credentialContext,
         source.passwordCredentialEnvKey,
       ),
     },
@@ -879,7 +874,7 @@ export async function evaluateWatch(
 
   const resolved = await resolver(watch, {
     credentialResolver: options.credentialResolver,
-    credentialScope: options.credentialScope,
+    credentialContext: options.credentialContext,
     fetchImpl: options.fetchImpl,
     lookupHostname: options.lookupHostname,
   });
@@ -887,10 +882,10 @@ export async function evaluateWatch(
 }
 
 export function createWatchEvaluator(
-  options: Omit<WatchEvaluationOptions, "credentialScope">,
+  options: Omit<WatchEvaluationOptions, "credentialContext">,
 ): WatchEvaluator {
-  return async (watch, credentialScope) => await evaluateWatch(watch, {
+  return async (watch, credentialContext) => await evaluateWatch(watch, {
     ...options,
-    credentialScope,
+    credentialContext,
   });
 }

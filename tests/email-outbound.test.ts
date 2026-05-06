@@ -110,7 +110,6 @@ function fakeResolver(): CredentialResolver {
       envKey,
       value: `${envKey}-value`,
       valuePreview: "preview",
-      scope: "agent",
       agentKey: "panda",
       keyVersion: 1,
       createdAt: 1,

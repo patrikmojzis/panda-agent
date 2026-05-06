@@ -5,7 +5,7 @@ import {validateWatchSourcePaths} from "./path-validation.js";
 
 const CREATE_PREVIEW_WATCH_ID = "watch-create-preview";
 
-export interface WatchMutationScope {
+export interface WatchMutationContext {
   agentKey: string;
   sessionId: string;
   createdByIdentityId?: string;
@@ -20,25 +20,23 @@ export interface WatchMutationServiceOptions {
   evaluateWatch: WatchEvaluator;
 }
 
-function buildCredentialScope(scope: WatchMutationScope): {
+function buildCredentialContext(context: WatchMutationContext): {
   agentKey: string;
-  identityId?: string;
 } {
   return {
-    agentKey: scope.agentKey,
-    identityId: scope.createdByIdentityId,
+    agentKey: context.agentKey,
   };
 }
 
 function buildCreateCandidate(
   input: CreateWatchMutationInput,
-  scope: WatchMutationScope,
+  context: WatchMutationContext,
 ): WatchRecord {
   const now = Date.now();
   return {
     id: CREATE_PREVIEW_WATCH_ID,
-    sessionId: scope.sessionId,
-    createdByIdentityId: scope.createdByIdentityId,
+    sessionId: context.sessionId,
+    createdByIdentityId: context.createdByIdentityId,
     title: input.title,
     intervalMinutes: input.intervalMinutes,
     source: input.source,
@@ -93,19 +91,19 @@ export class WatchMutationService {
 
   async createWatch(
     input: CreateWatchMutationInput,
-    scope: WatchMutationScope,
+    context: WatchMutationContext,
   ): Promise<WatchRecord> {
-    const candidate = buildCreateCandidate(input, scope);
+    const candidate = buildCreateCandidate(input, context);
     validateWatchSourcePaths(candidate.source);
-    const evaluation = await this.evaluateWatchFn(candidate, buildCredentialScope(scope));
+    const evaluation = await this.evaluateWatchFn(candidate, buildCredentialContext(context));
     const seedEnabled = candidate.enabled;
     const nextPollAt = seedEnabled
       ? Date.now() + candidate.intervalMinutes * 60_000
       : null;
 
     return await this.store.createWatch({
-      sessionId: scope.sessionId,
-      createdByIdentityId: scope.createdByIdentityId,
+      sessionId: context.sessionId,
+      createdByIdentityId: context.createdByIdentityId,
       title: candidate.title,
       intervalMinutes: candidate.intervalMinutes,
       source: candidate.source,
@@ -118,12 +116,12 @@ export class WatchMutationService {
 
   async updateWatch(
     input: UpdateWatchMutationInput,
-    scope: WatchMutationScope,
+    context: WatchMutationContext,
   ): Promise<WatchRecord> {
-    const existing = ensureSessionAccess(await this.store.getWatch(input.watchId), scope.sessionId);
+    const existing = ensureSessionAccess(await this.store.getWatch(input.watchId), context.sessionId);
     const {candidate, resetState, enabled} = buildUpdateCandidate(existing, input);
     validateWatchSourcePaths(candidate.source);
-    const evaluation = await this.evaluateWatchFn(candidate, buildCredentialScope(scope));
+    const evaluation = await this.evaluateWatchFn(candidate, buildCredentialContext(context));
 
     const nextPollAt = resetState && enabled
       ? Date.now() + candidate.intervalMinutes * 60_000
@@ -134,7 +132,7 @@ export class WatchMutationService {
 
     return await this.store.updateWatch({
       watchId: input.watchId,
-      sessionId: scope.sessionId,
+      sessionId: context.sessionId,
       title: input.title,
       intervalMinutes: input.intervalMinutes,
       source: input.source,

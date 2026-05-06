@@ -30,10 +30,8 @@ OpenClaw files map into Panda like this:
 
 When `--identity <handle>` is set:
 
-- imported credentials land in the relationship scope (`agent_key` + `identity_id`)
+- imported credentials still land on the agent
 - the importer also pairs that identity to the agent
-
-Without `--identity`, credential imports stay agent-scoped like before.
 
 ## Message Import
 

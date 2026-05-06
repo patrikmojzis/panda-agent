@@ -18,7 +18,6 @@ Identity is responsible for:
 
 - who is allowed to talk to an agent
 - which external actor maps to which person
-- optional relationship-scoped credentials
 - speaker provenance in transcript history
 
 Identity does not own:
