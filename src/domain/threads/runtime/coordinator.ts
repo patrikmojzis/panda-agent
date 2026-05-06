@@ -745,9 +745,12 @@ export class ThreadRuntimeCoordinator {
       while (true) {
         const appliedInputs = await this.store.applyPendingInputs(threadId, inputApplyScope);
         if (appliedInputs.length > 0) {
-          // New eligible input re-arms the one-step idle reroll for that wave.
-          // We only reset on applied inputs, not on tool churn or pending wake.
-          idleRerollAvailable = appliedInputs.some(grantsIdleReroll);
+          // Eligible input waves arm one blind extra step. Suppressed internal
+          // inputs may arrive later in the same run; they should not disarm an
+          // already-armed human/channel continuation.
+          if (appliedInputs.some(grantsIdleReroll)) {
+            idleRerollAvailable = true;
+          }
           await this.emit({
             type: "inputs_applied",
             threadId,
