@@ -93,6 +93,32 @@ describe("FileSystemMediaStore", () => {
     expect(descriptor.localPath).toMatch(/unknown\/unknown\/2026-04\/.+\.bin$/);
   });
 
+  it("infers Telegram rich media extensions from MIME types", async () => {
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-rich-media`);
+    directories.add(rootDir);
+
+    const store = new FileSystemMediaStore({
+      rootDir,
+      now: () => new Date("2026-04-08T12:00:00.000Z"),
+    });
+
+    const webm = await store.writeMedia({
+      bytes: new Uint8Array([1]),
+      source: "telegram",
+      connectorKey: "bot-main",
+      mimeType: "video/webm",
+    });
+    const tgs = await store.writeMedia({
+      bytes: new Uint8Array([2]),
+      source: "telegram",
+      connectorKey: "bot-main",
+      mimeType: "application/x-tgsticker",
+    });
+
+    expect(webm.localPath).toMatch(/telegram\/bot-main\/2026-04\/.+\.webm$/);
+    expect(tgs.localPath).toMatch(/telegram\/bot-main\/2026-04\/.+\.tgs$/);
+  });
+
   it("validates required fields", async () => {
     const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-c`);
     directories.add(rootDir);
