@@ -1,5 +1,6 @@
 import {stringToUserMessage} from "../../kernel/agent/index.js";
 import type {JsonObject} from "../../kernel/agent/types.js";
+import {runInBackground} from "../../lib/async.js";
 import type {SessionStore} from "../sessions/index.js";
 import type {ThreadRuntimeCoordinator} from "../threads/runtime/coordinator.js";
 import {renderWatchEventPrompt} from "../../prompts/runtime/watch-events.js";
@@ -100,9 +101,9 @@ export class WatchRunner {
 
     this.stopped = false;
     this.timer = setInterval(() => {
-      void this.triggerDrain();
+      this.kickDrain();
     }, this.pollIntervalMs);
-    await this.triggerDrain();
+    this.kickDrain();
   }
 
   async stop(): Promise<void> {
@@ -137,6 +138,13 @@ export class WatchRunner {
         await this.triggerDrain();
       }
     }
+  }
+
+  private kickDrain(): void {
+    runInBackground(() => this.triggerDrain(), {
+      label: "Watch runner drain",
+      onError: this.onError ? (error) => this.onError?.(error) : undefined,
+    });
   }
 
   private async drain(): Promise<void> {

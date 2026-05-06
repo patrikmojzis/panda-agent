@@ -310,13 +310,19 @@ export function createDaemonLifecycle(input: {
         requestUnsubscribe = await input.context.requests.listenPendingRequests(async () => {
           await triggerDrain();
         });
+        await input.context.runtime.coordinator.recoverOrphanedRuns("Run marked failed before recovery.");
+        if (stopped) {
+          return;
+        }
         await input.context.a2aOutboundWorker.start();
         await input.context.emailOutboundWorker.start();
         await input.context.emailSyncRunner.start();
         await input.context.scheduledTaskRunner.start();
         await input.context.watchRunner.start();
         await input.context.relationshipHeartbeatRunner.start();
-        await input.context.runtime.coordinator.recoverOrphanedRuns("Run marked failed before recovery.");
+        if (stopped) {
+          return;
+        }
         running = true;
         await triggerDrain();
       } catch (error) {

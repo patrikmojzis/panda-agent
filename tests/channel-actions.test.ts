@@ -9,6 +9,7 @@ import type {
     ChannelActionInput,
     ChannelActionRecord,
 } from "../src/domain/channels/actions/types.js";
+import {waitFor} from "./helpers/wait-for.js";
 
 function createTypingPayload(channel: string, connectorKey: string): ChannelTypingRequest {
   return {
@@ -356,6 +357,9 @@ describe("ChannelActionWorker", () => {
     });
 
     await worker.start();
+    await waitFor(() => {
+      expect(dispatch).toHaveBeenCalledTimes(1);
+    });
     await worker.stop();
 
     expect(dispatch).toHaveBeenCalledTimes(1);
@@ -387,6 +391,9 @@ describe("ChannelActionWorker", () => {
     });
 
     await worker.start();
+    await waitFor(() => {
+      expect(dispatch).toHaveBeenCalledTimes(1);
+    });
     await worker.stop();
 
     expect(dispatch).toHaveBeenCalledTimes(1);
@@ -418,6 +425,9 @@ describe("ChannelActionWorker", () => {
 
     await worker.start({
       subscribeToNotifications: false,
+    });
+    await waitFor(() => {
+      expect(dispatch).toHaveBeenCalledTimes(1);
     });
     await worker.stop();
 

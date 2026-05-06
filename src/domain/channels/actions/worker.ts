@@ -1,5 +1,6 @@
 import type {ActionNotification, ActionWorkerLookup, ChannelActionRecord} from "./types.js";
 import {isMatchingChannelNotification} from "../worker-shared.js";
+import {runInBackground} from "../../../lib/async.js";
 
 type ChannelActionWorkerStore = {
   failSendingActions(lookup: ActionWorkerLookup, error: string): Promise<number>;
@@ -52,10 +53,10 @@ export class ChannelActionWorker {
           return;
         }
 
-        await this.triggerDrain();
+        this.kickDrain();
       });
     }
-    await this.triggerDrain();
+    this.kickDrain();
   }
 
   async stop(): Promise<void> {
@@ -91,6 +92,13 @@ export class ChannelActionWorker {
         await this.triggerDrain();
       }
     }
+  }
+
+  private kickDrain(): void {
+    runInBackground(() => this.triggerDrain(), {
+      label: "Channel action worker drain",
+      onError: this.onError ? (error) => this.onError?.(error) : undefined,
+    });
   }
 
   private async drain(): Promise<void> {

@@ -7,6 +7,7 @@ import {HeartbeatRunner} from "../src/domain/scheduling/heartbeats/runner.js";
 import {type SessionHeartbeatRecord, type SessionStore} from "../src/domain/sessions/index.js";
 import {ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {waitFor} from "./helpers/wait-for.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
   return {
@@ -143,6 +144,10 @@ describe("HeartbeatRunner", () => {
     );
 
     await harness.runner.start();
+    await waitFor(async () => {
+      const heartbeat = await harness.sessionStore.getHeartbeat("session-main");
+      expect(heartbeat?.lastFireAt).toBeDefined();
+    });
     await harness.coordinator.waitForIdle("session-thread");
     await harness.runner.stop();
 
@@ -185,6 +190,10 @@ describe("HeartbeatRunner", () => {
     );
 
     await harness.runner.start();
+    await waitFor(async () => {
+      const heartbeat = await harness.sessionStore.getHeartbeat("session-main");
+      expect(heartbeat?.lastSkipReason).toBe("busy");
+    });
     await harness.runner.stop();
 
     const heartbeatInputs = await harness.pool.query(
@@ -254,6 +263,9 @@ describe("HeartbeatRunner", () => {
     });
 
     await runner.start();
+    await waitFor(() => {
+      expect(sessions.getSession).toHaveBeenCalledWith("session-main");
+    });
     await runner.stop();
 
     expect(sessions.getSession).toHaveBeenCalledWith("session-main");

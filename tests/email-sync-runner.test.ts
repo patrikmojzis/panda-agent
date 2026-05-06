@@ -17,6 +17,7 @@ import type {SessionRecord} from "../src/domain/sessions/types.js";
 import type {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/coordinator.js";
 import {EmailSyncRunner} from "../src/integrations/channels/email/sync-runner.js";
 import {renderEmailEventPrompt} from "../src/prompts/runtime/email-events.js";
+import {waitFor} from "./helpers/wait-for.js";
 
 class MemoryEmailStore implements EmailStore {
   account: EmailAccountRecord = {
@@ -121,6 +122,9 @@ describe("EmailSyncRunner", () => {
     });
 
     await runner.start();
+    await waitFor(() => {
+      expect(submitted).toHaveLength(1);
+    });
     await runner.stop();
 
     expect(submitted).toEqual([{

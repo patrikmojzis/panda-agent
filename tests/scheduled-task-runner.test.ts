@@ -6,6 +6,7 @@ import {Agent,} from "../src/index.js";
 import {PostgresScheduledTaskStore, ScheduledTaskRunner,} from "../src/domain/scheduling/tasks/index.js";
 import {ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {sleep, waitFor} from "./helpers/wait-for.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
   return {
@@ -160,6 +161,10 @@ describe("ScheduledTaskRunner", () => {
     });
 
     await harness.runner.start();
+    await waitFor(async () => {
+      const updated = await harness.scheduledTasks.getTask(task.id);
+      expect(updated.completedAt).toBeDefined();
+    });
     await harness.runner.stop();
 
     const updated = await harness.scheduledTasks.getTask(task.id);
@@ -191,7 +196,7 @@ describe("ScheduledTaskRunner", () => {
       instruction: "Deliver the report.",
       schedule: {
         kind: "recurring",
-        cron: "0 0 1 1 *",
+        cron: "* * * * *",
         timezone: "UTC",
       },
     });
@@ -201,6 +206,11 @@ describe("ScheduledTaskRunner", () => {
       [task.id, new Date(Date.now() - 1_000)],
     );
     await harness.runner.start();
+    await waitFor(async () => {
+      const updated = await harness.scheduledTasks.getTask(task.id);
+      expect(updated.claimedAt).toBeUndefined();
+      expect(updated.nextFireAt).toBeGreaterThan(Date.now());
+    });
     await harness.runner.stop();
 
     const updated = await harness.scheduledTasks.getTask(task.id);
@@ -227,6 +237,10 @@ describe("ScheduledTaskRunner", () => {
     });
 
     await harness.runner.start();
+    await waitFor(async () => {
+      const updated = await harness.scheduledTasks.getTask(task.id);
+      expect(updated.completedAt).toBeDefined();
+    });
     await harness.runner.stop();
 
     const updated = await harness.scheduledTasks.getTask(task.id);
@@ -237,5 +251,99 @@ describe("ScheduledTaskRunner", () => {
       [task.id],
     );
     expect(runs.rows).toEqual([{status: "succeeded"}]);
+  });
+
+  it("does not block start on an active scheduled task drain but stop still waits", async () => {
+    let released = false;
+    let releaseIdle!: () => void;
+    const idle = new Promise<void>((resolve) => {
+      releaseIdle = () => {
+        released = true;
+        resolve();
+      };
+    });
+    const task = {
+      id: "task-1",
+      sessionId: "session-main",
+      createdByIdentityId: "alice-id",
+      title: "Slow task",
+      instruction: "Do slow work.",
+      schedule: {
+        kind: "once",
+        runAt: new Date(Date.now() - 1_000).toISOString(),
+      },
+      nextFireAt: Date.now() - 1_000,
+    };
+    const run = {
+      id: "scheduled-run-1",
+      taskId: task.id,
+      sessionId: task.sessionId,
+      createdByIdentityId: task.createdByIdentityId,
+      scheduledFor: Date.now() - 1_000,
+      status: "running",
+      createdAt: Date.now(),
+    };
+    let listed = false;
+    const tasks = {
+      listDueTasks: vi.fn(async () => {
+        if (listed) {
+          return [];
+        }
+        listed = true;
+        return [task];
+      }),
+      claimTask: vi.fn(async () => ({task, run})),
+      startTaskRun: vi.fn(async () => run),
+      completeTaskRun: vi.fn(async () => ({...run, status: "succeeded"})),
+      failTaskRun: vi.fn(),
+      markTaskCompleted: vi.fn(async () => ({...task, completedAt: Date.now()})),
+      markTaskFailed: vi.fn(),
+      clearTaskClaim: vi.fn(),
+    };
+    const runner = new ScheduledTaskRunner({
+      tasks: tasks as any,
+      sessions: {
+        getSession: vi.fn(async () => ({
+          id: task.sessionId,
+          agentKey: "panda",
+          kind: "main",
+          currentThreadId: "thread-1",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })),
+      } as any,
+      threadStore: {
+        listRuns: vi.fn(async () => released
+          ? [{id: "thread-run-1", status: "completed"}]
+          : []),
+      } as any,
+      coordinator: {
+        waitForCurrentRun: vi.fn(async () => {}),
+        submitInput: vi.fn(async () => {}),
+        waitForIdle: vi.fn(async () => {
+          await idle;
+        }),
+      } as any,
+    });
+
+    const startResult = await Promise.race([
+      runner.start().then(() => "resolved"),
+      sleep(25).then(() => "blocked"),
+    ]);
+    expect(startResult).toBe("resolved");
+    await waitFor(() => {
+      expect(tasks.startTaskRun).toHaveBeenCalledTimes(1);
+    });
+
+    const stopPromise = runner.stop();
+    const stopResult = await Promise.race([
+      stopPromise.then(() => "resolved"),
+      sleep(25).then(() => "blocked"),
+    ]);
+    expect(stopResult).toBe("blocked");
+
+    releaseIdle();
+    await stopPromise;
+    expect(tasks.completeTaskRun).toHaveBeenCalledTimes(1);
   });
 });

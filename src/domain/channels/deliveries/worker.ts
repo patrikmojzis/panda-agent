@@ -1,5 +1,6 @@
 import type {ChannelOutboundAdapter} from "../outbound.js";
 import type {OutboundRequest} from "../types.js";
+import {runInBackground} from "../../../lib/async.js";
 import type {
     CompleteDeliveryInput,
     DeliveryNotification,
@@ -67,7 +68,7 @@ export class ChannelOutboundDeliveryWorker {
   async start(options: ChannelOutboundDeliveryWorkerStartOptions = {}): Promise<void> {
     this.stopped = false;
     // Callers must already hold connector ownership before starting the worker.
-    // start() immediately recovers stale `sending` rows and may drain pending work.
+    // start() recovers stale `sending` rows, then lets pending work drain in the background.
     await this.store.failSendingDeliveries(this.lookup, "Delivery worker stopped before completion.");
     if (options.subscribeToNotifications ?? true) {
       if (!this.store.listenPendingDeliveries) {
@@ -79,10 +80,10 @@ export class ChannelOutboundDeliveryWorker {
           return;
         }
 
-        await this.triggerDrain();
+        this.kickDrain();
       });
     }
-    await this.triggerDrain();
+    this.kickDrain();
   }
 
   async stop(): Promise<void> {
@@ -119,6 +120,13 @@ export class ChannelOutboundDeliveryWorker {
         await this.triggerDrain();
       }
     }
+  }
+
+  private kickDrain(): void {
+    runInBackground(() => this.triggerDrain(), {
+      label: "Outbound delivery worker drain",
+      onError: this.onError ? (error) => this.onError?.(error) : undefined,
+    });
   }
 
   private async drain(): Promise<void> {

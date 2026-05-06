@@ -19,6 +19,7 @@ import {
     normalizeEmailAddress,
     parseEmailAuthenticationResults
 } from "../../../domain/email/index.js";
+import {runInBackground} from "../../../lib/async.js";
 import {collapseWhitespace, trimToUndefined} from "../../../lib/strings.js";
 import {renderEmailEventPrompt} from "../../../prompts/runtime/email-events.js";
 
@@ -206,9 +207,9 @@ export class EmailSyncRunner {
 
     this.stopped = false;
     this.timer = setInterval(() => {
-      void this.triggerDrain();
+      this.kickDrain();
     }, this.pollIntervalMs);
-    await this.triggerDrain();
+    this.kickDrain();
   }
 
   async stop(): Promise<void> {
@@ -243,6 +244,13 @@ export class EmailSyncRunner {
         await this.triggerDrain();
       }
     }
+  }
+
+  private kickDrain(): void {
+    runInBackground(() => this.triggerDrain(), {
+      label: "Email sync runner drain",
+      onError: this.onError ? (error) => this.onError?.(error) : undefined,
+    });
   }
 
   private async drain(): Promise<void> {

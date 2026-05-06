@@ -15,6 +15,7 @@ import type {
     OutboundDeliveryRecord,
 } from "../src/domain/channels/deliveries/types.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {waitFor} from "./helpers/wait-for.js";
 
 describe("PostgresOutboundDeliveryStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -324,6 +325,9 @@ describe("ChannelOutboundDeliveryWorker", () => {
     });
 
     await worker.start();
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledTimes(1);
+    });
     await worker.stop();
 
     expect(send).toHaveBeenCalledTimes(1);
@@ -361,6 +365,9 @@ describe("ChannelOutboundDeliveryWorker", () => {
     });
 
     await worker.start();
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledTimes(1);
+    });
     await worker.stop();
 
     expect(send).toHaveBeenCalledTimes(1);
@@ -401,6 +408,9 @@ describe("ChannelOutboundDeliveryWorker", () => {
 
     await worker.start({
       subscribeToNotifications: false,
+    });
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledTimes(1);
     });
     await worker.stop();
 

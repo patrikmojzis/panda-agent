@@ -122,6 +122,7 @@ describe("createDaemonLifecycle", () => {
       relationshipHeartbeatRunner: {
         start: vi.fn(async () => {
           order.push("heartbeat-start");
+          await lifecycle.stop();
         }),
         stop: vi.fn(async () => {
           order.push("heartbeat-stop");
@@ -134,7 +135,6 @@ describe("createDaemonLifecycle", () => {
         coordinator: {
           recoverOrphanedRuns: vi.fn(async () => {
             order.push("recover");
-            await lifecycle.stop();
           }),
         },
       },
@@ -152,13 +152,13 @@ describe("createDaemonLifecycle", () => {
         "lease",
         "heartbeat",
         "listen",
+        "recover",
         "a2a-start",
         "email-outbound-start",
         "email-sync-start",
         "tasks-start",
         "watch-start",
         "heartbeat-start",
-        "recover",
         "unlisten",
         "a2a-stop",
         "email-outbound-stop",

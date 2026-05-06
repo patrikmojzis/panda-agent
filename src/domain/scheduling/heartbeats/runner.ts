@@ -1,5 +1,6 @@
 import {stringToUserMessage} from "../../../kernel/agent/index.js";
 import {renderHeartbeatPrompt} from "../../../prompts/runtime/heartbeat.js";
+import {runInBackground} from "../../../lib/async.js";
 import {resolveLocalDateTimeInfo} from "../../../lib/dates.js";
 import type {SessionHeartbeatRecord, SessionRecord, SessionStore} from "../../sessions/index.js";
 import type {ThreadRuntimeCoordinator} from "../../threads/runtime/coordinator.js";
@@ -58,9 +59,9 @@ export class HeartbeatRunner {
 
     this.stopped = false;
     this.timer = setInterval(() => {
-      void this.triggerDrain();
+      this.kickDrain();
     }, this.pollIntervalMs);
-    await this.triggerDrain();
+    this.kickDrain();
   }
 
   async stop(): Promise<void> {
@@ -95,6 +96,13 @@ export class HeartbeatRunner {
         await this.triggerDrain();
       }
     }
+  }
+
+  private kickDrain(): void {
+    runInBackground(() => this.triggerDrain(), {
+      label: "Heartbeat runner drain",
+      onError: this.onError ? (error) => this.onError?.(error) : undefined,
+    });
   }
 
   private async drain(): Promise<void> {

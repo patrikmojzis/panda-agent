@@ -11,6 +11,7 @@ import {
   WatchRunner,
 } from "../src/domain/watches/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {waitFor} from "./helpers/wait-for.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
   return {
@@ -202,10 +203,17 @@ describe("WatchRunner", () => {
     });
 
     await harness.watchRunner.start();
+    await waitFor(() => {
+      expect(evaluateWatch).toHaveBeenCalledTimes(1);
+    });
     await harness.watchRunner.stop();
 
     await forceWatchDue(harness.pool, watch.id);
     await harness.watchRunner.start();
+    await waitFor(async () => {
+      const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
+      expect(latestRun?.status).toBe("changed");
+    });
     await harness.coordinator.waitForIdle("session-thread");
     await harness.watchRunner.stop();
 
@@ -276,9 +284,19 @@ describe("WatchRunner", () => {
     });
 
     await harness.watchRunner.start();
+    await waitFor(() => {
+      expect(evaluateWatch).toHaveBeenCalledTimes(1);
+    });
     await harness.watchRunner.stop();
     await forceWatchDue(harness.pool, watch.id);
     await harness.watchRunner.start();
+    await waitFor(async () => {
+      const eventRows = await harness.pool.query(
+        `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."watch_events" WHERE watch_id = $1`,
+        [watch.id],
+      );
+      expect(eventRows.rows[0]).toMatchObject({count: 1});
+    });
     await harness.coordinator.waitForIdle("session-thread");
     await harness.watchRunner.stop();
 
@@ -336,9 +354,16 @@ describe("WatchRunner", () => {
     });
 
     await harness.watchRunner.start();
+    await waitFor(() => {
+      expect(evaluateWatch).toHaveBeenCalledTimes(1);
+    });
     await harness.watchRunner.stop();
     await forceWatchDue(harness.pool, watch.id);
     await harness.watchRunner.start();
+    await waitFor(async () => {
+      const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
+      expect(latestRun?.status).toBe("changed");
+    });
     await harness.coordinator.waitForIdle("session-thread");
     await harness.watchRunner.stop();
 
@@ -392,9 +417,16 @@ describe("WatchRunner", () => {
     });
 
     await harness.watchRunner.start();
+    await waitFor(() => {
+      expect(evaluateWatch).toHaveBeenCalledTimes(1);
+    });
     await harness.watchRunner.stop();
     await forceWatchDue(harness.pool, watch.id);
     await harness.watchRunner.start();
+    await waitFor(async () => {
+      const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
+      expect(latestRun?.status).toBe("changed");
+    });
     await harness.coordinator.waitForIdle("session-thread");
     await harness.watchRunner.stop();
 
