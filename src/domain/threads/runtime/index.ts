@@ -31,9 +31,11 @@ export {
   projectTranscriptForRun,
   splitTranscriptForCompaction,
   type CompactBoundaryMetadata,
+  type CompactAttemptDiagnostics,
   type CompactThreadOptions,
   type CompactThreadResult,
   type CompactTranscriptSplit,
+  CompactThreadError,
 } from "../../../kernel/transcript/compaction.js";
 export {
   projectTranscriptForInference,

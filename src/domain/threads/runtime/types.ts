@@ -7,12 +7,14 @@ import type {LlmContext} from "../../../kernel/agent/llm-context.js";
 import type {JsonObject, JsonValue} from "../../../kernel/agent/types.js";
 import type {LlmRuntime} from "../../../kernel/agent/runtime.js";
 import type {RunPipeline} from "../../../kernel/agent/run-pipeline.js";
+import type {CompactAttemptDiagnostics} from "../../../kernel/transcript/compaction.js";
 
 export interface AutoCompactionRuntimeState {
   consecutiveFailures: number;
   lastFailureReason?: string;
   lastFailureAt?: number;
   cooldownUntil?: number;
+  lastAttempt?: CompactAttemptDiagnostics;
 }
 
 export interface ThreadRuntimeState {
