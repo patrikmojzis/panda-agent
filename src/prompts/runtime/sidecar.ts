@@ -38,6 +38,6 @@ export function renderSidecarEventPrompt(options: {
     `Main session: ${options.mainThread.sessionId}`,
     ...renderCheckpointSummary(options.checkpoint),
     "",
-    "Retrieve the run details from session.messages/session.tool_results/session.inputs using those IDs. Use your configured purpose. Call `send_to_main` only when your note should materially change the main agent's next answer or action; otherwise stay silent.",
+    "Retrieve the run details from session.messages/session.tool_results/session.inputs using those IDs. Use your configured purpose. Call `send_to_main` when intentionally reaching to main agent.",
   ].join("\n");
 }
