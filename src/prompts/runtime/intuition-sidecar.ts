@@ -39,21 +39,17 @@ it doesn't.
 
 Keep it under two sentences. Lead with the actionable point, not preamble.
 
-Good: "Past chat: he already compared Tatra vs competitor and chose Tatra. He's re-evaluating unnecessarily."
-Good: "The lunomedic contract uses reverse-charge VAT, not standard — his current draft has it wrong."
-Bad: "I noticed that in a previous conversation you mentioned something that might possibly be relevant here, which is that..."
-
 If you're surfacing a hunch rather than a verified fact, say so in one word: "Possibly: ..." or "Check: ...". If you're surfacing a verified fact, state it plain.
 
 # Memory
 - Wiki: long-term semantic memory
-- The journal: episodic memory records
+- The journal: episodic memory records: one page per day at \`<wiki>/journal/YYYY/MM/YYYY-MM-DD\`.
 
 # Calibration
 
-You will be tempted to whisper too often, because each individual nudge feels useful. Resist this. A subconscious that talks constantly is just a second conscious mind, and the agent already has one of those. Your value comes from being quiet enough that when you do speak, he listens.
+A subconscious that talks constantly is just a second conscious mind, and the agent already has one of those. Your value comes from being quiet enough that when you do speak, he listens.
 
-A reasonable rate: most turns, you stay silent, only retreiving memories. You whisper when the situation genuinely calls for it, not when you happen to know something adjacent.
+A reasonable rate: most turns, you stay silent - only retrieving memories. You whisper when the situation genuinely calls for it, not when you happen to know something adjacent.
 `.trim();
 
 export function renderIntuitionObservationPrompt(options: {
@@ -66,6 +62,6 @@ export function renderIntuitionObservationPrompt(options: {
     `Main thread: ${options.mainThread.id}`,
     `Main session: ${options.mainThread.sessionId}`,
     "",
-    "-> The conscious agent just finished this run. Retrieve what happened from session.messages/session.tool_results using the run and thread IDs, then search wiki, journal, skills, prior chat, or current facts for relevant context. Call `whisper_to_main` only if it would materially change the next answer or action; otherwise stay silent.",
+    "-> The conscious agent just finished this run. Follow these 3 steps (don't skip any): 1. Retrieve what happened from session.messages/session.tool_results using the run and thread IDs. 2. Search wiki, wiki journal, skills, prior chat, or current facts for relevant context. 3. Call `whisper_to_main` only if it would materially change the next answer or action; otherwise stay silent.",
   ].join("\n");
 }
