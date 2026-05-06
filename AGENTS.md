@@ -21,14 +21,6 @@
 - Prefer negative code: the best code is often code removed. Favor simpler implementations, fewer files, fewer abstractions, and less moving parts when they solve the problem just as well. "The real hero of programming is the one who writes negative code."
 - As much as UX is important so is AX (agent experience)
 
-## Local Inspiration Repos
-
-- The agent is free to inspect `/Users/patrikmojzis/Projects/openclaw` for inspiration around provider boundaries, replay/sanitization ideas, and transport adapters.
-- The agent is free to inspect `/Users/patrikmojzis/Projects/claude-code` for inspiration around Anthropic client setup, streaming patterns, and Claude-oriented API usage.
-- The agent is free to inspect `/Users/patrikmojzis/Projects/codex` for inspiration.
-- `/Users/patrikmojzis/Projects/hermes-agent`
-- These repos are reference material only. Panda should stay much lighter and easier to reason about than either of them.
-
 ## Provider Docs
 
 - Anthropic docs: [https://platform.claude.com/docs](https://platform.claude.com/docs)
@@ -71,3 +63,7 @@
 - `integrations`: external systems like providers, Telegram, WhatsApp, Postgres, shell
 - `ui`: terminal and other human-facing surfaces
 - `lib`: small pure helpers
+
+## Agents working local rules
+- Notice if you are working in a worktree - if yes don't install node modules but source them from here `~/Projects/panda-agent` and also the .env 
+- in .env.codex you get readonly DB on prod `PROD_READONLY_DB_URL`
