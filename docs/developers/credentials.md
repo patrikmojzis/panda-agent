@@ -73,12 +73,12 @@ Remote intentionally does not inherit core host env or runner host env. If it di
 
 There are two redaction layers:
 
-1. Tool-call redaction before transcript persistence.
+1. Tool-call redaction before transcript persistence for tools that opt in.
 2. Bash result redaction for secret values carried by stored credentials or `bash.env`.
 
 Current behavior:
 
-- `set_env_value` redacts the `value` argument
+- `set_env_value` currently keeps the `value` argument in transcript history so the agent does not replay `[redacted]` as a credential
 - `bash` redacts `env` argument values
 - `bash` also replaces echoed credential or `bash.env` values in stdout/stderr with `[redacted]`
 

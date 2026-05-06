@@ -280,7 +280,18 @@ describe("credentials end-to-end", () => {
     await coordinator.waitForIdle("thread-credentials-redacted-bash");
 
     const transcript = await store.loadTranscript("thread-credentials-redacted-bash");
-    expect(JSON.stringify(transcript)).not.toContain("notion-secret");
+    expect(transcript[1]?.message).toMatchObject({
+      role: "assistant",
+      content: [{
+        type: "toolCall",
+        name: "set_env_value",
+        arguments: {
+          key: "NOTION_API_KEY",
+          value: "notion-secret",
+        },
+      }],
+    });
+    expect(JSON.stringify(transcript[2]?.message)).not.toContain("notion-secret");
     expect(transcript[4]?.message).toMatchObject({
       role: "toolResult",
       toolName: "bash",
@@ -288,5 +299,6 @@ describe("credentials end-to-end", () => {
         stdout: "[redacted]",
       }),
     });
+    expect(JSON.stringify(transcript[4]?.message)).not.toContain("notion-secret");
   });
 });
