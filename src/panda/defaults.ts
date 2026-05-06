@@ -34,10 +34,3 @@ export function resolveDefaultAgentSkillMaintainerSubagentModelSelector(
   const configured = env.SKILL_MAINTAINER_SUBAGENT_MODEL?.trim();
   return configured ? resolveModelSelector(configured).canonical : undefined;
 }
-
-export function resolveDefaultAgentIntuitionSidecarModelSelector(
-  env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
-  const configured = env.INTUITION_SIDECAR_MODEL?.trim();
-  return configured ? resolveModelSelector(configured).canonical : undefined;
-}

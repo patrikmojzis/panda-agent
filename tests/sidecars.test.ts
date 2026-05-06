@@ -1,5 +1,5 @@
 import {describe, expect, it, vi} from "vitest";
-import type {AssistantMessage} from "@mariozechner/pi-ai";
+import type {AssistantMessage, ToolCall, ToolResultMessage} from "@mariozechner/pi-ai";
 
 import {Agent, type LlmRuntime, stringToUserMessage, Tool, z,} from "../src/index.js";
 import {type ResolvedThreadDefinition, ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
@@ -18,10 +18,11 @@ import type {
   UpdateSessionHeartbeatConfigInput,
 } from "../src/domain/sessions/types.js";
 import {
-  INTUITION_OBSERVATION_SOURCE,
-  INTUITION_SIDECAR_SOURCE,
-  IntuitionSidecarService,
-} from "../src/app/runtime/intuition-sidecar.js";
+  SIDECAR_EVENT_SOURCE,
+  SIDECAR_INPUT_SOURCE,
+  type SidecarDefinitionRecord,
+} from "../src/domain/sidecars/index.js";
+import {SidecarService} from "../src/app/runtime/sidecars.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createAssistantMessage(
@@ -96,6 +97,7 @@ class SelectiveLeaseManager {
 
 class MemorySessionStore implements SessionStore {
   private readonly sessions = new Map<string, SessionRecord>();
+  readonly createdSessionIds: string[] = [];
 
   async ensureSchema(): Promise<void> {}
 
@@ -107,6 +109,7 @@ class MemorySessionStore implements SessionStore {
       updatedAt: now,
     };
     this.sessions.set(session.id, session);
+    this.createdSessionIds.push(session.id);
     return {...session};
   }
 
@@ -163,6 +166,43 @@ class MemorySessionStore implements SessionStore {
   }
 }
 
+class MemorySidecarRepo {
+  constructor(private readonly records: readonly SidecarDefinitionRecord[]) {}
+
+  async getDefinition(agentKey: string, sidecarKey: string): Promise<SidecarDefinitionRecord> {
+    const found = this.records.find((record) => record.agentKey === agentKey && record.sidecarKey === sidecarKey);
+    if (!found) {
+      throw new Error(`Unknown sidecar ${agentKey}/${sidecarKey}.`);
+    }
+    return found;
+  }
+
+  async listAgentDefinitions(agentKey: string, options: { enabled?: boolean } = {}): Promise<readonly SidecarDefinitionRecord[]> {
+    return this.records.filter((record) => {
+      return record.agentKey === agentKey
+        && (options.enabled === undefined || record.enabled === options.enabled);
+    });
+  }
+}
+
+function sidecar(
+  overrides: Partial<SidecarDefinitionRecord> = {},
+): SidecarDefinitionRecord {
+  const now = Date.now();
+  return {
+    agentKey: "panda",
+    sidecarKey: "memory_guard",
+    displayName: "Memory Guard",
+    enabled: true,
+    prompt: "Check memory quietly. Call send_to_main only for material corrections.",
+    triggers: ["after_run_finish"],
+    toolset: "readonly",
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
 async function createMainSession(options: {
   sessionStore: MemorySessionStore;
   threadStore: TestThreadRuntimeStore;
@@ -197,8 +237,8 @@ function definition(runtime?: LlmRuntime): ResolvedThreadDefinition {
   };
 }
 
-describe("Intuition sidecar", () => {
-  it("creates a visible sidecar session and post-run observation input", async () => {
+describe("Sidecars", () => {
+  it("creates a visible sidecar session and post-run event input", async () => {
     const sessionStore = new MemorySessionStore();
     const threadStore = new TestThreadRuntimeStore();
     const submitted: Array<{threadId: string; source: string; text: string}> = [];
@@ -219,29 +259,13 @@ describe("Intuition sidecar", () => {
       source: "assistant",
       runId: run.id,
     });
-    const toolResult = await threadStore.appendRuntimeMessage("thread-main", {
-      message: {
-        role: "toolResult",
-        toolCallId: "call-1",
-        toolName: "lookup",
-        content: [{type: "text", text: "lookup result"}],
-        isError: false,
-        timestamp: Date.now(),
-      },
-      source: "tool:lookup",
-      runId: run.id,
-    });
-    const runtime = await threadStore.appendRuntimeMessage("thread-main", {
-      message: stringToUserMessage("runtime nudge"),
-      source: "runtime",
-      runId: run.id,
-    });
     const finishedRun = await threadStore.completeRun(run.id);
     const mainThread = await threadStore.getThread("thread-main");
 
-    const service = new IntuitionSidecarService({
+    const service = new SidecarService({
       sessionStore,
       threadStore,
+      sidecarRepo: new MemorySidecarRepo([sidecar()]),
       runtime: {
         submitInput: async (threadId, payload) => {
           submitted.push({
@@ -257,30 +281,27 @@ describe("Intuition sidecar", () => {
     await service.afterRunFinish({
       run: finishedRun,
       thread: mainThread,
-      messages: [...appliedInputs, assistant, toolResult, runtime],
+      messages: [...appliedInputs, assistant],
       signal: new AbortController().signal,
     });
 
     const sessions = await sessionStore.listAgentSessions("panda");
-    const sidecar = sessions.find((session) => session.kind === "sidecar");
-    expect(sidecar).toBeDefined();
-    expect(sessions.map((session) => session.kind)).toContain("sidecar");
+    const sidecarSession = sessions.find((session) => session.kind === "sidecar");
+    expect(sidecarSession).toBeDefined();
     expect(submitted).toMatchObject([{
-      threadId: sidecar?.currentThreadId,
-      source: INTUITION_OBSERVATION_SOURCE,
+      threadId: sidecarSession?.currentThreadId,
+      source: SIDECAR_EVENT_SOURCE,
     }]);
+    expect(submitted[0]?.text).toContain("Trigger: after_run_finish");
     expect(submitted[0]?.text).toContain(`Main run: ${finishedRun.id}`);
     expect(submitted[0]?.text).toContain(`Main thread: ${mainThread.id}`);
-    expect(submitted[0]?.text).toContain(`Main session: ${mainThread.sessionId}`);
-    expect(submitted[0]?.text).toMatch(/retrieve what happened from session\.messages\/session\.tool_results/i);
+    expect(submitted[0]?.text).toMatch(/session\.messages\/session\.tool_results/i);
     expect(submitted[0]?.text).not.toContain("VAT XML");
     expect(submitted[0]?.text).not.toContain("handled run");
-    expect(submitted[0]?.text).not.toContain("lookup result");
-    expect(submitted[0]?.text).not.toContain("runtime nudge");
     expect(submitted[0]?.text).not.toContain("old message outside run");
   });
 
-  it("does not observe sidecar threads recursively", async () => {
+  it("does not trigger sidecars recursively", async () => {
     const sessionStore = new MemorySessionStore();
     const threadStore = new TestThreadRuntimeStore();
     const submitted = vi.fn();
@@ -290,9 +311,10 @@ describe("Intuition sidecar", () => {
       kind: "sidecar",
       currentThreadId: "sidecar-thread",
       metadata: {
-        intuitionSidecar: {
-          kind: "intuition_sidecar",
+        sidecar: {
+          kind: "sidecar",
           parentSessionId: "session-main",
+          sidecarKey: "memory_guard",
         },
       },
     });
@@ -302,15 +324,16 @@ describe("Intuition sidecar", () => {
       context: {
         sessionId: "sidecar-session",
         agentKey: "panda",
-        intuitionSidecar: {
-          kind: "intuition_sidecar",
+        sidecar: {
+          kind: "sidecar",
           parentSessionId: "session-main",
+          sidecarKey: "memory_guard",
         },
       },
     });
     await threadStore.enqueueInput("sidecar-thread", {
       message: stringToUserMessage("observe"),
-      source: INTUITION_OBSERVATION_SOURCE,
+      source: SIDECAR_EVENT_SOURCE,
     });
     const run = await threadStore.createRun("sidecar-thread");
     const appliedInputs = await threadStore.applyPendingInputs("sidecar-thread");
@@ -321,9 +344,10 @@ describe("Intuition sidecar", () => {
     });
     const finishedRun = await threadStore.completeRun(run.id);
     const sidecarThread = await threadStore.getThread("sidecar-thread");
-    const service = new IntuitionSidecarService({
+    const service = new SidecarService({
       sessionStore,
       threadStore,
+      sidecarRepo: new MemorySidecarRepo([sidecar()]),
       runtime: {submitInput: submitted},
     });
 
@@ -337,14 +361,15 @@ describe("Intuition sidecar", () => {
     expect(submitted).not.toHaveBeenCalled();
   });
 
-  it("does not observe failed or empty runs", async () => {
+  it("skips failed, empty, and sidecar-only runs", async () => {
     const sessionStore = new MemorySessionStore();
     const threadStore = new TestThreadRuntimeStore();
     const submitted = vi.fn();
     await createMainSession({sessionStore, threadStore});
-    const service = new IntuitionSidecarService({
+    const service = new SidecarService({
       sessionStore,
       threadStore,
+      sidecarRepo: new MemorySidecarRepo([sidecar()]),
       runtime: {submitInput: submitted},
     });
 
@@ -352,6 +377,19 @@ describe("Intuition sidecar", () => {
     const failed = await threadStore.failRunIfRunning(failedRun.id, "provider failed");
     const completedRun = await threadStore.createRun("thread-main");
     const completed = await threadStore.completeRun(completedRun.id);
+    const sidecarOnlyRun = await threadStore.createRun("thread-main");
+    const sidecarInput = await threadStore.appendRuntimeMessage("thread-main", {
+      origin: "input",
+      message: stringToUserMessage("[Sidecar note: memory_guard]\nCheck tax memory."),
+      source: SIDECAR_INPUT_SOURCE,
+      runId: sidecarOnlyRun.id,
+    });
+    const sidecarOnlyAssistant = await threadStore.appendRuntimeMessage("thread-main", {
+      message: message("handled sidecar"),
+      source: "assistant",
+      runId: sidecarOnlyRun.id,
+    });
+    const sidecarOnly = await threadStore.completeRun(sidecarOnlyRun.id);
     const thread = await threadStore.getThread("thread-main");
 
     await service.afterRunFinish({
@@ -370,11 +408,143 @@ describe("Intuition sidecar", () => {
       messages: [],
       signal: new AbortController().signal,
     });
+    await service.afterRunFinish({
+      run: sidecarOnly,
+      thread,
+      messages: [sidecarInput, sidecarOnlyAssistant],
+      signal: new AbortController().signal,
+    });
 
     expect(submitted).not.toHaveBeenCalled();
   });
 
-  it("observes only after the main run completes with current-run messages", async () => {
+  it("dispatches checkpoint triggers without exposing sidecar notes as current input", async () => {
+    const sessionStore = new MemorySessionStore();
+    const threadStore = new TestThreadRuntimeStore();
+    const submitted: Array<{source: string; text: string}> = [];
+    await createMainSession({sessionStore, threadStore});
+    await threadStore.enqueueInput("thread-main", {
+      message: stringToUserMessage("Run lookup."),
+      source: "tui",
+    });
+    const run = await threadStore.createRun("thread-main");
+    const appliedInputs = await threadStore.applyPendingInputs("thread-main");
+    const assistant = await threadStore.appendRuntimeMessage("thread-main", {
+      message: createAssistantMessage([{
+        type: "toolCall",
+        id: "call-1",
+        name: "echo",
+        arguments: {message: "payload"},
+      }]),
+      source: "assistant",
+      runId: run.id,
+    });
+    const checkpoint = {
+      phase: "after_tool_result" as const,
+      runContext: {} as never,
+      toolCall: {
+        type: "toolCall",
+        id: "call-1",
+        name: "echo",
+        arguments: {message: "payload"},
+      } satisfies ToolCall,
+      toolResult: {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "echo",
+        content: [{type: "text", text: "ok"}],
+        isError: false,
+        timestamp: Date.now(),
+      } satisfies ToolResultMessage,
+      remainingToolCalls: [],
+    };
+    const service = new SidecarService({
+      sessionStore,
+      threadStore,
+      sidecarRepo: new MemorySidecarRepo([sidecar({triggers: ["after_tool_result"]})]),
+      runtime: {
+        submitInput: async (_threadId, payload) => {
+          submitted.push({
+            source: payload.source,
+            text: typeof payload.message.content === "string" ? payload.message.content : "",
+          });
+        },
+      },
+    });
+
+    await service.afterCheckpoint({
+      run,
+      thread: await threadStore.getThread("thread-main"),
+      checkpoint,
+      messages: [...appliedInputs, assistant],
+      signal: new AbortController().signal,
+    });
+
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]?.source).toBe(SIDECAR_EVENT_SOURCE);
+    expect(submitted[0]?.text).toContain("Trigger: after_tool_result");
+    expect(submitted[0]?.text).toContain("Tool result: echo");
+  });
+
+  it("shares sidecar thread creation across overlapping trigger dispatches", async () => {
+    const sessionStore = new MemorySessionStore();
+    const threadStore = new TestThreadRuntimeStore();
+    const submitted: Array<{source: string}> = [];
+    await createMainSession({sessionStore, threadStore});
+    await threadStore.enqueueInput("thread-main", {
+      message: stringToUserMessage("Run lookup."),
+      source: "tui",
+    });
+    const run = await threadStore.createRun("thread-main");
+    const appliedInputs = await threadStore.applyPendingInputs("thread-main");
+    const assistant = await threadStore.appendRuntimeMessage("thread-main", {
+      message: message("answer"),
+      source: "assistant",
+      runId: run.id,
+    });
+    const finishedRun = await threadStore.completeRun(run.id);
+    const service = new SidecarService({
+      sessionStore,
+      threadStore,
+      sidecarRepo: new MemorySidecarRepo([sidecar({
+        triggers: ["after_assistant", "after_run_finish"],
+      })]),
+      runtime: {
+        submitInput: async (_threadId, payload) => {
+          submitted.push({source: payload.source});
+        },
+      },
+    });
+
+    await Promise.all([
+      service.afterRunFinish({
+        run: finishedRun,
+        thread: await threadStore.getThread("thread-main"),
+        messages: [...appliedInputs, assistant],
+        signal: new AbortController().signal,
+      }),
+      service.afterCheckpoint({
+        run,
+        thread: await threadStore.getThread("thread-main"),
+        checkpoint: {
+          phase: "after_assistant",
+          runContext: {} as never,
+          assistantMessage: assistant.message as AssistantMessage,
+          toolCalls: [],
+        },
+        messages: [...appliedInputs, assistant],
+        signal: new AbortController().signal,
+      }),
+    ]);
+
+    expect(submitted).toEqual([
+      {source: SIDECAR_EVENT_SOURCE},
+      {source: SIDECAR_EVENT_SOURCE},
+    ]);
+    expect(sessionStore.createdSessionIds.filter((id) => id.startsWith("sidecar-memory_guard-"))).toHaveLength(1);
+  });
+
+  it("runs coordinator sidecar hooks opportunistically", async () => {
     const threadStore = new TestThreadRuntimeStore();
     await threadStore.createThread({
       id: "thread-main",
@@ -394,7 +564,9 @@ describe("Intuition sidecar", () => {
       message("after tool"),
       message("Nothing else to do."),
     );
-    const observed = vi.fn();
+    const beforeRunStep = vi.fn();
+    const afterCheckpoint = vi.fn();
+    const afterRunFinish = vi.fn();
     const coordinator = new ThreadRuntimeCoordinator({
       store: threadStore,
       leaseManager: new SelectiveLeaseManager(),
@@ -406,7 +578,9 @@ describe("Intuition sidecar", () => {
         }),
         runtime,
       }),
-      afterRunFinish: observed,
+      beforeRunStep,
+      afterCheckpoint,
+      afterRunFinish,
     });
 
     await coordinator.submitInput("thread-main", {
@@ -416,21 +590,20 @@ describe("Intuition sidecar", () => {
     await coordinator.waitForIdle("thread-main");
 
     expect(runtime.complete).toHaveBeenCalledTimes(3);
-    expect(observed).toHaveBeenCalledTimes(1);
-    const observation = observed.mock.calls[0]?.[0];
-    expect(observation.run.status).toBe("completed");
-    expect(observation.messages.map((entry) => entry.source)).toEqual([
+    expect(beforeRunStep).toHaveBeenCalled();
+    expect(afterCheckpoint).toHaveBeenCalledTimes(2);
+    expect(afterCheckpoint.mock.calls[0]?.[0].messages.map((entry) => entry.source)).toEqual([
+      "tui",
+      "assistant",
+    ]);
+    expect(afterCheckpoint.mock.calls[1]?.[0].messages.map((entry) => entry.source)).toEqual([
       "tui",
       "assistant",
       "tool:echo",
-      "assistant",
-      "runtime",
-      "assistant",
     ]);
-    const firstRequest = runtime.complete.mock.calls[0]?.[0];
-    expect(JSON.stringify(firstRequest.context.messages)).not.toContain("[Internal intuition note]");
-    const transcript = await threadStore.loadTranscript("thread-main");
-    expect(transcript.map((entry) => entry.source)).toEqual([
+    expect(afterRunFinish).toHaveBeenCalledTimes(1);
+    const finish = afterRunFinish.mock.calls[0]?.[0];
+    expect(finish.messages.map((entry) => entry.source)).toEqual([
       "tui",
       "assistant",
       "tool:echo",
@@ -440,7 +613,7 @@ describe("Intuition sidecar", () => {
     ]);
   });
 
-  it("continues the main run when the post-run sidecar hook fails", async () => {
+  it("continues the main run when sidecar hooks fail", async () => {
     const threadStore = new TestThreadRuntimeStore();
     await threadStore.createThread({
       id: "thread-main",
@@ -450,11 +623,14 @@ describe("Intuition sidecar", () => {
         agentKey: "panda",
       },
     });
-    const runtime = createMockRuntime(message("handled without intuition"));
+    const runtime = createMockRuntime(message("handled without sidecar"));
     const coordinator = new ThreadRuntimeCoordinator({
       store: threadStore,
       leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: () => definition(runtime),
+      beforeRunStep: async () => {
+        throw new Error("sidecar unavailable");
+      },
       afterRunFinish: async () => {
         throw new Error("sidecar unavailable");
       },
@@ -470,34 +646,31 @@ describe("Intuition sidecar", () => {
     const runs = await threadStore.listRuns("thread-main");
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe("completed");
-    const transcript = await threadStore.loadTranscript("thread-main");
-    expect(transcript.map((entry) => entry.source)).toEqual([
-      "heartbeat",
-      "assistant",
-    ]);
   });
 
-  it("wakes Panda when a late whisper is emitted after the main run", async () => {
+  it("wakes the main thread when a sidecar sends a note", async () => {
     const sessionStore = new MemorySessionStore();
     const threadStore = new TestThreadRuntimeStore();
     await createMainSession({sessionStore, threadStore});
-    const runtime = createMockRuntime(message("noticed intuition"));
+    const runtime = createMockRuntime(message("noticed sidecar"));
     const coordinator = new ThreadRuntimeCoordinator({
       store: threadStore,
       leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: () => definition(runtime),
     });
-    const service = new IntuitionSidecarService({
+    const service = new SidecarService({
       sessionStore,
       threadStore,
+      sidecarRepo: new MemorySidecarRepo([sidecar()]),
       runtime: {
         submitInput: (threadId, payload, mode) => coordinator.submitInput(threadId, payload, mode),
       },
     });
 
-    await service.emitWhisper({
+    await service.sendToMain({
       parentThreadId: "thread-main",
       parentRunId: "run-late",
+      sidecarKey: "memory_guard",
       sidecarThreadId: "sidecar-thread",
       message: "Check the apartment wiki before giving drawdown dates.",
     });
@@ -505,46 +678,13 @@ describe("Intuition sidecar", () => {
 
     const transcript = await threadStore.loadTranscript("thread-main");
     expect(transcript.map((entry) => entry.source)).toEqual([
-      INTUITION_SIDECAR_SOURCE,
+      SIDECAR_INPUT_SOURCE,
       "assistant",
     ]);
     expect(runtime.complete).toHaveBeenCalledTimes(1);
   });
 
-  it("does not create a sidecar observation for intuition-only input", async () => {
-    const sessionStore = new MemorySessionStore();
-    const threadStore = new TestThreadRuntimeStore();
-    const submitted = vi.fn();
-    await createMainSession({sessionStore, threadStore});
-    await threadStore.enqueueInput("thread-main", {
-      message: stringToUserMessage("[Internal intuition note]\nCheck tax memory."),
-      source: INTUITION_SIDECAR_SOURCE,
-    });
-    const run = await threadStore.createRun("thread-main");
-    const appliedInputs = await threadStore.applyPendingInputs("thread-main");
-    const assistant = await threadStore.appendRuntimeMessage("thread-main", {
-      message: message("handled intuition"),
-      source: "assistant",
-      runId: run.id,
-    });
-    const finishedRun = await threadStore.completeRun(run.id);
-    const service = new IntuitionSidecarService({
-      sessionStore,
-      threadStore,
-      runtime: {submitInput: submitted},
-    });
-
-    await service.afterRunFinish({
-      run: finishedRun,
-      thread: await threadStore.getThread("thread-main"),
-      messages: [...appliedInputs, assistant],
-      signal: new AbortController().signal,
-    });
-
-    expect(submitted).not.toHaveBeenCalled();
-  });
-
-  it("uses the dedicated sidecar model and approved tool set", async () => {
+  it("uses the configured sidecar model, prompt, and readonly tool set", async () => {
     const sessionStore = new MemorySessionStore();
     const threadStore = new TestThreadRuntimeStore();
     await sessionStore.createSession({
@@ -553,9 +693,10 @@ describe("Intuition sidecar", () => {
       kind: "sidecar",
       currentThreadId: "sidecar-thread",
       metadata: {
-        intuitionSidecar: {
-          kind: "intuition_sidecar",
+        sidecar: {
+          kind: "sidecar",
           parentSessionId: "session-main",
+          sidecarKey: "memory_guard",
         },
       },
     });
@@ -565,15 +706,21 @@ describe("Intuition sidecar", () => {
       context: {
         sessionId: "sidecar-session",
         agentKey: "panda",
-        intuitionSidecar: {
-          kind: "intuition_sidecar",
+        sidecar: {
+          kind: "sidecar",
           parentSessionId: "session-main",
+          sidecarKey: "memory_guard",
         },
       },
     });
-    const service = new IntuitionSidecarService({
+    const service = new SidecarService({
       sessionStore,
       threadStore,
+      sidecarRepo: new MemorySidecarRepo([sidecar({
+        prompt: "Guard the wiki.",
+        model: "openai-codex/gpt-5.4",
+        thinking: "high",
+      })]),
       runtime: {submitInput: vi.fn()},
       pool: {
         query: vi.fn(),
@@ -584,7 +731,6 @@ describe("Intuition sidecar", () => {
       },
       env: {
         ...process.env,
-        INTUITION_SIDECAR_MODEL: "gpt",
         BRAVE_API_KEY: "test-key",
       },
     });
@@ -595,14 +741,16 @@ describe("Intuition sidecar", () => {
     );
 
     expect(resolved.model).toBe("openai-codex/gpt-5.4");
-    expect(resolved.promptCacheKey).toBe("sidecar:session-main");
+    expect(resolved.thinking).toBe("high");
+    expect(resolved.promptCacheKey).toMatch(/^sidecar:memory_guard:[a-f0-9]{12}$/);
     expect(resolved.promptCacheKey?.length).toBeLessThanOrEqual(64);
+    expect(resolved.agent.instructions).toBe("Guard the wiki.");
     expect(resolved.agent.tools.map((tool) => tool.name).sort()).toEqual([
       "brave_search",
       "current_datetime",
       "postgres_readonly_query",
+      "send_to_main",
       "web_fetch",
-      "whisper_to_main",
       "wiki",
     ]);
   });

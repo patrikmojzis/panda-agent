@@ -215,6 +215,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
       inputs: "\"session\".\"inputs\"",
       runs: "\"session\".\"runs\"",
       agentPrompts: "\"session\".\"agent_prompts\"",
+      sidecars: "\"session\".\"sidecars\"",
       agentPairings: "\"session\".\"agent_pairings\"",
       agentSkills: "\"session\".\"agent_skills\"",
       agentTelepathyDevices: "\"session\".\"agent_telepathy_devices\"",
@@ -236,6 +237,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"messages\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"tool_results\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_prompts\"");
+    expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"sidecars\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_pairings\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_skills\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_telepathy_devices\"");
@@ -251,10 +253,11 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("t.inference_projection");
     expect(queryable.queries[0]).toContain("t.session_id = current_setting('runtime.session_id', true)");
     expect(queryable.queries[0]).toContain("prompt.agent_key = current_setting('runtime.agent_key', true)");
+    expect(queryable.queries[0]).toContain("sidecar.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("pairing.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("skill.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("device.agent_key = current_setting('runtime.agent_key', true)");
-    expect(queryable.queries[1]).toContain("GRANT SELECT ON \"session\".\"agent_sessions\", \"session\".\"threads\", \"session\".\"messages\", \"session\".\"messages_raw\", \"session\".\"tool_results\", \"session\".\"inputs\", \"session\".\"runs\", \"session\".\"agent_prompts\", \"session\".\"agent_pairings\", \"session\".\"agent_skills\", \"session\".\"agent_telepathy_devices\", \"session\".\"scheduled_tasks\", \"session\".\"scheduled_task_runs\", \"session\".\"watches\", \"session\".\"watch_runs\", \"session\".\"watch_events\"");
+    expect(queryable.queries[1]).toContain("GRANT SELECT ON \"session\".\"agent_sessions\", \"session\".\"threads\", \"session\".\"messages\", \"session\".\"messages_raw\", \"session\".\"tool_results\", \"session\".\"inputs\", \"session\".\"runs\", \"session\".\"agent_prompts\", \"session\".\"sidecars\", \"session\".\"agent_pairings\", \"session\".\"agent_skills\", \"session\".\"agent_telepathy_devices\", \"session\".\"scheduled_tasks\", \"session\".\"scheduled_task_runs\", \"session\".\"watches\", \"session\".\"watch_runs\", \"session\".\"watch_events\"");
   });
 
   it("filters readonly threads by session when multiple identities share an agent", async () => {
