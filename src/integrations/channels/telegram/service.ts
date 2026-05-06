@@ -35,12 +35,23 @@ import {
   startPostgresNotificationListener,
 } from "../postgres-notification-listener.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
+import type {JsonObject} from "../../../kernel/agent/types.js";
 
 type TelegramContext = Context;
 const UPDATE_RETRY_DELAY_MS = 1_000;
 const TELEGRAM_POOL_MAX_FALLBACK = 5;
 const TELEGRAM_HEALTH_POLL_STALE_AFTER_MS = (TELEGRAM_POLL_TIMEOUT_SECONDS * 1_000) + 15_000;
 const TELEGRAM_BOT_API_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024;
+const TELEGRAM_FILE_DOWNLOAD_TIMEOUT_MS = 30_000;
+type TelegramMediaKind =
+  | "photo"
+  | "document"
+  | "voice"
+  | "sticker"
+  | "video"
+  | "audio"
+  | "animation"
+  | "video_note";
 
 export interface TelegramServiceOptions {
   token: string;
@@ -88,7 +99,7 @@ interface TelegramWorkerStores {
 }
 
 interface TelegramUnavailableMedia {
-  kind: "photo" | "document" | "voice";
+  kind: TelegramMediaKind;
   mimeType: string;
   sizeBytes?: number;
   filename?: string;
@@ -109,8 +120,7 @@ function isTelegramFileTooBigError(error: unknown): boolean {
 }
 
 function messageTextLength(message: TelegramContext["msg"] | undefined): number {
-  const text = message?.text ?? message?.caption ?? "";
-  return text.trim().length;
+  return extractTelegramMessageText(message).length;
 }
 
 function shouldSkipTelegramDownload(sizeBytes: number | undefined): boolean {
@@ -151,6 +161,162 @@ function mergeTextWithUnavailableMediaNotice(
   }
 
   return [text, notice].filter(Boolean).join("\n\n");
+}
+
+function trimToUndefined(value: string | undefined | null): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+function readFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function renderTelegramContact(contact: NonNullable<TelegramContext["msg"]>["contact"]): string {
+  const name = [contact?.first_name, contact?.last_name]
+    .map((part) => trimToUndefined(part))
+    .filter((part): part is string => Boolean(part))
+    .join(" ");
+  const lines = [
+    "Telegram contact:",
+    `name: ${name || "unknown"}`,
+    `phone_number: ${trimToUndefined(contact?.phone_number) ?? "unknown"}`,
+    contact?.user_id === undefined ? undefined : `telegram_user_id: ${contact.user_id}`,
+  ];
+  const vcard = trimToUndefined(contact?.vcard);
+  if (vcard) {
+    lines.push("vcard:", vcard);
+  }
+
+  return lines.filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function renderTelegramLocation(
+  location: NonNullable<TelegramContext["msg"]>["location"],
+  label = "location",
+): string {
+  const latitude = readFiniteNumber(location?.latitude);
+  const longitude = readFiniteNumber(location?.longitude);
+  const mapUrl = latitude === undefined || longitude === undefined
+    ? undefined
+    : `https://maps.google.com/?q=${latitude},${longitude}`;
+
+  return [
+    `Telegram ${label}:`,
+    latitude === undefined ? undefined : `latitude: ${latitude}`,
+    longitude === undefined ? undefined : `longitude: ${longitude}`,
+    location?.horizontal_accuracy === undefined ? undefined : `horizontal_accuracy: ${location.horizontal_accuracy}`,
+    location?.live_period === undefined ? undefined : `live_period: ${location.live_period}`,
+    location?.heading === undefined ? undefined : `heading: ${location.heading}`,
+    location?.proximity_alert_radius === undefined ? undefined : `proximity_alert_radius: ${location.proximity_alert_radius}`,
+    `map: ${mapUrl ?? "unknown"}`,
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function renderTelegramVenue(venue: NonNullable<TelegramContext["msg"]>["venue"]): string {
+  const location = venue?.location;
+  const latitude = readFiniteNumber(location?.latitude);
+  const longitude = readFiniteNumber(location?.longitude);
+  const mapUrl = latitude === undefined || longitude === undefined
+    ? undefined
+    : `https://maps.google.com/?q=${latitude},${longitude}`;
+
+  return [
+    "Telegram venue:",
+    `title: ${trimToUndefined(venue?.title) ?? "unknown"}`,
+    `address: ${trimToUndefined(venue?.address) ?? "unknown"}`,
+    latitude === undefined ? undefined : `latitude: ${latitude}`,
+    longitude === undefined ? undefined : `longitude: ${longitude}`,
+    `map: ${mapUrl ?? "unknown"}`,
+    venue?.foursquare_id ? `foursquare_id: ${venue.foursquare_id}` : undefined,
+    venue?.foursquare_type ? `foursquare_type: ${venue.foursquare_type}` : undefined,
+    venue?.google_place_id ? `google_place_id: ${venue.google_place_id}` : undefined,
+    venue?.google_place_type ? `google_place_type: ${venue.google_place_type}` : undefined,
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function extractTelegramStructuredText(message: TelegramContext["msg"] | undefined): string {
+  if (!message) {
+    return "";
+  }
+
+  const parts = [
+    message.contact ? renderTelegramContact(message.contact) : undefined,
+    message.venue ? renderTelegramVenue(message.venue) : undefined,
+    !message.venue && message.location
+      ? renderTelegramLocation(message.location, message.location.live_period === undefined ? "location" : "live location")
+      : undefined,
+  ];
+
+  return parts.filter((part): part is string => Boolean(part)).join("\n\n");
+}
+
+function extractTelegramMessageText(message: TelegramContext["msg"] | undefined): string {
+  const rawText = (message?.text ?? message?.caption)?.trim() ?? "";
+  const structuredText = extractTelegramStructuredText(message);
+  return [rawText, structuredText].filter(Boolean).join("\n\n");
+}
+
+function describeTelegramMessageShape(message: TelegramContext["msg"] | undefined): string {
+  if (!message) {
+    return "empty";
+  }
+
+  const supportedKeys = [
+    "text",
+    "caption",
+    "photo",
+    "document",
+    "voice",
+    "sticker",
+    "video",
+    "audio",
+    "animation",
+    "video_note",
+    "contact",
+    "location",
+    "venue",
+    "poll",
+    "dice",
+    "game",
+    "invoice",
+    "story",
+    "paid_media",
+    "successful_payment",
+    "users_shared",
+    "chat_shared",
+    "web_app_data",
+  ];
+  const keys = supportedKeys.filter((key) => key in message);
+  return keys.length === 0 ? "unknown" : keys.join(",");
+}
+
+function inferTelegramAnimationMimeType(animation: NonNullable<TelegramContext["msg"]>["animation"]): string {
+  const mimeType = trimToUndefined(animation?.mime_type);
+  if (mimeType) {
+    return mimeType;
+  }
+
+  const filename = animation?.file_name?.toLowerCase() ?? "";
+  if (filename.endsWith(".mp4")) {
+    return "video/mp4";
+  }
+  if (filename.endsWith(".webm")) {
+    return "video/webm";
+  }
+
+  return "image/gif";
+}
+
+function inferTelegramStickerMimeType(sticker: NonNullable<TelegramContext["msg"]>["sticker"]): string {
+  if (sticker?.is_video) {
+    return "video/webm";
+  }
+  if (sticker?.is_animated) {
+    return "application/x-tgsticker";
+  }
+
+  return "image/webp";
 }
 
 function isTelegramEmojiReaction(value: unknown): value is TelegramEmojiReaction {
@@ -888,7 +1054,7 @@ export class TelegramService {
     }
 
     const mediaDownload = await this.downloadSupportedMedia(message, stores);
-    const rawText = (message.text ?? message.caption)?.trim() ?? "";
+    const rawText = extractTelegramMessageText(message);
     const text = mergeTextWithUnavailableMediaNotice(rawText, mediaDownload.unavailable);
     if (!text && mediaDownload.media.length === 0) {
       this.log("message_dropped", {
@@ -897,6 +1063,7 @@ export class TelegramService {
         externalConversationId,
         chatType,
         reason: "unsupported_message_shape",
+        messageShape: describeTelegramMessageShape(message),
       });
       return;
     }
@@ -955,6 +1122,7 @@ export class TelegramService {
       mimeType: string;
       sizeBytes?: number;
       hintFilename?: string;
+      metadata?: JsonObject;
     }): Promise<void> => {
       const result = await this.downloadFileOrUnavailable({
         stores,
@@ -975,16 +1143,24 @@ export class TelegramService {
         fileId: photo.file_id,
         mimeType: "image/jpeg",
         sizeBytes: photo.file_size,
+        metadata: {
+          telegramMediaKind: "photo",
+          width: photo.width,
+          height: photo.height,
+        },
       });
     }
 
-    if (message.document) {
+    if (message.document && !message.animation) {
       await addDownload({
         kind: "document",
         fileId: message.document.file_id,
         mimeType: message.document.mime_type ?? "application/octet-stream",
         sizeBytes: message.document.file_size,
         hintFilename: message.document.file_name,
+        metadata: {
+          telegramMediaKind: "document",
+        },
       });
     }
 
@@ -994,6 +1170,91 @@ export class TelegramService {
         fileId: message.voice.file_id,
         mimeType: message.voice.mime_type ?? "audio/ogg",
         sizeBytes: message.voice.file_size,
+        metadata: {
+          telegramMediaKind: "voice",
+          duration: message.voice.duration,
+        },
+      });
+    }
+
+    if (message.sticker) {
+      await addDownload({
+        kind: "sticker",
+        fileId: message.sticker.file_id,
+        mimeType: inferTelegramStickerMimeType(message.sticker),
+        sizeBytes: message.sticker.file_size,
+        metadata: {
+          telegramMediaKind: "sticker",
+          emoji: message.sticker.emoji ?? null,
+          setName: message.sticker.set_name ?? null,
+          stickerType: message.sticker.type,
+          isAnimated: message.sticker.is_animated,
+          isVideo: message.sticker.is_video,
+          width: message.sticker.width,
+          height: message.sticker.height,
+        },
+      });
+    }
+
+    if (message.video) {
+      await addDownload({
+        kind: "video",
+        fileId: message.video.file_id,
+        mimeType: message.video.mime_type ?? "video/mp4",
+        sizeBytes: message.video.file_size,
+        hintFilename: message.video.file_name,
+        metadata: {
+          telegramMediaKind: "video",
+          duration: message.video.duration,
+          width: message.video.width,
+          height: message.video.height,
+        },
+      });
+    }
+
+    if (message.audio) {
+      await addDownload({
+        kind: "audio",
+        fileId: message.audio.file_id,
+        mimeType: message.audio.mime_type ?? "audio/mpeg",
+        sizeBytes: message.audio.file_size,
+        hintFilename: message.audio.file_name,
+        metadata: {
+          telegramMediaKind: "audio",
+          duration: message.audio.duration,
+          title: message.audio.title ?? null,
+          performer: message.audio.performer ?? null,
+        },
+      });
+    }
+
+    if (message.animation) {
+      await addDownload({
+        kind: "animation",
+        fileId: message.animation.file_id,
+        mimeType: inferTelegramAnimationMimeType(message.animation),
+        sizeBytes: message.animation.file_size,
+        hintFilename: message.animation.file_name,
+        metadata: {
+          telegramMediaKind: "animation",
+          duration: message.animation.duration,
+          width: message.animation.width,
+          height: message.animation.height,
+        },
+      });
+    }
+
+    if (message.video_note) {
+      await addDownload({
+        kind: "video_note",
+        fileId: message.video_note.file_id,
+        mimeType: "video/mp4",
+        sizeBytes: message.video_note.file_size,
+        metadata: {
+          telegramMediaKind: "video_note",
+          duration: message.video_note.duration,
+          length: message.video_note.length,
+        },
       });
     }
 
@@ -1010,6 +1271,7 @@ export class TelegramService {
     mimeType: string;
     sizeBytes?: number;
     hintFilename?: string;
+    metadata?: JsonObject;
   }): Promise<{media: MediaDescriptor} | {unavailable: TelegramUnavailableMedia}> {
     const unavailable = (reason: string): {unavailable: TelegramUnavailableMedia} => {
       this.log("media_download_skipped", {
@@ -1055,13 +1317,34 @@ export class TelegramService {
     mimeType: string;
     sizeBytes?: number;
     hintFilename?: string;
+    metadata?: JsonObject;
   }): Promise<MediaDescriptor> {
     const file = await this.bot.api.getFile(options.fileId);
     if (!file.file_path) {
       throw new Error(`Telegram file ${options.fileId} has no file_path.`);
     }
 
-    const response = await fetch(`https://api.telegram.org/file/bot${this.token}/${file.file_path}`);
+    const controller = new globalThis.AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, TELEGRAM_FILE_DOWNLOAD_TIMEOUT_MS);
+    timeout.unref?.();
+
+    let response: Response;
+    try {
+      response = await fetch(`https://api.telegram.org/file/bot${this.token}/${file.file_path}`, {
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new Error(`Telegram file ${options.fileId} download timed out after ${TELEGRAM_FILE_DOWNLOAD_TIMEOUT_MS}ms.`);
+      }
+
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+
     if (!response.ok) {
       throw new Error(`Failed to download Telegram file ${options.fileId}: ${response.status} ${response.statusText}`);
     }
@@ -1077,6 +1360,7 @@ export class TelegramService {
       metadata: {
         telegramFileId: options.fileId,
         telegramFilePath: file.file_path,
+        ...(options.metadata ?? {}),
       },
     });
   }

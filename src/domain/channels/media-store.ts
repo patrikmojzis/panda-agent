@@ -9,6 +9,7 @@ const MIME_EXTENSION_MAP = new Map<string, string>([
   ["application/json", ".json"],
   ["application/pdf", ".pdf"],
   ["application/zip", ".zip"],
+  ["application/x-tgsticker", ".tgs"],
   ["audio/m4a", ".m4a"],
   ["audio/mp4", ".m4a"],
   ["audio/mpeg", ".mp3"],
@@ -20,6 +21,7 @@ const MIME_EXTENSION_MAP = new Map<string, string>([
   ["image/webp", ".webp"],
   ["text/plain", ".txt"],
   ["video/mp4", ".mp4"],
+  ["video/webm", ".webm"],
 ]);
 
 export interface WriteMediaInput {
