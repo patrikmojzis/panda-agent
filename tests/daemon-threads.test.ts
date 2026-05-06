@@ -49,6 +49,8 @@ describe("createDaemonThreadHelpers", () => {
     workspace?: string;
     pairings?: readonly {agentKey: string}[];
     currentThreadId?: string;
+    sessionKind?: "main" | "branch" | "sidecar";
+    sessionMetadata?: Record<string, unknown>;
     createdByIdentityId?: string;
     getIdentity?: (identityId: string) => Promise<ReturnType<typeof createIdentity>>;
     backgroundJobService?: { cancelThreadJobs(threadId: string): Promise<void> };
@@ -63,9 +65,10 @@ describe("createDaemonThreadHelpers", () => {
     const sessions = new Map<string, {
       id: string;
       agentKey: string;
-      kind: "main" | "branch";
+      kind: "main" | "branch" | "sidecar";
       currentThreadId: string;
       createdByIdentityId?: string;
+      metadata?: Record<string, unknown>;
       createdAt: number;
       updatedAt: number;
     }>();
@@ -106,6 +109,7 @@ describe("createDaemonThreadHelpers", () => {
                 kind: "main" as const,
                 currentThreadId,
                 createdByIdentityId: options.createdByIdentityId,
+                metadata: undefined,
                 createdAt: Date.now(),
                 updatedAt: Date.now(),
               };
@@ -121,9 +125,10 @@ describe("createDaemonThreadHelpers", () => {
               return {
                 id: sessionId,
                 agentKey: "panda",
-                kind: "main" as const,
+                kind: options.sessionKind ?? "main",
                 currentThreadId: boundThreadId,
                 createdByIdentityId: options.createdByIdentityId,
+                metadata: options.sessionMetadata,
                 createdAt: Date.now(),
                 updatedAt: Date.now(),
               };
@@ -133,9 +138,10 @@ describe("createDaemonThreadHelpers", () => {
               const existing = sessions.get(sessionId) ?? {
                 id: sessionId,
                 agentKey: "panda",
-                kind: "main" as const,
+                kind: options.sessionKind ?? "main",
                 currentThreadId,
                 createdByIdentityId: options.createdByIdentityId,
+                metadata: options.sessionMetadata,
                 createdAt: Date.now(),
                 updatedAt: Date.now(),
               };
@@ -350,6 +356,58 @@ describe("createDaemonThreadHelpers", () => {
     expect(result.threadId).not.toBe("thread-ownerless");
     await expect(store.getThread(String(result.threadId))).resolves.toMatchObject({
       sessionId: "session-main",
+    });
+  });
+
+  it("preserves intuition sidecar binding when resetting a sidecar session", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-old-sidecar",
+      sessionId: "intuition-sidecar-session-main",
+      context: {
+        agentKey: "panda",
+        sessionId: "intuition-sidecar-session-main",
+        cwd: "/app",
+        intuitionSidecar: {
+          kind: "intuition_sidecar",
+          parentSessionId: "session-main",
+        },
+      },
+      promptCacheKey: "sidecar:session-main",
+    } as any);
+
+    const {helpers} = createHelpers({
+      store,
+      workspace: "/app",
+      currentThreadId: "thread-old-sidecar",
+      sessionKind: "sidecar",
+      sessionMetadata: {
+        intuitionSidecar: {
+          kind: "intuition_sidecar",
+          parentSessionId: "session-main",
+        },
+      },
+    });
+
+    const result = await helpers.handleResetSession({
+      source: "operator",
+      sessionId: "intuition-sidecar-session-main",
+    });
+
+    expect(result.previousThreadId).toBe("thread-old-sidecar");
+    expect(result.threadId).not.toBe("thread-old-sidecar");
+    await expect(store.getThread(String(result.threadId))).resolves.toMatchObject({
+      sessionId: "intuition-sidecar-session-main",
+      promptCacheKey: "sidecar:session-main",
+      context: {
+        agentKey: "panda",
+        sessionId: "intuition-sidecar-session-main",
+        cwd: "/app",
+        intuitionSidecar: {
+          kind: "intuition_sidecar",
+          parentSessionId: "session-main",
+        },
+      },
     });
   });
 });

@@ -43,7 +43,7 @@ export const INTUITION_SIDECAR_SOURCE = "intuition_sidecar";
 export const INTUITION_OBSERVATION_SOURCE = "intuition_observation";
 export const INTUITION_SIDECAR_KIND = "intuition_sidecar";
 
-interface IntuitionSidecarBinding {
+export interface IntuitionSidecarBinding {
   parentSessionId: string;
 }
 
@@ -69,7 +69,7 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function readSidecarBinding(value: unknown): IntuitionSidecarBinding | null {
+export function readIntuitionSidecarBinding(value: unknown): IntuitionSidecarBinding | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -91,7 +91,7 @@ function buildSidecarThreadId(parentSessionId: string): string {
   return `${buildSidecarSessionId(parentSessionId)}-thread`;
 }
 
-function buildSidecarPromptCacheKey(parentSessionId: string): string {
+export function buildSidecarPromptCacheKey(parentSessionId: string): string {
   return `sidecar:${parentSessionId}`;
 }
 
@@ -149,7 +149,7 @@ export class IntuitionSidecarService implements IntuitionWhisperSink {
   }
 
   isSidecarThread(thread: Pick<ThreadRecord, "context">): boolean {
-    return readSidecarBinding(thread.context) !== null;
+    return readIntuitionSidecarBinding(thread.context) !== null;
   }
 
   async afterRunFinish(input: ThreadRuntimeAfterRunFinishInput): Promise<void> {
@@ -209,7 +209,7 @@ export class IntuitionSidecarService implements IntuitionWhisperSink {
     thread: ThreadRecord,
     session: SessionRecord,
   ): Promise<ResolvedThreadDefinition> {
-    const binding = readSidecarBinding(thread.context) ?? readSidecarBinding(session.metadata);
+    const binding = readIntuitionSidecarBinding(thread.context) ?? readIntuitionSidecarBinding(session.metadata);
     if (!binding) {
       throw new Error(`Thread ${thread.id} is not an intuition sidecar thread.`);
     }
@@ -279,7 +279,7 @@ export class IntuitionSidecarService implements IntuitionWhisperSink {
     const parentSession = await this.sessionStore.getSession(parentThread.sessionId);
     const existing = (await this.sessionStore.listAgentSessions(parentSession.agentKey))
       .find((candidate) => candidate.kind === "sidecar"
-        && readSidecarBinding(candidate.metadata)?.parentSessionId === parentSession.id);
+        && readIntuitionSidecarBinding(candidate.metadata)?.parentSessionId === parentSession.id);
     if (existing) {
       try {
         return await this.threadStore.getThread(existing.currentThreadId);

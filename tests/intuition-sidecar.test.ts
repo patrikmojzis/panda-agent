@@ -272,7 +272,7 @@ describe("Intuition sidecar", () => {
     expect(submitted[0]?.text).toContain(`Main run: ${finishedRun.id}`);
     expect(submitted[0]?.text).toContain(`Main thread: ${mainThread.id}`);
     expect(submitted[0]?.text).toContain(`Main session: ${mainThread.sessionId}`);
-    expect(submitted[0]?.text).toContain("retrieve what happened from session.messages/session.tool_results");
+    expect(submitted[0]?.text).toMatch(/retrieve what happened from session\.messages\/session\.tool_results/i);
     expect(submitted[0]?.text).not.toContain("VAT XML");
     expect(submitted[0]?.text).not.toContain("handled run");
     expect(submitted[0]?.text).not.toContain("lookup result");

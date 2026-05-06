@@ -3,15 +3,15 @@ import {randomUUID} from "node:crypto";
 import {type MediaDescriptor, relocateMediaDescriptor} from "../../domain/channels/index.js";
 import type {IdentityRecord} from "../../domain/identity/index.js";
 import {
-    createSessionWithInitialThread,
-    resetSessionCurrentThread,
-    type SessionRecord
+  createSessionWithInitialThread,
+  resetSessionCurrentThread,
+  type SessionRecord
 } from "../../domain/sessions/index.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {
-    CreateBranchSessionRequestPayload,
-    ResetSessionRequestPayload,
-    ResolveMainSessionThreadRequestPayload,
+  CreateBranchSessionRequestPayload,
+  ResetSessionRequestPayload,
+  ResolveMainSessionThreadRequestPayload,
 } from "../../domain/threads/requests/index.js";
 import {PostgresThreadRuntimeStore, type ThreadRecord} from "../../domain/threads/runtime/index.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
@@ -19,6 +19,7 @@ import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
 import {requireIdentityId, trimNonEmptyString} from "./daemon-shared.js";
+import {buildSidecarPromptCacheKey, INTUITION_SIDECAR_KIND, readIntuitionSidecarBinding,} from "./intuition-sidecar.js";
 
 export interface DaemonThreadHelpers {
   ensureIdentity(identityId: string): Promise<IdentityRecord>;
@@ -100,6 +101,7 @@ export function createDaemonThreadHelpers(
     sessionId: string;
     agentKey?: string;
     id?: string;
+    promptCacheKey?: string;
     model?: string;
     thinking?: CreateBranchSessionRequestPayload["thinking"];
     inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
@@ -118,6 +120,7 @@ export function createDaemonThreadHelpers(
           : {}),
         ...(input.context ?? {}),
       },
+      promptCacheKey: input.promptCacheKey,
       model: input.model,
       thinking: input.thinking,
       inferenceProjection: input.inferenceProjection,
@@ -361,13 +364,27 @@ export function createDaemonThreadHelpers(
     await context.runtime.backgroundJobService.cancelThreadJobs(previousThread.id);
     await context.runtime.store.discardPendingInputs(previousThread.id);
 
+    const sidecarBinding = session.kind === "sidecar"
+      ? readIntuitionSidecarBinding(session.metadata) ?? readIntuitionSidecarBinding(previousThread.context)
+      : null;
     const nextThread = buildInitialSessionThreadInput({
       sessionId: session.id,
       agentKey: session.agentKey,
+      promptCacheKey: sidecarBinding
+        ? buildSidecarPromptCacheKey(sidecarBinding.parentSessionId)
+        : undefined,
       model: input.model,
       thinking: input.thinking,
       inferenceProjection: input.inferenceProjection,
-      context: input.context,
+      context: sidecarBinding
+        ? {
+          ...input.context,
+          intuitionSidecar: {
+            kind: INTUITION_SIDECAR_KIND,
+            parentSessionId: sidecarBinding.parentSessionId,
+          },
+        }
+        : input.context,
     });
     const thread = (
       context.runtime.pool
