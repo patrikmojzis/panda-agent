@@ -15,7 +15,7 @@ Core files:
 - `src/domain/watches/evaluator.ts`
 - `src/integrations/watches/evaluator.ts`
 - `src/domain/watches/runner.ts`
-- `src/personas/panda/tools/watch-tools.ts`
+- `src/panda/tools/watch-tools.ts`
 - `src/prompts/runtime/watch-events.ts`
 
 ## Runtime Flow
