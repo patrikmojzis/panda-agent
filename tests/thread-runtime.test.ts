@@ -572,6 +572,119 @@ describe("ThreadRuntimeCoordinator", () => {
     ]);
   });
 
+  it("keeps an armed idle reroll when a late intuition note arrives", async () => {
+    const responses = [
+      message("first reply"),
+      message("handled intuition note"),
+      message("idle continuation"),
+    ];
+    let coordinator!: ThreadRuntimeCoordinator;
+    const runtime: LlmRuntime & { complete: ReturnType<typeof vi.fn> } = {
+      complete: vi.fn().mockImplementation(async () => {
+        const response = responses.shift();
+        if (!response) {
+          throw new Error("No more mock responses queued");
+        }
+
+        if (runtime.complete.mock.calls.length === 1) {
+          await coordinator.submitInput("thread-late-sidecar-reroll", {
+            message: stringToUserMessage("[Internal intuition note]\nCheck the apartment wiki."),
+            source: "intuition_sidecar",
+          });
+        }
+
+        return response;
+      }),
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("late-sidecar-reroll", {
+      agent: new Agent({
+        name: "late-sidecar-reroll",
+        instructions: "Reply plainly.",
+      }),
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-late-sidecar-reroll",
+      agentKey: "late-sidecar-reroll",
+    });
+
+    coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-late-sidecar-reroll", {
+      message: stringToUserMessage("start"),
+      source: "telegram",
+      channelId: "chat-sidecar",
+      externalMessageId: "start-1",
+      actorId: "user-sidecar",
+    });
+
+    await coordinator.waitForIdle("thread-late-sidecar-reroll");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
+
+    const transcript = await store.loadTranscript("thread-late-sidecar-reroll");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "telegram",
+      "assistant",
+      "intuition_sidecar",
+      "assistant",
+      "runtime",
+      "assistant",
+    ]);
+    expect(transcript.some((entry) => {
+      return entry.source === "runtime"
+        && entry.metadata && typeof entry.metadata === "object" && !Array.isArray(entry.metadata)
+        && "autonomy" in entry.metadata;
+    })).toBe(true);
+  });
+
+  it("does not grant an idle reroll for intuition-only inputs", async () => {
+    const runtime = createMockRuntime(message("intuition handled"));
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("intuition-no-reroll", {
+      agent: new Agent({
+        name: "intuition-no-reroll",
+        instructions: "Reply plainly.",
+      }),
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-intuition-no-reroll",
+      agentKey: "intuition-no-reroll",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-intuition-no-reroll", {
+      message: stringToUserMessage("[Internal intuition note]\nCheck tax memory."),
+      source: "intuition_sidecar",
+    });
+
+    await coordinator.waitForIdle("thread-intuition-no-reroll");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(1);
+
+    const transcript = await store.loadTranscript("thread-intuition-no-reroll");
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "intuition_sidecar",
+      "assistant",
+    ]);
+  });
+
   it("re-arms the idle reroll when a new input lands during the extra pass", async () => {
     const runtime = new DeferredRuntime();
     const extraPass = createDeferred<AssistantMessage>();
