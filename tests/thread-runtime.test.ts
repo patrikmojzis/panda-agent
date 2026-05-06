@@ -2044,13 +2044,16 @@ describe("ThreadRuntimeCoordinator", () => {
     });
   });
 
-  it("skips the turn and records failure state when auto-compaction fails", async () => {
+  it("records failure state and continues when auto-compaction fails", async () => {
     vi.stubEnv("OPENAI_API_KEY", "test-key");
 
     const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
       message(`<summary>\nIntent:\n- ${"x".repeat(8_000)}\n</summary>`),
     );
-    const runtime = createMockRuntime(message("should not run"));
+    const runtime = createMockRuntime(
+      message("continued after compaction failure"),
+      message("Nothing else to do."),
+    );
     const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("auto-compact-fail-agent", {
       agent: new Agent({
@@ -2080,24 +2083,45 @@ describe("ThreadRuntimeCoordinator", () => {
     await coordinator.waitForIdle("thread-auto-compact-fail");
 
     expect(compactRuntime).toHaveBeenCalledTimes(1);
-    expect(runtime.complete).not.toHaveBeenCalled();
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
 
     const [run] = await store.listRuns("thread-auto-compact-fail");
-    expect(run?.status).toBe("failed");
-    expect(run?.error).toContain("Auto-compaction failed");
+    expect(run?.status).toBe("completed");
+    expect(run?.error).toBeUndefined();
 
     const thread = await store.getThread("thread-auto-compact-fail");
     expect(thread.runtimeState?.autoCompaction).toMatchObject({
       consecutiveFailures: 1,
+      lastAttempt: expect.objectContaining({
+        outcome: "summary_too_large",
+        trigger: "auto",
+        model: TEST_MODEL_WINDOW_620,
+        summaryRecordCount: expect.any(Number),
+        preservedTailRecordCount: expect.any(Number),
+        compactionInputChars: expect.any(Number),
+      }),
     });
 
     const transcript = await store.loadTranscript("thread-auto-compact-fail");
-    expect(transcript.at(-1)).toMatchObject({
+    expect(transcript.some((entry) => {
+      return entry.message.role === "assistant"
+        && entry.message.content.some((block) => block.type === "text" && block.text === "continued after compaction failure");
+    })).toBe(true);
+    const notice = transcript.find((entry) => {
+      return entry.metadata && typeof entry.metadata === "object" && entry.metadata !== null
+        && "kind" in entry.metadata && entry.metadata.kind === "compact_failure_notice";
+    });
+    expect(notice).toMatchObject({
       source: "compact",
       metadata: expect.objectContaining({
         kind: "compact_failure_notice",
         trigger: "auto",
         consecutiveFailures: 1,
+        diagnostics: expect.objectContaining({
+          outcome: "summary_too_large",
+          rawTextChars: expect.any(Number),
+          parsedSummaryChars: expect.any(Number),
+        }),
       }),
       message: expect.objectContaining({
         role: "assistant",
@@ -2105,18 +2129,18 @@ describe("ThreadRuntimeCoordinator", () => {
     });
   });
 
-  it("restarts after a new wake arrives during auto-compaction failure handling", async () => {
+  it("continues after auto-compaction failure and applies later wakes", async () => {
     vi.stubEnv("OPENAI_API_KEY", "test-key");
 
-    const enteredFailRun = createDeferred<void>();
-    const releaseFailRun = createDeferred<void>();
     const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete")
       .mockResolvedValueOnce(message(`<summary>\nIntent:\n- ${"x".repeat(8_000)}\n</summary>`));
     const runtime = createMockRuntime(
-      message("after retry"),
+      message("after failure"),
+      message("Nothing else to do."),
+      message("after later wake"),
       message("Nothing else to do."),
     );
-    const store = new FailRunBlockingStore(enteredFailRun, releaseFailRun);
+    const store = new TestThreadRuntimeStore();
     let retryModel = TEST_MODEL_WINDOW_620;
     const registry = new TestThreadDefinitionRegistry().register("auto-compact-retry-agent", () => ({
       agent: new Agent({
@@ -2143,8 +2167,7 @@ describe("ThreadRuntimeCoordinator", () => {
       message: stringToUserMessage("first risky request"),
       source: "tui",
     });
-
-    await enteredFailRun.promise;
+    await coordinator.waitForIdle("thread-auto-compact-retry");
 
     await coordinator.submitInput("thread-auto-compact-retry", {
       message: stringToUserMessage("second risky request"),
@@ -2152,20 +2175,19 @@ describe("ThreadRuntimeCoordinator", () => {
     });
 
     retryModel = TEST_MODEL_WINDOW_5000;
-    releaseFailRun.resolve();
     await coordinator.waitForIdle("thread-auto-compact-retry");
 
     expect(compactRuntime).toHaveBeenCalledTimes(1);
-    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    expect(runtime.complete).toHaveBeenCalledTimes(4);
 
     const runs = await store.listRuns("thread-auto-compact-retry");
-    expect(runs.map((run) => run.status)).toEqual(["failed", "completed"]);
+    expect(runs.map((run) => run.status)).toEqual(["completed", "completed"]);
 
     const transcript = await store.loadTranscript("thread-auto-compact-retry");
     expect(transcript.some((entry) => entry.origin === "input" && entry.source === "telegram")).toBe(true);
     expect(transcript.some((entry) => {
       return entry.message.role === "assistant"
-        && entry.message.content.some((block) => block.type === "text" && block.text === "after retry");
+        && entry.message.content.some((block) => block.type === "text" && block.text === "after later wake");
     })).toBe(true);
     expect(await store.hasRunnableInputs("thread-auto-compact-retry")).toBe(false);
   });
@@ -2178,7 +2200,12 @@ describe("ThreadRuntimeCoordinator", () => {
     const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
       message(`<summary>\nIntent:\n- ${"x".repeat(8_000)}\n</summary>`),
     );
-    const runtime = createMockRuntime(message("should not run"));
+    const runtime = createMockRuntime(
+      message("continued one"),
+      message("continued two"),
+      message("continued three"),
+      message("continued four"),
+    );
     const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("auto-compact-breaker-agent", {
       agent: new Agent({
@@ -2205,17 +2232,20 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await coordinator.submitInput("thread-auto-compact-breaker", {
       message: largeInput("new request one"),
-      source: "tui",
+      source: "heartbeat",
     });
     await coordinator.waitForIdle("thread-auto-compact-breaker");
     let thread = await store.getThread("thread-auto-compact-breaker");
     expect(thread.runtimeState?.autoCompaction).toMatchObject({
       consecutiveFailures: 1,
+      lastAttempt: expect.objectContaining({
+        outcome: "summary_too_large",
+      }),
     });
 
     await coordinator.submitInput("thread-auto-compact-breaker", {
       message: largeInput("new request two"),
-      source: "tui",
+      source: "heartbeat",
     });
     await coordinator.waitForIdle("thread-auto-compact-breaker");
 
@@ -2233,13 +2263,14 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await coordinator.submitInput("thread-auto-compact-breaker", {
       message: largeInput("new request three"),
-      source: "tui",
+      source: "heartbeat",
     });
     await coordinator.waitForIdle("thread-auto-compact-breaker");
 
     expect(compactRuntime).toHaveBeenCalledTimes(compactCallsBeforeCooldown);
     const runsBeforeCooldown = await store.listRuns("thread-auto-compact-breaker");
-    expect(runsBeforeCooldown.at(-1)?.error).toContain("paused until");
+    expect(runsBeforeCooldown.at(-1)?.status).toBe("completed");
+    expect(runsBeforeCooldown.at(-1)?.error).toBeUndefined();
     thread = await store.getThread("thread-auto-compact-breaker");
     expect(thread.runtimeState?.autoCompaction?.lastFailureAt).toBe(failureAtBeforeCooldown);
     transcript = await store.loadTranscript("thread-auto-compact-breaker");
@@ -2253,7 +2284,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await coordinator.submitInput("thread-auto-compact-breaker", {
       message: largeInput("new request four"),
-      source: "tui",
+      source: "heartbeat",
     });
     await coordinator.waitForIdle("thread-auto-compact-breaker");
 

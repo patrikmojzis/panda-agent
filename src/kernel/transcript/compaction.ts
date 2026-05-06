@@ -24,14 +24,48 @@ export const AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD = 2;
 export const AUTO_COMPACT_BREAKER_COOLDOWN_MS = 5 * 60_000;
 const TOOL_TEXT_LIMIT = 4_000;
 
-export interface CompactBoundaryMetadata extends JsonObject {
+export type CompactAttemptOutcome =
+  | "success"
+  | "no_split"
+  | "empty_input"
+  | "tail_over_operating_window"
+  | "empty_summary"
+  | "summary_too_large"
+  | "error";
+
+export type CompactAttemptDiagnostics = JsonObject & {
+  outcome: CompactAttemptOutcome;
+  trigger: "manual" | "auto";
+  model: string;
+  providerName: string;
+  modelId: string;
+  thinking?: string;
+  operatingWindow: number;
+  compactTriggerTokens: number;
+  activeTranscriptRecords: number;
+  activeTranscriptTokens: number;
+  summaryRecordCount?: number;
+  preservedTailRecordCount?: number;
+  compactedUpToSequence?: number;
+  compactionInputChars?: number;
+  preservedTailTokens?: number;
+  summaryTokenBudget?: number;
+  responseStopReason?: string;
+  responseContentTypes?: string[];
+  rawTextChars?: number;
+  parsedSummaryChars?: number;
+  error?: string;
+};
+
+export type CompactBoundaryMetadata = JsonObject & {
   kind: "compact_boundary";
   compactedUpToSequence: number;
   preservedTailUserTurns: number;
   trigger: "manual" | "auto";
   tokensBefore: number | null;
   tokensAfter: number | null;
-}
+  diagnostics?: CompactAttemptDiagnostics;
+};
 
 export interface CompactTranscriptSplit {
   summaryRecords: readonly ThreadMessageRecord[];
@@ -39,13 +73,14 @@ export interface CompactTranscriptSplit {
   compactedUpToSequence: number;
 }
 
-export interface CompactFailureNoticeMetadata extends JsonObject {
+export type CompactFailureNoticeMetadata = JsonObject & {
   kind: "compact_failure_notice";
   trigger: "auto";
   reason: string;
   consecutiveFailures: number;
   cooldownUntil: number | null;
-}
+  diagnostics?: CompactAttemptDiagnostics;
+};
 
 export interface CompactThreadOptions {
   store: Pick<{
@@ -70,6 +105,7 @@ export interface CompactThreadResult {
   tokensBefore: number;
   tokensAfter: number;
   compactedUpToSequence: number;
+  diagnostics: CompactAttemptDiagnostics;
 }
 
 export interface AutoCompactCheckResult {
@@ -80,6 +116,16 @@ export interface AutoCompactCheckResult {
 export interface EstimateTranscriptTokensOptions {
   estimateTextTokens?: TokenCounter;
   replayToolArtifacts?: boolean;
+}
+
+export class CompactThreadError extends Error {
+  readonly diagnostics: CompactAttemptDiagnostics;
+
+  constructor(message: string, diagnostics: CompactAttemptDiagnostics) {
+    super(message);
+    this.name = "CompactThreadError";
+    this.diagnostics = diagnostics;
+  }
 }
 
 function truncateText(text: string, maxChars: number): string {
@@ -296,6 +342,44 @@ export function createCompactBoundaryMessage(summary: string): ReturnType<typeof
   return stringToUserMessage(buildCompactSummaryMessage(summary));
 }
 
+function readThinkingDiagnostic(thinking: ThinkingLevel | undefined): string | undefined {
+  if (typeof thinking === "string") {
+    return thinking;
+  }
+
+  if (thinking === undefined) {
+    return undefined;
+  }
+
+  return JSON.stringify(thinking);
+}
+
+function buildCompactAttemptDiagnostics(options: {
+  outcome: CompactAttemptOutcome;
+  trigger: CompactBoundaryMetadata["trigger"];
+  model: string;
+  thinking?: ThinkingLevel;
+  activeTranscript: readonly ThreadMessageRecord[];
+  activeTranscriptTokens: number;
+}): CompactAttemptDiagnostics {
+  const modelSelection = resolveModelSelector(options.model);
+  const runtimeBudget = resolveModelRuntimeBudget(options.model);
+  const thinking = readThinkingDiagnostic(options.thinking);
+
+  return {
+    outcome: options.outcome,
+    trigger: options.trigger,
+    model: options.model,
+    providerName: modelSelection.providerName,
+    modelId: modelSelection.modelId,
+    ...(thinking ? {thinking} : {}),
+    operatingWindow: runtimeBudget.operatingWindow,
+    compactTriggerTokens: runtimeBudget.compactTriggerTokens,
+    activeTranscriptRecords: options.activeTranscript.length,
+    activeTranscriptTokens: options.activeTranscriptTokens,
+  };
+}
+
 async function requestCompactSummary(options: {
   model: string;
   thinking?: ThinkingLevel;
@@ -303,7 +387,8 @@ async function requestCompactSummary(options: {
   customInstructions?: string;
   maxSummaryTokens?: number;
   runtime?: Pick<LlmRuntime, "complete">;
-}): Promise<string> {
+  diagnostics: CompactAttemptDiagnostics;
+}): Promise<{ summary: string; diagnostics: CompactAttemptDiagnostics }> {
   const runtime = options.runtime ?? new PiAiRuntime();
   const modelSelection = resolveModelSelector(options.model);
   const response = await runtime.complete({
@@ -320,11 +405,28 @@ async function requestCompactSummary(options: {
     return part.type === "text" && part.text.trim() ? [part.text.trim()] : [];
   }).join("\n\n");
   const summary = parseCompactSummary(rawSummary);
+  const diagnostics: CompactAttemptDiagnostics = {
+    ...options.diagnostics,
+    responseStopReason: response.stopReason,
+    responseContentTypes: response.content.map((part) => part.type),
+    rawTextChars: rawSummary.length,
+    parsedSummaryChars: summary.length,
+  };
   if (!summary) {
-    throw new Error("Compaction returned an empty summary.");
+    throw new CompactThreadError("Compaction returned an empty summary.", {
+      ...diagnostics,
+      outcome: "empty_summary",
+      error: "Compaction returned an empty summary.",
+    });
   }
 
-  return summary;
+  return {
+    summary,
+    diagnostics: {
+      ...diagnostics,
+      outcome: "success",
+    },
+  };
 }
 
 export function readAutoCompactionRuntimeState(
@@ -340,6 +442,9 @@ export function readAutoCompactionRuntimeState(
     lastFailureReason: typeof state.lastFailureReason === "string" ? state.lastFailureReason : undefined,
     lastFailureAt: typeof state.lastFailureAt === "number" ? state.lastFailureAt : undefined,
     cooldownUntil: typeof state.cooldownUntil === "number" ? state.cooldownUntil : undefined,
+    lastAttempt: typeof state.lastAttempt === "object" && state.lastAttempt !== null && !Array.isArray(state.lastAttempt)
+      ? state.lastAttempt as CompactAttemptDiagnostics
+      : undefined,
   };
 }
 
@@ -406,13 +511,44 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
 
   const transcript = options.transcript ?? await options.store.loadTranscript(options.thread.id);
   const activeTranscript = projectTranscriptForRun(transcript);
+  const tokensBefore = estimateTranscriptTokens(activeTranscript, {
+    replayToolArtifacts: true,
+  });
+  const baseDiagnostics = buildCompactAttemptDiagnostics({
+    outcome: "success",
+    trigger: options.trigger,
+    model: options.model,
+    thinking: options.thinking,
+    activeTranscript,
+    activeTranscriptTokens: tokensBefore,
+  });
   const split = splitTranscriptForCompaction(activeTranscript);
   if (!split) {
+    if (options.trigger === "auto") {
+      throw new CompactThreadError("Not enough older context to compact while preserving the recent turns.", {
+        ...baseDiagnostics,
+        outcome: "no_split",
+        error: "Not enough older context to compact while preserving the recent turns.",
+      });
+    }
+
     return null;
   }
 
   const compactionInput = formatTranscriptForCompaction(split.summaryRecords).trim();
   if (!compactionInput) {
+    if (options.trigger === "auto") {
+      throw new CompactThreadError("Compaction input was empty.", {
+        ...baseDiagnostics,
+        outcome: "empty_input",
+        summaryRecordCount: split.summaryRecords.length,
+        preservedTailRecordCount: split.preservedTail.length,
+        compactedUpToSequence: split.compactedUpToSequence,
+        compactionInputChars: 0,
+        error: "Compaction input was empty.",
+      });
+    }
+
     return null;
   }
 
@@ -421,33 +557,55 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
   });
   const runtimeBudget = resolveModelRuntimeBudget(options.model);
   const summaryTokenBudget = runtimeBudget.operatingWindow - preservedTailTokens;
+  const splitDiagnostics: CompactAttemptDiagnostics = {
+    ...baseDiagnostics,
+    summaryRecordCount: split.summaryRecords.length,
+    preservedTailRecordCount: split.preservedTail.length,
+    compactedUpToSequence: split.compactedUpToSequence,
+    compactionInputChars: compactionInput.length,
+    preservedTailTokens,
+    summaryTokenBudget,
+  };
   if (summaryTokenBudget <= 0) {
-    throw new Error(
+    throw new CompactThreadError(
       "Recent context already fills the input budget, so compact cannot preserve the recent turns verbatim.",
+      {
+        ...splitDiagnostics,
+        outcome: "tail_over_operating_window",
+        error: "Recent context already fills the input budget, so compact cannot preserve the recent turns verbatim.",
+      },
     );
   }
 
-  const summary = await requestCompactSummary({
+  const summaryResult = await requestCompactSummary({
     model: options.model,
     thinking: options.thinking,
     compactionInput,
     customInstructions: options.customInstructions,
     maxSummaryTokens: summaryTokenBudget,
     runtime: options.runtime,
+    diagnostics: splitDiagnostics,
   });
+  const {summary} = summaryResult;
 
   const compactMessage = createCompactBoundaryMessage(summary);
   const summaryTokens = estimateVisibleMessageTokens(compactMessage);
   if (summaryTokens > summaryTokenBudget) {
-    throw new Error(
+    throw new CompactThreadError(
       "Compaction summary was too large to fit alongside the preserved recent turns. Try stricter instructions or use a model policy with a larger operating window.",
+      {
+        ...summaryResult.diagnostics,
+        outcome: "summary_too_large",
+        error: "Compaction summary was too large to fit alongside the preserved recent turns. Try stricter instructions or use a model policy with a larger operating window.",
+      },
     );
   }
 
-  const tokensBefore = estimateTranscriptTokens(activeTranscript, {
-    replayToolArtifacts: true,
-  });
   const tokensAfter = summaryTokens + preservedTailTokens;
+  const diagnostics: CompactAttemptDiagnostics = {
+    ...summaryResult.diagnostics,
+    parsedSummaryChars: summary.length,
+  };
   const metadata: CompactBoundaryMetadata = {
     kind: "compact_boundary",
     compactedUpToSequence: split.compactedUpToSequence,
@@ -455,6 +613,7 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
     trigger: options.trigger,
     tokensBefore,
     tokensAfter,
+    diagnostics,
   };
 
   const record = await options.store.appendRuntimeMessage(options.thread.id, {
@@ -469,6 +628,7 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
     tokensBefore,
     tokensAfter,
     compactedUpToSequence: split.compactedUpToSequence,
+    diagnostics,
   };
 }
 
@@ -484,10 +644,10 @@ export async function appendCompactionFailureNotice(options: {
   consecutiveFailures: number;
   cooldownUntil?: number;
   runId?: string;
+  diagnostics?: CompactAttemptDiagnostics;
 }): Promise<ThreadMessageRecord> {
   const lines = [
-    "Auto-compaction failed, so Panda skipped this turn.",
-    "Manual compaction is required before continuing.",
+    "Auto-compaction failed; continuing without compacting.",
     `Reason: ${options.reason}`,
   ];
 
@@ -501,6 +661,7 @@ export async function appendCompactionFailureNotice(options: {
     reason: options.reason,
     consecutiveFailures: options.consecutiveFailures,
     cooldownUntil: options.cooldownUntil ?? null,
+    ...(options.diagnostics ? {diagnostics: options.diagnostics} : {}),
   };
 
   return options.store.appendRuntimeMessage(options.threadId, {

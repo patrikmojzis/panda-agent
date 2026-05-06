@@ -20,6 +20,7 @@ import {
   appendCompactionFailureNotice,
   AUTO_COMPACT_BREAKER_COOLDOWN_MS,
   AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
+  CompactThreadError,
   compactThread,
   estimateTranscriptTokens,
   projectTranscriptForRun,
@@ -229,13 +230,11 @@ type AutoCompactionPreflightResult =
   | {
     action: "continue";
     thread: ThreadRecord;
+    attemptedAutoCompact?: boolean;
   }
   | {
     action: "restart";
-  }
-  | {
-    action: "skip";
-    reason: string;
+    attemptedAutoCompact?: boolean;
   };
 
 export class ThreadRuntimeCoordinator {
@@ -594,6 +593,7 @@ export class ThreadRuntimeCoordinator {
       && state.lastFailureReason === undefined
       && state.lastFailureAt === undefined
       && state.cooldownUntil === undefined
+      && state.lastAttempt === undefined
     ) {
       return thread;
     }
@@ -606,6 +606,7 @@ export class ThreadRuntimeCoordinator {
     run: ThreadRunRecord;
     reason: string;
     now: number;
+    diagnostics?: CompactThreadError["diagnostics"];
   }): Promise<ThreadRecord> {
     const currentState = readAutoCompactionRuntimeState(options.thread);
     const consecutiveFailures = currentState.consecutiveFailures + 1;
@@ -618,6 +619,7 @@ export class ThreadRuntimeCoordinator {
       lastFailureReason: options.reason,
       lastFailureAt: options.now,
       cooldownUntil,
+      ...(options.diagnostics ? {lastAttempt: options.diagnostics} : {}),
     };
 
     const updatedThread = await this.setAutoCompactionState(options.thread, nextState);
@@ -628,6 +630,7 @@ export class ThreadRuntimeCoordinator {
       consecutiveFailures,
       cooldownUntil,
       runId: options.run.id,
+      diagnostics: options.diagnostics,
     });
 
     return updatedThread;
@@ -638,6 +641,7 @@ export class ThreadRuntimeCoordinator {
     thread: ThreadRecord;
     definition: ResolvedThreadDefinition;
     transcript: readonly ThreadMessageRecord[];
+    allowAttempt: boolean;
   }): Promise<AutoCompactionPreflightResult> {
     let thread = options.thread;
     const now = Date.now();
@@ -662,14 +666,13 @@ export class ThreadRuntimeCoordinator {
         return { action: "continue", thread };
       }
 
-      const failureState = readAutoCompactionRuntimeState(thread);
-      const reason = failureState.lastFailureReason ?? "Auto-compaction is cooling down after repeated failures.";
       // The failure that opened cooldown already wrote a visible notice. Re-appending
       // it on every wake just bloats the transcript that compaction is trying to save.
-      return {
-        action: "skip",
-        reason: `Auto-compaction is paused until ${new Date(autoCompactCheck.cooldownUntil).toISOString()}. ${reason}`,
-      };
+      return { action: "continue", thread };
+    }
+
+    if (!options.allowAttempt) {
+      return { action: "continue", thread };
     }
 
     try {
@@ -689,26 +692,21 @@ export class ThreadRuntimeCoordinator {
           reason: "Not enough older context to compact while preserving the recent turns.",
           now,
         });
-        return {
-          action: "skip",
-          reason: `Auto-compaction failed for thread ${updatedThread.id}: not enough older context to preserve the recent turns.`,
-        };
+        return { action: "continue", thread: updatedThread, attemptedAutoCompact: true };
       }
 
       await this.clearAutoCompactionState(thread);
-      return { action: "restart" };
+      return { action: "restart", attemptedAutoCompact: true };
     } catch (error) {
       const reason = stringifyUnknown(error, { preferErrorMessage: true });
-      await this.recordAutoCompactionFailure({
+      const updatedThread = await this.recordAutoCompactionFailure({
         thread,
         run: options.run,
         reason,
         now,
+        diagnostics: error instanceof CompactThreadError ? error.diagnostics : undefined,
       });
-      return {
-        action: "skip",
-        reason: `Auto-compaction failed for thread ${thread.id}: ${reason}`,
-      };
+      return { action: "continue", thread: updatedThread, attemptedAutoCompact: true };
     }
   }
 
@@ -733,9 +731,9 @@ export class ThreadRuntimeCoordinator {
 
     let finishedRun: ThreadRunRecord | null = null;
     let restartRequested = false;
-    let skippedRun = false;
     let resumeState: ThreadResumeState | undefined;
     let inputApplyScope: ThreadInputApplyScope = "all";
+    let autoCompactionAttemptedThisRun = false;
     // Stop once is a bit too eager for Panda's current autonomy model.
     // Eligible input waves get one blind extra step before we finally let the
     // run go idle. Keep the source denylist small and intentional.
@@ -764,16 +762,11 @@ export class ThreadRuntimeCoordinator {
           thread,
           definition,
           transcript,
+          allowAttempt: !autoCompactionAttemptedThisRun,
         });
+        autoCompactionAttemptedThisRun = autoCompactionAttemptedThisRun || preflight.attemptedAutoCompact === true;
         if (preflight.action === "restart") {
           continue;
-        }
-
-        if (preflight.action === "skip") {
-          finishedRun = await this.store.failRunIfRunning(run.id, preflight.reason)
-            ?? await this.store.getRun(run.id);
-          skippedRun = true;
-          break;
         }
 
         if (this.beforeRunStep && appliedInputs.length > 0) {
@@ -882,9 +875,7 @@ export class ThreadRuntimeCoordinator {
         }
       }
 
-      if (!skippedRun) {
-        finishedRun = await this.store.completeRun(run.id);
-      }
+      finishedRun = await this.store.completeRun(run.id);
     } catch (error) {
       finishedRun = await this.store.failRunIfRunning(run.id, stringifyUnknown(error, { preferErrorMessage: true }))
         ?? await this.store.getRun(run.id);
