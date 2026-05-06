@@ -1,15 +1,8 @@
 import {describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 
-import {
-  Agent,
-  type LlmRuntime,
-  stringToUserMessage,
-} from "../src/index.js";
-import {
-  type ResolvedThreadDefinition,
-  ThreadRuntimeCoordinator,
-} from "../src/domain/threads/runtime/index.js";
+import {Agent, type LlmRuntime, stringToUserMessage, Tool, z,} from "../src/index.js";
+import {type ResolvedThreadDefinition, ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
 import type {
   CreateSessionInput,
   ListAgentSessionsInput,
@@ -31,10 +24,14 @@ import {
 } from "../src/app/runtime/intuition-sidecar.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
-function message(text: string): AssistantMessage {
+function createAssistantMessage(
+  content: AssistantMessage["content"],
+  overrides: Partial<AssistantMessage> = {},
+): AssistantMessage {
+  const stopReason = content.some((block) => block.type === "toolCall") ? "toolUse" : "stop";
   return {
     role: "assistant",
-    content: [{ type: "text", text }],
+    content,
     api: "openai-responses",
     model: "openai/gpt-5.1",
     usage: {
@@ -45,9 +42,14 @@ function message(text: string): AssistantMessage {
       totalTokens: 0,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
-    stopReason: "stop",
+    stopReason,
     timestamp: Date.now(),
+    ...overrides,
   };
+}
+
+function message(text: string): AssistantMessage {
+  return createAssistantMessage([{ type: "text", text }]);
 }
 
 function createMockRuntime(...responses: AssistantMessage[]): LlmRuntime & {
@@ -66,6 +68,21 @@ function createMockRuntime(...responses: AssistantMessage[]): LlmRuntime & {
       throw new Error("Streaming was not expected in this test");
     }),
   };
+}
+
+class EchoTool extends Tool<typeof EchoTool.schema> {
+  name = "echo";
+  description = "Echo a message";
+  static schema = z.object({
+    message: z.string(),
+  });
+  schema = EchoTool.schema;
+
+  async handle(args: z.output<typeof EchoTool.schema>): Promise<{ echoed: string }> {
+    return {
+      echoed: args.message,
+    };
+  }
 }
 
 class SelectiveLeaseManager {
@@ -181,17 +198,45 @@ function definition(runtime?: LlmRuntime): ResolvedThreadDefinition {
 }
 
 describe("Intuition sidecar", () => {
-  it("creates a visible sidecar session and observation thread input", async () => {
+  it("creates a visible sidecar session and post-run observation input", async () => {
     const sessionStore = new MemorySessionStore();
     const threadStore = new TestThreadRuntimeStore();
-    const submitted: Array<{threadId: string; source: string}> = [];
+    const submitted: Array<{threadId: string; source: string; text: string}> = [];
     await createMainSession({sessionStore, threadStore});
+    await threadStore.appendRuntimeMessage("thread-main", {
+      origin: "input",
+      message: stringToUserMessage("old message outside run"),
+      source: "tui",
+    });
     await threadStore.enqueueInput("thread-main", {
       message: stringToUserMessage("VAT XML"),
       source: "tui",
     });
-    const appliedInputs = await threadStore.applyPendingInputs("thread-main");
     const run = await threadStore.createRun("thread-main");
+    const appliedInputs = await threadStore.applyPendingInputs("thread-main");
+    const assistant = await threadStore.appendRuntimeMessage("thread-main", {
+      message: message("handled run"),
+      source: "assistant",
+      runId: run.id,
+    });
+    const toolResult = await threadStore.appendRuntimeMessage("thread-main", {
+      message: {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "lookup",
+        content: [{type: "text", text: "lookup result"}],
+        isError: false,
+        timestamp: Date.now(),
+      },
+      source: "tool:lookup",
+      runId: run.id,
+    });
+    const runtime = await threadStore.appendRuntimeMessage("thread-main", {
+      message: stringToUserMessage("runtime nudge"),
+      source: "runtime",
+      runId: run.id,
+    });
+    const finishedRun = await threadStore.completeRun(run.id);
     const mainThread = await threadStore.getThread("thread-main");
 
     const service = new IntuitionSidecarService({
@@ -199,19 +244,20 @@ describe("Intuition sidecar", () => {
       threadStore,
       runtime: {
         submitInput: async (threadId, payload) => {
-          submitted.push({threadId, source: payload.source});
+          submitted.push({
+            threadId,
+            source: payload.source,
+            text: typeof payload.message.content === "string" ? payload.message.content : "",
+          });
           await threadStore.enqueueInput(threadId, payload);
         },
       },
-      softWaitMs: 1,
     });
 
-    await service.beforeRunStep({
-      run,
+    await service.afterRunFinish({
+      run: finishedRun,
       thread: mainThread,
-      definition: definition(),
-      appliedInputs,
-      transcript: await threadStore.loadTranscript("thread-main"),
+      messages: [...appliedInputs, assistant, toolResult, runtime],
       signal: new AbortController().signal,
     });
 
@@ -219,10 +265,16 @@ describe("Intuition sidecar", () => {
     const sidecar = sessions.find((session) => session.kind === "sidecar");
     expect(sidecar).toBeDefined();
     expect(sessions.map((session) => session.kind)).toContain("sidecar");
-    expect(submitted).toEqual([{
+    expect(submitted).toMatchObject([{
       threadId: sidecar?.currentThreadId,
       source: INTUITION_OBSERVATION_SOURCE,
     }]);
+    expect(submitted[0]?.text).toContain("Messages in finished run:");
+    expect(submitted[0]?.text).toContain("VAT XML");
+    expect(submitted[0]?.text).toContain("handled run");
+    expect(submitted[0]?.text).toContain("lookup result");
+    expect(submitted[0]?.text).toContain("runtime nudge");
+    expect(submitted[0]?.text).not.toContain("old message outside run");
   });
 
   it("does not observe sidecar threads recursively", async () => {
@@ -257,29 +309,69 @@ describe("Intuition sidecar", () => {
       message: stringToUserMessage("observe"),
       source: INTUITION_OBSERVATION_SOURCE,
     });
-    const appliedInputs = await threadStore.applyPendingInputs("sidecar-thread");
     const run = await threadStore.createRun("sidecar-thread");
+    const appliedInputs = await threadStore.applyPendingInputs("sidecar-thread");
+    const assistant = await threadStore.appendRuntimeMessage("sidecar-thread", {
+      message: message("observed"),
+      source: "assistant",
+      runId: run.id,
+    });
+    const finishedRun = await threadStore.completeRun(run.id);
     const sidecarThread = await threadStore.getThread("sidecar-thread");
     const service = new IntuitionSidecarService({
       sessionStore,
       threadStore,
       runtime: {submitInput: submitted},
-      softWaitMs: 1,
     });
 
-    await service.beforeRunStep({
-      run,
+    await service.afterRunFinish({
+      run: finishedRun,
       thread: sidecarThread,
-      definition: definition(),
-      appliedInputs,
-      transcript: await threadStore.loadTranscript("sidecar-thread"),
+      messages: [...appliedInputs, assistant],
       signal: new AbortController().signal,
     });
 
     expect(submitted).not.toHaveBeenCalled();
   });
 
-  it("injects a fast sidecar whisper into the main run before the LLM call", async () => {
+  it("does not observe failed or empty runs", async () => {
+    const sessionStore = new MemorySessionStore();
+    const threadStore = new TestThreadRuntimeStore();
+    const submitted = vi.fn();
+    await createMainSession({sessionStore, threadStore});
+    const service = new IntuitionSidecarService({
+      sessionStore,
+      threadStore,
+      runtime: {submitInput: submitted},
+    });
+
+    const failedRun = await threadStore.createRun("thread-main");
+    const failed = await threadStore.failRunIfRunning(failedRun.id, "provider failed");
+    const completedRun = await threadStore.createRun("thread-main");
+    const completed = await threadStore.completeRun(completedRun.id);
+    const thread = await threadStore.getThread("thread-main");
+
+    await service.afterRunFinish({
+      run: failed!,
+      thread,
+      messages: [await threadStore.appendRuntimeMessage("thread-main", {
+        message: message("failed answer"),
+        source: "assistant",
+        runId: failedRun.id,
+      })],
+      signal: new AbortController().signal,
+    });
+    await service.afterRunFinish({
+      run: completed,
+      thread,
+      messages: [],
+      signal: new AbortController().signal,
+    });
+
+    expect(submitted).not.toHaveBeenCalled();
+  });
+
+  it("observes only after the main run completes with current-run messages", async () => {
     const threadStore = new TestThreadRuntimeStore();
     await threadStore.createThread({
       id: "thread-main",
@@ -289,38 +381,63 @@ describe("Intuition sidecar", () => {
         agentKey: "panda",
       },
     });
-    const runtime = createMockRuntime(message("handled"));
+    const runtime = createMockRuntime(
+      createAssistantMessage([{
+        type: "toolCall",
+        id: "call-1",
+        name: "echo",
+        arguments: {message: "tool payload"},
+      }]),
+      message("after tool"),
+      message("Nothing else to do."),
+    );
+    const observed = vi.fn();
     const coordinator = new ThreadRuntimeCoordinator({
       store: threadStore,
       leaseManager: new SelectiveLeaseManager(),
-      resolveDefinition: () => definition(runtime),
-      beforeRunStep: async (input) => {
-        await threadStore.enqueueInput(input.thread.id, {
-          message: stringToUserMessage("[Internal intuition note]\nLoad the VAT XML skill."),
-          source: INTUITION_SIDECAR_SOURCE,
-        });
-      },
+      resolveDefinition: () => ({
+        agent: new Agent({
+          name: "panda",
+          instructions: "Use tools.",
+          tools: [new EchoTool()],
+        }),
+        runtime,
+      }),
+      afterRunFinish: observed,
     });
 
     await coordinator.submitInput("thread-main", {
       message: stringToUserMessage("VAT XML"),
-      source: "heartbeat",
+      source: "tui",
     });
     await coordinator.waitForIdle("thread-main");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(1);
-    const request = runtime.complete.mock.calls[0]?.[0];
-    expect(String(request.context.messages.at(-1)?.content ?? "")).toContain("[Internal intuition note]");
-    expect(String(request.context.messages.at(-1)?.content ?? "")).toContain("VAT XML skill");
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
+    expect(observed).toHaveBeenCalledTimes(1);
+    const observation = observed.mock.calls[0]?.[0];
+    expect(observation.run.status).toBe("completed");
+    expect(observation.messages.map((entry) => entry.source)).toEqual([
+      "tui",
+      "assistant",
+      "tool:echo",
+      "assistant",
+      "runtime",
+      "assistant",
+    ]);
+    const firstRequest = runtime.complete.mock.calls[0]?.[0];
+    expect(JSON.stringify(firstRequest.context.messages)).not.toContain("[Internal intuition note]");
     const transcript = await threadStore.loadTranscript("thread-main");
     expect(transcript.map((entry) => entry.source)).toEqual([
-      "heartbeat",
-      INTUITION_SIDECAR_SOURCE,
+      "tui",
+      "assistant",
+      "tool:echo",
+      "assistant",
+      "runtime",
       "assistant",
     ]);
   });
 
-  it("continues the main run when the sidecar hook fails", async () => {
+  it("continues the main run when the post-run sidecar hook fails", async () => {
     const threadStore = new TestThreadRuntimeStore();
     await threadStore.createThread({
       id: "thread-main",
@@ -335,7 +452,7 @@ describe("Intuition sidecar", () => {
       store: threadStore,
       leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: () => definition(runtime),
-      beforeRunStep: async () => {
+      afterRunFinish: async () => {
         throw new Error("sidecar unavailable");
       },
     });
@@ -373,7 +490,6 @@ describe("Intuition sidecar", () => {
       runtime: {
         submitInput: (threadId, payload, mode) => coordinator.submitInput(threadId, payload, mode),
       },
-      softWaitMs: 1,
     });
 
     await service.emitWhisper({
@@ -401,21 +517,24 @@ describe("Intuition sidecar", () => {
       message: stringToUserMessage("[Internal intuition note]\nCheck tax memory."),
       source: INTUITION_SIDECAR_SOURCE,
     });
-    const appliedInputs = await threadStore.applyPendingInputs("thread-main");
     const run = await threadStore.createRun("thread-main");
+    const appliedInputs = await threadStore.applyPendingInputs("thread-main");
+    const assistant = await threadStore.appendRuntimeMessage("thread-main", {
+      message: message("handled intuition"),
+      source: "assistant",
+      runId: run.id,
+    });
+    const finishedRun = await threadStore.completeRun(run.id);
     const service = new IntuitionSidecarService({
       sessionStore,
       threadStore,
       runtime: {submitInput: submitted},
-      softWaitMs: 1,
     });
 
-    await service.beforeRunStep({
-      run,
+    await service.afterRunFinish({
+      run: finishedRun,
       thread: await threadStore.getThread("thread-main"),
-      definition: definition(),
-      appliedInputs,
-      transcript: await threadStore.loadTranscript("thread-main"),
+      messages: [...appliedInputs, assistant],
       signal: new AbortController().signal,
     });
 

@@ -141,7 +141,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
 
       return options.resolveDefinition(thread, resolverContext);
     },
-    beforeRunStep: (input) => intuitionSidecar?.beforeRunStep(input),
+    afterRunFinish: (input) => intuitionSidecar?.afterRunFinish(input),
     onEvent: options.onEvent,
   });
   runtime.backgroundJobService.setBackgroundCompletionHandler(async (record) => {

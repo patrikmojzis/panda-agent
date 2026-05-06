@@ -20,8 +20,8 @@ import {
   appendCompactionFailureNotice,
   AUTO_COMPACT_BREAKER_COOLDOWN_MS,
   AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD,
-  CompactThreadError,
   compactThread,
+  CompactThreadError,
   estimateTranscriptTokens,
   projectTranscriptForRun,
   readAutoCompactionRuntimeState,
@@ -53,21 +53,19 @@ export interface ThreadRuntimeCoordinatorOptions {
   store: ThreadRuntimeStore;
   resolveDefinition: ThreadDefinitionResolver;
   leaseManager: ThreadLeaseManager;
-  beforeRunStep?: ThreadRuntimeBeforeRunStepHook;
+  afterRunFinish?: ThreadRuntimeAfterRunFinishHook;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
 }
 
-export interface ThreadRuntimeBeforeRunStepInput {
+export interface ThreadRuntimeAfterRunFinishInput {
   run: ThreadRunRecord;
   thread: ThreadRecord;
-  definition: ResolvedThreadDefinition;
-  appliedInputs: readonly ThreadMessageRecord[];
-  transcript: readonly ThreadMessageRecord[];
+  messages: readonly ThreadMessageRecord[];
   signal: AbortSignal;
 }
 
-export type ThreadRuntimeBeforeRunStepHook = (
-  input: ThreadRuntimeBeforeRunStepInput,
+export type ThreadRuntimeAfterRunFinishHook = (
+  input: ThreadRuntimeAfterRunFinishInput,
 ) => Promise<void> | void;
 
 export type ThreadRuntimeEvent =
@@ -241,7 +239,7 @@ export class ThreadRuntimeCoordinator {
   private readonly store: ThreadRuntimeStore;
   private readonly resolveDefinition: ThreadDefinitionResolver;
   private readonly leaseManager: ThreadLeaseManager;
-  private readonly beforeRunStep?: ThreadRuntimeBeforeRunStepHook;
+  private readonly afterRunFinish?: ThreadRuntimeAfterRunFinishHook;
   private readonly onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   private readonly activeRuns = new Map<string, Promise<ThreadRunAttemptResult>>();
   private readonly activeSignals = new Map<string, AbortController>();
@@ -250,7 +248,7 @@ export class ThreadRuntimeCoordinator {
     this.store = options.store;
     this.resolveDefinition = options.resolveDefinition;
     this.leaseManager = options.leaseManager;
-    this.beforeRunStep = options.beforeRunStep;
+    this.afterRunFinish = options.afterRunFinish;
     this.onEvent = options.onEvent;
   }
 
@@ -426,22 +424,6 @@ export class ThreadRuntimeCoordinator {
 
   private async emit(event: ThreadRuntimeEvent): Promise<void> {
     await this.onEvent?.(event);
-  }
-
-  private async applyRunnableInputsForCurrentRun(options: {
-    threadId: string;
-    run: ThreadRunRecord;
-  }): Promise<readonly ThreadMessageRecord[]> {
-    const appliedInputs = await this.store.applyPendingInputs(options.threadId, "runnable");
-    if (appliedInputs.length > 0) {
-      await this.emit({
-        type: "inputs_applied",
-        threadId: options.threadId,
-        runId: options.run.id,
-        messages: appliedInputs,
-      });
-    }
-    return appliedInputs;
   }
 
   private async sleep(ms: number): Promise<void> {
@@ -724,6 +706,7 @@ export class ThreadRuntimeCoordinator {
     let resumeState: ThreadResumeState | undefined;
     let inputApplyScope: ThreadInputApplyScope = "all";
     let autoCompactionAttemptedThisRun = false;
+    const runMessages: ThreadMessageRecord[] = [];
     // Stop once is a bit too eager for Panda's current autonomy model.
     // Eligible input waves get one blind extra step before we finally let the
     // run go idle. Keep the source denylist small and intentional.
@@ -733,6 +716,7 @@ export class ThreadRuntimeCoordinator {
       while (true) {
         const appliedInputs = await this.store.applyPendingInputs(threadId, inputApplyScope);
         if (appliedInputs.length > 0) {
+          runMessages.push(...appliedInputs);
           // Eligible input waves arm one blind extra step. Suppressed internal
           // inputs may arrive later in the same run; they should not disarm an
           // already-armed human/channel continuation.
@@ -760,32 +744,6 @@ export class ThreadRuntimeCoordinator {
         autoCompactionAttemptedThisRun = autoCompactionAttemptedThisRun || preflight.attemptedAutoCompact === true;
         if (preflight.action === "restart") {
           continue;
-        }
-
-        if (this.beforeRunStep && appliedInputs.length > 0) {
-          try {
-            await this.beforeRunStep({
-              run,
-              thread: preflight.thread,
-              definition,
-              appliedInputs,
-              transcript,
-              signal: controller.signal,
-            });
-          } catch {
-            // Before-run hooks are opportunistic. A broken sidecar should
-            // disappear for the turn, not fail Panda's main run.
-          }
-
-          const sidecarInputs = await this.applyRunnableInputsForCurrentRun({
-            threadId,
-            run,
-          });
-          if (sidecarInputs.length > 0) {
-            idleRerollAvailable = idleRerollAvailable || sidecarInputs.some(grantsIdleReroll);
-            inputApplyScope = "runnable";
-            continue;
-          }
         }
 
         const inferenceProjection = definition.inferenceProjection ?? preflight.thread.inferenceProjection;
@@ -819,11 +777,12 @@ export class ThreadRuntimeCoordinator {
 
           const event = next.value;
           if (isPersistedThreadMessage(event)) {
-            await this.store.appendRuntimeMessage(threadId, {
+            const persisted = await this.store.appendRuntimeMessage(threadId, {
               message: sanitizePersistedMessage(event, definition.agent.tools),
               source: runtimeSourceForMessage(event),
               runId: run.id,
             });
+            runMessages.push(persisted);
           }
 
           await this.emit({
@@ -849,7 +808,7 @@ export class ThreadRuntimeCoordinator {
           // an empty stop. A machine-generated runtime user message gives the
           // model an explicit continuation event while keeping the source honest.
           idleRerollAvailable = false;
-          await this.store.appendRuntimeMessage(threadId, {
+          const runtimeMessage = await this.store.appendRuntimeMessage(threadId, {
             message: stringToUserMessage(renderRuntimeAutonomyContext()),
             source: "runtime",
             runId: run.id,
@@ -859,6 +818,7 @@ export class ThreadRuntimeCoordinator {
               },
             },
           });
+          runMessages.push(runtimeMessage);
           inputApplyScope = "runnable";
           continue;
         }
@@ -882,6 +842,20 @@ export class ThreadRuntimeCoordinator {
           threadId,
           run: finishedRun,
         });
+
+        if (this.afterRunFinish) {
+          try {
+            await this.afterRunFinish({
+              run: finishedRun,
+              thread: await this.store.getThread(threadId),
+              messages: runMessages,
+              signal: controller.signal,
+            });
+          } catch {
+            // Post-run hooks are opportunistic. Intuition can vanish for a run,
+            // but it must never change whether the main run completed.
+          }
+        }
       }
 
       this.activeSignals.delete(threadId);

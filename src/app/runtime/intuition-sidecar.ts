@@ -6,13 +6,18 @@ import type {LlmContext} from "../../kernel/agent/llm-context.js";
 import type {JsonObject} from "../../kernel/agent/types.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {AgentStore} from "../../domain/agents/store.js";
-import {createSessionWithInitialThread, PostgresSessionStore, type SessionRecord, type SessionStore} from "../../domain/sessions/index.js";
+import {
+  createSessionWithInitialThread,
+  PostgresSessionStore,
+  type SessionRecord,
+  type SessionStore
+} from "../../domain/sessions/index.js";
 import {
   PostgresThreadRuntimeStore,
   type ResolvedThreadDefinition,
   type ThreadInputPayload,
   type ThreadRecord,
-  type ThreadRuntimeBeforeRunStepInput,
+  type ThreadRuntimeAfterRunFinishInput,
 } from "../../domain/threads/runtime/index.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {PgPoolLike} from "../../domain/threads/runtime/postgres-db.js";
@@ -25,22 +30,18 @@ import {resolveDefaultAgentIntuitionSidecarModelSelector} from "../../panda/defa
 import {BraveSearchTool, hasBraveSearchApiKey} from "../../panda/tools/brave-search-tool.js";
 import {CurrentDateTimeTool} from "../../panda/tools/current-datetime-tool.js";
 import {
-  IntuitionWhisperTool,
   type IntuitionWhisper,
   type IntuitionWhisperSink,
+  IntuitionWhisperTool,
 } from "../../panda/tools/intuition-whisper-tool.js";
 import {PostgresReadonlyQueryTool} from "../../panda/tools/postgres-readonly-query-tool.js";
 import {WebFetchTool} from "../../panda/tools/web-fetch-tool.js";
 import {WikiReadonlyTool} from "../../panda/tools/wiki-tool.js";
-import {
-  INTUITION_SIDECAR_PROMPT,
-  renderIntuitionObservationPrompt,
-} from "../../prompts/runtime/intuition-sidecar.js";
+import {INTUITION_SIDECAR_PROMPT, renderIntuitionObservationPrompt,} from "../../prompts/runtime/intuition-sidecar.js";
 
 export const INTUITION_SIDECAR_SOURCE = "intuition_sidecar";
 export const INTUITION_OBSERVATION_SOURCE = "intuition_observation";
 export const INTUITION_SIDECAR_KIND = "intuition_sidecar";
-export const INTUITION_SIDECAR_SOFT_WAIT_MS = 5_000;
 
 interface IntuitionSidecarBinding {
   parentSessionId: string;
@@ -62,7 +63,6 @@ export interface IntuitionSidecarServiceOptions {
   agentStore?: AgentStore;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   env?: NodeJS.ProcessEnv;
-  softWaitMs?: number;
 }
 
 function readString(value: unknown): string | undefined {
@@ -129,10 +129,6 @@ function formatWhisperForMain(message: string): string {
   ].join("\n");
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export class IntuitionSidecarService implements IntuitionWhisperSink {
   private readonly sessionStore: SessionStore;
   private readonly threadStore: ThreadRuntimeStore;
@@ -141,8 +137,6 @@ export class IntuitionSidecarService implements IntuitionWhisperSink {
   private readonly agentStore?: AgentStore;
   private readonly wikiBindings?: Pick<WikiBindingService, "getBinding">;
   private readonly env: NodeJS.ProcessEnv;
-  private readonly softWaitMs: number;
-  private readonly waiters = new Map<string, Set<() => void>>();
 
   constructor(options: IntuitionSidecarServiceOptions) {
     this.sessionStore = options.sessionStore;
@@ -152,32 +146,34 @@ export class IntuitionSidecarService implements IntuitionWhisperSink {
     this.agentStore = options.agentStore;
     this.wikiBindings = options.wikiBindings;
     this.env = options.env ?? process.env;
-    this.softWaitMs = options.softWaitMs ?? INTUITION_SIDECAR_SOFT_WAIT_MS;
   }
 
   isSidecarThread(thread: Pick<ThreadRecord, "context">): boolean {
     return readSidecarBinding(thread.context) !== null;
   }
 
-  async beforeRunStep(input: ThreadRuntimeBeforeRunStepInput): Promise<void> {
+  async afterRunFinish(input: ThreadRuntimeAfterRunFinishInput): Promise<void> {
     if (this.isSidecarThread(input.thread)) {
       return;
     }
-    if (input.appliedInputs.length === 0) {
+    if (input.run.status !== "completed") {
       return;
     }
-    if (input.appliedInputs.every((entry) => entry.source === INTUITION_SIDECAR_SOURCE)) {
+    if (input.messages.length === 0) {
+      return;
+    }
+
+    const appliedInputs = input.messages.filter((entry) => entry.origin === "input");
+    if (appliedInputs.length > 0 && appliedInputs.every((entry) => entry.source === INTUITION_SIDECAR_SOURCE)) {
       return;
     }
 
     const sidecarThread = await this.ensureSidecarThread(input.thread);
-    const waiter = this.waitForWhisper(input.run.id, this.softWaitMs);
     await this.runtime.submitInput(sidecarThread.id, {
       message: stringToUserMessage(renderIntuitionObservationPrompt({
         run: input.run,
         mainThread: input.thread,
-        appliedInputs: input.appliedInputs,
-        transcript: input.transcript,
+        messages: input.messages,
       })),
       source: INTUITION_OBSERVATION_SOURCE,
       externalMessageId: `intuition_observation:${input.run.id}:${randomUUID()}`,
@@ -187,15 +183,12 @@ export class IntuitionSidecarService implements IntuitionWhisperSink {
           parentRunId: input.run.id,
           parentThreadId: input.thread.id,
           parentSessionId: input.thread.sessionId,
-          appliedInputIds: input.appliedInputs.map((entry) => entry.id),
         },
         parentRunId: input.run.id,
         parentThreadId: input.thread.id,
         parentSessionId: input.thread.sessionId,
       },
     });
-
-    await waiter;
   }
 
   async emitWhisper(input: IntuitionWhisper): Promise<void> {
@@ -211,16 +204,6 @@ export class IntuitionSidecarService implements IntuitionWhisperSink {
         },
       },
     });
-
-    const waiters = this.waiters.get(input.parentRunId);
-    if (!waiters) {
-      return;
-    }
-
-    this.waiters.delete(input.parentRunId);
-    for (const resolve of waiters) {
-      resolve();
-    }
   }
 
   async resolveDefinition(
@@ -367,28 +350,5 @@ export class IntuitionSidecarService implements IntuitionWhisperSink {
       currentThreadId: thread.id,
     });
     return thread;
-  }
-
-  private waitForWhisper(parentRunId: string, timeoutMs: number): Promise<void> {
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        const waiters = this.waiters.get(parentRunId);
-        waiters?.delete(finish);
-        if (waiters && waiters.size === 0) {
-          this.waiters.delete(parentRunId);
-        }
-        resolve();
-      };
-
-      const waiters = this.waiters.get(parentRunId) ?? new Set<() => void>();
-      waiters.add(finish);
-      this.waiters.set(parentRunId, waiters);
-      void sleep(timeoutMs).then(finish);
-    });
   }
 }
