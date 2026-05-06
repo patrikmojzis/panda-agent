@@ -572,10 +572,10 @@ describe("ThreadRuntimeCoordinator", () => {
     ]);
   });
 
-  it("keeps an armed idle reroll when a late intuition note arrives", async () => {
+  it("keeps an armed idle reroll when a late sidecar note arrives", async () => {
     const responses = [
       message("first reply"),
-      message("handled intuition note"),
+      message("handled sidecar note"),
       message("idle continuation"),
     ];
     let coordinator!: ThreadRuntimeCoordinator;
@@ -588,8 +588,8 @@ describe("ThreadRuntimeCoordinator", () => {
 
         if (runtime.complete.mock.calls.length === 1) {
           await coordinator.submitInput("thread-late-sidecar-reroll", {
-            message: stringToUserMessage("[Internal intuition note]\nCheck the apartment wiki."),
-            source: "intuition_sidecar",
+            message: stringToUserMessage("[Sidecar note: memory_guard]\nCheck the apartment wiki."),
+            source: "sidecar",
           });
         }
 
@@ -635,7 +635,7 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
-      "intuition_sidecar",
+      "sidecar",
       "assistant",
       "runtime",
       "assistant",
@@ -647,20 +647,20 @@ describe("ThreadRuntimeCoordinator", () => {
     })).toBe(true);
   });
 
-  it("does not grant an idle reroll for intuition-only inputs", async () => {
-    const runtime = createMockRuntime(message("intuition handled"));
+  it("does not grant an idle reroll for sidecar-only inputs", async () => {
+    const runtime = createMockRuntime(message("sidecar handled"));
     const store = new TestThreadRuntimeStore();
-    const registry = new TestThreadDefinitionRegistry().register("intuition-no-reroll", {
+    const registry = new TestThreadDefinitionRegistry().register("sidecar-no-reroll", {
       agent: new Agent({
-        name: "intuition-no-reroll",
+        name: "sidecar-no-reroll",
         instructions: "Reply plainly.",
       }),
       runtime,
     });
 
     await createRuntimeThread(store, {
-      id: "thread-intuition-no-reroll",
-      agentKey: "intuition-no-reroll",
+      id: "thread-sidecar-no-reroll",
+      agentKey: "sidecar-no-reroll",
     });
 
     const coordinator = new ThreadRuntimeCoordinator({
@@ -669,18 +669,18 @@ describe("ThreadRuntimeCoordinator", () => {
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
-    await coordinator.submitInput("thread-intuition-no-reroll", {
-      message: stringToUserMessage("[Internal intuition note]\nCheck tax memory."),
-      source: "intuition_sidecar",
+    await coordinator.submitInput("thread-sidecar-no-reroll", {
+      message: stringToUserMessage("[Sidecar note: memory_guard]\nCheck tax memory."),
+      source: "sidecar",
     });
 
-    await coordinator.waitForIdle("thread-intuition-no-reroll");
+    await coordinator.waitForIdle("thread-sidecar-no-reroll");
 
     expect(runtime.complete).toHaveBeenCalledTimes(1);
 
-    const transcript = await store.loadTranscript("thread-intuition-no-reroll");
+    const transcript = await store.loadTranscript("thread-sidecar-no-reroll");
     expect(transcript.map((entry) => entry.source)).toEqual([
-      "intuition_sidecar",
+      "sidecar",
       "assistant",
     ]);
   });

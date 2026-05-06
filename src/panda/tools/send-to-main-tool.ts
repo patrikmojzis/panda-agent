@@ -7,22 +7,23 @@ import type {ToolResultPayload} from "../../kernel/agent/types.js";
 import {isRecord} from "../../lib/records.js";
 import {truncateText} from "../../lib/strings.js";
 
-const MAX_WHISPER_CHARS = 4_000;
+const MAX_NOTE_CHARS = 4_000;
 
-export interface IntuitionWhisper {
+export interface SidecarNote {
   parentThreadId: string;
   parentRunId: string;
+  sidecarKey: string;
   sidecarThreadId: string;
   sidecarRunId?: string;
   message: string;
 }
 
-export interface IntuitionWhisperSink {
-  emitWhisper(input: IntuitionWhisper): Promise<void>;
+export interface SidecarNoteSink {
+  sendToMain(input: SidecarNote): Promise<void>;
 }
 
-export interface IntuitionWhisperToolOptions {
-  sink: IntuitionWhisperSink;
+export interface SendToMainToolOptions {
+  sink: SidecarNoteSink;
 }
 
 function readString(value: unknown): string | undefined {
@@ -37,19 +38,19 @@ function readCurrentInputMetadata(context: unknown): Record<string, unknown> {
   return isRecord(context.currentInput.metadata) ? context.currentInput.metadata : {};
 }
 
-export class IntuitionWhisperTool<TContext = unknown>
-  extends Tool<typeof IntuitionWhisperTool.schema, TContext> {
+export class SendToMainTool<TContext = unknown>
+  extends Tool<typeof SendToMainTool.schema, TContext> {
   static schema = z.object({
-    message: z.string().trim().min(1).max(MAX_WHISPER_CHARS),
+    message: z.string().trim().min(1).max(MAX_NOTE_CHARS),
   });
 
-  name = "whisper_to_main";
-  description = "Send one private freeform intuition note to Panda's main thread. Use only when the note is materially useful; otherwise stay silent.";
-  schema = IntuitionWhisperTool.schema;
+  name = "send_to_main";
+  description = "Send one private sidecar note to the main agent thread. Use only when it materially changes the next answer or action; otherwise stay silent.";
+  schema = SendToMainTool.schema;
 
-  private readonly sink: IntuitionWhisperSink;
+  private readonly sink: SidecarNoteSink;
 
-  constructor(options: IntuitionWhisperToolOptions) {
+  constructor(options: SendToMainToolOptions) {
     super();
     this.sink = options.sink;
   }
@@ -61,23 +62,25 @@ export class IntuitionWhisperTool<TContext = unknown>
   }
 
   async handle(
-    args: z.output<typeof IntuitionWhisperTool.schema>,
+    args: z.output<typeof SendToMainTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
     const context = run.context;
     const metadata = readCurrentInputMetadata(context);
     const parentThreadId = readString(metadata.parentThreadId);
     const parentRunId = readString(metadata.parentRunId);
+    const sidecarKey = readString(metadata.sidecarKey);
     const sidecarThreadId = isRecord(context) ? readString(context.threadId) : undefined;
     const sidecarRunId = isRecord(context) ? readString(context.runId) : undefined;
 
-    if (!parentThreadId || !parentRunId || !sidecarThreadId) {
-      throw new ToolError("whisper_to_main requires a sidecar observation with parent run metadata.");
+    if (!parentThreadId || !parentRunId || !sidecarKey || !sidecarThreadId) {
+      throw new ToolError("send_to_main requires a sidecar event with parent run metadata.");
     }
 
-    await this.sink.emitWhisper({
+    await this.sink.sendToMain({
       parentThreadId,
       parentRunId,
+      sidecarKey,
       sidecarThreadId,
       sidecarRunId,
       message: args.message,
@@ -86,7 +89,7 @@ export class IntuitionWhisperTool<TContext = unknown>
     return {
       content: [{
         type: "text",
-        text: "Whisper delivered to Panda's main thread.",
+        text: "Note delivered to the main thread.",
       }],
     };
   }

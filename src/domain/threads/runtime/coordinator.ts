@@ -1,6 +1,7 @@
 import type {Message} from "@mariozechner/pi-ai";
 
 import {runThreadStep, Thread, type ThreadResumeState, type ThreadStepResult} from "../../../kernel/agent/thread.js";
+import type {ThreadCheckpoint} from "../../../kernel/agent/thread-checkpoint.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {resolveModelRuntimeBudget} from "../../../kernel/models/model-context-policy.js";
 import {resolveRuntimeDefaultModelSelector} from "../../../kernel/models/default-model.js";
@@ -35,6 +36,7 @@ import {
 import {rehydrateProjectedToolArtifacts} from "./tool-artifact-replay.js";
 import {isRecord} from "../../../lib/records.js";
 import {renderRuntimeAutonomyContext} from "../../../prompts/runtime/autonomy-context.js";
+import {SIDECAR_INPUT_SOURCE} from "../../sidecars/types.js";
 
 export type ThreadWakeMode = "wake" | "queue";
 const ABORT_POLL_MS = 250;
@@ -53,9 +55,36 @@ export interface ThreadRuntimeCoordinatorOptions {
   store: ThreadRuntimeStore;
   resolveDefinition: ThreadDefinitionResolver;
   leaseManager: ThreadLeaseManager;
+  beforeRunStep?: ThreadRuntimeBeforeRunStepHook;
+  afterCheckpoint?: ThreadRuntimeCheckpointHook;
   afterRunFinish?: ThreadRuntimeAfterRunFinishHook;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
 }
+
+export interface ThreadRuntimeBeforeRunStepInput {
+  run: ThreadRunRecord;
+  thread: ThreadRecord;
+  definition: ResolvedThreadDefinition;
+  messages: readonly ThreadMessageRecord[];
+  transcript: readonly ThreadMessageRecord[];
+  signal: AbortSignal;
+}
+
+export type ThreadRuntimeBeforeRunStepHook = (
+  input: ThreadRuntimeBeforeRunStepInput,
+) => Promise<void> | void;
+
+export interface ThreadRuntimeCheckpointInput {
+  run: ThreadRunRecord;
+  thread: ThreadRecord;
+  checkpoint: ThreadCheckpoint;
+  messages: readonly ThreadMessageRecord[];
+  signal: AbortSignal;
+}
+
+export type ThreadRuntimeCheckpointHook = (
+  input: ThreadRuntimeCheckpointInput,
+) => Promise<void> | void;
 
 export interface ThreadRuntimeAfterRunFinishInput {
   run: ThreadRunRecord;
@@ -104,10 +133,10 @@ interface ThreadRunAttemptResult {
 
 const IDLE_REROLL_SUPPRESSED_INPUT_SOURCES = new Set([
   "heartbeat",
-  "intuition_sidecar",
+  SIDECAR_INPUT_SOURCE,
 ]);
 const CURRENT_INPUT_SUPPRESSED_INPUT_SOURCES = new Set([
-  "intuition_sidecar",
+  SIDECAR_INPUT_SOURCE,
 ]);
 
 function isPersistedThreadMessage(event: ThreadRunEvent): event is Extract<ThreadRunEvent, { role: string }> {
@@ -239,6 +268,8 @@ export class ThreadRuntimeCoordinator {
   private readonly store: ThreadRuntimeStore;
   private readonly resolveDefinition: ThreadDefinitionResolver;
   private readonly leaseManager: ThreadLeaseManager;
+  private readonly beforeRunStep?: ThreadRuntimeBeforeRunStepHook;
+  private readonly afterCheckpoint?: ThreadRuntimeCheckpointHook;
   private readonly afterRunFinish?: ThreadRuntimeAfterRunFinishHook;
   private readonly onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   private readonly activeRuns = new Map<string, Promise<ThreadRunAttemptResult>>();
@@ -248,6 +279,8 @@ export class ThreadRuntimeCoordinator {
     this.store = options.store;
     this.resolveDefinition = options.resolveDefinition;
     this.leaseManager = options.leaseManager;
+    this.beforeRunStep = options.beforeRunStep;
+    this.afterCheckpoint = options.afterCheckpoint;
     this.afterRunFinish = options.afterRunFinish;
     this.onEvent = options.onEvent;
   }
@@ -506,6 +539,7 @@ export class ThreadRuntimeCoordinator {
     thread: ThreadRecord,
     definition: ResolvedThreadDefinition,
     messages: readonly ThreadMessageRecord[],
+    checkpointMessages: readonly ThreadMessageRecord[],
     signal?: AbortSignal,
     resumeState?: ThreadResumeState,
   ): ConstructorParameters<typeof Thread>[0] {
@@ -540,6 +574,19 @@ export class ThreadRuntimeCoordinator {
             reason: latestRun.abortReason ?? "Aborted by runtime request.",
             cancelPendingToolCalls: pendingToolCalls.length > 0,
           } as const;
+        }
+        if (this.afterCheckpoint && signal) {
+          try {
+            await this.afterCheckpoint({
+              run,
+              thread,
+              checkpoint,
+              messages: [...checkpointMessages],
+              signal,
+            });
+          } catch {
+            // Checkpoint hooks are opportunistic observers, not part of the main run contract.
+          }
         }
         return { action: "continue" } as const;
       },
@@ -746,6 +793,21 @@ export class ThreadRuntimeCoordinator {
           continue;
         }
 
+        if (this.beforeRunStep) {
+          try {
+            await this.beforeRunStep({
+              run,
+              thread: preflight.thread,
+              definition,
+              messages: [...runMessages],
+              transcript,
+              signal: controller.signal,
+            });
+          } catch {
+            // Pre-run hooks are opportunistic observers, not part of the main run contract.
+          }
+        }
+
         const inferenceProjection = definition.inferenceProjection ?? preflight.thread.inferenceProjection;
         const projectedTranscript = projectTranscriptForInference(
           transcript,
@@ -762,7 +824,15 @@ export class ThreadRuntimeCoordinator {
           inferenceProjection?.dropImages,
         );
         const executor = new Thread(
-          this.buildThreadOptions(run, preflight.thread, definition, finalTranscript, controller.signal, resumeState),
+          this.buildThreadOptions(
+            run,
+            preflight.thread,
+            definition,
+            finalTranscript,
+            runMessages,
+            controller.signal,
+            resumeState,
+          ),
         );
 
         const step = runThreadStep(executor);
@@ -852,8 +922,7 @@ export class ThreadRuntimeCoordinator {
               signal: controller.signal,
             });
           } catch {
-            // Post-run hooks are opportunistic. Intuition can vanish for a run,
-            // but it must never change whether the main run completed.
+            // Post-run hooks are opportunistic observers, not part of the main run contract.
           }
         }
       }

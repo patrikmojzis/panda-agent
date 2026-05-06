@@ -1,6 +1,7 @@
 import {Pool, type PoolClient} from "pg";
 
 import {type AgentStore, PostgresAgentStore} from "../../domain/agents/index.js";
+import {PostgresSidecarRepo} from "../../domain/sidecars/index.js";
 import {
     CredentialResolver,
     CredentialService,
@@ -31,6 +32,7 @@ import type {Tool} from "../../kernel/agent/tool.js";
 import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry,} from "../../panda/definition.js";
 import {AgentPromptTool} from "../../panda/tools/agent-prompt-tool.js";
 import {AgentSkillTool} from "../../panda/tools/agent-skill-tool.js";
+import type {PostgresReadonlyQueryToolOptions} from "../../panda/tools/postgres-readonly-query-tool.js";
 import {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import {createRadicaleAgentCalendarServiceFromEnv} from "../../integrations/calendar/radicale.js";
 import type {AgentCalendarService} from "../../integrations/calendar/types.js";
@@ -106,12 +108,14 @@ export interface RuntimeBootstrapResult {
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
+  sidecarRepo: PostgresSidecarRepo;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
   telepathyService: TelepathyHub | null;
   watches: WatchStore;
   wikiBindingService: WikiBindingService | null;
+  postgresReadonly: PostgresReadonlyQueryToolOptions;
   mainTools: readonly Tool[];
   pool: Pool;
   notificationPool: Pool;
@@ -388,6 +392,9 @@ export async function bootstrapRuntime(
     const sessionStore = new PostgresSessionStore({
       pool: postgresPool,
     });
+    const sidecarRepo = new PostgresSidecarRepo({
+      pool: postgresPool,
+    });
     const telepathyDeviceStore = new PostgresTelepathyDeviceStore({
       pool: postgresPool,
     });
@@ -397,6 +404,7 @@ export async function bootstrapRuntime(
     await ensureSchemas([
       identityStore,
       agentStore,
+      sidecarRepo,
       sessionStore,
       telepathyDeviceStore,
       store,
@@ -475,6 +483,13 @@ export async function bootstrapRuntime(
       readonlyRole: readOnlyDbUrl ? readDatabaseUsername(readOnlyDbUrl) : null,
     });
 
+    const postgresReadonlyToolOptions: PostgresReadonlyQueryToolOptions = readOnlyDbUrl
+      ? {
+        getPool: getReadonlyPool,
+      }
+      : {
+        pool: postgresPool,
+      };
     const toolRegistry = createDefaultAgentToolRegistry({
       bash: {
         jobService: backgroundJobService,
@@ -493,13 +508,7 @@ export async function bootstrapRuntime(
           },
         }
         : {}),
-      postgresReadonly: readOnlyDbUrl
-        ? {
-          getPool: getReadonlyPool,
-        }
-        : {
-          pool: postgresPool,
-        },
+      postgresReadonly: postgresReadonlyToolOptions,
     });
     const agentSkillTool = new AgentSkillTool({
       store: agentStore,
@@ -546,6 +555,7 @@ export async function bootstrapRuntime(
         credentialResolver,
         identityStore,
         sessionStore,
+        sidecarRepo,
         store,
         email,
         telepathyService,
@@ -661,12 +671,14 @@ export async function bootstrapRuntime(
       credentialResolver,
       identityStore,
       sessionStore,
+      sidecarRepo,
       store,
       scheduledTasks,
       email,
       telepathyService,
       watches,
       wikiBindingService,
+      postgresReadonly: postgresReadonlyToolOptions,
       mainTools,
       pool: postgresPool,
       notificationPool,

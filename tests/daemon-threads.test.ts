@@ -359,21 +359,22 @@ describe("createDaemonThreadHelpers", () => {
     });
   });
 
-  it("preserves intuition sidecar binding when resetting a sidecar session", async () => {
+  it("preserves sidecar binding when resetting a sidecar session", async () => {
     const store = new TestThreadRuntimeStore();
     await store.createThread({
       id: "thread-old-sidecar",
-      sessionId: "intuition-sidecar-session-main",
+      sessionId: "sidecar-memory_guard-session-main",
       context: {
         agentKey: "panda",
-        sessionId: "intuition-sidecar-session-main",
+        sessionId: "sidecar-memory_guard-session-main",
         cwd: "/app",
-        intuitionSidecar: {
-          kind: "intuition_sidecar",
+        sidecar: {
+          kind: "sidecar",
           parentSessionId: "session-main",
+          sidecarKey: "memory_guard",
         },
       },
-      promptCacheKey: "sidecar:session-main",
+      promptCacheKey: "sidecar:memory_guard:oldhash",
     } as any);
 
     const {helpers} = createHelpers({
@@ -382,30 +383,32 @@ describe("createDaemonThreadHelpers", () => {
       currentThreadId: "thread-old-sidecar",
       sessionKind: "sidecar",
       sessionMetadata: {
-        intuitionSidecar: {
-          kind: "intuition_sidecar",
+        sidecar: {
+          kind: "sidecar",
           parentSessionId: "session-main",
+          sidecarKey: "memory_guard",
         },
       },
     });
 
     const result = await helpers.handleResetSession({
       source: "operator",
-      sessionId: "intuition-sidecar-session-main",
+      sessionId: "sidecar-memory_guard-session-main",
     });
 
     expect(result.previousThreadId).toBe("thread-old-sidecar");
     expect(result.threadId).not.toBe("thread-old-sidecar");
     await expect(store.getThread(String(result.threadId))).resolves.toMatchObject({
-      sessionId: "intuition-sidecar-session-main",
-      promptCacheKey: "sidecar:session-main",
+      sessionId: "sidecar-memory_guard-session-main",
+      promptCacheKey: expect.stringMatching(/^sidecar:memory_guard:[a-f0-9]{12}$/),
       context: {
         agentKey: "panda",
-        sessionId: "intuition-sidecar-session-main",
+        sessionId: "sidecar-memory_guard-session-main",
         cwd: "/app",
-        intuitionSidecar: {
-          kind: "intuition_sidecar",
+        sidecar: {
+          kind: "sidecar",
           parentSessionId: "session-main",
+          sidecarKey: "memory_guard",
         },
       },
     });
