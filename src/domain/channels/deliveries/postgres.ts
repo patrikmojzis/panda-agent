@@ -38,6 +38,7 @@ interface PgPoolLike extends PgQueryable {
 
 export interface PostgresOutboundDeliveryStoreOptions {
   pool: PgPoolLike;
+  notificationPool?: PgPoolLike;
 }
 
 function missingDeliveryError(id: string): Error {
@@ -126,12 +127,14 @@ export const parseDeliveryNotification = parseChannelNotification as (payload: s
 
 export class PostgresOutboundDeliveryStore {
   private readonly pool: PgPoolLike;
+  private readonly notificationPool: PgPoolLike;
   private readonly tables: OutboundDeliveryTableNames;
   private readonly notificationChannel: string;
   private readonly threadTableName: string;
 
   constructor(options: PostgresOutboundDeliveryStoreOptions) {
     this.pool = options.pool;
+    this.notificationPool = options.notificationPool ?? options.pool;
     this.tables = buildOutboundDeliveryTableNames();
     this.notificationChannel = buildDeliveryNotificationChannel();
     this.threadTableName = buildThreadRuntimeTableNames().threads;
@@ -397,7 +400,7 @@ export class PostgresOutboundDeliveryStore {
   async listenPendingDeliveries(
     listener: (notification: DeliveryNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>> {
-    const client = await this.pool.connect();
+    const client = await this.notificationPool.connect();
 
     const handleNotification = (message: { channel: string; payload?: string }) => {
       if (message.channel !== this.notificationChannel || typeof message.payload !== "string") {
@@ -413,7 +416,13 @@ export class PostgresOutboundDeliveryStore {
     };
 
     client.on("notification", handleNotification);
-    await client.query(`LISTEN ${this.notificationChannel}`);
+    try {
+      await client.query(`LISTEN ${this.notificationChannel}`);
+    } catch (error) {
+      client.off("notification", handleNotification);
+      client.release();
+      throw error;
+    }
 
     return async () => {
       client.off("notification", handleNotification);

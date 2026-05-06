@@ -11,9 +11,11 @@ import {
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
 import {buildDaemonAlreadyActiveMessage} from "./daemon-copy.js";
+import {readPositiveIntegerEnv} from "./database.js";
 import {DAEMON_HEARTBEAT_INTERVAL_MS, type DaemonServices} from "./daemon-shared.js";
 
 const DAEMON_HEALTH_STALE_AFTER_MS = DAEMON_HEARTBEAT_INTERVAL_MS * 3;
+const DAEMON_HEALTH_POOL_WAITING_STALE_AFTER_MS = 60_000;
 
 export function createDaemonLifecycle(input: {
   context: DaemonContext;
@@ -31,6 +33,12 @@ export function createDaemonLifecycle(input: {
   let shuttingDown = false;
   let stopped = false;
   let stopPromise: Promise<void> | null = null;
+  let queryPoolWaitingSince: number | null = null;
+  let wakeRunLoop: (() => void) | null = null;
+  const queryPoolWaitingStaleAfterMs = readPositiveIntegerEnv(
+    "PANDA_CORE_HEALTH_POOL_WAITING_STALE_MS",
+    DAEMON_HEALTH_POOL_WAITING_STALE_AFTER_MS,
+  );
 
   const releaseLease = async (): Promise<void> => {
     if (!lease) {
@@ -50,6 +58,8 @@ export function createDaemonLifecycle(input: {
     shuttingDown = true;
     stopped = true;
     running = false;
+    wakeRunLoop?.();
+    wakeRunLoop = null;
     stopPromise = (async () => {
       const unsubscribe = requestUnsubscribe;
       requestUnsubscribe = null;
@@ -163,8 +173,32 @@ export function createDaemonLifecycle(input: {
   };
 
   const heartbeat = async (): Promise<void> => {
-    lastHeartbeatAt = Date.now();
     await input.context.daemonState.heartbeat(input.context.daemonKey);
+    lastHeartbeatAt = Date.now();
+  };
+
+  const getQueryPoolHealth = (): {
+    ok: boolean;
+    waitingCount: number;
+    waitingForMs: number;
+  } => {
+    const waitingCount = input.context.runtime.pool.waitingCount;
+    if (waitingCount <= 0) {
+      queryPoolWaitingSince = null;
+      return {
+        ok: true,
+        waitingCount: 0,
+        waitingForMs: 0,
+      };
+    }
+
+    queryPoolWaitingSince ??= Date.now();
+    const waitingForMs = Date.now() - queryPoolWaitingSince;
+    return {
+      ok: waitingForMs < queryPoolWaitingStaleAfterMs,
+      waitingCount,
+      waitingForMs,
+    };
   };
 
   const triggerDrain = async (): Promise<void> => {
@@ -225,13 +259,24 @@ export function createDaemonLifecycle(input: {
 
           return startHealthServer({
             ...binding,
-            getSnapshot: () => ({
-              ok: running && !shuttingDown && (Date.now() - lastHeartbeatAt) <= DAEMON_HEALTH_STALE_AFTER_MS,
-              daemonKey: input.context.daemonKey,
-              running,
-              shuttingDown,
-              lastHeartbeatAt: lastHeartbeatAt || null,
-            }),
+            getSnapshot: () => {
+              const queryPool = getQueryPoolHealth();
+              const heartbeatAgeMs = lastHeartbeatAt ? Date.now() - lastHeartbeatAt : null;
+              return {
+                ok: running
+                  && !shuttingDown
+                  && heartbeatAgeMs !== null
+                  && heartbeatAgeMs <= DAEMON_HEALTH_STALE_AFTER_MS
+                  && queryPool.ok,
+                daemonKey: input.context.daemonKey,
+                running,
+                shuttingDown,
+                lastHeartbeatAt: lastHeartbeatAt || null,
+                heartbeatAgeMs,
+                queryPoolWaitingCount: queryPool.waitingCount,
+                queryPoolWaitingForMs: queryPool.waitingForMs,
+              };
+            },
           });
         })();
         appServer = await (async () => {
@@ -287,7 +332,17 @@ export function createDaemonLifecycle(input: {
       }
 
       while (!stopped) {
-        await new Promise((resolve) => setTimeout(resolve, DAEMON_HEARTBEAT_INTERVAL_MS));
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            wakeRunLoop = null;
+            resolve();
+          }, DAEMON_HEARTBEAT_INTERVAL_MS);
+          wakeRunLoop = () => {
+            clearTimeout(timer);
+            wakeRunLoop = null;
+            resolve();
+          };
+        });
       }
     },
     stop,

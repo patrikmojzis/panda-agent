@@ -75,8 +75,12 @@ import {ensureSchemas} from "./postgres-bootstrap.js";
 import type {RuntimeOptions} from "./create-runtime.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
+const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
+const CORE_THREAD_LEASE_POSTGRES_APPLICATION_NAME = "panda/core-lease";
 const CORE_READONLY_POSTGRES_APPLICATION_NAME = "panda/core-ro";
-const CORE_POSTGRES_POOL_MAX_FALLBACK = 7;
+const CORE_POSTGRES_POOL_MAX_FALLBACK = 5;
+const CORE_NOTIFICATION_POSTGRES_POOL_MAX_FALLBACK = 4;
+const CORE_THREAD_LEASE_POSTGRES_POOL_MAX_FALLBACK = 4;
 const CORE_READONLY_POSTGRES_POOL_MAX_FALLBACK = 2;
 
 function logRuntimeEvent(event: string, payload: Record<string, unknown>): void {
@@ -110,6 +114,8 @@ export interface RuntimeBootstrapResult {
   wikiBindingService: WikiBindingService | null;
   mainTools: readonly Tool[];
   pool: Pool;
+  notificationPool: Pool;
+  threadLeasePool: Pool;
   close(): Promise<void>;
 }
 
@@ -119,12 +125,58 @@ interface ObservedPoolState {
   initializing: Promise<Pool> | null;
 }
 
+interface ObservedPoolHandle {
+  pool: Pool;
+  observer: PostgresPoolObserver;
+}
+
+function createObservedPoolHandle(input: {
+  connectionString: string;
+  applicationName: string;
+  maxEnvKey: string;
+  fallbackMax: number;
+}): ObservedPoolHandle {
+  const config = buildObservedPoolConfig(
+    input.applicationName,
+    input.maxEnvKey,
+    input.fallbackMax,
+  );
+  const pool = createPostgresPool({
+    connectionString: input.connectionString,
+    applicationName: config.applicationName,
+    max: config.max,
+    idleTimeoutMillis: config.idleTimeoutMillis,
+    connectionTimeoutMillis: config.acquireTimeoutMillis,
+  });
+  const observer = observePostgresPool({
+    pool,
+    applicationName: config.applicationName,
+    max: config.max,
+    idleTimeoutMillis: config.idleTimeoutMillis,
+    waitingLogIntervalMs: config.waitingLogIntervalMs,
+    log: logRuntimeEvent,
+  });
+
+  logRuntimeEvent("postgres_pool_ready", {
+    applicationName: config.applicationName,
+    max: config.max,
+    idleTimeoutMillis: config.idleTimeoutMillis,
+    acquireTimeoutMillis: config.acquireTimeoutMillis,
+  });
+
+  return {pool, observer};
+}
+
 function createCloseRuntime(options: {
   backgroundJobService: BackgroundToolJobService | null;
   browserService: BrowserRunnerClient | null;
   telepathyService: TelepathyHub | null;
   postgresPool: Pool;
   postgresPoolObserver: PostgresPoolObserver;
+  notificationPool: Pool;
+  notificationPoolObserver: PostgresPoolObserver;
+  threadLeasePool: Pool;
+  threadLeasePoolObserver: PostgresPoolObserver;
   readonlyPoolState: ObservedPoolState;
   notificationClient: PoolClient | null;
   notificationChannel: string | null;
@@ -191,6 +243,8 @@ function createCloseRuntime(options: {
         run: async () => {
           await resolveReadonlyPool();
           options.postgresPoolObserver.stop();
+          options.notificationPoolObserver.stop();
+          options.threadLeasePoolObserver.stop();
           readonlyPoolObserver?.stop();
         },
       },
@@ -199,6 +253,18 @@ function createCloseRuntime(options: {
         run: async () => {
           await resolveReadonlyPool();
           await readonlyPool?.end();
+        },
+      },
+      {
+        label: "notification-postgres-pool",
+        run: async () => {
+          await options.notificationPool.end();
+        },
+      },
+      {
+        label: "thread-lease-postgres-pool",
+        run: async () => {
+          await options.threadLeasePool.end();
         },
       },
       {
@@ -238,31 +304,30 @@ export async function bootstrapRuntime(
   let browserService: BrowserRunnerClient | null = null;
   let telepathyService: TelepathyHub | null = null;
   const maxSubagentDepth = options.maxSubagentDepth ?? 1;
-  const postgresPoolConfig = buildObservedPoolConfig(
-    CORE_POSTGRES_APPLICATION_NAME,
-    "PANDA_CORE_DB_POOL_MAX",
-    CORE_POSTGRES_POOL_MAX_FALLBACK,
-  );
-  const postgresPool = createPostgresPool({
+  const postgresPoolHandle = createObservedPoolHandle({
     connectionString: options.dbUrl,
-    applicationName: postgresPoolConfig.applicationName,
-    max: postgresPoolConfig.max,
-    idleTimeoutMillis: postgresPoolConfig.idleTimeoutMillis,
+    applicationName: CORE_POSTGRES_APPLICATION_NAME,
+    maxEnvKey: "PANDA_CORE_DB_POOL_MAX",
+    fallbackMax: CORE_POSTGRES_POOL_MAX_FALLBACK,
   });
-  const postgresPoolObserver = observePostgresPool({
-    pool: postgresPool,
-    applicationName: postgresPoolConfig.applicationName,
-    max: postgresPoolConfig.max,
-    idleTimeoutMillis: postgresPoolConfig.idleTimeoutMillis,
-    waitingLogIntervalMs: postgresPoolConfig.waitingLogIntervalMs,
-    log: logRuntimeEvent,
+  const notificationPoolHandle = createObservedPoolHandle({
+    connectionString: options.dbUrl,
+    applicationName: CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME,
+    maxEnvKey: "PANDA_CORE_NOTIFICATION_DB_POOL_MAX",
+    fallbackMax: CORE_NOTIFICATION_POSTGRES_POOL_MAX_FALLBACK,
   });
-
-  logRuntimeEvent("postgres_pool_ready", {
-    applicationName: postgresPoolConfig.applicationName,
-    max: postgresPoolConfig.max,
-    idleTimeoutMillis: postgresPoolConfig.idleTimeoutMillis,
+  const threadLeasePoolHandle = createObservedPoolHandle({
+    connectionString: options.dbUrl,
+    applicationName: CORE_THREAD_LEASE_POSTGRES_APPLICATION_NAME,
+    maxEnvKey: "PANDA_CORE_THREAD_LEASE_DB_POOL_MAX",
+    fallbackMax: CORE_THREAD_LEASE_POSTGRES_POOL_MAX_FALLBACK,
   });
+  const postgresPool = postgresPoolHandle.pool;
+  const postgresPoolObserver = postgresPoolHandle.observer;
+  const notificationPool = notificationPoolHandle.pool;
+  const notificationPoolObserver = notificationPoolHandle.observer;
+  const threadLeasePool = threadLeasePoolHandle.pool;
+  const threadLeasePoolObserver = threadLeasePoolHandle.observer;
   const readonlyPoolConfig = readOnlyDbUrl
     ? buildObservedPoolConfig(
       CORE_READONLY_POSTGRES_APPLICATION_NAME,
@@ -287,6 +352,7 @@ export async function bootstrapRuntime(
           applicationName: readonlyPoolConfig.applicationName,
           max: readonlyPoolConfig.max,
           idleTimeoutMillis: readonlyPoolConfig.idleTimeoutMillis,
+          connectionTimeoutMillis: readonlyPoolConfig.acquireTimeoutMillis,
         });
         readonlyPoolState.pool = pool;
         readonlyPoolState.observer = observePostgresPool({
@@ -301,6 +367,7 @@ export async function bootstrapRuntime(
           applicationName: readonlyPoolConfig.applicationName,
           max: readonlyPoolConfig.max,
           idleTimeoutMillis: readonlyPoolConfig.idleTimeoutMillis,
+          acquireTimeoutMillis: readonlyPoolConfig.acquireTimeoutMillis,
         });
         return pool;
       }).finally(() => {
@@ -566,7 +633,7 @@ export async function bootstrapRuntime(
 
     if (options.onStoreNotification) {
       notificationChannel = buildThreadRuntimeNotificationChannel();
-      notificationClient = await postgresPool.connect();
+      notificationClient = await notificationPool.connect();
       notificationHandler = (message: { channel: string; payload?: string }) => {
         if (message.channel !== notificationChannel || typeof message.payload !== "string") {
           return;
@@ -602,12 +669,18 @@ export async function bootstrapRuntime(
       wikiBindingService,
       mainTools,
       pool: postgresPool,
+      notificationPool,
+      threadLeasePool,
       close: createCloseRuntime({
         backgroundJobService,
         browserService: resolvedBrowserService,
         telepathyService,
         postgresPool,
         postgresPoolObserver,
+        notificationPool,
+        notificationPoolObserver,
+        threadLeasePool,
+        threadLeasePoolObserver,
         readonlyPoolState,
         notificationClient,
         notificationChannel,
@@ -616,11 +689,15 @@ export async function bootstrapRuntime(
     };
   } catch (error) {
     await createCloseRuntime({
-        backgroundJobService: null,
+      backgroundJobService: null,
       browserService,
       telepathyService,
       postgresPool,
       postgresPoolObserver,
+      notificationPool,
+      notificationPoolObserver,
+      threadLeasePool,
+      threadLeasePoolObserver,
       readonlyPoolState,
       notificationClient,
       notificationChannel,

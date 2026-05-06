@@ -28,6 +28,66 @@ describe("PostgresOutboundDeliveryStore", () => {
     }
   });
 
+  it("uses the notification pool for LISTEN clients", async () => {
+    const queryPool = {
+      connect: vi.fn(async () => {
+        throw new Error("query pool should not be used for LISTEN");
+      }),
+      query: vi.fn(async () => ({rows: []})),
+    };
+    const client = {
+      off: vi.fn(),
+      on: vi.fn(),
+      query: vi.fn(async () => ({rows: []})),
+      release: vi.fn(),
+    };
+    const notificationPool = {
+      connect: vi.fn(async () => client),
+      query: vi.fn(async () => ({rows: []})),
+    };
+    const store = new PostgresOutboundDeliveryStore({
+      pool: queryPool,
+      notificationPool,
+    });
+
+    const unsubscribe = await store.listenPendingDeliveries(() => {});
+    await unsubscribe();
+
+    expect(queryPool.connect).not.toHaveBeenCalled();
+    expect(notificationPool.connect).toHaveBeenCalledTimes(1);
+    expect(client.query).toHaveBeenNthCalledWith(1, "LISTEN runtime_outbound_delivery_events");
+    expect(client.query).toHaveBeenNthCalledWith(2, "UNLISTEN runtime_outbound_delivery_events");
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the notification client when LISTEN setup fails", async () => {
+    const queryPool = {
+      connect: vi.fn(async () => {
+        throw new Error("query pool should not be used for LISTEN");
+      }),
+      query: vi.fn(async () => ({rows: []})),
+    };
+    const client = {
+      off: vi.fn(),
+      on: vi.fn(),
+      query: vi.fn(async () => ({rows: []})),
+      release: vi.fn(),
+    };
+    client.query.mockRejectedValueOnce(new Error("listen blew up"));
+    const store = new PostgresOutboundDeliveryStore({
+      pool: queryPool,
+      notificationPool: {
+        connect: vi.fn(async () => client),
+        query: vi.fn(async () => ({rows: []})),
+      },
+    });
+
+    await expect(store.listenPendingDeliveries(() => {})).rejects.toThrow("listen blew up");
+
+    expect(client.off).toHaveBeenCalledTimes(1);
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
   it("enqueues, claims, and completes deliveries", async () => {
     const db = newDb();
     db.public.registerFunction({

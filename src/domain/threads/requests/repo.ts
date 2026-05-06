@@ -20,7 +20,11 @@ interface PgPoolLike extends PgQueryable {
 
 export interface RuntimeRequestRepoOptions {
   pool: PgPoolLike;
+  notificationPool?: PgPoolLike;
+  staleRunningRequestMs?: number;
 }
+
+export const DEFAULT_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS = 300_000;
 
 function parseRecord<TPayload extends RuntimeRequestPayload>(
   row: Record<string, unknown>,
@@ -50,11 +54,15 @@ function requireTrimmedRequestId(id: string): string {
 
 export class RuntimeRequestRepo {
   private readonly pool: PgPoolLike;
+  private readonly notificationPool: PgPoolLike;
+  private readonly staleRunningRequestMs: number;
   private readonly tables: RuntimeRequestTableNames;
   private readonly notificationChannel: string;
 
   constructor(options: RuntimeRequestRepoOptions) {
     this.pool = options.pool;
+    this.notificationPool = options.notificationPool ?? options.pool;
+    this.staleRunningRequestMs = options.staleRunningRequestMs ?? DEFAULT_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS;
     this.tables = buildRuntimeRequestTableNames();
     this.notificationChannel = buildRuntimeRequestNotificationChannel();
   }
@@ -122,6 +130,11 @@ export class RuntimeRequestRepo {
           SELECT id
           FROM ${this.tables.runtimeRequests}
           WHERE status = 'pending'
+             OR (
+               status = 'running'
+               AND claimed_at IS NOT NULL
+               AND claimed_at < NOW() - ($1 * INTERVAL '1 millisecond')
+             )
           ORDER BY created_at ASC, id ASC
           FOR UPDATE SKIP LOCKED
           LIMIT 1
@@ -133,7 +146,9 @@ export class RuntimeRequestRepo {
         FROM next_request
         WHERE request.id = next_request.id
         RETURNING request.*
-      `);
+      `, [
+        this.staleRunningRequestMs,
+      ]);
       await client.query("COMMIT");
       const row = claimed.rows[0];
       return row ? parseRecord(row as Record<string, unknown>) : null;
@@ -193,7 +208,7 @@ export class RuntimeRequestRepo {
   }
 
   async listenPendingRequests(listener: () => Promise<void> | void): Promise<() => Promise<void>> {
-    const client = await this.pool.connect();
+    const client = await this.notificationPool.connect();
     const handleNotification = (message: { channel: string; payload?: string }) => {
       if (message.channel !== this.notificationChannel) {
         return;
@@ -203,7 +218,13 @@ export class RuntimeRequestRepo {
     };
 
     client.on("notification", handleNotification);
-    await client.query(`LISTEN ${this.notificationChannel}`);
+    try {
+      await client.query(`LISTEN ${this.notificationChannel}`);
+    } catch (error) {
+      client.off("notification", handleNotification);
+      client.release();
+      throw error;
+    }
 
     return async () => {
       client.off("notification", handleNotification);

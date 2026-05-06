@@ -9,6 +9,8 @@ const runtimeMocks = vi.hoisted(() => {
     on: ReturnType<typeof vi.fn>;
     query: ReturnType<typeof vi.fn>;
   }> = [];
+  const poolOptions: unknown[] = [];
+  const leaseManagerPools: unknown[] = [];
   const readonlyToolOptions: unknown[] = [];
   const client = {
     off: vi.fn(),
@@ -26,7 +28,8 @@ const runtimeMocks = vi.hoisted(() => {
     connect = vi.fn(async () => client);
     end = vi.fn(async () => {});
 
-    constructor(_options: unknown) {
+    constructor(options: unknown) {
+      poolOptions.push(options);
       poolInstances.push(this);
     }
   }
@@ -36,6 +39,8 @@ const runtimeMocks = vi.hoisted(() => {
     ensureReadonlySessionQuerySchema: vi.fn(async () => {}),
     ensureSchema: vi.fn(async () => {}),
     MockPool,
+    leaseManagerPools,
+    poolOptions,
     poolInstances,
     readonlyToolOptions,
     readDatabaseUsername: vi.fn(() => "readonly_user"),
@@ -73,7 +78,11 @@ vi.mock("pg", () => ({
 }));
 
 vi.mock("../src/domain/threads/runtime/index.js", () => ({
-  PostgresThreadLeaseManager: class {},
+  PostgresThreadLeaseManager: class {
+    constructor(pool: unknown) {
+      runtimeMocks.leaseManagerPools.push(pool);
+    }
+  },
   PostgresThreadRuntimeStore: class {
     identityStore = {};
 
@@ -120,6 +129,8 @@ describe("createRuntime", () => {
     runtimeMocks.client.query.mockReset();
     runtimeMocks.client.query.mockImplementation(async () => ({rows: []}));
     runtimeMocks.client.release.mockClear();
+    runtimeMocks.leaseManagerPools.length = 0;
+    runtimeMocks.poolOptions.length = 0;
     runtimeMocks.poolInstances.length = 0;
     runtimeMocks.readonlyToolOptions.length = 0;
     browserMocks.start.mockClear();
@@ -135,8 +146,8 @@ describe("createRuntime", () => {
       resolveDefinition: vi.fn(),
     })).rejects.toThrow("schema blew up");
 
-    expect(runtimeMocks.poolInstances).toHaveLength(1);
-    expect(runtimeMocks.poolInstances[0]?.end).toHaveBeenCalledTimes(1);
+    expect(runtimeMocks.poolInstances).toHaveLength(3);
+    expect(runtimeMocks.poolInstances.map((pool) => pool.end.mock.calls.length)).toEqual([1, 1, 1]);
   });
 
   it("releases the notification client and pool when LISTEN setup fails", async () => {
@@ -150,8 +161,8 @@ describe("createRuntime", () => {
 
     expect(runtimeMocks.client.off).toHaveBeenCalledTimes(1);
     expect(runtimeMocks.client.release).toHaveBeenCalledTimes(1);
-    expect(runtimeMocks.poolInstances).toHaveLength(1);
-    expect(runtimeMocks.poolInstances[0]?.end).toHaveBeenCalledTimes(1);
+    expect(runtimeMocks.poolInstances).toHaveLength(3);
+    expect(runtimeMocks.poolInstances.map((pool) => pool.end.mock.calls.length)).toEqual([1, 1, 1]);
   });
 
   it("does not eagerly start the browser service during runtime bootstrap", async () => {
@@ -176,7 +187,7 @@ describe("createRuntime", () => {
       resolveDefinition: vi.fn(),
     });
 
-    expect(runtimeMocks.poolInstances).toHaveLength(1);
+    expect(runtimeMocks.poolInstances).toHaveLength(3);
     const readonlyOptions = runtimeMocks.readonlyToolOptions.at(-1) as {
       getPool?: () => Promise<unknown>;
     } | undefined;
@@ -184,11 +195,31 @@ describe("createRuntime", () => {
 
     await readonlyOptions?.getPool?.();
 
-    expect(runtimeMocks.poolInstances).toHaveLength(2);
+    expect(runtimeMocks.poolInstances).toHaveLength(4);
 
     await runtime.close();
 
     expect(runtimeMocks.poolInstances[0]?.end).toHaveBeenCalledTimes(1);
     expect(runtimeMocks.poolInstances[1]?.end).toHaveBeenCalledTimes(1);
+    expect(runtimeMocks.poolInstances[2]?.end).toHaveBeenCalledTimes(1);
+    expect(runtimeMocks.poolInstances[3]?.end).toHaveBeenCalledTimes(1);
+  });
+
+  it("splits core query, notification, and thread lease pools", async () => {
+    const runtime = await createRuntime({
+      dbUrl: "postgres://panda:test@localhost:5432/panda",
+      resolveDefinition: vi.fn(),
+    });
+
+    expect(runtimeMocks.poolOptions).toEqual([
+      expect.objectContaining({application_name: "panda/core", max: 5}),
+      expect.objectContaining({application_name: "panda/core-notify", max: 4}),
+      expect.objectContaining({application_name: "panda/core-lease", max: 4}),
+    ]);
+    expect(runtime.pool).toBe(runtimeMocks.poolInstances[0]);
+    expect(runtime.notificationPool).toBe(runtimeMocks.poolInstances[1]);
+    expect(runtimeMocks.leaseManagerPools).toEqual([runtimeMocks.poolInstances[2]]);
+
+    await runtime.close();
   });
 });

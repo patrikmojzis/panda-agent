@@ -1,6 +1,33 @@
+import {createServer} from "node:net";
+
 import {describe, expect, it, vi} from "vitest";
 
 import {createDaemonLifecycle} from "../src/app/runtime/daemon-lifecycle.js";
+
+async function getFreePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to allocate test port.");
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+  return address.port;
+}
 
 describe("createDaemonLifecycle", () => {
   it("acquires the daemon lease before starting workers and releases it on stop", async () => {
@@ -400,5 +427,109 @@ describe("createDaemonLifecycle", () => {
       "release",
       "runtime-close",
     ]);
+  });
+
+  it("marks health unhealthy when the query pool has sustained waiters", async () => {
+    const previousAppsPort = process.env.PANDA_APPS_PORT;
+    const previousHealthPort = process.env.PANDA_CORE_HEALTH_PORT;
+    const previousWaitingStale = process.env.PANDA_CORE_HEALTH_POOL_WAITING_STALE_MS;
+    process.env.PANDA_APPS_PORT = "0";
+    process.env.PANDA_CORE_HEALTH_PORT = String(await getFreePort());
+    process.env.PANDA_CORE_HEALTH_POOL_WAITING_STALE_MS = "1";
+
+    let resolveRecovered!: () => void;
+    const recovered = new Promise<void>((resolve) => {
+      resolveRecovered = resolve;
+    });
+    const pool = {
+      waitingCount: 0,
+    };
+    const context = {
+      daemonKey: "primary",
+      connectorLeases: {
+        tryAcquire: vi.fn(async () => ({
+          source: "daemon",
+          connectorKey: "primary",
+          holderId: "holder-a",
+          leasedUntil: Date.now() + 30_000,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })),
+        renew: vi.fn(async () => null),
+        release: vi.fn(async () => true),
+      },
+      daemonState: {
+        heartbeat: vi.fn(async () => ({
+          daemonKey: "primary",
+          heartbeatAt: Date.now(),
+          startedAt: Date.now(),
+          updatedAt: Date.now(),
+        })),
+      },
+      requests: {
+        claimNextPendingRequest: vi.fn(async () => null),
+        listenPendingRequests: vi.fn(async () => async () => undefined),
+      },
+      a2aOutboundWorker: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      emailOutboundWorker: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      emailSyncRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      scheduledTaskRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      watchRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      relationshipHeartbeatRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      runtime: {
+        close: vi.fn(async () => {}),
+        apps: {},
+        appAuth: {},
+        identityStore: {},
+        sessionStore: {},
+        pool,
+        coordinator: {
+          recoverOrphanedRuns: vi.fn(async () => {
+            resolveRecovered();
+          }),
+        },
+      },
+    } as any;
+    const lifecycle = createDaemonLifecycle({
+      context,
+      processRequest: vi.fn(async () => undefined),
+    });
+    const runPromise = lifecycle.run();
+
+    try {
+      await recovered;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const healthy = await fetch(`http://127.0.0.1:${process.env.PANDA_CORE_HEALTH_PORT}/health`);
+      expect(healthy.status).toBe(200);
+
+      pool.waitingCount = 1;
+      await fetch(`http://127.0.0.1:${process.env.PANDA_CORE_HEALTH_PORT}/health`);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const unhealthy = await fetch(`http://127.0.0.1:${process.env.PANDA_CORE_HEALTH_PORT}/health`);
+      expect(unhealthy.status).toBe(503);
+      await expect(unhealthy.json()).resolves.toMatchObject({
+        ok: false,
+        queryPoolWaitingCount: 1,
+      });
+    } finally {
+      await lifecycle.stop();
+      await runPromise;
+      if (previousAppsPort === undefined) {
+        delete process.env.PANDA_APPS_PORT;
+      } else {
+        process.env.PANDA_APPS_PORT = previousAppsPort;
+      }
+      if (previousHealthPort === undefined) {
+        delete process.env.PANDA_CORE_HEALTH_PORT;
+      } else {
+        process.env.PANDA_CORE_HEALTH_PORT = previousHealthPort;
+      }
+      if (previousWaitingStale === undefined) {
+        delete process.env.PANDA_CORE_HEALTH_POOL_WAITING_STALE_MS;
+      } else {
+        process.env.PANDA_CORE_HEALTH_POOL_WAITING_STALE_MS = previousWaitingStale;
+      }
+    }
   });
 });

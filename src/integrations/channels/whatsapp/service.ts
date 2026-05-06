@@ -309,6 +309,7 @@ export class WhatsAppService {
       applicationName: poolConfig.applicationName,
       max: poolConfig.max,
       idleTimeoutMillis: poolConfig.idleTimeoutMillis,
+      connectionTimeoutMillis: poolConfig.acquireTimeoutMillis,
     });
     const poolObserver = observePostgresPool({
       pool,

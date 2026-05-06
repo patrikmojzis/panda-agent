@@ -89,6 +89,7 @@ export interface RuntimeServices {
   intuitionSidecar: IntuitionSidecarService | null;
   mainTools: readonly Tool[];
   pool: Pool;
+  notificationPool: Pool;
   close(): Promise<void>;
 }
 
@@ -131,7 +132,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
 
   coordinator = new ThreadRuntimeCoordinator({
     store: runtime.store,
-    leaseManager: new PostgresThreadLeaseManager(runtime.pool),
+    leaseManager: new PostgresThreadLeaseManager(runtime.threadLeasePool),
     resolveDefinition: async (thread) => {
       const session = await runtime.sessionStore.getSession(thread.sessionId);
       if (session.kind === "sidecar" && intuitionSidecar?.isSidecarThread(thread)) {
@@ -167,6 +168,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     intuitionSidecar,
     mainTools: runtime.mainTools,
     pool: runtime.pool,
+    notificationPool: runtime.notificationPool,
     close: runtime.close,
   };
 }

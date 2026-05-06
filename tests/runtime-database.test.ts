@@ -2,7 +2,11 @@ import {EventEmitter} from "node:events";
 
 import {describe, expect, it, vi} from "vitest";
 
-import {observePostgresPool} from "../src/app/runtime/database.js";
+import {
+  buildObservedPoolConfig,
+  createPostgresPool,
+  observePostgresPool,
+} from "../src/app/runtime/database.js";
 
 interface FakeQueryResult {
   rows: Array<{ok: boolean}>;
@@ -140,5 +144,66 @@ describe("observePostgresPool", () => {
 
     observer.stop();
     expect(log).not.toHaveBeenCalledWith("postgres_pool_error", expect.anything());
+  });
+
+  it("passes the acquire timeout into pg's native connection timeout", async () => {
+    const pool = createPostgresPool({
+      connectionString: "postgresql://panda:test@127.0.0.1:5432/panda",
+      connectionTimeoutMillis: 1234,
+    }) as import("pg").Pool & {
+      options: {
+        connectionTimeoutMillis?: number;
+      };
+    };
+
+    try {
+      expect(pool.options.connectionTimeoutMillis).toBe(1234);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("resolves the acquire timeout from env", () => {
+    const previous = process.env.PANDA_DB_POOL_ACQUIRE_TIMEOUT_MS;
+    process.env.PANDA_DB_POOL_ACQUIRE_TIMEOUT_MS = "4321";
+    try {
+      expect(buildObservedPoolConfig("test", "MISSING_MAX", 5).acquireTimeoutMillis).toBe(4321);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PANDA_DB_POOL_ACQUIRE_TIMEOUT_MS;
+      } else {
+        process.env.PANDA_DB_POOL_ACQUIRE_TIMEOUT_MS = previous;
+      }
+    }
+  });
+
+  it("logs native pg acquire timeouts distinctly", async () => {
+    class TimeoutConnectPool extends EventEmitter {
+      totalCount = 1;
+      idleCount = 0;
+      waitingCount = 1;
+      connect(): Promise<FakeClient> {
+        return Promise.reject(new Error("timeout exceeded when trying to connect"));
+      }
+      query(): Promise<never> {
+        return Promise.reject(new Error("not used"));
+      }
+    }
+
+    const pool = new TimeoutConnectPool() as unknown as import("pg").Pool;
+    const log = vi.fn();
+    const observer = observePostgresPool({
+      pool,
+      applicationName: "test-timeout",
+      log,
+    });
+
+    await expect(pool.connect()).rejects.toThrow("timeout exceeded");
+
+    observer.stop();
+    expect(log).toHaveBeenCalledWith("postgres_pool_error", expect.objectContaining({
+      reason: "connect_timeout",
+      applicationName: "test-timeout",
+    }));
   });
 });

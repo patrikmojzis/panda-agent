@@ -7,7 +7,10 @@ import {HeartbeatRunner} from "../../domain/scheduling/heartbeats/runner.js";
 import {ScheduledTaskRunner} from "../../domain/scheduling/tasks/index.js";
 import {ConversationRepo, SessionRouteRepo} from "../../domain/sessions/index.js";
 import {WatchRunner} from "../../domain/watches/index.js";
-import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
+import {
+  DEFAULT_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS,
+  RuntimeRequestRepo,
+} from "../../domain/threads/requests/repo.js";
 import {createChannelTypingEventHandler} from "../../domain/threads/runtime/channel-typing.js";
 import {A2AMessagingService} from "../../domain/a2a/service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
@@ -29,6 +32,7 @@ import {EmailSendTool} from "../../panda/tools/email-send-tool.js";
 import {OutboundTool} from "../../panda/tools/outbound-tool.js";
 import {MessageAgentTool} from "../../panda/tools/message-agent-tool.js";
 import {TelepathyContextIngress} from "./telepathy-context-ingress.js";
+import {readPositiveIntegerEnv} from "./database.js";
 
 export interface DaemonContext {
   fallbackContext: {cwd: string};
@@ -193,6 +197,7 @@ export async function bootstrapDaemonContext(
 
     outboundDeliveries = new PostgresOutboundDeliveryStore({
       pool: runtime.pool,
+      notificationPool: runtime.notificationPool,
     });
 
     a2aBindings = new A2ASessionBindingRepo({
@@ -201,6 +206,7 @@ export async function bootstrapDaemonContext(
 
     channelActions = new PostgresChannelActionStore({
       pool: runtime.pool,
+      notificationPool: runtime.notificationPool,
     });
 
     connectorLeases = new PostgresConnectorLeaseRepo({
@@ -209,6 +215,11 @@ export async function bootstrapDaemonContext(
 
     const requests = new RuntimeRequestRepo({
       pool: runtime.pool,
+      notificationPool: runtime.notificationPool,
+      staleRunningRequestMs: readPositiveIntegerEnv(
+        "PANDA_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS",
+        DEFAULT_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS,
+      ),
     });
 
     const daemonState = new DaemonStateRepo({

@@ -6,12 +6,14 @@ import {trimToNull} from "../../lib/strings.js";
 export const DEFAULT_POSTGRES_POOL_MAX = 10;
 export const DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS = 30_000;
 export const DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS = 60_000;
+export const DEFAULT_POSTGRES_POOL_ACQUIRE_TIMEOUT_MS = 10_000;
 
 export interface CreatePostgresPoolOptions {
   connectionString: string;
   applicationName?: string;
   max?: number;
   idleTimeoutMillis?: number;
+  connectionTimeoutMillis?: number;
 }
 
 export interface PostgresPoolObserverOptions {
@@ -66,6 +68,7 @@ export function buildObservedPoolConfig(applicationName: string, maxEnvKey: stri
   max: number;
   idleTimeoutMillis: number;
   waitingLogIntervalMs: number;
+  acquireTimeoutMillis: number;
 } {
   return {
     applicationName,
@@ -77,6 +80,10 @@ export function buildObservedPoolConfig(applicationName: string, maxEnvKey: stri
     waitingLogIntervalMs: readPositiveIntegerEnv(
       "PANDA_DB_POOL_WAITING_LOG_INTERVAL_MS",
       DEFAULT_POSTGRES_POOL_WAITING_LOG_INTERVAL_MS,
+    ),
+    acquireTimeoutMillis: readPositiveIntegerEnv(
+      "PANDA_DB_POOL_ACQUIRE_TIMEOUT_MS",
+      DEFAULT_POSTGRES_POOL_ACQUIRE_TIMEOUT_MS,
     ),
   };
 }
@@ -126,14 +133,26 @@ function describeError(error: unknown): Record<string, unknown> {
   return described;
 }
 
+function isPoolAcquireTimeoutError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return message.includes("timeout exceeded when trying to connect")
+    || message.includes("connection terminated due to connection timeout");
+}
+
 export function createPostgresPool(options: CreatePostgresPoolOptions): Pool {
   const max = options.max ?? DEFAULT_POSTGRES_POOL_MAX;
   const idleTimeoutMillis = options.idleTimeoutMillis ?? DEFAULT_POSTGRES_POOL_IDLE_TIMEOUT_MS;
+  const connectionTimeoutMillis = options.connectionTimeoutMillis ?? DEFAULT_POSTGRES_POOL_ACQUIRE_TIMEOUT_MS;
 
   return new Pool({
     connectionString: options.connectionString,
     max,
     idleTimeoutMillis,
+    connectionTimeoutMillis,
     ...(options.applicationName ? {application_name: options.applicationName} : {}),
   });
 }
@@ -175,6 +194,10 @@ export function observePostgresPool(options: PostgresPoolObserverOptions): Postg
   const originalConnect = options.pool.connect.bind(options.pool) as (...args: unknown[]) => unknown;
   const originalQuery = options.pool.query.bind(options.pool) as (...args: unknown[]) => unknown;
 
+  const logConnectError = (error: unknown): void => {
+    logError(isPoolAcquireTimeoutError(error) ? "connect_timeout" : "connect", error);
+  };
+
   // `pg.Pool.query()` internally calls `pool.connect(callback)`, so the observer
   // must preserve both the callback and promise overloads here.
   options.pool.connect = ((...args: unknown[]) => {
@@ -182,7 +205,7 @@ export function observePostgresPool(options: PostgresPoolObserverOptions): Postg
     if (typeof callback === "function") {
       return originalConnect((error: unknown, client: unknown, done: unknown) => {
         if (error) {
-          logError("connect", error);
+          logConnectError(error);
         }
         callback(error, client, done);
       });
@@ -194,7 +217,7 @@ export function observePostgresPool(options: PostgresPoolObserverOptions): Postg
     }
 
     return (result as Promise<unknown>).catch((error) => {
-      logError("connect", error);
+      logConnectError(error);
       throw error;
     });
   }) as Pool["connect"];

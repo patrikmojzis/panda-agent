@@ -30,7 +30,13 @@ export async function listenThreadRuntimeNotifications(options: {
   };
 
   client.on("notification", handleNotification);
-  await client.query(`LISTEN ${channel}`);
+  try {
+    await client.query(`LISTEN ${channel}`);
+  } catch (error) {
+    client.off("notification", handleNotification);
+    client.release();
+    throw error;
+  }
 
   return async () => {
     client.off("notification", handleNotification);

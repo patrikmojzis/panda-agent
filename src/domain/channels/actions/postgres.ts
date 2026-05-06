@@ -22,6 +22,7 @@ interface PgPoolLike extends PgQueryable {
 
 export interface PostgresChannelActionStoreOptions {
   pool: PgPoolLike;
+  notificationPool?: PgPoolLike;
 }
 
 function normalizeLookup(lookup: ActionWorkerLookup): ActionWorkerLookup {
@@ -73,11 +74,13 @@ function isSkipLockedSyntaxUnsupported(error: unknown): boolean {
 
 export class PostgresChannelActionStore {
   private readonly pool: PgPoolLike;
+  private readonly notificationPool: PgPoolLike;
   private readonly tables: ChannelActionTableNames;
   private readonly notificationChannel: string;
 
   constructor(options: PostgresChannelActionStoreOptions) {
     this.pool = options.pool;
+    this.notificationPool = options.notificationPool ?? options.pool;
     this.tables = buildChannelActionTableNames();
     this.notificationChannel = buildActionNotificationChannel();
   }
@@ -260,7 +263,7 @@ export class PostgresChannelActionStore {
   async listenPendingActions(
     listener: (notification: ActionNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>> {
-    const client = await this.pool.connect();
+    const client = await this.notificationPool.connect();
     const handleNotification = (message: { channel: string; payload?: string }) => {
       if (message.channel !== this.notificationChannel || typeof message.payload !== "string") {
         return;
@@ -275,7 +278,13 @@ export class PostgresChannelActionStore {
     };
 
     client.on("notification", handleNotification);
-    await client.query(`LISTEN ${this.notificationChannel}`);
+    try {
+      await client.query(`LISTEN ${this.notificationChannel}`);
+    } catch (error) {
+      client.off("notification", handleNotification);
+      client.release();
+      throw error;
+    }
 
     return async () => {
       client.off("notification", handleNotification);
