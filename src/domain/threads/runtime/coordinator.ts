@@ -676,7 +676,7 @@ export class ThreadRuntimeCoordinator {
     }
 
     try {
-      const compacted = await compactThread({
+      await compactThread({
         store: this.store,
         thread,
         transcript: options.transcript,
@@ -684,16 +684,6 @@ export class ThreadRuntimeCoordinator {
         thinking: modelConfig.thinking,
         trigger: "auto",
       });
-
-      if (!compacted) {
-        const updatedThread = await this.recordAutoCompactionFailure({
-          thread,
-          run: options.run,
-          reason: "Not enough older context to compact while preserving the recent turns.",
-          now,
-        });
-        return { action: "continue", thread: updatedThread, attemptedAutoCompact: true };
-      }
 
       await this.clearAutoCompactionState(thread);
       return { action: "restart", attemptedAutoCompact: true };

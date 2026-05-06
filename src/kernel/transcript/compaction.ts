@@ -30,8 +30,7 @@ export type CompactAttemptOutcome =
   | "empty_input"
   | "tail_over_operating_window"
   | "empty_summary"
-  | "summary_too_large"
-  | "error";
+  | "summary_too_large";
 
 export type CompactAttemptDiagnostics = JsonObject & {
   outcome: CompactAttemptOutcome;
