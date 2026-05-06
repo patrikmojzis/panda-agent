@@ -573,11 +573,27 @@ run_docker_build() {
 }
 
 build_stack_images() {
+  local failed=0
+  local pid
+  local build_pids=()
+
   run_docker_build --target app -t panda-app:latest "$repo_root"
-  run_docker_build --target browser-runner -t panda-browser-runner:latest "$repo_root"
+
+  run_docker_build --target browser-runner -t panda-browser-runner:latest "$repo_root" &
+  build_pids+=("$!")
+
   if agents_declared; then
-    run_docker_build --target runner -t panda-runner:latest "$repo_root"
+    run_docker_build --target runner -t panda-runner:latest "$repo_root" &
+    build_pids+=("$!")
   fi
+
+  for pid in "${build_pids[@]}"; do
+    if ! wait "$pid"; then
+      failed=1
+    fi
+  done
+
+  return "$failed"
 }
 
 ensure_host_dirs() {

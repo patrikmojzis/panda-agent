@@ -70,6 +70,51 @@ esac
     return stubPath;
   }
 
+  async function createSynchronizedBuildDockerStub(logPath: string): Promise<string> {
+    const syncDir = await makeTempDir("panda-docker-sync-");
+    const stubPath = path.join(await makeTempDir("panda-docker-stub-"), "docker");
+    await writeFile(stubPath, `#!/usr/bin/env bash
+set -euo pipefail
+
+log() {
+  printf '%s\\n' "$1" >> "${logPath}"
+}
+
+cmd="$*"
+log "START $cmd"
+
+case "$cmd" in
+  build*'--target browser-runner '*)
+    touch "${syncDir}/browser-runner.started"
+    attempts=0
+    while [[ ! -f "${syncDir}/runner.started" && "$attempts" -lt 200 ]]; do
+      attempts=$((attempts + 1))
+      sleep 0.01
+    done
+    ;;
+  build*'--target runner '*)
+    touch "${syncDir}/runner.started"
+    attempts=0
+    while [[ ! -f "${syncDir}/browser-runner.started" && "$attempts" -lt 200 ]]; do
+      attempts=$((attempts + 1))
+      sleep 0.01
+    done
+    ;;
+  compose*' ps -q panda-core')
+    printf 'container-panda-core\\n'
+    ;;
+  inspect*' container-panda-core')
+    printf 'healthy\\n'
+    ;;
+  *)
+    ;;
+esac
+
+log "END $cmd"
+`, {mode: 0o755});
+    return stubPath;
+  }
+
   async function createWikiLocalStub(logPath: string): Promise<string> {
     const stubPath = path.join(await makeTempDir("panda-wiki-local-stub-"), "wiki-local.sh");
     await writeFile(stubPath, `#!/usr/bin/env bash
@@ -190,6 +235,52 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     expect(logContents).not.toContain("build --target runner -t panda-runner:latest");
     expect(logContents).toContain("up -d --no-build --remove-orphans");
     expect(logContents).not.toContain("up -d --build --remove-orphans");
+  });
+
+  it("builds runner and browser images in parallel before starting compose", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createSynchronizedBuildDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw",
+    ].join("\n"));
+
+    const result = await runScript(["up", "--build"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const logLines = (await readFile(logPath, "utf8")).trimEnd().split("\n");
+    const findLogIndex = (predicate: (line: string) => boolean): number => {
+      const index = logLines.findIndex(predicate);
+      expect(index).toBeGreaterThanOrEqual(0);
+      return index;
+    };
+    const findBuildIndex = (marker: "START" | "END", target: string) => findLogIndex(
+      (line) => line.includes(`${marker} build --target ${target} `),
+    );
+
+    const appStart = findBuildIndex("START", "app");
+    const appEnd = findBuildIndex("END", "app");
+    const browserStart = findBuildIndex("START", "browser-runner");
+    const browserEnd = findBuildIndex("END", "browser-runner");
+    const runnerStart = findBuildIndex("START", "runner");
+    const runnerEnd = findBuildIndex("END", "runner");
+    const composeStart = findLogIndex(
+      (line) => line.startsWith("START compose ") && line.includes(" up -d --no-build --remove-orphans"),
+    );
+
+    expect(appStart).toBeLessThan(appEnd);
+    expect(appEnd).toBeLessThan(browserStart);
+    expect(appEnd).toBeLessThan(runnerStart);
+    expect(browserStart).toBeLessThan(runnerEnd);
+    expect(runnerStart).toBeLessThan(browserEnd);
+    expect(browserEnd).toBeLessThan(composeStart);
+    expect(runnerEnd).toBeLessThan(composeStart);
   });
 
   it("publishes telepathy on localhost only through the generated override", async () => {
