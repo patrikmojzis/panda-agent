@@ -55,17 +55,6 @@ export class SetEnvValueTool<TContext = DefaultAgentSessionContext> extends Tool
     return key;
   }
 
-  override redactCallArguments(args: Record<string, unknown>): Record<string, unknown> {
-    if (typeof args.value !== "string") {
-      return args;
-    }
-
-    return {
-      ...args,
-      value: "[redacted]",
-    };
-  }
-
   async handle(
     args: z.output<typeof SetEnvValueTool.schema>,
     run: RunContext<TContext>,
@@ -80,10 +69,8 @@ export class SetEnvValueTool<TContext = DefaultAgentSessionContext> extends Tool
 
     return buildJsonToolPayload({
       ok: true,
-      action: "set",
       envKey: record.envKey,
-      agentKey: record.agentKey,
-      updatedAt: record.updatedAt,
+      valueLength: record.value.length,
     });
   }
 }

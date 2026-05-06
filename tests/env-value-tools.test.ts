@@ -299,7 +299,7 @@ describe("Env value tools", () => {
     )).rejects.toThrow("Credential tools require agentKey");
   });
 
-  it("redacts secret tool call arguments before they hit the transcript", async () => {
+  it("keeps set_env_value call arguments in history but returns only confirmation facts", async () => {
     const {service} = await createHarness();
     const runtime = createMockRuntime(
       createAssistantMessage([{
@@ -358,12 +358,22 @@ describe("Env value tools", () => {
       name: "set_env_value",
       arguments: {
         key: "OPENAI_API_KEY",
-        value: "[redacted]",
+        value: "sk-live-123456",
       },
     });
 
     const toolResultText = JSON.stringify(toolResult);
     expect(toolResultText).not.toContain("sk-live-123456");
     expect(toolResultText).toContain("OPENAI_API_KEY");
+    expect(toolResult).toMatchObject({
+      role: "toolResult",
+      details: {
+        ok: true,
+        envKey: "OPENAI_API_KEY",
+        valueLength: 14,
+      },
+    });
+    expect(toolResultText).not.toContain("agentKey");
+    expect(toolResultText).not.toContain("updatedAt");
   });
 });
