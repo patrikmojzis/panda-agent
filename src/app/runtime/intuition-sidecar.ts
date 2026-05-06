@@ -173,7 +173,6 @@ export class IntuitionSidecarService implements IntuitionWhisperSink {
       message: stringToUserMessage(renderIntuitionObservationPrompt({
         run: input.run,
         mainThread: input.thread,
-        messages: input.messages,
       })),
       source: INTUITION_OBSERVATION_SOURCE,
       externalMessageId: `intuition_observation:${input.run.id}:${randomUUID()}`,

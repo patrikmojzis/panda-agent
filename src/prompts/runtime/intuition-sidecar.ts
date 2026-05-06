@@ -1,43 +1,4 @@
-import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord} from "../../domain/threads/runtime/types.js";
-
-const MAX_TEXT_PREVIEW_CHARS = 900;
-
-function truncate(value: string, maxChars: number): string {
-  const trimmed = value.trim();
-  if (trimmed.length <= maxChars) {
-    return trimmed;
-  }
-
-  return `${trimmed.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
-}
-
-function extractText(message: ThreadMessageRecord): string {
-  const content = message.message.content;
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return "";
-  }
-
-  return content.flatMap((block) => {
-    if (block.type === "text" && typeof block.text === "string") {
-      return [block.text];
-    }
-    if (block.type === "toolCall" && typeof block.name === "string") {
-      return [`[tool call: ${block.name}]`];
-    }
-    return [];
-  }).join("\n");
-}
-
-function renderMessagePreview(message: ThreadMessageRecord): string {
-  const role = message.message.role;
-  const text = truncate(extractText(message), MAX_TEXT_PREVIEW_CHARS);
-  const source = message.source ? ` source=${message.source}` : "";
-  return `- ${role}${source}: ${text || "[no text]"}`;
-}
-
+import type {ThreadRecord, ThreadRunRecord} from "../../domain/threads/runtime/types.js";
 
 export const INTUITION_SIDECAR_PROMPT = `
 You are the subconscious mind of another agent (the "conscious agent").
@@ -98,19 +59,13 @@ A reasonable rate: most turns, you stay silent, only retreiving memories. You wh
 export function renderIntuitionObservationPrompt(options: {
   run: ThreadRunRecord;
   mainThread: ThreadRecord;
-  messages: readonly ThreadMessageRecord[];
 }): string {
   return [
-    "[Intuition observation]",
+    "[Your conscious just finished run]",
     `Main run: ${options.run.id}`,
     `Main thread: ${options.mainThread.id}`,
     `Main session: ${options.mainThread.sessionId}`,
     "",
-    "Messages in finished run:",
-    ...(options.messages.length > 0
-      ? options.messages.map(renderMessagePreview)
-      : ["- [none]"]),
-    "",
-    "Look for relevant memory, skills, prior promises, task/watch context, or current facts. Use tools for targeted evidence. Whisper only if the note would materially change agent's next answer or action. Otherwise stay silent.",
+    "-> The conscious agent just finished this run. Retrieve what happened from session.messages/session.tool_results using the run and thread IDs, then search wiki, journal, skills, prior chat, or current facts for relevant context. Call `whisper_to_main` only if it would materially change the next answer or action; otherwise stay silent.",
   ].join("\n");
 }

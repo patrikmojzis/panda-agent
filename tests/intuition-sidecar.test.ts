@@ -269,11 +269,14 @@ describe("Intuition sidecar", () => {
       threadId: sidecar?.currentThreadId,
       source: INTUITION_OBSERVATION_SOURCE,
     }]);
-    expect(submitted[0]?.text).toContain("Messages in finished run:");
-    expect(submitted[0]?.text).toContain("VAT XML");
-    expect(submitted[0]?.text).toContain("handled run");
-    expect(submitted[0]?.text).toContain("lookup result");
-    expect(submitted[0]?.text).toContain("runtime nudge");
+    expect(submitted[0]?.text).toContain(`Main run: ${finishedRun.id}`);
+    expect(submitted[0]?.text).toContain(`Main thread: ${mainThread.id}`);
+    expect(submitted[0]?.text).toContain(`Main session: ${mainThread.sessionId}`);
+    expect(submitted[0]?.text).toContain("retrieve what happened from session.messages/session.tool_results");
+    expect(submitted[0]?.text).not.toContain("VAT XML");
+    expect(submitted[0]?.text).not.toContain("handled run");
+    expect(submitted[0]?.text).not.toContain("lookup result");
+    expect(submitted[0]?.text).not.toContain("runtime nudge");
     expect(submitted[0]?.text).not.toContain("old message outside run");
   });
 
