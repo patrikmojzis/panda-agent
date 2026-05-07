@@ -185,13 +185,41 @@ export class PostgresCredentialStore {
     const hasScopeColumn = await this.credentialColumnExists("scope");
 
     if (hasScopeColumn) {
-      await this.pool.query(`
-        DELETE FROM ${this.tables.credentials}
-        WHERE scope <> 'agent' OR scope IS NULL
-      `);
       for (const indexName of OLD_CREDENTIAL_INDEXES) {
         await this.pool.query(`DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(RUNTIME_SCHEMA, indexName)}`);
       }
+
+      await this.pool.query(`
+        DELETE FROM ${this.tables.credentials}
+        WHERE agent_key IS NULL OR agent_key = ''
+      `);
+      await this.pool.query(`
+        DELETE FROM ${this.tables.credentials}
+        WHERE (scope <> 'agent' OR scope IS NULL)
+          AND CONCAT(agent_key, ':', env_key) IN (
+            SELECT CONCAT(agent_key, ':', env_key)
+            FROM ${this.tables.credentials}
+            WHERE scope = 'agent'
+          )
+      `);
+      await this.pool.query(`
+        DELETE FROM ${this.tables.credentials}
+        WHERE id IN (
+          SELECT duplicate.id
+          FROM ${this.tables.credentials} duplicate, ${this.tables.credentials} keeper
+          WHERE (duplicate.scope <> 'agent' OR duplicate.scope IS NULL)
+            AND (keeper.scope <> 'agent' OR keeper.scope IS NULL)
+            AND duplicate.agent_key = keeper.agent_key
+            AND duplicate.env_key = keeper.env_key
+            AND duplicate.id < keeper.id
+        )
+      `);
+      await this.pool.query(`
+        UPDATE ${this.tables.credentials}
+        SET scope = 'agent',
+            identity_id = NULL
+        WHERE scope <> 'agent' OR scope IS NULL
+      `);
     }
     await this.pool.query(`
       DELETE FROM ${this.tables.credentials}
