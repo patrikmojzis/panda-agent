@@ -167,7 +167,7 @@ describe("PostgresCredentialStore", () => {
     ]);
   });
 
-  it("migrates old credential rows by keeping agent rows only", async () => {
+  it("migrates old credential rows by preserving relationship rows when no agent row exists", async () => {
     const {
       agentStore,
       credentialResolver,
@@ -177,6 +177,7 @@ describe("PostgresCredentialStore", () => {
     const crypto = new CredentialCrypto("test-master-key");
     const encryptAgent = crypto.encrypt("agent-token");
     const encryptRelationship = crypto.encrypt("relationship-token");
+    const encryptRelationshipOnly = crypto.encrypt("relationship-only-token");
 
     await agentStore.bootstrapAgent({
       agentKey: "panda",
@@ -211,7 +212,8 @@ describe("PostgresCredentialStore", () => {
         key_version
       ) VALUES
         ($1, 'NOTION_API_KEY', 'relationship', 'panda', 'alice-id', $2, $3, $4, $5),
-        ($6, 'NOTION_API_KEY', 'agent', 'panda', NULL, $7, $8, $9, $10)
+        ($6, 'NOTION_API_KEY', 'agent', 'panda', NULL, $7, $8, $9, $10),
+        ($11, 'GOOGLE_MAPS_API_KEY', 'relationship', 'panda', 'alice-id', $12, $13, $14, $15)
     `, [
       "00000000-0000-0000-0000-000000000001",
       encryptRelationship.ciphertext,
@@ -223,6 +225,11 @@ describe("PostgresCredentialStore", () => {
       encryptAgent.iv,
       encryptAgent.tag,
       encryptAgent.keyVersion,
+      "00000000-0000-0000-0000-000000000003",
+      encryptRelationshipOnly.ciphertext,
+      encryptRelationshipOnly.iv,
+      encryptRelationshipOnly.tag,
+      encryptRelationshipOnly.keyVersion,
     ]);
 
     await credentialStore.ensureSchema();
@@ -241,8 +248,13 @@ describe("PostgresCredentialStore", () => {
     })).resolves.toMatchObject({
       value: "agent-token",
     });
+    await expect(credentialResolver.resolveCredential("GOOGLE_MAPS_API_KEY", {
+      agentKey: "panda",
+    })).resolves.toMatchObject({
+      value: "relationship-only-token",
+    });
 
     const count = await pool.query("SELECT COUNT(*)::int AS count FROM runtime.credentials");
-    expect(count.rows[0]?.count).toBe(1);
+    expect(count.rows[0]?.count).toBe(2);
   });
 });
