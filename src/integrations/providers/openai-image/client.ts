@@ -51,7 +51,7 @@ export interface OpenAIImageClientOptions {
 const OPENAI_IMAGE_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_CODEX_IMAGE_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const DEFAULT_CODEX_RESPONSES_MODEL = "gpt-5.5";
-const DEFAULT_TIMEOUT_MS = 180_000;
+const DEFAULT_TIMEOUT_MS = 420_000;
 const MAX_ERROR_CHARS = 4_000;
 const MAX_CODEX_IMAGE_SSE_BYTES = 64 * 1024 * 1024;
 const MAX_CODEX_IMAGE_SSE_EVENTS = 512;
