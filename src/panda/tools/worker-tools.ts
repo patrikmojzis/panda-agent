@@ -8,8 +8,8 @@ import type {JsonObject} from "../../kernel/agent/types.js";
 import type {SessionRecord, SessionStore} from "../../domain/sessions/index.js";
 import {readWorkerSessionMetadata} from "../../domain/sessions/worker-metadata.js";
 import type {
-    ExecutionEnvironmentRecord,
-    ExecutionEnvironmentStore,
+  ExecutionEnvironmentRecord,
+  ExecutionEnvironmentStore,
 } from "../../domain/execution-environments/index.js";
 import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/index.js";
 import type {WorkerSessionService} from "../../app/runtime/worker-session-service.js";
@@ -45,6 +45,15 @@ function readScope(context: DefaultAgentSessionContext | undefined): {
     sessionId,
     ...(identityId ? {identityId} : {}),
   };
+}
+
+function ensureWorkerA2A(context: DefaultAgentSessionContext | undefined): NonNullable<DefaultAgentSessionContext["workerA2A"]> {
+  const service = context?.workerA2A;
+  if (!service) {
+    throw new ToolError("worker_spawn is unavailable because worker A2A binding is not configured.");
+  }
+
+  return service;
 }
 
 function readParentVisiblePaths(environment: ExecutionEnvironmentRecord): JsonObject | undefined {
@@ -146,7 +155,9 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
     args: z.output<typeof WorkerSpawnTool.schema>,
     run: RunContext<TContext>,
   ): Promise<JsonObject> {
-    const scope = readScope(run.context as DefaultAgentSessionContext | undefined);
+    const context = run.context as DefaultAgentSessionContext | undefined;
+    const scope = readScope(context);
+    const workerA2A = ensureWorkerA2A(context);
     const defaultModel = resolveDefaultAgentWorkerModelSelector(this.env);
     const created = await this.workerSessions.createWorkerSession({
       agentKey: scope.agentKey,
@@ -164,6 +175,12 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
         ...(args.allowReadonlyPostgres ? {postgresReadonly: {allowed: true}} : {}),
       },
       ttlMs: args.ttlMs,
+      beforeHandoff: async (result) => {
+        await workerA2A.bindParentWorker({
+          parentSessionId: scope.sessionId,
+          workerSessionId: result.session.id,
+        });
+      },
     });
 
     return {

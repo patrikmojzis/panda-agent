@@ -186,6 +186,18 @@ export async function bootstrapDaemonContext(
           messageAgent: {
             queueMessage: (input) => a2aMessagingService.queueMessage(input),
           },
+          workerA2A: {
+            bindParentWorker: async (input) => {
+              await a2aBindings.bindSession({
+                senderSessionId: input.parentSessionId,
+                recipientSessionId: input.workerSessionId,
+              });
+              await a2aBindings.bindSession({
+                senderSessionId: input.workerSessionId,
+                recipientSessionId: input.parentSessionId,
+              });
+            },
+          },
         },
       });
     },

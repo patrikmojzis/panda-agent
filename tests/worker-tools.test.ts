@@ -113,7 +113,11 @@ describe("worker control tools", () => {
         updatedAt: 1_000,
       },
     };
-    const createWorkerSessionMock = vi.fn(async (_input: CreateWorkerSessionInput) => created);
+    const createWorkerSessionMock = vi.fn(async (input: CreateWorkerSessionInput) => {
+      await input.beforeHandoff?.(created);
+      return created;
+    });
+    const bindParentWorker = vi.fn(async () => {});
     const tool = new WorkerSpawnTool({
       workerSessions: {
         createWorkerSession: createWorkerSessionMock,
@@ -134,6 +138,9 @@ describe("worker control tools", () => {
       agentKey: "panda",
       sessionId: "parent-session",
       threadId: "parent-thread",
+      workerA2A: {
+        bindParentWorker,
+      },
       currentInput: {
         source: "tui",
         identityId: "identity-1",
@@ -154,7 +161,12 @@ describe("worker control tools", () => {
         bash: {allowed: true},
         postgresReadonly: {allowed: true},
       },
+      beforeHandoff: expect.any(Function),
     }));
+    expect(bindParentWorker).toHaveBeenCalledWith({
+      parentSessionId: "parent-session",
+      workerSessionId: "worker-session",
+    });
     expect(result).toMatchObject({
       status: "spawned",
       sessionId: "worker-session",
@@ -168,6 +180,25 @@ describe("worker control tools", () => {
         artifacts: "/environments/worker-session/artifacts",
       },
     });
+  });
+
+  it("refuses to spawn workers when A2A binding is unavailable", async () => {
+    const createWorkerSessionMock = vi.fn();
+    const tool = new WorkerSpawnTool({
+      workerSessions: {
+        createWorkerSession: createWorkerSessionMock,
+      },
+    });
+
+    await expect(tool.run({
+      task: "Inspect docs.",
+    }, createRunContext({
+      cwd: "/workspace/panda",
+      agentKey: "panda",
+      sessionId: "parent-session",
+      threadId: "parent-thread",
+    }))).rejects.toThrow("worker A2A binding is not configured");
+    expect(createWorkerSessionMock).not.toHaveBeenCalled();
   });
 
   it("stops an owned worker environment and preserves file paths", async () => {

@@ -50,6 +50,13 @@ export interface DefaultAgentMessageAgentService {
   }>;
 }
 
+export interface DefaultAgentWorkerA2AService {
+  bindParentWorker(input: {
+    parentSessionId: string;
+    workerSessionId: string;
+  }): Promise<void>;
+}
+
 export type DefaultAgentShellSession = ShellSession;
 
 export interface DefaultAgentSessionContext extends ShellExecutionContext {
@@ -71,5 +78,6 @@ export interface DefaultAgentSessionContext extends ShellExecutionContext {
   outboundQueue?: DefaultAgentOutboundQueue;
   channelActionQueue?: DefaultAgentChannelActionQueue;
   messageAgent?: DefaultAgentMessageAgentService;
+  workerA2A?: DefaultAgentWorkerA2AService;
   subagentDepth?: number;
 }

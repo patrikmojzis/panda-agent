@@ -275,6 +275,69 @@ describe("MessageAgentTool", () => {
     }))).rejects.toBeInstanceOf(ToolError);
   });
 
+  it("turns A2A policy failures into recoverable tool errors", async () => {
+    const tool = new MessageAgentTool<DefaultAgentSessionContext>();
+    const context = createContext();
+    context.queueMessage.mockRejectedValueOnce(new Error("A2A is not allowed from session-a to session-b."));
+
+    await expect(tool.run({
+      sessionId: "session-b",
+      items: [{type: "text", text: "hello"}],
+    }, createRunContext(context))).rejects.toThrow(ToolError);
+  });
+
+  it("keeps the thread alive when A2A rejects a message", async () => {
+    const queueMessage = vi.fn(async () => {
+      throw new Error("A2A is not allowed from session-a to session-b.");
+    });
+    const runtime = createMockRuntime(
+      createAssistantMessage([{
+        type: "toolCall",
+        id: "call_1",
+        name: "message_agent",
+        arguments: {
+          sessionId: "session-b",
+          items: [{type: "text", text: "ping"}],
+        },
+      }]),
+      createAssistantMessage([{type: "text", text: "I could not send it."}]),
+    );
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "panda",
+        instructions: "Use tools when needed.",
+        tools: [new MessageAgentTool()],
+      }),
+      model: "openai/gpt-4o-mini",
+      messages: [stringToUserMessage("message the other panda")],
+      runtime,
+      context: {
+        cwd: process.cwd(),
+        agentKey: "panda",
+        sessionId: "session-a",
+        threadId: "thread-a",
+        messageAgent: {
+          queueMessage,
+        },
+      } satisfies DefaultAgentSessionContext,
+    });
+
+    const outputs = [];
+    for await (const output of thread.run()) {
+      outputs.push(output);
+    }
+
+    expect(outputs).toContainEqual(expect.objectContaining({
+      role: "toolResult",
+      toolName: "message_agent",
+      isError: true,
+    }));
+    expect(outputs).toContainEqual(expect.objectContaining({
+      role: "assistant",
+    }));
+  });
+
   it("runs through the real thread loop when Panda calls the tool", async () => {
     const queueMessage = vi.fn(async (input) => ({
       delivery: {

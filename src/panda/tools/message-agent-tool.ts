@@ -10,8 +10,8 @@ import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
 import {isRecord} from "../../lib/records.js";
 import type {OutboundFileItem, OutboundImageItem, OutboundItem} from "../../domain/channels/types.js";
 import {
-    readExecutionEnvironmentFilesystemMetadata,
-    type ResolvedExecutionEnvironment
+  readExecutionEnvironmentFilesystemMetadata,
+  type ResolvedExecutionEnvironment
 } from "../../domain/execution-environments/index.js";
 import type {A2AEnvironmentPathHints, A2ASenderEnvironmentSnapshot} from "../../domain/threads/requests/index.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
@@ -244,6 +244,8 @@ export class MessageAgentTool<TContext = DefaultAgentSessionContext> extends Too
       sessionId: args.sessionId,
       ...(senderEnvironment ? {senderEnvironment} : {}),
       items,
+    }).catch((error) => {
+      throw new ToolError(error instanceof Error ? error.message : String(error));
     });
 
     return serializeQueuedMessage({
