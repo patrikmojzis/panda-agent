@@ -216,6 +216,32 @@ describe("DockerExecutionEnvironmentManager", () => {
     expect(result.runnerUrl).toMatch(/^http:\/\/panda-env-env-worker-[a-f0-9]{10}:8080$/);
   });
 
+  it("keeps container-network runner hostnames within Docker DNS label limits", async () => {
+    const dockerClient = new FakeDockerClient();
+    const environmentsRoot = await makeEnvironmentRoot();
+    const manager = new DockerExecutionEnvironmentManager({
+      dockerClient,
+      network: "panda_runner_net",
+      hostEnvironmentsRoot: environmentsRoot,
+      managerEnvironmentsRoot: environmentsRoot,
+      createTimeoutMs: 10,
+    });
+    const environmentId = "worker:38fd8ac4-06e8-4219-bebc-c98b73944bf6";
+
+    const result = await manager.createDisposableEnvironment({
+      agentKey: "panda",
+      sessionId: "38fd8ac4-06e8-4219-bebc-c98b73944bf6",
+      environmentId,
+    });
+
+    const host = new URL(result.runnerUrl).hostname;
+    expect(host.length).toBeLessThanOrEqual(63);
+    expect(host).toMatch(/^[a-z0-9-]+$/);
+    expect(host).toBe(dockerClient.created[0]!.name);
+    expect((result.metadata as any).containerName).toBe(host);
+    expect(dockerClient.created[0]!.config.Labels["panda.environment.id"]).toBe(environmentId);
+  });
+
   it("treats Docker AutoRemove in-progress cleanup as stopped", async () => {
     const dockerClient = new FakeDockerClient();
     dockerClient.inspectLabels = {

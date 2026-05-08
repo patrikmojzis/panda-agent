@@ -35,6 +35,7 @@ const DEFAULT_CONTAINER_NAME_PREFIX = "panda-env";
 const DEFAULT_CREATE_TIMEOUT_MS = 300_000;
 const DEFAULT_DOCKER_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CORE_ENVIRONMENTS_ROOT = "/root/.panda/environments";
+const DOCKER_DNS_LABEL_MAX_LENGTH = 63;
 
 interface DockerRequestOptions {
   method: string;
@@ -315,6 +316,18 @@ function normalizeDockerNamePart(value: string): string {
   return cleaned || "env";
 }
 
+function normalizeDockerDnsLabelPart(value: string): string {
+  const cleaned = value
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "env";
+}
+
+function trimDockerDnsPart(value: string, maxLength: number): string {
+  return value.slice(0, Math.max(1, maxLength)).replace(/-+$/g, "") || "env";
+}
+
 function resolveDefaultHostEnvironmentsRoot(): string {
   return path.join(os.homedir(), ".panda", "environments");
 }
@@ -341,10 +354,14 @@ function buildEnvironmentDir(environmentId: string): string {
 }
 
 function buildContainerName(prefix: string, environmentId: string): string {
-  const normalized = normalizeDockerNamePart(environmentId);
+  const normalizedPrefix = normalizeDockerDnsLabelPart(prefix);
+  const normalized = normalizeDockerDnsLabelPart(environmentId);
   const digest = createHash("sha256").update(environmentId).digest("hex").slice(0, 10);
-  const maxBaseLength = Math.max(1, 90 - prefix.length - digest.length - 2);
-  return `${prefix}-${normalized.slice(0, maxBaseLength)}-${digest}`;
+  const maxPrefixLength = DOCKER_DNS_LABEL_MAX_LENGTH - digest.length - 3;
+  const trimmedPrefix = trimDockerDnsPart(normalizedPrefix, maxPrefixLength);
+  const maxBaseLength = DOCKER_DNS_LABEL_MAX_LENGTH - trimmedPrefix.length - digest.length - 2;
+  const trimmedBase = trimDockerDnsPart(normalized, maxBaseLength);
+  return `${trimmedPrefix}-${trimmedBase}-${digest}`;
 }
 
 function buildLabels(input: DisposableEnvironmentCreateRequest): Record<string, string> {
