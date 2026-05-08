@@ -10,7 +10,7 @@ Panda-to-Panda messaging is implemented as session-to-session delivery with agen
 - CLI namespace: `panda a2a`
 - binding table: `runtime.a2a_session_bindings`
 - transport identity: `source = "a2a"`, `connectorKey = "local"`
-- default rate limit: `20/hour` per `fromSessionId -> toSessionId`
+- default rate limit: `300/hour` per `fromSessionId -> toSessionId`
 - rate limit env: `A2A_MAX_MESSAGES_PER_HOUR`
 
 ## Mental Model

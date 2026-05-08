@@ -130,7 +130,7 @@ It is not request/response RPC.
 
 - same-session send is blocked
 - allowlist is checked on send and on receive
-- default rate limit is `20` messages per hour per session pair
+- default rate limit is `300` messages per hour per session pair
 - files and images are allowed, but size caps still apply
 - agent flags resolve only main sessions
 
