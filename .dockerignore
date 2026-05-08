@@ -1,5 +1,9 @@
 .git
 .idea
+.env
+.env.*
+!.env.example
+.generated/
 .temp
 coverage
 dist

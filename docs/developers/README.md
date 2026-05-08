@@ -8,6 +8,7 @@ Start here:
 - [A2A Messaging](./a2a.md)
 - [Daemon](./daemon.md)
 - [Sessions](./sessions.md)
+- [Execution Environments](./execution-environments.md)
 - [Browser](./browser.md)
 - [Current Structure](./restructure-plan.md)
 - [Chat Vision](./chat-vision.md)

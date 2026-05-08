@@ -17,3 +17,4 @@ Start here:
 - [Watches](./watches.md)
 - [Background Jobs](./background-bash.md)
 - [Remote Bash](./remote-bash.md)
+- [Disposable Execution Environments](./disposable-execution-environments.md)

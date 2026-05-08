@@ -393,7 +393,14 @@ export async function ensureReadonlySessionQuerySchema(
       skill.created_at,
       skill.updated_at
     FROM ${agentTables.agentSkills} AS skill
-    WHERE skill.agent_key = current_setting('runtime.agent_key', true);
+    WHERE skill.agent_key = current_setting('runtime.agent_key', true)
+      AND (
+        COALESCE(current_setting('runtime.skill_policy', true), 'all_agent') = 'all_agent'
+        OR (
+          current_setting('runtime.skill_policy', true) = 'allowlist'
+          AND STRPOS(',' || COALESCE(current_setting('runtime.skill_allowlist', true), '') || ',', ',' || skill.skill_key || ',') > 0
+        )
+      );
 
     CREATE VIEW ${views.agentTelepathyDevices}
     WITH (security_barrier = true) AS

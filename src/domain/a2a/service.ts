@@ -3,12 +3,13 @@ import {randomUUID} from "node:crypto";
 import type {JsonValue} from "../../kernel/agent/types.js";
 import type {OutboundDeliveryRecord} from "../channels/deliveries/types.js";
 import type {OutboundItem} from "../channels/types.js";
+import type {A2ASenderEnvironmentSnapshot} from "../threads/requests/index.js";
 import type {SessionStore} from "../sessions/index.js";
 import {A2ASessionBindingRepo} from "./repo.js";
 import {
-  A2A_CONNECTOR_KEY,
-  A2A_SOURCE,
-  DEFAULT_A2A_MAX_MESSAGES_PER_HOUR
+    A2A_CONNECTOR_KEY,
+    A2A_SOURCE,
+    DEFAULT_A2A_MAX_MESSAGES_PER_HOUR
 } from "../../integrations/channels/a2a/config.js";
 
 interface OutboundDeliveryQueue {
@@ -34,6 +35,7 @@ export interface QueueA2AMessageInput {
   senderRunId?: string;
   agentKey?: string;
   sessionId?: string;
+  senderEnvironment?: A2ASenderEnvironmentSnapshot;
   items: readonly OutboundItem[];
 }
 
@@ -141,6 +143,7 @@ export class A2AMessagingService {
           toAgentKey: targetSession.agentKey,
           toSessionId: targetSession.id,
           sentAt,
+          ...(input.senderEnvironment ? {senderEnvironment: input.senderEnvironment as unknown as JsonValue} : {}),
         },
       },
     });

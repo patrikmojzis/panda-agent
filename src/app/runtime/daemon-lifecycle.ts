@@ -175,6 +175,14 @@ export function createDaemonLifecycle(input: {
   const heartbeat = async (): Promise<void> => {
     await input.context.daemonState.heartbeat(input.context.daemonKey);
     lastHeartbeatAt = Date.now();
+    try {
+      await input.context.runtime.executionEnvironmentService?.sweepExpiredEnvironments?.();
+    } catch (error) {
+      console.error("Execution environment expiry sweep failed", {
+        daemonKey: input.context.daemonKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   const getQueryPoolHealth = (): {

@@ -1,46 +1,47 @@
 import type {
-  A2AMessageRequestPayload,
-  AbortThreadRequestPayload,
-  CompactThreadRequestPayload,
-  CreateBranchSessionRequestPayload,
-  ResetSessionRequestPayload,
-  ResolveMainSessionThreadRequestPayload,
-  ResolveThreadRunConfigRequestPayload,
-  RuntimeRequestRecord,
-  TelegramMessageRequestPayload,
-  TelegramReactionRequestPayload,
-  TuiInputRequestPayload,
-  UpdateThreadRequestPayload,
-  WhatsAppMessageRequestPayload,
-  WhatsAppReactionRequestPayload,
+    A2AMessageRequestPayload,
+    AbortThreadRequestPayload,
+    CompactThreadRequestPayload,
+    CreateBranchSessionRequestPayload,
+    CreateWorkerSessionRequestPayload,
+    ResetSessionRequestPayload,
+    ResolveMainSessionThreadRequestPayload,
+    ResolveThreadRunConfigRequestPayload,
+    RuntimeRequestRecord,
+    TelegramMessageRequestPayload,
+    TelegramReactionRequestPayload,
+    TuiInputRequestPayload,
+    UpdateThreadRequestPayload,
+    WhatsAppMessageRequestPayload,
+    WhatsAppReactionRequestPayload,
 } from "../../domain/threads/requests/index.js";
 import {compactThread} from "../../domain/threads/runtime/index.js";
 import {stringToUserMessage} from "../../kernel/agent/index.js";
 import {buildA2AInboundPersistence, buildA2AInboundText} from "../../integrations/channels/a2a/helpers.js";
 import {A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
 import {
-  buildTelegramInboundPersistence,
-  buildTelegramInboundText,
-  buildTelegramReactionText,
-  normalizeTelegramCommand,
+    buildTelegramInboundPersistence,
+    buildTelegramInboundText,
+    buildTelegramReactionText,
+    normalizeTelegramCommand,
 } from "../../integrations/channels/telegram/helpers.js";
 import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
 import {buildTuiInboundPersistence, buildTuiInboundText, TUI_SOURCE,} from "../../integrations/channels/tui/helpers.js";
 import {
-  buildWhatsAppInboundMetadata,
-  buildWhatsAppInboundText,
-  buildWhatsAppReactionMetadata,
-  buildWhatsAppReactionText,
+    buildWhatsAppInboundMetadata,
+    buildWhatsAppInboundText,
+    buildWhatsAppReactionMetadata,
+    buildWhatsAppReactionText,
 } from "../../integrations/channels/whatsapp/helpers.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {readMissingApiKeyMessageForModel} from "../../integrations/providers/shared/missing-api-key.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
 import {
-  buildQueuedInputCompactionMessage,
-  buildTelegramNewIsTuiOnlyText,
-  buildTelegramResetText,
-  buildTelegramStartText,
-  buildUnsupportedRuntimeRequestMessage,
+    buildQueuedInputCompactionMessage,
+    buildTelegramNewIsTuiOnlyText,
+    buildTelegramResetText,
+    buildTelegramStartText,
+    buildUnsupportedRuntimeRequestMessage,
 } from "./daemon-copy.js";
 import type {DaemonThreadHelpers} from "./daemon-threads.js";
 import {requireIdentityId} from "./daemon-shared.js";
@@ -504,6 +505,40 @@ export function createDaemonRequestProcessor(
     return {threadId: thread.id};
   };
 
+  const handleCreateWorkerSession = async (
+    payload: CreateWorkerSessionRequestPayload,
+  ): Promise<Record<string, unknown>> => {
+    const identity = await threads.ensureIdentity(requireIdentityId(payload.identityId, "create_worker_session"));
+    const created = await threads.createWorkerSession({
+      identity,
+      sessionId: payload.sessionId,
+      threadId: payload.threadId,
+      agentKey: payload.agentKey,
+      role: payload.role,
+      task: payload.task,
+      context: payload.context,
+      model: payload.model,
+      thinking: payload.thinking,
+      inferenceProjection: payload.inferenceProjection,
+      credentialAllowlist: payload.credentialAllowlist,
+      skillAllowlist: payload.skillAllowlist,
+      toolPolicy: payload.toolPolicy,
+      ttlMs: payload.ttlMs,
+      parentSessionId: payload.parentSessionId,
+    });
+    return {
+      threadId: created.thread.id,
+      sessionId: created.session.id,
+      environmentId: created.environment.id,
+      environment: {
+        id: created.environment.id,
+        runnerCwd: created.environment.runnerCwd,
+        rootPath: created.environment.rootPath,
+        metadata: created.environment.metadata,
+      },
+    };
+  };
+
   const handleAbortThread = async (
     payload: AbortThreadRequestPayload,
   ): Promise<Record<string, unknown>> => {
@@ -581,6 +616,8 @@ export function createDaemonRequestProcessor(
         return handleTuiInput(request.payload as TuiInputRequestPayload);
       case "create_branch_session":
         return handleCreateBranchSession(request.payload as CreateBranchSessionRequestPayload);
+      case "create_worker_session":
+        return handleCreateWorkerSession(request.payload as CreateWorkerSessionRequestPayload);
       case "resolve_main_session_thread": {
         const thread = await threads.openMainSession(
           request.payload as ResolveMainSessionThreadRequestPayload,

@@ -10,9 +10,28 @@ import {A2ASessionBindingRepo} from "../src/domain/a2a/index.js";
 import {A2AMessagingService} from "../src/domain/a2a/service.js";
 import {FileSystemMediaStore, PostgresOutboundDeliveryStore,} from "../src/domain/channels/index.js";
 import {stringToUserMessage} from "../src/kernel/agent/index.js";
-import {buildA2AInboundPersistence} from "../src/integrations/channels/a2a/helpers.js";
+import {buildA2AInboundPersistence, buildA2AInboundText} from "../src/integrations/channels/a2a/helpers.js";
 import {createA2AOutboundAdapter} from "../src/integrations/channels/a2a/outbound.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+
+function createDisposableSenderEnvironment(id = "worker:session-a") {
+  return {
+    id,
+    kind: "disposable_container" as const,
+    envDir: "worker-a",
+    parentRunnerPaths: {
+      root: "/environments/worker-a",
+      workspace: "/environments/worker-a/workspace",
+      inbox: "/environments/worker-a/inbox",
+      artifacts: "/environments/worker-a/artifacts",
+    },
+    workerPaths: {
+      workspace: "/workspace",
+      inbox: "/inbox",
+      artifacts: "/artifacts",
+    },
+  };
+}
 
 describe("A2ASessionBindingRepo", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -244,6 +263,7 @@ describe("A2AMessagingService", () => {
       senderThreadId: "thread-a",
       senderRunId: "run-a",
       agentKey: "koala",
+      senderEnvironment: createDisposableSenderEnvironment(),
       items: [{type: "text", text: "hello"}],
     });
 
@@ -267,6 +287,7 @@ describe("A2AMessagingService", () => {
           toAgentKey: "koala",
           toSessionId: "session-b",
           sentAt: expect.any(Number),
+          senderEnvironment: createDisposableSenderEnvironment(),
         },
       },
     });
@@ -398,6 +419,7 @@ describe("createA2AOutboundAdapter", () => {
           toAgentKey: "koala",
           toSessionId: "session-b",
           sentAt: 1234567890,
+          senderEnvironment: createDisposableSenderEnvironment(),
         },
       },
     });
@@ -411,6 +433,7 @@ describe("createA2AOutboundAdapter", () => {
         fromSessionId: "session-a",
         toAgentKey: "koala",
         toSessionId: "session-b",
+        senderEnvironment: createDisposableSenderEnvironment(),
       }),
     });
     expect(payload).not.toHaveProperty("externalConversationId");
@@ -492,5 +515,27 @@ describe("buildA2AInboundPersistence", () => {
         },
       },
     });
+  });
+
+  it("renders disposable sender paths for the receiver without core path leaks", () => {
+    const text = buildA2AInboundText({
+      connectorKey: "local",
+      externalMessageId: "a2a:worker-done",
+      fromAgentKey: "panda",
+      fromSessionId: "worker-session",
+      fromThreadId: "worker-thread",
+      toAgentKey: "panda",
+      toSessionId: "parent-session",
+      sentAt: 1234567890,
+      senderEnvironment: createDisposableSenderEnvironment("worker:worker-session"),
+      items: [{type: "text", text: "status: done\nsummary: ready for review"}],
+    });
+
+    expect(text).toContain("sender_environment:");
+    expect(text).toContain("- parent_workspace_path: /environments/worker-a/workspace");
+    expect(text).toContain("- parent_artifacts_path: /environments/worker-a/artifacts");
+    expect(text).toContain("- worker_artifacts_path: /artifacts");
+    expect(text).toContain("status: done");
+    expect(text).not.toContain("/root/.panda");
   });
 });

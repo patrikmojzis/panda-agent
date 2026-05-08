@@ -12,13 +12,22 @@ import type {CredentialResolver} from "../../domain/credentials/index.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {ensureShellSession, readBaseCwd} from "../../app/runtime/panda-path-context.js";
-import {type BashExecutor, createDefaultBashExecutor,} from "../../integrations/shell/bash-executor.js";
+import {
+  type BashExecutor,
+  createDefaultBashExecutor,
+  LocalShellExecutor,
+  RemoteShellExecutor,
+} from "../../integrations/shell/bash-executor.js";
 import {startBashBackgroundJob} from "../../integrations/shell/bash-background-runner.js";
 import {readThreadId} from "../../integrations/shell/runtime-context.js";
 import {redactSecretsInJson} from "../../integrations/shell/redaction.js";
 import {applyPersistedEnv, collectTrackedEnvKeys, resolveCommandCwd,} from "../../integrations/shell/bash-session.js";
 import type {PersistedEnvEntry} from "../../integrations/shell/bash-protocol.js";
 import type {ShellSession} from "../../integrations/shell/types.js";
+import type {
+  ExecutionCredentialPolicy,
+  ResolvedExecutionEnvironment
+} from "../../domain/execution-environments/index.js";
 import {buildBackgroundJobPayload, formatBackgroundJobResult} from "./background-job-tools.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -107,6 +116,27 @@ function updateSecretSessionKeys(
   shellSession.secretEnvKeys = [...nextSecretKeys];
 }
 
+function filterCredentialEnv(
+  env: Record<string, string>,
+  policy: ExecutionCredentialPolicy | undefined,
+): Record<string, string> {
+  if (!policy || policy.mode === "all_agent") {
+    return env;
+  }
+  if (policy.mode === "none") {
+    return {};
+  }
+
+  const allowed = new Set(policy.envKeys);
+  return Object.fromEntries(Object.entries(env).filter(([key]) => allowed.has(key)));
+}
+
+function assertBashAllowed(executionEnvironment: ResolvedExecutionEnvironment | undefined): void {
+  if (executionEnvironment?.toolPolicy.bash?.allowed === false) {
+    throw new ToolError("Bash is not allowed in this execution environment.");
+  }
+}
+
 export interface BashToolOptions {
   shell?: string;
   defaultTimeoutMs?: number;
@@ -145,7 +175,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
   private readonly env: NodeJS.ProcessEnv;
   private readonly shell?: string;
   private readonly fetchImpl?: typeof fetch;
-  private readonly executor: BashExecutor;
+  private readonly executor?: BashExecutor;
   private readonly credentialResolver?: CredentialResolver;
   private readonly jobService?: BackgroundToolJobService;
 
@@ -164,11 +194,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     this.outputDirectory = path.resolve(options.outputDirectory ?? DEFAULT_OUTPUT_DIRECTORY);
     this.credentialResolver = options.credentialResolver;
     this.jobService = options.jobService;
-    this.executor = options.executor ?? createDefaultBashExecutor({
-      shell: options.shell,
-      env,
-      fetchImpl: options.fetchImpl,
-    });
+    this.executor = options.executor;
   }
 
   override formatCall(args: Record<string, unknown>): string {
@@ -233,18 +259,22 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     args: z.output<typeof BashTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolOutput> {
+    const context = run.context as DefaultAgentSessionContext | undefined;
+    const executionEnvironment = context?.executionEnvironment;
+    assertBashAllowed(executionEnvironment);
     const shellSession = ensureShellSession(run.context);
     const baseCwd = shellSession?.cwd ?? readBaseCwd(run.context);
     const cwd = resolveCommandCwd(args.cwd, baseCwd);
     const timeoutMs = args.timeoutMs ?? this.defaultTimeoutMs;
     const priorSecretSessionEnv = readSecretSessionEnv(shellSession);
-    const resolvedCredentialEnv = this.credentialResolver
+    const resolvedCredentialEnv = filterCredentialEnv(this.credentialResolver
       ? await this.credentialResolver.resolveEnvironment({
         agentKey: typeof run.context === "object" && run.context !== null && "agentKey" in run.context
           ? (run.context as {agentKey?: string}).agentKey
           : undefined,
       })
-      : {};
+      : {}, executionEnvironment?.credentialPolicy);
+    const shellEnv = shellSession?.env ?? {};
     const knownSecretValues = collectSecretValues(resolvedCredentialEnv, args.env, priorSecretSessionEnv);
     const trackedEnvKeys = collectTrackedEnvKeys(args.command);
     if (args.background === true) {
@@ -252,7 +282,6 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
         throw new ToolError("Background bash is not available in this runtime.");
       }
 
-      const context = run.context as DefaultAgentSessionContext | undefined;
       const job = await this.jobService.start({
         threadId: readThreadId(context),
         runId: context?.runId,
@@ -269,6 +298,8 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
           outputDirectory: this.outputDirectory,
           env: args.env,
           resolvedEnv: resolvedCredentialEnv,
+          shellEnv,
+          executionEnvironment,
           secretValues: knownSecretValues,
           context,
           processEnv: this.env,
@@ -279,7 +310,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
 
       return buildBackgroundJobPayload(job);
     }
-    const result = await this.executor.execute({
+    const result = await this.resolveExecutor(executionEnvironment).execute({
       command: args.command,
       cwd,
       timeoutMs,
@@ -292,6 +323,8 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       outputDirectory: this.outputDirectory,
       env: args.env,
       resolvedEnv: resolvedCredentialEnv,
+      shellEnv,
+      executionEnvironment,
       run: run as RunContext<DefaultAgentSessionContext>,
     });
     const appliedSessionEnvKeys = applyPersistedEnv(shellSession, result.persistedEnvEntries);
@@ -363,5 +396,31 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     }
 
     return sanitizedPayload;
+  }
+
+  private resolveExecutor(executionEnvironment: ResolvedExecutionEnvironment | undefined): BashExecutor {
+    if (this.executor) {
+      return this.executor;
+    }
+
+    if (executionEnvironment?.executionMode === "local") {
+      return new LocalShellExecutor({
+        shell: this.shell,
+        env: this.env,
+      });
+    }
+
+    if (executionEnvironment?.executionMode === "remote") {
+      return new RemoteShellExecutor({
+        env: this.env,
+        fetchImpl: this.fetchImpl,
+      });
+    }
+
+    return createDefaultBashExecutor({
+      shell: this.shell,
+      env: this.env,
+      fetchImpl: this.fetchImpl,
+    });
   }
 }

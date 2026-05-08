@@ -171,15 +171,28 @@ function createScopedPool() {
     returns: DataType.integer,
     implementation: (value: Buffer) => value.length,
   });
+  db.public.registerFunction({
+    name: "strpos",
+    args: [DataType.text, DataType.text],
+    returns: DataType.integer,
+    implementation: (value: string, search: string) => value.indexOf(search) + 1,
+  });
 
   const adapter = db.adapters.createPg();
   const pool = new adapter.Pool();
 
   return {
     pool,
-    setScope(next: { sessionId?: string | null; agentKey?: string | null }) {
+    setScope(next: {
+      sessionId?: string | null;
+      agentKey?: string | null;
+      skillPolicy?: string | null;
+      skillAllowlist?: string | null;
+    }) {
       scope.set("runtime.session_id", next.sessionId ?? null);
       scope.set("runtime.agent_key", next.agentKey ?? null);
+      scope.set("runtime.skill_policy", next.skillPolicy ?? null);
+      scope.set("runtime.skill_allowlist", next.skillAllowlist ?? null);
     },
   };
 }
@@ -424,6 +437,38 @@ describe("ensureReadonlySessionQuerySchema", () => {
         load_count: 1,
         has_last_loaded_at: true,
       },
+    ]);
+  });
+
+  it("filters readonly agent skills by execution environment allowlist", async () => {
+    const { pool, setScope } = createScopedPool();
+    pools.push(pool);
+
+    const {agentStore} = await createRuntimeStores(pool);
+    await new PostgresTelepathyDeviceStore({ pool }).ensureSchema();
+    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
+    await new PostgresWatchStore({ pool }).ensureSchema();
+    await agentStore.setAgentSkill("panda", "calendar", "Panda calendar skill.", "# Panda");
+    await agentStore.setAgentSkill("panda", "finance", "Panda finance skill.", "# Finance");
+    await agentStore.setAgentSkill("panda", "foo_bar", "Underscore skill.", "# Foo");
+    await agentStore.setAgentSkill("panda", "fooxbar", "Lookalike skill.", "# Lookalike");
+
+    setScope({
+      sessionId: "panda-session",
+      agentKey: "panda",
+      skillPolicy: "allowlist",
+      skillAllowlist: "calendar,foo_bar",
+    });
+    const queryable = new PgMemReadonlySchemaQueryable(pool);
+    await ensureReadonlySessionQuerySchema({ queryable });
+
+    const result = await pool.query(
+      "SELECT skill_key FROM \"session\".\"agent_skills\" ORDER BY skill_key",
+    );
+
+    expect(result.rows).toEqual([
+      {skill_key: "calendar"},
+      {skill_key: "foo_bar"},
     ]);
   });
 

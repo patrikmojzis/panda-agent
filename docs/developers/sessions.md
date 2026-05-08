@@ -27,6 +27,8 @@ The current shape is:
 
 Every agent has exactly one `main` session.
 Agents may also have `branch` sessions.
+Worker runs use `worker` sessions: constrained role lanes owned by the same
+agent, with their own default execution environment and explicit allowlists.
 
 ## Lifecycle
 

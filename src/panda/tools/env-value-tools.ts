@@ -26,6 +26,26 @@ function readAgentKey(context: unknown): string {
   return agentKey;
 }
 
+function assertCredentialMutationAllowed(context: unknown): void {
+  if (typeof context !== "object" || context === null || Array.isArray(context)) {
+    return;
+  }
+
+  const environment = (context as Record<string, unknown>).executionEnvironment;
+  if (typeof environment !== "object" || environment === null || Array.isArray(environment)) {
+    return;
+  }
+
+  const record = environment as Record<string, unknown>;
+  const credentialPolicy = record.credentialPolicy;
+  const policyMode = typeof credentialPolicy === "object" && credentialPolicy !== null && !Array.isArray(credentialPolicy)
+    ? (credentialPolicy as Record<string, unknown>).mode
+    : undefined;
+  if (record.kind === "disposable_container" || policyMode === "none" || policyMode === "allowlist") {
+    throw new ToolError("Credential mutation is not allowed in this execution environment.");
+  }
+}
+
 export interface EnvValueToolOptions {
   service: CredentialService;
 }
@@ -59,6 +79,7 @@ export class SetEnvValueTool<TContext = DefaultAgentSessionContext> extends Tool
     args: z.output<typeof SetEnvValueTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
+    assertCredentialMutationAllowed(run.context);
     const agentKey = readAgentKey(run.context);
 
     const record = await this.service.setCredential({
@@ -103,6 +124,7 @@ export class ClearEnvValueTool<TContext = DefaultAgentSessionContext> extends To
     args: z.output<typeof ClearEnvValueTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
+    assertCredentialMutationAllowed(run.context);
     const agentKey = readAgentKey(run.context);
 
     const deleted = await this.service.clearCredential({

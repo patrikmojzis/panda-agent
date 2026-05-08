@@ -7,10 +7,7 @@ import {HeartbeatRunner} from "../../domain/scheduling/heartbeats/runner.js";
 import {ScheduledTaskRunner} from "../../domain/scheduling/tasks/index.js";
 import {ConversationRepo, SessionRouteRepo} from "../../domain/sessions/index.js";
 import {WatchRunner} from "../../domain/watches/index.js";
-import {
-  DEFAULT_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS,
-  RuntimeRequestRepo,
-} from "../../domain/threads/requests/repo.js";
+import {DEFAULT_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS, RuntimeRequestRepo,} from "../../domain/threads/requests/repo.js";
 import {createChannelTypingEventHandler} from "../../domain/threads/runtime/channel-typing.js";
 import {A2AMessagingService} from "../../domain/a2a/service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
@@ -31,6 +28,7 @@ import {resolveAgentMediaDir} from "./data-dir.js";
 import {EmailSendTool} from "../../panda/tools/email-send-tool.js";
 import {OutboundTool} from "../../panda/tools/outbound-tool.js";
 import {MessageAgentTool} from "../../panda/tools/message-agent-tool.js";
+import {WORKER_CONTROL_TOOL_NAMES} from "../../panda/tools/worker-tools.js";
 import {TelepathyContextIngress} from "./telepathy-context-ingress.js";
 import {readPositiveIntegerEnv} from "./database.js";
 
@@ -99,6 +97,7 @@ export async function bootstrapDaemonContext(
   const runtime = await createRuntime({
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
+    cwd: options.cwd,
     maxSubagentDepth: options.maxSubagentDepth,
     onEvent: createChannelTypingEventHandler(typingDispatcher),
     onStoreNotification: (notification) => {
@@ -119,14 +118,21 @@ export async function bootstrapDaemonContext(
           notificationPokesInFlight.delete(notification.threadId);
         });
     },
-    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, calendarService, credentialResolver, sessionStore, store, telepathyService, wikiBindingService, mainTools}) => {
+    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, calendarService, credentialResolver, executionEnvironments, executionEnvironmentResolver, sessionStore, store, telepathyService, wikiBindingService, mainTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
+      const executionEnvironment = await executionEnvironmentResolver.resolveDefault(session);
+      const sessionMainTools = session.kind === "worker"
+        ? mainTools.filter((tool) => !WORKER_CONTROL_TOOL_NAMES.has(tool.name))
+        : mainTools;
       return createThreadDefinition({
         thread,
         session,
         fallbackContext,
+        executionEnvironment,
         agentStore,
+        sessionStore,
         threadStore: store,
+        executionEnvironments,
         wikiBindings: wikiBindingService ?? undefined,
         calendarService,
         bashToolOptions: {
@@ -147,7 +153,7 @@ export async function bootstrapDaemonContext(
           }
           : {}),
         tools: [
-          ...mainTools,
+          ...sessionMainTools,
           new EmailSendTool({store: runtime.email}),
           new OutboundTool(),
           new MessageAgentTool(),

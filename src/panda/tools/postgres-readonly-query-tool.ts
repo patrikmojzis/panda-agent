@@ -6,6 +6,7 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {readExecutionSkillPolicy} from "../../domain/execution-environments/index.js";
 import {isRecord} from "../../lib/records.js";
 import {truncateText} from "../../lib/strings.js";
 
@@ -41,6 +42,7 @@ const READONLY_VIEW_GUIDANCE = [
 export interface PostgresReadonlyQueryToolOptions {
   pool?: PgPoolLike;
   getPool?: PgPoolResolver;
+  usesReadonlyRole?: boolean;
   maxRows?: number;
   maxOutputBytes?: number;
   maxStringChars?: number;
@@ -62,6 +64,9 @@ function assertReadonlySql(sql: string): string {
 
   if (!/^(select|with)\b/i.test(normalized)) {
     throw new ToolError("Only SELECT or WITH queries are allowed.");
+  }
+  if (/\bset_config\b/i.test(normalized)) {
+    throw new ToolError("Readonly SQL cannot mutate runtime scope.");
   }
 
   return normalized;
@@ -199,10 +204,31 @@ function readScope(context: unknown): { sessionId: string; agentKey: string } {
   };
 }
 
+function assertReadonlyToolAllowed(context: unknown, usesReadonlyRole: boolean): void {
+  if (!isRecord(context) || !isRecord(context.executionEnvironment)) {
+    return;
+  }
+
+  const environment = context.executionEnvironment;
+  const toolPolicy = isRecord(environment.toolPolicy) ? environment.toolPolicy : {};
+  const postgresReadonly = isRecord(toolPolicy.postgresReadonly)
+    ? toolPolicy.postgresReadonly
+    : undefined;
+  if (postgresReadonly?.allowed === false) {
+    throw new ToolError("Readonly Postgres is not allowed in this execution environment.");
+  }
+  if (environment.kind === "disposable_container" && postgresReadonly?.allowed !== true) {
+    throw new ToolError("Readonly Postgres requires an explicit allow policy in disposable execution environments.");
+  }
+  if (environment.kind === "disposable_container" && !usesReadonlyRole) {
+    throw new ToolError("Disposable execution environments require READONLY_DATABASE_URL for readonly Postgres.");
+  }
+}
+
 export class PostgresReadonlyQueryTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof PostgresReadonlyQueryTool.schema, TContext> {
   static schema = z.object({
-    sql: z.string().trim().min(1).describe(READONLY_VIEW_GUIDANCE),
+    sql: z.string().trim().min(1).describe("Single read-only SELECT or WITH query."),
   });
 
   name = "postgres_readonly_query";
@@ -213,6 +239,7 @@ export class PostgresReadonlyQueryTool<TContext = DefaultAgentSessionContext>
   private readonly maxRows: number;
   private readonly maxOutputBytes: number;
   private readonly maxStringChars: number;
+  private readonly usesReadonlyRole: boolean;
 
   constructor(options: PostgresReadonlyQueryToolOptions) {
     super();
@@ -227,6 +254,7 @@ export class PostgresReadonlyQueryTool<TContext = DefaultAgentSessionContext>
     this.maxRows = options.maxRows ?? MAX_ROWS;
     this.maxOutputBytes = options.maxOutputBytes ?? MAX_OUTPUT_BYTES;
     this.maxStringChars = options.maxStringChars ?? MAX_STRING_CHARS;
+    this.usesReadonlyRole = options.usesReadonlyRole ?? false;
   }
 
   override formatCall(args: Record<string, unknown>): string {
@@ -238,6 +266,8 @@ export class PostgresReadonlyQueryTool<TContext = DefaultAgentSessionContext>
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
     const { sessionId, agentKey } = readScope(run.context);
+    assertReadonlyToolAllowed(run.context, this.usesReadonlyRole);
+    const skillPolicy = readExecutionSkillPolicy(run.context);
     const sql = assertReadonlySql(args.sql);
     const limitedSql = `SELECT * FROM (${sql}) AS runtime_readonly_query LIMIT ${this.maxRows + 1}`;
     const pool = await this.getPool();
@@ -251,6 +281,10 @@ export class PostgresReadonlyQueryTool<TContext = DefaultAgentSessionContext>
       await client.query(`SET LOCAL idle_in_transaction_session_timeout = '${IDLE_TX_TIMEOUT_MS}ms'`);
       await client.query("SELECT set_config('runtime.session_id', $1, true)", [sessionId]);
       await client.query("SELECT set_config('runtime.agent_key', $1, true)", [agentKey]);
+      await client.query("SELECT set_config('runtime.skill_policy', $1, true)", [skillPolicy.mode]);
+      await client.query("SELECT set_config('runtime.skill_allowlist', $1, true)", [
+        skillPolicy.mode === "allowlist" ? skillPolicy.skillKeys.join(",") : "",
+      ]);
 
       const result = await client.query(limitedSql);
       await client.query("COMMIT");

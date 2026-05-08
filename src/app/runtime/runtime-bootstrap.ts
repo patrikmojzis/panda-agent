@@ -7,6 +7,10 @@ import {
     PostgresCredentialStore,
     resolveCredentialCrypto,
 } from "../../domain/credentials/index.js";
+import {
+    type ExecutionEnvironmentStore,
+    PostgresExecutionEnvironmentStore,
+} from "../../domain/execution-environments/index.js";
 import {PostgresIdentityStore} from "../../domain/identity/index.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import {PostgresScheduledTaskStore, type ScheduledTaskStore,} from "../../domain/scheduling/tasks/index.js";
@@ -74,6 +78,9 @@ import {runCleanupSteps} from "../../lib/cleanup.js";
 import {trimToNull} from "../../lib/strings.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
 import type {RuntimeOptions} from "./create-runtime.js";
+import {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
+import {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
+import {createExecutionEnvironmentManagerClientFromEnv} from "../../integrations/shell/index.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
@@ -105,6 +112,9 @@ export interface RuntimeBootstrapResult {
   browserService: BrowserRunnerClient;
   calendarService: AgentCalendarService | null;
   credentialResolver: CredentialResolver;
+  executionEnvironments: ExecutionEnvironmentStore;
+  executionEnvironmentResolver: ExecutionEnvironmentResolver;
+  executionEnvironmentService: ExecutionEnvironmentLifecycleService;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
   store: ThreadRuntimeStore;
@@ -390,6 +400,9 @@ export async function bootstrapRuntime(
     const sessionStore = new PostgresSessionStore({
       pool: postgresPool,
     });
+    const executionEnvironments = new PostgresExecutionEnvironmentStore({
+      pool: postgresPool,
+    });
     const telepathyDeviceStore = new PostgresTelepathyDeviceStore({
       pool: postgresPool,
     });
@@ -400,6 +413,7 @@ export async function bootstrapRuntime(
       identityStore,
       agentStore,
       sessionStore,
+      executionEnvironments,
       telepathyDeviceStore,
       store,
     ]);
@@ -438,6 +452,15 @@ export async function bootstrapRuntime(
     const credentialResolver = new CredentialResolver({
       store: credentialStore,
       crypto: credentialCrypto,
+    });
+    const executionEnvironmentResolver = new ExecutionEnvironmentResolver({
+      store: executionEnvironments,
+      env: process.env,
+    });
+    const executionEnvironmentManager = createExecutionEnvironmentManagerClientFromEnv(process.env);
+    const executionEnvironmentService = new ExecutionEnvironmentLifecycleService({
+      store: executionEnvironments,
+      manager: executionEnvironmentManager,
     });
     const credentialService = credentialCrypto
       ? new CredentialService({
@@ -480,9 +503,11 @@ export async function bootstrapRuntime(
     const postgresReadonlyToolOptions: PostgresReadonlyQueryToolOptions = readOnlyDbUrl
       ? {
         getPool: getReadonlyPool,
+        usesReadonlyRole: true,
       }
       : {
         pool: postgresPool,
+        usesReadonlyRole: false,
       };
     const toolRegistry = createDefaultAgentToolRegistry({
       bash: {
@@ -547,6 +572,9 @@ export async function bootstrapRuntime(
         backgroundJobService,
         browserService: resolvedBrowserService,
         credentialResolver,
+        executionEnvironments,
+        executionEnvironmentResolver,
+        executionEnvironmentService,
         identityStore,
         sessionStore,
         store,
@@ -662,6 +690,9 @@ export async function bootstrapRuntime(
       browserService: resolvedBrowserService,
       calendarService,
       credentialResolver,
+      executionEnvironments,
+      executionEnvironmentResolver,
+      executionEnvironmentService,
       identityStore,
       sessionStore,
       store,

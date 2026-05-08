@@ -157,11 +157,15 @@ describe("PostgresReadonlyQueryTool", () => {
       "SET LOCAL idle_in_transaction_session_timeout = '5000ms'",
       "SELECT set_config('runtime.session_id', $1, true)",
       "SELECT set_config('runtime.agent_key', $1, true)",
+      "SELECT set_config('runtime.skill_policy', $1, true)",
+      "SELECT set_config('runtime.skill_allowlist', $1, true)",
       "SELECT * FROM (select * from session.messages order by created_at desc limit 5) AS runtime_readonly_query LIMIT 51",
       "COMMIT",
     ]);
     expect(pool.client.queries[4]?.values).toEqual(["session-main"]);
     expect(pool.client.queries[5]?.values).toEqual(["panda"]);
+    expect(pool.client.queries[6]?.values).toEqual(["all_agent"]);
+    expect(pool.client.queries[7]?.values).toEqual([""]);
   });
 
   it("rejects non-read-only SQL and multiple statements", async () => {
@@ -316,6 +320,110 @@ describe("PostgresReadonlyQueryTool", () => {
       slug: "heartbeat",
       preview: "Keep it short.",
     }]);
-    expect(pool.client.queries[6]?.text).toContain("left(content, 16) as preview from session.agent_prompts");
+    expect(pool.client.queries[8]?.text).toContain("left(content, 16) as preview from session.agent_prompts");
+  });
+
+  it("sets readonly skill policy GUCs from the execution environment", async () => {
+    const pool = new FakeReadonlyPool([]);
+    const tool = new PostgresReadonlyQueryTool({
+      pool,
+      usesReadonlyRole: true,
+    });
+
+    await tool.run(
+      { sql: "select * from session.agent_skills order by skill_key limit 5" },
+      createRunContext({
+        sessionId: "session-main",
+        identityId: "identity-alice",
+        threadId: "thread-1",
+        agentKey: "panda",
+        executionEnvironment: {
+          id: "worker:session-main",
+          agentKey: "panda",
+          kind: "disposable_container",
+          state: "ready",
+          executionMode: "remote",
+          credentialPolicy: {mode: "allowlist", envKeys: []},
+          skillPolicy: {mode: "allowlist", skillKeys: ["calendar", "finance"]},
+          toolPolicy: {postgresReadonly: {allowed: true}},
+          source: "binding",
+        },
+      }),
+    );
+
+    expect(pool.client.queries[6]?.values).toEqual(["allowlist"]);
+    expect(pool.client.queries[7]?.values).toEqual(["calendar,finance"]);
+  });
+
+  it("blocks readonly Postgres by default in disposable execution environments", async () => {
+    const tool = new PostgresReadonlyQueryTool({
+      pool: new FakeReadonlyPool([]),
+    });
+
+    await expect(tool.run(
+      { sql: "select * from session.agent_skills limit 5" },
+      createRunContext({
+        sessionId: "session-worker",
+        identityId: "identity-alice",
+        threadId: "thread-1",
+        agentKey: "panda",
+        executionEnvironment: {
+          id: "worker:session-worker",
+          agentKey: "panda",
+          kind: "disposable_container",
+          state: "ready",
+          executionMode: "remote",
+          credentialPolicy: {mode: "allowlist", envKeys: []},
+          skillPolicy: {mode: "allowlist", skillKeys: []},
+          toolPolicy: {},
+          source: "binding",
+        },
+      }),
+    )).rejects.toThrow("Readonly Postgres requires an explicit allow policy");
+  });
+
+  it("requires a real readonly pool for disposable readonly Postgres", async () => {
+    const tool = new PostgresReadonlyQueryTool({
+      pool: new FakeReadonlyPool([]),
+    });
+
+    await expect(tool.run(
+      { sql: "select * from session.agent_skills limit 5" },
+      createRunContext({
+        sessionId: "session-worker",
+        identityId: "identity-alice",
+        threadId: "thread-1",
+        agentKey: "panda",
+        executionEnvironment: {
+          id: "worker:session-worker",
+          agentKey: "panda",
+          kind: "disposable_container",
+          state: "ready",
+          executionMode: "remote",
+          credentialPolicy: {mode: "allowlist", envKeys: []},
+          skillPolicy: {mode: "allowlist", skillKeys: []},
+          toolPolicy: {postgresReadonly: {allowed: true}},
+          source: "binding",
+        },
+      }),
+    )).rejects.toThrow("Disposable execution environments require READONLY_DATABASE_URL");
+  });
+
+  it("blocks readonly SQL from mutating runtime scope", async () => {
+    const tool = new PostgresReadonlyQueryTool({
+      pool: new FakeReadonlyPool([]),
+    });
+
+    await expect(tool.run(
+      {
+        sql: "with x as (select set_config('runtime.skill_policy', 'all_agent', true)) select * from session.agent_skills",
+      },
+      createRunContext({
+        sessionId: "session-main",
+        identityId: "identity-alice",
+        threadId: "thread-1",
+        agentKey: "panda",
+      }),
+    )).rejects.toThrow("Readonly SQL cannot mutate runtime scope.");
   });
 });

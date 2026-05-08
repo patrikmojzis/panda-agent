@@ -14,6 +14,7 @@ import type {IdentityStore} from "../../domain/identity/store.js";
 import type {WikiBindingService} from "../../domain/wiki/index.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {CredentialResolver} from "../../domain/credentials/index.js";
+import type {ExecutionEnvironmentStore,} from "../../domain/execution-environments/index.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import type {AgentAppService} from "../../integrations/apps/sqlite-service.js";
@@ -29,6 +30,10 @@ import {
     DEFAULT_INFERENCE_PROJECTION,
     resolveStoredContext,
 } from "./thread-definition.js";
+import type {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
+import type {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
+import {WorkerSessionService} from "./worker-session-service.js";
+import {WorkerSpawnTool, WorkerStopTool} from "../../panda/tools/worker-tools.js";
 
 export {
   createPostgresPool,
@@ -46,6 +51,9 @@ export interface DefinitionResolverContext {
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
+  executionEnvironments: ExecutionEnvironmentStore;
+  executionEnvironmentResolver: ExecutionEnvironmentResolver;
+  executionEnvironmentService: ExecutionEnvironmentLifecycleService;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
   store: ThreadRuntimeStore;
@@ -59,6 +67,7 @@ export interface DefinitionResolverContext {
 export interface RuntimeOptions {
   dbUrl?: string;
   readOnlyDbUrl?: string;
+  cwd?: string;
   maxSubagentDepth?: number;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
@@ -75,6 +84,9 @@ export interface RuntimeServices {
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
+  executionEnvironments: ExecutionEnvironmentStore;
+  executionEnvironmentResolver: ExecutionEnvironmentResolver;
+  executionEnvironmentService: ExecutionEnvironmentLifecycleService;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
   store: ThreadRuntimeStore;
@@ -82,6 +94,7 @@ export interface RuntimeServices {
   email: EmailStore;
   telepathyService: TelepathyHub | null;
   watches: WatchStore;
+  workerSessions: WorkerSessionService;
   calendarService: AgentCalendarService | null;
   coordinator: ThreadRuntimeCoordinator;
   mainTools: readonly Tool[];
@@ -102,6 +115,9 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     backgroundJobService: runtime.backgroundJobService,
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,
+    executionEnvironments: runtime.executionEnvironments,
+    executionEnvironmentResolver: runtime.executionEnvironmentResolver,
+    executionEnvironmentService: runtime.executionEnvironmentService,
     identityStore: runtime.identityStore,
     sessionStore: runtime.sessionStore,
     store: runtime.store,
@@ -118,6 +134,29 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     resolveDefinition: (thread) => options.resolveDefinition(thread, resolverContext),
     onEvent: options.onEvent,
   });
+  const workerSessions = new WorkerSessionService({
+    pool: runtime.pool,
+    sessions: runtime.sessionStore,
+    threads: runtime.store,
+    coordinator,
+    environments: runtime.executionEnvironmentService,
+    fallbackContext: {
+      cwd: options.cwd ?? process.cwd(),
+    },
+  });
+  const mainTools = [
+    ...runtime.mainTools,
+    new WorkerSpawnTool({
+      workerSessions,
+    }),
+    new WorkerStopTool({
+      sessions: runtime.sessionStore,
+      environments: runtime.executionEnvironments,
+      lifecycle: runtime.executionEnvironmentService,
+    }),
+  ];
+  resolverContext.mainTools = mainTools;
+
   runtime.backgroundJobService.setBackgroundCompletionHandler(async (record) => {
     await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "queue");
     await coordinator.wake(record.threadId);
@@ -130,6 +169,9 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     backgroundJobService: runtime.backgroundJobService,
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,
+    executionEnvironments: runtime.executionEnvironments,
+    executionEnvironmentResolver: runtime.executionEnvironmentResolver,
+    executionEnvironmentService: runtime.executionEnvironmentService,
     identityStore: runtime.identityStore,
     sessionStore: runtime.sessionStore,
     store: runtime.store,
@@ -137,9 +179,10 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     email: runtime.email,
     telepathyService: runtime.telepathyService,
     watches: runtime.watches,
+    workerSessions,
     calendarService: runtime.calendarService,
     coordinator,
-    mainTools: runtime.mainTools,
+    mainTools,
     pool: runtime.pool,
     notificationPool: runtime.notificationPool,
     close: runtime.close,

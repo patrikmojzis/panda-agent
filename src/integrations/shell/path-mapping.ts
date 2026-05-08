@@ -1,12 +1,8 @@
 import path from "node:path";
 
 import {resolveAgentDir} from "../../app/runtime/data-dir.js";
+import {mapPathBetweenRoots} from "../../domain/execution-environments/index.js";
 import {resolveBashExecutionMode, resolveRunnerCwd, resolveRunnerCwdTemplate,} from "./bash-executor.js";
-
-function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
-  const relative = path.relative(rootPath, candidatePath);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
 
 function resolveRemoteAgentRoots(
   agentKey: string,
@@ -27,17 +23,12 @@ function resolveRemoteAgentRoots(
   };
 }
 
-function mapPathBetweenRoots(
+function mapPathBetweenRemoteRoots(
   resolvedPath: string,
   sourceRoot: string,
   targetRoot: string,
 ): string {
-  if (!isPathWithinRoot(sourceRoot, resolvedPath)) {
-    return resolvedPath;
-  }
-
-  const relativePath = path.relative(sourceRoot, resolvedPath);
-  return path.join(targetRoot, relativePath);
+  return mapPathBetweenRoots(resolvedPath, sourceRoot, targetRoot) ?? resolvedPath;
 }
 
 export function mapHostAgentPathToRunner(
@@ -51,7 +42,7 @@ export function mapHostAgentPathToRunner(
     return resolvedPath;
   }
 
-  return mapPathBetweenRoots(resolvedPath, roots.hostAgentRoot, roots.runnerAgentRoot);
+  return mapPathBetweenRemoteRoots(resolvedPath, roots.hostAgentRoot, roots.runnerAgentRoot);
 }
 
 export function mapRunnerAgentPathToHost(
@@ -65,5 +56,5 @@ export function mapRunnerAgentPathToHost(
     return resolvedPath;
   }
 
-  return mapPathBetweenRoots(resolvedPath, roots.runnerAgentRoot, roots.hostAgentRoot);
+  return mapPathBetweenRemoteRoots(resolvedPath, roots.runnerAgentRoot, roots.hostAgentRoot);
 }

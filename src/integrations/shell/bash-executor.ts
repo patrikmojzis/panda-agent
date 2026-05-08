@@ -17,6 +17,8 @@ import type {
 import {RUNNER_AGENT_KEY_HEADER, RUNNER_EXPECTED_PATH_HEADER, RUNNER_PATH_SCOPED_HEADER,} from "./bash-protocol.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import type {ShellExecutionContext} from "./types.js";
+import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/index.js";
+import {buildShellProcessEnv} from "./environment.js";
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
 
@@ -35,6 +37,8 @@ export interface BashExecutorOptions {
   outputDirectory: string;
   env?: Record<string, string>;
   resolvedEnv?: Record<string, string>;
+  shellEnv?: Record<string, string>;
+  executionEnvironment?: ResolvedExecutionEnvironment;
   run: RunContext<ShellExecutionContext>;
 }
 
@@ -193,12 +197,13 @@ export class LocalShellExecutor implements BashExecutor {
       throw new ToolError(spawnFailure.message, { details: spawnFailure.details });
     }
 
-    const childEnv = {
-      ...this.env,
-      ...(options.resolvedEnv ?? {}),
-      ...(options.run.context?.shell?.env ?? {}),
-      ...(options.env ?? {}),
-    };
+    const childEnv = buildShellProcessEnv({
+      processEnv: this.env,
+      executionEnvironment: options.executionEnvironment,
+      resolvedEnv: options.resolvedEnv,
+      shellEnv: options.shellEnv,
+      env: options.env,
+    });
 
     const outcome = await executeBashCommand({
       command: options.command,
@@ -276,7 +281,7 @@ export class RemoteShellExecutor implements BashExecutor {
         maxOutputChars: options.maxOutputChars,
         env: {
           ...(options.resolvedEnv ?? {}),
-          ...(options.run.context?.shell?.env ?? {}),
+          ...(options.shellEnv ?? {}),
           ...(options.env ?? {}),
         },
       } satisfies BashRunnerExecRequest),
@@ -301,13 +306,15 @@ export class RemoteShellExecutor implements BashExecutor {
   async execute<TContext extends ShellExecutionContext>(
     options: BashExecutorOptions & {run: RunContext<TContext>},
   ): Promise<BashExecutionResult> {
-    if (!this.runnerUrlTemplate) {
+    if (!this.runnerUrlTemplate && !options.executionEnvironment?.runnerUrl) {
       throw new ToolError("Remote bash execution requires RUNNER_URL_TEMPLATE.");
     }
 
     const agentKey = readAgentKey(options.run.context);
-    const runnerUrl = resolveRunnerUrl(this.runnerUrlTemplate, agentKey);
-    const headers = buildRunnerRequestHeaders(agentKey, this.runnerUrlTemplate, runnerUrl);
+    const runnerUrl = options.executionEnvironment?.runnerUrl
+      ?? resolveRunnerUrl(this.runnerUrlTemplate ?? "", agentKey);
+    const runnerUrlTemplate = this.runnerUrlTemplate ?? runnerUrl;
+    const headers = buildRunnerRequestHeaders(agentKey, runnerUrlTemplate, runnerUrl);
     let requestId = randomUUID();
     const abortHandler = (): void => {
       void this.sendAbort(requestId, runnerUrl, headers).catch(() => {});

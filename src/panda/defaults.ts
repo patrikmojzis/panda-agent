@@ -14,6 +14,13 @@ export function resolveDefaultAgentWorkspaceSubagentModelSelector(
   return configured ? resolveModelSelector(configured).canonical : undefined;
 }
 
+export function resolveDefaultAgentWorkerModelSelector(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const configured = env.WORKER_MODEL?.trim();
+  return configured ? resolveModelSelector(configured).canonical : undefined;
+}
+
 export function resolveDefaultAgentMemorySubagentModelSelector(
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {

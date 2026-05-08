@@ -1,19 +1,20 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-  Agent,
-  assertProviderName,
-  ConfigurationError,
-  parseProviderName,
-  resolveModelSelector,
-  Thread,
+    Agent,
+    assertProviderName,
+    ConfigurationError,
+    parseProviderName,
+    resolveModelSelector,
+    Thread,
 } from "../src/index.js";
 import {resolveProviderModel} from "../src/integrations/providers/shared/model.js";
 import {
-  resolveDefaultAgentBrowserSubagentModelSelector,
-  resolveDefaultAgentMemorySubagentModelSelector,
-  resolveDefaultAgentModelSelector,
-  resolveDefaultAgentWorkspaceSubagentModelSelector,
+    resolveDefaultAgentBrowserSubagentModelSelector,
+    resolveDefaultAgentMemorySubagentModelSelector,
+    resolveDefaultAgentModelSelector,
+    resolveDefaultAgentWorkerModelSelector,
+    resolveDefaultAgentWorkspaceSubagentModelSelector,
 } from "../src/panda/defaults.js";
 
 describe("model selector", () => {
@@ -128,6 +129,14 @@ describe("model selector", () => {
     })).toBe("anthropic-oauth/claude-opus-4-7");
 
     expect(resolveDefaultAgentBrowserSubagentModelSelector({})).toBeUndefined();
+  });
+
+  it("resolves the worker selector from WORKER_MODEL", () => {
+    expect(resolveDefaultAgentWorkerModelSelector({
+      WORKER_MODEL: "gpt",
+    })).toBe("openai-codex/gpt-5.4");
+
+    expect(resolveDefaultAgentWorkerModelSelector({})).toBeUndefined();
   });
 
   it("throws a configuration error for unknown model ids", () => {

@@ -19,6 +19,7 @@ Primary flow:
 
 Notes:
   - One bash runner container is created per agent in PANDA_AGENTS.
+  - Disposable worker runners are enabled only when PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true.
   - The browser runner is shared.
   - Telegram polling is auto-enabled when TELEGRAM_BOT_TOKEN is set in .env.
   - WhatsApp polling is enabled when WHATSAPP_ENABLED=true in .env.
@@ -50,6 +51,57 @@ expand_home() {
       ;;
     *)
       printf '%s\n' "$value"
+      ;;
+  esac
+}
+
+expand_home_variable() {
+  local value
+  value="$(trim "$1")"
+  if [[ "$value" == "\$HOME" ]] || [[ "$value" == "\${HOME}" ]]; then
+    printf '%s\n' "$HOME"
+    return
+  fi
+  if [[ "$value" == "\$HOME/"* ]]; then
+    printf '%s/%s\n' "$HOME" "${value#\$HOME/}"
+    return
+  fi
+  if [[ "$value" == "\${HOME}/"* ]]; then
+    printf '%s/%s\n' "$HOME" "${value#\$\{HOME\}/}"
+    return
+  fi
+
+  printf '%s\n' "$value"
+}
+
+resolve_environment_host_root() {
+  local value expanded
+  value="${PANDA_ENVIRONMENTS_HOST_ROOT:-$HOME/.panda/environments}"
+  expanded="$(expand_home "$(expand_home_variable "$value")")"
+  [[ "$expanded" != *'$'* ]] \
+    || die "PANDA_ENVIRONMENTS_HOST_ROOT must not contain shell variables other than HOME."
+  case "$expanded" in
+    /*)
+      printf '%s\n' "$expanded"
+      ;;
+    *)
+      die "PANDA_ENVIRONMENTS_HOST_ROOT must be an absolute path."
+      ;;
+  esac
+}
+
+docker_socket_path_from_host() {
+  local docker_host
+  docker_host="$(trim "${PANDA_DOCKER_HOST:-unix:///var/run/docker.sock}")"
+  case "$docker_host" in
+    unix://*)
+      printf '%s\n' "${docker_host#unix://}"
+      ;;
+    /*)
+      printf '%s\n' "$docker_host"
+      ;;
+    *)
+      printf '\n'
       ;;
   esac
 }
@@ -105,9 +157,15 @@ env_loader="$script_dir/lib/load-env-file.sh"
 [[ -f "$env_loader" ]] || die "env loader not found: $env_loader"
 command -v "$docker_bin" >/dev/null 2>&1 || die "$docker_bin is not installed or not on PATH."
 
+env_file="$(cd "$(dirname "$env_file")" && pwd -P)/$(basename "$env_file")"
+export PANDA_STACK_SERVICE_ENV_FILE="$env_file"
+
 # shellcheck source=/dev/null
 source "$env_loader"
 load_env_file "$env_file"
+
+normalized_environment_host_root="$(resolve_environment_host_root)" || exit "$?"
+export PANDA_ENVIRONMENTS_HOST_ROOT="$normalized_environment_host_root"
 
 declare -a normalized_agents=()
 
@@ -524,6 +582,61 @@ enable_public_edge=0
 if (( enable_apps_edge || enable_gateway_edge )); then
   enable_public_edge=1
 fi
+
+disposable_environments_enabled() {
+  if env_falsey "${PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED:-}"; then
+    return 1
+  fi
+
+  env_truthy "${PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED:-}"
+}
+
+default_compose_project_name() {
+  local explicit
+  explicit="$(trim "${COMPOSE_PROJECT_NAME:-}")"
+  if [[ -n "$explicit" ]]; then
+    printf '%s\n' "$explicit"
+    return
+  fi
+
+  basename "$(dirname "$base_compose")"
+}
+
+enable_disposable_environments=0
+if disposable_environments_enabled; then
+  enable_disposable_environments=1
+fi
+use_managed_environment_manager=0
+if (( enable_disposable_environments )) && [[ -z "$(trim "${PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL:-}")" ]]; then
+  use_managed_environment_manager=1
+fi
+
+configure_disposable_environment_defaults() {
+  local compose_project
+  if (( ! enable_disposable_environments )); then
+    return
+  fi
+
+  compose_project="$(default_compose_project_name)"
+  export PANDA_DISPOSABLE_RUNNER_NETWORK="${PANDA_DISPOSABLE_RUNNER_NETWORK:-${compose_project}_disposable_runner_net}"
+  export PANDA_EXECUTION_ENVIRONMENT_MANAGER_NETWORK="${PANDA_EXECUTION_ENVIRONMENT_MANAGER_NETWORK:-${compose_project}_execution_manager_net}"
+  if (( use_managed_environment_manager )); then
+    export PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL="http://panda-environment-manager:${PANDA_EXECUTION_ENVIRONMENT_MANAGER_PORT:-8095}"
+  fi
+}
+
+validate_disposable_environment_config() {
+  local token
+  if (( ! enable_disposable_environments )); then
+    return
+  fi
+
+  token="$(trim "${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN:-}")"
+  [[ -n "$token" ]] \
+    || die "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN is required when disposable environments are enabled."
+}
+
+configure_disposable_environment_defaults
 validate_apps_edge_config
 validate_gateway_edge_config
 validate_public_edge_config
@@ -582,7 +695,7 @@ build_stack_images() {
   run_docker_build --target browser-runner -t panda-browser-runner:latest "$repo_root" &
   build_pids+=("$!")
 
-  if agents_declared; then
+  if agents_declared || (( enable_disposable_environments )); then
     run_docker_build --target runner -t panda-runner:latest "$repo_root" &
     build_pids+=("$!")
   fi
@@ -597,32 +710,37 @@ build_stack_images() {
 }
 
 ensure_host_dirs() {
-  local core_root shared_root browser_root agent_key
+  local core_root shared_root browser_root environments_root agent_key
   core_root="$HOME/.panda"
   shared_root="$(expand_home "${SHARED_ROOT:-$HOME/.panda/shared}")"
   browser_root="$(expand_home "${BROWSER_RUNNER_ROOT:-$HOME/.panda-browser-runner}")"
+  environments_root="$(expand_home "${PANDA_ENVIRONMENTS_HOST_ROOT:-$HOME/.panda/environments}")"
 
-  mkdir -p "$core_root" "$shared_root" "$browser_root"
+  mkdir -p "$core_root" "$shared_root" "$browser_root" "$environments_root"
   if ! agents_declared; then
     return
   fi
 
   for agent_key in "${normalized_agents[@]}"; do
-    mkdir -p "$core_root/agents/$agent_key"
+    mkdir -p "$core_root/agents/$agent_key" "$environments_root/$agent_key"
   done
 }
 
 render_generated_compose() {
-  local agent_key telepathy_port gateway_port include_telepathy
+  local agent_key telepathy_port gateway_port include_telepathy manager_docker_socket
   mkdir -p "$generated_dir"
   telepathy_port="$(trim "${TELEPATHY_PORT:-}")"
   gateway_port="$(trim "${GATEWAY_PORT:-8094}")"
+  manager_docker_socket=""
+  if (( use_managed_environment_manager )); then
+    manager_docker_socket="$(docker_socket_path_from_host)"
+  fi
   include_telepathy=0
   if [[ -n "$telepathy_port" ]] && telepathy_publish_enabled; then
     include_telepathy=1
   fi
 
-  if ! agents_declared && (( ! include_telepathy && ! enable_apps_edge && ! enable_gateway_edge )); then
+  if ! agents_declared && (( ! include_telepathy && ! enable_apps_edge && ! enable_gateway_edge && ! enable_disposable_environments )); then
     cat > "$generated_compose" <<'EOF'
 services: {}
 EOF
@@ -631,7 +749,7 @@ EOF
 
   {
     printf 'services:\n'
-    if (( include_telepathy || enable_apps_edge )); then
+    if (( include_telepathy || enable_apps_edge || enable_disposable_environments )); then
       cat <<EOF
   panda-core:
 EOF
@@ -641,15 +759,102 @@ EOF
       - "127.0.0.1:${telepathy_port}:${telepathy_port}"
 EOF
       fi
-      if (( enable_apps_edge )); then
+      if (( enable_apps_edge || enable_disposable_environments )); then
         cat <<EOF
     environment:
+EOF
+      fi
+      if (( enable_apps_edge )); then
+        cat <<EOF
       PANDA_APPS_AUTH: required
       PANDA_APPS_BASE_URL: \${PANDA_APPS_BASE_URL}
+EOF
+      fi
+      if (( enable_disposable_environments )); then
+        cat <<EOF
+      PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL: \${PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL}
+      PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: \${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN}
+      PANDA_ENVIRONMENTS_ROOT: \${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}
+      PANDA_CORE_ENVIRONMENTS_ROOT: \${PANDA_CORE_ENVIRONMENTS_ROOT:-\${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}}
+      PANDA_RUNNER_ENVIRONMENTS_ROOT: \${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}
+EOF
+      fi
+      if (( use_managed_environment_manager )); then
+        cat <<EOF
+    depends_on:
+      panda-environment-manager:
+        condition: service_healthy
+EOF
+      fi
+      if (( enable_apps_edge || enable_disposable_environments )); then
+        cat <<EOF
     networks:
+EOF
+      fi
+      if (( enable_apps_edge )); then
+        cat <<EOF
       - apps_edge_net
 EOF
       fi
+      if (( use_managed_environment_manager )); then
+        cat <<EOF
+      - execution_manager_net
+EOF
+      fi
+      if (( enable_disposable_environments )); then
+        cat <<EOF
+      - disposable_runner_net
+EOF
+      fi
+    fi
+
+    if (( use_managed_environment_manager )); then
+      cat <<EOF
+  panda-environment-manager:
+    image: panda-app:latest
+    command: ["environment-manager"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    environment:
+      PANDA_EXECUTION_ENVIRONMENT_MANAGER_HOST: 0.0.0.0
+      PANDA_EXECUTION_ENVIRONMENT_MANAGER_PORT: \${PANDA_EXECUTION_ENVIRONMENT_MANAGER_PORT:-8095}
+      PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: \${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN}
+      PANDA_DOCKER_HOST: \${PANDA_DOCKER_HOST:-unix:///var/run/docker.sock}
+      PANDA_DISPOSABLE_RUNNER_IMAGE: \${PANDA_DISPOSABLE_RUNNER_IMAGE:-panda-runner:latest}
+      PANDA_DISPOSABLE_RUNNER_NETWORK: \${PANDA_DISPOSABLE_RUNNER_NETWORK}
+      PANDA_DISPOSABLE_RUNNER_PORT: \${PANDA_DISPOSABLE_RUNNER_PORT:-8080}
+      PANDA_DISPOSABLE_RUNNER_CWD: \${PANDA_DISPOSABLE_RUNNER_CWD:-/workspace}
+      PANDA_ENVIRONMENTS_HOST_ROOT: $PANDA_ENVIRONMENTS_HOST_ROOT
+      PANDA_ENVIRONMENTS_ROOT: \${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}
+      PANDA_CORE_ENVIRONMENTS_ROOT: \${PANDA_CORE_ENVIRONMENTS_ROOT:-\${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}}
+      PANDA_RUNNER_ENVIRONMENTS_ROOT: \${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}
+      PANDA_DISPOSABLE_CONTAINER_PREFIX: \${PANDA_DISPOSABLE_CONTAINER_PREFIX:-panda-env}
+      PANDA_DISPOSABLE_CREATE_TIMEOUT_MS: \${PANDA_DISPOSABLE_CREATE_TIMEOUT_MS:-300000}
+      TZ: \${TZ:-UTC}
+    volumes:
+EOF
+      if [[ -n "$manager_docker_socket" ]]; then
+        cat <<EOF
+      - "$manager_docker_socket:$manager_docker_socket"
+EOF
+      fi
+      cat <<EOF
+      - "$PANDA_ENVIRONMENTS_HOST_ROOT:\${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}"
+    networks:
+      - execution_manager_net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:\${PANDA_EXECUTION_ENVIRONMENT_MANAGER_PORT:-8095}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+EOF
     fi
 
     if (( enable_gateway_edge )); then
@@ -753,6 +958,7 @@ EOF
     volumes:
       - \${HOME}/.panda/agents/$agent_key:/root/.panda/agents/$agent_key
       - \${SHARED_ROOT:-\${HOME}/.panda/shared}:/workspace/shared
+      - "$PANDA_ENVIRONMENTS_HOST_ROOT/$agent_key:\${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}"
     networks:
       - runner_net
     healthcheck:
@@ -765,11 +971,24 @@ EOF
       done
     fi
 
-    if (( enable_apps_edge || enable_gateway_edge )); then
+    if (( enable_apps_edge || enable_gateway_edge || enable_disposable_environments )); then
       printf '\nnetworks:\n'
       if (( enable_apps_edge )); then
         cat <<'EOF'
   apps_edge_net:
+EOF
+      fi
+      if (( use_managed_environment_manager )); then
+        cat <<'EOF'
+  execution_manager_net:
+    name: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_NETWORK}
+    internal: true
+EOF
+      fi
+      if (( enable_disposable_environments )); then
+        cat <<'EOF'
+  disposable_runner_net:
+    name: ${PANDA_DISPOSABLE_RUNNER_NETWORK}
 EOF
       fi
       if (( enable_gateway_edge )); then
@@ -803,6 +1022,10 @@ resolve_service_name() {
       ;;
     browser|panda-browser-runner)
       printf 'panda-browser-runner\n'
+      return
+      ;;
+    env|environment|environment-manager|panda-environment-manager)
+      printf 'panda-environment-manager\n'
       return
       ;;
     wiki)
@@ -913,6 +1136,9 @@ print_up_summary() {
   printf '  ./scripts/docker-stack.sh ps\n'
   printf '  ./scripts/docker-stack.sh logs core\n'
   printf '  ./scripts/docker-stack.sh logs browser\n'
+  if (( use_managed_environment_manager )); then
+    printf '  ./scripts/docker-stack.sh logs environment-manager\n'
+  fi
   printf '  ./scripts/docker-stack.sh logs wiki\n'
   if (( enable_calendar )); then
     printf '  ./scripts/docker-stack.sh logs calendar\n'
@@ -940,6 +1166,7 @@ print_up_summary() {
 
 run_up() {
   local build_flag=$1
+  validate_disposable_environment_config
   ensure_host_dirs
   render_generated_public_caddyfile
   ensure_calendar_bootstrap

@@ -5,16 +5,16 @@ import path from "node:path";
 import {describe, expect, it} from "vitest";
 
 import {
-  Agent,
-  BackgroundJobCancelTool,
-  BackgroundJobStatusTool,
-  BackgroundJobWaitTool,
-  BashTool,
-  type DefaultAgentSessionContext,
-  type JsonObject,
-  RunContext,
-  ToolError,
-  type ToolResultMessage,
+    Agent,
+    BackgroundJobCancelTool,
+    BackgroundJobStatusTool,
+    BackgroundJobWaitTool,
+    BashTool,
+    type DefaultAgentSessionContext,
+    type JsonObject,
+    RunContext,
+    ToolError,
+    type ToolResultMessage,
 } from "../src/index.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import type {ThreadToolJobRecord} from "../src/domain/threads/runtime/types.js";
@@ -289,6 +289,248 @@ describe("BashTool", () => {
       const output = asObject(result);
 
       expect(String(output.stdout)).toBe("ok");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("filters resolved credentials through the execution environment allowlist", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-credential-allowlist-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-worker",
+        threadId: "thread-worker",
+        cwd: workspace,
+        executionEnvironment: {
+          id: "env-worker",
+          agentKey: "panda",
+          kind: "disposable_container",
+          state: "ready",
+          executionMode: "local",
+          initialCwd: workspace,
+          credentialPolicy: {
+            mode: "allowlist",
+            envKeys: ["ALLOWED_SECRET"],
+          },
+          toolPolicy: {},
+          source: "binding",
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        credentialResolver: {
+          resolveEnvironment: async () => ({
+            ALLOWED_SECRET: "allowed",
+            DENIED_SECRET: "denied",
+          }),
+        } as any,
+      });
+
+      const result = await tool.run(
+        {
+          command: [
+            'test "${ALLOWED_SECRET:-missing}" = "allowed"',
+            'test "${DENIED_SECRET:-missing}" = "missing"',
+            "printf ok",
+          ].join(" && "),
+        },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+
+      expect(output.stdout).toBe("ok");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects bash when the execution environment policy disables it", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-tool-policy-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-worker",
+        threadId: "thread-worker",
+        cwd: workspace,
+        executionEnvironment: {
+          id: "env-worker",
+          agentKey: "panda",
+          kind: "disposable_container",
+          state: "ready",
+          executionMode: "local",
+          initialCwd: workspace,
+          credentialPolicy: {mode: "none"},
+          toolPolicy: {bash: {allowed: false}},
+          source: "binding",
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+      });
+
+      await expect(tool.run(
+        {command: "printf should-not-run"},
+        createRunContext(context),
+      )).rejects.toThrow("Bash is not allowed in this execution environment.");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not migrate legacy shell env into bound disposable environments", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-legacy-shell-env-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-worker",
+        threadId: "thread-worker",
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {
+            LEGACY_SECRET: "leaked",
+          },
+          secretEnvKeys: ["LEGACY_SECRET"],
+        },
+        executionEnvironment: {
+          id: "env-worker",
+          agentKey: "panda",
+          kind: "disposable_container",
+          state: "ready",
+          executionMode: "local",
+          initialCwd: workspace,
+          credentialPolicy: {mode: "allowlist", envKeys: []},
+          toolPolicy: {},
+          source: "binding",
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+      });
+
+      const result = await tool.run(
+        {command: 'printf "${LEGACY_SECRET:-missing}"'},
+        createRunContext(context),
+      );
+
+      expect(asObject(result).stdout).toBe("missing");
+      expect(context.shellSessions?.["env-worker"]?.env.LEGACY_SECRET).toBeUndefined();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("persists non-secret shell env in constrained disposable environments", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-disposable-shell-env-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-worker",
+        threadId: "thread-worker",
+        cwd: workspace,
+        executionEnvironment: {
+          id: "env-worker",
+          agentKey: "panda",
+          kind: "disposable_container",
+          state: "ready",
+          executionMode: "local",
+          initialCwd: workspace,
+          credentialPolicy: {mode: "allowlist", envKeys: []},
+          skillPolicy: {mode: "allowlist", skillKeys: []},
+          toolPolicy: {},
+          source: "binding",
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+      });
+
+      await tool.run(
+        {command: 'export WORKER_TMP_MARKER="kept"'},
+        createRunContext(context),
+      );
+      const result = await tool.run(
+        {command: 'printf "%s" "${WORKER_TMP_MARKER:-missing}"'},
+        createRunContext(context),
+      );
+
+      expect(asObject(result).stdout).toBe("kept");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps shell cwd and env isolated per execution environment", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-env-sessions-"));
+    try {
+      await mkdir(path.join(workspace, "one"));
+      await mkdir(path.join(workspace, "two"));
+      const firstCwd = await realpath(path.join(workspace, "one"));
+      const secondCwd = await realpath(path.join(workspace, "two"));
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-worker",
+        threadId: "thread-worker",
+        cwd: workspace,
+        executionEnvironment: {
+          id: "env-one",
+          agentKey: "panda",
+          kind: "local",
+          state: "ready",
+          executionMode: "local",
+          initialCwd: workspace,
+          credentialPolicy: {mode: "all_agent"},
+          toolPolicy: {},
+          source: "binding",
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+      });
+
+      await tool.run(
+        {command: 'cd one && export ENV_MARKER="one"'},
+        createRunContext(context),
+      );
+      expect(context.shellSessions?.["env-one"]?.cwd).toBe(firstCwd);
+      expect(context.shellSessions?.["env-one"]?.env.ENV_MARKER).toBe("one");
+
+      context.executionEnvironment = {
+        id: "env-two",
+        agentKey: "panda",
+        kind: "local",
+        state: "ready",
+        executionMode: "local",
+        initialCwd: secondCwd,
+        credentialPolicy: {mode: "all_agent"},
+        toolPolicy: {},
+        source: "binding",
+      };
+      const second = await tool.run(
+        {command: 'test "${ENV_MARKER:-missing}" = "missing" && pwd'},
+        createRunContext(context),
+      );
+      expect(String(asObject(second).stdout).trim()).toBe(secondCwd);
+      expect(context.shellSessions?.["env-two"]?.env.ENV_MARKER).toBeUndefined();
+
+      context.executionEnvironment = {
+        id: "env-one",
+        agentKey: "panda",
+        kind: "local",
+        state: "ready",
+        executionMode: "local",
+        initialCwd: workspace,
+        credentialPolicy: {mode: "all_agent"},
+        toolPolicy: {},
+        source: "binding",
+      };
+      const first = await tool.run(
+        {command: 'printf "%s:%s" "$PWD" "$ENV_MARKER"'},
+        createRunContext(context),
+      );
+
+      expect(asObject(first).stdout).toBe(`${firstCwd}:one`);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

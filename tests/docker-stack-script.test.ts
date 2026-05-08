@@ -237,6 +237,200 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     expect(logContents).not.toContain("up -d --build --remove-orphans");
   });
 
+  it("renders managed disposable environment infrastructure on private networks", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+    ].join("\n"));
+    const homeDir = await makeTempDir("panda-home-");
+
+    const upResult = await runScript(["up", "--build"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+
+    expect(upResult.exitCode).toBe(0);
+    expect(upResult.stdout).toContain("./scripts/docker-stack.sh logs environment-manager");
+    const generatedCompose = await readFile(generatedComposePath, "utf8");
+    const environmentsRoot = path.join(homeDir, ".panda", "environments");
+    expect(generatedCompose).toContain("panda-environment-manager:");
+    expect(generatedCompose).toContain('command: ["environment-manager"]');
+    expect(generatedCompose).toContain("PANDA_DOCKER_HOST: ${PANDA_DOCKER_HOST:-unix:///var/run/docker.sock}");
+    expect(generatedCompose).toContain('- "/var/run/docker.sock:/var/run/docker.sock"');
+    expect(generatedCompose).toContain(`PANDA_ENVIRONMENTS_HOST_ROOT: ${environmentsRoot}`);
+    expect(generatedCompose).toContain("PANDA_ENVIRONMENTS_ROOT: ${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}");
+    expect(generatedCompose).toContain("PANDA_CORE_ENVIRONMENTS_ROOT: ${PANDA_CORE_ENVIRONMENTS_ROOT:-${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}}");
+    expect(generatedCompose).toContain("PANDA_RUNNER_ENVIRONMENTS_ROOT: ${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}");
+    expect(generatedCompose).toContain(`- "${environmentsRoot}:${"${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}"}"`);
+    expect(generatedCompose).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL}");
+    expect(generatedCompose).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN}");
+    expect(generatedCompose).toContain("      - execution_manager_net");
+    expect(generatedCompose).toContain("      - disposable_runner_net");
+    expect(generatedCompose).toContain("execution_manager_net:\n    name: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_NETWORK}\n    internal: true");
+    expect(generatedCompose).toContain("disposable_runner_net:\n    name: ${PANDA_DISPOSABLE_RUNNER_NETWORK}");
+    expect(generatedCompose).not.toContain("gateway_edge_net");
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents.match(/build --target runner -t panda-runner:latest/g)).toHaveLength(1);
+
+    const logsResult = await runScript(["logs", "environment-manager"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+    expect(logsResult.exitCode).toBe(0);
+    expect(await readFile(logPath, "utf8")).toContain("logs -f panda-environment-manager");
+  });
+
+  it("does not mount the Docker socket when PANDA_DOCKER_HOST is not a Unix socket", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+      "PANDA_DOCKER_HOST=tcp://docker-proxy:2375",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const generatedCompose = await readFile(generatedComposePath, "utf8");
+    expect(generatedCompose).toContain("PANDA_DOCKER_HOST: ${PANDA_DOCKER_HOST:-unix:///var/run/docker.sock}");
+    expect(generatedCompose).not.toContain("/var/run/docker.sock:/var/run/docker.sock");
+  });
+
+  it("rejects disposable environments without an environment manager token", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN is required");
+  });
+
+  it("does not require the environment manager token for passive compose commands", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+    ].join("\n"));
+    const homeDir = await makeTempDir("panda-home-");
+
+    await expect(runScript(["ps"], {envFile, dockerBin, homeDir})).resolves.toMatchObject({exitCode: 0});
+    await expect(runScript(["logs", "environment-manager"], {envFile, dockerBin, homeDir})).resolves.toMatchObject({
+      exitCode: 0,
+    });
+    await expect(runScript(["down"], {envFile, dockerBin, homeDir})).resolves.toMatchObject({exitCode: 0});
+
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents).toContain("ps");
+    expect(logContents).toContain("logs -f panda-environment-manager");
+    expect(logContents).toContain("down --remove-orphans");
+  });
+
+  it("normalizes HOME-based disposable environment host roots before rendering compose", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+      "PANDA_ENVIRONMENTS_HOST_ROOT=$HOME/panda-envs",
+    ].join("\n"));
+    const homeDir = await makeTempDir("panda-home-");
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const generatedCompose = await readFile(generatedComposePath, "utf8");
+    const environmentsRoot = path.join(homeDir, "panda-envs");
+    expect(generatedCompose).toContain(`PANDA_ENVIRONMENTS_HOST_ROOT: ${environmentsRoot}`);
+    expect(generatedCompose).toContain(`- "${environmentsRoot}:${"${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}"}"`);
+    expect(generatedCompose).toContain(`- "${environmentsRoot}/claw:${"${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}"}"`);
+    expect(generatedCompose).not.toContain("$HOME/panda-envs");
+  });
+
+  it("rejects relative disposable environment host roots", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw",
+      "PANDA_ENVIRONMENTS_HOST_ROOT=./panda-envs",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("PANDA_ENVIRONMENTS_HOST_ROOT must be an absolute path");
+  });
+
+  it("does not enable disposable environments from manager config alone", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const generatedCompose = await readFile(generatedComposePath, "utf8");
+    expect(generatedCompose).not.toContain("panda-environment-manager:");
+    expect(generatedCompose).not.toContain("disposable_runner_net");
+  });
+
   it("builds runner and browser images in parallel before starting compose", async () => {
     const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
     const dockerBin = await createSynchronizedBuildDockerStub(logPath);
@@ -352,10 +546,14 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     expect(generatedCompose.match(/restart: unless-stopped/g)).toHaveLength(2);
     expect(generatedCompose).not.toContain("panda-runner-Luna");
     expect(generatedCompose).not.toContain("image: panda:latest");
+    const environmentsRoot = path.join(homeDir, ".panda", "environments");
+    expect(generatedCompose).toContain(`- "${environmentsRoot}/claw:${"${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}"}"`);
+    expect(generatedCompose).toContain(`- "${environmentsRoot}/luna:${"${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}"}"`);
 
     const baseCompose = await readFile(baseComposePath, "utf8");
     expect(baseCompose).toContain("  panda-telegram:\n    image: panda-app:latest");
     expect(baseCompose).toContain("  panda-whatsapp:\n    image: panda-app:latest");
+    expect(baseCompose).toContain("${PANDA_ENVIRONMENTS_HOST_ROOT:-${HOME}/.panda/environments}:${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}");
     expect(baseCompose).not.toContain("  panda-telegram:\n    build:");
     expect(baseCompose).not.toContain("  panda-whatsapp:\n    build:");
 
@@ -644,6 +842,46 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     });
     expect(logsResult.exitCode).toBe(0);
     expect(await readFile(logPath, "utf8")).toContain("logs -f panda-gateway");
+  });
+
+  it("keeps gateway and caddy off disposable environment networks", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_GATEWAY_BASE_URL=https://gateway.patrikmojzis.com",
+      "PANDA_GATEWAY_PUBLIC_HOST=gateway.patrikmojzis.com",
+      "GATEWAY_IP_ALLOWLIST=203.0.113.10/32",
+      "GATEWAY_GUARD_MODEL=openai-codex/gpt-5.5",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const upResult = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(upResult.exitCode).toBe(0);
+    const generatedCompose = await readFile(generatedComposePath, "utf8");
+    const gatewayStart = generatedCompose.indexOf("  panda-gateway:");
+    const caddyStart = generatedCompose.indexOf("  caddy:");
+    const networksStart = generatedCompose.indexOf("\nnetworks:");
+    expect(gatewayStart).toBeGreaterThanOrEqual(0);
+    expect(caddyStart).toBeGreaterThan(gatewayStart);
+    expect(networksStart).toBeGreaterThan(caddyStart);
+    const gatewaySection = generatedCompose.slice(gatewayStart, caddyStart);
+    const caddySection = generatedCompose.slice(caddyStart, networksStart);
+    expect(gatewaySection).toContain("gateway_edge_net");
+    expect(gatewaySection).not.toContain("disposable_runner_net");
+    expect(gatewaySection).not.toContain("execution_manager_net");
+    expect(caddySection).toContain("gateway_edge_net");
+    expect(caddySection).not.toContain("disposable_runner_net");
+    expect(caddySection).not.toContain("execution_manager_net");
   });
 
   it("rejects unsafe public gateway edge settings", async () => {

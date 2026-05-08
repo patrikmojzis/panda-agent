@@ -5,6 +5,8 @@ import {
     renderAgentProfileContext,
 } from "../../prompts/contexts/agent-profile.js";
 import type {AgentStore} from "../../domain/agents/store.js";
+import {normalizeSkillKey} from "../../domain/agents/types.js";
+import type {ExecutionSkillPolicy} from "../../domain/execution-environments/index.js";
 
 // Heartbeat guidance should only show up on heartbeat wakes, not in every normal run.
 const AGENT_PROMPT_SLUGS = ["agent"] as const;
@@ -17,6 +19,7 @@ export interface AgentProfileContextOptions {
   store: AgentStore;
   agentKey: string;
   sections?: readonly AgentProfileContextSection[];
+  skillPolicy?: ExecutionSkillPolicy;
 }
 
 export class AgentProfileContext extends LlmContext {
@@ -27,6 +30,19 @@ export class AgentProfileContext extends LlmContext {
   constructor(options: AgentProfileContextOptions) {
     super();
     this.options = options;
+  }
+
+  private filterSkillEntries(entries: AgentProfileSkillEntry[]): AgentProfileSkillEntry[] {
+    const policy = this.options.skillPolicy ?? {mode: "all_agent" as const};
+    if (policy.mode === "all_agent") {
+      return entries;
+    }
+    if (policy.mode === "none") {
+      return [];
+    }
+
+    const allowed = new Set(policy.skillKeys.map((key) => normalizeSkillKey(key)));
+    return entries.filter((entry) => allowed.has(normalizeSkillKey(entry.skillKey)));
   }
 
   async getContent(): Promise<string> {
@@ -49,10 +65,10 @@ export class AgentProfileContext extends LlmContext {
     }
 
     if (sections.has("skills")) {
-      skills = (await this.options.store.listAgentSkills(this.options.agentKey)).map((record) => ({
+      skills = this.filterSkillEntries((await this.options.store.listAgentSkills(this.options.agentKey)).map((record) => ({
         skillKey: record.skillKey,
         description: record.description,
-      }));
+      })));
     }
 
     return renderAgentProfileContext({

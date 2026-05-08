@@ -12,8 +12,10 @@ import type {
 import type {
     A2AMessageItem,
     A2AMessageRequestPayload,
+    A2ASenderEnvironmentSnapshot,
     RuntimeRequestRepo
 } from "../../../domain/threads/requests/index.js";
+import type {ExecutionEnvironmentKind} from "../../../domain/execution-environments/index.js";
 import {requireA2AString} from "../../../domain/a2a/shared.js";
 import type {SessionStore} from "../../../domain/sessions/index.js";
 import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "./config.js";
@@ -39,6 +41,7 @@ interface A2ADeliveryMetadata {
     toAgentKey: string;
     toSessionId: string;
     sentAt: number;
+    senderEnvironment?: A2ASenderEnvironmentSnapshot;
   };
 }
 
@@ -50,6 +53,72 @@ export interface CreateA2AOutboundAdapterOptions {
 }
 
 const requireTrimmed = requireA2AString;
+
+const EXECUTION_ENVIRONMENT_KINDS = new Set<ExecutionEnvironmentKind>([
+  "persistent_agent_runner",
+  "disposable_container",
+  "local",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readOptionalTrimmedString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function readPathHints(value: unknown): A2ASenderEnvironmentSnapshot["parentRunnerPaths"] | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const root = readOptionalTrimmedString(value, "root");
+  const workspace = readOptionalTrimmedString(value, "workspace");
+  const inbox = readOptionalTrimmedString(value, "inbox");
+  const artifacts = readOptionalTrimmedString(value, "artifacts");
+  const hints = {
+    ...(root ? {root} : {}),
+    ...(workspace ? {workspace} : {}),
+    ...(inbox ? {inbox} : {}),
+    ...(artifacts ? {artifacts} : {}),
+  };
+
+  return Object.keys(hints).length === 0 ? undefined : hints;
+}
+
+function readSenderEnvironment(value: unknown): A2ASenderEnvironmentSnapshot | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new Error("A2A sender environment metadata must be an object.");
+  }
+
+  const id = requireTrimmed("sender environment id", readOptionalTrimmedString(value, "id"));
+  const kind = requireTrimmed("sender environment kind", readOptionalTrimmedString(value, "kind"));
+  if (!EXECUTION_ENVIRONMENT_KINDS.has(kind as ExecutionEnvironmentKind)) {
+    throw new Error(`Unsupported A2A sender environment kind ${kind}.`);
+  }
+
+  const envDir = readOptionalTrimmedString(value, "envDir");
+  const parentRunnerPaths = readPathHints(value.parentRunnerPaths);
+  const workerPaths = readPathHints(value.workerPaths);
+
+  return {
+    id,
+    kind: kind as ExecutionEnvironmentKind,
+    ...(envDir ? {envDir} : {}),
+    ...(parentRunnerPaths ? {parentRunnerPaths} : {}),
+    ...(workerPaths ? {workerPaths} : {}),
+  };
+}
 
 function requireMetadata(value: JsonValue | undefined): A2ADeliveryMetadata["a2a"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -69,6 +138,7 @@ function requireMetadata(value: JsonValue | undefined): A2ADeliveryMetadata["a2a
   const toAgentKey = requireTrimmed("to agent key", typeof a2a.toAgentKey === "string" ? a2a.toAgentKey : undefined);
   const toSessionId = requireTrimmed("to session id", typeof a2a.toSessionId === "string" ? a2a.toSessionId : undefined);
   const sentAt = typeof a2a.sentAt === "number" && Number.isFinite(a2a.sentAt) ? a2a.sentAt : Date.now();
+  const senderEnvironment = readSenderEnvironment(a2a.senderEnvironment);
 
   return {
     messageId,
@@ -79,6 +149,7 @@ function requireMetadata(value: JsonValue | undefined): A2ADeliveryMetadata["a2a
     toAgentKey,
     toSessionId,
     sentAt,
+    ...(senderEnvironment ? {senderEnvironment} : {}),
   };
 }
 
@@ -182,6 +253,7 @@ export function createA2AOutboundAdapter(
         toAgentKey: a2a.toAgentKey,
         toSessionId: a2a.toSessionId,
         sentAt: a2a.sentAt,
+        ...(a2a.senderEnvironment ? {senderEnvironment: a2a.senderEnvironment} : {}),
         items,
       };
 

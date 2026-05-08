@@ -139,6 +139,70 @@ describe("AgentSkillTool", () => {
     });
   });
 
+  it("blocks skills outside the execution environment allowlist", async () => {
+    const store = await createStore();
+    await store.setAgentSkill("panda", "calendar", "Panda skill.", "# Panda");
+    await store.setAgentSkill("panda", "finance", "Finance skill.", "# Finance");
+    const tool = new AgentSkillTool({ store });
+    const context = createRunContext({
+      agentKey: "panda",
+      executionEnvironment: {
+        id: "worker:session",
+        agentKey: "panda",
+        kind: "disposable_container",
+        state: "ready",
+        executionMode: "remote",
+        credentialPolicy: {mode: "allowlist", envKeys: []},
+        skillPolicy: {mode: "allowlist", skillKeys: ["calendar"]},
+        toolPolicy: {},
+        source: "binding",
+      },
+    });
+
+    await expect(tool.run({
+      operation: "load",
+      skillKey: "calendar",
+    }, context)).resolves.toMatchObject({
+      found: true,
+      skillKey: "calendar",
+    });
+    await expect(tool.run({
+      operation: "load",
+      skillKey: "finance",
+    }, context)).rejects.toThrow("Skill finance is not allowed in this execution environment.");
+  });
+
+  it("blocks skill mutation in constrained execution environments", async () => {
+    const store = await createStore();
+    await store.setAgentSkill("panda", "calendar", "Panda skill.", "# Panda");
+    const tool = new AgentSkillTool({ store });
+    const context = createRunContext({
+      agentKey: "panda",
+      executionEnvironment: {
+        id: "worker:session",
+        agentKey: "panda",
+        kind: "disposable_container",
+        state: "ready",
+        executionMode: "remote",
+        credentialPolicy: {mode: "allowlist", envKeys: []},
+        skillPolicy: {mode: "allowlist", skillKeys: ["calendar"]},
+        toolPolicy: {},
+        source: "binding",
+      },
+    });
+
+    await expect(tool.run({
+      operation: "set",
+      skillKey: "calendar",
+      description: "Updated.",
+      content: "# Updated",
+    }, context)).rejects.toThrow("Skill mutation is not allowed in this execution environment.");
+    await expect(tool.run({
+      operation: "delete",
+      skillKey: "calendar",
+    }, context)).rejects.toThrow("Skill mutation is not allowed in this execution environment.");
+  });
+
   it("returns a non-throwing miss for load", async () => {
     const store = await createStore();
     const tool = new AgentSkillTool({ store });

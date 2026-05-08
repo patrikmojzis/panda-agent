@@ -1,59 +1,59 @@
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {
-  BackgroundToolJobCompletion,
-  BackgroundToolJobHandle,
-  BackgroundToolJobSnapshot,
+    BackgroundToolJobCompletion,
+    BackgroundToolJobHandle,
+    BackgroundToolJobSnapshot,
 } from "../../domain/threads/runtime/tool-job-service.js";
 import type {JsonObject} from "../../kernel/agent/types.js";
 import {
-  buildRunnerEndpoint,
-  buildRunnerRequestHeaders,
-  makeNetworkTimeoutSignal,
-  parseRunnerResponse,
-  readRunnerError,
-  resolveBashExecutionMode,
-  resolveRunnerUrl,
-  resolveRunnerUrlTemplate,
+    buildRunnerEndpoint,
+    buildRunnerRequestHeaders,
+    makeNetworkTimeoutSignal,
+    parseRunnerResponse,
+    readRunnerError,
+    resolveBashExecutionMode,
+    resolveRunnerUrl,
+    resolveRunnerUrlTemplate,
 } from "./bash-executor.js";
 import {ManagedBashJob} from "./bash-background-job.js";
+import {buildShellProcessEnv} from "./environment.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import type {
-  BashJobSnapshot,
-  BashRunnerJobCancelRequest,
-  BashRunnerJobQueryRequest,
-  BashRunnerJobResponse,
-  BashRunnerJobStartRequest,
-  BashRunnerJobWaitRequest,
+    BashJobSnapshot,
+    BashRunnerJobCancelRequest,
+    BashRunnerJobQueryRequest,
+    BashRunnerJobResponse,
+    BashRunnerJobStartRequest,
+    BashRunnerJobWaitRequest,
 } from "./bash-protocol.js";
 import {redactSecretsInString} from "./redaction.js";
 import type {ShellExecutionContext} from "./types.js";
+import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/index.js";
 
 const DEFAULT_CANCEL_WAIT_TIMEOUT_MS = 1_000;
 const DEFAULT_REMOTE_TIMEOUT_BUFFER_MS = 5_000;
 
-interface BashBackgroundContext extends ShellExecutionContext {
-  agentKey?: string;
-}
-
-export interface StartBashBackgroundJobOptions<TContext extends BashBackgroundContext = BashBackgroundContext> {
+export interface StartBashBackgroundJobOptions<TContext extends ShellExecutionContext = ShellExecutionContext> {
   jobId: string;
   command: string;
   cwd: string;
   timeoutMs: number;
   env?: Record<string, string>;
   resolvedEnv?: Record<string, string>;
+  shellEnv?: Record<string, string>;
   trackedEnvKeys: string[];
   maxOutputChars: number;
   persistOutputThresholdChars: number;
   outputDirectory: string;
   secretValues: readonly string[];
+  executionEnvironment?: ResolvedExecutionEnvironment;
   context?: TContext;
   processEnv?: NodeJS.ProcessEnv;
   shell?: string;
   fetchImpl?: typeof fetch;
 }
 
-function readAgentKey(context: BashBackgroundContext | undefined): string {
+function readAgentKey(context: ShellExecutionContext | undefined): string {
   const agentKey = context?.agentKey?.trim();
   if (!agentKey) {
     throw new ToolError("Remote background bash requires agentKey in the current runtime session context.");
@@ -135,13 +135,13 @@ async function parseJobResponse(response: Response): Promise<BashRunnerJobRespon
   return payload as BashRunnerJobResponse;
 }
 
-export async function startBashBackgroundJob<TContext extends BashBackgroundContext>(
+export async function startBashBackgroundJob<TContext extends ShellExecutionContext>(
   options: StartBashBackgroundJobOptions<TContext>,
 ): Promise<BackgroundToolJobHandle> {
   const processEnv = options.processEnv ?? process.env;
   const shell = options.shell ?? processEnv.SHELL ?? "/bin/zsh";
   const fetchImpl = options.fetchImpl ?? fetch;
-  const mode = resolveBashExecutionMode(processEnv);
+  const mode = options.executionEnvironment?.executionMode ?? resolveBashExecutionMode(processEnv);
 
   if (mode === "local") {
     const spawnFailure = await readBashSpawnPreflightFailure({
@@ -153,12 +153,13 @@ export async function startBashBackgroundJob<TContext extends BashBackgroundCont
       throw new ToolError(spawnFailure.message, { details: spawnFailure.details });
     }
 
-    const childEnv = {
-      ...processEnv,
-      ...(options.resolvedEnv ?? {}),
-      ...(options.context?.shell?.env ?? {}),
-      ...(options.env ?? {}),
-    };
+    const childEnv = buildShellProcessEnv({
+      processEnv,
+      executionEnvironment: options.executionEnvironment,
+      resolvedEnv: options.resolvedEnv,
+      shellEnv: options.shellEnv,
+      env: options.env,
+    });
     const job = await ManagedBashJob.start({
       jobId: options.jobId,
       command: options.command,
@@ -189,13 +190,15 @@ export async function startBashBackgroundJob<TContext extends BashBackgroundCont
   }
 
   const runnerUrlTemplate = resolveRunnerUrlTemplate(processEnv);
-  if (!runnerUrlTemplate) {
+  if (!runnerUrlTemplate && !options.executionEnvironment?.runnerUrl) {
     throw new ToolError("Remote background bash requires RUNNER_URL_TEMPLATE.");
   }
 
   const agentKey = readAgentKey(options.context);
-  const runnerUrl = resolveRunnerUrl(runnerUrlTemplate, agentKey);
-  const headers = buildRunnerRequestHeaders(agentKey, runnerUrlTemplate, runnerUrl);
+  const runnerUrl = options.executionEnvironment?.runnerUrl
+    ?? resolveRunnerUrl(runnerUrlTemplate ?? "", agentKey);
+  const requestTemplate = runnerUrlTemplate ?? runnerUrl;
+  const headers = buildRunnerRequestHeaders(agentKey, requestTemplate, runnerUrl);
   const request: BashRunnerJobStartRequest = {
     jobId: options.jobId,
     command: options.command,
@@ -207,12 +210,12 @@ export async function startBashBackgroundJob<TContext extends BashBackgroundCont
     persistOutputFiles: options.secretValues.length === 0,
     env: Object.keys({
       ...(options.resolvedEnv ?? {}),
-      ...(options.context?.shell?.env ?? {}),
+      ...(options.shellEnv ?? {}),
       ...(options.env ?? {}),
     }).length > 0
       ? {
         ...(options.resolvedEnv ?? {}),
-        ...(options.context?.shell?.env ?? {}),
+        ...(options.shellEnv ?? {}),
         ...(options.env ?? {}),
       }
       : undefined,

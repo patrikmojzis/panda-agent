@@ -6,11 +6,16 @@ import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import type {AgentStore} from "../../domain/agents/store.js";
 import {
-  MAX_AGENT_SKILL_CONTENT_CHARS,
-  MAX_AGENT_SKILL_DESCRIPTION_CHARS,
-  normalizeAgentSkillContent,
-  normalizeAgentSkillDescription,
+    MAX_AGENT_SKILL_CONTENT_CHARS,
+    MAX_AGENT_SKILL_DESCRIPTION_CHARS,
+    normalizeAgentSkillContent,
+    normalizeAgentSkillDescription,
 } from "../../domain/agents/types.js";
+import {
+    type ExecutionSkillPolicy,
+    isExecutionSkillAllowed,
+    readExecutionSkillPolicy,
+} from "../../domain/execution-environments/index.js";
 
 function readAgentSkillScope(context: unknown): { agentKey: string } {
   if (
@@ -26,6 +31,20 @@ function readAgentSkillScope(context: unknown): { agentKey: string } {
   return {
     agentKey: (context as {agentKey: string}).agentKey,
   };
+}
+
+function assertSkillAllowed(policy: ExecutionSkillPolicy, skillKey: string): void {
+  if (isExecutionSkillAllowed(policy, skillKey)) {
+    return;
+  }
+
+  throw new ToolError(`Skill ${skillKey} is not allowed in this execution environment.`);
+}
+
+function assertSkillMutationAllowed(policy: ExecutionSkillPolicy): void {
+  if (policy.mode !== "all_agent") {
+    throw new ToolError("Skill mutation is not allowed in this execution environment.");
+  }
 }
 
 export interface AgentSkillToolOptions {
@@ -141,6 +160,8 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
     run: RunContext<TContext>,
   ): Promise<AgentSkillToolResult> {
     const scope = readAgentSkillScope(run.context);
+    const skillPolicy = readExecutionSkillPolicy(run.context);
+    assertSkillAllowed(skillPolicy, args.skillKey);
 
     if (args.operation === "load") {
       const record = await this.store.loadAgentSkill(scope.agentKey, args.skillKey);
@@ -165,6 +186,8 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
         lastLoadedAt: record.lastLoadedAt,
       };
     }
+
+    assertSkillMutationAllowed(skillPolicy);
 
     if (args.operation === "delete") {
       return {

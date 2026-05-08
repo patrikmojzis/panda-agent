@@ -1,5 +1,7 @@
 import type {LlmContext} from "../../kernel/agent/llm-context.js";
 import type {AgentStore} from "../../domain/agents/store.js";
+import type {ExecutionEnvironmentStore, ExecutionSkillPolicy} from "../../domain/execution-environments/index.js";
+import type {SessionStore} from "../../domain/sessions/index.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {WikiBindingService} from "../../domain/wiki/index.js";
 import type {AgentCalendarService} from "../../integrations/calendar/types.js";
@@ -8,6 +10,7 @@ import {BackgroundJobsContext} from "./background-jobs-context.js";
 import {CalendarAgendaContext} from "./calendar-agenda-context.js";
 import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
+import {WorkersContext} from "./workers-context.js";
 import {WikiOverviewContext} from "./wiki-overview-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 
@@ -17,6 +20,7 @@ export type DefaultAgentLlmContextSection =
   | "calendar_agenda"
   | "wiki_overview"
   | "background_jobs"
+  | "workers"
   | AgentProfileContextSection;
 
 const PROFILE_SECTIONS = new Set<AgentProfileContextSection>([
@@ -29,6 +33,7 @@ export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContext
   "calendar_agenda",
   "wiki_overview",
   "background_jobs",
+  "workers",
   "prompts",
   "skills",
 ];
@@ -36,12 +41,15 @@ export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContext
 export interface BuildDefaultAgentLlmContextsOptions {
   context?: DefaultAgentSessionContext;
   agentStore?: AgentStore;
+  sessionStore?: Pick<SessionStore, "listAgentSessions">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
+  executionEnvironments?: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   calendarService?: AgentCalendarService | null;
   agentKey?: string;
   threadId?: string;
   sections?: readonly DefaultAgentLlmContextSection[];
+  skillPolicy?: ExecutionSkillPolicy;
   extraLlmContexts?: readonly LlmContext[];
 }
 
@@ -53,6 +61,7 @@ export {
 export {DateTimeContext, type DateTimeContextOptions} from "./datetime-context.js";
 export {EnvironmentContext, type EnvironmentContextOptions} from "./environment-context.js";
 export {CalendarAgendaContext, type CalendarAgendaContextOptions} from "./calendar-agenda-context.js";
+export {WorkersContext, type WorkersContextOptions} from "./workers-context.js";
 
 export function buildDefaultAgentLlmContexts(
   options: BuildDefaultAgentLlmContextsOptions,
@@ -94,6 +103,21 @@ export function buildDefaultAgentLlmContexts(
     }));
   }
 
+  if (
+    uniqueSections.has("workers")
+    && options.sessionStore
+    && options.executionEnvironments
+    && options.agentKey
+    && options.context?.sessionId
+  ) {
+    llmContexts.push(new WorkersContext({
+      sessions: options.sessionStore,
+      environments: options.executionEnvironments,
+      agentKey: options.agentKey,
+      parentSessionId: options.context.sessionId,
+    }));
+  }
+
   const profileSections = [...uniqueSections]
     .filter((section): section is AgentProfileContextSection => PROFILE_SECTIONS.has(section as AgentProfileContextSection));
   if (
@@ -105,6 +129,7 @@ export function buildDefaultAgentLlmContexts(
       store: options.agentStore,
       agentKey: options.agentKey,
       sections: profileSections,
+      skillPolicy: options.skillPolicy,
     }));
   }
 

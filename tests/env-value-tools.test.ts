@@ -5,10 +5,10 @@ import {DataType, newDb} from "pg-mem";
 import {Agent, RunContext, stringToUserMessage} from "../src/index.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {
-  CredentialCrypto,
-  CredentialResolver,
-  CredentialService,
-  PostgresCredentialStore,
+    CredentialCrypto,
+    CredentialResolver,
+    CredentialService,
+    PostgresCredentialStore,
 } from "../src/domain/credentials/index.js";
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../src/panda/index.js";
@@ -211,6 +211,43 @@ describe("Env value tools", () => {
     await expect(credentialStore.getCredential("OPENAI_API_KEY", {
       agentKey: "panda",
     })).resolves.toBeNull();
+  });
+
+  it("blocks credential mutation in constrained execution environments", async () => {
+    const {service} = await createHarness();
+    const setTool = new SetEnvValueTool({service});
+    const agent = new Agent({
+      name: "tool-agent",
+      instructions: "Use tools.",
+      tools: [setTool],
+    });
+
+    await expect(setTool.run(
+      {
+        key: "OPENAI_API_KEY",
+        value: "nope",
+      },
+      createRunContext(createContext({
+        executionEnvironment: {
+          id: "worker-env",
+          agentKey: "panda",
+          kind: "disposable_container",
+          state: "ready",
+          executionMode: "remote",
+          runnerUrl: "http://worker:8080",
+          credentialPolicy: {
+            mode: "allowlist",
+            envKeys: [],
+          },
+          skillPolicy: {
+            mode: "allowlist",
+            skillKeys: [],
+          },
+          toolPolicy: {},
+          source: "binding",
+        },
+      }), agent),
+    )).rejects.toThrow("Credential mutation is not allowed");
   });
 
   it("returns reserved env key errors as tool results so the run can recover", async () => {

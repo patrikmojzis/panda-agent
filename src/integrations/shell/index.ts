@@ -31,3 +31,18 @@ export {
   type LocalShellExecutorOptions,
   type RemoteShellExecutorOptions,
 } from "./bash-executor.js";
+export {
+  DockerApiError,
+  DockerExecutionEnvironmentManager,
+  resolveDockerExecutionEnvironmentManagerOptions,
+  resolveExecutionEnvironmentManagerServerOptions,
+  startExecutionEnvironmentManager,
+  type DockerExecutionEnvironmentManagerOptions,
+  type ExecutionEnvironmentManagerServer,
+  type ExecutionEnvironmentManagerServerOptions,
+} from "./docker-execution-environment-manager.js";
+export {
+  createExecutionEnvironmentManagerClientFromEnv,
+  HttpExecutionEnvironmentManagerClient,
+  type HttpExecutionEnvironmentManagerClientOptions,
+} from "./execution-environment-manager-client.js";

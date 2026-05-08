@@ -9,6 +9,9 @@ In both modes, foreground bash mutates the shared shell session and background b
 
 Use remote mode when you want Docker or another sandbox boundary between the core runtime and shell execution.
 
+For on-demand throwaway runners, start with
+[Disposable Execution Environments](./disposable-execution-environments.md).
+
 ## Rule Zero
 
 Keep secrets in `panda-core`, not in the runner.
@@ -46,9 +49,11 @@ That also means the core-to-runner link is sensitive. Keep it private.
 
 In v1:
 
-- `agentKey` is the filesystem boundary
-- one runner serves one agent
-- each runner mounts that agent home
+- sessions resolve a default execution environment before bash runs
+- when no explicit session environment binding exists, Panda falls back to the persistent per-agent runner
+- `agentKey` remains the fallback filesystem and credential boundary
+- one persistent runner serves one agent
+- each persistent runner mounts that agent home
 - shared workspaces are explicit extra mounts
 
 That means:
@@ -56,6 +61,7 @@ That means:
 - `panda-core` keeps DB creds, provider tokens, and connector secrets
 - `panda-runner-<agent>` executes shell commands
 - the runner should not have DB creds or a network path to Postgres
+- disposable/worker environments should use explicit credential allowlists, not inherit every agent credential
 
 Background jobs follow the same split:
 
@@ -270,10 +276,16 @@ Remote background jobs add:
 
 Those endpoints are runner-internal plumbing for Panda core. They are not meant as a public API contract for random clients.
 
+## Disposable Runners
+
+Disposable runner setup lives in
+[Disposable Execution Environments](./disposable-execution-environments.md).
+
 ## Hard Rules
 
 - do not put DB creds in runner env
 - do not put provider API keys in runner env
+- do not mount the Docker socket into `panda-core`
 - do not mount the Docker socket into runners
 - do not let runners reach Postgres over the network
 - do not expose the core-to-runner HTTP hop on a public network

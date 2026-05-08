@@ -1,4 +1,4 @@
-import {mkdtemp, rm, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
@@ -96,6 +96,73 @@ function createMockRuntime(...responses: AssistantMessage[]) {
   };
 }
 
+function createDisposableExecutionEnvironment(paths: Partial<{
+  rootHostPath: string;
+  rootCorePath: string;
+  workspaceCorePath: string;
+  inboxCorePath: string;
+  artifactsCorePath: string;
+}> = {}): NonNullable<DefaultAgentSessionContext["executionEnvironment"]> {
+  const rootCorePath = paths.rootCorePath ?? "/root/.panda/environments/panda/worker-a";
+  return {
+    id: "worker:session-a",
+    agentKey: "panda",
+    kind: "disposable_container",
+    state: "ready",
+    executionMode: "remote",
+    initialCwd: "/workspace",
+    rootPath: "/workspace",
+    source: "binding",
+    credentialPolicy: {mode: "allowlist", envKeys: []},
+    skillPolicy: {mode: "allowlist", skillKeys: []},
+    toolPolicy: {},
+    metadata: {
+      filesystem: {
+        envDir: "worker-a",
+        root: {
+          ...(paths.rootHostPath ? {hostPath: paths.rootHostPath} : {}),
+          corePath: rootCorePath,
+          parentRunnerPath: "/environments/worker-a",
+        },
+        workspace: {
+          corePath: paths.workspaceCorePath ?? path.join(rootCorePath, "workspace"),
+          parentRunnerPath: "/environments/worker-a/workspace",
+          workerPath: "/workspace",
+        },
+        inbox: {
+          corePath: paths.inboxCorePath ?? path.join(rootCorePath, "inbox"),
+          parentRunnerPath: "/environments/worker-a/inbox",
+          workerPath: "/inbox",
+        },
+        artifacts: {
+          corePath: paths.artifactsCorePath ?? path.join(rootCorePath, "artifacts"),
+          parentRunnerPath: "/environments/worker-a/artifacts",
+          workerPath: "/artifacts",
+        },
+      },
+    },
+  };
+}
+
+function expectedSenderEnvironment() {
+  return {
+    id: "worker:session-a",
+    kind: "disposable_container",
+    envDir: "worker-a",
+    parentRunnerPaths: {
+      root: "/environments/worker-a",
+      workspace: "/environments/worker-a/workspace",
+      inbox: "/environments/worker-a/inbox",
+      artifacts: "/environments/worker-a/artifacts",
+    },
+    workerPaths: {
+      workspace: "/workspace",
+      inbox: "/inbox",
+      artifacts: "/artifacts",
+    },
+  };
+}
+
 describe("MessageAgentTool", () => {
   const directories = new Set<string>();
 
@@ -147,6 +214,51 @@ describe("MessageAgentTool", () => {
       targetSessionId: "session-b",
       messageId: "a2a:123",
     });
+  });
+
+  it("passes disposable sender environment hints without leaking core paths", async () => {
+    const tool = new MessageAgentTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      executionEnvironment: createDisposableExecutionEnvironment({
+        rootHostPath: "/Users/patrikmojzis/.panda/environments/panda/worker-a",
+      }),
+    });
+
+    await tool.run({
+      sessionId: "session-b",
+      items: [{type: "text", text: "done"}],
+    }, createRunContext(context));
+
+    const senderEnvironment = context.queueMessage.mock.calls[0]?.[0]?.senderEnvironment;
+    expect(senderEnvironment).toEqual(expectedSenderEnvironment());
+    expect(JSON.stringify(senderEnvironment)).not.toContain("/root/.panda");
+    expect(JSON.stringify(senderEnvironment)).not.toContain("/Users/patrikmojzis");
+  });
+
+  it("does not leak core paths when disposable attachments fail validation", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "panda-message-agent-tool-"));
+    directories.add(tempDir);
+    const artifacts = path.join(tempDir, "artifacts");
+    const hugeFile = path.join(artifacts, "huge.bin");
+    await mkdir(artifacts, {recursive: true});
+    await writeFile(hugeFile, Buffer.alloc(20 * 1024 * 1024 + 1));
+
+    const tool = new MessageAgentTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      executionEnvironment: createDisposableExecutionEnvironment({
+        rootCorePath: tempDir,
+        artifactsCorePath: artifacts,
+      }),
+    });
+
+    await expect(tool.run({
+      sessionId: "session-b",
+      items: [{type: "file", path: "/artifacts/huge.bin"}],
+    }, createRunContext(context))).rejects.toThrow("Attachment /artifacts/huge.bin is too large");
+    await expect(tool.run({
+      sessionId: "session-b",
+      items: [{type: "file", path: "/artifacts/missing.bin"}],
+    }, createRunContext(context))).rejects.toThrow("No readable file found at /artifacts/missing.bin");
   });
 
   it("fails cleanly when the runtime does not expose A2A messaging", async () => {

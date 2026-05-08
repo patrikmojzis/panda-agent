@@ -3,12 +3,15 @@ export {
   type RuntimeRequestRepoOptions,
 } from "./repo.js";
 export type {
+  A2AEnvironmentPathHints,
   A2AMessageItem,
   A2AMessageRequestPayload,
+  A2ASenderEnvironmentSnapshot,
   AbortThreadRequestPayload,
   CompactThreadRequestPayload,
   CreateRuntimeRequestInput,
   CreateBranchSessionRequestPayload,
+  CreateWorkerSessionRequestPayload,
   ResolveThreadRunConfigRequestPayload,
   RuntimeRequestKind,
   RuntimeRequestPayload,

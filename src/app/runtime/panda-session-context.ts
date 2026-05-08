@@ -2,6 +2,7 @@ import type {JsonValue} from "../../kernel/agent/types.js";
 import type {OutboundDeliveryInput, OutboundDeliveryRecord,} from "../../domain/channels/deliveries/types.js";
 import type {ChannelActionInput, ChannelActionRecord,} from "../../domain/channels/actions/types.js";
 import type {OutboundItem, RememberedRoute} from "../../domain/channels/types.js";
+import type {A2ASenderEnvironmentSnapshot} from "../../domain/threads/requests/index.js";
 import type {IdentityRecord} from "../../domain/identity/types.js";
 import type {ShellExecutionContext, ShellSession} from "../../integrations/shell/types.js";
 
@@ -39,6 +40,7 @@ export interface DefaultAgentMessageAgentService {
     senderRunId?: string;
     agentKey?: string;
     sessionId?: string;
+    senderEnvironment?: A2ASenderEnvironmentSnapshot;
     items: readonly OutboundItem[];
   }): Promise<{
     delivery: OutboundDeliveryRecord;

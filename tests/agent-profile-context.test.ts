@@ -58,4 +58,42 @@ describe("AgentProfileContext", () => {
     expect(content).not.toContain("[memory]");
     expect(content).not.toContain("[recent diary]");
   });
+
+  it("filters injected skill summaries by execution environment skill allowlist", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const identityStore = new PostgresIdentityStore({ pool });
+    const agentStore = new PostgresAgentStore({ pool });
+    await identityStore.ensureSchema();
+    await agentStore.ensureSchema();
+    await agentStore.bootstrapAgent({
+      agentKey: "panda",
+      displayName: "Panda",
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
+    });
+    await agentStore.setAgentSkill("panda", "calendar", "Use this for calendar work.", "# Calendar");
+    await agentStore.setAgentSkill("panda", "finance", "Use this for finance work.", "# Finance");
+
+    const context = new AgentProfileContext({
+      store: agentStore,
+      agentKey: "panda",
+      skillPolicy: {
+        mode: "allowlist",
+        skillKeys: ["calendar"],
+      },
+    });
+    const content = await context.getContent();
+
+    expect(content).toContain("calendar\nUse this for calendar work.");
+    expect(content).not.toContain("finance\nUse this for finance work.");
+  });
 });

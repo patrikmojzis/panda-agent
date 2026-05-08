@@ -74,6 +74,9 @@ The current queued result includes:
 - `targetSessionId`
 - `messageId`
 
+Worker sessions should be targeted by `sessionId`. `agentKey` still resolves
+only the recipient agent's main session.
+
 ## Attachments
 
 V1 supports:
@@ -97,6 +100,11 @@ Attachment transfer is receiver-side durable media ingestion:
 4. the runtime request carries receiver-local `MediaDescriptor` values
 
 Raw sender paths do not cross the session boundary as the durable contract.
+
+For disposable workers, `message_agent` also carries a small sender environment
+snapshot in delivery metadata. It includes safe parent-runner paths such as
+`/environments/<envDir>/artifacts`, plus worker-local paths such as
+`/artifacts`. It does not include host paths or core container paths.
 
 ## Binding Model
 
@@ -159,6 +167,8 @@ Sender provenance lives in `delivery.metadata.a2a`:
 - `toAgentKey`
 - `toSessionId`
 - `sentAt`
+- `senderEnvironment` when the sender is a disposable/non-persistent execution
+  environment
 
 ## Delivery Worker Path
 
@@ -211,8 +221,17 @@ The model sees:
 - `message_id`
 - `from_agent_key`
 - `from_session_id`
+- `sender_environment` for disposable/non-persistent senders
 - attachment descriptions
 - message body
+
+For worker completion messages, the parent can inspect:
+
+- `parent_workspace_path`
+- `parent_inbox_path`
+- `parent_artifacts_path`
+
+These are parent-runner paths, not raw host paths.
 
 Inbound A2A does **not** fake a human:
 

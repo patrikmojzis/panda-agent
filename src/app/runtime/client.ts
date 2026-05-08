@@ -1,14 +1,15 @@
+import {randomUUID} from "node:crypto";
+
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {sleep} from "../../lib/async.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
 import {PostgresAgentStore} from "../../domain/agents/index.js";
+import type {ExecutionToolPolicy} from "../../domain/execution-environments/index.js";
 import {type IdentityRecord, normalizeIdentityHandle, PostgresIdentityStore,} from "../../domain/identity/index.js";
+import type {JsonValue} from "../../kernel/agent/types.js";
 import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {DaemonStateRepo} from "./state/repo.js";
-import {
-  PostgresThreadRuntimeStore,
-  type ThreadRuntimeNotification,
-} from "../../domain/threads/runtime/postgres.js";
+import {PostgresThreadRuntimeStore, type ThreadRuntimeNotification,} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {InferenceProjection, ThreadRecord, ThreadUpdate,} from "../../domain/threads/runtime/types.js";
 import {PostgresSessionStore, type SessionRecord} from "../../domain/sessions/index.js";
@@ -40,6 +41,31 @@ export interface RuntimeClientSessionOptions {
   inferenceProjection?: InferenceProjection;
 }
 
+export interface RuntimeClientWorkerSessionOptions extends RuntimeClientSessionOptions {
+  threadId?: string;
+  role?: string;
+  task: string;
+  context?: string;
+  credentialAllowlist?: readonly string[];
+  skillAllowlist?: readonly string[];
+  toolPolicy?: ExecutionToolPolicy;
+  ttlMs?: number;
+  parentSessionId?: string;
+}
+
+export interface RuntimeClientWorkerSessionResult {
+  thread: ThreadRecord;
+  sessionId: string;
+  threadId: string;
+  environmentId: string;
+  environment?: {
+    id: string;
+    runnerCwd?: string;
+    rootPath?: string;
+    metadata?: JsonValue;
+  };
+}
+
 export interface RuntimeClientCompactResult {
   compacted: boolean;
   tokensBefore?: number;
@@ -50,6 +76,7 @@ export interface RuntimeClient {
   identity: IdentityRecord;
   store: ThreadRuntimeStore;
   createBranchSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
+  createWorkerSession(options: RuntimeClientWorkerSessionOptions): Promise<RuntimeClientWorkerSessionResult>;
   openMainSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
   resetSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
   openSession(sessionId: string): Promise<ThreadRecord>;
@@ -171,6 +198,47 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       });
       const result = await waitForRequestResult<{threadId: string}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
+    };
+
+    const createWorkerSession = async (
+      sessionOptions: RuntimeClientWorkerSessionOptions,
+    ): Promise<RuntimeClientWorkerSessionResult> => {
+      await assertDaemonActive();
+      const sessionId = trimToUndefined(sessionOptions.sessionId) ?? randomUUID();
+      const threadId = trimToUndefined(sessionOptions.threadId) ?? randomUUID();
+      const request = await requests.enqueueRequest({
+        kind: "create_worker_session",
+        payload: {
+          identityId: identity.id,
+          sessionId,
+          threadId,
+          agentKey: trimToUndefined(sessionOptions.agentKey),
+          role: trimToUndefined(sessionOptions.role),
+          task: sessionOptions.task,
+          context: trimToUndefined(sessionOptions.context),
+          model: sessionOptions.model,
+          thinking: sessionOptions.thinking,
+          ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
+          ...(sessionOptions.credentialAllowlist ? {credentialAllowlist: sessionOptions.credentialAllowlist} : {}),
+          ...(sessionOptions.skillAllowlist ? {skillAllowlist: sessionOptions.skillAllowlist} : {}),
+          ...(sessionOptions.toolPolicy ? {toolPolicy: sessionOptions.toolPolicy} : {}),
+          ...(sessionOptions.ttlMs === undefined ? {} : {ttlMs: sessionOptions.ttlMs}),
+          parentSessionId: trimToUndefined(sessionOptions.parentSessionId),
+        },
+      });
+      const result = await waitForRequestResult<{
+        threadId: string;
+        sessionId: string;
+        environmentId: string;
+        environment?: RuntimeClientWorkerSessionResult["environment"];
+      }>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
+      return {
+        thread: await store.getThread(result.threadId),
+        sessionId: result.sessionId,
+        threadId: result.threadId,
+        environmentId: result.environmentId,
+        ...(result.environment ? {environment: result.environment} : {}),
+      };
     };
 
     const openMainSession = async (sessionOptions: RuntimeClientSessionOptions = {}): Promise<ThreadRecord> => {
@@ -323,6 +391,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       identity,
       store,
       createBranchSession,
+      createWorkerSession,
       openMainSession,
       resetSession,
       openSession,

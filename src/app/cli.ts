@@ -20,7 +20,12 @@ import {type ChatCliOptions, runChatCli} from "../ui/tui/chat.js";
 import {renderResumeHint} from "../ui/tui/exit-hint.js";
 import {registerWhatsAppCommands} from "../integrations/channels/whatsapp/cli.js";
 import {resolveBrowserRunnerOptions, startBrowserRunner} from "../integrations/browser/index.js";
-import {resolveBashRunnerOptions, startBashRunner} from "../integrations/shell/index.js";
+import {
+    resolveBashRunnerOptions,
+    resolveExecutionEnvironmentManagerServerOptions,
+    startBashRunner,
+    startExecutionEnvironmentManager,
+} from "../integrations/shell/index.js";
 import {registerObserveCommand} from "../ui/observe/cli.js";
 import {registerSmokeCommand} from "./smoke/cli.js";
 
@@ -54,6 +59,17 @@ interface BrowserRunnerCliOptions {
   host?: string;
   port?: number;
   dataDirectory?: string;
+}
+
+interface EnvironmentManagerCliOptions {
+  host?: string;
+  port?: number;
+  token?: string;
+  dockerHost?: string;
+  image?: string;
+  network?: string;
+  runnerCwd?: string;
+  runnerPublicHost?: string;
 }
 
 function parsePort(value: string): number {
@@ -200,6 +216,47 @@ async function runBrowserRunnerCommand(options: BrowserRunnerCliOptions): Promis
   }
 }
 
+async function runEnvironmentManagerCommand(options: EnvironmentManagerCliOptions): Promise<void> {
+  const resolved = resolveExecutionEnvironmentManagerServerOptions({
+    ...process.env,
+    ...(options.host ? {PANDA_EXECUTION_ENVIRONMENT_MANAGER_HOST: options.host} : {}),
+    ...(options.port !== undefined ? {PANDA_EXECUTION_ENVIRONMENT_MANAGER_PORT: String(options.port)} : {}),
+    ...(options.token ? {PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: options.token} : {}),
+    ...(options.dockerHost ? {PANDA_DOCKER_HOST: options.dockerHost} : {}),
+    ...(options.image ? {PANDA_DISPOSABLE_RUNNER_IMAGE: options.image} : {}),
+    ...(options.network ? {PANDA_DISPOSABLE_RUNNER_NETWORK: options.network} : {}),
+    ...(options.runnerCwd ? {PANDA_DISPOSABLE_RUNNER_CWD: options.runnerCwd} : {}),
+    ...(options.runnerPublicHost ? {PANDA_DISPOSABLE_RUNNER_PUBLIC_HOST: options.runnerPublicHost} : {}),
+  });
+  const manager = await startExecutionEnvironmentManager(resolved);
+
+  const shutdown = async () => {
+    await manager.close();
+  };
+
+  const handleSigint = () => {
+    void shutdown();
+  };
+  const handleSigterm = () => {
+    void shutdown();
+  };
+
+  process.once("SIGINT", handleSigint);
+  process.once("SIGTERM", handleSigterm);
+
+  try {
+    process.stdout.write(`Panda execution environment manager listening on http://${manager.host}:${manager.port}\n`);
+    await new Promise<void>((resolve, reject) => {
+      manager.server.once("close", resolve);
+      manager.server.once("error", reject);
+    });
+  } finally {
+    process.off("SIGINT", handleSigint);
+    process.off("SIGTERM", handleSigterm);
+    await manager.close().catch(() => {});
+  }
+}
+
 function configureChatOptions(command: Command): Command {
   return command
     .option("--identity <handle>", "Identity handle to use as the active participant (required)", parseIdentityHandle)
@@ -262,6 +319,21 @@ program
   .option("--data-directory <path>", "Directory for browser runner session state and scratch artifacts")
   .action((options: BrowserRunnerCliOptions) => {
     return runBrowserRunnerCommand(options);
+  });
+
+program
+  .command("environment-manager")
+  .description("Run the disposable execution environment manager")
+  .option("--host <host>", "Host to bind the environment manager server")
+  .option("--port <port>", "Port to bind the environment manager server", parsePort)
+  .option("--token <token>", "Bearer token required by panda-core")
+  .option("--docker-host <host>", "Docker Engine host, for example unix:///var/run/docker.sock")
+  .option("--image <image>", "Docker image used for disposable bash runners")
+  .option("--network <network>", "Docker network for disposable runner containers")
+  .option("--runner-cwd <path>", "Initial cwd inside disposable runner containers")
+  .option("--runner-public-host <host>", "Host panda-core should use for published disposable runner ports")
+  .action((options: EnvironmentManagerCliOptions) => {
+    return runEnvironmentManagerCommand(options);
   });
 
 registerAgentCommands(program);

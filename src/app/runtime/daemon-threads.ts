@@ -3,15 +3,16 @@ import {randomUUID} from "node:crypto";
 import {type MediaDescriptor, relocateMediaDescriptor} from "../../domain/channels/index.js";
 import type {IdentityRecord} from "../../domain/identity/index.js";
 import {
-  createSessionWithInitialThread,
-  resetSessionCurrentThread,
-  type SessionRecord
+    createSessionWithInitialThread,
+    resetSessionCurrentThread,
+    type SessionRecord
 } from "../../domain/sessions/index.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {
-  CreateBranchSessionRequestPayload,
-  ResetSessionRequestPayload,
-  ResolveMainSessionThreadRequestPayload,
+    CreateBranchSessionRequestPayload,
+    CreateWorkerSessionRequestPayload,
+    ResetSessionRequestPayload,
+    ResolveMainSessionThreadRequestPayload,
 } from "../../domain/threads/requests/index.js";
 import {PostgresThreadRuntimeStore, type ThreadRecord} from "../../domain/threads/runtime/index.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
@@ -19,18 +20,37 @@ import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
 import {requireIdentityId, trimNonEmptyString} from "./daemon-shared.js";
+import type {CreateWorkerSessionResult} from "./worker-session-service.js";
 
 export interface DaemonThreadHelpers {
   ensureIdentity(identityId: string): Promise<IdentityRecord>;
   createBranchSession(input: {
     identity: IdentityRecord;
     sessionId?: string;
+    threadId?: string;
     agentKey?: string;
     model?: string;
     thinking?: CreateBranchSessionRequestPayload["thinking"];
     inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
     context?: Record<string, unknown>;
   }): Promise<ThreadRecord>;
+  createWorkerSession(input: {
+    identity: IdentityRecord;
+    sessionId?: string;
+    threadId?: string;
+    agentKey?: string;
+    role?: string;
+    task: string;
+    context?: string;
+    model?: string;
+    thinking?: CreateWorkerSessionRequestPayload["thinking"];
+    inferenceProjection?: CreateWorkerSessionRequestPayload["inferenceProjection"];
+    credentialAllowlist?: readonly string[];
+    skillAllowlist?: readonly string[];
+    toolPolicy?: CreateWorkerSessionRequestPayload["toolPolicy"];
+    ttlMs?: number;
+    parentSessionId?: string;
+  }): Promise<CreateWorkerSessionResult>;
   relocateThreadMedia(
     thread: ThreadRecord,
     media: readonly MediaDescriptor[],
@@ -252,6 +272,62 @@ export function createDaemonThreadHelpers(
       createdByIdentityId: input.identity.id,
     });
     return context.runtime.store.createThread(threadInput);
+  };
+
+  const createWorkerSession = async (input: {
+    identity: IdentityRecord;
+    sessionId?: string;
+    threadId?: string;
+    agentKey?: string;
+    role?: string;
+    task: string;
+    context?: string;
+    model?: string;
+    thinking?: CreateWorkerSessionRequestPayload["thinking"];
+    inferenceProjection?: CreateWorkerSessionRequestPayload["inferenceProjection"];
+    credentialAllowlist?: readonly string[];
+    skillAllowlist?: readonly string[];
+    toolPolicy?: CreateWorkerSessionRequestPayload["toolPolicy"];
+    ttlMs?: number;
+    parentSessionId?: string;
+  }): Promise<CreateWorkerSessionResult> => {
+    const agentKey = await resolveAccessibleAgentKey(input.identity, input.agentKey);
+    const parentSession = input.parentSessionId
+      ? await context.runtime.sessionStore.getSession(input.parentSessionId)
+      : null;
+    if (parentSession && parentSession.agentKey !== agentKey) {
+      throw new Error(`Worker session agent ${agentKey} must match parent session agent ${parentSession.agentKey}.`);
+    }
+    const created = await context.runtime.workerSessions.createWorkerSession({
+      agentKey,
+      sessionId: input.sessionId,
+      threadId: input.threadId,
+      role: input.role,
+      task: input.task,
+      context: input.context,
+      model: input.model,
+      thinking: input.thinking,
+      inferenceProjection: input.inferenceProjection,
+      credentialAllowlist: input.credentialAllowlist,
+      skillAllowlist: input.skillAllowlist,
+      toolPolicy: input.toolPolicy,
+      ttlMs: input.ttlMs,
+      parentSessionId: input.parentSessionId,
+      createdByIdentityId: input.identity.id,
+      beforeHandoff: parentSession
+        ? async (result) => {
+          await context.a2aBindings.bindSession({
+            senderSessionId: parentSession.id,
+            recipientSessionId: result.session.id,
+          });
+          await context.a2aBindings.bindSession({
+            senderSessionId: result.session.id,
+            recipientSessionId: parentSession.id,
+          });
+        }
+        : undefined,
+    });
+    return created;
   };
 
   const relocateThreadMedia = async (
@@ -519,6 +595,7 @@ export function createDaemonThreadHelpers(
   return {
     ensureIdentity,
     createBranchSession,
+    createWorkerSession,
     relocateThreadMedia,
     openMainSession,
     resolveOrCreateConversationThread,

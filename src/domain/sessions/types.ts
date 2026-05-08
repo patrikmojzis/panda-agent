@@ -1,6 +1,6 @@
 import type {JsonValue} from "../../kernel/agent/types.js";
 
-export type AgentSessionKind = "main" | "branch";
+export type AgentSessionKind = "main" | "branch" | "worker";
 
 export interface CreateSessionInput {
   id: string;

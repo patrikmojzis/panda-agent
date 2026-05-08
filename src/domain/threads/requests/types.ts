@@ -1,5 +1,6 @@
 import type {JsonValue} from "../../../kernel/agent/types.js";
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
+import type {ExecutionEnvironmentKind, ExecutionToolPolicy} from "../../../domain/execution-environments/index.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import type {InferenceProjection, ThreadUpdate} from "../runtime/types.js";
 
@@ -11,6 +12,7 @@ export type RuntimeRequestKind =
   | "whatsapp_reaction"
   | "tui_input"
   | "create_branch_session"
+  | "create_worker_session"
   | "resolve_main_session_thread"
   | "resolve_thread_run_config"
   | "reset_session"
@@ -48,6 +50,21 @@ export type A2AMessageItem =
   | A2AMessageImageItem
   | A2AMessageFileItem;
 
+export interface A2AEnvironmentPathHints {
+  root?: string;
+  workspace?: string;
+  inbox?: string;
+  artifacts?: string;
+}
+
+export interface A2ASenderEnvironmentSnapshot {
+  id: string;
+  kind: ExecutionEnvironmentKind;
+  envDir?: string;
+  parentRunnerPaths?: A2AEnvironmentPathHints;
+  workerPaths?: A2AEnvironmentPathHints;
+}
+
 export interface A2AMessageRequestPayload extends BaseRuntimeRequestPayload {
   connectorKey: string;
   externalMessageId: string;
@@ -58,6 +75,7 @@ export interface A2AMessageRequestPayload extends BaseRuntimeRequestPayload {
   toAgentKey: string;
   toSessionId: string;
   sentAt: number;
+  senderEnvironment?: A2ASenderEnvironmentSnapshot;
   items: readonly A2AMessageItem[];
 }
 
@@ -136,6 +154,23 @@ export interface CreateBranchSessionRequestPayload extends BaseRuntimeRequestPay
   inferenceProjection?: InferenceProjection;
 }
 
+export interface CreateWorkerSessionRequestPayload extends BaseRuntimeRequestPayload {
+  sessionId?: string;
+  threadId?: string;
+  agentKey?: string;
+  role?: string;
+  task: string;
+  context?: string;
+  model?: string;
+  thinking?: ThinkingLevel;
+  inferenceProjection?: InferenceProjection;
+  credentialAllowlist?: readonly string[];
+  skillAllowlist?: readonly string[];
+  toolPolicy?: ExecutionToolPolicy;
+  ttlMs?: number;
+  parentSessionId?: string;
+}
+
 export interface ResolveMainSessionThreadRequestPayload extends BaseRuntimeRequestPayload {
   agentKey?: string;
   model?: string;
@@ -184,6 +219,7 @@ export type RuntimeRequestPayload =
   | WhatsAppReactionRequestPayload
   | TuiInputRequestPayload
   | CreateBranchSessionRequestPayload
+  | CreateWorkerSessionRequestPayload
   | ResolveMainSessionThreadRequestPayload
   | ResolveThreadRunConfigRequestPayload
   | ResetSessionRequestPayload

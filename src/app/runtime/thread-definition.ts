@@ -2,7 +2,11 @@ import type {LlmContext} from "../../kernel/agent/llm-context.js";
 import {Agent} from "../../kernel/agent/agent.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
 import type {AgentStore} from "../../domain/agents/index.js";
-import type {SessionRecord} from "../../domain/sessions/index.js";
+import type {
+    ExecutionEnvironmentStore,
+    ResolvedExecutionEnvironment
+} from "../../domain/execution-environments/index.js";
+import type {SessionRecord, SessionStore} from "../../domain/sessions/index.js";
 import type {InferenceProjection, ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {buildDefaultAgentLlmContexts, type DefaultAgentLlmContextSection,} from "../../panda/contexts/builder.js";
@@ -47,13 +51,16 @@ export interface CreateThreadDefinitionOptions {
   session: Pick<SessionRecord, "id" | "agentKey">;
   fallbackContext: Pick<DefaultAgentSessionContext, "cwd">;
   agentStore?: AgentStore;
+  sessionStore?: Pick<SessionStore, "listAgentSessions">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
+  executionEnvironments?: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   calendarService?: AgentCalendarService | null;
   bashToolOptions?: BashToolOptions;
   browserToolOptions?: BrowserToolOptions;
   imageGenerateToolOptions?: ImageGenerateToolOptions;
   telepathyToolOptions?: TelepathyScreenshotToolOptions;
+  executionEnvironment?: ResolvedExecutionEnvironment;
   tools?: readonly Tool[];
   extraLlmContexts?: readonly LlmContext[];
   llmContextSections?: readonly DefaultAgentLlmContextSection[];
@@ -72,8 +79,9 @@ export function resolveStoredContext(
   value: ThreadRecord["context"],
   fallback: Pick<DefaultAgentSessionContext, "cwd">,
   agentKey?: string,
+  executionEnvironment?: ResolvedExecutionEnvironment,
 ): Pick<DefaultAgentSessionContext, "cwd"> {
-  const remoteInitialCwd = agentKey ? resolveRemoteInitialCwd(agentKey) : null;
+  const remoteInitialCwd = executionEnvironment?.initialCwd ?? (agentKey ? resolveRemoteInitialCwd(agentKey) : null);
   if (!isRecord(value)) {
     return {
       ...fallback,
@@ -91,9 +99,19 @@ export function resolveStoredContext(
     && (!storedCwd || storedCwd === fallback.cwd),
   );
   const selectedCwd = useRemoteInitialCwd && remoteInitialCwd ? remoteInitialCwd : storedCwd ?? fallback.cwd;
+  const shouldMapHostAgentPath = Boolean(
+    agentKey
+    && (
+      !executionEnvironment
+      || executionEnvironment.source === "fallback"
+      || executionEnvironment.kind === "persistent_agent_runner"
+    ),
+  );
 
   return {
-    cwd: selectedCwd && agentKey ? mapHostAgentPathToRunner(selectedCwd, agentKey) : selectedCwd,
+    cwd: selectedCwd && shouldMapHostAgentPath && agentKey
+      ? mapHostAgentPathToRunner(selectedCwd, agentKey)
+      : selectedCwd,
   };
 }
 
@@ -102,23 +120,27 @@ export function createThreadDefinition(
 ): ResolvedThreadDefinition {
   const {session} = options;
   const context: DefaultAgentSessionContext = {
-    ...resolveStoredContext(options.thread.context, options.fallbackContext, session.agentKey),
+    ...resolveStoredContext(options.thread.context, options.fallbackContext, session.agentKey, options.executionEnvironment),
     threadId: options.thread.id,
     sessionId: session.id,
     agentKey: session.agentKey,
     subagentDepth: 0,
+    ...(options.executionEnvironment ? {executionEnvironment: options.executionEnvironment} : {}),
     ...options.extraContext,
   };
 
   const llmContexts: LlmContext[] = buildDefaultAgentLlmContexts({
     context,
     agentStore: options.agentStore,
+    sessionStore: options.sessionStore,
     threadStore: options.threadStore,
+    executionEnvironments: options.executionEnvironments,
     wikiBindings: options.wikiBindings,
     calendarService: options.calendarService,
     agentKey: session.agentKey,
     threadId: options.thread.id,
     sections: options.llmContextSections,
+    skillPolicy: options.executionEnvironment?.skillPolicy,
     extraLlmContexts: options.extraLlmContexts,
   });
 
