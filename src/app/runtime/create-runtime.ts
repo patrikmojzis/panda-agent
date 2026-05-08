@@ -1,7 +1,6 @@
 import {Pool} from "pg";
 
 import {type AgentStore} from "../../domain/agents/index.js";
-import type {PostgresSidecarRepo} from "../../domain/sidecars/index.js";
 import type {SessionStore} from "../../domain/sessions/index.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/index.js";
 import type {WatchStore} from "../../domain/watches/index.js";
@@ -30,7 +29,6 @@ import {
     DEFAULT_INFERENCE_PROJECTION,
     resolveStoredContext,
 } from "./thread-definition.js";
-import {SidecarService} from "./sidecars.js";
 
 export {
   createPostgresPool,
@@ -43,12 +41,6 @@ export {
 
 export type {CreateThreadDefinitionOptions};
 
-function scheduleSidecarHook(work: Promise<void> | void): void {
-  void Promise.resolve(work).catch(() => {
-    // Sidecars are opportunistic. They must never slow down or fail the main run.
-  });
-}
-
 export interface DefinitionResolverContext {
   agentStore: AgentStore;
   backgroundJobService: BackgroundToolJobService;
@@ -56,7 +48,6 @@ export interface DefinitionResolverContext {
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
-  sidecarRepo: PostgresSidecarRepo;
   store: ThreadRuntimeStore;
   email: EmailStore;
   telepathyService: TelepathyHub | null;
@@ -69,7 +60,6 @@ export interface RuntimeOptions {
   dbUrl?: string;
   readOnlyDbUrl?: string;
   maxSubagentDepth?: number;
-  sidecars?: boolean;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
   resolveDefinition: (
@@ -87,7 +77,6 @@ export interface RuntimeServices {
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
-  sidecarRepo: PostgresSidecarRepo;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
@@ -95,7 +84,6 @@ export interface RuntimeServices {
   watches: WatchStore;
   calendarService: AgentCalendarService | null;
   coordinator: ThreadRuntimeCoordinator;
-  sidecars: SidecarService | null;
   mainTools: readonly Tool[];
   pool: Pool;
   notificationPool: Pool;
@@ -116,7 +104,6 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     credentialResolver: runtime.credentialResolver,
     identityStore: runtime.identityStore,
     sessionStore: runtime.sessionStore,
-    sidecarRepo: runtime.sidecarRepo,
     store: runtime.store,
     email: runtime.email,
     telepathyService: runtime.telepathyService,
@@ -125,37 +112,10 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     mainTools: runtime.mainTools,
   };
 
-  let coordinator!: ThreadRuntimeCoordinator;
-  const sidecars = options.sidecars === false
-    ? null
-    : new SidecarService({
-      sessionStore: runtime.sessionStore,
-      threadStore: runtime.store,
-      sidecarRepo: runtime.sidecarRepo,
-      runtime: {
-        submitInput: (threadId, payload, mode) => coordinator.submitInput(threadId, payload, mode),
-      },
-      pool: runtime.pool,
-      postgresReadonly: runtime.postgresReadonly,
-      agentStore: runtime.agentStore,
-      wikiBindings: runtime.wikiBindingService ?? undefined,
-      env: process.env,
-    });
-
-  coordinator = new ThreadRuntimeCoordinator({
+  const coordinator = new ThreadRuntimeCoordinator({
     store: runtime.store,
     leaseManager: new PostgresThreadLeaseManager(runtime.threadLeasePool),
-    resolveDefinition: async (thread) => {
-      const session = await runtime.sessionStore.getSession(thread.sessionId);
-      if (session.kind === "sidecar" && sidecars?.isSidecarThread(thread)) {
-        return sidecars.resolveDefinition(thread, session);
-      }
-
-      return options.resolveDefinition(thread, resolverContext);
-    },
-    beforeRunStep: (input) => scheduleSidecarHook(sidecars?.beforeRunStep(input)),
-    afterCheckpoint: (input) => scheduleSidecarHook(sidecars?.afterCheckpoint(input)),
-    afterRunFinish: (input) => scheduleSidecarHook(sidecars?.afterRunFinish(input)),
+    resolveDefinition: (thread) => options.resolveDefinition(thread, resolverContext),
     onEvent: options.onEvent,
   });
   runtime.backgroundJobService.setBackgroundCompletionHandler(async (record) => {
@@ -172,7 +132,6 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     credentialResolver: runtime.credentialResolver,
     identityStore: runtime.identityStore,
     sessionStore: runtime.sessionStore,
-    sidecarRepo: runtime.sidecarRepo,
     store: runtime.store,
     scheduledTasks: runtime.scheduledTasks,
     email: runtime.email,
@@ -180,7 +139,6 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     watches: runtime.watches,
     calendarService: runtime.calendarService,
     coordinator,
-    sidecars,
     mainTools: runtime.mainTools,
     pool: runtime.pool,
     notificationPool: runtime.notificationPool,

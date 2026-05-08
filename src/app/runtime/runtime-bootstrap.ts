@@ -1,7 +1,6 @@
 import {Pool, type PoolClient} from "pg";
 
 import {type AgentStore, PostgresAgentStore} from "../../domain/agents/index.js";
-import {PostgresSidecarRepo} from "../../domain/sidecars/index.js";
 import {
     CredentialResolver,
     CredentialService,
@@ -108,7 +107,6 @@ export interface RuntimeBootstrapResult {
   credentialResolver: CredentialResolver;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
-  sidecarRepo: PostgresSidecarRepo;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
@@ -392,9 +390,6 @@ export async function bootstrapRuntime(
     const sessionStore = new PostgresSessionStore({
       pool: postgresPool,
     });
-    const sidecarRepo = new PostgresSidecarRepo({
-      pool: postgresPool,
-    });
     const telepathyDeviceStore = new PostgresTelepathyDeviceStore({
       pool: postgresPool,
     });
@@ -404,7 +399,6 @@ export async function bootstrapRuntime(
     await ensureSchemas([
       identityStore,
       agentStore,
-      sidecarRepo,
       sessionStore,
       telepathyDeviceStore,
       store,
@@ -555,7 +549,6 @@ export async function bootstrapRuntime(
         credentialResolver,
         identityStore,
         sessionStore,
-        sidecarRepo,
         store,
         email,
         telepathyService,
@@ -671,7 +664,6 @@ export async function bootstrapRuntime(
       credentialResolver,
       identityStore,
       sessionStore,
-      sidecarRepo,
       store,
       scheduledTasks,
       email,

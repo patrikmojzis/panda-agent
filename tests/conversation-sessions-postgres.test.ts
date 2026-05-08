@@ -175,10 +175,10 @@ describe("ConversationRepo", () => {
       currentThreadId: "thread-telegram",
     });
     await sessionStore.createSession({
-      id: "session-sidecar",
+      id: "session-secondary",
       agentKey: "panda",
       kind: "branch",
-      currentThreadId: "thread-sidecar",
+      currentThreadId: "thread-secondary",
     });
     await sessionStore.createSession({
       id: "session-whatsapp",
@@ -195,9 +195,9 @@ describe("ConversationRepo", () => {
     });
     await store.bindConversation({
       source: "telegram",
-      connectorKey: "bot-sidecar",
+      connectorKey: "bot-secondary",
       externalConversationId: "42",
-      sessionId: "session-sidecar",
+      sessionId: "session-secondary",
     });
     await store.bindConversation({
       source: "whatsapp",
@@ -215,10 +215,10 @@ describe("ConversationRepo", () => {
     });
     await expect(store.getConversationBinding({
       source: "telegram",
-      connectorKey: "bot-sidecar",
+      connectorKey: "bot-secondary",
       externalConversationId: "42",
     })).resolves.toMatchObject({
-      sessionId: "session-sidecar",
+      sessionId: "session-secondary",
     });
     await expect(store.getConversationBinding({
       source: "whatsapp",

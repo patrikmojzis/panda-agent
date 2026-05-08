@@ -105,7 +105,7 @@ describe("ChannelCursorRepo", () => {
     });
     await store.upsertChannelCursor({
       source: "telegram",
-      connectorKey: "bot-sidecar",
+      connectorKey: "bot-secondary",
       cursorKey: "updates",
       value: "20",
     });
@@ -129,7 +129,7 @@ describe("ChannelCursorRepo", () => {
     })).resolves.toMatchObject({ value: "10" });
     await expect(store.resolveChannelCursor({
       source: "telegram",
-      connectorKey: "bot-sidecar",
+      connectorKey: "bot-secondary",
       cursorKey: "updates",
     })).resolves.toMatchObject({ value: "20" });
     await expect(store.resolveChannelCursor({

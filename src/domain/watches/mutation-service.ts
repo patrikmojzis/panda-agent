@@ -22,9 +22,11 @@ export interface WatchMutationServiceOptions {
 
 function buildCredentialContext(context: WatchMutationContext): {
   agentKey: string;
+  identityId?: string;
 } {
   return {
     agentKey: context.agentKey,
+    identityId: context.createdByIdentityId,
   };
 }
 

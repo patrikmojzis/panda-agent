@@ -150,7 +150,7 @@ describe("PostgresIdentityStore", () => {
       id: "00000000-0000-0000-0000-000000000014",
       identityId: bob.id,
       source: "telegram",
-      connectorKey: "bot-sidecar",
+      connectorKey: "bot-secondary",
       externalActorId: "123",
     });
     expect(otherConnector.identityId).toBe(bob.id);
@@ -164,7 +164,7 @@ describe("PostgresIdentityStore", () => {
     await expect(store.listIdentityBindings(bob.id)).resolves.toEqual([
       expect.objectContaining({
         id: otherConnector.id,
-        connectorKey: "bot-sidecar",
+        connectorKey: "bot-secondary",
       }),
     ]);
 

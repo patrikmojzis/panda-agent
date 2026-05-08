@@ -19,7 +19,6 @@ import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
 import type {DaemonContext} from "./daemon-bootstrap.js";
 import {requireIdentityId, trimNonEmptyString} from "./daemon-shared.js";
-import {buildSidecarPromptCacheKey, readSidecarBinding} from "./sidecars.js";
 
 export interface DaemonThreadHelpers {
   ensureIdentity(identityId: string): Promise<IdentityRecord>;
@@ -364,28 +363,13 @@ export function createDaemonThreadHelpers(
     await context.runtime.backgroundJobService.cancelThreadJobs(previousThread.id);
     await context.runtime.store.discardPendingInputs(previousThread.id);
 
-    const sidecarBinding = session.kind === "sidecar"
-      ? readSidecarBinding(session.metadata) ?? readSidecarBinding(previousThread.context)
-      : null;
     const nextThread = buildInitialSessionThreadInput({
       sessionId: session.id,
       agentKey: session.agentKey,
-      promptCacheKey: sidecarBinding
-        ? buildSidecarPromptCacheKey(sidecarBinding.parentSessionId, sidecarBinding.sidecarKey)
-        : undefined,
       model: input.model,
       thinking: input.thinking,
       inferenceProjection: input.inferenceProjection,
-      context: sidecarBinding
-        ? {
-          ...input.context,
-          sidecar: {
-            kind: "sidecar",
-            parentSessionId: sidecarBinding.parentSessionId,
-            sidecarKey: sidecarBinding.sidecarKey,
-          },
-        }
-        : input.context,
+      context: input.context,
     });
     const thread = (
       context.runtime.pool

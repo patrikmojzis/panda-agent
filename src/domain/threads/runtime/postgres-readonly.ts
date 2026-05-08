@@ -1,7 +1,6 @@
 import type {Pool} from "pg";
 
 import {buildAgentTableNames} from "../../agents/postgres-shared.js";
-import {buildSidecarTableNames} from "../../sidecars/postgres-shared.js";
 import {buildIdentityTableNames} from "../../../domain/identity/postgres-shared.js";
 import {buildScheduledTaskTableNames} from "../../../domain/scheduling/tasks/postgres-shared.js";
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
@@ -29,7 +28,6 @@ export interface ReadonlySessionViewNames {
   inputs: string;
   runs: string;
   agentPrompts: string;
-  sidecars: string;
   agentPairings: string;
   agentSkills: string;
   agentTelepathyDevices: string;
@@ -69,14 +67,13 @@ export async function ensureReadonlySessionQuerySchema(
 ): Promise<ReadonlySessionViewNames> {
   const tables = buildThreadRuntimeTableNames();
   const agentTables = buildAgentTableNames();
-  const sidecarTables = buildSidecarTableNames();
   const identityTables = buildIdentityTableNames();
   const sessionTables = buildSessionTableNames();
   const telepathyTables = buildTelepathyTableNames();
   const scheduledTaskTables = buildScheduledTaskTableNames();
   const watchTables = buildWatchTableNames();
   const emailTables = buildEmailTableNames();
-  const { agentSessions, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, sidecars, agentPairings, agentSkills, agentTelepathyDevices, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents, emailAccounts, emailAllowedRecipients, emailMessages, emailMessageRecipients, emailAttachments } = buildSessionRelationNames({
+  const { agentSessions, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentPairings, agentSkills, agentTelepathyDevices, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents, emailAccounts, emailAllowedRecipients, emailMessages, emailMessageRecipients, emailAttachments } = buildSessionRelationNames({
     agentSessions: "agent_sessions",
     threads: "threads",
     messages: "messages",
@@ -85,7 +82,6 @@ export async function ensureReadonlySessionQuerySchema(
     inputs: "inputs",
     runs: "runs",
     agentPrompts: "agent_prompts",
-    sidecars: "sidecars",
     agentPairings: "agent_pairings",
     agentSkills: "agent_skills",
     agentTelepathyDevices: "agent_telepathy_devices",
@@ -109,7 +105,6 @@ export async function ensureReadonlySessionQuerySchema(
     inputs,
     runs,
     agentPrompts,
-    sidecars,
     agentPairings,
     agentSkills,
     agentTelepathyDevices,
@@ -169,7 +164,6 @@ export async function ensureReadonlySessionQuerySchema(
     DROP VIEW IF EXISTS ${views.agentTelepathyDevices};
     DROP VIEW IF EXISTS ${views.agentPairings};
     DROP VIEW IF EXISTS ${views.agentPrompts};
-    DROP VIEW IF EXISTS ${views.sidecars};
     DROP VIEW IF EXISTS ${views.agentSkills};
     DROP VIEW IF EXISTS ${views.scheduledTaskRuns};
     DROP VIEW IF EXISTS ${views.scheduledTasks};
@@ -372,24 +366,6 @@ export async function ensureReadonlySessionQuerySchema(
     FROM ${agentTables.agentPrompts} AS prompt
     WHERE prompt.agent_key = current_setting('runtime.agent_key', true)
       AND prompt.slug IN ('agent', 'heartbeat');
-
-    CREATE VIEW ${views.sidecars}
-    WITH (security_barrier = true) AS
-    SELECT
-      sidecar.agent_key,
-      sidecar.sidecar_key,
-      sidecar.display_name,
-      sidecar.enabled,
-      sidecar.triggers,
-      sidecar.model,
-      sidecar.thinking,
-      sidecar.toolset,
-      sidecar.metadata,
-      octet_length(convert_to(sidecar.prompt, 'utf8'))::INTEGER AS prompt_bytes,
-      sidecar.created_at,
-      sidecar.updated_at
-    FROM ${sidecarTables.sidecars} AS sidecar
-    WHERE sidecar.agent_key = current_setting('runtime.agent_key', true);
 
     CREATE VIEW ${views.agentPairings}
     WITH (security_barrier = true) AS
@@ -653,7 +629,7 @@ export async function ensureReadonlySessionQuerySchema(
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA ${quoteIdentifier(SESSION_SCHEMA)} TO ${readonlyRole};
-      GRANT SELECT ON ${views.agentSessions}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.sidecars}, ${views.agentPairings}, ${views.agentSkills}, ${views.agentTelepathyDevices}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents}, ${views.emailAccounts}, ${views.emailAllowedRecipients}, ${views.emailMessages}, ${views.emailMessageRecipients}, ${views.emailAttachments} TO ${readonlyRole};
+      GRANT SELECT ON ${views.agentSessions}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.agentTelepathyDevices}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents}, ${views.emailAccounts}, ${views.emailAllowedRecipients}, ${views.emailMessages}, ${views.emailMessageRecipients}, ${views.emailAttachments} TO ${readonlyRole};
     `);
   }
 

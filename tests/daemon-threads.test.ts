@@ -49,7 +49,7 @@ describe("createDaemonThreadHelpers", () => {
     workspace?: string;
     pairings?: readonly {agentKey: string}[];
     currentThreadId?: string;
-    sessionKind?: "main" | "branch" | "sidecar";
+    sessionKind?: "main" | "branch";
     sessionMetadata?: Record<string, unknown>;
     createdByIdentityId?: string;
     getIdentity?: (identityId: string) => Promise<ReturnType<typeof createIdentity>>;
@@ -65,7 +65,7 @@ describe("createDaemonThreadHelpers", () => {
     const sessions = new Map<string, {
       id: string;
       agentKey: string;
-      kind: "main" | "branch" | "sidecar";
+      kind: "main" | "branch";
       currentThreadId: string;
       createdByIdentityId?: string;
       metadata?: Record<string, unknown>;
@@ -359,58 +359,4 @@ describe("createDaemonThreadHelpers", () => {
     });
   });
 
-  it("preserves sidecar binding when resetting a sidecar session", async () => {
-    const store = new TestThreadRuntimeStore();
-    await store.createThread({
-      id: "thread-old-sidecar",
-      sessionId: "sidecar-memory_guard-session-main",
-      context: {
-        agentKey: "panda",
-        sessionId: "sidecar-memory_guard-session-main",
-        cwd: "/app",
-        sidecar: {
-          kind: "sidecar",
-          parentSessionId: "session-main",
-          sidecarKey: "memory_guard",
-        },
-      },
-      promptCacheKey: "sidecar:memory_guard:oldhash",
-    } as any);
-
-    const {helpers} = createHelpers({
-      store,
-      workspace: "/app",
-      currentThreadId: "thread-old-sidecar",
-      sessionKind: "sidecar",
-      sessionMetadata: {
-        sidecar: {
-          kind: "sidecar",
-          parentSessionId: "session-main",
-          sidecarKey: "memory_guard",
-        },
-      },
-    });
-
-    const result = await helpers.handleResetSession({
-      source: "operator",
-      sessionId: "sidecar-memory_guard-session-main",
-    });
-
-    expect(result.previousThreadId).toBe("thread-old-sidecar");
-    expect(result.threadId).not.toBe("thread-old-sidecar");
-    await expect(store.getThread(String(result.threadId))).resolves.toMatchObject({
-      sessionId: "sidecar-memory_guard-session-main",
-      promptCacheKey: expect.stringMatching(/^sidecar:memory_guard:[a-f0-9]{12}$/),
-      context: {
-        agentKey: "panda",
-        sessionId: "sidecar-memory_guard-session-main",
-        cwd: "/app",
-        sidecar: {
-          kind: "sidecar",
-          parentSessionId: "session-main",
-          sidecarKey: "memory_guard",
-        },
-      },
-    });
-  });
 });

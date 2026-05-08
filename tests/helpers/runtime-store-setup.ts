@@ -3,7 +3,6 @@ import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../../src/doma
 import {PostgresIdentityStore} from "../../src/domain/identity/index.js";
 import {PostgresEmailStore} from "../../src/domain/email/index.js";
 import {PostgresSessionStore} from "../../src/domain/sessions/index.js";
-import {PostgresSidecarRepo} from "../../src/domain/sidecars/index.js";
 import {PostgresThreadRuntimeStore} from "../../src/domain/threads/runtime/index.js";
 
 export async function createRuntimeStores(pool: {
@@ -13,14 +12,12 @@ export async function createRuntimeStores(pool: {
   const identityStore = new PostgresIdentityStore({pool});
   const agentStore = new PostgresAgentStore({pool});
   const sessionStore = new PostgresSessionStore({pool});
-  const sidecarRepo = new PostgresSidecarRepo({pool});
   const threadStore = new PostgresThreadRuntimeStore({pool});
   const emailStore = new PostgresEmailStore({pool});
 
   await ensureSchemas([
     identityStore,
     agentStore,
-    sidecarRepo,
     sessionStore,
     threadStore,
     emailStore,
@@ -35,7 +32,6 @@ export async function createRuntimeStores(pool: {
     agentStore,
     identityStore,
     sessionStore,
-    sidecarRepo,
     threadStore,
     emailStore,
   };
