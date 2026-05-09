@@ -43,7 +43,6 @@ export const KNOWN_WORKER_TOOL_NAMES = new Set([
   "outbound",
   "telegram_react",
   "wiki",
-  "calendar",
   "set_env_value",
   "clear_env_value",
   "telepathy_screenshot",

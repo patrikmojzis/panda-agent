@@ -28,7 +28,6 @@ import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js
 import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {WikiBindingService} from "../../domain/wiki/index.js";
-import type {AgentCalendarService} from "../../integrations/calendar/types.js";
 import {isRecord} from "../../lib/records.js";
 import {resolveThreadPromptCacheKey} from "../../domain/threads/runtime/prompt-cache-key.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
@@ -68,7 +67,6 @@ export interface CreateThreadDefinitionOptions {
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
-  calendarService?: AgentCalendarService | null;
   bashToolOptions?: BashToolOptions;
   browserToolOptions?: BrowserToolOptions;
   imageGenerateToolOptions?: ImageGenerateToolOptions;
@@ -219,7 +217,6 @@ export function createThreadDefinition(
     threadStore: options.threadStore,
     executionEnvironments: options.executionEnvironments,
     wikiBindings: options.wikiBindings,
-    calendarService: options.calendarService,
     agentKey: session.agentKey,
     threadId: options.thread.id,
     sections: resolveLlmContextSections(session, options.llmContextSections),

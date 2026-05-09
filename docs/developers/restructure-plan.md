@@ -51,7 +51,6 @@ src/
   integrations/
     apps/
     browser/
-    calendar/
     channels/
     gateway/
     providers/

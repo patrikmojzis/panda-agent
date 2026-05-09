@@ -117,7 +117,7 @@ Put here:
 
 - model providers
 - Telegram, WhatsApp, email, A2A, and gateway adapters
-- browser, apps, wiki, calendar, and watch source adapters
+- browser, apps, wiki, and watch source adapters
 - shell and remote runner glue
 
 Keep API-specific payload shaping here. Do not leak it into the thread loop.
