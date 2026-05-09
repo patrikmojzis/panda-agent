@@ -24,6 +24,7 @@ import type {
     CompleteScheduledTaskRunInput,
     CreateScheduledTaskInput,
     FailScheduledTaskRunInput,
+    ListActiveScheduledTasksInput,
     ListDueScheduledTasksInput,
     ScheduledTaskRecord,
     ScheduledTaskRunRecord,
@@ -600,6 +601,29 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
     }
 
     return parseTaskRow(row as Record<string, unknown>);
+  }
+
+  async listActiveTasks(input: ListActiveScheduledTasksInput): Promise<readonly ScheduledTaskRecord[]> {
+    const limit = Math.max(1, input.limit ?? 25);
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM ${this.tables.scheduledTasks}
+        WHERE session_id = $1
+          AND enabled = TRUE
+          AND cancelled_at IS NULL
+          AND completed_at IS NULL
+          AND next_fire_at IS NOT NULL
+        ORDER BY next_fire_at ASC, id ASC
+        LIMIT $2
+      `,
+      [
+        requireTrimmed("session id", input.sessionId),
+        limit,
+      ],
+    );
+
+    return result.rows.map((row) => parseTaskRow(row as Record<string, unknown>));
   }
 
   async listDueTasks(input: ListDueScheduledTasksInput = {}): Promise<readonly ScheduledTaskRecord[]> {

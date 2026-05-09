@@ -573,6 +573,7 @@ export async function bootstrapRuntime(
         identityStore,
         sessionStore,
         store,
+        scheduledTasks,
         email,
         telepathyService,
         wikiBindingService,

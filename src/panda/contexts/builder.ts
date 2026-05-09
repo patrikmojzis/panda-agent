@@ -2,12 +2,14 @@ import type {LlmContext} from "../../kernel/agent/llm-context.js";
 import type {AgentStore} from "../../domain/agents/store.js";
 import type {ExecutionEnvironmentStore, ExecutionSkillPolicy} from "../../domain/execution-environments/index.js";
 import type {SessionStore} from "../../domain/sessions/index.js";
+import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/index.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {WikiBindingService} from "../../domain/wiki/index.js";
 import {AgentProfileContext, type AgentProfileContextSection} from "./agent-profile-context.js";
 import {BackgroundJobsContext} from "./background-jobs-context.js";
 import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
+import {ScheduledRemindersContext} from "./scheduled-reminders-context.js";
 import {WorkersContext} from "./workers-context.js";
 import {WikiOverviewContext} from "./wiki-overview-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
@@ -15,6 +17,7 @@ import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-c
 export type DefaultAgentLlmContextSection =
   | "datetime"
   | "environment"
+  | "scheduled_reminders"
   | "wiki_overview"
   | "background_jobs"
   | "workers"
@@ -28,6 +31,7 @@ const PROFILE_SECTIONS = new Set<AgentProfileContextSection>([
 export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "environment",
   "wiki_overview",
+  "scheduled_reminders",
   "background_jobs",
   "workers",
   "prompts",
@@ -39,6 +43,7 @@ export interface BuildDefaultAgentLlmContextsOptions {
   agentStore?: AgentStore;
   sessionStore?: Pick<SessionStore, "listAgentSessions">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
+  scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   agentKey?: string;
@@ -73,6 +78,13 @@ export function buildDefaultAgentLlmContexts(
   if (uniqueSections.has("environment")) {
     llmContexts.push(new EnvironmentContext({
       cwd: options.context?.cwd,
+    }));
+  }
+
+  if (uniqueSections.has("scheduled_reminders") && options.context?.sessionId && options.scheduledTasks) {
+    llmContexts.push(new ScheduledRemindersContext({
+      store: options.scheduledTasks,
+      sessionId: options.context.sessionId,
     }));
   }
 

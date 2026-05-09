@@ -68,6 +68,7 @@ function createStoreMock(): ScheduledTaskStore {
       updatedAt: 1,
     })),
     getTask: vi.fn(),
+    listActiveTasks: vi.fn(),
     listDueTasks: vi.fn(),
     claimTask: vi.fn(),
     startTaskRun: vi.fn(),

@@ -56,6 +56,7 @@ export interface DefinitionResolverContext {
   identityStore: IdentityStore;
   sessionStore: SessionStore;
   store: ThreadRuntimeStore;
+  scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
   telepathyService: TelepathyHub | null;
   wikiBindingService: WikiBindingService | null;
@@ -118,6 +119,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     identityStore: runtime.identityStore,
     sessionStore: runtime.sessionStore,
     store: runtime.store,
+    scheduledTasks: runtime.scheduledTasks,
     email: runtime.email,
     telepathyService: runtime.telepathyService,
     wikiBindingService: runtime.wikiBindingService,

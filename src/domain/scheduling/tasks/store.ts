@@ -5,6 +5,7 @@ import type {
     CompleteScheduledTaskRunInput,
     CreateScheduledTaskInput,
     FailScheduledTaskRunInput,
+    ListActiveScheduledTasksInput,
     ListDueScheduledTasksInput,
     ScheduledTaskRecord,
     ScheduledTaskRunRecord,
@@ -18,6 +19,7 @@ export interface ScheduledTaskStore {
   updateTask(input: UpdateScheduledTaskInput): Promise<ScheduledTaskRecord>;
   cancelTask(input: CancelScheduledTaskInput): Promise<ScheduledTaskRecord>;
   getTask(taskId: string): Promise<ScheduledTaskRecord>;
+  listActiveTasks(input: ListActiveScheduledTasksInput): Promise<readonly ScheduledTaskRecord[]>;
   listDueTasks(input?: ListDueScheduledTasksInput): Promise<readonly ScheduledTaskRecord[]>;
   claimTask(input: ClaimScheduledTaskInput): Promise<ClaimScheduledTaskResult | null>;
   startTaskRun(input: StartScheduledTaskRunInput): Promise<ScheduledTaskRunRecord>;

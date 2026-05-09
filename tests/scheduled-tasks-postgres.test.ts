@@ -292,6 +292,110 @@ describe("PostgresScheduledTaskStore", () => {
     expect(columns.rows).toEqual([]);
   });
 
+  it("lists active scheduled tasks for one session", async () => {
+    const {pool} = createScopedPool();
+    pools.push(pool);
+
+    const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
+    const alice = await identityStore.createIdentity({
+      id: "alice-id",
+      handle: "alice",
+      displayName: "Alice",
+    });
+    await sessionStore.createSession({
+      id: "session-alice",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "home-a",
+      createdByIdentityId: alice.id,
+    });
+    await sessionStore.createSession({
+      id: "session-other",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "home-other",
+      createdByIdentityId: alice.id,
+    });
+    await threadStore.createThread({
+      id: "home-a",
+      sessionId: "session-alice",
+    });
+    await threadStore.createThread({
+      id: "home-other",
+      sessionId: "session-other",
+    });
+
+    const scheduledTasks = new PostgresScheduledTaskStore({pool});
+    await scheduledTasks.ensureSchema();
+
+    await scheduledTasks.createTask({
+      sessionId: "session-alice",
+      createdByIdentityId: alice.id,
+      title: "Second",
+      instruction: "Runs second.",
+      schedule: {
+        kind: "once",
+        runAt: "2026-05-10T09:00:00.000Z",
+      },
+    });
+    const first = await scheduledTasks.createTask({
+      sessionId: "session-alice",
+      createdByIdentityId: alice.id,
+      title: "First",
+      instruction: "Runs first.",
+      schedule: {
+        kind: "once",
+        runAt: "2026-05-09T09:00:00.000Z",
+      },
+    });
+    const cancelled = await scheduledTasks.createTask({
+      sessionId: "session-alice",
+      createdByIdentityId: alice.id,
+      title: "Cancelled",
+      instruction: "Should stay hidden.",
+      schedule: {
+        kind: "once",
+        runAt: "2026-05-08T09:00:00.000Z",
+      },
+    });
+    await scheduledTasks.cancelTask({
+      taskId: cancelled.id,
+      sessionId: "session-alice",
+    });
+    await scheduledTasks.createTask({
+      sessionId: "session-alice",
+      createdByIdentityId: alice.id,
+      title: "Disabled",
+      instruction: "Should stay hidden.",
+      schedule: {
+        kind: "once",
+        runAt: "2026-05-07T09:00:00.000Z",
+      },
+      enabled: false,
+    });
+    await scheduledTasks.createTask({
+      sessionId: "session-other",
+      createdByIdentityId: alice.id,
+      title: "Other session",
+      instruction: "Should stay hidden.",
+      schedule: {
+        kind: "once",
+        runAt: "2026-05-06T09:00:00.000Z",
+      },
+    });
+
+    const tasks = await scheduledTasks.listActiveTasks({
+      sessionId: "session-alice",
+      limit: 1,
+    });
+
+    expect(tasks.map((task) => task.id)).toEqual([first.id]);
+    expect(tasks[0]).toMatchObject({
+      title: "First",
+      nextFireAt: Date.parse("2026-05-09T09:00:00.000Z"),
+    });
+  });
+
   it("exposes scoped readonly scheduled-task views and resolves home targets dynamically", async () => {
     const {pool, setScope} = createScopedPool();
     pools.push(pool);
