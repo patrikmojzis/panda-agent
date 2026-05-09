@@ -273,6 +273,14 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     expect(generatedCompose).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN}");
     expect(generatedCompose).toContain("      - execution_manager_net");
     expect(generatedCompose).toContain("      - disposable_runner_net");
+    const browserStart = generatedCompose.indexOf("  panda-browser-runner:");
+    const runnerStart = generatedCompose.indexOf("  panda-runner-");
+    const networksStart = generatedCompose.indexOf("\nnetworks:");
+    expect(browserStart).toBeGreaterThanOrEqual(0);
+    const browserEnd = runnerStart >= 0 ? runnerStart : networksStart;
+    const browserSection = generatedCompose.slice(browserStart, browserEnd);
+    expect(browserSection).toMatch(/^\s+- runner_net$/m);
+    expect(browserSection).toMatch(/^\s+- disposable_runner_net$/m);
     expect(generatedCompose).toContain("execution_manager_net:\n    name: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_NETWORK}\n    internal: true");
     expect(generatedCompose).toContain("disposable_runner_net:\n    name: ${PANDA_DISPOSABLE_RUNNER_NETWORK}");
     expect(generatedCompose).not.toContain("gateway_edge_net");
@@ -870,18 +878,23 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     const generatedCompose = await readFile(generatedComposePath, "utf8");
     const gatewayStart = generatedCompose.indexOf("  panda-gateway:");
     const caddyStart = generatedCompose.indexOf("  caddy:");
+    const browserStart = generatedCompose.indexOf("  panda-browser-runner:");
     const networksStart = generatedCompose.indexOf("\nnetworks:");
     expect(gatewayStart).toBeGreaterThanOrEqual(0);
     expect(caddyStart).toBeGreaterThan(gatewayStart);
+    expect(browserStart).toBeGreaterThan(caddyStart);
     expect(networksStart).toBeGreaterThan(caddyStart);
     const gatewaySection = generatedCompose.slice(gatewayStart, caddyStart);
-    const caddySection = generatedCompose.slice(caddyStart, networksStart);
+    const caddySection = generatedCompose.slice(caddyStart, browserStart);
+    const browserSection = generatedCompose.slice(browserStart, networksStart);
     expect(gatewaySection).toContain("gateway_edge_net");
     expect(gatewaySection).not.toContain("disposable_runner_net");
     expect(gatewaySection).not.toContain("execution_manager_net");
     expect(caddySection).toContain("gateway_edge_net");
     expect(caddySection).not.toContain("disposable_runner_net");
     expect(caddySection).not.toContain("execution_manager_net");
+    expect(browserSection).toMatch(/^\s+- runner_net$/m);
+    expect(browserSection).toMatch(/^\s+- disposable_runner_net$/m);
   });
 
   it("rejects unsafe public gateway edge settings", async () => {

@@ -205,6 +205,163 @@ describe("browser runner transport", () => {
     });
   });
 
+  it("rewrites disposable worker loopback preview URLs to the worker container origin", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      return new Response(JSON.stringify({
+        ok: true,
+        text: "Snapshot ok",
+        details: {action: "navigate"},
+      }), {
+        status: 200,
+        headers: {"content-type": "application/json"},
+      });
+    });
+    const client = new BrowserRunnerClient({
+      fetchImpl: fetchImpl as typeof fetch,
+      runnerUrl: "http://runner.internal",
+      sharedSecret: "secret-123",
+    });
+
+    await client.handle(
+      {action: "navigate", url: "http://localhost:5173/path?q=1#top"},
+      createRunContext({
+        agentKey: "panda",
+        sessionId: "worker-session-1",
+        threadId: "worker-thread-1",
+        cwd: "/workspace",
+        executionEnvironment: {
+          id: "env-1",
+          agentKey: "panda",
+          kind: "disposable_container",
+          state: "ready",
+          executionMode: "remote",
+          metadata: {
+            containerName: "panda-env-worker-abc",
+            network: "panda_disposable_runner_net",
+          },
+          credentialPolicy: {mode: "allowlist", envKeys: []},
+          skillPolicy: {mode: "allowlist", skillKeys: []},
+          toolPolicy: {},
+          source: "binding",
+        },
+      }),
+    );
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
+      action: {action: "navigate", url: "http://panda-env-worker-abc:5173/path?q=1#top"},
+      previewOriginGrant: {
+        originalOrigin: "http://localhost:5173",
+        resolvedOrigin: "http://panda-env-worker-abc:5173",
+      },
+    });
+  });
+
+  it("rewrites 127.0.0.1 and [::1] previews only for disposable worker environments", async () => {
+    const requests: unknown[] = [];
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({
+        ok: true,
+        text: "Snapshot ok",
+      }), {
+        status: 200,
+        headers: {"content-type": "application/json"},
+      });
+    });
+    const client = new BrowserRunnerClient({
+      fetchImpl: fetchImpl as typeof fetch,
+      runnerUrl: "http://runner.internal",
+      sharedSecret: "secret-123",
+    });
+    const workerContext = createRunContext({
+      agentKey: "panda",
+      sessionId: "worker-session-1",
+      threadId: "worker-thread-1",
+      cwd: "/workspace",
+      executionEnvironment: {
+        id: "env-1",
+        agentKey: "panda",
+        kind: "disposable_container",
+        state: "ready",
+        executionMode: "remote",
+        metadata: {
+          containerName: "panda-env-worker-abc",
+          network: "panda_disposable_runner_net",
+        },
+        credentialPolicy: {mode: "allowlist", envKeys: []},
+        skillPolicy: {mode: "allowlist", skillKeys: []},
+        toolPolicy: {},
+        source: "binding",
+      },
+    });
+
+    await client.handle({action: "navigate", url: "http://127.0.0.1:5173/"}, workerContext);
+    await client.handle({action: "navigate", url: "http://[::1]:5174/"}, workerContext);
+    await client.handle(
+      {action: "navigate", url: "http://localhost:5175/"},
+      createRunContext({
+        agentKey: "panda",
+        sessionId: "main-session-1",
+        threadId: "thread-1",
+        cwd: "/workspace",
+      }),
+    );
+
+    expect(requests).toMatchObject([
+      {
+        action: {url: "http://panda-env-worker-abc:5173/"},
+        previewOriginGrant: {
+          originalOrigin: "http://127.0.0.1:5173",
+          resolvedOrigin: "http://panda-env-worker-abc:5173",
+        },
+      },
+      {
+        action: {url: "http://panda-env-worker-abc:5174/"},
+        previewOriginGrant: {
+          originalOrigin: "http://[::1]:5174",
+          resolvedOrigin: "http://panda-env-worker-abc:5174",
+        },
+      },
+      {
+        action: {url: "http://localhost:5175/"},
+      },
+    ]);
+    expect((requests[2] as {previewOriginGrant?: unknown}).previewOriginGrant).toBeUndefined();
+  });
+
+  it("fails worker preview rewrites when disposable environment Docker metadata is missing", async () => {
+    const fetchImpl = vi.fn();
+    const client = new BrowserRunnerClient({
+      fetchImpl: fetchImpl as typeof fetch,
+      runnerUrl: "http://runner.internal",
+      sharedSecret: "secret-123",
+    });
+
+    await expect(client.handle(
+      {action: "navigate", url: "http://localhost:5173/"},
+      createRunContext({
+        agentKey: "panda",
+        sessionId: "worker-session-1",
+        threadId: "worker-thread-1",
+        cwd: "/workspace",
+        executionEnvironment: {
+          id: "env-1",
+          agentKey: "panda",
+          kind: "disposable_container",
+          state: "ready",
+          executionMode: "remote",
+          metadata: {containerName: "panda-env-worker-abc"},
+          credentialPolicy: {mode: "allowlist", envKeys: []},
+          skillPolicy: {mode: "allowlist", skillKeys: []},
+          toolPolicy: {},
+          source: "binding",
+        },
+      }),
+    )).rejects.toThrow("Worker browser preview is unavailable");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("copies screenshot artifacts into Panda media paths and rewrites the returned metadata", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-client-"));
     tempDirs.push(tempDir);
@@ -295,6 +452,63 @@ describe("browser runner transport", () => {
       }),
     });
     expect(wrong.status).toBe(403);
+    expect(launchBrowserImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects forged preview origin grants at the runner boundary", async () => {
+    const launchBrowserImpl = vi.fn(async () => new FakeBrowser(new FakeBrowserContext(new FakePage())) as any);
+    const runner = await startBrowserRunner({
+      host: "127.0.0.1",
+      port: 0,
+      sharedSecret: "secret-123",
+      launchBrowserImpl,
+    });
+    runners.push(runner);
+
+    const snapshotGrant = await fetch(`http://127.0.0.1:${runner.port}/action`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret-123",
+      },
+      body: JSON.stringify({
+        agentKey: "panda",
+        threadId: "thread-1",
+        action: {action: "snapshot"},
+        previewOriginGrant: {
+          originalOrigin: "http://localhost:5173",
+          resolvedOrigin: "http://panda-env-worker-abc:5173",
+        },
+      }),
+    });
+    expect(snapshotGrant.status).toBe(400);
+    await expect(snapshotGrant.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Browser preview origin grants are only allowed for navigate actions.",
+    });
+
+    const internalServiceGrant = await fetch(`http://127.0.0.1:${runner.port}/action`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret-123",
+      },
+      body: JSON.stringify({
+        agentKey: "panda",
+        threadId: "thread-1",
+        action: {action: "navigate", url: "http://panda-core:8080/"},
+        previewOriginGrant: {
+          originalOrigin: "http://localhost:5173",
+          resolvedOrigin: "http://panda-core:8080",
+        },
+      }),
+    });
+    expect(internalServiceGrant.status).toBe(400);
+    await expect(internalServiceGrant.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Browser preview origin grant resolved host is not a managed disposable container.",
+    });
+
     expect(launchBrowserImpl).not.toHaveBeenCalled();
   });
 });

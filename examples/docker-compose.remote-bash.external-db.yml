@@ -68,6 +68,7 @@ services:
       BROWSER_RUNNER_SHARED_SECRET: ${BROWSER_RUNNER_SHARED_SECRET}
       BROWSER_RUNNER_DATA_DIR: /home/pwuser/.panda/browser-runner
       BROWSER_ALLOW_PRIVATE_HOSTS: ${BROWSER_ALLOW_PRIVATE_HOSTS:-panda-core}
+      PANDA_DISPOSABLE_CONTAINER_PREFIX: ${PANDA_DISPOSABLE_CONTAINER_PREFIX:-panda-env}
       TZ: ${TZ:-UTC}
     volumes:
       - ${BROWSER_RUNNER_ROOT:-${HOME}/.panda-browser-runner}:/home/pwuser/.panda/browser-runner

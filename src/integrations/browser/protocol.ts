@@ -1,11 +1,17 @@
 import type {JsonObject} from "../../kernel/agent/types.js";
 import type {BrowserAction} from "../../panda/tools/browser-types.js";
 
+export interface BrowserPreviewOriginGrant {
+  originalOrigin: string;
+  resolvedOrigin: string;
+}
+
 export interface BrowserRunnerActionRequest {
   agentKey: string;
   sessionId?: string;
   threadId?: string;
   action: BrowserAction;
+  previewOriginGrant?: BrowserPreviewOriginGrant;
 }
 
 export interface BrowserRunnerArtifact {

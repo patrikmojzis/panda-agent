@@ -16,6 +16,7 @@ import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
 import {browserActionSchema} from "../../panda/tools/browser-schema.js";
 import {BrowserSessionService, type BrowserSessionServiceOptions} from "./session-service.js";
 import type {
+    BrowserPreviewOriginGrant,
     BrowserRunnerActionRequest,
     BrowserRunnerActionResponse,
     BrowserRunnerArtifact,
@@ -24,12 +25,17 @@ import type {
 
 const DEFAULT_BROWSER_RUNNER_PORT = 8080;
 const DEFAULT_BROWSER_RUNNER_HOST = "0.0.0.0";
+const DEFAULT_PREVIEW_CONTAINER_PREFIX = "panda-env";
 
 const browserRunnerRequestSchema = z.object({
   agentKey: z.string().trim().default(""),
   sessionId: z.string().trim().optional(),
   threadId: z.string().trim().optional(),
   action: browserActionSchema,
+  previewOriginGrant: z.object({
+    originalOrigin: z.string().trim().url(),
+    resolvedOrigin: z.string().trim().url(),
+  }).optional(),
 });
 
 const runnerAgent = new Agent({
@@ -145,7 +151,75 @@ function requireAuthorization(request: IncomingMessage, sharedSecret: string): v
   }
 }
 
-function validateActionRequest(value: unknown): BrowserRunnerActionRequest {
+function normalizePreviewHostname(hostname: string): string {
+  const normalized = hostname.trim().replace(/\.+$/, "").toLowerCase();
+  if (normalized.startsWith("[") && normalized.endsWith("]")) {
+    return normalized.slice(1, -1);
+  }
+  return normalized;
+}
+
+function normalizeDockerDnsLabelPart(value: string): string {
+  const cleaned = value
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || DEFAULT_PREVIEW_CONTAINER_PREFIX;
+}
+
+function isLoopbackPreviewHost(hostname: string): boolean {
+  const normalized = normalizePreviewHostname(hostname);
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function isHttpPreviewOrigin(url: URL): boolean {
+  return url.protocol === "http:" || url.protocol === "https:";
+}
+
+function validatePreviewOriginGrant(
+  action: BrowserRunnerActionRequest["action"],
+  grant: BrowserPreviewOriginGrant | undefined,
+  env: NodeJS.ProcessEnv,
+): BrowserPreviewOriginGrant | undefined {
+  if (!grant) {
+    return undefined;
+  }
+  if (action.action !== "navigate") {
+    throw new ToolError("Browser preview origin grants are only allowed for navigate actions.");
+  }
+
+  const actionUrl = new URL(action.url);
+  const originalUrl = new URL(grant.originalOrigin);
+  const resolvedUrl = new URL(grant.resolvedOrigin);
+  if (grant.originalOrigin !== originalUrl.origin || grant.resolvedOrigin !== resolvedUrl.origin) {
+    throw new ToolError("Browser preview origin grants must contain origins, not full URLs.");
+  }
+  if (!isHttpPreviewOrigin(actionUrl) || !isHttpPreviewOrigin(originalUrl) || !isHttpPreviewOrigin(resolvedUrl)) {
+    throw new ToolError("Browser preview origin grants only support http:// and https:// origins.");
+  }
+  if (!isLoopbackPreviewHost(originalUrl.hostname)) {
+    throw new ToolError("Browser preview origin grants require a loopback original origin.");
+  }
+  if (actionUrl.origin !== resolvedUrl.origin) {
+    throw new ToolError("Browser preview origin grant does not match the action URL origin.");
+  }
+
+  const prefix = normalizeDockerDnsLabelPart(trimToNull(env.PANDA_DISPOSABLE_CONTAINER_PREFIX) ?? DEFAULT_PREVIEW_CONTAINER_PREFIX);
+  const resolvedHostname = normalizePreviewHostname(resolvedUrl.hostname);
+  if (!resolvedHostname.startsWith(`${prefix}-`)) {
+    throw new ToolError("Browser preview origin grant resolved host is not a managed disposable container.");
+  }
+
+  return {
+    originalOrigin: originalUrl.origin,
+    resolvedOrigin: resolvedUrl.origin,
+  };
+}
+
+function validateActionRequest(
+  value: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): BrowserRunnerActionRequest {
   const parsed = browserRunnerRequestSchema.safeParse(value);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((issue) => issue.message);
@@ -156,11 +230,14 @@ function validateActionRequest(value: unknown): BrowserRunnerActionRequest {
   }
 
   const agentKey = parsed.data.agentKey ? normalizeAgentKey(parsed.data.agentKey) : "";
+  const action = parsed.data.action as BrowserRunnerActionRequest["action"];
+  const previewOriginGrant = validatePreviewOriginGrant(action, parsed.data.previewOriginGrant, env);
   return {
     agentKey,
     ...(parsed.data.sessionId ? {sessionId: parsed.data.sessionId} : {}),
     ...(parsed.data.threadId ? {threadId: parsed.data.threadId} : {}),
-    action: parsed.data.action as BrowserRunnerActionRequest["action"],
+    action,
+    ...(previewOriginGrant ? {previewOriginGrant} : {}),
   };
 }
 
@@ -240,7 +317,7 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
 
       requireAuthorization(request, sharedSecret);
       const body = await readJsonBody(request);
-      const parsed = validateActionRequest(body);
+      const parsed = validateActionRequest(body, options.env ?? process.env);
       const requestId = randomUUID();
       const actionStartedAt = Date.now();
       const actionLogFields = buildActionLogFields(parsed);
@@ -263,7 +340,7 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
             sessionId: parsed.sessionId ?? "",
             threadId: parsed.threadId ?? "",
           },
-        }));
+        }), parsed.previewOriginGrant);
         const runnerResponse = await buildRunnerResponse(payload);
         logBrowserRunnerEvent("browser_action_end", {
           requestId,

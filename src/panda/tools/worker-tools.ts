@@ -1,4 +1,4 @@
-import type {ThinkingLevel, ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ToolResultMessage} from "@mariozechner/pi-ai";
 import {z} from "zod";
 
 import type {RunContext} from "../../kernel/agent/run-context.js";
@@ -16,11 +16,13 @@ import type {WorkerSessionService} from "../../app/runtime/worker-session-servic
 import type {ExecutionEnvironmentLifecycleService} from "../../app/runtime/execution-environment-service.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveDefaultAgentWorkerModelSelector} from "../defaults.js";
-
-const workerThinkingSchema = z.enum(["low", "medium", "high", "xhigh"]);
-const DEFAULT_WORKER_THINKING: ThinkingLevel = "high";
-
-export const WORKER_CONTROL_TOOL_NAMES = new Set(["worker_spawn", "worker_stop"]);
+import {
+  buildDefaultWorkerAllowedTools,
+  KNOWN_WORKER_TOOL_NAMES,
+  normalizeToolName,
+  POSTGRES_READONLY_TOOL_NAME,
+  WORKER_CONTROL_TOOL_NAMES,
+} from "./worker-tool-policy.js";
 
 function compactObject<T extends Record<string, unknown>>(value: T): JsonObject {
   return Object.fromEntries(
@@ -101,6 +103,7 @@ function validateOwnedWorkerSession(input: {
 export interface WorkerSpawnToolOptions {
   workerSessions: Pick<WorkerSessionService, "createWorkerSession">;
   env?: NodeJS.ProcessEnv;
+  availableToolNames?: () => readonly string[];
 }
 
 export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
@@ -110,10 +113,9 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
     task: z.string().trim().min(1),
     context: z.string().trim().min(1).optional(),
     model: z.string().trim().min(1).optional(),
-    thinking: workerThinkingSchema.optional(),
-    ttlMs: z.number().int().min(60_000).max(7 * 24 * 60 * 60 * 1_000).optional(),
     credentialAllowlist: z.array(z.string().trim().min(1)).max(50).optional(),
     skillAllowlist: z.array(z.string().trim().min(1)).max(50).optional(),
+    toolAllowlist: z.array(z.string().trim().min(1)).max(50).optional(),
     allowReadonlyPostgres: z.boolean().optional(),
   });
 
@@ -123,11 +125,13 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
 
   private readonly workerSessions: Pick<WorkerSessionService, "createWorkerSession">;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly availableToolNames?: () => readonly string[];
 
   constructor(options: WorkerSpawnToolOptions) {
     super();
     this.workerSessions = options.workerSessions;
     this.env = options.env ?? process.env;
+    this.availableToolNames = options.availableToolNames;
   }
 
   override formatCall(args: Record<string, unknown>): string {
@@ -159,6 +163,7 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
     const scope = readScope(context);
     const workerA2A = ensureWorkerA2A(context);
     const defaultModel = resolveDefaultAgentWorkerModelSelector(this.env);
+    const extraTools = this.validateToolAllowlist(args.toolAllowlist ?? [], args.allowReadonlyPostgres === true);
     const created = await this.workerSessions.createWorkerSession({
       agentKey: scope.agentKey,
       role: args.role,
@@ -167,14 +172,16 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
       parentSessionId: scope.sessionId,
       createdByIdentityId: scope.identityId,
       model: args.model ?? defaultModel,
-      thinking: (args.thinking ?? DEFAULT_WORKER_THINKING) as ThinkingLevel,
       credentialAllowlist: args.credentialAllowlist ?? [],
       skillAllowlist: args.skillAllowlist ?? [],
       toolPolicy: {
+        allowedTools: buildDefaultWorkerAllowedTools({
+          allowReadonlyPostgres: args.allowReadonlyPostgres === true,
+          extraTools,
+        }),
         bash: {allowed: true},
         ...(args.allowReadonlyPostgres ? {postgresReadonly: {allowed: true}} : {}),
       },
-      ttlMs: args.ttlMs,
       beforeHandoff: async (result) => {
         await workerA2A.bindParentWorker({
           parentSessionId: scope.sessionId,
@@ -190,6 +197,28 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
       role: readWorkerSessionMetadata(created.session.metadata)?.role ?? args.role ?? "worker",
       ...serializeWorkerEnvironment(created.environment),
     };
+  }
+
+  private validateToolAllowlist(values: readonly string[], allowReadonlyPostgres: boolean): string[] {
+    const requested = [...new Set(values.map(normalizeToolName).filter(Boolean))];
+    const available = this.availableToolNames ? new Set(this.availableToolNames()) : null;
+
+    for (const toolName of requested) {
+      if (WORKER_CONTROL_TOOL_NAMES.has(toolName)) {
+        throw new ToolError(`${toolName} cannot be granted to worker sessions.`);
+      }
+      if (!KNOWN_WORKER_TOOL_NAMES.has(toolName)) {
+        throw new ToolError(`Unknown worker tool: ${toolName}.`);
+      }
+      if (toolName === POSTGRES_READONLY_TOOL_NAME && !allowReadonlyPostgres) {
+        throw new ToolError("postgres_readonly_query requires allowReadonlyPostgres=true.");
+      }
+      if (available && !available.has(toolName)) {
+        throw new ToolError(`Tool ${toolName} is not available in this runtime.`);
+      }
+    }
+
+    return requested;
   }
 }
 

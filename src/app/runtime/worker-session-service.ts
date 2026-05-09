@@ -32,7 +32,8 @@ import {trimToUndefined} from "../../lib/strings.js";
 import {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
 
 const WORKER_INPUT_SOURCE = "worker";
-export const DEFAULT_WORKER_ENVIRONMENT_TTL_MS = 3 * 60 * 60 * 1_000;
+export const DEFAULT_WORKER_ENVIRONMENT_TTL_MS = 24 * 60 * 60 * 1_000;
+const DEFAULT_WORKER_THINKING: ThinkingLevel = "xhigh";
 
 export interface CreateWorkerSessionInput {
   agentKey: string;
@@ -191,7 +192,10 @@ export class WorkerSessionService {
 
     const sessionId = trimToUndefined(input.sessionId) ?? randomUUID();
     const threadId = trimToUndefined(input.threadId) ?? randomUUID();
-    const workerMetadata = buildWorkerSessionMetadata(input);
+    const workerMetadata = buildWorkerSessionMetadata({
+      ...input,
+      task,
+    });
     const sessionInput: CreateSessionInput = {
       id: sessionId,
       agentKey,
@@ -211,7 +215,7 @@ export class WorkerSessionService {
       }),
       systemPrompt: input.systemPrompt,
       model: input.model,
-      thinking: input.thinking,
+      thinking: input.thinking ?? DEFAULT_WORKER_THINKING,
       inferenceProjection: input.inferenceProjection,
     };
 

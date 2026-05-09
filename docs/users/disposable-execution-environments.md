@@ -163,11 +163,13 @@ Useful arguments:
 - `role`: short label, for example `research`, `qa`, or `ops`
 - `context`: extra handoff context
 - `model`: optional override; otherwise `WORKER_MODEL`, then the runtime default
-- `thinking`: optional `low|medium|high|xhigh`; default is `high`
-- `ttlMs`: optional environment lifetime; default is 3 hours
 - `credentialAllowlist`: env keys the worker may receive
 - `skillAllowlist`: skills the worker may read/use
+- `toolAllowlist`: extra tools to grant beyond the default worker tool set
 - `allowReadonlyPostgres`: explicitly grants readonly SQL access
+
+Worker thinking defaults to `xhigh`. Disposable worker environments live for 24
+hours by default. `worker_spawn` does not expose thinking or TTL overrides.
 
 The parent stops a worker with `worker_stop` using either `sessionId` or
 `environmentId`. Stopping removes the disposable container but keeps
@@ -176,8 +178,24 @@ The parent stops a worker with `worker_stop` using either `sessionId` or
 The parent agent context includes a `Workers` section for active workers and
 recently stopped workers, including parent-visible file paths.
 
-Worker sessions use normal `message_agent` A2A. The parent and worker are bound
-by session id when the worker is created. Workers cannot spawn or stop workers.
+Worker sessions use a dedicated worker base prompt, not the full Panda prompt.
+They use normal `message_agent` A2A. The parent and worker are bound by session
+id when the worker is created. Workers cannot spawn or stop workers.
+
+Every worker run receives a `Worker Runtime Context` with the durable facts the
+worker needs to operate:
+
+- `role`
+- `task`
+- `context`
+- `parentSessionId`
+- exact `message_agent({ sessionId: "..." })` parent target
+- worker paths: `/workspace`, `/inbox`, `/artifacts`
+- parent-visible root: `/environments/<envDir>`
+
+This is separate from the initial handoff message. It is re-rendered as runtime
+context on later worker wakes, so the parent session id and file paths do not
+depend on old transcript text staying visible.
 
 Worker messages should include:
 
@@ -221,10 +239,25 @@ inside the disposable runner, not inside the persistent per-agent runner.
 
 ## Policy Defaults
 
-| Environment | Credentials | Skills | Bash | Readonly Postgres |
+| Environment | Credentials | Skills | Tools | Readonly Postgres |
 | --- | --- | --- | --- | --- |
-| persistent agent runner | all current agent credentials | all current agent skills | allowed | normal tool policy |
-| disposable worker env | allowlist, default empty | allowlist, default empty | allowed unless disabled | disabled unless explicitly allowed |
+| persistent agent runner | all current agent credentials | all current agent skills | normal main-agent tool set | normal tool policy |
+| disposable worker env | allowlist, default empty | allowlist, default empty | worker allowlist | disabled unless explicitly allowed |
+
+Default disposable worker tools:
+
+- `bash`
+- `background_job_status`
+- `background_job_wait`
+- `background_job_cancel`
+- `message_agent`
+- `current_datetime`
+- `view_media`
+- `web_fetch`
+- `brave_search` when available
+- `browser`
+- `agent_skill` for allowed skill reads
+- `image_generate` when available
 
 Credentials are injected per bash request. Runners do not load credentials from
 Postgres, files, or long-lived process env.
@@ -235,8 +268,9 @@ The skill allowlist applies to:
 - readonly `session.agent_skills` queries
 
 Readonly Postgres in a disposable environment requires both
-`toolPolicy.postgresReadonly.allowed=true` and `READONLY_DATABASE_URL`. Without
-that explicit allow policy, workers cannot query Panda state.
+`toolPolicy.postgresReadonly.allowed=true` and `READONLY_DATABASE_URL`. In
+`worker_spawn`, set `allowReadonlyPostgres=true`; listing
+`postgres_readonly_query` in `toolAllowlist` without that flag is rejected.
 
 ## Troubleshooting
 

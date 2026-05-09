@@ -79,5 +79,6 @@ export interface DefaultAgentSessionContext extends ShellExecutionContext {
   channelActionQueue?: DefaultAgentChannelActionQueue;
   messageAgent?: DefaultAgentMessageAgentService;
   workerA2A?: DefaultAgentWorkerA2AService;
+  worker?: JsonValue;
   subagentDepth?: number;
 }

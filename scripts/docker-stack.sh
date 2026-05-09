@@ -944,6 +944,15 @@ EOF
       fi
     fi
 
+    if (( enable_disposable_environments )); then
+      cat <<'EOF'
+  panda-browser-runner:
+    networks:
+      - runner_net
+      - disposable_runner_net
+EOF
+    fi
+
     if agents_declared; then
       for agent_key in "${normalized_agents[@]}"; do
         cat <<EOF

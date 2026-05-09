@@ -235,7 +235,13 @@ class FakeBrowserContext {
     abort(reason?: string): Promise<void>;
     continue(): Promise<void>;
   }) => Promise<void>) | null = null;
+  websocketRouteHandler: ((route: {
+    url(): string;
+    close(options?: {code?: number; reason?: string}): Promise<void>;
+    connectToServer(): unknown;
+  }) => Promise<void>) | null = null;
   private pageListener: ((page: FakePage) => void) | null = null;
+  newContextOptions: unknown = undefined;
   storageStateInput: unknown = undefined;
   storageStatePaths: string[] = [];
 
@@ -262,6 +268,17 @@ class FakeBrowserContext {
     }) => Promise<void>,
   ): Promise<void> {
     this.routeHandler = handler;
+  }
+
+  async routeWebSocket(
+    _pattern: string | RegExp,
+    handler: (route: {
+      url(): string;
+      close(options?: {code?: number; reason?: string}): Promise<void>;
+      connectToServer(): unknown;
+    }) => Promise<void>,
+  ): Promise<void> {
+    this.websocketRouteHandler = handler;
   }
 
   async close(): Promise<void> {}
@@ -310,6 +327,7 @@ class FakeBrowser {
   constructor(readonly context: FakeBrowserContext) {}
 
   async newContext(options?: {storageState?: unknown}): Promise<FakeBrowserContext> {
+    this.context.newContextOptions = options;
     this.context.storageStateInput = options?.storageState;
     return this.context;
   }
@@ -480,6 +498,23 @@ describe("BrowserTool", () => {
     expect(browser.close).toHaveBeenCalledTimes(1);
   });
 
+  it("blocks service workers in browser contexts", async () => {
+    const context = new FakeBrowserContext(new FakePage());
+    const service = new BrowserSessionService({
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+    });
+    services.push(service);
+
+    await service.handle(
+      {action: "snapshot"},
+      createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
+    );
+
+    expect(context.newContextOptions).toMatchObject({
+      serviceWorkers: "block",
+    });
+  });
+
   it("blocks private targets before navigation starts", async () => {
     const launchBrowserImpl = vi.fn();
     const service = new BrowserSessionService({
@@ -505,6 +540,31 @@ describe("BrowserTool", () => {
       launchBrowserImpl: launchBrowserImpl as any,
       lookupHostname: async (hostname) => hostname === "panda-core" ? ["172.22.0.5"] : ["93.184.216.34"],
       allowPrivateHostnames: ["panda-core"],
+      dataDir: tempDir,
+    });
+    services.push(service);
+
+    const result = await service.handle(
+      {action: "navigate", url: "http://panda-core:8092/panda/apps/period-tracker/"},
+      createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
+    );
+
+    expect(launchBrowserImpl).toHaveBeenCalledTimes(1);
+    expect(page.url()).toBe("http://panda-core:8092/panda/apps/period-tracker/");
+    expect(result.details).toMatchObject({
+      action: "navigate",
+    });
+  });
+
+  it("reads trusted private hosts from BROWSER_ALLOW_PRIVATE_HOSTS", async () => {
+    const page = new FakePage();
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
+    tempDirs.push(tempDir);
+    const launchBrowserImpl = vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any);
+    const service = new BrowserSessionService({
+      env: {BROWSER_ALLOW_PRIVATE_HOSTS: "panda-core"} as NodeJS.ProcessEnv,
+      launchBrowserImpl: launchBrowserImpl as any,
+      lookupHostname: async (hostname) => hostname === "panda-core" ? ["172.22.0.5"] : ["93.184.216.34"],
       dataDir: tempDir,
     });
     services.push(service);
@@ -567,6 +627,191 @@ describe("BrowserTool", () => {
     });
 
     expect(routeEvents).toEqual(["abort"]);
+  });
+
+  it("allows only the active worker preview origin and matching websocket origin", async () => {
+    const context = new FakeBrowserContext(new FakePage());
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
+    tempDirs.push(tempDir);
+    const service = new BrowserSessionService({
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      lookupHostname: async () => ["172.28.0.12"],
+      dataDir: tempDir,
+    });
+    services.push(service);
+
+    await service.handle(
+      {action: "navigate", url: "http://panda-env-worker-a:5173/path"},
+      createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
+      {
+        originalOrigin: "http://localhost:5173",
+        resolvedOrigin: "http://panda-env-worker-a:5173",
+      },
+    );
+
+    const routeEvents: string[] = [];
+    const route = (url: string) => ({
+      request: () => ({url: () => url}),
+      abort: async () => {
+        routeEvents.push(`abort:${url}`);
+      },
+      continue: async () => {
+        routeEvents.push(`continue:${url}`);
+      },
+    });
+    const websocketRoute = (url: string) => ({
+      url: () => url,
+      close: async () => {
+        routeEvents.push(`ws-close:${url}`);
+      },
+      connectToServer: () => {
+        routeEvents.push(`ws-connect:${url}`);
+        return {};
+      },
+    });
+
+    await context.routeHandler?.(route("http://panda-env-worker-a:5173/src/App.tsx"));
+    await context.websocketRouteHandler?.(websocketRoute("ws://panda-env-worker-a:5173/@vite/client"));
+    await context.websocketRouteHandler?.(websocketRoute("ws://panda-env-worker-a:5174/@vite/client"));
+    await context.routeHandler?.(route("http://panda-env-worker-a:5174/src/App.tsx"));
+    await context.routeHandler?.(route("http://panda-env-worker-b:5173/src/App.tsx"));
+
+    expect(routeEvents).toEqual([
+      "continue:http://panda-env-worker-a:5173/src/App.tsx",
+      "ws-connect:ws://panda-env-worker-a:5173/@vite/client",
+      "ws-close:ws://panda-env-worker-a:5174/@vite/client",
+      "abort:http://panda-env-worker-a:5174/src/App.tsx",
+      "abort:http://panda-env-worker-b:5173/src/App.tsx",
+    ]);
+  });
+
+  it("clears the worker preview grant on ordinary navigation", async () => {
+    const context = new FakeBrowserContext(new FakePage());
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
+    tempDirs.push(tempDir);
+    const service = new BrowserSessionService({
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      lookupHostname: async (hostname) => hostname === "example.com" ? ["93.184.216.34"] : ["172.28.0.12"],
+      dataDir: tempDir,
+    });
+    services.push(service);
+    const run = createRunContext({cwd: "/workspace/panda", threadId: "thread-1"});
+
+    await service.handle(
+      {action: "navigate", url: "http://panda-env-worker-a:5173/"},
+      run,
+      {
+        originalOrigin: "http://localhost:5173",
+        resolvedOrigin: "http://panda-env-worker-a:5173",
+      },
+    );
+    await service.handle({action: "navigate", url: "https://example.com/"}, run);
+
+    const routeEvents: string[] = [];
+    await context.routeHandler?.({
+      request: () => ({url: () => "http://panda-env-worker-a:5173/src/App.tsx"}),
+      abort: async () => {
+        routeEvents.push("abort");
+      },
+      continue: async () => {
+        routeEvents.push("continue");
+      },
+    });
+
+    expect(routeEvents).toEqual(["abort"]);
+  });
+
+  it("clears the worker preview grant after click navigation leaves the worker origin", async () => {
+    const page = new FakePage();
+    const context = new FakeBrowserContext(page);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
+    tempDirs.push(tempDir);
+    const service = new BrowserSessionService({
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      lookupHostname: async (hostname) => hostname === "example.com" ? ["93.184.216.34"] : ["172.28.0.12"],
+      dataDir: tempDir,
+    });
+    services.push(service);
+    const run = createRunContext({cwd: "/workspace/panda", threadId: "thread-1"});
+
+    await service.handle(
+      {action: "navigate", url: "http://panda-env-worker-a:5173/"},
+      run,
+      {
+        originalOrigin: "http://localhost:5173",
+        resolvedOrigin: "http://panda-env-worker-a:5173",
+      },
+    );
+    page.onLocatorClick = () => {
+      page.currentUrl = "https://example.com/";
+      page.snapshot = {
+        ...page.snapshot,
+        url: "https://example.com/",
+        title: "Example",
+      };
+    };
+    await service.handle({action: "click", ref: "e1"}, run);
+
+    const routeEvents: string[] = [];
+    await context.routeHandler?.({
+      request: () => ({url: () => "http://panda-env-worker-a:5173/src/App.tsx"}),
+      abort: async () => {
+        routeEvents.push("abort");
+      },
+      continue: async () => {
+        routeEvents.push("continue");
+      },
+    });
+
+    expect(routeEvents).toEqual(["abort"]);
+  });
+
+  it("clears the worker preview grant during main-frame navigation away from the worker origin", async () => {
+    const context = new FakeBrowserContext(new FakePage());
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
+    tempDirs.push(tempDir);
+    const service = new BrowserSessionService({
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      lookupHostname: async (hostname) => hostname === "example.com" ? ["93.184.216.34"] : ["172.28.0.12"],
+      dataDir: tempDir,
+    });
+    services.push(service);
+
+    await service.handle(
+      {action: "navigate", url: "http://panda-env-worker-a:5173/"},
+      createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
+      {
+        originalOrigin: "http://localhost:5173",
+        resolvedOrigin: "http://panda-env-worker-a:5173",
+      },
+    );
+
+    const routeEvents: string[] = [];
+    await context.routeHandler?.({
+      request: () => ({
+        url: () => "https://example.com/",
+        isNavigationRequest: () => true,
+        resourceType: () => "document",
+        frame: () => ({parentFrame: () => null}),
+      }),
+      abort: async () => {
+        routeEvents.push("abort:navigate");
+      },
+      continue: async () => {
+        routeEvents.push("continue:navigate");
+      },
+    });
+    await context.routeHandler?.({
+      request: () => ({url: () => "http://panda-env-worker-a:5173/src/App.tsx"}),
+      abort: async () => {
+        routeEvents.push("abort:worker");
+      },
+      continue: async () => {
+        routeEvents.push("continue:worker");
+      },
+    });
+
+    expect(routeEvents).toEqual(["continue:navigate", "abort:worker"]);
   });
 
   it("re-checks routed requests instead of caching allow decisions forever", async () => {

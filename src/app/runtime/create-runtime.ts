@@ -144,11 +144,14 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
       cwd: options.cwd ?? process.cwd(),
     },
   });
-  const mainTools = [
+  let mainTools: readonly Tool[] = [];
+  const workerSpawnTool = new WorkerSpawnTool({
+    workerSessions,
+    availableToolNames: () => mainTools.map((tool) => tool.name),
+  });
+  mainTools = [
     ...runtime.mainTools,
-    new WorkerSpawnTool({
-      workerSessions,
-    }),
+    workerSpawnTool,
     new WorkerStopTool({
       sessions: runtime.sessionStore,
       environments: runtime.executionEnvironments,

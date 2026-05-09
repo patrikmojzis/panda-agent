@@ -23,6 +23,7 @@ export type ExecutionSkillPolicy =
   | {mode: "allowlist"; skillKeys: readonly string[]};
 
 export interface ExecutionToolPolicy {
+  allowedTools?: readonly string[];
   bash?: {
     allowed?: boolean;
   };

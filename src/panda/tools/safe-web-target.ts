@@ -41,6 +41,8 @@ export interface SafeHttpTarget {
 
 export interface SafeHttpTargetOptions {
   allowPrivateHostnames?: readonly string[];
+  allowPrivateOrigins?: readonly string[];
+  allowedProtocols?: readonly string[];
 }
 
 const BLOCKED_IPV4_SPECIAL_USE_RANGES = new Set<Ipv4Range>([
@@ -119,6 +121,57 @@ function normalizeAllowedHostnames(
       .map((hostname) => normalizeHostname(hostname))
       .filter(Boolean),
   );
+}
+
+function normalizeAllowedProtocol(protocol: string): string | undefined {
+  const normalized = trimNonEmptyString(protocol)?.toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.endsWith(":") ? normalized : `${normalized}:`;
+}
+
+function normalizeAllowedProtocols(protocols: readonly string[] | undefined): Set<string> {
+  return new Set(
+    (protocols ?? ["http:", "https:"])
+      .map((protocol) => normalizeAllowedProtocol(protocol))
+      .filter((protocol): protocol is string => Boolean(protocol)),
+  );
+}
+
+function normalizeOrigin(raw: string): string | undefined {
+  try {
+    const url = new URL(raw);
+    if (!url.hostname) {
+      return undefined;
+    }
+    url.hostname = normalizeHostname(url.hostname);
+    return url.origin.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeAllowedOrigins(origins: readonly string[] | undefined): Set<string> {
+  return new Set(
+    (origins ?? [])
+      .map((origin) => normalizeOrigin(origin))
+      .filter((origin): origin is string => Boolean(origin)),
+  );
+}
+
+function protocolDisplay(protocol: string): string {
+  return `${protocol.replace(/:$/, "")}://`;
+}
+
+function buildProtocolError(toolName: string, protocols: Set<string>): ToolError {
+  const labels = [...protocols].map((protocol) => protocolDisplay(protocol));
+  const message = labels.length === 0
+    ? `${toolName} has no allowed URL protocols.`
+    : labels.length === 1
+      ? `${toolName} only supports ${labels[0]} URLs.`
+      : `${toolName} only supports ${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]} URLs.`;
+  return new ToolError(message);
 }
 
 function stripIpv6Brackets(value: string): string {
@@ -423,8 +476,9 @@ export async function resolveSafeHttpTarget(
   toolName: string,
   options: SafeHttpTargetOptions = {},
 ): Promise<SafeHttpTarget> {
-  if (!["http:", "https:"].includes(url.protocol)) {
-    throw new ToolError(`${toolName} only supports http:// and https:// URLs.`);
+  const allowedProtocols = normalizeAllowedProtocols(options.allowedProtocols);
+  if (!allowedProtocols.has(url.protocol.toLowerCase())) {
+    throw buildProtocolError(toolName, allowedProtocols);
   }
   if (url.username || url.password) {
     throw new ToolError(`${toolName} does not allow URLs with embedded credentials.`);
@@ -432,7 +486,9 @@ export async function resolveSafeHttpTarget(
 
   const hostname = normalizeHostname(url.hostname);
   const allowedPrivateHostnames = normalizeAllowedHostnames(options.allowPrivateHostnames);
-  const allowPrivateTarget = allowedPrivateHostnames.has(hostname);
+  const allowedPrivateOrigins = normalizeAllowedOrigins(options.allowPrivateOrigins);
+  const allowPrivateTarget = allowedPrivateHostnames.has(hostname)
+    || allowedPrivateOrigins.has(url.origin.toLowerCase());
   if (!hostname) {
     throw new ToolError(`${toolName} requires a valid hostname.`);
   }

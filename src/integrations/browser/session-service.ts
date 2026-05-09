@@ -5,6 +5,7 @@ import path from "node:path";
 import {
     type Browser,
     type BrowserContext,
+    type BrowserContextOptions,
     chromium,
     type LaunchOptions,
     type Locator,
@@ -38,6 +39,7 @@ import type {
     BrowserSnapshotMode,
 } from "../../panda/tools/browser-types.js";
 import {defaultLookupHostname, type LookupHostname, resolveSafeHttpTarget,} from "../../panda/tools/safe-web-target.js";
+import type {BrowserPreviewOriginGrant} from "./protocol.js";
 import {normalizeBrowserLabelValue, normalizeBrowserScopeKey, safeAgentKey,} from "./shared.js";
 
 const DEFAULT_BROWSER_ACTION_TIMEOUT_MS = 60_000;
@@ -61,6 +63,7 @@ interface BrowserSessionRecord {
   createdAtMs: number;
   lastUsedAtMs: number;
   disconnected: boolean;
+  previewOriginGrant?: BrowserPreviewOriginGrant;
 }
 
 type BrowserElementAction =
@@ -191,6 +194,72 @@ function readAllowedPrivateHostnames(
     .split(",")
     .map((value) => trimToUndefined(value))
     .filter((value): value is string => Boolean(value));
+}
+
+function browserNetworkProtocols(): readonly string[] {
+  return ["http:", "https:", "ws:", "wss:"];
+}
+
+function browserNavigationProtocols(): readonly string[] {
+  return ["http:", "https:"];
+}
+
+function isBrowserNetworkProtocol(protocol: string): boolean {
+  return browserNetworkProtocols().includes(protocol.toLowerCase());
+}
+
+function isWebSocketProtocol(protocol: string): boolean {
+  return ["ws:", "wss:"].includes(protocol.toLowerCase());
+}
+
+function websocketOriginForHttpOrigin(origin: string): string | undefined {
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "http:") {
+      url.protocol = "ws:";
+    } else if (url.protocol === "https:") {
+      url.protocol = "wss:";
+    } else {
+      return undefined;
+    }
+    return url.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildPreviewPrivateOrigins(grant: BrowserPreviewOriginGrant | undefined): string[] {
+  if (!grant) {
+    return [];
+  }
+
+  const websocketOrigin = websocketOriginForHttpOrigin(grant.resolvedOrigin);
+  return [
+    grant.resolvedOrigin,
+    ...(websocketOrigin ? [websocketOrigin] : []),
+  ];
+}
+
+function buildBrowserContextOptions(storageStatePath?: string): BrowserContextOptions {
+  return {
+    serviceWorkers: "block",
+    ...(storageStatePath ? {storageState: storageStatePath} : {}),
+  };
+}
+
+function isMainFrameNavigationRequest(request: {
+  isNavigationRequest?: () => boolean;
+  resourceType?: () => string;
+  frame?: () => {parentFrame?: () => unknown};
+}): boolean {
+  if (request.isNavigationRequest?.() !== true || request.resourceType?.() !== "document") {
+    return false;
+  }
+  try {
+    return request.frame?.().parentFrame?.() === null;
+  } catch {
+    return false;
+  }
 }
 
 function normalizeScopeKey(context: DefaultAgentSessionContext): {scope: BrowserSessionScope; key: string} {
@@ -565,6 +634,31 @@ export class BrowserSessionService {
     });
   }
 
+  private async ensureSafeBrowserTarget(
+    url: URL,
+    previewOriginGrant: BrowserPreviewOriginGrant | undefined,
+    allowedProtocols: readonly string[] = browserNavigationProtocols(),
+  ): Promise<void> {
+    await resolveSafeHttpTarget(url, this.lookupHostname, "browser", {
+      allowPrivateHostnames: this.allowPrivateHostnames,
+      allowPrivateOrigins: buildPreviewPrivateOrigins(previewOriginGrant),
+      allowedProtocols,
+    });
+  }
+
+  private clearPreviewGrantIfLeavingOrigin(
+    session: BrowserSessionRecord,
+    url: URL,
+  ): void {
+    const grant = session.previewOriginGrant;
+    if (!grant) {
+      return;
+    }
+    if (url.origin !== grant.resolvedOrigin) {
+      session.previewOriginGrant = undefined;
+    }
+  }
+
   private resolveActionTimeout(action: BrowserAction): number {
     const actionTimeout = "timeoutMs" in action ? action.timeoutMs : undefined;
     return Math.max(1, Math.floor(actionTimeout ?? this.actionTimeoutMs));
@@ -624,16 +718,14 @@ export class BrowserSessionService {
     storageStatePath?: string,
   ): Promise<BrowserContext> {
     if (!storageStatePath || !(await pathExists(storageStatePath))) {
-      return await browser.newContext();
+      return await browser.newContext(buildBrowserContextOptions());
     }
 
     try {
-      return await browser.newContext({
-        storageState: storageStatePath,
-      });
+      return await browser.newContext(buildBrowserContextOptions(storageStatePath));
     } catch {
       await rm(storageStatePath, {force: true}).catch(() => undefined);
-      return await browser.newContext();
+      return await browser.newContext(buildBrowserContextOptions());
     }
   }
 
@@ -667,27 +759,53 @@ export class BrowserSessionService {
 
     let browser: Browser | null = null;
     let context: BrowserContext | null = null;
+    let session: BrowserSessionRecord | null = null;
     try {
       browser = await this.launchBrowserImpl(this.launchOptions);
       context = await this.createBrowserContext(browser, storageStatePath);
       await context.route("**/*", async (route) => {
-        const requestUrl = trimToUndefined(route.request().url());
-        if (!requestUrl || !requestUrl.startsWith("http://") && !requestUrl.startsWith("https://")) {
+        const request = route.request();
+        const requestUrl = trimToUndefined(request.url());
+        if (!requestUrl) {
           await route.continue();
           return;
         }
         try {
-          await resolveSafeHttpTarget(new URL(requestUrl), this.lookupHostname, "browser", {
-            allowPrivateHostnames: this.allowPrivateHostnames,
-          });
+          const url = new URL(requestUrl);
+          if (!isBrowserNetworkProtocol(url.protocol)) {
+            await route.continue();
+            return;
+          }
+          if (session && isMainFrameNavigationRequest(request)) {
+            this.clearPreviewGrantIfLeavingOrigin(session, url);
+          }
+          await this.ensureSafeBrowserTarget(url, session?.previewOriginGrant, browserNetworkProtocols());
           await route.continue();
         } catch {
           await route.abort("blockedbyclient");
         }
       });
+      await context.routeWebSocket?.("**/*", async (ws) => {
+        const requestUrl = trimToUndefined(ws.url());
+        if (!requestUrl) {
+          await ws.close({code: 1008, reason: "Blocked by browser policy"}).catch(() => undefined);
+          return;
+        }
+        try {
+          const url = new URL(requestUrl);
+          if (!isWebSocketProtocol(url.protocol)) {
+            await ws.close({code: 1008, reason: "Blocked by browser policy"}).catch(() => undefined);
+            return;
+          }
+          await this.ensureSafeBrowserTarget(url, session?.previewOriginGrant, ["ws:", "wss:"]);
+          ws.connectToServer();
+        } catch {
+          await ws.close({code: 1008, reason: "Blocked by browser policy"}).catch(() => undefined);
+        }
+      });
       const page = await context.newPage();
 
-      const session: BrowserSessionRecord = {
+      session = {
         scopeKey: scope.key,
         scope: scope.scope,
         browser,
@@ -699,11 +817,12 @@ export class BrowserSessionService {
         lastUsedAtMs: startedAtMs,
         disconnected: false,
       };
+      const createdSession = session;
       context.on?.("page", (nextPage) => {
-        void this.switchToPage(session, nextPage).catch(() => undefined);
+        void this.switchToPage(createdSession, nextPage).catch(() => undefined);
       });
       browser.on?.("disconnected", () => {
-        session.disconnected = true;
+        createdSession.disconnected = true;
       });
       if (this.isScopeInvalidated(scope.key, scopeVersion)) {
         throw buildTimeoutError("browser session startup", _timeoutMs, {
@@ -781,14 +900,24 @@ export class BrowserSessionService {
     return await this.ensureActivePage(session);
   }
 
-  private async ensureSafeFinalUrl(page: Page): Promise<void> {
+  private async ensureSafeFinalUrl(session: BrowserSessionRecord, page: Page): Promise<void> {
     const currentUrl = trimToUndefined(page.url());
-    if (!currentUrl || !/^https?:/i.test(currentUrl)) {
+    if (!currentUrl) {
       return;
     }
-    await resolveSafeHttpTarget(new URL(currentUrl), this.lookupHostname, "browser", {
-      allowPrivateHostnames: this.allowPrivateHostnames,
-    });
+    let url: URL;
+    try {
+      url = new URL(currentUrl);
+    } catch {
+      session.previewOriginGrant = undefined;
+      return;
+    }
+    if (!/^https?:$/i.test(url.protocol)) {
+      session.previewOriginGrant = undefined;
+      return;
+    }
+    await this.ensureSafeBrowserTarget(url, session.previewOriginGrant);
+    this.clearPreviewGrantIfLeavingOrigin(session, url);
   }
 
   private async targetLocator(
@@ -1233,6 +1362,7 @@ export class BrowserSessionService {
   async handle<TContext extends DefaultAgentSessionContext>(
     action: BrowserAction,
     run: RunContext<TContext>,
+    previewOriginGrant?: BrowserPreviewOriginGrant,
   ): Promise<ToolResultPayload> {
     await this.ensureStarted();
 
@@ -1242,7 +1372,7 @@ export class BrowserSessionService {
       action,
       scope.key,
       timeoutMs,
-      (scopeVersion) => this.handleAction(action, run, scope, timeoutMs, scopeVersion),
+      (scopeVersion) => this.handleAction(action, run, scope, timeoutMs, scopeVersion, previewOriginGrant),
     );
   }
 
@@ -1252,6 +1382,7 @@ export class BrowserSessionService {
     scope: {scope: BrowserSessionScope; key: string},
     timeoutMs: number,
     scopeVersion: number,
+    previewOriginGrant?: BrowserPreviewOriginGrant,
   ): Promise<ToolResultPayload> {
     const snapshotMode = "snapshotMode" in action ? action.snapshotMode ?? "compact" : "compact";
     const persistent = scope.scope === "thread";
@@ -1281,9 +1412,7 @@ export class BrowserSessionService {
         scope: scope.scope,
         url: action.url,
       });
-      await resolveSafeHttpTarget(new URL(action.url), this.lookupHostname, "browser", {
-        allowPrivateHostnames: this.allowPrivateHostnames,
-      });
+      await this.ensureSafeBrowserTarget(new URL(action.url), previewOriginGrant);
     }
 
     let session: BrowserSessionRecord | null = null;
@@ -1293,6 +1422,9 @@ export class BrowserSessionService {
       }
       this.emitProgress(run, "connecting", {scope: scope.scope, scopeKey});
       session = await this.resolveSession(scope, run, timeoutMs, scopeVersion);
+      if (action.action === "navigate") {
+        session.previewOriginGrant = previewOriginGrant;
+      }
       const page = await this.ensureActivePage(session);
 
       switch (action.action) {
@@ -1303,7 +1435,7 @@ export class BrowserSessionService {
             timeout: timeoutMs,
           });
           const settledPage = await this.settlePage(session, timeoutMs);
-          await this.ensureSafeFinalUrl(settledPage);
+          await this.ensureSafeFinalUrl(session, settledPage);
           this.emitProgress(run, "snapshotting", {action: "navigate"});
           const capture = await this.takeSnapshot(session, {
             mode: snapshotMode,
@@ -1332,7 +1464,7 @@ export class BrowserSessionService {
             timeout: timeoutMs,
           });
           const settledPage = await this.settlePage(session, timeoutMs);
-          await this.ensureSafeFinalUrl(settledPage);
+          await this.ensureSafeFinalUrl(session, settledPage);
           this.emitProgress(run, "snapshotting", {action: "click"});
           const capture = await this.takeSnapshot(session, {
             mode: snapshotMode,
@@ -1372,7 +1504,7 @@ export class BrowserSessionService {
             });
           }
           const settledPage = await this.settlePage(session, timeoutMs);
-          await this.ensureSafeFinalUrl(settledPage);
+          await this.ensureSafeFinalUrl(session, settledPage);
           this.emitProgress(run, "snapshotting", {action: "type"});
           const capture = await this.takeSnapshot(session, {
             mode: snapshotMode,
@@ -1397,7 +1529,7 @@ export class BrowserSessionService {
             await withTimeout(page.keyboard.press(action.key), timeoutMs, "browser key press");
           }
           const settledPage = await this.settlePage(session, timeoutMs);
-          await this.ensureSafeFinalUrl(settledPage);
+          await this.ensureSafeFinalUrl(session, settledPage);
           this.emitProgress(run, "snapshotting", {action: "press"});
           const capture = await this.takeSnapshot(session, {
             mode: snapshotMode,
@@ -1430,7 +1562,7 @@ export class BrowserSessionService {
             },
           );
           const settledPage = await this.settlePage(session, timeoutMs);
-          await this.ensureSafeFinalUrl(settledPage);
+          await this.ensureSafeFinalUrl(session, settledPage);
           this.emitProgress(run, "snapshotting", {action: "select"});
           const capture = await this.takeSnapshot(session, {
             mode: snapshotMode,
@@ -1472,7 +1604,7 @@ export class BrowserSessionService {
             });
           }
           const settledPage = await this.settlePage(session, timeoutMs);
-          await this.ensureSafeFinalUrl(settledPage);
+          await this.ensureSafeFinalUrl(session, settledPage);
           this.emitProgress(run, "snapshotting", {action: "wait"});
           const capture = await this.takeSnapshot(session, {
             mode: snapshotMode,

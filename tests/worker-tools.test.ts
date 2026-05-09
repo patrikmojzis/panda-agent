@@ -84,7 +84,7 @@ function createEnvironment(overrides: Partial<ExecutionEnvironmentRecord> = {}):
 }
 
 describe("worker control tools", () => {
-  it("spawns workers with high default thinking, scoped allowlists, and parent-visible paths", async () => {
+  it("spawns workers with scoped allowlists and parent-visible paths", async () => {
     const created: CreateWorkerSessionResult = {
       session: createWorkerSession(),
       thread: {
@@ -154,15 +154,32 @@ describe("worker control tools", () => {
       role: "research",
       task: "Inspect docs.",
       model: "openai-codex/gpt-5.4",
-      thinking: "high",
       credentialAllowlist: ["BRAVE_API_KEY"],
       skillAllowlist: ["debloater"],
       toolPolicy: {
+        allowedTools: [
+          "bash",
+          "background_job_status",
+          "background_job_wait",
+          "background_job_cancel",
+          "message_agent",
+          "current_datetime",
+          "view_media",
+          "web_fetch",
+          "brave_search",
+          "browser",
+          "agent_skill",
+          "image_generate",
+          "postgres_readonly_query",
+        ],
         bash: {allowed: true},
         postgresReadonly: {allowed: true},
       },
       beforeHandoff: expect.any(Function),
     }));
+    const createInput = createWorkerSessionMock.mock.calls[0]?.[0];
+    expect(createInput).not.toHaveProperty("thinking");
+    expect(createInput).not.toHaveProperty("ttlMs");
     expect(bindParentWorker).toHaveBeenCalledWith({
       parentSessionId: "parent-session",
       workerSessionId: "worker-session",
@@ -180,6 +197,103 @@ describe("worker control tools", () => {
         artifacts: "/environments/worker-session/artifacts",
       },
     });
+  });
+
+  it("adds explicit worker tools to the default allowlist", async () => {
+    const created: CreateWorkerSessionResult = {
+      session: createWorkerSession(),
+      thread: {
+        id: "worker-thread",
+        sessionId: "worker-session",
+        context: {},
+        createdAt: 1_000,
+        updatedAt: 1_000,
+      },
+      environment: createEnvironment(),
+      binding: {
+        sessionId: "worker-session",
+        environmentId: "worker:worker-session",
+        alias: "self",
+        isDefault: true,
+        credentialPolicy: {mode: "allowlist", envKeys: []},
+        skillPolicy: {mode: "allowlist", skillKeys: []},
+        toolPolicy: {},
+        createdAt: 1_000,
+        updatedAt: 1_000,
+      },
+    };
+    const createWorkerSessionMock = vi.fn(async (input: CreateWorkerSessionInput) => created);
+    const tool = new WorkerSpawnTool({
+      workerSessions: {
+        createWorkerSession: createWorkerSessionMock,
+      },
+      availableToolNames: () => [
+        "bash",
+        "message_agent",
+        "current_datetime",
+        "view_media",
+        "web_fetch",
+        "agent_skill",
+        "image_generate",
+        "wiki",
+      ],
+    });
+
+    await tool.run({
+      task: "Inspect docs.",
+      toolAllowlist: ["wiki"],
+    }, createRunContext({
+      cwd: "/workspace/panda",
+      agentKey: "panda",
+      sessionId: "parent-session",
+      threadId: "parent-thread",
+      workerA2A: {
+        bindParentWorker: async () => {},
+      },
+    }));
+
+    expect(createWorkerSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      toolPolicy: expect.objectContaining({
+        allowedTools: expect.arrayContaining(["bash", "message_agent", "wiki"]),
+      }),
+    }));
+  });
+
+  it("rejects unknown or gated worker tool grants", async () => {
+    const createWorkerSessionMock = vi.fn();
+    const tool = new WorkerSpawnTool({
+      workerSessions: {
+        createWorkerSession: createWorkerSessionMock,
+      },
+      availableToolNames: () => ["bash", "message_agent", "postgres_readonly_query"],
+    });
+    const context = createRunContext({
+      cwd: "/workspace/panda",
+      agentKey: "panda",
+      sessionId: "parent-session",
+      threadId: "parent-thread",
+      workerA2A: {
+        bindParentWorker: async () => {},
+      },
+    });
+
+    await expect(tool.run({
+      task: "Inspect docs.",
+      toolAllowlist: ["made_up_tool"],
+    }, context)).rejects.toThrow("Unknown worker tool: made_up_tool");
+    await expect(tool.run({
+      task: "Inspect docs.",
+      toolAllowlist: ["worker_spawn"],
+    }, context)).rejects.toThrow("worker_spawn cannot be granted");
+    await expect(tool.run({
+      task: "Inspect docs.",
+      toolAllowlist: ["postgres_readonly_query"],
+    }, context)).rejects.toThrow("postgres_readonly_query requires allowReadonlyPostgres=true");
+    await expect(tool.run({
+      task: "Inspect docs.",
+      toolAllowlist: ["wiki"],
+    }, context)).rejects.toThrow("Tool wiki is not available");
+    expect(createWorkerSessionMock).not.toHaveBeenCalled();
   });
 
   it("refuses to spawn workers when A2A binding is unavailable", async () => {

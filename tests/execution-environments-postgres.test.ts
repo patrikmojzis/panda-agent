@@ -107,6 +107,9 @@ describe("PostgresExecutionEnvironmentStore", () => {
         mode: "allowlist",
         skillKeys: ["calendar"],
       },
+      toolPolicy: {
+        allowedTools: ["bash", "message_agent"],
+      },
     });
 
     await expect(environmentStore.getDefaultBinding("session-worker")).resolves.toMatchObject({
@@ -120,6 +123,9 @@ describe("PostgresExecutionEnvironmentStore", () => {
       skillPolicy: {
         mode: "allowlist",
         skillKeys: ["calendar"],
+      },
+      toolPolicy: {
+        allowedTools: ["bash", "message_agent"],
       },
     });
   });

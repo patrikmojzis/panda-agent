@@ -28,7 +28,7 @@ import {resolveAgentMediaDir} from "./data-dir.js";
 import {EmailSendTool} from "../../panda/tools/email-send-tool.js";
 import {OutboundTool} from "../../panda/tools/outbound-tool.js";
 import {MessageAgentTool} from "../../panda/tools/message-agent-tool.js";
-import {WORKER_CONTROL_TOOL_NAMES} from "../../panda/tools/worker-tools.js";
+import {WORKER_CONTROL_TOOL_NAMES} from "../../panda/tools/worker-tool-policy.js";
 import {TelepathyContextIngress} from "./telepathy-context-ingress.js";
 import {readPositiveIntegerEnv} from "./database.js";
 

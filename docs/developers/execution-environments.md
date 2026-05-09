@@ -18,6 +18,12 @@ tool policy apply to a session.
   current agent.
 - `worker` sessions exist as a separate session kind for constrained role runs.
 - worker/disposable environments default to explicit credential allowlists.
+- worker sessions use a worker-specific base prompt and do not receive the
+  parent agent prompt context.
+- worker sessions receive a durable `Worker Runtime Context` containing their
+  role, task, parent session id, A2A target, and filesystem paths.
+- worker tools are filtered by `toolPolicy.allowedTools`; default workers get a
+  small execution/reporting tool set.
 - `worker_spawn` creates a worker session plus a default disposable environment.
 - `worker_stop` stops the disposable environment and leaves files in place.
 - parent LLM context renders active and recently stopped workers from session and
@@ -52,9 +58,15 @@ tool policy apply to a session.
 - binds the worker session to that environment as default
 - queues or wakes the worker handoff input
 
+`createThreadDefinition` prepends `WorkerRuntimeContext` for worker sessions.
+That context is sourced from `thread.context.worker` and environment filesystem
+metadata, not from the transcript. It is the reliable place for
+`parentSessionId`, `message_agent({ sessionId: "..." })`, `/workspace`,
+`/inbox`, `/artifacts`, and `/environments/<envDir>` hints.
+
 The worker model defaults to `WORKER_MODEL` when set. Worker thinking defaults
-to `high` unless the caller passes `thinking`. Worker environment TTL defaults
-to 3 hours unless the caller passes `ttlMs`.
+to `xhigh`. Worker environment TTL defaults to 24 hours. `worker_spawn` does not
+expose thinking or TTL overrides.
 
 `worker_stop` validates that the target worker belongs to the current
 `agentKey` and current parent `sessionId` before calling
@@ -62,6 +74,8 @@ to 3 hours unless the caller passes `ttlMs`.
 worker filesystem roots.
 
 Worker sessions do not receive `worker_spawn` or `worker_stop` in their toolset.
+`worker_spawn.toolAllowlist` can grant additional available tools by name.
+`postgres_readonly_query` also requires `allowReadonlyPostgres=true`.
 
 ## Disposable Environment Manager
 

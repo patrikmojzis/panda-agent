@@ -80,6 +80,13 @@ function parseToolPolicy(value: unknown): ExecutionToolPolicy {
   }
   const record = value as Record<string, unknown>;
   const policy: ExecutionToolPolicy = {};
+  if (Array.isArray(record.allowedTools)) {
+    const allowedTools = record.allowedTools
+      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+    if (allowedTools.length > 0) {
+      policy.allowedTools = allowedTools;
+    }
+  }
   if (record.bash && typeof record.bash === "object" && !Array.isArray(record.bash)) {
     const bash = record.bash as Record<string, unknown>;
     if (typeof bash.allowed === "boolean") {

@@ -12,10 +12,11 @@ import {trimToUndefined} from "../../lib/strings.js";
 import type {BrowserToolService} from "../../panda/tools/browser-tool.js";
 import type {BrowserAction} from "../../panda/tools/browser-types.js";
 import type {
-  BrowserRunnerActionRequest,
-  BrowserRunnerActionResponse,
-  BrowserRunnerArtifact,
-  BrowserRunnerErrorResponse,
+    BrowserPreviewOriginGrant,
+    BrowserRunnerActionRequest,
+    BrowserRunnerActionResponse,
+    BrowserRunnerArtifact,
+    BrowserRunnerErrorResponse,
 } from "./protocol.js";
 import {buildRunnerEndpoint, normalizeBrowserLabelValue, normalizeBrowserScopeKey, safeAgentKey,} from "./shared.js";
 
@@ -140,6 +141,68 @@ function rewriteBrowserText(text: string, runnerPath: string, localPath: string)
   return runnerPath ? text.replaceAll(runnerPath, localPath) : text;
 }
 
+function normalizeLoopbackHostname(hostname: string): string {
+  const normalized = hostname.trim().replace(/\.+$/, "").toLowerCase();
+  if (normalized.startsWith("[") && normalized.endsWith("]")) {
+    return normalized.slice(1, -1);
+  }
+  return normalized;
+}
+
+function isLoopbackPreviewHost(hostname: string): boolean {
+  const normalized = normalizeLoopbackHostname(hostname);
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function readStringField(value: unknown, key: string): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return typeof value[key] === "string" ? trimToUndefined(value[key]) : undefined;
+}
+
+function resolveWorkerPreviewAction(
+  action: BrowserAction,
+  context: DefaultAgentSessionContext,
+): {action: BrowserAction; previewOriginGrant?: BrowserPreviewOriginGrant} {
+  if (action.action !== "navigate") {
+    return {action};
+  }
+
+  const parsedUrl = new URL(action.url);
+  if (!["http:", "https:"].includes(parsedUrl.protocol) || !isLoopbackPreviewHost(parsedUrl.hostname)) {
+    return {action};
+  }
+
+  const executionEnvironment = context.executionEnvironment;
+  if (executionEnvironment?.kind !== "disposable_container") {
+    return {action};
+  }
+
+  const containerName = readStringField(executionEnvironment.metadata, "containerName");
+  const network = readStringField(executionEnvironment.metadata, "network");
+  if (!containerName || !network) {
+    throw new ToolError(
+      "Worker browser preview is unavailable because the disposable environment is missing Docker network metadata.",
+      {details: {environmentId: executionEnvironment.id}},
+    );
+  }
+
+  const rewrittenUrl = new URL(parsedUrl);
+  rewrittenUrl.hostname = containerName;
+  const rewrittenAction: BrowserAction = {
+    ...action,
+    url: rewrittenUrl.toString(),
+  };
+  return {
+    action: rewrittenAction,
+    previewOriginGrant: {
+      originalOrigin: parsedUrl.origin,
+      resolvedOrigin: rewrittenUrl.origin,
+    },
+  };
+}
+
 export class BrowserRunnerClient<TContext = DefaultAgentSessionContext> implements BrowserToolService<TContext> {
   private readonly env: NodeJS.ProcessEnv;
   private readonly fetchImpl: typeof fetch;
@@ -197,11 +260,13 @@ export class BrowserRunnerClient<TContext = DefaultAgentSessionContext> implemen
     const {runnerUrl, sharedSecret} = this.resolveConfig();
     const timeoutMs = Math.max(1, Math.floor(("timeoutMs" in action ? action.timeoutMs : undefined) ?? this.actionTimeoutMs ?? 60_000));
     const context = (run.context ?? {}) as DefaultAgentSessionContext;
+    const previewRequest = resolveWorkerPreviewAction(action, context);
     const request: BrowserRunnerActionRequest = {
       agentKey: trimToUndefined(context.agentKey) ?? "",
       ...(trimToUndefined(context.sessionId) ? {sessionId: context.sessionId!.trim()} : {}),
       ...(trimToUndefined(context.threadId) ? {threadId: context.threadId!.trim()} : {}),
-      action,
+      action: previewRequest.action,
+      ...(previewRequest.previewOriginGrant ? {previewOriginGrant: previewRequest.previewOriginGrant} : {}),
     };
 
     const response = await this.fetchImpl(buildRunnerEndpoint(runnerUrl, "action"), {

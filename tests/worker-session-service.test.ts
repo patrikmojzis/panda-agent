@@ -117,12 +117,15 @@ describe("WorkerSessionService", () => {
     expect(created.thread).toMatchObject({
       id: "worker-thread",
       sessionId: "worker-session",
+      thinking: "xhigh",
       context: {
         cwd: "/host/workspace",
         agentKey: "panda",
         sessionId: "worker-session",
         worker: {
           role: "research",
+          task: "Inspect the package graph.",
+          context: "Keep it read-only.",
           parentSessionId: "main-session",
         },
       },
@@ -160,6 +163,8 @@ describe("WorkerSessionService", () => {
         metadata: {
           worker: {
             role: "research",
+            task: "Inspect the package graph.",
+            context: "Keep it read-only.",
             parentSessionId: "main-session",
           },
         },
@@ -174,6 +179,8 @@ describe("WorkerSessionService", () => {
       metadata: {
         worker: {
           role: "research",
+          task: "Inspect the package graph.",
+          context: "Keep it read-only.",
           parentSessionId: "main-session",
         },
       },
