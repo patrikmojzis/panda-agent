@@ -15,8 +15,6 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "BraveSearchTool",
   "BrowserTool",
   "COMPACT_SUMMARY_PREFIX",
-  "CalendarAgendaContext",
-  "CalendarTool",
   "ClearEnvValueTool",
   "ConfigurationError",
   "DEFAULT_DAEMON_KEY",

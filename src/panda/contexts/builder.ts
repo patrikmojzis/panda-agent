@@ -4,10 +4,8 @@ import type {ExecutionEnvironmentStore, ExecutionSkillPolicy} from "../../domain
 import type {SessionStore} from "../../domain/sessions/index.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {WikiBindingService} from "../../domain/wiki/index.js";
-import type {AgentCalendarService} from "../../integrations/calendar/types.js";
 import {AgentProfileContext, type AgentProfileContextSection} from "./agent-profile-context.js";
 import {BackgroundJobsContext} from "./background-jobs-context.js";
-import {CalendarAgendaContext} from "./calendar-agenda-context.js";
 import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
 import {WorkersContext} from "./workers-context.js";
@@ -17,7 +15,6 @@ import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-c
 export type DefaultAgentLlmContextSection =
   | "datetime"
   | "environment"
-  | "calendar_agenda"
   | "wiki_overview"
   | "background_jobs"
   | "workers"
@@ -30,7 +27,6 @@ const PROFILE_SECTIONS = new Set<AgentProfileContextSection>([
 
 export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "environment",
-  "calendar_agenda",
   "wiki_overview",
   "background_jobs",
   "workers",
@@ -45,7 +41,6 @@ export interface BuildDefaultAgentLlmContextsOptions {
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
-  calendarService?: AgentCalendarService | null;
   agentKey?: string;
   threadId?: string;
   sections?: readonly DefaultAgentLlmContextSection[];
@@ -60,7 +55,6 @@ export {
 } from "./agent-profile-context.js";
 export {DateTimeContext, type DateTimeContextOptions} from "./datetime-context.js";
 export {EnvironmentContext, type EnvironmentContextOptions} from "./environment-context.js";
-export {CalendarAgendaContext, type CalendarAgendaContextOptions} from "./calendar-agenda-context.js";
 export {WorkersContext, type WorkersContextOptions} from "./workers-context.js";
 
 export function buildDefaultAgentLlmContexts(
@@ -79,13 +73,6 @@ export function buildDefaultAgentLlmContexts(
   if (uniqueSections.has("environment")) {
     llmContexts.push(new EnvironmentContext({
       cwd: options.context?.cwd,
-    }));
-  }
-
-  if (uniqueSections.has("calendar_agenda") && options.agentKey && options.calendarService) {
-    llmContexts.push(new CalendarAgendaContext({
-      service: options.calendarService,
-      agentKey: options.agentKey,
     }));
   }
 

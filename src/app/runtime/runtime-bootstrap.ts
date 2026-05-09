@@ -37,8 +37,6 @@ import {AgentPromptTool} from "../../panda/tools/agent-prompt-tool.js";
 import {AgentSkillTool} from "../../panda/tools/agent-skill-tool.js";
 import type {PostgresReadonlyQueryToolOptions} from "../../panda/tools/postgres-readonly-query-tool.js";
 import {BrowserRunnerClient} from "../../integrations/browser/client.js";
-import {createRadicaleAgentCalendarServiceFromEnv} from "../../integrations/calendar/radicale.js";
-import type {AgentCalendarService} from "../../integrations/calendar/types.js";
 import {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
@@ -50,7 +48,6 @@ import {
     AppListTool,
     AppViewTool,
 } from "../../panda/tools/app-tools.js";
-import {CalendarTool} from "../../panda/tools/calendar-tool.js";
 import {WikiTool} from "../../panda/tools/wiki-tool.js";
 import {resolveTelepathyEnabled, TelepathyHub,} from "../../integrations/telepathy/hub.js";
 import {
@@ -110,7 +107,6 @@ export interface RuntimeBootstrapResult {
   appAuth: AgentAppAuthService;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
-  calendarService: AgentCalendarService | null;
   credentialResolver: CredentialResolver;
   executionEnvironments: ExecutionEnvironmentStore;
   executionEnvironmentResolver: ExecutionEnvironmentResolver;
@@ -446,7 +442,6 @@ export async function bootstrapRuntime(
     const wikiBindingStore = new PostgresWikiBindingStore({
       pool: postgresPool,
     });
-    const calendarService = createRadicaleAgentCalendarServiceFromEnv(process.env);
 
     const credentialCrypto = resolveCredentialCrypto();
     const credentialResolver = new CredentialResolver({
@@ -581,7 +576,6 @@ export async function bootstrapRuntime(
         email,
         telepathyService,
         wikiBindingService,
-        calendarService,
         mainTools,
       }),
       toolsets: {
@@ -620,13 +614,6 @@ export async function bootstrapRuntime(
       appViewTool,
       appActionTool,
       ...(wikiTool ? [wikiTool] : []),
-      ...(calendarService
-        ? [
-          new CalendarTool({
-            service: calendarService,
-          }),
-        ]
-        : []),
       agentSkillTool,
       ...(credentialService
         ? [
@@ -688,7 +675,6 @@ export async function bootstrapRuntime(
       appAuth,
       backgroundJobService,
       browserService: resolvedBrowserService,
-      calendarService,
       credentialResolver,
       executionEnvironments,
       executionEnvironmentResolver,

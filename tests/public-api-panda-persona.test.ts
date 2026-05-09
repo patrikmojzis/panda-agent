@@ -12,8 +12,6 @@ const EXPECTED_PERSONA_EXPORTS = [
   "BashTool",
   "BraveSearchTool",
   "BrowserTool",
-  "CalendarAgendaContext",
-  "CalendarTool",
   "ClearEnvValueTool",
   "DEFAULT_AGENT_LLM_CONTEXT_SECTIONS",
   "DateTimeContext",
