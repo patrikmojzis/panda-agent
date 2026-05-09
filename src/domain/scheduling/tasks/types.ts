@@ -22,6 +22,7 @@ export interface ScheduledTaskRecord {
   id: string;
   sessionId: string;
   createdByIdentityId?: string;
+  createdFromMessageId?: string;
   title: string;
   instruction: string;
   schedule: ScheduledTaskSchedule;
@@ -54,6 +55,7 @@ export interface ScheduledTaskRunRecord {
 export interface CreateScheduledTaskInput {
   sessionId: string;
   createdByIdentityId?: string;
+  createdFromMessageId?: string;
   title: string;
   instruction: string;
   schedule: ScheduledTaskSchedule;

@@ -64,6 +64,7 @@ function parseTaskRow(row: Record<string, unknown>): ScheduledTaskRecord {
     id: String(row.id),
     sessionId: String(row.session_id),
     createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
+    createdFromMessageId: row.created_from_message_id == null ? undefined : String(row.created_from_message_id),
     title: String(row.title),
     instruction: String(row.instruction),
     schedule,
@@ -99,6 +100,7 @@ function parseTaskRunRow(row: Record<string, unknown>): ScheduledTaskRunRecord {
 function normalizeCreateInput(input: CreateScheduledTaskInput): {
   sessionId: string;
   createdByIdentityId?: string;
+  createdFromMessageId?: string;
   title: string;
   instruction: string;
   enabled: boolean;
@@ -110,6 +112,7 @@ function normalizeCreateInput(input: CreateScheduledTaskInput): {
   return {
     sessionId: requireTrimmed("session id", input.sessionId),
     createdByIdentityId: input.createdByIdentityId?.trim() || undefined,
+    createdFromMessageId: input.createdFromMessageId?.trim() || undefined,
     title: requireTrimmed("title", input.title),
     instruction: requireTrimmed("instruction", input.instruction),
     enabled: input.enabled ?? true,
@@ -156,6 +159,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
   private readonly identityTableName: string;
   private readonly sessionTableName: string;
   private readonly threadTableName: string;
+  private readonly messageTableName: string;
   private readonly runTableName: string;
 
   constructor(options: PostgresScheduledTaskStoreOptions) {
@@ -165,6 +169,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
     this.sessionTableName = buildSessionTableNames().sessions;
     const threadTables = buildThreadRuntimeTableNames();
     this.threadTableName = threadTables.threads;
+    this.messageTableName = threadTables.messages;
     this.runTableName = threadTables.runs;
   }
 
@@ -175,6 +180,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         id UUID PRIMARY KEY,
         session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
         created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
+        created_from_message_id UUID,
         title TEXT NOT NULL,
         instruction TEXT NOT NULL,
         schedule_kind TEXT NOT NULL,
@@ -246,6 +252,10 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
       ALTER TABLE ${this.tables.scheduledTaskRuns}
       ADD COLUMN IF NOT EXISTS thread_run_thread_id TEXT
     `);
+    await this.pool.query(`
+      ALTER TABLE ${this.tables.scheduledTasks}
+      ADD COLUMN IF NOT EXISTS created_from_message_id UUID
+    `);
     const threadRunTypeResult = await this.pool.query(`
       SELECT data_type
       FROM information_schema.columns
@@ -276,6 +286,17 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
       `);
     }
     await assertIntegrityChecks(this.pool, "Scheduled task schema", [
+      {
+        label: "scheduled_tasks.created_from_message_id orphaned from messages.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${this.tables.scheduledTasks} AS task
+          LEFT JOIN ${this.messageTableName} AS message
+            ON message.id = task.created_from_message_id
+          WHERE task.created_from_message_id IS NOT NULL
+            AND message.id IS NULL
+        `,
+      },
       {
         label: "scheduled_task_runs.task_id orphaned from scheduled_tasks.id",
         sql: `
@@ -385,6 +406,13 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         )
     `);
     await addConstraint(this.pool, `
+      ALTER TABLE ${this.tables.scheduledTasks}
+      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_tasks_created_from_message_fk`)}
+      FOREIGN KEY (created_from_message_id)
+      REFERENCES ${this.messageTableName}(id)
+      ON DELETE SET NULL
+    `);
+    await addConstraint(this.pool, `
       ALTER TABLE ${this.tables.scheduledTaskRuns}
       ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_task_scope_fk`)}
       FOREIGN KEY (session_id, task_id)
@@ -451,12 +479,32 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
 
   async createTask(input: CreateScheduledTaskInput): Promise<ScheduledTaskRecord> {
     const normalized = normalizeCreateInput(input);
+    if (normalized.createdFromMessageId) {
+      const messageResult = await this.pool.query(
+        `
+          SELECT message.id
+          FROM ${this.messageTableName} AS message
+          INNER JOIN ${this.threadTableName} AS thread
+            ON thread.id = message.thread_id
+          WHERE message.id = $1
+            AND thread.session_id = $2
+        `,
+        [
+          normalized.createdFromMessageId,
+          normalized.sessionId,
+        ],
+      );
+      if (messageResult.rows.length === 0) {
+        throw new Error(`Scheduled task provenance message ${normalized.createdFromMessageId} does not belong to session ${normalized.sessionId}.`);
+      }
+    }
     const result = await this.pool.query(
       `
         INSERT INTO ${this.tables.scheduledTasks} (
           id,
           session_id,
           created_by_identity_id,
+          created_from_message_id,
           title,
           instruction,
           schedule_kind,
@@ -476,7 +524,8 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
           $8,
           $9,
           $10,
-          $11
+          $11,
+          $12
         )
         RETURNING *
       `,
@@ -484,6 +533,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         randomUUID(),
         normalized.sessionId,
         normalized.createdByIdentityId ?? null,
+        normalized.createdFromMessageId ?? null,
         normalized.title,
         normalized.instruction,
         normalized.schedule.kind,

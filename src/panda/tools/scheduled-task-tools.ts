@@ -5,7 +5,7 @@ import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {normalizeScheduledTaskSchedule, type ScheduledTaskStore} from "../../domain/scheduling/tasks/index.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
-import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
+import {readCurrentInputIdentityId, readCurrentInputMessageId} from "../../app/runtime/panda-path-context.js";
 import {rethrowAsToolError} from "./shared.js";
 
 const onceScheduleSchema = z.strictObject({
@@ -27,6 +27,7 @@ const scheduledTaskScheduleSchema = z.discriminatedUnion("kind", [
 function readTaskScope(context: unknown): {
   sessionId: string;
   createdByIdentityId?: string;
+  createdFromMessageId?: string;
 } {
   if (
     !context
@@ -41,6 +42,7 @@ function readTaskScope(context: unknown): {
   return {
     sessionId: (context as {sessionId: string}).sessionId,
     createdByIdentityId: readCurrentInputIdentityId(context),
+    createdFromMessageId: readCurrentInputMessageId(context),
   };
 }
 

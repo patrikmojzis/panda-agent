@@ -86,6 +86,7 @@ Human identity is turn-level provenance, not durable thread ownership.
 That means:
 
 - active human runs use `currentInput.identityId`
+- tools can use `currentInput.messageId` as a scoped transcript retrieval anchor
 - autonomous runs may have no active identity
 - tools that need identity-scoped access must ask for it explicitly
 
@@ -96,6 +97,7 @@ Long-lived automation follows the session:
 - heartbeat config lives in `session_heartbeats`
 - watches store `session_id`
 - scheduled tasks store `session_id`
+- scheduled tasks may store `created_from_message_id` so the agent can query `session.messages` for origin context
 - scheduled reminder context shows active scheduled tasks for the current session
 - runners resolve `session.current_thread_id` at fire time
 

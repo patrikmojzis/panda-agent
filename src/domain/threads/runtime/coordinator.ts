@@ -117,6 +117,7 @@ function grantsIdleReroll(input: Pick<ThreadMessageRecord, "source">): boolean {
 function buildCurrentInputContext(
   messages: readonly ThreadMessageRecord[],
 ): {
+  messageId: string;
   source: string;
   channelId?: string;
   externalMessageId?: string;
@@ -130,6 +131,7 @@ function buildCurrentInputContext(
       continue;
     }
     return {
+      messageId: entry.id,
       source: entry.source,
       channelId: entry.channelId,
       externalMessageId: entry.externalMessageId,

@@ -66,6 +66,7 @@ export interface DefaultAgentSessionContext extends ShellExecutionContext {
   threadId: string;
   runId?: string;
   currentInput?: {
+    messageId?: string;
     source: string;
     channelId?: string;
     externalMessageId?: string;

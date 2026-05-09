@@ -31,6 +31,7 @@ function createStoreMock(): ScheduledTaskStore {
       id: "task-1",
       sessionId: input.sessionId,
       createdByIdentityId: input.createdByIdentityId,
+      createdFromMessageId: input.createdFromMessageId,
       title: input.title,
       instruction: input.instruction,
       schedule: input.schedule,
@@ -86,6 +87,7 @@ describe("scheduled task Panda tools", () => {
     sessionId: "session-main",
     threadId: "thread-home",
     currentInput: {
+      messageId: "00000000-0000-4000-8000-000000000001",
       source: "tui",
       identityId: "identity-1",
     },
@@ -112,10 +114,35 @@ describe("scheduled task Panda tools", () => {
     expect(store.createTask).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "session-main",
       createdByIdentityId: "identity-1",
+      createdFromMessageId: "00000000-0000-4000-8000-000000000001",
       schedule: {
         kind: "once",
         runAt: "2026-04-11T07:00:00.000Z",
       },
+    }));
+  });
+
+  it("creates a task without provenance when there is no current input message", async () => {
+    const store = createStoreMock();
+    const tool = new ScheduledTaskCreateTool({
+      store,
+    });
+
+    await tool.run({
+      title: "Buy apples",
+      instruction: "Remind me to buy apples.",
+      schedule: {
+        kind: "once",
+        runAt: "2026-04-11T09:00:00+02:00",
+      },
+    }, createRunContext({
+      agentKey: "panda",
+      sessionId: "session-main",
+      threadId: "thread-home",
+    }));
+
+    expect(store.createTask).toHaveBeenCalledWith(expect.not.objectContaining({
+      createdFromMessageId: expect.any(String),
     }));
   });
 

@@ -44,7 +44,25 @@ class PgMemReadonlySchemaQueryable {
         continue;
       }
 
-      if (/^CREATE VIEW "session"."(messages_raw|messages|tool_results|inputs|runs|agent_prompts|agent_pairings|agent_skills|agent_telepathy_devices|agent_sessions)"/i.test(statement)) {
+      if (/^CREATE VIEW "session"\."messages"(?:\s|$)/i.test(statement)) {
+        await this.pool.query(`
+          CREATE VIEW "session"."messages" AS
+          SELECT
+            m.id,
+            m.thread_id,
+            m.sequence,
+            m.run_id,
+            m.created_at,
+            m.message->>'role' AS role,
+            m.message->>'content' AS text
+          FROM "runtime"."messages" AS m
+          INNER JOIN "runtime"."threads" AS t ON t.id = m.thread_id
+          WHERE t.session_id = current_setting('runtime.session_id', true)
+        `);
+        continue;
+      }
+
+      if (/^CREATE VIEW "session"."(messages_raw|tool_results|inputs|runs|agent_prompts|agent_pairings|agent_skills|agent_telepathy_devices|agent_sessions)"/i.test(statement)) {
         continue;
       }
 
@@ -55,6 +73,7 @@ class PgMemReadonlySchemaQueryable {
             scheduled_tasks.id,
             scheduled_tasks.session_id,
             scheduled_tasks.created_by_identity_id,
+            scheduled_tasks.created_from_message_id,
             session.current_thread_id AS resolved_thread_id
           FROM "runtime"."scheduled_tasks" AS scheduled_tasks
           INNER JOIN "runtime"."agent_sessions" AS session
@@ -214,6 +233,15 @@ describe("PostgresScheduledTaskStore", () => {
       id: "session-thread",
       sessionId: "session-main",
     });
+    const provenanceMessage = await threadStore.appendRuntimeMessage("session-thread", {
+      origin: "input",
+      source: "tui",
+      identityId: alice.id,
+      message: {
+        role: "user",
+        content: "Remind me to research bees.",
+      },
+    });
 
     const scheduledTasks = new PostgresScheduledTaskStore({pool});
     await scheduledTasks.ensureSchema();
@@ -221,6 +249,7 @@ describe("PostgresScheduledTaskStore", () => {
     const created = await scheduledTasks.createTask({
       sessionId: "session-main",
       createdByIdentityId: alice.id,
+      createdFromMessageId: provenanceMessage.id,
       title: "Bee research",
       instruction: "Research bees and summarize the result.",
       schedule: {
@@ -232,6 +261,7 @@ describe("PostgresScheduledTaskStore", () => {
     expect(created).toMatchObject({
       sessionId: "session-main",
       createdByIdentityId: "alice-id",
+      createdFromMessageId: provenanceMessage.id,
       title: "Bee research",
       schedule: {
         kind: "once",
@@ -271,6 +301,22 @@ describe("PostgresScheduledTaskStore", () => {
 
     expect(cancelled.cancelledAt).toBeDefined();
     expect(cancelled.nextFireAt).toBeUndefined();
+
+    await pool.query(`DELETE FROM "runtime"."messages" WHERE id = $1`, [provenanceMessage.id]);
+    await expect(scheduledTasks.getTask(created.id)).resolves.toMatchObject({
+      createdFromMessageId: undefined,
+    });
+
+    await expect(scheduledTasks.createTask({
+      sessionId: "session-main",
+      createdFromMessageId: "00000000-0000-4000-8000-000000000099",
+      title: "Bad provenance",
+      instruction: "This should fail.",
+      schedule: {
+        kind: "once",
+        runAt: "2026-04-11T03:00:00+02:00",
+      },
+    })).rejects.toThrow("does not belong to session session-main");
   });
 
   it("keeps scheduled-task delivery columns out of the schema", async () => {
@@ -443,10 +489,20 @@ describe("PostgresScheduledTaskStore", () => {
       id: "home-b",
       sessionId: "session-alice",
     });
+    const provenanceMessage = await threadStore.appendRuntimeMessage("home-a", {
+      origin: "input",
+      source: "tui",
+      identityId: alice.id,
+      message: {
+        role: "user",
+        content: "Remind me to buy apples.",
+      },
+    });
 
     const aliceTask = await scheduledTasks.createTask({
       sessionId: "session-alice",
       createdByIdentityId: alice.id,
+      createdFromMessageId: provenanceMessage.id,
       title: "Buy apples",
       instruction: "Remind me to buy apples.",
       schedule: {
@@ -491,13 +547,27 @@ describe("PostgresScheduledTaskStore", () => {
     });
 
     let tasksResult = await pool.query(`
-      SELECT id, resolved_thread_id
+      SELECT id, resolved_thread_id, created_from_message_id
       FROM "session"."scheduled_tasks"
       ORDER BY id
     `);
     expect(tasksResult.rows).toEqual([{
       id: aliceTask.id,
       resolved_thread_id: "home-a",
+      created_from_message_id: provenanceMessage.id,
+    }]);
+
+    const messageResult = await pool.query(`
+      SELECT id, thread_id, sequence, role, text
+      FROM "session"."messages"
+      WHERE id = $1
+    `, [provenanceMessage.id]);
+    expect(messageResult.rows).toEqual([{
+      id: provenanceMessage.id,
+      thread_id: "home-a",
+      sequence: provenanceMessage.sequence,
+      role: "user",
+      text: "Remind me to buy apples.",
     }]);
 
     const runsResult = await pool.query(`
@@ -515,13 +585,14 @@ describe("PostgresScheduledTaskStore", () => {
       currentThreadId: "home-b",
     });
     tasksResult = await pool.query(`
-      SELECT id, resolved_thread_id
+      SELECT id, resolved_thread_id, created_from_message_id
       FROM "session"."scheduled_tasks"
       ORDER BY id
     `);
     expect(tasksResult.rows).toEqual([{
       id: aliceTask.id,
       resolved_thread_id: "home-b",
+      created_from_message_id: provenanceMessage.id,
     }]);
   });
 });

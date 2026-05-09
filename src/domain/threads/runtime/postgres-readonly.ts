@@ -425,6 +425,7 @@ export async function ensureReadonlySessionQuerySchema(
       st.session_id,
       st.created_by_identity_id,
       creator.handle AS created_by_identity_handle,
+      st.created_from_message_id,
       st.title,
       st.instruction,
       st.schedule_kind,

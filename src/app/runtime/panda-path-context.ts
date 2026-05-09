@@ -252,7 +252,7 @@ export function ensureShellSession(context: unknown): ShellSession | null {
   return nextShell;
 }
 
-export function readCurrentInputIdentityId(context: unknown): string | undefined {
+function readCurrentInputField(context: unknown, field: string): string | undefined {
   if (!isRecord(context)) {
     return undefined;
   }
@@ -262,7 +262,15 @@ export function readCurrentInputIdentityId(context: unknown): string | undefined
     return undefined;
   }
 
-  return trimToUndefined(currentInput.identityId);
+  return trimToUndefined(currentInput[field]);
+}
+
+export function readCurrentInputIdentityId(context: unknown): string | undefined {
+  return readCurrentInputField(context, "identityId");
+}
+
+export function readCurrentInputMessageId(context: unknown): string | undefined {
+  return readCurrentInputField(context, "messageId");
 }
 
 export function resolveContextPath(
