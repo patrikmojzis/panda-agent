@@ -2,6 +2,7 @@ import type {LlmContext} from "../../kernel/agent/llm-context.js";
 import {Agent} from "../../kernel/agent/agent.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
 import type {AgentStore} from "../../domain/agents/index.js";
+import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/index.js";
 import type {
   ExecutionEnvironmentStore,
   ResolvedExecutionEnvironment
@@ -66,6 +67,7 @@ export interface CreateThreadDefinitionOptions {
   agentStore?: AgentStore;
   sessionStore?: Pick<SessionStore, "listAgentSessions">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
+  scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   calendarService?: AgentCalendarService | null;
@@ -217,6 +219,7 @@ export function createThreadDefinition(
     agentStore: options.agentStore,
     sessionStore: options.sessionStore,
     threadStore: options.threadStore,
+    scheduledTasks: options.scheduledTasks,
     executionEnvironments: options.executionEnvironments,
     wikiBindings: options.wikiBindings,
     calendarService: options.calendarService,

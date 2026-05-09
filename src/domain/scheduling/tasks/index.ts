@@ -21,6 +21,7 @@ export {
   type CompleteScheduledTaskRunInput,
   type CreateScheduledTaskInput,
   type FailScheduledTaskRunInput,
+  type ListActiveScheduledTasksInput,
   type ListDueScheduledTasksInput,
   type ScheduledTaskRecord,
   type ScheduledTaskRecurringSchedule,

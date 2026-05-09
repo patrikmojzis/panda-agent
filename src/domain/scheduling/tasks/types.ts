@@ -80,6 +80,11 @@ export interface ListDueScheduledTasksInput {
   limit?: number;
 }
 
+export interface ListActiveScheduledTasksInput {
+  sessionId: string;
+  limit?: number;
+}
+
 export interface ClaimScheduledTaskInput {
   taskId: string;
   claimedBy: string;

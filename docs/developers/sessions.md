@@ -96,6 +96,7 @@ Long-lived automation follows the session:
 - heartbeat config lives in `session_heartbeats`
 - watches store `session_id`
 - scheduled tasks store `session_id`
+- scheduled reminder context shows active scheduled tasks for the current session
 - runners resolve `session.current_thread_id` at fire time
 
 So:

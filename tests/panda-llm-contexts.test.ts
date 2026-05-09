@@ -138,6 +138,37 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).not.toContain("job-done");
   });
 
+  it("shows active scheduled reminders in the default Panda contexts when available", async () => {
+    const dump = await gatherContexts(buildDefaultAgentLlmContexts({
+      context: {
+        cwd: "/workspace/panda",
+        agentKey: "panda",
+        sessionId: "session-main",
+        threadId: "thread-main",
+      },
+      scheduledTasks: {
+        listActiveTasks: async () => [{
+          id: "task-1",
+          sessionId: "session-main",
+          title: "Follow up",
+          instruction: "Check the deployment.",
+          schedule: {
+            kind: "once",
+            runAt: "2026-05-09T09:00:00.000Z",
+          },
+          enabled: true,
+          nextFireAt: Date.parse("2026-05-09T09:00:00.000Z"),
+          createdAt: Date.parse("2026-05-08T09:00:00.000Z"),
+          updatedAt: Date.parse("2026-05-08T09:00:00.000Z"),
+        }],
+      },
+    }));
+
+    expect(dump).toContain("**Scheduled Reminders:**");
+    expect(dump).toContain("task-1");
+    expect(dump).toContain("Follow up");
+  });
+
   it("omits the background bash section when no jobs are running", async () => {
     const threadStore = new TestThreadRuntimeStore();
     await threadStore.createThread({
