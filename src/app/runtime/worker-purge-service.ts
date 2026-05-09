@@ -7,17 +7,18 @@ import type {PoolClient} from "pg";
 import {buildA2ATableNames} from "../../domain/a2a/postgres-shared.js";
 import {buildOutboundDeliveryTableNames} from "../../domain/channels/deliveries/postgres-shared.js";
 import {
-    type ExecutionEnvironmentManager,
-    type ExecutionEnvironmentRecord,
-    type ExecutionEnvironmentState,
-    type ExecutionEnvironmentStore,
-    readExecutionEnvironmentFilesystemMetadata,
+  type ExecutionEnvironmentManager,
+  type ExecutionEnvironmentRecord,
+  type ExecutionEnvironmentState,
+  type ExecutionEnvironmentStore,
+  readExecutionEnvironmentFilesystemMetadata,
 } from "../../domain/execution-environments/index.js";
 import {buildExecutionEnvironmentTableNames} from "../../domain/execution-environments/postgres-shared.js";
 import {buildSessionTableNames} from "../../domain/sessions/postgres-shared.js";
 import {buildRuntimeRequestTableNames} from "../../domain/threads/requests/postgres-shared.js";
 import {buildThreadRuntimeTableNames, toMillis,} from "../../domain/threads/runtime/postgres-shared.js";
 import {type PgPoolLike, withTransaction} from "../../domain/threads/runtime/postgres-db.js";
+import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
@@ -314,6 +315,68 @@ function buildThreadIdClause(column: string, threadIds: readonly string[], value
   return `${column} IN (${placeholders.join(", ")})`;
 }
 
+function addValue(values: unknown[], value: unknown): string {
+  values.push(value);
+  return `$${values.length}`;
+}
+
+function jsonTextEquals(column: string, key: string, value: string, values: unknown[]): string {
+  return `${column}->>'${key}' = ${addValue(values, value)}`;
+}
+
+function nestedJsonTextEquals(
+  column: string,
+  parentKey: string,
+  key: string,
+  value: string,
+  values: unknown[],
+): string {
+  return `${column}->'${parentKey}'->>'${key}' = ${addValue(values, value)}`;
+}
+
+function buildOutboundDeliveryWorkerClause(input: {
+  sessionId: string;
+  threadIds: readonly string[];
+}, values: unknown[]): string {
+  const clauses: string[] = [];
+  if (input.threadIds.length > 0) {
+    clauses.push(buildThreadIdClause("thread_id", input.threadIds, values));
+  }
+  clauses.push([
+    `channel = ${addValue(values, A2A_SOURCE)}`,
+    `connector_key = ${addValue(values, A2A_CONNECTOR_KEY)}`,
+    `external_conversation_id = ${addValue(values, input.sessionId)}`,
+  ].join(" AND "));
+  clauses.push(nestedJsonTextEquals("metadata", "a2a", "fromSessionId", input.sessionId, values));
+  clauses.push(nestedJsonTextEquals("metadata", "a2a", "toSessionId", input.sessionId, values));
+  for (const threadId of input.threadIds) {
+    clauses.push(nestedJsonTextEquals("metadata", "a2a", "fromThreadId", threadId, values));
+  }
+  return `(${clauses.join(" OR ")})`;
+}
+
+function buildRuntimeRequestWorkerClause(input: {
+  sessionId: string;
+  environmentId: string;
+  threadIds: readonly string[];
+}, values: unknown[]): string {
+  const clauses = [
+    jsonTextEquals("payload", "sessionId", input.sessionId, values),
+    jsonTextEquals("payload", "fromSessionId", input.sessionId, values),
+    jsonTextEquals("payload", "toSessionId", input.sessionId, values),
+    jsonTextEquals("payload", "environmentId", input.environmentId, values),
+    nestedJsonTextEquals("payload", "senderEnvironment", "id", input.environmentId, values),
+    jsonTextEquals("result", "sessionId", input.sessionId, values),
+    jsonTextEquals("result", "environmentId", input.environmentId, values),
+  ];
+  for (const threadId of input.threadIds) {
+    clauses.push(jsonTextEquals("payload", "threadId", threadId, values));
+    clauses.push(jsonTextEquals("payload", "fromThreadId", threadId, values));
+    clauses.push(jsonTextEquals("result", "threadId", threadId, values));
+  }
+  return `(${clauses.join(" OR ")})`;
+}
+
 function emptyCounts(): WorkerPurgeDbCounts {
   return {
     sessions: 0,
@@ -452,6 +515,12 @@ export class WorkerPurgeService {
       }
     }
 
+    await withTransaction(this.pool, async (client) => {
+      for (const candidate of plan.candidates) {
+        await this.deleteDbRows(client, candidate);
+      }
+    });
+
     if (!input.skipFiles) {
       for (const candidate of plan.candidates) {
         if (candidate.filesystem.status === "safe" && candidate.filesystem.rootPath) {
@@ -459,12 +528,6 @@ export class WorkerPurgeService {
         }
       }
     }
-
-    await withTransaction(this.pool, async (client) => {
-      for (const candidate of plan.candidates) {
-        await this.deleteDbRows(client, candidate);
-      }
-    });
 
     return {
       ...plan,
@@ -574,36 +637,58 @@ export class WorkerPurgeService {
       };
     }
 
-    const rootPath = filesystem.root.hostPath ?? filesystem.root.corePath;
-    if (!rootPath || !await pathExists(rootPath)) {
-      return {
-        status: "missing",
+    const rootPaths = [
+      filesystem.root.corePath,
+      filesystem.root.hostPath,
+      filesystem.root.managerPath,
+    ].filter((entry): entry is string => Boolean(trimToUndefined(entry)));
+    let unsafe: WorkerPurgeFilesystemPlan | undefined;
+    for (const rootPath of rootPaths) {
+      if (!await pathExists(rootPath)) {
+        continue;
+      }
+      const safe = await resolveSafeEnvironmentRoot({
+        env: this.env,
+        agentKey: input.agentKey,
         rootPath,
         envDir: filesystem.envDir,
-        reason: "filesystem root does not exist",
+      });
+      if (!safe.ok) {
+        unsafe = {
+          status: "unsafe",
+          rootPath,
+          envDir: filesystem.envDir,
+          reason: safe.reason,
+        };
+        continue;
+      }
+
+      return {
+        status: "safe",
+        rootPath: safe.rootPath,
+        envDir: filesystem.envDir,
+        bytes: await directoryBytes(safe.rootPath),
       };
     }
 
-    const safe = await resolveSafeEnvironmentRoot({
-      env: this.env,
-      agentKey: input.agentKey,
-      rootPath,
-      envDir: filesystem.envDir,
-    });
-    if (!safe.ok) {
+    if (unsafe) {
+      return unsafe;
+    }
+
+    const firstRootPath = rootPaths[0];
+    if (!firstRootPath) {
       return {
-        status: "unsafe",
-        rootPath,
+        status: "missing",
         envDir: filesystem.envDir,
-        reason: safe.reason,
+        reason: "filesystem metadata has no root path",
       };
     }
 
     return {
-      status: "safe",
-      rootPath: safe.rootPath,
+      status: "missing",
+      rootPath: firstRootPath,
       envDir: filesystem.envDir,
-      bytes: await directoryBytes(safe.rootPath),
+      reason: "filesystem root does not exist",
     };
   }
 
@@ -649,17 +734,9 @@ export class WorkerPurgeService {
     threadIds: readonly string[];
   }): Promise<number> {
     const values: unknown[] = [];
-    const threadClause = buildThreadIdClause("thread_id", input.threadIds, values);
-    values.push(input.sessionId);
-    const sessionPlaceholder = `$${values.length}`;
-    const metadataClause = buildLikeClause("metadata", [input.sessionId, input.environmentId], values);
-    const itemsClause = buildLikeClause("items", [input.sessionId, input.environmentId], values);
+    const workerClause = buildOutboundDeliveryWorkerClause(input, values);
     return this.countSimple(
-      `${this.deliveries.outboundDeliveries}
-       WHERE ${threadClause}
-          OR external_conversation_id = ${sessionPlaceholder}
-          OR ${metadataClause}
-          OR ${itemsClause}`,
+      `${this.deliveries.outboundDeliveries} WHERE ${workerClause}`,
       values,
     );
   }
@@ -670,11 +747,9 @@ export class WorkerPurgeService {
     threadIds: readonly string[];
   }): Promise<number> {
     const values: unknown[] = [];
-    const needles = [input.sessionId, input.environmentId, ...input.threadIds];
-    const payloadClause = buildLikeClause("payload", needles, values);
-    const resultClause = buildLikeClause("result", needles, values);
+    const workerClause = buildRuntimeRequestWorkerClause(input, values);
     return this.countSimple(
-      `${this.requests.runtimeRequests} WHERE ${payloadClause} OR ${resultClause}`,
+      `${this.requests.runtimeRequests} WHERE ${workerClause}`,
       values,
     );
   }
@@ -801,29 +876,23 @@ export class WorkerPurgeService {
 
   private async deleteOutboundDeliveries(client: PoolClient, candidate: WorkerPurgeCandidate): Promise<void> {
     const values: unknown[] = [];
-    const threadClause = buildThreadIdClause("thread_id", candidate.threadIds, values);
-    values.push(candidate.sessionId);
-    const sessionPlaceholder = `$${values.length}`;
-    const metadataClause = buildLikeClause("metadata", [candidate.sessionId, candidate.environment.id], values);
-    const itemsClause = buildLikeClause("items", [candidate.sessionId, candidate.environment.id], values);
+    const workerClause = buildOutboundDeliveryWorkerClause(candidate, values);
     await client.query(`
       DELETE FROM ${this.deliveries.outboundDeliveries}
-      WHERE ${threadClause}
-         OR external_conversation_id = ${sessionPlaceholder}
-         OR ${metadataClause}
-         OR ${itemsClause}
+      WHERE ${workerClause}
     `, values);
   }
 
   private async deleteRuntimeRequests(client: PoolClient, candidate: WorkerPurgeCandidate): Promise<void> {
     const values: unknown[] = [];
-    const needles = [candidate.sessionId, candidate.environment.id, ...candidate.threadIds];
-    const payloadClause = buildLikeClause("payload", needles, values);
-    const resultClause = buildLikeClause("result", needles, values);
+    const workerClause = buildRuntimeRequestWorkerClause({
+      sessionId: candidate.sessionId,
+      environmentId: candidate.environment.id,
+      threadIds: candidate.threadIds,
+    }, values);
     await client.query(`
       DELETE FROM ${this.requests.runtimeRequests}
-      WHERE ${payloadClause}
-         OR ${resultClause}
+      WHERE ${workerClause}
     `, values);
   }
 }

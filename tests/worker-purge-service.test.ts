@@ -7,10 +7,10 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {
-    type DisposableEnvironmentCreateRequest,
-    type DisposableEnvironmentCreateResult,
-    type ExecutionEnvironmentManager,
-    PostgresExecutionEnvironmentStore,
+  type DisposableEnvironmentCreateRequest,
+  type DisposableEnvironmentCreateResult,
+  type ExecutionEnvironmentManager,
+  PostgresExecutionEnvironmentStore,
 } from "../src/domain/execution-environments/index.js";
 import {createSessionWithInitialThread} from "../src/domain/sessions/index.js";
 import {A2ASessionBindingRepo} from "../src/domain/a2a/repo.js";
@@ -48,6 +48,27 @@ function createPool() {
   });
   const adapter = db.adapters.createPg();
   return new adapter.Pool();
+}
+
+function createSessionDeleteFailingPool(pool: ReturnType<typeof createPool>) {
+  return {
+    query: pool.query.bind(pool),
+    connect: async () => {
+      const client = await pool.connect();
+      return {
+        query: async (queryText: unknown, values?: unknown[]) => {
+          if (
+            typeof queryText === "string"
+            && queryText.includes(`DELETE FROM "runtime"."agent_sessions"`)
+          ) {
+            throw new Error("simulated session delete failure");
+          }
+          return client.query(queryText as never, values as never);
+        },
+        release: () => client.release(),
+      };
+    },
+  };
 }
 
 async function createEnvRoot(root: string, agentKey: string, envDir: string): Promise<string> {
@@ -188,6 +209,7 @@ describe("WorkerPurgeService", () => {
       pool,
       a2a,
       environmentStore,
+      environmentsRoot,
       envRoot,
       manager,
       requests,
@@ -307,6 +329,52 @@ describe("WorkerPurgeService", () => {
       JSON.stringify([{type: "file", path: path.join(envRoot, "artifacts", "report.txt")}]),
       JSON.stringify({workerSessionId: "worker-session"}),
     ]);
+    const unrelatedDeliveryId = randomUUID();
+    await pool.query(`
+      INSERT INTO "runtime"."outbound_deliveries" (
+        id,
+        thread_id,
+        channel,
+        connector_key,
+        external_conversation_id,
+        items,
+        metadata,
+        status
+      ) VALUES (
+        $1,
+        'main-thread',
+        'a2a',
+        'local',
+        'someone-else',
+        $2::jsonb,
+        $3::jsonb,
+        'pending'
+      )
+    `, [
+      unrelatedDeliveryId,
+      JSON.stringify([{type: "text", text: "mentions worker-session but is not worker-owned"}]),
+      JSON.stringify({note: "mentions worker:worker-session"}),
+    ]);
+    const unrelatedRequestId = randomUUID();
+    await pool.query(`
+      INSERT INTO "runtime"."runtime_requests" (
+        id,
+        kind,
+        status,
+        payload,
+        result
+      ) VALUES (
+        $1,
+        'tui_input',
+        'completed',
+        $2::jsonb,
+        $3::jsonb
+      )
+    `, [
+      unrelatedRequestId,
+      JSON.stringify({text: "mentions worker-session but has no ownership fields"}),
+      JSON.stringify({text: "mentions worker:worker-session but has no ownership fields"}),
+    ]);
 
     const plan = await service.purge({
       selector: {
@@ -321,9 +389,68 @@ describe("WorkerPurgeService", () => {
     await expect(environmentStore.getEnvironment("worker:worker-session")).rejects.toThrow("Unknown execution environment");
     await expect(lstat(envRoot)).rejects.toThrow();
     await expect(pool.query(`SELECT COUNT(*)::INTEGER AS count FROM "runtime"."outbound_deliveries"`))
-      .resolves.toMatchObject({rows: [{count: 0}]});
+      .resolves.toMatchObject({rows: [{count: 1}]});
+    await expect(pool.query(`SELECT id FROM "runtime"."outbound_deliveries" WHERE id = $1`, [unrelatedDeliveryId]))
+      .resolves.toMatchObject({rows: [{id: unrelatedDeliveryId}]});
     await expect(pool.query(`SELECT COUNT(*)::INTEGER AS count FROM "runtime"."runtime_requests"`))
-      .resolves.toMatchObject({rows: [{count: 0}]});
+      .resolves.toMatchObject({rows: [{count: 1}]});
+    await expect(pool.query(`SELECT id FROM "runtime"."runtime_requests" WHERE id = $1`, [unrelatedRequestId]))
+      .resolves.toMatchObject({rows: [{id: unrelatedRequestId}]});
+  });
+
+  it("does not delete files when the DB purge fails", async () => {
+    const {pool, environmentStore, envRoot, manager, sessionStore} = await createHarness();
+    const service = new WorkerPurgeService({
+      pool: createSessionDeleteFailingPool(pool),
+      environmentStore,
+      manager,
+      env: {
+        PANDA_ENVIRONMENTS_HOST_ROOT: path.dirname(path.dirname(envRoot)),
+        PANDA_CORE_ENVIRONMENTS_ROOT: path.dirname(path.dirname(envRoot)),
+      } as NodeJS.ProcessEnv,
+    });
+
+    await expect(service.purge({
+      selector: {
+        sessionId: "worker-session",
+      },
+      execute: true,
+    })).rejects.toThrow("simulated session delete failure");
+
+    await expect(lstat(envRoot)).resolves.toBeTruthy();
+    await expect(sessionStore.getSession("worker-session")).resolves.toMatchObject({id: "worker-session"});
+  });
+
+  it("uses the core-visible environment root when host path is unavailable", async () => {
+    const {environmentStore, environmentsRoot, envRoot, service} = await createHarness();
+    const existing = await environmentStore.getEnvironment("worker:worker-session");
+    const envDir = "worker-session";
+    const metadata = filesystemMetadata(envRoot, envDir);
+    await environmentStore.createEnvironment({
+      ...existing,
+      metadata: {
+        ...existing.metadata,
+        filesystem: {
+          ...metadata,
+          root: {
+            ...metadata.root,
+            hostPath: path.join(environmentsRoot, "missing", envDir),
+            corePath: envRoot,
+          },
+        },
+      },
+    });
+
+    const plan = await service.plan({
+      selector: {
+        sessionId: "worker-session",
+      },
+    });
+
+    expect(plan.candidates[0]?.filesystem).toMatchObject({
+      status: "safe",
+      rootPath: envRoot,
+    });
   });
 
   it("refuses active unexpired ready workers unless forced and stops them through the manager", async () => {
