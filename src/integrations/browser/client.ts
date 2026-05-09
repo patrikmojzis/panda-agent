@@ -18,7 +18,7 @@ import type {
     BrowserRunnerArtifact,
     BrowserRunnerErrorResponse,
 } from "./protocol.js";
-import {buildRunnerEndpoint, normalizeBrowserLabelValue, normalizeBrowserScopeKey, safeAgentKey,} from "./shared.js";
+import {buildRunnerEndpoint, normalizeBrowserArtifactScopeKey, normalizeBrowserLabelValue, safeAgentKey,} from "./shared.js";
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
 
@@ -32,7 +32,7 @@ export interface BrowserRunnerClientOptions {
 }
 
 function normalizeScopeKey(context: DefaultAgentSessionContext): {scope: "thread" | "ephemeral"; key: string} {
-  return normalizeBrowserScopeKey(context);
+  return normalizeBrowserArtifactScopeKey(context);
 }
 
 function resolveBrowserMediaRoot(

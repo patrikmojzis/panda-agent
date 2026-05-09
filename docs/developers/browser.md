@@ -52,19 +52,22 @@ The difference is transport:
 5. screenshot/PDF bytes come back over HTTP
 6. core writes the final artifact into its own media storage and returns the usual tool result
 
-The public tool schema stayed unchanged on purpose.
+The public tool schema now includes a small `deviceProfile` enum for safe
+desktop/mobile/tablet QA without arbitrary viewport or browser flag control.
 
 ## Session Model
 
-- scope by `threadId` when present
+- scope by `sessionId` when present
+- otherwise fall back to `threadId`
 - otherwise fall back to ephemeral per-call sessions
+- device profiles are isolated from each other
 - one active page per session
 - popups switch to the newest page automatically
 - idle TTL: 10 minutes by default
 - max session age: 60 minutes by default
 - `close()` kills the session immediately
 
-Persistent session state lives under `BROWSER_RUNNER_DATA_DIR`, keyed by agent and thread.
+Persistent session state lives under `BROWSER_RUNNER_DATA_DIR`, keyed by agent, session/thread, and device profile.
 
 Final screenshots and PDFs still live under Panda's normal core media paths.
 
@@ -72,6 +75,22 @@ That split matters:
 
 - runner state is for browser continuity
 - core media paths are for artifact replay, TUI display, and user-facing outputs
+
+## Device Profiles
+
+Supported profiles:
+
+- `desktop`: current default Chromium context
+- `desktop-wide`: 1440x900 desktop viewport
+- `mobile-compact`: Playwright `Galaxy S24`
+- `mobile`: Playwright `Pixel 7`
+- `tablet`: Playwright `iPad (gen 11)`
+
+Missing `deviceProfile` means `desktop`.
+
+The runner keys contexts as `session:<sessionId>:device:<deviceProfile>` when
+`sessionId` is available. That lets one shared `browser-runner` serve desktop
+and mobile QA in parallel without viewport bleed.
 
 ## Protocol
 

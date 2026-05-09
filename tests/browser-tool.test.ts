@@ -367,7 +367,18 @@ describe("BrowserTool", () => {
       action: "navigate",
       url: "https://example.com",
       snapshotMode: "full",
+      deviceProfile: "mobile",
     })).not.toThrow();
+
+    expect(() => BrowserTool.schema.parse({
+      action: "snapshot",
+      deviceProfile: "desktop-wide",
+    })).not.toThrow();
+
+    expect(() => BrowserTool.schema.parse({
+      action: "snapshot",
+      deviceProfile: "iphone-safari",
+    })).toThrow();
 
     expect(() => BrowserTool.schema.parse({
       action: "click",
@@ -389,6 +400,21 @@ describe("BrowserTool", () => {
       ref: "e1",
       labels: true,
     })).toThrow("labels is only supported for whole-page screenshots.");
+  });
+
+  it("advertises device profiles in the browser tool contract", () => {
+    const tool = new BrowserTool({
+      service: {handle: vi.fn()},
+    });
+
+    expect(tool.description).toContain("deviceProfile");
+    expect(tool.piTool.parameters).toMatchObject({
+      properties: {
+        deviceProfile: {
+          description: expect.stringContaining("responsive QA"),
+        },
+      },
+    });
   });
 
   it("delegates to the injected service and formats calls cleanly", async () => {
@@ -512,6 +538,40 @@ describe("BrowserTool", () => {
 
     expect(context.newContextOptions).toMatchObject({
       serviceWorkers: "block",
+    });
+  });
+
+  it("applies whitelisted device profiles to browser contexts and details", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
+    tempDirs.push(tempDir);
+    const context = new FakeBrowserContext(new FakePage());
+    const service = new BrowserSessionService({
+      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      dataDir: tempDir,
+    });
+    services.push(service);
+
+    const result = await service.handle(
+      {action: "snapshot", deviceProfile: "mobile"},
+      createRunContext({cwd: "/workspace/panda", sessionId: "session-1", threadId: "thread-1"}),
+    );
+
+    expect(context.newContextOptions).toMatchObject({
+      serviceWorkers: "block",
+      viewport: {width: 412, height: 839},
+      isMobile: true,
+      hasTouch: true,
+    });
+    expect(result.details).toMatchObject({
+      action: "snapshot",
+      scope: "session",
+      deviceProfile: "mobile",
+      device: {
+        profile: "mobile",
+        viewport: {width: 412, height: 839},
+        isMobile: true,
+        hasTouch: true,
+      },
     });
   });
 
@@ -1195,6 +1255,85 @@ describe("BrowserTool", () => {
     expect(secondContext.storageStateInput).toBeTruthy();
     expect(String(secondContext.storageStateInput)).toContain("storage-state.json");
     await expect(stat(String(secondContext.storageStateInput))).resolves.toBeTruthy();
+  });
+
+  it("isolates browser sessions by durable session and device profile", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
+    tempDirs.push(tempDir);
+    const desktopContext = new FakeBrowserContext(new FakePage());
+    const mobileContext = new FakeBrowserContext(new FakePage());
+    const otherSessionContext = new FakeBrowserContext(new FakePage());
+    const launchBrowserImpl = vi.fn()
+      .mockResolvedValueOnce(new FakeBrowser(desktopContext) as any)
+      .mockResolvedValueOnce(new FakeBrowser(mobileContext) as any)
+      .mockResolvedValueOnce(new FakeBrowser(otherSessionContext) as any);
+    const service = new BrowserSessionService({
+      launchBrowserImpl: launchBrowserImpl as any,
+      dataDir: tempDir,
+    });
+    services.push(service);
+
+    const run = createRunContext({
+      cwd: "/workspace/panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    });
+    await service.handle({action: "snapshot"}, run);
+    await service.handle({action: "snapshot", deviceProfile: "desktop"}, run);
+    await service.handle({action: "snapshot", deviceProfile: "mobile"}, run);
+    await service.handle({action: "snapshot", deviceProfile: "mobile"}, run);
+    await service.handle(
+      {action: "snapshot", deviceProfile: "mobile"},
+      createRunContext({
+        cwd: "/workspace/panda",
+        sessionId: "session-2",
+        threadId: "thread-2",
+      }),
+    );
+
+    expect(launchBrowserImpl).toHaveBeenCalledTimes(3);
+    expect(String(desktopContext.storageStatePaths[0])).toContain("session:session-1:device:desktop");
+    expect(String(mobileContext.storageStatePaths[0])).toContain("session:session-1:device:mobile");
+    expect(String(otherSessionContext.storageStatePaths[0])).toContain("session:session-2:device:mobile");
+    expect(mobileContext.newContextOptions).toMatchObject({
+      viewport: {width: 412, height: 839},
+      isMobile: true,
+      hasTouch: true,
+    });
+  });
+
+  it("closes only the addressed device profile", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
+    tempDirs.push(tempDir);
+    const desktopBrowser = new FakeBrowser(new FakeBrowserContext(new FakePage()));
+    const mobileBrowser = new FakeBrowser(new FakeBrowserContext(new FakePage()));
+    const launchBrowserImpl = vi.fn()
+      .mockResolvedValueOnce(desktopBrowser as any)
+      .mockResolvedValueOnce(mobileBrowser as any);
+    const service = new BrowserSessionService({
+      launchBrowserImpl: launchBrowserImpl as any,
+      dataDir: tempDir,
+    });
+    services.push(service);
+    const run = createRunContext({
+      cwd: "/workspace/panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    });
+
+    await service.handle({action: "snapshot"}, run);
+    await service.handle({action: "snapshot", deviceProfile: "mobile"}, run);
+    const result = await service.handle({action: "close", deviceProfile: "mobile"}, run);
+    await service.handle({action: "snapshot"}, run);
+
+    expect(result.details).toMatchObject({
+      action: "close",
+      deviceProfile: "mobile",
+      closed: true,
+    });
+    expect(mobileBrowser.closed).toBe(true);
+    expect(desktopBrowser.closed).toBe(false);
+    expect(launchBrowserImpl).toHaveBeenCalledTimes(2);
   });
 
   it("closes the persistent session and closes the browser", async () => {

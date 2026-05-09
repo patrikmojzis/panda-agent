@@ -15,6 +15,7 @@ import {readToolArtifact} from "../../kernel/agent/tool-artifacts.js";
 import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
 import {browserActionSchema} from "../../panda/tools/browser-schema.js";
 import {BrowserSessionService, type BrowserSessionServiceOptions} from "./session-service.js";
+import {normalizeBrowserDeviceProfile} from "./shared.js";
 import type {
     BrowserPreviewOriginGrant,
     BrowserRunnerActionRequest,
@@ -58,11 +59,22 @@ function buildActionLogFields(parsed: BrowserRunnerActionRequest): Record<string
     agentKey: parsed.agentKey,
     sessionId: parsed.sessionId,
     threadId: parsed.threadId,
+    deviceProfile: normalizeBrowserDeviceProfile(action.deviceProfile),
     action: action.action,
     ...("url" in action ? {url: action.url} : {}),
     ...("ref" in action ? {ref: action.ref} : {}),
     ...("selector" in action ? {selector: action.selector} : {}),
     ...("timeoutMs" in action ? {timeoutMs: action.timeoutMs} : {}),
+  };
+}
+
+function buildDeviceLogFields(response: BrowserRunnerActionResponse): Record<string, unknown> {
+  if (!response.ok || !isRecord(response.details)) {
+    return {};
+  }
+  return {
+    ...(typeof response.details.deviceProfile === "string" ? {deviceProfile: response.details.deviceProfile} : {}),
+    ...(isRecord(response.details.device) ? {device: response.details.device} : {}),
   };
 }
 
@@ -347,6 +359,7 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
           durationMs: Date.now() - actionStartedAt,
           ok: true,
           ...actionLogFields,
+          ...buildDeviceLogFields(runnerResponse),
         });
         writeJsonResponse(response, 200, runnerResponse);
       } catch (error) {

@@ -19,6 +19,7 @@ import {buildRuntimeRequestTableNames} from "../../domain/threads/requests/postg
 import {buildThreadRuntimeTableNames, toMillis,} from "../../domain/threads/runtime/postgres-shared.js";
 import {type PgPoolLike, withTransaction} from "../../domain/threads/runtime/postgres-db.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
+import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import {resolveDataDir} from "./data-dir.js";
@@ -312,6 +313,68 @@ function buildThreadIdClause(column: string, threadIds: readonly string[], value
     return `$${values.length}`;
   });
   return `${column} IN (${placeholders.join(", ")})`;
+}
+
+function addValue(values: unknown[], value: unknown): string {
+  values.push(value);
+  return `$${values.length}`;
+}
+
+function jsonTextEquals(column: string, key: string, value: string, values: unknown[]): string {
+  return `${column}->>'${key}' = ${addValue(values, value)}`;
+}
+
+function nestedJsonTextEquals(
+  column: string,
+  parentKey: string,
+  key: string,
+  value: string,
+  values: unknown[],
+): string {
+  return `${column}->'${parentKey}'->>'${key}' = ${addValue(values, value)}`;
+}
+
+function buildOutboundDeliveryWorkerClause(input: {
+  sessionId: string;
+  threadIds: readonly string[];
+}, values: unknown[]): string {
+  const clauses: string[] = [];
+  if (input.threadIds.length > 0) {
+    clauses.push(buildThreadIdClause("thread_id", input.threadIds, values));
+  }
+  clauses.push([
+    `channel = ${addValue(values, A2A_SOURCE)}`,
+    `connector_key = ${addValue(values, A2A_CONNECTOR_KEY)}`,
+    `external_conversation_id = ${addValue(values, input.sessionId)}`,
+  ].join(" AND "));
+  clauses.push(nestedJsonTextEquals("metadata", "a2a", "fromSessionId", input.sessionId, values));
+  clauses.push(nestedJsonTextEquals("metadata", "a2a", "toSessionId", input.sessionId, values));
+  for (const threadId of input.threadIds) {
+    clauses.push(nestedJsonTextEquals("metadata", "a2a", "fromThreadId", threadId, values));
+  }
+  return `(${clauses.join(" OR ")})`;
+}
+
+function buildRuntimeRequestWorkerClause(input: {
+  sessionId: string;
+  environmentId: string;
+  threadIds: readonly string[];
+}, values: unknown[]): string {
+  const clauses = [
+    jsonTextEquals("payload", "sessionId", input.sessionId, values),
+    jsonTextEquals("payload", "fromSessionId", input.sessionId, values),
+    jsonTextEquals("payload", "toSessionId", input.sessionId, values),
+    jsonTextEquals("payload", "environmentId", input.environmentId, values),
+    nestedJsonTextEquals("payload", "senderEnvironment", "id", input.environmentId, values),
+    jsonTextEquals("result", "sessionId", input.sessionId, values),
+    jsonTextEquals("result", "environmentId", input.environmentId, values),
+  ];
+  for (const threadId of input.threadIds) {
+    clauses.push(jsonTextEquals("payload", "threadId", threadId, values));
+    clauses.push(jsonTextEquals("payload", "fromThreadId", threadId, values));
+    clauses.push(jsonTextEquals("result", "threadId", threadId, values));
+  }
+  return `(${clauses.join(" OR ")})`;
 }
 
 function emptyCounts(): WorkerPurgeDbCounts {

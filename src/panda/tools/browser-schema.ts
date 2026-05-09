@@ -1,6 +1,6 @@
 import {z} from "zod";
 
-import type {BrowserAction, BrowserLoadState, BrowserSnapshotMode} from "./browser-types.js";
+import type {BrowserAction, BrowserDeviceProfile, BrowserLoadState, BrowserSnapshotMode} from "./browser-types.js";
 
 function httpUrlSchema(fieldName = "url"): z.ZodString {
   return z.string().trim().url().superRefine((value, ctx) => {
@@ -40,6 +40,13 @@ function requireRefOrSelector(
 
 const browserLoadStateSchema = z.enum(["load", "domcontentloaded", "networkidle"]) satisfies z.ZodType<BrowserLoadState>;
 const browserSnapshotModeSchema = z.enum(["compact", "full"]) satisfies z.ZodType<BrowserSnapshotMode>;
+const browserDeviceProfileSchema = z.enum([
+  "desktop",
+  "desktop-wide",
+  "mobile-compact",
+  "mobile",
+  "tablet",
+]) satisfies z.ZodType<BrowserDeviceProfile>;
 
 export const browserActionSchema = z.object({
   action: z.enum([
@@ -69,6 +76,9 @@ export const browserActionSchema = z.object({
   fullPage: z.boolean().optional(),
   labels: z.boolean().optional(),
   snapshotMode: browserSnapshotModeSchema.optional(),
+  deviceProfile: browserDeviceProfileSchema
+    .describe("Optional browser device profile. Use desktop by default; use mobile, mobile-compact, tablet, or desktop-wide for responsive QA.")
+    .optional(),
   timeoutMs: optionalTimeoutSchema(),
 }).superRefine((value, ctx) => {
   switch (value.action) {

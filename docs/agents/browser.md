@@ -98,6 +98,15 @@ The same rule applies to wrapped `evaluate` output.
 
 - use for a fresh read without acting
 
+`deviceProfile`
+
+- optional on any action
+- use `desktop` by default
+- use `mobile` for normal mobile Chrome layout QA
+- use `mobile-compact` for narrow mobile checks
+- use `tablet` for tablet portrait checks
+- use `desktop-wide` when the default desktop viewport is too cramped
+
 `click`
 
 - prefer `ref`
@@ -144,7 +153,7 @@ The same rule applies to wrapped `evaluate` output.
 
 ## Session Persistence
 
-Thread-scoped browser sessions persist Playwright storage state.
+Session-scoped browser contexts persist Playwright storage state per device profile.
 
 That means auth usually survives:
 
@@ -152,7 +161,9 @@ That means auth usually survives:
 - browser TTL expiry
 - max-age session recycling
 
-So if you logged in earlier in the same thread, try reopening the browser before redoing the login dance.
+So if you logged in earlier in the same session/profile, try reopening the browser before redoing the login dance.
+
+Mobile and desktop contexts are separate. Switching to `mobile` does not resize the existing desktop context.
 
 ## Good Habits
 

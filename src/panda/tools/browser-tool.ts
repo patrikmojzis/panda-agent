@@ -28,7 +28,7 @@ export class BrowserTool<TContext = DefaultAgentSessionContext>
 
   name = "browser";
   description =
-    "Drive a stateful Chromium browser session: navigate, inspect the page, click, type, wait, evaluate, screenshot, print PDF, and close the session.";
+    "Drive a stateful Chromium browser session: navigate, inspect the page, click, type, wait, evaluate, screenshot, print PDF, and close the session. Use deviceProfile for desktop, desktop-wide, mobile, mobile-compact, or tablet responsive QA.";
   schema = BrowserTool.schema;
 
   private readonly service: BrowserToolService<TContext>;
