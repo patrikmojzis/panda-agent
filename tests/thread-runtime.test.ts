@@ -464,6 +464,71 @@ describe("ThreadRuntimeCoordinator", () => {
     expect((await store.getThread("thread-thinking")).thinking).toBeUndefined();
   });
 
+  it("passes the latest input message id into tool context", async () => {
+    let capturedContext: unknown;
+    class CaptureContextTool extends Tool<typeof CaptureContextTool.schema> {
+      name = "capture-context";
+      description = "Capture runtime context";
+      static schema = z.object({});
+      schema = CaptureContextTool.schema;
+
+      async handle(
+        _args: z.output<typeof CaptureContextTool.schema>,
+        run: RunContext,
+      ): Promise<{ ok: boolean }> {
+        capturedContext = run.context;
+        return {ok: true};
+      }
+    }
+
+    const runtime = createMockRuntime(
+      createAssistantMessage([{
+        type: "toolCall",
+        id: "call_capture_context",
+        name: "capture-context",
+        arguments: {},
+      }]),
+      message("done"),
+    );
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("input-message-context", {
+      agent: new Agent({
+        name: "input-message-context",
+        instructions: "Use the capture tool.",
+        tools: [new CaptureContextTool()],
+      }),
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-input-message-context",
+      agentKey: "input-message-context",
+    });
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-input-message-context", {
+      message: stringToUserMessage("capture this input"),
+      source: "heartbeat",
+      identityId: "identity-1",
+    });
+    await coordinator.waitForIdle("thread-input-message-context");
+
+    const input = (await store.loadTranscript("thread-input-message-context"))
+      .find((entry) => entry.origin === "input");
+    expect(input).toBeDefined();
+    expect(capturedContext).toMatchObject({
+      currentInput: {
+        messageId: input!.id,
+        source: "heartbeat",
+        identityId: "identity-1",
+      },
+    });
+  });
+
   it("grants one extra idle reroll before letting a run go idle", async () => {
     const responses = [
       message("first reply"),

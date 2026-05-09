@@ -61,6 +61,7 @@ export class ScheduledRemindersContext extends LlmContext {
       return renderScheduledRemindersContext({
         items: renderedTasks.map((task) => ({
           taskId: task.id,
+          createdFromMessageId: task.createdFromMessageId,
           title: sanitizeReminderField(task.title),
           nextFireAt: formatNextFireAt(task),
           schedule: formatSchedule(task),
