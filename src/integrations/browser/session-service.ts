@@ -7,6 +7,7 @@ import {
     type BrowserContext,
     type BrowserContextOptions,
     chromium,
+    devices,
     type LaunchOptions,
     type Locator,
     type Page
@@ -31,6 +32,7 @@ import {
 import {buildBrowserExternalContentDetails, wrapBrowserExternalContent,} from "../../panda/tools/browser-output.js";
 import type {
     BrowserAction,
+    BrowserDeviceProfile,
     BrowserProgressStatus,
     BrowserSessionScope,
     BrowserSnapshot,
@@ -40,7 +42,12 @@ import type {
 } from "../../panda/tools/browser-types.js";
 import {defaultLookupHostname, type LookupHostname, resolveSafeHttpTarget,} from "../../panda/tools/safe-web-target.js";
 import type {BrowserPreviewOriginGrant} from "./protocol.js";
-import {normalizeBrowserLabelValue, normalizeBrowserScopeKey, safeAgentKey,} from "./shared.js";
+import {
+    normalizeBrowserDeviceProfile,
+    normalizeBrowserLabelValue,
+    normalizeBrowserSessionScopeKey,
+    safeAgentKey,
+} from "./shared.js";
 
 const DEFAULT_BROWSER_ACTION_TIMEOUT_MS = 60_000;
 const DEFAULT_BROWSER_SESSION_IDLE_TTL_MS = 10 * 60_000;
@@ -58,6 +65,8 @@ interface BrowserSessionRecord {
   browser: Browser;
   context: BrowserContext;
   page: Page;
+  deviceProfile: BrowserDeviceProfile;
+  device: JsonObject;
   artifactDir: string;
   storageStatePath?: string;
   createdAtMs: number;
@@ -88,6 +97,12 @@ type BrowserSnapshotCapture = {
 type BrowserActionBaseline = {
   page: Page;
   snapshot: BrowserSnapshot;
+};
+
+type BrowserResolvedSessionScope = {
+  scope: BrowserSessionScope;
+  key: string;
+  deviceProfile: BrowserDeviceProfile;
 };
 
 export interface BrowserSessionServiceOptions {
@@ -240,11 +255,77 @@ function buildPreviewPrivateOrigins(grant: BrowserPreviewOriginGrant | undefined
   ];
 }
 
-function buildBrowserContextOptions(storageStatePath?: string): BrowserContextOptions {
+function cloneViewportSize(value: unknown): {width: number; height: number} | undefined {
+  if (
+    typeof value === "object"
+    && value !== null
+    && "width" in value
+    && "height" in value
+    && typeof (value as {width?: unknown}).width === "number"
+    && typeof (value as {height?: unknown}).height === "number"
+  ) {
+    return {
+      width: (value as {width: number}).width,
+      height: (value as {height: number}).height,
+    };
+  }
+  return undefined;
+}
+
+function stripDeviceDescriptor(name: string): BrowserContextOptions {
+  const descriptor = devices[name] as BrowserContextOptions & {defaultBrowserType?: unknown};
+  const {defaultBrowserType: _ignored, ...options} = descriptor;
+  return options;
+}
+
+function buildBrowserDeviceContextOptions(deviceProfile: BrowserDeviceProfile): BrowserContextOptions {
+  switch (deviceProfile) {
+    case "desktop":
+      return {};
+    case "desktop-wide":
+      return {
+        viewport: {width: 1440, height: 900},
+      };
+    case "mobile-compact":
+      return stripDeviceDescriptor("Galaxy S24");
+    case "mobile":
+      return stripDeviceDescriptor("Pixel 7");
+    case "tablet":
+      return stripDeviceDescriptor("iPad (gen 11)");
+  }
+}
+
+function buildBrowserDeviceDetails(
+  deviceProfile: BrowserDeviceProfile,
+  contextOptions: BrowserContextOptions,
+): JsonObject {
+  const viewport = cloneViewportSize(contextOptions.viewport) ?? {width: 1280, height: 720};
+  const screen = cloneViewportSize((contextOptions as {screen?: unknown}).screen);
   return {
+    profile: deviceProfile,
+    viewport,
+    ...(screen ? {screen} : {}),
+    deviceScaleFactor: typeof contextOptions.deviceScaleFactor === "number" ? contextOptions.deviceScaleFactor : 1,
+    isMobile: contextOptions.isMobile === true,
+    hasTouch: contextOptions.hasTouch === true,
+    ...(typeof contextOptions.userAgent === "string" ? {userAgent: contextOptions.userAgent} : {}),
+  };
+}
+
+function buildBrowserContextOptions(
+  deviceProfile: BrowserDeviceProfile,
+  storageStatePath?: string,
+): BrowserContextOptions {
+  const deviceOptions = buildBrowserDeviceContextOptions(deviceProfile);
+  return {
+    ...deviceOptions,
     serviceWorkers: "block",
     ...(storageStatePath ? {storageState: storageStatePath} : {}),
   };
+}
+
+function buildBrowserDeviceDetailsForProfile(deviceProfile: BrowserDeviceProfile): JsonObject {
+  return buildBrowserDeviceDetails(deviceProfile, buildBrowserDeviceContextOptions(deviceProfile));
 }
 
 function isMainFrameNavigationRequest(request: {
@@ -262,8 +343,11 @@ function isMainFrameNavigationRequest(request: {
   }
 }
 
-function normalizeScopeKey(context: DefaultAgentSessionContext): {scope: BrowserSessionScope; key: string} {
-  return normalizeBrowserScopeKey(context);
+function normalizeScopeKey(
+  context: DefaultAgentSessionContext,
+  action: BrowserAction,
+): BrowserResolvedSessionScope {
+  return normalizeBrowserSessionScopeKey(context, normalizeBrowserDeviceProfile(action.deviceProfile));
 }
 
 function resolveSessionContext(context: DefaultAgentSessionContext | undefined): DefaultAgentSessionContext {
@@ -715,22 +799,23 @@ export class BrowserSessionService {
 
   private async createBrowserContext(
     browser: Browser,
+    deviceProfile: BrowserDeviceProfile,
     storageStatePath?: string,
   ): Promise<BrowserContext> {
     if (!storageStatePath || !(await pathExists(storageStatePath))) {
-      return await browser.newContext(buildBrowserContextOptions());
+      return await browser.newContext(buildBrowserContextOptions(deviceProfile));
     }
 
     try {
-      return await browser.newContext(buildBrowserContextOptions(storageStatePath));
+      return await browser.newContext(buildBrowserContextOptions(deviceProfile, storageStatePath));
     } catch {
       await rm(storageStatePath, {force: true}).catch(() => undefined);
-      return await browser.newContext(buildBrowserContextOptions());
+      return await browser.newContext(buildBrowserContextOptions(deviceProfile));
     }
   }
 
   private async persistStorageState(session: BrowserSessionRecord | null | undefined): Promise<void> {
-    if (!session?.storageStatePath || session.scope !== "thread") {
+    if (!session?.storageStatePath || session.scope === "ephemeral") {
       return;
     }
     await mkdir(path.dirname(session.storageStatePath), {recursive: true});
@@ -740,7 +825,7 @@ export class BrowserSessionService {
   }
 
   private async startSession<TContext extends DefaultAgentSessionContext>(
-    scope: {scope: BrowserSessionScope; key: string},
+    scope: BrowserResolvedSessionScope,
     run: RunContext<TContext>,
     _timeoutMs: number,
     scopeVersion: number,
@@ -752,7 +837,7 @@ export class BrowserSessionService {
       normalizeBrowserLabelValue(scope.key),
     );
     const artifactDir = path.join(sessionRoot, "artifacts");
-    const storageStatePath = scope.scope === "thread"
+    const storageStatePath = scope.scope !== "ephemeral"
       ? path.join(sessionRoot, "storage-state.json")
       : undefined;
     await mkdir(artifactDir, {recursive: true});
@@ -762,7 +847,7 @@ export class BrowserSessionService {
     let session: BrowserSessionRecord | null = null;
     try {
       browser = await this.launchBrowserImpl(this.launchOptions);
-      context = await this.createBrowserContext(browser, storageStatePath);
+      context = await this.createBrowserContext(browser, scope.deviceProfile, storageStatePath);
       await context.route("**/*", async (route) => {
         const request = route.request();
         const requestUrl = trimToUndefined(request.url());
@@ -811,6 +896,8 @@ export class BrowserSessionService {
         browser,
         context,
         page,
+        deviceProfile: scope.deviceProfile,
+        device: buildBrowserDeviceDetailsForProfile(scope.deviceProfile),
         artifactDir,
         storageStatePath,
         createdAtMs: startedAtMs,
@@ -868,7 +955,7 @@ export class BrowserSessionService {
   }
 
   private async resolveSession<TContext extends DefaultAgentSessionContext>(
-    scope: {scope: BrowserSessionScope; key: string},
+    scope: BrowserResolvedSessionScope,
     run: RunContext<TContext>,
     timeoutMs: number,
     scopeVersion: number,
@@ -1031,6 +1118,8 @@ export class BrowserSessionService {
       truncated: capture.truncated,
       elementCount: capture.elementCount,
       scope: session.scope,
+      deviceProfile: session.deviceProfile,
+      device: session.device,
       snapshotMode: mode,
       signals: [...capture.snapshot.signals],
       elements: capture.snapshot.elements.map((element) => ({...element})),
@@ -1101,6 +1190,8 @@ export class BrowserSessionService {
         details: {
           action: "evaluate",
           scope: session.scope,
+          deviceProfile: session.deviceProfile,
+          device: session.device,
           url: page.url(),
           result: null,
           truncated: false,
@@ -1118,6 +1209,8 @@ export class BrowserSessionService {
       details: {
         action: "evaluate",
         scope: session.scope,
+        deviceProfile: session.deviceProfile,
+        device: session.device,
         url: page.url(),
         truncated: truncated.truncated,
         result: truncated.text,
@@ -1254,6 +1347,8 @@ export class BrowserSessionService {
     const details = withArtifactDetails({
       action: "screenshot",
       scope: session.scope,
+      deviceProfile: session.deviceProfile,
+      device: session.device,
       path: filePath,
       mimeType: "image/png",
       bytes: buffer.length,
@@ -1309,6 +1404,8 @@ export class BrowserSessionService {
       details: withArtifactDetails({
         action: "pdf",
         scope: session.scope,
+        deviceProfile: session.deviceProfile,
+        device: session.device,
         path: filePath,
         mimeType: "application/pdf",
         bytes: buffer.length,
@@ -1366,7 +1463,7 @@ export class BrowserSessionService {
   ): Promise<ToolResultPayload> {
     await this.ensureStarted();
 
-    const scope = normalizeScopeKey(resolveSessionContext(run.context));
+    const scope = normalizeScopeKey(resolveSessionContext(run.context), action);
     const timeoutMs = this.resolveActionTimeout(action);
     return await this.runWithActionTimeout(
       action,
@@ -1379,21 +1476,21 @@ export class BrowserSessionService {
   private async handleAction<TContext extends DefaultAgentSessionContext>(
     action: BrowserAction,
     run: RunContext<TContext>,
-    scope: {scope: BrowserSessionScope; key: string},
+    scope: BrowserResolvedSessionScope,
     timeoutMs: number,
     scopeVersion: number,
     previewOriginGrant?: BrowserPreviewOriginGrant,
   ): Promise<ToolResultPayload> {
     const snapshotMode = "snapshotMode" in action ? action.snapshotMode ?? "compact" : "compact";
-    const persistent = scope.scope === "thread";
+    const persistent = scope.scope !== "ephemeral";
     const scopeKey = scope.key;
 
     if (action.action === "close") {
-      this.emitProgress(run, "closing", {scope: scope.scope, scopeKey});
+      this.emitProgress(run, "closing", {scope: scope.scope, scopeKey, deviceProfile: scope.deviceProfile});
       if (!persistent) {
         return {
           content: [{type: "text", text: "No persistent browser session to close."}],
-          details: {action: "close", scope: scope.scope} satisfies JsonObject,
+          details: {action: "close", scope: scope.scope, deviceProfile: scope.deviceProfile} satisfies JsonObject,
         };
       }
       const hadSession = this.sessions.has(scopeKey);
@@ -1403,13 +1500,14 @@ export class BrowserSessionService {
           type: "text",
           text: hadSession ? "Closed the browser session." : "No active browser session to close.",
         }],
-        details: {action: "close", scope: scope.scope, closed: hadSession} satisfies JsonObject,
+        details: {action: "close", scope: scope.scope, deviceProfile: scope.deviceProfile, closed: hadSession} satisfies JsonObject,
       };
     }
 
     if (action.action === "navigate") {
       this.emitProgress(run, "navigating", {
         scope: scope.scope,
+        deviceProfile: scope.deviceProfile,
         url: action.url,
       });
       await this.ensureSafeBrowserTarget(new URL(action.url), previewOriginGrant);
@@ -1418,9 +1516,9 @@ export class BrowserSessionService {
     let session: BrowserSessionRecord | null = null;
     try {
       if (!this.sessions.has(scopeKey)) {
-        this.emitProgress(run, "starting", {scope: scope.scope, scopeKey});
+        this.emitProgress(run, "starting", {scope: scope.scope, scopeKey, deviceProfile: scope.deviceProfile});
       }
-      this.emitProgress(run, "connecting", {scope: scope.scope, scopeKey});
+      this.emitProgress(run, "connecting", {scope: scope.scope, scopeKey, deviceProfile: scope.deviceProfile});
       session = await this.resolveSession(scope, run, timeoutMs, scopeVersion);
       if (action.action === "navigate") {
         session.previewOriginGrant = previewOriginGrant;

@@ -1,4 +1,4 @@
-export type BrowserSessionScope = "thread" | "ephemeral";
+export type BrowserSessionScope = "session" | "thread" | "ephemeral";
 export type BrowserProgressStatus =
   | "starting"
   | "connecting"
@@ -11,11 +11,17 @@ export type BrowserProgressStatus =
 
 export type BrowserLoadState = "load" | "domcontentloaded" | "networkidle";
 export type BrowserSnapshotMode = "compact" | "full";
+export type BrowserDeviceProfile = "desktop" | "desktop-wide" | "mobile-compact" | "mobile" | "tablet";
 export type BrowserPageSignal = "dialog" | "alert" | "validation_error" | "login" | "captcha";
 export type BrowserPageSection = "page" | "dialog";
 
 type BrowserSnapshotActionOptions = {
   snapshotMode?: BrowserSnapshotMode;
+  deviceProfile?: BrowserDeviceProfile;
+};
+
+type BrowserDeviceActionOptions = {
+  deviceProfile?: BrowserDeviceProfile;
 };
 
 export type BrowserAction =
@@ -69,7 +75,7 @@ export type BrowserAction =
       script: string;
       arg?: unknown;
       timeoutMs?: number;
-    }
+    } & BrowserDeviceActionOptions
   | {
       action: "screenshot";
       ref?: string;
@@ -77,14 +83,14 @@ export type BrowserAction =
       fullPage?: boolean;
       labels?: boolean;
       timeoutMs?: number;
-    }
+    } & BrowserDeviceActionOptions
   | {
       action: "pdf";
       timeoutMs?: number;
-    }
+    } & BrowserDeviceActionOptions
   | {
       action: "close";
-    };
+    } & BrowserDeviceActionOptions;
 
 export interface BrowserSnapshotElement {
   ref: string;

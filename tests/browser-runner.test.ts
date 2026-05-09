@@ -109,6 +109,7 @@ class FakePage {
 
 class FakeBrowserContext {
   private readonly pagesList: FakePage[] = [];
+  newContextOptions: unknown = undefined;
 
   constructor(private readonly initialPage: FakePage) {}
 
@@ -138,7 +139,8 @@ class FakeBrowserContext {
 class FakeBrowser {
   constructor(private readonly context: FakeBrowserContext) {}
 
-  async newContext(): Promise<FakeBrowserContext> {
+  async newContext(options?: unknown): Promise<FakeBrowserContext> {
+    this.context.newContextOptions = options;
     return this.context;
   }
 
@@ -181,7 +183,7 @@ describe("browser runner transport", () => {
     });
 
     const result = await client.handle(
-      {action: "snapshot"},
+      {action: "snapshot", deviceProfile: "mobile"},
       createRunContext({
         agentKey: "panda",
         sessionId: "session-1",
@@ -201,8 +203,61 @@ describe("browser runner transport", () => {
       agentKey: "panda",
       sessionId: "session-1",
       threadId: "thread-1",
-      action: {action: "snapshot"},
+      action: {action: "snapshot", deviceProfile: "mobile"},
     });
+  });
+
+  it("applies runner device profiles and reports them in logs and details", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-runner-"));
+    tempDirs.push(tempDir);
+    const context = new FakeBrowserContext(new FakePage());
+    const launchBrowserImpl = vi.fn(async () => new FakeBrowser(context) as any);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const runner = await startBrowserRunner({
+      host: "127.0.0.1",
+      port: 0,
+      sharedSecret: "secret-123",
+      launchBrowserImpl,
+      dataDir: tempDir,
+    });
+    runners.push(runner);
+
+    const response = await fetch(`http://127.0.0.1:${runner.port}/action`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret-123",
+      },
+      body: JSON.stringify({
+        agentKey: "panda",
+        sessionId: "session-1",
+        threadId: "thread-1",
+        action: {action: "snapshot", deviceProfile: "mobile"},
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      details: {
+        action: "snapshot",
+        scope: "session",
+        deviceProfile: "mobile",
+        device: {
+          profile: "mobile",
+          viewport: {width: 412, height: 839},
+          isMobile: true,
+          hasTouch: true,
+        },
+      },
+    });
+    expect(context.newContextOptions).toMatchObject({
+      viewport: {width: 412, height: 839},
+      isMobile: true,
+      hasTouch: true,
+    });
+    expect(log.mock.calls.some(([line]) => String(line).includes('"deviceProfile":"mobile"'))).toBe(true);
+    expect(log.mock.calls.some(([line]) => String(line).includes('"device":{"profile":"mobile"'))).toBe(true);
   });
 
   it("rewrites disposable worker loopback preview URLs to the worker container origin", async () => {

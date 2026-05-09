@@ -20,6 +20,7 @@ import {buildThreadRuntimeTableNames, toMillis,} from "../../domain/threads/runt
 import {type PgPoolLike, withTransaction} from "../../domain/threads/runtime/postgres-db.js";
 import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
+import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import {resolveDataDir} from "./data-dir.js";

@@ -26,25 +26,35 @@ The tool supports:
 - `pdf`
 - `close`
 
-The public tool API did not change.
+Actions also accept `deviceProfile`:
+
+- `desktop`
+- `desktop-wide`
+- `mobile-compact`
+- `mobile`
+- `tablet`
+
+If omitted, Panda uses `desktop`.
 
 ## Runtime Shape
 
-- one browser session per Panda thread
+- one browser session per Panda session and device profile
 - one active page in that session
 - popups/new tabs switch to the newest page automatically
 - idle sessions expire after 10 minutes by default
 - hard max session age is 60 minutes by default
 - `browser close` kills the session immediately
 
-Thread-scoped sessions persist Playwright storage state in the browser-runner data directory, so auth state usually survives:
+Session-scoped browser contexts persist Playwright storage state in the browser-runner data directory, so auth state usually survives:
 
 - `browser close`
 - idle expiry
 - max-age recycling
 - browser-runner restarts that reuse the same runner data volume
 
-If Panda has no `threadId`, the browser falls back to an ephemeral one-call session with no persistence.
+If Panda has no `sessionId`, browser state falls back to the current `threadId`. If neither exists, the browser uses an ephemeral one-call session with no persistence.
+
+Device profiles are isolated. A mobile browser session does not change the desktop context for the same Panda session or for another worker.
 
 ## Core Env
 
@@ -211,7 +221,7 @@ That proves:
 - auth between them is correct
 - Chromium can reach the internet
 - screenshots land in Panda media storage
-- thread-scoped browser state works
+- session-scoped browser state works
 
 ## Troubleshooting
 
