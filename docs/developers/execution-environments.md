@@ -73,6 +73,23 @@ expose thinking or TTL overrides.
 `ExecutionEnvironmentLifecycleService.stopEnvironment`. It does not delete
 worker filesystem roots.
 
+Old workers are removed by the operator CLI, not by `worker_stop`:
+
+```bash
+panda workers purge --stopped --older-than 7d --dry-run
+panda workers purge --stopped --older-than 7d --execute
+```
+
+The purge path discovers worker-owned `disposable_container` environments,
+optionally stops active/expired containers through the environment manager,
+validates the filesystem root against configured Panda environment roots, then
+hard-deletes the environment row and worker session. Session deletion cascades
+threads, messages, inputs, runs, tool jobs, bash jobs, heartbeats, environment
+bindings, and A2A bindings. The purge explicitly deletes non-cascading
+`runtime.outbound_deliveries` and `runtime.runtime_requests` rows that reference
+the worker before deleting the session. External copied media outside the worker
+environment root is report-only in v1.
+
 Worker sessions do not receive `worker_spawn` or `worker_stop` in their toolset.
 `worker_spawn.toolAllowlist` can grant additional available tools by name.
 `postgres_readonly_query` also requires `allowReadonlyPostgres=true`.

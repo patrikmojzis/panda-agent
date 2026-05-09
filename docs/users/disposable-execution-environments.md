@@ -175,6 +175,21 @@ The parent stops a worker with `worker_stop` using either `sessionId` or
 `environmentId`. Stopping removes the disposable container but keeps
 `workspace`, `inbox`, and `artifacts` on disk for review.
 
+Operators hard-purge old stopped workers with:
+
+```bash
+panda workers purge --stopped --older-than 7d --dry-run
+panda workers purge --stopped --older-than 7d --execute
+```
+
+`panda workers purge` is dry-run by default and refuses to run without an
+explicit selector such as `--stopped`, `--expired`, `--agent`, `--session-id`,
+or `--environment-id`. It deletes the worker session, execution environment
+row, cascaded runtime rows, non-cascading outbound/runtime request rows, and the
+worker environment filesystem root. External copied media/artifact files outside
+the environment root are reported, not deleted. Active unexpired `ready` workers
+require `--force`.
+
 The parent agent context includes a `Workers` section for active workers and
 recently stopped workers, including parent-visible file paths.
 
@@ -233,9 +248,10 @@ Expected behavior:
 - the command output includes the httpbin response headers
 - the worker environment can be stopped or is swept after its TTL
 
-Until a dedicated operator CLI exists, run this through the runtime worker
-session path from Panda itself. The important check is that the bash command runs
-inside the disposable runner, not inside the persistent per-agent runner.
+The important check is that the bash command runs inside the disposable runner,
+not inside the persistent per-agent runner. After review, use
+`panda workers purge --session-id <workerSessionId> --dry-run` and then
+`--execute` when the candidate looks right.
 
 ## Policy Defaults
 

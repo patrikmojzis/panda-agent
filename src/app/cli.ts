@@ -28,6 +28,7 @@ import {
 } from "../integrations/shell/index.js";
 import {registerObserveCommand} from "../ui/observe/cli.js";
 import {registerSmokeCommand} from "./smoke/cli.js";
+import {registerWorkerCommands} from "./workers/cli.js";
 
 try {
   (process as NodeJS.Process & { loadEnvFile?: (path?: string) => void }).loadEnvFile?.();
@@ -280,6 +281,7 @@ program
 
 configureChatCommand(program);
 registerSmokeCommand(program);
+registerWorkerCommands(program);
 
 configureChatCommand(
   program
