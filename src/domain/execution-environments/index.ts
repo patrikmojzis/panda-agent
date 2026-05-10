@@ -34,6 +34,7 @@ export type {
   ExecutionSkillPolicy,
   ExecutionEnvironmentState,
   ExecutionToolPolicy,
+  ListDisposableEnvironmentsByOwnerInput,
   ResolvedExecutionEnvironment,
   SessionEnvironmentBindingRecord,
 } from "./types.js";

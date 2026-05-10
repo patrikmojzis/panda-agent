@@ -165,6 +165,7 @@ export interface CreateWorkerSessionRequestPayload extends BaseRuntimeRequestPay
   thinking?: ThinkingLevel;
   inferenceProjection?: InferenceProjection;
   credentialAllowlist?: readonly string[];
+  environmentId?: string;
   skillAllowlist?: readonly string[];
   toolPolicy?: ExecutionToolPolicy;
   ttlMs?: number;

@@ -67,7 +67,7 @@ export interface CreateThreadDefinitionOptions {
   sessionStore?: Pick<SessionStore, "listAgentSessions">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
-  executionEnvironments?: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment">;
+  executionEnvironments?: Pick<ExecutionEnvironmentStore, "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   bashToolOptions?: BashToolOptions;
   browserToolOptions?: BrowserToolOptions;

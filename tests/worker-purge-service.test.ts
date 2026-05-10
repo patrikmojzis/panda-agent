@@ -286,7 +286,7 @@ describe("WorkerPurgeService", () => {
       externalFileReferenceCount: 1,
     });
     await expect(service.plan({selector: {sessionId: "main-session"}})).rejects.toThrow(
-      "No worker-owned disposable environment matched",
+      "No disposable worker environment matched",
     );
   });
 
@@ -396,6 +396,90 @@ describe("WorkerPurgeService", () => {
       .resolves.toMatchObject({rows: [{count: 1}]});
     await expect(pool.query(`SELECT id FROM "runtime"."runtime_requests" WHERE id = $1`, [unrelatedRequestId]))
       .resolves.toMatchObject({rows: [{id: unrelatedRequestId}]});
+  });
+
+  it("plans standalone environment purge candidates without attached workers", async () => {
+    const {environmentStore, environmentsRoot, service} = await createHarness();
+    const envDir = "standalone-env";
+    const envRoot = await createEnvRoot(environmentsRoot, "panda", envDir);
+    await environmentStore.createEnvironment({
+      id: "environment:main-session:standalone",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "stopped",
+      runnerUrl: "http://standalone:8080",
+      runnerCwd: "/workspace",
+      rootPath: "/workspace",
+      createdBySessionId: "main-session",
+      metadata: {
+        containerName: "panda-env-standalone",
+        filesystem: filesystemMetadata(envRoot, envDir),
+      },
+    });
+
+    const plan = await service.plan({
+      selector: {
+        environmentId: "environment:main-session:standalone",
+      },
+    });
+
+    expect(plan.candidates).toHaveLength(1);
+    expect(plan.candidates[0]).toMatchObject({
+      sessionId: "",
+      sessionIds: [],
+      environment: {
+        id: "environment:main-session:standalone",
+      },
+      filesystem: {
+        status: "safe",
+        rootPath: envRoot,
+      },
+      dbCounts: {
+        sessions: 0,
+        threads: 0,
+        executionEnvironments: 1,
+        sessionEnvironmentBindings: 0,
+      },
+    });
+  });
+
+  it("purges a shared environment once and deletes every attached worker", async () => {
+    const {pool, environmentStore, envRoot, service, sessionStore, threadStore} = await createHarness();
+    await createSessionWithInitialThread({
+      pool,
+      sessionStore,
+      threadStore,
+      session: {
+        id: "worker-two",
+        agentKey: "panda",
+        kind: "worker",
+        currentThreadId: "worker-two-thread",
+      },
+      thread: {
+        id: "worker-two-thread",
+        sessionId: "worker-two",
+      },
+    });
+    await environmentStore.bindSession({
+      sessionId: "worker-two",
+      environmentId: "worker:worker-session",
+      alias: "self",
+      isDefault: true,
+    });
+
+    const plan = await service.purge({
+      selector: {
+        environmentId: "worker:worker-session",
+      },
+      execute: true,
+    });
+
+    expect(plan.candidates).toHaveLength(1);
+    expect(plan.candidates[0]?.sessionIds).toEqual(["worker-session", "worker-two"]);
+    await expect(sessionStore.getSession("worker-session")).rejects.toThrow("Unknown session");
+    await expect(sessionStore.getSession("worker-two")).rejects.toThrow("Unknown session");
+    await expect(environmentStore.getEnvironment("worker:worker-session")).rejects.toThrow("Unknown execution environment");
+    await expect(lstat(envRoot)).rejects.toThrow();
   });
 
   it("does not delete files when the DB purge fails", async () => {

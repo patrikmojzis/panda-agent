@@ -5,14 +5,16 @@ import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject} from "../../kernel/agent/types.js";
-import type {SessionRecord, SessionStore} from "../../domain/sessions/index.js";
 import {readWorkerSessionMetadata} from "../../domain/sessions/worker-metadata.js";
 import type {
   ExecutionEnvironmentRecord,
   ExecutionEnvironmentStore,
 } from "../../domain/execution-environments/index.js";
 import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/index.js";
-import type {WorkerSessionService} from "../../app/runtime/worker-session-service.js";
+import {
+  DEFAULT_WORKER_ENVIRONMENT_TTL_MS,
+  type WorkerSessionService,
+} from "../../app/runtime/worker-session-service.js";
 import type {ExecutionEnvironmentLifecycleService} from "../../app/runtime/execution-environment-service.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveDefaultAgentWorkerModelSelector} from "../defaults.js";
@@ -83,20 +85,18 @@ function serializeWorkerEnvironment(environment: ExecutionEnvironmentRecord): Js
   });
 }
 
-function validateOwnedWorkerSession(input: {
-  session: SessionRecord;
+function validateOwnedDisposableEnvironment(input: {
+  environment: ExecutionEnvironmentRecord;
   scope: {agentKey: string; sessionId: string};
 }): void {
-  if (input.session.kind !== "worker") {
-    throw new ToolError(`Session ${input.session.id} is not a worker session.`);
+  if (input.environment.kind !== "disposable_container") {
+    throw new ToolError(`Execution environment ${input.environment.id} is not disposable.`);
   }
-  if (input.session.agentKey !== input.scope.agentKey) {
-    throw new ToolError(`Worker session ${input.session.id} does not belong to agent ${input.scope.agentKey}.`);
+  if (input.environment.agentKey !== input.scope.agentKey) {
+    throw new ToolError(`Execution environment ${input.environment.id} does not belong to agent ${input.scope.agentKey}.`);
   }
-
-  const metadata = readWorkerSessionMetadata(input.session.metadata);
-  if (metadata?.parentSessionId !== input.scope.sessionId) {
-    throw new ToolError(`Worker session ${input.session.id} is not owned by this session.`);
+  if (input.environment.createdBySessionId !== input.scope.sessionId) {
+    throw new ToolError(`Execution environment ${input.environment.id} is not owned by this session.`);
   }
 }
 
@@ -113,6 +113,7 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
     task: z.string().trim().min(1),
     context: z.string().trim().min(1).optional(),
     model: z.string().trim().min(1).optional(),
+    environmentId: z.string().trim().min(1).optional(),
     credentialAllowlist: z.array(z.string().trim().min(1)).max(50).optional(),
     skillAllowlist: z.array(z.string().trim().min(1)).max(50).optional(),
     toolAllowlist: z.array(z.string().trim().min(1)).max(50).optional(),
@@ -120,7 +121,7 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
   });
 
   name = "worker_spawn";
-  description = "Spawn an isolated disposable worker session for scoped work. The worker receives a fresh bash environment and reports back with message_agent.";
+  description = "Spawn a disposable worker session for scoped work. By default it creates a fresh environment; pass environmentId to attach to an existing environment.";
   schema = WorkerSpawnTool.schema;
 
   private readonly workerSessions: Pick<WorkerSessionService, "createWorkerSession">;
@@ -172,6 +173,7 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
       parentSessionId: scope.sessionId,
       createdByIdentityId: scope.identityId,
       model: args.model ?? defaultModel,
+      environmentId: args.environmentId,
       credentialAllowlist: args.credentialAllowlist ?? [],
       skillAllowlist: args.skillAllowlist ?? [],
       toolPolicy: {
@@ -222,116 +224,126 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
   }
 }
 
-export interface WorkerStopToolOptions {
-  sessions: Pick<SessionStore, "getSession">;
-  environments: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment">;
-  lifecycle: Pick<ExecutionEnvironmentLifecycleService, "stopEnvironment">;
+export interface EnvironmentCreateToolOptions {
+  lifecycle: Pick<ExecutionEnvironmentLifecycleService, "createStandaloneDisposableEnvironment">;
 }
 
-const workerStopSchema = z.object({
-  sessionId: z.string().trim().min(1).optional(),
-  environmentId: z.string().trim().min(1).optional(),
-}).superRefine((value, ctx) => {
-  if (!value.sessionId && !value.environmentId) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["sessionId"],
-      message: "worker_stop requires sessionId or environmentId.",
-    });
-  }
-});
+export class EnvironmentCreateTool<TContext = DefaultAgentSessionContext>
+  extends Tool<typeof EnvironmentCreateTool.schema, TContext> {
+  static schema = z.object({
+    label: z.string().trim().min(1).max(80).optional(),
+    ttlHours: z.number().positive().max(24 * 30).optional(),
+  });
 
-export class WorkerStopTool<TContext = DefaultAgentSessionContext>
-  extends Tool<typeof workerStopSchema, TContext> {
-  static schema = workerStopSchema;
+  name = "environment_create";
+  description = "Create a disposable execution environment owned by this session. Files are preserved when the environment is stopped.";
+  schema = EnvironmentCreateTool.schema;
 
-  name = "worker_stop";
-  description = "Stop a disposable worker environment owned by the current session. Files are preserved for review.";
-  schema = WorkerStopTool.schema;
+  private readonly lifecycle: Pick<ExecutionEnvironmentLifecycleService, "createStandaloneDisposableEnvironment">;
 
-  private readonly sessions: Pick<SessionStore, "getSession">;
-  private readonly environments: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment">;
-  private readonly lifecycle: Pick<ExecutionEnvironmentLifecycleService, "stopEnvironment">;
-
-  constructor(options: WorkerStopToolOptions) {
+  constructor(options: EnvironmentCreateToolOptions) {
     super();
-    this.sessions = options.sessions;
-    this.environments = options.environments;
     this.lifecycle = options.lifecycle;
   }
 
   override formatCall(args: Record<string, unknown>): string {
-    return typeof args.sessionId === "string"
-      ? args.sessionId
-      : typeof args.environmentId === "string"
-        ? args.environmentId
-        : "worker";
+    return typeof args.label === "string" ? args.label : "environment";
   }
 
   override formatResult(message: ToolResultMessage): string {
     const details = message.details;
     if (!details || typeof details !== "object" || Array.isArray(details)) {
-      return message.isError ? "Worker stop failed." : "Worker stopped.";
+      return message.isError ? "Environment create failed." : "Environment created.";
+    }
+
+    const environmentId = typeof details.environmentId === "string" ? details.environmentId : undefined;
+    return environmentId ? `environment created\n${environmentId}` : "environment created";
+  }
+
+  async handle(
+    args: z.output<typeof EnvironmentCreateTool.schema>,
+    run: RunContext<TContext>,
+  ): Promise<JsonObject> {
+    const scope = readScope(run.context as DefaultAgentSessionContext | undefined);
+    const environment = await this.lifecycle.createStandaloneDisposableEnvironment({
+      agentKey: scope.agentKey,
+      createdBySessionId: scope.sessionId,
+      ttlMs: args.ttlHours === undefined
+        ? DEFAULT_WORKER_ENVIRONMENT_TTL_MS
+        : Math.round(args.ttlHours * 60 * 60 * 1_000),
+      metadata: compactObject({
+        ...(args.label ? {label: args.label} : {}),
+        createdByTool: "environment_create",
+      }),
+    });
+
+    return {
+      status: "created",
+      ...serializeWorkerEnvironment(environment),
+    };
+  }
+}
+
+export interface EnvironmentStopToolOptions {
+  environments: Pick<ExecutionEnvironmentStore, "getEnvironment">;
+  lifecycle: Pick<ExecutionEnvironmentLifecycleService, "stopEnvironment">;
+}
+
+export class EnvironmentStopTool<TContext = DefaultAgentSessionContext>
+  extends Tool<typeof EnvironmentStopTool.schema, TContext> {
+  static schema = z.object({
+    environmentId: z.string().trim().min(1),
+  });
+
+  name = "environment_stop";
+  description = "Stop a disposable execution environment owned by this session. Files and DB records are preserved.";
+  schema = EnvironmentStopTool.schema;
+
+  private readonly environments: Pick<ExecutionEnvironmentStore, "getEnvironment">;
+  private readonly lifecycle: Pick<ExecutionEnvironmentLifecycleService, "stopEnvironment">;
+
+  constructor(options: EnvironmentStopToolOptions) {
+    super();
+    this.environments = options.environments;
+    this.lifecycle = options.lifecycle;
+  }
+
+  override formatCall(args: Record<string, unknown>): string {
+    return typeof args.environmentId === "string" ? args.environmentId : "environment";
+  }
+
+  override formatResult(message: ToolResultMessage): string {
+    const details = message.details;
+    if (!details || typeof details !== "object" || Array.isArray(details)) {
+      return message.isError ? "Environment stop failed." : "Environment stopped.";
     }
 
     const status = typeof details.status === "string" ? details.status : "stopped";
-    const sessionId = typeof details.sessionId === "string" ? details.sessionId : undefined;
     const environmentId = typeof details.environmentId === "string" ? details.environmentId : undefined;
     return [
       status,
-      sessionId ? `session ${sessionId}` : "",
       environmentId ? `environment ${environmentId}` : "",
     ].filter(Boolean).join("\n");
   }
 
-  private async resolveTarget(args: z.output<typeof workerStopSchema>, scope: {
-    agentKey: string;
-    sessionId: string;
-  }): Promise<{session?: SessionRecord; environment: ExecutionEnvironmentRecord}> {
-    if (args.sessionId) {
-      const session = await this.sessions.getSession(args.sessionId);
-      validateOwnedWorkerSession({session, scope});
-      const binding = await this.environments.getDefaultBinding(session.id);
-      if (!binding) {
-        throw new ToolError(`Worker session ${session.id} has no default execution environment.`);
-      }
-      return {
-        session,
-        environment: await this.environments.getEnvironment(binding.environmentId),
-      };
-    }
-
-    const environment = await this.environments.getEnvironment(args.environmentId ?? "");
-    if (environment.agentKey !== scope.agentKey) {
-      throw new ToolError(`Execution environment ${environment.id} does not belong to agent ${scope.agentKey}.`);
-    }
-    if (environment.createdForSessionId) {
-      const session = await this.sessions.getSession(environment.createdForSessionId);
-      validateOwnedWorkerSession({session, scope});
-      return {session, environment};
-    }
-    if (environment.createdBySessionId !== scope.sessionId) {
-      throw new ToolError(`Execution environment ${environment.id} is not owned by this session.`);
-    }
-
-    return {environment};
-  }
-
   async handle(
-    args: z.output<typeof workerStopSchema>,
+    args: z.output<typeof EnvironmentStopTool.schema>,
     run: RunContext<TContext>,
   ): Promise<JsonObject> {
     const scope = readScope(run.context as DefaultAgentSessionContext | undefined);
-    const target = await this.resolveTarget(args, scope);
-    const current = target.environment;
+    const current = await this.environments.getEnvironment(args.environmentId);
+    validateOwnedDisposableEnvironment({environment: current, scope});
     const alreadyTerminal = current.state === "stopped" || current.state === "failed";
     const environment = alreadyTerminal || current.state === "stopping"
       ? current
       : await this.lifecycle.stopEnvironment(current.id);
 
     return {
-      status: alreadyTerminal ? "already_stopped" : environment.state,
-      ...(target.session ? {sessionId: target.session.id} : {}),
+      status: current.state === "failed"
+        ? "failed"
+        : alreadyTerminal
+          ? "already_stopped"
+          : environment.state,
       ...serializeWorkerEnvironment(environment),
     };
   }

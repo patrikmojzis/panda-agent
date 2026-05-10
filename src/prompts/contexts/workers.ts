@@ -1,35 +1,47 @@
 export interface RenderWorkersContextWorker {
   sessionId: string;
-  environmentId?: string;
   role: string;
+  startedAt: string;
+}
+
+export interface RenderWorkersContextEnvironment {
+  environmentId: string;
   state: string;
   startedAt: string;
+  updatedAt: string;
   workspacePath?: string;
   inboxPath?: string;
   artifactsPath?: string;
+  workers: readonly RenderWorkersContextWorker[];
 }
 
-export function renderWorkersContext(workers: readonly RenderWorkersContextWorker[]): string {
-  if (workers.length === 0) {
+export function renderWorkersContext(environments: readonly RenderWorkersContextEnvironment[]): string {
+  if (environments.length === 0) {
     return "";
   }
 
   return [
-    "Workers owned by this session:",
-    ...workers.map((worker) => {
+    "Worker environments owned by this session:",
+    ...environments.map((environment) => {
       const parts = [
-        worker.sessionId,
-        worker.environmentId ? `env ${worker.environmentId}` : "env unbound",
-        `role ${worker.role}`,
-        `state ${worker.state}`,
-        `started ${worker.startedAt}`,
+        environment.environmentId,
+        `state ${environment.state}`,
+        `started ${environment.startedAt}`,
+        `updated ${environment.updatedAt}`,
       ].filter(Boolean);
       const paths = [
-        worker.workspacePath ? `workspace ${worker.workspacePath}` : "",
-        worker.inboxPath ? `inbox ${worker.inboxPath}` : "",
-        worker.artifactsPath ? `artifacts ${worker.artifactsPath}` : "",
+        environment.workspacePath ? `workspace ${environment.workspacePath}` : "",
+        environment.inboxPath ? `inbox ${environment.inboxPath}` : "",
+        environment.artifactsPath ? `artifacts ${environment.artifactsPath}` : "",
       ].filter(Boolean);
-      return `- ${parts.join(" | ")}${paths.length ? ` | ${paths.join(" | ")}` : ""}`;
+      const workers = environment.workers.length
+        ? ` | workers ${environment.workers.map((worker) => [
+          worker.sessionId,
+          `role ${worker.role}`,
+          `started ${worker.startedAt}`,
+        ].join(" ")).join("; ")}`
+        : " | workers none";
+      return `- ${parts.join(" | ")}${paths.length ? ` | ${paths.join(" | ")}` : ""}${workers}`;
     }),
   ].join("\n");
 }

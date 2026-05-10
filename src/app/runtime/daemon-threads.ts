@@ -3,16 +3,16 @@ import {randomUUID} from "node:crypto";
 import {type MediaDescriptor, relocateMediaDescriptor} from "../../domain/channels/index.js";
 import type {IdentityRecord} from "../../domain/identity/index.js";
 import {
-    createSessionWithInitialThread,
-    resetSessionCurrentThread,
-    type SessionRecord
+  createSessionWithInitialThread,
+  resetSessionCurrentThread,
+  type SessionRecord
 } from "../../domain/sessions/index.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {
-    CreateBranchSessionRequestPayload,
-    CreateWorkerSessionRequestPayload,
-    ResetSessionRequestPayload,
-    ResolveMainSessionThreadRequestPayload,
+  CreateBranchSessionRequestPayload,
+  CreateWorkerSessionRequestPayload,
+  ResetSessionRequestPayload,
+  ResolveMainSessionThreadRequestPayload,
 } from "../../domain/threads/requests/index.js";
 import {PostgresThreadRuntimeStore, type ThreadRecord} from "../../domain/threads/runtime/index.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
@@ -46,6 +46,7 @@ export interface DaemonThreadHelpers {
     thinking?: CreateWorkerSessionRequestPayload["thinking"];
     inferenceProjection?: CreateWorkerSessionRequestPayload["inferenceProjection"];
     credentialAllowlist?: readonly string[];
+    environmentId?: string;
     skillAllowlist?: readonly string[];
     toolPolicy?: CreateWorkerSessionRequestPayload["toolPolicy"];
     ttlMs?: number;
@@ -286,6 +287,7 @@ export function createDaemonThreadHelpers(
     thinking?: CreateWorkerSessionRequestPayload["thinking"];
     inferenceProjection?: CreateWorkerSessionRequestPayload["inferenceProjection"];
     credentialAllowlist?: readonly string[];
+    environmentId?: string;
     skillAllowlist?: readonly string[];
     toolPolicy?: CreateWorkerSessionRequestPayload["toolPolicy"];
     ttlMs?: number;
@@ -309,6 +311,7 @@ export function createDaemonThreadHelpers(
       thinking: input.thinking,
       inferenceProjection: input.inferenceProjection,
       credentialAllowlist: input.credentialAllowlist,
+      environmentId: input.environmentId,
       skillAllowlist: input.skillAllowlist,
       toolPolicy: input.toolPolicy,
       ttlMs: input.ttlMs,

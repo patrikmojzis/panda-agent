@@ -3,10 +3,10 @@ import {randomUUID} from "node:crypto";
 import {stringToUserMessage} from "../../kernel/agent/index.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
 import {
-    type CreateSessionInput,
-    createSessionWithInitialThread,
-    type SessionRecord,
-    type SessionStore,
+  type CreateSessionInput,
+  createSessionWithInitialThread,
+  type SessionRecord,
+  type SessionStore,
 } from "../../domain/sessions/index.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
@@ -16,11 +16,11 @@ import type {CreateThreadInput, InferenceProjection} from "../../domain/threads/
 import type {PgPoolLike} from "../../domain/threads/runtime/postgres-db.js";
 import {buildSessionTableNames} from "../../domain/sessions/postgres-shared.js";
 import type {
-    ExecutionCredentialPolicy,
-    ExecutionEnvironmentRecord,
-    ExecutionSkillPolicy,
-    ExecutionToolPolicy,
-    SessionEnvironmentBindingRecord,
+  ExecutionCredentialPolicy,
+  ExecutionEnvironmentRecord,
+  ExecutionSkillPolicy,
+  ExecutionToolPolicy,
+  SessionEnvironmentBindingRecord,
 } from "../../domain/execution-environments/index.js";
 import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/index.js";
 import {normalizeSkillKey} from "../../domain/agents/types.js";
@@ -49,6 +49,7 @@ export interface CreateWorkerSessionInput {
   inferenceProjection?: InferenceProjection;
   credentialAllowlist?: readonly string[];
   credentialPolicy?: ExecutionCredentialPolicy;
+  environmentId?: string;
   skillAllowlist?: readonly string[];
   skillPolicy?: ExecutionSkillPolicy;
   toolPolicy?: ExecutionToolPolicy;
@@ -220,21 +221,33 @@ export class WorkerSessionService {
     };
 
     const created = await this.createSessionAndThread(sessionInput, threadInput);
-    const environmentId = buildWorkerEnvironmentId(created.session.id);
+    const environmentId = trimToUndefined(input.environmentId) ?? buildWorkerEnvironmentId(created.session.id);
+    const createsFreshEnvironment = !trimToUndefined(input.environmentId);
     let result: CreateWorkerSessionResult | null = null;
     try {
-      const environment = await this.environments.createDisposableForSession({
-        session: created.session,
-        environmentId,
-        createdBySessionId: input.parentSessionId,
-        alias: "self",
-        isDefault: true,
-        credentialPolicy: buildCredentialPolicy(input),
-        skillPolicy: buildSkillPolicy(input),
-        toolPolicy: input.toolPolicy ?? {},
-        ttlMs: input.ttlMs ?? DEFAULT_WORKER_ENVIRONMENT_TTL_MS,
-        metadata: workerMetadata,
-      });
+      const environment = createsFreshEnvironment
+        ? await this.environments.createDisposableForSession({
+          session: created.session,
+          environmentId,
+          createdBySessionId: input.parentSessionId,
+          alias: "self",
+          isDefault: true,
+          credentialPolicy: buildCredentialPolicy(input),
+          skillPolicy: buildSkillPolicy(input),
+          toolPolicy: input.toolPolicy ?? {},
+          ttlMs: input.ttlMs ?? DEFAULT_WORKER_ENVIRONMENT_TTL_MS,
+          metadata: workerMetadata,
+        })
+        : await this.environments.attachSessionToDisposableEnvironment({
+          session: created.session,
+          environmentId,
+          ownerSessionId: input.parentSessionId ?? "",
+          alias: "self",
+          isDefault: true,
+          credentialPolicy: buildCredentialPolicy(input),
+          skillPolicy: buildSkillPolicy(input),
+          toolPolicy: input.toolPolicy ?? {},
+        });
 
       result = {
         session: created.session,
@@ -261,7 +274,7 @@ export class WorkerSessionService {
       return result;
     } catch (error) {
       if (created.wasCreated) {
-        if (result) {
+        if (result && createsFreshEnvironment) {
           await this.environments.stopEnvironment(environmentId).catch(() => {});
         }
         await this.deleteCreatedWorkerSession(created.session.id, created.thread.id).catch(() => {});

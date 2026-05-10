@@ -117,7 +117,8 @@ describe("worker thread definitions", () => {
 
     expect(main.agent.instructions).toBe(DEFAULT_AGENT_INSTRUCTIONS);
     expect(worker.agent.instructions).toBe(DEFAULT_WORKER_INSTRUCTIONS);
-    expect(worker.agent.instructions).not.toContain("<channels_vs_inner_monologue>");
+    expect(worker.agent.instructions).not.toBe(DEFAULT_AGENT_INSTRUCTIONS);
+    expect(worker.agent.instructions).toContain("<process_notes>");
   });
 
   it("filters worker tools through the execution environment allowlist", () => {
@@ -139,6 +140,8 @@ describe("worker thread definitions", () => {
             "agent_prompt",
             "postgres_readonly_query",
             "worker_spawn",
+            "environment_create",
+            "environment_stop",
           ],
         },
       }),
@@ -148,7 +151,8 @@ describe("worker thread definitions", () => {
         new NamedTool("agent_prompt"),
         new NamedTool("postgres_readonly_query"),
         new NamedTool("worker_spawn"),
-        new NamedTool("worker_stop"),
+        new NamedTool("environment_create"),
+        new NamedTool("environment_stop"),
         new NamedTool("wiki"),
       ],
     });

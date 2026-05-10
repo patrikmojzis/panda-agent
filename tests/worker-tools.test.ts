@@ -5,7 +5,7 @@ import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-
 import type {CreateWorkerSessionInput, CreateWorkerSessionResult} from "../src/app/runtime/worker-session-service.js";
 import type {ExecutionEnvironmentRecord} from "../src/domain/execution-environments/index.js";
 import type {SessionRecord} from "../src/domain/sessions/index.js";
-import {WorkerSpawnTool, WorkerStopTool} from "../src/panda/tools/worker-tools.js";
+import {EnvironmentCreateTool, EnvironmentStopTool, WorkerSpawnTool} from "../src/panda/tools/worker-tools.js";
 
 function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
@@ -287,6 +287,10 @@ describe("worker control tools", () => {
     }, context)).rejects.toThrow("worker_spawn cannot be granted");
     await expect(tool.run({
       task: "Inspect docs.",
+      toolAllowlist: ["environment_stop"],
+    }, context)).rejects.toThrow("environment_stop cannot be granted");
+    await expect(tool.run({
+      task: "Inspect docs.",
       toolAllowlist: ["postgres_readonly_query"],
     }, context)).rejects.toThrow("postgres_readonly_query requires allowReadonlyPostgres=true");
     await expect(tool.run({
@@ -315,30 +319,108 @@ describe("worker control tools", () => {
     expect(createWorkerSessionMock).not.toHaveBeenCalled();
   });
 
-  it("stops an owned worker environment and preserves file paths", async () => {
-    const session = createWorkerSession();
-    const environment = createEnvironment();
+  it("spawns workers into an existing environment", async () => {
+    const created: CreateWorkerSessionResult = {
+      session: createWorkerSession(),
+      thread: {
+        id: "worker-thread",
+        sessionId: "worker-session",
+        context: {},
+        createdAt: 1_000,
+        updatedAt: 1_000,
+      },
+      environment: createEnvironment({id: "environment:parent-session:existing"}),
+      binding: {
+        sessionId: "worker-session",
+        environmentId: "environment:parent-session:existing",
+        alias: "self",
+        isDefault: true,
+        credentialPolicy: {mode: "allowlist", envKeys: []},
+        skillPolicy: {mode: "allowlist", skillKeys: []},
+        toolPolicy: {},
+        createdAt: 1_000,
+        updatedAt: 1_000,
+      },
+    };
+    const createWorkerSessionMock = vi.fn(async (input: CreateWorkerSessionInput) => created);
+    const tool = new WorkerSpawnTool({
+      workerSessions: {
+        createWorkerSession: createWorkerSessionMock,
+      },
+    });
+
+    await tool.run({
+      task: "Continue in shared env.",
+      environmentId: "environment:parent-session:existing",
+    }, createRunContext({
+      cwd: "/workspace/panda",
+      agentKey: "panda",
+      sessionId: "parent-session",
+      threadId: "parent-thread",
+      workerA2A: {
+        bindParentWorker: async () => {},
+      },
+    }));
+
+    expect(createWorkerSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      environmentId: "environment:parent-session:existing",
+    }));
+  });
+
+  it("creates standalone environments with parent-visible paths", async () => {
+    const environment = createEnvironment({
+      id: "environment:parent-session:abc",
+      createdForSessionId: undefined,
+    });
+    const createStandaloneDisposableEnvironment = vi.fn(async () => environment);
+    const tool = new EnvironmentCreateTool({
+      lifecycle: {
+        createStandaloneDisposableEnvironment,
+      },
+    });
+
+    const result = await tool.run({
+      label: "review env",
+      ttlHours: 2,
+    }, createRunContext({
+      cwd: "/workspace/panda",
+      agentKey: "panda",
+      sessionId: "parent-session",
+      threadId: "parent-thread",
+    }));
+
+    expect(createStandaloneDisposableEnvironment).toHaveBeenCalledWith({
+      agentKey: "panda",
+      createdBySessionId: "parent-session",
+      ttlMs: 2 * 60 * 60 * 1_000,
+      metadata: {
+        label: "review env",
+        createdByTool: "environment_create",
+      },
+    });
+    expect(result).toMatchObject({
+      status: "created",
+      environmentId: "environment:parent-session:abc",
+      paths: {
+        artifacts: "/environments/worker-session/artifacts",
+      },
+    });
+  });
+
+  it("stops an owned environment and preserves file paths", async () => {
+    const environment = createEnvironment({
+      id: "environment:parent-session:abc",
+      createdForSessionId: undefined,
+    });
     const stopped = createEnvironment({
+      id: "environment:parent-session:abc",
       state: "stopped",
+      createdForSessionId: undefined,
       updatedAt: 3_000,
     });
     const stopEnvironment = vi.fn(async () => stopped);
-    const tool = new WorkerStopTool({
-      sessions: {
-        getSession: async () => session,
-      },
+    const tool = new EnvironmentStopTool({
       environments: {
-        getDefaultBinding: async () => ({
-          sessionId: session.id,
-          environmentId: environment.id,
-          alias: "self",
-          isDefault: true,
-          credentialPolicy: {mode: "allowlist", envKeys: []},
-          skillPolicy: {mode: "allowlist", skillKeys: []},
-          toolPolicy: {},
-          createdAt: 1_000,
-          updatedAt: 1_000,
-        }),
         getEnvironment: async () => environment,
       },
       lifecycle: {
@@ -347,7 +429,7 @@ describe("worker control tools", () => {
     });
 
     const result = await tool.run({
-      sessionId: "worker-session",
+      environmentId: "environment:parent-session:abc",
     }, createRunContext({
       cwd: "/workspace/panda",
       agentKey: "panda",
@@ -355,32 +437,22 @@ describe("worker control tools", () => {
       threadId: "parent-thread",
     }));
 
-    expect(stopEnvironment).toHaveBeenCalledWith("worker:worker-session");
+    expect(stopEnvironment).toHaveBeenCalledWith("environment:parent-session:abc");
     expect(result).toMatchObject({
       status: "stopped",
-      sessionId: "worker-session",
-      environmentId: "worker:worker-session",
+      environmentId: "environment:parent-session:abc",
       paths: {
         artifacts: "/environments/worker-session/artifacts",
       },
     });
   });
 
-  it("rejects stopping a worker owned by another parent session", async () => {
-    const tool = new WorkerStopTool({
-      sessions: {
-        getSession: async () => createWorkerSession({
-          metadata: {
-            worker: {
-              role: "research",
-              parentSessionId: "different-parent",
-            },
-          },
-        }),
-      },
+  it("rejects stopping an environment owned by another parent session", async () => {
+    const tool = new EnvironmentStopTool({
       environments: {
-        getDefaultBinding: async () => null,
-        getEnvironment: async () => createEnvironment(),
+        getEnvironment: async () => createEnvironment({
+          createdBySessionId: "different-parent",
+        }),
       },
       lifecycle: {
         stopEnvironment: async () => createEnvironment({
@@ -390,7 +462,7 @@ describe("worker control tools", () => {
     });
 
     await expect(tool.run({
-      sessionId: "worker-session",
+      environmentId: "worker:worker-session",
     }, createRunContext({
       cwd: "/workspace/panda",
       agentKey: "panda",

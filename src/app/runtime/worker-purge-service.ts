@@ -20,7 +20,6 @@ import {buildThreadRuntimeTableNames, toMillis,} from "../../domain/threads/runt
 import {type PgPoolLike, withTransaction} from "../../domain/threads/runtime/postgres-db.js";
 import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
-import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import {resolveDataDir} from "./data-dir.js";
@@ -76,8 +75,9 @@ export interface WorkerPurgeFilesystemPlan {
 
 export interface WorkerPurgeCandidate {
   sessionId: string;
+  sessionIds: readonly string[];
   threadIds: readonly string[];
-  currentThreadId: string;
+  currentThreadId?: string;
   agentKey: string;
   sessionCreatedAt: number;
   sessionUpdatedAt: number;
@@ -103,11 +103,11 @@ export interface WorkerPurgeServiceOptions {
 }
 
 interface CandidateRow {
-  session_id: string;
-  agent_key: string;
-  current_thread_id: string;
-  session_created_at: unknown;
-  session_updated_at: unknown;
+  session_id: string | null;
+  session_agent_key: string | null;
+  current_thread_id: string | null;
+  session_created_at: unknown | null;
+  session_updated_at: unknown | null;
   environment_id: string;
   environment_agent_key: string;
   kind: string;
@@ -316,6 +316,17 @@ function buildThreadIdClause(column: string, threadIds: readonly string[], value
   return `${column} IN (${placeholders.join(", ")})`;
 }
 
+function buildTextInClause(column: string, valuesToAdd: readonly string[], values: unknown[]): string {
+  if (valuesToAdd.length === 0) {
+    return "FALSE";
+  }
+  const placeholders = valuesToAdd.map((value) => {
+    values.push(value);
+    return `$${values.length}`;
+  });
+  return `${column} IN (${placeholders.join(", ")})`;
+}
+
 function addValue(values: unknown[], value: unknown): string {
   values.push(value);
   return `$${values.length}`;
@@ -336,40 +347,44 @@ function nestedJsonTextEquals(
 }
 
 function buildOutboundDeliveryWorkerClause(input: {
-  sessionId: string;
+  sessionIds: readonly string[];
   threadIds: readonly string[];
 }, values: unknown[]): string {
   const clauses: string[] = [];
   if (input.threadIds.length > 0) {
     clauses.push(buildThreadIdClause("thread_id", input.threadIds, values));
   }
-  clauses.push([
-    `channel = ${addValue(values, A2A_SOURCE)}`,
-    `connector_key = ${addValue(values, A2A_CONNECTOR_KEY)}`,
-    `external_conversation_id = ${addValue(values, input.sessionId)}`,
-  ].join(" AND "));
-  clauses.push(nestedJsonTextEquals("metadata", "a2a", "fromSessionId", input.sessionId, values));
-  clauses.push(nestedJsonTextEquals("metadata", "a2a", "toSessionId", input.sessionId, values));
+  for (const sessionId of input.sessionIds) {
+    clauses.push([
+      `channel = ${addValue(values, A2A_SOURCE)}`,
+      `connector_key = ${addValue(values, A2A_CONNECTOR_KEY)}`,
+      `external_conversation_id = ${addValue(values, sessionId)}`,
+    ].join(" AND "));
+    clauses.push(nestedJsonTextEquals("metadata", "a2a", "fromSessionId", sessionId, values));
+    clauses.push(nestedJsonTextEquals("metadata", "a2a", "toSessionId", sessionId, values));
+  }
   for (const threadId of input.threadIds) {
     clauses.push(nestedJsonTextEquals("metadata", "a2a", "fromThreadId", threadId, values));
   }
-  return `(${clauses.join(" OR ")})`;
+  return clauses.length === 0 ? "FALSE" : `(${clauses.join(" OR ")})`;
 }
 
 function buildRuntimeRequestWorkerClause(input: {
-  sessionId: string;
+  sessionIds: readonly string[];
   environmentId: string;
   threadIds: readonly string[];
 }, values: unknown[]): string {
   const clauses = [
-    jsonTextEquals("payload", "sessionId", input.sessionId, values),
-    jsonTextEquals("payload", "fromSessionId", input.sessionId, values),
-    jsonTextEquals("payload", "toSessionId", input.sessionId, values),
     jsonTextEquals("payload", "environmentId", input.environmentId, values),
     nestedJsonTextEquals("payload", "senderEnvironment", "id", input.environmentId, values),
-    jsonTextEquals("result", "sessionId", input.sessionId, values),
     jsonTextEquals("result", "environmentId", input.environmentId, values),
   ];
+  for (const sessionId of input.sessionIds) {
+    clauses.push(jsonTextEquals("payload", "sessionId", sessionId, values));
+    clauses.push(jsonTextEquals("payload", "fromSessionId", sessionId, values));
+    clauses.push(jsonTextEquals("payload", "toSessionId", sessionId, values));
+    clauses.push(jsonTextEquals("result", "sessionId", sessionId, values));
+  }
   for (const threadId of input.threadIds) {
     clauses.push(jsonTextEquals("payload", "threadId", threadId, values));
     clauses.push(jsonTextEquals("payload", "fromThreadId", threadId, values));
@@ -418,6 +433,16 @@ export function summarizeWorkerPurgeCounts(candidates: readonly WorkerPurgeCandi
   return candidates.reduce((sum, candidate) => sumCounts(sum, candidate.dbCounts), emptyCounts());
 }
 
+function dedupeStrings(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function candidateLabel(candidate: WorkerPurgeCandidate): string {
+  return candidate.sessionIds.length > 0
+    ? `worker ${candidate.sessionIds.join(",")}`
+    : `environment ${candidate.environment.id}`;
+}
+
 export class WorkerPurgeService {
   private readonly pool: PgPoolLike;
   private readonly environmentStore: ExecutionEnvironmentStore;
@@ -445,36 +470,54 @@ export class WorkerPurgeService {
     const now = input.now ?? Date.now();
     const rows = await this.findCandidateRows(input.selector, now);
     if ((input.selector.sessionId || input.selector.environmentId) && rows.length === 0) {
-      throw new Error("No worker-owned disposable environment matched the selector.");
+      throw new Error("No disposable worker environment matched the selector.");
     }
 
     const candidates: WorkerPurgeCandidate[] = [];
+    const rowsByEnvironment = new Map<string, CandidateRow[]>();
     for (const row of rows) {
+      const existing = rowsByEnvironment.get(row.environment_id);
+      if (existing) {
+        existing.push(row);
+      } else {
+        rowsByEnvironment.set(row.environment_id, [row]);
+      }
+    }
+
+    for (const environmentRows of rowsByEnvironment.values()) {
+      const row = environmentRows[0];
+      if (!row) {
+        continue;
+      }
       const environment = parseEnvironmentRow(row);
-      const threadIds = await this.listThreadIds(row.session_id);
+      const sessionIds = dedupeStrings(environmentRows.flatMap((candidateRow) => (
+        candidateRow.session_id ? [candidateRow.session_id] : []
+      )));
+      const threadIds = (await Promise.all(sessionIds.map((sessionId) => this.listThreadIds(sessionId)))).flat();
       const filesystem = input.skipFiles
         ? {status: "skipped" as const, reason: "--skip-files was set"}
         : await this.planFilesystem({
-          agentKey: row.agent_key,
+          agentKey: row.environment_agent_key,
           environment,
         });
       candidates.push({
-        sessionId: row.session_id,
+        sessionId: sessionIds[0] ?? "",
+        sessionIds,
         threadIds,
-        currentThreadId: row.current_thread_id,
-        agentKey: row.agent_key,
-        sessionCreatedAt: toMillis(row.session_created_at),
-        sessionUpdatedAt: toMillis(row.session_updated_at),
+        ...(row.current_thread_id ? {currentThreadId: row.current_thread_id} : {}),
+        agentKey: row.environment_agent_key,
+        sessionCreatedAt: row.session_created_at ? toMillis(row.session_created_at) : environment.createdAt,
+        sessionUpdatedAt: row.session_updated_at ? toMillis(row.session_updated_at) : environment.updatedAt,
         environment,
         ...(readContainerName(environment.metadata) ? {containerName: readContainerName(environment.metadata)} : {}),
         filesystem,
         dbCounts: await this.countDbRows({
-          sessionId: row.session_id,
+          sessionIds,
           environmentId: environment.id,
           threadIds,
         }),
         externalFileReferenceCount: await this.countExternalFileReferences({
-          sessionId: row.session_id,
+          sessionIds,
           environmentId: environment.id,
           threadIds,
           environmentRootPath: filesystem.status === "safe" ? filesystem.rootPath : undefined,
@@ -500,13 +543,13 @@ export class WorkerPurgeService {
     const plan = await this.plan(input);
     const refused = plan.candidates.find((candidate) => candidate.refusedReason);
     if (refused) {
-      throw new Error(`Refusing to purge worker ${refused.sessionId}: ${refused.refusedReason}.`);
+      throw new Error(`Refusing to purge ${candidateLabel(refused)}: ${refused.refusedReason}.`);
     }
 
     if (!input.skipFiles) {
       const unsafe = plan.candidates.find((candidate) => candidate.filesystem.status !== "safe");
       if (unsafe) {
-        throw new Error(`Refusing to purge worker ${unsafe.sessionId}: filesystem root is ${unsafe.filesystem.status}.`);
+        throw new Error(`Refusing to purge ${candidateLabel(unsafe)}: filesystem root is ${unsafe.filesystem.status}.`);
       }
     }
 
@@ -551,12 +594,10 @@ export class WorkerPurgeService {
     const values: unknown[] = [];
     const where = [
       "env.kind = 'disposable_container'",
-      "session.kind = 'worker'",
     ];
 
     if (selector.agentKey) {
       values.push(requireTrimmed("agent key", selector.agentKey));
-      where.push(`session.agent_key = $${values.length}`);
       where.push(`env.agent_key = $${values.length}`);
     }
     if (selector.sessionId) {
@@ -585,7 +626,7 @@ export class WorkerPurgeService {
     const result = await this.pool.query(`
       SELECT DISTINCT
         session.id AS session_id,
-        session.agent_key,
+        session.agent_key AS session_agent_key,
         session.current_thread_id,
         session.created_at AS session_created_at,
         session.updated_at AS session_updated_at,
@@ -605,8 +646,9 @@ export class WorkerPurgeService {
       FROM ${this.environments.executionEnvironments} AS env
       LEFT JOIN ${this.environments.sessionEnvironmentBindings} AS binding
         ON binding.environment_id = env.id
-      INNER JOIN ${this.sessions.sessions} AS session
-        ON session.id = COALESCE(env.created_for_session_id, binding.session_id)
+      LEFT JOIN ${this.sessions.sessions} AS session
+        ON (session.id = env.created_for_session_id OR session.id = binding.session_id)
+       AND session.kind = 'worker'
       WHERE ${where.join("\n        AND ")}
       ORDER BY env.updated_at ASC, session.id ASC
     `, values);
@@ -694,21 +736,36 @@ export class WorkerPurgeService {
   }
 
   private async countDbRows(input: {
-    sessionId: string;
+    sessionIds: readonly string[];
     environmentId: string;
     threadIds: readonly string[];
   }): Promise<WorkerPurgeDbCounts> {
     const counts = emptyCounts();
-    counts.sessions = await this.countSimple(`${this.sessions.sessions} WHERE id = $1 AND kind = 'worker'`, [input.sessionId]);
-    counts.sessionHeartbeats = await this.countSimple(`${this.sessions.sessionHeartbeats} WHERE session_id = $1`, [input.sessionId]);
-    counts.executionEnvironments = await this.countSimple(`${this.environments.executionEnvironments} WHERE id = $1`, [input.environmentId]);
-    counts.sessionEnvironmentBindings = await this.countSimple(
-      `${this.environments.sessionEnvironmentBindings} WHERE session_id = $1 OR environment_id = $2`,
-      [input.sessionId, input.environmentId],
+    const sessionValues: unknown[] = [];
+    const sessionClause = buildTextInClause("id", input.sessionIds, sessionValues);
+    counts.sessions = await this.countSimple(
+      `${this.sessions.sessions} WHERE ${sessionClause} AND kind = 'worker'`,
+      sessionValues,
     );
+    const heartbeatValues: unknown[] = [];
+    const heartbeatClause = buildTextInClause("session_id", input.sessionIds, heartbeatValues);
+    counts.sessionHeartbeats = await this.countSimple(
+      `${this.sessions.sessionHeartbeats} WHERE ${heartbeatClause}`,
+      heartbeatValues,
+    );
+    counts.executionEnvironments = await this.countSimple(`${this.environments.executionEnvironments} WHERE id = $1`, [input.environmentId]);
+    const bindingValues: unknown[] = [input.environmentId];
+    const bindingSessionClause = buildTextInClause("session_id", input.sessionIds, bindingValues);
+    counts.sessionEnvironmentBindings = await this.countSimple(
+      `${this.environments.sessionEnvironmentBindings} WHERE environment_id = $1 OR ${bindingSessionClause}`,
+      bindingValues,
+    );
+    const a2aValues: unknown[] = [];
+    const a2aSenderClause = buildTextInClause("sender_session_id", input.sessionIds, a2aValues);
+    const a2aRecipientClause = buildTextInClause("recipient_session_id", input.sessionIds, a2aValues);
     counts.a2aSessionBindings = await this.countSimple(
-      `${this.a2a.a2aSessionBindings} WHERE sender_session_id = $1 OR recipient_session_id = $1`,
-      [input.sessionId],
+      `${this.a2a.a2aSessionBindings} WHERE ${a2aSenderClause} OR ${a2aRecipientClause}`,
+      a2aValues,
     );
 
     const threadValues: unknown[] = [];
@@ -730,7 +787,7 @@ export class WorkerPurgeService {
   }
 
   private async countOutboundDeliveries(input: {
-    sessionId: string;
+    sessionIds: readonly string[];
     environmentId: string;
     threadIds: readonly string[];
   }): Promise<number> {
@@ -743,7 +800,7 @@ export class WorkerPurgeService {
   }
 
   private async countRuntimeRequests(input: {
-    sessionId: string;
+    sessionIds: readonly string[];
     environmentId: string;
     threadIds: readonly string[];
   }): Promise<number> {
@@ -756,13 +813,13 @@ export class WorkerPurgeService {
   }
 
   private async countExternalFileReferences(input: {
-    sessionId: string;
+    sessionIds: readonly string[];
     environmentId: string;
     threadIds: readonly string[];
     environmentRootPath: string | undefined;
   }): Promise<number> {
     const paths = new Set<string>();
-    const needles = [input.sessionId, input.environmentId, ...input.threadIds];
+    const needles = [...input.sessionIds, input.environmentId, ...input.threadIds];
     await this.collectThreadJsonPaths(input, needles, paths);
     await this.collectOutboundDeliveryPaths(input, needles, paths);
     await this.collectRuntimeRequestPaths(needles, paths);
@@ -770,7 +827,7 @@ export class WorkerPurgeService {
   }
 
   private async collectThreadJsonPaths(
-    input: {sessionId: string; threadIds: readonly string[]},
+    input: {sessionIds: readonly string[]; threadIds: readonly string[]},
     needles: readonly string[],
     paths: Set<string>,
   ): Promise<void> {
@@ -778,15 +835,14 @@ export class WorkerPurgeService {
     const threadClause = buildThreadIdClause("thread_id", input.threadIds, threadValues);
     for (const table of [this.threads.messages, this.threads.inputs]) {
       const values = [...threadValues];
-      values.push(input.sessionId);
-      const channelPlaceholder = `$${values.length}`;
+      const channelClause = buildTextInClause("channel_id", input.sessionIds, values);
       const metadataClause = buildLikeClause("metadata", needles, values);
       const messageClause = buildLikeClause("message", needles, values);
       const result = await this.pool.query(`
         SELECT message, metadata
         FROM ${table}
         WHERE ${threadClause}
-           OR channel_id = ${channelPlaceholder}
+           OR ${channelClause}
            OR ${metadataClause}
            OR ${messageClause}
       `, values);
@@ -823,21 +879,20 @@ export class WorkerPurgeService {
   }
 
   private async collectOutboundDeliveryPaths(
-    input: {sessionId: string; environmentId: string; threadIds: readonly string[]},
+    input: {sessionIds: readonly string[]; environmentId: string; threadIds: readonly string[]},
     needles: readonly string[],
     paths: Set<string>,
   ): Promise<void> {
     const values: unknown[] = [];
     const threadClause = buildThreadIdClause("thread_id", input.threadIds, values);
-    values.push(input.sessionId);
-    const sessionPlaceholder = `$${values.length}`;
+    const sessionClause = buildTextInClause("external_conversation_id", input.sessionIds, values);
     const metadataClause = buildLikeClause("metadata", needles, values);
     const itemsClause = buildLikeClause("items", needles, values);
     const result = await this.pool.query(`
       SELECT items, metadata, sent_items
       FROM ${this.deliveries.outboundDeliveries}
       WHERE ${threadClause}
-         OR external_conversation_id = ${sessionPlaceholder}
+         OR ${sessionClause}
          OR ${metadataClause}
          OR ${itemsClause}
     `, values);
@@ -870,9 +925,11 @@ export class WorkerPurgeService {
     await client.query(`DELETE FROM ${this.environments.executionEnvironments} WHERE id = $1`, [
       candidate.environment.id,
     ]);
-    await client.query(`DELETE FROM ${this.sessions.sessions} WHERE id = $1 AND kind = 'worker'`, [
-      candidate.sessionId,
-    ]);
+    if (candidate.sessionIds.length > 0) {
+      const values: unknown[] = [];
+      const sessionClause = buildTextInClause("id", candidate.sessionIds, values);
+      await client.query(`DELETE FROM ${this.sessions.sessions} WHERE ${sessionClause} AND kind = 'worker'`, values);
+    }
   }
 
   private async deleteOutboundDeliveries(client: PoolClient, candidate: WorkerPurgeCandidate): Promise<void> {
@@ -887,7 +944,7 @@ export class WorkerPurgeService {
   private async deleteRuntimeRequests(client: PoolClient, candidate: WorkerPurgeCandidate): Promise<void> {
     const values: unknown[] = [];
     const workerClause = buildRuntimeRequestWorkerClause({
-      sessionId: candidate.sessionId,
+      sessionIds: candidate.sessionIds,
       environmentId: candidate.environment.id,
       threadIds: candidate.threadIds,
     }, values);

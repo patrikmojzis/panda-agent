@@ -6,15 +6,16 @@ import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis,} from "../
 import {buildExecutionEnvironmentTableNames, type ExecutionEnvironmentTableNames} from "./postgres-shared.js";
 import type {ExecutionEnvironmentStore} from "./store.js";
 import type {
-    BindSessionEnvironmentInput,
-    CreateExecutionEnvironmentInput,
-    ExecutionCredentialPolicy,
-    ExecutionEnvironmentKind,
-    ExecutionEnvironmentRecord,
-    ExecutionEnvironmentState,
-    ExecutionSkillPolicy,
-    ExecutionToolPolicy,
-    SessionEnvironmentBindingRecord,
+  BindSessionEnvironmentInput,
+  CreateExecutionEnvironmentInput,
+  ExecutionCredentialPolicy,
+  ExecutionEnvironmentKind,
+  ExecutionEnvironmentRecord,
+  ExecutionEnvironmentState,
+  ExecutionSkillPolicy,
+  ExecutionToolPolicy,
+  ListDisposableEnvironmentsByOwnerInput,
+  SessionEnvironmentBindingRecord,
 } from "./types.js";
 
 interface PgQueryable {
@@ -309,6 +310,40 @@ export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentSt
     `, [requireTrimmed("session id", sessionId)]);
     const row = result.rows[0];
     return row ? parseBindingRow(row as Record<string, unknown>) : null;
+  }
+
+  async listDisposableEnvironmentsByOwner(
+    input: ListDisposableEnvironmentsByOwnerInput,
+  ): Promise<readonly ExecutionEnvironmentRecord[]> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.executionEnvironments}
+      WHERE agent_key = $1
+        AND kind = 'disposable_container'
+        AND created_by_session_id = $2
+      ORDER BY created_at ASC, id ASC
+    `, [
+      requireTrimmed("agent key", input.agentKey),
+      requireTrimmed("owner session id", input.createdBySessionId),
+    ]);
+    return result.rows.map((row) => parseEnvironmentRow(row as Record<string, unknown>));
+  }
+
+  async listBindingsForEnvironments(
+    environmentIds: readonly string[],
+  ): Promise<readonly SessionEnvironmentBindingRecord[]> {
+    const ids = [...new Set(environmentIds.map((id) => id.trim()).filter(Boolean))];
+    if (ids.length === 0) {
+      return [];
+    }
+    const placeholders = ids.map((_, index) => `$${index + 1}`).join(", ");
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.sessionEnvironmentBindings}
+      WHERE environment_id IN (${placeholders})
+      ORDER BY created_at ASC, session_id ASC
+    `, ids);
+    return result.rows.map((row) => parseBindingRow(row as Record<string, unknown>));
   }
 
   async listExpiredDisposableEnvironments(now: number, limit: number): Promise<readonly ExecutionEnvironmentRecord[]> {

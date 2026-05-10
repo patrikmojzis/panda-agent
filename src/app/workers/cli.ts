@@ -5,11 +5,11 @@ import {Command, InvalidArgumentError} from "commander";
 import {DB_URL_OPTION_DESCRIPTION} from "../cli-shared.js";
 import {ensureSchemas, withPostgresPool} from "../runtime/postgres-bootstrap.js";
 import {
-    summarizeWorkerPurgeCounts,
-    type WorkerPurgeCandidate,
-    type WorkerPurgeInput,
-    type WorkerPurgePlan,
-    WorkerPurgeService,
+  summarizeWorkerPurgeCounts,
+  type WorkerPurgeCandidate,
+  type WorkerPurgeInput,
+  type WorkerPurgePlan,
+  WorkerPurgeService,
 } from "../runtime/worker-purge-service.js";
 import {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
 import {PostgresOutboundDeliveryStore} from "../../domain/channels/deliveries/postgres.js";
@@ -105,8 +105,8 @@ function formatBytes(bytes: number | undefined): string {
 function formatCandidate(candidate: WorkerPurgeCandidate, now: number): string {
   const counts = candidate.dbCounts;
   const lines = [
-    `- session ${candidate.sessionId} (${candidate.agentKey})`,
-    `  environment: ${candidate.environment.id}`,
+    `- environment ${candidate.environment.id} (${candidate.agentKey})`,
+    `  sessions: ${candidate.sessionIds.length ? candidate.sessionIds.join(", ") : "none"}`,
     `  state: ${candidate.environment.state}`,
     `  age: ${formatAge(now - candidate.environment.updatedAt)}`,
     `  updatedAt: ${new Date(candidate.environment.updatedAt).toISOString()}`,

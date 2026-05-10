@@ -153,29 +153,41 @@ Other agent runners do not mount this namespace.
 
 ## Worker A2A Handoff
 
-The parent agent creates workers with `worker_spawn`. The tool creates the
-worker session, creates the disposable environment, binds them together, and
-wakes the worker with the handoff task.
+The parent agent can create an environment first with `environment_create`, or
+let `worker_spawn` create one automatically. A worker is a session/task lane; an
+environment is the container/filesystem place where bash runs.
+
+`environment_create` returns the environment id plus parent-visible
+`workspace`, `inbox`, and `artifacts` paths. The parent can write files into the
+environment before assigning a worker.
+
+`worker_spawn` creates the worker session, attaches it to the selected
+environment, and wakes the worker with the handoff task. If `environmentId` is
+omitted, `worker_spawn` creates a fresh disposable environment. If the selected
+environment is stopped, Panda restarts the same environment/filesystem before
+binding the worker.
 
 Useful arguments:
 
 - `task`: required worker brief
 - `role`: short label, for example `research`, `qa`, or `ops`
 - `context`: extra handoff context
+- `environmentId`: optional existing environment to attach to
 - `model`: optional override; otherwise `WORKER_MODEL`, then the runtime default
 - `credentialAllowlist`: env keys the worker may receive
 - `skillAllowlist`: skills the worker may read/use
 - `toolAllowlist`: extra tools to grant beyond the default worker tool set
 - `allowReadonlyPostgres`: explicitly grants readonly SQL access
 
-Worker thinking defaults to `xhigh`. Disposable worker environments live for 24
-hours by default. `worker_spawn` does not expose thinking or TTL overrides.
+Worker thinking defaults to `xhigh`. Disposable environments live for 24 hours
+by default. `worker_spawn` does not expose thinking or TTL overrides.
 
-The parent stops a worker with `worker_stop` using either `sessionId` or
-`environmentId`. Stopping removes the disposable container but keeps
-`workspace`, `inbox`, and `artifacts` on disk for review.
+The parent stops a container with `environment_stop({ environmentId })`.
+Stopping removes the disposable container but keeps `workspace`, `inbox`, and
+`artifacts` on disk for review. Worker sessions remain as history until an
+operator purge.
 
-Operators hard-purge old stopped workers with:
+Operators hard-purge old stopped worker environments with:
 
 ```bash
 panda workers purge --stopped --older-than 7d --dry-run
@@ -184,18 +196,21 @@ panda workers purge --stopped --older-than 7d --execute
 
 `panda workers purge` is dry-run by default and refuses to run without an
 explicit selector such as `--stopped`, `--expired`, `--agent`, `--session-id`,
-or `--environment-id`. It deletes the worker session, execution environment
-row, cascaded runtime rows, non-cascading outbound/runtime request rows, and the
-worker environment filesystem root. External copied media/artifact files outside
-the environment root are reported, not deleted. Active unexpired `ready` workers
-require `--force`.
+or `--environment-id`. It deletes the execution environment row, attached
+worker sessions, cascaded runtime rows, non-cascading outbound/runtime request
+rows, and the worker environment filesystem root. It also handles standalone
+environments with no workers. External copied media/artifact files outside the
+environment root are reported, not deleted. Active unexpired `ready`
+environments require `--force`.
 
-The parent agent context includes a `Workers` section for active workers and
-recently stopped workers, including parent-visible file paths.
+The parent agent context includes a worker-environments section for active
+environments, recently stopped environments, attached workers, and
+parent-visible file paths.
 
 Worker sessions use a dedicated worker base prompt, not the full Panda prompt.
 They use normal `message_agent` A2A. The parent and worker are bound by session
-id when the worker is created. Workers cannot spawn or stop workers.
+id when the worker is created. Workers cannot spawn workers or manage
+environments.
 
 Every worker run receives a `Worker Runtime Context` with the durable facts the
 worker needs to operate:

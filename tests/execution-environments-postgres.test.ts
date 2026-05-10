@@ -3,9 +3,9 @@ import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import type {
-    DisposableEnvironmentCreateRequest,
-    DisposableEnvironmentCreateResult,
-    ExecutionEnvironmentManager,
+  DisposableEnvironmentCreateRequest,
+  DisposableEnvironmentCreateResult,
+  ExecutionEnvironmentManager,
 } from "../src/domain/execution-environments/index.js";
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
@@ -71,6 +71,12 @@ describe("PostgresExecutionEnvironmentStore", () => {
       prompts: {},
     });
     await sessionStore.createSession({
+      id: "session-main",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-main",
+    });
+    await sessionStore.createSession({
       id: "session-worker",
       agentKey: "panda",
       kind: "worker",
@@ -130,6 +136,40 @@ describe("PostgresExecutionEnvironmentStore", () => {
     });
   });
 
+  it("lists parent-owned disposable environments and their bindings", async () => {
+    const {environmentStore} = await createHarness();
+    await environmentStore.createEnvironment({
+      id: "env-owned",
+      agentKey: "panda",
+      kind: "disposable_container",
+      createdBySessionId: "session-main",
+    });
+    await environmentStore.createEnvironment({
+      id: "env-other",
+      agentKey: "panda",
+      kind: "disposable_container",
+      createdBySessionId: "session-worker",
+    });
+    await environmentStore.bindSession({
+      sessionId: "session-worker",
+      environmentId: "env-owned",
+      alias: "self",
+      isDefault: true,
+    });
+
+    await expect(environmentStore.listDisposableEnvironmentsByOwner({
+      agentKey: "panda",
+      createdBySessionId: "session-main",
+    })).resolves.toMatchObject([
+      {id: "env-owned"},
+    ]);
+    await expect(environmentStore.listBindingsForEnvironments(["env-owned"]))
+      .resolves.toMatchObject([
+        {sessionId: "session-worker", environmentId: "env-owned"},
+      ]);
+    await expect(environmentStore.listBindingsForEnvironments([])).resolves.toEqual([]);
+  });
+
   it("defaults binding policies to no credentials and no skills", async () => {
     const {environmentStore} = await createHarness();
 
@@ -153,12 +193,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
 
   it("resolves fallback persistent runners for main sessions without a database binding", async () => {
     const {environmentStore, sessionStore} = await createHarness();
-    await sessionStore.createSession({
-      id: "session-main",
-      agentKey: "panda",
-      kind: "main",
-      currentThreadId: "thread-main",
-    });
     const session = await sessionStore.getSession("session-main");
     const resolver = new ExecutionEnvironmentResolver({
       store: environmentStore,
@@ -322,6 +356,121 @@ describe("PostgresExecutionEnvironmentStore", () => {
         envKeys: ["DIFFERENT_TOKEN"],
       },
     })).rejects.toThrow("already exists with different policy");
+  });
+
+  it("creates standalone parent-owned disposable environments", async () => {
+    const {environmentStore} = await createHarness();
+    const manager = new FakeEnvironmentManager();
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+
+    const environment = await service.createStandaloneDisposableEnvironment({
+      agentKey: "panda",
+      createdBySessionId: "session-main",
+      ttlMs: 60_000,
+      metadata: {
+        label: "shared env",
+      },
+    });
+
+    expect(environment).toMatchObject({
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      createdBySessionId: "session-main",
+    });
+    expect(environment.createdForSessionId).toBeUndefined();
+    expect(manager.requests).toEqual([
+      {
+        agentKey: "panda",
+        sessionId: "session-main",
+        environmentId: environment.id,
+        ttlMs: 60_000,
+        metadata: {
+          label: "shared env",
+        },
+      },
+    ]);
+  });
+
+  it("attaches worker sessions to existing ready disposable environments", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    const manager = new FakeEnvironmentManager();
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+    await environmentStore.createEnvironment({
+      id: "env-shared",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      runnerUrl: "http://env-shared:8080",
+      runnerCwd: "/workspace",
+      createdBySessionId: "session-main",
+    });
+
+    await expect(service.attachSessionToDisposableEnvironment({
+      session,
+      environmentId: "env-shared",
+      ownerSessionId: "session-main",
+      credentialPolicy: {mode: "allowlist", envKeys: []},
+      skillPolicy: {mode: "allowlist", skillKeys: []},
+    })).resolves.toMatchObject({
+      environment: {
+        id: "env-shared",
+        state: "ready",
+      },
+      binding: {
+        sessionId: "session-worker",
+        environmentId: "env-shared",
+      },
+    });
+    expect(manager.requests).toEqual([]);
+  });
+
+  it("restarts stopped disposable environments before attaching workers", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    const manager = new FakeEnvironmentManager();
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+    await environmentStore.createEnvironment({
+      id: "env-stopped",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "stopped",
+      runnerUrl: "http://old-env:8080",
+      runnerCwd: "/workspace",
+      createdBySessionId: "session-main",
+      expiresAt: Date.now() + 60_000,
+    });
+
+    await expect(service.attachSessionToDisposableEnvironment({
+      session,
+      environmentId: "env-stopped",
+      ownerSessionId: "session-main",
+    })).resolves.toMatchObject({
+      environment: {
+        id: "env-stopped",
+        state: "ready",
+        runnerUrl: "http://env-stopped:8080",
+      },
+      binding: {
+        sessionId: "session-worker",
+        environmentId: "env-stopped",
+      },
+    });
+    expect(manager.requests[0]).toMatchObject({
+      agentKey: "panda",
+      sessionId: "session-main",
+      environmentId: "env-stopped",
+    });
   });
 
   it("sweeps expired disposable environments through the manager", async () => {

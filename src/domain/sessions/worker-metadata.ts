@@ -30,15 +30,32 @@ export function buildWorkerSessionMetadata(input: {
   };
 }
 
-export function readWorkerSessionMetadata(metadata: JsonValue | undefined): WorkerSessionMetadata | null {
-  if (!isRecord(metadata) || !isRecord(metadata.worker)) {
+function readMetadataRecord(metadata: JsonValue | undefined): Record<string, unknown> | null {
+  if (isRecord(metadata)) {
+    return metadata;
+  }
+  if (typeof metadata !== "string" || !metadata.trim()) {
     return null;
   }
 
-  const role = trimToUndefined(metadata.worker.role) ?? "worker";
-  const task = trimToUndefined(metadata.worker.task);
-  const context = trimToUndefined(metadata.worker.context);
-  const parentSessionId = trimToUndefined(metadata.worker.parentSessionId);
+  try {
+    const parsed = JSON.parse(metadata) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function readWorkerSessionMetadata(metadata: JsonValue | undefined): WorkerSessionMetadata | null {
+  const record = readMetadataRecord(metadata);
+  if (!record || !isRecord(record.worker)) {
+    return null;
+  }
+
+  const role = trimToUndefined(record.worker.role) ?? "worker";
+  const task = trimToUndefined(record.worker.task);
+  const context = trimToUndefined(record.worker.context);
+  const parentSessionId = trimToUndefined(record.worker.parentSessionId);
   return {
     role,
     ...(task ? {task} : {}),

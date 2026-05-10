@@ -47,6 +47,7 @@ export interface RuntimeClientWorkerSessionOptions extends RuntimeClientSessionO
   task: string;
   context?: string;
   credentialAllowlist?: readonly string[];
+  environmentId?: string;
   skillAllowlist?: readonly string[];
   toolPolicy?: ExecutionToolPolicy;
   ttlMs?: number;
@@ -220,6 +221,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
           thinking: sessionOptions.thinking,
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
           ...(sessionOptions.credentialAllowlist ? {credentialAllowlist: sessionOptions.credentialAllowlist} : {}),
+          ...(sessionOptions.environmentId ? {environmentId: trimToUndefined(sessionOptions.environmentId)} : {}),
           ...(sessionOptions.skillAllowlist ? {skillAllowlist: sessionOptions.skillAllowlist} : {}),
           ...(sessionOptions.toolPolicy ? {toolPolicy: sessionOptions.toolPolicy} : {}),
           ...(sessionOptions.ttlMs === undefined ? {} : {ttlMs: sessionOptions.ttlMs}),

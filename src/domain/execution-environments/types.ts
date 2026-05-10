@@ -84,6 +84,11 @@ export interface BindSessionEnvironmentInput {
   toolPolicy?: ExecutionToolPolicy;
 }
 
+export interface ListDisposableEnvironmentsByOwnerInput {
+  agentKey: string;
+  createdBySessionId: string;
+}
+
 export interface ResolvedExecutionEnvironment {
   id: string;
   agentKey: string;

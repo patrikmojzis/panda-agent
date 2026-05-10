@@ -24,10 +24,12 @@ tool policy apply to a session.
   role, task, parent session id, A2A target, and filesystem paths.
 - worker tools are filtered by `toolPolicy.allowedTools`; default workers get a
   small execution/reporting tool set.
-- `worker_spawn` creates a worker session plus a default disposable environment.
-- `worker_stop` stops the disposable environment and leaves files in place.
-- parent LLM context renders active and recently stopped workers from session and
-  environment state.
+- `environment_create` creates a parent-owned disposable environment without a
+  worker session.
+- `worker_spawn` creates a worker session and either attaches it to an existing
+  environment or creates a fresh one as a convenience path.
+- `environment_stop` stops the disposable container and leaves files in place.
+- parent LLM context renders environments grouped with their attached workers.
 
 ## Tables
 
@@ -49,13 +51,19 @@ tool policy apply to a session.
 
 ## Worker Controls
 
+`environment_create` creates a standalone parent-owned disposable environment.
+The parent can put files in `/environments/<envDir>/inbox` before assigning a
+worker.
+
 `worker_spawn` is intentionally a runtime tool, not a prompt trick. It calls
 `WorkerSessionService.createWorkerSession`, which:
 
 - creates a `worker` session using the same `agentKey` as the parent
 - stores worker role and parent session id in session metadata
-- creates the disposable environment through `ExecutionEnvironmentLifecycleService`
-- binds the worker session to that environment as default
+- creates a disposable environment through `ExecutionEnvironmentLifecycleService`
+  when no `environmentId` is provided
+- binds the worker session to the selected environment as default
+- restarts a stopped selected environment before binding
 - queues or wakes the worker handoff input
 
 `createThreadDefinition` prepends `WorkerRuntimeContext` for worker sessions.
@@ -68,30 +76,34 @@ The worker model defaults to `WORKER_MODEL` when set. Worker thinking defaults
 to `xhigh`. Worker environment TTL defaults to 24 hours. `worker_spawn` does not
 expose thinking or TTL overrides.
 
-`worker_stop` validates that the target worker belongs to the current
-`agentKey` and current parent `sessionId` before calling
+`environment_stop` validates that the target disposable environment belongs to
+the current `agentKey` and parent `sessionId` before calling
 `ExecutionEnvironmentLifecycleService.stopEnvironment`. It does not delete
-worker filesystem roots.
+environment filesystem roots or worker sessions.
 
-Old workers are removed by the operator CLI, not by `worker_stop`:
+Old worker environments are removed by the operator CLI, not by
+`environment_stop`:
 
 ```bash
 panda workers purge --stopped --older-than 7d --dry-run
 panda workers purge --stopped --older-than 7d --execute
 ```
 
-The purge path discovers worker-owned `disposable_container` environments,
-optionally stops active/expired containers through the environment manager,
-validates the filesystem root against configured Panda environment roots, then
-hard-deletes the environment row and worker session. Session deletion cascades
-threads, messages, inputs, runs, tool jobs, bash jobs, heartbeats, environment
-bindings, and A2A bindings. The purge explicitly deletes non-cascading
-`runtime.outbound_deliveries` and `runtime.runtime_requests` rows that reference
-the worker before deleting the session. External copied media outside the worker
+The purge path discovers parent-owned `disposable_container` environments,
+including standalone environments with no workers and shared environments with
+multiple attached workers. It optionally stops active/expired containers through
+the environment manager, validates the filesystem root against configured Panda
+environment roots, then hard-deletes the environment row and any attached worker
+sessions. Session deletion cascades threads, messages, inputs, runs, tool jobs,
+bash jobs, heartbeats, environment bindings, and A2A bindings. The purge
+explicitly deletes non-cascading `runtime.outbound_deliveries` and
+`runtime.runtime_requests` rows that reference the environment or attached
+workers before deleting the sessions. External copied media outside the worker
 environment root is report-only in v1.
 
-Worker sessions do not receive `worker_spawn` or `worker_stop` in their toolset.
-`worker_spawn.toolAllowlist` can grant additional available tools by name.
+Worker sessions do not receive `worker_spawn`, `environment_create`, or
+`environment_stop` in their toolset. `worker_spawn.toolAllowlist` can grant
+additional available tools by name.
 `postgres_readonly_query` also requires `allowReadonlyPostgres=true`.
 
 ## Disposable Environment Manager

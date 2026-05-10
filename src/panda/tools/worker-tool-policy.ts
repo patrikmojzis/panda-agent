@@ -1,6 +1,8 @@
 export const WORKER_CONTROL_TOOL_NAMES = new Set([
   "worker_spawn",
   "worker_stop",
+  "environment_create",
+  "environment_stop",
 ]);
 
 export const DEFAULT_WORKER_ALLOWED_TOOL_NAMES = [

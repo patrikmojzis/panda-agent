@@ -24,15 +24,15 @@ import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./dat
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundToolThreadInput} from "./background-tool-thread-input.js";
 import {
-    createThreadDefinition,
-    type CreateThreadDefinitionOptions,
-    DEFAULT_INFERENCE_PROJECTION,
-    resolveStoredContext,
+  createThreadDefinition,
+  type CreateThreadDefinitionOptions,
+  DEFAULT_INFERENCE_PROJECTION,
+  resolveStoredContext,
 } from "./thread-definition.js";
 import type {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
 import type {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
 import {WorkerSessionService} from "./worker-session-service.js";
-import {WorkerSpawnTool, WorkerStopTool} from "../../panda/tools/worker-tools.js";
+import {EnvironmentCreateTool, EnvironmentStopTool, WorkerSpawnTool} from "../../panda/tools/worker-tools.js";
 
 export {
   createPostgresPool,
@@ -149,12 +149,14 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
   });
   mainTools = [
     ...runtime.mainTools,
-    workerSpawnTool,
-    new WorkerStopTool({
-      sessions: runtime.sessionStore,
+    new EnvironmentCreateTool({
+      lifecycle: runtime.executionEnvironmentService,
+    }),
+    new EnvironmentStopTool({
       environments: runtime.executionEnvironments,
       lifecycle: runtime.executionEnvironmentService,
     }),
+    workerSpawnTool,
   ];
   resolverContext.mainTools = mainTools;
 

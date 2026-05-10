@@ -1,8 +1,8 @@
 import {describe, expect, it} from "vitest";
 
 import type {
-    ExecutionEnvironmentRecord,
-    SessionEnvironmentBindingRecord
+  ExecutionEnvironmentRecord,
+  SessionEnvironmentBindingRecord
 } from "../src/domain/execution-environments/index.js";
 import type {SessionRecord} from "../src/domain/sessions/index.js";
 import {WorkersContext} from "../src/panda/contexts/workers-context.js";
@@ -124,14 +124,8 @@ describe("WorkersContext", () => {
         listAgentSessions: async () => sessions,
       },
       environments: {
-        getDefaultBinding: async (sessionId) => bindings.get(sessionId) ?? null,
-        getEnvironment: async (environmentId) => {
-          const environment = environments.get(environmentId);
-          if (!environment) {
-            throw new Error("missing env");
-          }
-          return environment;
-        },
+        listDisposableEnvironmentsByOwner: async () => [environments.get("env-a")!],
+        listBindingsForEnvironments: async () => [...bindings.values()],
       },
       agentKey: "panda",
       parentSessionId: "parent-session",
@@ -140,10 +134,11 @@ describe("WorkersContext", () => {
 
     const rendered = await context.getContent();
 
-    expect(rendered).toContain("Workers owned by this session:");
+    expect(rendered).toContain("Worker environments owned by this session:");
     expect(rendered).toContain("worker-a");
-    expect(rendered).toContain("env env-a");
+    expect(rendered).toContain("env-a");
     expect(rendered).toContain("started 2026-05-08T11:45:00.000Z");
+    expect(rendered).toContain("updated 2026-05-08T11:50:00.000Z");
     expect(rendered).not.toContain("age ");
     expect(rendered).not.toContain("expiresAt");
     expect(rendered).toContain("workspace /environments/worker-a/workspace");
@@ -177,14 +172,8 @@ describe("WorkersContext", () => {
         listAgentSessions: async () => sessions,
       },
       environments: {
-        getDefaultBinding: async (sessionId) => bindings.get(sessionId) ?? null,
-        getEnvironment: async (environmentId) => {
-          const environment = environments.get(environmentId);
-          if (!environment) {
-            throw new Error("missing env");
-          }
-          return environment;
-        },
+        listDisposableEnvironmentsByOwner: async () => [...environments.values()],
+        listBindingsForEnvironments: async () => [...bindings.values()],
       },
       agentKey: "panda",
       parentSessionId: "parent-session",
@@ -196,5 +185,29 @@ describe("WorkersContext", () => {
     expect(rendered).toContain("worker-recent");
     expect(rendered).toContain("state stopped");
     expect(rendered).not.toContain("worker-old");
+  });
+
+  it("renders parent-owned environments even when no worker is attached", async () => {
+    const context = new WorkersContext({
+      sessions: {
+        listAgentSessions: async () => [],
+      },
+      environments: {
+        listDisposableEnvironmentsByOwner: async () => [
+          createEnvironment("env-empty", "env-empty", {
+            createdForSessionId: undefined,
+          }),
+        ],
+        listBindingsForEnvironments: async () => [],
+      },
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      now: NOW,
+    });
+
+    const rendered = await context.getContent();
+
+    expect(rendered).toContain("env-empty");
+    expect(rendered).toContain("workers none");
   });
 });

@@ -4,10 +4,10 @@ import {DataType, newDb} from "pg-mem";
 import {DEFAULT_WORKER_ENVIRONMENT_TTL_MS, WorkerSessionService,} from "../src/app/runtime/worker-session-service.js";
 import {ExecutionEnvironmentLifecycleService} from "../src/app/runtime/execution-environment-service.js";
 import {
-    type DisposableEnvironmentCreateRequest,
-    type DisposableEnvironmentCreateResult,
-    type ExecutionEnvironmentManager,
-    PostgresExecutionEnvironmentStore,
+  type DisposableEnvironmentCreateRequest,
+  type DisposableEnvironmentCreateResult,
+  type ExecutionEnvironmentManager,
+  PostgresExecutionEnvironmentStore,
 } from "../src/domain/execution-environments/index.js";
 import {createSessionWithInitialThread} from "../src/domain/sessions/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
@@ -216,6 +216,155 @@ describe("WorkerSessionService", () => {
       credentialAllowlist: ["NPM_TOKEN", "GITHUB_TOKEN"],
       ttlMs: 60_000,
     })).rejects.toThrow("already exists with different input");
+  });
+
+  it("creates worker sessions bound to an existing parent-owned environment", async () => {
+    const pool = createPool();
+    pools.push(pool);
+    const {sessionStore, threadStore} = await createRuntimeStores(pool);
+    const environmentStore = new PostgresExecutionEnvironmentStore({pool});
+    await environmentStore.ensureSchema();
+    const manager = new FakeEnvironmentManager();
+    const environments = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+    const workers = new WorkerSessionService({
+      pool,
+      sessions: sessionStore,
+      threads: threadStore,
+      environments,
+      fallbackContext: {
+        cwd: "/host/workspace",
+      },
+    });
+    await createSessionWithInitialThread({
+      pool,
+      sessionStore,
+      threadStore,
+      session: {
+        id: "main-session",
+        agentKey: "panda",
+        kind: "main",
+        currentThreadId: "main-thread",
+      },
+      thread: {
+        id: "main-thread",
+        sessionId: "main-session",
+      },
+    });
+    await environmentStore.createEnvironment({
+      id: "env-shared",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      runnerUrl: "http://env-shared:8080",
+      runnerCwd: "/workspace",
+      createdBySessionId: "main-session",
+    });
+
+    const created = await workers.createWorkerSession({
+      sessionId: "worker-session",
+      threadId: "worker-thread",
+      agentKey: "panda",
+      task: "Continue in shared env.",
+      parentSessionId: "main-session",
+      environmentId: "env-shared",
+    });
+
+    expect(created.environment).toMatchObject({
+      id: "env-shared",
+      state: "ready",
+    });
+    expect(created.binding).toMatchObject({
+      sessionId: "worker-session",
+      environmentId: "env-shared",
+    });
+    const second = await workers.createWorkerSession({
+      sessionId: "worker-two",
+      threadId: "worker-two-thread",
+      agentKey: "panda",
+      task: "Review the same env.",
+      parentSessionId: "main-session",
+      environmentId: "env-shared",
+    });
+    expect(second.binding).toMatchObject({
+      sessionId: "worker-two",
+      environmentId: "env-shared",
+    });
+    await expect(environmentStore.listBindingsForEnvironments(["env-shared"]))
+      .resolves.toMatchObject([
+        {sessionId: "worker-session", environmentId: "env-shared"},
+        {sessionId: "worker-two", environmentId: "env-shared"},
+      ]);
+    expect(manager.requests).toEqual([]);
+  });
+
+  it("restarts stopped parent-owned environments before binding worker sessions", async () => {
+    const pool = createPool();
+    pools.push(pool);
+    const {sessionStore, threadStore} = await createRuntimeStores(pool);
+    const environmentStore = new PostgresExecutionEnvironmentStore({pool});
+    await environmentStore.ensureSchema();
+    const manager = new FakeEnvironmentManager();
+    const environments = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+    const workers = new WorkerSessionService({
+      pool,
+      sessions: sessionStore,
+      threads: threadStore,
+      environments,
+      fallbackContext: {
+        cwd: "/host/workspace",
+      },
+    });
+    await createSessionWithInitialThread({
+      pool,
+      sessionStore,
+      threadStore,
+      session: {
+        id: "main-session",
+        agentKey: "panda",
+        kind: "main",
+        currentThreadId: "main-thread",
+      },
+      thread: {
+        id: "main-thread",
+        sessionId: "main-session",
+      },
+    });
+    await environmentStore.createEnvironment({
+      id: "env-stopped",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "stopped",
+      runnerUrl: "http://old-env:8080",
+      runnerCwd: "/workspace",
+      createdBySessionId: "main-session",
+      expiresAt: Date.now() + 60_000,
+    });
+
+    const created = await workers.createWorkerSession({
+      sessionId: "worker-session",
+      threadId: "worker-thread",
+      agentKey: "panda",
+      task: "Resume shared env.",
+      parentSessionId: "main-session",
+      environmentId: "env-stopped",
+    });
+
+    expect(created.environment).toMatchObject({
+      id: "env-stopped",
+      state: "ready",
+      runnerUrl: "http://env-stopped:8080",
+    });
+    expect(manager.requests[0]).toMatchObject({
+      agentKey: "panda",
+      sessionId: "main-session",
+      environmentId: "env-stopped",
+    });
   });
 
   it("rolls back a newly created worker session when environment creation fails", async () => {
