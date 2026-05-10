@@ -5,9 +5,9 @@ import {Readability} from "@mozilla/readability";
 
 import {Agent, type DefaultAgentSessionContext, RunContext, ToolError, WebFetchTool,} from "../src/index.js";
 import {
-    createPinnedLookup,
-    extractReadableContentFromHtml,
-    fetchWithPinnedLookup,
+  createPinnedLookup,
+  extractReadableContentFromHtml,
+  fetchWithPinnedLookup,
 } from "../src/panda/tools/web-fetch.js";
 
 function createAgent() {
@@ -104,6 +104,10 @@ describe("WebFetchTool", () => {
     });
     expect(result.content[0]).toMatchObject({
       type: "text",
+      text: expect.stringContaining("<<<EXTERNAL_UNTRUSTED_CONTENT source=\"web_fetch\" kind=\"page\">>>"),
+    });
+    expect(result.content[0]).toMatchObject({
+      type: "text",
       text: expect.stringContaining("# Example Article"),
     });
     expect(result.content[0]).toMatchObject({
@@ -113,6 +117,10 @@ describe("WebFetchTool", () => {
     expect(result.content[0]).toMatchObject({
       type: "text",
       text: expect.stringContaining("[Docs](https://example.com/docs)"),
+    });
+    expect(result.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>"),
     });
     expect(progress.map((entry) => entry.status)).toEqual(["validating", "fetching", "extracting"]);
   });

@@ -1,3 +1,5 @@
+import {wrapExternalUntrustedContent} from "../../prompts/external-content.js";
+
 export type BrowserExternalContentKind = "snapshot" | "evaluate";
 
 export function wrapBrowserExternalContent(
@@ -5,11 +7,7 @@ export function wrapBrowserExternalContent(
   params: {kind: BrowserExternalContentKind},
 ): string {
   const kind = params.kind.trim() || "snapshot";
-  return [
-    `<<<EXTERNAL_UNTRUSTED_CONTENT source="browser" kind="${kind}">>>`,
-    text,
-    "<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>",
-  ].join("\n");
+  return wrapExternalUntrustedContent(text, {source: "browser", kind});
 }
 
 export function buildBrowserExternalContentDetails(

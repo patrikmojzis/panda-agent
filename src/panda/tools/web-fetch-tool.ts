@@ -6,15 +6,16 @@ import {formatToolResultFallback, Tool} from "../../kernel/agent/tool.js";
 import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {
-    DEFAULT_WEB_FETCH_MAX_CONTENT_CHARS,
-    DEFAULT_WEB_FETCH_MAX_REDIRECTS,
-    DEFAULT_WEB_FETCH_MAX_RESPONSE_BYTES,
-    DEFAULT_WEB_FETCH_TIMEOUT_MS,
-    DEFAULT_WEB_FETCH_USER_AGENT,
-    type FetchImpl,
-    fetchReadableWebPage,
-    type LookupHostname,
+  DEFAULT_WEB_FETCH_MAX_CONTENT_CHARS,
+  DEFAULT_WEB_FETCH_MAX_REDIRECTS,
+  DEFAULT_WEB_FETCH_MAX_RESPONSE_BYTES,
+  DEFAULT_WEB_FETCH_TIMEOUT_MS,
+  DEFAULT_WEB_FETCH_USER_AGENT,
+  type FetchImpl,
+  fetchReadableWebPage,
+  type LookupHostname,
 } from "./web-fetch.js";
+import {wrapExternalUntrustedContent} from "../../prompts/external-content.js";
 
 export interface WebFetchToolOptions {
   fetchImpl?: FetchImpl;
@@ -46,7 +47,10 @@ function buildContentText(details: {
   lines.push(`Source: ${details.finalUrl}`);
   lines.push("");
   lines.push(details.content);
-  return lines.join("\n").trim();
+  return wrapExternalUntrustedContent(lines.join("\n").trim(), {
+    source: "web_fetch",
+    kind: "page",
+  });
 }
 
 export class WebFetchTool<TContext = DefaultAgentSessionContext>
