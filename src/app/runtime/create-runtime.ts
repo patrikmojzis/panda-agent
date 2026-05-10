@@ -24,10 +24,10 @@ import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./dat
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundToolThreadInput} from "./background-tool-thread-input.js";
 import {
-  createThreadDefinition,
-  type CreateThreadDefinitionOptions,
-  DEFAULT_INFERENCE_PROJECTION,
-  resolveStoredContext,
+    createThreadDefinition,
+    type CreateThreadDefinitionOptions,
+    DEFAULT_INFERENCE_PROJECTION,
+    resolveStoredContext,
 } from "./thread-definition.js";
 import type {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
 import type {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
@@ -161,8 +161,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
   resolverContext.mainTools = mainTools;
 
   runtime.backgroundJobService.setBackgroundCompletionHandler(async (record) => {
-    await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "queue");
-    await coordinator.wake(record.threadId);
+    await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "wake");
   });
 
   return {

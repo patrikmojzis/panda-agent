@@ -785,7 +785,7 @@ describe("ThreadRuntimeCoordinator", () => {
     }
   });
 
-  it("surfaces queued wake inputs before the next model turn when watcher-owned background jobs finish during an active run", async () => {
+  it("surfaces background wake inputs before the next model turn when watcher-owned background jobs finish during an active run", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "panda-thread-runtime-autowake-"));
     try {
       const started = createDeferred<void>();
@@ -806,6 +806,7 @@ describe("ThreadRuntimeCoordinator", () => {
       const runtime: LlmRuntime = {
         complete: vi.fn().mockImplementation(async (request) => {
           const callCount = (runtime.complete as ReturnType<typeof vi.fn>).mock.calls.length;
+          expect(request.context.messages.at(-1)?.role).not.toBe("assistant");
 
           if (callCount === 1) {
             return createAssistantMessage([{
@@ -885,8 +886,7 @@ describe("ThreadRuntimeCoordinator", () => {
         resolveDefinition: (thread) => registry.resolve(thread),
       });
       service.setBackgroundCompletionHandler(async (record) => {
-        await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "queue");
-        await coordinator.wake(record.threadId);
+        await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "wake");
       });
 
       await coordinator.submitInput("thread-bg-autowake", {
@@ -899,6 +899,7 @@ describe("ThreadRuntimeCoordinator", () => {
         const pendingInputs = await store.listPendingInputs("thread-bg-autowake");
         return pendingInputs.filter((entry) => entry.source === "background_tool").length === 2;
       });
+      expect(await store.hasPendingWake("thread-bg-autowake")).toBe(false);
 
       release.resolve({ done: "released" });
       await coordinator.waitForIdle("thread-bg-autowake");
