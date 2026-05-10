@@ -3,8 +3,9 @@ import {z} from "zod";
 
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
-import {ToolError} from "../../kernel/agent/exceptions.js";
+import {ConfigurationError, ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject} from "../../kernel/agent/types.js";
+import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import {readWorkerSessionMetadata} from "../../domain/sessions/worker-metadata.js";
 import type {
   ExecutionEnvironmentRecord,
@@ -17,7 +18,6 @@ import {
 } from "../../app/runtime/worker-session-service.js";
 import type {ExecutionEnvironmentLifecycleService} from "../../app/runtime/execution-environment-service.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
-import {resolveDefaultAgentWorkerModelSelector} from "../defaults.js";
 import {
   buildDefaultWorkerAllowedTools,
   KNOWN_WORKER_TOOL_NAMES,
@@ -58,6 +58,27 @@ function ensureWorkerA2A(context: DefaultAgentSessionContext | undefined): NonNu
   }
 
   return service;
+}
+
+function resolveWorkerModelSelector(value: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
+  const selector = value?.trim() || env.WORKER_MODEL?.trim();
+  if (!selector) {
+    return undefined;
+  }
+
+  try {
+    return resolveModelSelector(selector).canonical;
+  } catch (error) {
+    if (error instanceof ConfigurationError) {
+      throw new ToolError(`Invalid worker model ${JSON.stringify(selector)}: ${error.message}`, {
+        details: {
+          model: selector,
+        },
+      });
+    }
+
+    throw error;
+  }
 }
 
 function readParentVisiblePaths(environment: ExecutionEnvironmentRecord): JsonObject | undefined {
@@ -163,7 +184,7 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
     const context = run.context as DefaultAgentSessionContext | undefined;
     const scope = readScope(context);
     const workerA2A = ensureWorkerA2A(context);
-    const defaultModel = resolveDefaultAgentWorkerModelSelector(this.env);
+    const model = resolveWorkerModelSelector(args.model, this.env);
     const extraTools = this.validateToolAllowlist(args.toolAllowlist ?? [], args.allowReadonlyPostgres === true);
     const created = await this.workerSessions.createWorkerSession({
       agentKey: scope.agentKey,
@@ -172,7 +193,7 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
       context: args.context,
       parentSessionId: scope.sessionId,
       createdByIdentityId: scope.identityId,
-      model: args.model ?? defaultModel,
+      model,
       environmentId: args.environmentId,
       credentialAllowlist: args.credentialAllowlist ?? [],
       skillAllowlist: args.skillAllowlist ?? [],

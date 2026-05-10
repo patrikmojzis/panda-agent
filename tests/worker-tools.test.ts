@@ -300,6 +300,32 @@ describe("worker control tools", () => {
     expect(createWorkerSessionMock).not.toHaveBeenCalled();
   });
 
+  it("reports invalid worker models as tool errors before spawning", async () => {
+    const createWorkerSessionMock = vi.fn();
+    const tool = new WorkerSpawnTool({
+      workerSessions: {
+        createWorkerSession: createWorkerSessionMock,
+      },
+    });
+
+    await expect(tool.run({
+      task: "Smoke test frontend.",
+      model: "gpt-5.1",
+    }, createRunContext({
+      cwd: "/workspace/panda",
+      agentKey: "panda",
+      sessionId: "parent-session",
+      threadId: "parent-thread",
+      workerA2A: {
+        bindParentWorker: async () => {},
+      },
+    }))).rejects.toMatchObject({
+      name: "ToolError",
+      message: 'Invalid worker model "gpt-5.1": Unknown model alias "gpt-5.1". Use a canonical selector like `provider/model` or one of `gpt`, `opus`.',
+    });
+    expect(createWorkerSessionMock).not.toHaveBeenCalled();
+  });
+
   it("refuses to spawn workers when A2A binding is unavailable", async () => {
     const createWorkerSessionMock = vi.fn();
     const tool = new WorkerSpawnTool({
