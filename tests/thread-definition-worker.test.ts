@@ -1,4 +1,4 @@
-import {describe, expect, it, vi} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {createThreadDefinition} from "../src/app/runtime/create-runtime.js";
 import type {ResolvedExecutionEnvironment} from "../src/domain/execution-environments/index.js";
@@ -80,6 +80,10 @@ function createEnvironment(
 }
 
 describe("worker thread definitions", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("uses the worker base prompt only for worker sessions", () => {
     const main = createThreadDefinition({
       thread: createThread({
@@ -185,6 +189,31 @@ describe("worker thread definitions", () => {
 
     expect(definition.agent.tools.map((tool) => tool.name)).toEqual([
       "bash",
+      "browser",
+    ]);
+  });
+
+  it("uses the worker toolset when no explicit tools are supplied", () => {
+    vi.stubEnv("BRAVE_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "");
+    const definition = createThreadDefinition({
+      thread: createThread(),
+      session: {
+        id: "session-worker",
+        agentKey: "panda",
+        kind: "worker",
+      },
+      fallbackContext: {
+        cwd: "/tmp/panda",
+      },
+      executionEnvironment: createEnvironment(),
+    });
+
+    expect(definition.agent.tools.map((tool) => tool.name)).toEqual([
+      "bash",
+      "current_datetime",
+      "view_media",
+      "web_fetch",
       "browser",
     ]);
   });

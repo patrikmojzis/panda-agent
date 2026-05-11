@@ -29,7 +29,7 @@ export interface BuildDefaultAgentToolsOptions {
   webResearch?: WebResearchToolOptions;
 }
 
-export type DefaultAgentToolsetKey = "main" | "workspace" | "memory" | "browser" | "skill_maintainer";
+export type DefaultAgentToolsetKey = "main" | "workspace" | "memory" | "browser" | "worker" | "skill_maintainer";
 
 export interface DefaultAgentToolRegistry {
   bash: BashTool;
@@ -56,6 +56,7 @@ export interface DefaultAgentToolsets {
   workspace: readonly Tool[];
   memory: readonly Tool[];
   browser: readonly Tool[];
+  worker: readonly Tool[];
   skill_maintainer: readonly Tool[];
 }
 
@@ -130,6 +131,7 @@ export function buildDefaultAgentToolsetsFromRegistry(
   mainExtras: ReadonlyArray<Tool> = [],
   memoryExtras: ReadonlyArray<Tool> = [],
   skillMaintainerExtras: ReadonlyArray<Tool> = [],
+  workerExtras: ReadonlyArray<Tool> = [],
 ): DefaultAgentToolsets {
   return {
     main: compactTools([
@@ -167,6 +169,19 @@ export function buildDefaultAgentToolsetsFromRegistry(
       registry.grepFiles,
       registry.media,
       registry.browser,
+    ]),
+    worker: compactTools([
+      registry.bash,
+      registry.backgroundJobStatus,
+      registry.backgroundJobWait,
+      registry.backgroundJobCancel,
+      registry.currentDateTime,
+      registry.media,
+      registry.webFetch,
+      registry.braveSearch,
+      registry.browser,
+      registry.imageGenerate,
+      ...workerExtras,
     ]),
     skill_maintainer: compactTools([
       registry.currentDateTime,

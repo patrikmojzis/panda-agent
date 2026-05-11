@@ -118,11 +118,11 @@ export async function bootstrapDaemonContext(
           notificationPokesInFlight.delete(notification.threadId);
         });
     },
-    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, sessionStore, store, telepathyService, wikiBindingService, mainTools}) => {
+    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, sessionStore, store, telepathyService, wikiBindingService, mainTools, workerTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
       const executionEnvironment = await executionEnvironmentResolver.resolveDefault(session);
       const sessionMainTools = session.kind === "worker"
-        ? mainTools.filter((tool) => !WORKER_CONTROL_TOOL_NAMES.has(tool.name))
+        ? workerTools.filter((tool) => !WORKER_CONTROL_TOOL_NAMES.has(tool.name))
         : mainTools;
       return createThreadDefinition({
         thread,

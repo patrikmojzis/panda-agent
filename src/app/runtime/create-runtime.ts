@@ -61,6 +61,7 @@ export interface DefinitionResolverContext {
   telepathyService: TelepathyHub | null;
   wikiBindingService: WikiBindingService | null;
   mainTools: readonly Tool[];
+  workerTools: readonly Tool[];
 }
 
 export interface RuntimeOptions {
@@ -96,6 +97,7 @@ export interface RuntimeServices {
   workerSessions: WorkerSessionService;
   coordinator: ThreadRuntimeCoordinator;
   mainTools: readonly Tool[];
+  workerTools: readonly Tool[];
   pool: Pool;
   notificationPool: Pool;
   close(): Promise<void>;
@@ -124,6 +126,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     telepathyService: runtime.telepathyService,
     wikiBindingService: runtime.wikiBindingService,
     mainTools: runtime.mainTools,
+    workerTools: runtime.workerTools,
   };
 
   const coordinator = new ThreadRuntimeCoordinator({
@@ -143,9 +146,15 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     },
   });
   let mainTools: readonly Tool[] = [];
+  let workerTools: readonly Tool[] = runtime.workerTools;
   const workerSpawnTool = new WorkerSpawnTool({
     workerSessions,
-    availableToolNames: () => mainTools.map((tool) => tool.name),
+    availableToolNames: () => [
+      ...new Set([
+        ...mainTools.map((tool) => tool.name),
+        ...workerTools.map((tool) => tool.name),
+      ]),
+    ],
   });
   mainTools = [
     ...runtime.mainTools,
@@ -159,6 +168,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     workerSpawnTool,
   ];
   resolverContext.mainTools = mainTools;
+  resolverContext.workerTools = workerTools;
 
   runtime.backgroundJobService.setBackgroundCompletionHandler(async (record) => {
     await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "wake");
@@ -184,6 +194,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     workerSessions,
     coordinator,
     mainTools,
+    workerTools,
     pool: runtime.pool,
     notificationPool: runtime.notificationPool,
     close: runtime.close,

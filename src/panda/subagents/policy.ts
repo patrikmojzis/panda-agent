@@ -1,16 +1,16 @@
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {
-  BROWSER_SUBAGENT_PROMPT,
-  MEMORY_SUBAGENT_PROMPT,
-  SKILL_MAINTAINER_SUBAGENT_PROMPT,
-  WORKSPACE_SUBAGENT_PROMPT,
+    BROWSER_SUBAGENT_PROMPT,
+    MEMORY_SUBAGENT_PROMPT,
+    SKILL_MAINTAINER_SUBAGENT_PROMPT,
+    WORKSPACE_SUBAGENT_PROMPT,
 } from "../../prompts/runtime/subagents.js";
 import type {DefaultAgentLlmContextSection} from "../contexts/builder.js";
 import type {DefaultAgentToolsetKey} from "../definition.js";
 
 export const DEFAULT_AGENT_SUBAGENT_ROLES = ["workspace", "memory", "browser", "skill_maintainer"] as const;
 export type DefaultAgentSubagentRole = typeof DEFAULT_AGENT_SUBAGENT_ROLES[number];
-type DefaultAgentSubagentToolsetKey = Exclude<DefaultAgentToolsetKey, "main">;
+type DefaultAgentSubagentToolsetKey = Exclude<DefaultAgentToolsetKey, "main" | "worker">;
 
 interface DefaultAgentSubagentRolePolicy {
   role: DefaultAgentSubagentRole;

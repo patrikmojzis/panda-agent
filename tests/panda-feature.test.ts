@@ -239,6 +239,13 @@ describe("Panda feature surface", () => {
       "view_media",
       "browser",
     ]);
+    expect(toolsets.worker.map((tool) => tool.name)).toEqual([
+      "bash",
+      "current_datetime",
+      "view_media",
+      "web_fetch",
+      "browser",
+    ]);
     expect(toolsets.skill_maintainer.map((tool) => tool.name)).toEqual([
       "current_datetime",
       "postgres_readonly_query",

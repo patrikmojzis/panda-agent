@@ -11,7 +11,7 @@ import type {AgentSessionKind, SessionRecord, SessionStore} from "../../domain/s
 import type {InferenceProjection, ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {buildDefaultAgentLlmContexts, type DefaultAgentLlmContextSection,} from "../../panda/contexts/builder.js";
-import {buildDefaultAgentTools} from "../../panda/definition.js";
+import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry} from "../../panda/definition.js";
 import {DEFAULT_AGENT_INSTRUCTIONS} from "../../panda/prompt.js";
 import {DEFAULT_WORKER_INSTRUCTIONS} from "../../prompts/runtime/worker.js";
 import {WorkerRuntimeContext} from "../../panda/contexts/worker-runtime-context.js";
@@ -140,12 +140,15 @@ function resolveSessionTools(
   tools: readonly Tool[] | undefined,
   options: Pick<CreateThreadDefinitionOptions, "bashToolOptions" | "browserToolOptions" | "imageGenerateToolOptions" | "telepathyToolOptions" | "executionEnvironment" | "session">,
 ): readonly Tool[] {
-  const baseTools = tools ?? buildDefaultAgentTools([], {
-    bash: options.bashToolOptions,
-    browser: options.browserToolOptions,
-    imageGenerate: options.imageGenerateToolOptions,
-    telepathy: options.telepathyToolOptions,
-  });
+  const baseTools = tools ?? (() => {
+    const toolsets = buildDefaultAgentToolsetsFromRegistry(createDefaultAgentToolRegistry({
+      bash: options.bashToolOptions,
+      browser: options.browserToolOptions,
+      imageGenerate: options.imageGenerateToolOptions,
+      telepathy: options.telepathyToolOptions,
+    }));
+    return isWorkerSession(options.session) ? toolsets.worker : toolsets.main;
+  })();
 
   if (!isWorkerSession(options.session)) {
     return baseTools;

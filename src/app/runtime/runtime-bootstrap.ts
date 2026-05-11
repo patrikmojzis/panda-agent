@@ -97,6 +97,21 @@ function logRuntimeEvent(event: string, payload: Record<string, unknown>): void 
   })}\n`);
 }
 
+function mergeToolsByName(toolGroups: readonly (readonly Tool[])[]): readonly Tool[] {
+  const seen = new Set<string>();
+  const merged: Tool[] = [];
+  for (const tools of toolGroups) {
+    for (const tool of tools) {
+      if (seen.has(tool.name)) {
+        continue;
+      }
+      seen.add(tool.name);
+      merged.push(tool);
+    }
+  }
+  return merged;
+}
+
 export interface RuntimeBootstrapOptions extends Omit<RuntimeOptions, "dbUrl"> {
   dbUrl: string;
 }
@@ -121,6 +136,7 @@ export interface RuntimeBootstrapResult {
   wikiBindingService: WikiBindingService | null;
   postgresReadonly: PostgresReadonlyQueryToolOptions;
   mainTools: readonly Tool[];
+  workerTools: readonly Tool[];
   pool: Pool;
   notificationPool: Pool;
   threadLeasePool: Pool;
@@ -552,14 +568,16 @@ export async function bootstrapRuntime(
         bindings: wikiBindingService,
       })
       : null;
-    const subagentToolsets = buildDefaultAgentToolsetsFromRegistry(
+    const defaultToolsets = buildDefaultAgentToolsetsFromRegistry(
       toolRegistry,
       [],
       wikiTool ? [wikiTool] : [],
       [agentSkillTool],
+      [agentSkillTool],
     );
 
     let mainTools: readonly Tool[] = [];
+    let workerTools: readonly Tool[] = defaultToolsets.worker;
     const subagentService = new DefaultAgentSubagentService({
       store,
       resolveDefinition: (thread) => options.resolveDefinition(thread, {
@@ -578,12 +596,13 @@ export async function bootstrapRuntime(
         telepathyService,
         wikiBindingService,
         mainTools,
+        workerTools,
       }),
       toolsets: {
-        workspace: subagentToolsets.workspace,
-        memory: subagentToolsets.memory,
-        browser: subagentToolsets.browser,
-        skill_maintainer: subagentToolsets.skill_maintainer,
+        workspace: defaultToolsets.workspace,
+        memory: defaultToolsets.memory,
+        browser: defaultToolsets.browser,
+        skill_maintainer: defaultToolsets.skill_maintainer,
       },
       agentStore,
       wikiBindings: wikiBindingService ?? undefined,
@@ -649,6 +668,10 @@ export async function bootstrapRuntime(
         store: watches,
       }),
     ]).main;
+    workerTools = mergeToolsByName([
+      defaultToolsets.worker,
+      mainTools,
+    ]);
 
     if (options.onStoreNotification) {
       notificationChannel = buildThreadRuntimeNotificationChannel();
@@ -690,6 +713,7 @@ export async function bootstrapRuntime(
       wikiBindingService,
       postgresReadonly: postgresReadonlyToolOptions,
       mainTools,
+      workerTools,
       pool: postgresPool,
       notificationPool,
       threadLeasePool,
