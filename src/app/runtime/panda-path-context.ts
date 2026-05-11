@@ -3,12 +3,13 @@ import {realpath} from "node:fs/promises";
 import path from "node:path";
 
 import {
-    DEFAULT_PARENT_RUNNER_ENVIRONMENTS_ROOT,
-    isPathWithinRoot,
-    mapPathBetweenRoots,
-    readExecutionEnvironmentFilesystemMetadata,
+  DEFAULT_PARENT_RUNNER_ENVIRONMENTS_ROOT,
+  isPathWithinRoot,
+  mapPathBetweenRoots,
+  readExecutionEnvironmentFilesystemMetadata,
 } from "../../domain/execution-environments/index.js";
 import {mapRunnerAgentPathToHost} from "../../integrations/shell/path-mapping.js";
+import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonValue} from "../../kernel/agent/types.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
@@ -280,7 +281,7 @@ export function resolveContextPath(
 ): string {
   const resolved = resolveContextPathDetails(rawPath, context, env);
   if (resolved.blockedReason) {
-    throw new Error(`${resolved.blockedReason} Path: ${rawPath}`);
+    throw new ToolError(`${resolved.blockedReason} Path: ${rawPath}`);
   }
   if (!resolved.containmentRoot) {
     return resolved.path;
@@ -326,7 +327,7 @@ function resolveContainedPathSync(targetPath: string, rootPath: string, rawPath:
   const rootRealPath = realpathNearestExistingSync(rootPath);
   const targetRealPath = realpathNearestExistingSync(targetPath);
   if (!isPathWithinRoot(rootRealPath, targetRealPath)) {
-    throw new Error(`Resolved path escapes the execution environment root: ${rawPath}`);
+    throw new ToolError(`Resolved path escapes the execution environment root: ${rawPath}`);
   }
 
   return targetRealPath;
@@ -365,7 +366,7 @@ export async function resolveReadableContextPath(
 ): Promise<string> {
   const resolved = resolveContextPathDetails(rawPath, context, env);
   if (resolved.blockedReason) {
-    throw new Error(`${resolved.blockedReason} Path: ${rawPath}`);
+    throw new ToolError(`${resolved.blockedReason} Path: ${rawPath}`);
   }
   if (!resolved.containmentRoot) {
     return resolved.path;
@@ -376,7 +377,7 @@ export async function resolveReadableContextPath(
     realpathNearestExisting(resolved.path),
   ]);
   if (!isPathWithinRoot(rootRealPath, targetRealPath)) {
-    throw new Error(`Resolved path escapes the execution environment root: ${rawPath}`);
+    throw new ToolError(`Resolved path escapes the execution environment root: ${rawPath}`);
   }
 
   return targetRealPath;

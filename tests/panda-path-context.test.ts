@@ -5,6 +5,7 @@ import os from "node:os";
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {resolveContextPath, resolveReadableContextPath} from "../src/app/runtime/panda-path-context.js";
+import {ToolError} from "../src/index.js";
 
 function createDisposableContext(root: string, artifacts = path.join(root, "artifacts")) {
   return {
@@ -179,39 +180,11 @@ describe("resolveContextPath", () => {
     await mkdir(artifacts, {recursive: true});
     await symlink(outside, escape);
 
-    await expect(resolveReadableContextPath("/artifacts/escape.txt", {
-      agentKey: "clawd",
-      executionEnvironment: {
-        id: "env-worker",
-        agentKey: "clawd",
-        kind: "disposable_container",
-        source: "binding",
-        metadata: {
-          filesystem: {
-            envDir: "worker-a",
-            root: {
-              corePath: root,
-              parentRunnerPath: "/environments/worker-a",
-            },
-            workspace: {
-              corePath: path.join(root, "workspace"),
-              workerPath: "/workspace",
-              parentRunnerPath: "/environments/worker-a/workspace",
-            },
-            inbox: {
-              corePath: path.join(root, "inbox"),
-              workerPath: "/inbox",
-              parentRunnerPath: "/environments/worker-a/inbox",
-            },
-            artifacts: {
-              corePath: artifacts,
-              workerPath: "/artifacts",
-              parentRunnerPath: "/environments/worker-a/artifacts",
-            },
-          },
-        },
-      },
-    })).rejects.toThrow("escapes the execution environment root");
+    const context = createDisposableContext(root, artifacts);
+    const promise = resolveReadableContextPath("/artifacts/escape.txt", context);
+    await expect(promise).rejects.toBeInstanceOf(ToolError);
+    await expect(resolveReadableContextPath("/artifacts/escape.txt", context))
+      .rejects.toThrow("escapes the execution environment root");
   });
 
   it("rejects symlink escapes from sync mapped worker paths", async () => {
@@ -224,11 +197,13 @@ describe("resolveContextPath", () => {
     await symlink(outside, escape);
 
     expect(() => resolveContextPath("/artifacts/escape.txt", createDisposableContext(root, artifacts)))
+      .toThrow(ToolError);
+    expect(() => resolveContextPath("/artifacts/escape.txt", createDisposableContext(root, artifacts)))
       .toThrow("escapes the execution environment root");
   });
 
   it("rejects disposable worker paths outside the shared roots", () => {
-    expect(() => resolveContextPath("/etc/passwd", {
+    const resolve = () => resolveContextPath("/etc/passwd", {
       agentKey: "clawd",
       executionEnvironment: {
         id: "env-worker",
@@ -260,6 +235,8 @@ describe("resolveContextPath", () => {
           },
         },
       },
-    })).toThrow("outside this execution environment");
+    });
+    expect(resolve).toThrow(ToolError);
+    expect(resolve).toThrow("outside this execution environment");
   });
 });
