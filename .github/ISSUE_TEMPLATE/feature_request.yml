@@ -1,0 +1,101 @@
+name: Feature request
+description: Propose a focused product or developer workflow improvement.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: "Keep it concrete. Do not include tokens, private payloads, secrets, or user data."
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences.
+      placeholder: "Add ... so that ..."
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / user pain
+      placeholder: "What is painful or impossible today?"
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      placeholder: "What should change?"
+    validations:
+      required: true
+  - type: textarea
+    id: user-story
+    attributes:
+      label: User story / desired flow
+      placeholder: "As a ..., I want ..., so that ..."
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      placeholder: "What is included?"
+    validations:
+      required: true
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Non-goals
+      placeholder: "What should this explicitly not do?"
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - Given ..., when ..., then ...
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: validation-plan
+    attributes:
+      label: Validation plan / evidence expected
+      placeholder: "How will we prove this works? Tests, screenshots, logs, metrics..."
+    validations:
+      required: true
+  - type: textarea
+    id: ux-notes
+    attributes:
+      label: UX notes / screenshots / references
+      placeholder: "Mocks, links, screenshots, comparable flows..."
+  - type: textarea
+    id: data-model-api-impact
+    attributes:
+      label: Data / model / API impact
+      placeholder: "Schema changes, API changes, model/tool behavior changes, migrations..."
+  - type: textarea
+    id: risks-edge-cases
+    attributes:
+      label: Risks / edge cases
+      placeholder: "Failure modes, abuse cases, weird states, scale limits..."
+  - type: textarea
+    id: rollout-migration
+    attributes:
+      label: Rollout / migration notes
+      placeholder: "Flags, backfills, docs, compatibility, staged rollout..."
+  - type: textarea
+    id: privacy-security
+    attributes:
+      label: Privacy / security notes
+      placeholder: "Private data, auth, secrets, permissions, data retention..."
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority / urgency
+      options:
+        - low
+        - medium
+        - high
+        - urgent
+    validations:
+      required: true

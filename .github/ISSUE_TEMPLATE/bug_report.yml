@@ -1,0 +1,86 @@
+name: Bug report
+description: Report broken or surprising behavior.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include tokens, private payloads, secrets, or user data. Redact logs before attaching them."
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What broke, in one or two sentences?
+      placeholder: "The browser tool fails when..."
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Pick the closest area. Harness/runtime issues belong here too.
+      options:
+        - browser
+        - workers
+        - filesystem
+        - tools
+        - auth
+        - apps
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      placeholder: "What should have happened?"
+    validations:
+      required: true
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual behavior
+      placeholder: "What happened instead?"
+    validations:
+      required: true
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Repro steps
+      description: Keep it short and deterministic if possible.
+      placeholder: |
+        1. Run ...
+        2. Click/call ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence / artifacts / logs
+      description: Attach screenshots, logs, links, or artifact paths. Redact private data.
+      placeholder: "Paste the relevant excerpt or link to an artifact."
+  - type: textarea
+    id: impact-severity
+    attributes:
+      label: Impact / severity
+      placeholder: "Who is blocked? How bad is it?"
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workaround
+      placeholder: "Any known workaround, or 'none'."
+  - type: input
+    id: regression
+    attributes:
+      label: Regression? First seen commit/date
+      placeholder: "Yes/no/unknown. First seen at commit/date ..."
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment / session info
+      description: Include OS, runtime, branch/commit, browser/device if relevant, and session context that is safe to share.
+      placeholder: "OS, Node version, commit, session type, tool/browser details..."
+    validations:
+      required: true
