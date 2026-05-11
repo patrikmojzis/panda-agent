@@ -3,10 +3,10 @@ import {randomUUID} from "node:crypto";
 import {stringToUserMessage} from "../../kernel/agent/index.js";
 import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
 import {
-  type CreateSessionInput,
-  createSessionWithInitialThread,
-  type SessionRecord,
-  type SessionStore,
+    type CreateSessionInput,
+    createSessionWithInitialThread,
+    type SessionRecord,
+    type SessionStore,
 } from "../../domain/sessions/index.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
@@ -16,11 +16,11 @@ import type {CreateThreadInput, InferenceProjection} from "../../domain/threads/
 import type {PgPoolLike} from "../../domain/threads/runtime/postgres-db.js";
 import {buildSessionTableNames} from "../../domain/sessions/postgres-shared.js";
 import type {
-  ExecutionCredentialPolicy,
-  ExecutionEnvironmentRecord,
-  ExecutionSkillPolicy,
-  ExecutionToolPolicy,
-  SessionEnvironmentBindingRecord,
+    ExecutionCredentialPolicy,
+    ExecutionEnvironmentRecord,
+    ExecutionSkillPolicy,
+    ExecutionToolPolicy,
+    SessionEnvironmentBindingRecord,
 } from "../../domain/execution-environments/index.js";
 import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/index.js";
 import {normalizeSkillKey} from "../../domain/agents/types.js";
@@ -29,10 +29,13 @@ import {renderSubagentHandoff} from "../../prompts/runtime/subagents.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {stableStringify} from "../../lib/json.js";
 import {trimToUndefined} from "../../lib/strings.js";
-import {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
+import {
+    DEFAULT_DISPOSABLE_ENVIRONMENT_TTL_MS,
+    ExecutionEnvironmentLifecycleService,
+} from "./execution-environment-service.js";
 
 const WORKER_INPUT_SOURCE = "worker";
-export const DEFAULT_WORKER_ENVIRONMENT_TTL_MS = 24 * 60 * 60 * 1_000;
+export const DEFAULT_WORKER_ENVIRONMENT_TTL_MS = DEFAULT_DISPOSABLE_ENVIRONMENT_TTL_MS;
 const DEFAULT_WORKER_THINKING: ThinkingLevel = "xhigh";
 
 export interface CreateWorkerSessionInput {

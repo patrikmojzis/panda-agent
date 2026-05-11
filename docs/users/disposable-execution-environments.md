@@ -164,8 +164,9 @@ environment before assigning a worker.
 `worker_spawn` creates the worker session, attaches it to the selected
 environment, and wakes the worker with the handoff task. If `environmentId` is
 omitted, `worker_spawn` creates a fresh disposable environment. If the selected
-environment is stopped, Panda restarts the same environment/filesystem before
-binding the worker.
+environment is stopped or expired, Panda restarts the same
+environment/filesystem before binding the worker. Later worker wakes do the same
+for that worker's bound environment.
 
 Useful arguments:
 

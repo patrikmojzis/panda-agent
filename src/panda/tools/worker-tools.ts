@@ -25,6 +25,7 @@ import {
   POSTGRES_READONLY_TOOL_NAME,
   WORKER_CONTROL_TOOL_NAMES,
 } from "./worker-tool-policy.js";
+import {rethrowAsToolError} from "./shared.js";
 
 function compactObject<T extends Record<string, unknown>>(value: T): JsonObject {
   return Object.fromEntries(
@@ -211,7 +212,7 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
           workerSessionId: result.session.id,
         });
       },
-    });
+    }).catch((error: unknown) => rethrowAsToolError(error));
 
     return {
       status: "spawned",

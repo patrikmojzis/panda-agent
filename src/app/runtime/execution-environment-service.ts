@@ -17,6 +17,7 @@ import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
 
 const DEFAULT_DISPOSABLE_ALIAS = "self";
+export const DEFAULT_DISPOSABLE_ENVIRONMENT_TTL_MS = 24 * 60 * 60 * 1_000;
 
 export interface CreateDisposableSessionEnvironmentInput {
   session: Pick<SessionRecord, "id" | "agentKey">;
@@ -48,6 +49,12 @@ export interface AttachSessionToDisposableEnvironmentInput {
   credentialPolicy?: ExecutionCredentialPolicy;
   skillPolicy?: ExecutionSkillPolicy;
   toolPolicy?: ExecutionToolPolicy;
+}
+
+export interface EnsureBoundSessionEnvironmentReadyInput {
+  session: Pick<SessionRecord, "id" | "agentKey">;
+  binding: SessionEnvironmentBindingRecord;
+  ttlMs?: number;
 }
 
 export interface CreateDisposableSessionEnvironmentResult {
@@ -304,11 +311,10 @@ export class ExecutionEnvironmentLifecycleService {
     if (environment.createdBySessionId !== ownerSessionId) {
       throw new Error(`Execution environment ${environment.id} is not owned by session ${ownerSessionId}.`);
     }
-    if (isExpired(environment)) {
-      throw new Error(`Execution environment ${environment.id} is expired.`);
-    }
-    if (environment.state === "stopped") {
-      environment = await this.restartDisposableEnvironment(environment);
+    if (environment.state === "stopped" || isExpired(environment)) {
+      environment = await this.restartDisposableEnvironment(environment, {
+        ttlMs: isExpired(environment) ? DEFAULT_DISPOSABLE_ENVIRONMENT_TTL_MS : undefined,
+      });
     } else if (environment.state !== "ready") {
       throw new Error(`Execution environment ${environment.id} is ${environment.state}.`);
     }
@@ -325,8 +331,36 @@ export class ExecutionEnvironmentLifecycleService {
     return {environment, binding};
   }
 
+  async ensureBoundEnvironmentReady(
+    input: EnsureBoundSessionEnvironmentReadyInput,
+  ): Promise<ExecutionEnvironmentRecord> {
+    let environment = await this.store.getEnvironment(input.binding.environmentId);
+    if (environment.agentKey !== input.session.agentKey) {
+      throw new Error(`Execution environment ${environment.id} does not belong to agent ${input.session.agentKey}.`);
+    }
+    if (environment.state === "ready" && !isExpired(environment)) {
+      return environment;
+    }
+    if (environment.kind === "disposable_container" && (environment.state === "stopped" || isExpired(environment))) {
+      environment = await this.restartDisposableEnvironment(environment, {
+        ttlMs: isExpired(environment) ? input.ttlMs ?? DEFAULT_DISPOSABLE_ENVIRONMENT_TTL_MS : undefined,
+      });
+      if (environment.state === "ready" && !isExpired(environment)) {
+        return environment;
+      }
+    }
+    if (environment.state !== "ready") {
+      throw new Error(`Execution environment ${environment.id} is ${environment.state}.`);
+    }
+    if (isExpired(environment)) {
+      throw new Error(`Execution environment ${environment.id} is expired.`);
+    }
+    return environment;
+  }
+
   private async restartDisposableEnvironment(
     environment: ExecutionEnvironmentRecord,
+    options: {ttlMs?: number} = {},
   ): Promise<ExecutionEnvironmentRecord> {
     if (!this.manager) {
       throw new Error("Disposable execution environment manager is not configured.");
@@ -344,7 +378,8 @@ export class ExecutionEnvironmentLifecycleService {
 
     let created: DisposableEnvironmentCreateResult | null = null;
     try {
-      const ttlMs = remainingTtlMs(environment);
+      const ttlMs = options.ttlMs ?? remainingTtlMs(environment);
+      const expiresAt = options.ttlMs === undefined ? environment.expiresAt : Date.now() + options.ttlMs;
       created = await this.manager.createDisposableEnvironment({
         agentKey: environment.agentKey,
         sessionId: managerSessionId,
@@ -358,6 +393,7 @@ export class ExecutionEnvironmentLifecycleService {
         runnerUrl: created.runnerUrl,
         runnerCwd: created.runnerCwd,
         rootPath: created.rootPath,
+        expiresAt,
         metadata: mergeMetadata(environment.metadata, created.metadata),
       });
     } catch (error) {

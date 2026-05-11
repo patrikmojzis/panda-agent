@@ -3,9 +3,9 @@ import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import type {
-  DisposableEnvironmentCreateRequest,
-  DisposableEnvironmentCreateResult,
-  ExecutionEnvironmentManager,
+    DisposableEnvironmentCreateRequest,
+    DisposableEnvironmentCreateResult,
+    ExecutionEnvironmentManager,
 } from "../src/domain/execution-environments/index.js";
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
@@ -273,7 +273,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     });
   });
 
-  it("rejects expired bound environments before bash can use them", async () => {
+  it("rejects expired bound environments before bash can use them without lifecycle recovery", async () => {
     const {environmentStore, sessionStore} = await createHarness();
     await environmentStore.createEnvironment({
       id: "env-worker",
@@ -298,6 +298,56 @@ describe("PostgresExecutionEnvironmentStore", () => {
     });
 
     await expect(resolver.resolveDefault(session)).rejects.toThrow("Execution environment env-worker is expired.");
+  });
+
+  it("restarts expired bound disposable environments during resolution", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    await environmentStore.createEnvironment({
+      id: "env-worker",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      runnerUrl: "http://old-worker:8080",
+      runnerCwd: "/workspace",
+      expiresAt: Date.now() - 1_000,
+      createdBySessionId: "session-main",
+    });
+    await environmentStore.bindSession({
+      sessionId: "session-worker",
+      environmentId: "env-worker",
+      alias: "self",
+      isDefault: true,
+      credentialPolicy: {mode: "allowlist", envKeys: []},
+      skillPolicy: {mode: "allowlist", skillKeys: []},
+    });
+    const session = await sessionStore.getSession("session-worker");
+    const manager = new FakeEnvironmentManager();
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+    const resolver = new ExecutionEnvironmentResolver({
+      store: environmentStore,
+      lifecycle: service,
+      env: {} as NodeJS.ProcessEnv,
+    });
+
+    await expect(resolver.resolveDefault(session)).resolves.toMatchObject({
+      id: "env-worker",
+      state: "ready",
+      runnerUrl: "http://env-worker:8080",
+    });
+    expect(manager.requests[0]).toMatchObject({
+      agentKey: "panda",
+      sessionId: "session-main",
+      environmentId: "env-worker",
+    });
+    expect(manager.requests[0]?.ttlMs).toBeGreaterThan(0);
+    await expect(environmentStore.getEnvironment("env-worker")).resolves.toMatchObject({
+      state: "ready",
+      runnerUrl: "http://env-worker:8080",
+    });
+    expect((await environmentStore.getEnvironment("env-worker")).expiresAt).toBeGreaterThan(Date.now());
   });
 
   it("creates and binds disposable worker environments through the manager boundary", async () => {
@@ -471,6 +521,49 @@ describe("PostgresExecutionEnvironmentStore", () => {
       sessionId: "session-main",
       environmentId: "env-stopped",
     });
+  });
+
+  it("restarts expired disposable environments before attaching workers", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    const manager = new FakeEnvironmentManager();
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+    await environmentStore.createEnvironment({
+      id: "env-expired",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      runnerUrl: "http://old-env:8080",
+      runnerCwd: "/workspace",
+      createdBySessionId: "session-main",
+      expiresAt: Date.now() - 1_000,
+    });
+
+    await expect(service.attachSessionToDisposableEnvironment({
+      session,
+      environmentId: "env-expired",
+      ownerSessionId: "session-main",
+    })).resolves.toMatchObject({
+      environment: {
+        id: "env-expired",
+        state: "ready",
+        runnerUrl: "http://env-expired:8080",
+      },
+      binding: {
+        sessionId: "session-worker",
+        environmentId: "env-expired",
+      },
+    });
+    expect(manager.requests[0]).toMatchObject({
+      agentKey: "panda",
+      sessionId: "session-main",
+      environmentId: "env-expired",
+    });
+    expect(manager.requests[0]?.ttlMs).toBeGreaterThan(0);
+    expect((await environmentStore.getEnvironment("env-expired")).expiresAt).toBeGreaterThan(Date.now());
   });
 
   it("sweeps expired disposable environments through the manager", async () => {

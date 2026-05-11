@@ -63,7 +63,9 @@ worker.
 - creates a disposable environment through `ExecutionEnvironmentLifecycleService`
   when no `environmentId` is provided
 - binds the worker session to the selected environment as default
-- restarts a stopped selected environment before binding
+- restarts a stopped or expired selected environment before binding
+- restarts a stopped or expired bound worker environment before later worker
+  wakes resolve runtime context
 - queues or wakes the worker handoff input
 
 `createThreadDefinition` prepends `WorkerRuntimeContext` for worker sessions.

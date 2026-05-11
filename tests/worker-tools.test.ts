@@ -393,6 +393,33 @@ describe("worker control tools", () => {
     }));
   });
 
+  it("reports worker spawn service failures as tool errors", async () => {
+    const createWorkerSessionMock = vi.fn(async () => {
+      throw new Error("Execution environment environment:parent-session:old is expired.");
+    });
+    const tool = new WorkerSpawnTool({
+      workerSessions: {
+        createWorkerSession: createWorkerSessionMock,
+      },
+    });
+
+    await expect(tool.run({
+      task: "Continue in shared env.",
+      environmentId: "environment:parent-session:old",
+    }, createRunContext({
+      cwd: "/workspace/panda",
+      agentKey: "panda",
+      sessionId: "parent-session",
+      threadId: "parent-thread",
+      workerA2A: {
+        bindParentWorker: async () => {},
+      },
+    }))).rejects.toMatchObject({
+      name: "ToolError",
+      message: "Execution environment environment:parent-session:old is expired.",
+    });
+  });
+
   it("creates standalone environments with parent-visible paths", async () => {
     const environment = createEnvironment({
       id: "environment:parent-session:abc",

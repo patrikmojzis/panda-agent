@@ -1,22 +1,28 @@
 import type {SessionRecord} from "../../domain/sessions/index.js";
 import type {
-    ExecutionCredentialPolicy,
-    ExecutionEnvironmentRecord,
-    ExecutionEnvironmentStore,
-    ExecutionSkillPolicy,
-    ResolvedExecutionEnvironment,
-    SessionEnvironmentBindingRecord
+  ExecutionCredentialPolicy,
+  ExecutionEnvironmentRecord,
+  ExecutionEnvironmentStore,
+  ExecutionSkillPolicy,
+  ResolvedExecutionEnvironment,
+  SessionEnvironmentBindingRecord
 } from "../../domain/execution-environments/index.js";
 import {
-    resolveBashExecutionMode,
-    resolveRunnerCwd,
-    resolveRunnerCwdTemplate,
-    resolveRunnerUrl,
-    resolveRunnerUrlTemplate,
+  resolveBashExecutionMode,
+  resolveRunnerCwd,
+  resolveRunnerCwdTemplate,
+  resolveRunnerUrl,
+  resolveRunnerUrlTemplate,
 } from "../../integrations/shell/bash-executor.js";
 
 export interface ExecutionEnvironmentResolverOptions {
   store: ExecutionEnvironmentStore;
+  lifecycle?: {
+    ensureBoundEnvironmentReady(input: {
+      session: Pick<SessionRecord, "id" | "agentKey">;
+      binding: SessionEnvironmentBindingRecord;
+    }): Promise<ExecutionEnvironmentRecord>;
+  };
   env?: NodeJS.ProcessEnv;
 }
 
@@ -65,10 +71,12 @@ function resolveFallbackEnvironment(
 
 export class ExecutionEnvironmentResolver {
   private readonly store: ExecutionEnvironmentStore;
+  private readonly lifecycle?: NonNullable<ExecutionEnvironmentResolverOptions["lifecycle"]>;
   private readonly env: NodeJS.ProcessEnv;
 
   constructor(options: ExecutionEnvironmentResolverOptions) {
     this.store = options.store;
+    this.lifecycle = options.lifecycle;
     this.env = options.env ?? process.env;
   }
 
@@ -90,7 +98,9 @@ export class ExecutionEnvironmentResolver {
     session: Pick<SessionRecord, "id" | "agentKey" | "kind">,
     binding: SessionEnvironmentBindingRecord,
   ): Promise<ResolvedExecutionEnvironment> {
-    const environment = await this.store.getEnvironment(binding.environmentId);
+    const environment = this.lifecycle
+      ? await this.lifecycle.ensureBoundEnvironmentReady({session, binding})
+      : await this.store.getEnvironment(binding.environmentId);
     if (environment.agentKey !== session.agentKey) {
       throw new Error(`Execution environment ${environment.id} does not belong to agent ${session.agentKey}.`);
     }

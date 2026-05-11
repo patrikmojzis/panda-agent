@@ -464,14 +464,15 @@ export async function bootstrapRuntime(
       store: credentialStore,
       crypto: credentialCrypto,
     });
-    const executionEnvironmentResolver = new ExecutionEnvironmentResolver({
-      store: executionEnvironments,
-      env: process.env,
-    });
     const executionEnvironmentManager = createExecutionEnvironmentManagerClientFromEnv(process.env);
     const executionEnvironmentService = new ExecutionEnvironmentLifecycleService({
       store: executionEnvironments,
       manager: executionEnvironmentManager,
+    });
+    const executionEnvironmentResolver = new ExecutionEnvironmentResolver({
+      store: executionEnvironments,
+      lifecycle: executionEnvironmentService,
+      env: process.env,
     });
     const credentialService = credentialCrypto
       ? new CredentialService({
