@@ -1,0 +1,69 @@
+name: Problem report
+description: Capture a workflow pain, debugging gap, or product limitation without proposing implementation.
+title: "[Problem]: "
+labels: [problem]
+body:
+  - type: markdown
+    attributes:
+      value: "Describe the pain clearly. Do not include tokens, private payloads, secrets, or user data."
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What hurts, in one or two sentences?
+      placeholder: "It is hard to ..."
+    validations:
+      required: true
+  - type: textarea
+    id: current-workflow
+    attributes:
+      label: Current workflow
+      description: What do you have to do today?
+      placeholder: "Today I have to ..."
+    validations:
+      required: true
+  - type: textarea
+    id: pain
+    attributes:
+      label: Pain / limitation
+      description: Why is this annoying, slow, confusing, or blocking?
+      placeholder: "This is painful because ..."
+    validations:
+      required: true
+  - type: textarea
+    id: desired-outcome
+    attributes:
+      label: Desired outcome
+      description: What should become possible? Avoid implementation details unless they are essential.
+      placeholder: "I need to be able to ..."
+    validations:
+      required: true
+  - type: textarea
+    id: examples
+    attributes:
+      label: Examples / evidence
+      description: Commands, screenshots, traces, or concrete cases. Redact private data.
+      placeholder: "For example ..."
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Who is affected, how often, and how bad is it?
+      placeholder: "This affects ..."
+  - type: textarea
+    id: privacy-security
+    attributes:
+      label: Privacy / security notes
+      description: Sensitive data, access, retention, or redaction concerns.
+      placeholder: "This may expose ..."
+  - type: dropdown
+    id: urgency
+    attributes:
+      label: Urgency
+      options:
+        - low
+        - medium
+        - high
+        - urgent
+    validations:
+      required: true
