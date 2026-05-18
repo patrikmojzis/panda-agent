@@ -33,6 +33,7 @@ const runtimeRequestKinds = [
   "telegram_reaction",
   "whatsapp_message",
   "whatsapp_reaction",
+  "discord_message",
   "tui_input",
   "create_branch_session",
   "create_worker_session",
@@ -111,6 +112,26 @@ function parseOptionalNumber(value: unknown, label: string): number | undefined 
   return parseRequiredNumber(value, label);
 }
 
+function parseOptionalBoolean(value: unknown, label: string): boolean | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "boolean") {
+    throw new Error(`Runtime request ${label} must be a boolean.`);
+  }
+
+  return value;
+}
+
+function parseOptionalJsonObject(value: unknown, label: string): JsonObject | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  return parseJsonObject(value, label);
+}
+
 function parseRequiredNumber(value: unknown, label: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`Runtime request ${label} must be a finite number.`);
@@ -157,6 +178,44 @@ function parseMediaArray(value: unknown, label: string): readonly RuntimeRequest
   }
 
   return value.map((entry, index) => parseMediaDescriptor(entry, `${label} ${index + 1}`));
+}
+
+function parseDiscordAttachmentSummary(
+  value: unknown,
+  label: string,
+): RuntimeRequestPayloadByKind["discord_message"]["attachmentSummaries"][number] {
+  const record = parseJsonObject(value, label);
+  const sizeBytes = Object.hasOwn(record, "sizeBytes")
+    ? parseRequiredNumber(record.sizeBytes, `${label} size`)
+    : undefined;
+  if (sizeBytes !== undefined && sizeBytes < 0) {
+    throw new Error(`Runtime request ${label} size must not be negative.`);
+  }
+
+  const summary = {
+    id: parseRequiredString(record.id, `${label} id`),
+    filename: parseOptionalString(record.filename),
+    contentType: parseOptionalString(record.contentType),
+    sizeBytes,
+  };
+
+  return {
+    id: summary.id,
+    ...(summary.filename !== undefined ? {filename: summary.filename} : {}),
+    ...(summary.contentType !== undefined ? {contentType: summary.contentType} : {}),
+    ...(summary.sizeBytes !== undefined ? {sizeBytes: summary.sizeBytes} : {}),
+  };
+}
+
+function parseDiscordAttachmentSummaries(
+  value: unknown,
+  label: string,
+): RuntimeRequestPayloadByKind["discord_message"]["attachmentSummaries"] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Runtime request ${label} must be an array.`);
+  }
+
+  return value.map((entry, index) => parseDiscordAttachmentSummary(entry, `${label} ${index + 1}`));
 }
 
 function parsePathHints(value: unknown, label: string) {
@@ -348,6 +407,28 @@ function parsePayload<K extends RuntimeRequestKind>(
         pushName: parseOptionalString(payload.pushName),
       } as RuntimeRequestPayloadByKind[K];
 
+    case "discord_message":
+      return {
+        identityId,
+        connectorKey: parseRequiredString(payload.connectorKey, "Discord connector key"),
+        sentAt: parseOptionalNumber(payload.sentAt, "Discord sent timestamp"),
+        externalConversationId: parseRequiredString(payload.externalConversationId, "Discord conversation id"),
+        externalActorId: parseRequiredString(payload.externalActorId, "Discord actor id"),
+        externalMessageId: parseRequiredString(payload.externalMessageId, "Discord message id"),
+        actualChannelId: parseRequiredString(payload.actualChannelId, "Discord actual channel id"),
+        attachmentSummaries: parseDiscordAttachmentSummaries(payload.attachmentSummaries, "Discord attachment summaries"),
+        guildId: parseOptionalString(payload.guildId),
+        threadId: parseOptionalString(payload.threadId),
+        parentChannelId: parseOptionalString(payload.parentChannelId),
+        text: parseOptionalString(payload.text),
+        authorUsername: parseOptionalString(payload.authorUsername),
+        authorGlobalName: parseOptionalString(payload.authorGlobalName),
+        authorDisplayName: parseOptionalString(payload.authorDisplayName),
+        authorIsBot: parseOptionalBoolean(payload.authorIsBot, "Discord author is bot"),
+        replyToMessageId: parseOptionalString(payload.replyToMessageId),
+        deliveryContext: parseOptionalJsonObject(payload.deliveryContext, "Discord delivery context"),
+      } as RuntimeRequestPayloadByKind[K];
+
     case "tui_input":
       return {
         identityId,
@@ -447,6 +528,11 @@ function parsePayload<K extends RuntimeRequestKind>(
 function serializePayload<K extends RuntimeRequestKind>(
   input: CreateRuntimeRequestInput<K>,
 ): {kind: K; payload: RuntimeRequestPayloadByKind[K]; serialized: string} {
+  if (input.kind === "discord_message") {
+    const deliveryContext = (input.payload as Record<string, unknown>).deliveryContext;
+    parseOptionalJsonObject(deliveryContext, "Discord delivery context");
+  }
+
   const serialized = JSON.stringify(input.payload);
   const parsed = JSON.parse(serialized) as unknown;
   const payload = parsePayload(input.kind, parsed);

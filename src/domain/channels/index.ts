@@ -24,6 +24,7 @@ export {
 } from "./cursors/types.js";
 export {
   type ChannelTypingPhase,
+  type DeliveryContext,
   type ChannelTypingRequest,
   type ChannelTypingTarget,
   type InboundEnvelope,

@@ -141,6 +141,125 @@ describe("SessionRouteRepo", () => {
     });
   });
 
+  it("round-trips delivery context for global and identity-scoped routes and replaces stale generic context", async () => {
+    const pool = createPool();
+    pools.push(pool);
+
+    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const identity = await identityStore.createIdentity({
+      id: "identity-patrik",
+      handle: "patrik",
+      displayName: "Patrik",
+    });
+    const store = new SessionRouteRepo({pool});
+    await store.ensureSchema();
+    await sessionStore.createSession({
+      id: "session-a",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-a",
+      createdByIdentityId: identity.id,
+    });
+
+    await store.saveLastRoute({
+      sessionId: "session-a",
+      route: {
+        source: "custom",
+        connectorKey: "bot-1",
+        externalConversationId: "channel-1",
+        capturedAt: 100,
+        deliveryContext: {
+          custom: {
+            channelId: "thread-old",
+            parentChannelId: "channel-1",
+            threadId: "thread-old",
+          },
+        },
+      },
+    });
+    await store.saveLastRoute({
+      sessionId: "session-a",
+      route: {
+        source: "custom",
+        connectorKey: "bot-1",
+        externalConversationId: "channel-1",
+        capturedAt: 200,
+        deliveryContext: {
+          custom: {
+            channelId: "thread-new",
+            parentChannelId: "channel-1",
+            threadId: "thread-new",
+            guildId: "guild-1",
+          },
+        },
+      },
+    });
+    await store.saveLastRoute({
+      sessionId: "session-a",
+      identityId: identity.id,
+      route: {
+        source: "custom",
+        connectorKey: "bot-1",
+        externalConversationId: "channel-1",
+        externalActorId: "user-1",
+        capturedAt: 150,
+        deliveryContext: {
+          custom: {
+            channelId: "channel-1",
+            parentChannelId: "channel-1",
+          },
+        },
+      },
+    });
+
+    await expect(store.getLastRoute({
+      sessionId: "session-a",
+      channel: "custom",
+    })).resolves.toMatchObject({
+      deliveryContext: {
+        custom: {
+          channelId: "thread-new",
+          parentChannelId: "channel-1",
+          threadId: "thread-new",
+          guildId: "guild-1",
+        },
+      },
+    });
+    await expect(store.getLastRoute({
+      sessionId: "session-a",
+      identityId: identity.id,
+      channel: "custom",
+    })).resolves.toMatchObject({
+      externalActorId: "user-1",
+      deliveryContext: {
+        custom: {
+          channelId: "channel-1",
+          parentChannelId: "channel-1",
+        },
+      },
+    });
+  });
+
+  it("rejects non-object delivery context before writing session routes", async () => {
+    const pool = createPool();
+    pools.push(pool);
+
+    await createRuntimeStores(pool);
+    const store = new SessionRouteRepo({pool});
+    await store.ensureSchema();
+
+    await expect(store.saveLastRoute({
+      sessionId: "session-a",
+      route: {
+        source: "custom",
+        connectorKey: "bot-1",
+        externalConversationId: "channel-1",
+        capturedAt: 100,
+        deliveryContext: [] as never,
+      },
+    })).rejects.toThrow("Session route delivery context must be a JSON object.");
+  });
+
   it("migrates legacy routes without surrogate ids", async () => {
     const pool = createPool();
     pools.push(pool);
@@ -304,6 +423,7 @@ describe("SessionRouteRepo", () => {
             external_actor_id: null,
             external_message_id: null,
             captured_at_ms: "200",
+            metadata: {route: "legacy-without-context"},
             created_at: new Date(),
             updated_at: new Date(),
           }],
@@ -317,6 +437,10 @@ describe("SessionRouteRepo", () => {
     })).resolves.toMatchObject({
       capturedAt: 200,
     });
+    await expect(store.getLastRoute({
+      sessionId: "session-a",
+      channel: "telegram",
+    })).resolves.not.toHaveProperty("deliveryContext");
   });
 
   it("rejects non-integral persisted session route timestamps", async () => {

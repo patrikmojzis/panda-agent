@@ -76,6 +76,63 @@ describe("createDaemonThreadHelpers", () => {
       saveLastRoute: vi.fn(async () => undefined),
       getLastRoute: vi.fn(async () => null),
     };
+    const sessionStore = {
+      getMainSession: vi.fn(async (agentKey: string) => {
+        return [...sessions.values()].find((session) => session.agentKey === agentKey && session.kind === "main") ?? null;
+      }),
+      createSession: vi.fn(async ({id, agentKey, kind, currentThreadId}: CreateSessionInput) => {
+        boundThreadId = currentThreadId;
+        const session = {
+          id,
+          agentKey,
+          kind,
+          currentThreadId,
+          createdByIdentityId: options.createdByIdentityId,
+          metadata: undefined,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        sessions.set(id, session);
+        return session;
+      }),
+      getSession: vi.fn(async (sessionId: string) => {
+        const session = sessions.get(sessionId);
+        if (session) {
+          return session;
+        }
+
+        return {
+          id: sessionId,
+          agentKey: "panda",
+          kind: options.sessionKind ?? "main",
+          currentThreadId: boundThreadId,
+          createdByIdentityId: options.createdByIdentityId,
+          metadata: options.sessionMetadata,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+      }),
+      updateCurrentThread: vi.fn(async ({sessionId, currentThreadId}: UpdateSessionCurrentThreadInput) => {
+        boundThreadId = currentThreadId;
+        const existing = sessions.get(sessionId) ?? {
+          id: sessionId,
+          agentKey: "panda",
+          kind: options.sessionKind ?? "main",
+          currentThreadId,
+          createdByIdentityId: options.createdByIdentityId,
+          metadata: options.sessionMetadata,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        const updated = {
+          ...existing,
+          currentThreadId,
+          updatedAt: Date.now(),
+        };
+        sessions.set(sessionId, updated);
+        return updated;
+      }),
+    };
 
     const context: DaemonThreadHelperContext = {
         fallbackContext: { cwd: options.workspace ?? process.cwd() },
@@ -95,63 +152,7 @@ describe("createDaemonThreadHelpers", () => {
           identityStore: {
             getIdentity: vi.fn(async (identityId: string) => await (options.getIdentity?.(identityId) ?? Promise.resolve(identity))),
           },
-          sessionStore: {
-            getMainSession: vi.fn(async (agentKey: string) => {
-              return [...sessions.values()].find((session) => session.agentKey === agentKey && session.kind === "main") ?? null;
-            }),
-            createSession: vi.fn(async ({id, agentKey, kind, currentThreadId}: CreateSessionInput) => {
-              boundThreadId = currentThreadId;
-              const session = {
-                id,
-                agentKey,
-                kind,
-                currentThreadId,
-                createdByIdentityId: options.createdByIdentityId,
-                metadata: undefined,
-                createdAt: Date.now(),
-                updatedAt: Date.now(),
-              };
-              sessions.set(id, session);
-              return session;
-            }),
-            getSession: vi.fn(async (sessionId: string) => {
-              const session = sessions.get(sessionId);
-              if (session) {
-                return session;
-              }
-
-              return {
-                id: sessionId,
-                agentKey: "panda",
-                kind: options.sessionKind ?? "main",
-                currentThreadId: boundThreadId,
-                createdByIdentityId: options.createdByIdentityId,
-                metadata: options.sessionMetadata,
-                createdAt: Date.now(),
-                updatedAt: Date.now(),
-              };
-            }),
-            updateCurrentThread: vi.fn(async ({sessionId, currentThreadId}: UpdateSessionCurrentThreadInput) => {
-              boundThreadId = currentThreadId;
-              const existing = sessions.get(sessionId) ?? {
-                id: sessionId,
-                agentKey: "panda",
-                kind: options.sessionKind ?? "main",
-                currentThreadId,
-                createdByIdentityId: options.createdByIdentityId,
-                metadata: options.sessionMetadata,
-                createdAt: Date.now(),
-                updatedAt: Date.now(),
-              };
-              const updated = {
-                ...existing,
-                currentThreadId,
-                updatedAt: Date.now(),
-              };
-              sessions.set(sessionId, updated);
-              return updated;
-            }),
-          },
+          sessionStore,
           workerSessions: {
             createWorkerSession: vi.fn(async () => {
               throw new Error("Unexpected worker session creation in daemon thread helper tests.");
@@ -177,9 +178,80 @@ describe("createDaemonThreadHelpers", () => {
       identity,
       conversationBindings,
       sessionRoutes,
+      sessionStore,
       helpers: createDaemonThreadHelpers(context),
     };
   }
+
+
+  it("resolves null for unbound conversations without creating or binding sessions", async () => {
+    const {helpers, conversationBindings, sessionRoutes, sessionStore} = createHelpers({
+      conversationBinding: null,
+    });
+
+    await expect(helpers.resolveBoundConversationThread({
+      source: "discord",
+      connectorKey: "bot-1",
+      externalConversationId: "channel-1",
+    })).resolves.toBeNull();
+
+    expect(conversationBindings.getConversationBinding).toHaveBeenCalledWith({
+      source: "discord",
+      connectorKey: "bot-1",
+      externalConversationId: "channel-1",
+    });
+    expect(sessionStore.createSession).not.toHaveBeenCalled();
+    expect(conversationBindings.bindConversation).not.toHaveBeenCalled();
+    expect(sessionRoutes.saveLastRoute).not.toHaveBeenCalled();
+  });
+
+  it("resolves bound conversations to the bound session current thread", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-current",
+      sessionId: "session-bound",
+      context: {},
+    });
+    const {helpers, sessionStore} = createHelpers({
+      store,
+      conversationBinding: {sessionId: "session-bound"},
+      currentThreadId: "thread-current",
+    });
+
+    await expect(helpers.resolveBoundConversationThread({
+      source: "discord",
+      connectorKey: "bot-1",
+      externalConversationId: "channel-1",
+    })).resolves.toMatchObject({
+      id: "thread-current",
+      sessionId: "session-bound",
+    });
+
+    expect(sessionStore.createSession).not.toHaveBeenCalled();
+  });
+
+  it("uses the session's latest current thread after a conversation was bound", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-after-reset",
+      sessionId: "session-bound",
+      context: {},
+    });
+    const {helpers} = createHelpers({
+      store,
+      conversationBinding: {sessionId: "session-bound"},
+      currentThreadId: "thread-after-reset",
+    });
+
+    await expect(helpers.resolveBoundConversationThread({
+      source: "discord",
+      connectorKey: "bot-1",
+      externalConversationId: "channel-1",
+    })).resolves.toMatchObject({
+      id: "thread-after-reset",
+      sessionId: "session-bound",
+    });
+  });
 
   it("rejects explicit agent access when the identity has no pairings", async () => {
     const {helpers, identity} = createHelpers({

@@ -1,7 +1,7 @@
-import type {JsonValue} from "../../lib/json.js";
+import {isJsonObject, type JsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
-import type {ChannelTypingTarget} from "./types.js";
+import type {ChannelTypingTarget, DeliveryContext} from "./types.js";
 
 interface RouteTargetCarrier {
   source?: unknown;
@@ -11,6 +11,15 @@ interface RouteTargetCarrier {
 export interface ResolvedChannelRouteTarget {
   channel: string;
   target: ChannelTypingTarget;
+}
+
+
+function readDeliveryContext(metadata: Record<string, unknown>, route: Record<string, unknown>): DeliveryContext | undefined {
+  if (isJsonObject(metadata.deliveryContext)) {
+    return metadata.deliveryContext;
+  }
+
+  return isJsonObject(route.deliveryContext) ? route.deliveryContext : undefined;
 }
 
 export function resolveChannelRouteTarget(
@@ -37,6 +46,8 @@ export function resolveChannelRouteTarget(
     return null;
   }
 
+  const deliveryContext = readDeliveryContext(metadata, route);
+
   return {
     channel,
     target: {
@@ -44,6 +55,7 @@ export function resolveChannelRouteTarget(
       connectorKey,
       externalConversationId,
       externalActorId: trimToUndefined(route.externalActorId),
+      ...(deliveryContext !== undefined ? {deliveryContext} : {}),
     },
   };
 }

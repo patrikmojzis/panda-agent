@@ -5,7 +5,13 @@ import {isUniqueViolation} from "../../../lib/postgres-errors.js";
 import {requireNonEmptyString} from "../../../lib/strings.js";
 import {buildConversationSessionTableNames, type ConversationSessionTableNames} from "./postgres-shared.js";
 import {ensurePostgresConversationSessionSchema} from "./postgres-schema.js";
-import type {BindConversationInput, BindConversationResult, ConversationBinding, ConversationLookup,} from "./types.js";
+import type {
+  BindConversationInput,
+  BindConversationResult,
+  ConversationBinding,
+  ConversationBindingListFilter,
+  ConversationLookup,
+} from "./types.js";
 
 export interface ConversationRepoOptions {
   pool: PgPoolLike;
@@ -20,6 +26,15 @@ function normalizeConversationLookup(lookup: ConversationLookup): ConversationLo
     source: requireConversationBindingString("source", lookup.source),
     connectorKey: requireConversationBindingString("connector key", lookup.connectorKey),
     externalConversationId: requireConversationBindingString("external conversation id", lookup.externalConversationId),
+  };
+}
+
+function normalizeConversationBindingListFilter(
+  filter: ConversationBindingListFilter,
+): ConversationBindingListFilter {
+  return {
+    source: requireConversationBindingString("source", filter.source),
+    connectorKey: requireConversationBindingString("connector key", filter.connectorKey),
   };
 }
 
@@ -79,6 +94,67 @@ export class ConversationRepo {
 
     const row = result.rows[0];
     return row ? parseConversationBinding(row as Record<string, unknown>) : null;
+  }
+
+  async listConversationBindings(
+    filter: ConversationBindingListFilter,
+  ): Promise<readonly ConversationBinding[]> {
+    const normalizedFilter = normalizeConversationBindingListFilter(filter);
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM ${this.tables.conversationSessions}
+        WHERE source = $1
+          AND connector_key = $2
+        ORDER BY external_conversation_id ASC
+      `,
+      [
+        normalizedFilter.source,
+        normalizedFilter.connectorKey,
+      ],
+    );
+
+    return result.rows.map((row) => parseConversationBinding(row as Record<string, unknown>));
+  }
+
+  async createConversationBinding(input: BindConversationInput): Promise<ConversationBinding | null> {
+    const normalizedInput = normalizeBindConversationInput(input);
+
+    try {
+      const result = await this.pool.query(
+        `
+          INSERT INTO ${this.tables.conversationSessions} (
+            source,
+            connector_key,
+            external_conversation_id,
+            session_id,
+            metadata
+          ) VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5::jsonb
+          )
+          RETURNING *
+        `,
+        [
+          normalizedInput.source,
+          normalizedInput.connectorKey,
+          normalizedInput.externalConversationId,
+          normalizedInput.sessionId,
+          toJson(normalizedInput.metadata),
+        ],
+      );
+
+      return parseConversationBinding(result.rows[0] as Record<string, unknown>);
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        return null;
+      }
+
+      throw error;
+    }
   }
 
   async bindConversation(input: BindConversationInput): Promise<BindConversationResult> {

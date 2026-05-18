@@ -1,6 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {RuntimeRequestRepo} from "../src/domain/threads/requests/repo.js";
+import type {DiscordMessageRequestPayload} from "../src/domain/threads/requests/types.js";
 
 function createFakeNotificationClient() {
   return {
@@ -8,6 +9,51 @@ function createFakeNotificationClient() {
     on: vi.fn(),
     query: vi.fn(async () => ({rows: []})),
     release: vi.fn(),
+  };
+}
+
+function validDiscordPayload(overrides: Partial<DiscordMessageRequestPayload> = {}): DiscordMessageRequestPayload {
+  return {
+    connectorKey: "bot-1",
+    externalConversationId: "channel-1",
+    externalActorId: "user-1",
+    externalMessageId: "message-1",
+    actualChannelId: "channel-1",
+    text: "hello",
+    attachmentSummaries: [],
+    ...overrides,
+  };
+}
+
+function createEnqueueRepo() {
+  const now = new Date();
+  const pool = {
+    connect: vi.fn(),
+    query: vi.fn(async (sql: string, params: unknown[]) => {
+      if (sql.includes("pg_notify")) {
+        return {rows: []};
+      }
+
+      return {
+        rows: [{
+          id: String(params[0]),
+          kind: params[1],
+          status: "pending",
+          payload: JSON.parse(String(params[2])) as unknown,
+          result: null,
+          error: null,
+          claimed_at: null,
+          finished_at: null,
+          created_at: now,
+          updated_at: now,
+        }],
+      };
+    }),
+  };
+
+  return {
+    pool,
+    repo: new RuntimeRequestRepo({pool}),
   };
 }
 
@@ -347,4 +393,120 @@ describe("RuntimeRequestRepo", () => {
       "Unsupported runtime request status pending",
     );
   });
+
+  it("normalizes discord_message payloads and strips raw unknown fields before enqueue", async () => {
+    const {repo} = createEnqueueRepo();
+
+    const request = await repo.enqueueRequest({
+      kind: "discord_message",
+      payload: {
+        ...validDiscordPayload({
+          sentAt: 1_768_000_000_000,
+          guildId: "guild-1",
+          threadId: "thread-1",
+          parentChannelId: "channel-1",
+          authorUsername: "patrik",
+          authorGlobalName: "Patrik Global",
+          authorDisplayName: "Patrik Display",
+          authorIsBot: false,
+          replyToMessageId: "reply-1",
+          deliveryContext: {
+            discord: {
+              channelId: "thread-1",
+              parentChannelId: "channel-1",
+              threadId: "thread-1",
+              guildId: "guild-1",
+              messageId: "message-1",
+              referencedMessageId: "reply-1",
+            },
+          },
+          attachmentSummaries: [{
+            id: "attachment-1",
+            filename: "report.pdf",
+            contentType: "application/pdf",
+            sizeBytes: 123,
+          }],
+        }),
+        rawGatewayPayload: {content: "should disappear", privateLink: "cdn-private"},
+        rawAttachmentField: [{privateLink: "cdn-private"}],
+      } as DiscordMessageRequestPayload & Record<string, unknown>,
+    });
+
+    expect(request.kind).toBe("discord_message");
+    expect(request.payload).toEqual({
+      connectorKey: "bot-1",
+      sentAt: 1_768_000_000_000,
+      externalConversationId: "channel-1",
+      externalActorId: "user-1",
+      externalMessageId: "message-1",
+      actualChannelId: "channel-1",
+      attachmentSummaries: [{
+        id: "attachment-1",
+        filename: "report.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 123,
+      }],
+      guildId: "guild-1",
+      threadId: "thread-1",
+      parentChannelId: "channel-1",
+      text: "hello",
+      authorUsername: "patrik",
+      authorGlobalName: "Patrik Global",
+      authorDisplayName: "Patrik Display",
+      authorIsBot: false,
+      replyToMessageId: "reply-1",
+      deliveryContext: {
+        discord: {
+          channelId: "thread-1",
+          parentChannelId: "channel-1",
+          threadId: "thread-1",
+          guildId: "guild-1",
+          messageId: "message-1",
+          referencedMessageId: "reply-1",
+        },
+      },
+    });
+    expect(request.payload).not.toHaveProperty("rawGatewayPayload");
+    expect(request.payload).not.toHaveProperty("rawAttachmentField");
+    expect(JSON.stringify(request.payload)).not.toContain("cdn-private");
+  });
+
+  it("keeps discord attachmentSummaries as a required normalized array", async () => {
+    const {repo} = createEnqueueRepo();
+
+    const request = await repo.enqueueRequest({
+      kind: "discord_message",
+      payload: validDiscordPayload({attachmentSummaries: []}),
+    });
+
+    expect(request.payload).toMatchObject({
+      attachmentSummaries: [],
+    });
+  });
+
+  it.each([
+    ["connector key", {connectorKey: " "}, "Discord connector key"],
+    ["conversation id", {externalConversationId: " "}, "Discord conversation id"],
+    ["actor id", {externalActorId: " "}, "Discord actor id"],
+    ["message id", {externalMessageId: " "}, "Discord message id"],
+    ["actual channel id", {actualChannelId: " "}, "Discord actual channel id"],
+    ["attachment summaries", {attachmentSummaries: {}}, "Discord attachment summaries must be an array"],
+    ["negative attachment size", {attachmentSummaries: [{id: "attachment-1", sizeBytes: -1}]}, "Discord attachment summaries 1 size must not be negative"],
+    ["non-finite attachment size", {attachmentSummaries: [{id: "attachment-1", sizeBytes: Number.POSITIVE_INFINITY}]}, "Discord attachment summaries 1 size must be a finite number"],
+    ["delivery context", {deliveryContext: []}, "Discord delivery context must be a JSON object"],
+    ["non-json delivery context", {deliveryContext: {bad: () => undefined}}, "Discord delivery context must be a JSON object"],
+  ])("rejects malformed discord_message %s", async (_label, overrides, expected) => {
+    const {pool, repo} = createEnqueueRepo();
+
+    await expect(repo.enqueueRequest({
+      kind: "discord_message",
+      payload: {
+        ...validDiscordPayload(),
+        ...(overrides as Partial<DiscordMessageRequestPayload>),
+      },
+    })).rejects.toThrow(expected);
+
+    expect(pool.query).not.toHaveBeenCalled();
+  });
+
 });

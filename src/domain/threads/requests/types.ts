@@ -1,4 +1,4 @@
-import type {JsonValue} from "../../../lib/json.js";
+import type {JsonObject, JsonValue} from "../../../lib/json.js";
 import type {MediaDescriptor} from "../../channels/types.js";
 import type {ExecutionEnvironmentKind, ExecutionToolPolicy} from "../../execution-environments/types.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
@@ -121,6 +121,34 @@ export interface WhatsAppReactionRequestPayload extends BaseRuntimeRequestPayloa
   pushName?: string;
 }
 
+export interface DiscordAttachmentSummary {
+  id: string;
+  filename?: string;
+  contentType?: string;
+  sizeBytes?: number;
+}
+
+export interface DiscordMessageRequestPayload extends BaseRuntimeRequestPayload {
+  connectorKey: string;
+  externalConversationId: string;
+  externalActorId: string;
+  externalMessageId: string;
+  actualChannelId: string;
+  attachmentSummaries: readonly DiscordAttachmentSummary[];
+  sentAt?: number;
+  guildId?: string;
+  threadId?: string;
+  parentChannelId?: string;
+  text?: string;
+  authorUsername?: string;
+  authorGlobalName?: string;
+  authorDisplayName?: string;
+  authorIsBot?: boolean;
+  replyToMessageId?: string;
+  /** Reserved parser field for K8 delivery-context work; K7 does not populate/use it. */
+  deliveryContext?: JsonObject;
+}
+
 export interface TuiInputRequestPayload extends BaseRuntimeRequestPayload {
   threadId?: string;
   actorId: string;
@@ -210,6 +238,7 @@ export interface RuntimeRequestPayloadByKind {
   telegram_reaction: TelegramReactionRequestPayload;
   whatsapp_message: WhatsAppMessageRequestPayload;
   whatsapp_reaction: WhatsAppReactionRequestPayload;
+  discord_message: DiscordMessageRequestPayload;
   tui_input: TuiInputRequestPayload;
   create_branch_session: CreateBranchSessionRequestPayload;
   create_worker_session: CreateWorkerSessionRequestPayload;

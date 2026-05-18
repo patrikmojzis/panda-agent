@@ -1,5 +1,6 @@
-import type {RememberedRoute} from "../../channels/types.js";
+import type {DeliveryContext, RememberedRoute} from "../../channels/types.js";
 import {requireTimestampMillis, toJson} from "../../../lib/postgres-values.js";
+import {isJsonObject} from "../../../lib/json.js";
 import {isUniqueViolation} from "../../../lib/postgres-errors.js";
 import type {PgPoolLike} from "../../../lib/postgres-query.js";
 import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
@@ -23,10 +24,41 @@ function normalizeLookup(lookup: SessionRouteLookup): SessionRouteLookup {
   };
 }
 
+
+function readOptionalDeliveryContext(value: unknown, label: string): DeliveryContext | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!isJsonObject(value)) {
+    throw new Error(`${label} must be a JSON object.`);
+  }
+
+  return value;
+}
+
+function readRouteDeliveryContext(row: Record<string, unknown>): DeliveryContext | undefined {
+  const metadata = row.metadata;
+  if (metadata === undefined || metadata === null) {
+    return undefined;
+  }
+
+  if (!isJsonObject(metadata)) {
+    return undefined;
+  }
+
+  return readOptionalDeliveryContext(metadata.deliveryContext, "Session route delivery context");
+}
+
 function normalizeRoute(route: RememberedRoute): RememberedRoute {
   if (!Number.isSafeInteger(route.capturedAt)) {
     throw new Error("Session route capturedAt must be a safe integer.");
   }
+
+  const deliveryContext = readOptionalDeliveryContext(
+    route.deliveryContext,
+    "Session route delivery context",
+  );
 
   return {
     source: requireSessionRouteString("source", route.source),
@@ -35,6 +67,7 @@ function normalizeRoute(route: RememberedRoute): RememberedRoute {
     externalActorId: trimToUndefined(route.externalActorId),
     externalMessageId: trimToUndefined(route.externalMessageId),
     capturedAt: route.capturedAt,
+    ...(deliveryContext !== undefined ? {deliveryContext} : {}),
   };
 }
 
@@ -62,6 +95,8 @@ function parseRequiredBigintNumber(field: string, value: unknown): number {
 }
 
 function parseRoute(row: Record<string, unknown>): RememberedRoute {
+  const deliveryContext = readRouteDeliveryContext(row);
+
   return {
     source: requireSessionRouteString("source", row.channel),
     connectorKey: requireSessionRouteString("connector key", row.connector_key),
@@ -69,6 +104,7 @@ function parseRoute(row: Record<string, unknown>): RememberedRoute {
     externalActorId: typeof row.external_actor_id === "string" ? row.external_actor_id : undefined,
     externalMessageId: typeof row.external_message_id === "string" ? row.external_message_id : undefined,
     capturedAt: parseRequiredBigintNumber("capturedAt", row.captured_at_ms),
+    ...(deliveryContext !== undefined ? {deliveryContext} : {}),
   };
 }
 
