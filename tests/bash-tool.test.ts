@@ -268,7 +268,7 @@ describe("BashTool", () => {
             CREDENTIAL_ONLY: "credential-only",
             SHARED_KEY: "credential",
           }),
-        } as any,
+        },
       });
 
       const result = await tool.run(
@@ -324,7 +324,7 @@ describe("BashTool", () => {
             ALLOWED_SECRET: "allowed",
             DENIED_SECRET: "denied",
           }),
-        } as any,
+        },
       });
 
       const result = await tool.run(
@@ -557,7 +557,7 @@ describe("BashTool", () => {
           resolveEnvironment: async () => ({
             OPENAI_API_KEY: "stored-secret",
           }),
-        } as any,
+        },
       });
 
       const result = await tool.run(

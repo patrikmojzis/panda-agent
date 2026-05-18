@@ -137,3 +137,19 @@ Not:
 - `/agents/panda`
 
 The UI shows a `/` prefix, but the stored rule value itself should not include it.
+
+## Code Ownership
+
+Keep Wiki.js semantics in the Wiki integration:
+
+- `src/integrations/wiki/namespace-policy.ts` owns namespace checks, archive paths, subtree filtering, and list limits.
+- `src/integrations/wiki/asset-files.ts` owns supported upload/fetch MIME rules and managed asset filenames.
+- `src/integrations/wiki/tool-output.ts` owns the text rendering returned by the Panda wiki tool.
+- `src/integrations/wiki/types.ts`, `constants.ts`, `client-input.ts`, and
+  `client-parsers.ts` own the typed client surface, defaults, client input
+  normalization, and Wiki.js response parsing.
+- `src/integrations/wiki/page-move.ts` owns live page moves plus affected internal-link rewrites.
+- `src/integrations/wiki/page-write.ts` owns create/update behavior and optimistic conflict checks.
+- `src/panda/tools/wiki-tool.ts` should stay the model-facing tool surface plus orchestration.
+
+Do not move raw Wiki.js path or output policy back into `src/panda/tools`.

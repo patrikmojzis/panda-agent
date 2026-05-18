@@ -289,7 +289,7 @@ describe("Thread", () => {
       const service = new BackgroundToolJobService({ store });
       let turn = 0;
       const runtime: LlmRuntime = {
-        complete: vi.fn().mockImplementation(async (request) => {
+        complete: vi.fn().mockImplementation(async () => {
           turn += 1;
           if (turn === 1) {
             return createAssistantMessage([
@@ -407,6 +407,28 @@ describe("Thread", () => {
 
   it("parses structured output with zod", async () => {
     const runtime = createMockRuntime(message(JSON.stringify({ answer: "42" })));
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "structured",
+        instructions: "Return JSON",
+        outputSchema: z.object({
+          answer: z.string(),
+        }),
+      }),
+      model: "openai/gpt-4o-mini",
+      messages: [stringToUserMessage("What is the answer?")],
+      runtime,
+    });
+
+    await expect(thread.runToCompletion()).resolves.toEqual({ answer: "42" });
+  });
+
+  it("parses structured output split across assistant text blocks", async () => {
+    const runtime = createMockRuntime(createAssistantMessage([
+      { type: "text", text: "\n { \"answer\"" },
+      { type: "text", text: ": \"42\" } \n" },
+    ]));
 
     const thread = new Thread({
       agent: new Agent({

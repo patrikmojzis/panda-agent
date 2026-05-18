@@ -1,17 +1,12 @@
-import type {Pool, PoolClient} from "pg";
-
-import {
-    buildThreadRuntimeTableNames,
-    CREATE_RUNTIME_SCHEMA_SQL,
-    quoteIdentifier,
-    toJson,
-    toMillis
-} from "../threads/runtime/postgres-shared.js";
-import {withTransaction} from "../threads/runtime/postgres-db.js";
-import {buildAgentTableNames} from "../agents/postgres-shared.js";
-import {buildIdentityTableNames} from "../identity/postgres-shared.js";
-import {addConstraint, assertIntegrityChecks} from "../../lib/postgres-integrity.js";
+import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
+import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
+import {requireBoolean} from "../../lib/booleans.js";
+import {readOptionalJsonValue, stringifyOptionalJsonValue} from "../../lib/json.js";
+import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
+import {withTransaction} from "../../lib/postgres-transaction.js";
+import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
 import {buildSessionTableNames, type SessionTableNames} from "./postgres-shared.js";
+import {ensurePostgresSessionSchema} from "./postgres-schema.js";
 import type {SessionStore} from "./store.js";
 import type {
     ClaimSessionHeartbeatInput,
@@ -23,36 +18,33 @@ import type {
     UpdateSessionCurrentThreadInput,
     UpdateSessionHeartbeatConfigInput,
 } from "./types.js";
-import {DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES} from "./types.js";
-
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-interface PgPoolLike extends PgQueryable {
-  connect(): Promise<PoolClient>;
-}
 
 export interface PostgresSessionStoreOptions {
   pool: PgPoolLike;
 }
 
-function requireTrimmed(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`Session ${field} must not be empty.`);
-  }
-
-  return trimmed;
+function requireSessionString(field: string, value: unknown): string {
+  return requireNonEmptyString(value, `Session ${field} must not be empty.`);
 }
 
-function normalizeHeartbeatEveryMinutes(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 1) {
-    return DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES;
+function optionalSessionString(field: string, value: unknown): string | undefined {
+  return optionalNonEmptyString(value, `Session ${field} must not be empty.`);
+}
+
+function parseSessionKind(value: unknown): SessionRecord["kind"] {
+  if (value === "main" || value === "branch" || value === "worker") {
+    return value;
   }
 
-  return Math.floor(parsed);
+  throw new Error(`Unsupported session kind ${String(value)}.`);
+}
+
+function parseHeartbeatEveryMinutes(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error("Session heartbeat interval must be a positive integer.");
+  }
+
+  return value;
 }
 
 function requireHeartbeatEveryMinutes(value: number): number {
@@ -65,31 +57,31 @@ function requireHeartbeatEveryMinutes(value: number): number {
 
 function parseSessionRow(row: Record<string, unknown>): SessionRecord {
   return {
-    id: String(row.id),
-    agentKey: String(row.agent_key),
-    kind: String(row.kind) as SessionRecord["kind"],
-    currentThreadId: String(row.current_thread_id),
-    createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
-    metadata: row.metadata === null ? undefined : row.metadata as SessionRecord["metadata"],
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    id: requireSessionString("id", row.id),
+    agentKey: requireSessionString("agent key", row.agent_key),
+    kind: parseSessionKind(row.kind),
+    currentThreadId: requireSessionString("current thread id", row.current_thread_id),
+    createdByIdentityId: optionalSessionString("created identity id", row.created_by_identity_id),
+    metadata: readOptionalJsonValue(row.metadata, "Session metadata"),
+    createdAt: requireTimestampMillis(row.created_at, "Session created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Session updated_at must be a valid timestamp."),
   };
 }
 
 function parseHeartbeatRow(row: Record<string, unknown>): SessionHeartbeatRecord {
-  const everyMinutes = normalizeHeartbeatEveryMinutes(row.every_minutes);
+  const everyMinutes = parseHeartbeatEveryMinutes(row.every_minutes);
   return {
-    sessionId: String(row.session_id),
-    enabled: Boolean(row.enabled),
+    sessionId: requireSessionString("id", row.session_id),
+    enabled: requireBoolean(row.enabled, "Session heartbeat enabled flag must be a boolean."),
     everyMinutes,
-    nextFireAt: row.next_fire_at === null ? Date.now() + everyMinutes * 60_000 : toMillis(row.next_fire_at),
-    lastFireAt: row.last_fire_at === null ? undefined : toMillis(row.last_fire_at),
-    lastSkipReason: row.last_skip_reason === null ? undefined : String(row.last_skip_reason),
-    claimedAt: row.claimed_at === null ? undefined : toMillis(row.claimed_at),
-    claimedBy: row.claimed_by === null ? undefined : String(row.claimed_by),
-    claimExpiresAt: row.claim_expires_at === null ? undefined : toMillis(row.claim_expires_at),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    nextFireAt: requireTimestampMillis(row.next_fire_at, "Session next_fire_at must be a valid timestamp."),
+    lastFireAt: optionalTimestampMillis(row.last_fire_at, "Session last_fire_at must be a valid timestamp."),
+    lastSkipReason: optionalSessionString("last skip reason", row.last_skip_reason),
+    claimedAt: optionalTimestampMillis(row.claimed_at, "Session claimed_at must be a valid timestamp."),
+    claimedBy: optionalSessionString("claim owner", row.claimed_by),
+    claimExpiresAt: optionalTimestampMillis(row.claim_expires_at, "Session claim_expires_at must be a valid timestamp."),
+    createdAt: requireTimestampMillis(row.created_at, "Session created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Session updated_at must be a valid timestamp."),
   };
 }
 
@@ -104,15 +96,11 @@ function missingHeartbeatError(sessionId: string): Error {
 export class PostgresSessionStore implements SessionStore {
   private readonly pool: PgPoolLike;
   private readonly tables: SessionTableNames;
-  private readonly agentTableName: string;
-  private readonly identityTableName: string;
   private readonly threadTableName: string;
 
   constructor(options: PostgresSessionStoreOptions) {
     this.pool = options.pool;
     this.tables = buildSessionTableNames();
-    this.agentTableName = buildAgentTableNames().agents;
-    this.identityTableName = buildIdentityTableNames().identities;
     this.threadTableName = buildThreadRuntimeTableNames().threads;
   }
 
@@ -128,84 +116,7 @@ export class PostgresSessionStore implements SessionStore {
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.sessions} (
-        id TEXT PRIMARY KEY,
-        agent_key TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        current_thread_id TEXT NOT NULL,
-        created_by_identity_id TEXT,
-        metadata JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_agent_sessions_main_idx`)}
-      ON ${this.tables.sessions} (agent_key)
-      WHERE kind = 'main'
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_agent_sessions_agent_idx`)}
-      ON ${this.tables.sessions} (agent_key, created_at DESC)
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.sessionHeartbeats} (
-        session_id TEXT PRIMARY KEY REFERENCES ${this.tables.sessions}(id) ON DELETE CASCADE,
-        enabled BOOLEAN NOT NULL DEFAULT TRUE,
-        every_minutes INTEGER NOT NULL DEFAULT ${DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES},
-        next_fire_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '${DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES} minutes',
-        last_fire_at TIMESTAMPTZ,
-        last_skip_reason TEXT,
-        claimed_at TIMESTAMPTZ,
-        claimed_by TEXT,
-        claim_expires_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_session_heartbeats_due_idx`)}
-      ON ${this.tables.sessionHeartbeats} (enabled, next_fire_at, claim_expires_at, session_id)
-    `);
-    await assertIntegrityChecks(this.pool, "Session schema", [
-      {
-        label: "agent_sessions.agent_key orphaned from agents.agent_key",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.sessions} AS session
-          LEFT JOIN ${this.agentTableName} AS agent
-            ON agent.agent_key = session.agent_key
-          WHERE agent.agent_key IS NULL
-        `,
-      },
-      {
-        label: "agent_sessions.created_by_identity_id orphaned from identities.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.sessions} AS session
-          LEFT JOIN ${this.identityTableName} AS identity
-            ON identity.id = session.created_by_identity_id
-          WHERE session.created_by_identity_id IS NOT NULL
-            AND identity.id IS NULL
-        `,
-      },
-    ]);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.sessions}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_agent_sessions_agent_fk`)}
-      FOREIGN KEY (agent_key)
-      REFERENCES ${this.agentTableName}(agent_key)
-      ON DELETE CASCADE
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.sessions}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_agent_sessions_created_by_identity_fk`)}
-      FOREIGN KEY (created_by_identity_id)
-      REFERENCES ${this.identityTableName}(id)
-      ON DELETE SET NULL
-    `);
+    await ensurePostgresSessionSchema(this.pool);
   }
 
   async createSessionRecord(input: CreateSessionInput, queryable: PgQueryable = this.pool): Promise<SessionRecord> {
@@ -227,12 +138,12 @@ export class PostgresSessionStore implements SessionStore {
       )
       RETURNING *
     `, [
-      requireTrimmed("id", input.id),
-      requireTrimmed("agent key", input.agentKey),
-      requireTrimmed("kind", input.kind),
-      requireTrimmed("current thread id", input.currentThreadId),
+      requireSessionString("id", input.id),
+      requireSessionString("agent key", input.agentKey),
+      parseSessionKind(input.kind),
+      requireSessionString("current thread id", input.currentThreadId),
       input.createdByIdentityId?.trim() || null,
-      toJson(input.metadata),
+      stringifyOptionalJsonValue(input.metadata, "Session metadata"),
     ]);
 
     const session = parseSessionRow(result.rows[0] as Record<string, unknown>);
@@ -277,7 +188,7 @@ export class PostgresSessionStore implements SessionStore {
   async getSession(sessionId: string): Promise<SessionRecord> {
     const result = await this.pool.query(
       `SELECT * FROM ${this.tables.sessions} WHERE id = $1`,
-      [requireTrimmed("id", sessionId)],
+      [requireSessionString("id", sessionId)],
     );
     const row = result.rows[0];
     if (!row) {
@@ -294,7 +205,7 @@ export class PostgresSessionStore implements SessionStore {
       WHERE agent_key = $1
         AND kind = 'main'
       LIMIT 1
-    `, [requireTrimmed("agent key", agentKey)]);
+    `, [requireSessionString("agent key", agentKey)]);
 
     const row = result.rows[0];
     return row ? parseSessionRow(row as Record<string, unknown>) : null;
@@ -306,7 +217,7 @@ export class PostgresSessionStore implements SessionStore {
       FROM ${this.tables.sessions}
       WHERE agent_key = $1
       ORDER BY CASE WHEN kind = 'main' THEN 0 ELSE 1 END, created_at ASC
-    `, [requireTrimmed("agent key", agentKey)]);
+    `, [requireSessionString("agent key", agentKey)]);
 
     return result.rows.map((row) => parseSessionRow(row as Record<string, unknown>));
   }
@@ -315,8 +226,8 @@ export class PostgresSessionStore implements SessionStore {
     input: UpdateSessionCurrentThreadInput,
     queryable: PgQueryable = this.pool,
   ): Promise<SessionRecord> {
-    const sessionId = requireTrimmed("id", input.sessionId);
-    const currentThreadId = requireTrimmed("current thread id", input.currentThreadId);
+    const sessionId = requireSessionString("id", input.sessionId);
+    const currentThreadId = requireSessionString("current thread id", input.currentThreadId);
     const threadResult = await queryable.query(`
       SELECT 1
       FROM ${this.threadTableName}
@@ -358,7 +269,7 @@ export class PostgresSessionStore implements SessionStore {
       SELECT *
       FROM ${this.tables.sessionHeartbeats}
       WHERE session_id = $1
-    `, [requireTrimmed("id", sessionId)]);
+    `, [requireSessionString("id", sessionId)]);
     const row = result.rows[0];
     return row ? parseHeartbeatRow(row as Record<string, unknown>) : null;
   }
@@ -395,8 +306,8 @@ export class PostgresSessionStore implements SessionStore {
         AND (claim_expires_at IS NULL OR claim_expires_at <= $4)
       RETURNING *
     `, [
-      requireTrimmed("id", input.sessionId),
-      requireTrimmed("claim owner", input.claimedBy),
+      requireSessionString("id", input.sessionId),
+      requireSessionString("claim owner", input.claimedBy),
       new Date(input.claimExpiresAt),
       asOf,
     ]);
@@ -419,8 +330,8 @@ export class PostgresSessionStore implements SessionStore {
         AND claimed_by = $2
       RETURNING *
     `, [
-      requireTrimmed("id", input.sessionId),
-      requireTrimmed("claim owner", input.claimedBy),
+      requireSessionString("id", input.sessionId),
+      requireSessionString("claim owner", input.claimedBy),
       new Date(input.nextFireAt),
       input.lastFireAt === undefined ? null : new Date(input.lastFireAt),
       input.lastSkipReason ?? null,
@@ -460,7 +371,7 @@ export class PostgresSessionStore implements SessionStore {
       WHERE session_id = $1
       RETURNING *
     `, [
-      requireTrimmed("id", input.sessionId),
+      requireSessionString("id", input.sessionId),
       enabled,
       everyMinutes,
       new Date(nextFireAt),

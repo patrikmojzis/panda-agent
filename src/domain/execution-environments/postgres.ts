@@ -1,8 +1,10 @@
-import type {Pool} from "pg";
-
-import {buildAgentTableNames} from "../agents/postgres-shared.js";
-import {buildSessionTableNames} from "../sessions/postgres-shared.js";
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis,} from "../threads/runtime/postgres-shared.js";
+import {optionalTimestampMillis, requireTimestampMillis, toJson} from "../../lib/postgres-values.js";
+import {requireBoolean} from "../../lib/booleans.js";
+import {readOptionalJsonValue} from "../../lib/json.js";
+import type {PgPoolLike} from "../../lib/postgres-query.js";
+import {isRecord} from "../../lib/records.js";
+import {optionalTrimmedString, requireNonEmptyString, uniqueTrimmedStrings} from "../../lib/strings.js";
+import {ensurePostgresExecutionEnvironmentSchema} from "./postgres-schema.js";
 import {buildExecutionEnvironmentTableNames, type ExecutionEnvironmentTableNames} from "./postgres-shared.js";
 import type {ExecutionEnvironmentStore} from "./store.js";
 import type {
@@ -18,187 +20,141 @@ import type {
   SessionEnvironmentBindingRecord,
 } from "./types.js";
 
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-interface PgPoolLike extends PgQueryable {}
-
 export interface PostgresExecutionEnvironmentStoreOptions {
   pool: PgPoolLike;
 }
 
-function requireTrimmed(field: string, value: string | undefined): string {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    throw new Error(`${field} must not be empty.`);
-  }
-  return trimmed;
+function requireTrimmed(field: string, value: unknown): string {
+  return requireNonEmptyString(value, `${field} must not be empty.`);
 }
 
-function optionalTrimmed(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed || undefined;
+function optionalTrimmed(field: string, value: unknown): string | undefined {
+  return optionalTrimmedString(value, `${field} must be a string.`);
+}
+
+function readTrimmedList(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return uniqueTrimmedStrings(value.filter((entry): entry is string => typeof entry === "string"));
 }
 
 function parseCredentialPolicy(value: unknown): ExecutionCredentialPolicy {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return {mode: "none"};
   }
-  const record = value as Record<string, unknown>;
-  if (record.mode === "all_agent") {
+  if (value.mode === "all_agent") {
     return {mode: "all_agent"};
   }
-  if (record.mode === "allowlist") {
-    const envKeys = Array.isArray(record.envKeys)
-      ? record.envKeys.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-      : [];
-    return {mode: "allowlist", envKeys};
+  if (value.mode === "allowlist") {
+    return {mode: "allowlist", envKeys: readTrimmedList(value.envKeys)};
   }
   return {mode: "none"};
 }
 
 function parseSkillPolicy(value: unknown): ExecutionSkillPolicy {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return {mode: "none"};
   }
-  const record = value as Record<string, unknown>;
-  if (record.mode === "all_agent") {
+  if (value.mode === "all_agent") {
     return {mode: "all_agent"};
   }
-  if (record.mode === "allowlist") {
-    const skillKeys = Array.isArray(record.skillKeys)
-      ? record.skillKeys.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-      : [];
-    return {mode: "allowlist", skillKeys};
+  if (value.mode === "allowlist") {
+    return {mode: "allowlist", skillKeys: readTrimmedList(value.skillKeys)};
   }
   return {mode: "none"};
 }
 
 function parseToolPolicy(value: unknown): ExecutionToolPolicy {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return {};
   }
-  const record = value as Record<string, unknown>;
   const policy: ExecutionToolPolicy = {};
-  if (Array.isArray(record.allowedTools)) {
-    const allowedTools = record.allowedTools
-      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  if (Array.isArray(value.allowedTools)) {
+    const allowedTools = readTrimmedList(value.allowedTools);
     if (allowedTools.length > 0) {
       policy.allowedTools = allowedTools;
     }
   }
-  if (record.bash && typeof record.bash === "object" && !Array.isArray(record.bash)) {
-    const bash = record.bash as Record<string, unknown>;
-    if (typeof bash.allowed === "boolean") {
-      policy.bash = {allowed: bash.allowed};
+  if (isRecord(value.bash)) {
+    if (typeof value.bash.allowed === "boolean") {
+      policy.bash = {allowed: value.bash.allowed};
     }
   }
-  if (
-    record.postgresReadonly
-    && typeof record.postgresReadonly === "object"
-    && !Array.isArray(record.postgresReadonly)
-  ) {
-    const postgresReadonly = record.postgresReadonly as Record<string, unknown>;
-    if (typeof postgresReadonly.allowed === "boolean") {
-      policy.postgresReadonly = {allowed: postgresReadonly.allowed};
+  if (isRecord(value.postgresReadonly)) {
+    if (typeof value.postgresReadonly.allowed === "boolean") {
+      policy.postgresReadonly = {allowed: value.postgresReadonly.allowed};
     }
   }
   return policy;
 }
 
+function parseEnvironmentKind(value: unknown): ExecutionEnvironmentKind {
+  if (value === "persistent_agent_runner" || value === "disposable_container" || value === "local") {
+    return value;
+  }
+
+  throw new Error(`Unsupported execution environment kind ${String(value)}.`);
+}
+
+function parseEnvironmentState(value: unknown): ExecutionEnvironmentState {
+  if (
+    value === "provisioning"
+    || value === "ready"
+    || value === "failed"
+    || value === "stopping"
+    || value === "stopped"
+  ) {
+    return value;
+  }
+
+  throw new Error(`Unsupported execution environment state ${String(value)}.`);
+}
+
 function parseEnvironmentRow(row: Record<string, unknown>): ExecutionEnvironmentRecord {
   return {
-    id: String(row.id),
-    agentKey: String(row.agent_key),
-    kind: String(row.kind) as ExecutionEnvironmentKind,
-    state: String(row.state) as ExecutionEnvironmentState,
-    runnerUrl: row.runner_url === null ? undefined : String(row.runner_url),
-    runnerCwd: row.runner_cwd === null ? undefined : String(row.runner_cwd),
-    rootPath: row.root_path === null ? undefined : String(row.root_path),
-    createdBySessionId: row.created_by_session_id === null ? undefined : String(row.created_by_session_id),
-    createdForSessionId: row.created_for_session_id === null ? undefined : String(row.created_for_session_id),
-    expiresAt: row.expires_at === null || row.expires_at === undefined ? undefined : toMillis(row.expires_at),
-    metadata: row.metadata === null ? undefined : row.metadata as ExecutionEnvironmentRecord["metadata"],
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    id: requireTrimmed("environment id", row.id),
+    agentKey: requireTrimmed("agent key", row.agent_key),
+    kind: parseEnvironmentKind(row.kind),
+    state: parseEnvironmentState(row.state),
+    runnerUrl: optionalTrimmed("environment runner url", row.runner_url),
+    runnerCwd: optionalTrimmed("environment runner cwd", row.runner_cwd),
+    rootPath: optionalTrimmed("environment root path", row.root_path),
+    createdBySessionId: optionalTrimmed("environment created_by_session_id", row.created_by_session_id),
+    createdForSessionId: optionalTrimmed("environment created_for_session_id", row.created_for_session_id),
+    expiresAt: optionalTimestampMillis(row.expires_at, "environment expires_at must be a valid timestamp."),
+    metadata: readOptionalJsonValue(row.metadata, "Execution environment metadata"),
+    createdAt: requireTimestampMillis(row.created_at, "environment created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "environment updated_at must be a valid timestamp."),
   };
 }
 
 function parseBindingRow(row: Record<string, unknown>): SessionEnvironmentBindingRecord {
   return {
-    sessionId: String(row.session_id),
-    environmentId: String(row.environment_id),
-    alias: String(row.alias),
-    isDefault: Boolean(row.is_default),
+    sessionId: requireTrimmed("session id", row.session_id),
+    environmentId: requireTrimmed("environment id", row.environment_id),
+    alias: requireTrimmed("environment alias", row.alias),
+    isDefault: requireBoolean(row.is_default, "environment binding is_default must be a boolean."),
     credentialPolicy: parseCredentialPolicy(row.credential_policy),
     skillPolicy: parseSkillPolicy(row.skill_policy),
     toolPolicy: parseToolPolicy(row.tool_policy),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    createdAt: requireTimestampMillis(row.created_at, "environment binding created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "environment binding updated_at must be a valid timestamp."),
   };
 }
 
 export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentStore {
   private readonly pool: PgPoolLike;
   private readonly tables: ExecutionEnvironmentTableNames;
-  private readonly agentTables: ReturnType<typeof buildAgentTableNames>;
-  private readonly sessionTables: ReturnType<typeof buildSessionTableNames>;
 
   constructor(options: PostgresExecutionEnvironmentStoreOptions) {
     this.pool = options.pool;
     this.tables = buildExecutionEnvironmentTableNames();
-    this.agentTables = buildAgentTableNames();
-    this.sessionTables = buildSessionTableNames();
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.executionEnvironments} (
-        id TEXT PRIMARY KEY,
-        agent_key TEXT NOT NULL REFERENCES ${this.agentTables.agents}(agent_key) ON DELETE CASCADE,
-        kind TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'ready',
-        runner_url TEXT,
-        runner_cwd TEXT,
-        root_path TEXT,
-        created_by_session_id TEXT REFERENCES ${this.sessionTables.sessions}(id) ON DELETE SET NULL,
-        created_for_session_id TEXT REFERENCES ${this.sessionTables.sessions}(id) ON DELETE SET NULL,
-        expires_at TIMESTAMPTZ,
-        metadata JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.sessionEnvironmentBindings} (
-        session_id TEXT NOT NULL REFERENCES ${this.sessionTables.sessions}(id) ON DELETE CASCADE,
-        environment_id TEXT NOT NULL REFERENCES ${this.tables.executionEnvironments}(id) ON DELETE CASCADE,
-        alias TEXT NOT NULL,
-        is_default BOOLEAN NOT NULL DEFAULT FALSE,
-        allow_override BOOLEAN NOT NULL DEFAULT FALSE,
-        credential_policy JSONB NOT NULL DEFAULT '{"mode":"none"}'::jsonb,
-        skill_policy JSONB NOT NULL DEFAULT '{"mode":"none"}'::jsonb,
-        tool_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (session_id, environment_id)
-      )
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.sessionEnvironmentBindings}
-      ADD COLUMN IF NOT EXISTS skill_policy JSONB NOT NULL DEFAULT '{"mode":"none"}'::jsonb
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.sessionEnvironmentBindings}
-      ALTER COLUMN skill_policy SET DEFAULT '{"mode":"none"}'::jsonb
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_session_environment_default_idx`)}
-      ON ${this.tables.sessionEnvironmentBindings} (session_id)
-      WHERE is_default
-    `);
+    await ensurePostgresExecutionEnvironmentSchema(this.pool);
   }
 
   async createEnvironment(input: CreateExecutionEnvironmentInput): Promise<ExecutionEnvironmentRecord> {
@@ -234,24 +190,24 @@ export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentSt
     `, [
       requireTrimmed("environment id", input.id),
       requireTrimmed("agent key", input.agentKey),
-      requireTrimmed("environment kind", input.kind),
-      input.state ?? "ready",
-      optionalTrimmed(input.runnerUrl) ?? null,
-      optionalTrimmed(input.runnerCwd) ?? null,
-      optionalTrimmed(input.rootPath) ?? null,
-      optionalTrimmed(input.createdBySessionId) ?? null,
-      optionalTrimmed(input.createdForSessionId) ?? null,
+      parseEnvironmentKind(input.kind),
+      parseEnvironmentState(input.state ?? "ready"),
+      optionalTrimmed("environment runner url", input.runnerUrl) ?? null,
+      optionalTrimmed("environment runner cwd", input.runnerCwd) ?? null,
+      optionalTrimmed("environment root path", input.rootPath) ?? null,
+      optionalTrimmed("environment created_by_session_id", input.createdBySessionId) ?? null,
+      optionalTrimmed("environment created_for_session_id", input.createdForSessionId) ?? null,
       input.expiresAt === undefined ? null : new Date(input.expiresAt),
-      toJson(input.metadata),
+      toJson(readOptionalJsonValue(input.metadata, "Execution environment metadata")),
     ]);
 
     return parseEnvironmentRow(result.rows[0] as Record<string, unknown>);
   }
 
   async bindSession(input: BindSessionEnvironmentInput): Promise<SessionEnvironmentBindingRecord> {
-    const credentialPolicy = input.credentialPolicy ?? {mode: "none"};
-    const skillPolicy = input.skillPolicy ?? {mode: "none"};
-    const toolPolicy = input.toolPolicy ?? {};
+    const credentialPolicy = parseCredentialPolicy(input.credentialPolicy);
+    const skillPolicy = parseSkillPolicy(input.skillPolicy);
+    const toolPolicy = parseToolPolicy(input.toolPolicy);
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.sessionEnvironmentBindings} (
         session_id,
@@ -332,7 +288,7 @@ export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentSt
   async listBindingsForEnvironments(
     environmentIds: readonly string[],
   ): Promise<readonly SessionEnvironmentBindingRecord[]> {
-    const ids = [...new Set(environmentIds.map((id) => id.trim()).filter(Boolean))];
+    const ids = uniqueTrimmedStrings(environmentIds);
     if (ids.length === 0) {
       return [];
     }

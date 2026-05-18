@@ -1,20 +1,15 @@
-import {createHash, randomBytes, randomUUID, timingSafeEqual} from "node:crypto";
+import {randomUUID} from "node:crypto";
 
-import type {Pool} from "pg";
+import {generateOpaqueToken, hashOpaqueToken, opaqueTokenMatches} from "../../lib/opaque-tokens.js";
+import type {PgQueryable} from "../../lib/postgres-query.js";
+import {requireTimestampMillis} from "../../lib/postgres-values.js";
+import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
+import {ensurePostgresAgentAppAuthSchema} from "./auth-schema.js";
+import {buildAgentAppAuthTableNames} from "./auth-shared.js";
 
-import {buildAgentTableNames} from "../agents/postgres-shared.js";
-import {buildIdentityTableNames} from "../identity/postgres-shared.js";
-import {buildSessionTableNames} from "../sessions/postgres-shared.js";
-import {
-  buildRuntimeRelationNames,
-  CREATE_RUNTIME_SCHEMA_SQL,
-  quoteIdentifier,
-  toMillis,
-} from "../threads/runtime/postgres-shared.js";
-
-export const APP_CSRF_COOKIE_PREFIX = "panda_app_csrf_";
-export const APP_SESSION_COOKIE_PREFIX = "panda_app_session_";
-export const DEFAULT_APP_LAUNCH_TOKEN_TTL_MS = 10 * 60 * 1000;
+const APP_CSRF_COOKIE_PREFIX = "panda_app_csrf_";
+const APP_SESSION_COOKIE_PREFIX = "panda_app_session_";
+const DEFAULT_APP_LAUNCH_TOKEN_TTL_MS = 10 * 60 * 1000;
 export const DEFAULT_APP_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 function buildCookieNameSuffix(agentKey: string, appSlug: string): string {
@@ -30,16 +25,6 @@ export function buildAgentAppCookieNames(agentKey: string, appSlug: string): {
     csrf: `${APP_CSRF_COOKIE_PREFIX}${suffix}`,
     session: `${APP_SESSION_COOKIE_PREFIX}${suffix}`,
   };
-}
-
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-interface AgentAppAuthTableNames {
-  prefix: string;
-  launchTokens: string;
-  sessions: string;
 }
 
 export interface CreateAgentAppLaunchTokenInput {
@@ -80,34 +65,12 @@ export interface AgentAppAuthService {
   verifyCsrfToken(session: AgentAppSessionRecord, token: string): boolean;
 }
 
-function buildAgentAppAuthTableNames(): AgentAppAuthTableNames {
-  return buildRuntimeRelationNames({
-    launchTokens: "app_launch_tokens",
-    sessions: "app_sessions",
-  });
+function requireAppAuthString(label: string, value: unknown): string {
+  return requireNonEmptyString(value, `${label} must not be empty.`);
 }
 
-function generateToken(prefix: string): string {
-  return `${prefix}_${randomBytes(32).toString("base64url")}`;
-}
-
-function hashToken(token: string): string {
-  return createHash("sha256").update(token, "utf8").digest("hex");
-}
-
-function tokenMatches(token: string, expectedHash: string): boolean {
-  const actual = Buffer.from(hashToken(token), "utf8");
-  const expected = Buffer.from(expectedHash, "utf8");
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
-
-function requireTrimmed(label: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return trimmed;
+function optionalAppAuthString(label: string, value: unknown): string | undefined {
+  return optionalNonEmptyString(value, `${label} must not be empty.`);
 }
 
 function positiveDuration(value: number | undefined, fallback: number): number {
@@ -121,74 +84,48 @@ function positiveDuration(value: number | undefined, fallback: number): number {
   return Math.floor(value);
 }
 
+function parseLaunchRow(row: Record<string, unknown>): {
+  agentKey: string;
+  appSlug: string;
+  identityId: string;
+  sessionId?: string;
+} {
+  return {
+    agentKey: requireAppAuthString("App launch agent key", row.agent_key),
+    appSlug: requireAppAuthString("App launch slug", row.app_slug),
+    identityId: requireAppAuthString("App launch identity id", row.identity_id),
+    sessionId: optionalAppAuthString("App launch session id", row.session_id),
+  };
+}
+
 function parseSessionRow(row: Record<string, unknown>): AgentAppSessionRecord {
   return {
-    id: String(row.id),
-    agentKey: String(row.agent_key),
-    appSlug: String(row.app_slug),
-    identityId: String(row.identity_id),
-    sessionId: row.session_id === null || row.session_id === undefined ? undefined : String(row.session_id),
-    csrfTokenHash: String(row.csrf_token_hash),
-    expiresAt: toMillis(row.expires_at),
-    createdAt: toMillis(row.created_at),
-    lastSeenAt: toMillis(row.last_seen_at),
+    id: requireAppAuthString("App session id", row.id),
+    agentKey: requireAppAuthString("App session agent key", row.agent_key),
+    appSlug: requireAppAuthString("App session slug", row.app_slug),
+    identityId: requireAppAuthString("App session identity id", row.identity_id),
+    sessionId: optionalAppAuthString("App session runtime session id", row.session_id),
+    csrfTokenHash: requireAppAuthString("App session CSRF token hash", row.csrf_token_hash),
+    expiresAt: requireTimestampMillis(row.expires_at, "App session expires_at must be a valid timestamp."),
+    createdAt: requireTimestampMillis(row.created_at, "App session created_at must be a valid timestamp."),
+    lastSeenAt: requireTimestampMillis(row.last_seen_at, "App session last_seen_at must be a valid timestamp."),
   };
 }
 
 export class PostgresAgentAppAuthService implements AgentAppAuthService {
   private readonly pool: PgQueryable;
   private readonly tables = buildAgentAppAuthTableNames();
-  private readonly agentTables = buildAgentTableNames();
-  private readonly identityTables = buildIdentityTableNames();
-  private readonly sessionTables = buildSessionTableNames();
 
   constructor(options: {pool: PgQueryable}) {
     this.pool = options.pool;
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.launchTokens} (
-        id TEXT PRIMARY KEY,
-        token_hash TEXT NOT NULL UNIQUE,
-        agent_key TEXT NOT NULL REFERENCES ${this.agentTables.agents}(agent_key) ON DELETE CASCADE,
-        app_slug TEXT NOT NULL,
-        identity_id TEXT NOT NULL REFERENCES ${this.identityTables.identities}(id) ON DELETE CASCADE,
-        session_id TEXT REFERENCES ${this.sessionTables.sessions}(id) ON DELETE SET NULL,
-        expires_at TIMESTAMPTZ NOT NULL,
-        consumed_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_app_launch_tokens_lookup_idx`)}
-      ON ${this.tables.launchTokens} (agent_key, app_slug, identity_id, expires_at DESC)
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.sessions} (
-        id TEXT PRIMARY KEY,
-        session_token_hash TEXT NOT NULL UNIQUE,
-        csrf_token_hash TEXT NOT NULL,
-        agent_key TEXT NOT NULL REFERENCES ${this.agentTables.agents}(agent_key) ON DELETE CASCADE,
-        app_slug TEXT NOT NULL,
-        identity_id TEXT NOT NULL REFERENCES ${this.identityTables.identities}(id) ON DELETE CASCADE,
-        session_id TEXT REFERENCES ${this.sessionTables.sessions}(id) ON DELETE SET NULL,
-        expires_at TIMESTAMPTZ NOT NULL,
-        revoked_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_app_sessions_lookup_idx`)}
-      ON ${this.tables.sessions} (agent_key, app_slug, identity_id, expires_at DESC)
-      WHERE revoked_at IS NULL
-    `);
+    await ensurePostgresAgentAppAuthSchema(this.pool);
   }
 
   async createLaunchToken(input: CreateAgentAppLaunchTokenInput): Promise<AgentAppLaunchTokenResult> {
-    const token = generateToken("pal");
+    const token = generateOpaqueToken("pal");
     const expiresInMs = positiveDuration(input.expiresInMs, DEFAULT_APP_LAUNCH_TOKEN_TTL_MS);
     const expiresAt = Date.now() + expiresInMs;
 
@@ -212,10 +149,10 @@ export class PostgresAgentAppAuthService implements AgentAppAuthService {
       )
     `, [
       randomUUID(),
-      hashToken(token),
-      requireTrimmed("Agent key", input.agentKey),
-      requireTrimmed("App slug", input.appSlug),
-      requireTrimmed("Identity id", input.identityId),
+      hashOpaqueToken(token),
+      requireAppAuthString("Agent key", input.agentKey),
+      requireAppAuthString("App slug", input.appSlug),
+      requireAppAuthString("Identity id", input.identityId),
       input.sessionId?.trim() || null,
       new Date(expiresAt),
     ]);
@@ -237,15 +174,16 @@ export class PostgresAgentAppAuthService implements AgentAppAuthService {
         AND consumed_at IS NULL
         AND expires_at > NOW()
       RETURNING agent_key, app_slug, identity_id, session_id
-    `, [hashToken(requireTrimmed("Launch token", token))]);
+    `, [hashOpaqueToken(requireAppAuthString("Launch token", token))]);
 
     const row = launch.rows[0] as Record<string, unknown> | undefined;
     if (!row) {
       throw new Error("App launch link is invalid, expired, or already used.");
     }
+    const launchRow = parseLaunchRow(row);
 
-    const sessionToken = generateToken("pas");
-    const csrfToken = generateToken("pac");
+    const sessionToken = generateOpaqueToken("pas");
+    const csrfToken = generateOpaqueToken("pac");
     const expiresAt = Date.now() + positiveDuration(options.sessionTtlMs, DEFAULT_APP_SESSION_TTL_MS);
     const session = await this.pool.query(`
       INSERT INTO ${this.tables.sessions} (
@@ -270,12 +208,12 @@ export class PostgresAgentAppAuthService implements AgentAppAuthService {
       RETURNING *
     `, [
       randomUUID(),
-      hashToken(sessionToken),
-      hashToken(csrfToken),
-      String(row.agent_key),
-      String(row.app_slug),
-      String(row.identity_id),
-      row.session_id === null || row.session_id === undefined ? null : String(row.session_id),
+      hashOpaqueToken(sessionToken),
+      hashOpaqueToken(csrfToken),
+      launchRow.agentKey,
+      launchRow.appSlug,
+      launchRow.identityId,
+      launchRow.sessionId ?? null,
       new Date(expiresAt),
     ]);
 
@@ -294,13 +232,13 @@ export class PostgresAgentAppAuthService implements AgentAppAuthService {
         AND revoked_at IS NULL
         AND expires_at > NOW()
       RETURNING *
-    `, [hashToken(requireTrimmed("App session token", token))]);
+    `, [hashOpaqueToken(requireAppAuthString("App session token", token))]);
 
     const row = result.rows[0] as Record<string, unknown> | undefined;
     return row ? parseSessionRow(row) : null;
   }
 
   verifyCsrfToken(session: AgentAppSessionRecord, token: string): boolean {
-    return tokenMatches(token, session.csrfTokenHash);
+    return opaqueTokenMatches(token, session.csrfTokenHash);
   }
 }

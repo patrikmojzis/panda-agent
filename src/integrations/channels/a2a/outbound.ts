@@ -1,24 +1,26 @@
 import {basename, extname} from "node:path";
 import {readFile} from "node:fs/promises";
 
-import type {JsonValue} from "../../../kernel/agent/types.js";
+import type {JsonValue} from "../../../lib/json.js";
+import {isRecord} from "../../../lib/records.js";
 import type {
-    ChannelOutboundAdapter,
-    FileSystemMediaStore,
     OutboundRequest,
     OutboundResult,
     OutboundSentItem
-} from "../../../domain/channels/index.js";
+} from "../../../domain/channels/types.js";
+import type {ChannelOutboundAdapter} from "../../../domain/channels/outbound.js";
+import type {FileSystemMediaStore} from "../../../domain/channels/media-store.js";
 import type {
     A2AMessageItem,
     A2AMessageRequestPayload,
     A2ASenderEnvironmentSnapshot,
-    RuntimeRequestRepo
-} from "../../../domain/threads/requests/index.js";
-import type {ExecutionEnvironmentKind} from "../../../domain/execution-environments/index.js";
+    CreateRuntimeRequestInput,
+    RuntimeRequestRecord,
+} from "../../../domain/threads/requests/types.js";
+import type {ExecutionEnvironmentKind} from "../../../domain/execution-environments/types.js";
+import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "../../../domain/a2a/constants.js";
 import {requireA2AString} from "../../../domain/a2a/shared.js";
-import type {SessionStore} from "../../../domain/sessions/index.js";
-import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "./config.js";
+import type {SessionStore} from "../../../domain/sessions/store.js";
 
 const IMAGE_MIME_BY_EXTENSION = new Map<string, string>([
   [".png", "image/png"],
@@ -46,23 +48,19 @@ interface A2ADeliveryMetadata {
 }
 
 export interface CreateA2AOutboundAdapterOptions {
-  requests: RuntimeRequestRepo;
-  sessionStore: SessionStore;
+  requests: {
+    enqueueRequest(input: CreateRuntimeRequestInput<"a2a_message">): Promise<RuntimeRequestRecord<"a2a_message">>;
+  };
+  sessionStore: Pick<SessionStore, "getSession">;
   createMediaStore(rootDir: string): FileSystemMediaStore;
   resolveAgentMediaDir(agentKey: string): string;
 }
-
-const requireTrimmed = requireA2AString;
 
 const EXECUTION_ENVIRONMENT_KINDS = new Set<ExecutionEnvironmentKind>([
   "persistent_agent_runner",
   "disposable_container",
   "local",
 ]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function readOptionalTrimmedString(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
@@ -101,8 +99,8 @@ function readSenderEnvironment(value: unknown): A2ASenderEnvironmentSnapshot | u
     throw new Error("A2A sender environment metadata must be an object.");
   }
 
-  const id = requireTrimmed("sender environment id", readOptionalTrimmedString(value, "id"));
-  const kind = requireTrimmed("sender environment kind", readOptionalTrimmedString(value, "kind"));
+  const id = requireA2AString("sender environment id", readOptionalTrimmedString(value, "id"));
+  const kind = requireA2AString("sender environment kind", readOptionalTrimmedString(value, "kind"));
   if (!EXECUTION_ENVIRONMENT_KINDS.has(kind as ExecutionEnvironmentKind)) {
     throw new Error(`Unsupported A2A sender environment kind ${kind}.`);
   }
@@ -131,12 +129,12 @@ function requireMetadata(value: JsonValue | undefined): A2ADeliveryMetadata["a2a
   }
 
   const a2a = root.a2a as Record<string, unknown>;
-  const messageId = requireTrimmed("message id", typeof a2a.messageId === "string" ? a2a.messageId : undefined);
-  const fromAgentKey = requireTrimmed("from agent key", typeof a2a.fromAgentKey === "string" ? a2a.fromAgentKey : undefined);
-  const fromSessionId = requireTrimmed("from session id", typeof a2a.fromSessionId === "string" ? a2a.fromSessionId : undefined);
-  const fromThreadId = requireTrimmed("from thread id", typeof a2a.fromThreadId === "string" ? a2a.fromThreadId : undefined);
-  const toAgentKey = requireTrimmed("to agent key", typeof a2a.toAgentKey === "string" ? a2a.toAgentKey : undefined);
-  const toSessionId = requireTrimmed("to session id", typeof a2a.toSessionId === "string" ? a2a.toSessionId : undefined);
+  const messageId = requireA2AString("message id", typeof a2a.messageId === "string" ? a2a.messageId : undefined);
+  const fromAgentKey = requireA2AString("from agent key", typeof a2a.fromAgentKey === "string" ? a2a.fromAgentKey : undefined);
+  const fromSessionId = requireA2AString("from session id", typeof a2a.fromSessionId === "string" ? a2a.fromSessionId : undefined);
+  const fromThreadId = requireA2AString("from thread id", typeof a2a.fromThreadId === "string" ? a2a.fromThreadId : undefined);
+  const toAgentKey = requireA2AString("to agent key", typeof a2a.toAgentKey === "string" ? a2a.toAgentKey : undefined);
+  const toSessionId = requireA2AString("to session id", typeof a2a.toSessionId === "string" ? a2a.toSessionId : undefined);
   const sentAt = typeof a2a.sentAt === "number" && Number.isFinite(a2a.sentAt) ? a2a.sentAt : Date.now();
   const senderEnvironment = readSenderEnvironment(a2a.senderEnvironment);
 
@@ -230,7 +228,7 @@ export function createA2AOutboundAdapter(
   return {
     channel: A2A_SOURCE,
     async send(request: OutboundRequest): Promise<OutboundResult> {
-      requireTrimmed("connector key", request.target.connectorKey);
+      requireA2AString("connector key", request.target.connectorKey);
       if (request.target.connectorKey !== A2A_CONNECTOR_KEY) {
         throw new Error(`A2A outbound requires connector key ${A2A_CONNECTOR_KEY}.`);
       }

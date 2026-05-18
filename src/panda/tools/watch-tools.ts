@@ -3,9 +3,7 @@ import {z} from "zod";
 import type {WatchStore} from "../../domain/watches/store.js";
 import type {WatchMutationService} from "../../domain/watches/mutation-service.js";
 import type {WatchEventKind, WatchSourceKind} from "../../domain/watches/types.js";
-import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
-import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {
@@ -21,37 +19,31 @@ import {
     getWatchSourceSchema,
     parseWatchDetectorConfig,
     parseWatchSourceConfig,
-    requireSchemaGetSelection,
 } from "./watch-schema-catalog.js";
-import {rethrowAsToolError} from "./shared.js";
+import {readRequiredAgentSessionToolScope, rethrowAsToolError} from "./shared.js";
 
 function readWatchScope(context: unknown): {
   agentKey: string;
   sessionId: string;
   createdByIdentityId?: string;
 } {
-  if (
-    !context
-    || typeof context !== "object"
-    || Array.isArray(context)
-    || typeof (context as {agentKey?: unknown}).agentKey !== "string"
-    || !(context as {agentKey: string}).agentKey.trim()
-    || typeof (context as {sessionId?: unknown}).sessionId !== "string"
-    || !(context as {sessionId: string}).sessionId.trim()
-  ) {
-    throw new ToolError("Watch tools require agentKey and sessionId in the runtime session context.");
-  }
-
+  const scope = readRequiredAgentSessionToolScope(
+    context,
+    "Watch tools require agentKey and sessionId in the runtime session context.",
+  );
   return {
-    agentKey: (context as {agentKey: string}).agentKey,
-    sessionId: (context as {sessionId: string}).sessionId,
-    createdByIdentityId: readCurrentInputIdentityId(context),
+    agentKey: scope.agentKey,
+    sessionId: scope.sessionId,
+    ...(scope.identityId ? {createdByIdentityId: scope.identityId} : {}),
   };
 }
 
+type WatchToolMutations = Pick<WatchMutationService, "createWatch" | "updateWatch">;
+type WatchToolStore = Pick<WatchStore, "disableWatch">;
+
 export interface WatchToolOptions {
-  mutations: WatchMutationService;
-  store: WatchStore;
+  mutations: WatchToolMutations;
+  store: WatchToolStore;
 }
 
 const compactWatchSourceEnvelopeSchema = getCompactWatchSourceEnvelopeSchema();
@@ -99,25 +91,24 @@ export class WatchSchemaGetTool<TContext = DefaultAgentSessionContext>
       notes: string[];
     };
   }> {
-    const request = requireSchemaGetSelection(args);
     return {
-      ...(request.sourceKind
+      ...(args.sourceKind
         ? {
           source: {
-            kind: request.sourceKind,
-            schema: getWatchSourceSchema(request.sourceKind),
-            example: getWatchSourceExample(request.sourceKind),
-            notes: getWatchSourceNotes(request.sourceKind),
+            kind: args.sourceKind,
+            schema: getWatchSourceSchema(args.sourceKind),
+            example: getWatchSourceExample(args.sourceKind),
+            notes: getWatchSourceNotes(args.sourceKind),
           },
         }
         : {}),
-      ...(request.detectorKind
+      ...(args.detectorKind
         ? {
           detector: {
-            kind: request.detectorKind,
-            schema: getWatchDetectorSchema(request.detectorKind),
-            example: getWatchDetectorExample(request.detectorKind),
-            notes: getWatchDetectorNotes(request.detectorKind),
+            kind: args.detectorKind,
+            schema: getWatchDetectorSchema(args.detectorKind),
+            example: getWatchDetectorExample(args.detectorKind),
+            notes: getWatchDetectorNotes(args.detectorKind),
           },
         }
         : {}),

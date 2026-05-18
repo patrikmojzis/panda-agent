@@ -5,6 +5,50 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Resolves `promise`, or returns `fallback` when `timeoutMs` elapses first.
+ */
+export function withFallbackTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  fallback: () => T,
+): Promise<T> {
+  if (timeoutMs <= 0) {
+    return Promise.resolve(fallback());
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      resolve(fallback());
+    }, timeoutMs);
+    timer.unref?.();
+
+    promise.then((value) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    }).catch((error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
 export interface BackgroundTaskOptions {
   label: string;
   onError?: (error: unknown) => Promise<void> | void;

@@ -5,17 +5,21 @@ import {readFile} from "node:fs/promises";
 import {z} from "zod";
 
 import {normalizeAgentKey} from "../../domain/agents/types.js";
-import {writeJsonResponse} from "../../lib/http.js";
+import {isLoopbackHttpHostname, normalizeHttpHostname, writeJsonResponse} from "../../lib/http.js";
 import {isRecord} from "../../lib/records.js";
+import {readTcpPort} from "../../lib/numbers.js";
 import {trimToNull} from "../../lib/strings.js";
 import {Agent} from "../../kernel/agent/agent.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
+import {joinMessageTextParts} from "../../kernel/agent/helpers/message-text.js";
 import {RunContext} from "../../kernel/agent/run-context.js";
 import {readToolArtifact} from "../../kernel/agent/tool-artifacts.js";
-import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
-import {browserActionSchema} from "../../panda/tools/browser-schema.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import {isJsonObject, type JsonObject} from "../../lib/json.js";
+import {browserActionSchema} from "./action-schema.js";
 import {BrowserSessionService, type BrowserSessionServiceOptions} from "./session-service.js";
 import {normalizeBrowserDeviceProfile} from "./shared.js";
+import {readJsonHttpBody} from "../http-body.js";
 import type {
     BrowserPreviewOriginGrant,
     BrowserRunnerActionRequest,
@@ -27,6 +31,7 @@ import type {
 const DEFAULT_BROWSER_RUNNER_PORT = 8080;
 const DEFAULT_BROWSER_RUNNER_HOST = "0.0.0.0";
 const DEFAULT_PREVIEW_CONTAINER_PREFIX = "panda-env";
+const MAX_BROWSER_RUNNER_JSON_BODY_BYTES = 8 * 1024 * 1024;
 
 const browserRunnerRequestSchema = z.object({
   agentKey: z.string().trim().default(""),
@@ -96,8 +101,8 @@ function parsePort(value: string | null, fallback: number): number {
     return fallback;
   }
 
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+  const parsed = readTcpPort(value);
+  if (parsed === undefined) {
     throw new Error(`Invalid browser runner port: ${value}`);
   }
 
@@ -134,22 +139,16 @@ function unauthorized(response: ServerResponse, statusCode: number, error: strin
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
+  return readJsonHttpBody(request, {
+    createError: createBrowserRunnerBodyError,
+    invalidJsonPrefix: "Browser runner request body must be valid JSON",
+    maxBytes: MAX_BROWSER_RUNNER_JSON_BODY_BYTES,
+    tooLargeMessage: "Browser runner request body is too large.",
+  });
+}
 
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
-  if (!raw) {
-    return {};
-  }
-
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ToolError(`Browser runner request body must be valid JSON: ${message}`);
-  }
+function createBrowserRunnerBodyError(statusCode: number, message: string): ToolError {
+  return new ToolError(message, {details: {statusCode}});
 }
 
 function requireAuthorization(request: IncomingMessage, sharedSecret: string): void {
@@ -163,25 +162,12 @@ function requireAuthorization(request: IncomingMessage, sharedSecret: string): v
   }
 }
 
-function normalizePreviewHostname(hostname: string): string {
-  const normalized = hostname.trim().replace(/\.+$/, "").toLowerCase();
-  if (normalized.startsWith("[") && normalized.endsWith("]")) {
-    return normalized.slice(1, -1);
-  }
-  return normalized;
-}
-
 function normalizeDockerDnsLabelPart(value: string): string {
   const cleaned = value
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return cleaned || DEFAULT_PREVIEW_CONTAINER_PREFIX;
-}
-
-function isLoopbackPreviewHost(hostname: string): boolean {
-  const normalized = normalizePreviewHostname(hostname);
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
 function isHttpPreviewOrigin(url: URL): boolean {
@@ -209,7 +195,7 @@ function validatePreviewOriginGrant(
   if (!isHttpPreviewOrigin(actionUrl) || !isHttpPreviewOrigin(originalUrl) || !isHttpPreviewOrigin(resolvedUrl)) {
     throw new ToolError("Browser preview origin grants only support http:// and https:// origins.");
   }
-  if (!isLoopbackPreviewHost(originalUrl.hostname)) {
+  if (!isLoopbackHttpHostname(originalUrl.hostname)) {
     throw new ToolError("Browser preview origin grants require a loopback original origin.");
   }
   if (actionUrl.origin !== resolvedUrl.origin) {
@@ -217,7 +203,7 @@ function validatePreviewOriginGrant(
   }
 
   const prefix = normalizeDockerDnsLabelPart(trimToNull(env.PANDA_DISPOSABLE_CONTAINER_PREFIX) ?? DEFAULT_PREVIEW_CONTAINER_PREFIX);
-  const resolvedHostname = normalizePreviewHostname(resolvedUrl.hostname);
+  const resolvedHostname = normalizeHttpHostname(resolvedUrl.hostname);
   if (!resolvedHostname.startsWith(`${prefix}-`)) {
     throw new ToolError("Browser preview origin grant resolved host is not a managed disposable container.");
   }
@@ -270,11 +256,8 @@ async function buildRunnerArtifact(payload: ToolResultPayload): Promise<BrowserR
 }
 
 async function buildRunnerResponse(payload: ToolResultPayload): Promise<BrowserRunnerActionResponse> {
-  const text = payload.content
-    .filter((part): part is {type: "text"; text: string} => part.type === "text")
-    .map((part) => part.text)
-    .join("\n\n");
-  const details = isRecord(payload.details) ? payload.details as JsonObject : undefined;
+  const text = joinMessageTextParts(payload.content);
+  const details = isJsonObject(payload.details) ? payload.details : undefined;
   const artifact = await buildRunnerArtifact(payload);
 
   return {
@@ -283,6 +266,20 @@ async function buildRunnerResponse(payload: ToolResultPayload): Promise<BrowserR
     ...(details ? {details} : {}),
     ...(artifact ? {artifact} : {}),
   };
+}
+
+function readToolErrorStatusCode(details: unknown): number {
+  return isRecord(details) && typeof details.statusCode === "number"
+    ? details.statusCode
+    : 400;
+}
+
+function readToolErrorResponseDetails(details: unknown): JsonObject | undefined {
+  if (!isJsonObject(details) || "statusCode" in details) {
+    return undefined;
+  }
+
+  return details;
 }
 
 export function resolveBrowserRunnerOptions(env: NodeJS.ProcessEnv = process.env): BrowserRunnerOptions {
@@ -374,16 +371,12 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
       }
     } catch (error) {
       if (error instanceof ToolError) {
-        const statusCode = isRecord(error.details) && typeof error.details.statusCode === "number"
-          ? error.details.statusCode
-          : 400;
+        const statusCode = readToolErrorStatusCode(error.details);
         if (statusCode === 401 || statusCode === 403) {
           unauthorized(response, statusCode, error.message);
           return;
         }
-        const details = isRecord(error.details) && !("statusCode" in error.details)
-          ? error.details as JsonObject
-          : undefined;
+        const details = readToolErrorResponseDetails(error.details);
         writeJsonResponse(response, statusCode, {
           ok: false,
           error: error.message,

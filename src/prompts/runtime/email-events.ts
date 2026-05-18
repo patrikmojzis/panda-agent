@@ -1,4 +1,4 @@
-import type {EmailAuthSummary, EmailAuthVerdict} from "../../domain/email/index.js";
+import type {EmailAuthSummary, EmailAuthVerdict} from "../../domain/email/types.js";
 
 export function renderEmailEventPrompt(options: {
   accountKey: string;

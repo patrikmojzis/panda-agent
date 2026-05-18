@@ -1,6 +1,6 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {WatchRecord} from "../src/domain/watches/index.js";
-import {evaluateWatch, validateReadOnlySqlQuery,} from "../src/integrations/watches/evaluator.js";
+import {evaluateWatch, validateReadOnlySqlQuery, type WatchCredentialResolver,} from "../src/integrations/watches/evaluator.js";
 
 const adapterMocks = vi.hoisted(() => {
   const state = {
@@ -166,7 +166,7 @@ vi.mock("imapflow", () => ({
   ImapFlow: adapterMocks.MockImapFlow,
 }));
 
-function createCredentialResolver() {
+function createCredentialResolver(): WatchCredentialResolver {
   return {
     resolveCredential: vi.fn(async (envKey: string) => ({
       id: envKey,
@@ -254,7 +254,7 @@ describe("watch adapters", () => {
     });
 
     const result = await evaluateWatch(watch, {
-      credentialResolver: credentialResolver as any,
+      credentialResolver,
       credentialContext: {agentKey: "panda"},
     });
 
@@ -305,7 +305,7 @@ describe("watch adapters", () => {
     ];
 
     const postgresResult = await evaluateWatch(postgresWatch, {
-      credentialResolver: credentialResolver as any,
+      credentialResolver,
       credentialContext: {agentKey: "panda"},
     });
     expect(postgresResult.changed).toBe(true);
@@ -349,7 +349,7 @@ describe("watch adapters", () => {
     ];
 
     const mysqlResult = await evaluateWatch(mysqlWatch, {
-      credentialResolver: credentialResolver as any,
+      credentialResolver,
       credentialContext: {agentKey: "panda"},
     });
     expect(mysqlResult.changed).toBe(true);
@@ -407,7 +407,7 @@ describe("watch adapters", () => {
     ];
 
     const first = await evaluateWatch(watch, {
-      credentialResolver: credentialResolver as any,
+      credentialResolver,
       credentialContext: {agentKey: "panda"},
     });
     expect(first.changed).toBe(false);
@@ -471,7 +471,7 @@ describe("watch adapters", () => {
       ...watch,
       state: first.nextState,
     }, {
-      credentialResolver: credentialResolver as any,
+      credentialResolver,
       credentialContext: {agentKey: "panda"},
     });
     expect(second.changed).toBe(true);

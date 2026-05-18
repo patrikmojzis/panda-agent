@@ -1,4 +1,4 @@
-import {clamp} from "./screen.js";
+import {clamp} from "../../lib/numbers.js";
 import type {SearchState, TranscriptEntry, TranscriptLineCacheEntry,} from "./chat-shared.js";
 import {type NoticeState, type ViewModel} from "./chat-view.js";
 import {applySlashCompletion, getSlashCompletionContext, type SlashCompletionContext} from "./commands.js";

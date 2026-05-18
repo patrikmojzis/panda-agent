@@ -7,7 +7,8 @@ import {z} from "zod";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {formatToolResultFallback, Tool} from "../../kernel/agent/tool.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
-import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
 

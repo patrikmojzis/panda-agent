@@ -1,31 +1,31 @@
-import {Pool, type PoolClient} from "pg";
+import {Pool} from "pg";
 
-import {type AgentStore, PostgresAgentStore} from "../../domain/agents/index.js";
+import {PostgresAgentStore} from "../../domain/agents/postgres.js";
+import type {AgentStore} from "../../domain/agents/store.js";
 import {
     CredentialResolver,
     CredentialService,
-    PostgresCredentialStore,
-    resolveCredentialCrypto,
-} from "../../domain/credentials/index.js";
-import {
-    type ExecutionEnvironmentStore,
-    PostgresExecutionEnvironmentStore,
-} from "../../domain/execution-environments/index.js";
-import {PostgresIdentityStore} from "../../domain/identity/index.js";
+} from "../../domain/credentials/resolver.js";
+import {PostgresCredentialStore} from "../../domain/credentials/postgres.js";
+import {resolveCredentialCrypto} from "../../domain/credentials/crypto.js";
+import {PostgresExecutionEnvironmentStore} from "../../domain/execution-environments/postgres.js";
+import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
+import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
-import {PostgresScheduledTaskStore, type ScheduledTaskStore,} from "../../domain/scheduling/tasks/index.js";
-import {PostgresSessionStore, type SessionStore} from "../../domain/sessions/index.js";
-import {PostgresTelepathyDeviceStore} from "../../domain/telepathy/index.js";
-import {type EmailStore, PostgresEmailStore} from "../../domain/email/index.js";
+import {PostgresScheduledTaskStore} from "../../domain/scheduling/tasks/postgres.js";
+import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
+import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
+import type {SessionStore} from "../../domain/sessions/store.js";
+import {PostgresTelepathyDeviceStore} from "../../domain/telepathy/postgres.js";
+import {PostgresEmailStore} from "../../domain/email/postgres.js";
+import type {EmailStore} from "../../domain/email/types.js";
 import {WatchMutationService} from "../../domain/watches/mutation-service.js";
-import {PostgresWatchStore, type WatchStore,} from "../../domain/watches/index.js";
-import {PostgresWikiBindingStore, WikiBindingService} from "../../domain/wiki/index.js";
-import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/index.js";
+import {PostgresWatchStore} from "../../domain/watches/postgres.js";
+import type {WatchStore} from "../../domain/watches/store.js";
+import {PostgresWikiBindingStore} from "../../domain/wiki/postgres.js";
+import {WikiBindingService} from "../../domain/wiki/service.js";
+import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import {type AgentAppAuthService, PostgresAgentAppAuthService} from "../../domain/apps/auth.js";
-import {
-    buildThreadRuntimeNotificationChannel,
-    parseThreadRuntimeNotification,
-} from "../../domain/threads/runtime/postgres.js";
 import {
     ensureReadonlySessionQuerySchema,
     readDatabaseUsername,
@@ -49,7 +49,8 @@ import {
     AppViewTool,
 } from "../../panda/tools/app-tools.js";
 import {WikiTool} from "../../panda/tools/wiki-tool.js";
-import {resolveTelepathyEnabled, TelepathyHub,} from "../../integrations/telepathy/hub.js";
+import {TelepathyHub} from "../../integrations/telepathy/hub.js";
+import {resolveTelepathyEnabled} from "../../integrations/telepathy/config.js";
 import {
     ScheduledTaskCancelTool,
     ScheduledTaskCreateTool,
@@ -77,7 +78,8 @@ import {ensureSchemas} from "./postgres-bootstrap.js";
 import type {RuntimeOptions} from "./create-runtime.js";
 import {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
 import {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
-import {createExecutionEnvironmentManagerClientFromEnv} from "../../integrations/shell/index.js";
+import {createExecutionEnvironmentManagerClientFromEnv} from "../../integrations/shell/execution-environment-manager-client.js";
+import {listenThreadRuntimeNotifications} from "./store-notifications.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
@@ -112,11 +114,11 @@ function mergeToolsByName(toolGroups: readonly (readonly Tool[])[]): readonly To
   return merged;
 }
 
-export interface RuntimeBootstrapOptions extends Omit<RuntimeOptions, "dbUrl"> {
+interface RuntimeBootstrapOptions extends Omit<RuntimeOptions, "dbUrl"> {
   dbUrl: string;
 }
 
-export interface RuntimeBootstrapResult {
+interface RuntimeBootstrapResult {
   agentStore: AgentStore;
   apps: AgentAppService;
   appAuth: AgentAppAuthService;
@@ -202,9 +204,7 @@ function createCloseRuntime(options: {
   threadLeasePool: Pool;
   threadLeasePoolObserver: PostgresPoolObserver;
   readonlyPoolState: ObservedPoolState;
-  notificationClient: PoolClient | null;
-  notificationChannel: string | null;
-  notificationHandler: ((message: { channel: string; payload?: string }) => void) | null;
+  notificationUnsubscribe: (() => Promise<void>) | null;
 }): () => Promise<void> {
   return async () => {
     let readonlyPool = options.readonlyPoolState.pool;
@@ -245,21 +245,7 @@ function createCloseRuntime(options: {
       {
         label: "runtime-listener",
         run: async () => {
-          if (!options.notificationClient || !options.notificationHandler || !options.notificationChannel) {
-            return;
-          }
-
-          options.notificationClient.off("notification", options.notificationHandler);
-          try {
-            await options.notificationClient.query(`UNLISTEN ${options.notificationChannel}`);
-          } catch (error) {
-            logRuntimeEvent("runtime_cleanup_error", {
-              step: "runtime-listener-unlisten",
-              message: error instanceof Error ? error.message : String(error),
-            });
-          } finally {
-            options.notificationClient.release();
-          }
+          await options.notificationUnsubscribe?.();
         },
       },
       {
@@ -322,9 +308,7 @@ export async function bootstrapRuntime(
     observer: null,
     initializing: null,
   };
-  let notificationClient: PoolClient | null = null;
-  let notificationHandler: ((message: { channel: string; payload?: string }) => void) | null = null;
-  let notificationChannel: string | null = null;
+  let notificationUnsubscribe: (() => Promise<void>) | null = null;
   let browserService: BrowserRunnerClient | null = null;
   let telepathyService: TelepathyHub | null = null;
   const maxSubagentDepth = options.maxSubagentDepth ?? 1;
@@ -675,23 +659,10 @@ export async function bootstrapRuntime(
     ]);
 
     if (options.onStoreNotification) {
-      notificationChannel = buildThreadRuntimeNotificationChannel();
-      notificationClient = await notificationPool.connect();
-      notificationHandler = (message: { channel: string; payload?: string }) => {
-        if (message.channel !== notificationChannel || typeof message.payload !== "string") {
-          return;
-        }
-
-        const parsed = parseThreadRuntimeNotification(message.payload);
-        if (!parsed) {
-          return;
-        }
-
-        void options.onStoreNotification?.(parsed);
-      };
-
-      notificationClient.on("notification", notificationHandler);
-      await notificationClient.query(`LISTEN ${notificationChannel}`);
+      notificationUnsubscribe = await listenThreadRuntimeNotifications({
+        pool: notificationPool,
+        listener: options.onStoreNotification,
+      });
     }
 
     return {
@@ -729,9 +700,7 @@ export async function bootstrapRuntime(
         threadLeasePool,
         threadLeasePoolObserver,
         readonlyPoolState,
-        notificationClient,
-        notificationChannel,
-        notificationHandler,
+        notificationUnsubscribe,
       }),
     };
   } catch (error) {
@@ -746,9 +715,7 @@ export async function bootstrapRuntime(
       threadLeasePool,
       threadLeasePoolObserver,
       readonlyPoolState,
-      notificationClient,
-      notificationChannel,
-      notificationHandler,
+      notificationUnsubscribe,
     })().catch(() => undefined);
     throw error;
   }

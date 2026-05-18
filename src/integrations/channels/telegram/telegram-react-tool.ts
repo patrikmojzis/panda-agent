@@ -3,92 +3,17 @@ import {z} from "zod";
 import type {RunContext} from "../../../kernel/agent/run-context.js";
 import {Tool} from "../../../kernel/agent/tool.js";
 import {ToolError} from "../../../kernel/agent/exceptions.js";
-import type {JsonObject} from "../../../kernel/agent/types.js";
-import type {DefaultAgentSessionContext} from "../../../app/runtime/panda-session-context.js";
+import type {JsonObject, JsonValue} from "../../../lib/json.js";
 import {isRecord} from "../../../lib/records.js";
 import {trimToUndefined} from "../../../lib/strings.js";
+import type {ChannelActionInput} from "../../../domain/channels/actions/types.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 import {parseTelegramConversationId} from "./conversation-id.js";
-
-// Keep Telegram's provider-specific reaction allowlist out of the Zod schema.
-// Tool schemas are exposed to the model, and this list is runtime validation
-// detail, not something worth carrying around in prompt context every turn.
-const ALLOWED_TELEGRAM_REACTION_EMOJI_LIST = [
-  "❤",
-  "👍",
-  "👎",
-  "🔥",
-  "🥰",
-  "👏",
-  "😁",
-  "🤔",
-  "🤯",
-  "😱",
-  "🤬",
-  "😢",
-  "🎉",
-  "🤩",
-  "🤮",
-  "💩",
-  "🙏",
-  "👌",
-  "🕊",
-  "🤡",
-  "🥱",
-  "🥴",
-  "😍",
-  "🐳",
-  "❤‍🔥",
-  "🌚",
-  "🌭",
-  "💯",
-  "🤣",
-  "⚡",
-  "🍌",
-  "🏆",
-  "💔",
-  "🤨",
-  "😐",
-  "🍓",
-  "🍾",
-  "💋",
-  "🖕",
-  "😈",
-  "😴",
-  "😭",
-  "🤓",
-  "👻",
-  "👨‍💻",
-  "👀",
-  "🎃",
-  "🙈",
-  "😇",
-  "😨",
-  "🤝",
-  "✍",
-  "🤗",
-  "🫡",
-  "🎅",
-  "🎄",
-  "☃",
-  "💅",
-  "🤪",
-  "🗿",
-  "🆒",
-  "💘",
-  "🙉",
-  "🦄",
-  "😘",
-  "💊",
-  "🙊",
-  "😎",
-  "👾",
-  "🤷‍♂",
-  "🤷",
-  "🤷‍♀",
-  "😡",
-];
-const ALLOWED_TELEGRAM_REACTION_EMOJIS = new Set(ALLOWED_TELEGRAM_REACTION_EMOJI_LIST);
+import {
+  ALLOWED_TELEGRAM_REACTION_EMOJI_LIST,
+  isAllowedTelegramReactionEmoji,
+  parseTelegramReactionMessageId,
+} from "./reactions.js";
 
 const telegramReactToolSchema = z.object({
   emoji: z.string().trim().min(1).optional(),
@@ -113,13 +38,24 @@ interface TelegramReactionTarget {
   conversationId: string;
 }
 
-function parseTelegramMessageId(value: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new ToolError(`Invalid Telegram message id ${value}.`);
-  }
+interface TelegramReactContext {
+  currentInput?: {
+    source: string;
+    channelId?: string;
+    externalMessageId?: string;
+    metadata?: JsonValue;
+  };
+  channelActionQueue?: {
+    enqueueAction(input: ChannelActionInput): Promise<unknown>;
+  };
+}
 
-  return parsed;
+function parseTelegramMessageId(value: string): number {
+  try {
+    return parseTelegramReactionMessageId(value);
+  } catch (error) {
+    throw new ToolError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function parseReactionConversationId(value: string) {
@@ -131,7 +67,7 @@ function parseReactionConversationId(value: string) {
 }
 
 function requireAllowedTelegramReactionEmoji(value: string): string {
-  if (!ALLOWED_TELEGRAM_REACTION_EMOJIS.has(value)) {
+  if (!isAllowedTelegramReactionEmoji(value)) {
     throw new ToolError(
       `telegram_react emoji is unsupported by Telegram. Allowed emoji: ${ALLOWED_TELEGRAM_REACTION_EMOJI_LIST.join(", ")}`,
     );
@@ -140,7 +76,7 @@ function requireAllowedTelegramReactionEmoji(value: string): string {
   return value;
 }
 
-function readCurrentTelegramTarget(context: DefaultAgentSessionContext | undefined): TelegramReactionTarget | null {
+function readCurrentTelegramTarget(context: TelegramReactContext | undefined): TelegramReactionTarget | null {
   if (context?.currentInput?.source !== TELEGRAM_SOURCE) {
     return null;
   }
@@ -169,7 +105,7 @@ function readCurrentTelegramTarget(context: DefaultAgentSessionContext | undefin
   };
 }
 
-function readCurrentTelegramExternalMessageId(context: DefaultAgentSessionContext | undefined): string | undefined {
+function readCurrentTelegramExternalMessageId(context: TelegramReactContext | undefined): string | undefined {
   if (context?.currentInput?.source !== TELEGRAM_SOURCE) {
     return undefined;
   }
@@ -177,7 +113,7 @@ function readCurrentTelegramExternalMessageId(context: DefaultAgentSessionContex
   return trimToUndefined(context.currentInput.externalMessageId);
 }
 
-function readReactionTargetMessageId(context: DefaultAgentSessionContext | undefined): string | undefined {
+function readReactionTargetMessageId(context: TelegramReactContext | undefined): string | undefined {
   if (context?.currentInput?.source !== TELEGRAM_SOURCE) {
     return undefined;
   }
@@ -202,7 +138,7 @@ function readReactionTargetMessageId(context: DefaultAgentSessionContext | undef
 
 function resolveTelegramMessageId(
   args: z.output<typeof telegramReactToolSchema>,
-  context: DefaultAgentSessionContext | undefined,
+  context: TelegramReactContext | undefined,
 ): string | undefined {
   return (
     trimToUndefined(args.messageId)
@@ -211,7 +147,7 @@ function resolveTelegramMessageId(
   );
 }
 
-export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, DefaultAgentSessionContext> {
+export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, TelegramReactContext> {
   static schema = telegramReactToolSchema;
 
   name = "telegram_react";
@@ -229,7 +165,7 @@ export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, Defa
 
   async handle(
     args: z.output<typeof TelegramReactTool.schema>,
-    run: RunContext<DefaultAgentSessionContext>,
+    run: RunContext<TelegramReactContext>,
   ): Promise<JsonObject> {
     const queue = run.context?.channelActionQueue;
     if (!queue) {

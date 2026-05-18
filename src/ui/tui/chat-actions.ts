@@ -1,12 +1,13 @@
 import {randomUUID} from "node:crypto";
 
 import {readMissingApiKeyMessageForModel} from "../../integrations/providers/shared/missing-api-key.js";
-import {resolveModelSelector, type ThinkingLevel,} from "../../kernel/agent/index.js";
+import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
-import type {ThreadRecord} from "../../domain/threads/runtime/index.js";
+import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
 import type {ChatRuntimeServices} from "./runtime.js";
 import {buildChatHelpText, describeUnknownCommand, runChatCommandLine} from "./chat-commands.js";
-import {resolveStoredChatDisplayConfig} from "./chat-session.js";
+import {resolveStoredThreadDisplayConfig} from "../shared/stored-thread.js";
 import {collectThreadUsageSnapshot, formatThreadUsageSnapshot,} from "./usage-summary.js";
 import {
     type EntryRole,
@@ -93,7 +94,7 @@ async function handleModelCommand(host: ChatCommandHost, value: string): Promise
       model: resetToDefault ? null : resolveModelSelector(trimmed).canonical,
     });
     const runConfig = resetToDefault
-      ? await services.resolveThreadRunConfig(thread.id).catch(() => resolveStoredChatDisplayConfig(thread))
+      ? await services.resolveThreadRunConfig(thread.id).catch(() => resolveStoredThreadDisplayConfig(thread))
       : {model: thread.model ?? host.getModel()};
     host.setCurrentThread(thread);
     host.setModel(runConfig.model);
@@ -156,7 +157,7 @@ async function handleUsageCommand(host: ChatCommandHost): Promise<boolean> {
       services.store.loadTranscript(threadId),
     ]);
     const runConfig = await services.resolveThreadRunConfig(threadId)
-      .catch(() => resolveStoredChatDisplayConfig(thread));
+      .catch(() => resolveStoredThreadDisplayConfig(thread));
     const summary = formatThreadUsageSnapshot(collectThreadUsageSnapshot({
       thread,
       transcript,

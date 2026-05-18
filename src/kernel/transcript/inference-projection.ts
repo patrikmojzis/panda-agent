@@ -3,10 +3,10 @@ import type {Message} from "@mariozechner/pi-ai";
 import {isCompactBoundaryRecord} from "./compaction.js";
 import {readPositiveInteger} from "../../lib/numbers.js";
 import type {
-    InferenceProjection,
-    InferenceProjectionRule,
-    ThreadMessageRecord,
-} from "../../domain/threads/runtime/types.js";
+  InferenceProjection,
+  InferenceProjectionRule,
+  ThreadMessageRecord,
+} from "./types.js";
 
 interface RuleWindow {
   protectedIndexes: Set<number>;

@@ -3,7 +3,7 @@ import {DataType, newDb} from "pg-mem";
 
 import {ensureReadonlySessionQuerySchema,} from "../src/domain/threads/runtime/index.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
-import {PostgresTelepathyDeviceStore} from "../src/domain/telepathy/index.js";
+import {PostgresTelepathyDeviceStore} from "../src/domain/telepathy/postgres.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
@@ -291,7 +291,7 @@ describe("PostgresScheduledTaskStore", () => {
         timezone: "Europe/Bratislava",
       },
     });
-    expect(updated.nextFireAt).toBeDefined();
+    expect(updated.nextFireAt).toEqual(expect.any(Number));
 
     const cancelled = await scheduledTasks.cancelTask({
       taskId: created.id,
@@ -299,7 +299,7 @@ describe("PostgresScheduledTaskStore", () => {
       reason: "done already",
     });
 
-    expect(cancelled.cancelledAt).toBeDefined();
+    expect(cancelled.cancelledAt).toEqual(expect.any(Number));
     expect(cancelled.nextFireAt).toBeUndefined();
 
     await pool.query(`DELETE FROM "runtime"."messages" WHERE id = $1`, [provenanceMessage.id]);
@@ -336,6 +336,65 @@ describe("PostgresScheduledTaskStore", () => {
       ORDER BY table_name, column_name
     `);
     expect(columns.rows).toEqual([]);
+  });
+
+  it("rejects corrupted persisted task and run states before returning records", async () => {
+    const now = new Date("2026-05-01T12:00:00.000Z");
+    const query = vi.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "00000000-0000-0000-0000-000000000001",
+          session_id: "session-main",
+          created_by_identity_id: null,
+          created_from_message_id: null,
+          title: "Bad enabled",
+          instruction: "Should not parse.",
+          schedule_kind: "once",
+          run_at: now,
+          cron_expr: null,
+          timezone: null,
+          enabled: "yes",
+          next_fire_at: now,
+          claimed_at: null,
+          claimed_by: null,
+          claim_expires_at: null,
+          completed_at: null,
+          cancelled_at: null,
+          created_at: now,
+          updated_at: now,
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "00000000-0000-0000-0000-000000000002",
+          task_id: "00000000-0000-0000-0000-000000000001",
+          session_id: "session-main",
+          created_by_identity_id: null,
+          resolved_thread_id: null,
+          scheduled_for: now,
+          status: "stuck",
+          thread_run_id: null,
+          error: null,
+          created_at: now,
+          started_at: null,
+          finished_at: null,
+        }],
+      });
+    const scheduledTasks = new PostgresScheduledTaskStore({
+      pool: {
+        query,
+        connect: async () => {
+          throw new Error("connect should not be used by row reads");
+        },
+      },
+    });
+
+    await expect(scheduledTasks.getTask("00000000-0000-0000-0000-000000000001")).rejects.toThrow(
+      "Scheduled task enabled flag must be a boolean.",
+    );
+    await expect(scheduledTasks.startTaskRun({
+      runId: "00000000-0000-0000-0000-000000000002",
+    })).rejects.toThrow("Unsupported scheduled task run status stuck.");
   });
 
   it("lists active scheduled tasks for one session", async () => {

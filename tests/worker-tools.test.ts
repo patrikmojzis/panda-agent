@@ -3,7 +3,7 @@ import {describe, expect, it, vi} from "vitest";
 import {Agent, RunContext} from "../src/kernel/agent/index.js";
 import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
 import type {CreateWorkerSessionInput, CreateWorkerSessionResult} from "../src/app/runtime/worker-session-service.js";
-import type {ExecutionEnvironmentRecord} from "../src/domain/execution-environments/index.js";
+import type {ExecutionEnvironmentRecord} from "../src/domain/execution-environments/types.js";
 import type {SessionRecord} from "../src/domain/sessions/index.js";
 import {EnvironmentCreateTool, EnvironmentStopTool, WorkerSpawnTool} from "../src/panda/tools/worker-tools.js";
 
@@ -222,7 +222,7 @@ describe("worker control tools", () => {
         updatedAt: 1_000,
       },
     };
-    const createWorkerSessionMock = vi.fn(async (input: CreateWorkerSessionInput) => created);
+    const createWorkerSessionMock = vi.fn(async () => created);
     const tool = new WorkerSpawnTool({
       workerSessions: {
         createWorkerSession: createWorkerSessionMock,
@@ -368,7 +368,7 @@ describe("worker control tools", () => {
         updatedAt: 1_000,
       },
     };
-    const createWorkerSessionMock = vi.fn(async (input: CreateWorkerSessionInput) => created);
+    const createWorkerSessionMock = vi.fn(async () => created);
     const tool = new WorkerSpawnTool({
       workerSessions: {
         createWorkerSession: createWorkerSessionMock,

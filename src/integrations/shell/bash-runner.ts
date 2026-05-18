@@ -5,14 +5,14 @@ import path from "node:path";
 import {normalizeAgentKey} from "../../domain/agents/types.js";
 import {writeJsonResponse} from "../../lib/http.js";
 import {isRecord} from "../../lib/records.js";
+import {readTcpPort} from "../../lib/numbers.js";
 import {trimToNull} from "../../lib/strings.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import type {JsonObject} from "../../kernel/agent/types.js";
+import {isJsonObject} from "../../lib/json.js";
 import type {
     BashExecutionResult,
     BashRunnerAbortRequest,
     BashRunnerExecRequest,
-    BashRunnerJobCancelRequest,
     BashRunnerJobQueryRequest,
     BashRunnerJobStartRequest,
     BashRunnerJobWaitRequest,
@@ -21,9 +21,11 @@ import {RUNNER_AGENT_KEY_HEADER, RUNNER_EXPECTED_PATH_HEADER, RUNNER_PATH_SCOPED
 import {ManagedBashJob} from "./bash-background-job.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import {executeBashCommand} from "./bash-execution.js";
+import {readJsonHttpBody} from "../http-body.js";
 
 const DEFAULT_RUNNER_PORT = 8080;
 const DEFAULT_RUNNER_HOST = "0.0.0.0";
+const MAX_BASH_RUNNER_JSON_BODY_BYTES = 8 * 1024 * 1024;
 
 interface ActiveRunnerRequest {
   controller: AbortController;
@@ -51,8 +53,8 @@ function parsePort(value: string | null, fallback: number): number {
     return fallback;
   }
 
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+  const parsed = readTcpPort(value);
+  if (parsed === undefined) {
     throw new Error(`Invalid runner port: ${value}`);
   }
 
@@ -227,26 +229,17 @@ function validateJobWaitRequest(value: unknown): BashRunnerJobWaitRequest {
   };
 }
 
-function validateJobCancelRequest(value: unknown): BashRunnerJobCancelRequest {
-  return validateJobWaitRequest(value);
+async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+  return readJsonHttpBody(request, {
+    createError: createBashRunnerBodyError,
+    invalidJsonPrefix: "Request body must be valid JSON",
+    maxBytes: MAX_BASH_RUNNER_JSON_BODY_BYTES,
+    tooLargeMessage: "Runner request body is too large.",
+  });
 }
 
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
-  if (!raw) {
-    return {};
-  }
-
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new ToolError("Request body must be valid JSON.");
-  }
+function createBashRunnerBodyError(statusCode: number, message: string): ToolError {
+  return new ToolError(message, {details: {statusCode}});
 }
 
 function matchesEndpoint(
@@ -629,7 +622,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
 
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/cancel")) {
         validateRunnerRequestTarget(request, agentKey, "jobs/cancel");
-        const parsed = validateJobCancelRequest(await readJsonBody(request));
+        const parsed = validateJobWaitRequest(await readJsonBody(request));
         const job = backgroundJobs.get(parsed.jobId);
         if (!job) {
           writeJsonResponse(response, 404, {
@@ -655,10 +648,13 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       });
     } catch (error) {
       if (error instanceof ToolError) {
-        writeJsonResponse(response, 400, {
+        const statusCode = isRecord(error.details) && typeof error.details.statusCode === "number"
+          ? error.details.statusCode
+          : 400;
+        writeJsonResponse(response, statusCode, {
           ok: false,
           error: error.message,
-          details: error.details as JsonObject | undefined,
+          ...(isJsonObject(error.details) ? {details: error.details} : {}),
         });
         return;
       }

@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {createThreadDefinition} from "../src/app/runtime/create-runtime.js";
-import type {ResolvedExecutionEnvironment} from "../src/domain/execution-environments/index.js";
+import type {ResolvedExecutionEnvironment} from "../src/domain/execution-environments/types.js";
 import type {ThreadRecord} from "../src/domain/threads/runtime/types.js";
 import {DEFAULT_AGENT_INSTRUCTIONS} from "../src/prompts/runtime/default-agent.js";
 import {DEFAULT_WORKER_INSTRUCTIONS} from "../src/prompts/runtime/worker.js";
@@ -298,7 +298,7 @@ describe("worker thread definitions", () => {
             updatedAt: 1_000,
           },
         ],
-      } as any,
+      },
     });
 
     const dump = await gatherContexts(definition.llmContexts ?? []);

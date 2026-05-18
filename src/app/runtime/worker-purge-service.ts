@@ -2,28 +2,33 @@ import {lstat, readdir, realpath, rm} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type {PoolClient} from "pg";
-
 import {buildA2ATableNames} from "../../domain/a2a/postgres-shared.js";
 import {buildOutboundDeliveryTableNames} from "../../domain/channels/deliveries/postgres-shared.js";
 import {
-  type ExecutionEnvironmentManager,
-  type ExecutionEnvironmentRecord,
-  type ExecutionEnvironmentState,
-  type ExecutionEnvironmentStore,
   readExecutionEnvironmentFilesystemMetadata,
-} from "../../domain/execution-environments/index.js";
+} from "../../domain/execution-environments/filesystem.js";
+import type {
+  ExecutionEnvironmentManager,
+  ExecutionEnvironmentRecord,
+  ExecutionEnvironmentState,
+} from "../../domain/execution-environments/types.js";
 import {buildExecutionEnvironmentTableNames} from "../../domain/execution-environments/postgres-shared.js";
 import {buildSessionTableNames} from "../../domain/sessions/postgres-shared.js";
 import {buildRuntimeRequestTableNames} from "../../domain/threads/requests/postgres-shared.js";
-import {buildThreadRuntimeTableNames, toMillis,} from "../../domain/threads/runtime/postgres-shared.js";
-import {type PgPoolLike, withTransaction} from "../../domain/threads/runtime/postgres-db.js";
-import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
-import type {JsonValue} from "../../kernel/agent/types.js";
+import {nullableTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
+import {buildThreadRuntimeTableNames} from "../../domain/threads/runtime/postgres-shared.js";
+import {withTransaction} from "../../lib/postgres-transaction.js";
+import {requireNonNegativeInteger} from "../../lib/numbers.js";
+import type {PgClientLike, PgPoolLike} from "../../lib/postgres-query.js";
+import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "../../domain/a2a/constants.js";
+import {readOptionalJsonValue, type JsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
-import {trimToUndefined} from "../../lib/strings.js";
+import {requireTrimmedString, trimToUndefined, uniqueTrimmedStrings} from "../../lib/strings.js";
 import {resolveDataDir} from "./data-dir.js";
-import {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
+import {
+  stopExecutionEnvironment,
+  type ExecutionEnvironmentStopStore,
+} from "./execution-environment-service.js";
 
 export interface WorkerPurgeSelector {
   agentKey?: string;
@@ -97,7 +102,7 @@ export interface WorkerPurgePlan {
 
 export interface WorkerPurgeServiceOptions {
   pool: PgPoolLike;
-  environmentStore: ExecutionEnvironmentStore;
+  environmentStore: ExecutionEnvironmentStopStore;
   manager?: ExecutionEnvironmentManager | null;
   env?: NodeJS.ProcessEnv;
 }
@@ -106,32 +111,28 @@ interface CandidateRow {
   session_id: string | null;
   session_agent_key: string | null;
   current_thread_id: string | null;
-  session_created_at: unknown | null;
-  session_updated_at: unknown | null;
+  session_created_at: number | null;
+  session_updated_at: number | null;
   environment_id: string;
   environment_agent_key: string;
-  kind: string;
-  state: string;
+  kind: ExecutionEnvironmentRecord["kind"];
+  state: ExecutionEnvironmentState;
   runner_url: string | null;
   runner_cwd: string | null;
   root_path: string | null;
   created_by_session_id: string | null;
   created_for_session_id: string | null;
-  expires_at: unknown;
+  expires_at: number | null;
   metadata: JsonValue | null;
-  environment_created_at: unknown;
-  environment_updated_at: unknown;
+  environment_created_at: number;
+  environment_updated_at: number;
 }
 
 const STOPPED_PURGE_STATES = new Set<ExecutionEnvironmentState>(["stopped", "failed"]);
 const PATH_REFERENCE_KEYS = new Set(["localPath", "path", "stdoutPath", "stderrPath"]);
 
-function requireTrimmed(field: string, value: string | undefined): string {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    throw new Error(`${field} must not be empty.`);
-  }
-  return trimmed;
+function requireTrimmed(field: string, value: unknown): string {
+  return requireTrimmedString(value, `${field} must be a string.`, `${field} must not be empty.`);
 }
 
 function hasSelector(selector: WorkerPurgeSelector): boolean {
@@ -145,21 +146,74 @@ function hasSelector(selector: WorkerPurgeSelector): boolean {
   );
 }
 
+function parseEnvironmentKind(value: unknown): ExecutionEnvironmentRecord["kind"] {
+  if (value === "disposable_container" || value === "persistent_agent_runner" || value === "local") {
+    return value;
+  }
+
+  throw new Error(`Unsupported execution environment kind ${String(value)}.`);
+}
+
+function parseEnvironmentState(value: unknown): ExecutionEnvironmentState {
+  if (
+    value === "provisioning"
+    || value === "ready"
+    || value === "failed"
+    || value === "stopping"
+    || value === "stopped"
+  ) {
+    return value;
+  }
+
+  throw new Error(`Unsupported execution environment state ${String(value)}.`);
+}
+
+function parseCandidateMetadata(value: unknown): JsonValue | null {
+  return readOptionalJsonValue(value, "Worker purge environment metadata") ?? null;
+}
+
+function nullableString(field: string, value: unknown): string | null {
+  return value === null || value === undefined ? null : requireTrimmed(field, value);
+}
+
+function parseCandidateRow(row: Record<string, unknown>): CandidateRow {
+  return {
+    session_id: nullableString("worker session id", row.session_id),
+    session_agent_key: nullableString("worker session agent key", row.session_agent_key),
+    current_thread_id: nullableString("worker current thread id", row.current_thread_id),
+    session_created_at: nullableTimestampMillis(row.session_created_at, "Worker purge session_created_at must be a valid timestamp."),
+    session_updated_at: nullableTimestampMillis(row.session_updated_at, "Worker purge session_updated_at must be a valid timestamp."),
+    environment_id: requireTrimmed("worker environment id", row.environment_id),
+    environment_agent_key: requireTrimmed("worker environment agent key", row.environment_agent_key),
+    kind: parseEnvironmentKind(row.kind),
+    state: parseEnvironmentState(row.state),
+    runner_url: nullableString("worker runner url", row.runner_url),
+    runner_cwd: nullableString("worker runner cwd", row.runner_cwd),
+    root_path: nullableString("worker root path", row.root_path),
+    created_by_session_id: nullableString("worker creator session id", row.created_by_session_id),
+    created_for_session_id: nullableString("worker target session id", row.created_for_session_id),
+    expires_at: nullableTimestampMillis(row.expires_at, "Worker purge expires_at must be a valid timestamp."),
+    metadata: parseCandidateMetadata(row.metadata),
+    environment_created_at: requireTimestampMillis(row.environment_created_at, "Worker purge environment_created_at must be a valid timestamp."),
+    environment_updated_at: requireTimestampMillis(row.environment_updated_at, "Worker purge environment_updated_at must be a valid timestamp."),
+  };
+}
+
 function parseEnvironmentRow(row: CandidateRow): ExecutionEnvironmentRecord {
   return {
     id: row.environment_id,
     agentKey: row.environment_agent_key,
-    kind: row.kind as ExecutionEnvironmentRecord["kind"],
-    state: row.state as ExecutionEnvironmentState,
+    kind: row.kind,
+    state: row.state,
     ...(row.runner_url ? {runnerUrl: row.runner_url} : {}),
     ...(row.runner_cwd ? {runnerCwd: row.runner_cwd} : {}),
     ...(row.root_path ? {rootPath: row.root_path} : {}),
     ...(row.created_by_session_id ? {createdBySessionId: row.created_by_session_id} : {}),
     ...(row.created_for_session_id ? {createdForSessionId: row.created_for_session_id} : {}),
-    ...(row.expires_at ? {expiresAt: toMillis(row.expires_at)} : {}),
+    ...(row.expires_at === null ? {} : {expiresAt: row.expires_at}),
     ...(row.metadata === null ? {} : {metadata: row.metadata}),
-    createdAt: toMillis(row.environment_created_at),
-    updatedAt: toMillis(row.environment_updated_at),
+    createdAt: row.environment_created_at,
+    updatedAt: row.environment_updated_at,
   };
 }
 
@@ -305,17 +359,6 @@ function buildLikeClause(column: string, needles: readonly string[], values: unk
   return clauses.length === 0 ? "FALSE" : `(${clauses.join(" OR ")})`;
 }
 
-function buildThreadIdClause(column: string, threadIds: readonly string[], values: unknown[]): string {
-  if (threadIds.length === 0) {
-    return "FALSE";
-  }
-  const placeholders = threadIds.map((threadId) => {
-    values.push(threadId);
-    return `$${values.length}`;
-  });
-  return `${column} IN (${placeholders.join(", ")})`;
-}
-
 function buildTextInClause(column: string, valuesToAdd: readonly string[], values: unknown[]): string {
   if (valuesToAdd.length === 0) {
     return "FALSE";
@@ -352,7 +395,7 @@ function buildOutboundDeliveryWorkerClause(input: {
 }, values: unknown[]): string {
   const clauses: string[] = [];
   if (input.threadIds.length > 0) {
-    clauses.push(buildThreadIdClause("thread_id", input.threadIds, values));
+    clauses.push(buildTextInClause("thread_id", input.threadIds, values));
   }
   for (const sessionId of input.sessionIds) {
     clauses.push([
@@ -433,10 +476,6 @@ export function summarizeWorkerPurgeCounts(candidates: readonly WorkerPurgeCandi
   return candidates.reduce((sum, candidate) => sumCounts(sum, candidate.dbCounts), emptyCounts());
 }
 
-function dedupeStrings(values: readonly string[]): string[] {
-  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
-}
-
 function candidateLabel(candidate: WorkerPurgeCandidate): string {
   return candidate.sessionIds.length > 0
     ? `worker ${candidate.sessionIds.join(",")}`
@@ -445,7 +484,7 @@ function candidateLabel(candidate: WorkerPurgeCandidate): string {
 
 export class WorkerPurgeService {
   private readonly pool: PgPoolLike;
-  private readonly environmentStore: ExecutionEnvironmentStore;
+  private readonly environmentStore: ExecutionEnvironmentStopStore;
   private readonly manager: ExecutionEnvironmentManager | null;
   private readonly env: NodeJS.ProcessEnv;
   private readonly sessions = buildSessionTableNames();
@@ -490,7 +529,7 @@ export class WorkerPurgeService {
         continue;
       }
       const environment = parseEnvironmentRow(row);
-      const sessionIds = dedupeStrings(environmentRows.flatMap((candidateRow) => (
+      const sessionIds = uniqueTrimmedStrings(environmentRows.flatMap((candidateRow) => (
         candidateRow.session_id ? [candidateRow.session_id] : []
       )));
       const threadIds = (await Promise.all(sessionIds.map((sessionId) => this.listThreadIds(sessionId)))).flat();
@@ -506,8 +545,8 @@ export class WorkerPurgeService {
         threadIds,
         ...(row.current_thread_id ? {currentThreadId: row.current_thread_id} : {}),
         agentKey: row.environment_agent_key,
-        sessionCreatedAt: row.session_created_at ? toMillis(row.session_created_at) : environment.createdAt,
-        sessionUpdatedAt: row.session_updated_at ? toMillis(row.session_updated_at) : environment.updatedAt,
+        sessionCreatedAt: row.session_created_at ?? environment.createdAt,
+        sessionUpdatedAt: row.session_updated_at ?? environment.updatedAt,
         environment,
         ...(readContainerName(environment.metadata) ? {containerName: readContainerName(environment.metadata)} : {}),
         filesystem,
@@ -583,11 +622,11 @@ export class WorkerPurgeService {
     if (!this.manager) {
       throw new Error("Purge needs an execution environment manager to stop active disposable workers.");
     }
-    const lifecycle = new ExecutionEnvironmentLifecycleService({
-      store: this.environmentStore,
+    await stopExecutionEnvironment({
+      environmentId,
       manager: this.manager,
+      store: this.environmentStore,
     });
-    await lifecycle.stopEnvironment(environmentId);
   }
 
   private async findCandidateRows(selector: WorkerPurgeSelector, now: number): Promise<CandidateRow[]> {
@@ -653,7 +692,7 @@ export class WorkerPurgeService {
       ORDER BY env.updated_at ASC, session.id ASC
     `, values);
 
-    return result.rows as CandidateRow[];
+    return result.rows.map((row) => parseCandidateRow(row as Record<string, unknown>));
   }
 
   private async listThreadIds(sessionId: string): Promise<readonly string[]> {
@@ -664,7 +703,10 @@ export class WorkerPurgeService {
       ORDER BY created_at ASC, id ASC
     `, [sessionId]);
     return result.rows
-      .map((row) => typeof row.id === "string" ? row.id : "")
+      .map((row) => {
+        const record = row as {id?: unknown};
+        return typeof record.id === "string" ? record.id : "";
+      })
       .filter(Boolean);
   }
 
@@ -769,7 +811,7 @@ export class WorkerPurgeService {
     );
 
     const threadValues: unknown[] = [];
-    const threadClause = buildThreadIdClause("thread_id", input.threadIds, threadValues);
+    const threadClause = buildTextInClause("thread_id", input.threadIds, threadValues);
     counts.threads = input.threadIds.length;
     counts.messages = await this.countSimple(`${this.threads.messages} WHERE ${threadClause}`, threadValues);
     counts.inputs = await this.countSimple(`${this.threads.inputs} WHERE ${threadClause}`, threadValues);
@@ -783,7 +825,10 @@ export class WorkerPurgeService {
 
   private async countSimple(fromAndWhere: string, values: unknown[]): Promise<number> {
     const result = await this.pool.query(`SELECT COUNT(*)::INTEGER AS count FROM ${fromAndWhere}`, values);
-    return Number((result.rows[0] as {count?: unknown} | undefined)?.count ?? 0);
+    return requireNonNegativeInteger(
+      (result.rows[0] as {count?: unknown} | undefined)?.count ?? 0,
+      "Worker purge row count",
+    );
   }
 
   private async countOutboundDeliveries(input: {
@@ -832,7 +877,7 @@ export class WorkerPurgeService {
     paths: Set<string>,
   ): Promise<void> {
     const threadValues: unknown[] = [];
-    const threadClause = buildThreadIdClause("thread_id", input.threadIds, threadValues);
+    const threadClause = buildTextInClause("thread_id", input.threadIds, threadValues);
     for (const table of [this.threads.messages, this.threads.inputs]) {
       const values = [...threadValues];
       const channelClause = buildTextInClause("channel_id", input.sessionIds, values);
@@ -884,7 +929,7 @@ export class WorkerPurgeService {
     paths: Set<string>,
   ): Promise<void> {
     const values: unknown[] = [];
-    const threadClause = buildThreadIdClause("thread_id", input.threadIds, values);
+    const threadClause = buildTextInClause("thread_id", input.threadIds, values);
     const sessionClause = buildTextInClause("external_conversation_id", input.sessionIds, values);
     const metadataClause = buildLikeClause("metadata", needles, values);
     const itemsClause = buildLikeClause("items", needles, values);
@@ -919,7 +964,7 @@ export class WorkerPurgeService {
     }
   }
 
-  private async deleteDbRows(client: PoolClient, candidate: WorkerPurgeCandidate): Promise<void> {
+  private async deleteDbRows(client: PgClientLike, candidate: WorkerPurgeCandidate): Promise<void> {
     await this.deleteOutboundDeliveries(client, candidate);
     await this.deleteRuntimeRequests(client, candidate);
     await client.query(`DELETE FROM ${this.environments.executionEnvironments} WHERE id = $1`, [
@@ -932,7 +977,7 @@ export class WorkerPurgeService {
     }
   }
 
-  private async deleteOutboundDeliveries(client: PoolClient, candidate: WorkerPurgeCandidate): Promise<void> {
+  private async deleteOutboundDeliveries(client: PgClientLike, candidate: WorkerPurgeCandidate): Promise<void> {
     const values: unknown[] = [];
     const workerClause = buildOutboundDeliveryWorkerClause(candidate, values);
     await client.query(`
@@ -941,7 +986,7 @@ export class WorkerPurgeService {
     `, values);
   }
 
-  private async deleteRuntimeRequests(client: PoolClient, candidate: WorkerPurgeCandidate): Promise<void> {
+  private async deleteRuntimeRequests(client: PgClientLike, candidate: WorkerPurgeCandidate): Promise<void> {
     const values: unknown[] = [];
     const workerClause = buildRuntimeRequestWorkerClause({
       sessionIds: candidate.sessionIds,

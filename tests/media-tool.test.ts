@@ -184,7 +184,7 @@ describe("MediaTool", () => {
       });
       const previewPath = String((result.details as Record<string, unknown>).previewPath);
       expect(previewPath).toContain(path.join(dataDir, "agents", "jozef", "media", "view_media", "previews"));
-      await expect(stat(previewPath)).resolves.toBeTruthy();
+      expect((await stat(previewPath)).isFile()).toBe(true);
     } finally {
       await rm(workspace, { recursive: true, force: true });
       await rm(dataDir, { recursive: true, force: true });

@@ -4,11 +4,12 @@ import path from "node:path";
 import type {ToolResultMessage} from "@mariozechner/pi-ai";
 import {z} from "zod";
 
+import {joinMessageTextParts} from "../../kernel/agent/helpers/message-text.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool, type ToolOutput} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
-import type {CredentialResolver} from "../../domain/credentials/index.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
+import type {CredentialResolver} from "../../domain/credentials/resolver.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {ensureShellSession, readBaseCwd} from "../../app/runtime/panda-path-context.js";
@@ -20,14 +21,15 @@ import {
 } from "../../integrations/shell/bash-executor.js";
 import {startBashBackgroundJob} from "../../integrations/shell/bash-background-runner.js";
 import {readThreadId} from "../../integrations/shell/runtime-context.js";
-import {redactSecretsInJson} from "../../integrations/shell/redaction.js";
+import {redactSecretsInJsonObject} from "../../integrations/shell/redaction.js";
 import {applyPersistedEnv, collectTrackedEnvKeys, resolveCommandCwd,} from "../../integrations/shell/bash-session.js";
 import type {PersistedEnvEntry} from "../../integrations/shell/bash-protocol.js";
 import type {ShellSession} from "../../integrations/shell/types.js";
+import {uniqueTrimmedStrings} from "../../lib/strings.js";
 import type {
   ExecutionCredentialPolicy,
   ResolvedExecutionEnvironment
-} from "../../domain/execution-environments/index.js";
+} from "../../domain/execution-environments/types.js";
 import {buildBackgroundJobPayload, formatBackgroundJobResult} from "./background-job-tools.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -37,10 +39,7 @@ const DEFAULT_PROGRESS_TAIL_CHARS = 1_200;
 const DEFAULT_OUTPUT_DIRECTORY = path.join(tmpdir(), "runtime-tool-results");
 
 function readToolResultText(message: ToolResultMessage<JsonValue>): string {
-  return message.content
-    .flatMap((part) => part.type === "text" && part.text.trim() ? [part.text.trim()] : [])
-    .join("\n\n")
-    .trim();
+  return joinMessageTextParts(message.content);
 }
 
 function formatBashStatus(details: Record<string, unknown>): string {
@@ -65,13 +64,8 @@ function formatBashStatus(details: Record<string, unknown>): string {
 }
 
 function collectSecretValues(...envSets: Array<Record<string, string> | undefined>): string[] {
-  return [...new Set(
-    envSets
-      .flatMap((envSet) => envSet ? Object.values(envSet) : [])
-      .map((value) => value.trim())
-      .filter((value) => value.length > 0)
-      .sort((left, right) => right.length - left.length),
-  )];
+  return uniqueTrimmedStrings(envSets.flatMap((envSet) => envSet ? Object.values(envSet) : []))
+    .sort((left, right) => right.length - left.length);
 }
 
 function readSecretSessionEnv(shellSession: ShellSession | null): Record<string, string> {
@@ -137,6 +131,8 @@ function assertBashAllowed(executionEnvironment: ResolvedExecutionEnvironment | 
   }
 }
 
+type BashCredentialResolver = Pick<CredentialResolver, "resolveEnvironment">;
+
 export interface BashToolOptions {
   shell?: string;
   defaultTimeoutMs?: number;
@@ -148,7 +144,7 @@ export interface BashToolOptions {
   env?: NodeJS.ProcessEnv;
   executor?: BashExecutor;
   fetchImpl?: typeof fetch;
-  credentialResolver?: CredentialResolver;
+  credentialResolver?: BashCredentialResolver;
   jobService?: BackgroundToolJobService;
 }
 
@@ -176,7 +172,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
   private readonly shell?: string;
   private readonly fetchImpl?: typeof fetch;
   private readonly executor?: BashExecutor;
-  private readonly credentialResolver?: CredentialResolver;
+  private readonly credentialResolver?: BashCredentialResolver;
   private readonly jobService?: BackgroundToolJobService;
 
   constructor(options: BashToolOptions = {}) {
@@ -377,7 +373,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       ...(result.stderrPath ? { stderrPath: result.stderrPath } : {}),
     };
     const sanitizedPayload = redactedSecrets.length > 0
-      ? redactSecretsInJson(payload, redactedSecrets) as JsonObject
+      ? redactSecretsInJsonObject(payload, redactedSecrets)
       : payload;
 
     if (result.timedOut) {

@@ -15,7 +15,6 @@ That keeps provider creds, DB creds, and connector secrets out of the browser co
 Core-side files:
 
 - `src/panda/tools/browser-tool.ts`
-- `src/panda/tools/browser-schema.ts`
 - `src/integrations/browser/client.ts`
 - `src/integrations/browser/protocol.ts`
 
@@ -26,18 +25,38 @@ Runner-side files:
 
 Shared browser logic still lives in:
 
-- `src/panda/tools/browser-snapshot.ts`
-- `src/panda/tools/browser-output.ts`
-- `src/panda/tools/browser-types.ts`
-- `src/panda/tools/safe-web-target.ts`
+- `src/integrations/browser/artifacts.ts`
+- `src/integrations/browser/snapshot.ts`
+- `src/integrations/browser/snapshot-changes.ts`
+- `src/integrations/browser/output.ts`
+- `src/integrations/browser/action-types.ts`
+- `src/integrations/browser/device-profiles.ts`
+- `src/integrations/browser/navigation-policy.ts`
+- `src/integrations/web/safe-web-target.ts`
 
 ## Responsibility Split
 
-- `browser-tool.ts`: public tool surface, formatting, redaction
-- `browser-schema.ts`: shared action validation used by both tool and runner
+- `browser-tool.ts`: public tool interface, formatting, redaction
+- `action-schema.ts`: shared action validation used by both tool and runner
 - `client.ts`: authenticated HTTP client, response parsing, artifact copy into core media paths
 - `runner.ts`: HTTP server, bearer-token auth, request validation, response shaping
 - `session-service.ts`: Chromium launch, session reuse, storage-state persistence, SSRF checks, snapshot/evaluate/screenshot/pdf behavior
+- `artifacts.ts`: runner-side screenshot/PDF file writes and artifact result metadata
+- `snapshot-changes.ts`: pure compact-snapshot diffing and JSON detail shaping after actions
+
+Browser integration code should depend on `BrowserRuntimeContext` from
+`src/integrations/browser/shared.ts`, not on Panda's app-level
+`DefaultAgentSessionContext`. The browser seam needs only agent/session/thread
+ids plus optional execution-environment metadata.
+
+Changed actions (`navigate`, `click`, `type`, `press`, `select`, and `wait`)
+must finish through the shared changed-action snapshot seam in
+`BrowserSessionService`. That keeps the final URL safety check tied to the
+snapshot and change metadata for every state-changing browser action.
+
+Snapshot and evaluate code injected into Playwright should stay as named,
+serializable page functions in `session-service.ts`; do not hide the page-side
+contract behind `unknown as string` casts.
 
 ## Runtime Shape
 

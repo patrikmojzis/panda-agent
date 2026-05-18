@@ -1,6 +1,6 @@
 import {rm} from "node:fs/promises";
 
-import {type JsonObject} from "../../kernel/agent/types.js";
+import {type JsonObject} from "../../lib/json.js";
 import {createOutputCapture, finalizeOutputCapture} from "./bash-output.js";
 import {runWrappedBashCommand} from "./bash-process.js";
 import type {BashExecutionResult} from "./bash-protocol.js";

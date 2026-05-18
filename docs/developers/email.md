@@ -9,12 +9,14 @@ Panda email is a first-class channel:
 Runtime config lives in `runtime.email_accounts`.
 Secrets are credential env-key refs and resolve through the normal credential resolver.
 
-The sync runner polls enabled accounts read-only, stores messages in `runtime.email_messages`, and wakes the agent only for mail observed after initial backfill.
+The sync runner polls enabled accounts read-only, stores messages in `runtime.email_messages`, and wakes the agent only for mail observed after initial backfill. Mail wakes target the agent's durable main session and re-resolve its current thread at wake time.
 Inbound body text is wrapped with `=====EXTERNAL CONTENT=====` markers before persistence.
+Message input normalization, including inbound trust markers, auth summary fallback, recipient normalization, attachment normalization, and thread-key derivation, lives in `src/domain/email/message-input.ts`; `PostgresEmailStore` should persist normalized email records, not own those policies inline.
 V1 does not do live DNS verification or trusted-auth-server matching itself; it parses `Authentication-Results` verdicts into `auth_spf`, `auth_dkim`, and `auth_dmarc`, uses failures to set `auth_summary = 'suspicious'`, and otherwise leaves inbound `auth_summary = 'unknown'`.
 
 Outbound mail goes through `runtime.outbound_deliveries` with `channel = "email"` and connector key `smtp`.
 The email adapter verifies the configured from address, enforces recipient allowlists and attachment limits again before SMTP send, and records successful outbound mail into email history.
+Queued `email_send` metadata must pass the `EmailSendPayload` contract in `src/domain/email/send-payload.ts`; do not cast outbound metadata directly inside the send tool or adapter.
 
 Configure:
 

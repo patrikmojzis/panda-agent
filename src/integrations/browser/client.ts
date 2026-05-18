@@ -2,23 +2,22 @@ import {randomUUID} from "node:crypto";
 import {mkdir, writeFile} from "node:fs/promises";
 import path from "node:path";
 
-import {resolveAgentMediaDir, resolveMediaDir} from "../../app/runtime/data-dir.js";
-import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {resolveAgentMediaDir, resolveMediaDir} from "../../lib/data-dir.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
-import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import {buildEndpointUrl, isLoopbackHttpHostname} from "../../lib/http.js";
+import type {JsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
-import type {BrowserToolService} from "../../panda/tools/browser-tool.js";
-import type {BrowserAction} from "../../panda/tools/browser-types.js";
+import type {BrowserAction} from "./action-types.js";
 import type {
     BrowserPreviewOriginGrant,
     BrowserRunnerActionRequest,
-    BrowserRunnerActionResponse,
     BrowserRunnerArtifact,
-    BrowserRunnerErrorResponse,
 } from "./protocol.js";
-import {buildRunnerEndpoint, normalizeBrowserArtifactScopeKey, normalizeBrowserLabelValue, safeAgentKey,} from "./shared.js";
+import {parseBrowserRunnerActionResponse} from "./protocol.js";
+import {normalizeBrowserArtifactScopeKey, normalizeBrowserLabelValue, safeAgentKey, type BrowserRuntimeContext,} from "./shared.js";
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
 
@@ -31,12 +30,12 @@ export interface BrowserRunnerClientOptions {
   dataDir?: string;
 }
 
-function normalizeScopeKey(context: DefaultAgentSessionContext): {scope: "thread" | "ephemeral"; key: string} {
+function normalizeScopeKey(context: BrowserRuntimeContext): {scope: "thread" | "ephemeral"; key: string} {
   return normalizeBrowserArtifactScopeKey(context);
 }
 
 function resolveBrowserMediaRoot(
-  context: DefaultAgentSessionContext,
+  context: BrowserRuntimeContext,
   dataDir: string | undefined,
   env: NodeJS.ProcessEnv,
 ): string {
@@ -84,18 +83,10 @@ function readRunnerSharedSecret(env: NodeJS.ProcessEnv): string | undefined {
   return trimToUndefined(env.BROWSER_RUNNER_SHARED_SECRET);
 }
 
-function parseBrowserRunnerResponse(payload: unknown): BrowserRunnerActionResponse {
-  if (!isRecord(payload) || typeof payload.ok !== "boolean") {
-    throw new ToolError("Browser runner returned an invalid response.");
-  }
-
-  return payload as unknown as BrowserRunnerActionResponse;
-}
-
 async function readBrowserRunnerError(response: Response): Promise<never> {
-  let payload: BrowserRunnerErrorResponse | null = null;
+  let payload;
   try {
-    payload = parseBrowserRunnerResponse(await response.json()) as BrowserRunnerErrorResponse;
+    payload = parseBrowserRunnerActionResponse(await response.json());
   } catch {
     throw new ToolError(`Browser runner request failed with status ${response.status}.`);
   }
@@ -141,19 +132,6 @@ function rewriteBrowserText(text: string, runnerPath: string, localPath: string)
   return runnerPath ? text.replaceAll(runnerPath, localPath) : text;
 }
 
-function normalizeLoopbackHostname(hostname: string): string {
-  const normalized = hostname.trim().replace(/\.+$/, "").toLowerCase();
-  if (normalized.startsWith("[") && normalized.endsWith("]")) {
-    return normalized.slice(1, -1);
-  }
-  return normalized;
-}
-
-function isLoopbackPreviewHost(hostname: string): boolean {
-  const normalized = normalizeLoopbackHostname(hostname);
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
-}
-
 function readStringField(value: unknown, key: string): string | undefined {
   if (!isRecord(value)) {
     return undefined;
@@ -163,14 +141,14 @@ function readStringField(value: unknown, key: string): string | undefined {
 
 function resolveWorkerPreviewAction(
   action: BrowserAction,
-  context: DefaultAgentSessionContext,
+  context: BrowserRuntimeContext,
 ): {action: BrowserAction; previewOriginGrant?: BrowserPreviewOriginGrant} {
   if (action.action !== "navigate") {
     return {action};
   }
 
   const parsedUrl = new URL(action.url);
-  if (!["http:", "https:"].includes(parsedUrl.protocol) || !isLoopbackPreviewHost(parsedUrl.hostname)) {
+  if (!["http:", "https:"].includes(parsedUrl.protocol) || !isLoopbackHttpHostname(parsedUrl.hostname)) {
     return {action};
   }
 
@@ -203,7 +181,7 @@ function resolveWorkerPreviewAction(
   };
 }
 
-export class BrowserRunnerClient<TContext = DefaultAgentSessionContext> implements BrowserToolService<TContext> {
+export class BrowserRunnerClient<TContext extends BrowserRuntimeContext = BrowserRuntimeContext> {
   private readonly env: NodeJS.ProcessEnv;
   private readonly fetchImpl: typeof fetch;
   private readonly runnerUrl?: string;
@@ -235,7 +213,7 @@ export class BrowserRunnerClient<TContext = DefaultAgentSessionContext> implemen
   }
 
   private async persistArtifact(
-    context: DefaultAgentSessionContext,
+    context: BrowserRuntimeContext,
     artifact: BrowserRunnerArtifact,
   ): Promise<{path: string; bytes: number}> {
     const scope = normalizeScopeKey(context);
@@ -259,7 +237,7 @@ export class BrowserRunnerClient<TContext = DefaultAgentSessionContext> implemen
   async handle(action: BrowserAction, run: RunContext<TContext>): Promise<ToolResultPayload> {
     const {runnerUrl, sharedSecret} = this.resolveConfig();
     const timeoutMs = Math.max(1, Math.floor(("timeoutMs" in action ? action.timeoutMs : undefined) ?? this.actionTimeoutMs ?? 60_000));
-    const context = (run.context ?? {}) as DefaultAgentSessionContext;
+    const context = (run.context ?? {}) as BrowserRuntimeContext;
     const previewRequest = resolveWorkerPreviewAction(action, context);
     const request: BrowserRunnerActionRequest = {
       agentKey: trimToUndefined(context.agentKey) ?? "",
@@ -269,7 +247,7 @@ export class BrowserRunnerClient<TContext = DefaultAgentSessionContext> implemen
       ...(previewRequest.previewOriginGrant ? {previewOriginGrant: previewRequest.previewOriginGrant} : {}),
     };
 
-    const response = await this.fetchImpl(buildRunnerEndpoint(runnerUrl, "action"), {
+    const response = await this.fetchImpl(buildEndpointUrl(runnerUrl, "action"), {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -283,7 +261,7 @@ export class BrowserRunnerClient<TContext = DefaultAgentSessionContext> implemen
       await readBrowserRunnerError(response);
     }
 
-    const payload = parseBrowserRunnerResponse(await response.json());
+    const payload = parseBrowserRunnerActionResponse(await response.json());
     if (!payload.ok) {
       throw new ToolError(payload.error, payload.details ? {details: payload.details} : undefined);
     }

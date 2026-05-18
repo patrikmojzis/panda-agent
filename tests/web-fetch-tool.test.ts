@@ -4,11 +4,14 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {Readability} from "@mozilla/readability";
 
 import {Agent, type DefaultAgentSessionContext, RunContext, ToolError, WebFetchTool,} from "../src/index.js";
+import type {JsonObject} from "../src/lib/json.js";
+import {extractReadableContentFromHtml} from "../src/integrations/web/html-content.js";
+import {createPinnedLookup} from "../src/integrations/web/safe-web-target.js";
 import {
-  createPinnedLookup,
-  extractReadableContentFromHtml,
+  fetchSafeHttpResource,
+  type FetchImpl,
   fetchWithPinnedLookup,
-} from "../src/panda/tools/web-fetch.js";
+} from "../src/integrations/web/web-fetch.js";
 
 function createAgent() {
   return new Agent({
@@ -21,7 +24,7 @@ function createRunContext(
   context: DefaultAgentSessionContext,
   options: {
     signal?: AbortSignal;
-    onToolProgress?: (progress: Record<string, unknown>) => void;
+    onToolProgress?: (progress: JsonObject) => void;
   } = {},
 ): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
@@ -31,7 +34,7 @@ function createRunContext(
     messages: [],
     context,
     signal: options.signal,
-    onToolProgress: options.onToolProgress as any,
+    onToolProgress: options.onToolProgress,
   });
 }
 
@@ -126,7 +129,7 @@ describe("WebFetchTool", () => {
   });
 
   it("falls back to basic HTML cleanup when Readability returns nothing", () => {
-    const parseSpy = vi.spyOn(Readability.prototype, "parse").mockReturnValue(null as any);
+    const parseSpy = vi.spyOn(Readability.prototype, "parse").mockReturnValue(null);
 
     const result = extractReadableContentFromHtml({
       url: "https://example.com/post",
@@ -154,9 +157,9 @@ describe("WebFetchTool", () => {
   });
 
   it("rejects non-http URLs before doing any network work", async () => {
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn<FetchImpl>();
     const tool = new WebFetchTool({
-      fetchImpl: fetchMock as any,
+      fetchImpl: fetchMock,
     });
 
     await expect(tool.run(
@@ -292,9 +295,9 @@ describe("WebFetchTool", () => {
   });
 
   it("blocks direct private-network targets before fetch", async () => {
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn<FetchImpl>();
     const tool = new WebFetchTool({
-      fetchImpl: fetchMock as any,
+      fetchImpl: fetchMock,
       lookupHostname: async () => ["127.0.0.1"],
     });
 
@@ -309,9 +312,9 @@ describe("WebFetchTool", () => {
   });
 
   it("blocks 0.0.0.0 aliases before fetch", async () => {
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn<FetchImpl>();
     const tool = new WebFetchTool({
-      fetchImpl: fetchMock as any,
+      fetchImpl: fetchMock,
     });
 
     await expect(tool.run(
@@ -325,9 +328,9 @@ describe("WebFetchTool", () => {
   });
 
   it("blocks IPv4-mapped IPv6 loopback aliases before fetch", async () => {
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn<FetchImpl>();
     const tool = new WebFetchTool({
-      fetchImpl: fetchMock as any,
+      fetchImpl: fetchMock,
     });
 
     await expect(tool.run(
@@ -373,6 +376,73 @@ describe("WebFetchTool", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks cross-origin redirects before forwarding caller-supplied headers", async () => {
+    const fetchMock = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const requestUrl = String(input);
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
+      if (requestUrl === "https://api.example/start") {
+        return new Response("", {
+          status: 302,
+          headers: {
+            location: "https://other.example/landing",
+          },
+        });
+      }
+
+      return new Response("unexpected", {
+        status: 200,
+      });
+    });
+
+    await expect(fetchSafeHttpResource("https://api.example/start", {
+      fetchImpl: fetchMock,
+      lookupHostname: async () => ["93.184.216.34"],
+      headers: {
+        authorization: "Bearer secret",
+      },
+    })).rejects.toMatchObject({
+      message: "web_fetch blocked a cross-origin redirect for a request with custom headers, method, or body.",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows same-origin redirects for caller-supplied headers", async () => {
+    const fetchMock = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const requestUrl = String(input);
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
+      if (requestUrl === "https://api.example/start") {
+        return new Response("", {
+          status: 302,
+          headers: {
+            location: "/landing",
+          },
+        });
+      }
+
+      return new Response("{\"ok\":true}", {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      });
+    });
+
+    await expect(fetchSafeHttpResource("https://api.example/start", {
+      fetchImpl: fetchMock,
+      lookupHostname: async () => ["93.184.216.34"],
+      headers: {
+        authorization: "Bearer secret",
+      },
+    })).resolves.toMatchObject({
+      finalUrl: "https://api.example/landing",
+      status: 200,
+      bodyText: "{\"ok\":true}",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("pins the validated DNS results onto the actual request lookup", async () => {

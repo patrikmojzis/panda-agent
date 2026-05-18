@@ -4,7 +4,7 @@ import {runLiveSmokeTest} from "../helpers/live-smoke.js";
 
 describe("live panda smoke", () => {
   it("requires TEST_DATABASE_URL for live runs", () => {
-    expect(process.env.TEST_DATABASE_URL?.trim()).toBeTruthy();
+    expect(process.env.TEST_DATABASE_URL?.trim()).toMatch(/^postgres(?:ql)?:\/\//);
   });
 
   const hasSmokeDb = Boolean(process.env.TEST_DATABASE_URL?.trim());

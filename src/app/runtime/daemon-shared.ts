@@ -1,5 +1,3 @@
-import {createHash} from "node:crypto";
-import {buildMissingRuntimeIdentityIdMessage} from "./daemon-copy.js";
 import {trimToUndefined} from "../../lib/strings.js";
 
 export const DEFAULT_DAEMON_KEY = "primary";
@@ -19,17 +17,10 @@ export interface DaemonServices {
   stop(): Promise<void>;
 }
 
-export const trimNonEmptyString = trimToUndefined;
-
-export function hashLockKey(value: string): readonly [number, number] {
-  const digest = createHash("sha256").update(value).digest();
-  return [digest.readInt32BE(0), digest.readInt32BE(4)] as const;
-}
-
 export function requireIdentityId(identityId: string | undefined, kind: string): string {
   const trimmed = trimToUndefined(identityId);
   if (!trimmed) {
-    throw new Error(buildMissingRuntimeIdentityIdMessage(kind));
+    throw new Error(`Runtime request ${kind} is missing identityId.`);
   }
 
   return trimmed;

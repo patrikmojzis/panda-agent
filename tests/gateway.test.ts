@@ -1,15 +1,17 @@
 import {createHash} from "node:crypto";
 
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../src/domain/agents/index.js";
-import {buildGatewayTableNames, PostgresGatewayStore} from "../src/domain/gateway/index.js";
+import {PostgresGatewayStore} from "../src/domain/gateway/postgres.js";
+import {ensurePostgresGatewaySchema} from "../src/domain/gateway/postgres-schema.js";
+import {buildGatewayTableNames} from "../src/domain/gateway/postgres-shared.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {createSessionWithInitialThread, PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
 import {startGatewayServer} from "../src/integrations/gateway/http.js";
-import {createGatewayGuardFromEnv, type GatewayGuard} from "../src/integrations/gateway/guard.js";
+import {createGatewayGuardFromEnv, type GatewayGuard, LlmGatewayGuard} from "../src/integrations/gateway/guard.js";
 import {startGatewayWorker} from "../src/integrations/gateway/worker.js";
 import {ensureSchemas} from "../src/app/runtime/postgres-bootstrap.js";
 
@@ -145,8 +147,12 @@ describe("Panda gateway", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("pragma")).toBe("no-cache");
     const body = await response.json() as {access_token?: string};
-    expect(body.access_token).toBeTruthy();
-    return body.access_token ?? "";
+    const token = body.access_token;
+    if (!token) {
+      throw new Error("Expected OAuth token response to include access_token.");
+    }
+    expect(token).toMatch(/^pga_[A-Za-z0-9_-]+$/);
+    return token;
   }
 
   async function postEvent(
@@ -333,6 +339,68 @@ describe("Panda gateway", () => {
     expect(() => createGatewayGuardFromEnv({})).toThrow("GATEWAY_GUARD_MODEL");
   });
 
+  it("scores LLM guard verdicts through an injected runtime", async () => {
+    const runtime = {
+      complete: vi.fn(async () => ({
+        role: "assistant",
+        content: [{type: "text", text: "verdict: {\"riskScore\": 2}"}],
+        api: "test",
+        provider: "test",
+        model: "test",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: 0,
+          },
+        },
+        stopReason: "stop",
+        timestamp: Date.now(),
+      })),
+    };
+    const guard = new LlmGatewayGuard({
+      model: "openai-codex/gpt-test",
+      runtime,
+    });
+
+    await expect(guard.score({
+      event: {
+        id: "event-1",
+        sourceId: "work-prod",
+        type: "meeting.transcript",
+        deliveryRequested: "wake",
+        deliveryEffective: "wake",
+        idempotencyKey: "event-1",
+        text: "hello",
+        textBytes: 5,
+        textSha256: createHash("sha256").update("hello").digest("hex"),
+        status: "pending",
+        createdAt: Date.now(),
+      },
+      source: {
+        sourceId: "work-prod",
+        name: "Work Prod",
+        clientId: "client-1",
+        agentKey: "panda",
+        identityId: "identity-1",
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    })).resolves.toEqual({riskScore: 1});
+    expect(runtime.complete.mock.calls[0]?.[0]).toMatchObject({
+      providerName: "openai-codex",
+      modelId: "gpt-test",
+    });
+  });
+
   it("keeps request rate limits in postgres across gateway server restarts", async () => {
     const harness = await createHarness({rateLimitPerMinute: 1});
     try {
@@ -390,6 +458,240 @@ describe("Panda gateway", () => {
     }
   });
 
+  it("keeps gateway metadata repair in schema migrations", async () => {
+    const queries: string[] = [];
+    await ensurePostgresGatewaySchema({
+      query: vi.fn(async (queryText: string) => {
+        queries.push(queryText.replace(/\s+/g, " ").trim());
+        return {rows: []};
+      }),
+    });
+
+    expect(queries).toContain(
+      'ALTER TABLE "runtime"."gateway_events" ADD COLUMN IF NOT EXISTS metadata JSONB',
+    );
+    expect(queries).toContain(
+      'ALTER TABLE "runtime"."gateway_strikes" ADD COLUMN IF NOT EXISTS metadata JSONB',
+    );
+  });
+
+  it("rejects malformed persisted rate-limit usage", async () => {
+    const gatewayStore = new PostgresGatewayStore({
+      pool: {
+        query: vi.fn(async (sql: string) => {
+          if (sql.includes("RETURNING used")) {
+            return {rows: [{used: "busy"}]};
+          }
+
+          return {rows: []};
+        }),
+      },
+    });
+
+    await expect(gatewayStore.useRateLimit({
+      key: "gateway:bad-used",
+      windowMs: 60_000,
+      limit: 10,
+    })).rejects.toThrow("Gateway rate-limit usage must be a non-negative integer.");
+  });
+
+  it("accepts postgres bigint-shaped rate-limit usage", async () => {
+    const gatewayStore = new PostgresGatewayStore({
+      pool: {
+        query: vi.fn(async (sql: string) => {
+          if (sql.includes("RETURNING used")) {
+            return {rows: [{used: "3"}]};
+          }
+
+          return {rows: []};
+        }),
+      },
+    });
+
+    await expect(gatewayStore.useRateLimit({
+      key: "gateway:string-used",
+      windowMs: 60_000,
+      limit: 10,
+    })).resolves.toEqual({
+      allowed: true,
+      used: 3,
+    });
+  });
+
+  it("rejects malformed persisted strike counts", async () => {
+    const gatewayStore = new PostgresGatewayStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [{count: "many"}],
+        })),
+      },
+    });
+
+    await expect(gatewayStore.countRecentStrikes({
+      sourceId: "work-prod",
+      sinceMs: 60_000,
+    })).rejects.toThrow("Gateway strike count must be a non-negative integer.");
+  });
+
+  it("rejects malformed persisted gateway source rows", async () => {
+    const gatewayStore = new PostgresGatewayStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [{
+            source_id: "work-prod",
+            name: "Work",
+            client_id: "pgc_client",
+            agent_key: "panda",
+            identity_id: "identity-1",
+            session_id: null,
+            status: "active",
+            suspended_at: null,
+            suspend_reason: null,
+            created_at: "not-a-date",
+            updated_at: new Date(),
+          }],
+        })),
+      },
+    });
+
+    await expect(gatewayStore.getSource("work-prod")).rejects.toThrow(
+      "Gateway source created_at must be a finite timestamp.",
+    );
+  });
+
+  it("rejects stringified persisted gateway timestamps", async () => {
+    const gatewayStore = new PostgresGatewayStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [{
+            source_id: "work-prod",
+            name: "Work",
+            client_id: "pgc_client",
+            agent_key: "panda",
+            identity_id: "identity-1",
+            session_id: null,
+            status: "active",
+            suspended_at: null,
+            suspend_reason: null,
+            created_at: "2026-05-01T12:00:00.000Z",
+            updated_at: new Date(),
+          }],
+        })),
+      },
+    });
+
+    await expect(gatewayStore.getSource("work-prod")).rejects.toThrow(
+      "Gateway source created_at must be a finite timestamp.",
+    );
+  });
+
+  it("rejects malformed persisted gateway event rows", async () => {
+    const gatewayStore = new PostgresGatewayStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [{
+            id: "event-1",
+            source_id: "work-prod",
+            event_type: "meeting.transcript",
+            delivery_requested: "wake",
+            delivery_effective: "wake",
+            occurred_at: null,
+            idempotency_key: "event-key",
+            text: "",
+            text_bytes: "large",
+            text_sha256: "hash",
+            status: "pending",
+            risk_score: null,
+            reason: null,
+            thread_id: null,
+            metadata: null,
+            created_at: new Date(),
+            claim_id: null,
+            claimed_at: null,
+            processed_at: null,
+            delivered_at: null,
+            text_scrubbed_at: null,
+          }],
+        })),
+      },
+    });
+
+    await expect(gatewayStore.getEvent("event-1")).rejects.toThrow(
+      "Gateway event text bytes must be a non-negative integer.",
+    );
+  });
+
+  it("rejects driver-shaped persisted gateway event numbers", async () => {
+    const baseRow = {
+      id: "event-1",
+      source_id: "work-prod",
+      event_type: "meeting.transcript",
+      delivery_requested: "wake",
+      delivery_effective: "wake",
+      occurred_at: null,
+      idempotency_key: "event-key",
+      text: "",
+      text_bytes: 1,
+      text_sha256: "hash",
+      status: "pending",
+      risk_score: null,
+      reason: null,
+      thread_id: null,
+      metadata: null,
+      created_at: new Date(),
+      claim_id: null,
+      claimed_at: null,
+      processed_at: null,
+      delivered_at: null,
+      text_scrubbed_at: null,
+    };
+    const badTextBytes = new PostgresGatewayStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [{...baseRow, text_bytes: "1"}],
+        })),
+      },
+    });
+    await expect(badTextBytes.getEvent("event-1")).rejects.toThrow(
+      "Gateway event text bytes must be a non-negative integer.",
+    );
+
+    const badRiskScore = new PostgresGatewayStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [{...baseRow, risk_score: "0.5"}],
+        })),
+      },
+    });
+    await expect(badRiskScore.getEvent("event-1")).rejects.toThrow(
+      "Gateway event risk score must be a finite number.",
+    );
+  });
+
+  it("rejects malformed persisted gateway strike rows", async () => {
+    const gatewayStore = new PostgresGatewayStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [{
+            id: "strike-1",
+            source_id: "work-prod",
+            kind: "",
+            reason: "bad",
+            event_id: null,
+            metadata: null,
+            created_at: new Date(),
+          }],
+        })),
+      },
+    });
+
+    await expect(gatewayStore.recordStrike({
+      sourceId: "work-prod",
+      kind: "unknown_type",
+      reason: "bad",
+    })).rejects.toThrow("Gateway strike kind must not be empty.");
+  });
+
   it("rejects source routes to sessions owned by another agent", async () => {
     const harness = await createHarness();
     try {
@@ -404,12 +706,65 @@ describe("Panda gateway", () => {
     }
   });
 
+  it("delivers routed source events to the session current thread after reset", async () => {
+    const harness = await createHarness();
+    try {
+      const resetThreadId = "thread-after-reset";
+      await harness.threadStore.createThread({
+        id: resetThreadId,
+        sessionId: "session-1",
+        context: {
+          agentKey: "panda",
+          sessionId: "session-1",
+          cwd: "/tmp",
+        },
+      });
+      await harness.sessionStore.updateCurrentThread({
+        sessionId: "session-1",
+        currentThreadId: resetThreadId,
+      });
+      await harness.gatewayStore.createSource({
+        sourceId: "session-routed",
+        agentKey: "panda",
+        identityId: "identity-1",
+        sessionId: "session-1",
+      });
+      await harness.gatewayStore.upsertEventType({
+        sourceId: "session-routed",
+        type: "meeting.transcript",
+        delivery: "wake",
+      });
+
+      const text = "Route this to the reset thread.";
+      const stored = await harness.gatewayStore.storeEvent({
+        sourceId: "session-routed",
+        type: "meeting.transcript",
+        deliveryRequested: "wake",
+        deliveryEffective: "wake",
+        idempotencyKey: "session-routed-event",
+        text,
+        textBytes: Buffer.byteLength(text, "utf8"),
+        textSha256: createHash("sha256").update(text, "utf8").digest("hex"),
+      });
+
+      harness.worker.poke();
+      await waitForEventStatus(harness, stored.event.id, "delivered");
+
+      const event = await harness.gatewayStore.getEvent(stored.event.id);
+      expect(event.threadId).toBe(resetThreadId);
+      expect(await harness.threadStore.hasRunnableInputs(resetThreadId)).toBe(true);
+      expect(await harness.threadStore.hasPendingInputs("thread-1")).toBe(false);
+    } finally {
+      await closeHarness(harness);
+    }
+  });
+
   it("rotates client secrets when resuming a suspended source", async () => {
     const harness = await createHarness();
     try {
       await harness.gatewayStore.suspendSource("work-prod", "test suspension");
       const resumed = await harness.gatewayStore.resumeSource("work-prod");
-      expect(resumed.clientSecret).toBeTruthy();
+      expect(resumed.clientSecret).toMatch(/^pgs_[A-Za-z0-9_-]+$/);
       expect(resumed.source.status).toBe("active");
       await expect(harness.gatewayStore.verifyClientCredentials({
         clientId: harness.clientId,
@@ -621,11 +976,14 @@ describe("Panda gateway", () => {
         textSha256: createHash("sha256").update(text, "utf8").digest("hex"),
       });
       const [claimed] = await harness.gatewayStore.claimPendingEvents(1);
-      expect(claimed?.id).toBe(stored.event.id);
-      expect(claimed?.claimId).toBeTruthy();
+      if (!claimed?.claimId) {
+        throw new Error("Expected pending gateway event to be claimed with a claim id.");
+      }
+      expect(claimed.id).toBe(stored.event.id);
+      expect(claimed.claimId).toMatch(/^[0-9a-f-]{36}$/);
       const reserved = await harness.gatewayStore.reserveEventDelivery({
         eventId: stored.event.id,
-        claimId: claimed?.claimId ?? "",
+        claimId: claimed.claimId,
         riskScore: 0.01,
       });
       expect(reserved?.status).toBe("delivering");
@@ -640,6 +998,45 @@ describe("Panda gateway", () => {
       await expect(harness.gatewayStore.getEvent(stored.event.id)).resolves.toMatchObject({
         status: "delivering",
       });
+    } finally {
+      await closeHarness(harness);
+    }
+  });
+
+  it("rejects non-json gateway metadata before persistence", async () => {
+    const harness = await createHarness();
+    try {
+      const text = "Metadata must stay JSON.";
+      const stored = await harness.gatewayStore.storeEvent({
+        sourceId: "work-prod",
+        type: "meeting.transcript",
+        deliveryRequested: "wake",
+        deliveryEffective: "wake",
+        idempotencyKey: "metadata-guard-event",
+        text,
+        textBytes: Buffer.byteLength(text, "utf8"),
+        textSha256: createHash("sha256").update(text, "utf8").digest("hex"),
+      });
+      const [claimed] = await harness.gatewayStore.claimPendingEvents(1);
+      if (!claimed?.claimId) {
+        throw new Error("Expected pending gateway event to be claimed with a claim id.");
+      }
+      expect(claimed.id).toBe(stored.event.id);
+      expect(claimed.claimId).toMatch(/^[0-9a-f-]{36}$/);
+
+      await expect(harness.gatewayStore.reserveEventDelivery({
+        eventId: stored.event.id,
+        claimId: claimed.claimId,
+        riskScore: 0.01,
+        metadata: Number.NaN,
+      })).rejects.toThrow("Gateway event metadata must be JSON-serializable.");
+
+      await expect(harness.gatewayStore.recordStrike({
+        sourceId: "work-prod",
+        kind: "guard",
+        reason: "bad metadata",
+        metadata: Number.NaN,
+      })).rejects.toThrow("Gateway strike metadata must be JSON-serializable.");
     } finally {
       await closeHarness(harness);
     }

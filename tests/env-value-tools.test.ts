@@ -4,12 +4,9 @@ import {DataType, newDb} from "pg-mem";
 
 import {Agent, RunContext, stringToUserMessage} from "../src/index.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
-import {
-    CredentialCrypto,
-    CredentialResolver,
-    CredentialService,
-    PostgresCredentialStore,
-} from "../src/domain/credentials/index.js";
+import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
+import {CredentialResolver, CredentialService} from "../src/domain/credentials/resolver.js";
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../src/panda/index.js";
 import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";

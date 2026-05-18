@@ -1,16 +1,16 @@
 import {randomUUID} from "node:crypto";
 
-import type {JsonValue} from "../../kernel/agent/types.js";
+import {isJsonObject, type JsonObject, type JsonValue} from "../../lib/json.js";
+import {trimToUndefined} from "../../lib/strings.js";
 import type {OutboundDeliveryRecord} from "../channels/deliveries/types.js";
 import type {OutboundItem} from "../channels/types.js";
-import type {A2ASenderEnvironmentSnapshot} from "../threads/requests/index.js";
-import type {SessionStore} from "../sessions/index.js";
-import {A2ASessionBindingRepo} from "./repo.js";
+import type {SessionStore} from "../sessions/store.js";
+import type {A2ASenderEnvironmentSnapshot} from "../threads/requests/types.js";
 import {
-    A2A_CONNECTOR_KEY,
-    A2A_SOURCE,
-    DEFAULT_A2A_MAX_MESSAGES_PER_HOUR
-} from "../../integrations/channels/a2a/config.js";
+  A2A_CONNECTOR_KEY,
+  A2A_SOURCE,
+  DEFAULT_A2A_MAX_MESSAGES_PER_HOUR,
+} from "./constants.js";
 
 interface OutboundDeliveryQueue {
   enqueueDelivery(input: {
@@ -28,7 +28,19 @@ interface OutboundDeliveryQueue {
   }): Promise<OutboundDeliveryRecord>;
 }
 
-export interface QueueA2AMessageInput {
+interface A2AMessagingBindings {
+  hasBinding(input: {
+    senderSessionId: string;
+    recipientSessionId: string;
+  }): Promise<boolean>;
+  countRecentMessages(input: {
+    senderSessionId: string;
+    recipientSessionId: string;
+    since: number;
+  }): Promise<number>;
+}
+
+interface QueueA2AMessageInput {
   senderAgentKey: string;
   senderSessionId: string;
   senderThreadId: string;
@@ -39,23 +51,18 @@ export interface QueueA2AMessageInput {
   items: readonly OutboundItem[];
 }
 
-export interface QueueA2AMessageResult {
+interface QueueA2AMessageResult {
   delivery: OutboundDeliveryRecord;
   targetAgentKey: string;
   targetSessionId: string;
   messageId: string;
 }
 
-export interface A2AMessagingServiceOptions {
-  bindings: A2ASessionBindingRepo;
+interface A2AMessagingServiceOptions {
+  bindings: A2AMessagingBindings;
   outboundDeliveries: OutboundDeliveryQueue;
-  sessions: SessionStore;
+  sessions: Pick<SessionStore, "getMainSession" | "getSession">;
   maxMessagesPerHour?: number;
-}
-
-function trimNonEmptyString(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed || undefined;
 }
 
 function normalizePositiveInteger(value: number | undefined): number {
@@ -70,10 +77,18 @@ function buildMessageId(): string {
   return `a2a:${randomUUID()}`;
 }
 
+function senderEnvironmentToJsonObject(value: A2ASenderEnvironmentSnapshot): JsonObject {
+  if (isJsonObject(value)) {
+    return value;
+  }
+
+  throw new Error("A2A sender environment metadata must be JSON-safe.");
+}
+
 export class A2AMessagingService {
-  private readonly bindings: A2ASessionBindingRepo;
+  private readonly bindings: A2AMessagingBindings;
   private readonly outboundDeliveries: OutboundDeliveryQueue;
-  private readonly sessions: SessionStore;
+  private readonly sessions: Pick<SessionStore, "getMainSession" | "getSession">;
   private readonly maxMessagesPerHour: number;
 
   constructor(options: A2AMessagingServiceOptions) {
@@ -84,8 +99,8 @@ export class A2AMessagingService {
   }
 
   async queueMessage(input: QueueA2AMessageInput): Promise<QueueA2AMessageResult> {
-    const explicitSessionId = trimNonEmptyString(input.sessionId);
-    const explicitAgentKey = trimNonEmptyString(input.agentKey);
+    const explicitSessionId = trimToUndefined(input.sessionId);
+    const explicitAgentKey = trimToUndefined(input.agentKey);
     if (!explicitSessionId && !explicitAgentKey) {
       throw new Error("message_agent requires agentKey or sessionId.");
     }
@@ -143,7 +158,7 @@ export class A2AMessagingService {
           toAgentKey: targetSession.agentKey,
           toSessionId: targetSession.id,
           sentAt,
-          ...(input.senderEnvironment ? {senderEnvironment: input.senderEnvironment as unknown as JsonValue} : {}),
+          ...(input.senderEnvironment ? {senderEnvironment: senderEnvironmentToJsonObject(input.senderEnvironment)} : {}),
         },
       },
     });

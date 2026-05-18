@@ -9,8 +9,9 @@ import type {
 
 import type {Agent} from "../../../kernel/agent/agent.js";
 import {formatParameters} from "../../../kernel/agent/helpers/schema.js";
-import type {JsonValue, ToolResultContent} from "../../../kernel/agent/types.js";
+import type {ToolResultContent} from "../../../kernel/agent/types.js";
 import {Tool} from "../../../kernel/agent/tool.js";
+import type {JsonValue} from "../../../lib/json.js";
 import {renderStructuredOutputInstruction} from "../../../prompts/runtime/structured-output.js";
 
 function normalizeSystemPrompt(systemPrompt?: string | ReadonlyArray<string>): string[] {

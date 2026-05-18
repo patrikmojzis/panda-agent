@@ -1,4 +1,4 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {newDb} from "pg-mem";
 import {initAuthCreds, proto} from "baileys";
 
@@ -47,6 +47,41 @@ describe("PostgresWhatsAppAuthStore", () => {
     });
   });
 
+  it("rejects malformed persisted credential rows", async () => {
+    const store = new PostgresWhatsAppAuthStore({
+      pool: {
+        connect: vi.fn(),
+        query: vi.fn(async () => ({
+          rows: [{
+            connector_key: " ",
+            creds: initAuthCreds(),
+            created_at: new Date(),
+            updated_at: new Date(),
+          }],
+        })),
+      },
+    });
+
+    await expect(store.loadCreds("wa-main")).rejects.toThrow("WhatsApp auth connector key must not be empty.");
+  });
+
+  it("rejects malformed persisted signal key ids", async () => {
+    const store = new PostgresWhatsAppAuthStore({
+      pool: {
+        connect: vi.fn(),
+        query: vi.fn(async () => ({
+          rows: [{
+            key_id: " ",
+            value: Buffer.from("hello"),
+          }],
+        })),
+      },
+    });
+
+    await expect(store.loadSignalKeys("wa-main", "session", ["session-1"]))
+      .rejects.toThrow("WhatsApp auth key id must not be empty.");
+  });
+
   it("round-trips signal keys and deletes nulled entries", async () => {
     const db = newDb();
     const adapter = db.adapters.createPg();
@@ -79,7 +114,6 @@ describe("PostgresWhatsAppAuthStore", () => {
     expect(Buffer.from(sessions["session-1"] ?? []).toString()).toBe("hello");
 
     const appStateKeys = await store.loadSignalKeys("wa-main", "app-state-sync-key", ["sync-1"]);
-    expect(appStateKeys["sync-1"]).toBeDefined();
     expect(Buffer.from(appStateKeys["sync-1"]?.keyData ?? []).toString()).toBe("abc");
 
     await store.saveSignalKeys("wa-main", {

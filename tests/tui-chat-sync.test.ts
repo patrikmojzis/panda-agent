@@ -1,7 +1,6 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {syncChatStoredThreadState} from "../src/ui/tui/chat-sync.js";
-import type {ChatRuntimeServices} from "../src/ui/tui/runtime.js";
 
 describe("syncChatStoredThreadState", () => {
   it("applies the stored snapshot during background sync without daemon config", async () => {
@@ -19,7 +18,7 @@ describe("syncChatStoredThreadState", () => {
         loadTranscript: vi.fn(async () => []),
         listRuns: vi.fn(async () => []),
       },
-    } as unknown as ChatRuntimeServices;
+    };
     let syncInFlight = false;
     let lastStoredSyncAt = 0;
 

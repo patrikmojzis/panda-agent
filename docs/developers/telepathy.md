@@ -80,10 +80,21 @@ Panda runtime:
 - `src/integrations/telepathy/protocol.ts`
 - `src/integrations/telepathy/hub.ts`
 - `src/integrations/telepathy/config.ts`
+- `src/integrations/telepathy/context-media.ts`
 - `src/integrations/telepathy/helpers.ts`
+- `src/integrations/telepathy/screenshot-artifact.ts`
+- `src/integrations/telepathy/websocket.ts`
 - `src/prompts/channels/telepathy.ts`
 - `src/app/runtime/telepathy-context-ingress.ts`
 - `src/panda/tools/telepathy-screenshot-tool.ts`
+
+Store shape:
+
+- `PostgresTelepathyDeviceStore` is the concrete device registry.
+- The websocket hub and `device.hello` auth path define their own narrow store
+  interfaces. Do not recreate a broad `domain/telepathy/store.ts` interface for
+  one Postgres adapter; registration/listing/admin methods do not belong in the
+  live socket seam.
 
 macOS receiver:
 

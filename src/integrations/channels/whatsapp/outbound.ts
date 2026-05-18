@@ -4,20 +4,25 @@ import path from "node:path";
 import type {WASocket} from "baileys";
 
 import type {
-  ChannelOutboundAdapter,
   OutboundRequest,
   OutboundResult,
   OutboundSentItem
-} from "../../../domain/channels/index.js";
+} from "../../../domain/channels/types.js";
+import type {ChannelOutboundAdapter} from "../../../domain/channels/outbound.js";
 import {WHATSAPP_SOURCE} from "./config.js";
 import {assertWhatsAppConnectorKey, requireWhatsAppSocket} from "./transport.js";
 
+export type WhatsAppOutboundSocket = Pick<WASocket, "sendMessage">;
+
 export interface CreateWhatsAppOutboundAdapterOptions {
   connectorKey: string;
-  getSocket(): WASocket | null;
+  getSocket(): WhatsAppOutboundSocket | null;
 }
 
-function requireSentItemId(itemType: OutboundSentItem["type"], sent: Awaited<ReturnType<WASocket["sendMessage"]>>): OutboundSentItem {
+function requireSentItemId(
+  itemType: OutboundSentItem["type"],
+  sent: Awaited<ReturnType<WhatsAppOutboundSocket["sendMessage"]>>,
+): OutboundSentItem {
   const externalMessageId = sent?.key.id?.trim();
   if (!externalMessageId) {
     throw new Error(`WhatsApp ${itemType} send did not return a message id.`);

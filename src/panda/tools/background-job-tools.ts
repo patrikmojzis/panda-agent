@@ -6,7 +6,8 @@ import type {ThreadToolJobRecord} from "../../domain/threads/runtime/types.js";
 import {readThreadId} from "../../integrations/shell/runtime-context.js";
 import {Tool, type ToolOutput} from "../../kernel/agent/tool.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
-import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import {isJsonObject, type JsonObject, type JsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 
@@ -70,8 +71,8 @@ function materializedPayload(record: ThreadToolJobRecord): ToolResultPayload | n
   const contentText = typeof record.result.contentText === "string"
     ? record.result.contentText
     : null;
-  const details = isRecord(record.result.details)
-    ? record.result.details as JsonObject
+  const details = isJsonObject(record.result.details)
+    ? record.result.details
     : null;
   if (!contentText || !details) {
     return null;

@@ -78,6 +78,8 @@
     "dev": "tsx src/app/cli.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/app/cli.js",
+    "architecture:import-law": "node scripts/import-law-report.mjs",
+    "architecture:import-law:ratchet": "node scripts/import-law-report.mjs --ratchet",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "smoke": "tsx src/app/cli.ts smoke",

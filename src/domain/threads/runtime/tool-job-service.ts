@@ -1,7 +1,8 @@
 import {randomUUID} from "node:crypto";
 
 import {ToolError} from "../../../kernel/agent/exceptions.js";
-import type {JsonObject} from "../../../kernel/agent/types.js";
+import {withFallbackTimeout} from "../../../lib/async.js";
+import type {JsonObject} from "../../../lib/json.js";
 import type {ThreadRuntimeStore} from "./store.js";
 import type {ThreadToolJobKind, ThreadToolJobRecord, ThreadToolJobStatus, ThreadToolJobUpdate,} from "./types.js";
 
@@ -64,43 +65,6 @@ function errorMessage(error: unknown): string {
 function abortReason(signal: AbortSignal): string {
   const reason = signal.reason;
   return reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Cancelled.";
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: () => T): Promise<T> {
-  if (timeoutMs <= 0) {
-    return Promise.resolve(fallback());
-  }
-
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      resolve(fallback());
-    }, timeoutMs);
-    timer.unref();
-
-    promise.then((value) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    }).catch((error) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      clearTimeout(timer);
-      reject(error);
-    });
-  });
 }
 
 function snapshotToUpdate(snapshot: BackgroundToolJobSnapshot): ThreadToolJobUpdate {
@@ -221,7 +185,7 @@ export class BackgroundToolJobService {
     }
 
     try {
-      const completion = await withTimeout(live.handle.done, timeoutMs, () => null);
+      const completion = await withFallbackTimeout(live.handle.done, timeoutMs, () => null);
       if (!completion) {
         return this.readLiveJob(record);
       }

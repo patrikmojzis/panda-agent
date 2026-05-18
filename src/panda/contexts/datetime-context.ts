@@ -1,5 +1,6 @@
 import {LlmContext} from "../../kernel/agent/llm-context.js";
 import {renderDateTimeContext} from "../../prompts/contexts/datetime.js";
+import {resolveNow} from "./shared.js";
 
 export interface DateTimeContextOptions {
   now?: Date | (() => Date);
@@ -8,14 +9,6 @@ export interface DateTimeContextOptions {
 export interface ResolvedDateTimeContextOptions {
   locale: string;
   timeZone: string;
-}
-
-function resolveNow(now?: Date | (() => Date)): Date {
-  if (typeof now === "function") {
-    return now();
-  }
-
-  return now ?? new Date();
 }
 
 export function resolveDateTimeContextOptions(): ResolvedDateTimeContextOptions {

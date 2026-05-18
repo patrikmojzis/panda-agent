@@ -20,7 +20,7 @@ There is one value per `(agent_key, env_key)`.
 
 ## Migration
 
-`PostgresCredentialStore.ensureSchema()` migrates the old table shape by keeping old agent-owned rows and deleting rows that cannot map to a single agent credential. The final schema has no owner dimension beyond `agent_key`.
+`src/domain/credentials/postgres-schema.ts` migrates the old table shape by keeping old agent-owned rows and deleting rows that cannot map to a single agent credential. The final schema has no owner dimension beyond `agent_key`; `PostgresCredentialStore` owns encrypted row lookup and mutation behavior.
 
 ## Encryption
 

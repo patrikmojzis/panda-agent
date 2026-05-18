@@ -1,4 +1,4 @@
-import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
 
 /**
  * Replaces every exact secret occurrence in `value` with a redaction marker.
@@ -32,10 +32,16 @@ export function redactSecretsInJson(value: JsonValue, secrets: readonly string[]
   }
 
   if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, redactSecretsInJson(entry as JsonValue, secrets)]),
-    ) as JsonObject;
+    return redactSecretsInJsonObject(value, secrets);
   }
 
   return value;
+}
+
+export function redactSecretsInJsonObject(value: JsonObject, secrets: readonly string[]): JsonObject {
+  const redacted: JsonObject = {};
+  for (const [key, entry] of Object.entries(value)) {
+    redacted[key] = redactSecretsInJson(entry, secrets);
+  }
+  return redacted;
 }

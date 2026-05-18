@@ -8,7 +8,7 @@ describe("createTelegramTypingAdapter", () => {
     const adapter = createTelegramTypingAdapter({
       api: {
         sendChatAction,
-      } as never,
+      },
       connectorKey: "main",
     });
 
@@ -53,7 +53,7 @@ describe("createTelegramTypingAdapter", () => {
     const adapter = createTelegramTypingAdapter({
       api: {
         sendChatAction: vi.fn(async () => true),
-      } as never,
+      },
       connectorKey: "main",
     });
 

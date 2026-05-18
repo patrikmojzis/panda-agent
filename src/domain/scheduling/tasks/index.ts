@@ -12,7 +12,10 @@ export {
   PostgresScheduledTaskStore,
   type PostgresScheduledTaskStoreOptions,
 } from "./postgres.js";
-export {ScheduledTaskRunner, type ScheduledTaskRunnerOptions} from "./runner.js";
+export {
+  ScheduledTaskRunner,
+  type ScheduledTaskRunnerOptions,
+} from "./runner.js";
 export type {ScheduledTaskStore} from "./store.js";
 export {
   type CancelScheduledTaskInput,

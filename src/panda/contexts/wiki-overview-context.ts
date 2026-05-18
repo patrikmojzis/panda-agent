@@ -1,4 +1,4 @@
-import type {WikiBindingService} from "../../domain/wiki/index.js";
+import type {WikiBindingService} from "../../domain/wiki/service.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import {
     DEFAULT_WIKI_LOCALE,

@@ -1,4 +1,4 @@
-import {mkdtemp, readFile, rm, stat} from "node:fs/promises";
+import {mkdtemp, readFile, rm} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -7,6 +7,9 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {Agent, type DefaultAgentSessionContext, RunContext} from "../src/index.js";
 import {BrowserRunnerClient} from "../src/integrations/browser/client.js";
 import {type BrowserRunner, startBrowserRunner} from "../src/integrations/browser/runner.js";
+
+type StartBrowserRunnerOptions = NonNullable<Parameters<typeof startBrowserRunner>[0]>;
+type LaunchBrowserImpl = NonNullable<StartBrowserRunnerOptions["launchBrowserImpl"]>;
 
 function createAgent() {
   return new Agent({
@@ -149,6 +152,14 @@ class FakeBrowser {
   on(_event: "disconnected", _listener: () => void): void {}
 }
 
+function asLaunchedBrowser(browser: FakeBrowser): Awaited<ReturnType<LaunchBrowserImpl>> {
+  return browser as Awaited<ReturnType<LaunchBrowserImpl>>;
+}
+
+function createFakeLaunchBrowser(context: FakeBrowserContext) {
+  return vi.fn(async () => asLaunchedBrowser(new FakeBrowser(context)));
+}
+
 describe("browser runner transport", () => {
   const tempDirs: string[] = [];
   const runners: BrowserRunner[] = [];
@@ -166,7 +177,7 @@ describe("browser runner transport", () => {
   });
 
   it("sends agent/session/thread context and auth headers from the core client", async () => {
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
       return new Response(JSON.stringify({
         ok: true,
         text: "Snapshot ok",
@@ -211,7 +222,7 @@ describe("browser runner transport", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-runner-"));
     tempDirs.push(tempDir);
     const context = new FakeBrowserContext(new FakePage());
-    const launchBrowserImpl = vi.fn(async () => new FakeBrowser(context) as any);
+    const launchBrowserImpl = createFakeLaunchBrowser(context);
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const runner = await startBrowserRunner({
       host: "127.0.0.1",
@@ -469,12 +480,11 @@ describe("browser runner transport", () => {
     const screenshotPath = String((result.details as Record<string, unknown>).path);
     expect(screenshotPath).toContain(path.join("agents", "panda", "media", "browser", "thread-1"));
     expect((result.content[0] as {type: string; text: string}).text).toContain(screenshotPath);
-    await expect(stat(screenshotPath)).resolves.toBeTruthy();
     await expect(readFile(screenshotPath, "utf8")).resolves.toContain("fake-image");
   });
 
   it("rejects missing and wrong bearer tokens at the runner boundary", async () => {
-    const launchBrowserImpl = vi.fn(async () => new FakeBrowser(new FakeBrowserContext(new FakePage())) as any);
+    const launchBrowserImpl = createFakeLaunchBrowser(new FakeBrowserContext(new FakePage()));
     const runner = await startBrowserRunner({
       host: "127.0.0.1",
       port: 0,
@@ -510,8 +520,41 @@ describe("browser runner transport", () => {
     expect(launchBrowserImpl).not.toHaveBeenCalled();
   });
 
+  it("returns validation details as protocol JSON for malformed action requests", async () => {
+    const launchBrowserImpl = createFakeLaunchBrowser(new FakeBrowserContext(new FakePage()));
+    const runner = await startBrowserRunner({
+      host: "127.0.0.1",
+      port: 0,
+      sharedSecret: "secret-123",
+      launchBrowserImpl,
+    });
+    runners.push(runner);
+
+    const response = await fetch(`http://127.0.0.1:${runner.port}/action`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret-123",
+      },
+      body: JSON.stringify({
+        agentKey: "panda",
+        threadId: "thread-1",
+        action: {action: "not-real"},
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      details: {
+        issues: expect.arrayContaining([expect.any(String)]),
+      },
+    });
+    expect(launchBrowserImpl).not.toHaveBeenCalled();
+  });
+
   it("rejects forged preview origin grants at the runner boundary", async () => {
-    const launchBrowserImpl = vi.fn(async () => new FakeBrowser(new FakeBrowserContext(new FakePage())) as any);
+    const launchBrowserImpl = createFakeLaunchBrowser(new FakeBrowserContext(new FakePage()));
     const runner = await startBrowserRunner({
       host: "127.0.0.1",
       port: 0,

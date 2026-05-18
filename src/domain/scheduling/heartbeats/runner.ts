@@ -1,8 +1,10 @@
-import {stringToUserMessage} from "../../../kernel/agent/index.js";
+import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {renderHeartbeatPrompt} from "../../../prompts/runtime/heartbeat.js";
-import {runInBackground} from "../../../lib/async.js";
 import {resolveLocalDateTimeInfo} from "../../../lib/dates.js";
-import type {SessionHeartbeatRecord, SessionRecord, SessionStore} from "../../sessions/index.js";
+import {DrainLoop} from "../../../lib/drain-loop.js";
+import {resolveCurrentSessionThread} from "../../sessions/current-thread.js";
+import type {SessionStore} from "../../sessions/store.js";
+import type {SessionHeartbeatRecord, SessionRecord} from "../../sessions/types.js";
 import type {ThreadRuntimeCoordinator} from "../../threads/runtime/coordinator.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
@@ -10,6 +12,10 @@ const DEFAULT_CLAIM_TTL_MS = 5 * 60_000;
 const DEFAULT_BATCH_SIZE = 100;
 const HEARTBEAT_SOURCE = "heartbeat";
 const HEARTBEAT_CLAIM_OWNER = "heartbeat-runner";
+type HeartbeatRunnerSessionStore = Pick<
+  SessionStore,
+  "claimHeartbeat" | "getSession" | "listDueHeartbeats" | "recordHeartbeatResult"
+>;
 
 function buildHeartbeatPrompt(scheduledFor: number, guidance?: string | null): string {
   const localDateTime = resolveLocalDateTimeInfo(new Date(scheduledFor));
@@ -21,9 +27,13 @@ function buildHeartbeatPrompt(scheduledFor: number, guidance?: string | null): s
   });
 }
 
+function describeHeartbeatFailure(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export interface HeartbeatRunnerOptions {
-  sessions: SessionStore;
-  coordinator: ThreadRuntimeCoordinator;
+  sessions: HeartbeatRunnerSessionStore;
+  coordinator: Pick<ThreadRuntimeCoordinator, "isThreadBusy" | "submitInput">;
   pollIntervalMs?: number;
   claimTtlMs?: number;
   resolveInstructions?: (session: SessionRecord) => Promise<string | null> | string | null;
@@ -31,82 +41,41 @@ export interface HeartbeatRunnerOptions {
 }
 
 export class HeartbeatRunner {
-  private readonly sessions: SessionStore;
-  private readonly coordinator: ThreadRuntimeCoordinator;
-  private readonly pollIntervalMs: number;
+  private readonly sessions: HeartbeatRunnerSessionStore;
+  private readonly coordinator: Pick<ThreadRuntimeCoordinator, "isThreadBusy" | "submitInput">;
   private readonly claimTtlMs: number;
   private readonly resolveInstructions?: (session: SessionRecord) => Promise<string | null> | string | null;
   private readonly onError?: (error: unknown, sessionId?: string) => Promise<void> | void;
-
-  private timer: NodeJS.Timeout | null = null;
-  private stopped = true;
-  private drainPromise: Promise<void> | null = null;
-  private pendingDrain = false;
+  private readonly drainLoop: DrainLoop;
 
   constructor(options: HeartbeatRunnerOptions) {
     this.sessions = options.sessions;
     this.coordinator = options.coordinator;
-    this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.claimTtlMs = options.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS;
     this.resolveInstructions = options.resolveInstructions;
     this.onError = options.onError;
-  }
-
-  async start(): Promise<void> {
-    if (!this.stopped) {
-      return;
-    }
-
-    this.stopped = false;
-    this.timer = setInterval(() => {
-      this.kickDrain();
-    }, this.pollIntervalMs);
-    this.kickDrain();
-  }
-
-  async stop(): Promise<void> {
-    this.stopped = true;
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-
-    if (this.drainPromise) {
-      await this.drainPromise;
-    }
-  }
-
-  async triggerDrain(): Promise<void> {
-    if (this.stopped) {
-      return;
-    }
-
-    if (this.drainPromise) {
-      this.pendingDrain = true;
-      return;
-    }
-
-    this.drainPromise = this.drain();
-    try {
-      await this.drainPromise;
-    } finally {
-      this.drainPromise = null;
-      if (this.pendingDrain && !this.stopped) {
-        this.pendingDrain = false;
-        await this.triggerDrain();
-      }
-    }
-  }
-
-  private kickDrain(): void {
-    runInBackground(() => this.triggerDrain(), {
+    this.drainLoop = new DrainLoop({
       label: "Heartbeat runner drain",
+      pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+      drain: () => this.drain(),
       onError: this.onError ? (error) => this.onError?.(error) : undefined,
     });
   }
 
+  async start(): Promise<void> {
+    this.drainLoop.start();
+  }
+
+  async stop(): Promise<void> {
+    await this.drainLoop.stop();
+  }
+
+  async triggerDrain(): Promise<void> {
+    await this.drainLoop.trigger();
+  }
+
   private async drain(): Promise<void> {
-    while (!this.stopped) {
+    while (!this.drainLoop.isStopped) {
       const dueHeartbeats = await this.sessions.listDueHeartbeats({
         limit: DEFAULT_BATCH_SIZE,
       });
@@ -116,7 +85,7 @@ export class HeartbeatRunner {
 
       let claimedAny = false;
       for (const heartbeat of dueHeartbeats) {
-        if (this.stopped) {
+        if (this.drainLoop.isStopped) {
           return;
         }
 
@@ -145,47 +114,64 @@ export class HeartbeatRunner {
 
   private async processHeartbeat(heartbeat: SessionHeartbeatRecord): Promise<void> {
     const now = Date.now();
-    const session = await this.sessions.getSession(heartbeat.sessionId);
     const nextFireAt = now + heartbeat.everyMinutes * 60_000;
 
-    if (await this.coordinator.isThreadBusy(session.currentThreadId)) {
-      await this.sessions.recordHeartbeatResult({
-        sessionId: session.id,
-        claimedBy: HEARTBEAT_CLAIM_OWNER,
-        nextFireAt,
-        lastSkipReason: "busy",
-      });
-      return;
-    }
-
+    let recordedSkip = false;
     try {
+      const {session, threadId} = await resolveCurrentSessionThread(this.sessions, heartbeat.sessionId);
+
+      if (await this.coordinator.isThreadBusy(threadId)) {
+        recordedSkip = true;
+        await this.sessions.recordHeartbeatResult({
+          sessionId: session.id,
+          claimedBy: HEARTBEAT_CLAIM_OWNER,
+          nextFireAt,
+          lastSkipReason: "busy",
+        });
+        return;
+      }
+
       const guidance = await this.resolveInstructions?.(session);
-      await this.coordinator.submitInput(session.currentThreadId, {
+      const deliveryTarget = await resolveCurrentSessionThread(this.sessions, heartbeat.sessionId);
+      if (await this.coordinator.isThreadBusy(deliveryTarget.threadId)) {
+        recordedSkip = true;
+        await this.sessions.recordHeartbeatResult({
+          sessionId: deliveryTarget.session.id,
+          claimedBy: HEARTBEAT_CLAIM_OWNER,
+          nextFireAt,
+          lastSkipReason: "busy",
+        });
+        return;
+      }
+
+      await this.coordinator.submitInput(deliveryTarget.threadId, {
         message: stringToUserMessage(buildHeartbeatPrompt(heartbeat.nextFireAt, guidance)),
         source: HEARTBEAT_SOURCE,
-        identityId: session.createdByIdentityId,
+        identityId: deliveryTarget.session.createdByIdentityId,
         metadata: {
           heartbeat: {
             kind: "interval",
             scheduledFor: new Date(heartbeat.nextFireAt).toISOString(),
-            sessionId: session.id,
+            sessionId: deliveryTarget.session.id,
           },
         },
       });
       await this.sessions.recordHeartbeatResult({
-        sessionId: session.id,
+        sessionId: deliveryTarget.session.id,
         claimedBy: HEARTBEAT_CLAIM_OWNER,
         nextFireAt,
         lastFireAt: now,
         lastSkipReason: null,
       });
     } catch (error) {
-      await this.sessions.recordHeartbeatResult({
-        sessionId: session.id,
-        claimedBy: HEARTBEAT_CLAIM_OWNER,
-        nextFireAt,
-        lastSkipReason: error instanceof Error ? error.message : String(error),
-      });
+      if (!recordedSkip) {
+        await this.sessions.recordHeartbeatResult({
+          sessionId: heartbeat.sessionId,
+          claimedBy: HEARTBEAT_CLAIM_OWNER,
+          nextFireAt,
+          lastSkipReason: describeHeartbeatFailure(error),
+        });
+      }
       throw error;
     }
   }

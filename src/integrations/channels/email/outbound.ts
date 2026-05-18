@@ -2,16 +2,16 @@ import type {SendMailOptions, SentMessageInfo} from "nodemailer";
 import nodemailer from "nodemailer";
 import {stat} from "node:fs/promises";
 
-import type {CredentialResolver} from "../../../domain/credentials/index.js";
+import type {CredentialResolver} from "../../../domain/credentials/resolver.js";
 import type {
-    ChannelOutboundAdapter,
     OutboundRequest,
     OutboundResult,
     OutboundSentItem
-} from "../../../domain/channels/index.js";
-import type {EmailSendPayload, EmailSendRecipientPayload} from "../../../domain/email/send-payload.js";
-import type {EmailStore} from "../../../domain/email/index.js";
-import {EMAIL_CONNECTOR_KEY, EMAIL_SOURCE, normalizeEmailAddress} from "../../../domain/email/index.js";
+} from "../../../domain/channels/types.js";
+import type {ChannelOutboundAdapter} from "../../../domain/channels/outbound.js";
+import {isEmailSendPayload, type EmailSendPayload, type EmailSendRecipientPayload} from "../../../domain/email/send-payload.js";
+import {EMAIL_CONNECTOR_KEY, EMAIL_SOURCE, normalizeEmailAddress} from "../../../domain/email/shared.js";
+import type {EmailStore} from "../../../domain/email/types.js";
 import {isRecord} from "../../../lib/records.js";
 import {assertPathReadable} from "../../../lib/fs.js";
 
@@ -35,9 +35,12 @@ export interface EmailSendMailResult {
   messageId?: string;
 }
 
+type EmailOutboundStore = Pick<EmailStore, "assertRecipientsAllowed" | "getAccount" | "recordMessage">;
+type EmailOutboundCredentialResolver = Pick<CredentialResolver, "resolveCredential">;
+
 export interface CreateEmailOutboundAdapterOptions {
-  store: EmailStore;
-  credentialResolver: CredentialResolver;
+  store: EmailOutboundStore;
+  credentialResolver: EmailOutboundCredentialResolver;
   sendMail?: (input: EmailSendMailInput) => Promise<EmailSendMailResult>;
 }
 
@@ -48,38 +51,11 @@ function requireEmailPayload(request: OutboundRequest): EmailSendPayload {
   }
 
   const payload = metadata.email;
-  if (
-    payload.kind !== "email_send"
-    || typeof payload.agentKey !== "string"
-    || typeof payload.accountKey !== "string"
-    || typeof payload.fromAddress !== "string"
-    || typeof payload.subject !== "string"
-    || typeof payload.text !== "string"
-    || typeof payload.threadKey !== "string"
-    || !Array.isArray(payload.to)
-    || !Array.isArray(payload.cc)
-    || !Array.isArray(payload.attachments)
-    || !payload.to.every(isEmailRecipientPayload)
-    || !payload.cc.every(isEmailRecipientPayload)
-    || !payload.attachments.every(isEmailAttachmentPayload)
-  ) {
+  if (!isEmailSendPayload(payload)) {
     throw new Error("Email outbound delivery metadata is invalid.");
   }
 
-  return payload as unknown as EmailSendPayload;
-}
-
-function isEmailRecipientPayload(value: unknown): value is EmailSendRecipientPayload {
-  return isRecord(value)
-    && typeof value.address === "string"
-    && (value.name === undefined || typeof value.name === "string");
-}
-
-function isEmailAttachmentPayload(value: unknown): value is EmailSendPayload["attachments"][number] {
-  return isRecord(value)
-    && typeof value.path === "string"
-    && (value.filename === undefined || typeof value.filename === "string")
-    && (value.mimeType === undefined || typeof value.mimeType === "string");
+  return payload;
 }
 
 function formatAddress(recipient: EmailSendRecipientPayload): string | {address: string; name: string} {
@@ -99,7 +75,7 @@ function assertPayloadMatchesAccount(payload: EmailSendPayload, account: {fromAd
 }
 
 async function resolveCredential(
-  resolver: CredentialResolver,
+  resolver: EmailOutboundCredentialResolver,
   agentKey: string,
   envKey: string,
 ): Promise<string> {

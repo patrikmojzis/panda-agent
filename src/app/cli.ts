@@ -3,29 +3,29 @@
 import process from "node:process";
 import path from "node:path";
 
-import {Command, InvalidArgumentError} from "commander";
+import {Command} from "commander";
 import {DB_URL_OPTION_DESCRIPTION} from "./cli-shared.js";
-import {createDaemon} from "./runtime/index.js";
+import {parsePortOption} from "../lib/cli.js";
+import {createDaemon} from "./runtime/daemon.js";
 import {registerA2ACommands} from "../domain/a2a/cli.js";
 import {parseAgentKey, registerAgentCommands} from "../domain/agents/cli.js";
 import {registerCredentialCommands} from "../domain/credentials/cli.js";
 import {registerEmailCommands} from "../domain/email/cli.js";
-import {registerGatewayCommands} from "../domain/gateway/cli.js";
+import {registerGatewayCommands} from "./gateway/cli.js";
 import {parseIdentityHandle, registerIdentityCommands} from "../domain/identity/cli.js";
-import {registerSessionCommands} from "../domain/sessions/cli.js";
-import {registerTelepathyCommands} from "../domain/telepathy/index.js";
-import {registerWikiCommands} from "../domain/wiki/index.js";
+import {registerSessionCommands} from "./sessions/cli.js";
+import {registerTelepathyCommands} from "../domain/telepathy/cli.js";
+import {registerWikiCommands} from "../domain/wiki/cli.js";
 import {registerTelegramCommands} from "../integrations/channels/telegram/cli.js";
 import {type ChatCliOptions, runChatCli} from "../ui/tui/chat.js";
 import {renderResumeHint} from "../ui/tui/exit-hint.js";
 import {registerWhatsAppCommands} from "../integrations/channels/whatsapp/cli.js";
-import {resolveBrowserRunnerOptions, startBrowserRunner} from "../integrations/browser/index.js";
+import {resolveBrowserRunnerOptions, startBrowserRunner} from "../integrations/browser/runner.js";
+import {resolveBashRunnerOptions, startBashRunner} from "../integrations/shell/bash-runner.js";
 import {
-    resolveBashRunnerOptions,
     resolveExecutionEnvironmentManagerServerOptions,
-    startBashRunner,
     startExecutionEnvironmentManager,
-} from "../integrations/shell/index.js";
+} from "../integrations/shell/docker-execution-environment-manager.js";
 import {registerObserveCommand} from "../ui/observe/cli.js";
 import {registerSmokeCommand} from "./smoke/cli.js";
 import {registerWorkerCommands} from "./workers/cli.js";
@@ -71,15 +71,6 @@ interface EnvironmentManagerCliOptions {
   network?: string;
   runnerCwd?: string;
   runnerPublicHost?: string;
-}
-
-function parsePort(value: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) {
-    throw new InvalidArgumentError("Port must be an integer between 1 and 65535.");
-  }
-
-  return parsed;
 }
 
 async function runChatCommand(options: ChatCliOptions): Promise<void> {
@@ -295,7 +286,7 @@ program
   .description("Run the singular Panda runtime daemon")
   .option("--cwd <cwd>", "Working directory the bash tool should treat as the workspace")
   .option("--apps-host <host>", "Host to bind the local micro-app server")
-  .option("--apps-port <port>", "Port to bind the local micro-app server", parsePort)
+  .option("--apps-port <port>", "Port to bind the local micro-app server", parsePortOption)
   .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
   .option("--read-only-db-url <url>", "Read-only Postgres connection string for the raw SQL tool")
   .action((options: RunCliOptions) => {
@@ -307,7 +298,7 @@ program
   .description("Run a per-agent remote bash runner")
   .option("--agent <agentKey>", "Agent key this runner serves", parseAgentKey)
   .option("--host <host>", "Host to bind the runner server")
-  .option("--port <port>", "Port to bind the runner server", parsePort)
+  .option("--port <port>", "Port to bind the runner server", parsePortOption)
   .option("--output-directory <path>", "Directory used for temporary runner output capture")
   .action((options: RunnerCliOptions) => {
     return runRunnerCommand(options);
@@ -317,7 +308,7 @@ program
   .command("browser-runner")
   .description("Run the isolated browser runner")
   .option("--host <host>", "Host to bind the browser runner server")
-  .option("--port <port>", "Port to bind the browser runner server", parsePort)
+  .option("--port <port>", "Port to bind the browser runner server", parsePortOption)
   .option("--data-directory <path>", "Directory for browser runner session state and scratch artifacts")
   .action((options: BrowserRunnerCliOptions) => {
     return runBrowserRunnerCommand(options);
@@ -327,7 +318,7 @@ program
   .command("environment-manager")
   .description("Run the disposable execution environment manager")
   .option("--host <host>", "Host to bind the environment manager server")
-  .option("--port <port>", "Port to bind the environment manager server", parsePort)
+  .option("--port <port>", "Port to bind the environment manager server", parsePortOption)
   .option("--token <token>", "Bearer token required by panda-core")
   .option("--docker-host <host>", "Docker Engine host, for example unix:///var/run/docker.sock")
   .option("--image <image>", "Docker image used for disposable bash runners")

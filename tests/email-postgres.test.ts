@@ -1,6 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
+import {PostgresEmailStore} from "../src/domain/email/postgres.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createScopedPool() {
@@ -87,7 +88,7 @@ describe("PostgresEmailStore", () => {
     })).rejects.toThrow("control characters");
 
     await email.addAllowedRecipient("panda", "work", "ALICE@Example.com");
-    await expect(email.assertRecipientsAllowed("panda", "work", ["alice@example.com"])).resolves.toBeUndefined();
+    await email.assertRecipientsAllowed("panda", "work", ["alice@example.com"]);
     await expect(email.assertRecipientsAllowed("panda", "work", ["bob@example.com"]))
       .rejects.toThrow("not allowed");
 
@@ -167,5 +168,198 @@ describe("PostgresEmailStore", () => {
       authSummary: "suspicious",
       authSpf: "fail",
     });
+  });
+
+  it("rejects malformed persisted email message enums", async () => {
+    const query = async () => ({
+      rows: [{
+        id: "00000000-0000-0000-0000-000000000001",
+        agent_key: "panda",
+        account_key: "work",
+        direction: "sideways",
+        mailbox: null,
+        uid: null,
+        uid_validity: null,
+        message_id_header: null,
+        in_reply_to: null,
+        references_header: null,
+        thread_key: "thread",
+        subject: null,
+        from_name: null,
+        from_address: null,
+        reply_to_address: null,
+        sent_at: null,
+        received_at: null,
+        body_text: null,
+        body_excerpt: null,
+        authentication_results: null,
+        auth_spf: null,
+        auth_dkim: null,
+        auth_dmarc: null,
+        auth_summary: "unknown",
+        has_attachments: false,
+        source_delivery_id: null,
+        created_at: new Date(1),
+      }],
+    });
+    const pool = {query};
+    const email = new PostgresEmailStore({pool});
+
+    await expect(email.getMessage("00000000-0000-0000-0000-000000000001"))
+      .rejects.toThrow("Unsupported email message direction sideways.");
+  });
+
+  it("rejects malformed persisted email account rows", async () => {
+    const query = async () => ({
+      rows: [{
+        agent_key: "panda",
+        account_key: "work",
+        from_address: "panda@example.com",
+        from_name: null,
+        imap_config: {
+          host: "imap.example.com",
+          usernameCredentialEnvKey: "IMAP_USER",
+          passwordCredentialEnvKey: "IMAP_PASS",
+        },
+        smtp_config: {
+          host: "smtp.example.com",
+          usernameCredentialEnvKey: "SMTP_USER",
+          passwordCredentialEnvKey: "SMTP_PASS",
+        },
+        mailboxes: "INBOX",
+        sync_state: {},
+        enabled: true,
+        created_at: new Date(1),
+        updated_at: new Date(1),
+      }],
+    });
+    const email = new PostgresEmailStore({
+      pool: {query},
+    });
+
+    await expect(email.getAccount("panda", "work"))
+      .rejects.toThrow("Email account mailboxes must be an array.");
+  });
+
+  it("rejects malformed persisted email message counters", async () => {
+    const query = async () => ({
+      rows: [{
+        id: "00000000-0000-0000-0000-000000000001",
+        agent_key: "panda",
+        account_key: "work",
+        direction: "inbound",
+        mailbox: "INBOX",
+        uid: "many",
+        uid_validity: "uv-1",
+        message_id_header: null,
+        in_reply_to: null,
+        references_header: null,
+        thread_key: "thread",
+        subject: null,
+        from_name: null,
+        from_address: null,
+        reply_to_address: null,
+        sent_at: null,
+        received_at: null,
+        body_text: null,
+        body_excerpt: null,
+        authentication_results: null,
+        auth_spf: null,
+        auth_dkim: null,
+        auth_dmarc: null,
+        auth_summary: "unknown",
+        has_attachments: false,
+        source_delivery_id: null,
+        created_at: "eventually",
+      }],
+    });
+    const email = new PostgresEmailStore({
+      pool: {query},
+    });
+
+    await expect(email.getMessage("00000000-0000-0000-0000-000000000001"))
+      .rejects.toThrow("Email message uid must be a non-negative integer.");
+  });
+
+  it("rejects driver-shaped persisted email message counters", async () => {
+    const query = async () => ({
+      rows: [{
+        id: "00000000-0000-0000-0000-000000000001",
+        agent_key: "panda",
+        account_key: "work",
+        direction: "inbound",
+        mailbox: "INBOX",
+        uid: "1",
+        uid_validity: "uv-1",
+        message_id_header: null,
+        in_reply_to: null,
+        references_header: null,
+        thread_key: "thread",
+        subject: null,
+        from_name: null,
+        from_address: null,
+        reply_to_address: null,
+        sent_at: null,
+        received_at: null,
+        body_text: null,
+        body_excerpt: null,
+        authentication_results: null,
+        auth_spf: null,
+        auth_dkim: null,
+        auth_dmarc: null,
+        auth_summary: "unknown",
+        has_attachments: false,
+        source_delivery_id: null,
+        created_at: new Date(1),
+      }],
+    });
+    const email = new PostgresEmailStore({
+      pool: {query},
+    });
+
+    await expect(email.getMessage("00000000-0000-0000-0000-000000000001"))
+      .rejects.toThrow("Email message uid must be a non-negative integer.");
+  });
+
+  it("rejects malformed persisted email attachment rows", async () => {
+    const query = async () => ({
+      rows: [{
+        id: "attachment-1",
+        message_id: "00000000-0000-0000-0000-000000000001",
+        filename: "brief.txt",
+        mime_type: "text/plain",
+        size_bytes: "large",
+        local_path: "/tmp/brief.txt",
+        content_id: null,
+        created_at: new Date(1),
+      }],
+    });
+    const email = new PostgresEmailStore({
+      pool: {query},
+    });
+
+    await expect(email.listMessageAttachments("00000000-0000-0000-0000-000000000001"))
+      .rejects.toThrow("Email attachment size must be a non-negative integer.");
+  });
+
+  it("rejects driver-shaped persisted email attachment sizes", async () => {
+    const query = async () => ({
+      rows: [{
+        id: "attachment-1",
+        message_id: "00000000-0000-0000-0000-000000000001",
+        filename: "brief.txt",
+        mime_type: "text/plain",
+        size_bytes: "1",
+        local_path: "/tmp/brief.txt",
+        content_id: null,
+        created_at: new Date(1),
+      }],
+    });
+    const email = new PostgresEmailStore({
+      pool: {query},
+    });
+
+    await expect(email.listMessageAttachments("00000000-0000-0000-0000-000000000001"))
+      .rejects.toThrow("Email attachment size must be a non-negative integer.");
   });
 });

@@ -209,16 +209,26 @@ describe("WatchRunner", () => {
     await harness.watchRunner.stop();
 
     await forceWatchDue(harness.pool, watch.id);
+    const resetThreadId = "session-thread-after-reset";
+    await harness.threadStore.createThread({
+      id: resetThreadId,
+      sessionId: "session-main",
+    });
+    await harness.sessionStore.updateCurrentThread({
+      sessionId: "session-main",
+      currentThreadId: resetThreadId,
+    });
     await harness.watchRunner.start();
     await waitFor(async () => {
       const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
       expect(latestRun?.status).toBe("changed");
     });
-    await harness.coordinator.waitForIdle("session-thread");
+    await harness.coordinator.waitForIdle(resetThreadId);
     await harness.watchRunner.stop();
 
     const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
     expect(latestRun?.status).toBe("changed");
+    expect(latestRun?.resolvedThreadId).toBe(resetThreadId);
     expect(evaluateWatch).toHaveBeenCalledTimes(2);
     expect(evaluateWatch).toHaveBeenNthCalledWith(
       1,
@@ -229,12 +239,90 @@ describe("WatchRunner", () => {
       },
     );
 
-    const transcript = await harness.threadStore.loadTranscript("session-thread");
+    const oldTranscript = await harness.threadStore.loadTranscript("session-thread");
+    expect(oldTranscript.some((entry) => entry.origin === "input" && entry.source === "watch_event")).toBe(false);
+
+    const transcript = await harness.threadStore.loadTranscript(resetThreadId);
     const input = transcript.find((entry) => entry.origin === "input" && entry.source === "watch_event");
     expect(input?.identityId).toBe(harness.alice.id);
     expect(input?.message.role).toBe("user");
     expect(JSON.stringify(input?.message)).toContain("[Watch Event] Registrations");
     expect(JSON.stringify(input?.message)).toContain("If this session is connected to an external channel");
+  });
+
+  it("delivers changed watch events to the current thread after evaluation", async () => {
+    let harness: Awaited<ReturnType<typeof createHarness>>;
+    const resetThreadId = "session-thread-after-slow-eval";
+    const evaluateWatch = vi.fn<WatchEvaluator>()
+      .mockResolvedValueOnce({
+        changed: false,
+        nextState: {
+          kind: "snapshot_changed",
+          fingerprint: "initial",
+        },
+      } satisfies WatchEvaluationResult)
+      .mockImplementationOnce(async () => {
+        await harness.threadStore.createThread({
+          id: resetThreadId,
+          sessionId: "session-main",
+        });
+        await harness.sessionStore.updateCurrentThread({
+          sessionId: "session-main",
+          currentThreadId: resetThreadId,
+        });
+        return {
+          changed: true,
+          nextState: {
+            kind: "snapshot_changed",
+            fingerprint: "after-reset",
+          },
+          event: {
+            eventKind: "snapshot_changed",
+            summary: "Observed content changed.",
+            dedupeKey: "after-reset",
+          },
+        };
+      });
+    harness = await createHarness(evaluateWatch);
+    pools.push(harness.pool);
+
+    const watch = await harness.watchStore.createWatch({
+      sessionId: "session-main",
+      createdByIdentityId: harness.alice.id,
+      title: "Slow watch",
+      intervalMinutes: 5,
+      source: {
+        kind: "http_json",
+        url: "https://example.com/state.json",
+        result: {
+          observation: "snapshot",
+        },
+      },
+      detector: {
+        kind: "snapshot_changed",
+      },
+    });
+
+    await harness.watchRunner.start();
+    await waitFor(() => {
+      expect(evaluateWatch).toHaveBeenCalledTimes(1);
+    });
+    await harness.watchRunner.stop();
+    await forceWatchDue(harness.pool, watch.id);
+    await harness.watchRunner.start();
+    await waitFor(async () => {
+      const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
+      expect(latestRun?.status).toBe("changed");
+    });
+    await harness.coordinator.waitForIdle(resetThreadId);
+    await harness.watchRunner.stop();
+
+    const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
+    expect(latestRun?.resolvedThreadId).toBe(resetThreadId);
+    const oldTranscript = await harness.threadStore.loadTranscript("session-thread");
+    expect(oldTranscript.some((entry) => entry.origin === "input" && entry.source === "watch_event")).toBe(false);
+    const transcript = await harness.threadStore.loadTranscript(resetThreadId);
+    expect(transcript.some((entry) => entry.origin === "input" && entry.source === "watch_event")).toBe(true);
   });
 
   it("wakes Panda for an IMAP-style new email event only after bootstrap", async () => {

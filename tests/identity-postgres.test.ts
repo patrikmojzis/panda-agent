@@ -1,7 +1,9 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import {
+  PostgresIdentityStore,
+} from "../src/domain/identity/index.js";
 
 describe("PostgresIdentityStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -58,6 +60,88 @@ describe("PostgresIdentityStore", () => {
       displayName: "Bad Symbols",
     })).rejects.toThrow("Identity handle must use lowercase letters, numbers, hyphens, or underscores.");
     await expect(store.getIdentityByHandle("   ")).rejects.toThrow("Identity handle must not be empty.");
+  });
+
+  it("rejects corrupted persisted identity rows before returning records", async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "alice-id",
+          handle: "alice",
+          display_name: "Alice",
+          status: "sideways",
+          metadata: {},
+          created_at: new Date(),
+          updated_at: new Date(),
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "00000000-0000-0000-0000-000000000010",
+          identity_id: "alice-id",
+          source: "telegram",
+          connector_key: "bot-main",
+          external_actor_id: "123",
+          metadata: Number.NaN,
+          created_at: new Date(),
+          updated_at: new Date(),
+        }],
+      });
+    const store = new PostgresIdentityStore({
+      pool: {
+        query,
+      },
+    });
+
+    await expect(store.getIdentity("alice-id")).rejects.toThrow(
+      "Unsupported identity status sideways.",
+    );
+    await expect(store.resolveIdentityBinding({
+      source: "telegram",
+      connectorKey: "bot-main",
+      externalActorId: "123",
+    })).rejects.toThrow("Identity binding metadata must be JSON-serializable.");
+  });
+
+  it("rejects corrupted persisted identity timestamps before returning records", async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "alice-id",
+          handle: "alice",
+          display_name: "Alice",
+          status: "active",
+          metadata: {},
+          created_at: "eventually",
+          updated_at: new Date(),
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "00000000-0000-0000-0000-000000000010",
+          identity_id: "alice-id",
+          source: "telegram",
+          connector_key: "bot-main",
+          external_actor_id: "123",
+          metadata: {},
+          created_at: new Date(),
+          updated_at: "eventually",
+        }],
+      });
+    const store = new PostgresIdentityStore({
+      pool: {
+        query,
+      },
+    });
+
+    await expect(store.getIdentity("alice-id")).rejects.toThrow(
+      "Identity created_at must be a valid timestamp.",
+    );
+    await expect(store.resolveIdentityBinding({
+      source: "telegram",
+      connectorKey: "bot-main",
+      externalActorId: "123",
+    })).rejects.toThrow("Identity binding updated_at must be a valid timestamp.");
   });
 
   it("manages actor-scoped identity bindings", async () => {

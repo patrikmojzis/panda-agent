@@ -2,90 +2,62 @@ import {AbortController} from "abort-controller";
 import {Bot, type Context} from "grammy";
 import type {Pool} from "pg";
 
-import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../app/health/server.js";
-import {ChannelActionWorker, type TelegramReactionActionPayload} from "../../../domain/channels/actions/index.js";
+import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../lib/health-server.js";
+import {ChannelActionWorker} from "../../../domain/channels/actions/worker.js";
+import type {TelegramReactionActionPayload} from "../../../domain/channels/actions/types.js";
 import {ChannelCursorRepo} from "../../../domain/channels/cursors/repo.js";
 import {
   acquireManagedConnectorLease,
   type ManagedConnectorLease,
   PostgresConnectorLeaseRepo
-} from "../../../domain/connector-leases/index.js";
-import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
-import {
-  ChannelOutboundDeliveryWorker,
-  PostgresOutboundDeliveryStore
-} from "../../../domain/channels/deliveries/index.js";
+} from "../../../domain/connector-leases/repo.js";
+import {FileSystemMediaStore} from "../../../domain/channels/media-store.js";
+import {PostgresOutboundDeliveryStore} from "../../../domain/channels/deliveries/postgres.js";
+import {ChannelOutboundDeliveryWorker} from "../../../domain/channels/deliveries/worker.js";
 import {
   buildObservedPoolConfig,
   createPostgresPool,
   observePostgresPool,
   type PostgresPoolObserver,
   requireDatabaseUrl,
-} from "../../../app/runtime/database.js";
-import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
-import {RuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
+} from "../../../lib/postgres-database.js";
+import {ensureSchemas} from "../../../lib/postgres-bootstrap.js";
+import {RuntimeRequestRepo} from "../../../domain/threads/requests/repo.js";
 import {TELEGRAM_POLL_TIMEOUT_SECONDS, TELEGRAM_SOURCE, TELEGRAM_UPDATES_CURSOR_KEY} from "./config.js";
-import {buildTelegramConversationId} from "./helpers.js";
 import {createTelegramOutboundAdapter} from "./outbound.js";
 import {parseTelegramConversationId} from "./conversation-id.js";
 import {createTelegramTypingAdapter} from "./typing.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
-import {
-  type PostgresNotificationListenerHandle,
-  startPostgresNotificationListener,
-} from "../postgres-notification-listener.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
-import type {JsonObject} from "../../../kernel/agent/types.js";
+import {sleep} from "../../../lib/async.js";
+import {
+  createConnectorOutboundWorker,
+  startConnectorWorkerRuntime,
+  startConnectorWorkerNotificationListener,
+  stopConnectorWorkerRuntime,
+  type ConnectorWorkerRuntimeHandle,
+} from "../worker-runtime.js";
+import {parseTelegramReactionMessageId} from "./reactions.js";
+import {
+  isAbortError,
+  downloadTelegramSupportedMedia,
+  type TelegramMediaDownloadResult,
+} from "./media.js";
+import {
+  ingestTelegramMessage,
+  ingestTelegramMessageReaction,
+  type TelegramReactionContextLike,
+} from "./message-ingestion.js";
 
 type TelegramContext = Context;
 const UPDATE_RETRY_DELAY_MS = 1_000;
 const TELEGRAM_POOL_MAX_FALLBACK = 5;
 const TELEGRAM_HEALTH_POLL_STALE_AFTER_MS = (TELEGRAM_POLL_TIMEOUT_SECONDS * 1_000) + 15_000;
-const TELEGRAM_BOT_API_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024;
-const TELEGRAM_FILE_DOWNLOAD_TIMEOUT_MS = 30_000;
-type TelegramMediaKind =
-  | "photo"
-  | "document"
-  | "voice"
-  | "sticker"
-  | "video"
-  | "audio"
-  | "animation"
-  | "video_note";
 
 export interface TelegramServiceOptions {
   token: string;
   dataDir: string;
   dbUrl?: string;
-}
-
-interface TelegramReactionUpdateUser {
-  id?: number;
-  username?: string;
-  first_name?: string;
-  last_name?: string;
-  is_bot?: boolean;
-}
-
-interface TelegramEmojiReaction {
-  type: "emoji";
-  emoji: string;
-}
-
-interface TelegramReactionContextLike {
-  update?: {
-    update_id?: number;
-  };
-  messageReaction?: {
-    chat: {
-      id: number;
-      type?: string;
-    };
-    message_id: number;
-    user?: TelegramReactionUpdateUser;
-    old_reaction: readonly unknown[];
-    new_reaction: readonly unknown[];
-  };
 }
 
 interface TelegramWorkerStores {
@@ -98,251 +70,8 @@ interface TelegramWorkerStores {
   mediaStore: FileSystemMediaStore;
 }
 
-interface TelegramUnavailableMedia {
-  kind: TelegramMediaKind;
-  mimeType: string;
-  sizeBytes?: number;
-  filename?: string;
-  reason: string;
-}
-
-interface TelegramMediaDownloadResult {
-  media: readonly MediaDescriptor[];
-  unavailable: readonly TelegramUnavailableMedia[];
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
-
-function isTelegramFileTooBigError(error: unknown): boolean {
-  return error instanceof Error && /file is too big/i.test(error.message);
-}
-
-function messageTextLength(message: TelegramContext["msg"] | undefined): number {
-  return extractTelegramMessageText(message).length;
-}
-
-function shouldSkipTelegramDownload(sizeBytes: number | undefined): boolean {
-  return typeof sizeBytes === "number"
-    && Number.isFinite(sizeBytes)
-    && sizeBytes > TELEGRAM_BOT_API_DOWNLOAD_LIMIT_BYTES;
-}
-
-function renderUnavailableMediaNotice(items: readonly TelegramUnavailableMedia[]): string {
-  if (items.length === 0) {
-    return "";
-  }
-
-  const lines = items.map((item) => {
-    const details = [
-      item.filename ? `filename: ${item.filename}` : undefined,
-      `mime_type: ${item.mimeType}`,
-      item.sizeBytes === undefined ? undefined : `size_bytes: ${item.sizeBytes}`,
-      `reason: ${item.reason}`,
-    ].filter((line): line is string => Boolean(line));
-
-    return `- ${item.kind}\n  ${details.join("\n  ")}`;
-  });
-
-  return [
-    "Telegram attachment unavailable:",
-    ...lines,
-  ].join("\n");
-}
-
-function mergeTextWithUnavailableMediaNotice(
-  text: string,
-  unavailable: readonly TelegramUnavailableMedia[],
-): string {
-  const notice = renderUnavailableMediaNotice(unavailable);
-  if (!notice) {
-    return text;
-  }
-
-  return [text, notice].filter(Boolean).join("\n\n");
-}
-
-function trimToUndefined(value: string | undefined | null): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed || undefined;
-}
-
-function readFiniteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function renderTelegramContact(contact: NonNullable<TelegramContext["msg"]>["contact"]): string {
-  const name = [contact?.first_name, contact?.last_name]
-    .map((part) => trimToUndefined(part))
-    .filter((part): part is string => Boolean(part))
-    .join(" ");
-  const lines = [
-    "Telegram contact:",
-    `name: ${name || "unknown"}`,
-    `phone_number: ${trimToUndefined(contact?.phone_number) ?? "unknown"}`,
-    contact?.user_id === undefined ? undefined : `telegram_user_id: ${contact.user_id}`,
-  ];
-  const vcard = trimToUndefined(contact?.vcard);
-  if (vcard) {
-    lines.push("vcard:", vcard);
-  }
-
-  return lines.filter((line): line is string => Boolean(line)).join("\n");
-}
-
-function renderTelegramLocation(
-  location: NonNullable<TelegramContext["msg"]>["location"],
-  label = "location",
-): string {
-  const latitude = readFiniteNumber(location?.latitude);
-  const longitude = readFiniteNumber(location?.longitude);
-  const mapUrl = latitude === undefined || longitude === undefined
-    ? undefined
-    : `https://maps.google.com/?q=${latitude},${longitude}`;
-
-  return [
-    `Telegram ${label}:`,
-    latitude === undefined ? undefined : `latitude: ${latitude}`,
-    longitude === undefined ? undefined : `longitude: ${longitude}`,
-    location?.horizontal_accuracy === undefined ? undefined : `horizontal_accuracy: ${location.horizontal_accuracy}`,
-    location?.live_period === undefined ? undefined : `live_period: ${location.live_period}`,
-    location?.heading === undefined ? undefined : `heading: ${location.heading}`,
-    location?.proximity_alert_radius === undefined ? undefined : `proximity_alert_radius: ${location.proximity_alert_radius}`,
-    `map: ${mapUrl ?? "unknown"}`,
-  ].filter((line): line is string => Boolean(line)).join("\n");
-}
-
-function renderTelegramVenue(venue: NonNullable<TelegramContext["msg"]>["venue"]): string {
-  const location = venue?.location;
-  const latitude = readFiniteNumber(location?.latitude);
-  const longitude = readFiniteNumber(location?.longitude);
-  const mapUrl = latitude === undefined || longitude === undefined
-    ? undefined
-    : `https://maps.google.com/?q=${latitude},${longitude}`;
-
-  return [
-    "Telegram venue:",
-    `title: ${trimToUndefined(venue?.title) ?? "unknown"}`,
-    `address: ${trimToUndefined(venue?.address) ?? "unknown"}`,
-    latitude === undefined ? undefined : `latitude: ${latitude}`,
-    longitude === undefined ? undefined : `longitude: ${longitude}`,
-    `map: ${mapUrl ?? "unknown"}`,
-    venue?.foursquare_id ? `foursquare_id: ${venue.foursquare_id}` : undefined,
-    venue?.foursquare_type ? `foursquare_type: ${venue.foursquare_type}` : undefined,
-    venue?.google_place_id ? `google_place_id: ${venue.google_place_id}` : undefined,
-    venue?.google_place_type ? `google_place_type: ${venue.google_place_type}` : undefined,
-  ].filter((line): line is string => Boolean(line)).join("\n");
-}
-
-function extractTelegramStructuredText(message: TelegramContext["msg"] | undefined): string {
-  if (!message) {
-    return "";
-  }
-
-  const parts = [
-    message.contact ? renderTelegramContact(message.contact) : undefined,
-    message.venue ? renderTelegramVenue(message.venue) : undefined,
-    !message.venue && message.location
-      ? renderTelegramLocation(message.location, message.location.live_period === undefined ? "location" : "live location")
-      : undefined,
-  ];
-
-  return parts.filter((part): part is string => Boolean(part)).join("\n\n");
-}
-
-function extractTelegramMessageText(message: TelegramContext["msg"] | undefined): string {
-  const rawText = (message?.text ?? message?.caption)?.trim() ?? "";
-  const structuredText = extractTelegramStructuredText(message);
-  return [rawText, structuredText].filter(Boolean).join("\n\n");
-}
-
-function describeTelegramMessageShape(message: TelegramContext["msg"] | undefined): string {
-  if (!message) {
-    return "empty";
-  }
-
-  const supportedKeys = [
-    "text",
-    "caption",
-    "photo",
-    "document",
-    "voice",
-    "sticker",
-    "video",
-    "audio",
-    "animation",
-    "video_note",
-    "contact",
-    "location",
-    "venue",
-    "poll",
-    "dice",
-    "game",
-    "invoice",
-    "story",
-    "paid_media",
-    "successful_payment",
-    "users_shared",
-    "chat_shared",
-    "web_app_data",
-  ];
-  const keys = supportedKeys.filter((key) => key in message);
-  return keys.length === 0 ? "unknown" : keys.join(",");
-}
-
-function inferTelegramAnimationMimeType(animation: NonNullable<TelegramContext["msg"]>["animation"]): string {
-  const mimeType = trimToUndefined(animation?.mime_type);
-  if (mimeType) {
-    return mimeType;
-  }
-
-  const filename = animation?.file_name?.toLowerCase() ?? "";
-  if (filename.endsWith(".mp4")) {
-    return "video/mp4";
-  }
-  if (filename.endsWith(".webm")) {
-    return "video/webm";
-  }
-
-  return "image/gif";
-}
-
-function inferTelegramStickerMimeType(sticker: NonNullable<TelegramContext["msg"]>["sticker"]): string {
-  if (sticker?.is_video) {
-    return "video/webm";
-  }
-  if (sticker?.is_animated) {
-    return "application/x-tgsticker";
-  }
-
-  return "image/webp";
-}
-
-function isTelegramEmojiReaction(value: unknown): value is TelegramEmojiReaction {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-
-  const candidate = value as Record<string, unknown>;
-  return candidate.type === "emoji" && typeof candidate.emoji === "string" && candidate.emoji.trim().length > 0;
-}
-
-function parseTelegramMessageId(value: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`Invalid Telegram message id ${value}.`);
-  }
-
-  return parsed;
-}
-
-function readTelegramSentAtMs(message: TelegramContext["msg"] | undefined): number | undefined {
-  if (!message || typeof message.date !== "number" || !Number.isFinite(message.date) || message.date <= 0) {
-    return undefined;
-  }
-
-  return message.date * 1_000;
+function rejectUnsupportedTelegramAction(_action: never): never {
+  throw new Error("Unsupported Telegram channel action.");
 }
 
 export class TelegramService {
@@ -354,11 +83,8 @@ export class TelegramService {
   private botId: string | null = null;
   private connectorKey: string | null = null;
   private botUsername: string | null = null;
-  private lease: ManagedConnectorLease | null = null;
-  private notificationListener: PostgresNotificationListenerHandle | null = null;
   private pollAbortController: AbortController | null = null;
-  private outboundWorker: ChannelOutboundDeliveryWorker | null = null;
-  private actionWorker: ChannelActionWorker | null = null;
+  private workerRuntime: ConnectorWorkerRuntimeHandle<ChannelOutboundDeliveryWorker, ChannelActionWorker> | null = null;
   private poolObserver: PostgresPoolObserver | null = null;
   private healthServer: HealthServer | null = null;
   private healthInitialized = false;
@@ -504,41 +230,25 @@ export class TelegramService {
     return this.stores;
   }
 
-  private ensureOutboundWorker(stores: TelegramWorkerStores, connectorKey: string): ChannelOutboundDeliveryWorker {
-    if (this.outboundWorker) {
-      return this.outboundWorker;
-    }
-
-    this.outboundWorker = new ChannelOutboundDeliveryWorker({
+  private createOutboundWorker(stores: TelegramWorkerStores, connectorKey: string): ChannelOutboundDeliveryWorker {
+    return createConnectorOutboundWorker({
       store: stores.outboundDeliveries,
       adapter: createTelegramOutboundAdapter({
         api: this.bot.api,
         connectorKey,
       }),
       connectorKey,
-      onError: (error, deliveryId) => {
-        this.log("outbound_delivery_failed", {
-          connectorKey,
-          deliveryId: deliveryId ?? null,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      },
+      log: (event, payload) => this.log(event, payload),
     });
-
-    return this.outboundWorker;
   }
 
-  private ensureActionWorker(stores: TelegramWorkerStores, connectorKey: string): ChannelActionWorker {
-    if (this.actionWorker) {
-      return this.actionWorker;
-    }
-
+  private createActionWorker(stores: TelegramWorkerStores, connectorKey: string): ChannelActionWorker {
     const typingAdapter = createTelegramTypingAdapter({
       api: this.bot.api,
       connectorKey,
     });
 
-    this.actionWorker = new ChannelActionWorker({
+    return new ChannelActionWorker({
       store: stores.channelActions,
       lookup: {
         channel: TELEGRAM_SOURCE,
@@ -547,13 +257,13 @@ export class TelegramService {
       dispatch: async (action) => {
         switch (action.kind) {
           case "typing":
-            await typingAdapter.send(action.payload as Parameters<typeof typingAdapter.send>[0]);
+            await typingAdapter.send(action.payload);
             return;
           case "telegram_reaction":
-            await this.sendReactionAction(action.payload as TelegramReactionActionPayload);
+            await this.sendReactionAction(action.payload);
             return;
           default:
-            throw new Error(`Unsupported Telegram channel action ${action.kind}.`);
+            rejectUnsupportedTelegramAction(action);
         }
       },
       onError: (error, actionId) => {
@@ -564,38 +274,24 @@ export class TelegramService {
         });
       },
     });
-
-    return this.actionWorker;
   }
 
   private async startWorkerNotificationListener(
     stores: TelegramWorkerStores,
     connectorKey: string,
-  ): Promise<PostgresNotificationListenerHandle> {
-    const outboundWorker = this.ensureOutboundWorker(stores, connectorKey);
-    const actionWorker = this.ensureActionWorker(stores, connectorKey);
-
-    return startPostgresNotificationListener({
+    workers: {
+      actionWorker: ChannelActionWorker;
+      outboundWorker: ChannelOutboundDeliveryWorker;
+    },
+  ) {
+    return startConnectorWorkerNotificationListener({
       pool: stores.pool,
-      onActionNotification: async (notification) => {
-        if (notification.channel !== TELEGRAM_SOURCE || notification.connectorKey !== connectorKey) {
-          return;
-        }
-
-        await actionWorker.triggerDrain();
-      },
-      onDeliveryNotification: async (notification) => {
-        if (notification.channel !== TELEGRAM_SOURCE || notification.connectorKey !== connectorKey) {
-          return;
-        }
-
-        await outboundWorker.triggerDrain();
-      },
-      onError: async (error) => {
-        this.log("worker_notification_listener_failed", {
-          connectorKey,
-          message: error instanceof Error ? error.message : String(error),
-        });
+      source: TELEGRAM_SOURCE,
+      connectorKey,
+      actionWorker: workers.actionWorker,
+      outboundWorker: workers.outboundWorker,
+      log: (event, payload) => this.log(event, payload),
+      onListenerFailure: async () => {
         this.healthListenersActive = false;
         await this.stop();
       },
@@ -688,15 +384,25 @@ export class TelegramService {
         });
       })();
       this.healthInitialized = true;
-      this.lease = await this.acquireConnectorLease(connectorKey, stores);
+      const outboundWorker = this.createOutboundWorker(stores, connectorKey);
+      const actionWorker = this.createActionWorker(stores, connectorKey);
+      this.workerRuntime = await startConnectorWorkerRuntime({
+        acquireLease: () => this.acquireConnectorLease(connectorKey, stores),
+        outboundWorker,
+        actionWorker,
+        startNotificationListener: () => this.startWorkerNotificationListener(stores, connectorKey, {
+          outboundWorker,
+          actionWorker,
+        }),
+        onCleanupError: (step, error) => {
+          this.log("shutdown_cleanup_failed", {
+            connectorKey: this.connectorKey ?? connectorKey,
+            step: step.label,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        },
+      });
       this.healthLockHeld = true;
-      await this.ensureOutboundWorker(stores, connectorKey).start({
-        subscribeToNotifications: false,
-      });
-      await this.ensureActionWorker(stores, connectorKey).start({
-        subscribeToNotifications: false,
-      });
-      this.notificationListener = await this.startWorkerNotificationListener(stores, connectorKey);
       this.healthListenersActive = true;
       await this.bot.api.setMyCommands([
         {command: "start", description: "Pair this Telegram account with Panda"},
@@ -733,7 +439,7 @@ export class TelegramService {
             connectorKey,
             message: error instanceof Error ? error.message : String(error),
           });
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+          await sleep(1000);
           continue;
         } finally {
           this.pollAbortController = null;
@@ -770,7 +476,7 @@ export class TelegramService {
             });
 
             if (!this.stopping) {
-              await new Promise((resolve) => setTimeout(resolve, UPDATE_RETRY_DELAY_MS));
+              await sleep(UPDATE_RETRY_DELAY_MS);
             }
             break;
           }
@@ -793,14 +499,8 @@ export class TelegramService {
     this.pollAbortController?.abort();
     this.pollAbortController = null;
     this.stopPromise = (async () => {
-      const notificationListener = this.notificationListener;
-      const actionWorker = this.actionWorker;
-      const outboundWorker = this.outboundWorker;
-      const lease = this.lease;
-      this.notificationListener = null;
-      this.actionWorker = null;
-      this.outboundWorker = null;
-      this.lease = null;
+      const workerRuntime = this.workerRuntime;
+      this.workerRuntime = null;
 
       const stores = this.stores;
       const storesPromise = this.storesPromise;
@@ -813,27 +513,15 @@ export class TelegramService {
 
       await runCleanupSteps([
         {
-          label: "notification-listener",
+          label: "connector-workers",
           run: async () => {
-            await notificationListener?.close();
-          },
-        },
-        {
-          label: "action-worker",
-          run: async () => {
-            await actionWorker?.stop();
-          },
-        },
-        {
-          label: "outbound-worker",
-          run: async () => {
-            await outboundWorker?.stop();
-          },
-        },
-        {
-          label: "connector-lease",
-          run: async () => {
-            await lease?.release();
+            await stopConnectorWorkerRuntime(workerRuntime, (step, error) => {
+              this.log("shutdown_cleanup_failed", {
+                connectorKey: this.connectorKey ?? null,
+                step: step.label,
+                message: error instanceof Error ? error.message : String(error),
+              });
+            });
           },
         },
         {
@@ -905,462 +593,52 @@ export class TelegramService {
       : [{type: "emoji" as const, emoji: payload.emoji ?? ""}]) as Parameters<typeof this.bot.api.setMessageReaction>[2];
     await this.bot.api.setMessageReaction(
       route.chatId,
-      parseTelegramMessageId(payload.messageId),
+      parseTelegramReactionMessageId(payload.messageId),
       reactions,
     );
   }
 
   private async handleMessageReaction(ctx: TelegramReactionContextLike): Promise<void> {
     const {stores, connectorKey} = await this.ensureInitialized();
-    const reaction = ctx.messageReaction;
-    const chatId = reaction?.chat.id;
-    const chatType = reaction?.chat.type ?? null;
-    const updateId = ctx.update?.update_id;
-    const actorId = reaction?.user?.id != null ? String(reaction.user.id) : null;
-    const externalConversationId = buildTelegramConversationId(
-      String(chatId ?? "unknown"),
-    );
-
-    if (!reaction || typeof chatId !== "number") {
-      this.log("reaction_dropped", {
-        connectorKey,
-        externalActorId: actorId,
-        externalConversationId,
-        chatType,
-        reason: "missing_reaction_payload",
-      });
-      return;
-    }
-
-    if (chatType !== "private") {
-      this.log("reaction_dropped", {
-        connectorKey,
-        externalActorId: actorId,
-        externalConversationId,
-        chatType,
-        reason: "group_support_not_enabled",
-      });
-      return;
-    }
-
-    if (typeof updateId !== "number" || !Number.isInteger(updateId)) {
-      this.log("reaction_dropped", {
-        connectorKey,
-        externalActorId: actorId,
-        externalConversationId,
-        chatType,
-        reason: "missing_update_id",
-      });
-      return;
-    }
-
-    if (!actorId) {
-      this.log("reaction_dropped", {
-        connectorKey,
-        externalActorId: actorId,
-        externalConversationId,
-        chatType,
-        reason: "missing_actor",
-      });
-      return;
-    }
-
-    if (reaction.user?.is_bot) {
-      this.log("reaction_dropped", {
-        connectorKey,
-        externalActorId: actorId,
-        externalConversationId,
-        chatType,
-        reason: "bot_actor",
-      });
-      return;
-    }
-
-    const oldEmojis = new Set(
-      reaction.old_reaction
-        .filter(isTelegramEmojiReaction)
-        .map((entry) => entry.emoji.trim()),
-    );
-    const addedEmojis = reaction.new_reaction
-      .filter(isTelegramEmojiReaction)
-      .map((entry) => entry.emoji.trim())
-      .filter((emoji) => emoji && !oldEmojis.has(emoji));
-
-    if (addedEmojis.length === 0) {
-      return;
-    }
-
-    const request = await stores.requests.enqueueRequest({
-      kind: "telegram_reaction",
-      payload: {
-        connectorKey,
-        externalConversationId,
-        chatId: String(chatId),
-        chatType: chatType ?? "private",
-        externalActorId: actorId,
-        updateId,
-        targetMessageId: String(reaction.message_id),
-        addedEmojis,
-        username: reaction.user?.username,
-        firstName: reaction.user?.first_name,
-        lastName: reaction.user?.last_name,
-      },
-    });
-
-    this.log("reaction_ingested", {
+    await ingestTelegramMessageReaction(ctx, {
       connectorKey,
-      externalActorId: actorId,
-      externalConversationId,
-      chatType,
-      updateId,
-      requestId: request.id,
-      targetMessageId: String(reaction.message_id),
-      addedEmojis,
+      requests: stores.requests,
+      log: (event, payload) => this.log(event, payload),
     });
   }
 
   private async handleMessage(ctx: TelegramContext): Promise<void> {
     const {stores, connectorKey, botUsername} = await this.ensureInitialized();
-    const message = ctx.msg;
-    const chatType = ctx.chat?.type ?? null;
-    const actorId = ctx.from?.id ? String(ctx.from.id) : null;
-    const externalConversationId = buildTelegramConversationId(
-      String(ctx.chat?.id ?? "unknown"),
-      message && "message_thread_id" in message && typeof message.message_thread_id === "number"
-        ? String(message.message_thread_id)
-        : undefined,
-    );
-
-    if (chatType !== "private") {
-      this.log("message_dropped", {
-        connectorKey,
-        externalActorId: actorId,
-        externalConversationId,
-        chatType,
-        reason: "group_support_not_enabled",
-      });
-      return;
-    }
-
-    if (!message || !actorId) {
-      this.log("message_dropped", {
-        connectorKey,
-        externalActorId: actorId,
-        externalConversationId,
-        chatType,
-        reason: "missing_actor_or_message",
-      });
-      return;
-    }
-
-    const mediaDownload = await this.downloadSupportedMedia(message, stores);
-    const rawText = extractTelegramMessageText(message);
-    const text = mergeTextWithUnavailableMediaNotice(rawText, mediaDownload.unavailable);
-    if (!text && mediaDownload.media.length === 0) {
-      this.log("message_dropped", {
-        connectorKey,
-        externalActorId: actorId,
-        externalConversationId,
-        chatType,
-        reason: "unsupported_message_shape",
-        messageShape: describeTelegramMessageShape(message),
-      });
-      return;
-    }
-
-    const request = await stores.requests.enqueueRequest({
-      kind: "telegram_message",
-      payload: {
-        connectorKey,
-        botUsername,
-        sentAt: readTelegramSentAtMs(message),
-        externalConversationId,
-        chatId: String(message.chat.id),
-        chatType: chatType ?? "private",
-        externalActorId: actorId,
-        externalMessageId: String(message.message_id),
-        text,
-        username: ctx.from?.username,
-        firstName: ctx.from?.first_name,
-        lastName: ctx.from?.last_name,
-        replyToMessageId: message.reply_to_message?.message_id
-          ? String(message.reply_to_message.message_id)
-          : undefined,
-        media: mediaDownload.media,
-      },
-    });
-
-    this.log("message_ingested", {
+    await ingestTelegramMessage(ctx, {
       connectorKey,
-      externalActorId: actorId,
-      externalConversationId,
-      chatType,
-      externalMessageId: String(message.message_id),
-      mediaCount: mediaDownload.media.length,
-      unavailableMediaCount: mediaDownload.unavailable.length,
-      textLength: messageTextLength(message),
-      requestId: request.id,
+      botUsername,
+      requests: stores.requests,
+      downloadMedia: async (message) => {
+        return this.downloadSupportedMedia(message, stores, connectorKey);
+      },
+      log: (event, payload) => this.log(event, payload),
     });
   }
 
   private async downloadSupportedMedia(
     message: TelegramContext["msg"],
     stores: TelegramWorkerStores,
+    connectorKey: string,
   ): Promise<TelegramMediaDownloadResult> {
-    if (!message) {
-      return {
-        media: [],
-        unavailable: [],
-      };
-    }
-
-    const media: MediaDescriptor[] = [];
-    const unavailable: TelegramUnavailableMedia[] = [];
-    const addDownload = async (input: {
-      kind: TelegramUnavailableMedia["kind"];
-      fileId: string;
-      mimeType: string;
-      sizeBytes?: number;
-      hintFilename?: string;
-      metadata?: JsonObject;
-    }): Promise<void> => {
-      const result = await this.downloadFileOrUnavailable({
-        stores,
-        ...input,
-      });
-      if ("media" in result) {
-        media.push(result.media);
-        return;
-      }
-
-      unavailable.push(result.unavailable);
-    };
-
-    const photo = message.photo?.at(-1);
-    if (photo) {
-      await addDownload({
-        kind: "photo",
-        fileId: photo.file_id,
-        mimeType: "image/jpeg",
-        sizeBytes: photo.file_size,
-        metadata: {
-          telegramMediaKind: "photo",
-          width: photo.width,
-          height: photo.height,
-        },
-      });
-    }
-
-    if (message.document && !message.animation) {
-      await addDownload({
-        kind: "document",
-        fileId: message.document.file_id,
-        mimeType: message.document.mime_type ?? "application/octet-stream",
-        sizeBytes: message.document.file_size,
-        hintFilename: message.document.file_name,
-        metadata: {
-          telegramMediaKind: "document",
-        },
-      });
-    }
-
-    if (message.voice) {
-      await addDownload({
-        kind: "voice",
-        fileId: message.voice.file_id,
-        mimeType: message.voice.mime_type ?? "audio/ogg",
-        sizeBytes: message.voice.file_size,
-        metadata: {
-          telegramMediaKind: "voice",
-          duration: message.voice.duration,
-        },
-      });
-    }
-
-    if (message.sticker) {
-      await addDownload({
-        kind: "sticker",
-        fileId: message.sticker.file_id,
-        mimeType: inferTelegramStickerMimeType(message.sticker),
-        sizeBytes: message.sticker.file_size,
-        metadata: {
-          telegramMediaKind: "sticker",
-          emoji: message.sticker.emoji ?? null,
-          setName: message.sticker.set_name ?? null,
-          stickerType: message.sticker.type,
-          isAnimated: message.sticker.is_animated,
-          isVideo: message.sticker.is_video,
-          width: message.sticker.width,
-          height: message.sticker.height,
-        },
-      });
-    }
-
-    if (message.video) {
-      await addDownload({
-        kind: "video",
-        fileId: message.video.file_id,
-        mimeType: message.video.mime_type ?? "video/mp4",
-        sizeBytes: message.video.file_size,
-        hintFilename: message.video.file_name,
-        metadata: {
-          telegramMediaKind: "video",
-          duration: message.video.duration,
-          width: message.video.width,
-          height: message.video.height,
-        },
-      });
-    }
-
-    if (message.audio) {
-      await addDownload({
-        kind: "audio",
-        fileId: message.audio.file_id,
-        mimeType: message.audio.mime_type ?? "audio/mpeg",
-        sizeBytes: message.audio.file_size,
-        hintFilename: message.audio.file_name,
-        metadata: {
-          telegramMediaKind: "audio",
-          duration: message.audio.duration,
-          title: message.audio.title ?? null,
-          performer: message.audio.performer ?? null,
-        },
-      });
-    }
-
-    if (message.animation) {
-      await addDownload({
-        kind: "animation",
-        fileId: message.animation.file_id,
-        mimeType: inferTelegramAnimationMimeType(message.animation),
-        sizeBytes: message.animation.file_size,
-        hintFilename: message.animation.file_name,
-        metadata: {
-          telegramMediaKind: "animation",
-          duration: message.animation.duration,
-          width: message.animation.width,
-          height: message.animation.height,
-        },
-      });
-    }
-
-    if (message.video_note) {
-      await addDownload({
-        kind: "video_note",
-        fileId: message.video_note.file_id,
-        mimeType: "video/mp4",
-        sizeBytes: message.video_note.file_size,
-        metadata: {
-          telegramMediaKind: "video_note",
-          duration: message.video_note.duration,
-          length: message.video_note.length,
-        },
-      });
-    }
-
-    return {
-      media,
-      unavailable,
-    };
-  }
-
-  private async downloadFileOrUnavailable(options: {
-    stores: TelegramWorkerStores;
-    kind: TelegramUnavailableMedia["kind"];
-    fileId: string;
-    mimeType: string;
-    sizeBytes?: number;
-    hintFilename?: string;
-    metadata?: JsonObject;
-  }): Promise<{media: MediaDescriptor} | {unavailable: TelegramUnavailableMedia}> {
-    const unavailable = (reason: string): {unavailable: TelegramUnavailableMedia} => {
-      this.log("media_download_skipped", {
-        connectorKey: this.connectorKey ?? "unknown",
-        kind: options.kind,
-        mimeType: options.mimeType,
-        sizeBytes: options.sizeBytes ?? null,
-        filename: options.hintFilename ?? null,
-        reason,
-      });
-
-      return {
-        unavailable: {
-          kind: options.kind,
-          mimeType: options.mimeType,
-          sizeBytes: options.sizeBytes,
-          filename: options.hintFilename,
-          reason,
-        },
-      };
-    };
-
-    if (shouldSkipTelegramDownload(options.sizeBytes)) {
-      return unavailable("Telegram Bot API only exposes bot-downloadable files up to 20 MB.");
-    }
-
-    try {
-      return {
-        media: await this.downloadFile(options),
-      };
-    } catch (error) {
-      if (isTelegramFileTooBigError(error)) {
-        return unavailable("Telegram Bot API refused to expose this file because it is too big.");
-      }
-
-      throw error;
-    }
-  }
-
-  private async downloadFile(options: {
-    stores: TelegramWorkerStores;
-    fileId: string;
-    mimeType: string;
-    sizeBytes?: number;
-    hintFilename?: string;
-    metadata?: JsonObject;
-  }): Promise<MediaDescriptor> {
-    const file = await this.bot.api.getFile(options.fileId);
-    if (!file.file_path) {
-      throw new Error(`Telegram file ${options.fileId} has no file_path.`);
-    }
-
-    const controller = new globalThis.AbortController();
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, TELEGRAM_FILE_DOWNLOAD_TIMEOUT_MS);
-    timeout.unref?.();
-
-    let response: Response;
-    try {
-      response = await fetch(`https://api.telegram.org/file/bot${this.token}/${file.file_path}`, {
-        signal: controller.signal,
-      });
-    } catch (error) {
-      if (isAbortError(error)) {
-        throw new Error(`Telegram file ${options.fileId} download timed out after ${TELEGRAM_FILE_DOWNLOAD_TIMEOUT_MS}ms.`);
-      }
-
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    if (!response.ok) {
-      throw new Error(`Failed to download Telegram file ${options.fileId}: ${response.status} ${response.statusText}`);
-    }
-
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    return options.stores.mediaStore.writeMedia({
-      bytes,
-      source: TELEGRAM_SOURCE,
-      connectorKey: this.connectorKey ?? "unknown",
-      mimeType: options.mimeType,
-      sizeBytes: options.sizeBytes,
-      hintFilename: options.hintFilename,
-      metadata: {
-        telegramFileId: options.fileId,
-        telegramFilePath: file.file_path,
-        ...(options.metadata ?? {}),
+    return downloadTelegramSupportedMedia(message, {
+      api: this.bot.api,
+      token: this.token,
+      connectorKey,
+      mediaStore: stores.mediaStore,
+      onUnavailable: (item) => {
+        this.log("media_download_skipped", {
+          connectorKey,
+          kind: item.kind,
+          mimeType: item.mimeType,
+          sizeBytes: item.sizeBytes ?? null,
+          filename: item.filename ?? null,
+          reason: item.reason,
+        });
       },
     });
   }

@@ -3,6 +3,7 @@ import {type output, ZodError, type ZodTypeAny} from "zod";
 
 import {isRecord} from "../../lib/records.js";
 import {ToolError} from "./exceptions.js";
+import {joinMessageTextParts} from "./helpers/message-text.js";
 import {formatParameters} from "./helpers/schema.js";
 import {stringifyUnknown} from "./helpers/stringify.js";
 import type {RunContext} from "./run-context.js";
@@ -38,8 +39,9 @@ export function isToolResultPayload(value: ToolOutput): value is ToolResultPaylo
 
 export function formatToolResultFallback(message: ToolResultMessage<JsonValue>): string {
   const contentParts = message.content.flatMap((part) => {
-    if (part.type === "text" && part.text.trim()) {
-      return [part.text.trim()];
+    if (part.type === "text") {
+      const text = joinMessageTextParts([part]);
+      return text ? [text] : [];
     }
 
     if (part.type === "image") {

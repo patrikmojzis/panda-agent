@@ -4,7 +4,53 @@ import path from "node:path";
 
 import {afterEach, describe, expect, it} from "vitest";
 
-import {TelepathyContextIngress} from "../src/app/runtime/telepathy-context-ingress.js";
+import {
+  TelepathyContextIngress,
+} from "../src/app/runtime/telepathy-context-ingress.js";
+import type {SessionRecord, SessionStore} from "../src/domain/sessions/index.js";
+import type {ThreadRuntimeCoordinator, ThreadRecord} from "../src/domain/threads/runtime/index.js";
+import type {ThreadRuntimeStore} from "../src/domain/threads/runtime/store.js";
+import {isRecord} from "../src/lib/records.js";
+
+type TelepathyContextSessionStore = Pick<SessionStore, "createSession" | "getMainSession" | "getSession">;
+type TelepathyContextThreadStore = Pick<ThreadRuntimeStore, "createThread" | "getThread">;
+
+function failUnused(name: string): never {
+  throw new Error(`${name} should not be called`);
+}
+
+function createSessionStore(overrides: Partial<TelepathyContextSessionStore>): TelepathyContextSessionStore {
+  return {
+    createSession: async () => failUnused("createSession"),
+    getSession: async () => failUnused("getSession"),
+    getMainSession: async () => null,
+    ...overrides,
+  };
+}
+
+function createThreadStore(
+  overrides: Partial<TelepathyContextThreadStore>,
+): TelepathyContextThreadStore {
+  return {
+    createThread: async () => failUnused("createThread"),
+    getThread: async () => failUnused("getThread"),
+    ...overrides,
+  };
+}
+
+function createCoordinator(
+  submitInput: Pick<ThreadRuntimeCoordinator, "submitInput">["submitInput"],
+): Pick<ThreadRuntimeCoordinator, "submitInput"> {
+  return {submitInput};
+}
+
+function requirePayloadRecord(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error("Expected Telepathy ingress to submit an object payload.");
+  }
+
+  return value;
+}
 
 describe("telepathy context ingress", () => {
   const tempDirs: string[] = [];
@@ -19,32 +65,20 @@ describe("telepathy context ingress", () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "runtime-telepathy-context-"));
     tempDirs.push(dataDir);
 
-    const sessions = new Map<string, {
-      id: string;
-      agentKey: string;
-      kind: "main" | "branch";
-      currentThreadId: string;
-      createdByIdentityId?: string;
-    }>();
-    const threads = new Map<string, {
-      id: string;
-      sessionId: string;
-      context?: unknown;
-    }>();
+    const sessions = new Map<string, SessionRecord>();
+    const threads = new Map<string, ThreadRecord>();
     const submittedInputs: Array<{
       threadId: string;
       payload: Record<string, unknown>;
     }> = [];
 
     const ingress = new TelepathyContextIngress({
-      coordinator: {
-        submitInput: async (threadId, payload) => {
-          submittedInputs.push({
-            threadId,
-            payload: payload as unknown as Record<string, unknown>,
-          });
-        },
-      } as never,
+      coordinator: createCoordinator(async (threadId, payload) => {
+        submittedInputs.push({
+          threadId,
+          payload: requirePayloadRecord(payload),
+        });
+      }),
       env: {
         ...process.env,
         DATA_DIR: dataDir,
@@ -52,12 +86,12 @@ describe("telepathy context ingress", () => {
       fallbackContext: {
         cwd: "/workspace/panda-agent",
       },
-      pool: {} as never,
-      sessionStore: {
-        ensureSchema: async () => {},
+      sessionStore: createSessionStore({
         createSession: async (input) => {
-          const session = {
+          const session: SessionRecord = {
             ...input,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
           };
           sessions.set(session.id, session);
           return session;
@@ -73,29 +107,10 @@ describe("telepathy context ingress", () => {
         getMainSession: async (agentKey) => {
           return [...sessions.values()].find((session) => session.agentKey === agentKey && session.kind === "main") ?? null;
         },
-        listAgentSessions: async (agentKey) => [...sessions.values()].filter((session) => session.agentKey === agentKey),
-        updateCurrentThread: async (input) => {
-          const session = sessions.get(input.sessionId);
-          if (!session) {
-            throw new Error(`Unknown session ${input.sessionId}`);
-          }
-
-          session.currentThreadId = input.currentThreadId;
-          return session;
-        },
-        getHeartbeat: async () => null,
-        listDueHeartbeats: async () => [],
-        claimHeartbeat: async () => null,
-        recordHeartbeatResult: async () => {
-          throw new Error("not used");
-        },
-        updateHeartbeatConfig: async () => {
-          throw new Error("not used");
-        },
-      },
-      store: {
+      }),
+      store: createThreadStore({
         createThread: async (input) => {
-          const thread = {
+          const thread: ThreadRecord = {
             ...input,
             createdAt: Date.now(),
             updatedAt: Date.now(),
@@ -109,9 +124,9 @@ describe("telepathy context ingress", () => {
             throw new Error(`Unknown thread ${threadId}`);
           }
 
-          return thread as never;
+          return thread;
         },
-      } as never,
+      }),
     });
 
     await ingress.ingest({
@@ -178,16 +193,24 @@ describe("telepathy context ingress", () => {
     await expect(readFile(image!.localPath, "utf8")).resolves.toBe("screen-shot");
   });
 
-  it("rejects pushed media when declared byte count does not match decoded bytes", async () => {
+  it("targets the current session thread when reset happens during context persistence", async () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "runtime-telepathy-context-"));
     tempDirs.push(dataDir);
 
+    const session: SessionRecord = {
+      id: "session-main",
+      agentKey: "panda",
+      kind: "main" as const,
+      currentThreadId: "thread-old",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const submittedInputs: Array<{threadId: string}> = [];
+
     const ingress = new TelepathyContextIngress({
-      coordinator: {
-        submitInput: async () => {
-          throw new Error("should not wake agent for invalid media");
-        },
-      } as never,
+      coordinator: createCoordinator(async (threadId) => {
+        submittedInputs.push({threadId});
+      }),
       env: {
         ...process.env,
         DATA_DIR: dataDir,
@@ -195,13 +218,66 @@ describe("telepathy context ingress", () => {
       fallbackContext: {
         cwd: "/workspace/panda-agent",
       },
-      pool: {} as never,
-      sessionStore: {
-        ensureSchema: async () => {},
-        createSession: async (input) => input as never,
-        getSession: async () => {
-          throw new Error("not used");
+      sessionStore: createSessionStore({
+        getSession: async (sessionId) => {
+          if (sessionId !== session.id) {
+            throw new Error(`Unknown session ${sessionId}`);
+          }
+
+          return session;
         },
+        getMainSession: async () => session,
+      }),
+      store: createThreadStore({
+        getThread: async (threadId) => {
+          if (threadId !== "thread-old") {
+            throw new Error(`Unexpected thread lookup ${threadId}`);
+          }
+
+          session.currentThreadId = "thread-new";
+          return {
+            id: "thread-old",
+            sessionId: session.id,
+            context: {},
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+        },
+      }),
+    });
+
+    await ingress.ingest({
+      agentKey: "panda",
+      deviceId: "tunnel-mac-patrik",
+      requestId: "ctx-after-reset",
+      mode: "push_to_talk",
+      items: [
+        {
+          type: "text",
+          text: "use the current thread",
+        },
+      ],
+    });
+
+    expect(submittedInputs).toEqual([{threadId: "thread-new"}]);
+  });
+
+  it("rejects pushed media when declared byte count does not match decoded bytes", async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "runtime-telepathy-context-"));
+    tempDirs.push(dataDir);
+
+    const ingress = new TelepathyContextIngress({
+      coordinator: createCoordinator(async () => {
+        throw new Error("should not wake agent for invalid media");
+      }),
+      env: {
+        ...process.env,
+        DATA_DIR: dataDir,
+      },
+      fallbackContext: {
+        cwd: "/workspace/panda-agent",
+      },
+      sessionStore: createSessionStore({
         getMainSession: async () => ({
           id: "session-1",
           agentKey: "panda",
@@ -209,30 +285,17 @@ describe("telepathy context ingress", () => {
           currentThreadId: "thread-1",
           createdAt: Date.now(),
           updatedAt: Date.now(),
-        }) as never,
-        listAgentSessions: async () => [],
-        updateCurrentThread: async () => {
-          throw new Error("not used");
-        },
-        getHeartbeat: async () => null,
-        listDueHeartbeats: async () => [],
-        claimHeartbeat: async () => null,
-        recordHeartbeatResult: async () => {
-          throw new Error("not used");
-        },
-        updateHeartbeatConfig: async () => {
-          throw new Error("not used");
-        },
-      },
-      store: {
+        }),
+      }),
+      store: createThreadStore({
         getThread: async () => ({
           id: "thread-1",
           sessionId: "session-1",
           context: {},
           createdAt: Date.now(),
           updatedAt: Date.now(),
-        }) as never,
-      } as never,
+        }),
+      }),
     });
 
     await expect(ingress.ingest({

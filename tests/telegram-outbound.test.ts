@@ -2,17 +2,19 @@ import {mkdtemp, writeFile} from "node:fs/promises";
 import path from "node:path";
 import {tmpdir} from "node:os";
 
-import type {Api} from "grammy";
 import {describe, expect, it, vi} from "vitest";
 
-import {createTelegramOutboundAdapter} from "../src/integrations/channels/telegram/outbound.js";
+import {
+  createTelegramOutboundAdapter,
+  type TelegramOutboundApi,
+} from "../src/integrations/channels/telegram/outbound.js";
 
-function createApiMock() {
+function createApiMock(): TelegramOutboundApi {
   return {
     sendMessage: vi.fn(),
     sendPhoto: vi.fn(),
     sendDocument: vi.fn(),
-  } as unknown as Api;
+  };
 }
 
 describe("createTelegramOutboundAdapter", () => {

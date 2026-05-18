@@ -1,140 +1,63 @@
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {stringifyUnknown} from "../../kernel/agent/helpers/stringify.js";
-import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
-import {hasUnsafeWikiPathSegments, trimWikiPath,} from "./paths.js";
+import {
+    DEFAULT_WIKI_EDITOR,
+    DEFAULT_WIKI_LOCALE,
+    DEFAULT_WIKI_URL,
+} from "./constants.js";
+import {
+    normalizeWikiLocale,
+    normalizeWikiPath,
+    normalizeWikiTags,
+} from "./client-input.js";
+import {
+    isMissingPageMessage,
+    normalizeContentType,
+    normalizeGraphQlErrors,
+    parseWikiAssetFolders,
+    parseWikiAssetList,
+    parseWikiPage,
+    parseWikiPageLinks,
+    parseWikiPageList,
+    parseWikiSearchResults,
+    pickInteger,
+    pickMessage,
+    type GraphQlEnvelope,
+    type WikiResponseResult,
+} from "./client-parsers.js";
+import type {
+    WikiAssetDownloadResult,
+    WikiAssetFolder,
+    WikiAssetListItem,
+    WikiAssetUploadInput,
+    WikiJsClientOptions,
+    WikiPage,
+    WikiPageLinkItem,
+    WikiPageListItem,
+    WikiPageMoveInput,
+    WikiPageSearchResult,
+    WikiPageWriteInput,
+} from "./types.js";
 
-export const DEFAULT_WIKI_URL = "http://wiki:3000";
-export const DEFAULT_WIKI_LOCALE = "en";
-export const DEFAULT_WIKI_EDITOR = "markdown";
-
-export interface WikiJsClientOptions {
-  apiToken: string;
-  baseUrl?: string;
-  fetchImpl?: typeof fetch;
-}
-
-export interface WikiPage {
-  id: number;
-  path: string;
-  locale: string;
-  title: string;
-  description: string;
-  content: string;
-  tags: string[];
-  editor: string;
-  isPublished: boolean;
-  isPrivate: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface WikiPageSearchResult {
-  id: string;
-  path: string;
-  locale: string;
-  title: string;
-  description: string;
-}
-
-export interface WikiPageListItem {
-  id: number;
-  path: string;
-  locale: string;
-  title: string;
-  updatedAt: string;
-}
-
-export interface WikiPageLinkItem {
-  id: number;
-  path: string;
-  title: string;
-  links: string[];
-}
-
-export interface WikiAssetFolder {
-  id: number;
-  slug: string;
-  name: string;
-}
-
-export interface WikiAssetListItem {
-  id: number;
-  filename: string;
-  ext: string;
-  kind: string;
-  fileSize?: number;
-}
-
-export interface WikiPageWriteInput {
-  id?: number;
-  path: string;
-  locale?: string;
-  title: string;
-  description: string;
-  content: string;
-  tags?: readonly string[];
-  editor?: string;
-  isPublished?: boolean;
-  isPrivate?: boolean;
-}
-
-export interface WikiPageMoveInput {
-  id: number;
-  destinationPath: string;
-  destinationLocale?: string;
-}
-
-export interface WikiAssetUploadInput {
-  folderId: number | null;
-  filename: string;
-  bytes: Uint8Array;
-  mimeType: string;
-}
-
-export interface WikiAssetDownloadResult {
-  bytes: Uint8Array;
-  mimeType?: string;
-  sizeBytes?: number;
-}
-
-interface GraphQlErrorShape {
-  message?: unknown;
-}
-
-interface GraphQlEnvelope<T> {
-  data?: T;
-  errors?: GraphQlErrorShape[];
-}
-
-interface WikiResponseResult {
-  succeeded?: boolean;
-  message?: string;
-}
-
-function normalizeWikiPath(value: string): string {
-  const withoutSlashes = trimWikiPath(value);
-  if (!withoutSlashes) {
-    throw new ToolError("Wiki path must not be empty.");
-  }
-  if (hasUnsafeWikiPathSegments(withoutSlashes)) {
-    throw new ToolError(`Wiki path must not contain empty, '.', or '..' segments (${value}).`);
-  }
-  return withoutSlashes;
-}
-
-function normalizeWikiLocale(value: string | undefined): string {
-  const locale = trimToUndefined(value) ?? DEFAULT_WIKI_LOCALE;
-  return locale;
-}
-
-function normalizeWikiTags(value: readonly string[] | undefined): string[] {
-  return [...new Set(
-    (value ?? [])
-      .map((tag) => tag.trim())
-      .filter((tag) => tag.length > 0),
-  )];
-}
+export {
+  DEFAULT_WIKI_EDITOR,
+  DEFAULT_WIKI_LOCALE,
+  DEFAULT_WIKI_URL,
+} from "./constants.js";
+export type {
+  WikiAssetDownloadResult,
+  WikiAssetFolder,
+  WikiAssetListItem,
+  WikiAssetUploadInput,
+  WikiJsClientOptions,
+  WikiPage,
+  WikiPageLinkItem,
+  WikiPageListItem,
+  WikiPageMoveInput,
+  WikiPageSearchResult,
+  WikiPageWriteInput,
+} from "./types.js";
 
 function buildWikiUrl(baseUrl: string, route: string): string {
   const url = new URL(baseUrl);
@@ -173,201 +96,6 @@ async function fetchWiki(
   } catch (error) {
     throw new ToolError(`${label} failed before receiving a response: ${formatTransportError(error)}`);
   }
-}
-
-function pickMessage(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function pickInteger(value: unknown): number | undefined {
-  const normalized = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(normalized) ? normalized : undefined;
-}
-
-function normalizeContentType(value: string | null): string | undefined {
-  return trimToUndefined(value?.split(";")[0])?.toLowerCase();
-}
-
-function normalizeGraphQlErrors(errors: readonly GraphQlErrorShape[] | undefined): string[] {
-  return (errors ?? [])
-    .map((error) => pickMessage(error.message))
-    .filter((message): message is string => Boolean(message));
-}
-
-function isMissingPageMessage(message: string): boolean {
-  return /not found|does not exist/i.test(message);
-}
-
-function parseWikiPage(value: unknown): WikiPage {
-  if (!isRecord(value)) {
-    throw new ToolError("Wiki.js returned an invalid page payload.");
-  }
-
-  const id = typeof value.id === "number" ? value.id : Number(value.id);
-  if (!Number.isFinite(id)) {
-    throw new ToolError("Wiki.js page payload did not include a valid id.");
-  }
-
-  const tags = Array.isArray(value.tags)
-    ? value.tags
-      .map((tag) => {
-        if (isRecord(tag) && typeof tag.tag === "string") {
-          return tag.tag;
-        }
-        if (typeof tag === "string") {
-          return tag;
-        }
-        return null;
-      })
-      .filter((tag): tag is string => typeof tag === "string")
-    : [];
-
-  return {
-    id,
-    path: normalizeWikiPath(String(value.path ?? "")),
-    locale: normalizeWikiLocale(typeof value.locale === "string" ? value.locale : undefined),
-    title: typeof value.title === "string" ? value.title : "",
-    description: typeof value.description === "string" ? value.description : "",
-    content: typeof value.content === "string" ? value.content : "",
-    tags,
-    editor: typeof value.editor === "string" && value.editor.trim() ? value.editor : DEFAULT_WIKI_EDITOR,
-    isPublished: value.isPublished === true,
-    isPrivate: value.isPrivate === true,
-    createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
-    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : "",
-  };
-}
-
-function parseWikiSearchResults(value: unknown): WikiPageSearchResult[] {
-  if (!Array.isArray(value)) {
-    throw new ToolError("Wiki.js returned invalid search results.");
-  }
-
-  return value.flatMap((entry) => {
-    if (!isRecord(entry)) {
-      return [];
-    }
-    const id = pickMessage(entry.id);
-    const path = pickMessage(entry.path);
-    const locale = pickMessage(entry.locale);
-    if (!id || !path || !locale) {
-      return [];
-    }
-
-    return [{
-      id,
-      path: normalizeWikiPath(path),
-      locale,
-      title: typeof entry.title === "string" ? entry.title : "",
-      description: typeof entry.description === "string" ? entry.description : "",
-    }];
-  });
-}
-
-function parseWikiPageList(value: unknown): WikiPageListItem[] {
-  if (!Array.isArray(value)) {
-    throw new ToolError("Wiki.js returned an invalid page list.");
-  }
-
-  return value.flatMap((entry) => {
-    if (!isRecord(entry)) {
-      return [];
-    }
-
-    const id = typeof entry.id === "number" ? entry.id : Number(entry.id);
-    const path = pickMessage(entry.path);
-    const locale = pickMessage(entry.locale);
-    if (!Number.isFinite(id) || !path || !locale) {
-      return [];
-    }
-
-    return [{
-      id,
-      path: normalizeWikiPath(path),
-      locale: normalizeWikiLocale(locale),
-      title: typeof entry.title === "string" ? entry.title : "",
-      updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : "",
-    }];
-  });
-}
-
-function parseWikiPageLinks(value: unknown): WikiPageLinkItem[] {
-  if (!Array.isArray(value)) {
-    throw new ToolError("Wiki.js returned invalid page links.");
-  }
-
-  return value.flatMap((entry) => {
-    if (!isRecord(entry)) {
-      return [];
-    }
-
-    const id = typeof entry.id === "number" ? entry.id : Number(entry.id);
-    const path = pickMessage(entry.path);
-    if (!Number.isFinite(id) || !path) {
-      return [];
-    }
-
-    return [{
-      id,
-      path: normalizeWikiPath(path),
-      title: typeof entry.title === "string" ? entry.title : "",
-      links: Array.isArray(entry.links)
-        ? entry.links
-          .filter((link): link is string => typeof link === "string" && link.trim().length > 0)
-          .map((link) => normalizeWikiPath(link))
-        : [],
-    }];
-  });
-}
-
-function parseWikiAssetFolders(value: unknown): WikiAssetFolder[] {
-  if (!Array.isArray(value)) {
-    throw new ToolError("Wiki.js returned an invalid asset folder list.");
-  }
-
-  return value.flatMap((entry) => {
-    if (!isRecord(entry)) {
-      return [];
-    }
-
-    const id = pickInteger(entry.id);
-    const slug = pickMessage(entry.slug);
-    if (id === undefined || !slug) {
-      return [];
-    }
-
-    return [{
-      id,
-      slug,
-      name: typeof entry.name === "string" ? entry.name : slug,
-    }];
-  });
-}
-
-function parseWikiAssetList(value: unknown): WikiAssetListItem[] {
-  if (!Array.isArray(value)) {
-    throw new ToolError("Wiki.js returned an invalid asset list.");
-  }
-
-  return value.flatMap((entry) => {
-    if (!isRecord(entry)) {
-      return [];
-    }
-
-    const id = pickInteger(entry.id);
-    const filename = pickMessage(entry.filename);
-    if (id === undefined || !filename) {
-      return [];
-    }
-
-    return [{
-      id,
-      filename,
-      ext: typeof entry.ext === "string" ? entry.ext : "",
-      kind: typeof entry.kind === "string" ? entry.kind : "UNKNOWN",
-      ...(pickInteger(entry.fileSize) !== undefined ? {fileSize: pickInteger(entry.fileSize)} : {}),
-    }];
-  });
 }
 
 export function resolveWikiUrl(env: NodeJS.ProcessEnv = process.env): string {

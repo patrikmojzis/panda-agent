@@ -4,14 +4,17 @@ import {DEFAULT_INFERENCE_PROJECTION} from "../../app/runtime/thread-definition.
 import {
     estimateTranscriptTokens,
     isCompactBoundaryRecord,
-    projectTranscriptForInference,
     projectTranscriptForRun,
+} from "../../kernel/transcript/compaction.js";
+import {projectTranscriptForInference} from "../../kernel/transcript/inference-projection.js";
+import {
     type ThreadMessageRecord,
     type ThreadRecord,
-} from "../../domain/threads/runtime/index.js";
+} from "../../domain/threads/runtime/types.js";
 import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
 import {resolveModelRuntimeBudget} from "../../kernel/models/model-context-policy.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
+import {isRecord} from "../../lib/records.js";
 import {formatThinkingLevel} from "./chat-shared.js";
 
 interface UsageCost {
@@ -83,7 +86,7 @@ function readNumber(value: unknown): number {
 }
 
 function readUsageCost(value: unknown): UsageCost {
-  const cost = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+  const cost = isRecord(value) ? value : {};
   return {
     input: readNumber(cost.input),
     output: readNumber(cost.output),
@@ -103,11 +106,11 @@ function readAssistantUsage(record: ThreadMessageRecord): UsageSnapshot | null {
     provider?: unknown;
     model?: unknown;
   };
-  if (typeof message.usage !== "object" || message.usage === null) {
+  if (!isRecord(message.usage)) {
     return null;
   }
 
-  const usage = message.usage as unknown as Record<string, unknown>;
+  const usage = message.usage;
   const cost = readUsageCost(usage.cost);
   const input = readNumber(usage.input);
   const output = readNumber(usage.output);

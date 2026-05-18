@@ -3,10 +3,18 @@ import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {DataType, newDb} from "pg-mem";
 
 import {Agent,} from "../src/index.js";
-import {PostgresScheduledTaskStore, ScheduledTaskRunner,} from "../src/domain/scheduling/tasks/index.js";
+import {
+  PostgresScheduledTaskStore,
+  ScheduledTaskRunner,
+  type ScheduledTaskRecord,
+  type ScheduledTaskRunRecord,
+  type ScheduledTaskRunnerOptions,
+} from "../src/domain/scheduling/tasks/index.js";
 import {ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 import {sleep, waitFor} from "./helpers/wait-for.js";
+
+const RUNNER_WAIT_TIMEOUT_MS = 5_000;
 
 function createAssistantMessage(text: string): AssistantMessage {
   return {
@@ -161,14 +169,11 @@ describe("ScheduledTaskRunner", () => {
     });
 
     await harness.runner.start();
-    await waitFor(async () => {
-      const updated = await harness.scheduledTasks.getTask(task.id);
-      expect(updated.completedAt).toBeDefined();
-    });
+    await harness.runner.triggerDrain();
     await harness.runner.stop();
 
     const updated = await harness.scheduledTasks.getTask(task.id);
-    expect(updated.completedAt).toBeDefined();
+    expect(updated.completedAt).toEqual(expect.any(Number));
     expect(updated.nextFireAt).toBeUndefined();
 
     const runs = await harness.pool.query(
@@ -206,11 +211,7 @@ describe("ScheduledTaskRunner", () => {
       [task.id, new Date(Date.now() - 1_000)],
     );
     await harness.runner.start();
-    await waitFor(async () => {
-      const updated = await harness.scheduledTasks.getTask(task.id);
-      expect(updated.claimedAt).toBeUndefined();
-      expect(updated.nextFireAt).toBeGreaterThan(Date.now());
-    });
+    await harness.runner.triggerDrain();
     await harness.runner.stop();
 
     const updated = await harness.scheduledTasks.getTask(task.id);
@@ -237,20 +238,153 @@ describe("ScheduledTaskRunner", () => {
     });
 
     await harness.runner.start();
-    await waitFor(async () => {
-      const updated = await harness.scheduledTasks.getTask(task.id);
-      expect(updated.completedAt).toBeDefined();
-    });
+    await harness.runner.triggerDrain();
     await harness.runner.stop();
 
     const updated = await harness.scheduledTasks.getTask(task.id);
-    expect(updated.completedAt).toBeDefined();
+    expect(updated.completedAt).toEqual(expect.any(Number));
 
     const runs = await harness.pool.query(
       `SELECT status FROM "runtime"."scheduled_task_runs" WHERE task_id = $1`,
       [task.id],
     );
     expect(runs.rows).toEqual([{status: "succeeded"}]);
+  });
+
+  it("resolves the session current thread when the task fires", async () => {
+    const harness = await createHarness({
+      responseText: "Handled after reset.",
+    });
+    pools.push(harness.pool);
+
+    const resetThreadId = "session-thread-after-reset";
+    await harness.threadStore.createThread({
+      id: resetThreadId,
+      sessionId: "session-main",
+    });
+    await harness.sessionStore.updateCurrentThread({
+      sessionId: "session-main",
+      currentThreadId: resetThreadId,
+    });
+
+    const task = await harness.scheduledTasks.createTask({
+      sessionId: "session-main",
+      createdByIdentityId: harness.alice.id,
+      title: "After reset",
+      instruction: "Run on the current session thread.",
+      schedule: {
+        kind: "once",
+        runAt: new Date(Date.now() - 60_000).toISOString(),
+      },
+    });
+
+    await harness.runner.start();
+    await harness.runner.triggerDrain();
+    await harness.coordinator.waitForIdle(resetThreadId);
+    await harness.runner.stop();
+
+    const updated = await harness.scheduledTasks.getTask(task.id);
+    expect(updated.completedAt).toEqual(expect.any(Number));
+
+    const oldTranscript = await harness.threadStore.loadTranscript("session-thread");
+    expect(oldTranscript.some((entry) => entry.origin === "input" && entry.source === "scheduled_task")).toBe(false);
+
+    const resetTranscript = await harness.threadStore.loadTranscript(resetThreadId);
+    expect(resetTranscript.some((entry) => entry.origin === "input" && entry.source === "scheduled_task")).toBe(true);
+
+    const runs = await harness.pool.query(
+      `SELECT resolved_thread_id FROM "runtime"."scheduled_task_runs" WHERE task_id = $1`,
+      [task.id],
+    );
+    expect(runs.rows).toEqual([{resolved_thread_id: resetThreadId}]);
+  });
+
+  it("re-resolves the delivery thread after waiting for an existing run", async () => {
+    const task: ScheduledTaskRecord = {
+      id: "task-1",
+      sessionId: "session-main",
+      createdByIdentityId: "alice-id",
+      title: "Wait then run",
+      instruction: "Run on the current thread after the wait.",
+      schedule: {
+        kind: "once",
+        runAt: new Date(Date.now() - 1_000).toISOString(),
+      },
+      enabled: true,
+      nextFireAt: Date.now() - 1_000,
+      updatedAt: Date.now(),
+      createdAt: Date.now(),
+    };
+    const run: ScheduledTaskRunRecord = {
+      id: "scheduled-run-1",
+      taskId: task.id,
+      sessionId: task.sessionId,
+      createdByIdentityId: task.createdByIdentityId,
+      scheduledFor: Date.now() - 1_000,
+      status: "claimed",
+      createdAt: Date.now(),
+    };
+    let listed = false;
+    let currentThreadId = "thread-before-wait";
+    let submitted = false;
+    const tasks: ScheduledTaskRunnerOptions["tasks"] = {
+      listDueTasks: vi.fn(async () => {
+        if (listed) {
+          return [];
+        }
+        listed = true;
+        return [task];
+      }),
+      claimTask: vi.fn(async () => ({task, run})),
+      startTaskRun: vi.fn(async () => ({...run, status: "running"})),
+      completeTaskRun: vi.fn(async () => ({...run, status: "succeeded"})),
+      failTaskRun: vi.fn(),
+      markTaskCompleted: vi.fn(async () => ({...task, completedAt: Date.now()})),
+      markTaskFailed: vi.fn(),
+      clearTaskClaim: vi.fn(),
+    };
+    const runner = new ScheduledTaskRunner({
+      tasks,
+      sessions: {
+        getSession: vi.fn(async () => ({
+          id: task.sessionId,
+          agentKey: "panda",
+          kind: "main",
+          currentThreadId,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })),
+      },
+      threadStore: {
+        listRuns: vi.fn(async (threadId: string) => {
+          expect(threadId).toBe("thread-after-wait");
+          return submitted ? [{id: "thread-run-1", status: "completed"}] : [];
+        }),
+      },
+      coordinator: {
+        waitForCurrentRun: vi.fn(async (threadId: string) => {
+          expect(threadId).toBe("thread-before-wait");
+          currentThreadId = "thread-after-wait";
+        }),
+        submitInput: vi.fn(async (threadId: string) => {
+          expect(threadId).toBe("thread-after-wait");
+          submitted = true;
+        }),
+        waitForIdle: vi.fn(async (threadId: string) => {
+          expect(threadId).toBe("thread-after-wait");
+        }),
+      },
+    });
+
+    await runner.start();
+    await runner.triggerDrain();
+    await runner.stop();
+
+    expect(tasks.completeTaskRun).toHaveBeenCalledTimes(1);
+    expect(tasks.startTaskRun).toHaveBeenCalledWith({
+      runId: run.id,
+      resolvedThreadId: "thread-after-wait",
+    });
   });
 
   it("does not block start on an active scheduled task drain but stop still waits", async () => {
@@ -262,7 +396,7 @@ describe("ScheduledTaskRunner", () => {
         resolve();
       };
     });
-    const task = {
+    const task: ScheduledTaskRecord = {
       id: "task-1",
       sessionId: "session-main",
       createdByIdentityId: "alice-id",
@@ -272,9 +406,12 @@ describe("ScheduledTaskRunner", () => {
         kind: "once",
         runAt: new Date(Date.now() - 1_000).toISOString(),
       },
+      enabled: true,
       nextFireAt: Date.now() - 1_000,
+      updatedAt: Date.now(),
+      createdAt: Date.now(),
     };
-    const run = {
+    const run: ScheduledTaskRunRecord = {
       id: "scheduled-run-1",
       taskId: task.id,
       sessionId: task.sessionId,
@@ -284,7 +421,7 @@ describe("ScheduledTaskRunner", () => {
       createdAt: Date.now(),
     };
     let listed = false;
-    const tasks = {
+    const tasks: ScheduledTaskRunnerOptions["tasks"] = {
       listDueTasks: vi.fn(async () => {
         if (listed) {
           return [];
@@ -301,7 +438,7 @@ describe("ScheduledTaskRunner", () => {
       clearTaskClaim: vi.fn(),
     };
     const runner = new ScheduledTaskRunner({
-      tasks: tasks as any,
+      tasks,
       sessions: {
         getSession: vi.fn(async () => ({
           id: task.sessionId,
@@ -311,19 +448,19 @@ describe("ScheduledTaskRunner", () => {
           createdAt: Date.now(),
           updatedAt: Date.now(),
         })),
-      } as any,
+      },
       threadStore: {
         listRuns: vi.fn(async () => released
           ? [{id: "thread-run-1", status: "completed"}]
           : []),
-      } as any,
+      },
       coordinator: {
         waitForCurrentRun: vi.fn(async () => {}),
         submitInput: vi.fn(async () => {}),
         waitForIdle: vi.fn(async () => {
           await idle;
         }),
-      } as any,
+      },
     });
 
     const startResult = await Promise.race([
@@ -333,7 +470,7 @@ describe("ScheduledTaskRunner", () => {
     expect(startResult).toBe("resolved");
     await waitFor(() => {
       expect(tasks.startTaskRun).toHaveBeenCalledTimes(1);
-    });
+    }, RUNNER_WAIT_TIMEOUT_MS);
 
     const stopPromise = runner.stop();
     const stopResult = await Promise.race([

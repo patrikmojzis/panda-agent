@@ -1,5 +1,13 @@
-import {resolveModelSelector} from "../kernel/agent/index.js";
+import {resolveModelSelector} from "../kernel/models/model-selector.js";
 import {resolveRuntimeDefaultModelSelector} from "../kernel/models/default-model.js";
+import type {DefaultAgentSubagentRole} from "./subagents/policy.js";
+
+const DEFAULT_AGENT_SUBAGENT_MODEL_ENV_KEYS: Record<DefaultAgentSubagentRole, string> = {
+  workspace: "WORKSPACE_SUBAGENT_MODEL",
+  memory: "MEMORY_SUBAGENT_MODEL",
+  browser: "BROWSER_SUBAGENT_MODEL",
+  skill_maintainer: "SKILL_MAINTAINER_SUBAGENT_MODEL",
+};
 
 export function resolveDefaultAgentModelSelector(
   env: NodeJS.ProcessEnv = process.env,
@@ -7,37 +15,17 @@ export function resolveDefaultAgentModelSelector(
   return resolveRuntimeDefaultModelSelector(env);
 }
 
-export function resolveDefaultAgentWorkspaceSubagentModelSelector(
-  env: NodeJS.ProcessEnv = process.env,
+function resolveOptionalModelSelector(
+  env: NodeJS.ProcessEnv,
+  envKey: string,
 ): string | undefined {
-  const configured = env.WORKSPACE_SUBAGENT_MODEL?.trim();
+  const configured = env[envKey]?.trim();
   return configured ? resolveModelSelector(configured).canonical : undefined;
 }
 
-export function resolveDefaultAgentWorkerModelSelector(
+export function resolveDefaultAgentSubagentModelSelector(
+  role: DefaultAgentSubagentRole,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  const configured = env.WORKER_MODEL?.trim();
-  return configured ? resolveModelSelector(configured).canonical : undefined;
-}
-
-export function resolveDefaultAgentMemorySubagentModelSelector(
-  env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
-  const configured = env.MEMORY_SUBAGENT_MODEL?.trim();
-  return configured ? resolveModelSelector(configured).canonical : undefined;
-}
-
-export function resolveDefaultAgentBrowserSubagentModelSelector(
-  env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
-  const configured = env.BROWSER_SUBAGENT_MODEL?.trim();
-  return configured ? resolveModelSelector(configured).canonical : undefined;
-}
-
-export function resolveDefaultAgentSkillMaintainerSubagentModelSelector(
-  env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
-  const configured = env.SKILL_MAINTAINER_SUBAGENT_MODEL?.trim();
-  return configured ? resolveModelSelector(configured).canonical : undefined;
+  return resolveOptionalModelSelector(env, DEFAULT_AGENT_SUBAGENT_MODEL_ENV_KEYS[role]);
 }

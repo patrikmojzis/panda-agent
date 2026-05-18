@@ -1,4 +1,4 @@
-import type {JsonObject} from "../../../kernel/agent/types.js";
+import type {JsonObject} from "../../../lib/json.js";
 
 export type ScheduledTaskScheduleKind = "once" | "recurring";
 export type ScheduledTaskRunStatus = "claimed" | "running" | "succeeded" | "failed" | "cancelled";

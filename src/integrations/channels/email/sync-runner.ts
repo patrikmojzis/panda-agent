@@ -1,10 +1,11 @@
 import {ImapFlow} from "imapflow";
 import {type AddressObject, type ParsedMail, simpleParser} from "mailparser";
 
-import {stringToUserMessage} from "../../../kernel/agent/index.js";
-import type {JsonObject} from "../../../kernel/agent/types.js";
-import type {CredentialResolver} from "../../../domain/credentials/index.js";
-import type {SessionStore} from "../../../domain/sessions/index.js";
+import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
+import type {JsonObject} from "../../../lib/json.js";
+import type {CredentialResolver} from "../../../domain/credentials/resolver.js";
+import {submitCurrentSessionInput} from "../../../domain/sessions/current-thread.js";
+import type {SessionStore} from "../../../domain/sessions/store.js";
 import type {ThreadRuntimeCoordinator} from "../../../domain/threads/runtime/coordinator.js";
 import type {
     EmailAccountRecord,
@@ -13,24 +14,27 @@ import type {
     EmailMessageRecord,
     EmailRecipientInput,
     EmailStore
-} from "../../../domain/email/index.js";
+} from "../../../domain/email/types.js";
+import {parseEmailAuthenticationResults} from "../../../domain/email/auth.js";
 import {
     DEFAULT_EMAIL_BACKFILL_LIMIT,
     normalizeEmailAddress,
-    parseEmailAuthenticationResults
-} from "../../../domain/email/index.js";
-import {runInBackground} from "../../../lib/async.js";
+} from "../../../domain/email/shared.js";
+import {DrainLoop} from "../../../lib/drain-loop.js";
 import {collapseWhitespace, trimToUndefined} from "../../../lib/strings.js";
 import {renderEmailEventPrompt} from "../../../prompts/runtime/email-events.js";
 
 const DEFAULT_EMAIL_POLL_INTERVAL_MS = 60_000;
 const EMAIL_EVENT_SOURCE = "email_event";
+type EmailSyncCoordinator = Pick<ThreadRuntimeCoordinator, "submitInput">;
+type EmailSyncStore = Pick<EmailStore, "listEnabledAccounts" | "recordMessage" | "updateAccountSyncState">;
+type EmailSyncCredentialResolver = Pick<CredentialResolver, "resolveCredential">;
 
 export interface EmailSyncRunnerOptions {
-  store: EmailStore;
-  sessions: SessionStore;
-  coordinator: ThreadRuntimeCoordinator;
-  credentialResolver: CredentialResolver;
+  store: EmailSyncStore;
+  sessions: Pick<SessionStore, "getMainSession" | "getSession">;
+  coordinator: EmailSyncCoordinator;
+  credentialResolver: EmailSyncCredentialResolver;
   pollIntervalMs?: number;
   backfillLimit?: number;
   syncAccount?: (account: EmailAccountRecord) => Promise<readonly EmailMessageRecord[]>;
@@ -133,7 +137,7 @@ function authenticationResultsHeader(parsed: ParsedMail): string | undefined {
 }
 
 async function resolveCredential(
-  resolver: CredentialResolver,
+  resolver: EmailSyncCredentialResolver,
   agentKey: string,
   envKey: string,
 ): Promise<string> {
@@ -175,88 +179,47 @@ function updateMailboxState(
 }
 
 export class EmailSyncRunner {
-  private readonly store: EmailStore;
-  private readonly sessions: SessionStore;
-  private readonly coordinator: ThreadRuntimeCoordinator;
-  private readonly credentialResolver: CredentialResolver;
-  private readonly pollIntervalMs: number;
+  private readonly store: EmailSyncStore;
+  private readonly sessions: Pick<SessionStore, "getMainSession" | "getSession">;
+  private readonly coordinator: EmailSyncCoordinator;
+  private readonly credentialResolver: EmailSyncCredentialResolver;
   private readonly backfillLimit: number;
   private readonly syncAccountFn?: (account: EmailAccountRecord) => Promise<readonly EmailMessageRecord[]>;
   private readonly onError?: (error: unknown, accountKey?: string) => Promise<void> | void;
-
-  private timer: NodeJS.Timeout | null = null;
-  private stopped = true;
-  private drainPromise: Promise<void> | null = null;
-  private pendingDrain = false;
+  private readonly drainLoop: DrainLoop;
 
   constructor(options: EmailSyncRunnerOptions) {
     this.store = options.store;
     this.sessions = options.sessions;
     this.coordinator = options.coordinator;
     this.credentialResolver = options.credentialResolver;
-    this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_EMAIL_POLL_INTERVAL_MS;
     this.backfillLimit = options.backfillLimit ?? DEFAULT_EMAIL_BACKFILL_LIMIT;
     this.syncAccountFn = options.syncAccount;
     this.onError = options.onError;
+    this.drainLoop = new DrainLoop({
+      label: "Email sync runner drain",
+      pollIntervalMs: options.pollIntervalMs ?? DEFAULT_EMAIL_POLL_INTERVAL_MS,
+      drain: () => this.drain(),
+      onError: this.onError ? (error) => this.onError?.(error) : undefined,
+    });
   }
 
   async start(): Promise<void> {
-    if (!this.stopped) {
-      return;
-    }
-
-    this.stopped = false;
-    this.timer = setInterval(() => {
-      this.kickDrain();
-    }, this.pollIntervalMs);
-    this.kickDrain();
+    this.drainLoop.start();
   }
 
   async stop(): Promise<void> {
-    this.stopped = true;
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-
-    if (this.drainPromise) {
-      await this.drainPromise;
-    }
+    await this.drainLoop.stop();
   }
 
   async triggerDrain(): Promise<void> {
-    if (this.stopped) {
-      return;
-    }
-
-    if (this.drainPromise) {
-      this.pendingDrain = true;
-      return;
-    }
-
-    this.drainPromise = this.drain();
-    try {
-      await this.drainPromise;
-    } finally {
-      this.drainPromise = null;
-      if (this.pendingDrain && !this.stopped) {
-        this.pendingDrain = false;
-        await this.triggerDrain();
-      }
-    }
-  }
-
-  private kickDrain(): void {
-    runInBackground(() => this.triggerDrain(), {
-      label: "Email sync runner drain",
-      onError: this.onError ? (error) => this.onError?.(error) : undefined,
-    });
+    await this.drainLoop.trigger();
   }
 
   private async drain(): Promise<void> {
     const accounts = await this.store.listEnabledAccounts();
     for (const account of accounts) {
-      if (this.stopped) {
+      if (this.drainLoop.isStopped) {
         return;
       }
 
@@ -416,7 +379,7 @@ export class EmailSyncRunner {
 
   private async wakeForMessage(account: EmailAccountRecord, message: EmailMessageRecord): Promise<void> {
     const session = await this.sessions.getMainSession(account.agentKey);
-    if (!session?.currentThreadId) {
+    if (!session) {
       return;
     }
 
@@ -427,21 +390,26 @@ export class EmailSyncRunner {
         receivedAt: message.receivedAt ? new Date(message.receivedAt).toISOString() : null,
       },
     };
-    await this.coordinator.submitInput(session.currentThreadId, {
-      message: stringToUserMessage(renderEmailEventPrompt({
-        accountKey: account.accountKey,
-        messageId: message.id,
-        fromAddress: message.fromAddress,
-        subject: message.subject,
-        receivedIso: message.receivedAt ? new Date(message.receivedAt).toISOString() : undefined,
-        authSummary: message.authSummary,
-        authSpf: message.authSpf,
-        authDkim: message.authDkim,
-        authDmarc: message.authDmarc,
-      })),
-      source: EMAIL_EVENT_SOURCE,
-      externalMessageId: message.id,
-      metadata,
+    await submitCurrentSessionInput({
+      sessions: this.sessions,
+      sessionId: session.id,
+      coordinator: this.coordinator,
+      payload: {
+        message: stringToUserMessage(renderEmailEventPrompt({
+          accountKey: account.accountKey,
+          messageId: message.id,
+          fromAddress: message.fromAddress,
+          subject: message.subject,
+          receivedIso: message.receivedAt ? new Date(message.receivedAt).toISOString() : undefined,
+          authSummary: message.authSummary,
+          authSpf: message.authSpf,
+          authDkim: message.authDkim,
+          authDmarc: message.authDmarc,
+        })),
+        source: EMAIL_EVENT_SOURCE,
+        externalMessageId: message.id,
+        metadata,
+      },
     });
   }
 }

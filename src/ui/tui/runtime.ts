@@ -1,11 +1,11 @@
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
 import {createRuntimeClient} from "../../app/runtime/client.js";
-import type {InferenceProjection, ThreadRecord, ThreadUpdate} from "../../domain/threads/runtime/index.js";
-import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres.js";
+import type {InferenceProjection, ThreadRecord, ThreadUpdate} from "../../domain/threads/runtime/types.js";
+import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres-notifications.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import type {IdentityRecord} from "../../domain/identity/index.js";
-import type {SessionRecord} from "../../domain/sessions/index.js";
+import type {IdentityRecord} from "../../domain/identity/types.js";
+import type {SessionRecord} from "../../domain/sessions/types.js";
 import {trimToUndefined} from "../../lib/strings.js";
 
 export interface ChatRuntimeOptions {
@@ -23,9 +23,11 @@ export interface CreateChatSessionOptions {
   inferenceProjection?: InferenceProjection;
 }
 
+export type ChatRuntimeThreadStore = Pick<ThreadRuntimeStore, "getThread" | "listRuns" | "loadTranscript">;
+
 export interface ChatRuntimeServices {
   identity: IdentityRecord;
-  store: ThreadRuntimeStore;
+  store: ChatRuntimeThreadStore;
   createBranchSession(options?: CreateChatSessionOptions): Promise<ThreadRecord>;
   openMainSession(options?: CreateChatSessionOptions): Promise<ThreadRecord>;
   resetSession(options?: CreateChatSessionOptions): Promise<ThreadRecord>;

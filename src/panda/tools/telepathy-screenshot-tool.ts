@@ -1,62 +1,31 @@
-import {randomUUID} from "node:crypto";
-import {mkdir, writeFile} from "node:fs/promises";
-import path from "node:path";
-
 import type {ToolResultMessage} from "@mariozechner/pi-ai";
 import {z} from "zod";
 
-import {resolveAgentMediaDir, resolveMediaDir} from "../../app/runtime/data-dir.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {stripToolArtifactInlineImages, withArtifactDetails} from "../../kernel/agent/tool-artifacts.js";
 import {Tool} from "../../kernel/agent/tool.js";
-import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
-import {trimToNull, trimToUndefined} from "../../lib/strings.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
+import {trimToNull} from "../../lib/strings.js";
 import type {TelepathyHub, TelepathyScreenshotCapture} from "../../integrations/telepathy/hub.js";
-import {decodeTelepathyMediaPayload} from "../../integrations/telepathy/protocol.js";
-import {readTelepathyAgentKey} from "./telepathy-shared.js";
+import {persistTelepathyScreenshotArtifact} from "../../integrations/telepathy/screenshot-artifact.js";
+import {resolveToolArtifactMediaRoot, resolveToolArtifactScopeKey} from "./artifact-paths.js";
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
-function normalizeFileLabel(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "unknown";
-}
-
-function safeAgentKey(agentKey: string): string {
-  const trimmed = agentKey.trim();
-  if (!trimmed || /[\\/]/.test(trimmed) || trimmed.includes("..")) {
-    throw new ToolError(`Unsafe agent key for telepathy artifact path: ${agentKey}`);
+function readTelepathyAgentKey(context: unknown, toolName: string): string {
+  const agentKey = trimToNull(
+    context && typeof context === "object" && !Array.isArray(context)
+      ? (context as {agentKey?: unknown}).agentKey
+      : null,
+  );
+  if (!agentKey) {
+    throw new ToolError(`${toolName} requires agentKey in the current runtime session context.`);
   }
 
-  return trimmed;
-}
-
-function resolveScopeKey(context: DefaultAgentSessionContext): string {
-  const threadId = trimToUndefined(context.threadId);
-  return threadId ? normalizeFileLabel(threadId) : `ephemeral-${randomUUID()}`;
-}
-
-function resolveMediaRoot(context: DefaultAgentSessionContext, env: NodeJS.ProcessEnv): string {
-  const agentKey = trimToNull(context.agentKey);
-  if (agentKey) {
-    return resolveAgentMediaDir(safeAgentKey(agentKey), env);
-  }
-
-  return resolveMediaDir(env);
-}
-
-function screenshotExtension(mimeType: string): string {
-  switch (mimeType) {
-    case "image/jpeg":
-      return ".jpg";
-    case "image/png":
-      return ".png";
-    case "image/webp":
-      return ".webp";
-    default:
-      throw new ToolError(`Unsupported telepathy screenshot MIME type: ${mimeType}`);
-  }
+  return agentKey;
 }
 
 function rewriteDetails(
@@ -139,46 +108,37 @@ export class TelepathyScreenshotTool<TContext = DefaultAgentSessionContext>
       timeoutMs: args.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
 
-    return await this.persistCapture(capture, context);
+    return this.persistCapture(capture, context);
   }
 
   private async persistCapture(
     capture: TelepathyScreenshotCapture,
     context: DefaultAgentSessionContext,
   ): Promise<ToolResultPayload> {
-    const root = resolveMediaRoot(context, this.env);
-    const artifactDir = path.join(
-      root,
-      "telepathy",
-      resolveScopeKey(context),
-      normalizeFileLabel(capture.deviceId),
-    );
-    await mkdir(artifactDir, {recursive: true});
-
-    const extension = screenshotExtension(capture.mimeType);
-    const persistedPath = path.join(artifactDir, `${Date.now()}-${randomUUID()}${extension}`);
-    const bytes = decodeTelepathyMediaPayload({
-      data: capture.data,
-      ...(capture.bytes !== undefined ? {bytes: capture.bytes} : {}),
-      kind: "screenshot",
+    const artifact = await persistTelepathyScreenshotArtifact(capture, {
+      rootDir: resolveToolArtifactMediaRoot({
+        context,
+        env: this.env,
+        source: "telepathy",
+      }),
+      scopeKey: resolveToolArtifactScopeKey(context),
     });
-    await writeFile(persistedPath, bytes);
 
     const details = rewriteDetails({
       action: "screenshot",
       deviceId: capture.deviceId,
       ...(capture.label ? {label: capture.label} : {}),
-      path: persistedPath,
+      path: artifact.path,
       mimeType: capture.mimeType,
-      bytes: bytes.length,
-    }, persistedPath, bytes.length);
+      bytes: artifact.byteLength,
+    }, artifact.path, artifact.byteLength);
 
     return {
       content: [
         {
           type: "text",
           text: [
-            `Telepathy screenshot saved to ${persistedPath}`,
+            `Telepathy screenshot saved to ${artifact.path}`,
             `Device: ${capture.deviceId}`,
             ...(capture.label ? [`Label: ${capture.label}`] : []),
           ].join("\n"),

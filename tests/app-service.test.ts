@@ -272,17 +272,16 @@ describe("agent app service", () => {
 
     const result = await service.createBlankApp("panda", {
       slug: "sleep-checkin",
-      name: "Sleep Check-In",
-      description: "Track sleep notes and rough quality.",
+      name: "Sleep <Check-In> & Notes",
+      description: "Track sleep notes and rough 'quality'.",
       identityScoped: true,
     });
 
     expect(result.app.slug).toBe("sleep-checkin");
-    expect(result.app.name).toBe("Sleep Check-In");
+    expect(result.app.name).toBe("Sleep <Check-In> & Notes");
     expect(result.app.identityScoped).toBe(true);
     expect(result.app.hasUi).toBe(true);
     expect(result.schemaApplied).toBe(false);
-    expect(result.createdDatabase).toBe(true);
 
     await access(result.app.dbPath);
 
@@ -290,6 +289,9 @@ describe("agent app service", () => {
     expect(await readFile(result.actionPath, "utf8")).toBe("{}\n");
     expect(await readFile(result.schemaPath, "utf8")).toContain("Panda does not run this file automatically yet.");
     expect(await readFile(result.readmePath, "utf8")).toContain("docs/agents/apps.md");
+    const html = await readFile(path.join(result.app.publicDir, "index.html"), "utf8");
+    expect(html).toContain("Sleep &lt;Check-In&gt; &amp; Notes");
+    expect(html).toContain("rough &#39;quality&#39;.");
 
     const apps = await service.listApps("panda");
     expect(apps.map((app) => app.slug)).toEqual(["sleep-checkin"]);

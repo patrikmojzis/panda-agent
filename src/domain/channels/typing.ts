@@ -1,3 +1,4 @@
+import {requireNonEmptyString} from "../../lib/strings.js";
 import type {ChannelTypingRequest} from "./types.js";
 
 export interface ChannelTypingAdapter {
@@ -6,12 +7,7 @@ export interface ChannelTypingAdapter {
 }
 
 function requireTrimmedChannel(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error("Typing channel must not be empty.");
-  }
-
-  return trimmed;
+  return requireNonEmptyString(value, "Typing channel must not be empty.");
 }
 
 export class ChannelTypingDispatcher {

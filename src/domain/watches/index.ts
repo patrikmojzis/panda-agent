@@ -7,6 +7,7 @@ export {
   type PostgresWatchStoreOptions,
 } from "./postgres.js";
 export {WatchRunner, type WatchEvaluator, type WatchRunnerOptions} from "./runner.js";
+export {parseWatchDetectorConfig, parseWatchSourceConfig} from "./config.js";
 export type {
   RecordWatchEventResult,
   WatchStore,

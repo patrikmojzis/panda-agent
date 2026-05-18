@@ -1,16 +1,12 @@
 import {randomUUID} from "node:crypto";
 
-import type {Pool, PoolClient} from "pg";
-
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toMillis} from "../threads/runtime/postgres-shared.js";
-
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-interface PgPoolLike extends PgQueryable {
-  connect(): Promise<PoolClient>;
-}
+import type {PgPoolLike} from "../../lib/postgres-query.js";
+import {
+  ensurePostgresConnectorLeaseSchema,
+  POSTGRES_CONNECTOR_LEASE_TABLE,
+} from "./postgres-schema.js";
+import {requireTimestampMillis} from "../../lib/postgres-values.js";
+import {requireNonEmptyString} from "../../lib/strings.js";
 
 export interface ConnectorLeaseLookup {
   source: string;
@@ -37,8 +33,14 @@ export interface ManagedConnectorLease {
   release(): Promise<void>;
 }
 
+export interface ConnectorLeaseRepository {
+  tryAcquire(input: ConnectorLeaseMutationInput): Promise<ConnectorLeaseRecord | null>;
+  renew(input: ConnectorLeaseMutationInput): Promise<ConnectorLeaseRecord | null>;
+  release(input: ConnectorLeaseLookup & {holderId: string}): Promise<boolean>;
+}
+
 export interface AcquireManagedConnectorLeaseOptions {
-  repo: PostgresConnectorLeaseRepo;
+  repo: ConnectorLeaseRepository;
   source: string;
   connectorKey: string;
   alreadyHeldMessage: string;
@@ -52,13 +54,8 @@ export interface AcquireManagedConnectorLeaseOptions {
 const DEFAULT_CONNECTOR_LEASE_TTL_MS = 30_000;
 const DEFAULT_CONNECTOR_LEASE_RENEW_INTERVAL_MS = 10_000;
 
-function requireTrimmed(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`Connector lease ${field} must not be empty.`);
-  }
-
-  return trimmed;
+function requireConnectorLeaseString(field: string, value: unknown): string {
+  return requireNonEmptyString(value, `Connector lease ${field} must not be empty.`);
 }
 
 function requirePositiveInteger(field: string, value: number): number {
@@ -71,8 +68,8 @@ function requirePositiveInteger(field: string, value: number): number {
 
 function normalizeLookup(input: ConnectorLeaseLookup): ConnectorLeaseLookup {
   return {
-    source: requireTrimmed("source", input.source),
-    connectorKey: requireTrimmed("connector key", input.connectorKey),
+    source: requireConnectorLeaseString("source", input.source),
+    connectorKey: requireConnectorLeaseString("connector key", input.connectorKey),
   };
 }
 
@@ -80,19 +77,19 @@ function normalizeMutation(input: ConnectorLeaseMutationInput): ConnectorLeaseMu
   const lookup = normalizeLookup(input);
   return {
     ...lookup,
-    holderId: requireTrimmed("holder id", input.holderId),
+    holderId: requireConnectorLeaseString("holder id", input.holderId),
     leasedUntil: requirePositiveInteger("leasedUntil", input.leasedUntil),
   };
 }
 
 function parseRecord(row: Record<string, unknown>): ConnectorLeaseRecord {
   return {
-    source: String(row.source),
-    connectorKey: String(row.connector_key),
-    holderId: String(row.holder_id),
-    leasedUntil: toMillis(row.leased_until),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    source: requireConnectorLeaseString("source", row.source),
+    connectorKey: requireConnectorLeaseString("connector key", row.connector_key),
+    holderId: requireConnectorLeaseString("holder id", row.holder_id),
+    leasedUntil: requireTimestampMillis(row.leased_until, "Connector lease leasedUntil must be a valid timestamp."),
+    createdAt: requireTimestampMillis(row.created_at, "Connector lease createdAt must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Connector lease updatedAt must be a valid timestamp."),
   };
 }
 
@@ -102,29 +99,14 @@ function toTimestamp(value: number): Date {
 
 export class PostgresConnectorLeaseRepo {
   private readonly pool: PgPoolLike;
-  private readonly tableName = `"runtime"."connector_leases"`;
+  private readonly tableName = POSTGRES_CONNECTOR_LEASE_TABLE;
 
   constructor(options: PostgresConnectorLeaseRepoOptions) {
     this.pool = options.pool;
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tableName} (
-        source TEXT NOT NULL,
-        connector_key TEXT NOT NULL,
-        holder_id TEXT NOT NULL,
-        leased_until TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (source, connector_key)
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier("runtime_connector_leases_expiry_idx")}
-      ON ${this.tableName} (leased_until)
-    `);
+    await ensurePostgresConnectorLeaseSchema(this.pool);
   }
 
   async tryAcquire(input: ConnectorLeaseMutationInput): Promise<ConnectorLeaseRecord | null> {
@@ -227,7 +209,7 @@ export class PostgresConnectorLeaseRepo {
   async release(input: Omit<ConnectorLeaseMutationInput, "leasedUntil">): Promise<boolean> {
     const normalized = {
       ...normalizeLookup(input),
-      holderId: requireTrimmed("holder id", input.holderId),
+      holderId: requireConnectorLeaseString("holder id", input.holderId),
     };
     const result = await this.pool.query(`
       DELETE FROM ${this.tableName}
@@ -251,8 +233,8 @@ export async function acquireManagedConnectorLease(
     "renewIntervalMs",
     options.renewIntervalMs ?? DEFAULT_CONNECTOR_LEASE_RENEW_INTERVAL_MS,
   );
-  const source = requireTrimmed("source", options.source);
-  const connectorKey = requireTrimmed("connector key", options.connectorKey);
+  const source = requireConnectorLeaseString("source", options.source);
+  const connectorKey = requireConnectorLeaseString("connector key", options.connectorKey);
   const holderId = options.holderId?.trim() || randomUUID();
 
   const acquired = await options.repo.tryAcquire({

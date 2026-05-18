@@ -1,4 +1,6 @@
 import {resolveOpenAICodexOauthToken} from "../shared/auth.js";
+import {readResponseError} from "../../../lib/http.js";
+import {isRecord} from "../../../lib/records.js";
 import {trimToNull} from "../../../lib/strings.js";
 
 export type OpenAIImageAuthKind = "codex-oauth" | "openai-api-key";
@@ -70,7 +72,7 @@ type OpenAIImageApiResponse = {
 };
 
 type OpenAICodexImageGenerationEvent = {
-  type?: string;
+  type: string;
   item?: {
     type?: string;
     result?: string;
@@ -89,6 +91,14 @@ type OpenAICodexImageGenerationEvent = {
   };
   message?: string;
 };
+
+function malformedCodexImageSse(message: string): Error {
+  return new Error(`OpenAI Codex image generation returned malformed SSE ${message}.`);
+}
+
+function malformedOpenAIImageApiResponse(): Error {
+  return new Error("OpenAI image generation returned malformed response.");
+}
 
 function isEnabledEnv(value: string | undefined): boolean {
   return /^(1|true|yes|on)$/i.test(value?.trim() ?? "");
@@ -156,21 +166,12 @@ function toUploadBytes(buffer: Buffer): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-async function readResponseError(response: Response): Promise<string> {
-  try {
-    const text = await response.text();
-    return text.length > MAX_ERROR_CHARS ? `${text.slice(0, MAX_ERROR_CHARS)}...` : text;
-  } catch {
-    return "";
-  }
-}
-
 async function assertOk(response: Response, label: string): Promise<void> {
   if (response.ok) {
     return;
   }
 
-  const detail = await readResponseError(response);
+  const detail = await readResponseError(response, MAX_ERROR_CHARS).catch(() => "");
   throw new Error(`${label} (${response.status}): ${detail || response.statusText}`);
 }
 
@@ -218,20 +219,16 @@ async function readResponseBodyText(response: Response): Promise<string> {
 function parseCodexImageGenerationEvents(body: string): OpenAICodexImageGenerationEvent[] {
   const events: OpenAICodexImageGenerationEvent[] = [];
   for (const line of body.split(/\r?\n/)) {
-    if (!line.startsWith("data: ")) {
+    if (!line.startsWith("data:")) {
       continue;
     }
 
-    const data = line.slice(6).trim();
+    const data = line.slice(5).trim();
     if (!data || data === "[DONE]") {
       continue;
     }
 
-    try {
-      events.push(JSON.parse(data) as OpenAICodexImageGenerationEvent);
-    } catch {
-      continue;
-    }
+    events.push(parseCodexImageGenerationEvent(data));
 
     if (events.length > MAX_CODEX_IMAGE_SSE_EVENTS) {
       throw new Error("OpenAI Codex image generation response exceeded event limit.");
@@ -240,11 +237,126 @@ function parseCodexImageGenerationEvents(body: string): OpenAICodexImageGenerati
   return events;
 }
 
-function decodeCodexImagePayload(payload: string): Buffer {
-  if (payload.length > MAX_CODEX_IMAGE_BASE64_CHARS) {
-    throw new Error("OpenAI Codex image generation result exceeded size limit.");
+function readOptionalStringField(
+  source: Record<string, unknown>,
+  key: string,
+  malformed: () => Error,
+): string | undefined {
+  const value = source[key];
+  if (value === undefined || value === null) {
+    return undefined;
   }
-  return Buffer.from(payload, "base64");
+  if (typeof value !== "string") {
+    throw malformed();
+  }
+  return value;
+}
+
+const malformedCodexImageEvent = () => malformedCodexImageSse("event");
+
+function parseCodexImageEntry(value: unknown): NonNullable<OpenAICodexImageGenerationEvent["item"]> {
+  if (!isRecord(value)) {
+    throw malformedCodexImageSse("event");
+  }
+  const type = readOptionalStringField(value, "type", malformedCodexImageEvent);
+  const result = readOptionalStringField(value, "result", malformedCodexImageEvent);
+  const revisedPrompt = readOptionalStringField(value, "revised_prompt", malformedCodexImageEvent);
+
+  return {
+    ...(type !== undefined ? {type} : {}),
+    ...(result !== undefined ? {result} : {}),
+    ...(revisedPrompt !== undefined ? {revised_prompt: revisedPrompt} : {}),
+  };
+}
+
+function parseCodexImageResponse(value: unknown): OpenAICodexImageGenerationEvent["response"] {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw malformedCodexImageSse("event");
+  }
+
+  const output = value.output;
+  if (output === undefined || output === null) {
+    return {};
+  }
+  if (!Array.isArray(output)) {
+    throw malformedCodexImageSse("event");
+  }
+  return {
+    output: output.map((entry) => parseCodexImageEntry(entry)),
+  };
+}
+
+function parseCodexImageError(value: unknown): OpenAICodexImageGenerationEvent["error"] {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw malformedCodexImageSse("event");
+  }
+  const code = readOptionalStringField(value, "code", malformedCodexImageEvent);
+  const message = readOptionalStringField(value, "message", malformedCodexImageEvent);
+
+  return {
+    ...(code !== undefined ? {code} : {}),
+    ...(message !== undefined ? {message} : {}),
+  };
+}
+
+function parseCodexImageGenerationEvent(data: string): OpenAICodexImageGenerationEvent {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data) as unknown;
+  } catch {
+    throw malformedCodexImageSse("JSON");
+  }
+
+  if (!isRecord(parsed)) {
+    throw malformedCodexImageSse("event");
+  }
+
+  const type = trimToNull(readOptionalStringField(parsed, "type", malformedCodexImageEvent));
+  if (!type) {
+    throw malformedCodexImageSse("event");
+  }
+
+  const item = parsed.item === undefined || parsed.item === null ? undefined : parseCodexImageEntry(parsed.item);
+  const response = parseCodexImageResponse(parsed.response);
+  const error = parseCodexImageError(parsed.error);
+  const message = readOptionalStringField(parsed, "message", malformedCodexImageEvent);
+  return {
+    type,
+    ...(item ? {item} : {}),
+    ...(response ? {response} : {}),
+    ...(error ? {error} : {}),
+    ...(message !== undefined ? {message} : {}),
+  };
+}
+
+function decodeCodexImagePayload(payload: string): Buffer {
+  return decodeImagePayload(payload, "OpenAI Codex image generation");
+}
+
+function decodeOpenAIImageApiPayload(payload: string): Buffer {
+  return decodeImagePayload(payload, "OpenAI image generation");
+}
+
+function decodeImagePayload(payload: string, label: string): Buffer {
+  if (payload.length > MAX_CODEX_IMAGE_BASE64_CHARS) {
+    throw new Error(`${label} result exceeded size limit.`);
+  }
+
+  const compact = payload.replace(/\s/g, "");
+  const buffer = Buffer.from(compact, "base64");
+  const normalizedInput = compact.replace(/=+$/, "");
+  const normalizedOutput = buffer.toString("base64").replace(/=+$/, "");
+  if (!compact || compact.length % 4 === 1 || normalizedInput !== normalizedOutput) {
+    throw new Error(`${label} returned invalid image payload.`);
+  }
+
+  return buffer;
 }
 
 function codexEntryToImage(
@@ -316,18 +428,19 @@ async function fetchImageUrl(params: {
 }
 
 async function parseOpenAIImageApiResponse(params: {
-  payload: OpenAIImageApiResponse;
+  payload: unknown;
   outputFormat: OpenAIImageOutputFormat;
   fetchImpl: typeof fetch;
   signal?: AbortSignal;
 }): Promise<readonly GeneratedOpenAIImage[]> {
+  const payload = parseOpenAIImageApiPayload(params.payload);
   const output = resolveOpenAIImageMime(params.outputFormat);
   const images: GeneratedOpenAIImage[] = [];
 
-  for (const [index, entry] of (params.payload.data ?? []).entries()) {
+  for (const [index, entry] of (payload.data ?? []).entries()) {
     if (entry.b64_json) {
       images.push({
-        buffer: Buffer.from(entry.b64_json, "base64"),
+        buffer: decodeOpenAIImageApiPayload(entry.b64_json),
         mimeType: output.mimeType,
         fileName: `image-${index + 1}.${output.extension}`,
         ...(entry.revised_prompt ? {revisedPrompt: entry.revised_prompt} : {}),
@@ -352,6 +465,37 @@ async function parseOpenAIImageApiResponse(params: {
   }
 
   return images;
+}
+
+function parseOpenAIImageApiPayload(payload: unknown): OpenAIImageApiResponse {
+  if (!isRecord(payload)) {
+    throw malformedOpenAIImageApiResponse();
+  }
+
+  const data = payload.data;
+  if (data === undefined || data === null) {
+    return {};
+  }
+  if (!Array.isArray(data)) {
+    throw malformedOpenAIImageApiResponse();
+  }
+
+  return {
+    data: data.map((entry) => {
+      if (!isRecord(entry)) {
+        throw malformedOpenAIImageApiResponse();
+      }
+
+      const b64Json = readOptionalStringField(entry, "b64_json", malformedOpenAIImageApiResponse);
+      const url = readOptionalStringField(entry, "url", malformedOpenAIImageApiResponse);
+      const revisedPrompt = readOptionalStringField(entry, "revised_prompt", malformedOpenAIImageApiResponse);
+      return {
+        ...(b64Json !== undefined ? {b64_json: b64Json} : {}),
+        ...(url !== undefined ? {url} : {}),
+        ...(revisedPrompt !== undefined ? {revised_prompt: revisedPrompt} : {}),
+      };
+    }),
+  };
 }
 
 export class OpenAIImageClient {
@@ -499,7 +643,7 @@ export class OpenAIImageClient {
     }
 
     await assertOk(response, isEdit ? "OpenAI image edit failed" : "OpenAI image generation failed");
-    const payload = (await response.json()) as OpenAIImageApiResponse;
+    const payload = await response.json() as unknown;
     const images = await parseOpenAIImageApiResponse({
       payload,
       outputFormat: request.outputFormat,

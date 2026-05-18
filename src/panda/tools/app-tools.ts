@@ -1,108 +1,107 @@
 import {z} from "zod";
 
-import {readCurrentInputIdentityId} from "../../app/runtime/panda-path-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import type {AgentAppAuthService} from "../../domain/apps/auth.js";
-import {
-    type AgentAppCheckResult,
-    type AgentAppDefinition,
-    readAgentAppRequiredInputKeys,
+import type {
+  AgentAppActionResult,
+  AgentAppCheckResult,
+  AgentAppDefinition,
+  AgentAppInspectionResult,
+  AgentAppViewResult,
 } from "../../domain/apps/types.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
-import type {JsonObject} from "../../kernel/agent/types.js";
-import {buildAgentAppOpenPath, resolveAgentAppUrls} from "../../integrations/apps/http-server.js";
-import {AgentAppService} from "../../integrations/apps/sqlite-service.js";
-import {buildJsonToolPayload, buildTextToolPayload, rethrowAsToolError} from "./shared.js";
+import {isJsonObject, type JsonObject} from "../../lib/json.js";
+import {buildAgentAppOpenPath, resolveAgentAppUrls} from "../../integrations/apps/http-config.js";
+import type {
+  CreateBlankAgentAppOptions,
+  CreateBlankAgentAppResult,
+} from "../../integrations/apps/scaffold-install.js";
+import type {
+  AgentAppActionExecutionOptions,
+  AgentAppViewExecutionOptions,
+} from "../../integrations/apps/sqlite-execution.js";
+import {
+  describeAgentAppDetails,
+  describeAgentAppSummary,
+} from "../../integrations/apps/descriptors.js";
+import {buildJsonToolPayload, buildTextToolPayload, readRequiredAgentSessionToolScope, rethrowAsToolError} from "./shared.js";
+
+export interface AppToolService {
+  createBlankApp(agentKey: string, options: CreateBlankAgentAppOptions): Promise<CreateBlankAgentAppResult>;
+  inspectApps(agentKey: string): Promise<AgentAppInspectionResult>;
+  checkApps(agentKey: string, options?: {appSlug?: string}): Promise<readonly AgentAppCheckResult[]>;
+  getApp(agentKey: string, appSlug: string): Promise<AgentAppDefinition>;
+  executeView(
+    agentKey: string,
+    appSlug: string,
+    viewName: string,
+    options?: AgentAppViewExecutionOptions,
+  ): Promise<AgentAppViewResult>;
+  executeAction(
+    agentKey: string,
+    appSlug: string,
+    actionName: string,
+    options?: AgentAppActionExecutionOptions,
+  ): Promise<AgentAppActionResult>;
+}
+
+export type AppLinkAuthService = Pick<AgentAppAuthService, "createLaunchToken">;
 
 function readAppScope(context: unknown): {
   agentKey: string;
   sessionId: string;
   identityId?: string;
 } {
-  if (
-    !context
-    || typeof context !== "object"
-    || Array.isArray(context)
-    || typeof (context as {agentKey?: unknown}).agentKey !== "string"
-    || !(context as {agentKey: string}).agentKey.trim()
-    || typeof (context as {sessionId?: unknown}).sessionId !== "string"
-    || !(context as {sessionId: string}).sessionId.trim()
-  ) {
-    throw new ToolError("App tools require agentKey and sessionId in the runtime session context.");
-  }
-
-  return {
-    agentKey: (context as {agentKey: string}).agentKey,
-    sessionId: (context as {sessionId: string}).sessionId,
-    identityId: readCurrentInputIdentityId(context),
-  };
+  return readRequiredAgentSessionToolScope(
+    context,
+    "App tools require agentKey and sessionId in the runtime session context.",
+  );
 }
 
 const looseRecordSchema = z.record(z.string(), z.unknown());
 const appListDetailSchema = z.enum(["summary", "full"]);
 
+function requireAppToolJsonObject(value: unknown, label: string): JsonObject {
+  if (isJsonObject(value)) {
+    return value;
+  }
+
+  throw new ToolError(`${label} must be a JSON object.`);
+}
+
 function serializeAppSummary(app: AgentAppDefinition): JsonObject {
-  return {
-    slug: app.slug,
-    name: app.name,
-    ...(app.description ? {description: app.description} : {}),
-    identityScoped: app.identityScoped,
-    hasUi: app.hasUi,
-    viewNames: Object.keys(app.views),
-    actionNames: Object.keys(app.actions),
-  } as JsonObject;
+  return requireAppToolJsonObject(describeAgentAppSummary(app), "app summary");
 }
 
 function serializeBrokenAppSummary(app: AgentAppCheckResult): JsonObject {
-  return {
+  return requireAppToolJsonObject({
     slug: app.appSlug,
     errorCount: app.errors.length,
     warningCount: app.warnings.length,
     ...(app.errors[0] ? {firstError: app.errors[0].message} : {}),
     ...(app.warnings[0] ? {firstWarning: app.warnings[0].message} : {}),
-  } as JsonObject;
+  }, "broken app summary");
 }
 
 function serializeAppFull(app: AgentAppDefinition): JsonObject {
-  return {
-    slug: app.slug,
-    name: app.name,
-    ...(app.description ? {description: app.description} : {}),
-    identityScoped: app.identityScoped,
-    hasUi: app.hasUi,
+  return requireAppToolJsonObject({
+    ...describeAgentAppDetails(app),
     ...(app.hasUi ? resolveAgentAppUrls({
       agentKey: app.agentKey,
       appSlug: app.slug,
     }) : {}),
-    viewNames: Object.keys(app.views),
-    actionNames: Object.keys(app.actions),
-    views: Object.entries(app.views).map(([name, definition]) => ({
-      name,
-      ...(definition.description ? {description: definition.description} : {}),
-      paginated: Boolean(definition.pagination),
-    })),
-    actions: Object.entries(app.actions).map(([name, definition]) => {
-      const requiredInputKeys = readAgentAppRequiredInputKeys(definition);
-      return {
-        name,
-        mode: definition.mode ?? "native",
-        ...(definition.description ? {description: definition.description} : {}),
-        ...(requiredInputKeys?.length ? {requiredInputKeys} : {}),
-        ...(definition.inputSchema ? {inputSchema: definition.inputSchema} : {}),
-      };
-    }),
-  } as unknown as JsonObject;
+  }, "app details");
 }
 
 function serializeBrokenAppFull(app: AgentAppCheckResult): JsonObject {
-  return {
+  return requireAppToolJsonObject({
     slug: app.appSlug,
     appDir: app.appDir,
     errors: app.errors,
     warnings: app.warnings,
-  } as unknown as JsonObject;
+  }, "broken app details");
 }
 
 export class AppCreateTool<TContext = DefaultAgentSessionContext>
@@ -120,7 +119,7 @@ export class AppCreateTool<TContext = DefaultAgentSessionContext>
     "Create a blank filesystem-backed micro-app scaffold for the current agent. This writes manifest.json, views.json, actions.json, schema.sql, a basic public UI, README.md, and data/app.sqlite. Use it to start a new app, then edit the generated files. It does not generate a finished product for you.";
   schema = AppCreateTool.schema;
 
-  constructor(private readonly service: AgentAppService) {
+  constructor(private readonly service: AppToolService) {
     super();
   }
 
@@ -144,7 +143,7 @@ export class AppCreateTool<TContext = DefaultAgentSessionContext>
 
       return buildTextToolPayload(
         `Created blank app ${result.app.slug} for ${result.app.agentKey}.`,
-        {
+        requireAppToolJsonObject({
           agentKey: result.app.agentKey,
           slug: result.app.slug,
           name: result.app.name,
@@ -158,10 +157,9 @@ export class AppCreateTool<TContext = DefaultAgentSessionContext>
           readmePath: result.readmePath,
           dbPath: result.app.dbPath,
           hasUi: result.app.hasUi,
-          createdDatabase: result.createdDatabase,
           schemaApplied: result.schemaApplied,
           ...(urls ? urls : {}),
-        } as JsonObject,
+        }, "app_create result"),
       );
     } catch (error) {
       rethrowAsToolError(error);
@@ -183,7 +181,7 @@ export class AppListTool<TContext = DefaultAgentSessionContext>
     "List filesystem-backed micro-apps installed for the current agent. Defaults to a compact discovery index with app/view/action names. Pass appSlug plus detail=\"full\" only when you need one app's action inputSchema metadata or raw UI URLs.";
   schema = AppListTool.schema;
 
-  constructor(private readonly service: AgentAppService) {
+  constructor(private readonly service: AppToolService) {
     super();
   }
 
@@ -218,11 +216,11 @@ export class AppListTool<TContext = DefaultAgentSessionContext>
       }
 
       const detail = args.detail ?? "summary";
-      return buildJsonToolPayload({
+      return buildJsonToolPayload(requireAppToolJsonObject({
         detail,
         apps: apps.map((app) => detail === "full" ? serializeAppFull(app) : serializeAppSummary(app)),
         brokenApps: brokenApps.map((app) => detail === "full" ? serializeBrokenAppFull(app) : serializeBrokenAppSummary(app)),
-      } as unknown as JsonObject);
+      }, "app_list result"));
     } catch (error) {
       rethrowAsToolError(error);
     }
@@ -243,8 +241,8 @@ export class AppLinkCreateTool<TContext = DefaultAgentSessionContext>
   schema = AppLinkCreateTool.schema;
 
   constructor(
-    private readonly service: AgentAppService,
-    private readonly auth: AgentAppAuthService,
+    private readonly service: AppToolService,
+    private readonly auth: AppLinkAuthService,
   ) {
     super();
   }
@@ -284,17 +282,16 @@ export class AppLinkCreateTool<TContext = DefaultAgentSessionContext>
 
       return buildTextToolPayload(
         `Created one-time app link for ${app.slug}.`,
-        {
+        requireAppToolJsonObject({
           agentKey: app.agentKey,
           appSlug: app.slug,
-          identityId,
           openUrl,
           expiresAt: new Date(launch.expiresAt).toISOString(),
           appUrl: urls.appUrl,
           localAppUrl: urls.localAppUrl,
           ...(urls.internalAppUrl ? {internalAppUrl: urls.internalAppUrl} : {}),
           ...(urls.publicAppUrl ? {publicAppUrl: urls.publicAppUrl} : {}),
-        } as JsonObject,
+        }, "app_link_create result"),
       );
     } catch (error) {
       rethrowAsToolError(error);
@@ -313,7 +310,7 @@ export class AppCheckTool<TContext = DefaultAgentSessionContext>
     "Check whether one micro-app, or all micro-apps for the current agent, can be loaded cleanly by Panda. Returns exact file/path/message diagnostics and lightweight SQL prepare checks. Use this when app_list or the UI feels confused.";
   schema = AppCheckTool.schema;
 
-  constructor(private readonly service: AgentAppService) {
+  constructor(private readonly service: AppToolService) {
     super();
   }
 
@@ -330,10 +327,10 @@ export class AppCheckTool<TContext = DefaultAgentSessionContext>
       const apps = await this.service.checkApps(scope.agentKey, {
         appSlug: args.appSlug,
       });
-      return buildJsonToolPayload({
+      return buildJsonToolPayload(requireAppToolJsonObject({
         ok: apps.every((app) => app.ok),
         apps,
-      } as unknown as JsonObject);
+      }, "app_check result"));
     } catch (error) {
       rethrowAsToolError(error);
     }
@@ -355,7 +352,7 @@ export class AppViewTool<TContext = DefaultAgentSessionContext>
     "Run one readonly view from an installed micro-app for the current input identity. If you do not know the app or view name, call app_list first for the compact discovery index. Pass params when the app view expects them.";
   schema = AppViewTool.schema;
 
-  constructor(private readonly service: AgentAppService) {
+  constructor(private readonly service: AppToolService) {
     super();
   }
 
@@ -381,11 +378,11 @@ export class AppViewTool<TContext = DefaultAgentSessionContext>
         sessionId: scope.sessionId,
       });
 
-      return buildJsonToolPayload({
+      return buildJsonToolPayload(requireAppToolJsonObject({
         appSlug: args.appSlug,
         viewName: args.viewName,
         ...result,
-      } as unknown as JsonObject);
+      }, "app_view result"));
     } catch (error) {
       rethrowAsToolError(error);
     }
@@ -405,7 +402,7 @@ export class AppActionTool<TContext = DefaultAgentSessionContext>
     "Run one declared micro-app action for the current input identity. If you do not know the app or action name, call app_list first for the compact discovery index. Use app_list with appSlug and detail=\"full\" only when you need inputSchema details. If the action needs values, pass them through the input object. This is for fixed app actions, not arbitrary SQL.";
   schema = AppActionTool.schema;
 
-  constructor(private readonly service: AgentAppService) {
+  constructor(private readonly service: AppToolService) {
     super();
   }
 
@@ -429,11 +426,11 @@ export class AppActionTool<TContext = DefaultAgentSessionContext>
         sessionId: scope.sessionId,
       });
 
-      return buildJsonToolPayload({
+      return buildJsonToolPayload(requireAppToolJsonObject({
         appSlug: args.appSlug,
         actionName: args.actionName,
         ...result,
-      } as unknown as JsonObject);
+      }, "app_action result"));
     } catch (error) {
       rethrowAsToolError(error);
     }

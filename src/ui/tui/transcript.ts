@@ -1,13 +1,12 @@
-import type {Message} from "@mariozechner/pi-ai";
+import type {Message, ToolResultMessage} from "@mariozechner/pi-ai";
 
 import {
     formatToolCallFallback,
     formatToolResultFallback,
     type Tool,
-    type ToolResultMessage,
-} from "../../kernel/agent/index.js";
-import {summarizeMessageText} from "../../kernel/transcript/message-preview.js";
-import type {ThreadMessageMetadata} from "../../domain/threads/runtime/index.js";
+} from "../../kernel/agent/tool.js";
+import {joinMessageTextParts} from "../../kernel/agent/helpers/message-text.js";
+import type {ThreadMessageMetadata} from "../../domain/threads/runtime/types.js";
 
 interface TranscriptEntryView {
   role: TranscriptEntryRole;
@@ -25,6 +24,26 @@ function sourceLabel(metadata: ThreadMessageMetadata): string {
   return `${metadata.source}:${metadata.channelId}`;
 }
 
+function summarizeMessageText(message: Message): string {
+  switch (message.role) {
+    case "user":
+      if (typeof message.content === "string") {
+        return message.content.trim();
+      }
+
+      return joinMessageTextParts(message.content, "\n");
+
+    case "assistant":
+      return joinMessageTextParts(message.content, "\n");
+
+    case "toolResult":
+      return formatToolResultFallback(message);
+
+    default:
+      return JSON.stringify(message);
+  }
+}
+
 export function renderTranscriptEntries(
   message: Message,
   metadata: ThreadMessageMetadata,
@@ -40,11 +59,12 @@ export function renderTranscriptEntries(
 
   if (message.role === "assistant") {
     const entries: TranscriptEntryView[] = [];
-    let text = "";
+    const textBlocks: Array<{type: string; text?: unknown}> = [];
 
     const flushText = (): void => {
-      const body = text.trim();
+      const body = joinMessageTextParts(textBlocks, "\n");
       if (!body) {
+        textBlocks.length = 0;
         return;
       }
 
@@ -53,12 +73,12 @@ export function renderTranscriptEntries(
         title: metadata.source === "assistant" ? "agent" : metadata.source,
         body,
       });
-      text = "";
+      textBlocks.length = 0;
     };
 
     for (const block of message.content) {
-      if (block.type === "text" && block.text) {
-        text += block.text;
+      if (block.type === "text") {
+        textBlocks.push(block);
         continue;
       }
 

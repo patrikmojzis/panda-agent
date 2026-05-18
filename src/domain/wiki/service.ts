@@ -1,6 +1,11 @@
-import {CredentialCrypto} from "../credentials/index.js";
-import {PostgresWikiBindingStore} from "./postgres.js";
-import type {DecryptedWikiBindingRecord, WikiBindingRecord} from "./types.js";
+import {CredentialCrypto} from "../credentials/crypto.js";
+import type {DecryptedWikiBindingRecord, SetWikiBindingInput, WikiBindingRecord} from "./types.js";
+
+export interface WikiBindingServiceStore {
+  deleteBinding(agentKey: string): Promise<boolean>;
+  getBinding(agentKey: string): Promise<WikiBindingRecord | null>;
+  setBinding(input: SetWikiBindingInput): Promise<WikiBindingRecord>;
+}
 
 function decryptBindingRecord(
   record: WikiBindingRecord,
@@ -23,10 +28,10 @@ function decryptBindingRecord(
 }
 
 export class WikiBindingService {
-  private readonly store: PostgresWikiBindingStore;
+  private readonly store: WikiBindingServiceStore;
   private readonly crypto: CredentialCrypto;
 
-  constructor(options: {store: PostgresWikiBindingStore; crypto: CredentialCrypto}) {
+  constructor(options: {store: WikiBindingServiceStore; crypto: CredentialCrypto}) {
     this.store = options.store;
     this.crypto = options.crypto;
   }

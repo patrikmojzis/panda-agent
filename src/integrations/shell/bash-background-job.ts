@@ -1,6 +1,7 @@
 import {type ChildProcess, spawn} from "node:child_process";
 import {rm} from "node:fs/promises";
 
+import {withFallbackTimeout} from "../../lib/async.js";
 import {createOutputCapture, finalizeOutputCapture, type OutputCaptureState} from "./bash-output.js";
 import type {BashJobSnapshot} from "./bash-protocol.js";
 import {buildWrappedCommand, createInvocationPaths, readPersistedCwd} from "./bash-session.js";
@@ -43,43 +44,6 @@ function resolveTerminalStatus(options: {
   }
 
   return "failed";
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: () => T): Promise<T> {
-  if (timeoutMs <= 0) {
-    return Promise.resolve(fallback());
-  }
-
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      resolve(fallback());
-    }, timeoutMs);
-    timer.unref();
-
-    promise.then((value) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    }).catch((error) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      clearTimeout(timer);
-      reject(error);
-    });
-  });
 }
 
 export class ManagedBashJob {
@@ -355,7 +319,7 @@ export class ManagedBashJob {
       return this.finalSnapshot;
     }
 
-    const result = await withTimeout(this.donePromise, timeoutMs, () => ({ snapshot: this.snapshot() }));
+    const result = await withFallbackTimeout(this.donePromise, timeoutMs, () => ({ snapshot: this.snapshot() }));
     return result.snapshot;
   }
 

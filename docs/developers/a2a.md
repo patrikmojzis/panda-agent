@@ -31,6 +31,7 @@ That means:
 ## File Map
 
 - [src/panda/tools/message-agent-tool.ts](/Users/patrikmojzis/Projects/panda-agent/src/panda/tools/message-agent-tool.ts)
+- [src/domain/a2a/constants.ts](/Users/patrikmojzis/Projects/panda-agent/src/domain/a2a/constants.ts)
 - [src/domain/a2a/service.ts](/Users/patrikmojzis/Projects/panda-agent/src/domain/a2a/service.ts)
 - [src/domain/a2a/repo.ts](/Users/patrikmojzis/Projects/panda-agent/src/domain/a2a/repo.ts)
 - [src/domain/a2a/cli.ts](/Users/patrikmojzis/Projects/panda-agent/src/domain/a2a/cli.ts)
@@ -105,6 +106,8 @@ For disposable workers, `message_agent` also carries a small sender environment
 snapshot in delivery metadata. It includes safe parent-runner paths such as
 `/environments/<envDir>/artifacts`, plus worker-local paths such as
 `/artifacts`. It does not include host paths or core container paths.
+The sender environment snapshot must stay JSON-safe at the domain service
+boundary; do not cast it into outbound metadata.
 
 ## Binding Model
 

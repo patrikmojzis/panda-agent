@@ -2,7 +2,146 @@ import {createServer} from "node:net";
 
 import {describe, expect, it, vi} from "vitest";
 
-import {createDaemonLifecycle} from "../src/app/runtime/daemon-lifecycle.js";
+import type {RuntimeRequestRecord} from "../src/domain/threads/requests/index.js";
+import {
+  createDaemonLifecycle,
+  type DaemonLifecycleContext,
+  type DaemonLifecycleRuntime,
+} from "../src/app/runtime/daemon-lifecycle.js";
+import {sleep, waitFor} from "./helpers/wait-for.js";
+
+function deferred(): {promise: Promise<void>; resolve(): void} {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return {promise, resolve};
+}
+
+function requestRecord(id: string): RuntimeRequestRecord {
+  const now = Date.now();
+  return {
+    id,
+    kind: "tui_input",
+    status: "pending",
+    payload: {
+      actorId: "operator",
+      externalMessageId: `message-${id}`,
+      text: "hello",
+    },
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function failUnusedDependency(name: string): never {
+  throw new Error(`${name} should not be used by this test`);
+}
+
+function createUnusedAppService(): DaemonLifecycleRuntime["apps"] {
+  return {
+    getApp: async () => failUnusedDependency("runtime.apps.getApp"),
+    executeView: async () => failUnusedDependency("runtime.apps.executeView"),
+    executeAction: async () => failUnusedDependency("runtime.apps.executeAction"),
+  };
+}
+
+function createStartStopService(): DaemonLifecycleContext["a2aOutboundWorker"] {
+  return {
+    start: vi.fn(async () => undefined),
+    stop: vi.fn(async () => undefined),
+  };
+}
+
+type RuntimeOverrides = Omit<Partial<DaemonLifecycleRuntime>, "coordinator" | "pool"> & {
+  coordinator?: Partial<DaemonLifecycleRuntime["coordinator"]>;
+  pool?: DaemonLifecycleRuntime["pool"];
+};
+
+type DaemonLifecycleContextOverrides =
+  Omit<Partial<DaemonLifecycleContext>, "connectorLeases" | "daemonState" | "requests" | "runtime"> & {
+    connectorLeases?: Partial<DaemonLifecycleContext["connectorLeases"]>;
+    daemonState?: Partial<DaemonLifecycleContext["daemonState"]>;
+    requests?: Partial<DaemonLifecycleContext["requests"]>;
+    runtime?: RuntimeOverrides;
+  };
+
+function createDaemonLifecycleContext(overrides: DaemonLifecycleContextOverrides = {}): DaemonLifecycleContext {
+  const runtimeOverrides = overrides.runtime ?? {};
+  const baseRuntime: DaemonLifecycleRuntime = {
+    close: vi.fn(async () => undefined),
+    apps: createUnusedAppService(),
+    coordinator: {
+      recoverOrphanedRuns: vi.fn(async () => undefined),
+      submitInput: vi.fn(async () => undefined),
+    },
+    pool: {waitingCount: 0},
+  };
+  const runtime: DaemonLifecycleRuntime = {
+    ...baseRuntime,
+    ...runtimeOverrides,
+    coordinator: {
+      ...baseRuntime.coordinator,
+      ...runtimeOverrides.coordinator,
+    },
+    pool: runtimeOverrides.pool ?? baseRuntime.pool,
+  };
+
+  const baseContext: DaemonLifecycleContext = {
+    daemonKey: "primary",
+    connectorLeases: {
+      tryAcquire: vi.fn(async () => ({
+        source: "daemon",
+        connectorKey: "primary",
+        holderId: "holder-a",
+        leasedUntil: Date.now() + 30_000,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })),
+      renew: vi.fn(async () => null),
+      release: vi.fn(async () => true),
+    },
+    daemonState: {
+      heartbeat: vi.fn(async () => ({
+        daemonKey: "primary",
+        heartbeatAt: Date.now(),
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+      })),
+    },
+    requests: {
+      claimNextPendingRequest: vi.fn(async () => null),
+      completeRequest: vi.fn(async () => undefined),
+      failRequest: vi.fn(async () => undefined),
+      listenPendingRequests: vi.fn(async () => async () => undefined),
+    },
+    a2aOutboundWorker: createStartStopService(),
+    emailOutboundWorker: createStartStopService(),
+    emailSyncRunner: createStartStopService(),
+    scheduledTaskRunner: createStartStopService(),
+    watchRunner: createStartStopService(),
+    relationshipHeartbeatRunner: createStartStopService(),
+    runtime,
+  };
+
+  return {
+    ...baseContext,
+    ...overrides,
+    connectorLeases: {
+      ...baseContext.connectorLeases,
+      ...overrides.connectorLeases,
+    },
+    daemonState: {
+      ...baseContext.daemonState,
+      ...overrides.daemonState,
+    },
+    requests: {
+      ...baseContext.requests,
+      ...overrides.requests,
+    },
+    runtime,
+  };
+}
 
 async function getFreePort(): Promise<number> {
   const server = createServer();
@@ -39,7 +178,7 @@ describe("createDaemonLifecycle", () => {
     const order: string[] = [];
     const processRequest = vi.fn(async () => undefined);
     let lifecycle!: ReturnType<typeof createDaemonLifecycle>;
-    const context = {
+    const context = createDaemonLifecycleContext({
       daemonKey: "primary",
       connectorLeases: {
         tryAcquire: vi.fn(async () => {
@@ -138,7 +277,7 @@ describe("createDaemonLifecycle", () => {
           }),
         },
       },
-    } as any;
+    });
 
     lifecycle = createDaemonLifecycle({
       context,
@@ -193,7 +332,7 @@ describe("createDaemonLifecycle", () => {
 
     const order: string[] = [];
     let lifecycle!: ReturnType<typeof createDaemonLifecycle>;
-    const context = {
+    const context = createDaemonLifecycleContext({
       daemonKey: "primary",
       connectorLeases: {
         tryAcquire: vi.fn(async () => ({
@@ -272,7 +411,7 @@ describe("createDaemonLifecycle", () => {
           }),
         },
       },
-    } as any;
+    });
 
     lifecycle = createDaemonLifecycle({
       context,
@@ -280,7 +419,7 @@ describe("createDaemonLifecycle", () => {
     });
 
     try {
-      await expect(lifecycle.run()).resolves.toBeUndefined();
+      await lifecycle.run();
       expect(order).toEqual([
         "unlisten",
         "a2a-stop",
@@ -307,6 +446,113 @@ describe("createDaemonLifecycle", () => {
     }
   });
 
+  it("waits for an active runtime request before closing runtime", async () => {
+    const previousAppsPort = process.env.PANDA_APPS_PORT;
+    const previousHealthPort = process.env.PANDA_CORE_HEALTH_PORT;
+    process.env.PANDA_APPS_PORT = "0";
+    delete process.env.PANDA_CORE_HEALTH_PORT;
+
+    const activeRequest = deferred();
+    const order: string[] = [];
+    const pendingRequests = [requestRecord("request-1"), requestRecord("request-2")];
+    const context = createDaemonLifecycleContext({
+      daemonKey: "primary",
+      connectorLeases: {
+        tryAcquire: vi.fn(async () => ({
+          source: "daemon",
+          connectorKey: "primary",
+          holderId: "holder-a",
+          leasedUntil: Date.now() + 30_000,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })),
+        renew: vi.fn(async () => null),
+        release: vi.fn(async () => true),
+      },
+      daemonState: {
+        heartbeat: vi.fn(async () => ({
+          daemonKey: "primary",
+          heartbeatAt: Date.now(),
+          startedAt: Date.now(),
+          updatedAt: Date.now(),
+        })),
+      },
+      requests: {
+        claimNextPendingRequest: vi.fn(async () => pendingRequests.shift() ?? null),
+        completeRequest: vi.fn(async (id: string) => {
+          order.push(`complete-${id}`);
+        }),
+        failRequest: vi.fn(async () => undefined),
+        listenPendingRequests: vi.fn(async () => async () => undefined),
+      },
+      a2aOutboundWorker: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      emailOutboundWorker: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      emailSyncRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      scheduledTaskRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      watchRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      relationshipHeartbeatRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      runtime: {
+        close: vi.fn(async () => {
+          order.push("runtime-close");
+        }),
+        pool: {waitingCount: 0},
+        coordinator: {
+          recoverOrphanedRuns: vi.fn(async () => undefined),
+        },
+      },
+    });
+    const lifecycle = createDaemonLifecycle({
+      context,
+      processRequest: vi.fn(async (request) => {
+        order.push(`process-start-${request.id}`);
+        if (request.id === "request-1") {
+          await activeRequest.promise;
+        }
+        order.push(`process-end-${request.id}`);
+        return request.id;
+      }),
+    });
+    const runPromise = lifecycle.run();
+
+    try {
+      await waitFor(() => {
+        expect(order).toEqual(["process-start-request-1"]);
+      });
+
+      const stopPromise = lifecycle.stop();
+      await sleep(20);
+      expect(order).toEqual(["process-start-request-1"]);
+
+      activeRequest.resolve();
+      await stopPromise;
+      await runPromise;
+
+      expect(order).toEqual([
+        "process-start-request-1",
+        "process-end-request-1",
+        "complete-request-1",
+        "runtime-close",
+      ]);
+      expect(context.requests.claimNextPendingRequest).toHaveBeenCalledTimes(1);
+      expect(context.requests.failRequest).not.toHaveBeenCalled();
+    } finally {
+      activeRequest.resolve();
+      await lifecycle.stop();
+      await runPromise;
+      if (previousAppsPort === undefined) {
+        delete process.env.PANDA_APPS_PORT;
+      } else {
+        process.env.PANDA_APPS_PORT = previousAppsPort;
+      }
+
+      if (previousHealthPort === undefined) {
+        delete process.env.PANDA_CORE_HEALTH_PORT;
+      } else {
+        process.env.PANDA_CORE_HEALTH_PORT = previousHealthPort;
+      }
+    }
+  });
+
   it("acquires and releases the lease if app server startup fails after binding resolution", async () => {
     const previousAppsPort = process.env.PANDA_APPS_PORT;
     const previousHealthPort = process.env.PANDA_CORE_HEALTH_PORT;
@@ -314,7 +560,7 @@ describe("createDaemonLifecycle", () => {
     delete process.env.PANDA_CORE_HEALTH_PORT;
 
     const order: string[] = [];
-    const context = {
+    const context = createDaemonLifecycleContext({
       daemonKey: "primary",
       connectorLeases: {
         tryAcquire: vi.fn(async () => {
@@ -386,14 +632,11 @@ describe("createDaemonLifecycle", () => {
         close: vi.fn(async () => {
           order.push("runtime-close");
         }),
-        apps: {},
-        identityStore: {},
-        sessionStore: {},
         coordinator: {
           recoverOrphanedRuns: vi.fn(async () => undefined),
         },
       },
-    } as any;
+    });
 
     const lifecycle = createDaemonLifecycle({
       context,
@@ -444,7 +687,7 @@ describe("createDaemonLifecycle", () => {
     const pool = {
       waitingCount: 0,
     };
-    const context = {
+    const context = createDaemonLifecycleContext({
       daemonKey: "primary",
       connectorLeases: {
         tryAcquire: vi.fn(async () => ({
@@ -478,10 +721,6 @@ describe("createDaemonLifecycle", () => {
       relationshipHeartbeatRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
       runtime: {
         close: vi.fn(async () => {}),
-        apps: {},
-        appAuth: {},
-        identityStore: {},
-        sessionStore: {},
         pool,
         coordinator: {
           recoverOrphanedRuns: vi.fn(async () => {
@@ -489,7 +728,7 @@ describe("createDaemonLifecycle", () => {
           }),
         },
       },
-    } as any;
+    });
     const lifecycle = createDaemonLifecycle({
       context,
       processRequest: vi.fn(async () => undefined),

@@ -1,4 +1,9 @@
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, type ThreadRuntimeTableNames,} from "./postgres-shared.js";
+import {addConstraint, alterIfSupported, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
+import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
+import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
+import type {PgPoolLike} from "../../../lib/postgres-query.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier} from "../../../lib/postgres-relations.js";
+import {buildThreadRuntimeTableNames, type ThreadRuntimeTableNames} from "./postgres-shared.js";
 
 export function buildThreadRuntimeSchemaSql(
   tables: ThreadRuntimeTableNames,
@@ -180,4 +185,205 @@ export function buildThreadRuntimeSchemaSql(
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_bash_jobs_status_idx`)}
     ON ${tables.bashJobs} (status, started_at);
   `;
+}
+
+/** Ensures thread runtime storage schema, migrations, and cross-table integrity constraints. */
+export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promise<void> {
+  const tables = buildThreadRuntimeTableNames();
+  const identityTableName = buildIdentityTableNames().identities;
+  const sessionTableName = buildSessionTableNames().sessions;
+
+  await pool.query(CREATE_RUNTIME_SCHEMA_SQL);
+  await pool.query(buildThreadRuntimeSchemaSql(tables, sessionTableName, identityTableName));
+  await assertIntegrityChecks(pool, "Thread runtime schema", [
+    {
+      label: "agent_sessions.current_thread_id orphaned from threads.id",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${sessionTableName} AS session
+        LEFT JOIN ${tables.threads} AS thread
+          ON thread.id = session.current_thread_id
+        WHERE thread.id IS NULL
+      `,
+    },
+    {
+      label: "agent_sessions.current_thread_id bound to a thread from another session",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${sessionTableName} AS session
+        INNER JOIN ${tables.threads} AS thread
+          ON thread.id = session.current_thread_id
+        WHERE thread.session_id <> session.id
+      `,
+    },
+    {
+      label: "messages.run_id orphaned from runs.id",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.messages} AS message
+        LEFT JOIN ${tables.runs} AS run
+          ON run.id = message.run_id
+        WHERE message.run_id IS NOT NULL
+          AND run.id IS NULL
+      `,
+    },
+    {
+      label: "messages.run_id bound to a run from another thread",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.messages} AS message
+        INNER JOIN ${tables.runs} AS run
+          ON run.id = message.run_id
+        WHERE message.run_id IS NOT NULL
+          AND run.thread_id <> message.thread_id
+      `,
+    },
+    {
+      label: "tool_jobs.run_id bound to a run from another thread",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.toolJobs} AS job
+        INNER JOIN ${tables.runs} AS run
+          ON run.id = job.run_id
+        WHERE job.run_id IS NOT NULL
+          AND run.thread_id <> job.thread_id
+      `,
+    },
+    {
+      label: "bash_jobs.run_id bound to a run from another thread",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.bashJobs} AS job
+        INNER JOIN ${tables.runs} AS run
+          ON run.id = job.run_id
+        WHERE job.run_id IS NOT NULL
+          AND run.thread_id <> job.thread_id
+      `,
+    },
+  ]);
+  await pool.query(`
+    UPDATE ${tables.messages}
+    SET run_thread_id = NULL
+    WHERE run_id IS NULL
+      AND run_thread_id IS NOT NULL
+  `);
+  await pool.query(`
+    UPDATE ${tables.messages}
+    SET run_thread_id = run.thread_id
+    FROM ${tables.runs} AS run
+    WHERE ${tables.messages}.run_id IS NOT NULL
+      AND run.id = ${tables.messages}.run_id
+      AND (
+        ${tables.messages}.run_thread_id IS NULL
+        OR ${tables.messages}.run_thread_id <> run.thread_id
+      )
+  `);
+  await pool.query(`
+    UPDATE ${tables.toolJobs}
+    SET run_thread_id = NULL
+    WHERE run_id IS NULL
+      AND run_thread_id IS NOT NULL
+  `);
+  await pool.query(`
+    UPDATE ${tables.toolJobs}
+    SET run_thread_id = run.thread_id
+    FROM ${tables.runs} AS run
+    WHERE ${tables.toolJobs}.run_id IS NOT NULL
+      AND run.id = ${tables.toolJobs}.run_id
+      AND (
+        ${tables.toolJobs}.run_thread_id IS NULL
+        OR ${tables.toolJobs}.run_thread_id <> run.thread_id
+      )
+  `);
+  await pool.query(`
+    UPDATE ${tables.bashJobs}
+    SET run_thread_id = NULL
+    WHERE run_id IS NULL
+      AND run_thread_id IS NOT NULL
+  `);
+  await pool.query(`
+    UPDATE ${tables.bashJobs}
+    SET run_thread_id = run.thread_id
+    FROM ${tables.runs} AS run
+    WHERE ${tables.bashJobs}.run_id IS NOT NULL
+      AND run.id = ${tables.bashJobs}.run_id
+      AND (
+        ${tables.bashJobs}.run_thread_id IS NULL
+        OR ${tables.bashJobs}.run_thread_id <> run.thread_id
+      )
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.messages}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_messages_run_fk`)}
+    FOREIGN KEY (run_id)
+    REFERENCES ${tables.runs}(id)
+    ON DELETE SET NULL
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.messages}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_messages_run_scope_check`)}
+    CHECK (
+      (
+        run_id IS NULL
+        AND run_thread_id IS NULL
+      ) OR (
+        run_id IS NOT NULL
+        AND run_thread_id = thread_id
+      )
+    )
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.messages}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_messages_run_scope_fk`)}
+    FOREIGN KEY (run_thread_id, run_id)
+    REFERENCES ${tables.runs}(thread_id, id)
+    ON DELETE SET NULL
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.toolJobs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_tool_jobs_run_scope_check`)}
+    CHECK (
+      (
+        run_id IS NULL
+        AND run_thread_id IS NULL
+      ) OR (
+        run_id IS NOT NULL
+        AND run_thread_id = thread_id
+      )
+    )
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.toolJobs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_tool_jobs_run_scope_fk`)}
+    FOREIGN KEY (run_thread_id, run_id)
+    REFERENCES ${tables.runs}(thread_id, id)
+    ON DELETE SET NULL
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.bashJobs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_bash_jobs_run_scope_check`)}
+    CHECK (
+      (
+        run_id IS NULL
+        AND run_thread_id IS NULL
+      ) OR (
+        run_id IS NOT NULL
+        AND run_thread_id = thread_id
+      )
+    )
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.bashJobs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_bash_jobs_run_scope_fk`)}
+    FOREIGN KEY (run_thread_id, run_id)
+    REFERENCES ${tables.runs}(thread_id, id)
+    ON DELETE SET NULL
+  `);
+  await alterIfSupported(pool, `
+    ALTER TABLE ${sessionTableName}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_agent_sessions_current_thread_fk`)}
+    FOREIGN KEY (id, current_thread_id)
+    REFERENCES ${tables.threads}(session_id, id)
+    DEFERRABLE INITIALLY DEFERRED
+  `);
 }

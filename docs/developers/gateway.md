@@ -11,6 +11,12 @@ It is deliberately separate from Panda core:
 - gateway auth resolves one source to one agent route
 - gateway stores events first
 - gateway worker guards, applies policy, then writes Panda thread input
+- gateway worker uses the shared drain-loop pattern; do not reintroduce a
+  bespoke timer/poke/close loop in this public ingress path
+- gateway network controls live in `src/integrations/gateway/network-controls.ts`
+  so IP allowlist and trusted-proxy policy stay pure and directly testable
+- gateway HTTP body parsing lives in `src/integrations/gateway/http-body.ts`;
+  route dispatch should not inline byte-limit, JSON, or token-body parsing
 - Panda core does not expose this public HTTP surface
 
 ## Public API
@@ -43,16 +49,21 @@ Content-Type: application/json
 ```
 
 `delivery` is only `queue` or `wake`. Event type policy may downgrade `wake` to `queue`.
+Token requests must use `application/x-www-form-urlencoded` or `application/json`.
+Event requests must use `application/json`; the gateway rejects ambiguous public
+bodies before parsing.
 
 ## Safety Rules
 
 - Clients never send `agentKey`, `identityId`, `sessionId`, or `sourceId`.
 - OAuth client credentials resolve to a registered gateway source.
+- Token and event bodies must declare a supported `Content-Type`.
 - Event types must be explicitly allowed per source.
 - Unknown event types are rejected and strike the source.
 - `riskScore >= 0.85` quarantines the event, skips delivery, and strikes the source.
 - Panda receives the raw text wrapped as untrusted external data.
 - Gateway event text is scrubbed after delivery or quarantine. The event keeps hash, byte count, and metadata.
+- Gateway Postgres table creation lives in `src/domain/gateway/postgres-schema.ts`; keep public-ingress behavior in `PostgresGatewayStore` and HTTP/worker adapters.
 - Files are not v1. Text first.
 
 ## Network Controls

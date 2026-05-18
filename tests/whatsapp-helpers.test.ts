@@ -67,20 +67,13 @@ describe("whatsapp helpers", () => {
       },
     }))).toBe("video caption");
 
-    expect(extractWhatsAppMessageText({
-      key: {
-        id: "wamid-2",
-        remoteJid: "421900000000@s.whatsapp.net",
-        fromMe: false,
-      },
-      message: {
-        ephemeralMessage: {
-          message: {
-            conversation: "wrapped hello",
-          },
+    expect(extractWhatsAppMessageText(waMessage({
+      ephemeralMessage: {
+        message: {
+          conversation: "wrapped hello",
         },
       },
-    } as unknown as WAMessage)).toBe("wrapped hello");
+    }))).toBe("wrapped hello");
   });
 
   it("extracts structured text from contacts and locations", () => {

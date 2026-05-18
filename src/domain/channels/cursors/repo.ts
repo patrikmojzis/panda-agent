@@ -1,24 +1,23 @@
-import type {Pool} from "pg";
-
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
+import {requireTimestampMillis, toJson} from "../../../lib/postgres-values.js";
+import {readOptionalJsonValue} from "../../../lib/json.js";
+import type {PgQueryable} from "../../../lib/postgres-query.js";
+import {requireTrimmedString} from "../../../lib/strings.js";
 import {buildChannelCursorTableNames, type ChannelCursorTableNames} from "./postgres-shared.js";
+import {
+  ensurePostgresChannelCursorSchema,
+} from "./postgres-schema.js";
 import type {ChannelCursorInput, ChannelCursorLookup, ChannelCursorRecord,} from "./types.js";
-
-interface PgQueryable {
-  query: Pool["query"];
-}
 
 export interface ChannelCursorRepoOptions {
   pool: PgQueryable;
 }
 
-function requireTrimmedCursorKeyPart(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`Channel cursor ${field} must not be empty.`);
-  }
-
-  return trimmed;
+function requireTrimmedCursorKeyPart(field: string, value: unknown): string {
+  return requireTrimmedString(
+    value,
+    `Channel cursor ${field} must be a string.`,
+    `Channel cursor ${field} must not be empty.`,
+  );
 }
 
 function normalizeChannelCursorLookup(lookup: ChannelCursorLookup): ChannelCursorLookup {
@@ -35,18 +34,19 @@ function normalizeChannelCursorInput(input: ChannelCursorInput): ChannelCursorIn
     ...input,
     ...lookup,
     value: requireTrimmedCursorKeyPart("value", input.value),
+    metadata: readOptionalJsonValue(input.metadata, "Channel cursor metadata"),
   };
 }
 
 function parseChannelCursorRow(row: Record<string, unknown>): ChannelCursorRecord {
   return {
-    source: String(row.source),
-    connectorKey: String(row.connector_key),
-    cursorKey: String(row.cursor_key),
-    value: String(row.cursor_value),
-    metadata: row.metadata === null ? undefined : (row.metadata as ChannelCursorRecord["metadata"]),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    source: requireTrimmedCursorKeyPart("source", row.source),
+    connectorKey: requireTrimmedCursorKeyPart("connector key", row.connector_key),
+    cursorKey: requireTrimmedCursorKeyPart("cursor key", row.cursor_key),
+    value: requireTrimmedCursorKeyPart("value", row.cursor_value),
+    metadata: readOptionalJsonValue(row.metadata, "Channel cursor metadata"),
+    createdAt: requireTimestampMillis(row.created_at, "Channel cursor created_at must be a finite timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Channel cursor updated_at must be a finite timestamp."),
   };
 }
 
@@ -60,23 +60,7 @@ export class ChannelCursorRepo {
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.channelCursors} (
-        source TEXT NOT NULL,
-        connector_key TEXT NOT NULL,
-        cursor_key TEXT NOT NULL,
-        cursor_value TEXT NOT NULL,
-        metadata JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (source, connector_key, cursor_key)
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_channel_cursors_updated_idx`)}
-      ON ${this.tables.channelCursors} (updated_at DESC)
-    `);
+    await ensurePostgresChannelCursorSchema(this.pool);
   }
 
   async resolveChannelCursor(lookup: ChannelCursorLookup): Promise<ChannelCursorRecord | null> {

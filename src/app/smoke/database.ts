@@ -1,4 +1,4 @@
-import {quoteIdentifier} from "../../domain/threads/runtime/postgres-shared.js";
+import {quoteIdentifier} from "../../lib/postgres-relations.js";
 import {createPostgresPool} from "../runtime/database.js";
 
 export interface SmokeDatabaseTarget {

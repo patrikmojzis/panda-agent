@@ -1,13 +1,9 @@
 import type {AssistantMessage, AssistantMessageEvent, ToolResultMessage,} from "@mariozechner/pi-ai";
 
+import type {JsonObject, JsonValue} from "../../lib/json.js";
+
 export type { ProviderName } from "../../integrations/providers/shared/provider.js";
-
-export type JsonPrimitive = string | number | boolean | null;
-export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
-
-export interface JsonObject {
-  [key: string]: JsonValue;
-}
+export type {JsonObject, JsonPrimitive, JsonValue} from "../../lib/json.js";
 
 export type ToolResultContent = ToolResultMessage<JsonValue>["content"];
 export type ToolResultPayload = Pick<ToolResultMessage<JsonValue>, "content" | "details">;

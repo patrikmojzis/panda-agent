@@ -4,96 +4,81 @@ import {describe, expect, it} from "vitest";
 import * as domainAgents from "../src/domain/agents/index.js";
 import * as domainWatches from "../src/domain/watches/index.js";
 
+const architectureDoc = readFileSync(
+  new URL("../docs/developers/architecture.md", import.meta.url),
+  "utf8",
+);
 const packageJson = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ) as {
   exports: Record<string, { types: string; import: string }>;
 };
 
-const EXPECTED_EXPORTS = {
-  ".": {
-    types: "./dist/index.d.ts",
-    import: "./dist/index.js",
-  },
-  "./app/runtime": {
-    types: "./dist/app/runtime/index.d.ts",
-    import: "./dist/app/runtime/index.js",
-  },
-  "./kernel/agent": {
-    types: "./dist/kernel/agent/index.d.ts",
-    import: "./dist/kernel/agent/index.js",
-  },
-  "./panda": {
-    types: "./dist/panda/index.d.ts",
-    import: "./dist/panda/index.js",
-  },
-  "./domain/agents": {
-    types: "./dist/domain/agents/index.d.ts",
-    import: "./dist/domain/agents/index.js",
-  },
-  "./domain/identity": {
-    types: "./dist/domain/identity/index.d.ts",
-    import: "./dist/domain/identity/index.js",
-  },
-  "./domain/channels": {
-    types: "./dist/domain/channels/index.d.ts",
-    import: "./dist/domain/channels/index.js",
-  },
-  "./domain/channels/actions": {
-    types: "./dist/domain/channels/actions/index.d.ts",
-    import: "./dist/domain/channels/actions/index.js",
-  },
-  "./domain/channels/deliveries": {
-    types: "./dist/domain/channels/deliveries/index.d.ts",
-    import: "./dist/domain/channels/deliveries/index.js",
-  },
-  "./domain/threads": {
-    types: "./dist/domain/threads/index.d.ts",
-    import: "./dist/domain/threads/index.js",
-  },
-  "./domain/threads/requests": {
-    types: "./dist/domain/threads/requests/index.d.ts",
-    import: "./dist/domain/threads/requests/index.js",
-  },
-  "./domain/threads/runtime": {
-    types: "./dist/domain/threads/runtime/index.d.ts",
-    import: "./dist/domain/threads/runtime/index.js",
-  },
-  "./domain/scheduling": {
-    types: "./dist/domain/scheduling/index.d.ts",
-    import: "./dist/domain/scheduling/index.js",
-  },
-  "./domain/scheduling/tasks": {
-    types: "./dist/domain/scheduling/tasks/index.d.ts",
-    import: "./dist/domain/scheduling/tasks/index.js",
-  },
-  "./domain/watches": {
-    types: "./dist/domain/watches/index.d.ts",
-    import: "./dist/domain/watches/index.js",
-  },
-  "./integrations/shell": {
-    types: "./dist/integrations/shell/index.d.ts",
-    import: "./dist/integrations/shell/index.js",
-  },
-} as const;
+function codeBulletsAfter(marker: string): string[] {
+  const markerIndex = architectureDoc.indexOf(marker);
+  if (markerIndex < 0) {
+    throw new Error(`Architecture doc is missing marker: ${marker}`);
+  }
+
+  const entries: string[] = [];
+  for (const line of architectureDoc.slice(markerIndex + marker.length).split(/\r?\n/)) {
+    const match = line.match(/^- `([^`]+)`$/);
+    if (match) {
+      entries.push(match[1]);
+      continue;
+    }
+    if (entries.length > 0 && line.trim() === "") {
+      break;
+    }
+  }
+
+  return entries;
+}
+
+function sourcePathForPackageEntrypoint(entrypoint: string): string {
+  if (entrypoint === "panda") {
+    return "src/index.ts";
+  }
+  if (!entrypoint.startsWith("panda/")) {
+    throw new Error(`Unsupported package entrypoint in architecture doc: ${entrypoint}`);
+  }
+
+  return `src/${entrypoint.slice("panda/".length)}/index.ts`;
+}
+
+function packageExportKey(entrypoint: string): string {
+  return entrypoint === "panda" ? "." : `./${entrypoint.slice("panda/".length)}`;
+}
+
+function packageExportValue(entrypoint: string): {types: string; import: string} {
+  const distPath = sourcePathForPackageEntrypoint(entrypoint)
+    .replace(/^src\//, "./dist/")
+    .replace(/\.ts$/, "");
+  return {
+    types: `${distPath}.d.ts`,
+    import: `${distPath}.js`,
+  };
+}
+
+const DOCUMENTED_SOURCE_BARRELS = codeBulletsAfter("These are the source barrels that still deserve to exist:");
+const DOCUMENTED_PACKAGE_ENTRYPOINTS = codeBulletsAfter("The supported package entrypoints are:");
+const EXPECTED_EXPORTS = Object.fromEntries(
+  DOCUMENTED_PACKAGE_ENTRYPOINTS.map((entrypoint) => [
+    packageExportKey(entrypoint),
+    packageExportValue(entrypoint),
+  ]),
+);
 
 describe("package exports", () => {
-  it("matches the intentional root and subpath entrypoints", () => {
-    expect(packageJson.exports).toEqual(EXPECTED_EXPORTS);
+  it("keeps the supported entrypoint docs aligned with package exports", () => {
+    expect(new Set(DOCUMENTED_SOURCE_BARRELS)).toEqual(new Set([
+      ...DOCUMENTED_PACKAGE_ENTRYPOINTS.map(sourcePathForPackageEntrypoint),
+      "src/domain/sessions/index.ts",
+    ]));
   });
 
-  it("does not expose internal implementation subpaths", () => {
-    expect(packageJson.exports).not.toHaveProperty("./personas/panda");
-    expect(packageJson.exports).not.toHaveProperty("./domain/credentials");
-    expect(packageJson.exports).not.toHaveProperty("./domain/sessions/conversations");
-    expect(packageJson.exports).not.toHaveProperty("./domain/threads/conversations");
-    expect(packageJson.exports).not.toHaveProperty("./domain/threads/routes");
-    expect(packageJson.exports).not.toHaveProperty("./integrations/channels/telegram");
-    expect(packageJson.exports).not.toHaveProperty("./integrations/channels/whatsapp");
-    expect(packageJson.exports).not.toHaveProperty("./panda/tools/bash-tool");
-    expect(packageJson.exports).not.toHaveProperty("./panda/tools/env-value-tools");
-    expect(packageJson.exports).not.toHaveProperty("./panda/tools/web-fetch");
-    expect(packageJson.exports).not.toHaveProperty("./panda/tools/web-fetch-tool");
+  it("matches the intentional root and subpath entrypoints", () => {
+    expect(packageJson.exports).toEqual(EXPECTED_EXPORTS);
   });
 
   it("keeps domain subpath barrels slim", () => {

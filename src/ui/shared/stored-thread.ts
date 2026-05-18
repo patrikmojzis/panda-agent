@@ -1,4 +1,6 @@
-import type {ThinkingLevel, Tool} from "../../kernel/agent/index.js";
+import type {ThinkingLevel} from "@mariozechner/pi-ai";
+
+import type {Tool} from "../../kernel/agent/tool.js";
 import {resolveStoredContext} from "../../app/runtime/create-runtime.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord,} from "../../domain/threads/runtime/types.js";

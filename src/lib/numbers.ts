@@ -25,3 +25,37 @@ export function readNonNegativeNumber(value: unknown): number | undefined {
     ? value
     : undefined;
 }
+
+/**
+ * Returns a non-negative integer or throws using the caller's field label.
+ */
+export function requireNonNegativeInteger(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer.`);
+  }
+
+  return value;
+}
+
+/**
+ * Parses a TCP port number. Server binding config may opt into port 0 when it
+ * wants the OS to choose a free ephemeral port.
+ */
+export function readTcpPort(
+  value: unknown,
+  options: {
+    allowZero?: boolean;
+  } = {},
+): number | undefined {
+  const parsed = typeof value === "string" && value.trim()
+    ? Number(value)
+    : typeof value === "number"
+      ? value
+      : undefined;
+  if (parsed === undefined || !Number.isInteger(parsed)) {
+    return undefined;
+  }
+
+  const minPort = options.allowZero ? 0 : 1;
+  return parsed >= minPort && parsed <= 65_535 ? parsed : undefined;
+}

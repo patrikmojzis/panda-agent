@@ -38,6 +38,9 @@ The worker is a long-lived Baileys process with:
 
 Keep it one worker per linked account.
 Do not invent webhooks or clustering until there is a real reason.
+Pairing retry policy belongs in `src/integrations/channels/whatsapp/pairing.ts`;
+the service should wire auth/socket creation and delegate reconnect semantics to
+that module.
 
 Docker stack support is profile-gated:
 

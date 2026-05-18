@@ -8,6 +8,8 @@ import {
   DEFAULT_APPS_PORT,
   resolveAgentAppUrls,
   resolveOptionalAgentAppServerBinding,
+} from "../src/integrations/apps/http-config.js";
+import {
   startAgentAppServer,
 } from "../src/integrations/apps/http-server.js";
 import {type AgentAppSessionRecord, buildAgentAppCookieNames} from "../src/domain/apps/auth.js";
@@ -140,6 +142,14 @@ describe("agent app server", () => {
         PANDA_APPS_BASE_URL: "http://127.0.0.1:8092",
       },
     }).appUrl).toBe("http://127.0.0.1:8092/panda/apps/period-tracker/");
+
+    expect(resolveAgentAppUrls({
+      agentKey: "panda",
+      appSlug: "period-tracker",
+      env: {
+        PANDA_APPS_BASE_URL: "http://[::1]:8092",
+      },
+    }).appUrl).toBe("http://[::1]:8092/panda/apps/period-tracker/");
   });
 
   it("serves ui assets, bootstrap data, and wakes the main session for wake actions", async () => {
@@ -169,6 +179,7 @@ describe("agent app server", () => {
       env: {...process.env, DATA_DIR: fixture.dataDir},
     });
     const submitInput = vi.fn(async () => undefined);
+    let mainThreadId = "thread-main";
     const server = await startAgentAppServer({
       host: "127.0.0.1",
       port: 0,
@@ -178,7 +189,7 @@ describe("agent app server", () => {
           id: "session-main",
           agentKey: fixture.agentKey,
           kind: "main",
-          currentThreadId: "thread-main",
+          currentThreadId: mainThreadId,
           createdAt: 1,
           updatedAt: 1,
         }),
@@ -186,7 +197,7 @@ describe("agent app server", () => {
           id: sessionId,
           agentKey: fixture.agentKey,
           kind: "branch",
-          currentThreadId: "thread-branch",
+          currentThreadId: sessionId === "session-main" ? mainThreadId : "thread-branch",
           createdAt: 1,
           updatedAt: 1,
         }),
@@ -201,6 +212,8 @@ describe("agent app server", () => {
 
     const html = await fetch(`${baseUrl}/${fixture.agentKey}/apps/${fixture.appSlug}/`);
     expect(html.status).toBe(200);
+    expect(html.headers.get("x-frame-options")).toBe("DENY");
+    expect(html.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect(await html.text()).toContain("Counter");
 
     const sdk = await fetch(`${baseUrl}/panda-app-sdk.js`);
@@ -275,6 +288,34 @@ describe("agent app server", () => {
       ok: true,
       items: [{count: 4}],
     });
+
+    const missingView = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/views/missing`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+    });
+    expect(missingView.status).toBe(404);
+    await expect(missingView.json()).resolves.toMatchObject({
+      ok: false,
+      error: `Unknown app view missing in ${fixture.appSlug}.`,
+    });
+
+    mainThreadId = "thread-after-reset";
+    const secondAction = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/actions/increment`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        input: {amount: 1},
+      }),
+    });
+    expect(secondAction.status).toBe(200);
+    expect(submitInput).toHaveBeenLastCalledWith("thread-after-reset", expect.objectContaining({
+      source: "app_http",
+      channelId: fixture.appSlug,
+    }), "wake");
   });
 
   it("rejects oversized app API JSON bodies before parsing them", async () => {
@@ -310,6 +351,48 @@ describe("agent app server", () => {
       ok: false,
       error: "App request body is too large.",
     });
+  });
+
+  it("redacts unexpected app execution errors at the HTTP boundary", async () => {
+    const fixture = await createAgentAppFixture();
+    fixtures.push(fixture);
+
+    const service = new AgentAppService({
+      env: {...process.env, DATA_DIR: fixture.dataDir},
+    });
+    vi.spyOn(service, "executeAction").mockRejectedValueOnce(
+      new Error("sqlite failed at /Users/patrikmojzis/private/panda.db"),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const server = await startAgentAppServer({
+      host: "127.0.0.1",
+      port: 0,
+      service,
+    });
+    servers.push(server);
+
+    try {
+      const response = await fetch(`http://${server.host}:${server.port}/api/apps/${fixture.agentKey}/${fixture.appSlug}/actions/increment`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          input: {amount: 1},
+        }),
+      });
+
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual({
+        ok: false,
+        error: "Internal server error.",
+      });
+      expect(consoleError).toHaveBeenCalledWith("Agent app request failed", expect.objectContaining({
+        error: expect.stringContaining("private/panda.db"),
+      }));
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("rejects literal and encoded dot segments before route normalization", async () => {
@@ -511,7 +594,7 @@ describe("agent app server", () => {
     expect(bootstrap.status).toBe(400);
     await expect(bootstrap.json()).resolves.toMatchObject({
       ok: false,
-      error: "Session session-luna belongs to luna, not panda.",
+      error: "Requested session is not valid for this app.",
     });
 
     const action = await fetch(`${foreignSessionPath}/actions/increment`, {
@@ -527,7 +610,7 @@ describe("agent app server", () => {
     expect(action.status).toBe(400);
     await expect(action.json()).resolves.toMatchObject({
       ok: false,
-      error: "Session session-luna belongs to luna, not panda.",
+      error: "Requested session is not valid for this app.",
     });
 
     expect(getSession).toHaveBeenCalledTimes(2);

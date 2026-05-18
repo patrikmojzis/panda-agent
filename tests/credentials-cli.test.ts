@@ -124,7 +124,7 @@ vi.mock("../src/domain/credentials/crypto.js", () => ({
   resolveCredentialCrypto: credentialCliMocks.resolveCredentialCrypto,
 }));
 
-vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
+vi.mock("../src/lib/postgres-bootstrap.js", () => ({
   withPostgresPool: credentialCliMocks.withPostgresPool,
 }));
 

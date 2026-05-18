@@ -1,40 +1,37 @@
-import type {Pool, PoolClient} from "pg";
-
-import type {RememberedRoute} from "../../../domain/channels/types.js";
+import type {RememberedRoute} from "../../channels/types.js";
+import {requireTimestampMillis, toJson} from "../../../lib/postgres-values.js";
 import {isUniqueViolation} from "../../../lib/postgres-errors.js";
-import {trimToUndefined} from "../../../lib/strings.js";
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
-import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
-import {buildSessionTableNames} from "../postgres-shared.js";
-import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
+import type {PgPoolLike} from "../../../lib/postgres-query.js";
+import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import {buildSessionRouteTableNames, type SessionRouteTableNames} from "./postgres-shared.js";
+import {ensurePostgresSessionRouteSchema} from "./postgres-schema.js";
 import type {SessionRouteInput, SessionRouteLookup, SessionRouteRecord} from "./types.js";
-
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-interface PgPoolLike extends PgQueryable {
-  connect(): Promise<PoolClient>;
-}
 
 export interface SessionRouteRepoOptions {
   pool: PgPoolLike;
 }
 
+function requireSessionRouteString(field: string, value: unknown): string {
+  return requireNonEmptyString(value, `Session route ${field} must not be empty.`);
+}
+
 function normalizeLookup(lookup: SessionRouteLookup): SessionRouteLookup {
   return {
-    sessionId: lookup.sessionId?.trim() || (() => { throw new Error("Session route session id must not be empty."); })(),
+    sessionId: requireSessionRouteString("session id", lookup.sessionId),
     identityId: trimToUndefined(lookup.identityId),
     channel: trimToUndefined(lookup.channel),
   };
 }
 
 function normalizeRoute(route: RememberedRoute): RememberedRoute {
+  if (!Number.isSafeInteger(route.capturedAt)) {
+    throw new Error("Session route capturedAt must be a safe integer.");
+  }
+
   return {
-    source: route.source?.trim() || (() => { throw new Error("Session route source must not be empty."); })(),
-    connectorKey: route.connectorKey?.trim() || (() => { throw new Error("Session route connector key must not be empty."); })(),
-    externalConversationId: route.externalConversationId?.trim() || (() => { throw new Error("Session route conversation id must not be empty."); })(),
+    source: requireSessionRouteString("source", route.source),
+    connectorKey: requireSessionRouteString("connector key", route.connectorKey),
+    externalConversationId: requireSessionRouteString("conversation id", route.externalConversationId),
     externalActorId: trimToUndefined(route.externalActorId),
     externalMessageId: trimToUndefined(route.externalMessageId),
     capturedAt: route.capturedAt,
@@ -43,205 +40,61 @@ function normalizeRoute(route: RememberedRoute): RememberedRoute {
 
 function normalizeInput(input: SessionRouteInput): SessionRouteInput {
   return {
-    sessionId: input.sessionId?.trim() || (() => { throw new Error("Session route session id must not be empty."); })(),
+    sessionId: requireSessionRouteString("session id", input.sessionId),
     identityId: trimToUndefined(input.identityId),
     route: normalizeRoute(input.route),
   };
 }
 
+function parseRequiredBigintNumber(field: string, value: unknown): number {
+  if (typeof value === "number" && Number.isSafeInteger(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && /^-?[0-9]+$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) {
+      return parsed;
+    }
+  }
+
+  throw new Error(`Session route ${field} must be a safe integer.`);
+}
+
 function parseRoute(row: Record<string, unknown>): RememberedRoute {
   return {
-    source: String(row.channel),
-    connectorKey: String(row.connector_key),
-    externalConversationId: String(row.external_conversation_id),
+    source: requireSessionRouteString("source", row.channel),
+    connectorKey: requireSessionRouteString("connector key", row.connector_key),
+    externalConversationId: requireSessionRouteString("conversation id", row.external_conversation_id),
     externalActorId: typeof row.external_actor_id === "string" ? row.external_actor_id : undefined,
     externalMessageId: typeof row.external_message_id === "string" ? row.external_message_id : undefined,
-    capturedAt: Number(row.captured_at_ms),
+    capturedAt: parseRequiredBigintNumber("capturedAt", row.captured_at_ms),
   };
 }
 
 function parseRecord(row: Record<string, unknown>): SessionRouteRecord {
   const route = parseRoute(row);
   return {
-    sessionId: String(row.session_id),
+    sessionId: requireSessionRouteString("session id", row.session_id),
     identityId: typeof row.identity_id === "string" && row.identity_id.trim() ? row.identity_id : undefined,
     channel: route.source,
     route,
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    createdAt: requireTimestampMillis(row.created_at, "Session route created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Session route updated_at must be a valid timestamp."),
   };
 }
 
 export class SessionRouteRepo {
   private readonly pool: PgPoolLike;
   private readonly tables: SessionRouteTableNames;
-  private readonly identityTableName: string;
-  private readonly sessionTableName: string;
 
   constructor(options: SessionRouteRepoOptions) {
     this.pool = options.pool;
     this.tables = buildSessionRouteTableNames();
-    this.identityTableName = buildIdentityTableNames().identities;
-    this.sessionTableName = buildSessionTableNames().sessions;
-  }
-
-  private async readColumnNames(): Promise<Set<string>> {
-    const result = await this.pool.query(`
-      SELECT column_name
-      FROM information_schema.columns
-      WHERE table_schema = 'runtime'
-        AND table_name = 'session_routes'
-    `);
-    return new Set(result.rows.map((row) => String((row as {column_name?: unknown}).column_name ?? "")));
-  }
-
-  private async createSessionRoutesTable(tableName = this.tables.sessionRoutes): Promise<void> {
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${tableName} (
-        id BIGSERIAL PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        identity_id TEXT,
-        channel TEXT NOT NULL,
-        connector_key TEXT NOT NULL,
-        external_conversation_id TEXT NOT NULL,
-        external_actor_id TEXT,
-        external_message_id TEXT,
-        captured_at_ms BIGINT NOT NULL,
-        metadata JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-  }
-
-  private async rebuildLegacyTable(): Promise<void> {
-    const replacementTable = `"runtime"."session_routes_rebuild"`;
-    await this.pool.query(`DROP TABLE IF EXISTS ${replacementTable}`);
-    await this.createSessionRoutesTable(replacementTable);
-    await this.pool.query(`
-      INSERT INTO ${replacementTable} (
-        session_id,
-        identity_id,
-        channel,
-        connector_key,
-        external_conversation_id,
-        external_actor_id,
-        external_message_id,
-        captured_at_ms,
-        metadata,
-        created_at,
-        updated_at
-      )
-      SELECT
-        session_id,
-        NULLIF(BTRIM(identity_id), ''),
-        channel,
-        connector_key,
-        external_conversation_id,
-        external_actor_id,
-        external_message_id,
-        captured_at_ms,
-        metadata,
-        created_at,
-        updated_at
-      FROM ${this.tables.sessionRoutes}
-    `);
-    await this.pool.query(`DROP TABLE ${this.tables.sessionRoutes}`);
-    await this.pool.query(`ALTER TABLE ${replacementTable} RENAME TO session_routes`);
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    const existingColumns = await this.readColumnNames();
-    if (existingColumns.size === 0) {
-      await this.createSessionRoutesTable();
-    } else if (!existingColumns.has("id")) {
-      await assertIntegrityChecks(this.pool, "Session route schema", [
-        {
-          label: "session_routes.session_id orphaned from agent_sessions.id",
-          sql: `
-            SELECT COUNT(*)::INTEGER AS count
-            FROM ${this.tables.sessionRoutes} AS route
-            LEFT JOIN ${this.sessionTableName} AS session
-              ON session.id = route.session_id
-            WHERE session.id IS NULL
-          `,
-        },
-        {
-          label: "session_routes.identity_id orphaned from identities.id",
-          sql: `
-            SELECT COUNT(*)::INTEGER AS count
-            FROM ${this.tables.sessionRoutes} AS route
-            LEFT JOIN ${this.identityTableName} AS identity
-              ON identity.id = NULLIF(BTRIM(route.identity_id), '')
-            WHERE NULLIF(BTRIM(route.identity_id), '') IS NOT NULL
-              AND identity.id IS NULL
-          `,
-        },
-      ]);
-      await this.rebuildLegacyTable();
-    } else {
-      await this.createSessionRoutesTable();
-    }
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.sessionRoutes}
-      ALTER COLUMN identity_id DROP NOT NULL
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.sessionRoutes}
-      ALTER COLUMN identity_id DROP DEFAULT
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_session_routes_lookup_idx`)}
-      ON ${this.tables.sessionRoutes} (session_id, identity_id, captured_at_ms DESC)
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_session_routes_global_unique_idx`)}
-      ON ${this.tables.sessionRoutes} (session_id, channel)
-      WHERE identity_id IS NULL
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_session_routes_identity_unique_idx`)}
-      ON ${this.tables.sessionRoutes} (session_id, identity_id, channel)
-      WHERE identity_id IS NOT NULL
-    `);
-    await assertIntegrityChecks(this.pool, "Session route schema", [
-      {
-        label: "session_routes.session_id orphaned from agent_sessions.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.sessionRoutes} AS route
-          LEFT JOIN ${this.sessionTableName} AS session
-            ON session.id = route.session_id
-          WHERE session.id IS NULL
-        `,
-      },
-      {
-        label: "session_routes.identity_id orphaned from identities.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.sessionRoutes} AS route
-          LEFT JOIN ${this.identityTableName} AS identity
-            ON identity.id = route.identity_id
-          WHERE route.identity_id IS NOT NULL
-            AND identity.id IS NULL
-        `,
-      },
-    ]);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.sessionRoutes}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_session_routes_session_fk`)}
-      FOREIGN KEY (session_id)
-      REFERENCES ${this.sessionTableName}(id)
-      ON DELETE CASCADE
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.sessionRoutes}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_session_routes_identity_fk`)}
-      FOREIGN KEY (identity_id)
-      REFERENCES ${this.identityTableName}(id)
-      ON DELETE CASCADE
-    `);
+    await ensurePostgresSessionRouteSchema(this.pool);
   }
 
   async getLastRoute(lookup: SessionRouteLookup): Promise<RememberedRoute | null> {

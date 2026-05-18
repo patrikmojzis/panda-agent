@@ -5,15 +5,14 @@ import type {
   ExecutionCredentialPolicy,
   ExecutionEnvironmentManager,
   ExecutionEnvironmentRecord,
-  ExecutionEnvironmentStore,
   ExecutionSkillPolicy,
   ExecutionToolPolicy,
   SessionEnvironmentBindingRecord,
-} from "../../domain/execution-environments/index.js";
-import type {SessionRecord} from "../../domain/sessions/index.js";
-import type {JsonValue} from "../../kernel/agent/types.js";
-import {stableStringify} from "../../lib/json.js";
-import {isRecord} from "../../lib/records.js";
+} from "../../domain/execution-environments/types.js";
+import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
+import type {SessionRecord} from "../../domain/sessions/types.js";
+import type {JsonValue} from "../../lib/json.js";
+import {isJsonObject, normalizeToJsonValue, stableStringify} from "../../lib/json.js";
 import {trimToUndefined} from "../../lib/strings.js";
 
 const DEFAULT_DISPOSABLE_ALIAS = "self";
@@ -69,9 +68,21 @@ export interface SweepExpiredExecutionEnvironmentsResult {
 }
 
 export interface ExecutionEnvironmentLifecycleServiceOptions {
-  store: ExecutionEnvironmentStore;
+  store: ExecutionEnvironmentLifecycleStore;
   manager?: ExecutionEnvironmentManager | null;
 }
+
+export type ExecutionEnvironmentStopStore = Pick<
+  ExecutionEnvironmentStore,
+  "createEnvironment" | "getEnvironment"
+>;
+
+type ExecutionEnvironmentLifecycleStore = ExecutionEnvironmentStopStore & Pick<
+  ExecutionEnvironmentStore,
+  | "bindSession"
+  | "getDefaultBinding"
+  | "listExpiredDisposableEnvironments"
+>;
 
 function buildDisposableEnvironmentId(sessionId: string): string {
   return `disposable:${sessionId}:${randomUUID()}`;
@@ -82,17 +93,20 @@ function buildStandaloneEnvironmentId(sessionId: string): string {
 }
 
 function mergeMetadata(...values: Array<JsonValue | undefined>): JsonValue | undefined {
-  const records = values.filter(isRecord);
-  if (records.length === values.filter((entry) => entry !== undefined).length) {
-    return Object.assign({}, ...records) as JsonValue;
+  const present = values.filter((entry): entry is JsonValue => entry !== undefined);
+  if (present.length === 0) {
+    return undefined;
   }
-  for (let index = values.length - 1; index >= 0; index -= 1) {
-    const value = values[index];
-    if (value !== undefined) {
-      return value;
+
+  const records = present.filter(isJsonObject);
+  if (records.length === present.length) {
+    const merged = Object.assign({}, ...records);
+    if (isJsonObject(merged)) {
+      return merged;
     }
   }
-  return undefined;
+
+  return present[present.length - 1];
 }
 
 function errorMetadata(error: unknown): JsonValue {
@@ -115,8 +129,25 @@ function sameJson(left: JsonValue, right: JsonValue): boolean {
   return stableStringify(left) === stableStringify(right);
 }
 
+export async function stopExecutionEnvironment(input: {
+  environmentId: string;
+  manager: ExecutionEnvironmentManager;
+  store: ExecutionEnvironmentStopStore;
+}): Promise<ExecutionEnvironmentRecord> {
+  const existing = await input.store.getEnvironment(input.environmentId);
+  await input.store.createEnvironment({
+    ...existing,
+    state: "stopping",
+  });
+  await input.manager.stopEnvironment(input.environmentId);
+  return input.store.createEnvironment({
+    ...existing,
+    state: "stopped",
+  });
+}
+
 export class ExecutionEnvironmentLifecycleService {
-  private readonly store: ExecutionEnvironmentStore;
+  private readonly store: ExecutionEnvironmentLifecycleStore;
   private readonly manager: ExecutionEnvironmentManager | null;
 
   constructor(options: ExecutionEnvironmentLifecycleServiceOptions) {
@@ -139,9 +170,9 @@ export class ExecutionEnvironmentLifecycleService {
     const existingBinding = await this.store.getDefaultBinding(input.session.id);
     if (existingBinding?.environmentId === environmentId) {
       if (
-        !sameJson(existingBinding.credentialPolicy as unknown as JsonValue, credentialPolicy as unknown as JsonValue)
-        || !sameJson(existingBinding.skillPolicy as unknown as JsonValue, skillPolicy as unknown as JsonValue)
-        || !sameJson(existingBinding.toolPolicy as unknown as JsonValue, toolPolicy as unknown as JsonValue)
+        !sameJson(normalizeToJsonValue(existingBinding.credentialPolicy), normalizeToJsonValue(credentialPolicy))
+        || !sameJson(normalizeToJsonValue(existingBinding.skillPolicy), normalizeToJsonValue(skillPolicy))
+        || !sameJson(normalizeToJsonValue(existingBinding.toolPolicy), normalizeToJsonValue(toolPolicy))
       ) {
         throw new Error(`Execution environment binding for session ${input.session.id} already exists with different policy.`);
       }
@@ -417,15 +448,10 @@ export class ExecutionEnvironmentLifecycleService {
       throw new Error("Disposable execution environment manager is not configured.");
     }
 
-    const existing = await this.store.getEnvironment(environmentId);
-    await this.store.createEnvironment({
-      ...existing,
-      state: "stopping",
-    });
-    await this.manager.stopEnvironment(environmentId);
-    return this.store.createEnvironment({
-      ...existing,
-      state: "stopped",
+    return stopExecutionEnvironment({
+      environmentId,
+      manager: this.manager,
+      store: this.store,
     });
   }
 

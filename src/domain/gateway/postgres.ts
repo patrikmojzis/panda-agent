@@ -1,17 +1,24 @@
-import {createHash, randomBytes, randomUUID, timingSafeEqual} from "node:crypto";
+import {randomUUID} from "node:crypto";
 
-import type {Pool} from "pg";
-
+import {requireNonNegativeInteger} from "../../lib/numbers.js";
+import {generateOpaqueToken, hashOpaqueToken, opaqueTokenMatches} from "../../lib/opaque-tokens.js";
 import {isUniqueViolation} from "../../lib/postgres-errors.js";
-import {
-  CREATE_RUNTIME_SCHEMA_SQL,
-  quoteIdentifier,
-  toJson,
-  toMillis,
-} from "../threads/runtime/postgres-shared.js";
-import {buildAgentTableNames} from "../agents/postgres-shared.js";
-import {buildIdentityTableNames} from "../identity/postgres-shared.js";
+import type {PgQueryable} from "../../lib/postgres-query.js";
+import {toJson} from "../../lib/postgres-values.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
+import {
+  normalizeGatewayEventType,
+  normalizeGatewaySourceId,
+  parseGatewayDeliveryMode,
+  parseGatewayEventRow,
+  parseGatewayEventTypeRow,
+  parseGatewaySourceRow,
+  parseGatewayStrikeRow,
+  parseNonNegativeBigintCounter,
+  parseOptionalGatewayMetadata,
+  requireGatewayTrimmedString,
+} from "./postgres-rows.js";
+import {ensurePostgresGatewaySchema} from "./postgres-schema.js";
 import {buildGatewayTableNames} from "./postgres-shared.js";
 import type {
   CreateGatewaySourceInput,
@@ -26,12 +33,6 @@ import type {
   GatewayStrikeRecord,
 } from "./types.js";
 
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-type PgPoolLike = PgQueryable;
-
 const ACCESS_TOKEN_PREFIX = "pga";
 const CLIENT_ID_PREFIX = "pgc";
 const CLIENT_SECRET_PREFIX = "pgs";
@@ -39,112 +40,6 @@ const DEFAULT_MAX_ACTIVE_ACCESS_TOKENS = 20;
 const PROCESSING_STALE_MS = 5 * 60_000;
 const RATE_LIMIT_CLEANUP_INTERVAL_MS = 60_000;
 const RATE_LIMIT_BUCKET_RETENTION_MS = 24 * 60 * 60_000;
-
-function generateOpaqueToken(prefix: string): string {
-  return `${prefix}_${randomBytes(32).toString("base64url")}`;
-}
-
-function hashToken(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-function tokenMatches(value: string, expectedHash: string): boolean {
-  const actual = Buffer.from(hashToken(value), "utf8");
-  const expected = Buffer.from(expectedHash, "utf8");
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
-
-function requireTrimmed(label: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`${label} must not be empty.`);
-  }
-  return trimmed;
-}
-
-export function normalizeGatewaySourceId(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  if (!/^[a-z0-9][a-z0-9_-]{0,79}$/.test(normalized)) {
-    throw new Error("Gateway source id must use lowercase letters, numbers, hyphens, or underscores.");
-  }
-  return normalized;
-}
-
-export function normalizeGatewayEventType(value: string): string {
-  const normalized = value.trim();
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}$/.test(normalized)) {
-    throw new Error("Gateway event type must use letters, numbers, dots, colons, underscores, or hyphens.");
-  }
-  return normalized;
-}
-
-function parseOptionalMillis(value: unknown): number | undefined {
-  return value === null || value === undefined ? undefined : toMillis(value);
-}
-
-function parseSourceRow(row: Record<string, unknown>): GatewaySourceRecord {
-  return {
-    sourceId: String(row.source_id),
-    name: String(row.name),
-    clientId: String(row.client_id),
-    agentKey: String(row.agent_key),
-    identityId: String(row.identity_id),
-    sessionId: row.session_id === null ? undefined : String(row.session_id),
-    status: String(row.status) as GatewaySourceRecord["status"],
-    suspendedAt: parseOptionalMillis(row.suspended_at),
-    suspendReason: row.suspend_reason === null ? undefined : String(row.suspend_reason),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
-  };
-}
-
-function parseEventTypeRow(row: Record<string, unknown>): GatewayEventTypeRecord {
-  return {
-    sourceId: String(row.source_id),
-    type: String(row.event_type),
-    delivery: String(row.delivery) as GatewayDeliveryMode,
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
-  };
-}
-
-function parseEventRow(row: Record<string, unknown>): GatewayEventRecord {
-  return {
-    id: String(row.id),
-    sourceId: String(row.source_id),
-    type: String(row.event_type),
-    deliveryRequested: String(row.delivery_requested) as GatewayDeliveryMode,
-    deliveryEffective: String(row.delivery_effective) as GatewayDeliveryMode,
-    occurredAt: parseOptionalMillis(row.occurred_at),
-    idempotencyKey: String(row.idempotency_key),
-    text: String(row.text),
-    textBytes: Number(row.text_bytes),
-    textSha256: String(row.text_sha256),
-    status: String(row.status) as GatewayEventRecord["status"],
-    riskScore: row.risk_score === null ? undefined : Number(row.risk_score),
-    reason: row.reason === null ? undefined : String(row.reason),
-    threadId: row.thread_id === null ? undefined : String(row.thread_id),
-    metadata: row.metadata === null ? undefined : row.metadata as GatewayEventRecord["metadata"],
-    createdAt: toMillis(row.created_at),
-    claimId: row.claim_id === null ? undefined : String(row.claim_id),
-    claimedAt: parseOptionalMillis(row.claimed_at),
-    processedAt: parseOptionalMillis(row.processed_at),
-    deliveredAt: parseOptionalMillis(row.delivered_at),
-    textScrubbedAt: parseOptionalMillis(row.text_scrubbed_at),
-  };
-}
-
-function parseStrikeRow(row: Record<string, unknown>): GatewayStrikeRecord {
-  return {
-    id: String(row.id),
-    sourceId: String(row.source_id),
-    kind: String(row.kind),
-    reason: String(row.reason),
-    eventId: row.event_id === null ? undefined : String(row.event_id),
-    metadata: row.metadata === null ? undefined : row.metadata as GatewayStrikeRecord["metadata"],
-    createdAt: toMillis(row.created_at),
-  };
-}
 
 export class GatewayEventConflictError extends Error {
   constructor(readonly existing: GatewayEventRecord) {
@@ -155,134 +50,24 @@ export class GatewayEventConflictError extends Error {
 
 function sameIdempotentEventBody(existing: GatewayEventRecord, input: GatewayEventInput): boolean {
   return existing.type === normalizeGatewayEventType(input.type)
-    && existing.deliveryRequested === input.deliveryRequested
+    && existing.deliveryRequested === parseGatewayDeliveryMode(input.deliveryRequested)
     && (existing.occurredAt ?? null) === (input.occurredAt ?? null)
     && existing.textBytes === input.textBytes
     && existing.textSha256 === input.textSha256;
 }
 
 export class PostgresGatewayStore {
-  private readonly pool: PgPoolLike;
+  private readonly pool: PgQueryable;
   private readonly tables = buildGatewayTableNames();
-  private readonly agentTables = buildAgentTableNames();
-  private readonly identityTables = buildIdentityTableNames();
   private readonly sessionTables = buildSessionTableNames();
   private lastRateLimitCleanupAt = 0;
 
-  constructor(options: {pool: PgPoolLike}) {
+  constructor(options: {pool: PgQueryable}) {
     this.pool = options.pool;
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.sources} (
-        source_id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        client_id TEXT NOT NULL UNIQUE,
-        client_secret_hash TEXT NOT NULL,
-        agent_key TEXT NOT NULL REFERENCES ${this.agentTables.agents}(agent_key) ON DELETE CASCADE,
-        identity_id TEXT NOT NULL REFERENCES ${this.identityTables.identities}(id) ON DELETE CASCADE,
-        session_id TEXT REFERENCES ${this.sessionTables.sessions}(id) ON DELETE SET NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        suspended_at TIMESTAMPTZ,
-        suspend_reason TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.eventTypes} (
-        source_id TEXT NOT NULL REFERENCES ${this.tables.sources}(source_id) ON DELETE CASCADE,
-        event_type TEXT NOT NULL,
-        delivery TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (source_id, event_type)
-      )
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.accessTokens} (
-        id TEXT PRIMARY KEY,
-        token_hash TEXT NOT NULL UNIQUE,
-        source_id TEXT NOT NULL REFERENCES ${this.tables.sources}(source_id) ON DELETE CASCADE,
-        expires_at TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_gateway_access_tokens_source_idx`)}
-      ON ${this.tables.accessTokens} (source_id, expires_at DESC)
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.events} (
-        id TEXT PRIMARY KEY,
-        source_id TEXT NOT NULL REFERENCES ${this.tables.sources}(source_id) ON DELETE CASCADE,
-        event_type TEXT NOT NULL,
-        delivery_requested TEXT NOT NULL,
-        delivery_effective TEXT NOT NULL,
-        occurred_at TIMESTAMPTZ,
-        idempotency_key TEXT NOT NULL,
-        text TEXT NOT NULL,
-        text_bytes INTEGER NOT NULL,
-        text_sha256 TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        risk_score DOUBLE PRECISION,
-        reason TEXT,
-        thread_id TEXT,
-        metadata JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        claim_id TEXT,
-        claimed_at TIMESTAMPTZ,
-        processed_at TIMESTAMPTZ,
-        delivered_at TIMESTAMPTZ,
-        text_scrubbed_at TIMESTAMPTZ,
-        UNIQUE (source_id, idempotency_key)
-      )
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.events}
-      ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.events}
-      ADD COLUMN IF NOT EXISTS claim_id TEXT
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.events}
-      ADD COLUMN IF NOT EXISTS text_scrubbed_at TIMESTAMPTZ
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_gateway_events_pending_idx`)}
-      ON ${this.tables.events} (status, created_at)
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.rateLimits} (
-        bucket_key TEXT PRIMARY KEY,
-        window_start TIMESTAMPTZ NOT NULL,
-        used BIGINT NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_gateway_rate_limits_updated_idx`)}
-      ON ${this.tables.rateLimits} (updated_at)
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.strikes} (
-        id TEXT PRIMARY KEY,
-        source_id TEXT NOT NULL REFERENCES ${this.tables.sources}(source_id) ON DELETE CASCADE,
-        kind TEXT NOT NULL,
-        reason TEXT NOT NULL,
-        event_id TEXT REFERENCES ${this.tables.events}(id) ON DELETE SET NULL,
-        metadata JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_gateway_strikes_source_kind_idx`)}
-      ON ${this.tables.strikes} (source_id, kind, created_at DESC)
-    `);
+    await ensurePostgresGatewaySchema(this.pool);
   }
 
   async createSource(input: CreateGatewaySourceInput): Promise<GatewaySourceSecretResult> {
@@ -298,7 +83,7 @@ export class PostgresGatewayStore {
       if (!sessionRow) {
         throw new Error(`Unknown gateway route session ${input.sessionId}.`);
       }
-      if (String(sessionRow.agent_key) !== input.agentKey) {
+      if (requireGatewayTrimmedString("Gateway route session agent key", sessionRow.agent_key) !== input.agentKey) {
         throw new Error(`Gateway route session ${input.sessionId} does not belong to agent ${input.agentKey}.`);
       }
     }
@@ -317,14 +102,14 @@ export class PostgresGatewayStore {
       sourceId,
       input.name?.trim() || sourceId,
       clientId,
-      hashToken(clientSecret),
-      requireTrimmed("Agent key", input.agentKey),
-      requireTrimmed("Identity id", input.identityId),
+      hashOpaqueToken(clientSecret),
+      requireGatewayTrimmedString("Agent key", input.agentKey),
+      requireGatewayTrimmedString("Identity id", input.identityId),
       input.sessionId?.trim() || null,
     ]);
 
     return {
-      source: parseSourceRow(result.rows[0] as Record<string, unknown>),
+      source: parseGatewaySourceRow(result.rows[0] as Record<string, unknown>),
       clientSecret,
     };
   }
@@ -338,14 +123,14 @@ export class PostgresGatewayStore {
     if (!row) {
       throw new Error(`Unknown gateway source ${sourceId}.`);
     }
-    return parseSourceRow(row);
+    return parseGatewaySourceRow(row);
   }
 
   async listSources(): Promise<readonly GatewaySourceRecord[]> {
     const result = await this.pool.query(
       `SELECT * FROM ${this.tables.sources} ORDER BY created_at DESC, source_id ASC`,
     );
-    return result.rows.map((row) => parseSourceRow(row as Record<string, unknown>));
+    return result.rows.map((row) => parseGatewaySourceRow(row as Record<string, unknown>));
   }
 
   async rotateSourceSecret(sourceId: string): Promise<GatewaySourceSecretResult> {
@@ -358,7 +143,7 @@ export class PostgresGatewayStore {
       RETURNING *
     `, [
       normalizedSourceId,
-      hashToken(clientSecret),
+      hashOpaqueToken(clientSecret),
     ]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
     if (!row) {
@@ -369,7 +154,7 @@ export class PostgresGatewayStore {
       [normalizedSourceId],
     );
     return {
-      source: parseSourceRow(row),
+      source: parseGatewaySourceRow(row),
       clientSecret,
     };
   }
@@ -393,7 +178,7 @@ export class PostgresGatewayStore {
       `DELETE FROM ${this.tables.accessTokens} WHERE source_id = $1`,
       [normalizedSourceId],
     );
-    return parseSourceRow(row);
+    return parseGatewaySourceRow(row);
   }
 
   async resumeSource(sourceId: string): Promise<GatewaySourceSecretResult> {
@@ -406,13 +191,13 @@ export class PostgresGatewayStore {
   }): Promise<GatewaySourceRecord | null> {
     const result = await this.pool.query(
       `SELECT * FROM ${this.tables.sources} WHERE client_id = $1`,
-      [requireTrimmed("Client id", input.clientId)],
+      [requireGatewayTrimmedString("Client id", input.clientId)],
     );
     const row = result.rows[0] as Record<string, unknown> | undefined;
-    if (!row || !tokenMatches(input.clientSecret, String(row.client_secret_hash))) {
+    if (!row || !opaqueTokenMatches(input.clientSecret, requireGatewayTrimmedString("Gateway client secret hash", row.client_secret_hash))) {
       return null;
     }
-    const source = parseSourceRow(row);
+    const source = parseGatewaySourceRow(row);
     return source.status === "active" ? source : null;
   }
 
@@ -438,7 +223,7 @@ export class PostgresGatewayStore {
       ) VALUES ($1, $2, $3, $4)
     `, [
       randomUUID(),
-      hashToken(token),
+      hashOpaqueToken(token),
       sourceId,
       new Date(expiresAt),
     ]);
@@ -470,9 +255,9 @@ export class PostgresGatewayStore {
         AND access.expires_at > NOW()
         AND source.status = 'active'
       LIMIT 1
-    `, [hashToken(requireTrimmed("Access token", token))]);
+    `, [hashOpaqueToken(requireGatewayTrimmedString("Access token", token))]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
-    return row ? parseSourceRow(row) : null;
+    return row ? parseGatewaySourceRow(row) : null;
   }
 
   async upsertEventType(input: {
@@ -492,9 +277,9 @@ export class PostgresGatewayStore {
     `, [
       normalizeGatewaySourceId(input.sourceId),
       normalizeGatewayEventType(input.type),
-      input.delivery,
+      parseGatewayDeliveryMode(input.delivery),
     ]);
-    return parseEventTypeRow(result.rows[0] as Record<string, unknown>);
+    return parseGatewayEventTypeRow(result.rows[0] as Record<string, unknown>);
   }
 
   async getEventType(sourceId: string, type: string): Promise<GatewayEventTypeRecord | null> {
@@ -507,7 +292,7 @@ export class PostgresGatewayStore {
       normalizeGatewayEventType(type),
     ]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
-    return row ? parseEventTypeRow(row) : null;
+    return row ? parseGatewayEventTypeRow(row) : null;
   }
 
   async listEventTypes(sourceId: string): Promise<readonly GatewayEventTypeRecord[]> {
@@ -517,7 +302,7 @@ export class PostgresGatewayStore {
       WHERE source_id = $1
       ORDER BY event_type ASC
     `, [normalizeGatewaySourceId(sourceId)]);
-    return result.rows.map((row) => parseEventTypeRow(row as Record<string, unknown>));
+    return result.rows.map((row) => parseGatewayEventTypeRow(row as Record<string, unknown>));
   }
 
   async storeEvent(input: GatewayEventInput): Promise<GatewayStoredEventResult> {
@@ -541,16 +326,16 @@ export class PostgresGatewayStore {
         id,
         normalizeGatewaySourceId(input.sourceId),
         normalizeGatewayEventType(input.type),
-        input.deliveryRequested,
-        input.deliveryEffective,
+        parseGatewayDeliveryMode(input.deliveryRequested),
+        parseGatewayDeliveryMode(input.deliveryEffective),
         input.occurredAt === undefined ? null : new Date(input.occurredAt),
-        requireTrimmed("Idempotency key", input.idempotencyKey),
+        requireGatewayTrimmedString("Idempotency key", input.idempotencyKey),
         input.text,
         input.textBytes,
         input.textSha256,
       ]);
       return {
-        event: parseEventRow(result.rows[0] as Record<string, unknown>),
+        event: parseGatewayEventRow(result.rows[0] as Record<string, unknown>),
         inserted: true,
       };
     } catch (error) {
@@ -577,7 +362,7 @@ export class PostgresGatewayStore {
     if (!row) {
       throw new Error(`Unknown gateway event ${eventId}.`);
     }
-    return parseEventRow(row);
+    return parseGatewayEventRow(row);
   }
 
   async getEventByIdempotencyKey(sourceId: string, idempotencyKey: string): Promise<GatewayEventRecord> {
@@ -587,13 +372,13 @@ export class PostgresGatewayStore {
       WHERE source_id = $1 AND idempotency_key = $2
     `, [
       normalizeGatewaySourceId(sourceId),
-      requireTrimmed("Idempotency key", idempotencyKey),
+      requireGatewayTrimmedString("Idempotency key", idempotencyKey),
     ]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
     if (!row) {
       throw new Error(`Unknown gateway idempotency key ${idempotencyKey}.`);
     }
-    return parseEventRow(row);
+    return parseGatewayEventRow(row);
   }
 
   async listEvents(input: {sourceId?: string; limit?: number} = {}): Promise<readonly GatewayEventRecord[]> {
@@ -612,7 +397,7 @@ export class PostgresGatewayStore {
         ORDER BY created_at DESC
         LIMIT $1
       `, [limit]);
-    return result.rows.map((row) => parseEventRow(row as Record<string, unknown>));
+    return result.rows.map((row) => parseGatewayEventRow(row as Record<string, unknown>));
   }
 
   async useRateLimit(input: {
@@ -645,11 +430,14 @@ export class PostgresGatewayStore {
         updated_at = NOW()
       RETURNING used
     `, [
-      requireTrimmed("Rate limit key", input.key),
+      requireGatewayTrimmedString("Rate limit key", input.key),
       cost,
       staleBefore,
     ]);
-    const used = Number((result.rows[0] as {used?: unknown} | undefined)?.used ?? cost);
+    const used = parseNonNegativeBigintCounter(
+      "Gateway rate-limit usage",
+      (result.rows[0] as {used?: unknown} | undefined)?.used ?? cost,
+    );
     return {
       allowed: used <= limit,
       used,
@@ -699,7 +487,7 @@ export class PostgresGatewayStore {
       staleBefore,
       claimId,
     ]);
-    return result.rows.map((row) => parseEventRow(row as Record<string, unknown>));
+    return result.rows.map((row) => parseGatewayEventRow(row as Record<string, unknown>));
   }
 
   async reserveEventDelivery(input: {
@@ -722,10 +510,10 @@ export class PostgresGatewayStore {
       input.eventId,
       input.claimId,
       input.riskScore,
-      toJson(input.metadata),
+      toJson(parseOptionalGatewayMetadata("Gateway event metadata", input.metadata)),
     ]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
-    return row ? parseEventRow(row) : null;
+    return row ? parseGatewayEventRow(row) : null;
   }
 
   async markEventDelivered(input: {
@@ -753,11 +541,11 @@ export class PostgresGatewayStore {
       input.eventId,
       input.riskScore,
       input.threadId,
-      toJson(input.metadata),
+      toJson(parseOptionalGatewayMetadata("Gateway event metadata", input.metadata)),
       input.claimId ?? null,
     ]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
-    return row ? parseEventRow(row) : await this.getEvent(input.eventId);
+    return row ? parseGatewayEventRow(row) : await this.getEvent(input.eventId);
   }
 
   async markEventQuarantined(input: {
@@ -784,11 +572,11 @@ export class PostgresGatewayStore {
       input.eventId,
       input.riskScore,
       input.reason,
-      toJson(input.metadata),
+      toJson(parseOptionalGatewayMetadata("Gateway event metadata", input.metadata)),
       input.claimId ?? null,
     ]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
-    return row ? parseEventRow(row) : await this.getEvent(input.eventId);
+    return row ? parseGatewayEventRow(row) : await this.getEvent(input.eventId);
   }
 
   async recordStrike(input: {
@@ -811,12 +599,12 @@ export class PostgresGatewayStore {
     `, [
       randomUUID(),
       normalizeGatewaySourceId(input.sourceId),
-      requireTrimmed("Strike kind", input.kind),
-      requireTrimmed("Strike reason", input.reason),
+      requireGatewayTrimmedString("Strike kind", input.kind),
+      requireGatewayTrimmedString("Strike reason", input.reason),
       input.eventId ?? null,
-      toJson(input.metadata),
+      toJson(parseOptionalGatewayMetadata("Gateway strike metadata", input.metadata)),
     ]);
-    return parseStrikeRow(result.rows[0] as Record<string, unknown>);
+    return parseGatewayStrikeRow(result.rows[0] as Record<string, unknown>);
   }
 
   async countRecentStrikes(input: {
@@ -832,7 +620,7 @@ export class PostgresGatewayStore {
         WHERE source_id = $1 AND kind = $2 AND created_at >= $3
       `, [
         normalizeGatewaySourceId(input.sourceId),
-        requireTrimmed("Strike kind", input.kind),
+        requireGatewayTrimmedString("Strike kind", input.kind),
         since,
       ])
       : await this.pool.query(`
@@ -843,7 +631,10 @@ export class PostgresGatewayStore {
         normalizeGatewaySourceId(input.sourceId),
         since,
       ]);
-    return Number((result.rows[0] as {count?: unknown} | undefined)?.count ?? 0);
+    return requireNonNegativeInteger(
+      (result.rows[0] as {count?: unknown} | undefined)?.count ?? 0,
+      "Gateway strike count",
+    );
   }
 
   async recordStrikeAndMaybeSuspend(input: {

@@ -266,6 +266,7 @@ describe("example apps", () => {
       env: {...process.env, DATA_DIR: fixture.dataDir},
     });
     const submitInput = vi.fn(async () => undefined);
+    let mainThreadId = "thread-main";
     const server = await startAgentAppServer({
       host: "127.0.0.1",
       port: 0,
@@ -285,15 +286,15 @@ describe("example apps", () => {
           id: "session-main",
           agentKey: fixture.agentKey,
           kind: "main",
-          currentThreadId: "thread-main",
+          currentThreadId: mainThreadId,
           createdAt: 1,
           updatedAt: 1,
         }),
         getSession: async (sessionId: string) => ({
           id: sessionId,
           agentKey: fixture.agentKey,
-          kind: "branch",
-          currentThreadId: "thread-branch",
+          kind: sessionId === "session-main" ? "main" : "branch",
+          currentThreadId: sessionId === "session-main" ? mainThreadId : "thread-branch",
           createdAt: 1,
           updatedAt: 1,
         }),

@@ -34,6 +34,13 @@ export function firstNonEmptyString(...values: readonly unknown[]): string | und
 }
 
 /**
+ * Returns trimmed non-empty strings once each, preserving first-seen order.
+ */
+export function uniqueTrimmedStrings(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+/**
  * Ensures that `value` is a non-empty trimmed string.
  *
  * Pass the fully rendered error message so callers can keep domain-specific
@@ -46,6 +53,51 @@ export function requireNonEmptyString(value: unknown, errorMessage: string): str
   }
 
   return trimmed;
+}
+
+/**
+ * Ensures that `value` is a trimmed non-empty string while preserving separate
+ * type and empty-value diagnostics for row and external-payload parsers.
+ */
+export function requireTrimmedString(
+  value: unknown,
+  typeErrorMessage: string,
+  emptyErrorMessage: string,
+): string {
+  if (typeof value !== "string") {
+    throw new Error(typeErrorMessage);
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(emptyErrorMessage);
+  }
+
+  return trimmed;
+}
+
+/**
+ * Reads an optional row string while still rejecting present-but-empty or
+ * non-string values with caller-owned error text.
+ */
+export function optionalNonEmptyString(value: unknown, errorMessage: string): string | undefined {
+  return value === null || value === undefined ? undefined : requireNonEmptyString(value, errorMessage);
+}
+
+/**
+ * Reads an optional string where blank means absent, while still rejecting
+ * present non-string values with caller-owned error text.
+ */
+export function optionalTrimmedString(value: unknown, typeErrorMessage: string): string | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw new Error(typeErrorMessage);
+  }
+
+  return trimToUndefined(value);
 }
 
 /**

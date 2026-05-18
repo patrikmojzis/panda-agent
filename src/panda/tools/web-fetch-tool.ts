@@ -3,7 +3,8 @@ import {z} from "zod";
 
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {formatToolResultFallback, Tool} from "../../kernel/agent/tool.js";
-import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {
   DEFAULT_WEB_FETCH_MAX_CONTENT_CHARS,
@@ -13,9 +14,10 @@ import {
   DEFAULT_WEB_FETCH_USER_AGENT,
   type FetchImpl,
   fetchReadableWebPage,
-  type LookupHostname,
-} from "./web-fetch.js";
+} from "../../integrations/web/web-fetch.js";
+import type {LookupHostname} from "../../integrations/web/safe-web-target.js";
 import {wrapExternalUntrustedContent} from "../../prompts/external-content.js";
+import {requireJsonObject} from "./shared.js";
 
 export interface WebFetchToolOptions {
   fetchImpl?: FetchImpl;
@@ -150,7 +152,9 @@ export class WebFetchTool<TContext = DefaultAgentSessionContext>
       maxContentChars: this.maxContentChars,
       userAgent: this.userAgent,
       signal: run.signal,
-      onProgress: (progress) => run.emitToolProgress(progress as JsonObject),
+      onProgress: (progress) => run.emitToolProgress(
+        requireJsonObject(progress, "web_fetch progress must be a JSON object."),
+      ),
     });
 
     const links = result.links.map((link) => ({

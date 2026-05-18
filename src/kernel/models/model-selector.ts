@@ -2,7 +2,7 @@ import {ConfigurationError} from "../agent/exceptions.js";
 import {assertProviderName, type ProviderName} from "../../integrations/providers/shared/provider.js";
 
 const MODEL_SELECTOR_ALIASES = {
-  gpt: "openai-codex/gpt-5.4",
+  gpt: "openai-codex/gpt-5.5",
   opus: "anthropic-oauth/claude-opus-4-7",
 } as const satisfies Record<string, string>;
 

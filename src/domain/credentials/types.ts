@@ -1,3 +1,5 @@
+import {requireNonEmptyString} from "../../lib/strings.js";
+
 export interface CredentialRecord {
   id: string;
   agentKey: string;
@@ -110,12 +112,7 @@ const RESERVED_RUNTIME_ENV_KEYS = new Set([
 ]);
 
 function requireTrimmed(field: string, value: string | undefined): string {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    throw new Error(`${field} must not be empty.`);
-  }
-
-  return trimmed;
+  return requireNonEmptyString(value, `${field} must not be empty.`);
 }
 
 export function normalizeCredentialEnvKey(value: string): string {

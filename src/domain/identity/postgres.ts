@@ -1,15 +1,12 @@
 import {randomUUID} from "node:crypto";
 
-import type {Pool, PoolClient} from "pg";
-
+import {readOptionalJsonValue, stringifyOptionalJsonValue} from "../../lib/json.js";
 import {isUniqueViolation} from "../../lib/postgres-errors.js";
-import {
-    CREATE_RUNTIME_SCHEMA_SQL,
-    quoteIdentifier,
-    toJson,
-    toMillis
-} from "../../domain/threads/runtime/postgres-shared.js";
+import type {PgQueryable} from "../../lib/postgres-query.js";
+import {requireNonEmptyString} from "../../lib/strings.js";
+import {requireTimestampMillis} from "../../lib/postgres-values.js";
 import {buildIdentityTableNames, type IdentityTableNames} from "./postgres-shared.js";
+import {ensurePostgresIdentitySchema} from "./postgres-schema.js";
 import {
     type CreateIdentityBindingInput,
     type CreateIdentityInput,
@@ -22,25 +19,28 @@ import {
 } from "./types.js";
 import type {IdentityStore} from "./store.js";
 
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-interface PgPoolLike extends PgQueryable {
-  connect(): Promise<PoolClient>;
-}
-
 export interface PostgresIdentityStoreOptions {
-  pool: PgPoolLike;
+  pool: PgQueryable;
+}
+
+function parseString(value: unknown, errorMessage: string): string {
+  if (typeof value !== "string") {
+    throw new Error(errorMessage);
+  }
+
+  return value;
+}
+
+function parseIdentityStatus(value: unknown): IdentityRecord["status"] {
+  if (value === "active" || value === "deleted") {
+    return value;
+  }
+
+  throw new Error(`Unsupported identity status ${String(value)}.`);
 }
 
 function requireTrimmedBindingKeyPart(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`Identity binding ${field} must not be empty.`);
-  }
-
-  return trimmed;
+  return requireNonEmptyString(value, `Identity binding ${field} must not be empty.`);
 }
 
 function requireOpaqueExternalActorId(value: string): string {
@@ -69,26 +69,37 @@ function normalizeIdentityBindingInput<T extends IdentityBindingLookup>(input: T
 
 function parseIdentityRow(row: Record<string, unknown>): IdentityRecord {
   return {
-    id: String(row.id),
-    handle: String(row.handle),
-    displayName: String(row.display_name),
-    status: String(row.status) as IdentityRecord["status"],
-    metadata: row.metadata === null ? undefined : (row.metadata as IdentityRecord["metadata"]),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    id: requireNonEmptyString(row.id, "Identity row is missing id."),
+    handle: normalizeIdentityHandle(
+      requireNonEmptyString(row.handle, "Identity row is missing handle."),
+    ),
+    displayName: parseString(row.display_name, "Identity row is missing display name."),
+    status: parseIdentityStatus(row.status),
+    metadata: readOptionalJsonValue(row.metadata, "Identity metadata"),
+    createdAt: requireTimestampMillis(row.created_at, "Identity created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Identity updated_at must be a valid timestamp."),
   };
 }
 
 function parseIdentityBindingRow(row: Record<string, unknown>): IdentityBindingRecord {
+  const lookup = normalizeIdentityBindingLookup({
+    source: requireNonEmptyString(row.source, "Identity binding row is missing source."),
+    connectorKey: requireNonEmptyString(row.connector_key, "Identity binding row is missing connector key."),
+    externalActorId: parseString(
+      row.external_actor_id,
+      "Identity binding row is missing external actor id.",
+    ),
+  });
+
   return {
-    id: String(row.id),
-    identityId: String(row.identity_id),
-    source: String(row.source),
-    connectorKey: String(row.connector_key),
-    externalActorId: String(row.external_actor_id),
-    metadata: row.metadata === null ? undefined : (row.metadata as IdentityBindingRecord["metadata"]),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    id: requireNonEmptyString(row.id, "Identity binding row is missing id."),
+    identityId: requireNonEmptyString(row.identity_id, "Identity binding row is missing identity id."),
+    source: lookup.source,
+    connectorKey: lookup.connectorKey,
+    externalActorId: lookup.externalActorId,
+    metadata: readOptionalJsonValue(row.metadata, "Identity binding metadata"),
+    createdAt: requireTimestampMillis(row.created_at, "Identity binding created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Identity binding updated_at must be a valid timestamp."),
   };
 }
 
@@ -115,7 +126,7 @@ function bindingBelongsToDifferentIdentityError(
 }
 
 export class PostgresIdentityStore implements IdentityStore {
-  private readonly pool: PgPoolLike;
+  private readonly pool: PgQueryable;
   private readonly tables: IdentityTableNames;
 
   constructor(options: PostgresIdentityStoreOptions) {
@@ -147,41 +158,14 @@ export class PostgresIdentityStore implements IdentityStore {
       input.source,
       input.connectorKey,
       input.externalActorId,
-      toJson(input.metadata),
+      stringifyOptionalJsonValue(input.metadata, "Identity binding metadata"),
     ]);
 
     return parseIdentityBindingRow(result.rows[0] as Record<string, unknown>);
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.identities} (
-        id TEXT PRIMARY KEY,
-        handle TEXT NOT NULL UNIQUE,
-        display_name TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        metadata JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.identityBindings} (
-        id UUID PRIMARY KEY,
-        identity_id TEXT NOT NULL REFERENCES ${this.tables.identities}(id) ON DELETE CASCADE,
-        source TEXT NOT NULL,
-        connector_key TEXT NOT NULL,
-        external_actor_id TEXT NOT NULL,
-        metadata JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_identity_bindings_lookup_idx`)}
-      ON ${this.tables.identityBindings} (source, connector_key, external_actor_id)
-    `);
+    await ensurePostgresIdentitySchema(this.pool);
   }
 
   async createIdentity(input: CreateIdentityInput): Promise<IdentityRecord> {
@@ -204,8 +188,8 @@ export class PostgresIdentityStore implements IdentityStore {
       input.id,
       normalizeIdentityHandle(input.handle),
       input.displayName,
-      input.status ?? "active",
-      toJson(input.metadata),
+      parseIdentityStatus(input.status ?? "active"),
+      stringifyOptionalJsonValue(input.metadata, "Identity metadata"),
     ]);
 
     return parseIdentityRow(result.rows[0] as Record<string, unknown>);
@@ -238,13 +222,13 @@ export class PostgresIdentityStore implements IdentityStore {
 
     if (input.status !== undefined) {
       assignments.push(`status = $${index}`);
-      values.push(input.status);
+      values.push(parseIdentityStatus(input.status));
       index += 1;
     }
 
     if (input.metadata !== undefined) {
       assignments.push(`metadata = $${index}::jsonb`);
-      values.push(toJson(input.metadata));
+      values.push(stringifyOptionalJsonValue(input.metadata, "Identity metadata"));
       index += 1;
     }
 

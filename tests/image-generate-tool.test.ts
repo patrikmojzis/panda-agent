@@ -1,4 +1,4 @@
-import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
@@ -164,7 +164,6 @@ describe("ImageGenerateTool", () => {
         "image-generation",
         "thread-1",
       ));
-      await expect(stat(details.artifact.path)).resolves.toBeTruthy();
       await expect(readFile(details.artifact.path, "utf8")).resolves.toBe("generated-image");
       expect(result.content.some((part) => part.type === "image")).toBe(false);
 

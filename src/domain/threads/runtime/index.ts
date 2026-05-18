@@ -7,9 +7,11 @@ export {
   type ThreadWakeMode,
 } from "./coordinator.js";
 export {
-  PostgresThreadLeaseManager,
   PostgresThreadRuntimeStore,
 } from "./postgres.js";
+export {
+  PostgresThreadLeaseManager,
+} from "./postgres-lease.js";
 export {
   ensureReadonlySessionQuerySchema,
   readDatabaseUsername,

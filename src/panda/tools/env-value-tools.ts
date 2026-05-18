@@ -4,7 +4,7 @@ import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {ToolResultPayload} from "../../kernel/agent/types.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
-import {CredentialService} from "../../domain/credentials/index.js";
+import {CredentialService} from "../../domain/credentials/resolver.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {buildJsonToolPayload, rethrowAsToolError} from "./shared.js";
 

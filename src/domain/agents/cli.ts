@@ -6,14 +6,18 @@ import {mkdir} from "node:fs/promises";
 import {Command, InvalidArgumentError} from "commander";
 import type {Pool} from "pg";
 
-import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
-import {resolveAgentDir} from "../../app/runtime/data-dir.js";
-import {CredentialService, PostgresCredentialStore, resolveCredentialCrypto} from "../credentials/index.js";
-import {isMissingThreadError, PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
+import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
+import {resolveAgentDir} from "../../lib/data-dir.js";
+import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {resolveCredentialCrypto} from "../credentials/crypto.js";
+import {PostgresCredentialStore} from "../credentials/postgres.js";
+import {CredentialService} from "../credentials/resolver.js";
 import {parseIdentityHandle} from "../identity/cli.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
-import {createSessionWithInitialThread, PostgresSessionStore, resetSessionCurrentThread} from "../sessions/index.js";
+import {createSessionWithInitialThread, resetSessionCurrentThread} from "../sessions/lifecycle.js";
+import {PostgresSessionStore} from "../sessions/postgres.js";
+import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
+import {isMissingThreadError} from "../threads/runtime/types.js";
 import {isMissingAgentError} from "./errors.js";
 import {
     discoverLegacyAgentSourceDirs,

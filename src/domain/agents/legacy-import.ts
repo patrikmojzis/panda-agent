@@ -1,14 +1,16 @@
 import {randomUUID} from "node:crypto";
-import {access, copyFile, mkdir, readdir, readFile} from "node:fs/promises";
+import {copyFile, mkdir, readdir, readFile} from "node:fs/promises";
 import path from "node:path";
 
-import {resolveAgentDir} from "../../app/runtime/data-dir.js";
+import {pathExists} from "../../lib/fs.js";
+import {resolveAgentDir} from "../../lib/data-dir.js";
 import {trimToNull} from "../../lib/strings.js";
-import type {CredentialService} from "../credentials/index.js";
-import {createSessionWithInitialThread, PostgresSessionStore} from "../sessions/index.js";
+import type {CredentialService} from "../credentials/resolver.js";
+import {createSessionWithInitialThread} from "../sessions/lifecycle.js";
+import {PostgresSessionStore} from "../sessions/postgres.js";
 import type {SessionStore} from "../sessions/store.js";
-import type {PgPoolLike} from "../threads/runtime/postgres-db.js";
-import {PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
+import type {PgPoolLike} from "../../lib/postgres-query.js";
+import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../threads/runtime/store.js";
 import type {ThreadRuntimeMessagePayload} from "../threads/runtime/types.js";
 import type {AgentStore} from "./store.js";
@@ -93,19 +95,6 @@ export interface ImportedLegacyAgentResult {
   credentialCount: number;
   skippedCredentialCount: number;
   warnings: readonly string[];
-}
-
-function trimNonEmpty(value: string | null | undefined): string | null {
-  return trimToNull(value);
-}
-
-async function pathExists(targetPath: string): Promise<boolean> {
-  try {
-    await access(targetPath);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function titleCaseWords(value: string): string {
@@ -410,7 +399,7 @@ async function buildCredentialPlans(sourceDir: string, warnings: string[]): Prom
   for (const filePath of credentialFiles) {
     const content = await readFile(filePath, "utf8");
     for (const entry of parseEnvEntries(content)) {
-      if (!trimNonEmpty(entry.value)) {
+      if (!trimToNull(entry.value)) {
         warnings.push(`Skipped blank credential ${entry.envKey} from ${filePath}.`);
         continue;
       }
@@ -480,7 +469,7 @@ function parseLegacyTimestamp(value: unknown): number | null {
 
 function extractLegacyMessageText(content: unknown): string | null {
   if (typeof content === "string") {
-    return trimNonEmpty(content);
+    return trimToNull(content);
   }
 
   if (!Array.isArray(content)) {
@@ -493,7 +482,7 @@ function extractLegacyMessageText(content: unknown): string | null {
     .map((block) => (block.text as string).trim())
     .filter(Boolean);
 
-  return trimNonEmpty(blocks.join("\n"));
+  return trimToNull(blocks.join("\n"));
 }
 
 function sanitizeLegacyUserText(rawText: string): string {

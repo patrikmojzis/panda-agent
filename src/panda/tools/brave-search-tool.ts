@@ -6,9 +6,9 @@ import {trimToNull} from "../../lib/strings.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {formatToolResultFallback, Tool, type ToolOutput} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
-import {readResponseError} from "./http.js";
+import {readResponseError} from "../../lib/http.js";
 
 const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 const DEFAULT_COUNT = 5;

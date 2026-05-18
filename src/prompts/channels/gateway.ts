@@ -1,13 +1,4 @@
-function formatMaybeValue(value: string | undefined): string {
-  return value?.trim() || "null";
-}
-
-function formatUntrustedValue(value: string): string {
-  return JSON.stringify(value)
-    .replace(/</g, "\\u003c")
-    .replace(/>/g, "\\u003e")
-    .replace(/&/g, "\\u0026");
-}
+import {formatMaybeValue, formatUntrustedStringValue} from "./shared.js";
 
 export function renderGatewayInboundText(options: {
   sourceId: string;
@@ -25,7 +16,7 @@ export function renderGatewayInboundText(options: {
 channel: gateway
 source_id: ${options.sourceId}
 event_id: ${options.eventId}
-event_type: ${formatUntrustedValue(options.eventType)}
+event_type: ${formatUntrustedStringValue(options.eventType)}
 delivery: ${options.delivery}
 occurred_at: ${formatMaybeValue(options.occurredAt)}
 received_at: ${options.receivedAt}

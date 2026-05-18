@@ -1,47 +1,42 @@
 import {randomUUID} from "node:crypto";
-import {createServer, type IncomingMessage, type Server} from "node:http";
+import {createServer, type Server} from "node:http";
 import type {AddressInfo} from "node:net";
 
 import {WebSocketServer, type WebSocket} from "ws";
 
-import type {TelepathyDeviceStore} from "../../domain/telepathy/index.js";
-import {telepathyTokenMatches} from "../../domain/telepathy/index.js";
+import type {TelepathyDeviceRecord} from "../../domain/telepathy/types.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import {isRecord} from "../../lib/records.js";
-import {trimToNull} from "../../lib/strings.js";
 import type {
   TelepathyContextItem,
   TelepathyContextSubmit,
   TelepathyReceiverMessage,
-  TelepathyServerMessage,
   TelepathyScreenshotResult,
 } from "./protocol.js";
+import {TELEPATHY_MAX_WEBSOCKET_PAYLOAD_BYTES, readTelepathyMessageRequestId} from "./protocol.js";
 import {
-  TELEPATHY_MAX_WEBSOCKET_PAYLOAD_BYTES,
-  parseTelepathyReceiverMessage,
-} from "./protocol.js";
+  closeTelepathySocket,
+  createTelepathySocketBudget,
+  isTelepathyUpgradeRequestAllowed,
+  parseTelepathySocketReceiverMessage,
+  sendTelepathySocketJson,
+} from "./websocket.js";
+import {
+  normalizeTelepathyPath,
+  resolveTelepathyHost,
+  resolveTelepathyPath,
+  resolveTelepathyPort,
+} from "./config.js";
+import {
+  acceptTelepathyDeviceHello,
+  buildTelepathyDeviceKey,
+  type ConnectedTelepathyDevice,
+} from "./device-hello.js";
 
-const DEFAULT_TELEPATHY_HOST = "127.0.0.1";
-const DEFAULT_TELEPATHY_PORT = 8787;
-const DEFAULT_TELEPATHY_PATH = "/telepathy";
 const DEFAULT_TELEPATHY_TIMEOUT_MS = 20_000;
 const DEFAULT_TELEPATHY_DEVICE_WAIT_MS = 3_000;
 const DEVICE_WAIT_POLL_MS = 100;
 const RECEIVER_CLOSE_CODE_POLICY_VIOLATION = 1008;
 const RECEIVER_CLOSE_CODE_TRY_AGAIN = 1013;
-const MESSAGE_RATE_WINDOW_MS = 10_000;
-const MAX_MESSAGES_PER_WINDOW = 60;
-const MAX_BYTES_PER_WINDOW = TELEPATHY_MAX_WEBSOCKET_PAYLOAD_BYTES * 2;
-
-interface ConnectedDevice {
-  agentKey: string;
-  deviceId: string;
-  label?: string;
-  authenticatedTokenHash: string;
-  socket: WebSocket;
-  connectedAt: number;
-  lastSeenAt: number;
-}
 
 interface PendingScreenshotRequest {
   agentKey: string;
@@ -73,7 +68,15 @@ export interface TelepathyHubOptions {
   onContextSubmit?: TelepathyContextSubmitHandler;
   path?: string;
   port?: number;
-  store: TelepathyDeviceStore;
+  store: TelepathyHubStore;
+}
+
+export interface TelepathyHubStore {
+  clearConnectedStates(): Promise<void>;
+  getDevice(agentKey: string, deviceId: string): Promise<TelepathyDeviceRecord>;
+  markConnected(agentKey: string, deviceId: string, label?: string): Promise<TelepathyDeviceRecord>;
+  markDisconnected(agentKey: string, deviceId: string): Promise<void>;
+  touchLastSeen(agentKey: string, deviceId: string): Promise<void>;
 }
 
 export interface TelepathyContextSubmitMetadata {
@@ -97,199 +100,13 @@ export type TelepathyContextSubmitHandler = (
   input: TelepathyContextSubmitInput,
 ) => Promise<void> | void;
 
-function normalizePath(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith("/")) {
-    return `/${trimmed}`;
-  }
-
-  return trimmed;
-}
-
-function readPort(value: string | null): number {
-  if (!value) {
-    return DEFAULT_TELEPATHY_PORT;
-  }
-
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) {
-    throw new Error(`Invalid telepathy port: ${value}`);
-  }
-
-  return parsed;
-}
-
-function buildDeviceKey(agentKey: string, deviceId: string): string {
-  return `${agentKey}::${deviceId}`;
-}
-
-function isUpgradeRequestForPath(request: IncomingMessage, expectedPath: string): boolean {
-  if (!request.url) {
-    return false;
-  }
-
-  const pathname = new URL(request.url, "http://telepathy.local").pathname.replace(/\/+$/, "") || "/";
-  const normalizedExpectedPath = expectedPath.replace(/\/+$/, "") || "/";
-  return pathname === normalizedExpectedPath;
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
-}
-
-function isAllowedUpgradeOrigin(request: IncomingMessage): boolean {
-  const origin = request.headers.origin;
-  if (origin === undefined) {
-    return true;
-  }
-
-  if (Array.isArray(origin)) {
-    return false;
-  }
-
-  try {
-    return isLoopbackHostname(new URL(origin).hostname);
-  } catch {
-    return false;
-  }
-}
-
-function rawMessageByteLength(message: WebSocket.RawData): number {
-  if (typeof message === "string") {
-    return Buffer.byteLength(message, "utf8");
-  }
-
-  if (Array.isArray(message)) {
-    return message.reduce((total, chunk) => total + chunk.byteLength, 0);
-  }
-
-  return message.byteLength;
-}
-
-function createSocketBudget(): (message: WebSocket.RawData) => string | null {
-  let windowStartedAt = Date.now();
-  let messageCount = 0;
-  let byteCount = 0;
-
-  return (message) => {
-    const now = Date.now();
-    if (now - windowStartedAt > MESSAGE_RATE_WINDOW_MS) {
-      windowStartedAt = now;
-      messageCount = 0;
-      byteCount = 0;
-    }
-
-    const messageBytes = rawMessageByteLength(message);
-    if (messageBytes > TELEPATHY_MAX_WEBSOCKET_PAYLOAD_BYTES) {
-      return "Telepathy message is too large.";
-    }
-
-    messageCount += 1;
-    byteCount += messageBytes;
-    if (messageCount > MAX_MESSAGES_PER_WINDOW) {
-      return "Telepathy message rate limit exceeded.";
-    }
-
-    if (byteCount > MAX_BYTES_PER_WINDOW) {
-      return "Telepathy message byte rate limit exceeded.";
-    }
-
-    return null;
-  };
-}
-
-function rawMessageToUtf8Text(message: WebSocket.RawData): string {
-  if (typeof message === "string") {
-    return message;
-  }
-
-  if (Array.isArray(message)) {
-    return Buffer.concat(message).toString("utf8");
-  }
-
-  if (Buffer.isBuffer(message)) {
-    return message.toString("utf8");
-  }
-
-  return Buffer.from(new Uint8Array(message)).toString("utf8");
-}
-
-function safeJsonParse(message: WebSocket.RawData): unknown {
-  const text = rawMessageToUtf8Text(message);
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    throw new ToolError("Telepathy receiver sent invalid JSON.");
-  }
-}
-
-function sendJson(socket: WebSocket, payload: TelepathyServerMessage): Promise<void> {
-  return new Promise((resolve, reject) => {
-    socket.send(JSON.stringify(payload), (error: Error | undefined) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-
-      resolve();
-    });
-  });
-}
-
-function compactCloseReason(reason: string): string {
-  const maxBytes = 120;
-  const bytes = Buffer.from(reason, "utf8");
-  if (bytes.length <= maxBytes) {
-    return reason;
-  }
-
-  return `${bytes.subarray(0, maxBytes - 1).toString("utf8").replace(/\uFFFD+$/u, "")}…`;
-}
-
-async function closeSocket(socket: WebSocket, code: number, reason: string): Promise<void> {
-  if (socket.readyState === socket.CLOSING || socket.readyState === socket.CLOSED) {
-    return;
-  }
-
-  socket.close(code, compactCloseReason(reason));
-}
-
-function readOptionalRequestId(value: unknown): string | undefined {
-  if (!isRecord(value) || typeof value.requestId !== "string") {
-    return undefined;
-  }
-
-  return trimToNull(value.requestId) ?? undefined;
-}
-
-export function resolveTelepathyEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = trimToNull(env.TELEPATHY_ENABLED);
-  if (raw) {
-    return /^(1|true|yes|on)$/i.test(raw);
-  }
-
-  return trimToNull(env.TELEPATHY_PORT) !== null;
-}
-
-function resolveTelepathyHost(env: NodeJS.ProcessEnv = process.env): string {
-  return trimToNull(env.TELEPATHY_HOST) ?? DEFAULT_TELEPATHY_HOST;
-}
-
-function resolveTelepathyPort(env: NodeJS.ProcessEnv = process.env): number {
-  return readPort(trimToNull(env.TELEPATHY_PORT));
-}
-
-function resolveTelepathyPath(env: NodeJS.ProcessEnv = process.env): string {
-  return normalizePath(trimToNull(env.TELEPATHY_PATH) ?? DEFAULT_TELEPATHY_PATH);
-}
-
 export class TelepathyHub {
   private readonly host: string;
   private onContextSubmit: TelepathyContextSubmitHandler | null;
   private readonly path: string;
   private readonly port: number;
-  private readonly store: TelepathyDeviceStore;
-  private readonly devices = new Map<string, ConnectedDevice>();
+  private readonly store: TelepathyHubStore;
+  private readonly devices = new Map<string, ConnectedTelepathyDevice>();
   private readonly pending = new Map<string, PendingScreenshotRequest>();
 
   private server: Server | null = null;
@@ -300,7 +117,7 @@ export class TelepathyHub {
     const env = options.env ?? process.env;
     this.host = options.host ?? resolveTelepathyHost(env);
     this.onContextSubmit = options.onContextSubmit ?? null;
-    this.path = options.path ? normalizePath(options.path) : resolveTelepathyPath(env);
+    this.path = options.path ? normalizeTelepathyPath(options.path) : resolveTelepathyPath(env);
     this.port = options.port ?? resolveTelepathyPort(env);
     this.store = options.store;
   }
@@ -354,7 +171,7 @@ export class TelepathyHub {
   }): Promise<TelepathyScreenshotCapture> {
     await this.start();
 
-    const deviceKey = buildDeviceKey(input.agentKey, input.deviceId);
+    const deviceKey = buildTelepathyDeviceKey(input.agentKey, input.deviceId);
     const device = await this.waitForConnectedDevice(
       input.agentKey,
       input.deviceId,
@@ -367,7 +184,7 @@ export class TelepathyHub {
     if (!registeredDevice.enabled || registeredDevice.tokenHash !== device.authenticatedTokenHash) {
       this.devices.delete(deviceKey);
       this.rejectPendingForDevice(device.agentKey, device.deviceId, "Telepathy device credentials changed.");
-      void closeSocket(device.socket, RECEIVER_CLOSE_CODE_TRY_AGAIN, "Telepathy device credentials changed");
+      void closeTelepathySocket(device.socket, RECEIVER_CLOSE_CODE_TRY_AGAIN, "Telepathy device credentials changed");
       throw new ToolError(`Telepathy device ${input.deviceId} is no longer authorized for agent ${input.agentKey}.`);
     }
 
@@ -390,7 +207,7 @@ export class TelepathyHub {
       });
 
       try {
-        await sendJson(device.socket, {
+        await sendTelepathySocketJson(device.socket, {
           type: "screenshot.request",
           requestId,
         });
@@ -406,8 +223,8 @@ export class TelepathyHub {
     agentKey: string,
     deviceId: string,
     timeoutMs: number,
-  ): Promise<ConnectedDevice | null> {
-    const deviceKey = buildDeviceKey(agentKey, deviceId);
+  ): Promise<ConnectedTelepathyDevice | null> {
+    const deviceKey = buildTelepathyDeviceKey(agentKey, deviceId);
     const existingDevice = this.devices.get(deviceKey);
     if (existingDevice) {
       return existingDevice;
@@ -446,7 +263,7 @@ export class TelepathyHub {
     }
 
     for (const device of this.devices.values()) {
-      await closeSocket(device.socket, RECEIVER_CLOSE_CODE_TRY_AGAIN, "Telepathy hub shutting down");
+      await closeTelepathySocket(device.socket, RECEIVER_CLOSE_CODE_TRY_AGAIN, "Telepathy hub shutting down");
     }
     this.devices.clear();
 
@@ -506,7 +323,7 @@ export class TelepathyHub {
       noServer: true,
     });
     server.on("upgrade", (request, socket, head) => {
-      if (!isUpgradeRequestForPath(request, this.path) || !isAllowedUpgradeOrigin(request)) {
+      if (!isTelepathyUpgradeRequestAllowed(request, this.path)) {
         socket.destroy();
         return;
       }
@@ -533,7 +350,7 @@ export class TelepathyHub {
 
   private attachSocket(socket: WebSocket): void {
     let currentKey: string | null = null;
-    const consumeSocketBudget = createSocketBudget();
+    const consumeSocketBudget = createTelepathySocketBudget();
 
     socket.on("message", async (rawMessage: WebSocket.RawData) => {
       let message: TelepathyReceiverMessage;
@@ -541,17 +358,18 @@ export class TelepathyHub {
       try {
         const budgetError = consumeSocketBudget(rawMessage);
         if (budgetError) {
-          await closeSocket(socket, RECEIVER_CLOSE_CODE_POLICY_VIOLATION, budgetError);
+          await closeTelepathySocket(socket, RECEIVER_CLOSE_CODE_POLICY_VIOLATION, budgetError);
           return;
         }
 
-        parsedMessage = safeJsonParse(rawMessage);
-        message = parseTelepathyReceiverMessage(parsedMessage);
+        const parsed = parseTelepathySocketReceiverMessage(rawMessage);
+        parsedMessage = parsed.raw;
+        message = parsed.message;
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Invalid telepathy message";
         if (currentKey) {
-          const requestId = readOptionalRequestId(parsedMessage);
-          await sendJson(socket, {
+          const requestId = readTelepathyMessageRequestId(parsedMessage);
+          await sendTelepathySocketJson(socket, {
             type: "request.error",
             ...(requestId ? {requestId} : {}),
             error: errorMessage,
@@ -559,43 +377,30 @@ export class TelepathyHub {
           return;
         }
 
-        await closeSocket(socket, RECEIVER_CLOSE_CODE_POLICY_VIOLATION, "Invalid telepathy message");
+        await closeTelepathySocket(socket, RECEIVER_CLOSE_CODE_POLICY_VIOLATION, "Invalid telepathy message");
         return;
       }
 
       if (message.type === "device.hello") {
-        let registeredDevice;
-        try {
-          registeredDevice = await this.store.getDevice(message.agentKey, message.deviceId);
-        } catch {
-          await closeSocket(socket, RECEIVER_CLOSE_CODE_POLICY_VIOLATION, "Unknown telepathy device");
+        const accepted = await acceptTelepathyDeviceHello({
+          message,
+          socket,
+          store: this.store,
+        });
+        if (!accepted.ok) {
+          await closeTelepathySocket(socket, RECEIVER_CLOSE_CODE_POLICY_VIOLATION, accepted.closeReason);
           return;
         }
 
-        if (!registeredDevice.enabled || !telepathyTokenMatches(message.token, registeredDevice.tokenHash)) {
-          await closeSocket(socket, RECEIVER_CLOSE_CODE_POLICY_VIOLATION, "Invalid telepathy token");
-          return;
-        }
-
-        const deviceKey = buildDeviceKey(message.agentKey, message.deviceId);
-        const existing = this.devices.get(deviceKey);
+        const existing = this.devices.get(accepted.deviceKey);
         if (existing && existing.socket !== socket) {
           this.rejectPendingForDevice(existing.agentKey, existing.deviceId, "Telepathy device reconnected.");
-          void closeSocket(existing.socket, RECEIVER_CLOSE_CODE_TRY_AGAIN, "Telepathy device replaced");
+          void closeTelepathySocket(existing.socket, RECEIVER_CLOSE_CODE_TRY_AGAIN, "Telepathy device replaced");
         }
 
-        currentKey = deviceKey;
-        const storedDevice = await this.store.markConnected(message.agentKey, message.deviceId, message.label);
-        this.devices.set(deviceKey, {
-          agentKey: storedDevice.agentKey,
-          deviceId: storedDevice.deviceId,
-          ...(storedDevice.label ? {label: storedDevice.label} : {}),
-          authenticatedTokenHash: storedDevice.tokenHash,
-          socket,
-          connectedAt: storedDevice.connectedAt ?? Date.now(),
-          lastSeenAt: storedDevice.lastSeenAt ?? Date.now(),
-        });
-        await sendJson(socket, {
+        currentKey = accepted.deviceKey;
+        this.devices.set(accepted.deviceKey, accepted.device);
+        await sendTelepathySocketJson(socket, {
           type: "device.ready",
           agentKey: message.agentKey,
           deviceId: message.deviceId,
@@ -604,13 +409,13 @@ export class TelepathyHub {
       }
 
       if (!currentKey) {
-        await closeSocket(socket, RECEIVER_CLOSE_CODE_POLICY_VIOLATION, "Telepathy hello required first");
+        await closeTelepathySocket(socket, RECEIVER_CLOSE_CODE_POLICY_VIOLATION, "Telepathy hello required first");
         return;
       }
 
       const device = this.devices.get(currentKey);
       if (!device || device.socket !== socket) {
-        await closeSocket(socket, RECEIVER_CLOSE_CODE_TRY_AGAIN, "Telepathy device is no longer active");
+        await closeTelepathySocket(socket, RECEIVER_CLOSE_CODE_TRY_AGAIN, "Telepathy device is no longer active");
         return;
       }
       device.lastSeenAt = Date.now();
@@ -645,12 +450,12 @@ export class TelepathyHub {
   }
 
   private async handleContextSubmit(
-    device: ConnectedDevice,
+    device: ConnectedTelepathyDevice,
     message: TelepathyContextSubmit,
     socket: WebSocket,
   ): Promise<void> {
     if (!this.onContextSubmit) {
-      await sendJson(socket, {
+      await sendTelepathySocketJson(socket, {
         type: "request.error",
         requestId: message.requestId,
         error: "Telepathy context submit is not configured on the server.",
@@ -668,12 +473,12 @@ export class TelepathyHub {
         items: message.items,
         ...(message.metadata ? {metadata: message.metadata} : {}),
       });
-      await sendJson(socket, {
+      await sendTelepathySocketJson(socket, {
         type: "context.accepted",
         requestId: message.requestId,
       });
     } catch (error) {
-      await sendJson(socket, {
+      await sendTelepathySocketJson(socket, {
         type: "request.error",
         requestId: message.requestId,
         error: error instanceof Error ? error.message : "Telepathy context submit failed.",
@@ -681,7 +486,7 @@ export class TelepathyHub {
     }
   }
 
-  private handleScreenshotResult(device: ConnectedDevice, message: TelepathyScreenshotResult): void {
+  private handleScreenshotResult(device: ConnectedTelepathyDevice, message: TelepathyScreenshotResult): void {
     const pending = this.pending.get(message.requestId);
     if (!pending) {
       return;

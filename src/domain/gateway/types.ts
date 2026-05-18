@@ -1,4 +1,4 @@
-import type {JsonValue} from "../../kernel/agent/types.js";
+import type {JsonValue} from "../../lib/json.js";
 
 export type GatewayDeliveryMode = "queue" | "wake";
 export type GatewaySourceStatus = "active" | "suspended";

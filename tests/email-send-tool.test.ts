@@ -4,22 +4,18 @@ import os from "node:os";
 import path from "node:path";
 
 import {Agent, RunContext} from "../src/kernel/agent/index.js";
-import {EmailSendTool} from "../src/panda/index.js";
+import {EmailSendTool, type EmailSendToolOptions} from "../src/panda/index.js";
 import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
 import type {
     EmailAccountRecord,
-    EmailAccountSyncState,
-    EmailAllowedRecipientRecord,
     EmailMessageRecipientRecord,
     EmailMessageRecord,
-    EmailStore,
-    RecordEmailMessageInput,
-    RecordEmailMessageResult,
-    UpsertEmailAccountInput,
-} from "../src/domain/email/index.js";
-import {normalizeEmailAddress} from "../src/domain/email/index.js";
+} from "../src/domain/email/types.js";
+import {normalizeEmailAddress} from "../src/domain/email/shared.js";
 
-class MemoryEmailStore implements EmailStore {
+type EmailSendStore = EmailSendToolOptions["store"];
+
+class MemoryEmailStore implements EmailSendStore {
   account: EmailAccountRecord = {
     agentKey: "panda",
     accountKey: "work",
@@ -44,14 +40,6 @@ class MemoryEmailStore implements EmailStore {
   messages = new Map<string, EmailMessageRecord>();
   recipients = new Map<string, EmailMessageRecipientRecord[]>();
 
-  async ensureSchema(): Promise<void> {}
-  async upsertAccount(_input: UpsertEmailAccountInput): Promise<EmailAccountRecord> {
-    return this.account;
-  }
-  async disableAccount(): Promise<EmailAccountRecord> {
-    this.account = {...this.account, enabled: false};
-    return this.account;
-  }
   async getAccount(agentKey: string, accountKey: string): Promise<EmailAccountRecord> {
     if (agentKey !== this.account.agentKey || accountKey !== this.account.accountKey) {
       throw new Error(`Unknown email account ${accountKey}`);
@@ -59,23 +47,8 @@ class MemoryEmailStore implements EmailStore {
 
     return this.account;
   }
-  async listEnabledAccounts(): Promise<readonly EmailAccountRecord[]> {
-    return [this.account];
-  }
-  async updateAccountSyncState(_agentKey: string, _accountKey: string, syncState: EmailAccountSyncState): Promise<EmailAccountRecord> {
-    this.account = {...this.account, syncState};
-    return this.account;
-  }
-  async addAllowedRecipient(agentKey: string, accountKey: string, address: string): Promise<EmailAllowedRecipientRecord> {
-    const normalized = normalizeEmailAddress(address);
-    this.allowed.add(normalized);
-    return {agentKey, accountKey, address: normalized, createdAt: 1};
-  }
-  async removeAllowedRecipient(_agentKey: string, _accountKey: string, address: string): Promise<boolean> {
-    return this.allowed.delete(normalizeEmailAddress(address));
-  }
-  async listAllowedRecipients(agentKey: string, accountKey: string): Promise<readonly EmailAllowedRecipientRecord[]> {
-    return Array.from(this.allowed).map((address) => ({agentKey, accountKey, address, createdAt: 1}));
+  allowRecipient(address: string): void {
+    this.allowed.add(normalizeEmailAddress(address));
   }
   async assertRecipientsAllowed(_agentKey: string, accountKey: string, addresses: readonly string[]): Promise<void> {
     const blocked = addresses
@@ -84,9 +57,6 @@ class MemoryEmailStore implements EmailStore {
     if (blocked.length > 0) {
       throw new Error(`Email account ${accountKey} is not allowed to send to ${blocked.join(", ")}.`);
     }
-  }
-  async recordMessage(_input: RecordEmailMessageInput): Promise<RecordEmailMessageResult> {
-    throw new Error("unused");
   }
   async getMessage(messageId: string): Promise<EmailMessageRecord> {
     const message = this.messages.get(messageId);
@@ -148,7 +118,7 @@ describe("EmailSendTool", () => {
 
   it("queues a fresh allowlisted email", async () => {
     const store = new MemoryEmailStore();
-    await store.addAllowedRecipient("panda", "work", "alice@example.com");
+    store.allowRecipient("alice@example.com");
     const context = createContext();
     const tool = new EmailSendTool<DefaultAgentSessionContext>({store});
 
@@ -186,7 +156,7 @@ describe("EmailSendTool", () => {
   it("derives reply-all recipients and threading headers from stored email", async () => {
     const store = new MemoryEmailStore();
     for (const address of ["alice@example.com", "bob@example.com", "carol@example.com"]) {
-      await store.addAllowedRecipient("panda", "work", address);
+      store.allowRecipient(address);
     }
     store.messages.set("email-1", {
       id: "email-1",
@@ -287,7 +257,7 @@ describe("EmailSendTool", () => {
 
   it("validates attachment paths before queueing", async () => {
     const store = new MemoryEmailStore();
-    await store.addAllowedRecipient("panda", "work", "alice@example.com");
+    store.allowRecipient("alice@example.com");
     const context = createContext();
     const tool = new EmailSendTool<DefaultAgentSessionContext>({store});
 

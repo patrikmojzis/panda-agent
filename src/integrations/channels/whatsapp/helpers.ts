@@ -1,7 +1,13 @@
 import type {WAMessage} from "baileys";
+import {
+  isJidBroadcast,
+  isJidGroup,
+  isJidNewsletter,
+  isJidStatusBroadcast,
+} from "baileys";
 import {normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
-import type {JsonObject} from "../../../kernel/agent/types.js";
+import type {JsonObject} from "../../../lib/json.js";
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import {renderWhatsAppInboundText, renderWhatsAppReactionText} from "../../../prompts/channels/whatsapp.js";
 import {WHATSAPP_SOURCE} from "./config.js";
@@ -155,6 +161,21 @@ export function extractWhatsAppQuotedMessageId(message: WAMessage): string | und
   );
 }
 
+export function extractWhatsAppReaction(message: WAMessage): {emoji: string; targetMessageId: string} | null {
+  const content = normalizeMessageContent(message.message);
+  const reaction = content?.reactionMessage;
+  const emoji = reaction?.text?.trim();
+  const targetMessageId = reaction?.key?.id?.trim();
+  if (!emoji || !targetMessageId) {
+    return null;
+  }
+
+  return {
+    emoji,
+    targetMessageId,
+  };
+}
+
 export function describeWhatsAppMessageShape(message: WAMessage): string {
   const content = normalizeMessageContent(message.message);
   if (!content) {
@@ -163,6 +184,46 @@ export function describeWhatsAppMessageShape(message: WAMessage): string {
 
   const keys = Object.keys(content).filter((key) => key !== "messageContextInfo");
   return keys.length === 0 ? "unknown" : keys.join(",");
+}
+
+export function resolveWhatsAppChatType(remoteJid: string | undefined): "private" | "group" | "status" | "newsletter" | "broadcast" | "unknown" {
+  if (!remoteJid) {
+    return "unknown";
+  }
+
+  if (isJidStatusBroadcast(remoteJid)) {
+    return "status";
+  }
+  if (isJidGroup(remoteJid)) {
+    return "group";
+  }
+  if (isJidNewsletter(remoteJid)) {
+    return "newsletter";
+  }
+  if (isJidBroadcast(remoteJid)) {
+    return "broadcast";
+  }
+
+  return "private";
+}
+
+export function readWhatsAppMessageSentAtMs(value: unknown): number | undefined {
+  const seconds = (() => {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      return value;
+    }
+
+    if (typeof value === "object" && value !== null && "toNumber" in value && typeof value.toNumber === "function") {
+      const numericValue = value.toNumber();
+      if (typeof numericValue === "number" && Number.isFinite(numericValue) && numericValue > 0) {
+        return numericValue;
+      }
+    }
+
+    return undefined;
+  })();
+
+  return seconds === undefined ? undefined : seconds * 1_000;
 }
 
 export function buildWhatsAppInboundText(options: WhatsAppInboundTextOptions): string {

@@ -1,25 +1,26 @@
-import {createHash, randomUUID} from "node:crypto";
+import {toJson} from "../../../lib/postgres-values.js";
+import {randomUUID} from "node:crypto";
 
 import {resolveModelSelector} from "../../../kernel/models/model-selector.js";
-import {addConstraint, alterIfSupported, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
-import type {ThreadLease, ThreadLeaseManager} from "./coordinator.js";
 import {
-    buildThreadRuntimeTableNames,
-    CREATE_RUNTIME_SCHEMA_SQL,
-    quoteIdentifier,
-    type ThreadRuntimeTableNames,
-    toJson,
-    validateIdentifier,
-} from "./postgres-shared.js";
-import {buildThreadRuntimeSchemaSql} from "./postgres-schema.js";
-import {parseInputRow, parseMessageRow, parseRunRow, parseThreadRow, parseToolJobRow} from "./postgres-rows.js";
+    buildThreadRuntimeTableNames, type ThreadRuntimeTableNames} from "./postgres-shared.js";
+import {buildThreadRuntimeNotificationChannel, type ThreadRuntimeNotification} from "./postgres-notifications.js";
+import {ensurePostgresThreadRuntimeSchema} from "./postgres-schema.js";
+import {
+    parseInputRow,
+    parseMessageRow,
+    parseRunRow,
+    parseRunningToolJobLossRow,
+    parseThreadRow,
+    parseToolJobRow,
+} from "./postgres-rows.js";
 import {
     applyPendingThreadInputs,
     discardPendingThreadInputs,
     enqueueThreadInput,
     promoteQueuedThreadInputs,
 } from "./postgres-inputs.js";
-import type {PgPoolLike, PgQueryable} from "./postgres-db.js";
+import type {PgPoolLike, PgQueryable} from "../../../lib/postgres-query.js";
 import type {ThreadEnqueueResult, ThreadInputApplyScope, ThreadRuntimeStore} from "./store.js";
 import {
     type CreateThreadInput,
@@ -37,52 +38,45 @@ import {
     type ThreadToolJobUpdate,
     type ThreadUpdate,
 } from "./types.js";
-import {buildIdentityTableNames} from "../../../domain/identity/postgres-shared.js";
-import {buildSessionTableNames} from "../../../domain/sessions/postgres-shared.js";
 import {resolveThreadPromptCacheKey} from "./prompt-cache-key.js";
 
 interface PostgresThreadRuntimeStoreOptions {
   pool: PgPoolLike;
 }
 
-export interface ThreadRuntimeNotification {
+function parseThreadSummaryCount(row: Record<string, unknown>, column: string): {
   threadId: string;
-}
-
-export function buildThreadRuntimeNotificationChannel(): string {
-  return validateIdentifier("runtime_events");
-}
-
-export function parseThreadRuntimeNotification(payload: string): ThreadRuntimeNotification | null {
-  try {
-    const parsed = JSON.parse(payload) as Partial<ThreadRuntimeNotification>;
-    if (!parsed || typeof parsed.threadId !== "string" || parsed.threadId.length === 0) {
-      return null;
-    }
-
-    return {
-      threadId: parsed.threadId,
-    };
-  } catch {
-    return null;
+  count: number;
+} {
+  if (typeof row.thread_id !== "string" || !row.thread_id.trim()) {
+    throw new Error("Thread runtime summary count thread id must not be empty.");
   }
+
+  const value = row[column] ?? 0;
+  const count = typeof value === "number" && Number.isSafeInteger(value)
+    ? value
+    : typeof value === "string" && /^[0-9]+$/.test(value)
+      ? Number(value)
+      : Number.NaN;
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new Error(`Thread runtime summary ${column} must be a non-negative safe integer.`);
+  }
+
+  return {
+    threadId: row.thread_id,
+    count,
+  };
 }
 
 export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   private readonly pool: PgPoolLike;
   private readonly tables: ThreadRuntimeTableNames;
   private readonly notificationChannel: string;
-  private readonly identityTableName: string;
-  private readonly sessionTableName: string;
 
   constructor(options: PostgresThreadRuntimeStoreOptions) {
     this.pool = options.pool;
-    const identityTables = buildIdentityTableNames();
-    const sessionTables = buildSessionTableNames();
     this.tables = buildThreadRuntimeTableNames();
     this.notificationChannel = buildThreadRuntimeNotificationChannel();
-    this.identityTableName = identityTables.identities;
-    this.sessionTableName = sessionTables.sessions;
   }
 
   private async notifyThreadChanged(threadId: string, queryable: PgQueryable = this.pool): Promise<void> {
@@ -100,199 +94,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(buildThreadRuntimeSchemaSql(this.tables, this.sessionTableName, this.identityTableName));
-    await assertIntegrityChecks(this.pool, "Thread runtime schema", [
-      {
-        label: "agent_sessions.current_thread_id orphaned from threads.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.sessionTableName} AS session
-          LEFT JOIN ${this.tables.threads} AS thread
-            ON thread.id = session.current_thread_id
-          WHERE thread.id IS NULL
-        `,
-      },
-      {
-        label: "agent_sessions.current_thread_id bound to a thread from another session",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.sessionTableName} AS session
-          INNER JOIN ${this.tables.threads} AS thread
-            ON thread.id = session.current_thread_id
-          WHERE thread.session_id <> session.id
-        `,
-      },
-      {
-        label: "messages.run_id orphaned from runs.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.messages} AS message
-          LEFT JOIN ${this.tables.runs} AS run
-            ON run.id = message.run_id
-          WHERE message.run_id IS NOT NULL
-            AND run.id IS NULL
-        `,
-      },
-      {
-        label: "messages.run_id bound to a run from another thread",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.messages} AS message
-          INNER JOIN ${this.tables.runs} AS run
-            ON run.id = message.run_id
-          WHERE message.run_id IS NOT NULL
-            AND run.thread_id <> message.thread_id
-        `,
-      },
-      {
-        label: "tool_jobs.run_id bound to a run from another thread",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.toolJobs} AS job
-          INNER JOIN ${this.tables.runs} AS run
-            ON run.id = job.run_id
-          WHERE job.run_id IS NOT NULL
-            AND run.thread_id <> job.thread_id
-        `,
-      },
-      {
-        label: "bash_jobs.run_id bound to a run from another thread",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.bashJobs} AS job
-          INNER JOIN ${this.tables.runs} AS run
-            ON run.id = job.run_id
-          WHERE job.run_id IS NOT NULL
-            AND run.thread_id <> job.thread_id
-        `,
-      },
-    ]);
-    await this.pool.query(`
-      UPDATE ${this.tables.messages}
-      SET run_thread_id = NULL
-      WHERE run_id IS NULL
-        AND run_thread_id IS NOT NULL
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.messages}
-      SET run_thread_id = run.thread_id
-      FROM ${this.tables.runs} AS run
-      WHERE ${this.tables.messages}.run_id IS NOT NULL
-        AND run.id = ${this.tables.messages}.run_id
-        AND (
-          ${this.tables.messages}.run_thread_id IS NULL
-          OR ${this.tables.messages}.run_thread_id <> run.thread_id
-        )
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.toolJobs}
-      SET run_thread_id = NULL
-      WHERE run_id IS NULL
-        AND run_thread_id IS NOT NULL
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.toolJobs}
-      SET run_thread_id = run.thread_id
-      FROM ${this.tables.runs} AS run
-      WHERE ${this.tables.toolJobs}.run_id IS NOT NULL
-        AND run.id = ${this.tables.toolJobs}.run_id
-        AND (
-          ${this.tables.toolJobs}.run_thread_id IS NULL
-          OR ${this.tables.toolJobs}.run_thread_id <> run.thread_id
-        )
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.bashJobs}
-      SET run_thread_id = NULL
-      WHERE run_id IS NULL
-        AND run_thread_id IS NOT NULL
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.bashJobs}
-      SET run_thread_id = run.thread_id
-      FROM ${this.tables.runs} AS run
-      WHERE ${this.tables.bashJobs}.run_id IS NOT NULL
-        AND run.id = ${this.tables.bashJobs}.run_id
-        AND (
-          ${this.tables.bashJobs}.run_thread_id IS NULL
-          OR ${this.tables.bashJobs}.run_thread_id <> run.thread_id
-        )
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.messages}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_messages_run_fk`)}
-      FOREIGN KEY (run_id)
-      REFERENCES ${this.tables.runs}(id)
-      ON DELETE SET NULL
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.messages}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_messages_run_scope_check`)}
-      CHECK (
-        (
-          run_id IS NULL
-          AND run_thread_id IS NULL
-        ) OR (
-          run_id IS NOT NULL
-          AND run_thread_id = thread_id
-        )
-      )
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.messages}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_messages_run_scope_fk`)}
-      FOREIGN KEY (run_thread_id, run_id)
-      REFERENCES ${this.tables.runs}(thread_id, id)
-      ON DELETE SET NULL
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.toolJobs}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_tool_jobs_run_scope_check`)}
-      CHECK (
-        (
-          run_id IS NULL
-          AND run_thread_id IS NULL
-        ) OR (
-          run_id IS NOT NULL
-          AND run_thread_id = thread_id
-        )
-      )
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.toolJobs}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_tool_jobs_run_scope_fk`)}
-      FOREIGN KEY (run_thread_id, run_id)
-      REFERENCES ${this.tables.runs}(thread_id, id)
-      ON DELETE SET NULL
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.bashJobs}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_bash_jobs_run_scope_check`)}
-      CHECK (
-        (
-          run_id IS NULL
-          AND run_thread_id IS NULL
-        ) OR (
-          run_id IS NOT NULL
-          AND run_thread_id = thread_id
-        )
-      )
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.bashJobs}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_bash_jobs_run_scope_fk`)}
-      FOREIGN KEY (run_thread_id, run_id)
-      REFERENCES ${this.tables.runs}(thread_id, id)
-      ON DELETE SET NULL
-    `);
-    await alterIfSupported(this.pool, `
-      ALTER TABLE ${this.sessionTableName}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_agent_sessions_current_thread_fk`)}
-      FOREIGN KEY (id, current_thread_id)
-      REFERENCES ${this.tables.threads}(session_id, id)
-      DEFERRABLE INITIALLY DEFERRED
-    `);
+    await ensurePostgresThreadRuntimeSchema(this.pool);
   }
 
   async createThreadRecord(input: CreateThreadInput, queryable: PgQueryable = this.pool): Promise<ThreadRecord> {
@@ -447,20 +249,14 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
 
     const messageCountByThreadId = new Map<string, number>();
     for (const row of messageCountResult.rows) {
-      const parsedRow = row as Record<string, unknown>;
-      messageCountByThreadId.set(
-        String(parsedRow.thread_id),
-        Number(parsedRow.message_count ?? 0),
-      );
+      const parsedRow = parseThreadSummaryCount(row as Record<string, unknown>, "message_count");
+      messageCountByThreadId.set(parsedRow.threadId, parsedRow.count);
     }
 
     const pendingCountByThreadId = new Map<string, number>();
     for (const row of pendingCountResult.rows) {
-      const parsedRow = row as Record<string, unknown>;
-      pendingCountByThreadId.set(
-        String(parsedRow.thread_id),
-        Number(parsedRow.pending_input_count ?? 0),
-      );
+      const parsedRow = parseThreadSummaryCount(row as Record<string, unknown>, "pending_input_count");
+      pendingCountByThreadId.set(parsedRow.threadId, parsedRow.count);
     }
 
     const latestMessageByThreadId = new Map<string, ThreadMessageRecord>();
@@ -987,10 +783,10 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     const threadIds = new Set<string>();
 
     for (const row of runningResult.rows) {
-      const parsedRow = row as Record<string, unknown>;
-      const jobId = String(parsedRow.id);
-      const threadId = String(parsedRow.thread_id);
-      const startedAt = new Date(String(parsedRow.started_at)).getTime();
+      const parsedRow = parseRunningToolJobLossRow(row as Record<string, unknown>);
+      const jobId = parsedRow.id;
+      const threadId = parsedRow.threadId;
+      const startedAt = parsedRow.startedAt;
       threadIds.add(threadId);
 
       await this.pool.query(`
@@ -1054,59 +850,4 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     await this.notifyThreadChanged(record.threadId);
     return record;
   }
-}
-
-export class PostgresThreadLeaseManager implements ThreadLeaseManager {
-  private readonly pool: PgPoolLike;
-
-  constructor(pool: PgPoolLike) {
-    this.pool = pool;
-  }
-
-  async tryAcquire(threadId: string): Promise<ThreadLease | null> {
-    const client = await this.pool.connect();
-    const [keyA, keyB] = hashThreadLeaseKey(threadId);
-
-    try {
-      const result = await client.query(
-        "SELECT pg_try_advisory_lock($1, $2) AS acquired",
-        [keyA, keyB],
-      );
-
-      const acquired = Boolean((result.rows[0] as Record<string, unknown> | undefined)?.acquired);
-      if (!acquired) {
-        client.release();
-        return null;
-      }
-
-      let released = false;
-      return {
-        threadId,
-        release: async () => {
-          if (released) {
-            return;
-          }
-
-          released = true;
-
-          try {
-            await client.query("SELECT pg_advisory_unlock($1, $2)", [keyA, keyB]);
-          } finally {
-            client.release();
-          }
-        },
-      };
-    } catch (error) {
-      client.release();
-      throw error;
-    }
-  }
-}
-
-function hashThreadLeaseKey(threadId: string): readonly [number, number] {
-  const digest = createHash("sha256").update(threadId).digest();
-  return [
-    digest.readInt32BE(0),
-    digest.readInt32BE(4),
-  ] as const;
 }

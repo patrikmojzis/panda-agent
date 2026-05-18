@@ -4,33 +4,36 @@ import {z} from "zod";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {ConfigurationError, ToolError} from "../../kernel/agent/exceptions.js";
-import type {JsonObject} from "../../kernel/agent/types.js";
+import {isJsonObject, type JsonObject} from "../../lib/json.js";
+import {uniqueTrimmedStrings} from "../../lib/strings.js";
 import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import {readWorkerSessionMetadata} from "../../domain/sessions/worker-metadata.js";
 import type {
   ExecutionEnvironmentRecord,
-  ExecutionEnvironmentStore,
-} from "../../domain/execution-environments/index.js";
-import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/index.js";
-import {
-  DEFAULT_WORKER_ENVIRONMENT_TTL_MS,
-  type WorkerSessionService,
-} from "../../app/runtime/worker-session-service.js";
-import type {ExecutionEnvironmentLifecycleService} from "../../app/runtime/execution-environment-service.js";
+  ExecutionToolPolicy,
+} from "../../domain/execution-environments/types.js";
+import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
+import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {SessionRecord} from "../../domain/sessions/types.js";
+import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
 import {
   buildDefaultWorkerAllowedTools,
   KNOWN_WORKER_TOOL_NAMES,
-  normalizeToolName,
   POSTGRES_READONLY_TOOL_NAME,
   WORKER_CONTROL_TOOL_NAMES,
-} from "./worker-tool-policy.js";
-import {rethrowAsToolError} from "./shared.js";
+} from "../worker-tool-policy.js";
+import {readRequiredAgentSessionToolScope, rethrowAsToolError} from "./shared.js";
 
 function compactObject<T extends Record<string, unknown>>(value: T): JsonObject {
-  return Object.fromEntries(
+  const compacted = Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined),
-  ) as JsonObject;
+  );
+  if (isJsonObject(compacted)) {
+    return compacted;
+  }
+
+  throw new ToolError("Worker tool payload must be a JSON object.");
 }
 
 function readScope(context: DefaultAgentSessionContext | undefined): {
@@ -38,18 +41,10 @@ function readScope(context: DefaultAgentSessionContext | undefined): {
   sessionId: string;
   identityId?: string;
 } {
-  const agentKey = context?.agentKey?.trim();
-  const sessionId = context?.sessionId?.trim();
-  if (!agentKey || !sessionId) {
-    throw new ToolError("Worker tools require agentKey and sessionId in the runtime session context.");
-  }
-
-  const identityId = context?.currentInput?.identityId?.trim();
-  return {
-    agentKey,
-    sessionId,
-    ...(identityId ? {identityId} : {}),
-  };
+  return readRequiredAgentSessionToolScope(
+    context,
+    "Worker tools require agentKey and sessionId in the runtime session context.",
+  );
 }
 
 function ensureWorkerA2A(context: DefaultAgentSessionContext | undefined): NonNullable<DefaultAgentSessionContext["workerA2A"]> {
@@ -59,6 +54,44 @@ function ensureWorkerA2A(context: DefaultAgentSessionContext | undefined): NonNu
   }
 
   return service;
+}
+
+const DEFAULT_WORKER_ENVIRONMENT_TTL_MS = 24 * 60 * 60 * 1_000;
+
+interface WorkerSessionCreateResult {
+  session: Pick<SessionRecord, "id" | "metadata">;
+  thread: Pick<ThreadRecord, "id">;
+  environment: ExecutionEnvironmentRecord;
+}
+
+interface WorkerSessionCreator {
+  createWorkerSession(input: {
+    agentKey: string;
+    role?: string;
+    task: string;
+    context?: string;
+    parentSessionId: string;
+    createdByIdentityId?: string;
+    model?: string;
+    environmentId?: string;
+    credentialAllowlist: readonly string[];
+    skillAllowlist: readonly string[];
+    toolPolicy: ExecutionToolPolicy;
+    beforeHandoff?: (created: WorkerSessionCreateResult) => Promise<void>;
+  }): Promise<WorkerSessionCreateResult>;
+}
+
+interface ExecutionEnvironmentCreator {
+  createStandaloneDisposableEnvironment(input: {
+    agentKey: string;
+    createdBySessionId: string;
+    ttlMs?: number;
+    metadata?: JsonObject;
+  }): Promise<ExecutionEnvironmentRecord>;
+}
+
+interface ExecutionEnvironmentStopper {
+  stopEnvironment(environmentId: string): Promise<ExecutionEnvironmentRecord>;
 }
 
 function resolveWorkerModelSelector(value: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
@@ -123,7 +156,7 @@ function validateOwnedDisposableEnvironment(input: {
 }
 
 export interface WorkerSpawnToolOptions {
-  workerSessions: Pick<WorkerSessionService, "createWorkerSession">;
+  workerSessions: WorkerSessionCreator;
   env?: NodeJS.ProcessEnv;
   availableToolNames?: () => readonly string[];
 }
@@ -146,7 +179,7 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
   description = "Spawn a disposable worker session for scoped work. By default it creates a fresh environment; pass environmentId to attach to an existing environment.";
   schema = WorkerSpawnTool.schema;
 
-  private readonly workerSessions: Pick<WorkerSessionService, "createWorkerSession">;
+  private readonly workerSessions: WorkerSessionCreator;
   private readonly env: NodeJS.ProcessEnv;
   private readonly availableToolNames?: () => readonly string[];
 
@@ -224,7 +257,7 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
   }
 
   private validateToolAllowlist(values: readonly string[], allowReadonlyPostgres: boolean): string[] {
-    const requested = [...new Set(values.map(normalizeToolName).filter(Boolean))];
+    const requested = uniqueTrimmedStrings(values);
     const available = this.availableToolNames ? new Set(this.availableToolNames()) : null;
 
     for (const toolName of requested) {
@@ -247,7 +280,7 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
 }
 
 export interface EnvironmentCreateToolOptions {
-  lifecycle: Pick<ExecutionEnvironmentLifecycleService, "createStandaloneDisposableEnvironment">;
+  lifecycle: ExecutionEnvironmentCreator;
 }
 
 export class EnvironmentCreateTool<TContext = DefaultAgentSessionContext>
@@ -261,7 +294,7 @@ export class EnvironmentCreateTool<TContext = DefaultAgentSessionContext>
   description = "Create a disposable execution environment owned by this session. Files are preserved when the environment is stopped.";
   schema = EnvironmentCreateTool.schema;
 
-  private readonly lifecycle: Pick<ExecutionEnvironmentLifecycleService, "createStandaloneDisposableEnvironment">;
+  private readonly lifecycle: ExecutionEnvironmentCreator;
 
   constructor(options: EnvironmentCreateToolOptions) {
     super();
@@ -308,7 +341,7 @@ export class EnvironmentCreateTool<TContext = DefaultAgentSessionContext>
 
 export interface EnvironmentStopToolOptions {
   environments: Pick<ExecutionEnvironmentStore, "getEnvironment">;
-  lifecycle: Pick<ExecutionEnvironmentLifecycleService, "stopEnvironment">;
+  lifecycle: ExecutionEnvironmentStopper;
 }
 
 export class EnvironmentStopTool<TContext = DefaultAgentSessionContext>
@@ -322,7 +355,7 @@ export class EnvironmentStopTool<TContext = DefaultAgentSessionContext>
   schema = EnvironmentStopTool.schema;
 
   private readonly environments: Pick<ExecutionEnvironmentStore, "getEnvironment">;
-  private readonly lifecycle: Pick<ExecutionEnvironmentLifecycleService, "stopEnvironment">;
+  private readonly lifecycle: ExecutionEnvironmentStopper;
 
   constructor(options: EnvironmentStopToolOptions) {
     super();

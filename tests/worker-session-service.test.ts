@@ -3,12 +3,12 @@ import {DataType, newDb} from "pg-mem";
 
 import {DEFAULT_WORKER_ENVIRONMENT_TTL_MS, WorkerSessionService,} from "../src/app/runtime/worker-session-service.js";
 import {ExecutionEnvironmentLifecycleService} from "../src/app/runtime/execution-environment-service.js";
-import {
-  type DisposableEnvironmentCreateRequest,
-  type DisposableEnvironmentCreateResult,
-  type ExecutionEnvironmentManager,
-  PostgresExecutionEnvironmentStore,
-} from "../src/domain/execution-environments/index.js";
+import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
+import type {
+  DisposableEnvironmentCreateRequest,
+  DisposableEnvironmentCreateResult,
+  ExecutionEnvironmentManager,
+} from "../src/domain/execution-environments/types.js";
 import {createSessionWithInitialThread} from "../src/domain/sessions/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 

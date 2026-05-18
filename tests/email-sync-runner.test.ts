@@ -1,25 +1,21 @@
 import {describe, expect, it} from "vitest";
 
-import type {CredentialResolver} from "../src/domain/credentials/index.js";
 import type {
     EmailAccountRecord,
     EmailAccountSyncState,
-    EmailAllowedRecipientRecord,
-    EmailMessageRecipientRecord,
     EmailMessageRecord,
-    EmailStore,
     RecordEmailMessageInput,
     RecordEmailMessageResult,
-    UpsertEmailAccountInput,
-} from "../src/domain/email/index.js";
-import type {SessionStore} from "../src/domain/sessions/index.js";
+} from "../src/domain/email/types.js";
 import type {SessionRecord} from "../src/domain/sessions/types.js";
-import type {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/coordinator.js";
-import {EmailSyncRunner} from "../src/integrations/channels/email/sync-runner.js";
+import {EmailSyncRunner, type EmailSyncRunnerOptions} from "../src/integrations/channels/email/sync-runner.js";
 import {renderEmailEventPrompt} from "../src/prompts/runtime/email-events.js";
 import {waitFor} from "./helpers/wait-for.js";
 
-class MemoryEmailStore implements EmailStore {
+type EmailSyncStore = EmailSyncRunnerOptions["store"];
+type EmailSyncCredentialResolver = EmailSyncRunnerOptions["credentialResolver"];
+
+class MemoryEmailStore implements EmailSyncStore {
   account: EmailAccountRecord = {
     agentKey: "panda",
     accountKey: "work",
@@ -41,16 +37,6 @@ class MemoryEmailStore implements EmailStore {
     updatedAt: 1,
   };
 
-  async ensureSchema(): Promise<void> {}
-  async upsertAccount(_input: UpsertEmailAccountInput): Promise<EmailAccountRecord> {
-    return this.account;
-  }
-  async disableAccount(): Promise<EmailAccountRecord> {
-    return this.account;
-  }
-  async getAccount(): Promise<EmailAccountRecord> {
-    return this.account;
-  }
   async listEnabledAccounts(): Promise<readonly EmailAccountRecord[]> {
     return [this.account];
   }
@@ -58,26 +44,34 @@ class MemoryEmailStore implements EmailStore {
     this.account = {...this.account, syncState};
     return this.account;
   }
-  async addAllowedRecipient(): Promise<EmailAllowedRecipientRecord> {
-    throw new Error("unused");
-  }
-  async removeAllowedRecipient(): Promise<boolean> {
-    return false;
-  }
-  async listAllowedRecipients(): Promise<readonly EmailAllowedRecipientRecord[]> {
-    return [];
-  }
-  async assertRecipientsAllowed(): Promise<void> {}
   async recordMessage(_input: RecordEmailMessageInput): Promise<RecordEmailMessageResult> {
-    throw new Error("unused");
-  }
-  async getMessage(): Promise<EmailMessageRecord> {
-    throw new Error("unused");
-  }
-  async listMessageRecipients(): Promise<readonly EmailMessageRecipientRecord[]> {
-    return [];
+    return {
+      inserted: true,
+      message: {
+        id: "email-recorded",
+        agentKey: this.account.agentKey,
+        accountKey: this.account.accountKey,
+        direction: "inbound",
+        threadKey: "thread",
+        hasAttachments: false,
+        createdAt: 1,
+      },
+    };
   }
 }
+
+const fakeCredentialResolver: EmailSyncCredentialResolver = {
+  resolveCredential: async (envKey: string) => ({
+    id: envKey,
+    envKey,
+    value: `${envKey}-value`,
+    valuePreview: "preview",
+    agentKey: "panda",
+    keyVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  }),
+};
 
 describe("EmailSyncRunner", () => {
   it("wakes the main session for synced visible messages", async () => {
@@ -95,13 +89,14 @@ describe("EmailSyncRunner", () => {
       store,
       sessions: {
         getMainSession: async () => session,
-      } as unknown as SessionStore,
+        getSession: async () => session,
+      },
       coordinator: {
         submitInput: async (threadId: string, input: unknown) => {
           submitted.push({threadId, input});
         },
-      } as unknown as ThreadRuntimeCoordinator,
-      credentialResolver: {} as CredentialResolver,
+      },
+      credentialResolver: fakeCredentialResolver,
       pollIntervalMs: 60 * 60 * 1000,
       syncAccount: async () => [{
         id: "email-1",
@@ -144,6 +139,55 @@ describe("EmailSyncRunner", () => {
     const prompt = (submitted[0] as {input: {message: {content: string}}}).input.message.content;
     expect(prompt).toContain("Authentication summary: \"suspicious\"");
     expect(prompt).toContain("provider authentication checks did not pass cleanly");
+  });
+
+  it("re-resolves the main session current thread when waking for synced mail", async () => {
+    const store = new MemoryEmailStore();
+    const submitted: Array<{threadId: string}> = [];
+    const session: SessionRecord = {
+      id: "session-1",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-before-reset",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const runner = new EmailSyncRunner({
+      store,
+      sessions: {
+        getMainSession: async () => session,
+        getSession: async (sessionId) => {
+          expect(sessionId).toBe(session.id);
+          session.currentThreadId = "thread-after-reset";
+          return session;
+        },
+      },
+      coordinator: {
+        submitInput: async (threadId: string) => {
+          submitted.push({threadId});
+        },
+      },
+      credentialResolver: fakeCredentialResolver,
+      pollIntervalMs: 60 * 60 * 1000,
+      syncAccount: async () => [{
+        id: "email-after-reset",
+        agentKey: "panda",
+        accountKey: "work",
+        direction: "inbound",
+        threadKey: "<email-after-reset@example.com>",
+        subject: "Thread changed",
+        fromAddress: "alice@example.com",
+        receivedAt: Date.parse("2026-05-05T10:00:00Z"),
+        hasAttachments: false,
+        createdAt: 1,
+      }],
+    });
+
+    await runner.start();
+    await waitFor(() => {
+      expect(submitted).toEqual([{threadId: "thread-after-reset"}]);
+    });
+    await runner.stop();
   });
 
   it("quotes untrusted email header fields in wake prompts", () => {

@@ -1,6 +1,7 @@
 import {stdin as input, stdout as output} from "node:process";
 
-import {type ThinkingLevel, Tool,} from "../../kernel/agent/index.js";
+import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import {Tool} from "../../kernel/agent/tool.js";
 import {buildDefaultAgentTools} from "../../panda/definition.js";
 import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
 import {type ChatRuntimeServices, createChatRuntime,} from "./runtime.js";
@@ -8,17 +9,19 @@ import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
 import {runChatActionsCommandLine, submitChatComposer, submitChatUserMessage,} from "./chat-actions.js";
 import {buildChatScreenFrame, buildChatView} from "./chat-render.js";
 import {
-    appendStoredChatMessages,
     buildChatSessionDefaults,
-    createChatTranscriptEntry,
-    observeLatestChatRun,
     pendingChatInputsForThread,
     queuePendingChatInput,
     removePendingChatInput,
-    resolveChatDisplayedCwd,
     resolveInitialChatSessionThread,
-    resolveStoredChatDisplayConfig,
 } from "./chat-session.js";
+import {
+    appendStoredTranscriptMessages,
+    createStoredTranscriptEntry,
+    observeLatestStoredRun,
+    resolveStoredThreadDisplayConfig,
+    resolveStoredThreadDisplayedCwd,
+} from "../shared/stored-thread.js";
 import {type SlashCompletionContext,} from "./commands.js";
 import {type ComposerState, createComposerState, setComposerValue,} from "./composer.js";
 import {
@@ -88,7 +91,7 @@ import {
     type TranscriptLineCacheEntry,
     WELCOME_ENTRY_TEXT,
 } from "./chat-shared.js";
-import type {ThreadRecord,} from "../../domain/threads/runtime/index.js";
+import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
 
 export type {ChatCliOptions, ChatCliResult} from "./chat-shared.js";
 
@@ -350,7 +353,7 @@ export class ChatApp {
   }
 
   private resolveDisplayedCwd(): string {
-    return resolveChatDisplayedCwd(this.currentThread, this.fallbackCwd);
+    return resolveStoredThreadDisplayedCwd(this.currentThread, this.fallbackCwd);
   }
 
   private async initializeRuntime(): Promise<void> {
@@ -392,7 +395,7 @@ export class ChatApp {
   }
 
   private async switchThread(thread: ThreadRecord): Promise<void> {
-    const displayConfig = resolveStoredChatDisplayConfig(thread);
+    const displayConfig = resolveStoredThreadDisplayConfig(thread);
     this.currentThread = thread;
     this.currentThreadId = thread.id;
     this.currentAgentLabel = readThreadAgentKey(thread) ?? "unknown";
@@ -406,7 +409,7 @@ export class ChatApp {
   }
 
   private createTranscriptEntry(role: EntryRole, title: string, body: string): TranscriptEntry {
-    const created = createChatTranscriptEntry({
+    const created = createStoredTranscriptEntry({
       nextEntryId: this.nextEntryId,
       role,
       title,
@@ -416,8 +419,8 @@ export class ChatApp {
     return created.entry;
   }
 
-  private appendStoredMessages(records: Parameters<typeof appendStoredChatMessages>[0]["records"]): void {
-    const appended = appendStoredChatMessages({
+  private appendStoredMessages(records: Parameters<typeof appendStoredTranscriptMessages>[0]["records"]): void {
+    const appended = appendStoredTranscriptMessages({
       records,
       visibleStoredMessageIds: this.visibleStoredMessageIds,
       currentTools: this.currentTools,
@@ -482,8 +485,8 @@ export class ChatApp {
     this.setNotice(compactLabel, "info", 6_000);
   }
 
-  private observeLatestRun(runs: Parameters<typeof observeLatestChatRun>[0]["runs"]): void {
-    const observed = observeLatestChatRun({
+  private observeLatestRun(runs: Parameters<typeof observeLatestStoredRun>[0]["runs"]): void {
+    const observed = observeLatestStoredRun({
       runs,
       lastObservedRunStatusKey: this.lastObservedRunStatusKey,
       currentRunStartedAt: this.runStartedAt,
@@ -508,10 +511,10 @@ export class ChatApp {
 
   private applyLoadedSnapshot(
     thread: ThreadRecord,
-    transcript: Parameters<typeof appendStoredChatMessages>[0]["records"],
-    runs: Parameters<typeof observeLatestChatRun>[0]["runs"],
+    transcript: Parameters<typeof appendStoredTranscriptMessages>[0]["records"],
+    runs: Parameters<typeof observeLatestStoredRun>[0]["runs"],
   ): void {
-    const displayConfig = resolveStoredChatDisplayConfig(thread);
+    const displayConfig = resolveStoredThreadDisplayConfig(thread);
     this.currentThread = thread;
     this.currentThreadId = thread.id;
     this.currentAgentLabel = readThreadAgentKey(thread) ?? "unknown";

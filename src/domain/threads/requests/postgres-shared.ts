@@ -1,4 +1,4 @@
-import {buildRuntimeRelationNames} from "../runtime/postgres-shared.js";
+import {buildRuntimeRelationNames} from "../../../lib/postgres-relations.js";
 
 export interface RuntimeRequestTableNames {
   prefix: string;

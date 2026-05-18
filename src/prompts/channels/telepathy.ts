@@ -1,4 +1,4 @@
-import {formatMaybeValue} from "./shared.js";
+import {formatMaybeValue, formatUntrustedStringValue} from "./shared.js";
 
 function formatUntrustedValue(value: string | undefined): string {
   const trimmed = value?.trim();
@@ -6,10 +6,7 @@ function formatUntrustedValue(value: string | undefined): string {
     return "null";
   }
 
-  return JSON.stringify(trimmed)
-    .replace(/</g, "\\u003c")
-    .replace(/>/g, "\\u003e")
-    .replace(/&/g, "\\u0026");
+  return formatUntrustedStringValue(trimmed);
 }
 
 export function renderTelepathyInboundText(options: {

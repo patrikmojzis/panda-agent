@@ -39,8 +39,6 @@ interface ZonedDateTimeParts {
 
 const formatterCache = new Map<string, Intl.DateTimeFormat>();
 
-const requireTrimmed = requireScheduledTaskString;
-
 function requireInteger(field: string, value: string): number {
   if (!/^\d+$/.test(value)) {
     throw new Error(`Scheduled task ${field} must be an integer.`);
@@ -72,7 +70,7 @@ function parseCronField(
   max: number,
   normalize: (value: number) => number = (value) => value,
 ): ParsedCronField {
-  const trimmed = requireTrimmed(`${field} cron field`, raw);
+  const trimmed = requireScheduledTaskString(`${field} cron field`, raw);
   const values = new Set<number>();
 
   if (trimmed === "*") {
@@ -87,9 +85,9 @@ function parseCronField(
   }
 
   for (const token of trimmed.split(",")) {
-    const normalizedToken = requireTrimmed(`${field} cron token`, token);
+    const normalizedToken = requireScheduledTaskString(`${field} cron token`, token);
     const [rangePart, stepPart] = normalizedToken.split("/");
-    const normalizedRangePart = requireTrimmed(`${field} cron range`, rangePart ?? "");
+    const normalizedRangePart = requireScheduledTaskString(`${field} cron range`, rangePart ?? "");
     const step = stepPart === undefined ? 1 : requireInteger(`${field} cron step`, stepPart);
     if (step <= 0) {
       throw new Error(`Scheduled task ${field} cron step must be greater than 0.`);
@@ -124,7 +122,7 @@ function parseCronField(
 }
 
 function parseCronExpression(cron: string): ParsedCronExpression {
-  const normalized = requireTrimmed("cron", cron).replace(/\s+/g, " ");
+  const normalized = requireScheduledTaskString("cron", cron).replace(/\s+/g, " ");
   const fields = normalized.split(" ");
   if (fields.length !== 5) {
     throw new Error("Scheduled task cron expression must have exactly 5 fields.");
@@ -140,7 +138,7 @@ function parseCronExpression(cron: string): ParsedCronExpression {
 }
 
 function assertValidTimeZone(timeZone: string): string {
-  const normalized = requireTrimmed("timezone", timeZone);
+  const normalized = requireScheduledTaskString("timezone", timeZone);
 
   try {
     new Intl.DateTimeFormat("en-US", {
@@ -154,7 +152,7 @@ function assertValidTimeZone(timeZone: string): string {
 }
 
 function normalizeAbsoluteTimestamp(field: string, value: string): string {
-  const normalized = requireTrimmed(field, value);
+  const normalized = requireScheduledTaskString(field, value);
   if (!ABSOLUTE_TIMESTAMP_RE.test(normalized)) {
     throw new Error(`Scheduled task ${field} must be an absolute ISO timestamp with a timezone offset.`);
   }
@@ -245,7 +243,7 @@ export function normalizeScheduledTaskSchedule(schedule: ScheduledTaskSchedule):
     }
     case "recurring":
       {
-        const cron = requireTrimmed("cron", schedule.cron).replace(/\s+/g, " ");
+        const cron = requireScheduledTaskString("cron", schedule.cron).replace(/\s+/g, " ");
         parseCronExpression(cron);
         return {
         kind: "recurring",

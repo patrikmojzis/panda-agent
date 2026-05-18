@@ -6,17 +6,17 @@ import {randomUUID} from "node:crypto";
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {
-  type DisposableEnvironmentCreateRequest,
-  type DisposableEnvironmentCreateResult,
-  type ExecutionEnvironmentManager,
-  PostgresExecutionEnvironmentStore,
-} from "../src/domain/execution-environments/index.js";
+import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
+import type {
+  DisposableEnvironmentCreateRequest,
+  DisposableEnvironmentCreateResult,
+  ExecutionEnvironmentManager,
+} from "../src/domain/execution-environments/types.js";
 import {createSessionWithInitialThread} from "../src/domain/sessions/index.js";
 import {A2ASessionBindingRepo} from "../src/domain/a2a/repo.js";
 import {PostgresOutboundDeliveryStore} from "../src/domain/channels/deliveries/postgres.js";
 import {RuntimeRequestRepo} from "../src/domain/threads/requests/repo.js";
-import {WorkerPurgeService} from "../src/app/runtime/worker-purge-service.js";
+import {WorkerPurgeService, type WorkerPurgeServiceOptions} from "../src/app/runtime/worker-purge-service.js";
 import {ensureSchemas} from "../src/app/runtime/postgres-bootstrap.js";
 import {buildPurgeInput, parseDurationOption} from "../src/app/workers/cli.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
@@ -56,18 +56,36 @@ function createSessionDeleteFailingPool(pool: ReturnType<typeof createPool>) {
     connect: async () => {
       const client = await pool.connect();
       return {
-        query: async (queryText: unknown, values?: unknown[]) => {
+        query: async (queryText: string, values?: readonly unknown[]) => {
           if (
             typeof queryText === "string"
             && queryText.includes(`DELETE FROM "runtime"."agent_sessions"`)
           ) {
             throw new Error("simulated session delete failure");
           }
-          return client.query(queryText as never, values as never);
+          return client.query(queryText, values);
         },
         release: () => client.release(),
       };
     },
+  };
+}
+
+function failUnusedDependency(name: string): never {
+  throw new Error(`${name} should not be used by this test`);
+}
+
+function createQueryOnlyPurgePool(query: WorkerPurgeServiceOptions["pool"]["query"]): WorkerPurgeServiceOptions["pool"] {
+  return {
+    query,
+    connect: async () => failUnusedDependency("worker purge transaction client"),
+  };
+}
+
+function createUnusedEnvironmentStore(): WorkerPurgeServiceOptions["environmentStore"] {
+  return {
+    createEnvironment: async () => failUnusedDependency("environmentStore.createEnvironment"),
+    getEnvironment: async () => failUnusedDependency("environmentStore.getEnvironment"),
   };
 }
 
@@ -290,6 +308,108 @@ describe("WorkerPurgeService", () => {
     );
   });
 
+  it("rejects corrupted environment state before planning purge actions", async () => {
+    const {pool, service} = await createHarness();
+    await pool.query(`
+      UPDATE "runtime"."execution_environments"
+      SET state = 'limbo'
+      WHERE id = 'worker:worker-session'
+    `);
+
+    await expect(service.plan({
+      selector: {
+        environmentId: "worker:worker-session",
+      },
+      skipFiles: true,
+    })).rejects.toThrow("Unsupported execution environment state limbo.");
+  });
+
+  it("rejects corrupted purge candidate keys before planning purge actions", async () => {
+    const service = new WorkerPurgeService({
+      pool: createQueryOnlyPurgePool(async () => ({
+        rows: [{
+          session_id: "worker-session",
+          session_agent_key: "panda",
+          current_thread_id: "worker-thread",
+          session_created_at: new Date(1),
+          session_updated_at: new Date(1),
+          environment_id: "worker:worker-session",
+          environment_agent_key: "",
+          kind: "disposable_container",
+          state: "stopped",
+          runner_url: "http://worker:8080",
+          runner_cwd: "/workspace",
+          root_path: "/workspace",
+          created_by_session_id: "main-session",
+          created_for_session_id: "worker-session",
+          expires_at: null,
+          metadata: null,
+          environment_created_at: new Date(1),
+          environment_updated_at: new Date(1),
+        }],
+      })),
+      environmentStore: createUnusedEnvironmentStore(),
+      manager: null,
+    });
+
+    await expect(service.plan({
+      selector: {
+        environmentId: "worker:worker-session",
+      },
+      skipFiles: true,
+    })).rejects.toThrow("worker environment agent key must not be empty.");
+  });
+
+  it("rejects malformed purge count rows", async () => {
+    const {pool, environmentStore, manager} = await createHarness();
+    const service = new WorkerPurgeService({
+      pool: {
+        query: async (queryText: string, values?: readonly unknown[]) => {
+          if (typeof queryText === "string" && queryText.includes("COUNT(*)::INTEGER AS count")) {
+            return {rows: [{count: "many"}]};
+          }
+
+          return pool.query(queryText, values);
+        },
+        connect: () => pool.connect(),
+      },
+      environmentStore,
+      manager,
+    });
+
+    await expect(service.plan({
+      selector: {
+        environmentId: "worker:worker-session",
+      },
+      skipFiles: true,
+    })).rejects.toThrow("Worker purge row count must be a non-negative integer.");
+  });
+
+  it("rejects driver-shaped purge count rows", async () => {
+    const {pool, environmentStore, manager} = await createHarness();
+    const service = new WorkerPurgeService({
+      pool: {
+        query: async (queryText: string, values?: readonly unknown[]) => {
+          if (typeof queryText === "string" && queryText.includes("COUNT(*)::INTEGER AS count")) {
+            return {rows: [{count: "1"}]};
+          }
+
+          return pool.query(queryText, values);
+        },
+        connect: () => pool.connect(),
+      },
+      environmentStore,
+      manager,
+    });
+
+    await expect(service.plan({
+      selector: {
+        environmentId: "worker:worker-session",
+      },
+      skipFiles: true,
+    })).rejects.toThrow("Worker purge row count must be a non-negative integer.");
+  });
+
   it("hard purges non-cascading rows, cascaded session rows, environment row, and env files", async () => {
     const {pool, a2a, environmentStore, envRoot, manager, requests, service, sessionStore} = await createHarness();
     await a2a.bindSession({
@@ -501,7 +621,7 @@ describe("WorkerPurgeService", () => {
       execute: true,
     })).rejects.toThrow("simulated session delete failure");
 
-    await expect(lstat(envRoot)).resolves.toBeTruthy();
+    expect((await lstat(envRoot)).isDirectory()).toBe(true);
     await expect(sessionStore.getSession("worker-session")).resolves.toMatchObject({id: "worker-session"});
   });
 

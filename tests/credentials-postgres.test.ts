@@ -1,13 +1,10 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
-import {
-  CredentialCrypto,
-  CredentialResolver,
-  CredentialService,
-  PostgresCredentialStore,
-} from "../src/domain/credentials/index.js";
+import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
+import {CredentialResolver, CredentialService} from "../src/domain/credentials/resolver.js";
 
 describe("PostgresCredentialStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -165,6 +162,87 @@ describe("PostgresCredentialStore", () => {
         valuePreview: "sk-l...8484",
       }),
     ]);
+  });
+
+  it("rejects corrupted persisted key versions before credential resolution", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        id: "00000000-0000-0000-0000-000000000001",
+        env_key: "OPENAI_API_KEY",
+        agent_key: "panda",
+        value_ciphertext: Buffer.from("ciphertext"),
+        value_iv: Buffer.from("iv"),
+        value_tag: Buffer.from("tag"),
+        key_version: 0,
+        created_at: new Date(),
+        updated_at: new Date(),
+      }],
+    }));
+    const pool = {
+      query,
+      connect: async () => {
+        throw new Error("connect should not be used by getCredential");
+      },
+    };
+    const credentialStore = new PostgresCredentialStore({pool});
+
+    await expect(credentialStore.getCredential("OPENAI_API_KEY", {
+      agentKey: "panda",
+    })).rejects.toThrow("Credential key version must be a positive integer.");
+  });
+
+  it("rejects driver-shaped persisted key versions before credential resolution", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        id: "00000000-0000-0000-0000-000000000001",
+        env_key: "OPENAI_API_KEY",
+        agent_key: "panda",
+        value_ciphertext: Buffer.from("ciphertext"),
+        value_iv: Buffer.from("iv"),
+        value_tag: Buffer.from("tag"),
+        key_version: "1",
+        created_at: new Date(),
+        updated_at: new Date(),
+      }],
+    }));
+    const pool = {
+      query,
+      connect: async () => {
+        throw new Error("connect should not be used by getCredential");
+      },
+    };
+    const credentialStore = new PostgresCredentialStore({pool});
+
+    await expect(credentialStore.getCredential("OPENAI_API_KEY", {
+      agentKey: "panda",
+    })).rejects.toThrow("Credential key version must be a positive integer.");
+  });
+
+  it("rejects stringified persisted credential timestamps before credential resolution", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        id: "00000000-0000-0000-0000-000000000001",
+        env_key: "OPENAI_API_KEY",
+        agent_key: "panda",
+        value_ciphertext: Buffer.from("ciphertext"),
+        value_iv: Buffer.from("iv"),
+        value_tag: Buffer.from("tag"),
+        key_version: 1,
+        created_at: "2026-05-01T12:00:00.000Z",
+        updated_at: new Date(),
+      }],
+    }));
+    const pool = {
+      query,
+      connect: async () => {
+        throw new Error("connect should not be used by getCredential");
+      },
+    };
+    const credentialStore = new PostgresCredentialStore({pool});
+
+    await expect(credentialStore.getCredential("OPENAI_API_KEY", {
+      agentKey: "panda",
+    })).rejects.toThrow("Credential created_at must be a valid timestamp.");
   });
 
   it("migrates old credential rows by preserving relationship rows when no agent row exists", async () => {

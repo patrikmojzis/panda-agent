@@ -1,25 +1,23 @@
 import type {LlmContext} from "../../kernel/agent/llm-context.js";
 import {Agent} from "../../kernel/agent/agent.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
-import type {AgentStore} from "../../domain/agents/index.js";
-import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/index.js";
-import type {
-  ExecutionEnvironmentStore,
-  ResolvedExecutionEnvironment
-} from "../../domain/execution-environments/index.js";
-import type {AgentSessionKind, SessionRecord, SessionStore} from "../../domain/sessions/index.js";
+import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
+import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
+import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
+import type {SessionStore} from "../../domain/sessions/store.js";
+import type {AgentSessionKind, SessionRecord} from "../../domain/sessions/types.js";
 import type {InferenceProjection, ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import {buildDefaultAgentLlmContexts, type DefaultAgentLlmContextSection,} from "../../panda/contexts/builder.js";
+import {buildDefaultAgentLlmContexts, type AgentProfileStore, type DefaultAgentLlmContextSection,} from "../../panda/contexts/builder.js";
 import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry} from "../../panda/definition.js";
-import {DEFAULT_AGENT_INSTRUCTIONS} from "../../panda/prompt.js";
+import {DEFAULT_AGENT_INSTRUCTIONS} from "../../prompts/runtime/default-agent.js";
 import {DEFAULT_WORKER_INSTRUCTIONS} from "../../prompts/runtime/worker.js";
 import {WorkerRuntimeContext} from "../../panda/contexts/worker-runtime-context.js";
 import {
   DEFAULT_WORKER_ALLOWED_TOOL_NAMES,
   POSTGRES_READONLY_TOOL_NAME,
   WORKER_CONTROL_TOOL_NAMES,
-} from "../../panda/tools/worker-tool-policy.js";
+} from "../../panda/worker-tool-policy.js";
 import type {DefaultAgentSessionContext} from "./panda-session-context.js";
 import type {BashToolOptions} from "../../panda/tools/bash-tool.js";
 import type {BrowserToolOptions} from "../../panda/tools/browser-tool.js";
@@ -28,10 +26,10 @@ import type {TelepathyScreenshotToolOptions} from "../../panda/tools/telepathy-s
 import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js";
 import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js";
 import type {Tool} from "../../kernel/agent/tool.js";
-import type {WikiBindingService} from "../../domain/wiki/index.js";
+import type {WikiBindingService} from "../../domain/wiki/service.js";
 import {isRecord} from "../../lib/records.js";
 import {resolveThreadPromptCacheKey} from "../../domain/threads/runtime/prompt-cache-key.js";
-import type {JsonValue} from "../../kernel/agent/types.js";
+import {readWorkerContextValue} from "../../domain/sessions/worker-metadata.js";
 
 const HOUR_MS = 60 * 60 * 1_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -63,7 +61,7 @@ export interface CreateThreadDefinitionOptions {
   thread: ThreadRecord;
   session: Pick<SessionRecord, "id" | "agentKey"> & {kind?: AgentSessionKind};
   fallbackContext: Pick<DefaultAgentSessionContext, "cwd">;
-  agentStore?: AgentStore;
+  agentStore?: AgentProfileStore;
   sessionStore?: Pick<SessionStore, "listAgentSessions">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
@@ -86,14 +84,6 @@ export interface CreateThreadDefinitionOptions {
 function hasStoredShellCwd(value: Record<string, unknown>): boolean {
   const shell = value.shell;
   return isRecord(shell) && typeof shell.cwd === "string" && shell.cwd.trim().length > 0;
-}
-
-function readStoredWorkerContext(value: ThreadRecord["context"]): JsonValue | undefined {
-  if (!isRecord(value) || value.worker === undefined) {
-    return undefined;
-  }
-
-  return value.worker as JsonValue;
 }
 
 function isWorkerSession(session: Pick<SessionRecord, "id" | "agentKey"> & {kind?: AgentSessionKind}): boolean {
@@ -202,7 +192,7 @@ export function createThreadDefinition(
 ): ResolvedThreadDefinition {
   const {session} = options;
   const storedWorker = isWorkerSession(session)
-    ? readStoredWorkerContext(options.thread.context)
+    ? readWorkerContextValue(options.thread.context)
     : undefined;
   const context: DefaultAgentSessionContext = {
     ...resolveStoredContext(options.thread.context, options.fallbackContext, session.agentKey, options.executionEnvironment),

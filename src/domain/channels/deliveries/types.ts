@@ -1,4 +1,4 @@
-import type {JsonValue} from "../../../kernel/agent/types.js";
+import type {JsonValue} from "../../../lib/json.js";
 import type {OutboundItem, OutboundSentItem, OutboundTarget,} from "../types.js";
 
 export type OutboundDeliveryStatus = "pending" | "sending" | "sent" | "failed";

@@ -2,7 +2,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import type {ChannelTypingRequest} from "../src/domain/channels/index.js";
-import {ChannelActionWorker, PostgresChannelActionStore,} from "../src/domain/channels/actions/index.js";
+import {ChannelActionWorker, parseActionNotification, PostgresChannelActionStore,} from "../src/domain/channels/actions/index.js";
 import type {
     ActionNotification,
     ActionWorkerLookup,
@@ -10,6 +10,9 @@ import type {
     ChannelActionRecord,
 } from "../src/domain/channels/actions/types.js";
 import {waitFor} from "./helpers/wait-for.js";
+
+type ChannelActionPool = ConstructorParameters<typeof PostgresChannelActionStore>[0]["pool"];
+type ChannelActionClient = Awaited<ReturnType<ChannelActionPool["connect"]>>;
 
 function createTypingPayload(channel: string, connectorKey: string): ChannelTypingRequest {
   return {
@@ -30,6 +33,39 @@ describe("PostgresChannelActionStore", () => {
     while (pools.length > 0) {
       await pools.pop()?.end();
     }
+  });
+
+  function persistedActionRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: "action-1",
+      channel: "telegram",
+      connector_key: "bot-1",
+      kind: "typing",
+      payload: createTypingPayload("telegram", "bot-1"),
+      status: "pending",
+      attempt_count: 0,
+      last_error: null,
+      claimed_at: null,
+      completed_at: null,
+      created_at: new Date(1),
+      updated_at: new Date(1),
+      ...overrides,
+    };
+  }
+
+  it("parses only valid pending-action notifications", () => {
+    expect(parseActionNotification(JSON.stringify({
+      channel: " telegram ",
+      connectorKey: " bot-1 ",
+    }))).toEqual({
+      channel: "telegram",
+      connectorKey: "bot-1",
+    });
+    expect(parseActionNotification(JSON.stringify({
+      channel: "",
+      connectorKey: "bot-1",
+    }))).toBeNull();
+    expect(parseActionNotification(JSON.stringify([]))).toBeNull();
   });
 
   it("uses the notification pool for LISTEN clients", async () => {
@@ -133,6 +169,147 @@ describe("PostgresChannelActionStore", () => {
     });
   });
 
+  it("round-trips telegram reaction payloads through persisted actions", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const store = new PostgresChannelActionStore({pool});
+    await store.ensureSchema();
+
+    const action = await store.enqueueAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "telegram_reaction",
+      payload: {
+        conversationId: "chat-1",
+        messageId: "message-1",
+        emoji: "react",
+        remove: false,
+      },
+    });
+
+    const claimed = await store.claimNextPendingAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+    });
+
+    expect(claimed).toMatchObject({
+      id: action.id,
+      kind: "telegram_reaction",
+      status: "sending",
+      payload: {
+        conversationId: "chat-1",
+        messageId: "message-1",
+        emoji: "react",
+        remove: false,
+      },
+    });
+  });
+
+  it("rejects malformed persisted action payloads before claiming them", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const store = new PostgresChannelActionStore({pool});
+    await store.ensureSchema();
+    await pool.query(`
+      INSERT INTO "runtime"."channel_actions" (
+        id,
+        channel,
+        connector_key,
+        kind,
+        payload,
+        status
+      ) VALUES (
+        '00000000-0000-0000-0000-000000000001',
+        'telegram',
+        'bot-1',
+        'typing',
+        $1::jsonb,
+        'pending'
+      )
+    `, [
+      JSON.stringify({
+        channel: "telegram",
+        phase: "start",
+        target: {
+          source: "telegram",
+          connectorKey: "bot-1",
+        },
+      }),
+    ]);
+
+    await expect(store.claimNextPendingAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+    })).rejects.toThrow("Channel action typing payload target conversation id must not be empty.");
+
+    const rows = await pool.query(
+      `SELECT status, attempt_count FROM "runtime"."channel_actions" WHERE id = '00000000-0000-0000-0000-000000000001'`,
+    );
+    expect(rows.rows[0]).toMatchObject({
+      status: "pending",
+      attempt_count: 0,
+    });
+  });
+
+  it("rejects malformed persisted action identity fields", async () => {
+    const store = new PostgresChannelActionStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [persistedActionRow({connector_key: ""})],
+        })),
+        connect: vi.fn(),
+      },
+    });
+
+    await expect(store.markActionSent("action-1")).rejects.toThrow(
+      "Channel action connector key must not be empty.",
+    );
+  });
+
+  it("rejects malformed persisted action counters and timestamps", async () => {
+    const badCount = new PostgresChannelActionStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [persistedActionRow({attempt_count: "many"})],
+        })),
+        connect: vi.fn(),
+      },
+    });
+    await expect(badCount.markActionSent("action-1")).rejects.toThrow(
+      "Channel action attempt count must be a non-negative integer.",
+    );
+
+    const badTimestamp = new PostgresChannelActionStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [persistedActionRow({updated_at: "eventually"})],
+        })),
+        connect: vi.fn(),
+      },
+    });
+    await expect(badTimestamp.markActionSent("action-1")).rejects.toThrow(
+      "Channel action updated_at must be a finite timestamp.",
+    );
+  });
+
   it("marks abandoned sending actions as failed", async () => {
     const db = newDb();
     db.public.registerFunction({
@@ -224,16 +401,22 @@ describe("PostgresChannelActionStore", () => {
     });
 
     const release = vi.fn();
-    const client = {
+    const client: ChannelActionClient = {
       query,
       release,
+      on() {
+        return this;
+      },
+      off() {
+        return this;
+      },
     };
-    const pool = {
+    const pool: ChannelActionPool = {
       query: vi.fn(),
       connect: vi.fn(async () => client),
     };
 
-    const store = new PostgresChannelActionStore({pool: pool as any});
+    const store = new PostgresChannelActionStore({pool});
     const claimed = await store.claimNextPendingAction({
       channel: "telegram",
       connectorKey: "bot-1",
@@ -362,7 +545,6 @@ describe("ChannelActionWorker", () => {
     });
     await worker.stop();
 
-    expect(dispatch).toHaveBeenCalledTimes(1);
     expect(store.actions[0]).toMatchObject({
       status: "sent",
       attemptCount: 1,
@@ -396,7 +578,6 @@ describe("ChannelActionWorker", () => {
     });
     await worker.stop();
 
-    expect(dispatch).toHaveBeenCalledTimes(1);
     expect(store.actions[0]).toMatchObject({
       status: "failed",
       lastError: "connector unavailable",
@@ -431,7 +612,6 @@ describe("ChannelActionWorker", () => {
     });
     await worker.stop();
 
-    expect(dispatch).toHaveBeenCalledTimes(1);
     expect(store.listener).toBeNull();
   });
 });

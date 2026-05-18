@@ -1,10 +1,12 @@
 import process from "node:process";
 
-import {Command, InvalidArgumentError} from "commander";
+import {Command} from "commander";
 
-import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
-import {parseAgentKey, PostgresAgentStore} from "../agents/index.js";
+import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
+import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {parseAgentKey} from "../agents/cli.js";
+import {PostgresAgentStore} from "../agents/postgres.js";
+import {parseLabeledPortOption} from "../../lib/cli.js";
 import {DEFAULT_EMAIL_MAILBOXES, normalizeEmailAddress, normalizeEmailMailbox} from "./shared.js";
 import {PostgresEmailStore} from "./postgres.js";
 import type {EmailEndpointConfig} from "./types.js";
@@ -38,18 +40,11 @@ interface EmailAccountLookupOptions extends EmailCliOptions {
 
 interface EmailAllowOptions extends EmailAccountLookupOptions {}
 
-function parseEmailPort(value: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) {
-    throw new InvalidArgumentError("Email port must be an integer between 1 and 65535.");
-  }
-
-  return parsed;
-}
-
 function collectMailbox(value: string, previous: string[] = []): string[] {
   return [...previous, normalizeEmailMailbox(value)];
 }
+
+const parseEmailPortOption = parseLabeledPortOption("Email port");
 
 function endpoint(input: {
   host: string;
@@ -79,7 +74,7 @@ async function withEmailStores<T>(
   });
 }
 
-export async function emailAccountSetCommand(accountKey: string, options: EmailAccountOptions): Promise<void> {
+async function emailAccountSetCommand(accountKey: string, options: EmailAccountOptions): Promise<void> {
   await withEmailStores(options, async (store) => {
     const secureFallback = options.secure;
     const account = await store.upsertAccount({
@@ -117,14 +112,14 @@ export async function emailAccountSetCommand(accountKey: string, options: EmailA
   });
 }
 
-export async function emailAccountDisableCommand(accountKey: string, options: EmailAccountLookupOptions): Promise<void> {
+async function emailAccountDisableCommand(accountKey: string, options: EmailAccountLookupOptions): Promise<void> {
   await withEmailStores(options, async (store) => {
     const account = await store.disableAccount(options.agent, accountKey);
     process.stdout.write(`Disabled email account ${account.accountKey} for ${account.agentKey}.\n`);
   });
 }
 
-export async function emailAllowAddCommand(
+async function emailAllowAddCommand(
   accountKey: string,
   address: string,
   options: EmailAllowOptions,
@@ -135,7 +130,7 @@ export async function emailAllowAddCommand(
   });
 }
 
-export async function emailAllowRemoveCommand(
+async function emailAllowRemoveCommand(
   accountKey: string,
   address: string,
   options: EmailAllowOptions,
@@ -149,7 +144,7 @@ export async function emailAllowRemoveCommand(
   });
 }
 
-export async function emailAllowListCommand(accountKey: string, options: EmailAllowOptions): Promise<void> {
+async function emailAllowListCommand(accountKey: string, options: EmailAllowOptions): Promise<void> {
   await withEmailStores(options, async (store) => {
     const recipients = await store.listAllowedRecipients(options.agent, accountKey);
     if (recipients.length === 0) {
@@ -178,12 +173,12 @@ export function registerEmailCommands(program: Command): void {
     .requiredOption("--from <email>", "From email address", normalizeEmailAddress)
     .option("--name <name>", "From display name")
     .requiredOption("--imap-host <host>", "IMAP host")
-    .option("--imap-port <port>", "IMAP port", parseEmailPort)
+    .option("--imap-port <port>", "IMAP port", parseEmailPortOption)
     .option("--imap-secure", "Use TLS for IMAP")
     .requiredOption("--imap-username-key <envKey>", "Credential env key for IMAP username")
     .requiredOption("--imap-password-key <envKey>", "Credential env key for IMAP password")
     .requiredOption("--smtp-host <host>", "SMTP host")
-    .option("--smtp-port <port>", "SMTP port", parseEmailPort)
+    .option("--smtp-port <port>", "SMTP port", parseEmailPortOption)
     .option("--smtp-secure", "Use TLS for SMTP")
     .requiredOption("--smtp-username-key <envKey>", "Credential env key for SMTP username")
     .requiredOption("--smtp-password-key <envKey>", "Credential env key for SMTP password")
@@ -241,4 +236,3 @@ export function registerEmailCommands(program: Command): void {
       return emailAllowListCommand(accountKey, options);
     });
 }
-

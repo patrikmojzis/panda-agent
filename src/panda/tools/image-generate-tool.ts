@@ -18,7 +18,8 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {stripToolArtifactInlineImages, withArtifactDetails} from "../../kernel/agent/tool-artifacts.js";
 import {Tool, type ToolOutput} from "../../kernel/agent/tool.js";
-import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
 import type {LlmRuntime} from "../../kernel/agent/runtime.js";
 import {readThreadId} from "../../integrations/shell/runtime-context.js";
 import {trimToNull} from "../../lib/strings.js";
@@ -38,6 +39,7 @@ import {
     toImageArtifact,
 } from "./image-generation/media.js";
 import {buildBackgroundJobPayload} from "./background-job-tools.js";
+import {serializeToolResultForBackgroundJob} from "./shared.js";
 
 export interface ImageGenerateClient {
   generate(request: GenerateOpenAIImageRequest): Promise<GenerateOpenAIImageResult>;
@@ -309,17 +311,6 @@ async function runImageGeneration(params: {
   };
 }
 
-function serializeImageGenerationResult(payload: ToolResultPayload): JsonObject {
-  return {
-    contentText: payload.content
-      .flatMap((part) => part.type === "text" && part.text.trim() ? [part.text.trim()] : [])
-      .join("\n\n"),
-    ...(payload.details && typeof payload.details === "object" && !Array.isArray(payload.details)
-      ? {details: payload.details as JsonObject}
-      : {}),
-  };
-}
-
 export class ImageGenerateTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof ImageGenerateTool.schema, TContext> {
   static schema = z.object({
@@ -424,7 +415,7 @@ export class ImageGenerateTool<TContext = DefaultAgentSessionContext>
           runtime: this.runtime,
         }).then((payload) => ({
           status: "completed" as const,
-          result: serializeImageGenerationResult(payload),
+          result: serializeToolResultForBackgroundJob(payload),
         })),
       }),
     });

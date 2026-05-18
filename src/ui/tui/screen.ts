@@ -1,4 +1,3 @@
-export {clamp} from "../../lib/numbers.js";
 import {stripAnsi} from "./theme.js";
 
 export const ALT_SCREEN_ON = "\u001b[?1049h";

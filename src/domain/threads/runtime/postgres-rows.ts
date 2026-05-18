@@ -1,94 +1,312 @@
-import {toMillis, toOrderNumber} from "./postgres-shared.js";
+import type {Message} from "@mariozechner/pi-ai";
+
+import {isJsonValue, type JsonObject, type JsonValue} from "../../../lib/json.js";
+import {optionalNonEmptyString, requireNonEmptyString} from "../../../lib/strings.js";
+import {optionalTimestampMillis, requireTimestampMillis} from "../../../lib/postgres-values.js";
 import type {
     ThreadInputDeliveryMode,
+    ThreadMessageOrigin,
     ThreadInputRecord,
     ThreadMessageRecord,
     ThreadRecord,
     ThreadRunRecord,
+    ThreadRunStatus,
+    ThreadToolJobKind,
     ThreadToolJobRecord,
+    ThreadToolJobStatus,
 } from "./types.js";
+
+const messageOrigins = ["input", "runtime"] as const satisfies readonly ThreadMessageOrigin[];
+const inputDeliveryModes = ["wake", "queue"] as const satisfies readonly ThreadInputDeliveryMode[];
+const runStatuses = ["running", "completed", "failed"] as const satisfies readonly ThreadRunStatus[];
+const toolJobKinds = ["bash", "image_generate", "spawn_subagent", "web_research"] as const satisfies readonly ThreadToolJobKind[];
+const toolJobStatuses = ["running", "completed", "failed", "cancelled", "lost"] as const satisfies readonly ThreadToolJobStatus[];
+
+export interface RunningToolJobLossRow {
+  id: string;
+  threadId: string;
+  startedAt: number;
+}
+
+function parseRequiredString(value: unknown, label: string): string {
+  return requireNonEmptyString(value, `Thread runtime ${label} must not be empty.`);
+}
+
+function parseOptionalString(value: unknown): string | undefined {
+  return optionalNonEmptyString(value, "Thread runtime optional string must not be empty.");
+}
+
+function parseRequiredNumber(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Thread runtime ${label} must be a finite number.`);
+  }
+
+  return value;
+}
+
+function parseOptionalNumber(value: unknown, label: string): number | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  return parseRequiredNumber(value, label);
+}
+
+function parseRequiredInteger(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+    throw new Error(`Thread runtime ${label} must be a safe integer.`);
+  }
+
+  return value;
+}
+
+function parseOptionalInteger(value: unknown, label: string): number | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  return parseRequiredInteger(value, label);
+}
+
+function parseRequiredBigintNumber(value: unknown, label: string): number {
+  if (typeof value === "number" && Number.isSafeInteger(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && /^-?[0-9]+$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) {
+      return parsed;
+    }
+  }
+
+  throw new Error(`Thread runtime ${label} must be a safe integer.`);
+}
+
+function parseOptionalBigintNumber(value: unknown, label: string): number | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  return parseRequiredBigintNumber(value, label);
+}
+
+function parseJsonValue(value: unknown, label: string): JsonValue {
+  if (!isJsonValue(value)) {
+    throw new Error(`Thread runtime ${label} must be JSON-serializable.`);
+  }
+
+  return value;
+}
+
+function parseOptionalJsonValue(value: unknown, label: string): JsonValue | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  return parseJsonValue(value, label);
+}
+
+function parseJsonObject(value: unknown, label: string): JsonObject {
+  if (!isJsonValue(value) || typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`Thread runtime ${label} must be a JSON object.`);
+  }
+
+  return value;
+}
+
+function parseOptionalJsonObject(value: unknown, label: string): JsonObject | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  return parseJsonObject(value, label);
+}
+
+function parseSystemPrompt(value: unknown): ThreadRecord["systemPrompt"] {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
+    return value;
+  }
+
+  throw new Error("Thread runtime system prompt must be a string or string array.");
+}
+
+function isMessageRole(value: unknown): value is Message["role"] {
+  return value === "user" || value === "assistant" || value === "toolResult";
+}
+
+function isPersistedMessage(value: unknown): value is Message {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  // Provider message payloads can drift; the durable invariant Panda needs at
+  // this boundary is that replay can route the message by role.
+  return isMessageRole((value as {role?: unknown}).role);
+}
+
+function parseMessage(value: unknown, label: string): Message {
+  const message = parseJsonObject(value, label);
+  if (!isPersistedMessage(message)) {
+    throw new Error(`Thread runtime ${label} has unsupported role ${String(message.role)}.`);
+  }
+
+  return message;
+}
+
+function parseOrigin(value: unknown): ThreadMessageOrigin {
+  if (typeof value !== "string" || !messageOrigins.includes(value as ThreadMessageOrigin)) {
+    throw new Error(`Unsupported thread message origin ${String(value)}`);
+  }
+
+  return value as ThreadMessageOrigin;
+}
+
+function parseDeliveryMode(value: unknown): ThreadInputDeliveryMode {
+  if (typeof value !== "string" || !inputDeliveryModes.includes(value as ThreadInputDeliveryMode)) {
+    throw new Error(`Unsupported thread input delivery mode ${String(value)}`);
+  }
+
+  return value as ThreadInputDeliveryMode;
+}
+
+function parseRunStatus(value: unknown): ThreadRunStatus {
+  if (typeof value !== "string" || !runStatuses.includes(value as ThreadRunStatus)) {
+    throw new Error(`Unsupported thread run status ${String(value)}`);
+  }
+
+  return value as ThreadRunStatus;
+}
+
+function parseToolJobKind(value: unknown): ThreadToolJobKind {
+  if (typeof value !== "string" || !toolJobKinds.includes(value as ThreadToolJobKind)) {
+    throw new Error(`Unsupported thread tool job kind ${String(value)}`);
+  }
+
+  return value as ThreadToolJobKind;
+}
+
+function parseToolJobStatus(value: unknown): ThreadToolJobStatus {
+  if (typeof value !== "string" || !toolJobStatuses.includes(value as ThreadToolJobStatus)) {
+    throw new Error(`Unsupported thread tool job status ${String(value)}`);
+  }
+
+  return value as ThreadToolJobStatus;
+}
+
+function parseToolJobSummary(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (typeof value !== "string") {
+    throw new Error("Thread runtime tool job summary must be a string.");
+  }
+
+  return value;
+}
 
 export function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
   return {
-    id: String(row.id),
-    sessionId: String(row.session_id),
-    systemPrompt: row.system_prompt === null ? undefined : (row.system_prompt as ThreadRecord["systemPrompt"]),
-    maxTurns: row.max_turns === null ? undefined : Number(row.max_turns),
-    context: row.context === null ? undefined : (row.context as ThreadRecord["context"]),
-    runtimeState: row.runtime_state === null ? undefined : (row.runtime_state as ThreadRecord["runtimeState"]),
-    inferenceProjection: row.inference_projection === null ? undefined : (row.inference_projection as ThreadRecord["inferenceProjection"]),
-    promptCacheKey: row.prompt_cache_key === null ? undefined : String(row.prompt_cache_key),
-    model: row.model === null ? undefined : String(row.model),
-    temperature: row.temperature === null ? undefined : Number(row.temperature),
-    thinking: row.thinking === null ? undefined : String(row.thinking) as ThreadRecord["thinking"],
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    id: parseRequiredString(row.id, "thread id"),
+    sessionId: parseRequiredString(row.session_id, "session id"),
+    systemPrompt: parseSystemPrompt(row.system_prompt),
+    maxTurns: parseOptionalInteger(row.max_turns, "max_turns"),
+    context: parseOptionalJsonValue(row.context, "context"),
+    runtimeState: parseOptionalJsonObject(row.runtime_state, "runtime state") as ThreadRecord["runtimeState"],
+    inferenceProjection: parseOptionalJsonObject(row.inference_projection, "inference projection") as ThreadRecord["inferenceProjection"],
+    promptCacheKey: parseOptionalString(row.prompt_cache_key),
+    model: parseOptionalString(row.model),
+    temperature: parseOptionalNumber(row.temperature, "temperature"),
+    thinking: parseOptionalString(row.thinking) as ThreadRecord["thinking"],
+    createdAt: requireTimestampMillis(row.created_at, "Thread runtime created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Thread runtime updated_at must be a valid timestamp."),
   };
 }
 
 export function parseMessageRow(row: Record<string, unknown>): ThreadMessageRecord {
   return {
-    id: String(row.id),
-    threadId: String(row.thread_id),
-    sequence: toOrderNumber(row.sequence),
-    origin: String(row.origin) as ThreadMessageRecord["origin"],
-    message: row.message as ThreadMessageRecord["message"],
-    metadata: row.metadata === null ? undefined : (row.metadata as ThreadMessageRecord["metadata"]),
-    source: String(row.source),
-    channelId: row.channel_id === null ? undefined : String(row.channel_id),
-    externalMessageId: row.external_message_id === null ? undefined : String(row.external_message_id),
-    actorId: row.actor_id === null ? undefined : String(row.actor_id),
-    identityId: row.identity_id === null ? undefined : String(row.identity_id),
-    runId: row.run_id === null ? undefined : String(row.run_id),
-    createdAt: toMillis(row.created_at),
+    id: parseRequiredString(row.id, "message id"),
+    threadId: parseRequiredString(row.thread_id, "thread id"),
+    sequence: parseRequiredBigintNumber(row.sequence, "message sequence"),
+    origin: parseOrigin(row.origin),
+    message: parseMessage(row.message, "message"),
+    metadata: parseOptionalJsonValue(row.metadata, "message metadata"),
+    source: parseRequiredString(row.source, "message source"),
+    channelId: parseOptionalString(row.channel_id),
+    externalMessageId: parseOptionalString(row.external_message_id),
+    actorId: parseOptionalString(row.actor_id),
+    identityId: parseOptionalString(row.identity_id),
+    runId: parseOptionalString(row.run_id),
+    createdAt: requireTimestampMillis(row.created_at, "Thread runtime message created_at must be a valid timestamp."),
   };
 }
 
 export function parseInputRow(row: Record<string, unknown>): ThreadInputRecord {
   return {
-    id: String(row.id),
-    threadId: String(row.thread_id),
-    order: toOrderNumber(row.input_order),
-    deliveryMode: String(row.delivery_mode) as ThreadInputDeliveryMode,
-    message: row.message as ThreadInputRecord["message"],
-    metadata: row.metadata === null ? undefined : (row.metadata as ThreadInputRecord["metadata"]),
-    source: String(row.source),
-    channelId: row.channel_id === null ? undefined : String(row.channel_id),
-    externalMessageId: row.external_message_id === null ? undefined : String(row.external_message_id),
-    actorId: row.actor_id === null ? undefined : String(row.actor_id),
-    identityId: row.identity_id === null ? undefined : String(row.identity_id),
-    createdAt: toMillis(row.created_at),
-    appliedAt: row.applied_at === null ? undefined : toMillis(row.applied_at),
+    id: parseRequiredString(row.id, "input id"),
+    threadId: parseRequiredString(row.thread_id, "thread id"),
+    order: parseRequiredBigintNumber(row.input_order, "input order"),
+    deliveryMode: parseDeliveryMode(row.delivery_mode),
+    message: parseMessage(row.message, "input message"),
+    metadata: parseOptionalJsonValue(row.metadata, "input metadata"),
+    source: parseRequiredString(row.source, "input source"),
+    channelId: parseOptionalString(row.channel_id),
+    externalMessageId: parseOptionalString(row.external_message_id),
+    actorId: parseOptionalString(row.actor_id),
+    identityId: parseOptionalString(row.identity_id),
+    createdAt: requireTimestampMillis(row.created_at, "Thread runtime input created_at must be a valid timestamp."),
+    appliedAt: optionalTimestampMillis(row.applied_at, "Thread runtime input applied_at must be a valid timestamp."),
   };
+}
+
+export function parseInputThreadIdRow(row: Record<string, unknown>): string {
+  return parseRequiredString(row.thread_id, "input thread id");
 }
 
 export function parseRunRow(row: Record<string, unknown>): ThreadRunRecord {
   return {
-    id: String(row.id),
-    threadId: String(row.thread_id),
-    status: String(row.status) as ThreadRunRecord["status"],
-    startedAt: toMillis(row.started_at),
-    finishedAt: row.finished_at === null ? undefined : toMillis(row.finished_at),
-    error: row.error === null ? undefined : String(row.error),
-    abortRequestedAt: row.abort_requested_at === null ? undefined : toMillis(row.abort_requested_at),
-    abortReason: row.abort_reason === null ? undefined : String(row.abort_reason),
+    id: parseRequiredString(row.id, "run id"),
+    threadId: parseRequiredString(row.thread_id, "thread id"),
+    status: parseRunStatus(row.status),
+    startedAt: requireTimestampMillis(row.started_at, "Thread runtime run started_at must be a valid timestamp."),
+    finishedAt: optionalTimestampMillis(row.finished_at, "Thread runtime run finished_at must be a valid timestamp."),
+    error: parseOptionalString(row.error),
+    abortRequestedAt: optionalTimestampMillis(row.abort_requested_at, "Thread runtime run abort_requested_at must be a valid timestamp."),
+    abortReason: parseOptionalString(row.abort_reason),
   };
 }
 
 export function parseToolJobRow(row: Record<string, unknown>): ThreadToolJobRecord {
   return {
-    id: String(row.id),
-    threadId: String(row.thread_id),
-    runId: row.run_id === null ? undefined : String(row.run_id),
-    kind: String(row.kind) as ThreadToolJobRecord["kind"],
-    status: String(row.status) as ThreadToolJobRecord["status"],
-    summary: row.summary === null ? "" : String(row.summary),
-    startedAt: toMillis(row.started_at),
-    finishedAt: row.finished_at === null ? undefined : toMillis(row.finished_at),
-    durationMs: row.duration_ms === null ? undefined : Number(row.duration_ms),
-    result: row.result === null ? undefined : (row.result as ThreadToolJobRecord["result"]),
-    error: row.error === null ? undefined : String(row.error),
-    statusReason: row.status_reason === null ? undefined : String(row.status_reason),
-    progress: row.progress === null ? undefined : (row.progress as ThreadToolJobRecord["progress"]),
+    id: parseRequiredString(row.id, "tool job id"),
+    threadId: parseRequiredString(row.thread_id, "thread id"),
+    runId: parseOptionalString(row.run_id),
+    kind: parseToolJobKind(row.kind),
+    status: parseToolJobStatus(row.status),
+    summary: parseToolJobSummary(row.summary),
+    startedAt: requireTimestampMillis(row.started_at, "Thread runtime tool job started_at must be a valid timestamp."),
+    finishedAt: optionalTimestampMillis(row.finished_at, "Thread runtime tool job finished_at must be a valid timestamp."),
+    durationMs: parseOptionalBigintNumber(row.duration_ms, "tool job duration"),
+    result: parseOptionalJsonObject(row.result, "tool job result"),
+    error: parseOptionalString(row.error),
+    statusReason: parseOptionalString(row.status_reason),
+    progress: parseOptionalJsonObject(row.progress, "tool job progress"),
+  };
+}
+
+export function parseRunningToolJobLossRow(row: Record<string, unknown>): RunningToolJobLossRow {
+  return {
+    id: parseRequiredString(row.id, "tool job id"),
+    threadId: parseRequiredString(row.thread_id, "thread id"),
+    startedAt: requireTimestampMillis(row.started_at, "Thread runtime tool job started_at must be a valid timestamp."),
   };
 }

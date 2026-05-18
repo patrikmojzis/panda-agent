@@ -1,13 +1,13 @@
-import type {Pool, PoolClient} from "pg";
-
+import {readOptionalJsonValue, stringifyOptionalJsonValue} from "../../lib/json.js";
+import {requireNonNegativeInteger} from "../../lib/numbers.js";
+import type {PgPoolLike} from "../../lib/postgres-query.js";
+import {requireNonEmptyString} from "../../lib/strings.js";
+import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
+import {buildAgentTableNames, type AgentTableNames} from "./postgres-shared.js";
 import {
-  CREATE_RUNTIME_SCHEMA_SQL,
-  quoteIdentifier,
-  toJson,
-  toMillis
-} from "../../domain/threads/runtime/postgres-shared.js";
-import {buildIdentityTableNames} from "../identity/postgres-shared.js";
-import {type AgentTableNames, buildAgentTableNames} from "./postgres-shared.js";
+  ensurePostgresAgentSchema,
+  ensurePostgresAgentTableSchema,
+} from "./postgres-schema.js";
 import type {AgentStore} from "./store.js";
 import type {
   AgentPairingRecord,
@@ -24,61 +24,91 @@ import {
   normalizeSkillKey,
 } from "./types.js";
 
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-interface PgPoolLike extends PgQueryable {
-  connect(): Promise<PoolClient>;
-}
-
 export interface PostgresAgentStoreOptions {
   pool: PgPoolLike;
 }
 
+function parseAgentStatus(value: unknown): AgentRecord["status"] {
+  if (value === "active" || value === "deleted") {
+    return value;
+  }
+
+  throw new Error(`Unsupported agent status ${String(value)}.`);
+}
+
+function parseAgentPromptSlug(value: unknown): AgentPromptSlug {
+  if (value === "agent" || value === "heartbeat") {
+    return value;
+  }
+
+  throw new Error(`Unsupported agent prompt slug ${String(value)}.`);
+}
+
+function parseString(value: unknown, errorMessage: string): string {
+  if (typeof value !== "string") {
+    throw new Error(errorMessage);
+  }
+
+  return value;
+}
+
 function parseAgentRow(row: Record<string, unknown>): AgentRecord {
   return {
-    agentKey: String(row.agent_key),
-    displayName: String(row.display_name),
-    status: String(row.status) as AgentRecord["status"],
-    metadata: row.metadata === null ? undefined : row.metadata as AgentRecord["metadata"],
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    agentKey: normalizeAgentKey(
+      requireNonEmptyString(row.agent_key, "Agent row is missing agent key."),
+    ),
+    displayName: requireNonEmptyString(row.display_name, "Agent row is missing display name."),
+    status: parseAgentStatus(row.status),
+    metadata: readOptionalJsonValue(row.metadata, "Agent metadata"),
+    createdAt: requireTimestampMillis(row.created_at, "Agent created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Agent updated_at must be a valid timestamp."),
   };
 }
 
 function parseAgentPromptRow(row: Record<string, unknown>): AgentPromptRecord {
   return {
-    agentKey: String(row.agent_key),
-    slug: String(row.slug) as AgentPromptSlug,
-    content: String(row.content),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    agentKey: normalizeAgentKey(
+      requireNonEmptyString(row.agent_key, "Agent prompt row is missing agent key."),
+    ),
+    slug: parseAgentPromptSlug(row.slug),
+    content: parseString(row.content, "Agent prompt row is missing content."),
+    createdAt: requireTimestampMillis(row.created_at, "Agent prompt created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Agent prompt updated_at must be a valid timestamp."),
   };
 }
 
 function parseAgentSkillRow(row: Record<string, unknown>): AgentSkillRecord {
   return {
-    agentKey: String(row.agent_key),
-    skillKey: String(row.skill_key),
-    description: String(row.description),
-    content: String(row.content),
-    lastLoadedAt: row.last_loaded_at === null || row.last_loaded_at === undefined
-      ? undefined
-      : toMillis(row.last_loaded_at),
-    loadCount: Number(row.load_count ?? 0),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    agentKey: normalizeAgentKey(
+      requireNonEmptyString(row.agent_key, "Agent skill row is missing agent key."),
+    ),
+    skillKey: normalizeSkillKey(
+      requireNonEmptyString(row.skill_key, "Agent skill row is missing skill key."),
+    ),
+    description: normalizeAgentSkillDescription(
+      requireNonEmptyString(row.description, "Agent skill row is missing description."),
+    ),
+    content: normalizeAgentSkillContent(
+      requireNonEmptyString(row.content, "Agent skill row is missing content."),
+    ),
+    lastLoadedAt: optionalTimestampMillis(row.last_loaded_at, "Agent skill last_loaded_at must be a valid timestamp."),
+    loadCount: requireNonNegativeInteger(row.load_count ?? 0, "Agent skill load count"),
+    createdAt: requireTimestampMillis(row.created_at, "Agent skill created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Agent skill updated_at must be a valid timestamp."),
   };
 }
 
 function parseAgentPairingRow(row: Record<string, unknown>): AgentPairingRecord {
   return {
-    agentKey: String(row.agent_key),
-    identityId: String(row.identity_id),
-    metadata: row.metadata === null ? undefined : row.metadata as AgentPairingRecord["metadata"],
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    agentKey: normalizeAgentKey(
+      requireNonEmptyString(row.agent_key, "Agent pairing row is missing agent key."),
+    ),
+    identityId: requireIdentityId(
+      requireNonEmptyString(row.identity_id, "Agent pairing row is missing identity id."),
+    ),
+    metadata: readOptionalJsonValue(row.metadata, "Agent pairing metadata"),
+    createdAt: requireTimestampMillis(row.created_at, "Agent pairing created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Agent pairing updated_at must be a valid timestamp."),
   };
 }
 
@@ -98,75 +128,18 @@ function missingAgentError(agentKey: string): Error {
 export class PostgresAgentStore implements AgentStore {
   private readonly pool: PgPoolLike;
   private readonly tables: AgentTableNames;
-  private readonly identityTables: ReturnType<typeof buildIdentityTableNames>;
 
   constructor(options: PostgresAgentStoreOptions) {
     this.pool = options.pool;
     this.tables = buildAgentTableNames();
-    this.identityTables = buildIdentityTableNames();
   }
 
   async ensureAgentTableSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.agents} (
-        agent_key TEXT PRIMARY KEY,
-        display_name TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        metadata JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
+    await ensurePostgresAgentTableSchema(this.pool);
   }
 
   async ensureSchema(): Promise<void> {
-    await this.ensureAgentTableSchema();
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.agentPairings} (
-        agent_key TEXT NOT NULL REFERENCES ${this.tables.agents}(agent_key) ON DELETE CASCADE,
-        identity_id TEXT NOT NULL REFERENCES ${this.identityTables.identities}(id) ON DELETE CASCADE,
-        metadata JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (agent_key, identity_id)
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_agent_pairings_identity_idx`)}
-      ON ${this.tables.agentPairings} (identity_id, agent_key)
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.agentSkills} (
-        agent_key TEXT NOT NULL REFERENCES ${this.tables.agents}(agent_key) ON DELETE CASCADE,
-        skill_key TEXT NOT NULL,
-        description TEXT NOT NULL,
-        content TEXT NOT NULL,
-        last_loaded_at TIMESTAMPTZ,
-        load_count INTEGER NOT NULL DEFAULT 0,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (agent_key, skill_key)
-      )
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.agentSkills}
-      ADD COLUMN IF NOT EXISTS last_loaded_at TIMESTAMPTZ
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.agentSkills}
-      ADD COLUMN IF NOT EXISTS load_count INTEGER NOT NULL DEFAULT 0
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.agentPrompts} (
-        agent_key TEXT NOT NULL REFERENCES ${this.tables.agents}(agent_key) ON DELETE CASCADE,
-        slug TEXT NOT NULL,
-        content TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (agent_key, slug)
-      )
-    `);
+    await ensurePostgresAgentSchema(this.pool);
   }
 
   async bootstrapAgent(input: BootstrapAgentInput): Promise<AgentRecord> {
@@ -192,8 +165,8 @@ export class PostgresAgentStore implements AgentStore {
       `, [
         agentKey,
         input.displayName.trim() || agentKey,
-        input.status ?? "active",
-        toJson(input.metadata),
+        parseAgentStatus(input.status ?? "active"),
+        stringifyOptionalJsonValue(input.metadata, "Agent metadata"),
       ]);
 
       for (const [slug, content] of Object.entries(prompts)) {

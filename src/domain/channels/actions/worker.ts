@@ -1,6 +1,6 @@
 import type {ActionNotification, ActionWorkerLookup, ChannelActionRecord} from "./types.js";
 import {isMatchingChannelNotification} from "../worker-shared.js";
-import {runInBackground} from "../../../lib/async.js";
+import {DrainLoop} from "../../../lib/drain-loop.js";
 
 type ChannelActionWorkerStore = {
   failSendingActions(lookup: ActionWorkerLookup, error: string): Promise<number>;
@@ -29,19 +29,21 @@ export class ChannelActionWorker {
   private readonly dispatchAction: (action: ChannelActionRecord) => Promise<void>;
   private readonly onError?: (error: unknown, actionId?: string) => Promise<void> | void;
   private unsubscribe: (() => Promise<void>) | null = null;
-  private drainPromise: Promise<void> | null = null;
-  private stopped = false;
-  private pendingDrain = false;
+  private readonly drainLoop: DrainLoop;
 
   constructor(options: ChannelActionWorkerOptions) {
     this.store = options.store;
     this.lookup = options.lookup;
     this.dispatchAction = options.dispatch;
     this.onError = options.onError;
+    this.drainLoop = new DrainLoop({
+      label: "Channel action worker drain",
+      drain: () => this.drain(),
+      onError: this.onError ? (error) => this.onError?.(error) : undefined,
+    });
   }
 
   async start(options: ChannelActionWorkerStartOptions = {}): Promise<void> {
-    this.stopped = false;
     await this.store.failSendingActions(this.lookup, "Channel action worker stopped before completion.");
     if (options.subscribeToNotifications ?? true) {
       if (!this.store.listenPendingActions) {
@@ -53,56 +55,28 @@ export class ChannelActionWorker {
           return;
         }
 
-        this.kickDrain();
+        this.drainLoop.kick();
       });
     }
-    this.kickDrain();
+    this.drainLoop.start();
   }
 
   async stop(): Promise<void> {
-    this.stopped = true;
     const unsubscribe = this.unsubscribe;
     this.unsubscribe = null;
     if (unsubscribe) {
       await unsubscribe();
     }
 
-    if (this.drainPromise) {
-      await this.drainPromise;
-    }
+    await this.drainLoop.stop();
   }
 
   async triggerDrain(): Promise<void> {
-    if (this.stopped) {
-      return;
-    }
-
-    if (this.drainPromise) {
-      this.pendingDrain = true;
-      return;
-    }
-
-    this.drainPromise = this.drain();
-    try {
-      await this.drainPromise;
-    } finally {
-      this.drainPromise = null;
-      if (this.pendingDrain && !this.stopped) {
-        this.pendingDrain = false;
-        await this.triggerDrain();
-      }
-    }
-  }
-
-  private kickDrain(): void {
-    runInBackground(() => this.triggerDrain(), {
-      label: "Channel action worker drain",
-      onError: this.onError ? (error) => this.onError?.(error) : undefined,
-    });
+    await this.drainLoop.trigger();
   }
 
   private async drain(): Promise<void> {
-    while (!this.stopped) {
+    while (!this.drainLoop.isStopped) {
       const action = await this.store.claimNextPendingAction(this.lookup);
       if (!action) {
         return;

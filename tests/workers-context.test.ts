@@ -3,7 +3,7 @@ import {describe, expect, it} from "vitest";
 import type {
   ExecutionEnvironmentRecord,
   SessionEnvironmentBindingRecord
-} from "../src/domain/execution-environments/index.js";
+} from "../src/domain/execution-environments/types.js";
 import type {SessionRecord} from "../src/domain/sessions/index.js";
 import {WorkersContext} from "../src/panda/contexts/workers-context.js";
 

@@ -1,6 +1,6 @@
-import {type ThinkingLevel} from "../../kernel/agent/index.js";
+import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import type {TranscriptLine} from "./chat-view.js";
-import type {SessionRecord} from "../../domain/sessions/index.js";
+import type {SessionRecord} from "../../domain/sessions/types.js";
 
 export type EntryRole = "assistant" | "user" | "tool" | "meta" | "error";
 export type RunPhase = "idle" | "thinking";

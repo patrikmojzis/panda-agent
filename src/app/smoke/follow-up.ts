@@ -6,8 +6,10 @@ import type {Writable} from "node:stream";
 
 import type {ToolResultMessage} from "@mariozechner/pi-ai";
 
-import type {ThreadMessageRecord, ThreadRecord} from "../../domain/threads/runtime/index.js";
-import {formatToolCallFallback, formatToolResultFallback, type JsonValue,} from "../../kernel/agent/index.js";
+import type {ThreadMessageRecord, ThreadRecord} from "../../domain/threads/runtime/types.js";
+import {joinMessageTextParts} from "../../kernel/agent/helpers/message-text.js";
+import {formatToolCallFallback, formatToolResultFallback} from "../../kernel/agent/tool.js";
+import type {JsonValue} from "../../lib/json.js";
 import {createRuntimeClient} from "../runtime/client.js";
 import {createDaemon} from "../runtime/daemon.js";
 import {waitForSmokeDaemonOnline, waitForSmokeThreadIdle} from "./harness.js";
@@ -55,8 +57,11 @@ function renderAssistantEntry(entry: ThreadMessageRecord): string[] {
   };
 
   for (const block of entry.message.content) {
-    if (block.type === "text" && block.text.trim()) {
-      bufferedText += (bufferedText ? "\n" : "") + block.text.trim();
+    if (block.type === "text") {
+      const text = joinMessageTextParts([block], "\n");
+      if (text) {
+        bufferedText += (bufferedText ? "\n" : "") + text;
+      }
       continue;
     }
 

@@ -1,19 +1,16 @@
 import {randomUUID} from "node:crypto";
 
-import {stringToUserMessage} from "../../kernel/agent/index.js";
-import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
-import {
-    type CreateSessionInput,
-    createSessionWithInitialThread,
-    type SessionRecord,
-    type SessionStore,
-} from "../../domain/sessions/index.js";
+import {stringToUserMessage} from "../../kernel/agent/helpers/input.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
+import {createSessionWithInitialThread} from "../../domain/sessions/lifecycle.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
+import type {SessionStore} from "../../domain/sessions/store.js";
+import type {CreateSessionInput, SessionRecord} from "../../domain/sessions/types.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
-import {PostgresThreadRuntimeStore, type ThreadRecord} from "../../domain/threads/runtime/index.js";
+import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import type {CreateThreadInput, InferenceProjection} from "../../domain/threads/runtime/types.js";
-import type {PgPoolLike} from "../../domain/threads/runtime/postgres-db.js";
+import type {CreateThreadInput, InferenceProjection, ThreadRecord} from "../../domain/threads/runtime/types.js";
+import type {PgPoolLike} from "../../lib/postgres-query.js";
 import {buildSessionTableNames} from "../../domain/sessions/postgres-shared.js";
 import type {
     ExecutionCredentialPolicy,
@@ -21,14 +18,14 @@ import type {
     ExecutionSkillPolicy,
     ExecutionToolPolicy,
     SessionEnvironmentBindingRecord,
-} from "../../domain/execution-environments/index.js";
-import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/index.js";
+} from "../../domain/execution-environments/types.js";
+import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
 import {normalizeSkillKey} from "../../domain/agents/types.js";
-import {buildWorkerSessionMetadata} from "../../domain/sessions/worker-metadata.js";
+import {buildWorkerSessionMetadata, readWorkerContextValue} from "../../domain/sessions/worker-metadata.js";
 import {renderSubagentHandoff} from "../../prompts/runtime/subagents.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {stableStringify} from "../../lib/json.js";
-import {trimToUndefined} from "../../lib/strings.js";
+import {trimToUndefined, uniqueTrimmedStrings} from "../../lib/strings.js";
 import {
     DEFAULT_DISPOSABLE_ENVIRONMENT_TTL_MS,
     ExecutionEnvironmentLifecycleService,
@@ -70,10 +67,13 @@ export interface CreateWorkerSessionResult {
   binding: SessionEnvironmentBindingRecord;
 }
 
-export interface WorkerSessionServiceOptions {
+type WorkerSessionStore = Pick<SessionStore, "createSession" | "getSession">;
+type WorkerThreadStore = Pick<ThreadRuntimeStore, "createThread" | "enqueueInput" | "getThread">;
+
+interface WorkerSessionServiceOptions {
   pool?: PgPoolLike;
-  sessions: SessionStore;
-  threads: ThreadRuntimeStore;
+  sessions: WorkerSessionStore;
+  threads: WorkerThreadStore;
   coordinator?: Pick<ThreadRuntimeCoordinator, "submitInput">;
   environments: ExecutionEnvironmentLifecycleService;
   fallbackContext: {cwd: string};
@@ -83,19 +83,15 @@ function buildWorkerEnvironmentId(sessionId: string): string {
   return `worker:${sessionId}`;
 }
 
-function normalizeAllowlist(values: readonly string[] | undefined): string[] {
-  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
-}
-
 function buildCredentialPolicy(input: CreateWorkerSessionInput): ExecutionCredentialPolicy {
   return input.credentialPolicy ?? {
     mode: "allowlist",
-    envKeys: normalizeAllowlist(input.credentialAllowlist),
+    envKeys: uniqueTrimmedStrings(input.credentialAllowlist ?? []),
   };
 }
 
 function normalizeSkillAllowlist(values: readonly string[] | undefined): string[] {
-  return normalizeAllowlist(values).map((value) => normalizeSkillKey(value));
+  return uniqueTrimmedStrings(values ?? []).map((value) => normalizeSkillKey(value));
 }
 
 function buildSkillPolicy(input: CreateWorkerSessionInput): ExecutionSkillPolicy {
@@ -111,11 +107,16 @@ function buildThreadContext(input: {
   agentKey: string;
   workerMetadata: JsonObject;
 }): JsonObject {
+  const worker = readWorkerContextValue(input.workerMetadata);
+  if (worker === undefined) {
+    throw new Error("Worker session metadata must include worker context.");
+  }
+
   return {
     ...input.fallbackContext,
     agentKey: input.agentKey,
     sessionId: input.sessionId,
-    worker: input.workerMetadata.worker as JsonValue,
+    worker,
   };
 }
 
@@ -169,8 +170,8 @@ function sameJson(left: JsonValue | undefined, right: JsonValue | undefined): bo
 
 export class WorkerSessionService {
   private readonly pool?: PgPoolLike;
-  private readonly sessions: SessionStore;
-  private readonly threads: ThreadRuntimeStore;
+  private readonly sessions: WorkerSessionStore;
+  private readonly threads: WorkerThreadStore;
   private readonly coordinator?: Pick<ThreadRuntimeCoordinator, "submitInput">;
   private readonly environments: ExecutionEnvironmentLifecycleService;
   private readonly fallbackContext: {cwd: string};

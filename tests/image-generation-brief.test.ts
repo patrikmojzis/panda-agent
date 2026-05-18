@@ -162,6 +162,7 @@ describe("image brief composition", () => {
       stringToUserMessage("Make a tiny red square icon."),
       assistantImageGenerateCall({
         prompt: "tiny red square icon on white background",
+        images: [" /tmp/panda/source.png ", "/tmp/panda/source.png", ""],
         size: "1024x1024",
         quality: "low",
         outputFormat: "png",
@@ -175,6 +176,8 @@ describe("image brief composition", () => {
 
     expect(rendered).toContain("image_generate request");
     expect(rendered).toContain("tiny red square icon on white background");
+    expect(rendered).toContain("referenceImages: /tmp/panda/source.png");
+    expect(rendered).not.toContain("referenceImages:  /tmp/panda/source.png ");
     expect(rendered).toContain("image_generate result");
     expect(rendered).toContain("/tmp/panda/generated-red-square.png");
     expect(rendered).toContain("A centered red square icon");

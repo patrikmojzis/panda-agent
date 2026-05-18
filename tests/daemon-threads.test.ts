@@ -4,8 +4,12 @@ import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {createDaemonThreadHelpers} from "../src/app/runtime/daemon-threads.js";
+import {
+  createDaemonThreadHelpers,
+  type DaemonThreadHelperContext,
+} from "../src/app/runtime/daemon-threads.js";
 import {Agent, BashTool, RunContext,} from "../src/index.js";
+import type {CreateSessionInput, SessionRecord, UpdateSessionCurrentThreadInput} from "../src/domain/sessions/index.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {TEST_IDENTITY_ID, TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
@@ -53,6 +57,7 @@ describe("createDaemonThreadHelpers", () => {
     sessionMetadata?: Record<string, unknown>;
     createdByIdentityId?: string;
     getIdentity?: (identityId: string) => Promise<ReturnType<typeof createIdentity>>;
+    conversationBinding?: {sessionId: string} | null;
     backgroundJobService?: { cancelThreadJobs(threadId: string): Promise<void> };
     coordinator?: {
       abort(threadId: string, reason?: string): Promise<boolean>;
@@ -62,24 +67,18 @@ describe("createDaemonThreadHelpers", () => {
     const store = options.store ?? new TestThreadRuntimeStore();
     let boundThreadId = options.currentThreadId ?? "thread-old-home";
     const identity = createIdentity();
-    const sessions = new Map<string, {
-      id: string;
-      agentKey: string;
-      kind: "main" | "branch";
-      currentThreadId: string;
-      createdByIdentityId?: string;
-      metadata?: Record<string, unknown>;
-      createdAt: number;
-      updatedAt: number;
-    }>();
+    const sessions = new Map<string, SessionRecord>();
+    const conversationBindings = {
+      bindConversation: vi.fn(async () => undefined),
+      getConversationBinding: vi.fn(async () => options.conversationBinding ?? null),
+    };
+    const sessionRoutes = {
+      saveLastRoute: vi.fn(async () => undefined),
+      getLastRoute: vi.fn(async () => null),
+    };
 
-    return {
-      store,
-      identity,
-      helpers: createDaemonThreadHelpers({
+    const context: DaemonThreadHelperContext = {
         fallbackContext: { cwd: options.workspace ?? process.cwd() },
-        model: "openai/gpt-5.1",
-        daemonKey: "panda-daemon",
         runtime: {
           store,
           backgroundJobService: options.backgroundJobService ?? {
@@ -90,23 +89,22 @@ describe("createDaemonThreadHelpers", () => {
             waitForCurrentRun: vi.fn(async () => undefined),
           },
           agentStore: {
-            getAgent: vi.fn(async (agentKey: string) => ({ agentKey })),
+            getAgent: vi.fn(async () => undefined),
             listIdentityPairings: vi.fn(async () => options.pairings ?? []),
           },
           identityStore: {
-            ensureIdentity: vi.fn(async () => identity),
             getIdentity: vi.fn(async (identityId: string) => await (options.getIdentity?.(identityId) ?? Promise.resolve(identity))),
           },
           sessionStore: {
             getMainSession: vi.fn(async (agentKey: string) => {
               return [...sessions.values()].find((session) => session.agentKey === agentKey && session.kind === "main") ?? null;
             }),
-            createSession: vi.fn(async ({id, agentKey, currentThreadId}: {id: string; agentKey: string; currentThreadId: string}) => {
+            createSession: vi.fn(async ({id, agentKey, kind, currentThreadId}: CreateSessionInput) => {
               boundThreadId = currentThreadId;
               const session = {
                 id,
                 agentKey,
-                kind: "main" as const,
+                kind,
                 currentThreadId,
                 createdByIdentityId: options.createdByIdentityId,
                 metadata: undefined,
@@ -133,7 +131,7 @@ describe("createDaemonThreadHelpers", () => {
                 updatedAt: Date.now(),
               };
             }),
-            updateCurrentThread: vi.fn(async ({sessionId, currentThreadId}: {sessionId: string; currentThreadId: string}) => {
+            updateCurrentThread: vi.fn(async ({sessionId, currentThreadId}: UpdateSessionCurrentThreadInput) => {
               boundThreadId = currentThreadId;
               const existing = sessions.get(sessionId) ?? {
                 id: sessionId,
@@ -154,27 +152,32 @@ describe("createDaemonThreadHelpers", () => {
               return updated;
             }),
           },
-        } as any,
-        conversationBindings: {
-          bindConversation: vi.fn(async () => undefined),
-          getConversationBinding: vi.fn(async () => null),
-        } as any,
-        sessionRoutes: {
-          saveLastRoute: vi.fn(async () => undefined),
-          getLastRoute: vi.fn(async () => null),
-        } as any,
+          workerSessions: {
+            createWorkerSession: vi.fn(async () => {
+              throw new Error("Unexpected worker session creation in daemon thread helper tests.");
+            }),
+          },
+        },
+        conversationBindings,
+        sessionRoutes,
         outboundDeliveries: {
           enqueueDelivery: vi.fn(async () => undefined),
-        } as any,
-        channelActions: {
-          enqueueAction: vi.fn(async () => undefined),
-        } as any,
-        requests: {} as any,
-        daemonState: {} as any,
-        scheduledTaskRunner: {} as any,
-        watchRunner: {} as any,
-        relationshipHeartbeatRunner: {} as any,
-      }),
+        },
+        a2aBindings: {
+          bindSession: vi.fn(async (input) => ({
+            ...input,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          })),
+        },
+      };
+
+    return {
+      store,
+      identity,
+      conversationBindings,
+      sessionRoutes,
+      helpers: createDaemonThreadHelpers(context),
     };
   }
 
@@ -277,7 +280,7 @@ describe("createDaemonThreadHelpers", () => {
         identityId: TEST_IDENTITY_ID,
         identityHandle: "home",
       },
-    } as any);
+    });
 
     const backgroundJobService = new BackgroundToolJobService({ store });
     const bash = new BashTool({
@@ -299,7 +302,7 @@ describe("createDaemonThreadHelpers", () => {
 
     const onTerminalJob = vi.fn();
     backgroundJobService.setBackgroundCompletionHandler(onTerminalJob);
-    const {helpers, identity} = createHelpers({
+    const {helpers} = createHelpers({
       store,
       workspace,
       pairings: [{agentKey: "panda"}],
@@ -330,6 +333,68 @@ describe("createDaemonThreadHelpers", () => {
     expect((thread.context as Record<string, unknown>).identityHandle).toBeUndefined();
   });
 
+  it("resets channel-bound conversations without adapter-specific daemon logic", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-old-channel",
+      sessionId: "session-main",
+      context: {
+        agentKey: "panda",
+        sessionId: "session-main",
+      },
+    });
+
+    const {helpers, conversationBindings, sessionRoutes} = createHelpers({
+      store,
+      currentThreadId: "thread-old-channel",
+      conversationBinding: {sessionId: "session-main"},
+    });
+
+    const result = await helpers.handleResetSession({
+      identityId: TEST_IDENTITY_ID,
+      source: "whatsapp",
+      connectorKey: "main",
+      externalConversationId: "421900000000@s.whatsapp.net",
+      externalActorId: "421900000000@s.whatsapp.net",
+      externalMessageId: "reset-1",
+    });
+
+    expect(result.previousThreadId).toBe("thread-old-channel");
+    expect(result.threadId).not.toBe("thread-old-channel");
+    expect(conversationBindings.getConversationBinding).toHaveBeenCalledWith({
+      source: "whatsapp",
+      connectorKey: "main",
+      externalConversationId: "421900000000@s.whatsapp.net",
+    });
+    expect(conversationBindings.bindConversation).toHaveBeenCalledWith(expect.objectContaining({
+      source: "whatsapp",
+      connectorKey: "main",
+      externalConversationId: "421900000000@s.whatsapp.net",
+      sessionId: "session-main",
+      metadata: {
+        kind: "channel_reset_receipt",
+        externalMessageId: "reset-1",
+      },
+    }));
+    expect(sessionRoutes.saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-main",
+      identityId: TEST_IDENTITY_ID,
+      route: expect.objectContaining({
+        source: "whatsapp",
+        connectorKey: "main",
+        externalConversationId: "421900000000@s.whatsapp.net",
+        externalActorId: "421900000000@s.whatsapp.net",
+        externalMessageId: "reset-1",
+      }),
+    }));
+    await expect(store.getThread(String(result.threadId))).resolves.toMatchObject({
+      sessionId: "session-main",
+      context: expect.objectContaining({
+        source: "whatsapp",
+      }),
+    });
+  });
+
   it("allows operator reset for an ownerless session", async () => {
     const store = new TestThreadRuntimeStore();
     await store.createThread({
@@ -339,7 +404,7 @@ describe("createDaemonThreadHelpers", () => {
         agentKey: "panda",
         sessionId: "session-main",
       },
-    } as any);
+    });
 
     const {helpers} = createHelpers({
       store,

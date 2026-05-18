@@ -7,11 +7,10 @@ import {
     ToolError,
     WatchCreateTool,
     WatchDisableTool,
+    type WatchToolOptions,
     WatchSchemaGetTool,
     WatchUpdateTool,
 } from "../src/index.js";
-import type {WatchMutationService} from "../src/domain/watches/mutation-service.js";
-import type {WatchStore} from "../src/domain/watches/index.js";
 
 function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
@@ -26,44 +25,8 @@ function createRunContext(context: DefaultAgentSessionContext): RunContext<Defau
   });
 }
 
-function createStoreMock(): WatchStore {
+function createStoreMock(): WatchToolOptions["store"] {
   return {
-    ensureSchema: vi.fn(async () => {}),
-    createWatch: vi.fn(async (input) => ({
-      id: "watch-1",
-      sessionId: input.sessionId,
-      createdByIdentityId: input.createdByIdentityId,
-      title: input.title,
-      intervalMinutes: input.intervalMinutes,
-      source: input.source,
-      detector: input.detector,
-      enabled: input.enabled ?? true,
-      nextPollAt: 1,
-      createdAt: 1,
-      updatedAt: 1,
-    })),
-    updateWatch: vi.fn(async (input) => ({
-      id: input.watchId,
-      sessionId: input.sessionId,
-      title: input.title ?? "watch",
-      intervalMinutes: input.intervalMinutes ?? 5,
-      source: input.source ?? {
-        kind: "http_json",
-        url: "https://example.com/btc",
-        result: {
-          observation: "scalar",
-          valuePath: "price",
-        },
-      },
-      detector: input.detector ?? {
-        kind: "percent_change",
-        percent: 10,
-      },
-      enabled: input.enabled ?? true,
-      nextPollAt: 1,
-      createdAt: 1,
-      updatedAt: 1,
-    })),
     disableWatch: vi.fn(async (input) => ({
       id: input.watchId,
       sessionId: input.sessionId,
@@ -87,19 +50,10 @@ function createStoreMock(): WatchStore {
       createdAt: 1,
       updatedAt: 1,
     })),
-    getWatch: vi.fn(),
-    listDueWatches: vi.fn(),
-    claimWatch: vi.fn(),
-    startWatchRun: vi.fn(),
-    completeWatchRun: vi.fn(),
-    failWatchRun: vi.fn(),
-    clearWatchClaim: vi.fn(),
-    recordEvent: vi.fn(),
-    getLatestWatchRun: vi.fn(),
   };
 }
 
-function createMutationServiceMock() {
+function createMutationServiceMock(): WatchToolOptions["mutations"] {
   return {
     createWatch: vi.fn(async (input, scope) => ({
       id: "watch-1",
@@ -137,7 +91,7 @@ function createMutationServiceMock() {
       createdAt: 1,
       updatedAt: 1,
     })),
-  } as unknown as WatchMutationService;
+  };
 }
 
 describe("watch Panda tools", () => {
@@ -415,6 +369,60 @@ describe("watch Panda tools", () => {
         percent: 10,
       },
     }, createRunContext(context))).rejects.toBeInstanceOf(ToolError);
+
+    expect(mutations.createWatch).not.toHaveBeenCalled();
+  });
+
+  it("rejects incomplete HTTP header config before persistence", async () => {
+    const mutations = createMutationServiceMock();
+    const tool = new WatchCreateTool({
+      mutations,
+      store: createStoreMock(),
+    });
+
+    await expect(tool.run({
+      title: "Broken header watch",
+      intervalMinutes: 5,
+      source: {
+        kind: "http_json",
+        url: "https://example.com/btc",
+        headers: [{name: "Authorization"}],
+        result: {
+          observation: "scalar",
+          valuePath: "price",
+        },
+      },
+      detector: {
+        kind: "percent_change",
+        percent: 10,
+      },
+    }, createRunContext(context))).rejects.toThrow("Watch request header must include value or credentialEnvKey.");
+
+    expect(mutations.createWatch).not.toHaveBeenCalled();
+  });
+
+  it("rejects selector-text HTML snapshots without a selector before persistence", async () => {
+    const mutations = createMutationServiceMock();
+    const tool = new WatchCreateTool({
+      mutations,
+      store: createStoreMock(),
+    });
+
+    await expect(tool.run({
+      title: "Broken HTML watch",
+      intervalMinutes: 5,
+      source: {
+        kind: "http_html",
+        url: "https://example.com",
+        result: {
+          observation: "snapshot",
+          mode: "selector_text",
+        },
+      },
+      detector: {
+        kind: "snapshot_changed",
+      },
+    }, createRunContext(context))).rejects.toThrow("Watch HTML snapshot selector must not be empty.");
 
     expect(mutations.createWatch).not.toHaveBeenCalled();
   });

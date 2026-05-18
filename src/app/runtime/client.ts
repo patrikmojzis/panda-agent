@@ -3,16 +3,21 @@ import {randomUUID} from "node:crypto";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {sleep} from "../../lib/async.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
-import {PostgresAgentStore} from "../../domain/agents/index.js";
-import type {ExecutionToolPolicy} from "../../domain/execution-environments/index.js";
-import {type IdentityRecord, normalizeIdentityHandle, PostgresIdentityStore,} from "../../domain/identity/index.js";
-import type {JsonValue} from "../../kernel/agent/types.js";
+import {PostgresAgentStore} from "../../domain/agents/postgres.js";
+import type {ExecutionToolPolicy} from "../../domain/execution-environments/types.js";
+import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
+import {type IdentityRecord, normalizeIdentityHandle} from "../../domain/identity/types.js";
+import type {JsonValue} from "../../lib/json.js";
+import type {CreateRuntimeRequestInput, RuntimeRequestKind} from "../../domain/threads/requests/types.js";
 import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {DaemonStateRepo} from "./state/repo.js";
-import {PostgresThreadRuntimeStore, type ThreadRuntimeNotification,} from "../../domain/threads/runtime/postgres.js";
+import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
+import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres-notifications.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {InferenceProjection, ThreadRecord, ThreadUpdate,} from "../../domain/threads/runtime/types.js";
-import {PostgresSessionStore, type SessionRecord} from "../../domain/sessions/index.js";
+import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
+import type {SessionRecord} from "../../domain/sessions/types.js";
+import {resolveCurrentSessionThread} from "../../domain/sessions/current-thread.js";
 import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY,} from "./daemon.js";
 import {createPostgresPool, requireDatabaseUrl} from "./create-runtime.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
@@ -184,9 +189,20 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       }
     };
 
-    const createBranchSession = async (sessionOptions: RuntimeClientSessionOptions = {}): Promise<ThreadRecord> => {
+    const enqueueDaemonRequest = async <
+      TResult,
+      K extends RuntimeRequestKind = RuntimeRequestKind,
+    >(
+      input: CreateRuntimeRequestInput<K>,
+      timeoutMs = DAEMON_REQUEST_TIMEOUT_MS,
+    ): Promise<TResult> => {
       await assertDaemonActive();
-      const request = await requests.enqueueRequest({
+      const request = await requests.enqueueRequest(input);
+      return waitForRequestResult<TResult>(requests, request.id, timeoutMs);
+    };
+
+    const createBranchSession = async (sessionOptions: RuntimeClientSessionOptions = {}): Promise<ThreadRecord> => {
+      const result = await enqueueDaemonRequest<{threadId: string}>({
         kind: "create_branch_session",
         payload: {
           identityId: identity.id,
@@ -197,17 +213,20 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
         },
       });
-      const result = await waitForRequestResult<{threadId: string}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
     };
 
     const createWorkerSession = async (
       sessionOptions: RuntimeClientWorkerSessionOptions,
     ): Promise<RuntimeClientWorkerSessionResult> => {
-      await assertDaemonActive();
       const sessionId = trimToUndefined(sessionOptions.sessionId) ?? randomUUID();
       const threadId = trimToUndefined(sessionOptions.threadId) ?? randomUUID();
-      const request = await requests.enqueueRequest({
+      const result = await enqueueDaemonRequest<{
+        threadId: string;
+        sessionId: string;
+        environmentId: string;
+        environment?: RuntimeClientWorkerSessionResult["environment"];
+      }>({
         kind: "create_worker_session",
         payload: {
           identityId: identity.id,
@@ -228,12 +247,6 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
           parentSessionId: trimToUndefined(sessionOptions.parentSessionId),
         },
       });
-      const result = await waitForRequestResult<{
-        threadId: string;
-        sessionId: string;
-        environmentId: string;
-        environment?: RuntimeClientWorkerSessionResult["environment"];
-      }>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
       return {
         thread: await store.getThread(result.threadId),
         sessionId: result.sessionId,
@@ -244,8 +257,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
     };
 
     const openMainSession = async (sessionOptions: RuntimeClientSessionOptions = {}): Promise<ThreadRecord> => {
-      await assertDaemonActive();
-      const request = await requests.enqueueRequest({
+      const result = await enqueueDaemonRequest<{threadId: string}>({
         kind: "resolve_main_session_thread",
         payload: {
           identityId: identity.id,
@@ -255,15 +267,13 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
         },
       });
-      const result = await waitForRequestResult<{threadId: string}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
     };
 
     const resetSession = async (
       sessionOptions: RuntimeClientSessionOptions = {},
     ): Promise<ThreadRecord> => {
-      await assertDaemonActive();
-      const request = await requests.enqueueRequest({
+      const result = await enqueueDaemonRequest<{threadId: string}>({
         kind: "reset_session",
         payload: {
           identityId: identity.id,
@@ -275,14 +285,14 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
         },
       });
-      const result = await waitForRequestResult<{threadId: string}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
     };
 
     const openSession = async (sessionId: string): Promise<ThreadRecord> => {
       const session = await sessionStore.getSession(sessionId);
       await assertIdentityCanAccessAgent(session.agentKey);
-      return store.getThread(session.currentThreadId);
+      const {threadId} = await resolveCurrentSessionThread(sessionStore, session.id);
+      return store.getThread(threadId);
     };
 
     const listAgentSessions = async (agentKey: string): Promise<readonly SessionRecord[]> => {
@@ -296,8 +306,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       actorId: string;
       externalMessageId: string;
     }): Promise<{threadId: string}> => {
-      await assertDaemonActive();
-      const request = await requests.enqueueRequest({
+      return enqueueDaemonRequest<{threadId: string}>({
         kind: "tui_input",
         payload: {
           identityId: identity.id,
@@ -309,12 +318,10 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
           text: input.text,
         },
       });
-      return waitForRequestResult<{threadId: string}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
     };
 
     const abortThread = async (threadId: string, reason?: string): Promise<boolean> => {
-      await assertDaemonActive();
-      const request = await requests.enqueueRequest({
+      const result = await enqueueDaemonRequest<{aborted?: boolean}>({
         kind: "abort_thread",
         payload: {
           identityId: identity.id,
@@ -322,7 +329,6 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
           reason,
         },
       });
-      const result = await waitForRequestResult<{aborted?: boolean}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
       return result.aborted === true;
     };
 
@@ -341,8 +347,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
     };
 
     const updateThread = async (threadId: string, update: ThreadUpdate): Promise<ThreadRecord> => {
-      await assertDaemonActive();
-      const request = await requests.enqueueRequest({
+      const result = await enqueueDaemonRequest<{threadId: string}>({
         kind: "update_thread",
         payload: {
           identityId: identity.id,
@@ -350,39 +355,30 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
           update,
         },
       });
-      const result = await waitForRequestResult<{threadId: string}>(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
       return store.getThread(result.threadId);
     };
 
     const compactThread = async (threadId: string, customInstructions: string): Promise<RuntimeClientCompactResult> => {
-      await assertDaemonActive();
-      const request = await requests.enqueueRequest({
+      return enqueueDaemonRequest<RuntimeClientCompactResult>({
         kind: "compact_thread",
         payload: {
           identityId: identity.id,
           threadId,
           customInstructions,
         },
-      });
-      return waitForRequestResult<RuntimeClientCompactResult>(requests, request.id, 15 * 60_000);
+      }, 15 * 60_000);
     };
 
     const resolveThreadRunConfig = async (
       threadId: string,
     ): Promise<{model: string; thinking?: ThinkingLevel}> => {
-      await assertDaemonActive();
-      const request = await requests.enqueueRequest({
+      const result = await enqueueDaemonRequest<{model: string; thinking?: ThinkingLevel | null}>({
         kind: "resolve_thread_run_config",
         payload: {
           identityId: identity.id,
           threadId,
         },
       });
-      const result = await waitForRequestResult<{model: string; thinking?: ThinkingLevel | null}>(
-        requests,
-        request.id,
-        DAEMON_REQUEST_TIMEOUT_MS,
-      );
       return {
         model: result.model,
         thinking: result.thinking ?? undefined,

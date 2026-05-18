@@ -1,4 +1,4 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
@@ -151,6 +151,62 @@ describe("ConversationRepo", () => {
         paired: true,
       },
     });
+  });
+
+  it("rejects non-json conversation metadata before persistence", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {sessionStore} = await createRuntimeStores(pool);
+    const store = new ConversationRepo({ pool });
+    await store.ensureSchema();
+    await sessionStore.createSession({
+      id: "session-a",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-a",
+    });
+
+    await expect(store.bindConversation({
+      source: "telegram",
+      connectorKey: "bot-main",
+      externalConversationId: "chat-bad-meta",
+      sessionId: "session-a",
+      metadata: Number.NaN,
+    })).rejects.toThrow("Conversation binding metadata must be JSON-serializable.");
+  });
+
+  it("rejects malformed persisted conversation binding rows", async () => {
+    const store = new ConversationRepo({
+      pool: {
+        connect: vi.fn(),
+        query: vi.fn(async () => ({
+          rows: [{
+            source: "telegram",
+            connector_key: "bot-main",
+            external_conversation_id: "chat-1",
+            session_id: "session-a",
+            metadata: Number.NaN,
+            created_at: new Date(),
+            updated_at: new Date(),
+          }],
+        })),
+      },
+    });
+
+    await expect(store.getConversationBinding({
+      source: "telegram",
+      connectorKey: "bot-main",
+      externalConversationId: "chat-1",
+    })).rejects.toThrow("Conversation binding metadata must be JSON-serializable.");
   });
 
   it("isolates bindings by source and connector key", async () => {

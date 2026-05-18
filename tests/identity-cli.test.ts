@@ -61,7 +61,7 @@ vi.mock("../src/domain/identity/postgres.js", () => ({
   PostgresIdentityStore: identityCliMocks.MockPostgresIdentityStore,
 }));
 
-vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
+vi.mock("../src/lib/postgres-bootstrap.js", () => ({
   ensureSchemas: identityCliMocks.ensureSchemas,
   withPostgresPool: identityCliMocks.withPostgresPool,
 }));

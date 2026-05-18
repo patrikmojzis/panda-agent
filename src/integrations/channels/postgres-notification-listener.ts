@@ -1,29 +1,68 @@
-import type {PoolClient} from "pg";
-
 import {
-  type ActionNotification,
-  buildActionNotificationChannel,
   parseActionNotification,
-} from "../../domain/channels/actions/index.js";
-import {
-  buildDeliveryNotificationChannel,
-  type DeliveryNotification,
-  parseDeliveryNotification,
-} from "../../domain/channels/deliveries/index.js";
+} from "../../domain/channels/actions/postgres.js";
+import {buildActionNotificationChannel} from "../../domain/channels/actions/postgres-shared.js";
+import type {ActionNotification} from "../../domain/channels/actions/types.js";
+import {parseDeliveryNotification} from "../../domain/channels/deliveries/postgres.js";
+import {buildDeliveryNotificationChannel} from "../../domain/channels/deliveries/postgres-shared.js";
+import type {DeliveryNotification} from "../../domain/channels/deliveries/types.js";
+import {runInBackground} from "../../lib/async.js";
+import type {PgListenClient, PgPoolLike as BasePgPoolLike} from "../../lib/postgres-query.js";
 
-interface PgPoolLike {
-  connect(): Promise<PoolClient>;
+interface PgNotificationClient extends PgListenClient {
+  on(event: "notification", listener: (message: {channel: string; payload?: string}) => void): this;
+  on(event: "error", listener: (error: unknown) => void): this;
+  off(event: "notification", listener: (message: {channel: string; payload?: string}) => void): this;
+  off(event: "error", listener: (error: unknown) => void): this;
 }
+
+type PgPoolLike = BasePgPoolLike<PgNotificationClient>;
 
 export interface PostgresNotificationListenerHandle {
   close(): Promise<void>;
 }
 
-export interface StartPostgresNotificationListenerOptions {
+interface StartPostgresNotificationListenerOptions {
   pool: PgPoolLike;
   onActionNotification?: (notification: ActionNotification) => Promise<void> | void;
   onDeliveryNotification?: (notification: DeliveryNotification) => Promise<void> | void;
   onError?: (error: unknown) => Promise<void> | void;
+}
+
+interface ChannelWorkerNotificationTarget {
+  triggerDrain(): Promise<void>;
+}
+
+interface StartChannelWorkerNotificationListenerOptions {
+  actionWorker: ChannelWorkerNotificationTarget;
+  connectorKey: string;
+  outboundWorker: ChannelWorkerNotificationTarget;
+  pool: PgPoolLike;
+  source: string;
+  onError?: (error: unknown) => Promise<void> | void;
+}
+
+export function startChannelWorkerNotificationListener(
+  options: StartChannelWorkerNotificationListenerOptions,
+): Promise<PostgresNotificationListenerHandle> {
+  return startPostgresNotificationListener({
+    pool: options.pool,
+    onActionNotification: async (notification) => {
+      if (notification.channel !== options.source || notification.connectorKey !== options.connectorKey) {
+        return;
+      }
+
+      await options.actionWorker.triggerDrain();
+    },
+    onDeliveryNotification: async (notification) => {
+      if (notification.channel !== options.source || notification.connectorKey !== options.connectorKey) {
+        return;
+      }
+
+      await options.outboundWorker.triggerDrain();
+    },
+    onError: options.onError,
+  });
 }
 
 export async function startPostgresNotificationListener(
@@ -34,7 +73,9 @@ export async function startPostgresNotificationListener(
   const deliveryChannel = buildDeliveryNotificationChannel();
 
   const handleError = (error: unknown) => {
-    void options.onError?.(error);
+    runInBackground(async () => {
+      await options.onError?.(error);
+    }, {label: "Channel notification listener error handler"});
   };
   const handleNotification = (message: {channel: string; payload?: string}) => {
     if (typeof message.payload !== "string") {
@@ -44,7 +85,9 @@ export async function startPostgresNotificationListener(
     if (message.channel === actionChannel) {
       const notification = parseActionNotification(message.payload);
       if (notification) {
-        void options.onActionNotification?.(notification);
+        runInBackground(async () => {
+          await options.onActionNotification?.(notification);
+        }, {label: "Channel action notification callback"});
       }
       return;
     }
@@ -52,7 +95,9 @@ export async function startPostgresNotificationListener(
     if (message.channel === deliveryChannel) {
       const notification = parseDeliveryNotification(message.payload);
       if (notification) {
-        void options.onDeliveryNotification?.(notification);
+        runInBackground(async () => {
+          await options.onDeliveryNotification?.(notification);
+        }, {label: "Channel delivery notification callback"});
       }
     }
   };

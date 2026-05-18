@@ -3,10 +3,11 @@ import type {AssistantMessage, Message, ToolCall, ToolResultMessage, UserMessage
 import {PiAiRuntime} from "../../../integrations/providers/shared/runtime.js";
 import type {LlmRuntime} from "../../../kernel/agent/runtime.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
+import {joinMessageTextParts} from "../../../kernel/agent/helpers/message-text.js";
 import {resolveModelSelector} from "../../../kernel/models/model-selector.js";
 import {renderImageBriefPrompt, renderImageBriefUserInput} from "../../../prompts/runtime/image-brief.js";
 import {isRecord} from "../../../lib/records.js";
-import {trimToNull} from "../../../lib/strings.js";
+import {trimToNull, uniqueTrimmedStrings} from "../../../lib/strings.js";
 
 export interface ImagePromptComposition {
   compiledPrompt: string;
@@ -75,8 +76,9 @@ function userMessageText(message: UserMessage): string {
   }
 
   return message.content.flatMap((part) => {
-    if (part.type === "text" && part.text.trim()) {
-      return [part.text];
+    if (part.type === "text") {
+      const text = joinMessageTextParts([part], "\n");
+      return text ? [text] : [];
     }
     if (part.type === "image") {
       return ["[image attachment omitted]"];
@@ -111,7 +113,7 @@ function renderStringArray(value: unknown): string | null {
     return null;
   }
 
-  const entries = value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  const entries = uniqueTrimmedStrings(value.filter((entry): entry is string => typeof entry === "string"));
   return entries.length > 0 ? entries.join(", ") : null;
 }
 
@@ -143,8 +145,9 @@ function imageGenerateToolCallText(call: ToolCall): string | null {
 
 function assistantMessageText(message: AssistantMessage): string {
   return message.content.flatMap((part) => {
-    if (part.type === "text" && part.text.trim()) {
-      return [part.text];
+    if (part.type === "text") {
+      const text = joinMessageTextParts([part], "\n");
+      return text ? [text] : [];
     }
 
     if (part.type === "toolCall") {
@@ -195,9 +198,7 @@ function toolResultMessageText(message: ToolResultMessage): string {
     return "";
   }
 
-  const text = message.content.flatMap((part) => {
-    return part.type === "text" && part.text.trim() ? [part.text] : [];
-  }).join("\n");
+  const text = joinMessageTextParts(message.content, "\n");
   const detailParts = message.toolName === "image_generate"
     ? renderImageGenerateResultDetails(message.details)
     : renderViewMediaResultDetails(message.details);
@@ -275,9 +276,7 @@ export function buildCompiledImagePrompt(params: {
 }
 
 function extractAssistantText(message: Awaited<ReturnType<LlmRuntime["complete"]>>): string {
-  return message.content.flatMap((part) => {
-    return part.type === "text" && part.text.trim() ? [part.text.trim()] : [];
-  }).join("\n\n").trim();
+  return joinMessageTextParts(message.content);
 }
 
 export async function composeImagePrompt(

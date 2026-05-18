@@ -1,16 +1,8 @@
-import type {ThinkingLevel} from "../../kernel/agent/index.js";
-import type {ThreadRecord} from "../../domain/threads/runtime/index.js";
+import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
 import type {ChatRuntimeServices} from "./runtime.js";
 import {type PendingLocalInput,} from "./chat-shared.js";
-import type {SessionRecord} from "../../domain/sessions/index.js";
-import {
-  appendStoredTranscriptMessages,
-  createStoredTranscriptEntry,
-  loadStoredThreadSnapshot,
-  observeLatestStoredRun,
-  resolveStoredThreadDisplayConfig,
-  resolveStoredThreadDisplayedCwd,
-} from "../shared/stored-thread.js";
+import type {SessionRecord} from "../../domain/sessions/types.js";
 
 export interface ChatSessionDefaults {
   sessionId?: string;
@@ -18,8 +10,6 @@ export interface ChatSessionDefaults {
   model?: string;
   thinking?: ThinkingLevel;
 }
-
-export const resolveChatDisplayedCwd = resolveStoredThreadDisplayedCwd;
 
 export function buildChatSessionDefaults(input: {
   defaultAgentKey?: string;
@@ -35,8 +25,6 @@ export function buildChatSessionDefaults(input: {
   };
 }
 
-export const resolveStoredChatDisplayConfig = resolveStoredThreadDisplayConfig;
-
 export async function resolveInitialChatSessionThread(input: {
   services: ChatRuntimeServices;
   sessionId?: string;
@@ -48,10 +36,6 @@ export async function resolveInitialChatSessionThread(input: {
 
   return await input.services.openMainSession(input.defaults);
 }
-
-export const createChatTranscriptEntry = createStoredTranscriptEntry;
-
-export const appendStoredChatMessages = appendStoredTranscriptMessages;
 
 export function queuePendingChatInput(
   pendingLocalInputs: PendingLocalInput[],
@@ -87,8 +71,6 @@ export function pendingChatInputsForThread(
   return pendingLocalInputs.filter((entry) => entry.threadId === threadId);
 }
 
-export const observeLatestChatRun = observeLatestStoredRun;
-
 export function resolveSessionPickerSelection(input: {
   sessions: readonly SessionRecord[];
   selectedSessionId: string;
@@ -105,14 +87,4 @@ export function resolveSessionPickerSelection(input: {
 
   const fallbackIndex = input.sessions.findIndex((session) => session.id === input.currentSessionId);
   return fallbackIndex >= 0 ? fallbackIndex : 0;
-}
-
-export async function loadChatThreadSnapshot(input: {
-  services: ChatRuntimeServices;
-  threadId: string;
-}) {
-  return loadStoredThreadSnapshot({
-    store: input.services.store,
-    threadId: input.threadId,
-  });
 }

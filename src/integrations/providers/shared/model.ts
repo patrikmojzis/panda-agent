@@ -1,4 +1,4 @@
-import {type Api, getModel, type Model} from "@mariozechner/pi-ai";
+import {type Api, getModels, type Model} from "@mariozechner/pi-ai";
 
 import {ConfigurationError} from "../../../kernel/agent/exceptions.js";
 import {getProviderConfig, type ProviderName} from "./provider.js";
@@ -6,7 +6,7 @@ import {getProviderConfig, type ProviderName} from "./provider.js";
 export function resolveProviderModel(providerName: ProviderName, modelId: string): Model<Api> {
   const config = getProviderConfig(providerName);
 
-  const model = getModel(config.runtimeProvider, modelId as never) as Model<Api> | undefined;
+  const model = getModels(config.runtimeProvider).find((candidate) => candidate.id === modelId);
   if (!model) {
     throw new ConfigurationError(
       `Unknown model ${JSON.stringify(modelId)} for provider ${JSON.stringify(providerName)}.`,

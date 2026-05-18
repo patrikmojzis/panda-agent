@@ -1,10 +1,11 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
-import {CredentialCrypto} from "../src/domain/credentials/index.js";
+import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
-import {PostgresWikiBindingStore, WikiBindingService} from "../src/domain/wiki/index.js";
+import {PostgresWikiBindingStore} from "../src/domain/wiki/postgres.js";
+import {WikiBindingService} from "../src/domain/wiki/service.js";
 
 describe("PostgresWikiBindingStore", () => {
   const pools: Array<{end(): Promise<void>}> = [];
@@ -106,5 +107,74 @@ describe("PostgresWikiBindingStore", () => {
 
     await expect(wikiBindingService.clearBinding("panda")).resolves.toBe(true);
     await expect(wikiBindingService.getBinding("panda")).resolves.toBeNull();
+  });
+
+  it("rejects corrupted persisted wiki binding versions before decryption", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        agent_key: "panda",
+        wiki_group_id: 7,
+        namespace_path: "agents/panda",
+        api_token_ciphertext: Buffer.from("ciphertext"),
+        api_token_iv: Buffer.from("iv"),
+        api_token_tag: Buffer.from("tag"),
+        key_version: 0,
+        created_at: new Date(),
+        updated_at: new Date(),
+      }],
+    }));
+    const wikiBindingStore = new PostgresWikiBindingStore({
+      pool: {query},
+    });
+
+    await expect(wikiBindingStore.getBinding("panda")).rejects.toThrow(
+      "Wiki binding key version must be a positive integer.",
+    );
+  });
+
+  it("rejects driver-shaped persisted wiki binding numbers before decryption", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        agent_key: "panda",
+        wiki_group_id: "7",
+        namespace_path: "agents/panda",
+        api_token_ciphertext: Buffer.from("ciphertext"),
+        api_token_iv: Buffer.from("iv"),
+        api_token_tag: Buffer.from("tag"),
+        key_version: 1,
+        created_at: new Date(),
+        updated_at: new Date(),
+      }],
+    }));
+    const wikiBindingStore = new PostgresWikiBindingStore({
+      pool: {query},
+    });
+
+    await expect(wikiBindingStore.getBinding("panda")).rejects.toThrow(
+      "Wiki group id must be a positive integer.",
+    );
+  });
+
+  it("rejects stringified persisted wiki binding timestamps before decryption", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        agent_key: "panda",
+        wiki_group_id: 7,
+        namespace_path: "agents/panda",
+        api_token_ciphertext: Buffer.from("ciphertext"),
+        api_token_iv: Buffer.from("iv"),
+        api_token_tag: Buffer.from("tag"),
+        key_version: 1,
+        created_at: "2026-05-01T12:00:00.000Z",
+        updated_at: new Date(),
+      }],
+    }));
+    const wikiBindingStore = new PostgresWikiBindingStore({
+      pool: {query},
+    });
+
+    await expect(wikiBindingStore.getBinding("panda")).rejects.toThrow(
+      "Wiki binding created_at must be a valid timestamp.",
+    );
   });
 });

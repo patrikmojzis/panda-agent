@@ -1,4 +1,4 @@
-import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/index.js";
+import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 
 const CONSTRAINED_BASE_ENV_KEYS = ["PATH", "HOME", "SHELL", "TMPDIR", "TEMP", "TMP", "TERM", "LANG", "LC_ALL", "TZ"];
 

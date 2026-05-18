@@ -1,23 +1,13 @@
-import type {Pool} from "pg";
-
+import type {PgQueryable} from "../../../lib/postgres-query.js";
 import {buildAgentTableNames} from "../../agents/postgres-shared.js";
-import {buildIdentityTableNames} from "../../../domain/identity/postgres-shared.js";
-import {buildScheduledTaskTableNames} from "../../../domain/scheduling/tasks/postgres-shared.js";
+import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
+import {buildScheduledTaskTableNames} from "../../scheduling/tasks/postgres-shared.js";
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
-import {buildTelepathyTableNames} from "../../../domain/telepathy/postgres-shared.js";
-import {buildWatchTableNames} from "../../../domain/watches/postgres-shared.js";
-import {buildEmailTableNames} from "../../../domain/email/postgres-shared.js";
-import {
-    buildSessionRelationNames,
-    buildThreadRuntimeTableNames,
-    quoteIdentifier,
-    RUNTIME_SCHEMA,
-    SESSION_SCHEMA,
-} from "./postgres-shared.js";
-
-interface PgQueryable {
-  query: Pool["query"];
-}
+import {buildTelepathyTableNames} from "../../telepathy/postgres-shared.js";
+import {buildWatchTableNames} from "../../watches/postgres-shared.js";
+import {buildEmailTableNames} from "../../email/postgres-shared.js";
+import {buildSessionRelationNames, quoteIdentifier, RUNTIME_SCHEMA, SESSION_SCHEMA} from "../../../lib/postgres-relations.js";
+import {buildThreadRuntimeTableNames} from "./postgres-shared.js";
 
 export interface ReadonlySessionViewNames {
   agentSessions: string;

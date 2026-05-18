@@ -1,17 +1,12 @@
+import {optionalTimestampMillis, requireTimestampMillis, toJson} from "../../../lib/postgres-values.js";
 import {randomUUID} from "node:crypto";
 
-import type {Pool, PoolClient} from "pg";
-
-import {
-    buildThreadRuntimeTableNames,
-    CREATE_RUNTIME_SCHEMA_SQL,
-    quoteIdentifier,
-    toJson,
-    toMillis,
-} from "../../threads/runtime/postgres-shared.js";
-import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
+import {readOptionalJsonValue} from "../../../lib/json.js";
+import {listenPostgresChannel} from "../../../lib/postgres-listen.js";
+import {requireNonNegativeInteger} from "../../../lib/numbers.js";
+import type {PgListenClient, PgPoolLike} from "../../../lib/postgres-query.js";
 import {isRecord} from "../../../lib/records.js";
-import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
+import {optionalTrimmedString, requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import {normalizeChannelWorkerLookup, parseChannelNotification} from "../worker-shared.js";
 import type {OutboundItem, OutboundSentItem, OutboundTarget} from "../types.js";
 import {
@@ -19,6 +14,7 @@ import {
     buildOutboundDeliveryTableNames,
     type OutboundDeliveryTableNames,
 } from "./postgres-shared.js";
+import {ensurePostgresOutboundDeliverySchema} from "./postgres-schema.js";
 import type {
     CompleteDeliveryInput,
     DeliveryNotification,
@@ -26,27 +22,16 @@ import type {
     FailDeliveryInput,
     OutboundDeliveryInput,
     OutboundDeliveryRecord,
+    OutboundDeliveryStatus,
 } from "./types.js";
 
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-interface PgPoolLike extends PgQueryable {
-  connect(): Promise<PoolClient>;
-}
-
 export interface PostgresOutboundDeliveryStoreOptions {
-  pool: PgPoolLike;
-  notificationPool?: PgPoolLike;
+  pool: PgPoolLike<PgListenClient>;
+  notificationPool?: PgPoolLike<PgListenClient>;
 }
 
 function missingDeliveryError(id: string): Error {
   return new Error(`Unknown outbound delivery ${id}`);
-}
-
-function normalizeWorkerLookup(lookup: DeliveryWorkerLookup): DeliveryWorkerLookup {
-  return normalizeChannelWorkerLookup(lookup, "Outbound delivery");
 }
 
 function normalizeTarget(channel: string, target: OutboundTarget): OutboundTarget {
@@ -66,23 +51,49 @@ function normalizeDeliveryInput(input: OutboundDeliveryInput): OutboundDeliveryI
     threadId: trimToUndefined(input.threadId),
     channel,
     target: normalizeTarget(channel, input.target),
+    items: parseItems(input.items),
+    metadata: readOptionalJsonValue(input.metadata, "Outbound delivery metadata"),
   };
 }
 
+function parseStatus(value: unknown): OutboundDeliveryStatus {
+  if (value === "pending" || value === "sending" || value === "sent" || value === "failed") {
+    return value;
+  }
+
+  throw new Error(`Unsupported outbound delivery status ${String(value)}.`);
+}
+
+function readOptionalString(value: unknown, field: string): string | undefined {
+  return optionalTrimmedString(value, `Outbound delivery ${field} must be a string.`);
+}
+
 function parseSentItems(value: unknown): readonly OutboundSentItem[] | undefined {
-  if (!Array.isArray(value)) {
+  if (value === undefined || value === null) {
     return undefined;
   }
 
-  return value.flatMap((item) => {
-    if (!isRecord(item) || typeof item.type !== "string" || typeof item.externalMessageId !== "string") {
-      return [];
+  if (!Array.isArray(value)) {
+    throw new Error("Outbound delivery sent items must be an array.");
+  }
+
+  return value.map((item) => {
+    if (!isRecord(item)) {
+      throw new Error("Outbound delivery sent item must be a JSON object.");
     }
 
-    return [{
-      type: item.type as OutboundSentItem["type"],
-      externalMessageId: item.externalMessageId,
-    }];
+    const type = item.type;
+    if (type !== "text" && type !== "image" && type !== "file") {
+      throw new Error(`Outbound delivery sent item type is invalid: ${String(type)}.`);
+    }
+
+    return {
+      type,
+      externalMessageId: requireNonEmptyString(
+        item.externalMessageId,
+        "Outbound delivery sent item external message id must not be empty.",
+      ),
+    };
   });
 }
 
@@ -91,53 +102,92 @@ function parseItems(value: unknown): readonly OutboundItem[] {
     throw new Error("Outbound delivery items are missing or invalid.");
   }
 
-  return value as readonly OutboundItem[];
+  return value.map((item) => {
+    if (!isRecord(item)) {
+      throw new Error("Outbound delivery item must be a JSON object.");
+    }
+
+    switch (item.type) {
+      case "text":
+        if (typeof item.text !== "string") {
+          throw new Error("Outbound delivery text item text must be a string.");
+        }
+
+        return {
+          type: "text",
+          text: item.text,
+        };
+      case "image": {
+        const caption = readOptionalString(item.caption, "image item caption");
+        return {
+          type: "image",
+          path: requireNonEmptyString(item.path, "Outbound delivery image item path must not be empty."),
+          ...(caption ? {caption} : {}),
+        };
+      }
+      case "file": {
+        const filename = readOptionalString(item.filename, "file item filename");
+        const caption = readOptionalString(item.caption, "file item caption");
+        const mimeType = readOptionalString(item.mimeType, "file item MIME type");
+        return {
+          type: "file",
+          path: requireNonEmptyString(item.path, "Outbound delivery file item path must not be empty."),
+          ...(filename ? {filename} : {}),
+          ...(caption ? {caption} : {}),
+          ...(mimeType ? {mimeType} : {}),
+        };
+      }
+      default:
+        throw new Error(`Outbound delivery item type is invalid: ${String(item.type)}.`);
+    }
+  });
 }
 
 function parseTarget(row: Record<string, unknown>): OutboundTarget {
   return {
-    source: String(row.channel),
-    connectorKey: String(row.connector_key),
-    externalConversationId: String(row.external_conversation_id),
-    externalActorId: typeof row.external_actor_id === "string" ? row.external_actor_id : undefined,
-    replyToMessageId: typeof row.reply_to_message_id === "string" ? row.reply_to_message_id : undefined,
+    source: requireNonEmptyString(row.channel, "Outbound delivery target source must not be empty."),
+    connectorKey: requireNonEmptyString(row.connector_key, "Outbound delivery target connector key must not be empty."),
+    externalConversationId: requireNonEmptyString(
+      row.external_conversation_id,
+      "Outbound delivery target conversation id must not be empty.",
+    ),
+    externalActorId: readOptionalString(row.external_actor_id, "target actor id"),
+    replyToMessageId: readOptionalString(row.reply_to_message_id, "reply target message id"),
   };
 }
 
 function parseOutboundDeliveryRow(row: Record<string, unknown>): OutboundDeliveryRecord {
   return {
-    id: String(row.id),
-    threadId: typeof row.thread_id === "string" ? row.thread_id : undefined,
-    channel: String(row.channel),
+    id: requireNonEmptyString(row.id, "Outbound delivery id must not be empty."),
+    threadId: readOptionalString(row.thread_id, "thread id"),
+    channel: requireNonEmptyString(row.channel, "Outbound delivery channel must not be empty."),
     target: parseTarget(row),
     items: parseItems(row.items),
-    metadata: row.metadata === null ? undefined : (row.metadata as OutboundDeliveryRecord["metadata"]),
-    status: String(row.status) as OutboundDeliveryRecord["status"],
-    attemptCount: Number(row.attempt_count),
-    lastError: typeof row.last_error === "string" ? row.last_error : undefined,
+    metadata: readOptionalJsonValue(row.metadata, "Outbound delivery metadata"),
+    status: parseStatus(row.status),
+    attemptCount: requireNonNegativeInteger(row.attempt_count, "Outbound delivery attempt count"),
+    lastError: readOptionalString(row.last_error, "last error"),
     sent: parseSentItems(row.sent_items),
-    claimedAt: row.claimed_at === null ? undefined : toMillis(row.claimed_at),
-    completedAt: row.completed_at === null ? undefined : toMillis(row.completed_at),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    claimedAt: optionalTimestampMillis(row.claimed_at, "Outbound delivery claimed_at must be a finite timestamp."),
+    completedAt: optionalTimestampMillis(row.completed_at, "Outbound delivery completed_at must be a finite timestamp."),
+    createdAt: requireTimestampMillis(row.created_at, "Outbound delivery created_at must be a finite timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Outbound delivery updated_at must be a finite timestamp."),
   };
 }
 
-export const parseDeliveryNotification = parseChannelNotification as (payload: string) => DeliveryNotification | null;
+export const parseDeliveryNotification: (payload: string) => DeliveryNotification | null = parseChannelNotification;
 
 export class PostgresOutboundDeliveryStore {
-  private readonly pool: PgPoolLike;
-  private readonly notificationPool: PgPoolLike;
+  private readonly pool: PgPoolLike<PgListenClient>;
+  private readonly notificationPool: PgPoolLike<PgListenClient>;
   private readonly tables: OutboundDeliveryTableNames;
   private readonly notificationChannel: string;
-  private readonly threadTableName: string;
 
   constructor(options: PostgresOutboundDeliveryStoreOptions) {
     this.pool = options.pool;
     this.notificationPool = options.notificationPool ?? options.pool;
     this.tables = buildOutboundDeliveryTableNames();
     this.notificationChannel = buildDeliveryNotificationChannel();
-    this.threadTableName = buildThreadRuntimeTableNames().threads;
   }
 
   private async notifyPendingDelivery(target: Pick<OutboundTarget, "connectorKey"> & { source: string }): Promise<void> {
@@ -151,56 +201,7 @@ export class PostgresOutboundDeliveryStore {
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.outboundDeliveries} (
-        id UUID PRIMARY KEY,
-        thread_id TEXT,
-        channel TEXT NOT NULL,
-        connector_key TEXT NOT NULL,
-        external_conversation_id TEXT NOT NULL,
-        external_actor_id TEXT,
-        reply_to_message_id TEXT,
-        items JSONB NOT NULL,
-        metadata JSONB,
-        status TEXT NOT NULL,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        last_error TEXT,
-        sent_items JSONB,
-        claimed_at TIMESTAMPTZ,
-        completed_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_outbound_deliveries_pending_idx`)}
-      ON ${this.tables.outboundDeliveries} (channel, connector_key, status, created_at, id)
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_outbound_deliveries_thread_idx`)}
-      ON ${this.tables.outboundDeliveries} (thread_id, created_at DESC)
-    `);
-    await assertIntegrityChecks(this.pool, "Outbound delivery schema", [
-      {
-        label: "outbound_deliveries.thread_id orphaned from threads.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.outboundDeliveries} AS delivery
-          LEFT JOIN ${this.threadTableName} AS thread
-            ON thread.id = delivery.thread_id
-          WHERE delivery.thread_id IS NOT NULL
-            AND thread.id IS NULL
-        `,
-      },
-    ]);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.outboundDeliveries}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_outbound_deliveries_thread_fk`)}
-      FOREIGN KEY (thread_id)
-      REFERENCES ${this.threadTableName}(id)
-      ON DELETE SET NULL
-    `);
+    await ensurePostgresOutboundDeliverySchema(this.pool);
   }
 
   async enqueueDelivery(input: OutboundDeliveryInput): Promise<OutboundDeliveryRecord> {
@@ -268,7 +269,7 @@ export class PostgresOutboundDeliveryStore {
   }
 
   async claimNextPendingDelivery(lookup: DeliveryWorkerLookup): Promise<OutboundDeliveryRecord | null> {
-    const normalizedLookup = normalizeWorkerLookup(lookup);
+    const normalizedLookup = normalizeChannelWorkerLookup(lookup, "Outbound delivery");
     const client = await this.pool.connect();
     let inTransaction = false;
 
@@ -297,6 +298,7 @@ export class PostgresOutboundDeliveryStore {
         await client.query("COMMIT");
         return null;
       }
+      const selected = parseOutboundDeliveryRow(row as Record<string, unknown>);
 
       const updateResult = await client.query(
         `
@@ -308,7 +310,7 @@ export class PostgresOutboundDeliveryStore {
           WHERE id = $1
           RETURNING *
         `,
-        [String((row as Record<string, unknown>).id)],
+        [selected.id],
       );
 
       await client.query("COMMIT");
@@ -375,7 +377,7 @@ export class PostgresOutboundDeliveryStore {
   }
 
   async failSendingDeliveries(lookup: DeliveryWorkerLookup, error: string): Promise<number> {
-    const normalizedLookup = normalizeWorkerLookup(lookup);
+    const normalizedLookup = normalizeChannelWorkerLookup(lookup, "Outbound delivery");
     const result = await this.pool.query(
       `
         UPDATE ${this.tables.outboundDeliveries}
@@ -400,37 +402,12 @@ export class PostgresOutboundDeliveryStore {
   async listenPendingDeliveries(
     listener: (notification: DeliveryNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>> {
-    const client = await this.notificationPool.connect();
-
-    const handleNotification = (message: { channel: string; payload?: string }) => {
-      if (message.channel !== this.notificationChannel || typeof message.payload !== "string") {
-        return;
-      }
-
-      const parsed = parseDeliveryNotification(message.payload);
-      if (!parsed) {
-        return;
-      }
-
-      void listener(parsed);
-    };
-
-    client.on("notification", handleNotification);
-    try {
-      await client.query(`LISTEN ${this.notificationChannel}`);
-    } catch (error) {
-      client.off("notification", handleNotification);
-      client.release();
-      throw error;
-    }
-
-    return async () => {
-      client.off("notification", handleNotification);
-      try {
-        await client.query(`UNLISTEN ${this.notificationChannel}`);
-      } finally {
-        client.release();
-      }
-    };
+    return listenPostgresChannel({
+      pool: this.notificationPool,
+      channel: this.notificationChannel,
+      label: "Outbound delivery notification listener",
+      parse: (payload) => typeof payload === "string" ? parseDeliveryNotification(payload) : null,
+      listener,
+    });
   }
 }
