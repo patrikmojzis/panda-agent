@@ -1,4 +1,4 @@
-import type {JsonValue} from "../../kernel/agent/types.js";
+import type {JsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import type {ChannelTypingTarget} from "./types.js";

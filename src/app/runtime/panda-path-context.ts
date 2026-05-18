@@ -7,10 +7,10 @@ import {
   isPathWithinRoot,
   mapPathBetweenRoots,
   readExecutionEnvironmentFilesystemMetadata,
-} from "../../domain/execution-environments/index.js";
+} from "../../domain/execution-environments/filesystem.js";
 import {mapRunnerAgentPathToHost} from "../../integrations/shell/path-mapping.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import type {JsonValue} from "../../kernel/agent/types.js";
+import {isJsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
 import type {ShellSession} from "../../integrations/shell/types.js";
@@ -62,7 +62,8 @@ function resolveBoundEnvironmentPath(resolvedPath: string, context: Record<strin
     return null;
   }
 
-  const filesystem = readExecutionEnvironmentFilesystemMetadata(executionEnvironment.metadata as JsonValue | undefined);
+  const metadata = executionEnvironment.metadata;
+  const filesystem = readExecutionEnvironmentFilesystemMetadata(isJsonValue(metadata) ? metadata : undefined);
   if (!filesystem) {
     return null;
   }
@@ -148,6 +149,40 @@ function normalizeShellSession(shellSession: ShellSession): ShellSession {
   }
 
   return shellSession;
+}
+
+function assertNormalizedShellSession(value: Record<string, unknown>): asserts value is Record<string, unknown> & ShellSession {
+  if (
+    typeof value.cwd !== "string"
+    || !isRecord(value.env)
+    || Object.values(value.env).some((envValue) => typeof envValue !== "string")
+    || (value.secretEnvKeys !== undefined && !Array.isArray(value.secretEnvKeys))
+  ) {
+    throw new Error("Legacy shell session was not normalized.");
+  }
+}
+
+function readLegacyShellSession(value: Record<string, unknown>): ShellSession | null {
+  if (typeof value.cwd !== "string") {
+    return null;
+  }
+
+  if (isRecord(value.env)) {
+    for (const [key, envValue] of Object.entries(value.env)) {
+      if (typeof envValue !== "string") {
+        delete value.env[key];
+      }
+    }
+  } else {
+    value.env = {};
+  }
+
+  if (!Array.isArray(value.secretEnvKeys)) {
+    value.secretEnvKeys = [];
+  }
+
+  assertNormalizedShellSession(value);
+  return normalizeShellSession(value);
 }
 
 function readExecutionEnvironmentId(context: unknown): string {
@@ -237,9 +272,11 @@ export function ensureShellSession(context: unknown): ShellSession | null {
     Object.keys(shellSessions).length === 0
     && canMigrateLegacyShell(context)
     && isRecord(shell)
-    && typeof shell.cwd === "string"
   ) {
-    const normalized = normalizeShellSession(shell as unknown as ShellSession);
+    const normalized = readLegacyShellSession(shell);
+    if (!normalized) {
+      return null;
+    }
     shellSessions[environmentId] = normalized;
     return normalized;
   }
@@ -251,27 +288,6 @@ export function ensureShellSession(context: unknown): ShellSession | null {
 
   shellSessions[environmentId] = nextShell;
   return nextShell;
-}
-
-function readCurrentInputField(context: unknown, field: string): string | undefined {
-  if (!isRecord(context)) {
-    return undefined;
-  }
-
-  const currentInput = context.currentInput;
-  if (!isRecord(currentInput)) {
-    return undefined;
-  }
-
-  return trimToUndefined(currentInput[field]);
-}
-
-export function readCurrentInputIdentityId(context: unknown): string | undefined {
-  return readCurrentInputField(context, "identityId");
-}
-
-export function readCurrentInputMessageId(context: unknown): string | undefined {
-  return readCurrentInputField(context, "messageId");
 }
 
 export function resolveContextPath(

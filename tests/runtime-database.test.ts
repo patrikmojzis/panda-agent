@@ -105,7 +105,7 @@ class DuplicateQueryErrorPool extends EventEmitter {
 
 describe("observePostgresPool", () => {
   it("preserves the callback-style connect path used by pool.query", async () => {
-    const pool = new FakePool() as unknown as import("pg").Pool;
+    const pool = new FakePool();
     const log = vi.fn();
     const observer = observePostgresPool({
       pool,
@@ -130,7 +130,7 @@ describe("observePostgresPool", () => {
   });
 
   it("does not log duplicate-object bootstrap errors as pool failures", async () => {
-    const pool = new DuplicateQueryErrorPool() as unknown as import("pg").Pool;
+    const pool = new DuplicateQueryErrorPool();
     const log = vi.fn();
     const observer = observePostgresPool({
       pool,
@@ -190,7 +190,7 @@ describe("observePostgresPool", () => {
       }
     }
 
-    const pool = new TimeoutConnectPool() as unknown as import("pg").Pool;
+    const pool = new TimeoutConnectPool();
     const log = vi.fn();
     const observer = observePostgresPool({
       pool,

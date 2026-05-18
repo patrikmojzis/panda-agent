@@ -4,35 +4,26 @@ import type {Agent} from "../../../kernel/agent/agent.js";
 import type {TokenCounter} from "../../../kernel/agent/helpers/token-count.js";
 import type {Hook} from "../../../kernel/agent/hook.js";
 import type {LlmContext} from "../../../kernel/agent/llm-context.js";
-import type {JsonObject, JsonValue} from "../../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../../lib/json.js";
 import type {LlmRuntime} from "../../../kernel/agent/runtime.js";
 import type {RunPipeline} from "../../../kernel/agent/run-pipeline.js";
-import type {CompactAttemptDiagnostics} from "../../../kernel/transcript/compaction.js";
+import type {
+  InferenceProjection,
+  ThreadMessageMetadata,
+  ThreadMessageRecord,
+  ThreadRuntimeState,
+} from "../../../kernel/transcript/types.js";
 
-export interface AutoCompactionRuntimeState {
-  consecutiveFailures: number;
-  lastFailureReason?: string;
-  lastFailureAt?: number;
-  cooldownUntil?: number;
-  lastAttempt?: CompactAttemptDiagnostics;
-}
-
-export interface ThreadRuntimeState {
-  autoCompaction?: AutoCompactionRuntimeState;
-}
-
-export interface InferenceProjectionRule {
-  preserveRecentUserTurns?: number;
-  olderThanMs?: number;
-  preserveTailMessages?: number;
-}
-
-export interface InferenceProjection {
-  dropThinking?: InferenceProjectionRule;
-  dropToolCalls?: InferenceProjectionRule;
-  dropImages?: InferenceProjectionRule;
-  dropMessages?: InferenceProjectionRule;
-}
+export type {
+  AutoCompactionRuntimeState,
+  InferenceProjection,
+  InferenceProjectionRule,
+  ThreadMessageMetadata,
+  ThreadMessageOrigin,
+  ThreadMessageRecord,
+  ThreadRuntimeMessagePayload,
+  ThreadRuntimeState,
+} from "../../../kernel/transcript/types.js";
 
 export interface CreateThreadInput {
   id: string;
@@ -81,14 +72,6 @@ export type ThreadDefinitionResolver = (
   thread: ThreadRecord,
 ) => Promise<ResolvedThreadDefinition> | ResolvedThreadDefinition;
 
-export interface ThreadMessageMetadata {
-  source: string;
-  channelId?: string;
-  externalMessageId?: string;
-  actorId?: string;
-  identityId?: string;
-}
-
 export function missingThreadError(threadId: string): Error {
   return new Error(`Unknown thread ${threadId}`);
 }
@@ -105,32 +88,7 @@ export function isMissingThreadError(error: unknown, threadId?: string): boolean
   return error.message === `Unknown thread ${threadId}`;
 }
 
-export function matchesThreadInputIdentity(
-  left: Pick<ThreadMessageMetadata, "source" | "channelId" | "externalMessageId">,
-  right: Pick<ThreadMessageMetadata, "source" | "channelId" | "externalMessageId">,
-): boolean {
-  if (!left.externalMessageId || !right.externalMessageId) {
-    return false;
-  }
-
-  return left.source === right.source
-    && left.externalMessageId === right.externalMessageId
-    && (left.channelId ?? null) === (right.channelId ?? null);
-}
-
-export type ThreadMessageOrigin = "input" | "runtime";
 export type ThreadInputDeliveryMode = "wake" | "queue";
-
-export interface ThreadMessageRecord extends ThreadMessageMetadata {
-  id: string;
-  threadId: string;
-  sequence: number;
-  origin: ThreadMessageOrigin;
-  message: Message;
-  metadata?: JsonValue;
-  runId?: string;
-  createdAt: number;
-}
 
 export interface ThreadSummaryRecord {
   thread: ThreadRecord;
@@ -153,14 +111,6 @@ export interface ThreadInputRecord extends ThreadMessageMetadata {
 export interface ThreadInputPayload extends ThreadMessageMetadata {
   message: Message;
   metadata?: JsonValue;
-}
-
-export interface ThreadRuntimeMessagePayload extends ThreadMessageMetadata {
-  origin?: ThreadMessageOrigin;
-  message: Message;
-  metadata?: JsonValue;
-  runId?: string;
-  createdAt?: number;
 }
 
 export type ThreadRunStatus = "running" | "completed" | "failed";

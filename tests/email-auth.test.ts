@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 
-import {parseEmailAuthenticationResults} from "../src/domain/email/index.js";
+import {parseEmailAuthenticationResults} from "../src/domain/email/auth.js";
 
 describe("email authentication parsing", () => {
   it("keeps authentication passes unknown because raw headers are not trusted", () => {

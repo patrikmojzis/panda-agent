@@ -1,14 +1,14 @@
-import {mkdtemp, readFile, rm, stat} from "node:fs/promises";
+import {mkdtemp, readFile, rm} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import {afterEach, describe, expect, it} from "vitest";
 import WebSocket from "ws";
 
-import {hashTelepathyToken} from "../src/domain/telepathy/index.js";
 import {Agent, type DefaultAgentSessionContext, RunContext} from "../src/index.js";
-import {TelepathyHub} from "../src/integrations/telepathy/hub.js";
+import {TelepathyHub, type TelepathyContextSubmitInput} from "../src/integrations/telepathy/hub.js";
 import {parseTelepathyReceiverMessage} from "../src/integrations/telepathy/protocol.js";
+import {hashOpaqueToken} from "../src/lib/opaque-tokens.js";
 import {TelepathyScreenshotTool} from "../src/panda/tools/telepathy-screenshot-tool.js";
 
 function createAgent() {
@@ -50,7 +50,7 @@ async function waitForMessage(socket: WebSocket): Promise<unknown> {
   });
 }
 
-function createFakeTelepathyStore() {
+function createFakeTelepathyHubStore() {
   const devices = new Map<string, {
     agentKey: string;
     deviceId: string;
@@ -66,13 +66,16 @@ function createFakeTelepathyStore() {
   }>();
   const keyFor = (agentKey: string, deviceId: string) => `${agentKey}::${deviceId}`;
 
+  async function getDevice(agentKey: string, deviceId: string) {
+    const found = devices.get(keyFor(agentKey, deviceId));
+    if (!found) {
+      throw new Error("missing device");
+    }
+
+    return found;
+  }
+
   return {
-    async ensureSchema() {},
-    async clearConnectedStates() {
-      for (const device of devices.values()) {
-        device.connected = false;
-      }
-    },
     async registerDevice(input: {agentKey: string; deviceId: string; tokenHash: string; label?: string}) {
       const now = Date.now();
       const key = keyFor(input.agentKey, input.deviceId);
@@ -92,50 +95,39 @@ function createFakeTelepathyStore() {
       devices.set(key, next);
       return next;
     },
-    async getDevice(agentKey: string, deviceId: string) {
-      const found = devices.get(keyFor(agentKey, deviceId));
-      if (!found) {
-        throw new Error("missing device");
-      }
-
-      return found;
-    },
-    async listDevices(agentKey: string) {
-      return [...devices.values()].filter((device) => device.agentKey === agentKey);
-    },
-    async setDeviceEnabled(agentKey: string, deviceId: string, enabled: boolean) {
-      const found = await this.getDevice(agentKey, deviceId);
-      found.enabled = enabled;
-      found.connected = enabled ? found.connected : false;
-      found.updatedAt = Date.now();
-      found.lastDisconnectedAt = enabled ? found.lastDisconnectedAt : found.updatedAt;
-      return found;
-    },
-    async markConnected(agentKey: string, deviceId: string, label?: string) {
-      const found = await this.getDevice(agentKey, deviceId);
-      const now = Date.now();
-      found.connected = true;
-      found.connectedAt = now;
-      found.lastSeenAt = now;
-      found.updatedAt = now;
-      found.lastDisconnectedAt = undefined;
-      if (label) {
-        found.label = label;
-      }
-      return found;
-    },
-    async touchLastSeen(agentKey: string, deviceId: string) {
-      const found = await this.getDevice(agentKey, deviceId);
-      const now = Date.now();
-      found.lastSeenAt = now;
-      found.updatedAt = now;
-    },
-    async markDisconnected(agentKey: string, deviceId: string) {
-      const found = await this.getDevice(agentKey, deviceId);
-      const now = Date.now();
-      found.connected = false;
-      found.updatedAt = now;
-      found.lastDisconnectedAt = now;
+    store: {
+      async clearConnectedStates() {
+        for (const device of devices.values()) {
+          device.connected = false;
+        }
+      },
+      getDevice,
+      async markConnected(agentKey: string, deviceId: string, label?: string) {
+        const found = await getDevice(agentKey, deviceId);
+        const now = Date.now();
+        found.connected = true;
+        found.connectedAt = now;
+        found.lastSeenAt = now;
+        found.updatedAt = now;
+        found.lastDisconnectedAt = undefined;
+        if (label) {
+          found.label = label;
+        }
+        return found;
+      },
+      async touchLastSeen(agentKey: string, deviceId: string) {
+        const found = await getDevice(agentKey, deviceId);
+        const now = Date.now();
+        found.lastSeenAt = now;
+        found.updatedAt = now;
+      },
+      async markDisconnected(agentKey: string, deviceId: string) {
+        const found = await getDevice(agentKey, deviceId);
+        const now = Date.now();
+        found.connected = false;
+        found.updatedAt = now;
+        found.lastDisconnectedAt = now;
+      },
     },
   };
 }
@@ -168,18 +160,18 @@ describe("telepathy hub", () => {
   });
 
   it("routes screenshot requests to the connected device", async () => {
-    const telepathyStore = createFakeTelepathyStore();
+    const telepathyStore = createFakeTelepathyHubStore();
     await telepathyStore.registerDevice({
       agentKey: "panda",
       deviceId: "home-mac",
-      tokenHash: hashTelepathyToken("secret-123"),
+      tokenHash: hashOpaqueToken("secret-123"),
       label: "Home Mac",
     });
     const hub = new TelepathyHub({
       host: "127.0.0.1",
       port: 0,
       path: "/telepathy",
-      store: telepathyStore,
+      store: telepathyStore.store,
     });
     hubs.push(hub);
     await hub.start();
@@ -231,18 +223,18 @@ describe("telepathy hub", () => {
   });
 
   it("waits briefly for a device that connects just after the request starts", async () => {
-    const telepathyStore = createFakeTelepathyStore();
+    const telepathyStore = createFakeTelepathyHubStore();
     await telepathyStore.registerDevice({
       agentKey: "panda",
       deviceId: "late-mac",
-      tokenHash: hashTelepathyToken("secret-123"),
+      tokenHash: hashOpaqueToken("secret-123"),
       label: "Late Mac",
     });
     const hub = new TelepathyHub({
       host: "127.0.0.1",
       port: 0,
       path: "/telepathy",
-      store: telepathyStore,
+      store: telepathyStore.store,
     });
     hubs.push(hub);
     await hub.start();
@@ -299,21 +291,21 @@ describe("telepathy hub", () => {
   });
 
   it("accepts pushed context items from an authenticated device", async () => {
-    const submitted: Array<Record<string, unknown>> = [];
-    const telepathyStore = createFakeTelepathyStore();
+    const submitted: TelepathyContextSubmitInput[] = [];
+    const telepathyStore = createFakeTelepathyHubStore();
     await telepathyStore.registerDevice({
       agentKey: "panda",
       deviceId: "voice-mac",
-      tokenHash: hashTelepathyToken("secret-123"),
+      tokenHash: hashOpaqueToken("secret-123"),
       label: "Voice Mac",
     });
     const hub = new TelepathyHub({
       host: "127.0.0.1",
       port: 0,
       path: "/telepathy",
-      store: telepathyStore,
+      store: telepathyStore.store,
       onContextSubmit: async (input) => {
-        submitted.push(input as unknown as Record<string, unknown>);
+        submitted.push(input);
       },
     });
     hubs.push(hub);
@@ -380,18 +372,18 @@ describe("telepathy hub", () => {
   });
 
   it("rejects unsupported pushed context media types", async () => {
-    const telepathyStore = createFakeTelepathyStore();
+    const telepathyStore = createFakeTelepathyHubStore();
     await telepathyStore.registerDevice({
       agentKey: "panda",
       deviceId: "voice-mac",
-      tokenHash: hashTelepathyToken("secret-123"),
+      tokenHash: hashOpaqueToken("secret-123"),
       label: "Voice Mac",
     });
     const hub = new TelepathyHub({
       host: "127.0.0.1",
       port: 0,
       path: "/telepathy",
-      store: telepathyStore,
+      store: telepathyStore.store,
       onContextSubmit: async () => {
         throw new Error("should not ingest invalid context");
       },
@@ -491,7 +483,6 @@ describe("telepathy hub", () => {
     });
     const screenshotPath = String((result.details as Record<string, unknown>).path);
     expect(screenshotPath).toContain(path.join("agents", "panda", "media", "telepathy", "thread-1", "home-mac"));
-    await expect(stat(screenshotPath)).resolves.toBeTruthy();
     await expect(readFile(screenshotPath, "utf8")).resolves.toBe("telepathy-image");
   });
 

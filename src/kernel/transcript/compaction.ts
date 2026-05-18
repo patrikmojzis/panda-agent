@@ -1,9 +1,11 @@
 import type {Message, ThinkingLevel} from "@mariozechner/pi-ai";
 
-import {formatToolCallFallback, formatToolResultFallback, PiAiRuntime} from "../agent/index.js";
+import {PiAiRuntime} from "../../integrations/providers/shared/runtime.js";
+import {formatToolCallFallback, formatToolResultFallback} from "../agent/tool.js";
 import {buildCompactSummaryMessage, stripCompactSummaryPrefix} from "../agent/helpers/compact.js";
 import {estimateTokensFromString, type TokenCounter} from "../agent/helpers/token-count.js";
 import {stringToUserMessage} from "../agent/helpers/input.js";
+import {joinMessageTextParts} from "../agent/helpers/message-text.js";
 import {resolveModelRuntimeBudget} from "../models/model-context-policy.js";
 import {resolveModelSelector} from "../models/model-selector.js";
 import {renderCompactionPrompt} from "../../prompts/runtime/compaction.js";
@@ -12,49 +14,24 @@ import type {JsonObject, JsonValue} from "../agent/types.js";
 import type {LlmRuntime} from "../agent/runtime.js";
 import {estimateReplayMessageTokens, estimateVisibleMessageTokens} from "./token-estimation.js";
 import type {
-    AutoCompactionRuntimeState,
-    ThreadMessageRecord,
-    ThreadRecord,
-    ThreadRuntimeMessagePayload,
-    ThreadRuntimeState,
-} from "../../domain/threads/runtime/types.js";
+  AutoCompactionRuntimeState,
+  CompactAttemptDiagnostics,
+  CompactAttemptOutcome,
+  ThreadMessageRecord,
+  ThreadRuntimeMessagePayload,
+  ThreadRuntimeState,
+  TranscriptThreadState,
+} from "./types.js";
+
+export type {
+  CompactAttemptDiagnostics,
+  CompactAttemptOutcome,
+} from "./types.js";
 
 export const DEFAULT_COMPACT_PRESERVED_USER_TURNS = 6;
 export const AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD = 2;
 export const AUTO_COMPACT_BREAKER_COOLDOWN_MS = 5 * 60_000;
 const TOOL_TEXT_LIMIT = 4_000;
-
-export type CompactAttemptOutcome =
-  | "success"
-  | "no_split"
-  | "empty_input"
-  | "tail_over_operating_window"
-  | "empty_summary"
-  | "summary_too_large";
-
-export type CompactAttemptDiagnostics = JsonObject & {
-  outcome: CompactAttemptOutcome;
-  trigger: "manual" | "auto";
-  model: string;
-  providerName: string;
-  modelId: string;
-  thinking?: string;
-  operatingWindow: number;
-  compactTriggerTokens: number;
-  activeTranscriptRecords: number;
-  activeTranscriptTokens: number;
-  summaryRecordCount?: number;
-  preservedTailRecordCount?: number;
-  compactedUpToSequence?: number;
-  compactionInputChars?: number;
-  preservedTailTokens?: number;
-  summaryTokenBudget?: number;
-  responseStopReason?: string;
-  responseContentTypes?: string[];
-  rawTextChars?: number;
-  parsedSummaryChars?: number;
-  error?: string;
-};
 
 export type CompactBoundaryMetadata = JsonObject & {
   kind: "compact_boundary";
@@ -89,7 +66,7 @@ export interface CompactThreadOptions {
       payload: ThreadRuntimeMessagePayload,
     ): Promise<ThreadMessageRecord>;
   }, "loadTranscript" | "appendRuntimeMessage">;
-  thread: Pick<ThreadRecord, "id">;
+  thread: Pick<TranscriptThreadState, "id">;
   transcript?: readonly ThreadMessageRecord[];
   model: string;
   thinking?: ThinkingLevel;
@@ -258,14 +235,24 @@ function renderUserMessage(message: Extract<Message, { role: "user" }>): string 
 
 function renderAssistantMessage(message: Extract<Message, { role: "assistant" }>): string {
   const parts: string[] = [];
+  const textBlocks: Array<{type: string; text?: unknown}> = [];
+
+  const flushText = (): void => {
+    const text = joinMessageTextParts(textBlocks);
+    if (text) {
+      parts.push(text);
+    }
+    textBlocks.length = 0;
+  };
 
   for (const block of message.content) {
-    if (block.type === "text" && block.text.trim()) {
-      parts.push(block.text.trim());
+    if (block.type === "text") {
+      textBlocks.push(block);
       continue;
     }
 
     if (block.type === "toolCall") {
+      flushText();
       parts.push(
         [
           `Tool call: ${block.name}`,
@@ -275,6 +262,7 @@ function renderAssistantMessage(message: Extract<Message, { role: "assistant" }>
     }
   }
 
+  flushText();
   return parts.join("\n\n").trim();
 }
 
@@ -400,9 +388,7 @@ async function requestCompactSummary(options: {
     },
   });
 
-  const rawSummary = response.content.flatMap((part) => {
-    return part.type === "text" && part.text.trim() ? [part.text.trim()] : [];
-  }).join("\n\n");
+  const rawSummary = joinMessageTextParts(response.content);
   const summary = parseCompactSummary(rawSummary);
   const diagnostics: CompactAttemptDiagnostics = {
     ...options.diagnostics,
@@ -429,7 +415,7 @@ async function requestCompactSummary(options: {
 }
 
 export function readAutoCompactionRuntimeState(
-  thread: Pick<ThreadRecord, "runtimeState">,
+  thread: Pick<TranscriptThreadState, "runtimeState">,
 ): AutoCompactionRuntimeState {
   const state = thread.runtimeState?.autoCompaction;
   if (!state || typeof state !== "object") {
@@ -448,7 +434,7 @@ export function readAutoCompactionRuntimeState(
 }
 
 export function updateAutoCompactionRuntimeState(
-  thread: Pick<ThreadRecord, "runtimeState">,
+  thread: Pick<TranscriptThreadState, "runtimeState">,
   next: AutoCompactionRuntimeState | null,
 ): ThreadRuntimeState | undefined {
   const current = thread.runtimeState && typeof thread.runtimeState === "object"
@@ -473,7 +459,7 @@ export function updateAutoCompactionRuntimeState(
 }
 
 export function shouldAutoCompactThread(options: {
-  thread: Pick<ThreadRecord, "runtimeState">;
+  thread: Pick<TranscriptThreadState, "runtimeState">;
   transcriptTokens: number;
   compactTriggerTokens?: number;
   now?: number;

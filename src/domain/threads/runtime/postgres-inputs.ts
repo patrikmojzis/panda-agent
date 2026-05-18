@@ -1,9 +1,11 @@
+import {toJson} from "../../../lib/postgres-values.js";
 import {randomUUID} from "node:crypto";
 
 import type {ThreadEnqueueResult, ThreadInputApplyScope} from "./store.js";
-import {type ThreadRuntimeTableNames, toJson} from "./postgres-shared.js";
-import {parseInputRow, parseMessageRow} from "./postgres-rows.js";
-import {type PgPoolLike, type PgQueryable, withTransaction} from "./postgres-db.js";
+import {type ThreadRuntimeTableNames} from "./postgres-shared.js";
+import {parseInputRow, parseInputThreadIdRow, parseMessageRow} from "./postgres-rows.js";
+import type {PgPoolLike, PgQueryable} from "../../../lib/postgres-query.js";
+import {withTransaction} from "../../../lib/postgres-transaction.js";
 import type {ThreadInputDeliveryMode, ThreadInputPayload, ThreadMessageRecord,} from "./types.js";
 
 interface ThreadMutationCallbacks {
@@ -161,9 +163,10 @@ async function applyThreadInputs(
     const inserted: ThreadMessageRecord[] = [];
 
     for (const row of pendingRows) {
+      const input = parseInputRow(row);
       await client.query(
         `UPDATE ${options.tables.inputs} SET applied_at = NOW() WHERE id = $1`,
-        [String(row.id)],
+        [input.id],
       );
 
       const insertResult = await client.query(`
@@ -196,14 +199,14 @@ async function applyThreadInputs(
       `, [
         randomUUID(),
         options.threadId,
-        row.source,
-        row.channel_id ?? null,
-        row.external_message_id ?? null,
-        row.actor_id ?? null,
-        row.identity_id ?? null,
-        row.created_at,
-        toJson(row.metadata ?? null),
-        toJson(row.message),
+        input.source,
+        input.channelId ?? null,
+        input.externalMessageId ?? null,
+        input.actorId ?? null,
+        input.identityId ?? null,
+        new Date(input.createdAt),
+        toJson(input.metadata ?? null),
+        toJson(input.message),
       ]);
 
       inserted.push(parseMessageRow(insertResult.rows[0] as Record<string, unknown>));
@@ -266,7 +269,7 @@ export async function promoteQueuedThreadInputs(
     RETURNING thread_id
   `, values);
 
-  const promotedThreadIds = [...new Set(result.rows.map((row) => String((row as Record<string, unknown>).thread_id)))];
+  const promotedThreadIds = [...new Set(result.rows.map((row) => parseInputThreadIdRow(row as Record<string, unknown>)))];
   await Promise.all(promotedThreadIds.map((threadId) => options.notifyThreadChanged(threadId, options.pool)));
   return promotedThreadIds;
 }

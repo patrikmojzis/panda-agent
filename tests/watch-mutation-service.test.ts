@@ -7,6 +7,8 @@ import {PostgresWatchStore, type WatchRecord} from "../src/domain/watches/index.
 import {evaluateWatch} from "../src/integrations/watches/evaluator.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
+type WatchEvaluationOptions = Parameters<typeof evaluateWatch>[1];
+
 function createPool() {
   const db = newDb();
   db.public.registerFunction({
@@ -209,7 +211,6 @@ describe("WatchMutationService", () => {
 
     const afterCreate = Date.now();
     expect(created.state).toMatchObject(createPercentWatchState(150));
-    expect(created.nextPollAt).toBeDefined();
     expect(created.nextPollAt!).toBeGreaterThanOrEqual(beforeCreate + 5 * 60_000 - 2_000);
     expect(created.nextPollAt!).toBeLessThanOrEqual(afterCreate + 5 * 60_000 + 2_000);
 
@@ -279,7 +280,6 @@ describe("WatchMutationService", () => {
 
     const afterUpdate = Date.now();
     expect(updated.state).toMatchObject(createPercentWatchState(200));
-    expect(updated.nextPollAt).toBeDefined();
     expect(updated.nextPollAt!).toBeGreaterThanOrEqual(beforeUpdate + 5 * 60_000 - 2_000);
     expect(updated.nextPollAt!).toBeLessThanOrEqual(afterUpdate + 5 * 60_000 + 2_000);
   });
@@ -312,7 +312,7 @@ describe("WatchMutationService", () => {
 
     expect(updated.enabled).toBe(true);
     expect(updated.state).toMatchObject(createPercentWatchState(123));
-    expect(updated.nextPollAt).toBeDefined();
+    expect(updated.nextPollAt).toEqual(expect.any(Number));
   });
 
   it("clears seeded state and next poll on disabled source resets while still probing", async () => {
@@ -371,11 +371,12 @@ describe("WatchMutationService", () => {
       updatedAt: 1,
     };
     const resolver = vi.fn();
+    const credentialResolver: WatchEvaluationOptions["credentialResolver"] = {
+      resolveCredential: vi.fn(),
+    };
 
     await expect(evaluateWatch(watch, {
-      credentialResolver: {
-        resolveCredential: vi.fn(),
-      } as any,
+      credentialResolver,
       sourceResolvers: {
         http_json: resolver,
       },

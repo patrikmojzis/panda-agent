@@ -1,4 +1,4 @@
-import type {JsonValue} from "../../../kernel/agent/types.js";
+import type {JsonValue} from "../../../lib/json.js";
 
 export interface ChannelCursorLookup {
   source: string;

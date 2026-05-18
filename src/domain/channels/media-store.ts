@@ -2,7 +2,9 @@ import {randomUUID} from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 
-import type {JsonValue} from "../../kernel/agent/types.js";
+import {pathExists} from "../../lib/fs.js";
+import type {JsonValue} from "../../lib/json.js";
+import {requireNonEmptyString} from "../../lib/strings.js";
 import type {MediaDescriptor} from "./types.js";
 
 const MIME_EXTENSION_MAP = new Map<string, string>([
@@ -50,12 +52,7 @@ export interface MediaMoveFileOps {
 }
 
 function requireTrimmedValue(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`Media ${field} must not be empty.`);
-  }
-
-  return trimmed;
+  return requireNonEmptyString(value, `Media ${field} must not be empty.`);
 }
 
 function sanitizePathSegment(value: string): string {
@@ -125,15 +122,6 @@ function resolveStoredFilename(descriptor: MediaDescriptor): string {
   }
 
   return `${descriptor.id}${inferExtension(descriptor.mimeType, descriptor.originalFilename)}`;
-}
-
-async function pathExists(targetPath: string): Promise<boolean> {
-  try {
-    await fs.access(targetPath);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function isCrossDeviceMoveError(error: unknown): boolean {

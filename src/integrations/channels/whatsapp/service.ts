@@ -1,59 +1,59 @@
 import {randomBytes} from "node:crypto";
 import type {Pool} from "pg";
 import {
-  addTransactionCapability,
-  type AuthenticationState,
-  type BaileysEventMap,
-  Browsers,
   bytesToCrockford,
-  type ConnectionState,
-  DisconnectReason,
   fetchLatestWaWebVersion,
-  isJidBroadcast,
-  isJidGroup,
-  isJidNewsletter,
-  isJidStatusBroadcast,
-  jidNormalizedUser,
-  makeCacheableSignalKeyStore,
-  makeWASocket,
-  type WAMessage,
   type WASocket,
 } from "baileys";
-import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
-import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../app/health/server.js";
-import {ChannelActionWorker} from "../../../domain/channels/actions/index.js";
+import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../lib/health-server.js";
+import {ChannelActionWorker} from "../../../domain/channels/actions/worker.js";
 import {
   acquireManagedConnectorLease,
   type ManagedConnectorLease,
   PostgresConnectorLeaseRepo
-} from "../../../domain/connector-leases/index.js";
-import {FileSystemMediaStore, type MediaDescriptor} from "../../../domain/channels/index.js";
+} from "../../../domain/connector-leases/repo.js";
+import {FileSystemMediaStore} from "../../../domain/channels/media-store.js";
 import {
   buildObservedPoolConfig,
   createPostgresPool,
   observePostgresPool,
   type PostgresPoolObserver,
   requireDatabaseUrl,
-} from "../../../app/runtime/database.js";
-import {ensureSchemas} from "../../../app/runtime/postgres-bootstrap.js";
-import {RuntimeRequestRepo} from "../../../domain/threads/requests/index.js";
+} from "../../../lib/postgres-database.js";
+import {ensureSchemas} from "../../../lib/postgres-bootstrap.js";
+import {RuntimeRequestRepo} from "../../../domain/threads/requests/repo.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {
-  ChannelOutboundDeliveryWorker,
   PostgresOutboundDeliveryStore
-} from "../../../domain/channels/deliveries/index.js";
+} from "../../../domain/channels/deliveries/postgres.js";
+import {ChannelOutboundDeliveryWorker} from "../../../domain/channels/deliveries/worker.js";
 import {resolveWhatsAppSocketVersion, WHATSAPP_SOURCE} from "./config.js";
 import {PostgresWhatsAppAuthStore, type WhatsAppAuthStateHandle} from "./auth-store.js";
-import {describeWhatsAppMessageShape, extractWhatsAppMessageText, extractWhatsAppQuotedMessageId} from "./helpers.js";
-import {createWhatsAppOutboundAdapter} from "./outbound.js";
-import {createWhatsAppTypingAdapter} from "./typing.js";
 import {
-  type PostgresNotificationListenerHandle,
-  startPostgresNotificationListener,
-} from "../postgres-notification-listener.js";
-import {sleep} from "../../../lib/async.js";
+  toWhatsAppWhoamiResult,
+  type WhatsAppPairResult,
+  type WhatsAppWhoamiResult,
+} from "./account.js";
+import {WhatsAppHealthState} from "./health.js";
+import {createWhatsAppOutboundAdapter} from "./outbound.js";
+import {
+  runWhatsAppPairingLoop,
+  type WhatsAppPairSocketCycleResult,
+  waitForWhatsAppPairingCycle,
+} from "./pairing.js";
+import {waitForWhatsAppSocketCycle} from "./runtime-cycle.js";
+import {createWhatsAppSocket} from "./socket.js";
+import {createWhatsAppTypingAdapter} from "./typing.js";
+import {runInBackground, sleep} from "../../../lib/async.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
+import {
+  createConnectorOutboundWorker,
+  startConnectorWorkerRuntime,
+  startConnectorWorkerNotificationListener,
+  stopConnectorWorkerRuntime,
+  type ConnectorWorkerRuntimeHandle,
+} from "../worker-runtime.js";
 
 export interface WhatsAppServiceOptions {
   connectorKey: string;
@@ -61,38 +61,8 @@ export interface WhatsAppServiceOptions {
   dbUrl?: string;
 }
 
-interface WhatsAppLoggerLike {
-  level: string;
-  child(obj: Record<string, unknown>): WhatsAppLoggerLike;
-  trace(obj: unknown, msg?: string): void;
-  debug(obj: unknown, msg?: string): void;
-  info(obj: unknown, msg?: string): void;
-  warn(obj: unknown, msg?: string): void;
-  error(obj: unknown, msg?: string): void;
-}
-
-const WHATSAPP_LOGGER: WhatsAppLoggerLike = {
-  level: "silent",
-  child() {
-    return this;
-  },
-  trace() {},
-  debug() {},
-  info() {},
-  warn() {},
-  error() {},
-};
-
-const TRANSACTION_OPTIONS = {
-  maxCommitRetries: 5,
-  delayBetweenTriesMs: 200,
-} as const;
-const WHATSAPP_BROWSER_NAME = "Chrome";
-const WHATSAPP_TRANSIENT_REJECTION_STATUS = 405;
-const PAIRING_CODE_REQUEST_DELAY_MS = 1_500;
 const RECONNECT_DELAY_MS = 1_000;
 const WHATSAPP_POOL_MAX_FALLBACK = 5;
-const WHATSAPP_HEALTH_RECONNECT_GRACE_MS = 30_000;
 
 interface WhatsAppWorkerStores {
   pool: Pool;
@@ -104,185 +74,26 @@ interface WhatsAppWorkerStores {
   mediaStore: FileSystemMediaStore;
 }
 
-export interface WhatsAppWhoamiResult {
-  connectorKey: string;
-  registered: boolean;
-  accountId?: string;
-  phoneNumber?: string;
-  name?: string;
-}
-
-export interface WhatsAppPairResult extends WhatsAppWhoamiResult {
-  pairingCode?: string;
-  alreadyPaired: boolean;
-}
-
-type WhatsAppPairSocketCycleResult =
-  | {pairedIdentity: WhatsAppWhoamiResult}
-  | {reconnect: true; reason: string};
-
-type WhatsAppSocketHealthState = "idle" | "connecting" | "open" | "reconnecting" | "closed" | "stopped";
-
-function describeAccountId(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-function toWhoamiResult(connectorKey: string, creds: AuthenticationState["creds"]): WhatsAppWhoamiResult {
-  const registered = creds.registered === true;
-  const accountId = registered ? describeAccountId(creds.me?.id) : undefined;
-  return {
-    connectorKey,
-    registered,
-    accountId,
-    phoneNumber: registered ? creds.me?.phoneNumber?.trim() || undefined : undefined,
-    name: registered ? creds.me?.name?.trim() || creds.me?.notify?.trim() || undefined : undefined,
-  };
-}
-
-function extractDisconnectStatusCode(error: unknown): number | null {
-  if (!error || typeof error !== "object") {
-    return null;
-  }
-
-  if ("output" in error && error.output && typeof error.output === "object") {
-    const output = error.output as {statusCode?: unknown};
-    if (typeof output.statusCode === "number") {
-      return output.statusCode;
-    }
-  }
-
-  if ("statusCode" in error && typeof (error as {statusCode?: unknown}).statusCode === "number") {
-    return (error as {statusCode: number}).statusCode;
-  }
-
-  return null;
-}
-
-function shouldReconnect(statusCode: number | null): boolean {
-  switch (statusCode) {
-    case DisconnectReason.connectionClosed:
-    case DisconnectReason.connectionLost:
-    case DisconnectReason.timedOut:
-    case DisconnectReason.restartRequired:
-    case DisconnectReason.unavailableService:
-    case WHATSAPP_TRANSIENT_REJECTION_STATUS:
-      return true;
-    default:
-      return false;
-  }
-}
-
-function shouldReconnectPairing(statusCode: number | null): boolean {
-  return shouldReconnect(statusCode) || statusCode === DisconnectReason.loggedOut;
-}
-
-function describeDisconnectStatus(statusCode: number | null): string {
-  if (statusCode === null) {
-    return "unknown";
-  }
-
-  return DisconnectReason[statusCode] ?? String(statusCode);
-}
-
-function resolveChatType(remoteJid: string | undefined): "private" | "group" | "status" | "newsletter" | "broadcast" | "unknown" {
-  if (!remoteJid) {
-    return "unknown";
-  }
-
-  if (isJidStatusBroadcast(remoteJid)) {
-    return "status";
-  }
-  if (isJidGroup(remoteJid)) {
-    return "group";
-  }
-  if (isJidNewsletter(remoteJid)) {
-    return "newsletter";
-  }
-  if (isJidBroadcast(remoteJid)) {
-    return "broadcast";
-  }
-
-  return "private";
-}
-
-function extractMessageTextLength(message: WAMessage): number {
-  return extractWhatsAppMessageText(message).length;
-}
-
-function extractWhatsAppReaction(message: WAMessage): {emoji: string; targetMessageId: string} | null {
-  const content = normalizeMessageContent(message.message);
-  const reaction = content?.reactionMessage;
-  const emoji = reaction?.text?.trim();
-  const targetMessageId = reaction?.key?.id?.trim();
-  if (!emoji || !targetMessageId) {
-    return null;
-  }
-
-  return {
-    emoji,
-    targetMessageId,
-  };
-}
-
-function readMediaSizeBytes(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-    return value;
-  }
-
-  if (typeof value === "object" && value !== null && "toNumber" in value && typeof value.toNumber === "function") {
-    const numericValue = value.toNumber();
-    if (typeof numericValue === "number" && Number.isFinite(numericValue) && numericValue >= 0) {
-      return numericValue;
-    }
-  }
-
-  return undefined;
-}
-
-function readMessageSentAtMs(value: unknown): number | undefined {
-  const seconds = (() => {
-    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-      return value;
-    }
-
-    if (typeof value === "object" && value !== null && "toNumber" in value && typeof value.toNumber === "function") {
-      const numericValue = value.toNumber();
-      if (typeof numericValue === "number" && Number.isFinite(numericValue) && numericValue > 0) {
-        return numericValue;
-      }
-    }
-
-    return undefined;
-  })();
-
-  return seconds === undefined ? undefined : seconds * 1_000;
-}
-
 export class WhatsAppService {
   private readonly options: WhatsAppServiceOptions;
+  private readonly healthState: WhatsAppHealthState;
   private pool: Pool | null = null;
   private authStore: PostgresWhatsAppAuthStore | null = null;
   private storesPromise: Promise<WhatsAppWorkerStores> | null = null;
   private stores: WhatsAppWorkerStores | null = null;
   private socket: WASocket | null = null;
-  private lease: ManagedConnectorLease | null = null;
-  private notificationListener: PostgresNotificationListenerHandle | null = null;
-  private outboundWorker: ChannelOutboundDeliveryWorker | null = null;
-  private actionWorker: ChannelActionWorker | null = null;
+  private workerRuntime: ConnectorWorkerRuntimeHandle<ChannelOutboundDeliveryWorker, ChannelActionWorker> | null = null;
   private poolObserver: PostgresPoolObserver | null = null;
   private healthServer: HealthServer | null = null;
-  private healthInitialized = false;
-  private healthLockHeld = false;
-  private healthListenersActive = false;
-  private socketHealthState: WhatsAppSocketHealthState = "idle";
-  private socketHealthStateAt = 0;
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
   private socketWaiterResolve: (() => void) | null = null;
 
   constructor(options: WhatsAppServiceOptions) {
     this.options = options;
+    this.healthState = new WhatsAppHealthState({
+      connectorKey: options.connectorKey,
+    });
   }
 
   private log(event: string, payload: Record<string, unknown>): void {
@@ -405,31 +216,13 @@ export class WhatsAppService {
     const authHandle = options.authHandle ?? await authStore.createAuthState(this.options.connectorKey);
     const persistCredsOnUpdate = options.persistCredsOnUpdate ?? true;
     const socketVersion = await this.resolveSocketVersion();
-    const socket = makeWASocket({
-      auth: {
-        creds: authHandle.state.creds,
-        keys: addTransactionCapability(
-          makeCacheableSignalKeyStore(authHandle.state.keys, WHATSAPP_LOGGER),
-          WHATSAPP_LOGGER,
-          TRANSACTION_OPTIONS,
-        ),
-      },
-      logger: WHATSAPP_LOGGER,
-      browser: Browsers.ubuntu(WHATSAPP_BROWSER_NAME),
-      ...(socketVersion ? {version: socketVersion} : {}),
-      syncFullHistory: false,
-      shouldSyncHistoryMessage: () => false,
-      markOnlineOnConnect: false,
-      getMessage: async () => undefined,
+    const socket = createWhatsAppSocket({
+      authHandle,
+      socketVersion,
+      persistCredsOnUpdate,
     });
 
     this.socket = socket;
-    if (persistCredsOnUpdate) {
-      socket.ev.on("creds.update", async () => {
-        await authHandle.saveCreds();
-      });
-    }
-
     return {
       authHandle,
       socket,
@@ -453,12 +246,8 @@ export class WhatsAppService {
     }
   }
 
-  private ensureOutboundWorker(stores: WhatsAppWorkerStores): ChannelOutboundDeliveryWorker {
-    if (this.outboundWorker) {
-      return this.outboundWorker;
-    }
-
-    this.outboundWorker = new ChannelOutboundDeliveryWorker({
+  private createOutboundWorker(stores: WhatsAppWorkerStores): ChannelOutboundDeliveryWorker {
+    return createConnectorOutboundWorker({
       store: stores.outboundDeliveries,
       adapter: createWhatsAppOutboundAdapter({
         connectorKey: this.options.connectorKey,
@@ -466,29 +255,17 @@ export class WhatsAppService {
       }),
       connectorKey: this.options.connectorKey,
       canSend: () => this.socket !== null,
-      onError: (error, deliveryId) => {
-        this.log("outbound_delivery_failed", {
-          connectorKey: this.options.connectorKey,
-          deliveryId: deliveryId ?? null,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      },
+      log: (event, payload) => this.log(event, payload),
     });
-
-    return this.outboundWorker;
   }
 
-  private ensureActionWorker(stores: WhatsAppWorkerStores): ChannelActionWorker {
-    if (this.actionWorker) {
-      return this.actionWorker;
-    }
-
+  private createActionWorker(stores: WhatsAppWorkerStores): ChannelActionWorker {
     const typingAdapter = createWhatsAppTypingAdapter({
       connectorKey: this.options.connectorKey,
       getSocket: () => this.socket,
     });
 
-    this.actionWorker = new ChannelActionWorker({
+    return new ChannelActionWorker({
       store: stores.channelActions,
       lookup: {
         channel: WHATSAPP_SOURCE,
@@ -497,7 +274,7 @@ export class WhatsAppService {
       dispatch: async (action) => {
         switch (action.kind) {
           case "typing":
-            await typingAdapter.send(action.payload as Parameters<typeof typingAdapter.send>[0]);
+            await typingAdapter.send(action.payload);
             return;
           default:
             throw new Error(`Unsupported WhatsApp channel action ${action.kind}.`);
@@ -511,38 +288,56 @@ export class WhatsAppService {
         });
       },
     });
+  }
 
-    return this.actionWorker;
+  private triggerConnectionOpenDrains(): void {
+    const outboundWorker = this.workerRuntime?.outboundWorker;
+    if (outboundWorker) {
+      runInBackground(async () => {
+        await outboundWorker.triggerDrain();
+      }, {
+        label: "WhatsApp outbound reconnect drain",
+        onError: (error) => {
+          this.log("outbound_delivery_reconnect_drain_failed", {
+            connectorKey: this.options.connectorKey,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        },
+      });
+    }
+
+    const actionWorker = this.workerRuntime?.actionWorker;
+    if (actionWorker) {
+      runInBackground(async () => {
+        await actionWorker.triggerDrain();
+      }, {
+        label: "WhatsApp action reconnect drain",
+        onError: (error) => {
+          this.log("channel_action_reconnect_drain_failed", {
+            connectorKey: this.options.connectorKey,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        },
+      });
+    }
   }
 
   private async startWorkerNotificationListener(
     stores: WhatsAppWorkerStores,
-  ): Promise<PostgresNotificationListenerHandle> {
-    const outboundWorker = this.ensureOutboundWorker(stores);
-    const actionWorker = this.ensureActionWorker(stores);
-
-    return startPostgresNotificationListener({
+    workers: {
+      actionWorker: ChannelActionWorker;
+      outboundWorker: ChannelOutboundDeliveryWorker;
+    },
+  ) {
+    return startConnectorWorkerNotificationListener({
       pool: stores.pool,
-      onActionNotification: async (notification) => {
-        if (notification.channel !== WHATSAPP_SOURCE || notification.connectorKey !== this.options.connectorKey) {
-          return;
-        }
-
-        await actionWorker.triggerDrain();
-      },
-      onDeliveryNotification: async (notification) => {
-        if (notification.channel !== WHATSAPP_SOURCE || notification.connectorKey !== this.options.connectorKey) {
-          return;
-        }
-
-        await outboundWorker.triggerDrain();
-      },
-      onError: async (error) => {
-        this.log("worker_notification_listener_failed", {
-          connectorKey: this.options.connectorKey,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        this.healthListenersActive = false;
+      source: WHATSAPP_SOURCE,
+      connectorKey: this.options.connectorKey,
+      actionWorker: workers.actionWorker,
+      outboundWorker: workers.outboundWorker,
+      log: (event, payload) => this.log(event, payload),
+      onListenerFailure: async () => {
+        this.healthState.markListenersActive(false);
         await this.stop();
       },
     });
@@ -567,7 +362,7 @@ export class WhatsAppService {
           connectorKey: this.options.connectorKey,
           message: error.message,
         });
-        this.healthLockHeld = false;
+        this.healthState.markLockHeld(false);
         await this.stop();
       },
     });
@@ -576,13 +371,13 @@ export class WhatsAppService {
   async whoami(): Promise<WhatsAppWhoamiResult> {
     const authStore = await this.ensureAuthStore();
     const creds = await authStore.loadCreds(this.options.connectorKey);
-    return toWhoamiResult(this.options.connectorKey, creds);
+    return toWhatsAppWhoamiResult(this.options.connectorKey, creds);
   }
 
   async pair(phoneNumber: string, onPairingCode?: (code: string) => void): Promise<WhatsAppPairResult> {
     const authStore = await this.ensureAuthStore();
     const existingCreds = await authStore.loadCreds(this.options.connectorKey);
-    const existingIdentity = toWhoamiResult(this.options.connectorKey, existingCreds);
+    const existingIdentity = toWhatsAppWhoamiResult(this.options.connectorKey, existingCreds);
 
     if (existingIdentity.accountId) {
       return {
@@ -591,36 +386,18 @@ export class WhatsAppService {
       };
     }
 
-    const pairingCode = bytesToCrockford(randomBytes(5));
-    let pairingCodeAnnounced = false;
-    const announcePairingCode = (code: string) => {
-      if (pairingCodeAnnounced) {
-        return;
-      }
-
-      pairingCodeAnnounced = true;
-      onPairingCode?.(code);
-    };
-
-    while (!this.stopping) {
-      const outcome = await this.runPairSocketCycle(phoneNumber, announcePairingCode, pairingCode);
-      if ("pairedIdentity" in outcome) {
-        return {
-          ...outcome.pairedIdentity,
-          pairingCode: undefined,
-          alreadyPaired: false,
-        };
-      }
-
-      this.log("pairing_reconnect_scheduled", {
-        connectorKey: this.options.connectorKey,
-        reason: outcome.reason,
-        delayMs: RECONNECT_DELAY_MS,
-      });
-      await sleep(RECONNECT_DELAY_MS);
-    }
-
-    throw new Error(`WhatsApp connector ${this.options.connectorKey} pairing stopped before login completed.`);
+    return runWhatsAppPairingLoop({
+      connectorKey: this.options.connectorKey,
+      phoneNumber,
+      pairingCode: bytesToCrockford(randomBytes(5)),
+      onPairingCode,
+      isStopping: () => this.stopping,
+      sleep,
+      log: (event, payload) => this.log(event, payload),
+      runCycle: (cyclePhoneNumber, announcePairingCode, pairingCode) => {
+        return this.runPairSocketCycle(cyclePhoneNumber, announcePairingCode, pairingCode);
+      },
+    });
   }
 
   private async runPairSocketCycle(
@@ -635,117 +412,13 @@ export class WhatsAppService {
       persistCredsOnUpdate: false,
     });
     try {
-      return await new Promise<WhatsAppPairSocketCycleResult>((resolve, reject) => {
-        let settled = false;
-        let pairingCodeRequested = false;
-        let pairingCodeTimer: ReturnType<typeof setTimeout> | null = null;
-
-        const finish = (outcome: WhatsAppPairSocketCycleResult) => {
-          if (settled) {
-            return;
-          }
-
-          settled = true;
-          cleanup();
-          resolve(outcome);
-        };
-
-        const fail = (error: Error) => {
-          if (settled) {
-            return;
-          }
-
-          settled = true;
-          cleanup();
-          reject(error);
-        };
-
-        const finishPaired = () => {
-          authHandle.promoteTo(this.options.connectorKey)
-            .then(() => {
-              finish({
-                pairedIdentity: toWhoamiResult(this.options.connectorKey, authHandle.state.creds),
-              });
-            })
-            .catch((error) => {
-              fail(error instanceof Error ? error : new Error(String(error)));
-            });
-        };
-
-        const requestPairingCodeOnce = () => {
-          if (pairingCodeRequested || settled) {
-            return;
-          }
-
-          pairingCodeRequested = true;
-          socket.requestPairingCode(phoneNumber, pairingCode)
-            .then((issuedPairingCode) => {
-              if (!settled) {
-                onPairingCode?.(issuedPairingCode);
-              }
-            })
-            .catch((error) => {
-              const statusCode = extractDisconnectStatusCode(error);
-              const reason = describeDisconnectStatus(statusCode);
-              if (shouldReconnectPairing(statusCode)) {
-                finish({reconnect: true, reason});
-                return;
-              }
-
-              fail(error instanceof Error ? error : new Error(String(error)));
-            });
-        };
-
-        const schedulePairingCodeRequest = () => {
-          if (pairingCodeTimer || pairingCodeRequested || settled) {
-            return;
-          }
-
-          pairingCodeTimer = setTimeout(() => {
-            pairingCodeTimer = null;
-            requestPairingCodeOnce();
-          }, PAIRING_CODE_REQUEST_DELAY_MS);
-        };
-
-        const onConnectionUpdate = (update: Partial<ConnectionState>) => {
-          if (update.connection === "connecting" || update.qr) {
-            schedulePairingCodeRequest();
-          }
-
-          if (update.isNewLogin === true && authHandle.state.creds.registered) {
-            finishPaired();
-            return;
-          }
-
-          if (update.connection === "open") {
-            finishPaired();
-            return;
-          }
-
-          if (update.connection === "close") {
-            const statusCode = extractDisconnectStatusCode(update.lastDisconnect?.error);
-            const reason = describeDisconnectStatus(statusCode);
-            if (shouldReconnectPairing(statusCode)) {
-              finish({reconnect: true, reason});
-              return;
-            }
-
-            fail(update.lastDisconnect?.error instanceof Error
-              ? update.lastDisconnect.error
-              : new Error(`WhatsApp pairing closed before login completed (${reason}).`));
-          }
-        };
-
-        const cleanup = () => {
-          if (pairingCodeTimer) {
-            clearTimeout(pairingCodeTimer);
-            pairingCodeTimer = null;
-          }
-          socket.ev.off("connection.update", onConnectionUpdate);
-        };
-
-        socket.ev.on("connection.update", onConnectionUpdate);
-        schedulePairingCodeRequest();
+      return await waitForWhatsAppPairingCycle({
+        connectorKey: this.options.connectorKey,
+        phoneNumber,
+        socket,
+        authHandle,
+        pairingCode,
+        onPairingCode,
       });
     } finally {
       await this.stopSocket();
@@ -755,8 +428,7 @@ export class WhatsAppService {
   async run(): Promise<void> {
     this.stopping = false;
     this.stopPromise = null;
-    this.socketHealthState = "idle";
-    this.socketHealthStateAt = Date.now();
+    this.healthState.resetForRun();
 
     try {
       const identity = await this.whoami();
@@ -778,41 +450,30 @@ export class WhatsAppService {
 
         return startHealthServer({
           ...binding,
-          getSnapshot: () => {
-            const socketHealthy = this.socketHealthState === "open"
-              || (
-                this.socketHealthState === "reconnecting"
-                && (Date.now() - this.socketHealthStateAt) <= WHATSAPP_HEALTH_RECONNECT_GRACE_MS
-              );
-
-            return {
-              ok: this.healthInitialized
-                && this.healthLockHeld
-                && this.healthListenersActive
-                && socketHealthy
-                && !this.stopping,
-              connectorKey: this.options.connectorKey,
-              initialized: this.healthInitialized,
-              lockHeld: this.healthLockHeld,
-              listenersActive: this.healthListenersActive,
-              socketState: this.socketHealthState,
-              socketStateAt: this.socketHealthStateAt || null,
-              stopping: this.stopping,
-            };
-          },
+          getSnapshot: () => this.healthState.snapshot(this.stopping),
         });
       })();
-      this.healthInitialized = true;
-      this.lease = await this.acquireConnectorLease(stores);
-      this.healthLockHeld = true;
-      await this.ensureOutboundWorker(stores).start({
-        subscribeToNotifications: false,
+      this.healthState.markInitialized(true);
+      const outboundWorker = this.createOutboundWorker(stores);
+      const actionWorker = this.createActionWorker(stores);
+      this.workerRuntime = await startConnectorWorkerRuntime({
+        acquireLease: () => this.acquireConnectorLease(stores),
+        outboundWorker,
+        actionWorker,
+        startNotificationListener: () => this.startWorkerNotificationListener(stores, {
+          outboundWorker,
+          actionWorker,
+        }),
+        onCleanupError: (step, error) => {
+          this.log("shutdown_cleanup_failed", {
+            connectorKey: this.options.connectorKey,
+            step: step.label,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        },
       });
-      await this.ensureActionWorker(stores).start({
-        subscribeToNotifications: false,
-      });
-      this.notificationListener = await this.startWorkerNotificationListener(stores);
-      this.healthListenersActive = true;
+      this.healthState.markLockHeld(true);
+      this.healthState.markListenersActive(true);
       this.log("run_started", {
         connectorKey: this.options.connectorKey,
         accountId: identity.accountId,
@@ -821,15 +482,13 @@ export class WhatsAppService {
       });
 
       while (!this.stopping) {
-        this.socketHealthState = "connecting";
-        this.socketHealthStateAt = Date.now();
+        this.healthState.markSocketState("connecting");
         const outcome = await this.runSocketCycle(stores);
         if (!outcome.reconnect || this.stopping) {
           break;
         }
 
-        this.socketHealthState = "reconnecting";
-        this.socketHealthStateAt = Date.now();
+        this.healthState.markSocketState("reconnecting");
         this.log("reconnect_scheduled", {
           connectorKey: this.options.connectorKey,
           reason: outcome.reason,
@@ -848,26 +507,16 @@ export class WhatsAppService {
     }
 
     this.stopping = true;
-    this.healthListenersActive = false;
-    this.healthLockHeld = false;
-    this.healthInitialized = false;
-    this.socketHealthState = "stopped";
-    this.socketHealthStateAt = Date.now();
+    this.healthState.markStopped();
     this.stopPromise = (async () => {
       this.socketWaiterResolve?.();
       this.socketWaiterResolve = null;
 
-      const notificationListener = this.notificationListener;
-      const actionWorker = this.actionWorker;
-      const outboundWorker = this.outboundWorker;
-      const lease = this.lease;
+      const workerRuntime = this.workerRuntime;
       const pool = this.pool;
       const poolObserver = this.poolObserver;
       const healthServer = this.healthServer;
-      this.notificationListener = null;
-      this.actionWorker = null;
-      this.outboundWorker = null;
-      this.lease = null;
+      this.workerRuntime = null;
       this.pool = null;
       this.poolObserver = null;
       this.healthServer = null;
@@ -877,33 +526,21 @@ export class WhatsAppService {
 
       await runCleanupSteps([
         {
-          label: "notification-listener",
+          label: "connector-workers",
           run: async () => {
-            await notificationListener?.close();
-          },
-        },
-        {
-          label: "action-worker",
-          run: async () => {
-            await actionWorker?.stop();
-          },
-        },
-        {
-          label: "outbound-worker",
-          run: async () => {
-            await outboundWorker?.stop();
+            await stopConnectorWorkerRuntime(workerRuntime, (step, error) => {
+              this.log("shutdown_cleanup_failed", {
+                connectorKey: this.options.connectorKey,
+                step: step.label,
+                message: error instanceof Error ? error.message : String(error),
+              });
+            });
           },
         },
         {
           label: "socket",
           run: async () => {
             await this.stopSocket();
-          },
-        },
-        {
-          label: "connector-lease",
-          run: async () => {
-            await lease?.release();
           },
         },
         {
@@ -940,120 +577,23 @@ export class WhatsAppService {
     const {authHandle, socket} = await this.createSocket();
 
     try {
-      return await new Promise<{reconnect: boolean; reason?: string}>((resolve, reject) => {
-        let settled = false;
-
-        const finish = (outcome: {reconnect: boolean; reason?: string}) => {
-          if (settled) {
-            return;
-          }
-
-          settled = true;
-          cleanup();
-          resolve(outcome);
-        };
-
-        const fail = (error: Error) => {
-          if (settled) {
-            return;
-          }
-
-          settled = true;
-          cleanup();
-          reject(error);
-        };
-
-        const cleanup = () => {
-          socket.ev.off("connection.update", onConnectionUpdate);
-          socket.ev.off("messages.upsert", onMessagesUpsert);
-          socket.ev.off("messaging-history.set", onHistorySet);
-          this.socketWaiterResolve = null;
-        };
-
-        const onMessagesUpsert = (update: BaileysEventMap["messages.upsert"]) => {
-          void this.handleMessagesUpsert(stores, update).catch((error) => {
-            this.log("upsert_error", {
-              connectorKey: this.options.connectorKey,
-              message: error instanceof Error ? error.message : String(error),
-            });
-            if (!this.stopping) {
-              finish({reconnect: true, reason: "upsert_error"});
-            }
-          });
-        };
-
-        const onHistorySet = (update: BaileysEventMap["messaging-history.set"]) => {
-          this.log("history_sync_ignored", {
-            connectorKey: this.options.connectorKey,
-            chatCount: update.chats.length,
-            contactCount: update.contacts.length,
-            messageCount: update.messages.length,
-            syncType: update.syncType ?? null,
-            isLatest: update.isLatest ?? null,
-          });
-        };
-
-        const onConnectionUpdate = (update: Partial<ConnectionState>) => {
-          if (update.connection) {
-            if (update.connection === "open") {
-              this.socketHealthState = "open";
-              this.socketHealthStateAt = Date.now();
-            } else if (update.connection === "close" && !this.stopping) {
-              this.socketHealthState = "closed";
-              this.socketHealthStateAt = Date.now();
-            }
-            this.log("connection_update", {
-              connectorKey: this.options.connectorKey,
-              connection: update.connection,
-              receivedPendingNotifications: update.receivedPendingNotifications ?? null,
-              isNewLogin: update.isNewLogin ?? null,
-            });
-          }
-
-          if (update.connection === "open") {
-            void this.outboundWorker?.triggerDrain();
-            void this.actionWorker?.triggerDrain();
-          }
-
-          if (update.connection !== "close") {
-            return;
-          }
-
-          const statusCode = extractDisconnectStatusCode(update.lastDisconnect?.error);
-          const reason = describeDisconnectStatus(statusCode);
-
-          this.log("connection_closed", {
-            connectorKey: this.options.connectorKey,
-            reason,
-            statusCode,
-            message: update.lastDisconnect?.error instanceof Error
-              ? update.lastDisconnect.error.message
-              : String(update.lastDisconnect?.error ?? ""),
-          });
-
-          if (this.stopping) {
-            finish({reconnect: false, reason: "stopped"});
-            return;
-          }
-
-          if (shouldReconnect(statusCode)) {
-            finish({reconnect: true, reason});
-            return;
-          }
-
-          fail(new Error(`WhatsApp connection closed permanently (${reason}).`));
-        };
-
-        this.socketWaiterResolve = () => {
-          finish({reconnect: false, reason: "stopped"});
-        };
-
-        socket.ev.on("connection.update", onConnectionUpdate);
-        socket.ev.on("messages.upsert", onMessagesUpsert);
-        socket.ev.on("messaging-history.set", onHistorySet);
-        authHandle.saveCreds().catch((error) => {
-          fail(error instanceof Error ? error : new Error(String(error)));
-        });
+      return await waitForWhatsAppSocketCycle({
+        connectorKey: this.options.connectorKey,
+        socket,
+        authHandle,
+        requests: stores.requests,
+        mediaStore: stores.mediaStore,
+        isStopping: () => this.stopping,
+        setStopWaiter: (waiter) => {
+          this.socketWaiterResolve = waiter;
+        },
+        markSocketState: (state) => {
+          this.healthState.markSocketState(state);
+        },
+        onConnectionOpen: () => {
+          this.triggerConnectionOpenDrains();
+        },
+        log: (event, payload) => this.log(event, payload),
       });
     } finally {
       await this.stopSocket();
@@ -1068,244 +608,5 @@ export class WhatsAppService {
     const socket = this.socket;
     this.socket = null;
     socket.end(undefined);
-  }
-
-  private async handleMessagesUpsert(
-    stores: WhatsAppWorkerStores,
-    update: BaileysEventMap["messages.upsert"],
-  ): Promise<void> {
-    if (update.type !== "notify") {
-      this.log("message_ignored", {
-        connectorKey: this.options.connectorKey,
-        reason: "non_notify_upsert",
-        upsertType: update.type,
-        messageCount: update.messages.length,
-      });
-      return;
-    }
-
-    for (const message of update.messages) {
-      const remoteJid = message.key.remoteJid;
-      const chatType = resolveChatType(remoteJid ?? undefined);
-      const externalConversationId = remoteJid ? jidNormalizedUser(remoteJid) : null;
-      const externalActorId = message.key.participant
-        ? jidNormalizedUser(message.key.participant)
-        : externalConversationId;
-      const externalMessageId = message.key.id?.trim() || null;
-
-      if (message.key.fromMe) {
-        this.log("message_ignored", {
-          connectorKey: this.options.connectorKey,
-          externalConversationId,
-          externalActorId,
-          chatType,
-          reason: "own_message",
-        });
-        continue;
-      }
-
-      if (!remoteJid || !externalConversationId || !externalActorId || !externalMessageId) {
-        this.log("message_dropped", {
-          connectorKey: this.options.connectorKey,
-          externalConversationId,
-          externalActorId,
-          chatType,
-          reason: "missing_actor_conversation_or_message",
-        });
-        continue;
-      }
-
-      if (chatType !== "private") {
-        this.log("message_dropped", {
-          connectorKey: this.options.connectorKey,
-          externalConversationId,
-          externalActorId,
-          chatType,
-          reason: "group_support_not_enabled",
-        });
-        continue;
-      }
-
-      const reaction = extractWhatsAppReaction(message);
-      if (reaction) {
-        const request = await stores.requests.enqueueRequest({
-          kind: "whatsapp_reaction",
-          payload: {
-            connectorKey: this.options.connectorKey,
-            sentAt: readMessageSentAtMs(message.messageTimestamp),
-            externalConversationId,
-            externalActorId,
-            externalMessageId,
-            remoteJid,
-            chatType,
-            targetMessageId: reaction.targetMessageId,
-            emoji: reaction.emoji,
-            pushName: message.pushName ?? undefined,
-          },
-        });
-
-        this.log("reaction_ingested", {
-          connectorKey: this.options.connectorKey,
-          externalConversationId,
-          externalActorId,
-          chatType,
-          externalMessageId,
-          targetMessageId: reaction.targetMessageId,
-          emoji: reaction.emoji,
-          requestId: request.id,
-        });
-        continue;
-      }
-
-      if (normalizeMessageContent(message.message)?.reactionMessage) {
-        this.log("reaction_ignored", {
-          connectorKey: this.options.connectorKey,
-          externalConversationId,
-          externalActorId,
-          chatType,
-          externalMessageId,
-          reason: "empty_reaction",
-        });
-        continue;
-      }
-
-      const rawText = extractWhatsAppMessageText(message);
-      const media = await this.downloadSupportedMedia(message, stores);
-      if (!rawText && media.length === 0) {
-        this.log("message_dropped", {
-          connectorKey: this.options.connectorKey,
-          externalConversationId,
-          externalActorId,
-          chatType,
-          reason: "unsupported_message_shape",
-          messageShape: describeWhatsAppMessageShape(message),
-        });
-        continue;
-      }
-
-      const quotedMessageId = extractWhatsAppQuotedMessageId(message);
-      const request = await stores.requests.enqueueRequest({
-        kind: "whatsapp_message",
-        payload: {
-          connectorKey: this.options.connectorKey,
-          sentAt: readMessageSentAtMs(message.messageTimestamp),
-          externalConversationId,
-          externalActorId,
-          externalMessageId,
-          remoteJid,
-          chatType,
-          text: rawText,
-          pushName: message.pushName ?? undefined,
-          quotedMessageId,
-          media,
-        },
-      });
-
-      this.log("message_ingested", {
-        connectorKey: this.options.connectorKey,
-        externalConversationId,
-        externalActorId,
-        chatType,
-        externalMessageId,
-        mediaCount: media.length,
-        textLength: extractMessageTextLength(message),
-        requestId: request.id,
-      });
-    }
-  }
-
-  private async downloadSupportedMedia(
-    message: WAMessage,
-    stores: WhatsAppWorkerStores,
-  ): Promise<readonly MediaDescriptor[]> {
-    const content = normalizeMessageContent(message.message);
-    if (!content) {
-      return [];
-    }
-
-    const descriptors: MediaDescriptor[] = [];
-
-    if (content.imageMessage) {
-      descriptors.push(await this.downloadMedia(message, stores, {
-        mimeType: content.imageMessage.mimetype ?? "image/jpeg",
-        sizeBytes: readMediaSizeBytes(content.imageMessage.fileLength),
-      }));
-    }
-
-    if (content.videoMessage) {
-      descriptors.push(await this.downloadMedia(message, stores, {
-        mimeType: content.videoMessage.mimetype ?? "video/mp4",
-        sizeBytes: readMediaSizeBytes(content.videoMessage.fileLength),
-        metadata: {
-          whatsappMediaKind: "video",
-        },
-      }));
-    }
-
-    if (content.documentMessage) {
-      descriptors.push(await this.downloadMedia(message, stores, {
-        mimeType: content.documentMessage.mimetype ?? "application/octet-stream",
-        sizeBytes: readMediaSizeBytes(content.documentMessage.fileLength),
-        hintFilename: content.documentMessage.fileName ?? undefined,
-      }));
-    }
-
-    if (content.stickerMessage) {
-      descriptors.push(await this.downloadMedia(message, stores, {
-        mimeType: content.stickerMessage.mimetype ?? "image/webp",
-        sizeBytes: readMediaSizeBytes(content.stickerMessage.fileLength),
-        metadata: {
-          whatsappMediaKind: "sticker",
-          isAnimated: content.stickerMessage.isAnimated ?? null,
-        },
-      }));
-    }
-
-    if (content.audioMessage) {
-      descriptors.push(await this.downloadMedia(message, stores, {
-        mimeType: content.audioMessage.mimetype ?? "audio/ogg",
-        sizeBytes: readMediaSizeBytes(content.audioMessage.fileLength),
-        metadata: {
-          whatsappMediaKind: "audio",
-          ptt: content.audioMessage.ptt ?? null,
-        },
-      }));
-    }
-
-    return descriptors;
-  }
-
-  private async downloadMedia(
-    message: WAMessage,
-    stores: WhatsAppWorkerStores,
-    options: {
-      mimeType: string;
-      sizeBytes?: number;
-      hintFilename?: string;
-      metadata?: Record<string, unknown>;
-    },
-  ): Promise<MediaDescriptor> {
-    if (!this.socket) {
-      throw new Error("WhatsApp media download requires a live connector socket.");
-    }
-
-    const bytes = new Uint8Array(await downloadMediaMessage(message, "buffer", {}, {
-      reuploadRequest: this.socket.updateMediaMessage,
-      logger: WHATSAPP_LOGGER,
-    }));
-
-    return stores.mediaStore.writeMedia({
-      bytes,
-      source: WHATSAPP_SOURCE,
-      connectorKey: this.options.connectorKey,
-      mimeType: options.mimeType,
-      sizeBytes: options.sizeBytes,
-      hintFilename: options.hintFilename,
-      metadata: {
-        whatsappMessageId: message.key.id ?? null,
-        whatsappRemoteJid: message.key.remoteJid ?? null,
-        ...options.metadata,
-      },
-    });
   }
 }

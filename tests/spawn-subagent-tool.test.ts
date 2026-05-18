@@ -323,7 +323,7 @@ describe("SpawnSubagentTool", () => {
     const service = new DefaultAgentSubagentService({
       store: {
         getThread: vi.fn(async () => threadRecord),
-      } as any,
+      },
       resolveDefinition: vi.fn(async () => ({
         agent: new Agent({
           name: "panda",
@@ -402,7 +402,7 @@ describe("SpawnSubagentTool", () => {
     const service = new DefaultAgentSubagentService({
       store: {
         getThread: vi.fn(async () => createThreadRecord()),
-      } as any,
+      },
       resolveDefinition: vi.fn(async () => ({
         agent: new Agent({
           name: "panda",
@@ -460,7 +460,7 @@ describe("SpawnSubagentTool", () => {
     const service = new DefaultAgentSubagentService({
       store: {
         getThread: vi.fn(async () => createThreadRecord()),
-      } as any,
+      },
       resolveDefinition: vi.fn(async () => ({
         agent: new Agent({
           name: "panda",
@@ -538,7 +538,7 @@ describe("SpawnSubagentTool", () => {
     const service = new DefaultAgentSubagentService({
       store: {
         getThread: vi.fn(async () => createThreadRecord()),
-      } as any,
+      },
       resolveDefinition: vi.fn(async () => ({
         agent: new Agent({
           name: "panda",
@@ -596,7 +596,7 @@ describe("SpawnSubagentTool", () => {
     const service = new DefaultAgentSubagentService({
       store: {
         getThread: vi.fn(async () => createThreadRecord()),
-      } as any,
+      },
       resolveDefinition: vi.fn(async () => ({
         agent: new Agent({
           name: "panda",
@@ -672,7 +672,7 @@ describe("SpawnSubagentTool", () => {
     const service = new DefaultAgentSubagentService({
       store: {
         getThread: vi.fn(async () => createThreadRecord()),
-      } as any,
+      },
       resolveDefinition: vi.fn(async () => ({
         agent: new Agent({
           name: "panda",
@@ -746,7 +746,7 @@ describe("SpawnSubagentTool", () => {
     const service = new DefaultAgentSubagentService({
       store: {
         getThread: vi.fn(async () => createThreadRecord()),
-      } as any,
+      },
       resolveDefinition: vi.fn(async () => ({
         agent: new Agent({
           name: "panda",
@@ -780,7 +780,7 @@ describe("SpawnSubagentTool", () => {
     const service = new DefaultAgentSubagentService({
       store: {
         getThread: vi.fn(async () => createThreadRecord()),
-      } as any,
+      },
       resolveDefinition: vi.fn(async () => ({
         agent: new Agent({
           name: "panda",
@@ -820,7 +820,7 @@ describe("SpawnSubagentTool", () => {
     const service = new DefaultAgentSubagentService({
       store: {
         getThread: vi.fn(async () => createThreadRecord()),
-      } as any,
+      },
       resolveDefinition: vi.fn(async () => ({
         agent: new Agent({
           name: "panda",

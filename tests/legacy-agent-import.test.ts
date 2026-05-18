@@ -4,7 +4,9 @@ import {mkdir, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
-import {CredentialCrypto, CredentialService, PostgresCredentialStore,} from "../src/domain/credentials/index.js";
+import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
+import {CredentialService} from "../src/domain/credentials/resolver.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {importLegacyAgent, planLegacyAgentImport,} from "../src/domain/agents/legacy-import.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
@@ -289,11 +291,13 @@ describe("legacy agent import", () => {
     expect(credential?.value).toBe("shh");
 
     const session = await harness.sessionStore.getMainSession("luna");
+    if (!session) {
+      throw new Error("Expected imported agent luna to have a main session.");
+    }
     expect(session).toMatchObject({
       createdByIdentityId: identity.id,
     });
-    expect(session).not.toBeNull();
-    const transcript = await harness.threadStore.loadTranscript(session!.currentThreadId);
+    const transcript = await harness.threadStore.loadTranscript(session.currentThreadId);
     expect(transcript).toMatchObject([
       {
         origin: "input",

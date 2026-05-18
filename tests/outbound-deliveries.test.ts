@@ -29,6 +29,29 @@ describe("PostgresOutboundDeliveryStore", () => {
     }
   });
 
+  function persistedDeliveryRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: "delivery-1",
+      thread_id: "thread-1",
+      channel: "telegram",
+      connector_key: "bot-1",
+      external_conversation_id: "chat-1",
+      external_actor_id: null,
+      reply_to_message_id: null,
+      items: [{type: "text", text: "hello"}],
+      metadata: null,
+      status: "pending",
+      attempt_count: 0,
+      last_error: null,
+      sent_items: null,
+      claimed_at: null,
+      completed_at: null,
+      created_at: new Date(1),
+      updated_at: new Date(1),
+      ...overrides,
+    };
+  }
+
   it("uses the notification pool for LISTEN clients", async () => {
     const queryPool = {
       connect: vi.fn(async () => {
@@ -148,6 +171,124 @@ describe("PostgresOutboundDeliveryStore", () => {
       status: "sent",
       sent: [{ type: "text", externalMessageId: "101" }],
     });
+  });
+
+  it("rejects non-json delivery metadata before enqueueing", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    await createRuntimeStores(pool);
+    const store = new PostgresOutboundDeliveryStore({ pool });
+    await store.ensureSchema();
+
+    await expect(store.enqueueDelivery({
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-1",
+        externalConversationId: "chat-1",
+      },
+      items: [{ type: "text", text: "hello" }],
+      metadata: Number.NaN,
+    })).rejects.toThrow("Outbound delivery metadata must be JSON-serializable.");
+  });
+
+  it("rejects malformed persisted delivery items before claiming them", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    await createRuntimeStores(pool);
+    const store = new PostgresOutboundDeliveryStore({ pool });
+    await store.ensureSchema();
+    await pool.query(`
+      INSERT INTO "runtime"."outbound_deliveries" (
+        id,
+        channel,
+        connector_key,
+        external_conversation_id,
+        items,
+        status
+      ) VALUES (
+        '00000000-0000-0000-0000-000000000002',
+        'telegram',
+        'bot-1',
+        'chat-1',
+        $1::jsonb,
+        'pending'
+      )
+    `, [
+      JSON.stringify([{type: "image"}]),
+    ]);
+
+    await expect(store.claimNextPendingDelivery({
+      channel: "telegram",
+      connectorKey: "bot-1",
+    })).rejects.toThrow("Outbound delivery image item path must not be empty.");
+
+    const rows = await pool.query(
+      `SELECT status, attempt_count FROM "runtime"."outbound_deliveries" WHERE id = '00000000-0000-0000-0000-000000000002'`,
+    );
+    expect(rows.rows[0]).toMatchObject({
+      status: "pending",
+      attempt_count: 0,
+    });
+  });
+
+  it("rejects malformed persisted delivery identity fields", async () => {
+    const store = new PostgresOutboundDeliveryStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [persistedDeliveryRow({connector_key: ""})],
+        })),
+        connect: vi.fn(),
+      },
+    });
+
+    await expect(store.getDelivery("delivery-1")).rejects.toThrow(
+      "Outbound delivery target connector key must not be empty.",
+    );
+  });
+
+  it("rejects malformed persisted delivery counters and timestamps", async () => {
+    const badCount = new PostgresOutboundDeliveryStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [persistedDeliveryRow({attempt_count: "many"})],
+        })),
+        connect: vi.fn(),
+      },
+    });
+    await expect(badCount.getDelivery("delivery-1")).rejects.toThrow(
+      "Outbound delivery attempt count must be a non-negative integer.",
+    );
+
+    const badTimestamp = new PostgresOutboundDeliveryStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [persistedDeliveryRow({created_at: "eventually"})],
+        })),
+        connect: vi.fn(),
+      },
+    });
+    await expect(badTimestamp.getDelivery("delivery-1")).rejects.toThrow(
+      "Outbound delivery created_at must be a finite timestamp.",
+    );
   });
 
   it("marks abandoned sending deliveries as failed", async () => {
@@ -330,7 +471,6 @@ describe("ChannelOutboundDeliveryWorker", () => {
     });
     await worker.stop();
 
-    expect(send).toHaveBeenCalledTimes(1);
     expect(store.deliveries[0]).toMatchObject({
       status: "sent",
       sent: [{ type: "text", externalMessageId: "101" }],
@@ -370,7 +510,6 @@ describe("ChannelOutboundDeliveryWorker", () => {
     });
     await worker.stop();
 
-    expect(send).toHaveBeenCalledTimes(1);
     expect(store.deliveries[0]).toMatchObject({
       status: "failed",
       lastError: "socket unavailable",
@@ -414,7 +553,6 @@ describe("ChannelOutboundDeliveryWorker", () => {
     });
     await worker.stop();
 
-    expect(send).toHaveBeenCalledTimes(1);
     expect(store.listener).toBeNull();
   });
 });

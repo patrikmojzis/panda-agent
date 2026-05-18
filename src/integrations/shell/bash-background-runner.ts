@@ -4,12 +4,11 @@ import type {
     BackgroundToolJobHandle,
     BackgroundToolJobSnapshot,
 } from "../../domain/threads/runtime/tool-job-service.js";
-import type {JsonObject} from "../../kernel/agent/types.js";
+import type {JsonObject} from "../../lib/json.js";
 import {
     buildRunnerEndpoint,
     buildRunnerRequestHeaders,
     makeNetworkTimeoutSignal,
-    parseRunnerResponse,
     readRunnerError,
     resolveBashExecutionMode,
     resolveRunnerUrl,
@@ -26,9 +25,10 @@ import type {
     BashRunnerJobStartRequest,
     BashRunnerJobWaitRequest,
 } from "./bash-protocol.js";
+import {parseBashRunnerJobResponse} from "./bash-protocol.js";
 import {redactSecretsInString} from "./redaction.js";
 import type {ShellExecutionContext} from "./types.js";
-import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/index.js";
+import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 
 const DEFAULT_CANCEL_WAIT_TIMEOUT_MS = 1_000;
 const DEFAULT_REMOTE_TIMEOUT_BUFFER_MS = 5_000;
@@ -127,12 +127,11 @@ function snapshotToCompletion(snapshot: BashJobSnapshot, mode: "local" | "remote
 }
 
 async function parseJobResponse(response: Response): Promise<BashRunnerJobResponse> {
-  const payload = await parseRunnerResponse(response);
-  if (!payload.ok || !("jobId" in payload)) {
+  try {
+    return parseBashRunnerJobResponse(await response.json());
+  } catch {
     throw new ToolError("Remote bash runner returned an invalid background job response.");
   }
-
-  return payload as BashRunnerJobResponse;
 }
 
 export async function startBashBackgroundJob<TContext extends ShellExecutionContext>(

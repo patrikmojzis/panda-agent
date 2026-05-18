@@ -1,4 +1,4 @@
-import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
+import {isJsonValue, type JsonObject, type JsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
 
@@ -62,4 +62,13 @@ export function readWorkerSessionMetadata(metadata: JsonValue | undefined): Work
     ...(context ? {context} : {}),
     ...(parentSessionId ? {parentSessionId} : {}),
   };
+}
+
+export function readWorkerContextValue(metadata: JsonValue | undefined): JsonValue | undefined {
+  const record = readMetadataRecord(metadata);
+  if (!record || record.worker === undefined || !isJsonValue(record.worker)) {
+    return undefined;
+  }
+
+  return record.worker;
 }

@@ -1,7 +1,7 @@
 import {ensureSchemas} from "../../src/app/runtime/postgres-bootstrap.js";
 import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../../src/domain/identity/index.js";
-import {PostgresEmailStore} from "../../src/domain/email/index.js";
+import {PostgresEmailStore} from "../../src/domain/email/postgres.js";
 import {PostgresSessionStore} from "../../src/domain/sessions/index.js";
 import {PostgresThreadRuntimeStore} from "../../src/domain/threads/runtime/index.js";
 

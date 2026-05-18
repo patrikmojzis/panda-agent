@@ -6,7 +6,7 @@ describe("runCleanupSteps", () => {
   it("swallows cleanup errors by default after reporting them", async () => {
     const onError = vi.fn();
 
-    await expect(runCleanupSteps([
+    await runCleanupSteps([
       {
         label: "first",
         run: async () => {
@@ -17,7 +17,7 @@ describe("runCleanupSteps", () => {
         label: "second",
         run: async () => {},
       },
-    ], onError)).resolves.toBeUndefined();
+    ], onError);
 
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onError.mock.calls[0]?.[0]).toMatchObject({label: "first"});

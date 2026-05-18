@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "description": "Known dependency-direction violations. Keep empty unless a documented transitional exception is approved.",
+  "violations": []
+}

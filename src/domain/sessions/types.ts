@@ -1,4 +1,4 @@
-import type {JsonValue} from "../../kernel/agent/types.js";
+import type {JsonValue} from "../../lib/json.js";
 
 export type AgentSessionKind = "main" | "branch" | "worker";
 
@@ -14,10 +14,6 @@ export interface CreateSessionInput {
 export interface SessionRecord extends CreateSessionInput {
   createdAt: number;
   updatedAt: number;
-}
-
-export interface ListAgentSessionsInput {
-  agentKey: string;
 }
 
 export interface UpdateSessionCurrentThreadInput {

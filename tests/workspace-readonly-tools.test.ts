@@ -11,14 +11,15 @@ import {
     GrepFilesTool,
     ReadFileTool,
     RunContext,
+    type Tool,
 } from "../src/index.js";
 
-function createRunContext(tool: {name: string}, cwd: string): RunContext<DefaultAgentSessionContext> {
+function createRunContext(tool: Tool, cwd: string): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: new Agent({
       name: "panda",
       instructions: "Inspect files.",
-      tools: [tool as any],
+      tools: [tool],
     }),
     turn: 1,
     maxTurns: 5,

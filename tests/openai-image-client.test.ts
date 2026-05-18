@@ -1,6 +1,6 @@
 import {describe, expect, it, vi} from "vitest";
 
-import {OpenAIImageClient, resolveOpenAIImageAuth,} from "../src/integrations/providers/openai-image/client.js";
+import {OpenAIImageClient, resolveOpenAIImageAuth} from "../src/integrations/providers/openai-image/client.js";
 
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6p6WQAAAAASUVORK5CYII=";
@@ -84,5 +84,102 @@ describe("OpenAI image client", () => {
         mimeType: "image/webp",
       }],
     });
+  });
+
+  it("rejects malformed Codex image SSE JSON", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(
+      [
+        "data: {not-json}",
+        "data: [DONE]",
+        "",
+      ].join("\n"),
+      {
+        status: 200,
+        headers: {"Content-Type": "text/event-stream"},
+      },
+    ));
+    const client = new OpenAIImageClient({
+      env: {
+        ...process.env,
+        OPENAI_OAUTH_TOKEN: "codex-token",
+      },
+      fetchImpl,
+    });
+
+    await expect(client.generate({
+      prompt: "make an icon",
+      model: "gpt-image-2",
+      size: "auto",
+      quality: "high",
+      outputFormat: "png",
+      background: "transparent",
+      moderation: "low",
+      count: 1,
+    })).rejects.toThrow("OpenAI Codex image generation returned malformed SSE JSON.");
+  });
+
+  it("rejects invalid Codex image payloads", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(
+      [
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"image_generation_call\",\"result\":\"not base64!\"}}",
+        "data: [DONE]",
+        "",
+      ].join("\n"),
+      {
+        status: 200,
+        headers: {"Content-Type": "text/event-stream"},
+      },
+    ));
+    const client = new OpenAIImageClient({
+      env: {
+        ...process.env,
+        OPENAI_OAUTH_TOKEN: "codex-token",
+      },
+      fetchImpl,
+    });
+
+    await expect(client.generate({
+      prompt: "make an icon",
+      model: "gpt-image-2",
+      size: "auto",
+      quality: "high",
+      outputFormat: "png",
+      background: "transparent",
+      moderation: "low",
+      count: 1,
+    })).rejects.toThrow("OpenAI Codex image generation returned invalid image payload.");
+  });
+
+  it("rejects malformed OpenAI image API responses", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({
+        data: [{
+          b64_json: 123,
+        }],
+      }),
+      {
+        status: 200,
+        headers: {"Content-Type": "application/json"},
+      },
+    ));
+    const client = new OpenAIImageClient({
+      env: {
+        OPENAI_API_KEY: "sk-test",
+        PANDA_IMAGE_ALLOW_OPENAI_API_KEY: "true",
+        CODEX_HOME: "/tmp/panda-missing-codex-home",
+      },
+      fetchImpl,
+    });
+
+    await expect(client.generate({
+      prompt: "make an icon",
+      model: "gpt-image-2",
+      size: "auto",
+      quality: "high",
+      outputFormat: "png",
+      background: "transparent",
+      moderation: "low",
+      count: 1,
+    })).rejects.toThrow("OpenAI image generation returned malformed response.");
   });
 });

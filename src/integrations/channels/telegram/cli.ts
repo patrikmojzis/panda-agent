@@ -3,11 +3,12 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 import {Bot} from "grammy";
 
-import {DB_URL_OPTION_DESCRIPTION} from "../../../app/cli-shared.js";
-import {PostgresIdentityStore} from "../../../domain/identity/index.js";
+import {DB_URL_OPTION_DESCRIPTION} from "../../../lib/cli.js";
+import {resolveMediaDir} from "../../../lib/data-dir.js";
+import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
 import {parseIdentityHandle} from "../../../domain/identity/cli.js";
-import {ensureSchemas, withPostgresPool} from "../../../app/runtime/postgres-bootstrap.js";
-import {requireTelegramBotToken, resolveTelegramMediaDir, TELEGRAM_SOURCE} from "./config.js";
+import {ensureSchemas, withPostgresPool} from "../../../lib/postgres-bootstrap.js";
+import {requireTelegramBotToken, TELEGRAM_SOURCE} from "./config.js";
 import {TelegramService} from "./service.js";
 
 interface TelegramIdentityCliOptions {
@@ -63,7 +64,7 @@ async function withTelegramIdentityStore<T>(
 function createTelegramRunService(options: TelegramRunCliOptions = {}): TelegramService {
   return new TelegramService({
     token: requireTelegramBotToken(),
-    dataDir: resolveTelegramMediaDir(),
+    dataDir: resolveMediaDir(),
     dbUrl: options.dbUrl,
   });
 }
@@ -125,7 +126,7 @@ export async function telegramUnpairCommand(options: TelegramUnpairCliOptions): 
   });
 }
 
-export async function telegramRunCommand(options: TelegramRunCliOptions): Promise<void> {
+async function telegramRunCommand(options: TelegramRunCliOptions): Promise<void> {
   const service = createTelegramRunService(options);
 
   const shutdown = async () => {

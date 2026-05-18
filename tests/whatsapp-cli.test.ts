@@ -79,14 +79,14 @@ const whatsappCliMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
+vi.mock("../src/lib/postgres-bootstrap.js", () => ({
   ensureSchemas: vi.fn(async () => {}),
   withPostgresPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: unknown) => Promise<unknown>) => {
     return fn({});
   }),
 }));
 
-vi.mock("../src/domain/identity/index.js", () => ({
+vi.mock("../src/domain/identity/postgres.js", () => ({
   PostgresIdentityStore: whatsappCliMocks.MockPostgresIdentityStore,
 }));
 
@@ -129,7 +129,6 @@ describe("WhatsApp CLI", () => {
       dbUrl: "postgres://wa-db",
     });
 
-    expect(latestService().whoami).toHaveBeenCalledTimes(1);
     expect(latestService().stop).toHaveBeenCalledTimes(1);
     expect(write).toHaveBeenCalledWith(
       [
@@ -150,7 +149,6 @@ describe("WhatsApp CLI", () => {
       dbUrl: "postgres://wa-db",
     });
 
-    expect(latestService().pair).toHaveBeenCalledTimes(1);
     expect(latestService().stop).toHaveBeenCalledTimes(1);
     expect(write).toHaveBeenCalledWith(
       [

@@ -2,6 +2,7 @@ import {ZodError, z} from "zod";
 
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {isRecord} from "../../lib/records.js";
+import {trimToNull} from "../../lib/strings.js";
 
 const trimmedString = z.string().trim().min(1);
 const maxRequestIdLength = 120;
@@ -10,8 +11,8 @@ const maxTextItemLength = 16_000;
 const maxMetadataStringLength = 256;
 const maxFilenameLength = 180;
 const maxContextItems = 4;
-export const TELEPATHY_MAX_MEDIA_BYTES = 24 * 1024 * 1024;
-export const TELEPATHY_MAX_BASE64_PAYLOAD_LENGTH = 32 * 1024 * 1024;
+const TELEPATHY_MAX_MEDIA_BYTES = 24 * 1024 * 1024;
+const TELEPATHY_MAX_BASE64_PAYLOAD_LENGTH = 32 * 1024 * 1024;
 export const TELEPATHY_MAX_WEBSOCKET_PAYLOAD_BYTES = 36 * 1024 * 1024;
 const base64PayloadSchema = trimmedString
   .max(TELEPATHY_MAX_BASE64_PAYLOAD_LENGTH)
@@ -106,47 +107,34 @@ const telepathyReceiverMessageSchema = z.discriminatedUnion("type", [
   telepathyContextSubmitSchema,
 ]);
 
-export const telepathyDeviceReadySchema = z.object({
-  type: z.literal("device.ready"),
-  agentKey: trimmedString,
-  deviceId: trimmedString,
-});
-
-export const telepathyContextAcceptedSchema = z.object({
-  type: z.literal("context.accepted"),
-  requestId: trimmedString,
-});
-
-export const telepathyRequestErrorSchema = z.object({
-  type: z.literal("request.error"),
-  requestId: trimmedString.optional(),
-  error: trimmedString,
-});
-
-export const telepathyScreenshotRequestSchema = z.object({
-  type: z.literal("screenshot.request"),
-  requestId: trimmedString,
-});
-
 export type TelepathyDeviceHello = z.output<typeof telepathyDeviceHelloSchema>;
-export type TelepathyDeviceReady = z.output<typeof telepathyDeviceReadySchema>;
-export type TelepathyContextAccepted = z.output<typeof telepathyContextAcceptedSchema>;
-export type TelepathyContextTextItem = z.output<typeof telepathyContextTextItemSchema>;
 export type TelepathyContextAudioItem = z.output<typeof telepathyContextAudioItemSchema>;
 export type TelepathyContextImageItem = z.output<typeof telepathyContextImageItemSchema>;
 export type TelepathyContextItem = z.output<typeof telepathyContextItemSchema>;
 export type TelepathyContextSubmit = z.output<typeof telepathyContextSubmitSchema>;
-export type TelepathyRequestError = z.output<typeof telepathyRequestErrorSchema>;
-export type TelepathyScreenshotRequest = z.output<typeof telepathyScreenshotRequestSchema>;
 export type TelepathyScreenshotResultSuccess = z.output<typeof telepathyScreenshotResultSuccessSchema>;
 export type TelepathyScreenshotResultError = z.output<typeof telepathyScreenshotResultErrorSchema>;
 export type TelepathyScreenshotResult = TelepathyScreenshotResultSuccess | TelepathyScreenshotResultError;
 export type TelepathyReceiverMessage = z.output<typeof telepathyReceiverMessageSchema>;
 export type TelepathyServerMessage =
-  | TelepathyContextAccepted
-  | TelepathyDeviceReady
-  | TelepathyRequestError
-  | TelepathyScreenshotRequest;
+  | {
+    type: "context.accepted";
+    requestId: string;
+  }
+  | {
+    type: "device.ready";
+    agentKey: string;
+    deviceId: string;
+  }
+  | {
+    type: "request.error";
+    requestId?: string;
+    error: string;
+  }
+  | {
+    type: "screenshot.request";
+    requestId: string;
+  };
 
 export function decodeTelepathyMediaPayload(input: {
   data: string;
@@ -189,33 +177,10 @@ export function parseTelepathyReceiverMessage(value: unknown): TelepathyReceiver
   return parseSchema(telepathyReceiverMessageSchema, value, "Invalid telepathy receiver message");
 }
 
-export function parseTelepathyScreenshotRequest(value: unknown): TelepathyScreenshotRequest {
-  return parseSchema(telepathyScreenshotRequestSchema, value, "Invalid telepathy screenshot request");
-}
-
-export function parseTelepathyContextAccepted(value: unknown): TelepathyContextAccepted {
-  return parseSchema(telepathyContextAcceptedSchema, value, "Invalid telepathy context accepted message");
-}
-
-export function parseTelepathyRequestError(value: unknown): TelepathyRequestError {
-  return parseSchema(telepathyRequestErrorSchema, value, "Invalid telepathy error message");
-}
-
-export function parseTelepathyServerMessage(value: unknown): TelepathyServerMessage {
-  if (!isRecord(value) || typeof value.type !== "string") {
-    throw new ToolError("Invalid telepathy server message: missing type.");
+export function readTelepathyMessageRequestId(value: unknown): string | undefined {
+  if (!isRecord(value) || typeof value.requestId !== "string") {
+    return undefined;
   }
 
-  switch (value.type) {
-    case "context.accepted":
-      return parseTelepathyContextAccepted(value);
-    case "device.ready":
-      return parseSchema(telepathyDeviceReadySchema, value, "Invalid telepathy ready message");
-    case "request.error":
-      return parseTelepathyRequestError(value);
-    case "screenshot.request":
-      return parseTelepathyScreenshotRequest(value);
-    default:
-      throw new ToolError(`Invalid telepathy server message: unsupported type ${JSON.stringify(value.type)}.`);
-  }
+  return trimToNull(value.requestId) ?? undefined;
 }

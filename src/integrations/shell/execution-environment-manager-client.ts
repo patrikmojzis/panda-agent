@@ -2,9 +2,10 @@ import type {
     DisposableEnvironmentCreateRequest,
     DisposableEnvironmentCreateResult,
     ExecutionEnvironmentManager,
-} from "../../domain/execution-environments/index.js";
+} from "../../domain/execution-environments/types.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {buildEndpointUrl} from "../../lib/http.js";
+import {isJsonValue, type JsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
 
@@ -24,7 +25,7 @@ type ManagerResponse = {
   runnerUrl?: string;
   runnerCwd?: string;
   rootPath?: string;
-  metadata?: unknown;
+  metadata?: JsonValue;
 };
 
 function makeNetworkTimeoutSignal(timeoutMs: number): AbortSignal {
@@ -35,11 +36,30 @@ function makeNetworkTimeoutSignal(timeoutMs: number): AbortSignal {
   return controller.signal;
 }
 
+function parseOptionalMetadata(label: string, value: unknown): JsonValue | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!isJsonValue(value)) {
+    throw new ToolError(`${label} must be JSON-serializable.`);
+  }
+
+  return value;
+}
+
 function parseManagerResponse(payload: unknown): ManagerResponse {
   if (!isRecord(payload) || typeof payload.ok !== "boolean") {
     throw new ToolError("Execution environment manager returned an invalid response.");
   }
-  return payload as ManagerResponse;
+  return {
+    ok: payload.ok,
+    error: typeof payload.error === "string" ? payload.error : undefined,
+    runnerUrl: trimToUndefined(payload.runnerUrl),
+    runnerCwd: trimToUndefined(payload.runnerCwd),
+    rootPath: trimToUndefined(payload.rootPath),
+    metadata: parseOptionalMetadata("Execution environment manager response metadata", payload.metadata),
+  };
 }
 
 async function readManagerError(response: Response): Promise<never> {
@@ -74,7 +94,12 @@ export class HttpExecutionEnvironmentManagerClient implements ExecutionEnvironme
   async createDisposableEnvironment(
     input: DisposableEnvironmentCreateRequest,
   ): Promise<DisposableEnvironmentCreateResult> {
-    const payload = await this.post("environments/disposable", input);
+    const payload = await this.post("environments/disposable", {
+      ...input,
+      ...(input.metadata === undefined ? {} : {
+        metadata: parseOptionalMetadata("Execution environment manager request metadata", input.metadata),
+      }),
+    });
     if (!payload.runnerUrl || !payload.runnerCwd) {
       throw new ToolError("Execution environment manager returned an invalid create response.");
     }
@@ -82,7 +107,7 @@ export class HttpExecutionEnvironmentManagerClient implements ExecutionEnvironme
       runnerUrl: payload.runnerUrl,
       runnerCwd: payload.runnerCwd,
       ...(payload.rootPath ? {rootPath: payload.rootPath} : {}),
-      ...(payload.metadata === undefined ? {} : {metadata: payload.metadata as DisposableEnvironmentCreateResult["metadata"]}),
+      ...(payload.metadata === undefined ? {} : {metadata: payload.metadata}),
     };
   }
 

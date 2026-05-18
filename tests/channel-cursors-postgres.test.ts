@@ -177,4 +177,120 @@ describe("ChannelCursorRepo", () => {
       value: "   ",
     })).rejects.toThrow("Channel cursor value must not be empty.");
   });
+
+  it("rejects non-json cursor metadata before persisting it", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const store = new ChannelCursorRepo({ pool });
+    await store.ensureSchema();
+
+    await expect(store.upsertChannelCursor({
+      source: "telegram",
+      connectorKey: "bot-main",
+      cursorKey: "updates",
+      value: "1",
+      metadata: Number.NaN,
+    })).rejects.toThrow("Channel cursor metadata must be JSON-serializable.");
+  });
+
+  it("rejects malformed persisted cursor metadata", async () => {
+    const query = async () => ({
+      rows: [{
+        source: "telegram",
+        connector_key: "bot-main",
+        cursor_key: "updates",
+        cursor_value: "1",
+        metadata: Number.NaN,
+        created_at: new Date(1),
+        updated_at: new Date(1),
+      }],
+    });
+    const store = new ChannelCursorRepo({
+      pool: {query},
+    });
+
+    await expect(store.resolveChannelCursor({
+      source: "telegram",
+      connectorKey: "bot-main",
+      cursorKey: "updates",
+    })).rejects.toThrow("Channel cursor metadata must be JSON-serializable.");
+  });
+
+  it("rejects malformed persisted cursor key fields", async () => {
+    const query = async () => ({
+      rows: [{
+        source: "telegram",
+        connector_key: "",
+        cursor_key: "updates",
+        cursor_value: "1",
+        metadata: null,
+        created_at: new Date(1),
+        updated_at: new Date(1),
+      }],
+    });
+    const store = new ChannelCursorRepo({
+      pool: {query},
+    });
+
+    await expect(store.resolveChannelCursor({
+      source: "telegram",
+      connectorKey: "bot-main",
+      cursorKey: "updates",
+    })).rejects.toThrow("Channel cursor connector key must not be empty.");
+  });
+
+  it("rejects malformed persisted cursor timestamps", async () => {
+    const query = async () => ({
+      rows: [{
+        source: "telegram",
+        connector_key: "bot-main",
+        cursor_key: "updates",
+        cursor_value: "1",
+        metadata: null,
+        created_at: new Date(1),
+        updated_at: "eventually",
+      }],
+    });
+    const store = new ChannelCursorRepo({
+      pool: {query},
+    });
+
+    await expect(store.resolveChannelCursor({
+      source: "telegram",
+      connectorKey: "bot-main",
+      cursorKey: "updates",
+    })).rejects.toThrow("Channel cursor updated_at must be a finite timestamp.");
+  });
+
+  it("rejects stringified persisted cursor timestamps", async () => {
+    const query = async () => ({
+      rows: [{
+        source: "telegram",
+        connector_key: "bot-main",
+        cursor_key: "updates",
+        cursor_value: "1",
+        metadata: null,
+        created_at: "2026-05-01T12:00:00.000Z",
+        updated_at: new Date(1),
+      }],
+    });
+    const store = new ChannelCursorRepo({
+      pool: {query},
+    });
+
+    await expect(store.resolveChannelCursor({
+      source: "telegram",
+      connectorKey: "bot-main",
+      cursorKey: "updates",
+    })).rejects.toThrow("Channel cursor created_at must be a finite timestamp.");
+  });
 });

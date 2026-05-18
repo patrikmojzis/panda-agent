@@ -6,12 +6,17 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {DEFAULT_AGENT_PROMPT_TEMPLATES} from "../src/domain/agents/index.js";
-import {A2ASessionBindingRepo} from "../src/domain/a2a/index.js";
+import {A2ASessionBindingRepo} from "../src/domain/a2a/repo.js";
 import {A2AMessagingService} from "../src/domain/a2a/service.js";
 import {FileSystemMediaStore, PostgresOutboundDeliveryStore,} from "../src/domain/channels/index.js";
 import {stringToUserMessage} from "../src/kernel/agent/index.js";
 import {buildA2AInboundPersistence, buildA2AInboundText} from "../src/integrations/channels/a2a/helpers.js";
-import {createA2AOutboundAdapter} from "../src/integrations/channels/a2a/outbound.js";
+import {
+  createA2AOutboundAdapter,
+  type CreateA2AOutboundAdapterOptions,
+} from "../src/integrations/channels/a2a/outbound.js";
+import {handleA2AMessageRequest} from "../src/integrations/channels/a2a/request-handler.js";
+import type {SessionRecord} from "../src/domain/sessions/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createDisposableSenderEnvironment(id = "worker:session-a") {
@@ -161,6 +166,59 @@ describe("A2ASessionBindingRepo", () => {
     })).resolves.toBe(1);
   });
 
+  it("rejects malformed persisted session binding rows", async () => {
+    const now = new Date();
+    const bindings = new A2ASessionBindingRepo({
+      pool: {
+        connect: vi.fn(),
+        query: vi.fn(async () => ({
+          rows: [{
+            sender_session_id: " ",
+            recipient_session_id: "session-b",
+            created_at: now,
+            updated_at: now,
+          }],
+        })),
+      },
+    });
+
+    await expect(bindings.listBindings()).rejects.toThrow("A2A sender session id must not be empty.");
+  });
+
+  it("rejects malformed persisted A2A delivery counts", async () => {
+    const bindings = new A2ASessionBindingRepo({
+      pool: {
+        connect: vi.fn(),
+        query: vi.fn(async () => ({
+          rows: [{count: "unknown"}],
+        })),
+      },
+    });
+
+    await expect(bindings.countRecentMessages({
+      senderSessionId: "session-a",
+      recipientSessionId: "session-b",
+      since: Date.now() - 60_000,
+    })).rejects.toThrow("A2A recent message count must be a non-negative integer.");
+  });
+
+  it("rejects driver-shaped persisted A2A delivery counts", async () => {
+    const bindings = new A2ASessionBindingRepo({
+      pool: {
+        connect: vi.fn(),
+        query: vi.fn(async () => ({
+          rows: [{count: "1"}],
+        })),
+      },
+    });
+
+    await expect(bindings.countRecentMessages({
+      senderSessionId: "session-a",
+      recipientSessionId: "session-b",
+      since: Date.now() - 60_000,
+    })).rejects.toThrow("A2A recent message count must be a non-negative integer.");
+  });
+
   it("dedupes received A2A message ids across session resets", async () => {
     const db = newDb();
     db.public.registerFunction({
@@ -241,11 +299,14 @@ describe("A2AMessagingService", () => {
       bindings: {
         hasBinding: vi.fn(async () => true),
         countRecentMessages: vi.fn(async () => 0),
-      } as unknown as A2ASessionBindingRepo,
+      },
       outboundDeliveries: {
         enqueueDelivery,
       },
       sessions: {
+        getSession: vi.fn(async () => {
+          throw new Error("getSession should not be used for agent-targeted A2A.");
+        }),
         getMainSession: vi.fn(async (agentKey: string) => ({
           id: "session-b",
           agentKey,
@@ -254,7 +315,7 @@ describe("A2AMessagingService", () => {
           createdAt: 0,
           updatedAt: 0,
         })),
-      } as any,
+      },
     });
 
     const result = await service.queueMessage({
@@ -300,24 +361,28 @@ describe("A2AMessagingService", () => {
   });
 
   it("blocks same-session sends and rate-limit overruns", async () => {
+    const getSession = vi.fn(async () => ({
+      id: "session-a",
+      agentKey: "panda",
+      kind: "main" as const,
+      currentThreadId: "thread-a",
+      createdAt: 0,
+      updatedAt: 0,
+    }));
     const service = new A2AMessagingService({
       bindings: {
         hasBinding: vi.fn(async () => true),
         countRecentMessages: vi.fn(async () => 1),
-      } as unknown as A2ASessionBindingRepo,
+      },
       outboundDeliveries: {
         enqueueDelivery: vi.fn(),
       },
       sessions: {
-        getSession: vi.fn(async () => ({
-          id: "session-a",
-          agentKey: "panda",
-          kind: "main",
-          currentThreadId: "thread-a",
-          createdAt: 0,
-          updatedAt: 0,
-        })),
-      } as any,
+        getMainSession: vi.fn(async () => {
+          throw new Error("getMainSession should not be used for session-targeted A2A.");
+        }),
+        getSession,
+      },
       maxMessagesPerHour: 1,
     });
 
@@ -329,7 +394,7 @@ describe("A2AMessagingService", () => {
       items: [{type: "text", text: "self"}],
     })).rejects.toThrow("message_agent does not allow sending to the same session.");
 
-    vi.mocked((service as any).sessions.getSession).mockResolvedValueOnce({
+    getSession.mockResolvedValueOnce({
       id: "session-b",
       agentKey: "koala",
       kind: "main",
@@ -345,6 +410,48 @@ describe("A2AMessagingService", () => {
       sessionId: "session-b",
       items: [{type: "text", text: "too many"}],
     })).rejects.toThrow("A2A rate limit reached for session-a -> session-b (1/hour).");
+  });
+
+  it("rejects non-JSON sender environment metadata before queueing", async () => {
+    const enqueueDelivery = vi.fn();
+    const service = new A2AMessagingService({
+      bindings: {
+        hasBinding: vi.fn(async () => true),
+        countRecentMessages: vi.fn(async () => 0),
+      },
+      outboundDeliveries: {
+        enqueueDelivery,
+      },
+      sessions: {
+        getSession: vi.fn(async () => {
+          throw new Error("getSession should not be used for agent-targeted A2A.");
+        }),
+        getMainSession: vi.fn(async (agentKey: string) => ({
+          id: "session-b",
+          agentKey,
+          kind: "main",
+          currentThreadId: "thread-b",
+          createdAt: 0,
+          updatedAt: 0,
+        })),
+      },
+    });
+
+    await expect(service.queueMessage({
+      senderAgentKey: "panda",
+      senderSessionId: "session-a",
+      senderThreadId: "thread-a",
+      agentKey: "koala",
+      senderEnvironment: {
+        ...createDisposableSenderEnvironment(),
+        parentRunnerPaths: {
+          root: Number.NaN,
+        },
+      } as unknown as ReturnType<typeof createDisposableSenderEnvironment>,
+      items: [{type: "text", text: "hello"}],
+    })).rejects.toThrow("A2A sender environment metadata must be JSON-safe.");
+
+    expect(enqueueDelivery).not.toHaveBeenCalled();
   });
 });
 
@@ -368,7 +475,7 @@ describe("createA2AOutboundAdapter", () => {
     await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     await writeFile(filePath, "hi from panda", "utf8");
 
-    const enqueueRequest = vi.fn(async (input) => ({
+    const enqueueRequest: CreateA2AOutboundAdapterOptions["requests"]["enqueueRequest"] = vi.fn(async (input) => ({
       id: "request-1",
       kind: input.kind,
       status: "pending",
@@ -376,20 +483,21 @@ describe("createA2AOutboundAdapter", () => {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }));
+    const sessionStore: CreateA2AOutboundAdapterOptions["sessionStore"] = {
+      getSession: vi.fn(async () => ({
+        id: "session-b",
+        agentKey: "koala",
+        kind: "main",
+        currentThreadId: "thread-b",
+        createdAt: 0,
+        updatedAt: 0,
+      })),
+    };
     const adapter = createA2AOutboundAdapter({
       requests: {
         enqueueRequest,
-      } as any,
-      sessionStore: {
-        getSession: vi.fn(async () => ({
-          id: "session-b",
-          agentKey: "koala",
-          kind: "main",
-          currentThreadId: "thread-b",
-          createdAt: 0,
-          updatedAt: 0,
-        })),
-      } as any,
+      },
+      sessionStore,
       createMediaStore: (rootDir) => new FileSystemMediaStore({
         rootDir,
         now: () => new Date("2026-04-08T12:00:00.000Z"),
@@ -481,6 +589,58 @@ describe("createA2AOutboundAdapter", () => {
         {type: "file", externalMessageId: "a2a:123"},
       ],
     });
+  });
+});
+
+describe("handleA2AMessageRequest", () => {
+  it("delivers inbound messages to the recipient session current thread", async () => {
+    const recipient: SessionRecord = {
+      id: "session-b",
+      agentKey: "koala",
+      kind: "main",
+      currentThreadId: "thread-before-reset",
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const submitInput = vi.fn(async () => undefined);
+
+    const result = await handleA2AMessageRequest({
+      connectorKey: "local",
+      externalMessageId: "a2a:after-reset",
+      fromAgentKey: "panda",
+      fromSessionId: "session-a",
+      fromThreadId: "thread-a",
+      toAgentKey: "koala",
+      toSessionId: "session-b",
+      sentAt: 1234567890,
+      items: [{type: "text", text: "hello after reset"}],
+    }, {
+      bindings: {
+        hasBinding: async () => true,
+        hasReceivedMessage: async () => {
+          recipient.currentThreadId = "thread-after-reset";
+          return false;
+        },
+      },
+      coordinator: {submitInput},
+      sessions: {
+        getSession: async (sessionId) => {
+          expect(sessionId).toBe("session-b");
+          return recipient;
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      status: "queued",
+      threadId: "thread-after-reset",
+    });
+    expect(submitInput).toHaveBeenCalledWith("thread-after-reset", expect.objectContaining({
+      source: "a2a",
+      channelId: "session-a",
+      externalMessageId: "a2a:after-reset",
+      actorId: "panda",
+    }));
   });
 });
 

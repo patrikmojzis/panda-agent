@@ -1,4 +1,4 @@
-import type {JsonObject} from "../kernel/agent/types.js";
+import type {JsonObject} from "./json.js";
 
 /**
  * Converts a millisecond timestamp into a `Date`, while preserving `undefined`

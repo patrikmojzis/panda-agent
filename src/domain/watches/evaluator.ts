@@ -1,7 +1,7 @@
 import {createHash} from "node:crypto";
 
-import {stableStringify} from "../../lib/json.js";
-import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
+import {isJsonObject, stableStringify} from "../../lib/json.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
 import type {
     WatchCollectionItem,
     WatchCollectionObservation,
@@ -75,7 +75,11 @@ function withIdentityToken<T extends JsonObject>(value: T, identityToken?: strin
 }
 
 function asStateObject(value: NewItemsState | SnapshotState | PercentChangeState): JsonObject {
-  return value as unknown as JsonObject;
+  if (isJsonObject(value)) {
+    return value;
+  }
+
+  throw new Error("Watch state must be a JSON object.");
 }
 
 function buildCollectionState(

@@ -1,4 +1,4 @@
-import type {JsonValue} from "../../kernel/agent/types.js";
+import type {JsonValue} from "../../lib/json.js";
 
 export type ExecutionEnvironmentKind =
   | "persistent_agent_runner"

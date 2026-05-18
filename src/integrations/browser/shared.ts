@@ -1,27 +1,33 @@
 import {randomUUID} from "node:crypto";
 
-import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
+import {normalizePathLabel, readSafePathSegment} from "../../lib/path-segments.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import type {BrowserDeviceProfile, BrowserSessionScope} from "../../panda/tools/browser-types.js";
+import type {BrowserDeviceProfile, BrowserSessionScope} from "./action-types.js";
 
-export {buildEndpointUrl as buildRunnerEndpoint} from "../../lib/http.js";
+const DEFAULT_BROWSER_DEVICE_PROFILE: BrowserDeviceProfile = "desktop";
 
-export const DEFAULT_BROWSER_DEVICE_PROFILE: BrowserDeviceProfile = "desktop";
+export interface BrowserRuntimeContext {
+  agentKey?: string;
+  sessionId?: string;
+  threadId?: string;
+  executionEnvironment?: ResolvedExecutionEnvironment;
+}
 
 /**
  * Normalizes browser labels into a filesystem-safe token.
  */
 export function normalizeBrowserLabelValue(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "unknown";
+  return normalizePathLabel(value);
 }
 
 /**
  * Validates agent keys before they are used in browser-owned filesystem paths.
  */
 export function safeAgentKey(agentKey: string): string {
-  const trimmed = agentKey.trim();
-  if (!trimmed || /[\\/]/.test(trimmed) || trimmed.includes("..")) {
+  const trimmed = readSafePathSegment(agentKey);
+  if (!trimmed) {
     throw new ToolError(`Unsafe agent key for browser artifact path: ${agentKey}`);
   }
 
@@ -32,7 +38,7 @@ export function safeAgentKey(agentKey: string): string {
  * Resolves the browser artifact scope key from the current transcript context.
  */
 export function normalizeBrowserArtifactScopeKey(
-  context: DefaultAgentSessionContext,
+  context: BrowserRuntimeContext,
 ): {scope: "thread" | "ephemeral"; key: string} {
   const threadId = trimToUndefined(context.threadId);
   if (threadId) {
@@ -61,7 +67,7 @@ export function normalizeBrowserDeviceProfile(
  * Resolves the browser runner session key from the durable runtime lane and device profile.
  */
 export function normalizeBrowserSessionScopeKey(
-  context: DefaultAgentSessionContext,
+  context: BrowserRuntimeContext,
   deviceProfile: BrowserDeviceProfile | undefined,
 ): {scope: BrowserSessionScope; key: string; deviceProfile: BrowserDeviceProfile} {
   const normalizedDeviceProfile = normalizeBrowserDeviceProfile(deviceProfile);

@@ -12,10 +12,10 @@ import {
     normalizeAgentSkillDescription,
 } from "../../domain/agents/types.js";
 import {
-    type ExecutionSkillPolicy,
     isExecutionSkillAllowed,
     readExecutionSkillPolicy,
-} from "../../domain/execution-environments/index.js";
+} from "../../domain/execution-environments/policy.js";
+import type {ExecutionSkillPolicy} from "../../domain/execution-environments/types.js";
 
 function readAgentSkillScope(context: unknown): { agentKey: string } {
   if (
@@ -47,8 +47,10 @@ function assertSkillMutationAllowed(policy: ExecutionSkillPolicy): void {
   }
 }
 
+export type AgentSkillToolStore = Pick<AgentStore, "deleteAgentSkill" | "loadAgentSkill" | "setAgentSkill">;
+
 export interface AgentSkillToolOptions {
-  store: AgentStore;
+  store: AgentSkillToolStore;
 }
 
 function issueMessage(error: unknown): string {
@@ -142,7 +144,7 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
     "Load, create, replace, or delete agent-scoped skills stored in Postgres. Use load when an injected skill summary looks relevant and you need the full markdown body in context. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal agent runs only inject each skill's key and description. For post-run reflective learning, prefer the skill_maintainer subagent instead of writing reflective skills directly from the main agent.";
   schema = AgentSkillTool.schema;
 
-  private readonly store: AgentStore;
+  private readonly store: AgentSkillToolStore;
 
   constructor(options: AgentSkillToolOptions) {
     super();

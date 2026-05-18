@@ -1,4 +1,4 @@
-import type {JsonObject} from "../../../kernel/agent/types.js";
+import type {JsonObject} from "../../../lib/json.js";
 import type {RememberedRoute} from "../../../domain/channels/types.js";
 import {renderTuiInboundText} from "../../../prompts/channels/tui.js";
 

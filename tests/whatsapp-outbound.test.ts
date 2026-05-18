@@ -2,15 +2,17 @@ import {mkdtemp, writeFile} from "node:fs/promises";
 import path from "node:path";
 import {tmpdir} from "node:os";
 
-import type {WASocket} from "baileys";
 import {describe, expect, it, vi} from "vitest";
 
-import {createWhatsAppOutboundAdapter} from "../src/integrations/channels/whatsapp/outbound.js";
+import {
+  createWhatsAppOutboundAdapter,
+  type WhatsAppOutboundSocket,
+} from "../src/integrations/channels/whatsapp/outbound.js";
 
-function mockSocket(sendMessage: ReturnType<typeof vi.fn>): WASocket {
+function mockSocket(sendMessage: ReturnType<typeof vi.fn>): WhatsAppOutboundSocket {
   return {
     sendMessage,
-  } as unknown as WASocket;
+  };
 }
 
 describe("createWhatsAppOutboundAdapter", () => {

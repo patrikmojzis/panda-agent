@@ -1,5 +1,6 @@
 import type {Message} from "@mariozechner/pi-ai";
 
+import {sleep} from "../../../lib/async.js";
 import {runThreadStep, Thread, type ThreadResumeState, type ThreadStepResult} from "../../../kernel/agent/thread.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {resolveModelRuntimeBudget} from "../../../kernel/models/model-context-policy.js";
@@ -407,7 +408,7 @@ export class ThreadRuntimeCoordinator {
   }
 
   private async sleep(ms: number): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, ms));
+    await sleep(ms);
   }
 
   private shouldContinueFromBoundary(boundary: ThreadBoundaryState): boolean {

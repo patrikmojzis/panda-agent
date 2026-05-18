@@ -1,11 +1,11 @@
 import type {LlmContext} from "../../kernel/agent/llm-context.js";
-import type {AgentStore} from "../../domain/agents/store.js";
-import type {ExecutionEnvironmentStore, ExecutionSkillPolicy} from "../../domain/execution-environments/index.js";
-import type {SessionStore} from "../../domain/sessions/index.js";
-import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/index.js";
+import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
+import type {ExecutionSkillPolicy} from "../../domain/execution-environments/types.js";
+import type {SessionStore} from "../../domain/sessions/store.js";
+import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import type {WikiBindingService} from "../../domain/wiki/index.js";
-import {AgentProfileContext, type AgentProfileContextSection} from "./agent-profile-context.js";
+import type {WikiBindingService} from "../../domain/wiki/service.js";
+import {AgentProfileContext, type AgentProfileContextSection, type AgentProfileStore} from "./agent-profile-context.js";
 import {BackgroundJobsContext} from "./background-jobs-context.js";
 import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
@@ -40,7 +40,7 @@ export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContext
 
 export interface BuildDefaultAgentLlmContextsOptions {
   context?: DefaultAgentSessionContext;
-  agentStore?: AgentStore;
+  agentStore?: AgentProfileStore;
   sessionStore?: Pick<SessionStore, "listAgentSessions">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
@@ -57,6 +57,7 @@ export {
   AgentProfileContext,
   type AgentProfileContextSection,
   type AgentProfileContextOptions,
+  type AgentProfileStore,
 } from "./agent-profile-context.js";
 export {DateTimeContext, type DateTimeContextOptions} from "./datetime-context.js";
 export {EnvironmentContext, type EnvironmentContextOptions} from "./environment-context.js";

@@ -1,6 +1,6 @@
 import {spawn} from "node:child_process";
 
-import type {JsonObject} from "../../kernel/agent/types.js";
+import type {JsonObject} from "../../lib/json.js";
 import {appendOutput, type OutputCaptureState, tailString} from "./bash-output.js";
 
 export interface BashProcessResult {

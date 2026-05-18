@@ -1,4 +1,4 @@
-import {buildRuntimeRelationNames} from "../../threads/runtime/postgres-shared.js";
+import {buildRuntimeRelationNames} from "../../../lib/postgres-relations.js";
 
 export interface ChannelActionTableNames {
   prefix: string;

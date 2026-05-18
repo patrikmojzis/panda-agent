@@ -3,18 +3,20 @@ import path from "node:path";
 import {type Api, InputFile} from "grammy";
 
 import type {
-    ChannelOutboundAdapter,
     OutboundRequest,
     OutboundResult,
     OutboundSentItem
-} from "../../../domain/channels/index.js";
+} from "../../../domain/channels/types.js";
+import type {ChannelOutboundAdapter} from "../../../domain/channels/outbound.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 import {type ParsedTelegramConversationId, parseTelegramConversationId} from "./conversation-id.js";
 import {markdownToTelegramHtml} from "./format.js";
 import {assertTelegramConnectorKey} from "./transport.js";
 
+export type TelegramOutboundApi = Pick<Api, "sendMessage" | "sendPhoto" | "sendDocument">;
+
 export interface TelegramOutboundAdapterOptions {
-  api: Api;
+  api: TelegramOutboundApi;
   connectorKey: string;
 }
 

@@ -1,40 +1,39 @@
-import type {Pool} from "pg";
-
-import {
-  CREATE_RUNTIME_SCHEMA_SQL,
-  quoteIdentifier,
-  toMillis,
-} from "../threads/runtime/postgres-shared.js";
-import {buildAgentTableNames} from "../agents/postgres-shared.js";
+import type {PgQueryable} from "../../lib/postgres-query.js";
+import {requireBoolean} from "../../lib/booleans.js";
+import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
+import {requireTrimmedString} from "../../lib/strings.js";
+import {ensurePostgresTelepathyDeviceSchema} from "./postgres-schema.js";
 import {buildTelepathyTableNames, type TelepathyTableNames} from "./postgres-shared.js";
-import type {TelepathyDeviceStore} from "./store.js";
 import type {RegisterTelepathyDeviceInput, TelepathyDeviceRecord} from "./types.js";
 import {normalizeTelepathyDeviceId, normalizeTelepathyLabel} from "./types.js";
 
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-export interface PostgresTelepathyDeviceStoreOptions {
+interface PostgresTelepathyDeviceStoreOptions {
   pool: PgQueryable;
 }
 
+function requireTrimmed(value: unknown, field: string): string {
+  return requireTrimmedString(
+    value,
+    `Telepathy device ${field} must be a string.`,
+    `Telepathy device ${field} must not be empty.`,
+  );
+}
+
 function parseDeviceRow(row: Record<string, unknown>): TelepathyDeviceRecord {
+  const disabledAt = optionalTimestampMillis(row.disabled_at, "Telepathy device disabled_at must be a finite timestamp.");
   return {
-    agentKey: String(row.agent_key),
-    deviceId: String(row.device_id),
-    label: row.label === null || row.label === undefined ? undefined : String(row.label),
-    tokenHash: String(row.token_hash),
-    enabled: row.disabled_at === null,
-    connected: Boolean(row.connected),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
-    connectedAt: row.connected_at === null || row.connected_at === undefined ? undefined : toMillis(row.connected_at),
-    lastSeenAt: row.last_seen_at === null || row.last_seen_at === undefined ? undefined : toMillis(row.last_seen_at),
-    lastDisconnectedAt: row.last_disconnected_at === null || row.last_disconnected_at === undefined
-      ? undefined
-      : toMillis(row.last_disconnected_at),
-    disabledAt: row.disabled_at === null || row.disabled_at === undefined ? undefined : toMillis(row.disabled_at),
+    agentKey: requireTrimmed(row.agent_key, "agent key"),
+    deviceId: normalizeTelepathyDeviceId(requireTrimmed(row.device_id, "device id")),
+    label: normalizeTelepathyLabel(row.label === null || row.label === undefined ? undefined : requireTrimmed(row.label, "label")),
+    tokenHash: requireTrimmed(row.token_hash, "token hash"),
+    enabled: disabledAt === undefined,
+    connected: requireBoolean(row.connected, "Telepathy device connected state must be a boolean."),
+    createdAt: requireTimestampMillis(row.created_at, "Telepathy device created_at must be a finite timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Telepathy device updated_at must be a finite timestamp."),
+    connectedAt: optionalTimestampMillis(row.connected_at, "Telepathy device connected_at must be a finite timestamp."),
+    lastSeenAt: optionalTimestampMillis(row.last_seen_at, "Telepathy device last_seen_at must be a finite timestamp."),
+    lastDisconnectedAt: optionalTimestampMillis(row.last_disconnected_at, "Telepathy device last_disconnected_at must be a finite timestamp."),
+    disabledAt,
   };
 }
 
@@ -42,10 +41,9 @@ function missingDeviceError(agentKey: string, deviceId: string): Error {
   return new Error(`Unknown telepathy device ${deviceId} for agent ${agentKey}. Register it first.`);
 }
 
-export class PostgresTelepathyDeviceStore implements TelepathyDeviceStore {
+export class PostgresTelepathyDeviceStore {
   private readonly pool: PgQueryable;
   private readonly tables: TelepathyTableNames;
-  private readonly agentTables = buildAgentTableNames();
 
   constructor(options: PostgresTelepathyDeviceStoreOptions) {
     this.pool = options.pool;
@@ -53,31 +51,7 @@ export class PostgresTelepathyDeviceStore implements TelepathyDeviceStore {
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.devices} (
-        agent_key TEXT NOT NULL REFERENCES ${this.agentTables.agents}(agent_key) ON DELETE CASCADE,
-        device_id TEXT NOT NULL,
-        label TEXT,
-        token_hash TEXT NOT NULL,
-        connected BOOLEAN NOT NULL DEFAULT FALSE,
-        connected_at TIMESTAMPTZ,
-        last_seen_at TIMESTAMPTZ,
-        last_disconnected_at TIMESTAMPTZ,
-        disabled_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (agent_key, device_id)
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_telepathy_devices_agent_idx`)}
-      ON ${this.tables.devices} (agent_key, updated_at DESC)
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_telepathy_devices_connected_idx`)}
-      ON ${this.tables.devices} (connected, agent_key)
-    `);
+    await ensurePostgresTelepathyDeviceSchema(this.pool);
   }
 
   async clearConnectedStates(): Promise<void> {
@@ -92,16 +66,10 @@ export class PostgresTelepathyDeviceStore implements TelepathyDeviceStore {
   }
 
   async registerDevice(input: RegisterTelepathyDeviceInput): Promise<TelepathyDeviceRecord> {
-    const agentKey = input.agentKey.trim();
+    const agentKey = requireTrimmed(input.agentKey, "agent key");
     const deviceId = normalizeTelepathyDeviceId(input.deviceId);
     const label = normalizeTelepathyLabel(input.label);
-    const tokenHash = input.tokenHash.trim();
-    if (!agentKey) {
-      throw new Error("Agent key must not be empty.");
-    }
-    if (!tokenHash) {
-      throw new Error("Telepathy token hash must not be empty.");
-    }
+    const tokenHash = requireTrimmed(input.tokenHash, "token hash");
 
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.devices} (
@@ -144,7 +112,7 @@ export class PostgresTelepathyDeviceStore implements TelepathyDeviceStore {
         AND device_id = $2
       LIMIT 1
     `, [
-      agentKey.trim(),
+      requireTrimmed(agentKey, "agent key"),
       normalizeTelepathyDeviceId(deviceId),
     ]);
 
@@ -162,7 +130,7 @@ export class PostgresTelepathyDeviceStore implements TelepathyDeviceStore {
       FROM ${this.tables.devices}
       WHERE agent_key = $1
       ORDER BY device_id ASC
-    `, [agentKey.trim()]);
+    `, [requireTrimmed(agentKey, "agent key")]);
 
     return result.rows.map((row) => parseDeviceRow(row as Record<string, unknown>));
   }
@@ -179,7 +147,7 @@ export class PostgresTelepathyDeviceStore implements TelepathyDeviceStore {
         AND device_id = $2
       RETURNING *
     `, [
-      agentKey.trim(),
+      requireTrimmed(agentKey, "agent key"),
       normalizeTelepathyDeviceId(deviceId),
       enabled,
     ]);
@@ -206,7 +174,7 @@ export class PostgresTelepathyDeviceStore implements TelepathyDeviceStore {
         AND device_id = $2
       RETURNING *
     `, [
-      agentKey.trim(),
+      requireTrimmed(agentKey, "agent key"),
       normalizeTelepathyDeviceId(deviceId),
       normalizeTelepathyLabel(label) ?? null,
     ]);
@@ -228,7 +196,7 @@ export class PostgresTelepathyDeviceStore implements TelepathyDeviceStore {
       WHERE agent_key = $1
         AND device_id = $2
     `, [
-      agentKey.trim(),
+      requireTrimmed(agentKey, "agent key"),
       normalizeTelepathyDeviceId(deviceId),
     ]);
   }
@@ -243,7 +211,7 @@ export class PostgresTelepathyDeviceStore implements TelepathyDeviceStore {
       WHERE agent_key = $1
         AND device_id = $2
     `, [
-      agentKey.trim(),
+      requireTrimmed(agentKey, "agent key"),
       normalizeTelepathyDeviceId(deviceId),
     ]);
   }

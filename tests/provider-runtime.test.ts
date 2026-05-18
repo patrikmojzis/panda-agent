@@ -1,4 +1,5 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
+import {createAssistantMessageEventStream} from "@mariozechner/pi-ai";
 import {PiAiRuntime} from "../src/integrations/providers/shared/runtime.js";
 
 const mocks = vi.hoisted(() => ({
@@ -38,7 +39,7 @@ describe("PiAiRuntime", () => {
     await runtime.complete({
       providerName: "anthropic",
       modelId: "claude-opus-4-7",
-      context: [] as never,
+      context: {messages: []},
     });
 
     const options = mocks.completeSimple.mock.calls[0]?.[2];
@@ -65,7 +66,7 @@ describe("PiAiRuntime", () => {
     await runtime.complete({
       providerName: "anthropic",
       modelId: "claude-opus-4-7",
-      context: [] as never,
+      context: {messages: []},
       signal: controller.signal,
     });
 
@@ -93,19 +94,19 @@ describe("PiAiRuntime", () => {
     await expect(runtime.complete({
       providerName: "anthropic-oauth",
       modelId: "claude-opus-4-7",
-      context: [] as never,
+      context: {messages: []},
     })).rejects.toBe(failure);
   });
 
   it("does not apply the hard timeout to streaming requests", () => {
-    mocks.streamSimple.mockReturnValue({} as never);
+    mocks.streamSimple.mockReturnValue(createAssistantMessageEventStream());
 
     const controller = new AbortController();
     const runtime = new PiAiRuntime();
     runtime.stream({
       providerName: "anthropic",
       modelId: "claude-opus-4-7",
-      context: [] as never,
+      context: {messages: []},
       signal: controller.signal,
     });
 

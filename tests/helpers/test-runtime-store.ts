@@ -18,7 +18,6 @@ import type {
 import {
     type CreateThreadInput,
     type CreateThreadToolJobInput,
-    matchesThreadInputIdentity,
     missingThreadError,
     type ThreadInputDeliveryMode,
     type ThreadInputPayload,
@@ -32,6 +31,19 @@ import {
     type ThreadToolJobUpdate,
     type ThreadUpdate,
 } from "../../src/domain/threads/runtime/types.js";
+
+function matchesThreadInputIdentity(
+  left: Pick<ThreadInputPayload, "source" | "channelId" | "externalMessageId">,
+  right: Pick<ThreadInputPayload, "source" | "channelId" | "externalMessageId">,
+): boolean {
+  if (!left.externalMessageId || !right.externalMessageId) {
+    return false;
+  }
+
+  return left.source === right.source
+    && left.externalMessageId === right.externalMessageId
+    && (left.channelId ?? null) === (right.channelId ?? null);
+}
 
 function cloneRecord<T extends object>(record: T): T {
   return {

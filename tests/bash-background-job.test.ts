@@ -1,4 +1,4 @@
-import {mkdtemp, realpath, rm} from "node:fs/promises";
+import {mkdtemp, readFile, realpath, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
@@ -53,6 +53,9 @@ describe("ManagedBashJob", () => {
     expect(final.status).toBe("completed");
     expect(final.finalCwd).toBe(await realpath(workspace));
     expect(final.stdoutPersisted).toBe(true);
-    expect(final.stdoutPath).toBeDefined();
+    if (!final.stdoutPath) {
+      throw new Error("Expected stdout to be persisted.");
+    }
+    await expect(readFile(final.stdoutPath, "utf8")).resolves.toBe("0123456789ABCDEF");
   });
 });

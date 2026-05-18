@@ -1,4 +1,4 @@
-import type {JsonObject} from "../../kernel/agent/types.js";
+import type {JsonObject} from "../../lib/json.js";
 import type {WatchEventKind} from "../../domain/watches/types.js";
 
 export function renderWatchEventPrompt(options: {

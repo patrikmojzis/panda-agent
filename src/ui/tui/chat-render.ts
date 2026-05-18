@@ -1,16 +1,17 @@
-import type {ThinkingLevel} from "../../kernel/agent/index.js";
+import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import {clamp} from "../../lib/numbers.js";
+import {collapseWhitespace} from "../../lib/strings.js";
 import type {ComposerState} from "./composer.js";
 import type {SlashCompletionContext} from "./commands.js";
 import {
     buildChatViewModel,
     buildWelcomeTranscriptLines,
-    normalizeInlineText,
     type NoticeState,
     SESSION_PICKER_VISIBLE_COUNT,
     type TranscriptLine,
     type ViewModel,
 } from "./chat-view.js";
-import {clamp, formatDuration, truncatePlainText,} from "./screen.js";
+import {formatDuration, truncatePlainText,} from "./screen.js";
 import {
     formatThinkingLevel,
     MAX_VISIBLE_PENDING_LOCAL_INPUTS,
@@ -142,7 +143,7 @@ function buildPendingLocalInputLines(input: {
 
   for (const entry of visible) {
     const age = formatDuration(Date.now() - entry.createdAt);
-    const summary = normalizeInlineText(entry.text) || "(empty)";
+    const summary = collapseWhitespace(entry.text) || "(empty)";
     lines.push(theme.dim(truncatePlainText(`+ ${summary} · ${age}`, input.width)));
   }
 

@@ -1,5 +1,6 @@
-import {resolveChannelRouteTarget, type ResolvedChannelRouteTarget} from "../../../domain/channels/route-target.js";
-import type {ChannelTypingDispatcher, ChannelTypingTarget} from "../../../domain/channels/index.js";
+import {resolveChannelRouteTarget, type ResolvedChannelRouteTarget} from "../../channels/route-target.js";
+import type {ChannelTypingTarget} from "../../channels/types.js";
+import type {ChannelTypingDispatcher} from "../../channels/typing.js";
 import type {ThreadRuntimeEvent} from "./coordinator.js";
 import type {ThreadMessageRecord} from "./types.js";
 
@@ -74,19 +75,13 @@ class ChannelTypingEventHandler {
       return;
     }
 
+    // Typing is intentionally one-shot for now. A keepalive tied to run lifetime
+    // outlives some outbound deliveries and creates misleading channel UX; the
+    // next policy should be delivery-bound instead.
     const session: ChannelTypingSession = {
       runId,
       channel: resolved.channel,
       target: resolved.target,
-      // Temporary one-shot typing policy: refreshing typing until run_finished creates
-      // a broken UX because outbound delivery can happen before the agent finishes
-      // its internal post-tool reasoning. Leave the old keepalive loop disabled until
-      // we replace it with a proper delivery-bound typing policy.
-      //
-      // timer: setInterval(() => {
-      //   void this.keepAlive(threadId, runId);
-      // }, CHANNEL_TYPING_KEEPALIVE_MS),
-      // tickInFlight: false,
     };
 
     this.sessions.set(threadId, session);

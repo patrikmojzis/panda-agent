@@ -1,4 +1,4 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
@@ -84,7 +84,7 @@ describe("PostgresWatchStore", () => {
       enabled: true,
       title: "BTC 10% move",
     });
-    expect(created.nextPollAt).toBeDefined();
+    expect(created.nextPollAt).toEqual(expect.any(Number));
 
     const updated = await watches.updateWatch({
       watchId: created.id,
@@ -108,7 +108,7 @@ describe("PostgresWatchStore", () => {
     });
 
     expect(disabled.enabled).toBe(false);
-    expect(disabled.disabledAt).toBeDefined();
+    expect(disabled.disabledAt).toEqual(expect.any(Number));
     expect(disabled.nextPollAt).toBeUndefined();
     expect(disabled.lastError).toBe("finished");
   });
@@ -173,7 +173,7 @@ describe("PostgresWatchStore", () => {
       resolvedThreadId: "session-thread",
     });
     expect(running.status).toBe("running");
-    expect(running.startedAt).toBeDefined();
+    expect(running.startedAt).toEqual(expect.any(Number));
 
     const firstEvent = await watches.recordEvent({
       watchId: created.id,
@@ -201,8 +201,63 @@ describe("PostgresWatchStore", () => {
     });
 
     expect(firstEvent.created).toBe(true);
+    expect(firstEvent.event.payload).toEqual({
+      totalNewItems: 2,
+    });
     expect(duplicateEvent.created).toBe(false);
     expect(duplicateEvent.event.id).toBe(firstEvent.event.id);
+
+    await pool.query(
+      `
+        INSERT INTO "runtime"."watch_events" (
+          id,
+          watch_id,
+          session_id,
+          created_by_identity_id,
+          resolved_thread_id,
+          resolved_thread_session_id,
+          event_kind,
+          summary,
+          dedupe_key,
+          payload
+        ) VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10::jsonb
+        )
+      `,
+      [
+        "00000000-0000-4000-8000-000000000001",
+        created.id,
+        "session-main",
+        alice.id,
+        "session-thread",
+        "session-main",
+        "new_items",
+        "Malformed payload",
+        "bad-payload",
+        JSON.stringify([]),
+      ],
+    );
+    await expect(watches.recordEvent({
+      watchId: created.id,
+      sessionId: "session-main",
+      createdByIdentityId: alice.id,
+      resolvedThreadId: "session-thread",
+      eventKind: "new_items",
+      summary: "Malformed payload",
+      dedupeKey: "bad-payload",
+      payload: {
+        ignored: true,
+      },
+    })).rejects.toThrow("Watch event payload must be a JSON object.");
 
     const completed = await watches.completeWatchRun({
       runId: claim!.run.id,
@@ -232,12 +287,259 @@ describe("PostgresWatchStore", () => {
     expect(reloaded.claimedAt).toBeUndefined();
 
     const eventRows = await pool.query(
-      `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."watch_events" WHERE watch_id = $1`,
-      [created.id],
+      `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."watch_events" WHERE watch_id = $1 AND dedupe_key = $2`,
+      [created.id, "same-event"],
     );
     expect(eventRows.rows[0]).toMatchObject({
       count: 1,
     });
+  });
+
+  it("rejects corrupted persisted watch states before returning records", async () => {
+    const now = new Date("2026-05-01T12:00:00.000Z");
+    const query = vi.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "00000000-0000-0000-0000-000000000001",
+          session_id: "session-main",
+          created_by_identity_id: null,
+          title: "Bad watch",
+          interval_minutes: 5,
+          source_config: {
+            kind: "unsupported",
+          },
+          detector_config: {
+            kind: "new_items",
+          },
+          enabled: true,
+          next_poll_at: now,
+          claimed_at: null,
+          claimed_by: null,
+          claim_expires_at: null,
+          cooldown_until: null,
+          last_error: null,
+          state: null,
+          disabled_at: null,
+          created_at: now,
+          updated_at: now,
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "00000000-0000-0000-0000-000000000002",
+          watch_id: "00000000-0000-0000-0000-000000000001",
+          session_id: "session-main",
+          created_by_identity_id: null,
+          scheduled_for: now,
+          status: "stuck",
+          resolved_thread_id: null,
+          emitted_event_id: null,
+          error: null,
+          created_at: now,
+          started_at: null,
+          finished_at: null,
+        }],
+      });
+    const watches = new PostgresWatchStore({
+      pool: {
+        query,
+        connect: async () => {
+          throw new Error("connect should not be used by row reads");
+        },
+      },
+    });
+
+    await expect(watches.getWatch("00000000-0000-0000-0000-000000000001")).rejects.toThrow(
+      "Unsupported watch source kind unsupported.",
+    );
+    await expect(watches.startWatchRun({
+      runId: "00000000-0000-0000-0000-000000000002",
+    })).rejects.toThrow("Unsupported watch run status stuck.");
+  });
+
+  it("rejects malformed persisted watch intervals before returning records", async () => {
+    const now = new Date("2026-05-01T12:00:00.000Z");
+    const query = vi.fn().mockResolvedValueOnce({
+      rows: [{
+        id: "00000000-0000-0000-0000-000000000001",
+        session_id: "session-main",
+        created_by_identity_id: null,
+        title: "Bad interval",
+        interval_minutes: "5",
+        source_config: {
+          kind: "http_json",
+          url: "https://example.com/btc",
+          result: {
+            observation: "scalar",
+            valuePath: "price",
+            label: "BTC",
+          },
+        },
+        detector_config: {
+          kind: "new_items",
+        },
+        enabled: true,
+        next_poll_at: now,
+        claimed_at: null,
+        claimed_by: null,
+        claim_expires_at: null,
+        cooldown_until: null,
+        last_error: null,
+        state: null,
+        disabled_at: null,
+        created_at: now,
+        updated_at: now,
+      }],
+    });
+    const watches = new PostgresWatchStore({
+      pool: {
+        query,
+        connect: async () => {
+          throw new Error("connect should not be used by row reads");
+        },
+      },
+    });
+
+    await expect(watches.getWatch("00000000-0000-0000-0000-000000000001")).rejects.toThrow(
+      "Watch intervalMinutes must be a positive integer.",
+    );
+  });
+
+  it("rejects incomplete persisted watch source configs before returning records", async () => {
+    const now = new Date("2026-05-01T12:00:00.000Z");
+    const query = vi.fn().mockResolvedValueOnce({
+      rows: [{
+        id: "00000000-0000-0000-0000-000000000001",
+        session_id: "session-main",
+        created_by_identity_id: null,
+        title: "Bad source",
+        interval_minutes: 5,
+        source_config: {
+          kind: "http_json",
+          result: {
+            observation: "scalar",
+            valuePath: "price",
+          },
+        },
+        detector_config: {
+          kind: "new_items",
+        },
+        enabled: true,
+        next_poll_at: now,
+        claimed_at: null,
+        claimed_by: null,
+        claim_expires_at: null,
+        cooldown_until: null,
+        last_error: null,
+        state: null,
+        disabled_at: null,
+        created_at: now,
+        updated_at: now,
+      }],
+    });
+    const watches = new PostgresWatchStore({
+      pool: {
+        query,
+        connect: async () => {
+          throw new Error("connect should not be used by row reads");
+        },
+      },
+    });
+
+    await expect(watches.getWatch("00000000-0000-0000-0000-000000000001")).rejects.toThrow(
+      "Watch HTTP JSON url must not be empty.",
+    );
+  });
+
+  it("rejects incomplete persisted watch detector configs before returning records", async () => {
+    const now = new Date("2026-05-01T12:00:00.000Z");
+    const query = vi.fn().mockResolvedValueOnce({
+      rows: [{
+        id: "00000000-0000-0000-0000-000000000001",
+        session_id: "session-main",
+        created_by_identity_id: null,
+        title: "Bad detector",
+        interval_minutes: 5,
+        source_config: createHttpJsonSource(),
+        detector_config: {
+          kind: "percent_change",
+        },
+        enabled: true,
+        next_poll_at: now,
+        claimed_at: null,
+        claimed_by: null,
+        claim_expires_at: null,
+        cooldown_until: null,
+        last_error: null,
+        state: null,
+        disabled_at: null,
+        created_at: now,
+        updated_at: now,
+      }],
+    });
+    const watches = new PostgresWatchStore({
+      pool: {
+        query,
+        connect: async () => {
+          throw new Error("connect should not be used by row reads");
+        },
+      },
+    });
+
+    await expect(watches.getWatch("00000000-0000-0000-0000-000000000001")).rejects.toThrow(
+      "Watch percent change threshold must be a positive number.",
+    );
+  });
+
+  it("rejects incomplete persisted MongoDB aggregate watch configs before returning records", async () => {
+    const now = new Date("2026-05-01T12:00:00.000Z");
+    const query = vi.fn().mockResolvedValueOnce({
+      rows: [{
+        id: "00000000-0000-0000-0000-000000000001",
+        session_id: "session-main",
+        created_by_identity_id: null,
+        title: "Bad aggregate",
+        interval_minutes: 5,
+        source_config: {
+          kind: "mongodb_query",
+          credentialEnvKey: "MONGODB_URL",
+          database: "sales",
+          collection: "orders",
+          operation: "aggregate",
+          result: {
+            observation: "scalar",
+            valueField: "total",
+          },
+        },
+        detector_config: {
+          kind: "percent_change",
+          percent: 10,
+        },
+        enabled: true,
+        next_poll_at: now,
+        claimed_at: null,
+        claimed_by: null,
+        claim_expires_at: null,
+        cooldown_until: null,
+        last_error: null,
+        state: null,
+        disabled_at: null,
+        created_at: now,
+        updated_at: now,
+      }],
+    });
+    const watches = new PostgresWatchStore({
+      pool: {
+        query,
+        connect: async () => {
+          throw new Error("connect should not be used by row reads");
+        },
+      },
+    });
+
+    await expect(watches.getWatch("00000000-0000-0000-0000-000000000001")).rejects.toThrow(
+      "Watch MongoDB pipeline must be JSON-serializable.",
+    );
   });
 
   it("resets stored state when the source or detector changes", async () => {
@@ -312,7 +614,7 @@ describe("PostgresWatchStore", () => {
 
     expect(updated.state).toBeUndefined();
     expect(updated.lastError).toBeUndefined();
-    expect(updated.nextPollAt).toBeDefined();
+    expect(updated.nextPollAt).toEqual(expect.any(Number));
   });
 
   it("reschedules the next poll from now when intervalMinutes changes", async () => {
@@ -386,7 +688,6 @@ describe("PostgresWatchStore", () => {
     const afterUpdate = Date.now();
 
     expect(updated.intervalMinutes).toBe(1);
-    expect(updated.nextPollAt).toBeDefined();
     expect(updated.nextPollAt!).toBeGreaterThanOrEqual(beforeUpdate + 60_000 - 2_000);
     expect(updated.nextPollAt!).toBeLessThanOrEqual(afterUpdate + 60_000 + 2_000);
   });

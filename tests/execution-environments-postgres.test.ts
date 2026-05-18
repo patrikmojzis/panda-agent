@@ -1,4 +1,4 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
@@ -6,8 +6,8 @@ import type {
     DisposableEnvironmentCreateRequest,
     DisposableEnvironmentCreateResult,
     ExecutionEnvironmentManager,
-} from "../src/domain/execution-environments/index.js";
-import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/index.js";
+} from "../src/domain/execution-environments/types.js";
+import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {ExecutionEnvironmentResolver} from "../src/app/runtime/execution-environment-resolver.js";
@@ -44,6 +44,25 @@ describe("PostgresExecutionEnvironmentStore", () => {
       await pools.pop()?.end();
     }
   });
+
+  function persistedEnvironmentRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: "env-worker",
+      agent_key: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      runner_url: null,
+      runner_cwd: null,
+      root_path: null,
+      created_by_session_id: null,
+      created_for_session_id: null,
+      expires_at: null,
+      metadata: null,
+      created_at: new Date(1),
+      updated_at: new Date(1),
+      ...overrides,
+    };
+  }
 
   async function createHarness() {
     const db = newDb();
@@ -85,6 +104,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
 
     return {
       environmentStore,
+      pool,
       sessionStore,
     };
   }
@@ -107,14 +127,14 @@ describe("PostgresExecutionEnvironmentStore", () => {
       isDefault: true,
       credentialPolicy: {
         mode: "allowlist",
-        envKeys: ["NPM_TOKEN"],
+        envKeys: [" NPM_TOKEN ", ""],
       },
       skillPolicy: {
         mode: "allowlist",
-        skillKeys: ["calendar"],
+        skillKeys: [" calendar ", ""],
       },
       toolPolicy: {
-        allowedTools: ["bash", "message_agent"],
+        allowedTools: [" bash ", "message_agent", ""],
       },
     });
 
@@ -134,6 +154,77 @@ describe("PostgresExecutionEnvironmentStore", () => {
         allowedTools: ["bash", "message_agent"],
       },
     });
+  });
+
+  it("rejects invalid environment metadata before persistence", async () => {
+    const {environmentStore} = await createHarness();
+
+    await expect(environmentStore.createEnvironment({
+      id: "env-bad-metadata",
+      agentKey: "panda",
+      kind: "disposable_container",
+      metadata: Number.NaN,
+    })).rejects.toThrow("Execution environment metadata must be JSON-serializable.");
+  });
+
+  it("rejects unsupported persisted environment kinds", async () => {
+    const {environmentStore, pool} = await createHarness();
+
+    await pool.query(`
+      INSERT INTO "runtime"."execution_environments" (
+        id,
+        agent_key,
+        kind,
+        state
+      ) VALUES (
+        'env-bad-kind',
+        'panda',
+        'sidecar',
+        'ready'
+      )
+    `);
+
+    await expect(environmentStore.getEnvironment("env-bad-kind"))
+      .rejects.toThrow("Unsupported execution environment kind sidecar.");
+  });
+
+  it("rejects malformed persisted environment string fields", async () => {
+    const environmentStore = new PostgresExecutionEnvironmentStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [persistedEnvironmentRow({runner_url: 42})],
+        })),
+      },
+    });
+
+    await expect(environmentStore.getEnvironment("env-worker")).rejects.toThrow(
+      "environment runner url must be a string.",
+    );
+  });
+
+  it("rejects non-boolean persisted default binding flags", async () => {
+    const now = new Date();
+    const environmentStore = new PostgresExecutionEnvironmentStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [{
+            session_id: "session-worker",
+            environment_id: "env-worker",
+            alias: "self",
+            is_default: "yes",
+            credential_policy: {mode: "none"},
+            skill_policy: {mode: "none"},
+            tool_policy: {},
+            created_at: now,
+            updated_at: now,
+          }],
+        })),
+      },
+    });
+
+    await expect(environmentStore.listBindingsForEnvironments(["env-worker"])).rejects.toThrow(
+      "environment binding is_default must be a boolean.",
+    );
   });
 
   it("lists parent-owned disposable environments and their bindings", async () => {
@@ -371,6 +462,10 @@ describe("PostgresExecutionEnvironmentStore", () => {
         state: "ready",
         runnerUrl: "http://env-worker:8080",
         runnerCwd: "/workspace",
+        metadata: {
+          role: "research",
+          containerName: "env-worker",
+        },
       },
       binding: {
         sessionId: "session-worker",

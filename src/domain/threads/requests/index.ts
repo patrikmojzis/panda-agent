@@ -18,6 +18,7 @@ export type {
   RuntimeRequestRecord,
   RuntimeRequestStatus,
   ResetSessionRequestPayload,
+  ResetSessionResult,
   ResolveMainSessionThreadRequestPayload,
   TelegramMessageRequestPayload,
   TelegramReactionRequestPayload,

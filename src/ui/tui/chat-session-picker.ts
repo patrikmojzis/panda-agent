@@ -1,9 +1,9 @@
-import type {ThreadRecord} from "../../domain/threads/runtime/index.js";
+import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
+import {clamp} from "../../lib/numbers.js";
 import type {SessionPickerState} from "./chat-shared.js";
 import {resolveSessionPickerSelection} from "./chat-session.js";
 import type {NoticeState} from "./chat-view.js";
 import type {ChatRuntimeServices} from "./runtime.js";
-import {clamp} from "./screen.js";
 
 type NoticeTone = NoticeState["tone"];
 

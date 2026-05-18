@@ -1,16 +1,16 @@
-import type {JsonObject} from "../../../kernel/agent/types.js";
+import type {JsonObject} from "../../../lib/json.js";
 import type {
     A2AEnvironmentPathHints,
     A2AMessageItem,
     A2AMessageRequestPayload,
     A2ASenderEnvironmentSnapshot
-} from "../../../domain/threads/requests/index.js";
+} from "../../../domain/threads/requests/types.js";
 import {
     renderA2AAttachmentCaption,
     renderA2AInboundFallbackBody,
     renderA2AInboundText
 } from "../../../prompts/channels/a2a.js";
-import {A2A_SOURCE} from "./config.js";
+import {A2A_SOURCE} from "../../../domain/a2a/constants.js";
 import {describeMediaDescriptor, serializeMediaDescriptor} from "../media-shared.js";
 
 function serializeItem(item: A2AMessageItem): JsonObject {

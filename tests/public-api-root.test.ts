@@ -105,45 +105,8 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "z",
 ] as const;
 
-const FORBIDDEN_INTERNAL_EXPORTS = [
-  "ChannelCursorRepo",
-  "ChannelOutboundDeliveryWorker",
-  "ChannelTypingDispatcher",
-  "ConversationRepo",
-  "CredentialCrypto",
-  "CredentialResolver",
-  "CredentialService",
-  "FileSystemMediaStore",
-  "HeartbeatRunner",
-  "PostgresAgentStore",
-  "PostgresCredentialStore",
-  "PostgresHomeThreadStore",
-  "PostgresIdentityStore",
-  "PostgresOutboundDeliveryStore",
-  "PostgresScheduledTaskStore",
-  "PostgresThreadRuntimeStore",
-  "DefaultAgentSubagentService",
-  "ScheduledTaskRunner",
-  "ThreadRuntimeCoordinator",
-  "buildTelegramInboundText",
-  "buildWhatsAppInboundText",
-  "createTelegramTypingAdapter",
-  "createWhatsAppOutboundAdapter",
-  "ensureReadonlySessionQuerySchema",
-  "extractReadableContentFromHtml",
-  "fetchReadableWebPage",
-  "readDatabaseUsername",
-  "summarizeMessageText",
-] as const;
-
 describe("package root public API", () => {
   it("matches the intentional runtime export surface", () => {
     expect(Object.keys(panda).sort()).toEqual([...EXPECTED_RUNTIME_EXPORTS].sort());
-  });
-
-  it("does not leak internal domain or integration exports", () => {
-    for (const exportName of FORBIDDEN_INTERNAL_EXPORTS) {
-      expect(panda).not.toHaveProperty(exportName);
-    }
   });
 });

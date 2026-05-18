@@ -1,43 +1,27 @@
-import type {JsonValue} from "../../../kernel/agent/types.js";
-import type {MediaDescriptor} from "../../../domain/channels/types.js";
-import type {ExecutionEnvironmentKind, ExecutionToolPolicy} from "../../../domain/execution-environments/index.js";
+import type {JsonValue} from "../../../lib/json.js";
+import type {MediaDescriptor} from "../../channels/types.js";
+import type {ExecutionEnvironmentKind, ExecutionToolPolicy} from "../../execution-environments/types.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import type {InferenceProjection, ThreadUpdate} from "../runtime/types.js";
 
-export type RuntimeRequestKind =
-  | "a2a_message"
-  | "telegram_message"
-  | "telegram_reaction"
-  | "whatsapp_message"
-  | "whatsapp_reaction"
-  | "tui_input"
-  | "create_branch_session"
-  | "create_worker_session"
-  | "resolve_main_session_thread"
-  | "resolve_thread_run_config"
-  | "reset_session"
-  | "abort_thread"
-  | "compact_thread"
-  | "update_thread";
-
 export type RuntimeRequestStatus = "pending" | "running" | "completed" | "failed";
 
-export interface BaseRuntimeRequestPayload {
+interface BaseRuntimeRequestPayload {
   identityId?: string;
 }
 
-export interface A2AMessageTextItem {
+interface A2AMessageTextItem {
   type: "text";
   text: string;
 }
 
-export interface A2AMessageImageItem {
+interface A2AMessageImageItem {
   type: "image";
   media: MediaDescriptor;
   caption?: string;
 }
 
-export interface A2AMessageFileItem {
+interface A2AMessageFileItem {
   type: "file";
   media: MediaDescriptor;
   filename?: string;
@@ -184,18 +168,26 @@ export interface ResolveThreadRunConfigRequestPayload extends BaseRuntimeRequest
 }
 
 export interface ResetSessionRequestPayload extends BaseRuntimeRequestPayload {
-  source: "telegram" | "tui" | "operator";
+  source: string;
   sessionId?: string;
   threadId?: string;
   connectorKey?: string;
   externalConversationId?: string;
   externalActorId?: string;
+  externalMessageId?: string;
+  /** Legacy persisted name for channel reset command messages. New callers use externalMessageId. */
   commandExternalMessageId?: string;
   agentKey?: string;
   model?: string;
   thinking?: ThinkingLevel;
   inferenceProjection?: InferenceProjection;
 }
+
+export type ResetSessionResult = Record<string, unknown> & {
+  threadId: string;
+  previousThreadId: string;
+  sessionId: string;
+};
 
 export interface AbortThreadRequestPayload extends BaseRuntimeRequestPayload {
   threadId: string;
@@ -212,36 +204,46 @@ export interface UpdateThreadRequestPayload extends BaseRuntimeRequestPayload {
   update: ThreadUpdate;
 }
 
-export type RuntimeRequestPayload =
-  | A2AMessageRequestPayload
-  | TelegramMessageRequestPayload
-  | TelegramReactionRequestPayload
-  | WhatsAppMessageRequestPayload
-  | WhatsAppReactionRequestPayload
-  | TuiInputRequestPayload
-  | CreateBranchSessionRequestPayload
-  | CreateWorkerSessionRequestPayload
-  | ResolveMainSessionThreadRequestPayload
-  | ResolveThreadRunConfigRequestPayload
-  | ResetSessionRequestPayload
-  | AbortThreadRequestPayload
-  | CompactThreadRequestPayload
-  | UpdateThreadRequestPayload;
-
-export interface CreateRuntimeRequestInput<TPayload extends RuntimeRequestPayload = RuntimeRequestPayload> {
-  kind: RuntimeRequestKind;
-  payload: TPayload;
+export interface RuntimeRequestPayloadByKind {
+  a2a_message: A2AMessageRequestPayload;
+  telegram_message: TelegramMessageRequestPayload;
+  telegram_reaction: TelegramReactionRequestPayload;
+  whatsapp_message: WhatsAppMessageRequestPayload;
+  whatsapp_reaction: WhatsAppReactionRequestPayload;
+  tui_input: TuiInputRequestPayload;
+  create_branch_session: CreateBranchSessionRequestPayload;
+  create_worker_session: CreateWorkerSessionRequestPayload;
+  resolve_main_session_thread: ResolveMainSessionThreadRequestPayload;
+  resolve_thread_run_config: ResolveThreadRunConfigRequestPayload;
+  reset_session: ResetSessionRequestPayload;
+  abort_thread: AbortThreadRequestPayload;
+  compact_thread: CompactThreadRequestPayload;
+  update_thread: UpdateThreadRequestPayload;
 }
 
-export interface RuntimeRequestRecord<TPayload extends RuntimeRequestPayload = RuntimeRequestPayload> {
+export type RuntimeRequestKind = keyof RuntimeRequestPayloadByKind;
+export type RuntimeRequestPayload = RuntimeRequestPayloadByKind[RuntimeRequestKind];
+
+export type CreateRuntimeRequestInput<K extends RuntimeRequestKind = RuntimeRequestKind> = {
+  [Kind in K]: {
+    kind: Kind;
+    payload: RuntimeRequestPayloadByKind[Kind];
+  };
+}[K];
+
+type RuntimeRequestRecordForKind<K extends RuntimeRequestKind> = {
   id: string;
-  kind: RuntimeRequestKind;
+  kind: K;
   status: RuntimeRequestStatus;
-  payload: TPayload;
+  payload: RuntimeRequestPayloadByKind[K];
   result?: JsonValue;
   error?: string;
   claimedAt?: number;
   createdAt: number;
   updatedAt: number;
   finishedAt?: number;
-}
+};
+
+export type RuntimeRequestRecord<K extends RuntimeRequestKind = RuntimeRequestKind> = {
+  [Kind in K]: RuntimeRequestRecordForKind<Kind>;
+}[K];

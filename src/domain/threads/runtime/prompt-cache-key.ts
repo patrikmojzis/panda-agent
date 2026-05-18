@@ -2,7 +2,7 @@
  * Returns the stable cache-affinity key for one append-only thread transcript.
  * Resets create a new thread, which intentionally starts a fresh cache lane.
  */
-export function buildThreadPromptCacheKey(threadId: string): string {
+function buildThreadPromptCacheKey(threadId: string): string {
   return `thread:${threadId}`;
 }
 

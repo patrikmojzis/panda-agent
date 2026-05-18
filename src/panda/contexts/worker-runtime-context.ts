@@ -1,11 +1,11 @@
 import {LlmContext} from "../../kernel/agent/llm-context.js";
-import type {JsonValue} from "../../kernel/agent/types.js";
+import type {JsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import {
     readExecutionEnvironmentFilesystemMetadata,
-    type ResolvedExecutionEnvironment,
-} from "../../domain/execution-environments/index.js";
+} from "../../domain/execution-environments/filesystem.js";
+import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 import {renderWorkerRuntimeContext, type WorkerRuntimeContextInput,} from "../../prompts/contexts/worker-runtime.js";
 
 export interface WorkerRuntimeContextOptions {

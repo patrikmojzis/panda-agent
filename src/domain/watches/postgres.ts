@@ -1,21 +1,14 @@
+import {optionalTimestampMillis, requireTimestampMillis, toJson} from "../../lib/postgres-values.js";
 import {randomUUID} from "node:crypto";
 
-import type {PoolClient} from "pg";
-
-import type {JsonObject} from "../../kernel/agent/types.js";
+import {requireBoolean} from "../../lib/booleans.js";
+import {hasActiveClaim} from "../../lib/claims.js";
+import {isJsonObject, type JsonObject} from "../../lib/json.js";
 import {toDateOrNull} from "../../lib/dates.js";
-import {requireNonEmptyString} from "../../lib/strings.js";
-import {buildIdentityTableNames} from "../identity/postgres-shared.js";
-import {buildSessionTableNames} from "../sessions/postgres-shared.js";
-import type {PgPoolLike} from "../threads/runtime/postgres-db.js";
-import {
-    buildThreadRuntimeTableNames,
-    CREATE_RUNTIME_SCHEMA_SQL,
-    quoteIdentifier,
-    toJson,
-    toMillis
-} from "../threads/runtime/postgres-shared.js";
-import {addConstraint, assertIntegrityChecks} from "../../lib/postgres-integrity.js";
+import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
+import type {PgClientLike, PgPoolLike} from "../../lib/postgres-query.js";
+import {parseWatchDetectorConfig, parseWatchSourceConfig} from "./config.js";
+import {ensurePostgresWatchSchema} from "./postgres-schema.js";
 import {buildWatchTableNames, type WatchTableNames} from "./postgres-shared.js";
 import type {RecordWatchEventResult, WatchStore} from "./store.js";
 import type {
@@ -47,75 +40,116 @@ function missingWatchRunError(runId: string): Error {
   return new Error(`Unknown watch run ${runId}`);
 }
 
-function requireTrimmed(field: string, value: string): string {
+function requireWatchString(field: string, value: unknown): string {
   return requireNonEmptyString(value, `Watch ${field} must not be empty.`);
 }
 
+function optionalWatchString(field: string, value: unknown): string | undefined {
+  return optionalNonEmptyString(value, `Watch ${field} must not be empty.`);
+}
+
 function normalizeIntervalMinutes(value: number): number {
-  const normalized = Math.floor(value);
-  if (!Number.isFinite(normalized) || normalized <= 0) {
+  if (!Number.isInteger(value) || value <= 0) {
     throw new Error("Watch intervalMinutes must be a positive integer.");
   }
 
-  return normalized;
+  return value;
 }
 
-function toDate(value: number | undefined): Date | null {
-  return toDateOrNull(value);
+function parseIntervalMinutes(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new Error("Watch intervalMinutes must be a positive integer.");
+  }
+
+  return value;
+}
+
+function readOptionalJsonObject(value: unknown, field: string): JsonObject | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (!isJsonObject(value)) {
+    throw new Error(`Watch ${field} must be a JSON object.`);
+  }
+
+  return value;
+}
+
+function parseWatchRunStatus(value: unknown): WatchRunRecord["status"] {
+  if (
+    value === "claimed"
+    || value === "running"
+    || value === "no_change"
+    || value === "changed"
+    || value === "failed"
+    || value === "disabled"
+  ) {
+    return value;
+  }
+
+  throw new Error(`Unsupported watch run status ${String(value)}.`);
+}
+
+function parseWatchEventKind(value: unknown): WatchEventRecord["eventKind"] {
+  if (value === "new_items" || value === "snapshot_changed" || value === "percent_change") {
+    return value;
+  }
+
+  throw new Error(`Unsupported watch event kind ${String(value)}.`);
 }
 
 function parseWatchRow(row: Record<string, unknown>): WatchRecord {
   return {
-    id: String(row.id),
-    sessionId: String(row.session_id),
-    createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
-    title: String(row.title),
-    intervalMinutes: Number(row.interval_minutes),
-    source: row.source_config as WatchRecord["source"],
-    detector: row.detector_config as WatchRecord["detector"],
-    enabled: Boolean(row.enabled),
-    nextPollAt: row.next_poll_at === null ? undefined : toMillis(row.next_poll_at),
-    claimedAt: row.claimed_at === null ? undefined : toMillis(row.claimed_at),
-    claimedBy: row.claimed_by === null ? undefined : String(row.claimed_by),
-    claimExpiresAt: row.claim_expires_at === null ? undefined : toMillis(row.claim_expires_at),
-    cooldownUntil: row.cooldown_until === null ? undefined : toMillis(row.cooldown_until),
-    lastError: row.last_error === null ? undefined : String(row.last_error),
-    state: row.state === null ? undefined : (row.state as WatchRecord["state"]),
-    disabledAt: row.disabled_at === null ? undefined : toMillis(row.disabled_at),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    id: requireWatchString("id", row.id),
+    sessionId: requireWatchString("session id", row.session_id),
+    createdByIdentityId: optionalWatchString("created identity id", row.created_by_identity_id),
+    title: requireWatchString("title", row.title),
+    intervalMinutes: parseIntervalMinutes(row.interval_minutes),
+    source: parseWatchSourceConfig(row.source_config),
+    detector: parseWatchDetectorConfig(row.detector_config),
+    enabled: requireBoolean(row.enabled, "Watch enabled flag must be a boolean."),
+    nextPollAt: optionalTimestampMillis(row.next_poll_at, "Watch next_poll_at must be a valid timestamp."),
+    claimedAt: optionalTimestampMillis(row.claimed_at, "Watch claimed_at must be a valid timestamp."),
+    claimedBy: optionalWatchString("claim owner", row.claimed_by),
+    claimExpiresAt: optionalTimestampMillis(row.claim_expires_at, "Watch claim_expires_at must be a valid timestamp."),
+    cooldownUntil: optionalTimestampMillis(row.cooldown_until, "Watch cooldown_until must be a valid timestamp."),
+    lastError: optionalWatchString("last error", row.last_error),
+    state: readOptionalJsonObject(row.state, "state"),
+    disabledAt: optionalTimestampMillis(row.disabled_at, "Watch disabled_at must be a valid timestamp."),
+    createdAt: requireTimestampMillis(row.created_at, "Watch created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Watch updated_at must be a valid timestamp."),
   };
 }
 
 function parseWatchRunRow(row: Record<string, unknown>): WatchRunRecord {
   return {
-    id: String(row.id),
-    watchId: String(row.watch_id),
-    sessionId: String(row.session_id),
-    createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
-    scheduledFor: toMillis(row.scheduled_for),
-    status: String(row.status) as WatchRunRecord["status"],
-    resolvedThreadId: row.resolved_thread_id === null ? undefined : String(row.resolved_thread_id),
-    emittedEventId: row.emitted_event_id === null ? undefined : String(row.emitted_event_id),
-    error: row.error === null ? undefined : String(row.error),
-    createdAt: toMillis(row.created_at),
-    startedAt: row.started_at === null ? undefined : toMillis(row.started_at),
-    finishedAt: row.finished_at === null ? undefined : toMillis(row.finished_at),
+    id: requireWatchString("run id", row.id),
+    watchId: requireWatchString("id", row.watch_id),
+    sessionId: requireWatchString("session id", row.session_id),
+    createdByIdentityId: optionalWatchString("created identity id", row.created_by_identity_id),
+    scheduledFor: requireTimestampMillis(row.scheduled_for, "Watch scheduled_for must be a valid timestamp."),
+    status: parseWatchRunStatus(row.status),
+    resolvedThreadId: optionalWatchString("resolved thread id", row.resolved_thread_id),
+    emittedEventId: optionalWatchString("emitted event id", row.emitted_event_id),
+    error: optionalWatchString("error", row.error),
+    createdAt: requireTimestampMillis(row.created_at, "Watch created_at must be a valid timestamp."),
+    startedAt: optionalTimestampMillis(row.started_at, "Watch started_at must be a valid timestamp."),
+    finishedAt: optionalTimestampMillis(row.finished_at, "Watch finished_at must be a valid timestamp."),
   };
 }
 
 function parseWatchEventRow(row: Record<string, unknown>): WatchEventRecord {
   return {
-    id: String(row.id),
-    watchId: String(row.watch_id),
-    sessionId: String(row.session_id),
-    createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
-    resolvedThreadId: row.resolved_thread_id === null ? undefined : String(row.resolved_thread_id),
-    eventKind: String(row.event_kind) as WatchEventRecord["eventKind"],
-    summary: String(row.summary),
-    dedupeKey: String(row.dedupe_key),
-    payload: row.payload === null ? undefined : row.payload as JsonObject,
-    createdAt: toMillis(row.created_at),
+    id: requireWatchString("event id", row.id),
+    watchId: requireWatchString("id", row.watch_id),
+    sessionId: requireWatchString("session id", row.session_id),
+    createdByIdentityId: optionalWatchString("created identity id", row.created_by_identity_id),
+    resolvedThreadId: optionalWatchString("resolved thread id", row.resolved_thread_id),
+    eventKind: parseWatchEventKind(row.event_kind),
+    summary: requireWatchString("summary", row.summary),
+    dedupeKey: requireWatchString("dedupe key", row.dedupe_key),
+    payload: readOptionalJsonObject(row.payload, "event payload"),
+    createdAt: requireTimestampMillis(row.created_at, "Watch created_at must be a valid timestamp."),
   };
 }
 
@@ -132,9 +166,9 @@ function normalizeCreateInput(input: CreateWatchInput): {
 } {
   const enabled = input.enabled ?? true;
   return {
-    sessionId: requireTrimmed("session id", input.sessionId),
+    sessionId: requireWatchString("session id", input.sessionId),
     createdByIdentityId: input.createdByIdentityId?.trim() || undefined,
-    title: requireTrimmed("title", input.title),
+    title: requireWatchString("title", input.title),
     intervalMinutes: normalizeIntervalMinutes(input.intervalMinutes),
     source: input.source,
     detector: input.detector,
@@ -144,18 +178,12 @@ function normalizeCreateInput(input: CreateWatchInput): {
       ? (enabled ? new Date() : null)
       : input.nextPollAt === null
         ? null
-        : toDate(input.nextPollAt),
+        : toDateOrNull(input.nextPollAt),
   };
 }
 
-function isActiveClaim(watch: WatchRecord, nowMs: number): boolean {
-  return watch.claimedAt !== undefined
-    && watch.claimExpiresAt !== undefined
-    && watch.claimExpiresAt > nowMs;
-}
-
 async function readLockedWatch(
-  client: PoolClient,
+  client: PgClientLike,
   tables: WatchTableNames,
   input: Pick<UpdateWatchInput, "watchId" | "sessionId">,
 ): Promise<WatchRecord> {
@@ -168,8 +196,8 @@ async function readLockedWatch(
       FOR UPDATE
     `,
     [
-      requireTrimmed("id", input.watchId),
-      requireTrimmed("session id", input.sessionId),
+      requireWatchString("id", input.watchId),
+      requireWatchString("session id", input.sessionId),
     ],
   );
   const row = result.rows[0];
@@ -183,363 +211,14 @@ async function readLockedWatch(
 export class PostgresWatchStore implements WatchStore {
   private readonly pool: PgPoolLike;
   private readonly tables: WatchTableNames;
-  private readonly identityTableName: string;
-  private readonly sessionTableName: string;
-  private readonly threadTableName: string;
 
   constructor(options: PostgresWatchStoreOptions) {
     this.pool = options.pool;
     this.tables = buildWatchTableNames();
-    this.identityTableName = buildIdentityTableNames().identities;
-    this.sessionTableName = buildSessionTableNames().sessions;
-    this.threadTableName = buildThreadRuntimeTableNames().threads;
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.watches} (
-        id UUID PRIMARY KEY,
-        session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
-        created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
-        title TEXT NOT NULL,
-        interval_minutes INTEGER NOT NULL,
-        source_config JSONB NOT NULL,
-        detector_config JSONB NOT NULL,
-        enabled BOOLEAN NOT NULL DEFAULT TRUE,
-        next_poll_at TIMESTAMPTZ,
-        claimed_at TIMESTAMPTZ,
-        claimed_by TEXT,
-        claim_expires_at TIMESTAMPTZ,
-        cooldown_until TIMESTAMPTZ,
-        last_error TEXT,
-        state JSONB,
-        disabled_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_watches_due_idx`)}
-      ON ${this.tables.watches} (enabled, disabled_at, next_poll_at, id)
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_watches_identity_agent_idx`)}
-      ON ${this.tables.watches} (session_id, created_at DESC)
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_watches_session_id_id_idx`)}
-      ON ${this.tables.watches} (session_id, id)
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.watchRuns} (
-        id UUID PRIMARY KEY,
-        watch_id UUID NOT NULL REFERENCES ${this.tables.watches}(id) ON DELETE CASCADE,
-        session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
-        created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
-        scheduled_for TIMESTAMPTZ NOT NULL,
-        status TEXT NOT NULL,
-        resolved_thread_id TEXT,
-        resolved_thread_session_id TEXT,
-        emitted_event_watch_id UUID,
-        emitted_event_id UUID,
-        error TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        started_at TIMESTAMPTZ,
-        finished_at TIMESTAMPTZ
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_watch_runs_watch_created_idx`)}
-      ON ${this.tables.watchRuns} (watch_id, created_at DESC)
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.watchEvents} (
-        id UUID PRIMARY KEY,
-        watch_id UUID NOT NULL REFERENCES ${this.tables.watches}(id) ON DELETE CASCADE,
-        session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
-        created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
-        resolved_thread_id TEXT,
-        resolved_thread_session_id TEXT,
-        event_kind TEXT NOT NULL,
-        summary TEXT NOT NULL,
-        dedupe_key TEXT NOT NULL,
-        payload JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_watch_events_dedupe_idx`)}
-      ON ${this.tables.watchEvents} (watch_id, dedupe_key)
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_watch_events_watch_created_idx`)}
-      ON ${this.tables.watchEvents} (watch_id, created_at DESC)
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_watch_events_watch_id_id_idx`)}
-      ON ${this.tables.watchEvents} (watch_id, id)
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.watchRuns}
-      ADD COLUMN IF NOT EXISTS resolved_thread_session_id TEXT
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.watchRuns}
-      ADD COLUMN IF NOT EXISTS emitted_event_watch_id UUID
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.watchEvents}
-      ADD COLUMN IF NOT EXISTS resolved_thread_session_id TEXT
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.watchEvents}
-      ALTER COLUMN resolved_thread_id DROP NOT NULL
-    `);
-    await assertIntegrityChecks(this.pool, "Watch schema", [
-      {
-        label: "watch_runs.watch_id orphaned from watches.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.watchRuns} AS run
-          LEFT JOIN ${this.tables.watches} AS watch
-            ON watch.id = run.watch_id
-          WHERE watch.id IS NULL
-        `,
-      },
-      {
-        label: "watch_runs watch/session mismatch",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.watchRuns} AS run
-          INNER JOIN ${this.tables.watches} AS watch
-            ON watch.id = run.watch_id
-          WHERE watch.session_id <> run.session_id
-        `,
-      },
-      {
-        label: "watch_runs.resolved_thread_id orphaned from threads.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.watchRuns} AS run
-          LEFT JOIN ${this.threadTableName} AS thread
-            ON thread.id = run.resolved_thread_id
-          WHERE run.resolved_thread_id IS NOT NULL
-            AND thread.id IS NULL
-        `,
-      },
-      {
-        label: "watch_runs.resolved_thread_id bound to another session",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.watchRuns} AS run
-          INNER JOIN ${this.threadTableName} AS thread
-            ON thread.id = run.resolved_thread_id
-          WHERE run.resolved_thread_id IS NOT NULL
-            AND thread.session_id <> run.session_id
-        `,
-      },
-      {
-        label: "watch_runs.emitted_event_id orphaned from watch_events.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.watchRuns} AS run
-          LEFT JOIN ${this.tables.watchEvents} AS event
-            ON event.id = run.emitted_event_id
-          WHERE run.emitted_event_id IS NOT NULL
-            AND event.id IS NULL
-        `,
-      },
-      {
-        label: "watch_runs.emitted_event_id bound to another watch",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.watchRuns} AS run
-          INNER JOIN ${this.tables.watchEvents} AS event
-            ON event.id = run.emitted_event_id
-          WHERE run.emitted_event_id IS NOT NULL
-            AND event.watch_id <> run.watch_id
-        `,
-      },
-      {
-        label: "watch_events watch/session mismatch",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.watchEvents} AS event
-          INNER JOIN ${this.tables.watches} AS watch
-            ON watch.id = event.watch_id
-          WHERE watch.session_id <> event.session_id
-        `,
-      },
-      {
-        label: "watch_events.resolved_thread_id orphaned from threads.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.watchEvents} AS event
-          LEFT JOIN ${this.threadTableName} AS thread
-            ON thread.id = event.resolved_thread_id
-          WHERE event.resolved_thread_id IS NOT NULL
-            AND thread.id IS NULL
-        `,
-      },
-      {
-        label: "watch_events.resolved_thread_id bound to another session",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.watchEvents} AS event
-          INNER JOIN ${this.threadTableName} AS thread
-            ON thread.id = event.resolved_thread_id
-          WHERE event.resolved_thread_id IS NOT NULL
-            AND thread.session_id <> event.session_id
-        `,
-      },
-    ]);
-    await this.pool.query(`
-      UPDATE ${this.tables.watchRuns}
-      SET resolved_thread_session_id = NULL
-      WHERE resolved_thread_id IS NULL
-        AND resolved_thread_session_id IS NOT NULL
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.watchRuns}
-      SET resolved_thread_session_id = thread.session_id
-      FROM ${this.threadTableName} AS thread
-      WHERE ${this.tables.watchRuns}.resolved_thread_id IS NOT NULL
-        AND thread.id = ${this.tables.watchRuns}.resolved_thread_id
-        AND (
-          ${this.tables.watchRuns}.resolved_thread_session_id IS NULL
-          OR ${this.tables.watchRuns}.resolved_thread_session_id <> thread.session_id
-        )
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.watchRuns}
-      SET emitted_event_watch_id = NULL
-      WHERE emitted_event_id IS NULL
-        AND emitted_event_watch_id IS NOT NULL
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.watchRuns}
-      SET emitted_event_watch_id = event.watch_id
-      FROM ${this.tables.watchEvents} AS event
-      WHERE ${this.tables.watchRuns}.emitted_event_id IS NOT NULL
-        AND event.id = ${this.tables.watchRuns}.emitted_event_id
-        AND (
-          ${this.tables.watchRuns}.emitted_event_watch_id IS NULL
-          OR ${this.tables.watchRuns}.emitted_event_watch_id <> event.watch_id
-        )
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.watchEvents}
-      SET resolved_thread_session_id = NULL
-      WHERE resolved_thread_id IS NULL
-        AND resolved_thread_session_id IS NOT NULL
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.watchEvents}
-      SET resolved_thread_session_id = thread.session_id
-      FROM ${this.threadTableName} AS thread
-      WHERE ${this.tables.watchEvents}.resolved_thread_id IS NOT NULL
-        AND thread.id = ${this.tables.watchEvents}.resolved_thread_id
-        AND (
-          ${this.tables.watchEvents}.resolved_thread_session_id IS NULL
-          OR ${this.tables.watchEvents}.resolved_thread_session_id <> thread.session_id
-        )
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.watchRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_watch_scope_fk`)}
-      FOREIGN KEY (session_id, watch_id)
-      REFERENCES ${this.tables.watches}(session_id, id)
-      ON DELETE CASCADE
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.watchRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_resolved_thread_fk`)}
-      FOREIGN KEY (resolved_thread_id)
-      REFERENCES ${this.threadTableName}(id)
-      ON DELETE SET NULL
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.watchRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_emitted_event_fk`)}
-      FOREIGN KEY (emitted_event_id)
-      REFERENCES ${this.tables.watchEvents}(id)
-      ON DELETE SET NULL
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.watchRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_emitted_event_scope_check`)}
-      CHECK (
-        (
-          emitted_event_id IS NULL
-          AND emitted_event_watch_id IS NULL
-        ) OR (
-          emitted_event_id IS NOT NULL
-          AND emitted_event_watch_id = watch_id
-        )
-      )
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.watchRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_emitted_event_scope_fk`)}
-      FOREIGN KEY (emitted_event_watch_id, emitted_event_id)
-      REFERENCES ${this.tables.watchEvents}(watch_id, id)
-      ON DELETE SET NULL
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.watchRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_resolved_thread_scope_check`)}
-      CHECK (
-        (
-          resolved_thread_id IS NULL
-          AND resolved_thread_session_id IS NULL
-        ) OR (
-          resolved_thread_id IS NOT NULL
-          AND resolved_thread_session_id = session_id
-        )
-      )
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.watchRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_runs_resolved_thread_scope_fk`)}
-      FOREIGN KEY (resolved_thread_session_id, resolved_thread_id)
-      REFERENCES ${this.threadTableName}(session_id, id)
-      ON DELETE SET NULL
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.watchEvents}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_events_watch_scope_fk`)}
-      FOREIGN KEY (session_id, watch_id)
-      REFERENCES ${this.tables.watches}(session_id, id)
-      ON DELETE CASCADE
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.watchEvents}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_events_resolved_thread_fk`)}
-      FOREIGN KEY (resolved_thread_id)
-      REFERENCES ${this.threadTableName}(id)
-      ON DELETE SET NULL
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.watchEvents}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_events_resolved_thread_scope_check`)}
-      CHECK (
-        (
-          resolved_thread_id IS NULL
-          AND resolved_thread_session_id IS NULL
-        ) OR (
-          resolved_thread_id IS NOT NULL
-          AND resolved_thread_session_id = session_id
-        )
-      )
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.watchEvents}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_watch_events_resolved_thread_scope_fk`)}
-      FOREIGN KEY (resolved_thread_session_id, resolved_thread_id)
-      REFERENCES ${this.threadTableName}(session_id, id)
-      ON DELETE SET NULL
-    `);
+    await ensurePostgresWatchSchema(this.pool);
   }
 
   async createWatch(input: CreateWatchInput): Promise<WatchRecord> {
@@ -597,7 +276,7 @@ export class PostgresWatchStore implements WatchStore {
       inTransaction = true;
 
       const existing = await readLockedWatch(client, this.tables, input);
-      if (isActiveClaim(existing, Date.now())) {
+      if (hasActiveClaim(existing, Date.now())) {
         throw new Error(`Watch ${existing.id} is currently running and cannot be updated.`);
       }
 
@@ -613,7 +292,7 @@ export class PostgresWatchStore implements WatchStore {
       const nextPollAt = !enabled
         ? null
         : input.nextPollAt !== undefined
-          ? (input.nextPollAt === null ? null : toDate(input.nextPollAt))
+          ? (input.nextPollAt === null ? null : toDateOrNull(input.nextPollAt))
           : resetState
           ? new Date()
           : intervalChanged
@@ -639,7 +318,7 @@ export class PostgresWatchStore implements WatchStore {
         `,
         [
           existing.id,
-          input.title === undefined ? existing.title : requireTrimmed("title", input.title),
+          input.title === undefined ? existing.title : requireWatchString("title", input.title),
           nextIntervalMinutes,
           toJson(input.source ?? existing.source),
           toJson(input.detector ?? existing.detector),
@@ -672,7 +351,7 @@ export class PostgresWatchStore implements WatchStore {
       inTransaction = true;
 
       const existing = await readLockedWatch(client, this.tables, input);
-      if (isActiveClaim(existing, Date.now())) {
+      if (hasActiveClaim(existing, Date.now())) {
         throw new Error(`Watch ${existing.id} is currently running and cannot be disabled.`);
       }
 
@@ -712,7 +391,7 @@ export class PostgresWatchStore implements WatchStore {
   async getWatch(watchId: string): Promise<WatchRecord> {
     const result = await this.pool.query(
       `SELECT * FROM ${this.tables.watches} WHERE id = $1`,
-      [requireTrimmed("id", watchId)],
+      [requireWatchString("id", watchId)],
     );
     const row = result.rows[0];
     if (!row) {
@@ -763,7 +442,7 @@ export class PostgresWatchStore implements WatchStore {
             AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())
           FOR UPDATE
         `,
-        [requireTrimmed("id", input.watchId)],
+        [requireWatchString("id", input.watchId)],
       );
       const row = result.rows[0];
       if (!row) {
@@ -787,9 +466,9 @@ export class PostgresWatchStore implements WatchStore {
         `,
         [
           watch.id,
-          requireTrimmed("claimedBy", input.claimedBy),
+          requireWatchString("claimedBy", input.claimedBy),
           new Date(input.claimExpiresAt),
-          toDate(input.nextPollAt),
+          toDateOrNull(input.nextPollAt),
         ],
       );
       const claimedWatch = parseWatchRow(claimedResult.rows[0] as Record<string, unknown>);
@@ -852,7 +531,7 @@ export class PostgresWatchStore implements WatchStore {
         RETURNING *
       `,
       [
-        requireTrimmed("run id", input.runId),
+        requireWatchString("run id", input.runId),
         input.resolvedThreadId ?? null,
       ],
     );
@@ -892,7 +571,7 @@ export class PostgresWatchStore implements WatchStore {
           RETURNING *
         `,
         [
-          requireTrimmed("run id", input.runId),
+          requireWatchString("run id", input.runId),
           input.status,
           input.resolvedThreadId ?? null,
           input.emittedEventId ?? null,
@@ -958,9 +637,9 @@ export class PostgresWatchStore implements WatchStore {
           RETURNING *
         `,
         [
-          requireTrimmed("run id", input.runId),
+          requireWatchString("run id", input.runId),
           input.resolvedThreadId ?? null,
-          requireTrimmed("error", input.error),
+          requireWatchString("error", input.error),
         ],
       );
       const runRow = runResult.rows[0];
@@ -1011,7 +690,7 @@ export class PostgresWatchStore implements WatchStore {
         WHERE id = $1
         RETURNING *
       `,
-      [requireTrimmed("id", watchId)],
+      [requireWatchString("id", watchId)],
     );
     const row = result.rows[0];
     if (!row) {
@@ -1053,14 +732,14 @@ export class PostgresWatchStore implements WatchStore {
       `,
       [
         id,
-        requireTrimmed("watch id", input.watchId),
-        requireTrimmed("session id", input.sessionId),
+        requireWatchString("watch id", input.watchId),
+        requireWatchString("session id", input.sessionId),
         input.createdByIdentityId?.trim() || null,
-        requireTrimmed("resolved thread id", input.resolvedThreadId),
-        requireTrimmed("session id", input.sessionId),
+        requireWatchString("resolved thread id", input.resolvedThreadId),
+        requireWatchString("session id", input.sessionId),
         input.eventKind,
-        requireTrimmed("summary", input.summary),
-        requireTrimmed("dedupe key", input.dedupeKey),
+        requireWatchString("summary", input.summary),
+        requireWatchString("dedupe key", input.dedupeKey),
         toJson(input.payload),
       ],
     );
@@ -1101,7 +780,7 @@ export class PostgresWatchStore implements WatchStore {
         ORDER BY created_at DESC
         LIMIT 1
       `,
-      [requireTrimmed("id", watchId)],
+      [requireWatchString("id", watchId)],
     );
     const row = result.rows[0];
     return row ? parseWatchRunRow(row as Record<string, unknown>) : null;

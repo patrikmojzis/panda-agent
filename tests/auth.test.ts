@@ -50,6 +50,28 @@ describe("auth helpers", () => {
     }
   });
 
+  it("ignores malformed Codex auth cache token fields", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-codex-auth-"));
+
+    try {
+      await fs.writeFile(
+        path.join(tempDir, "auth.json"),
+        JSON.stringify({
+          auth_mode: "chatgpt",
+          tokens: {
+            access_token: 42,
+          },
+        }),
+      );
+
+      const env = { CODEX_HOME: tempDir };
+      expect(resolveOpenAICodexOauthToken({ env })).toBeNull();
+      expect(hasOpenAICodexOauthToken({ env })).toBe(false);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("resolves Anthropic OAuth tokens from the supported env vars", () => {
     expect(
       resolveAnthropicAccessToken({

@@ -3,6 +3,8 @@ import {describe, expect, it, vi} from "vitest";
 import {DEFAULT_WIKI_URL, resolveWikiUrl, WikiJsClient,} from "../src/integrations/wiki/client.js";
 import {ToolError} from "../src/kernel/agent/exceptions.js";
 
+type WikiFetch = NonNullable<ConstructorParameters<typeof WikiJsClient>[0]["fetchImpl"]>;
+
 describe("WikiJsClient", () => {
   it("uses WIKI_URL when configured and falls back to the docker service url", () => {
     expect(resolveWikiUrl({WIKI_URL: "http://wiki.internal:3000"} as NodeJS.ProcessEnv)).toBe(
@@ -12,7 +14,7 @@ describe("WikiJsClient", () => {
   });
 
   it("fetches a page by path and sends bearer auth", async () => {
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl = vi.fn<WikiFetch>(async (_input, _init) => {
       return new Response(JSON.stringify({
         data: {
           pages: {
@@ -41,7 +43,7 @@ describe("WikiJsClient", () => {
     const client = new WikiJsClient({
       apiToken: "wiki-token",
       baseUrl: "http://wiki.internal:3000/base",
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl,
     });
 
     const page = await client.getPageByPath("/agents/panda/profile/", "en");
@@ -61,24 +63,25 @@ describe("WikiJsClient", () => {
   });
 
   it("surfaces mutation failures from responseResult", async () => {
-    const client = new WikiJsClient({
-      apiToken: "wiki-token",
-      fetchImpl: vi.fn(async () => new Response(JSON.stringify({
-        data: {
-          pages: {
-            update: {
-              responseResult: {
-                succeeded: false,
-                message: "Page empty content",
-              },
-              page: null,
+    const fetchImpl = vi.fn<WikiFetch>(async () => new Response(JSON.stringify({
+      data: {
+        pages: {
+          update: {
+            responseResult: {
+              succeeded: false,
+              message: "Page empty content",
             },
+            page: null,
           },
         },
-      }), {
-        status: 200,
-        headers: {"content-type": "application/json"},
-      })) as typeof fetch,
+      },
+    }), {
+      status: 200,
+      headers: {"content-type": "application/json"},
+    }));
+    const client = new WikiJsClient({
+      apiToken: "wiki-token",
+      fetchImpl,
     });
 
     await expect(client.updatePage({
@@ -92,9 +95,9 @@ describe("WikiJsClient", () => {
   });
 
   it("wraps Wiki.js transport failures as tool errors", async () => {
-    const fetchImpl = vi.fn(async () => {
+    const fetchImpl = vi.fn<WikiFetch>(async () => {
       throw new TypeError("fetch failed");
-    }) as unknown as typeof fetch;
+    });
     const client = new WikiJsClient({
       apiToken: "wiki-token",
       fetchImpl,
@@ -118,7 +121,7 @@ describe("WikiJsClient", () => {
 
   it("moves a page and reloads it from the destination path", async () => {
     const fetchImpl = vi
-      .fn()
+      .fn<WikiFetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         data: {
           pages: {
@@ -160,7 +163,7 @@ describe("WikiJsClient", () => {
 
     const client = new WikiJsClient({
       apiToken: "wiki-token",
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl,
     });
 
     const page = await client.movePage({
@@ -179,21 +182,22 @@ describe("WikiJsClient", () => {
   });
 
   it("treats real Wiki.js missing-page errors as a null lookup", async () => {
+    const fetchImpl = vi.fn<WikiFetch>(async () => new Response(JSON.stringify({
+      errors: [{message: "This page does not exist."}],
+    }), {
+      status: 200,
+      headers: {"content-type": "application/json"},
+    }));
     const client = new WikiJsClient({
       apiToken: "wiki-token",
-      fetchImpl: vi.fn(async () => new Response(JSON.stringify({
-        errors: [{message: "This page does not exist."}],
-      }), {
-        status: 200,
-        headers: {"content-type": "application/json"},
-      })) as typeof fetch,
+      fetchImpl,
     });
 
     await expect(client.getPageByPath("agents/panda/missing", "en")).resolves.toBeNull();
   });
 
   it("lists asset folders under a parent folder", async () => {
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+    const fetchImpl = vi.fn<WikiFetch>(async () => new Response(JSON.stringify({
       data: {
         assets: {
           folders: [
@@ -210,7 +214,7 @@ describe("WikiJsClient", () => {
     const client = new WikiJsClient({
       apiToken: "wiki-token",
       baseUrl: "http://wiki.internal:3000/base",
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl,
     });
 
     await expect(client.listAssetFolders(7)).resolves.toEqual([
@@ -223,7 +227,7 @@ describe("WikiJsClient", () => {
   });
 
   it("uploads an asset through the raw /u endpoint", async () => {
-    const fetchImpl = vi.fn(async () => new Response("ok", {
+    const fetchImpl = vi.fn<WikiFetch>(async () => new Response("ok", {
       status: 200,
       headers: {"content-type": "text/plain"},
     }));
@@ -231,7 +235,7 @@ describe("WikiJsClient", () => {
     const client = new WikiJsClient({
       apiToken: "wiki-token",
       baseUrl: "http://wiki.internal:3000/base",
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl,
     });
 
     await client.uploadAsset({
@@ -258,7 +262,7 @@ describe("WikiJsClient", () => {
   });
 
   it("deletes an asset through the GraphQL API", async () => {
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+    const fetchImpl = vi.fn<WikiFetch>(async () => new Response(JSON.stringify({
       data: {
         assets: {
           deleteAsset: {
@@ -276,7 +280,7 @@ describe("WikiJsClient", () => {
 
     const client = new WikiJsClient({
       apiToken: "wiki-token",
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl,
     });
 
     await client.deleteAsset(91);
@@ -286,7 +290,7 @@ describe("WikiJsClient", () => {
   });
 
   it("downloads an asset from the wiki base url", async () => {
-    const fetchImpl = vi.fn(async () => new Response(Buffer.from([1, 2, 3]), {
+    const fetchImpl = vi.fn<WikiFetch>(async () => new Response(Buffer.from([1, 2, 3]), {
       status: 200,
       headers: {
         "content-type": "image/png",
@@ -297,7 +301,7 @@ describe("WikiJsClient", () => {
     const client = new WikiJsClient({
       apiToken: "wiki-token",
       baseUrl: "http://wiki.internal:3000/base",
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl,
     });
 
     const downloaded = await client.downloadAsset("agents/panda/_assets/profile/profile-photo.png");

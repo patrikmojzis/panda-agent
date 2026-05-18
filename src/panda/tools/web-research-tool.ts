@@ -3,7 +3,8 @@ import {z} from "zod";
 
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {formatToolResultFallback, Tool} from "../../kernel/agent/tool.js";
-import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
@@ -15,8 +16,9 @@ import {
   performWebResearch,
   renderWebResearchText,
   type WebResearchReasoningEffort,
-} from "./web-research.js";
+} from "../../integrations/web/research.js";
 import {buildBackgroundJobPayload, formatBackgroundJobResult} from "./background-job-tools.js";
+import {requireJsonObject, serializeToolResultForBackgroundJob} from "./shared.js";
 
 export interface WebResearchToolOptions {
   apiKey?: string;
@@ -47,7 +49,9 @@ async function runWebResearch(params: {
     model: params.model,
     reasoningEffort: params.reasoningEffort,
     signal: params.signal,
-    onProgress: (progress) => params.emitProgress(progress as JsonObject),
+    onProgress: (progress) => params.emitProgress(
+      requireJsonObject(progress, "web_research progress must be a JSON object."),
+    ),
   });
 
   const details = {
@@ -74,17 +78,6 @@ async function runWebResearch(params: {
       text: renderWebResearchText(result),
     }],
     details,
-  };
-}
-
-function serializeWebResearchResult(payload: ToolResultPayload): JsonObject {
-  return {
-    contentText: payload.content
-      .flatMap((part) => part.type === "text" && part.text.trim() ? [part.text.trim()] : [])
-      .join("\n\n"),
-    ...(payload.details && typeof payload.details === "object" && !Array.isArray(payload.details)
-      ? {details: payload.details as JsonObject}
-      : {}),
   };
 }
 
@@ -171,7 +164,7 @@ export class WebResearchTool<TContext = DefaultAgentSessionContext>
           emitProgress,
         }).then((payload) => ({
           status: "completed" as const,
-          result: serializeWebResearchResult(payload),
+          result: serializeToolResultForBackgroundJob(payload),
         })),
       }),
     });

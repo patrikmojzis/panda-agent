@@ -47,7 +47,7 @@ function renderSmokeText(result: Awaited<ReturnType<typeof runSmoke>>): string {
   ].join("\n") + "\n";
 }
 
-export async function runSmokeCliCommand(options: SmokeCliOptions): Promise<void> {
+async function runSmokeCliCommand(options: SmokeCliOptions): Promise<void> {
   if (!options.agent && !options.session) {
     throw new InvalidArgumentError("Pass --agent or --session.");
   }

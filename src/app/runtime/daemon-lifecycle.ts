@@ -1,24 +1,68 @@
-import type {RuntimeRequestRecord} from "../../domain/threads/requests/index.js";
-import {acquireManagedConnectorLease, type ManagedConnectorLease} from "../../domain/connector-leases/index.js";
+import type {RuntimeRequestRecord} from "../../domain/threads/requests/types.js";
+import {
+    acquireManagedConnectorLease,
+    type ConnectorLeaseRepository,
+    type ManagedConnectorLease,
+} from "../../domain/connector-leases/repo.js";
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../health/server.js";
 import {
     type AgentAppServer,
+    type AgentAppServerOptions,
+    type AgentAppHttpService,
+    startAgentAppServer,
+} from "../../integrations/apps/http-server.js";
+import {
     DEFAULT_APPS_PORT,
     resolveAgentAppAuthMode,
     resolveOptionalAgentAppServerBinding,
-    startAgentAppServer,
-} from "../../integrations/apps/http-server.js";
+} from "../../integrations/apps/http-config.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
-import type {DaemonContext} from "./daemon-bootstrap.js";
-import {buildDaemonAlreadyActiveMessage} from "./daemon-copy.js";
 import {readPositiveIntegerEnv} from "./database.js";
 import {DAEMON_HEARTBEAT_INTERVAL_MS, type DaemonServices} from "./daemon-shared.js";
+import {RuntimeRequestDrain, type RuntimeRequestDrainStore} from "./request-drain.js";
+import type {RuntimeServices} from "./create-runtime.js";
 
 const DAEMON_HEALTH_STALE_AFTER_MS = DAEMON_HEARTBEAT_INTERVAL_MS * 3;
 const DAEMON_HEALTH_POOL_WAITING_STALE_AFTER_MS = 60_000;
 
+interface StartStopService {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+interface DaemonLifecycleRequests extends RuntimeRequestDrainStore {
+  listenPendingRequests(onRequest: () => void): Promise<() => Promise<void>>;
+}
+
+export interface DaemonLifecycleRuntime {
+  close(): Promise<void>;
+  apps: AgentAppHttpService;
+  appAuth?: AgentAppServerOptions["auth"];
+  identityStore?: AgentAppServerOptions["identityStore"];
+  sessionStore?: AgentAppServerOptions["sessionStore"];
+  coordinator: Pick<RuntimeServices["coordinator"], "recoverOrphanedRuns" | "submitInput">;
+  executionEnvironmentService?: Pick<RuntimeServices["executionEnvironmentService"], "sweepExpiredEnvironments">;
+  pool: Pick<RuntimeServices["pool"], "waitingCount">;
+}
+
+export interface DaemonLifecycleContext {
+  daemonKey: string;
+  runtime: DaemonLifecycleRuntime;
+  connectorLeases: ConnectorLeaseRepository;
+  requests: DaemonLifecycleRequests;
+  daemonState: {
+    heartbeat(daemonKey: string): Promise<unknown>;
+  };
+  a2aOutboundWorker: StartStopService;
+  emailOutboundWorker: StartStopService;
+  emailSyncRunner: StartStopService;
+  scheduledTaskRunner: StartStopService;
+  watchRunner: StartStopService;
+  relationshipHeartbeatRunner: StartStopService;
+}
+
 export function createDaemonLifecycle(input: {
-  context: DaemonContext;
+  context: DaemonLifecycleContext;
   processRequest: (request: RuntimeRequestRecord) => Promise<unknown>;
 }): DaemonServices {
   let requestUnsubscribe: (() => Promise<void>) | null = null;
@@ -26,8 +70,6 @@ export function createDaemonLifecycle(input: {
   let healthServer: HealthServer | null = null;
   let appServer: AgentAppServer | null = null;
   let lease: ManagedConnectorLease | null = null;
-  let drainPromise: Promise<void> | null = null;
-  let pendingDrain = false;
   let lastHeartbeatAt = 0;
   let running = false;
   let shuttingDown = false;
@@ -39,6 +81,17 @@ export function createDaemonLifecycle(input: {
     "PANDA_CORE_HEALTH_POOL_WAITING_STALE_MS",
     DAEMON_HEALTH_POOL_WAITING_STALE_AFTER_MS,
   );
+  const requestDrain = new RuntimeRequestDrain({
+    requests: input.context.requests,
+    processRequest: input.processRequest,
+    label: "daemon runtime request drain",
+    onError: (error) => {
+      console.error("Daemon request drain failed", {
+        daemonKey: input.context.daemonKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    },
+  });
 
   const releaseLease = async (): Promise<void> => {
     if (!lease) {
@@ -78,6 +131,12 @@ export function createDaemonLifecycle(input: {
           label: "request-unsubscribe",
           run: async () => {
             await unsubscribe?.();
+          },
+        },
+        {
+          label: "request-drain",
+          run: async () => {
+            await requestDrain.stop();
           },
         },
         {
@@ -155,7 +214,7 @@ export function createDaemonLifecycle(input: {
       repo: input.context.connectorLeases,
       source: "daemon",
       connectorKey: input.context.daemonKey,
-      alreadyHeldMessage: buildDaemonAlreadyActiveMessage(input.context.daemonKey),
+      alreadyHeldMessage: `panda run (${input.context.daemonKey}) is already active.`,
       onError: async (error) => {
         console.error("Daemon lease renew failed", {
           daemonKey: input.context.daemonKey,
@@ -207,46 +266,6 @@ export function createDaemonLifecycle(input: {
       waitingCount,
       waitingForMs,
     };
-  };
-
-  const triggerDrain = async (): Promise<void> => {
-    if (stopped) {
-      return;
-    }
-
-    if (drainPromise) {
-      pendingDrain = true;
-      return;
-    }
-
-    drainPromise = (async () => {
-      while (!stopped) {
-        const request = await input.context.requests.claimNextPendingRequest();
-        if (!request) {
-          return;
-        }
-
-        try {
-          const result = await input.processRequest(request);
-          await input.context.requests.completeRequest(request.id, result);
-        } catch (error) {
-          await input.context.requests.failRequest(
-            request.id,
-            error instanceof Error ? error.message : String(error),
-          );
-        }
-      }
-    })();
-
-    try {
-      await drainPromise;
-    } finally {
-      drainPromise = null;
-      if (pendingDrain && !stopped) {
-        pendingDrain = false;
-        await triggerDrain();
-      }
-    }
   };
 
   return {
@@ -315,8 +334,8 @@ export function createDaemonLifecycle(input: {
             });
           });
         }, DAEMON_HEARTBEAT_INTERVAL_MS);
-        requestUnsubscribe = await input.context.requests.listenPendingRequests(async () => {
-          await triggerDrain();
+        requestUnsubscribe = await input.context.requests.listenPendingRequests(() => {
+          requestDrain.kick();
         });
         await input.context.runtime.coordinator.recoverOrphanedRuns("Run marked failed before recovery.");
         if (stopped) {
@@ -332,7 +351,7 @@ export function createDaemonLifecycle(input: {
           return;
         }
         running = true;
-        await triggerDrain();
+        requestDrain.start();
       } catch (error) {
         try {
           await stop();

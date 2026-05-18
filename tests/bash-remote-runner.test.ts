@@ -290,7 +290,7 @@ describe("remote bash runner", () => {
           OPENAI_API_KEY: "stored-secret",
           NOTION_API_KEY: "notion-secret",
         }),
-      } as any,
+      },
     });
 
     const result = await tool.run(
@@ -935,8 +935,6 @@ describe("remote bash runner", () => {
   });
 
   it("lets two agents intentionally share the same mounted workspace", async () => {
-    const agentHomeA = await createWorkspace("runtime-agent-home-a-");
-    const agentHomeB = await createWorkspace("runtime-agent-home-b-");
     const sharedWorkspace = await createWorkspace("panda-shared-workspace-");
     const runnerA = await createRunner("panda");
     const runnerB = await createRunner("ops");

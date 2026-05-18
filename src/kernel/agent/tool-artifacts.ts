@@ -5,6 +5,7 @@ import type {ToolResultMessage} from "@mariozechner/pi-ai";
 import {readNonNegativeNumber, readPositiveInteger} from "../../lib/numbers.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToNull} from "../../lib/strings.js";
+import {isJsonObject} from "../../lib/json.js";
 import type {JsonObject, JsonValue} from "./types.js";
 
 export interface ToolArtifactPreview {
@@ -164,8 +165,12 @@ export function withArtifactDetails(
   details: JsonObject,
   artifact: ToolArtifactDescriptor,
 ): JsonObject {
+  if (!isJsonObject(artifact)) {
+    throw new Error("Tool artifact descriptor must be JSON-safe.");
+  }
+
   return {
     ...details,
-    artifact: artifact as unknown as JsonValue,
+    artifact,
   };
 }

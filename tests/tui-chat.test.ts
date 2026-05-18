@@ -1,28 +1,76 @@
 import {describe, expect, it, vi} from "vitest";
 
-import {stringToUserMessage} from "../src/kernel/agent/index.js";
-import {createCompactBoundaryMessage, type ThreadRunRecord} from "../src/domain/threads/runtime/index.js";
+import {stringToUserMessage, type ThinkingLevel} from "../src/kernel/agent/index.js";
+import {createCompactBoundaryMessage, type ThreadRecord, type ThreadRunRecord} from "../src/domain/threads/runtime/index.js";
 import * as markdown from "../src/ui/tui/markdown.js";
 import {buildChatHelpText} from "../src/ui/tui/chat-commands.js";
 import {buildChatViewModel, buildWelcomeTranscriptLines} from "../src/ui/tui/chat-view.js";
 import type {ChatRuntimeServices} from "../src/ui/tui/runtime.js";
 import * as tuiRuntime from "../src/ui/tui/runtime.js";
 import {stripAnsi} from "../src/ui/tui/theme.js";
-import {createComposerState, setComposerValue} from "../src/ui/tui/composer.js";
+import {createComposerState, setComposerValue, type ComposerState} from "../src/ui/tui/composer.js";
 import {ChatApp, runChatCli} from "../src/ui/tui/chat.js";
 import {collectThreadUsageSnapshot, formatThreadUsageSnapshot,} from "../src/ui/tui/usage-summary.js";
 
 type AppHarness = {
   closed: boolean;
   currentThreadId: string;
+  currentThread: ({
+    id: string;
+    sessionId?: string;
+    agentKey?: string;
+    model?: string;
+    thinking?: ThinkingLevel;
+    context?: unknown;
+    createdAt?: number;
+    updatedAt?: number;
+  } & Record<string, unknown>) | null;
+  composer: ComposerState;
+  inputHistory: string[];
+  historySearch: {active: boolean; query: string; selected: number};
+  sessionPicker: {
+    active: boolean;
+    sessions: readonly unknown[];
+    selected: number;
+  };
+  model: string;
+  thinking?: ThinkingLevel;
+  nextEntryId: number;
   runPhase: "idle" | "thinking";
-  services: ChatRuntimeServices | null;
-  transcript: Array<{ title: string; body: string }>;
+  services: ChatRuntimeServices;
+  transcript: Array<{ id?: number; role?: string; title: string; body: string }>;
   render(): void;
-  handleKeypress(sequence: string, key: { ctrl?: boolean; meta?: boolean; shift?: boolean; name?: string }): Promise<void>;
+  handleKeypress(sequence: string | undefined, key: {
+    code?: string;
+    ctrl?: boolean;
+    meta?: boolean;
+    name?: string;
+    sequence?: string;
+    shift?: boolean;
+  }): Promise<void>;
   observeLatestRun(runs: readonly ThreadRunRecord[]): void;
   cleanup(): Promise<void>;
+  submitComposer(): Promise<void>;
+  handleCommand(commandLine: string): Promise<boolean>;
+  switchThread(thread: ThreadRecord): Promise<void>;
+  pushEntry(role: string, title: string, body: string): void;
+  setNotice(text: string, tone: "info" | "error", durationMs?: number): void;
+  openSessionPicker(): Promise<void>;
+  cycleSessionPicker(delta: number): void;
+  selectSessionPickerEntry(): Promise<void>;
+  refreshToolCatalog(): void;
+  reloadVisibleTranscript(): Promise<void>;
+  syncStoredThreadState(force?: boolean): Promise<void>;
+  scheduleSyncStoredThreadState(delayMs?: number): void;
+  initializeRuntime(): Promise<void>;
+  buildView(): ReturnType<typeof buildChatViewModel>;
+  appendStoredMessages(records: readonly unknown[]): void;
+  markDirty(): void;
 };
+
+function createAppHarness(options?: ConstructorParameters<typeof ChatApp>[0]): AppHarness {
+  return new ChatApp(options) as unknown as AppHarness;
+}
 
 function flushTimers(): Promise<void> {
   return new Promise((resolve) => {
@@ -94,7 +142,7 @@ describe("ChatApp Ctrl-C handling", () => {
   it("aborts once and closes after the active run settles", async () => {
     const abortThread = vi.fn(async () => true);
     const waitForCurrentRun = vi.fn(async () => {});
-    const app = new ChatApp() as unknown as AppHarness;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-ctrl-c";
     app.runPhase = "thinking";
@@ -132,7 +180,7 @@ describe("ChatApp Ctrl-C handling", () => {
     const offStdout = vi.spyOn(process.stdout, "off");
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const close = vi.fn(async () => {});
-    const app = new ChatApp() as unknown as AppHarness;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-cleanup";
     app.runPhase = "thinking";
@@ -163,7 +211,7 @@ describe("ChatApp Ctrl-C handling", () => {
 
 describe("ChatApp bracketed paste", () => {
   it("keeps pasted returns inside the composer until paste ends", async () => {
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
     const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
 
     app.render = vi.fn();
@@ -186,7 +234,7 @@ describe("ChatApp bracketed paste", () => {
 
 describe("ChatApp Shift+Enter", () => {
   it("turns backslash-enter into a newline without sending", async () => {
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
     const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
 
     app.render = vi.fn();
@@ -200,7 +248,7 @@ describe("ChatApp Shift+Enter", () => {
   });
 
   it("inserts a newline when shift is held on return", async () => {
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
     const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
 
     app.render = vi.fn();
@@ -213,7 +261,7 @@ describe("ChatApp Shift+Enter", () => {
   });
 
   it("inserts a newline for meta-enter terminal keybindings", async () => {
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
     const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
 
     app.render = vi.fn();
@@ -227,7 +275,7 @@ describe("ChatApp Shift+Enter", () => {
   });
 
   it("inserts a newline for kitty and modifyOtherKeys Shift+Enter sequences", async () => {
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
     const submitComposer = vi.spyOn(app, "submitComposer").mockResolvedValue(undefined);
 
     app.render = vi.fn();
@@ -245,7 +293,7 @@ describe("ChatApp Shift+Enter", () => {
 
 describe("ChatApp composer word shortcuts", () => {
   it("supports meta-left and meta-b for moving backward by word", async () => {
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
     app.render = vi.fn();
 
     const value = "alpha beta gamma";
@@ -259,7 +307,7 @@ describe("ChatApp composer word shortcuts", () => {
   });
 
   it("supports raw alt-arrow sequences and meta-f/right for moving forward by word", async () => {
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
     app.render = vi.fn();
 
     const value = "alpha beta gamma";
@@ -277,7 +325,7 @@ describe("ChatApp composer word shortcuts", () => {
   });
 
   it("supports meta-backspace for deleting the previous word", async () => {
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
     app.render = vi.fn();
 
     const value = "alpha beta gamma";
@@ -303,7 +351,7 @@ describe("ChatApp thinking command", () => {
       createdAt: 1,
       updatedAt: 2,
     }));
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-thinking";
     app.services = {
@@ -332,7 +380,7 @@ describe("ChatApp thinking command", () => {
       model: "anthropic-oauth/claude-opus-4-7",
       thinking: undefined,
     }));
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-config";
     app.model = "openai/gpt-5.4";
@@ -370,7 +418,7 @@ describe("ChatApp thinking command", () => {
       const resolveThreadRunConfig = vi.fn(async () => {
         throw new Error("daemon offline");
       });
-      const app = new ChatApp() as any;
+      const app = createAppHarness();
 
       app.currentThreadId = "thread-config";
       app.model = "openai/gpt-5.4";
@@ -400,7 +448,7 @@ describe("ChatApp thinking command", () => {
     const updateThread = vi.fn(async () => {
       throw new Error("store unavailable");
     });
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-config";
     app.model = "openai/gpt-5.1";
@@ -446,7 +494,7 @@ describe("ChatApp fresh-session agent selection", () => {
       createdAt: 1,
       updatedAt: 2,
     }));
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
     const expectedModel = "openai/gpt-5.1";
 
     app.currentThreadId = "thread-current";
@@ -495,7 +543,7 @@ describe("ChatApp fresh-session agent selection", () => {
       createdAt: 1,
       updatedAt: 2,
     }));
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
     const expectedModel = "openai/gpt-5.1";
 
     app.currentThreadId = "thread-current";
@@ -555,7 +603,7 @@ describe("ChatApp fresh-session agent selection", () => {
       updatedAt: 2,
     }));
     const createNewApp = () => {
-      const app = new ChatApp() as any;
+      const app = createAppHarness();
       app.model = "anthropic-oauth/claude-opus-4-7";
       app.currentThreadId = "thread-current";
       app.currentThread = {
@@ -606,7 +654,7 @@ describe("ChatApp fresh-session agent selection", () => {
 
 describe("ChatApp history search", () => {
   it("filters history matches and loads the selected prompt into the composer", async () => {
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
     app.render = vi.fn();
     app.inputHistory.push("deploy alpha", "fix bug", "deploy beta");
 
@@ -662,7 +710,7 @@ describe("ChatApp session picker", () => {
     };
     const listAgentSessions = vi.fn(async () => sessions);
     const openSession = vi.fn(async () => selectedThread);
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-b";
     app.currentThread = {
@@ -733,7 +781,7 @@ describe("ChatApp session picker", () => {
     const openSession = vi.fn(async () => {
       throw new Error("missing session");
     });
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-a";
     app.currentThread = {
@@ -753,7 +801,7 @@ describe("ChatApp session picker", () => {
 
     await app.openSessionPicker();
     app.cycleSessionPicker(1);
-    await expect(app.selectSessionPickerEntry()).resolves.toBeUndefined();
+    await app.selectSessionPickerEntry();
 
     expect(openSession).toHaveBeenCalledWith("session-b");
     expect(app.switchThread).not.toHaveBeenCalled();
@@ -775,7 +823,7 @@ describe("ChatApp compact command", () => {
       tokensBefore: 1_200,
       tokensAfter: 400,
     }));
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-compact";
     app.currentThread = {
@@ -808,7 +856,7 @@ describe("ChatApp compact command", () => {
     const compactThread = vi.fn(async () => {
       throw new Error("summary too large");
     });
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-compact";
     app.currentThread = {
@@ -991,7 +1039,7 @@ describe("ChatApp usage command", () => {
       model: "openai/gpt-5.4",
       thinking: "medium" as const,
     }));
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-usage";
     app.currentThread = thread;
@@ -1051,7 +1099,7 @@ describe("ChatApp usage command", () => {
     const resolveThreadRunConfig = vi.fn(async () => {
       throw new Error("daemon offline");
     });
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-usage";
     app.currentThread = thread;
@@ -1077,7 +1125,7 @@ describe("ChatApp usage command", () => {
 describe("ChatApp performance helpers", () => {
   it("reuses cached transcript lines for unchanged assistant entries", () => {
     const renderMarkdownLines = vi.spyOn(markdown, "renderMarkdownLines");
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.transcript.push({
       id: 1,
@@ -1100,7 +1148,7 @@ describe("ChatApp performance helpers", () => {
 
   it("renders usage meta entries through the markdown renderer", () => {
     const renderMarkdownLines = vi.spyOn(markdown, "renderMarkdownLines");
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.transcript.push({
       id: 1,
@@ -1125,7 +1173,7 @@ describe("ChatApp performance helpers", () => {
   });
 
   it("batches transcript changes when appending stored messages", () => {
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
     const markDirty = vi.spyOn(app, "markDirty");
 
     app.appendStoredMessages([
@@ -1163,7 +1211,7 @@ describe("ChatApp performance helpers", () => {
     }));
     const loadTranscript = vi.fn(async () => []);
     const listRuns = vi.fn(async () => []);
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-sync";
     app.services = {
@@ -1195,7 +1243,7 @@ describe("ChatApp performance helpers", () => {
       }));
       const loadTranscript = vi.fn(async () => []);
       const listRuns = vi.fn(async () => []);
-      const app = new ChatApp() as any;
+      const app = createAppHarness();
 
       app.currentThreadId = "thread-sync";
       app.services = {
@@ -1242,7 +1290,7 @@ describe("ChatApp performance helpers", () => {
       updatedAt: 2,
     }));
     const listRuns = vi.fn(async () => []);
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.currentThreadId = "thread-sync";
     app.services = {
@@ -1388,7 +1436,7 @@ describe("buildChatViewModel", () => {
 
 describe("ChatApp agent header", () => {
   it("uses the session agent key in the header when switching threads", async () => {
-    const app = new ChatApp() as any;
+    const app = createAppHarness();
 
     app.services = {
       identity: {
@@ -1461,7 +1509,6 @@ describe("ChatApp explicit session id", () => {
         createdAt: 1,
         updatedAt: 1,
       },
-      recoverOrphanedRuns: vi.fn(async () => []),
       openSession: vi.fn(async () => {
         throw new Error("Session session-locked does not belong to identity alice.");
       }),
@@ -1470,7 +1517,7 @@ describe("ChatApp explicit session id", () => {
       }),
     } as unknown as ChatRuntimeServices);
 
-    const app = new ChatApp({ session: "session-locked" }) as any;
+    const app = createAppHarness({ session: "session-locked" });
     app.switchThread = vi.fn(async () => {});
 
     await expect(app.initializeRuntime()).rejects.toThrow("Session session-locked does not belong to identity alice.");
@@ -1507,10 +1554,10 @@ describe("ChatApp explicit session id", () => {
       },
     } as unknown as ChatRuntimeServices);
 
-    const app = new ChatApp({ session: "session-stored" }) as any;
+    const app = createAppHarness({ session: "session-stored" });
     const expectedModel = app.model;
 
-    await expect(app.initializeRuntime()).resolves.toBeUndefined();
+    await app.initializeRuntime();
     expect(app.currentThreadId).toBe("thread-session");
     expect(app.model).toBe(expectedModel);
 

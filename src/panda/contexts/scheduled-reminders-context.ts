@@ -1,7 +1,9 @@
 import {LlmContext} from "../../kernel/agent/llm-context.js";
-import type {ScheduledTaskRecord, ScheduledTaskStore} from "../../domain/scheduling/tasks/index.js";
+import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
+import type {ScheduledTaskRecord} from "../../domain/scheduling/tasks/types.js";
 import {collapseWhitespace, stripInvisibleUnicode, truncateText} from "../../lib/strings.js";
 import {renderScheduledRemindersContext} from "../../prompts/contexts/scheduled-reminders.js";
+import {resolveNow} from "./shared.js";
 
 const DEFAULT_MAX_ITEMS = 12;
 const INSTRUCTION_PREVIEW_CHARS = 160;
@@ -11,10 +13,6 @@ interface ScheduledRemindersContextOptions {
   sessionId: string;
   now?: Date | (() => Date);
   maxItems?: number;
-}
-
-function resolveNow(now?: Date | (() => Date)): Date {
-  return typeof now === "function" ? now() : now ?? new Date();
 }
 
 function sanitizeReminderField(value: string): string {

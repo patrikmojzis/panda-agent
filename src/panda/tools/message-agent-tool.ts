@@ -6,14 +6,14 @@ import {z} from "zod";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import type {OutboundFileItem, OutboundImageItem, OutboundItem} from "../../domain/channels/types.js";
 import {
   readExecutionEnvironmentFilesystemMetadata,
-  type ResolvedExecutionEnvironment
-} from "../../domain/execution-environments/index.js";
-import type {A2AEnvironmentPathHints, A2ASenderEnvironmentSnapshot} from "../../domain/threads/requests/index.js";
+} from "../../domain/execution-environments/filesystem.js";
+import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
+import type {A2AEnvironmentPathHints, A2ASenderEnvironmentSnapshot} from "../../domain/threads/requests/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveReadableContextPath} from "../../app/runtime/panda-path-context.js";
 

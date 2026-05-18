@@ -1,5 +1,3 @@
-import type {Pool, PoolClient} from "pg";
-
 import {
     type AuthenticationCreds,
     type AuthenticationState,
@@ -10,26 +8,13 @@ import {
     type SignalDataTypeMap,
 } from "baileys";
 
+import {requireTimestampMillis} from "../../../lib/postgres-values.js";
+import type {PgPoolLike} from "../../../lib/postgres-query.js";
+import {requireNonEmptyString, uniqueTrimmedStrings} from "../../../lib/strings.js";
 import {
-    buildRuntimeRelationNames,
-    CREATE_RUNTIME_SCHEMA_SQL,
-    quoteIdentifier,
-    toMillis,
-} from "../../../domain/threads/runtime/postgres-shared.js";
-
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-interface PgPoolLike extends PgQueryable {
-  connect(): Promise<PoolClient>;
-}
-
-interface WhatsAppAuthTableNames {
-  prefix: string;
-  authCreds: string;
-  authKeys: string;
-}
+  buildWhatsAppAuthTableNames,
+  ensurePostgresWhatsAppAuthSchema,
+} from "./auth-schema.js";
 
 export interface PostgresWhatsAppAuthStoreOptions {
   pool: PgPoolLike;
@@ -51,29 +36,8 @@ export interface WhatsAppAuthCredsRecord {
   updatedAt: number;
 }
 
-function buildWhatsAppAuthTableNames(): WhatsAppAuthTableNames {
-  return buildRuntimeRelationNames({
-    authCreds: "whatsapp_auth_creds",
-    authKeys: "whatsapp_auth_keys",
-  });
-}
-
-function requireTrimmedConnectorKey(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error("WhatsApp auth connector key must not be empty.");
-  }
-
-  return trimmed;
-}
-
-function requireTrimmedKeyPart(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`WhatsApp auth ${field} must not be empty.`);
-  }
-
-  return trimmed;
+function requireTrimmedKeyPart(field: string, value: unknown): string {
+  return requireNonEmptyString(value, `WhatsApp auth ${field} must not be empty.`);
 }
 
 function serializeBaileysJson(value: unknown): string {
@@ -88,20 +52,32 @@ function reviveBaileysJson<T>(value: unknown): T | null {
   return JSON.parse(JSON.stringify(value), BufferJSON.reviver) as T;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function reviveAppStateSyncKey(value: unknown): SignalDataTypeMap["app-state-sync-key"] | undefined {
+  const revived = reviveBaileysJson<unknown>(value);
+  if (revived === null) {
+    return undefined;
+  }
+  if (!isRecord(revived)) {
+    throw new Error("WhatsApp auth app-state-sync-key value must be an object.");
+  }
+
+  return proto.Message.AppStateSyncKeyData.fromObject(revived);
+}
+
 function reviveSignalValue<T extends keyof SignalDataTypeMap>(
   type: T,
   value: unknown,
 ): SignalDataTypeMap[T] | undefined {
-  const revived = reviveBaileysJson<SignalDataTypeMap[T]>(value);
-  if (revived === null) {
-    return undefined;
-  }
-
   if (type === "app-state-sync-key") {
-    return proto.Message.AppStateSyncKeyData.fromObject(revived as object) as unknown as SignalDataTypeMap[T];
+    return reviveAppStateSyncKey(value) as SignalDataTypeMap[T] | undefined;
   }
 
-  return revived;
+  const revived = reviveBaileysJson<SignalDataTypeMap[T]>(value);
+  return revived === null ? undefined : revived;
 }
 
 function parseCredsRow(row: Record<string, unknown>): WhatsAppAuthCredsRecord {
@@ -111,16 +87,16 @@ function parseCredsRow(row: Record<string, unknown>): WhatsAppAuthCredsRecord {
   }
 
   return {
-    connectorKey: String(row.connector_key),
+    connectorKey: requireTrimmedKeyPart("connector key", row.connector_key),
     creds,
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    createdAt: requireTimestampMillis(row.created_at, "WhatsApp auth created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "WhatsApp auth updated_at must be a valid timestamp."),
   };
 }
 
 export class PostgresWhatsAppAuthStore {
   private readonly pool: PgPoolLike;
-  private readonly tables: WhatsAppAuthTableNames;
+  private readonly tables: ReturnType<typeof buildWhatsAppAuthTableNames>;
 
   constructor(options: PostgresWhatsAppAuthStoreOptions) {
     this.pool = options.pool;
@@ -128,34 +104,11 @@ export class PostgresWhatsAppAuthStore {
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.authCreds} (
-        connector_key TEXT PRIMARY KEY,
-        creds JSONB NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.authKeys} (
-        connector_key TEXT NOT NULL,
-        category TEXT NOT NULL,
-        key_id TEXT NOT NULL,
-        value JSONB NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (connector_key, category, key_id)
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_whatsapp_auth_keys_updated_idx`)}
-      ON ${this.tables.authKeys} (updated_at DESC)
-    `);
+    await ensurePostgresWhatsAppAuthSchema(this.pool);
   }
 
   async loadCreds(connectorKey: string): Promise<AuthenticationCreds> {
-    const normalizedConnectorKey = requireTrimmedConnectorKey(connectorKey);
+    const normalizedConnectorKey = requireTrimmedKeyPart("connector key", connectorKey);
     const result = await this.pool.query(
       `
         SELECT *
@@ -174,7 +127,7 @@ export class PostgresWhatsAppAuthStore {
   }
 
   async saveCreds(connectorKey: string, creds: AuthenticationCreds): Promise<WhatsAppAuthCredsRecord> {
-    const normalizedConnectorKey = requireTrimmedConnectorKey(connectorKey);
+    const normalizedConnectorKey = requireTrimmedKeyPart("connector key", connectorKey);
     const result = await this.pool.query(
       `
         INSERT INTO ${this.tables.authCreds} (
@@ -204,9 +157,9 @@ export class PostgresWhatsAppAuthStore {
     type: T,
     ids: readonly string[],
   ): Promise<{ [id: string]: SignalDataTypeMap[T] }> {
-    const normalizedConnectorKey = requireTrimmedConnectorKey(connectorKey);
+    const normalizedConnectorKey = requireTrimmedKeyPart("connector key", connectorKey);
     const normalizedType = requireTrimmedKeyPart("key category", type);
-    const normalizedIds = [...new Set(ids.map((id) => requireTrimmedKeyPart("key id", id)))];
+    const normalizedIds = uniqueTrimmedStrings(ids.map((id) => requireTrimmedKeyPart("key id", id)));
 
     if (normalizedIds.length === 0) {
       return {};
@@ -229,7 +182,7 @@ export class PostgresWhatsAppAuthStore {
 
     const valuesById = new Map<string, unknown>();
     for (const row of result.rows as Array<Record<string, unknown>>) {
-      valuesById.set(String(row.key_id), row.value);
+      valuesById.set(requireTrimmedKeyPart("key id", row.key_id), row.value);
     }
 
     const data: Record<string, SignalDataTypeMap[T] | undefined> = {};
@@ -241,7 +194,7 @@ export class PostgresWhatsAppAuthStore {
   }
 
   async saveSignalKeys(connectorKey: string, data: SignalDataSet): Promise<void> {
-    const normalizedConnectorKey = requireTrimmedConnectorKey(connectorKey);
+    const normalizedConnectorKey = requireTrimmedKeyPart("connector key", connectorKey);
     const client = await this.pool.connect();
 
     try {
@@ -310,7 +263,7 @@ export class PostgresWhatsAppAuthStore {
   }
 
   async createAuthState(connectorKey: string): Promise<WhatsAppAuthStateHandle> {
-    const normalizedConnectorKey = requireTrimmedConnectorKey(connectorKey);
+    const normalizedConnectorKey = requireTrimmedKeyPart("connector key", connectorKey);
     const creds = await this.loadCreds(normalizedConnectorKey);
 
     return {
@@ -370,7 +323,7 @@ export class PostgresWhatsAppAuthStore {
       },
       saveCreds: async () => {},
       promoteTo: async (connectorKey) => {
-        const normalizedConnectorKey = requireTrimmedConnectorKey(connectorKey);
+        const normalizedConnectorKey = requireTrimmedKeyPart("connector key", connectorKey);
         await this.saveCreds(normalizedConnectorKey, creds);
 
         for (const [category, values] of keyStore.entries()) {

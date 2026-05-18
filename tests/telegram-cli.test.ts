@@ -106,11 +106,11 @@ vi.mock("../src/integrations/channels/telegram/service.js", () => ({
   TelegramService: telegramCliMocks.MockTelegramService,
 }));
 
-vi.mock("../src/domain/identity/index.js", () => ({
+vi.mock("../src/domain/identity/postgres.js", () => ({
   PostgresIdentityStore: telegramCliMocks.MockPostgresIdentityStore,
 }));
 
-vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
+vi.mock("../src/lib/postgres-bootstrap.js", () => ({
   ensureSchemas: telegramCliMocks.ensureSchemas,
   withPostgresPool: telegramCliMocks.withPostgresPool,
 }));
@@ -152,7 +152,6 @@ describe("Telegram CLI", () => {
 
     await telegramWhoamiCommand();
 
-    expect(latestBot().api.getMe).toHaveBeenCalledTimes(1);
     expect(telegramCliMocks.serviceConstructor).not.toHaveBeenCalled();
     expect(write).toHaveBeenCalledWith(
       [

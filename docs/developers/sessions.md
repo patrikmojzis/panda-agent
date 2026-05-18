@@ -70,6 +70,21 @@ For a new external conversation:
 - if the identity has multiple paired agents, an operator must bind the conversation explicitly
 
 That explicit bind lives in `panda session bind-conversation`.
+Channel UIs should not invent hidden session-management UX in-band. New direct
+conversations bind to a session; explicit rebinding is an operator/admin action.
+
+Session-owned delivery must resolve the current thread at the last responsible
+moment. Do not read `session.currentThreadId` directly from channel workers,
+scheduled-task runners, watch runners, gateway delivery, app wake actions, or
+A2A inbound handling. Use `resolveCurrentSessionThread` when the caller must
+record the resolved thread id, `submitCurrentSessionInput` when the caller only
+needs to wake the current backing thread through the live daemon, and
+`enqueueCurrentSessionInput` when already-reserved work must persist directly
+through the thread store. That keeps `/reset` attached to the durable session
+instead of the stale backing thread.
+If a delivery path performs a pre-submit check such as “is this thread busy,”
+re-resolve after the check and apply the check to the final target before
+submitting. Do not check one backing thread and then submit to another.
 
 ## Runtime Context
 
@@ -98,8 +113,9 @@ Long-lived automation follows the session:
 - watches store `session_id`
 - scheduled tasks store `session_id`
 - scheduled tasks may store `created_from_message_id` so the agent can query `session.messages` for origin context
+- scheduled task schema and cross-table integrity checks live in `src/domain/scheduling/tasks/postgres-schema.ts`
 - scheduled reminder context shows active scheduled tasks for the current session
-- runners resolve `session.current_thread_id` at fire time
+- runners resolve `session.current_thread_id` at fire time; if they wait for old thread work to finish, they re-resolve before delivery
 
 So:
 
@@ -117,7 +133,8 @@ So:
 ## Code Map
 
 - [src/domain/sessions](../../src/domain/sessions)
+- [src/domain/sessions/current-thread.ts](../../src/domain/sessions/current-thread.ts) resolves and submits session-owned runtime work onto the session's current thread
 - [src/app/runtime/daemon-threads.ts](../../src/app/runtime/daemon-threads.ts)
 - [src/app/runtime/thread-definition.ts](../../src/app/runtime/thread-definition.ts)
-- [src/domain/threads/conversations/repo.ts](../../src/domain/threads/conversations/repo.ts)
-- [src/domain/threads/routes/repo.ts](../../src/domain/threads/routes/repo.ts)
+- [src/domain/sessions/conversations/repo.ts](../../src/domain/sessions/conversations/repo.ts)
+- [src/domain/sessions/routes/repo.ts](../../src/domain/sessions/routes/repo.ts)

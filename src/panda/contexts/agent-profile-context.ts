@@ -6,7 +6,7 @@ import {
 } from "../../prompts/contexts/agent-profile.js";
 import type {AgentStore} from "../../domain/agents/store.js";
 import {normalizeSkillKey} from "../../domain/agents/types.js";
-import type {ExecutionSkillPolicy} from "../../domain/execution-environments/index.js";
+import type {ExecutionSkillPolicy} from "../../domain/execution-environments/types.js";
 
 // Heartbeat guidance should only show up on heartbeat wakes, not in every normal run.
 const AGENT_PROMPT_SLUGS = ["agent"] as const;
@@ -15,8 +15,10 @@ export type AgentProfileContextSection =
   | "prompts"
   | "skills";
 
+export type AgentProfileStore = Pick<AgentStore, "listAgentSkills" | "readAgentPrompt">;
+
 export interface AgentProfileContextOptions {
-  store: AgentStore;
+  store: AgentProfileStore;
   agentKey: string;
   sections?: readonly AgentProfileContextSection[];
   skillPolicy?: ExecutionSkillPolicy;

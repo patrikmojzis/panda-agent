@@ -14,10 +14,6 @@ interface ObserveCliOptions {
   tail?: number;
 }
 
-function parseThreadIdOption(value: string): string {
-  return parseRequiredOptionValue(value, "Thread id");
-}
-
 function resolveObserveTarget(options: ObserveCliOptions): ObserveRunOptions["target"] {
   const targets: ObserveRunOptions["target"][] = [];
   if (options.agent) {
@@ -41,7 +37,7 @@ function resolveObserveTarget(options: ObserveCliOptions): ObserveRunOptions["ta
   return targets[0]!;
 }
 
-export async function runObserveCliCommand(options: ObserveCliOptions): Promise<void> {
+async function runObserveCliCommand(options: ObserveCliOptions): Promise<void> {
   await runObserveApp({
     target: resolveObserveTarget(options),
     dbUrl: options.dbUrl,
@@ -56,7 +52,7 @@ export function registerObserveCommand(program: Command): void {
     .description("Follow stored Panda activity without opening chat")
     .option("--agent <agentKey>", "Observe an agent's main session", parseAgentKey)
     .option("--session <sessionId>", "Observe a session and follow resets", parseSessionIdOption)
-    .option("--thread <threadId>", "Observe one concrete thread", parseThreadIdOption)
+    .option("--thread <threadId>", "Observe one concrete thread", (value) => parseRequiredOptionValue(value, "Thread id"))
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .option("--once", "Print the current snapshot once and exit")
     .option("--tail <messages>", "Stored messages to print on the initial snapshot", parsePositiveIntegerOption)

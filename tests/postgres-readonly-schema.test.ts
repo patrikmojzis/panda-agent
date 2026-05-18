@@ -2,7 +2,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {DEFAULT_AGENT_PROMPT_TEMPLATES,} from "../src/domain/agents/index.js";
-import {PostgresTelepathyDeviceStore} from "../src/domain/telepathy/index.js";
+import {PostgresTelepathyDeviceStore} from "../src/domain/telepathy/postgres.js";
 import {ensureReadonlySessionQuerySchema} from "../src/domain/threads/runtime/index.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";

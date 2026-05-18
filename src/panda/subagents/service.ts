@@ -1,20 +1,19 @@
 import type {AssistantMessage, Message} from "@mariozechner/pi-ai";
 
-import {Agent, stringToUserMessage, Thread, ToolError} from "../../kernel/agent/index.js";
+import {Agent} from "../../kernel/agent/agent.js";
+import {ToolError} from "../../kernel/agent/exceptions.js";
+import {stringToUserMessage} from "../../kernel/agent/helpers/input.js";
+import {joinMessageTextParts} from "../../kernel/agent/helpers/message-text.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
+import {Thread} from "../../kernel/agent/thread.js";
 import type {AgentStore} from "../../domain/agents/store.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ThreadDefinitionResolver} from "../../domain/threads/runtime/types.js";
 import {renderSubagentHandoff} from "../../prompts/runtime/subagents.js";
-import {
-    resolveDefaultAgentBrowserSubagentModelSelector,
-    resolveDefaultAgentMemorySubagentModelSelector,
-    resolveDefaultAgentSkillMaintainerSubagentModelSelector,
-    resolveDefaultAgentWorkspaceSubagentModelSelector,
-} from "../defaults.js";
+import {resolveDefaultAgentSubagentModelSelector} from "../defaults.js";
 import {buildDefaultAgentLlmContexts} from "../contexts/builder.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
-import type {WikiBindingService} from "../../domain/wiki/index.js";
+import type {WikiBindingService} from "../../domain/wiki/service.js";
 import type {DefaultAgentToolsets} from "../definition.js";
 import {type DefaultAgentSubagentRole, getDefaultAgentSubagentRolePolicy,} from "./policy.js";
 
@@ -34,8 +33,12 @@ export interface DefaultAgentSubagentRunResult {
   durationMs: number;
 }
 
+export type DefaultAgentSubagentStore =
+  Pick<ThreadRuntimeStore, "getThread">
+  & Partial<Pick<ThreadRuntimeStore, "listToolJobs">>;
+
 export interface DefaultAgentSubagentServiceOptions {
-  store: ThreadRuntimeStore;
+  store: DefaultAgentSubagentStore;
   resolveDefinition: ThreadDefinitionResolver;
   toolsets: Pick<DefaultAgentToolsets, "workspace" | "memory" | "browser" | "skill_maintainer">;
   agentStore?: AgentStore;
@@ -65,27 +68,17 @@ function buildSubagentContext(
 }
 
 function extractAssistantText(message: AssistantMessage | null): string {
-  const text = message?.content.flatMap((part) => {
-    return part.type === "text" && part.text.trim() ? [part.text.trim()] : [];
-  }).join("\n\n") ?? "";
-  return text.trim();
+  return message ? joinMessageTextParts(message.content) : "";
 }
 
-function resolveDefaultSubagentModelSelector(role: DefaultAgentSubagentRole): string | undefined {
-  switch (role) {
-    case "workspace":
-      return resolveDefaultAgentWorkspaceSubagentModelSelector();
-    case "memory":
-      return resolveDefaultAgentMemorySubagentModelSelector();
-    case "browser":
-      return resolveDefaultAgentBrowserSubagentModelSelector();
-    case "skill_maintainer":
-      return resolveDefaultAgentSkillMaintainerSubagentModelSelector();
-  }
+function hasToolJobListing(
+  store: DefaultAgentSubagentStore,
+): store is DefaultAgentSubagentStore & Pick<ThreadRuntimeStore, "listToolJobs"> {
+  return typeof store.listToolJobs === "function";
 }
 
 export class DefaultAgentSubagentService {
-  private readonly store: ThreadRuntimeStore;
+  private readonly store: DefaultAgentSubagentStore;
   private readonly resolveDefinition: ThreadDefinitionResolver;
   private readonly toolsets: Pick<DefaultAgentToolsets, "workspace" | "memory" | "browser" | "skill_maintainer">;
   private readonly agentStore?: DefaultAgentSubagentServiceOptions["agentStore"];
@@ -122,8 +115,8 @@ export class DefaultAgentSubagentService {
     const childContext = buildSubagentContext(parentContext, currentDepth + 1);
     const childMessages: Message[] = [stringToUserMessage(renderSubagentHandoff(input.task, input.context))];
     const childTools = this.toolsets[policy.toolset];
-    const threadStore = typeof this.store.listToolJobs === "function" ? this.store : undefined;
-    const defaultRoleModel = resolveDefaultSubagentModelSelector(input.role);
+    const threadStore = hasToolJobListing(this.store) ? this.store : undefined;
+    const defaultRoleModel = resolveDefaultAgentSubagentModelSelector(input.role);
     const childThread = new Thread<DefaultAgentSessionContext>({
       agent: new Agent({
         name: `${childContext.agentKey}-${input.role}`,

@@ -5,18 +5,20 @@ import {validateWatchSourcePaths} from "./path-validation.js";
 
 const CREATE_PREVIEW_WATCH_ID = "watch-create-preview";
 
-export interface WatchMutationContext {
+interface WatchMutationContext {
   agentKey: string;
   sessionId: string;
   createdByIdentityId?: string;
 }
 
-export interface CreateWatchMutationInput extends Omit<CreateWatchInput, "sessionId" | "createdByIdentityId" | "state" | "nextPollAt"> {}
+interface CreateWatchMutationInput extends Omit<CreateWatchInput, "sessionId" | "createdByIdentityId" | "state" | "nextPollAt"> {}
 
-export interface UpdateWatchMutationInput extends Omit<UpdateWatchInput, "sessionId" | "state" | "nextPollAt"> {}
+interface UpdateWatchMutationInput extends Omit<UpdateWatchInput, "sessionId" | "state" | "nextPollAt"> {}
 
-export interface WatchMutationServiceOptions {
-  store: WatchStore;
+type WatchMutationStore = Pick<WatchStore, "createWatch" | "getWatch" | "updateWatch">;
+
+interface WatchMutationServiceOptions {
+  store: WatchMutationStore;
   evaluateWatch: WatchEvaluator;
 }
 
@@ -83,7 +85,7 @@ function ensureSessionAccess(watch: WatchRecord, sessionId: string): WatchRecord
 }
 
 export class WatchMutationService {
-  private readonly store: WatchStore;
+  private readonly store: WatchMutationStore;
   private readonly evaluateWatchFn: WatchEvaluator;
 
   constructor(options: WatchMutationServiceOptions) {
@@ -103,7 +105,7 @@ export class WatchMutationService {
       ? Date.now() + candidate.intervalMinutes * 60_000
       : null;
 
-    return await this.store.createWatch({
+    return this.store.createWatch({
       sessionId: context.sessionId,
       createdByIdentityId: context.createdByIdentityId,
       title: candidate.title,
@@ -132,7 +134,7 @@ export class WatchMutationService {
       ? (enabled ? evaluation.nextState : null)
       : undefined;
 
-    return await this.store.updateWatch({
+    return this.store.updateWatch({
       watchId: input.watchId,
       sessionId: context.sessionId,
       title: input.title,

@@ -1,6 +1,7 @@
 import {LlmContext} from "../../kernel/agent/llm-context.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {renderBackgroundJobsContext} from "../../prompts/contexts/background-jobs.js";
+import {resolveNow} from "./shared.js";
 
 const COMMAND_PREVIEW_CHARS = 120;
 
@@ -40,14 +41,6 @@ export interface BackgroundJobsContextOptions {
   store: Pick<ThreadRuntimeStore, "listToolJobs">;
   threadId: string;
   now?: Date | (() => Date);
-}
-
-function resolveNow(now?: Date | (() => Date)): Date {
-  if (typeof now === "function") {
-    return now();
-  }
-
-  return now ?? new Date();
 }
 
 export class BackgroundJobsContext extends LlmContext {

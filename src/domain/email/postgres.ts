@@ -1,22 +1,19 @@
+import {optionalTimestampMillis, requireTimestampMillis, toJson} from "../../lib/postgres-values.js";
 import {randomUUID} from "node:crypto";
 
-import type {PoolClient} from "pg";
-
-import {buildAgentTableNames} from "../agents/postgres-shared.js";
-import type {PgPoolLike, PgQueryable} from "../threads/runtime/postgres-db.js";
-import {withTransaction} from "../threads/runtime/postgres-db.js";
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis,} from "../threads/runtime/postgres-shared.js";
-import {addConstraint, assertIntegrityChecks} from "../../lib/postgres-integrity.js";
-import {collapseWhitespace, trimToUndefined} from "../../lib/strings.js";
+import {requireBoolean} from "../../lib/booleans.js";
+import {requireNonNegativeInteger} from "../../lib/numbers.js";
+import type {PgClientLike, PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
+import {withTransaction} from "../../lib/postgres-transaction.js";
+import {requireTrimmedString, trimToUndefined} from "../../lib/strings.js";
 import {
     DEFAULT_EMAIL_MAILBOXES,
-    markExternalEmailContent,
     normalizeEmailAccountKey,
     normalizeEmailAddress,
     normalizeEmailMailbox,
-    normalizeOptionalEmailAddress,
 } from "./shared.js";
-import {summarizeEmailAuthentication} from "./auth.js";
+import {normalizeEmailMessageInput} from "./message-input.js";
+import {ensurePostgresEmailSchema} from "./postgres-schema.js";
 import {buildEmailTableNames, type EmailTableNames} from "./postgres-shared.js";
 import type {
     EmailAccountRecord,
@@ -27,8 +24,10 @@ import type {
     EmailAuthSummary,
     EmailAuthVerdict,
     EmailEndpointConfig,
+    EmailMessageDirection,
     EmailMessageRecipientRecord,
     EmailMessageRecord,
+    EmailRecipientRole,
     EmailRecipientInput,
     EmailStore,
     RecordEmailMessageInput,
@@ -40,13 +39,8 @@ export interface PostgresEmailStoreOptions {
   pool: PgPoolLike;
 }
 
-function requireTrimmed(field: string, value: string | undefined): string {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    throw new Error(`Email ${field} must not be empty.`);
-  }
-
-  return trimmed;
+function requireTrimmed(field: string, value: unknown): string {
+  return requireTrimmedString(value, `Email ${field} must be a string.`, `Email ${field} must not be empty.`);
 }
 
 function normalizeEndpoint(input: EmailEndpointConfig, label: string): EmailEndpointConfig {
@@ -81,312 +75,209 @@ function parseEndpoint(value: unknown, field: string): EmailEndpointConfig {
 
   const record = value as Record<string, unknown>;
   return normalizeEndpoint({
-    host: String(record.host ?? ""),
-    port: typeof record.port === "number" ? record.port : undefined,
-    secure: typeof record.secure === "boolean" ? record.secure : undefined,
-    usernameCredentialEnvKey: String(record.usernameCredentialEnvKey ?? ""),
-    passwordCredentialEnvKey: String(record.passwordCredentialEnvKey ?? ""),
+    host: requireTrimmed(`account ${field} host`, record.host),
+    port: parseOptionalPort(record.port, field),
+    secure: parseOptionalEndpointBoolean(record.secure, field),
+    usernameCredentialEnvKey: requireTrimmed(`account ${field} username credential key`, record.usernameCredentialEnvKey),
+    passwordCredentialEnvKey: requireTrimmed(`account ${field} password credential key`, record.passwordCredentialEnvKey),
   }, field);
 }
 
 function parseMailboxes(value: unknown): readonly string[] {
   if (!Array.isArray(value)) {
-    return [...DEFAULT_EMAIL_MAILBOXES];
+    throw new Error("Email account mailboxes must be an array.");
   }
 
-  const mailboxes = value.map((entry) => normalizeEmailMailbox(String(entry)));
+  const mailboxes = value.map((entry) => normalizeEmailMailbox(requireTrimmed("account mailbox", entry)));
   return mailboxes.length > 0 ? mailboxes : [...DEFAULT_EMAIL_MAILBOXES];
+}
+
+function parseOptionalPort(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "number") {
+    throw new Error(`Email account ${field} port must be a number.`);
+  }
+
+  return value;
+}
+
+function parseOptionalEndpointBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "boolean") {
+    throw new Error(`Email account ${field} secure flag must be a boolean.`);
+  }
+
+  return value;
+}
+
+function parseMessageDirection(value: unknown): EmailMessageDirection {
+  if (value === "inbound" || value === "outbound") {
+    return value;
+  }
+
+  throw new Error(`Unsupported email message direction ${String(value)}.`);
+}
+
+function parseRecipientRole(value: unknown): EmailRecipientRole {
+  if (value === "from" || value === "reply_to" || value === "to" || value === "cc") {
+    return value;
+  }
+
+  throw new Error(`Unsupported email recipient role ${String(value)}.`);
+}
+
+function parseAuthVerdict(value: unknown): EmailAuthVerdict {
+  if (
+    value === "pass"
+    || value === "fail"
+    || value === "softfail"
+    || value === "neutral"
+    || value === "none"
+    || value === "temperror"
+    || value === "permerror"
+    || value === "unknown"
+  ) {
+    return value;
+  }
+
+  throw new Error(`Unsupported email authentication verdict ${String(value)}.`);
+}
+
+function parseOptionalAuthVerdict(value: unknown): EmailAuthVerdict | undefined {
+  return value === null || value === undefined ? undefined : parseAuthVerdict(value);
+}
+
+function parseAuthSummary(value: unknown): EmailAuthSummary {
+  if (value === "trusted" || value === "suspicious" || value === "unknown") {
+    return value;
+  }
+
+  throw new Error(`Unsupported email authentication summary ${String(value)}.`);
+}
+
+function parseOptionalString(field: string, value: unknown): string | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw new Error(`Email ${field} must be a string.`);
+  }
+
+  return value;
+}
+
+function parseOptionalNormalizedAddress(field: string, value: unknown): string | undefined {
+  const parsed = parseOptionalString(field, value);
+  return parsed === undefined ? undefined : normalizeEmailAddress(parsed);
+}
+
+function parseOptionalNonNegativeInteger(field: string, value: unknown): number | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  return requireNonNegativeInteger(value, `Email ${field}`);
 }
 
 function parseAccountRow(row: Record<string, unknown>): EmailAccountRecord {
   return {
-    agentKey: String(row.agent_key),
-    accountKey: String(row.account_key),
-    fromAddress: String(row.from_address),
-    fromName: row.from_name === null ? undefined : String(row.from_name),
+    agentKey: requireTrimmed("account agent key", row.agent_key),
+    accountKey: normalizeEmailAccountKey(requireTrimmed("account key", row.account_key)),
+    fromAddress: normalizeEmailAddress(requireTrimmed("account from address", row.from_address)),
+    fromName: parseOptionalString("account from name", row.from_name),
     imap: parseEndpoint(row.imap_config, "IMAP"),
     smtp: parseEndpoint(row.smtp_config, "SMTP"),
     mailboxes: parseMailboxes(row.mailboxes),
     syncState: normalizeSyncState(row.sync_state),
-    enabled: Boolean(row.enabled),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    enabled: requireBoolean(row.enabled, "Email account enabled flag must be a boolean."),
+    createdAt: requireTimestampMillis(row.created_at, "Email account created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Email account updated_at must be a valid timestamp."),
   };
 }
 
 function parseAllowedRecipientRow(row: Record<string, unknown>): EmailAllowedRecipientRecord {
   return {
-    agentKey: String(row.agent_key),
-    accountKey: String(row.account_key),
-    address: String(row.address),
-    createdAt: toMillis(row.created_at),
+    agentKey: requireTrimmed("allowed recipient agent key", row.agent_key),
+    accountKey: normalizeEmailAccountKey(requireTrimmed("allowed recipient account key", row.account_key)),
+    address: normalizeEmailAddress(requireTrimmed("allowed recipient address", row.address)),
+    createdAt: requireTimestampMillis(row.created_at, "Email allowed recipient created_at must be a valid timestamp."),
   };
 }
 
 function parseMessageRow(row: Record<string, unknown>): EmailMessageRecord {
   return {
-    id: String(row.id),
-    agentKey: String(row.agent_key),
-    accountKey: String(row.account_key),
-    direction: String(row.direction) as EmailMessageRecord["direction"],
-    mailbox: row.mailbox === null ? undefined : String(row.mailbox),
-    uid: row.uid === null ? undefined : Number(row.uid),
-    uidValidity: row.uid_validity === null ? undefined : String(row.uid_validity),
-    messageIdHeader: row.message_id_header === null ? undefined : String(row.message_id_header),
-    inReplyTo: row.in_reply_to === null ? undefined : String(row.in_reply_to),
-    referencesHeader: row.references_header === null ? undefined : String(row.references_header),
-    threadKey: String(row.thread_key),
-    subject: row.subject === null ? undefined : String(row.subject),
-    fromName: row.from_name === null ? undefined : String(row.from_name),
-    fromAddress: row.from_address === null ? undefined : String(row.from_address),
-    replyToAddress: row.reply_to_address === null ? undefined : String(row.reply_to_address),
-    sentAt: row.sent_at === null ? undefined : toMillis(row.sent_at),
-    receivedAt: row.received_at === null ? undefined : toMillis(row.received_at),
-    bodyText: row.body_text === null ? undefined : String(row.body_text),
-    bodyExcerpt: row.body_excerpt === null ? undefined : String(row.body_excerpt),
-    authenticationResults: row.authentication_results === null ? undefined : String(row.authentication_results),
-    authSpf: row.auth_spf === null ? undefined : String(row.auth_spf) as EmailAuthVerdict,
-    authDkim: row.auth_dkim === null ? undefined : String(row.auth_dkim) as EmailAuthVerdict,
-    authDmarc: row.auth_dmarc === null ? undefined : String(row.auth_dmarc) as EmailAuthVerdict,
-    authSummary: String(row.auth_summary) as EmailAuthSummary,
-    hasAttachments: Boolean(row.has_attachments),
-    sourceDeliveryId: row.source_delivery_id === null ? undefined : String(row.source_delivery_id),
-    createdAt: toMillis(row.created_at),
+    id: requireTrimmed("message id", row.id),
+    agentKey: requireTrimmed("message agent key", row.agent_key),
+    accountKey: normalizeEmailAccountKey(requireTrimmed("message account key", row.account_key)),
+    direction: parseMessageDirection(row.direction),
+    mailbox: parseOptionalString("message mailbox", row.mailbox),
+    uid: parseOptionalNonNegativeInteger("message uid", row.uid),
+    uidValidity: parseOptionalString("message uid validity", row.uid_validity),
+    messageIdHeader: parseOptionalString("message-id header", row.message_id_header),
+    inReplyTo: parseOptionalString("in-reply-to header", row.in_reply_to),
+    referencesHeader: parseOptionalString("references header", row.references_header),
+    threadKey: requireTrimmed("message thread key", row.thread_key),
+    subject: parseOptionalString("message subject", row.subject),
+    fromName: parseOptionalString("message from name", row.from_name),
+    fromAddress: parseOptionalNormalizedAddress("message from address", row.from_address),
+    replyToAddress: parseOptionalNormalizedAddress("message reply-to address", row.reply_to_address),
+    sentAt: optionalTimestampMillis(row.sent_at, "Email message sent_at must be a valid timestamp."),
+    receivedAt: optionalTimestampMillis(row.received_at, "Email message received_at must be a valid timestamp."),
+    bodyText: parseOptionalString("message body text", row.body_text),
+    bodyExcerpt: parseOptionalString("message body excerpt", row.body_excerpt),
+    authenticationResults: parseOptionalString("message authentication results", row.authentication_results),
+    authSpf: parseOptionalAuthVerdict(row.auth_spf),
+    authDkim: parseOptionalAuthVerdict(row.auth_dkim),
+    authDmarc: parseOptionalAuthVerdict(row.auth_dmarc),
+    authSummary: parseAuthSummary(row.auth_summary),
+    hasAttachments: requireBoolean(row.has_attachments, "Email message attachment flag must be a boolean."),
+    sourceDeliveryId: parseOptionalString("message source delivery id", row.source_delivery_id),
+    createdAt: requireTimestampMillis(row.created_at, "Email message created_at must be a valid timestamp."),
   };
 }
 
 function parseMessageRecipientRow(row: Record<string, unknown>): EmailMessageRecipientRecord {
   return {
-    id: String(row.id),
-    messageId: String(row.message_id),
-    role: String(row.role) as EmailMessageRecipientRecord["role"],
-    address: String(row.address),
-    name: row.name === null ? undefined : String(row.name),
-    createdAt: toMillis(row.created_at),
+    id: requireTrimmed("recipient id", row.id),
+    messageId: requireTrimmed("recipient message id", row.message_id),
+    role: parseRecipientRole(row.role),
+    address: normalizeEmailAddress(requireTrimmed("recipient address", row.address)),
+    name: parseOptionalString("recipient name", row.name),
+    createdAt: requireTimestampMillis(row.created_at, "Email recipient created_at must be a valid timestamp."),
   };
 }
 
 function parseAttachmentRow(row: Record<string, unknown>): EmailAttachmentRecord {
   return {
-    id: String(row.id),
-    messageId: String(row.message_id),
-    filename: row.filename === null ? undefined : String(row.filename),
-    mimeType: row.mime_type === null ? undefined : String(row.mime_type),
-    sizeBytes: row.size_bytes === null ? undefined : Number(row.size_bytes),
-    localPath: row.local_path === null ? undefined : String(row.local_path),
-    contentId: row.content_id === null ? undefined : String(row.content_id),
-    createdAt: toMillis(row.created_at),
+    id: requireTrimmed("attachment id", row.id),
+    messageId: requireTrimmed("attachment message id", row.message_id),
+    filename: parseOptionalString("attachment filename", row.filename),
+    mimeType: parseOptionalString("attachment MIME type", row.mime_type),
+    sizeBytes: parseOptionalNonNegativeInteger("attachment size", row.size_bytes),
+    localPath: parseOptionalString("attachment local path", row.local_path),
+    contentId: parseOptionalString("attachment content id", row.content_id),
+    createdAt: requireTimestampMillis(row.created_at, "Email attachment created_at must be a valid timestamp."),
   };
-}
-
-function normalizeBodyExcerpt(bodyText: string | undefined): string | undefined {
-  const collapsed = collapseWhitespace(bodyText ?? "");
-  return collapsed ? collapsed.slice(0, 500) : undefined;
-}
-
-function normalizeBodyText(input: RecordEmailMessageInput): string | undefined {
-  const bodyText = trimToUndefined(input.bodyText);
-  return input.direction === "inbound"
-    ? markExternalEmailContent(bodyText)
-    : bodyText;
-}
-
-function normalizeAuthSummary(input: RecordEmailMessageInput): EmailAuthSummary {
-  if (input.direction === "outbound") {
-    return input.authSummary ?? "trusted";
-  }
-
-  const verdictSummary = summarizeEmailAuthentication({
-    authSpf: input.authSpf,
-    authDkim: input.authDkim,
-    authDmarc: input.authDmarc,
-  });
-  if (verdictSummary === "suspicious" || input.authSummary === "suspicious") {
-    return "suspicious";
-  }
-
-  return verdictSummary;
-}
-
-function normalizeThreadKey(input: RecordEmailMessageInput): string {
-  const explicit = trimToUndefined(input.threadKey);
-  if (explicit) {
-    return explicit;
-  }
-
-  const firstReference = trimToUndefined(input.referencesHeader)?.split(/\s+/)[0];
-  return firstReference
-    ?? trimToUndefined(input.inReplyTo)
-    ?? trimToUndefined(input.messageIdHeader)
-    ?? randomUUID();
-}
-
-function normalizeRecipients(recipients: readonly EmailRecipientInput[] | undefined): readonly EmailRecipientInput[] {
-  return (recipients ?? []).map((recipient) => ({
-    role: recipient.role,
-    address: normalizeEmailAddress(recipient.address),
-    name: trimToUndefined(recipient.name),
-  }));
-}
-
-function normalizeAttachments(attachments: readonly EmailAttachmentInput[] | undefined): readonly EmailAttachmentInput[] {
-  return (attachments ?? []).map((attachment) => ({
-    filename: trimToUndefined(attachment.filename),
-    mimeType: trimToUndefined(attachment.mimeType),
-    sizeBytes: attachment.sizeBytes === undefined ? undefined : Math.max(0, Math.floor(attachment.sizeBytes)),
-    localPath: trimToUndefined(attachment.localPath),
-    contentId: trimToUndefined(attachment.contentId),
-  }));
 }
 
 export class PostgresEmailStore implements EmailStore {
   private readonly pool: PgPoolLike;
   private readonly tables: EmailTableNames;
-  private readonly agentTableName: string;
 
   constructor(options: PostgresEmailStoreOptions) {
     this.pool = options.pool;
     this.tables = buildEmailTableNames();
-    this.agentTableName = buildAgentTableNames().agents;
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.emailAccounts} (
-        id UUID PRIMARY KEY,
-        agent_key TEXT NOT NULL,
-        account_key TEXT NOT NULL,
-        from_address TEXT NOT NULL,
-        from_name TEXT,
-        imap_config JSONB NOT NULL,
-        smtp_config JSONB NOT NULL,
-        mailboxes JSONB NOT NULL,
-        sync_state JSONB NOT NULL,
-        enabled BOOLEAN NOT NULL DEFAULT TRUE,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.emailAllowedRecipients} (
-        id UUID PRIMARY KEY,
-        agent_key TEXT NOT NULL,
-        account_key TEXT NOT NULL,
-        address TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.emailMessages} (
-        id UUID PRIMARY KEY,
-        agent_key TEXT NOT NULL,
-        account_key TEXT NOT NULL,
-        direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
-        mailbox TEXT,
-        uid INTEGER CHECK (uid IS NULL OR uid >= 0),
-        uid_validity TEXT,
-        message_id_header TEXT,
-        in_reply_to TEXT,
-        references_header TEXT,
-        thread_key TEXT NOT NULL,
-        subject TEXT,
-        from_name TEXT,
-        from_address TEXT,
-        reply_to_address TEXT,
-        sent_at TIMESTAMPTZ,
-        received_at TIMESTAMPTZ,
-        body_text TEXT,
-        body_excerpt TEXT,
-        authentication_results TEXT,
-        auth_spf TEXT CHECK (auth_spf IS NULL OR auth_spf IN ('pass', 'fail', 'softfail', 'neutral', 'none', 'temperror', 'permerror', 'unknown')),
-        auth_dkim TEXT CHECK (auth_dkim IS NULL OR auth_dkim IN ('pass', 'fail', 'softfail', 'neutral', 'none', 'temperror', 'permerror', 'unknown')),
-        auth_dmarc TEXT CHECK (auth_dmarc IS NULL OR auth_dmarc IN ('pass', 'fail', 'softfail', 'neutral', 'none', 'temperror', 'permerror', 'unknown')),
-        auth_summary TEXT NOT NULL DEFAULT 'unknown' CHECK (auth_summary IN ('trusted', 'suspicious', 'unknown')),
-        has_attachments BOOLEAN NOT NULL DEFAULT FALSE,
-        source_delivery_id TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.emailMessageRecipients} (
-        id UUID PRIMARY KEY,
-        message_id UUID NOT NULL REFERENCES ${this.tables.emailMessages}(id) ON DELETE CASCADE,
-        role TEXT NOT NULL CHECK (role IN ('from', 'reply_to', 'to', 'cc')),
-        address TEXT NOT NULL,
-        name TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.emailAttachments} (
-        id UUID PRIMARY KEY,
-        message_id UUID NOT NULL REFERENCES ${this.tables.emailMessages}(id) ON DELETE CASCADE,
-        filename TEXT,
-        mime_type TEXT,
-        size_bytes INTEGER CHECK (size_bytes IS NULL OR size_bytes >= 0),
-        local_path TEXT,
-        content_id TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_email_accounts_key_idx`)}
-      ON ${this.tables.emailAccounts} (agent_key, account_key)
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_email_allowed_key_idx`)}
-      ON ${this.tables.emailAllowedRecipients} (agent_key, account_key, address)
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_email_accounts_enabled_idx`)}
-      ON ${this.tables.emailAccounts} (enabled, agent_key, account_key)
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_email_messages_mailbox_uid_idx`)}
-      ON ${this.tables.emailMessages} (agent_key, account_key, mailbox, uid_validity, uid)
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_email_messages_thread_idx`)}
-      ON ${this.tables.emailMessages} (agent_key, account_key, thread_key, COALESCE(received_at, sent_at, created_at))
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_email_recipients_message_idx`)}
-      ON ${this.tables.emailMessageRecipients} (message_id, role)
-    `);
-    await assertIntegrityChecks(this.pool, "Email schema", [
-      {
-        label: "email_accounts.agent_key orphaned from agents.agent_key",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.emailAccounts} AS account
-          LEFT JOIN ${this.agentTableName} AS agent
-            ON agent.agent_key = account.agent_key
-          WHERE agent.agent_key IS NULL
-        `,
-      },
-    ]);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.emailAccounts}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_email_accounts_agent_fk`)}
-      FOREIGN KEY (agent_key)
-      REFERENCES ${this.agentTableName}(agent_key)
-      ON DELETE CASCADE
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.emailAllowedRecipients}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_email_allowed_account_fk`)}
-      FOREIGN KEY (agent_key, account_key)
-      REFERENCES ${this.tables.emailAccounts}(agent_key, account_key)
-      ON DELETE CASCADE
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.emailMessages}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_email_messages_account_fk`)}
-      FOREIGN KEY (agent_key, account_key)
-      REFERENCES ${this.tables.emailAccounts}(agent_key, account_key)
-      ON DELETE CASCADE
-    `);
+    await ensurePostgresEmailSchema(this.pool);
   }
 
   async upsertAccount(input: UpsertEmailAccountInput): Promise<EmailAccountRecord> {
@@ -584,18 +475,12 @@ export class PostgresEmailStore implements EmailStore {
   }
 
   private async recordMessageInTransaction(
-    client: PoolClient,
+    client: PgClientLike,
     input: RecordEmailMessageInput,
   ): Promise<RecordEmailMessageResult> {
     const agentKey = requireTrimmed("agent key", input.agentKey);
     const accountKey = normalizeEmailAccountKey(input.accountKey);
-    const recipients = normalizeRecipients(input.recipients);
-    const attachments = normalizeAttachments(input.attachments);
-    const bodyText = normalizeBodyText(input);
-    const bodyExcerpt = normalizeBodyExcerpt(bodyText);
-    const authSummary = normalizeAuthSummary(input);
-    const fromAddress = normalizeOptionalEmailAddress(input.fromAddress);
-    const replyToAddress = normalizeOptionalEmailAddress(input.replyToAddress);
+    const normalizedMessage = normalizeEmailMessageInput(input);
     const uid = input.uid === undefined ? null : Math.floor(input.uid);
     const uidValidity = trimToUndefined(input.uidValidity) ?? null;
     const mailbox = trimToUndefined(input.mailbox) ?? null;
@@ -685,21 +570,21 @@ export class PostgresEmailStore implements EmailStore {
       trimToUndefined(input.messageIdHeader) ?? null,
       trimToUndefined(input.inReplyTo) ?? null,
       trimToUndefined(input.referencesHeader) ?? null,
-      normalizeThreadKey(input),
+      normalizedMessage.threadKey,
       trimToUndefined(input.subject) ?? null,
       trimToUndefined(input.fromName) ?? null,
-      fromAddress ?? null,
-      replyToAddress ?? null,
+      normalizedMessage.fromAddress ?? null,
+      normalizedMessage.replyToAddress ?? null,
       input.sentAt === undefined ? null : new Date(input.sentAt),
       input.receivedAt === undefined ? null : new Date(input.receivedAt),
-      bodyText ?? null,
-      bodyExcerpt ?? null,
+      normalizedMessage.bodyText ?? null,
+      normalizedMessage.bodyExcerpt ?? null,
       trimToUndefined(input.authenticationResults) ?? null,
       input.authSpf ?? null,
       input.authDkim ?? null,
       input.authDmarc ?? null,
-      authSummary,
-      attachments.length > 0,
+      normalizedMessage.authSummary,
+      normalizedMessage.attachments.length > 0,
       trimToUndefined(input.sourceDeliveryId) ?? null,
     ]);
 
@@ -719,8 +604,8 @@ export class PostgresEmailStore implements EmailStore {
     }
 
     const message = parseMessageRow(insertedRow as Record<string, unknown>);
-    await this.insertRecipients(client, message.id, recipients);
-    await this.insertAttachments(client, message.id, attachments);
+    await this.insertRecipients(client, message.id, normalizedMessage.recipients);
+    await this.insertAttachments(client, message.id, normalizedMessage.attachments);
     return {
       message,
       inserted: true,
@@ -792,7 +677,7 @@ export class PostgresEmailStore implements EmailStore {
   }
 
   private async insertRecipients(
-    client: PoolClient,
+    client: PgClientLike,
     messageId: string,
     recipients: readonly EmailRecipientInput[],
   ): Promise<void> {
@@ -816,7 +701,7 @@ export class PostgresEmailStore implements EmailStore {
   }
 
   private async insertAttachments(
-    client: PoolClient,
+    client: PgClientLike,
     messageId: string,
     attachments: readonly EmailAttachmentInput[],
   ): Promise<void> {

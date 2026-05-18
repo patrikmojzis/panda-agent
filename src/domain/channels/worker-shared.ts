@@ -1,3 +1,4 @@
+import {isRecord} from "../../lib/records.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 
 /**
@@ -41,17 +42,14 @@ export function parseChannelNotification(
   payload: string,
 ): {channel: string; connectorKey: string} | null {
   try {
-    const parsed = JSON.parse(payload) as Partial<{
-      channel: unknown;
-      connectorKey: unknown;
-    }>;
-    if (!parsed || typeof parsed.channel !== "string" || typeof parsed.connectorKey !== "string") {
+    const parsed = JSON.parse(payload) as unknown;
+    if (!isRecord(parsed)) {
       return null;
     }
 
     return {
-      channel: parsed.channel,
-      connectorKey: parsed.connectorKey,
+      channel: requireNonEmptyString(parsed.channel, "Channel notification channel must not be empty."),
+      connectorKey: requireNonEmptyString(parsed.connectorKey, "Channel notification connector key must not be empty."),
     };
   } catch {
     return null;

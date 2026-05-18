@@ -1,12 +1,15 @@
 import type {WASocket} from "baileys";
 
-import type {ChannelTypingAdapter, ChannelTypingRequest} from "../../../domain/channels/index.js";
+import type {ChannelTypingRequest} from "../../../domain/channels/types.js";
+import type {ChannelTypingAdapter} from "../../../domain/channels/typing.js";
 import {WHATSAPP_SOURCE} from "./config.js";
 import {assertWhatsAppConnectorKey, requireWhatsAppSocket} from "./transport.js";
 
+export type WhatsAppTypingSocket = Pick<WASocket, "sendPresenceUpdate">;
+
 export interface CreateWhatsAppTypingAdapterOptions {
   connectorKey: string;
-  getSocket(): WASocket | null;
+  getSocket(): WhatsAppTypingSocket | null;
 }
 
 export function createWhatsAppTypingAdapter(

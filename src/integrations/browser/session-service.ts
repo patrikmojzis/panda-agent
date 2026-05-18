@@ -1,26 +1,28 @@
-import {randomUUID} from "node:crypto";
-import {mkdir, rm, writeFile} from "node:fs/promises";
+import {mkdir, rm} from "node:fs/promises";
 import path from "node:path";
 
 import {
     type Browser,
     type BrowserContext,
-    type BrowserContextOptions,
     chromium,
-    devices,
     type LaunchOptions,
     type Locator,
     type Page
 } from "playwright-core";
 
-import {resolveDataDir} from "../../app/runtime/data-dir.js";
-import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {resolveDataDir} from "../../lib/data-dir.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
-import {withArtifactDetails} from "../../kernel/agent/tool-artifacts.js";
-import type {JsonObject, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import {sleep} from "../../lib/async.js";
 import {pathExists} from "../../lib/fs.js";
+import type {JsonObject} from "../../lib/json.js";
 import {trimToUndefined, truncateTextWithStatus} from "../../lib/strings.js";
+import {
+    buildBrowserPdfArtifactPayload,
+    buildBrowserScreenshotArtifactPayload,
+    type BrowserArtifactSnapshot,
+} from "./artifacts.js";
 import {
     buildRefSelector,
     getSnapshotScript,
@@ -28,8 +30,21 @@ import {
     renderBrowserSnapshot,
     SNAPSHOT_REF_ATTRIBUTE,
     type SnapshotScriptResult,
-} from "../../panda/tools/browser-snapshot.js";
-import {buildBrowserExternalContentDetails, wrapBrowserExternalContent,} from "../../panda/tools/browser-output.js";
+} from "./snapshot.js";
+import {buildBrowserExternalContentDetails, wrapBrowserExternalContent,} from "./output.js";
+import {
+    buildBrowserContextOptions,
+    buildBrowserDeviceDetailsForProfile,
+} from "./device-profiles.js";
+import {
+    browserNavigationProtocols,
+    browserNetworkProtocols,
+    buildPreviewPrivateOrigins,
+    isBrowserNetworkProtocol,
+    isMainFrameNavigationRequest,
+    isWebSocketProtocol,
+    readAllowedPrivateHostnames,
+} from "./navigation-policy.js";
 import type {
     BrowserAction,
     BrowserDeviceProfile,
@@ -37,15 +52,15 @@ import type {
     BrowserSessionScope,
     BrowserSnapshot,
     BrowserSnapshotChanges,
-    BrowserSnapshotElement,
     BrowserSnapshotMode,
-} from "../../panda/tools/browser-types.js";
-import {defaultLookupHostname, type LookupHostname, resolveSafeHttpTarget,} from "../../panda/tools/safe-web-target.js";
+} from "./action-types.js";
+import {buildSnapshotChanges, toJsonSnapshotChanges} from "./snapshot-changes.js";
+import {defaultLookupHostname, type LookupHostname, resolveSafeHttpTarget,} from "../web/safe-web-target.js";
 import type {BrowserPreviewOriginGrant} from "./protocol.js";
 import {
-    normalizeBrowserDeviceProfile,
     normalizeBrowserLabelValue,
     normalizeBrowserSessionScopeKey,
+    type BrowserRuntimeContext,
     safeAgentKey,
 } from "./shared.js";
 
@@ -87,12 +102,7 @@ type BrowserEvaluateResult = {
   text?: string;
 };
 
-type BrowserSnapshotCapture = {
-  snapshot: BrowserSnapshot;
-  text: string;
-  truncated: boolean;
-  elementCount: number;
-};
+type BrowserSnapshotCapture = BrowserArtifactSnapshot;
 
 type BrowserActionBaseline = {
   page: Page;
@@ -104,6 +114,29 @@ type BrowserResolvedSessionScope = {
   key: string;
   deviceProfile: BrowserDeviceProfile;
 };
+
+function runSnapshotScriptInPage(input: {
+  script?: unknown;
+  maxChars?: unknown;
+}): SnapshotScriptResult {
+  const script = typeof input.script === "string" ? input.script : "";
+  const runner = new Function("maxChars", script) as (maxChars: unknown) => SnapshotScriptResult;
+  return runner(input.maxChars);
+}
+
+function runEvaluateScriptInPage(input: {
+  arg?: unknown;
+  userScript?: unknown;
+  runnerSource?: unknown;
+}): BrowserEvaluateResult {
+  const script = typeof input.userScript === "string" ? input.userScript : "";
+  const runnerSource = typeof input.runnerSource === "string" ? input.runnerSource : "";
+  const run = new Function("arg", "script", runnerSource) as (
+    arg: unknown,
+    script: string,
+  ) => BrowserEvaluateResult;
+  return run(input.arg, script);
+}
 
 export interface BrowserSessionServiceOptions {
   env?: NodeJS.ProcessEnv;
@@ -179,10 +212,6 @@ function formatActionTarget(action: BrowserAction): string | undefined {
   return undefined;
 }
 
-function normalizeBuffer(bytes: Buffer | Uint8Array): Buffer {
-  return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-}
-
 function resolveBrowserRunnerRoot(dataDir: string | undefined, env: NodeJS.ProcessEnv): string {
   const configured = trimToUndefined(dataDir);
   if (configured) {
@@ -192,165 +221,14 @@ function resolveBrowserRunnerRoot(dataDir: string | undefined, env: NodeJS.Proce
   return path.join(resolveDataDir(env), DEFAULT_BROWSER_RUNNER_SUBDIR);
 }
 
-function readAllowedPrivateHostnames(
-  env: NodeJS.ProcessEnv,
-  explicit: readonly string[] | undefined,
-): readonly string[] {
-  if (explicit?.length) {
-    return explicit;
-  }
-
-  const raw = trimToUndefined(env.BROWSER_ALLOW_PRIVATE_HOSTS);
-  if (!raw) {
-    return [];
-  }
-
-  return raw
-    .split(",")
-    .map((value) => trimToUndefined(value))
-    .filter((value): value is string => Boolean(value));
-}
-
-function browserNetworkProtocols(): readonly string[] {
-  return ["http:", "https:", "ws:", "wss:"];
-}
-
-function browserNavigationProtocols(): readonly string[] {
-  return ["http:", "https:"];
-}
-
-function isBrowserNetworkProtocol(protocol: string): boolean {
-  return browserNetworkProtocols().includes(protocol.toLowerCase());
-}
-
-function isWebSocketProtocol(protocol: string): boolean {
-  return ["ws:", "wss:"].includes(protocol.toLowerCase());
-}
-
-function websocketOriginForHttpOrigin(origin: string): string | undefined {
-  try {
-    const url = new URL(origin);
-    if (url.protocol === "http:") {
-      url.protocol = "ws:";
-    } else if (url.protocol === "https:") {
-      url.protocol = "wss:";
-    } else {
-      return undefined;
-    }
-    return url.origin;
-  } catch {
-    return undefined;
-  }
-}
-
-function buildPreviewPrivateOrigins(grant: BrowserPreviewOriginGrant | undefined): string[] {
-  if (!grant) {
-    return [];
-  }
-
-  const websocketOrigin = websocketOriginForHttpOrigin(grant.resolvedOrigin);
-  return [
-    grant.resolvedOrigin,
-    ...(websocketOrigin ? [websocketOrigin] : []),
-  ];
-}
-
-function cloneViewportSize(value: unknown): {width: number; height: number} | undefined {
-  if (
-    typeof value === "object"
-    && value !== null
-    && "width" in value
-    && "height" in value
-    && typeof (value as {width?: unknown}).width === "number"
-    && typeof (value as {height?: unknown}).height === "number"
-  ) {
-    return {
-      width: (value as {width: number}).width,
-      height: (value as {height: number}).height,
-    };
-  }
-  return undefined;
-}
-
-function stripDeviceDescriptor(name: string): BrowserContextOptions {
-  const descriptor = devices[name] as BrowserContextOptions & {defaultBrowserType?: unknown};
-  const {defaultBrowserType: _ignored, ...options} = descriptor;
-  return options;
-}
-
-function buildBrowserDeviceContextOptions(deviceProfile: BrowserDeviceProfile): BrowserContextOptions {
-  switch (deviceProfile) {
-    case "desktop":
-      return {};
-    case "desktop-wide":
-      return {
-        viewport: {width: 1440, height: 900},
-      };
-    case "mobile-compact":
-      return stripDeviceDescriptor("Galaxy S24");
-    case "mobile":
-      return stripDeviceDescriptor("Pixel 7");
-    case "tablet":
-      return stripDeviceDescriptor("iPad (gen 11)");
-  }
-}
-
-function buildBrowserDeviceDetails(
-  deviceProfile: BrowserDeviceProfile,
-  contextOptions: BrowserContextOptions,
-): JsonObject {
-  const viewport = cloneViewportSize(contextOptions.viewport) ?? {width: 1280, height: 720};
-  const screen = cloneViewportSize((contextOptions as {screen?: unknown}).screen);
-  return {
-    profile: deviceProfile,
-    viewport,
-    ...(screen ? {screen} : {}),
-    deviceScaleFactor: typeof contextOptions.deviceScaleFactor === "number" ? contextOptions.deviceScaleFactor : 1,
-    isMobile: contextOptions.isMobile === true,
-    hasTouch: contextOptions.hasTouch === true,
-    ...(typeof contextOptions.userAgent === "string" ? {userAgent: contextOptions.userAgent} : {}),
-  };
-}
-
-function buildBrowserContextOptions(
-  deviceProfile: BrowserDeviceProfile,
-  storageStatePath?: string,
-): BrowserContextOptions {
-  const deviceOptions = buildBrowserDeviceContextOptions(deviceProfile);
-  return {
-    ...deviceOptions,
-    serviceWorkers: "block",
-    ...(storageStatePath ? {storageState: storageStatePath} : {}),
-  };
-}
-
-function buildBrowserDeviceDetailsForProfile(deviceProfile: BrowserDeviceProfile): JsonObject {
-  return buildBrowserDeviceDetails(deviceProfile, buildBrowserDeviceContextOptions(deviceProfile));
-}
-
-function isMainFrameNavigationRequest(request: {
-  isNavigationRequest?: () => boolean;
-  resourceType?: () => string;
-  frame?: () => {parentFrame?: () => unknown};
-}): boolean {
-  if (request.isNavigationRequest?.() !== true || request.resourceType?.() !== "document") {
-    return false;
-  }
-  try {
-    return request.frame?.().parentFrame?.() === null;
-  } catch {
-    return false;
-  }
-}
-
 function normalizeScopeKey(
-  context: DefaultAgentSessionContext,
+  context: BrowserRuntimeContext,
   action: BrowserAction,
 ): BrowserResolvedSessionScope {
-  return normalizeBrowserSessionScopeKey(context, normalizeBrowserDeviceProfile(action.deviceProfile));
+  return normalizeBrowserSessionScopeKey(context, action.deviceProfile);
 }
 
-function resolveSessionContext(context: DefaultAgentSessionContext | undefined): DefaultAgentSessionContext {
+function resolveSessionContext(context: BrowserRuntimeContext | undefined): BrowserRuntimeContext {
   return context ?? {
     agentKey: "",
     sessionId: "",
@@ -380,7 +258,7 @@ function getEvaluateScriptSource(): string {
 }
 
 function resolveBrowserSessionRoot(
-  context: DefaultAgentSessionContext,
+  context: BrowserRuntimeContext,
   dataDir: string | undefined,
   env: NodeJS.ProcessEnv,
 ): string {
@@ -416,224 +294,6 @@ function buildWaitLabel(action: BrowserAction): string {
     return `url=${action.url}`;
   }
   return "wait";
-}
-
-function buildBrowserImagePayload(params: {
-  bytes: Buffer;
-  path: string;
-  text: string;
-  details: JsonObject;
-}): ToolResultPayload {
-  return {
-    content: [
-      {
-        type: "text",
-        text: params.text,
-      },
-      {
-        type: "image",
-        data: params.bytes.toString("base64"),
-        mimeType: "image/png",
-      },
-    ],
-    details: params.details,
-  };
-}
-
-function summarizeSnapshotElement(element: BrowserSnapshotElement | undefined): string | undefined {
-  if (!element) {
-    return undefined;
-  }
-
-  const parts: string[] = [];
-  if (element.text) {
-    parts.push(`text="${element.text}"`);
-  }
-  if (element.value) {
-    parts.push(`value="${element.value}"`);
-  }
-  if (element.checked !== undefined) {
-    parts.push(element.checked ? "checked" : "unchecked");
-  }
-  if (element.selected !== undefined) {
-    parts.push(element.selected ? "selected" : "unselected");
-  }
-  if (element.expanded !== undefined) {
-    parts.push(element.expanded ? "expanded" : "collapsed");
-  }
-  if (element.pressed !== undefined) {
-    parts.push(element.pressed ? "pressed" : "not-pressed");
-  }
-  if (element.invalid) {
-    parts.push("invalid");
-  }
-  if (element.readonly) {
-    parts.push("readonly");
-  }
-  if (element.href) {
-    parts.push(`href="${element.href}"`);
-  }
-  if (parts.length === 0) {
-    parts.push(element.role || element.tag || "element");
-  }
-  return parts.join(", ");
-}
-
-function diffSnapshotElementFields(
-  before: BrowserSnapshotElement | undefined,
-  after: BrowserSnapshotElement | undefined,
-): readonly string[] {
-  if (!before && !after) {
-    return [];
-  }
-  if (!before) {
-    return ["appeared"];
-  }
-  if (!after) {
-    return ["disappeared"];
-  }
-
-  const changed: string[] = [];
-  const fields: Array<keyof BrowserSnapshotElement> = [
-    "text",
-    "value",
-    "checked",
-    "selected",
-    "expanded",
-    "pressed",
-    "disabled",
-    "required",
-    "invalid",
-    "readonly",
-    "href",
-  ];
-  for (const field of fields) {
-    if (before[field] !== after[field]) {
-      changed.push(field);
-    }
-  }
-  return changed;
-}
-
-function resolveTargetSnapshotElement(
-  snapshot: BrowserSnapshot,
-  action: BrowserAction,
-): BrowserSnapshotElement | undefined {
-  if (!("ref" in action)) {
-    return undefined;
-  }
-  const ref = trimToUndefined(action.ref);
-  if (!ref) {
-    return undefined;
-  }
-  return snapshot.elements.find((element) => element.ref === ref);
-}
-
-function buildSnapshotChanges(params: {
-  before?: BrowserSnapshot | null;
-  after: BrowserSnapshot;
-  action: BrowserAction;
-  pageSwitched: boolean;
-}): BrowserSnapshotChanges | undefined {
-  const before = params.before ?? null;
-  const after = params.after;
-  const changes: BrowserSnapshotChanges = {};
-
-  if (params.pageSwitched) {
-    changes.pageSwitched = true;
-  }
-
-  if (before && before.url !== after.url) {
-    changes.urlChanged = {
-      before: before.url,
-      after: after.url,
-    };
-  }
-
-  if (before && before.title !== after.title) {
-    changes.titleChanged = {
-      before: before.title,
-      after: after.title,
-    };
-  }
-
-  const beforeSignals = new Set(before?.signals ?? []);
-  const afterSignals = new Set(after.signals);
-  const signalsAdded = [...afterSignals].filter((signal) => !beforeSignals.has(signal));
-  const signalsRemoved = [...beforeSignals].filter((signal) => !afterSignals.has(signal));
-  if (signalsAdded.length > 0) {
-    changes.signalsAdded = signalsAdded;
-  }
-  if (signalsRemoved.length > 0) {
-    changes.signalsRemoved = signalsRemoved;
-  }
-
-  const beforeHasDialog = beforeSignals.has("dialog");
-  const afterHasDialog = afterSignals.has("dialog");
-  if (!beforeHasDialog && afterHasDialog) {
-    changes.dialogAppeared = true;
-  }
-  if (beforeHasDialog && !afterHasDialog) {
-    changes.dialogDismissed = true;
-  }
-
-  const beforeTarget = before ? resolveTargetSnapshotElement(before, params.action) : undefined;
-  const afterTarget = resolveTargetSnapshotElement(after, params.action);
-  const targetFieldChanges = diffSnapshotElementFields(beforeTarget, afterTarget);
-  if (targetFieldChanges.length > 0) {
-    const beforeSummary = summarizeSnapshotElement(beforeTarget);
-    const afterSummary = summarizeSnapshotElement(afterTarget);
-    changes.target = {
-      ...("ref" in params.action && trimToUndefined(params.action.ref)
-        ? {ref: params.action.ref?.trim()}
-        : {}),
-      ...("selector" in params.action && trimToUndefined(params.action.selector)
-        ? {selector: params.action.selector?.trim()}
-        : {}),
-      ...(beforeSummary ? {before: beforeSummary} : {}),
-      ...(afterSummary ? {after: afterSummary} : {}),
-      changed: targetFieldChanges,
-    };
-  }
-
-  return Object.keys(changes).length > 0 ? changes : undefined;
-}
-
-function toJsonSnapshotChanges(changes: BrowserSnapshotChanges): JsonObject {
-  return {
-    ...(changes.pageSwitched ? {pageSwitched: true} : {}),
-    ...(changes.urlChanged
-      ? {
-          urlChanged: {
-            before: changes.urlChanged.before,
-            after: changes.urlChanged.after,
-          },
-        }
-      : {}),
-    ...(changes.titleChanged
-      ? {
-          titleChanged: {
-            ...(changes.titleChanged.before !== undefined ? {before: changes.titleChanged.before} : {}),
-            ...(changes.titleChanged.after !== undefined ? {after: changes.titleChanged.after} : {}),
-          },
-        }
-      : {}),
-    ...(changes.dialogAppeared ? {dialogAppeared: true} : {}),
-    ...(changes.dialogDismissed ? {dialogDismissed: true} : {}),
-    ...(changes.signalsAdded ? {signalsAdded: [...changes.signalsAdded]} : {}),
-    ...(changes.signalsRemoved ? {signalsRemoved: [...changes.signalsRemoved]} : {}),
-    ...(changes.target
-      ? {
-          target: {
-            ...(changes.target.ref ? {ref: changes.target.ref} : {}),
-            ...(changes.target.selector ? {selector: changes.target.selector} : {}),
-            ...(changes.target.before !== undefined ? {before: changes.target.before} : {}),
-            ...(changes.target.after !== undefined ? {after: changes.target.after} : {}),
-            ...(changes.target.changed ? {changed: [...changes.target.changed]} : {}),
-          },
-        }
-      : {}),
-  };
 }
 
 export class BrowserSessionService {
@@ -707,7 +367,7 @@ export class BrowserSessionService {
     }
   }
 
-  private emitProgress<TContext extends DefaultAgentSessionContext>(
+  private emitProgress<TContext extends BrowserRuntimeContext>(
     run: RunContext<TContext>,
     status: BrowserProgressStatus,
     extra: JsonObject = {},
@@ -824,7 +484,7 @@ export class BrowserSessionService {
     }).catch(() => undefined);
   }
 
-  private async startSession<TContext extends DefaultAgentSessionContext>(
+  private async startSession<TContext extends BrowserRuntimeContext>(
     scope: BrowserResolvedSessionScope,
     run: RunContext<TContext>,
     _timeoutMs: number,
@@ -954,7 +614,7 @@ export class BrowserSessionService {
     return session.page;
   }
 
-  private async resolveSession<TContext extends DefaultAgentSessionContext>(
+  private async resolveSession<TContext extends BrowserRuntimeContext>(
     scope: BrowserResolvedSessionScope,
     run: RunContext<TContext>,
     timeoutMs: number,
@@ -978,7 +638,7 @@ export class BrowserSessionService {
   }
 
   private async settlePage(session: BrowserSessionRecord, timeoutMs: number): Promise<Page> {
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await sleep(250);
     const current = await this.ensureActivePage(session);
     await current.waitForLoadState("domcontentloaded", {
       timeout: Math.min(timeoutMs, 5_000),
@@ -1044,17 +704,12 @@ export class BrowserSessionService {
     const timeoutMs = Math.max(1, Math.floor(params.timeoutMs ?? this.actionTimeoutMs));
     const raw = await withTimeout(
       page.evaluate(
-        ((input: unknown) => {
-          const payload = input as {script?: unknown; maxChars?: unknown};
-          const script = typeof payload.script === "string" ? payload.script : "";
-          const runner = new Function("maxChars", script);
-          return runner(payload.maxChars);
-        }) as unknown as string,
+        runSnapshotScriptInPage,
         {
           script: getSnapshotScript(),
           maxChars: this.maxSnapshotChars,
         },
-      ) as Promise<SnapshotScriptResult>,
+      ),
       timeoutMs,
       "browser snapshot",
       {
@@ -1154,6 +809,30 @@ export class BrowserSessionService {
     };
   }
 
+  private async buildChangedActionSnapshotPayload<TContext extends BrowserRuntimeContext>(
+    run: RunContext<TContext>,
+    session: BrowserSessionRecord,
+    action: BrowserAction,
+    baseline: BrowserActionBaseline,
+    settledPage: Page,
+    snapshotMode: BrowserSnapshotMode,
+    timeoutMs: number,
+  ): Promise<ToolResultPayload> {
+    await this.ensureSafeFinalUrl(session, settledPage);
+    this.emitProgress(run, "snapshotting", {action: action.action});
+    const capture = await this.takeSnapshot(session, {
+      mode: snapshotMode,
+      timeoutMs,
+    });
+    const changes = buildSnapshotChanges({
+      before: baseline.snapshot,
+      after: capture.snapshot,
+      action,
+      pageSwitched: baseline.page !== settledPage,
+    });
+    return await this.buildSnapshotPayload(session, action.action, snapshotMode, changes, capture);
+  }
+
   private async buildEvaluatePayload(
     session: BrowserSessionRecord,
     action: Extract<BrowserAction, {action: "evaluate"}>,
@@ -1161,20 +840,13 @@ export class BrowserSessionService {
     const page = await this.ensureActivePage(session);
     const raw = await withTimeout(
       page.evaluate(
-        ((input: unknown) => {
-          const payload = input as {arg?: unknown; userScript?: unknown; runnerSource?: unknown};
-          const arg = payload.arg;
-          const script = typeof payload.userScript === "string" ? payload.userScript : "";
-          const runnerSource = typeof payload.runnerSource === "string" ? payload.runnerSource : "";
-          const run = new Function("arg", "script", runnerSource);
-          return run(arg, script);
-        }) as unknown as string,
+        runEvaluateScriptInPage,
         {
           arg: action.arg,
           userScript: action.script,
           runnerSource: getEvaluateScriptSource(),
         },
-      ) as Promise<BrowserEvaluateResult>,
+      ),
       action.timeoutMs ?? this.actionTimeoutMs,
       "browser evaluate",
     );
@@ -1242,7 +914,12 @@ export class BrowserSessionService {
       overlayRoot.style.pointerEvents = "none";
       overlayRoot.style.zIndex = "2147483647";
 
-      for (const element of Array.from(document.querySelectorAll(`[${refAttribute}]`)) as any[]) {
+      type ScreenshotLabelTarget = {
+        getAttribute(name: string): string | null;
+        getBoundingClientRect(): {left: number; top: number; width: number; height: number};
+      };
+      const targets = Array.from(document.querySelectorAll(`[${refAttribute}]`)) as ScreenshotLabelTarget[];
+      for (const element of targets) {
         const ref = element.getAttribute(refAttribute);
         if (!ref) {
           continue;
@@ -1332,51 +1009,12 @@ export class BrowserSessionService {
         await this.removeScreenshotLabels(page);
       }
     }
-    const buffer = normalizeBuffer(bytes);
-    const filePath = path.join(session.artifactDir, `${Date.now()}-${randomUUID()}.png`);
-    await writeFile(filePath, buffer);
-    const title = await page.title().catch(() => "");
-    const textLines = [
-      `Browser screenshot saved to ${filePath}`,
-      ...(trimToUndefined(title) ? [`Page title: ${title}`] : []),
-      `Page URL: ${page.url()}`,
-    ];
-    const text = action.labels && labeledSnapshot
-      ? `${textLines.join("\n")}\n\n${labeledSnapshot.text}`
-      : textLines.join("\n");
-    const details = withArtifactDetails({
-      action: "screenshot",
-      scope: session.scope,
-      deviceProfile: session.deviceProfile,
-      device: session.device,
-      path: filePath,
-      mimeType: "image/png",
-      bytes: buffer.length,
-      url: page.url(),
-      title,
-      ...(action.labels ? {labels: true} : {}),
-      ...(labeledSnapshot
-        ? {
-            snapshotMode: "compact",
-            truncated: labeledSnapshot.truncated,
-            elementCount: labeledSnapshot.elementCount,
-            signals: [...labeledSnapshot.snapshot.signals],
-            elements: labeledSnapshot.snapshot.elements.map((element) => ({...element})),
-            externalContent: buildBrowserExternalContentDetails("snapshot"),
-          }
-        : {}),
-    }, {
-      kind: "image",
-      source: "browser",
-      path: filePath,
-      mimeType: "image/png",
-      bytes: buffer.length,
-    });
-    return buildBrowserImagePayload({
-      bytes: buffer,
-      path: filePath,
-      text,
-      details,
+    return await buildBrowserScreenshotArtifactPayload({
+      session,
+      page,
+      bytes,
+      labels: action.labels === true,
+      labeledSnapshot,
     });
   }
 
@@ -1386,39 +1024,11 @@ export class BrowserSessionService {
   ): Promise<ToolResultPayload> {
     const page = await this.ensureActivePage(session);
     const pdf = await withTimeout(page.pdf(), timeoutMs, "browser pdf");
-    const buffer = normalizeBuffer(pdf);
-    const filePath = path.join(session.artifactDir, `${Date.now()}-${randomUUID()}.pdf`);
-    await writeFile(filePath, buffer);
-    const title = await page.title().catch(() => "");
-    return {
-      content: [
-        {
-          type: "text",
-          text: [
-            `Browser PDF saved to ${filePath}`,
-            ...(trimToUndefined(title) ? [`Page title: ${title}`] : []),
-            `Page URL: ${page.url()}`,
-          ].join("\n"),
-        },
-      ],
-      details: withArtifactDetails({
-        action: "pdf",
-        scope: session.scope,
-        deviceProfile: session.deviceProfile,
-        device: session.device,
-        path: filePath,
-        mimeType: "application/pdf",
-        bytes: buffer.length,
-        url: page.url(),
-        title,
-      } satisfies JsonObject, {
-        kind: "pdf",
-        source: "browser",
-        path: filePath,
-        mimeType: "application/pdf",
-        bytes: buffer.length,
-      }),
-    };
+    return await buildBrowserPdfArtifactPayload({
+      session,
+      page,
+      bytes: pdf,
+    });
   }
 
   async closeSession(scopeKey: string): Promise<void> {
@@ -1456,7 +1066,7 @@ export class BrowserSessionService {
     }
   }
 
-  async handle<TContext extends DefaultAgentSessionContext>(
+  async handle<TContext extends BrowserRuntimeContext>(
     action: BrowserAction,
     run: RunContext<TContext>,
     previewOriginGrant?: BrowserPreviewOriginGrant,
@@ -1473,7 +1083,7 @@ export class BrowserSessionService {
     );
   }
 
-  private async handleAction<TContext extends DefaultAgentSessionContext>(
+  private async handleAction<TContext extends BrowserRuntimeContext>(
     action: BrowserAction,
     run: RunContext<TContext>,
     scope: BrowserResolvedSessionScope,
@@ -1533,19 +1143,15 @@ export class BrowserSessionService {
             timeout: timeoutMs,
           });
           const settledPage = await this.settlePage(session, timeoutMs);
-          await this.ensureSafeFinalUrl(session, settledPage);
-          this.emitProgress(run, "snapshotting", {action: "navigate"});
-          const capture = await this.takeSnapshot(session, {
-            mode: snapshotMode,
-            timeoutMs,
-          });
-          const changes = buildSnapshotChanges({
-            before: baseline.snapshot,
-            after: capture.snapshot,
+          return await this.buildChangedActionSnapshotPayload(
+            run,
+            session,
             action,
-            pageSwitched: baseline.page !== settledPage,
-          });
-          return await this.buildSnapshotPayload(session, "navigate", snapshotMode, changes, capture);
+            baseline,
+            settledPage,
+            snapshotMode,
+            timeoutMs,
+          );
         }
         case "snapshot":
           this.emitProgress(run, "snapshotting", {action: "snapshot"});
@@ -1562,19 +1168,15 @@ export class BrowserSessionService {
             timeout: timeoutMs,
           });
           const settledPage = await this.settlePage(session, timeoutMs);
-          await this.ensureSafeFinalUrl(session, settledPage);
-          this.emitProgress(run, "snapshotting", {action: "click"});
-          const capture = await this.takeSnapshot(session, {
-            mode: snapshotMode,
-            timeoutMs,
-          });
-          const changes = buildSnapshotChanges({
-            before: baseline.snapshot,
-            after: capture.snapshot,
+          return await this.buildChangedActionSnapshotPayload(
+            run,
+            session,
             action,
-            pageSwitched: baseline.page !== settledPage,
-          });
-          return await this.buildSnapshotPayload(session, "click", snapshotMode, changes, capture);
+            baseline,
+            settledPage,
+            snapshotMode,
+            timeoutMs,
+          );
         }
         case "type": {
           const baseline = await this.captureActionBaseline(session, timeoutMs);
@@ -1602,19 +1204,15 @@ export class BrowserSessionService {
             });
           }
           const settledPage = await this.settlePage(session, timeoutMs);
-          await this.ensureSafeFinalUrl(session, settledPage);
-          this.emitProgress(run, "snapshotting", {action: "type"});
-          const capture = await this.takeSnapshot(session, {
-            mode: snapshotMode,
-            timeoutMs,
-          });
-          const changes = buildSnapshotChanges({
-            before: baseline.snapshot,
-            after: capture.snapshot,
+          return await this.buildChangedActionSnapshotPayload(
+            run,
+            session,
             action,
-            pageSwitched: baseline.page !== settledPage,
-          });
-          return await this.buildSnapshotPayload(session, "type", snapshotMode, changes, capture);
+            baseline,
+            settledPage,
+            snapshotMode,
+            timeoutMs,
+          );
         }
         case "press": {
           const baseline = await this.captureActionBaseline(session, timeoutMs);
@@ -1627,19 +1225,15 @@ export class BrowserSessionService {
             await withTimeout(page.keyboard.press(action.key), timeoutMs, "browser key press");
           }
           const settledPage = await this.settlePage(session, timeoutMs);
-          await this.ensureSafeFinalUrl(session, settledPage);
-          this.emitProgress(run, "snapshotting", {action: "press"});
-          const capture = await this.takeSnapshot(session, {
-            mode: snapshotMode,
-            timeoutMs,
-          });
-          const changes = buildSnapshotChanges({
-            before: baseline.snapshot,
-            after: capture.snapshot,
+          return await this.buildChangedActionSnapshotPayload(
+            run,
+            session,
             action,
-            pageSwitched: baseline.page !== settledPage,
-          });
-          return await this.buildSnapshotPayload(session, "press", snapshotMode, changes, capture);
+            baseline,
+            settledPage,
+            snapshotMode,
+            timeoutMs,
+          );
         }
         case "select": {
           const baseline = await this.captureActionBaseline(session, timeoutMs);
@@ -1660,19 +1254,15 @@ export class BrowserSessionService {
             },
           );
           const settledPage = await this.settlePage(session, timeoutMs);
-          await this.ensureSafeFinalUrl(session, settledPage);
-          this.emitProgress(run, "snapshotting", {action: "select"});
-          const capture = await this.takeSnapshot(session, {
-            mode: snapshotMode,
-            timeoutMs,
-          });
-          const changes = buildSnapshotChanges({
-            before: baseline.snapshot,
-            after: capture.snapshot,
+          return await this.buildChangedActionSnapshotPayload(
+            run,
+            session,
             action,
-            pageSwitched: baseline.page !== settledPage,
-          });
-          return await this.buildSnapshotPayload(session, "select", snapshotMode, changes, capture);
+            baseline,
+            settledPage,
+            snapshotMode,
+            timeoutMs,
+          );
         }
         case "wait": {
           const baseline = await this.captureActionBaseline(session, timeoutMs);
@@ -1702,19 +1292,15 @@ export class BrowserSessionService {
             });
           }
           const settledPage = await this.settlePage(session, timeoutMs);
-          await this.ensureSafeFinalUrl(session, settledPage);
-          this.emitProgress(run, "snapshotting", {action: "wait"});
-          const capture = await this.takeSnapshot(session, {
-            mode: snapshotMode,
-            timeoutMs,
-          });
-          const changes = buildSnapshotChanges({
-            before: baseline.snapshot,
-            after: capture.snapshot,
+          return await this.buildChangedActionSnapshotPayload(
+            run,
+            session,
             action,
-            pageSwitched: baseline.page !== settledPage,
-          });
-          return await this.buildSnapshotPayload(session, "wait", snapshotMode, changes, capture);
+            baseline,
+            settledPage,
+            snapshotMode,
+            timeoutMs,
+          );
         }
         case "evaluate":
           this.emitProgress(run, "evaluating", {action: "evaluate"});
@@ -1739,15 +1325,4 @@ export class BrowserSessionService {
       }
     }
   }
-}
-
-let defaultBrowserSessionService: BrowserSessionService | null = null;
-
-export function getDefaultBrowserSessionService(
-  options: BrowserSessionServiceOptions = {},
-): BrowserSessionService {
-  if (!defaultBrowserSessionService) {
-    defaultBrowserSessionService = new BrowserSessionService(options);
-  }
-  return defaultBrowserSessionService;
 }

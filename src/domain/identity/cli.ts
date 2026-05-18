@@ -3,8 +3,8 @@ import process from "node:process";
 
 import {Command, InvalidArgumentError} from "commander";
 
-import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
+import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
+import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {PostgresIdentityStore} from "./postgres.js";
 import {normalizeIdentityHandle} from "./types.js";
 

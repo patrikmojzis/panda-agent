@@ -6,22 +6,20 @@ import type {Message} from "@mariozechner/pi-ai";
 
 import {sleep} from "../../lib/async.js";
 import {trimToUndefined} from "../../lib/strings.js";
-import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore,} from "../../domain/agents/index.js";
-import {
-    type CreateIdentityInput,
-    type IdentityRecord,
-    normalizeIdentityHandle,
-    PostgresIdentityStore,
-} from "../../domain/identity/index.js";
+import {DEFAULT_AGENT_PROMPT_TEMPLATES} from "../../prompts/templates/agent-prompts.js";
+import {PostgresAgentStore} from "../../domain/agents/postgres.js";
+import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
+import {type CreateIdentityInput, type IdentityRecord, normalizeIdentityHandle} from "../../domain/identity/types.js";
 import {isMissingAgentError} from "../../domain/agents/errors.js";
 import {normalizeAgentKey} from "../../domain/agents/types.js";
-import {PostgresSessionStore} from "../../domain/sessions/index.js";
+import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
+import {joinMessageTextParts} from "../../kernel/agent/helpers/message-text.js";
 import type {
     ThreadMessageRecord,
     ThreadRecord,
     ThreadRunRecord,
     ThreadToolJobRecord,
-} from "../../domain/threads/runtime/index.js";
+} from "../../domain/threads/runtime/types.js";
 import {readToolArtifact, type ToolArtifactDescriptor} from "../../kernel/agent/tool-artifacts.js";
 import {createRuntimeClient} from "../runtime/client.js";
 import {createDaemon} from "../runtime/daemon.js";
@@ -151,19 +149,13 @@ function isMissingIdentityHandleError(error: unknown, handle: string): boolean {
 
 function normalizeTextLines(message: Message): string[] {
   if (message.role === "assistant") {
-    return message.content.flatMap((block) => {
-      return block.type === "text" && block.text.trim()
-        ? [block.text.trim()]
-        : [];
-    });
+    const text = joinMessageTextParts(message.content, "\n");
+    return text ? [text] : [];
   }
 
   if (message.role === "toolResult") {
-    return message.content.flatMap((block) => {
-      return block.type === "text" && block.text.trim()
-        ? [block.text.trim()]
-        : [];
-    });
+    const text = joinMessageTextParts(message.content, "\n");
+    return text ? [text] : [];
   }
 
   return [];

@@ -1,4 +1,4 @@
-import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/index.js";
+import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 
 export interface ShellSession {
   cwd: string;

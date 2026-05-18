@@ -207,8 +207,10 @@ function buildPromptPayload(
   return buildJsonToolPayload(details);
 }
 
+export type AgentPromptToolStore = Pick<AgentStore, "readAgentPrompt" | "setAgentPrompt" | "transformAgentPrompt">;
+
 export interface AgentPromptToolOptions {
-  store: AgentStore;
+  store: AgentPromptToolStore;
 }
 
 export class AgentPromptTool<TContext = DefaultAgentSessionContext>
@@ -271,7 +273,7 @@ export class AgentPromptTool<TContext = DefaultAgentSessionContext>
   ].join("\n\n");
   schema = AgentPromptTool.schema;
 
-  private readonly store: AgentStore;
+  private readonly store: AgentPromptToolStore;
 
   constructor(options: AgentPromptToolOptions) {
     super();

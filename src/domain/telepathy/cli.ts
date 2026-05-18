@@ -2,13 +2,16 @@ import process from "node:process";
 
 import {Command} from "commander";
 
-import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
+import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
+import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {generateOpaqueToken, hashOpaqueToken} from "../../lib/opaque-tokens.js";
 import {parseAgentKey} from "../agents/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
-import {generateTelepathyToken, hashTelepathyToken} from "./crypto.js";
 import {PostgresTelepathyDeviceStore} from "./postgres.js";
+
+const TELEPATHY_DEVICE_TOKEN_PREFIX = "pdt";
+const TELEPATHY_DEVICE_TOKEN_BYTES = 24;
 
 interface TelepathyCliOptions {
   dbUrl?: string;
@@ -43,12 +46,12 @@ async function registerDeviceCommand(
 
   await withTelepathyStores(options, async ({agentStore, telepathyStore}) => {
     await agentStore.getAgent(agentKey);
-    const token = generateTelepathyToken();
+    const token = generateOpaqueToken(TELEPATHY_DEVICE_TOKEN_PREFIX, TELEPATHY_DEVICE_TOKEN_BYTES);
     const device = await telepathyStore.registerDevice({
       agentKey,
       deviceId,
       label: options.label,
-      tokenHash: hashTelepathyToken(token),
+      tokenHash: hashOpaqueToken(token),
     });
 
     process.stdout.write([

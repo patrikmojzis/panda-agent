@@ -1,5 +1,5 @@
-import type {PgPoolLike} from "../threads/runtime/postgres-db.js";
-import {withTransaction} from "../threads/runtime/postgres-db.js";
+import type {PgPoolLike} from "../../lib/postgres-query.js";
+import {withTransaction} from "../../lib/postgres-transaction.js";
 import type {CreateThreadInput, ThreadRecord} from "../threads/runtime/types.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import {PostgresSessionStore} from "./postgres.js";

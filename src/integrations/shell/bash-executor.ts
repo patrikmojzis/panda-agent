@@ -1,7 +1,6 @@
 import {randomUUID} from "node:crypto";
 
 import {buildEndpointUrl} from "../../lib/http.js";
-import {isRecord} from "../../lib/records.js";
 import {trimToNull} from "../../lib/strings.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
@@ -9,15 +8,21 @@ import {executeBashCommand} from "./bash-execution.js";
 import type {
   BashExecutionResult,
   BashRunnerAbortRequest,
-  BashRunnerAbortResponse,
   BashRunnerErrorResponse,
   BashRunnerExecRequest,
   BashRunnerResponse,
 } from "./bash-protocol.js";
-import {RUNNER_AGENT_KEY_HEADER, RUNNER_EXPECTED_PATH_HEADER, RUNNER_PATH_SCOPED_HEADER,} from "./bash-protocol.js";
+import {
+  parseBashRunnerAbortResponse,
+  parseBashRunnerExecResponse,
+  parseBashRunnerResponse,
+  RUNNER_AGENT_KEY_HEADER,
+  RUNNER_EXPECTED_PATH_HEADER,
+  RUNNER_PATH_SCOPED_HEADER,
+} from "./bash-protocol.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import type {ShellExecutionContext} from "./types.js";
-import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/index.js";
+import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 import {buildShellProcessEnv} from "./environment.js";
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
@@ -152,23 +157,21 @@ export function makeNetworkTimeoutSignal(timeoutMs: number): AbortSignal {
 export const buildRunnerEndpoint = buildEndpointUrl;
 
 export async function parseRunnerResponse(response: Response): Promise<BashRunnerResponse> {
-  const payload = await response.json();
-  if (!isRecord(payload) || typeof payload.ok !== "boolean") {
-    throw new ToolError("Remote bash runner returned an invalid response.");
-  }
-
-  return payload as unknown as BashRunnerResponse;
+  return parseBashRunnerResponse(await response.json());
 }
 
 export async function readRunnerError(response: Response): Promise<never> {
   let payload: BashRunnerErrorResponse | null = null;
   try {
-    payload = await parseRunnerResponse(response) as BashRunnerErrorResponse;
+    const parsed = await parseRunnerResponse(response);
+    if (!parsed.ok) {
+      payload = parsed;
+    }
   } catch {
     throw new ToolError(`Remote bash runner request failed with status ${response.status}.`);
   }
 
-  if (payload.ok) {
+  if (!payload) {
     throw new ToolError(`Remote bash runner request failed with status ${response.status}.`);
   }
 
@@ -256,7 +259,7 @@ export class RemoteShellExecutor implements BashExecutor {
       return;
     }
 
-    const payload = await response.json() as BashRunnerAbortResponse;
+    const payload = parseBashRunnerAbortResponse(await response.json());
     if (!payload.ok) {
       return;
     }
@@ -292,15 +295,7 @@ export class RemoteShellExecutor implements BashExecutor {
       await readRunnerError(response);
     }
 
-    const payload = await parseRunnerResponse(response);
-    if (!payload.ok) {
-      throw new ToolError(payload.error, { details: payload.details });
-    }
-    if (!("shell" in payload)) {
-      throw new ToolError("Remote bash runner returned an invalid foreground response.");
-    }
-
-    return payload as BashExecutionResult;
+    return parseBashRunnerExecResponse(await response.json());
   }
 
   async execute<TContext extends ShellExecutionContext>(

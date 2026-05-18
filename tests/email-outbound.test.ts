@@ -3,22 +3,22 @@ import {mkdtemp, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type {CredentialResolver} from "../src/domain/credentials/index.js";
 import type {
     EmailAccountRecord,
-    EmailAccountSyncState,
-    EmailAllowedRecipientRecord,
-    EmailMessageRecipientRecord,
     EmailMessageRecord,
-    EmailStore,
     RecordEmailMessageInput,
     RecordEmailMessageResult,
-    UpsertEmailAccountInput,
-} from "../src/domain/email/index.js";
-import {normalizeEmailAddress} from "../src/domain/email/index.js";
-import {createEmailOutboundAdapter} from "../src/integrations/channels/email/outbound.js";
+} from "../src/domain/email/types.js";
+import {normalizeEmailAddress} from "../src/domain/email/shared.js";
+import {
+  createEmailOutboundAdapter,
+  type CreateEmailOutboundAdapterOptions,
+} from "../src/integrations/channels/email/outbound.js";
 
-class MemoryEmailStore implements EmailStore {
+type EmailOutboundStore = CreateEmailOutboundAdapterOptions["store"];
+type EmailOutboundCredentialResolver = CreateEmailOutboundAdapterOptions["credentialResolver"];
+
+class MemoryEmailStore implements EmailOutboundStore {
   account: EmailAccountRecord = {
     agentKey: "panda",
     accountKey: "work",
@@ -44,35 +44,10 @@ class MemoryEmailStore implements EmailStore {
   allowed = new Set(["alice@example.com"]);
   recorded: RecordEmailMessageInput[] = [];
 
-  async ensureSchema(): Promise<void> {}
-  async upsertAccount(_input: UpsertEmailAccountInput): Promise<EmailAccountRecord> {
-    return this.account;
-  }
-  async disableAccount(): Promise<EmailAccountRecord> {
-    this.account = {...this.account, enabled: false};
-    return this.account;
-  }
   async getAccount(): Promise<EmailAccountRecord> {
     return this.account;
   }
-  async listEnabledAccounts(): Promise<readonly EmailAccountRecord[]> {
-    return [this.account];
-  }
-  async updateAccountSyncState(_agentKey: string, _accountKey: string, syncState: EmailAccountSyncState): Promise<EmailAccountRecord> {
-    this.account = {...this.account, syncState};
-    return this.account;
-  }
-  async addAllowedRecipient(agentKey: string, accountKey: string, address: string): Promise<EmailAllowedRecipientRecord> {
-    const normalized = normalizeEmailAddress(address);
-    this.allowed.add(normalized);
-    return {agentKey, accountKey, address: normalized, createdAt: 1};
-  }
-  async removeAllowedRecipient(_agentKey: string, _accountKey: string, address: string): Promise<boolean> {
-    return this.allowed.delete(normalizeEmailAddress(address));
-  }
-  async listAllowedRecipients(agentKey: string, accountKey: string): Promise<readonly EmailAllowedRecipientRecord[]> {
-    return Array.from(this.allowed).map((address) => ({agentKey, accountKey, address, createdAt: 1}));
-  }
+
   async assertRecipientsAllowed(_agentKey: string, accountKey: string, addresses: readonly string[]): Promise<void> {
     const blocked = addresses
       .map((address) => normalizeEmailAddress(address))
@@ -95,15 +70,9 @@ class MemoryEmailStore implements EmailStore {
     };
     return {message, inserted: true};
   }
-  async getMessage(): Promise<EmailMessageRecord> {
-    throw new Error("unused");
-  }
-  async listMessageRecipients(): Promise<readonly EmailMessageRecipientRecord[]> {
-    return [];
-  }
 }
 
-function fakeResolver(): CredentialResolver {
+function fakeResolver(): EmailOutboundCredentialResolver {
   return {
     resolveCredential: async (envKey: string) => ({
       id: envKey,
@@ -115,7 +84,7 @@ function fakeResolver(): CredentialResolver {
       createdAt: 1,
       updatedAt: 1,
     }),
-  } as unknown as CredentialResolver;
+  };
 }
 
 describe("Email outbound adapter", () => {
@@ -321,6 +290,32 @@ describe("Email outbound adapter", () => {
           accountKey: "work",
           fromAddress: "panda@example.com",
           to: [{}],
+          cc: [],
+          subject: "Hello",
+          text: "Hello",
+          attachments: [],
+          threadKey: "Hello",
+        },
+      },
+    })).rejects.toThrow("metadata is invalid");
+    expect(sendMail).not.toHaveBeenCalled();
+
+    await expect(adapter.send({
+      channel: "email",
+      target: {
+        source: "email",
+        connectorKey: "smtp",
+        externalConversationId: "work",
+      },
+      items: [{type: "text", text: "Hello"}],
+      metadata: {
+        email: {
+          kind: "email_send",
+          agentKey: "panda",
+          accountKey: "work",
+          fromAddress: "panda@example.com",
+          fromName: 42,
+          to: [{address: "alice@example.com"}],
           cc: [],
           subject: "Hello",
           text: "Hello",

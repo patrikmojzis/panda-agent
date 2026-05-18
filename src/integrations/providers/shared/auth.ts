@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import {isRecord} from "../../../lib/records.js";
 import {trimToUndefined} from "../../../lib/strings.js";
 import {getProviderConfig, type ProviderAuthKind, type ProviderName} from "./provider.js";
 
@@ -34,17 +35,36 @@ export function resolveOpenAICodexAuthFilePath(env: NodeJS.ProcessEnv = process.
 }
 
 type OpenAICodexAuthFile = {
-  auth_mode?: unknown;
+  auth_mode?: string;
   tokens?: {
-    access_token?: unknown;
+    access_token?: string;
   };
 };
+
+function readOptionalStringField(source: Record<string, unknown>, key: string): string | undefined {
+  const value = source[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function parseOpenAICodexAuthFile(value: unknown): OpenAICodexAuthFile | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const authMode = readOptionalStringField(value, "auth_mode");
+  const accessToken = isRecord(value.tokens)
+    ? readOptionalStringField(value.tokens, "access_token")
+    : undefined;
+  return {
+    ...(authMode !== undefined ? {auth_mode: authMode} : {}),
+    ...(accessToken !== undefined ? {tokens: {access_token: accessToken}} : {}),
+  };
+}
 
 function readOpenAICodexAuthFile(authFilePath: string): OpenAICodexAuthFile | null {
   try {
     const raw = fs.readFileSync(authFilePath, "utf8");
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? (parsed as OpenAICodexAuthFile) : null;
+    return parseOpenAICodexAuthFile(JSON.parse(raw) as unknown);
   } catch {
     return null;
   }

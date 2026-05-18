@@ -1,7 +1,8 @@
-import {stringToUserMessage} from "../../kernel/agent/index.js";
-import type {JsonObject} from "../../kernel/agent/types.js";
-import {runInBackground} from "../../lib/async.js";
-import type {SessionStore} from "../sessions/index.js";
+import {stringToUserMessage} from "../../kernel/agent/helpers/input.js";
+import type {JsonObject} from "../../lib/json.js";
+import {DrainLoop} from "../../lib/drain-loop.js";
+import {resolveCurrentSessionThread, type CurrentSessionThread} from "../sessions/current-thread.js";
+import type {SessionStore} from "../sessions/store.js";
 import type {ThreadRuntimeCoordinator} from "../threads/runtime/coordinator.js";
 import {renderWatchEventPrompt} from "../../prompts/runtime/watch-events.js";
 import type {WatchStore} from "./store.js";
@@ -11,6 +12,8 @@ const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const DEFAULT_CLAIM_TTL_MS = 10 * 60_000;
 const DEFAULT_BATCH_SIZE = 25;
 const WATCH_EVENT_SOURCE = "watch_event";
+type WatchCoordinator = Pick<ThreadRuntimeCoordinator, "submitInput">;
+type WatchSessionStore = Pick<SessionStore, "getSession">;
 
 export type WatchEvaluator = (
   watch: WatchRecord,
@@ -21,14 +24,24 @@ export type WatchEvaluator = (
 ) => Promise<WatchEvaluationResult>;
 
 export interface WatchRunnerOptions {
-  watches: WatchStore;
-  sessions: SessionStore;
-  coordinator: ThreadRuntimeCoordinator;
+  watches: WatchRunnerStore;
+  sessions: WatchSessionStore;
+  coordinator: WatchCoordinator;
   evaluateWatch: WatchEvaluator;
   pollIntervalMs?: number;
   claimTtlMs?: number;
   onError?: (error: unknown, watchId?: string) => Promise<void> | void;
 }
+
+type WatchRunnerStore = Pick<
+  WatchStore,
+  | "claimWatch"
+  | "completeWatchRun"
+  | "failWatchRun"
+  | "listDueWatches"
+  | "recordEvent"
+  | "startWatchRun"
+>;
 
 function computeNextPollAt(watch: ClaimWatchResult["watch"], nowMs: number): number {
   return nowMs + watch.intervalMinutes * 60_000;
@@ -69,86 +82,49 @@ function buildWatchEventPrompt(options: {
   });
 }
 
+function describeWatchFailure(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export class WatchRunner {
-  private readonly watches: WatchStore;
-  private readonly sessions: SessionStore;
-  private readonly coordinator: ThreadRuntimeCoordinator;
+  private readonly watches: WatchRunnerStore;
+  private readonly sessions: WatchSessionStore;
+  private readonly coordinator: WatchCoordinator;
   private readonly evaluateWatchFn: WatchEvaluator;
-  private readonly pollIntervalMs: number;
   private readonly claimTtlMs: number;
   private readonly onError?: (error: unknown, watchId?: string) => Promise<void> | void;
   private readonly claimOwner = "watch-runner";
-
-  private timer: NodeJS.Timeout | null = null;
-  private stopped = true;
-  private drainPromise: Promise<void> | null = null;
-  private pendingDrain = false;
+  private readonly drainLoop: DrainLoop;
 
   constructor(options: WatchRunnerOptions) {
     this.watches = options.watches;
     this.sessions = options.sessions;
     this.coordinator = options.coordinator;
     this.evaluateWatchFn = options.evaluateWatch;
-    this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.claimTtlMs = options.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS;
     this.onError = options.onError;
-  }
-
-  async start(): Promise<void> {
-    if (!this.stopped) {
-      return;
-    }
-
-    this.stopped = false;
-    this.timer = setInterval(() => {
-      this.kickDrain();
-    }, this.pollIntervalMs);
-    this.kickDrain();
-  }
-
-  async stop(): Promise<void> {
-    this.stopped = true;
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-
-    if (this.drainPromise) {
-      await this.drainPromise;
-    }
-  }
-
-  async triggerDrain(): Promise<void> {
-    if (this.stopped) {
-      return;
-    }
-
-    if (this.drainPromise) {
-      this.pendingDrain = true;
-      return;
-    }
-
-    this.drainPromise = this.drain();
-    try {
-      await this.drainPromise;
-    } finally {
-      this.drainPromise = null;
-      if (this.pendingDrain && !this.stopped) {
-        this.pendingDrain = false;
-        await this.triggerDrain();
-      }
-    }
-  }
-
-  private kickDrain(): void {
-    runInBackground(() => this.triggerDrain(), {
+    this.drainLoop = new DrainLoop({
       label: "Watch runner drain",
+      pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+      drain: () => this.drain(),
       onError: this.onError ? (error) => this.onError?.(error) : undefined,
     });
   }
 
+  async start(): Promise<void> {
+    this.drainLoop.start();
+  }
+
+  async stop(): Promise<void> {
+    await this.drainLoop.stop();
+  }
+
+  async triggerDrain(): Promise<void> {
+    await this.drainLoop.trigger();
+  }
+
   private async drain(): Promise<void> {
-    while (!this.stopped) {
+    while (!this.drainLoop.isStopped) {
       const dueWatches = await this.watches.listDueWatches({
         limit: DEFAULT_BATCH_SIZE,
       });
@@ -158,7 +134,7 @@ export class WatchRunner {
 
       let claimedAny = false;
       for (const watch of dueWatches) {
-        if (this.stopped) {
+        if (this.drainLoop.isStopped) {
           return;
         }
 
@@ -187,15 +163,11 @@ export class WatchRunner {
   }
 
   private async processClaim(claim: ClaimWatchResult): Promise<void> {
-    const session = await this.sessions.getSession(claim.watch.sessionId);
-    const resolvedThreadId = session.currentThreadId;
-    if (!resolvedThreadId) {
-      await this.watches.failWatchRun({
-        runId: claim.run.id,
-        error: `Watch ${claim.watch.id} has no resolved thread target.`,
-      });
+    const target = await this.resolveClaimTarget(claim);
+    if (!target) {
       return;
     }
+    const {session, threadId: resolvedThreadId} = target;
 
     await this.watches.startWatchRun({
       runId: claim.run.id,
@@ -209,11 +181,7 @@ export class WatchRunner {
         identityId: claim.watch.createdByIdentityId ?? session.createdByIdentityId,
       });
     } catch (error) {
-      await this.watches.failWatchRun({
-        runId: claim.run.id,
-        resolvedThreadId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      await this.failClaimRun(claim, error, {resolvedThreadId});
       return;
     }
 
@@ -228,11 +196,17 @@ export class WatchRunner {
       return;
     }
 
+    const deliveryTarget = await this.resolveClaimTarget(claim, {resolvedThreadId});
+    if (!deliveryTarget) {
+      return;
+    }
+    const deliveryThreadId = deliveryTarget.threadId;
+
     const event = await this.watches.recordEvent({
       watchId: claim.watch.id,
       sessionId: claim.watch.sessionId,
       createdByIdentityId: claim.watch.createdByIdentityId,
-      resolvedThreadId,
+      resolvedThreadId: deliveryThreadId,
       eventKind: evaluation.event.eventKind,
       summary: evaluation.event.summary,
       dedupeKey: evaluation.event.dedupeKey,
@@ -240,7 +214,7 @@ export class WatchRunner {
     });
 
     try {
-      await this.coordinator.submitInput(resolvedThreadId, {
+      await this.coordinator.submitInput(deliveryThreadId, {
         message: stringToUserMessage(buildWatchEventPrompt({
           claim,
           eventId: event.event.id,
@@ -253,21 +227,45 @@ export class WatchRunner {
         metadata: buildWatchEventMetadata(claim, event.event.id),
       });
     } catch (error) {
-      await this.watches.failWatchRun({
-        runId: claim.run.id,
-        resolvedThreadId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      await this.failClaimRun(claim, error, {resolvedThreadId: deliveryThreadId});
       return;
     }
 
     await this.watches.completeWatchRun({
       runId: claim.run.id,
       status: "changed",
-      resolvedThreadId,
+      resolvedThreadId: deliveryThreadId,
       emittedEventId: event.event.id,
       state: evaluation.nextState,
       lastError: null,
+    });
+  }
+
+  private async resolveClaimTarget(
+    claim: ClaimWatchResult,
+    details: {
+      resolvedThreadId?: string;
+    } = {},
+  ): Promise<CurrentSessionThread | null> {
+    try {
+      return await resolveCurrentSessionThread(this.sessions, claim.watch.sessionId);
+    } catch (error) {
+      await this.failClaimRun(claim, error, details);
+      return null;
+    }
+  }
+
+  private async failClaimRun(
+    claim: ClaimWatchResult,
+    error: unknown,
+    details: {
+      resolvedThreadId?: string;
+    } = {},
+  ): Promise<void> {
+    await this.watches.failWatchRun({
+      runId: claim.run.id,
+      error: describeWatchFailure(error),
+      ...(details.resolvedThreadId ? {resolvedThreadId: details.resolvedThreadId} : {}),
     });
   }
 }

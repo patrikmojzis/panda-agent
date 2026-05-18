@@ -2,11 +2,12 @@ import process from "node:process";
 
 import {Command, InvalidArgumentError} from "commander";
 
-import {DB_URL_OPTION_DESCRIPTION} from "../../../app/cli-shared.js";
-import {ensureSchemas, withPostgresPool} from "../../../app/runtime/postgres-bootstrap.js";
-import {PostgresIdentityStore} from "../../../domain/identity/index.js";
+import {DB_URL_OPTION_DESCRIPTION} from "../../../lib/cli.js";
+import {resolveMediaDir} from "../../../lib/data-dir.js";
+import {ensureSchemas, withPostgresPool} from "../../../lib/postgres-bootstrap.js";
+import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
 import {parseIdentityHandle} from "../../../domain/identity/cli.js";
-import {resolveWhatsAppConnectorKey, resolveWhatsAppDataDir, WHATSAPP_SOURCE} from "./config.js";
+import {resolveWhatsAppConnectorKey, WHATSAPP_SOURCE} from "./config.js";
 import {WhatsAppService} from "./service.js";
 
 interface WhatsAppCliOptions {
@@ -67,7 +68,7 @@ function parseWhatsAppActorId(value: string): string {
 function createWhatsAppService(options: WhatsAppRunCliOptions = {}): WhatsAppService {
   return new WhatsAppService({
     connectorKey: options.connector ?? resolveWhatsAppConnectorKey(),
-    dataDir: resolveWhatsAppDataDir(),
+    dataDir: resolveMediaDir(),
     dbUrl: options.dbUrl,
   });
 }
@@ -187,7 +188,7 @@ export async function whatsappUnpairCommand(options: WhatsAppUnpairCliOptions): 
   });
 }
 
-export async function whatsappRunCommand(options: WhatsAppRunCliOptions): Promise<void> {
+async function whatsappRunCommand(options: WhatsAppRunCliOptions): Promise<void> {
   const service = createWhatsAppService(options);
 
   const shutdown = async () => {

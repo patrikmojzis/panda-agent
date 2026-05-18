@@ -1,13 +1,25 @@
 import {describe, expect, it, vi} from "vitest";
 
-import {createDaemonRequestProcessor} from "../src/app/runtime/daemon-requests.js";
-import type {DaemonContext} from "../src/app/runtime/daemon-bootstrap.js";
-import type {DaemonThreadHelpers} from "../src/app/runtime/daemon-threads.js";
-import type {RuntimeRequestRecord, WhatsAppReactionRequestPayload} from "../src/domain/threads/requests/index.js";
+import {
+  createDaemonRequestProcessor,
+  type DaemonRequestProcessorContext,
+  type DaemonRequestThreadHelpers,
+} from "../src/app/runtime/daemon-requests.js";
+import type {IdentityBindingRecord, IdentityRecord} from "../src/domain/identity/index.js";
+import type {SessionRecord, SessionRouteInput, SessionRouteRecord} from "../src/domain/sessions/index.js";
+import type {ThreadRecord} from "../src/domain/threads/runtime/index.js";
+import type {
+  A2AMessageRequestPayload,
+  RuntimeRequestRecord,
+  TelegramMessageRequestPayload,
+  TuiInputRequestPayload,
+  WhatsAppReactionRequestPayload,
+} from "../src/domain/threads/requests/index.js";
+import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function whatsappReactionRequest(
   overrides: Partial<WhatsAppReactionRequestPayload> = {},
-): RuntimeRequestRecord<WhatsAppReactionRequestPayload> {
+): RuntimeRequestRecord<"whatsapp_reaction"> {
   return {
     id: "request-1",
     kind: "whatsapp_reaction",
@@ -29,42 +41,205 @@ function whatsappReactionRequest(
   };
 }
 
-function createHarness(options: {
-  binding?: {identityId: string} | null;
-  thread?: {id: string; sessionId: string} | null;
-} = {}) {
-  const binding = options.binding === undefined ? {identityId: "identity-1"} : options.binding;
-  const thread = options.thread === undefined ? {id: "thread-1", sessionId: "session-1"} : options.thread;
-  const submitInput = vi.fn(async () => {});
-  const saveLastRoute = vi.fn(async () => {});
-  const resolveOrCreateConversationThread = vi.fn(async () => thread);
-  const context = {
+function telegramMessageRequest(
+  overrides: Partial<TelegramMessageRequestPayload> = {},
+): RuntimeRequestRecord<"telegram_message"> {
+  return {
+    id: "request-telegram",
+    kind: "telegram_message",
+    status: "pending",
+    createdAt: 1,
+    updatedAt: 1,
+    payload: {
+      connectorKey: "main",
+      botUsername: "panda_bot",
+      externalConversationId: "777",
+      chatId: "777",
+      chatType: "private",
+      externalActorId: "123",
+      externalMessageId: "555",
+      text: "hello from telegram",
+      username: "patrik",
+      firstName: "Patrik",
+      media: [],
+      ...overrides,
+    },
+  };
+}
+
+function tuiInputRequest(
+  overrides: Partial<TuiInputRequestPayload> = {},
+): RuntimeRequestRecord<"tui_input"> {
+  return {
+    id: "request-tui",
+    kind: "tui_input",
+    status: "pending",
+    createdAt: 1,
+    updatedAt: 1,
+    payload: {
+      identityId: "identity-1",
+      threadId: "thread-1",
+      actorId: "terminal-user",
+      externalMessageId: "tui-1",
+      identityHandle: "patrik",
+      text: "hello from tui",
+      ...overrides,
+    },
+  };
+}
+
+function createIdentity(): IdentityRecord {
+  return {
+    id: "identity-1",
+    handle: "patrik",
+    displayName: "Patrik",
+    status: "active",
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function createIdentityBinding(identityId = "identity-1"): IdentityBindingRecord {
+  return {
+    id: "binding-1",
+    source: "test",
+    connectorKey: "main",
+    externalActorId: "actor-1",
+    identityId,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function createSession(sessionId: string, currentThreadId: string, agentKey = "panda"): SessionRecord {
+  return {
+    id: sessionId,
+    agentKey,
+    kind: "main",
+    currentThreadId,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function createSaveLastRouteMock() {
+  return vi.fn(async (input: SessionRouteInput): Promise<SessionRouteRecord> => ({
+    ...input,
+    channel: input.route.source,
+    createdAt: 1,
+    updatedAt: 1,
+  }));
+}
+
+function createCoordinator(submitInput = vi.fn(async () => {})): DaemonRequestProcessorContext["runtime"]["coordinator"] {
+  return {
+    abort: vi.fn(async () => true),
+    resolveThreadRunConfig: vi.fn(async () => ({
+      model: "openai/gpt-5.1",
+    })),
+    runExclusively: vi.fn(async (_threadId, operation) => operation()),
+    submitInput,
+  };
+}
+
+function createRequestContext(input: {
+  binding?: IdentityBindingRecord | null;
+  currentThreadId?: string;
+  getSession?: (sessionId: string) => Promise<SessionRecord>;
+  saveLastRoute?: ReturnType<typeof createSaveLastRouteMock>;
+  store?: TestThreadRuntimeStore;
+  submitInput?: ReturnType<typeof vi.fn>;
+} = {}): DaemonRequestProcessorContext {
+  const currentThreadId = input.currentThreadId ?? "thread-1";
+  return {
     runtime: {
+      coordinator: createCoordinator(input.submitInput),
       identityStore: {
-        resolveIdentityBinding: vi.fn(async () => binding),
-        getIdentity: vi.fn(async () => ({
-          id: "identity-1",
-          handle: "patrik",
-          displayName: "Patrik",
-          status: "active",
-          createdAt: 1,
-          updatedAt: 1,
-        })),
+        getIdentity: vi.fn(async () => createIdentity()),
+        resolveIdentityBinding: vi.fn(async () => input.binding === undefined ? createIdentityBinding() : input.binding),
       },
-      coordinator: {
-        submitInput,
+      sessionStore: {
+        getSession: input.getSession ?? vi.fn(async (sessionId: string) => createSession(sessionId, currentThreadId)),
       },
+      store: input.store ?? new TestThreadRuntimeStore(),
+    },
+    a2aBindings: {
+      hasBinding: vi.fn(async () => true),
+      hasReceivedMessage: vi.fn(async () => false),
     },
     sessionRoutes: {
-      saveLastRoute,
+      saveLastRoute: input.saveLastRoute ?? createSaveLastRouteMock(),
     },
-  } as unknown as DaemonContext;
-  const threads = {
+  };
+}
+
+function createThreadHelpers(overrides: Partial<DaemonRequestThreadHelpers> = {}): DaemonRequestThreadHelpers {
+  const unexpected = async (): Promise<never> => {
+    throw new Error("Unexpected daemon thread helper call.");
+  };
+  return {
+    createBranchSession: unexpected,
+    createWorkerSession: unexpected,
+    ensureIdentity: unexpected,
+    handleResetSession: unexpected,
+    openMainSession: unexpected,
+    queueSystemReply: unexpected,
+    relocateThreadMedia: vi.fn(async (_thread, media) => media),
+    resolveOrCreateConversationThread: unexpected,
+    ...overrides,
+  };
+}
+
+function createHarness(options: {
+  binding?: {identityId: string} | null;
+  currentThreadId?: string;
+  thread?: {id: string; sessionId: string} | null;
+} = {}) {
+  const binding = options.binding === undefined
+    ? createIdentityBinding()
+    : options.binding
+      ? createIdentityBinding(options.binding.identityId)
+      : null;
+  const thread = options.thread === undefined ? {id: "thread-1", sessionId: "session-1"} : options.thread;
+  const currentThreadId = options.currentThreadId ?? thread?.id ?? "thread-1";
+  const submitInput = vi.fn(async () => {});
+  const saveLastRoute = createSaveLastRouteMock();
+  const getSession = vi.fn(async (sessionId: string) => createSession(sessionId, currentThreadId));
+  const resolveOrCreateConversationThread = vi.fn(async (): Promise<ThreadRecord | null> => {
+    return thread
+      ? {
+        id: thread.id,
+        sessionId: thread.sessionId,
+        context: {},
+        createdAt: 1,
+        updatedAt: 1,
+      }
+      : null;
+  });
+  const queueSystemReply = vi.fn(async () => {});
+  const handleResetSession = vi.fn(async () => ({
+    threadId: "thread-reset",
+    previousThreadId: "thread-before-reset",
+    sessionId: "session-1",
+  }));
+  const context = createRequestContext({
+    binding,
+    currentThreadId,
+    getSession,
+    saveLastRoute,
+    submitInput,
+  });
+  const threads = createThreadHelpers({
     resolveOrCreateConversationThread,
-  } as unknown as DaemonThreadHelpers;
+    queueSystemReply,
+    handleResetSession,
+  });
 
   return {
     context,
+    getSession,
+    handleResetSession,
+    queueSystemReply,
     resolveOrCreateConversationThread,
     saveLastRoute,
     submitInput,
@@ -72,7 +247,219 @@ function createHarness(options: {
   };
 }
 
+function expectFirstCallBefore(
+  first: {mock: {invocationCallOrder: number[]}},
+  second: {mock: {invocationCallOrder: number[]}},
+): void {
+  const firstCall = first.mock.invocationCallOrder[0];
+  const secondCall = second.mock.invocationCallOrder[0];
+  if (firstCall === undefined || secondCall === undefined) {
+    throw new Error("Expected both mocks to have been called.");
+  }
+  expect(firstCall).toBeLessThan(secondCall);
+}
+
 describe("daemon request processor", () => {
+  it("routes TUI input through the terminal channel adapter", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-1",
+      sessionId: "session-1",
+      context: {},
+    });
+    const submitInput = vi.fn(async () => {});
+    const saveLastRoute = createSaveLastRouteMock();
+    const getThread = vi.spyOn(store, "getThread");
+    const context = createRequestContext({
+      getSession: vi.fn(async (sessionId: string) => createSession(sessionId, "thread-1")),
+      saveLastRoute,
+      store,
+      submitInput,
+    });
+    const processor = createDaemonRequestProcessor(context, createThreadHelpers());
+
+    await expect(processor(tuiInputRequest())).resolves.toEqual({
+      status: "queued",
+      threadId: "thread-1",
+    });
+
+    expect(getThread).toHaveBeenCalledWith("thread-1");
+    expect(submitInput).toHaveBeenCalledWith("thread-1", expect.objectContaining({
+      source: "tui",
+      channelId: "terminal",
+      externalMessageId: "tui-1",
+      actorId: "terminal-user",
+      identityId: "identity-1",
+      message: expect.objectContaining({
+        content: expect.stringContaining("hello from tui"),
+      }),
+      metadata: expect.objectContaining({
+        tui: expect.objectContaining({
+          conversationId: "terminal",
+          actorId: "terminal-user",
+        }),
+      }),
+    }));
+    expect(saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      identityId: "identity-1",
+    }));
+    expectFirstCallBefore(saveLastRoute, submitInput);
+  });
+
+  it("queues bound A2A messages to the recipient session current thread", async () => {
+    const submitInput = vi.fn(async () => {});
+    const getSession = vi.fn(async (sessionId: string) => createSession(sessionId, "thread-after-reset", "koala"));
+    const context = createRequestContext({
+      getSession,
+      submitInput,
+    });
+    const processor = createDaemonRequestProcessor(context, createThreadHelpers());
+
+    await expect(processor({
+      id: "request-a2a",
+      kind: "a2a_message",
+      status: "pending",
+      createdAt: 1,
+      updatedAt: 1,
+      payload: {
+        connectorKey: "local",
+        externalMessageId: "a2a:reset-thread",
+        fromAgentKey: "panda",
+        fromSessionId: "session-a",
+        fromThreadId: "thread-a",
+        toAgentKey: "koala",
+        toSessionId: "session-b",
+        sentAt: 123,
+        items: [{type: "text", text: "hello after reset"}],
+      } satisfies A2AMessageRequestPayload,
+    })).resolves.toEqual({
+      status: "queued",
+      threadId: "thread-after-reset",
+    });
+
+    expect(submitInput).toHaveBeenCalledWith("thread-after-reset", expect.objectContaining({
+      source: "a2a",
+      channelId: "session-a",
+      externalMessageId: "a2a:reset-thread",
+      actorId: "panda",
+      message: expect.objectContaining({
+        content: expect.stringContaining("hello after reset"),
+      }),
+    }));
+  });
+
+  it("routes paired Telegram messages to the conversation thread", async () => {
+    const harness = createHarness();
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(telegramMessageRequest())).resolves.toEqual({
+      status: "queued",
+      threadId: "thread-1",
+    });
+
+    expect(harness.resolveOrCreateConversationThread).toHaveBeenCalledWith({
+      identityId: "identity-1",
+      source: "telegram",
+      connectorKey: "main",
+      externalConversationId: "777",
+      context: {
+        source: "telegram",
+        chatId: "777",
+      },
+    });
+    expect(harness.submitInput).toHaveBeenCalledWith("thread-1", expect.objectContaining({
+      source: "telegram",
+      externalMessageId: "555",
+      actorId: "123",
+      identityId: "identity-1",
+      message: expect.objectContaining({
+        content: expect.stringContaining("hello from telegram"),
+      }),
+      metadata: expect.objectContaining({
+        telegram: expect.objectContaining({
+          chatId: "777",
+          username: "patrik",
+        }),
+      }),
+    }));
+    expect(harness.saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      identityId: "identity-1",
+    }));
+    expectFirstCallBefore(harness.saveLastRoute, harness.submitInput);
+  });
+
+  it("routes paired Telegram messages to the session current thread after conversation resolution", async () => {
+    const harness = createHarness({
+      thread: {id: "thread-before-reset", sessionId: "session-1"},
+      currentThreadId: "thread-after-reset",
+    });
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(telegramMessageRequest())).resolves.toEqual({
+      status: "queued",
+      threadId: "thread-after-reset",
+    });
+
+    expect(harness.submitInput).toHaveBeenCalledWith("thread-after-reset", expect.objectContaining({
+      source: "telegram",
+      externalMessageId: "555",
+      identityId: "identity-1",
+    }));
+    expectFirstCallBefore(harness.saveLastRoute, harness.submitInput);
+  });
+
+  it("replies to unpaired Telegram /start with pairing instructions", async () => {
+    const harness = createHarness({
+      binding: null,
+    });
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(telegramMessageRequest({text: "/start"}))).resolves.toEqual({
+      status: "replied",
+      reason: "start_unpaired",
+    });
+
+    expect(harness.queueSystemReply).toHaveBeenCalledWith(expect.objectContaining({
+      channel: "telegram",
+      connectorKey: "main",
+      externalConversationId: "777",
+      externalActorId: "123",
+      replyToMessageId: "555",
+      text: expect.stringContaining("panda telegram pair --identity <identity-handle> --actor 123"),
+    }));
+    expect(harness.submitInput).not.toHaveBeenCalled();
+  });
+
+  it("resets paired Telegram conversations and replies on the new thread", async () => {
+    const harness = createHarness();
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(telegramMessageRequest({text: "/reset"}))).resolves.toEqual({
+      threadId: "thread-reset",
+      previousThreadId: "thread-before-reset",
+      sessionId: "session-1",
+    });
+
+    expect(harness.handleResetSession).toHaveBeenCalledWith(expect.objectContaining({
+      identityId: "identity-1",
+      source: "telegram",
+      connectorKey: "main",
+      externalConversationId: "777",
+      externalActorId: "123",
+      externalMessageId: "555",
+    }));
+    expect(harness.queueSystemReply).toHaveBeenCalledWith(expect.objectContaining({
+      channel: "telegram",
+      connectorKey: "main",
+      externalConversationId: "777",
+      replyToMessageId: "555",
+      threadId: "thread-reset",
+      text: "Reset Panda. Fresh session started.",
+    }));
+  });
+
   it("routes paired WhatsApp reactions to the conversation thread", async () => {
     const harness = createHarness();
     const processor = createDaemonRequestProcessor(harness.context, harness.threads);
@@ -114,6 +501,7 @@ describe("daemon request processor", () => {
       sessionId: "session-1",
       identityId: "identity-1",
     }));
+    expectFirstCallBefore(harness.saveLastRoute, harness.submitInput);
   });
 
   it("drops WhatsApp reactions from unpaired actors", async () => {

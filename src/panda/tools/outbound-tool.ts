@@ -4,7 +4,7 @@ import {z} from "zod";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {assertPathReadable} from "../../lib/fs.js";
 import {resolveChannelRouteTarget} from "../../domain/channels/route-target.js";
@@ -17,8 +17,8 @@ import type {
 } from "../../domain/channels/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
-import {A2A_SOURCE} from "../../integrations/channels/a2a/config.js";
-import {EMAIL_SOURCE} from "../../domain/email/index.js";
+import {A2A_SOURCE} from "../../domain/a2a/constants.js";
+import {EMAIL_SOURCE} from "../../domain/email/shared.js";
 
 const outboundItemSchema = z.discriminatedUnion("type", [
   z.object({

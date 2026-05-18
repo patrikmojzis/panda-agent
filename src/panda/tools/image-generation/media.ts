@@ -2,19 +2,18 @@ import {randomUUID} from "node:crypto";
 import {mkdir, readFile, stat, writeFile} from "node:fs/promises";
 import path from "node:path";
 
-import {resolveAgentMediaDir, resolveMediaDir} from "../../../app/runtime/data-dir.js";
 import {resolveContextPath} from "../../../app/runtime/panda-path-context.js";
 import type {DefaultAgentSessionContext} from "../../../app/runtime/panda-session-context.js";
 import {ToolError} from "../../../kernel/agent/exceptions.js";
 import type {ToolArtifactDescriptor} from "../../../kernel/agent/tool-artifacts.js";
-import type {JsonObject} from "../../../kernel/agent/types.js";
+import type {JsonObject} from "../../../lib/json.js";
 import {
   type GeneratedOpenAIImage,
   type OpenAIImageInputImage,
   type OpenAIImageOutputFormat,
   resolveOpenAIImageMime,
 } from "../../../integrations/providers/openai-image/client.js";
-import {trimToNull, trimToUndefined} from "../../../lib/strings.js";
+import {resolveToolArtifactMediaRoot, resolveToolArtifactScopeKey} from "../artifact-paths.js";
 
 export interface PersistedGeneratedImage {
   path: string;
@@ -31,36 +30,6 @@ const REFERENCE_IMAGE_MIME_TYPES = new Map<string, string>([
   [".jpeg", "image/jpeg"],
   [".webp", "image/webp"],
 ]);
-
-function normalizeFileLabel(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "unknown";
-}
-
-function safeAgentKey(agentKey: string): string {
-  const trimmed = agentKey.trim();
-  if (!trimmed || /[\\/]/.test(trimmed) || trimmed.includes("..")) {
-    throw new ToolError(`Unsafe agent key for image artifact path: ${agentKey}`);
-  }
-
-  return trimmed;
-}
-
-function resolveScopeKey(context: Partial<DefaultAgentSessionContext>): string {
-  const threadId = trimToUndefined(context.threadId);
-  return threadId ? normalizeFileLabel(threadId) : `ephemeral-${randomUUID()}`;
-}
-
-function resolveImageGenerationMediaRoot(
-  context: Partial<DefaultAgentSessionContext> | undefined,
-  env: NodeJS.ProcessEnv,
-): string {
-  const agentKey = trimToNull(context?.agentKey);
-  if (agentKey) {
-    return resolveAgentMediaDir(safeAgentKey(agentKey), env);
-  }
-
-  return resolveMediaDir(env);
-}
 
 function inferReferenceMimeType(filePath: string): string {
   const mimeType = REFERENCE_IMAGE_MIME_TYPES.get(path.extname(filePath).toLowerCase());
@@ -117,8 +86,12 @@ export async function persistGeneratedImages(params: {
   env: NodeJS.ProcessEnv;
   outputFormat: OpenAIImageOutputFormat;
 }): Promise<readonly PersistedGeneratedImage[]> {
-  const root = resolveImageGenerationMediaRoot(params.context, params.env);
-  const artifactDir = path.join(root, "image-generation", resolveScopeKey(params.context));
+  const root = resolveToolArtifactMediaRoot({
+    context: params.context,
+    env: params.env,
+    source: "image",
+  });
+  const artifactDir = path.join(root, "image-generation", resolveToolArtifactScopeKey(params.context));
   await mkdir(artifactDir, {recursive: true});
 
   const output = resolveOpenAIImageMime(params.outputFormat);

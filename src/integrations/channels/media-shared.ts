@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import type {JsonObject} from "../../kernel/agent/types.js";
+import type {JsonObject} from "../../lib/json.js";
 import type {MediaDescriptor} from "../../domain/channels/types.js";
 
 /**

@@ -6,21 +6,27 @@ import {z} from "zod";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import type {JsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {assertPathReadable} from "../../lib/fs.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
-import type {EmailMessageRecipientRecord, EmailMessageRecord, EmailStore} from "../../domain/email/index.js";
-import {EMAIL_CONNECTOR_KEY, EMAIL_SOURCE, normalizeEmailAddress} from "../../domain/email/index.js";
-import type {EmailSendPayload, EmailSendRecipientPayload} from "../../domain/email/send-payload.js";
+import {EMAIL_CONNECTOR_KEY, EMAIL_SOURCE, normalizeEmailAddress} from "../../domain/email/shared.js";
+import type {EmailMessageRecipientRecord, EmailMessageRecord, EmailStore} from "../../domain/email/types.js";
+import {emailSendPayloadToJsonObject, type EmailSendPayload, type EmailSendRecipientPayload} from "../../domain/email/send-payload.js";
 import type {OutboundFileItem, OutboundItem} from "../../domain/channels/types.js";
 import {buildJsonToolPayload, rethrowAsToolError} from "./shared.js";
 
 const MAX_EMAIL_ATTACHMENTS = 10;
 const MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_EMAIL_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+
+type EmailSendStore = Pick<
+  EmailStore,
+  "getAccount" | "getMessage" | "listMessageRecipients" | "assertRecipientsAllowed"
+>;
 
 const emailRecipientSchema = z.object({
   address: z.string().trim().min(1),
@@ -93,7 +99,7 @@ const emailSendToolSchema = z.object({
 });
 
 export interface EmailSendToolOptions {
-  store: EmailStore;
+  store: EmailSendStore;
 }
 
 interface ResolvedEmailDraft {
@@ -255,7 +261,7 @@ export class EmailSendTool<TContext = DefaultAgentSessionContext> extends Tool<t
   ].join("\n");
   schema = EmailSendTool.schema;
 
-  private readonly store: EmailStore;
+  private readonly store: EmailSendStore;
 
   constructor(options: EmailSendToolOptions) {
     super();
@@ -367,8 +373,8 @@ export class EmailSendTool<TContext = DefaultAgentSessionContext> extends Tool<t
       },
       items,
       metadata: {
-        email: payload as unknown as JsonObject,
-      } satisfies JsonObject,
+        email: emailSendPayloadToJsonObject(payload),
+      },
     });
 
     return buildJsonToolPayload({

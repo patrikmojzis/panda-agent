@@ -48,22 +48,8 @@ const EXPECTED_PERSONA_EXPORTS = [
   "resolveDefaultAgentModelSelector",
 ] as const;
 
-const FORBIDDEN_PERSONA_EXPORTS = [
-  "DefaultAgentSubagentRunInput",
-  "DefaultAgentSubagentRunResult",
-  "DefaultAgentSubagentService",
-  "DefaultAgentSubagentServiceOptions",
-  "summarizeMessageText",
-] as const;
-
 describe("panda persona public API", () => {
   it("matches the intentional persona export surface", () => {
     expect(Object.keys(personaExports).sort()).toEqual([...EXPECTED_PERSONA_EXPORTS].sort());
-  });
-
-  it("does not leak persona wiring helpers", () => {
-    for (const exportName of FORBIDDEN_PERSONA_EXPORTS) {
-      expect(personaExports).not.toHaveProperty(exportName);
-    }
   });
 });

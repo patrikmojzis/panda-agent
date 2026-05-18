@@ -1,39 +1,47 @@
-import type {Pool} from "pg";
-
-import {CREATE_RUNTIME_SCHEMA_SQL, toMillis} from "../../../domain/threads/runtime/postgres-shared.js";
-import {buildDaemonStateTableNames, type DaemonStateTableNames} from "./postgres-shared.js";
-import type {DaemonStateRecord} from "./types.js";
-
-interface PgQueryable {
-  query: Pool["query"];
-}
+import type {PgQueryable} from "../../../lib/postgres-query.js";
+import {requireTimestampMillis} from "../../../lib/postgres-values.js";
+import {requireNonEmptyString} from "../../../lib/strings.js";
+import {buildRuntimeRelationNames, CREATE_RUNTIME_SCHEMA_SQL} from "../../../lib/postgres-relations.js";
 
 export interface DaemonStateRepoOptions {
   pool: PgQueryable;
 }
 
+export interface DaemonStateRecord {
+  daemonKey: string;
+  heartbeatAt: number;
+  startedAt: number;
+  updatedAt: number;
+}
+
 function parseRow(row: Record<string, unknown>): DaemonStateRecord {
   return {
-    daemonKey: String(row.daemon_key),
-    heartbeatAt: toMillis(row.heartbeat_at),
-    startedAt: toMillis(row.started_at),
-    updatedAt: toMillis(row.updated_at),
+    daemonKey: requireNonEmptyString(row.daemon_key, "Daemon key must not be empty."),
+    heartbeatAt: requireTimestampMillis(row.heartbeat_at, "Daemon state heartbeat_at must be a valid timestamp."),
+    startedAt: requireTimestampMillis(row.started_at, "Daemon state started_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Daemon state updated_at must be a valid timestamp."),
   };
+}
+
+function normalizeDaemonKey(value: string): string {
+  return requireNonEmptyString(value, "Daemon key must not be empty.");
 }
 
 export class DaemonStateRepo {
   private readonly pool: PgQueryable;
-  private readonly tables: DaemonStateTableNames;
+  private readonly daemonStateTable: string;
 
   constructor(options: DaemonStateRepoOptions) {
     this.pool = options.pool;
-    this.tables = buildDaemonStateTableNames();
+    this.daemonStateTable = buildRuntimeRelationNames({
+      daemonState: "daemon_state",
+    }).daemonState;
   }
 
   async ensureSchema(): Promise<void> {
     await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
     await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.daemonState} (
+      CREATE TABLE IF NOT EXISTS ${this.daemonStateTable} (
         daemon_key TEXT PRIMARY KEY,
         heartbeat_at TIMESTAMPTZ NOT NULL,
         started_at TIMESTAMPTZ NOT NULL,
@@ -43,8 +51,9 @@ export class DaemonStateRepo {
   }
 
   async heartbeat(daemonKey: string): Promise<DaemonStateRecord> {
+    const normalizedDaemonKey = normalizeDaemonKey(daemonKey);
     const result = await this.pool.query(`
-      INSERT INTO ${this.tables.daemonState} (
+      INSERT INTO ${this.daemonStateTable} (
         daemon_key,
         heartbeat_at,
         started_at
@@ -58,16 +67,17 @@ export class DaemonStateRepo {
         heartbeat_at = NOW(),
         updated_at = NOW()
       RETURNING *
-    `, [daemonKey.trim()]);
+    `, [normalizedDaemonKey]);
     return parseRow(result.rows[0] as Record<string, unknown>);
   }
 
   async readState(daemonKey: string): Promise<DaemonStateRecord | null> {
+    const normalizedDaemonKey = normalizeDaemonKey(daemonKey);
     const result = await this.pool.query(`
       SELECT *
-      FROM ${this.tables.daemonState}
+      FROM ${this.daemonStateTable}
       WHERE daemon_key = $1
-    `, [daemonKey.trim()]);
+    `, [normalizedDaemonKey]);
     const row = result.rows[0];
     return row ? parseRow(row as Record<string, unknown>) : null;
   }

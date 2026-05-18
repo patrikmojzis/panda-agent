@@ -77,12 +77,15 @@ vi.mock("pg", () => ({
   Pool: runtimeMocks.MockPool,
 }));
 
-vi.mock("../src/domain/threads/runtime/index.js", () => ({
+vi.mock("../src/domain/threads/runtime/postgres-lease.js", () => ({
   PostgresThreadLeaseManager: class {
     constructor(pool: unknown) {
       runtimeMocks.leaseManagerPools.push(pool);
     }
   },
+}));
+
+vi.mock("../src/domain/threads/runtime/postgres.js", () => ({
   PostgresThreadRuntimeStore: class {
     identityStore = {};
 
@@ -94,6 +97,9 @@ vi.mock("../src/domain/threads/runtime/index.js", () => ({
       return 0;
     }
   },
+}));
+
+vi.mock("../src/domain/threads/runtime/coordinator.js", () => ({
   ThreadRuntimeCoordinator: class {},
 }));
 
@@ -102,7 +108,7 @@ vi.mock("../src/domain/threads/runtime/postgres-readonly.js", () => ({
   readDatabaseUsername: runtimeMocks.readDatabaseUsername,
 }));
 
-vi.mock("../src/domain/threads/runtime/postgres.js", () => ({
+vi.mock("../src/domain/threads/runtime/postgres-notifications.js", () => ({
   buildThreadRuntimeNotificationChannel: vi.fn(() => "runtime_events"),
   parseThreadRuntimeNotification: vi.fn(() => null),
 }));

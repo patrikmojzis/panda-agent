@@ -1,9 +1,29 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {stringToUserMessage} from "../src/index.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
+import {
+  parseInputRow,
+  parseMessageRow,
+  parseThreadRow,
+  parseToolJobRow,
+} from "../src/domain/threads/runtime/postgres-rows.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+
+type ThreadRuntimePool = ConstructorParameters<typeof PostgresThreadRuntimeStore>[0]["pool"];
+
+function createQueryOnlyThreadRuntimePool(
+  query: ThreadRuntimePool["query"],
+  message: string,
+): ThreadRuntimePool {
+  return {
+    query,
+    connect: async () => {
+      throw new Error(message);
+    },
+  };
+}
 
 describe("PostgresThreadRuntimeStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -332,6 +352,91 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(completedAfterAbort.error).toBe("recover me");
   });
 
+  it("rejects malformed persisted thread summary counts", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM \"runtime\".\"threads\"") && !sql.includes("COUNT(*)")) {
+        return {
+          rows: [{
+            id: "thread-1",
+            session_id: "session-1",
+            system_prompt: null,
+            max_turns: null,
+            context: null,
+            runtime_state: null,
+            inference_projection: null,
+            prompt_cache_key: null,
+            model: null,
+            temperature: null,
+            thinking: null,
+            created_at: new Date(1),
+            updated_at: new Date(1),
+          }],
+        };
+      }
+
+      if (sql.includes("message_count")) {
+        return {rows: [{thread_id: "thread-1", message_count: "many"}]};
+      }
+
+      if (sql.includes("pending_input_count")) {
+        return {rows: []};
+      }
+
+      return {rows: []};
+    });
+    const store = new PostgresThreadRuntimeStore({
+      pool: createQueryOnlyThreadRuntimePool(query, "connect should not be used by summary reads"),
+    });
+
+    await expect(store.listThreadSummaries()).rejects.toThrow(
+      "Thread runtime summary message_count must be a non-negative safe integer.",
+    );
+  });
+
+  it("accepts postgres bigint-shaped thread summary counts", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM \"runtime\".\"threads\"") && !sql.includes("COUNT(*)")) {
+        return {
+          rows: [{
+            id: "thread-1",
+            session_id: "session-1",
+            system_prompt: null,
+            max_turns: null,
+            context: null,
+            runtime_state: null,
+            inference_projection: null,
+            prompt_cache_key: null,
+            model: null,
+            temperature: null,
+            thinking: null,
+            created_at: new Date(1),
+            updated_at: new Date(1),
+          }],
+        };
+      }
+
+      if (sql.includes("message_count")) {
+        return {rows: [{thread_id: "thread-1", message_count: "4"}]};
+      }
+
+      if (sql.includes("pending_input_count")) {
+        return {rows: [{thread_id: "thread-1", pending_input_count: "0"}]};
+      }
+
+      return {rows: []};
+    });
+    const store = new PostgresThreadRuntimeStore({
+      pool: createQueryOnlyThreadRuntimePool(query, "connect should not be used by summary reads"),
+    });
+
+    await expect(store.listThreadSummaries()).resolves.toEqual([
+      expect.objectContaining({
+        messageCount: 4,
+        pendingInputCount: 0,
+      }),
+    ]);
+  });
+
   it("discards unapplied wake and queued inputs", async () => {
     const db = newDb();
     db.public.registerFunction({
@@ -372,6 +477,22 @@ describe("PostgresThreadRuntimeStore", () => {
     await expect(store.hasPendingInputs("pg-thread-reset")).resolves.toBe(false);
     await expect(store.listPendingInputs("pg-thread-reset")).resolves.toEqual([]);
     await expect(store.loadTranscript("pg-thread-reset")).resolves.toEqual([]);
+  });
+
+  it("rejects malformed promoted input thread ids before notifying threads", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        thread_id: "",
+      }],
+    }));
+    const store = new PostgresThreadRuntimeStore({
+      pool: createQueryOnlyThreadRuntimePool(query, "connect should not be used by queued input promotion"),
+    });
+
+    await expect(store.promoteQueuedInputs()).rejects.toThrow(
+      "Thread runtime input thread id must not be empty.",
+    );
+    expect(query).toHaveBeenCalledTimes(1);
   });
 
   it("round-trips durable pending wakes", async () => {
@@ -541,7 +662,107 @@ describe("PostgresThreadRuntimeStore", () => {
     const lost = await store.getToolJob(created.id);
     expect(lost.status).toBe("lost");
     expect(lost.statusReason).toBe("runtime restarted");
-    expect(lost.finishedAt).toBeDefined();
+    expect(lost.finishedAt).toEqual(expect.any(Number));
+  });
+
+  it("rejects malformed running tool-job rows before startup loss recovery", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        id: "job-1",
+        thread_id: "thread-1",
+        started_at: "2026-05-01T12:00:00.000Z",
+      }],
+    }));
+    const store = new PostgresThreadRuntimeStore({
+      pool: createQueryOnlyThreadRuntimePool(query, "connect should not be used by loss recovery"),
+    });
+
+    await expect(store.markRunningToolJobsLost("runtime restarted")).rejects.toThrow(
+      "Thread runtime tool job started_at must be a valid timestamp.",
+    );
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects unsupported persisted input delivery modes", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {threadStore: store} = await createRuntimeStores(pool);
+
+    await seedSession(pool, {
+      sessionId: "session-bad-input-mode",
+      threadId: "pg-thread-bad-input-mode",
+    });
+    await store.createThread({
+      id: "pg-thread-bad-input-mode",
+      sessionId: "session-bad-input-mode",
+      context: {
+        agentKey: "panda",
+        sessionId: "session-bad-input-mode",
+      },
+    });
+    await store.enqueueInput("pg-thread-bad-input-mode", {
+      message: stringToUserMessage("bad mode"),
+      source: "tui",
+    });
+    await pool.query(`
+      UPDATE "runtime"."inputs"
+      SET delivery_mode = 'sleep'
+      WHERE thread_id = $1
+    `, ["pg-thread-bad-input-mode"]);
+
+    await expect(store.listPendingInputs("pg-thread-bad-input-mode")).rejects.toThrow(
+      "Unsupported thread input delivery mode sleep",
+    );
+  });
+
+  it("rejects unsupported persisted tool job statuses", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {threadStore: store} = await createRuntimeStores(pool);
+
+    await seedSession(pool, {
+      sessionId: "session-bad-tool-status",
+      threadId: "pg-thread-bad-tool-status",
+    });
+    await store.createThread({
+      id: "pg-thread-bad-tool-status",
+      sessionId: "session-bad-tool-status",
+      context: {
+        agentKey: "panda",
+        sessionId: "session-bad-tool-status",
+      },
+    });
+    const job = await store.createToolJob({
+      id: "00000000-0000-4000-8000-000000000003",
+      threadId: "pg-thread-bad-tool-status",
+      kind: "bash",
+      summary: "sleep 5",
+    });
+    await pool.query(`
+      UPDATE "runtime"."tool_jobs"
+      SET status = 'ghost'
+      WHERE id = $1
+    `, [job.id]);
+
+    await expect(store.getToolJob(job.id)).rejects.toThrow("Unsupported thread tool job status ghost");
   });
 
   it("rejects threads without a session id instead of silently creating one", async () => {
@@ -565,5 +786,111 @@ describe("PostgresThreadRuntimeStore", () => {
         agentKey: "panda",
       },
     })).rejects.toThrow("Thread pg-thread-missing-session is missing sessionId.");
+  });
+
+  it("parses pg bigint runtime counters without coercing scalar columns", () => {
+    const message = stringToUserMessage("hello");
+    const messageRow = {
+      id: "message-1",
+      thread_id: "thread-1",
+      sequence: "42",
+      origin: "input",
+      message,
+      metadata: null,
+      source: "user",
+      channel_id: null,
+      external_message_id: null,
+      actor_id: null,
+      identity_id: null,
+      run_id: null,
+      created_at: new Date(1),
+    };
+    expect(parseMessageRow(messageRow)).toMatchObject({
+      sequence: 42,
+    });
+    expect(() => parseMessageRow({
+      ...messageRow,
+      message: {role: "system"},
+    })).toThrow("Thread runtime message has unsupported role system.");
+    expect(parseInputRow({
+      id: "input-1",
+      thread_id: "thread-1",
+      input_order: "7",
+      delivery_mode: "wake",
+      message,
+      metadata: null,
+      source: "user",
+      channel_id: null,
+      external_message_id: null,
+      actor_id: null,
+      identity_id: null,
+      created_at: new Date(1),
+      applied_at: null,
+    })).toMatchObject({
+      order: 7,
+    });
+    expect(parseToolJobRow({
+      id: "job-1",
+      thread_id: "thread-1",
+      run_id: null,
+      kind: "bash",
+      status: "completed",
+      summary: null,
+      started_at: new Date(1),
+      finished_at: null,
+      duration_ms: "123",
+      result: null,
+      error: null,
+      status_reason: null,
+      progress: null,
+    })).toMatchObject({
+      durationMs: 123,
+    });
+
+    expect(() => parseThreadRow({
+      id: "thread-1",
+      session_id: "session-1",
+      system_prompt: null,
+      max_turns: "10",
+      context: null,
+      runtime_state: null,
+      inference_projection: null,
+      prompt_cache_key: null,
+      model: null,
+      temperature: null,
+      thinking: null,
+      created_at: new Date(1),
+      updated_at: new Date(1),
+    })).toThrow("Thread runtime max_turns must be a safe integer.");
+    expect(() => parseThreadRow({
+      id: "thread-1",
+      session_id: "session-1",
+      system_prompt: null,
+      max_turns: null,
+      context: null,
+      runtime_state: null,
+      inference_projection: null,
+      prompt_cache_key: null,
+      model: null,
+      temperature: "0.7",
+      thinking: null,
+      created_at: new Date(1),
+      updated_at: new Date(1),
+    })).toThrow("Thread runtime temperature must be a finite number.");
+    expect(() => parseToolJobRow({
+      id: "job-1",
+      thread_id: "thread-1",
+      run_id: null,
+      kind: "bash",
+      status: "completed",
+      summary: {bad: true},
+      started_at: new Date(1),
+      finished_at: null,
+      duration_ms: null,
+      result: null,
+      error: null,
+      status_reason: null,
+      progress: null,
+    })).toThrow("Thread runtime tool job summary must be a string.");
   });
 });

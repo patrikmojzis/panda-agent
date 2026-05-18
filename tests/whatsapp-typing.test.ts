@@ -1,12 +1,9 @@
-import type {WASocket} from "baileys";
 import {describe, expect, it, vi} from "vitest";
 
-import {createWhatsAppTypingAdapter} from "../src/integrations/channels/whatsapp/typing.js";
+import {createWhatsAppTypingAdapter, type WhatsAppTypingSocket} from "../src/integrations/channels/whatsapp/typing.js";
 
-function mockSocket(sendPresenceUpdate: ReturnType<typeof vi.fn>): WASocket {
-  return {
-    sendPresenceUpdate,
-  } as unknown as WASocket;
+function mockSocket(sendPresenceUpdate: ReturnType<typeof vi.fn>): WhatsAppTypingSocket {
+  return {sendPresenceUpdate};
 }
 
 describe("createWhatsAppTypingAdapter", () => {

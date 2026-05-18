@@ -1,4 +1,4 @@
-import type {JsonObject, JsonPrimitive, JsonValue} from "../../kernel/agent/types.js";
+import type {JsonObject, JsonPrimitive, JsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 
 export type WatchRunStatus = "claimed" | "running" | "no_change" | "changed" | "failed" | "disabled";

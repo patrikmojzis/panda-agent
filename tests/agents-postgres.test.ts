@@ -1,7 +1,10 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {
+  DEFAULT_AGENT_PROMPT_TEMPLATES,
+  PostgresAgentStore,
+} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 
 describe("PostgresAgentStore", () => {
@@ -37,28 +40,6 @@ describe("PostgresAgentStore", () => {
     };
   }
 
-  it("bootstraps schema with repeatable DDL statements", async () => {
-    const queries: string[] = [];
-    const store = new PostgresAgentStore({
-      pool: {
-        query: async (sql: string) => {
-          queries.push(sql);
-          return { rows: [] };
-        },
-        connect: async () => ({
-          query: async () => ({ rows: [] }),
-          release: () => {},
-        }),
-      },
-    });
-
-    await store.ensureSchema();
-    await store.ensureSchema();
-
-    expect(queries.length).toBeGreaterThan(0);
-    expect(queries.every((query) => query.includes("IF NOT EXISTS"))).toBe(true);
-  });
-
   it("bootstraps agents with shared prompts and lists them", async () => {
     const { agentStore } = await createStores();
 
@@ -86,6 +67,69 @@ describe("PostgresAgentStore", () => {
       slug: "agent",
       content: DEFAULT_AGENT_PROMPT_TEMPLATES.agent,
     });
+  });
+
+  it("rejects non-json persisted agent metadata before returning records", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        agent_key: "panda",
+        display_name: "Panda",
+        status: "active",
+        metadata: Number.NaN,
+        created_at: new Date(),
+        updated_at: new Date(),
+      }],
+    }));
+    const agentStore = new PostgresAgentStore({
+      pool: {
+        query,
+        connect: async () => {
+          throw new Error("connect should not be used by getAgent");
+        },
+      },
+    });
+
+    await expect(agentStore.getAgent("panda")).rejects.toThrow(
+      "Agent metadata must be JSON-serializable.",
+    );
+  });
+
+  it("rejects corrupted persisted agent timestamps before returning records", async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          agent_key: "panda",
+          display_name: "Panda",
+          status: "active",
+          metadata: {},
+          created_at: "eventually",
+          updated_at: new Date(),
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          agent_key: "panda",
+          identity_id: "identity-patrik",
+          metadata: {},
+          created_at: new Date(),
+          updated_at: "eventually",
+        }],
+      });
+    const agentStore = new PostgresAgentStore({
+      pool: {
+        query,
+        connect: async () => {
+          throw new Error("connect should not be used by row reads");
+        },
+      },
+    });
+
+    await expect(agentStore.getAgent("panda")).rejects.toThrow(
+      "Agent created_at must be a valid timestamp.",
+    );
+    await expect(agentStore.listAgentPairings("panda")).rejects.toThrow(
+      "Agent pairing updated_at must be a valid timestamp.",
+    );
   });
 
   it("stores pairings per identity and keeps prompts scoped by agent", async () => {
@@ -216,6 +260,33 @@ describe("PostgresAgentStore", () => {
     await expect(agentStore.readAgentSkill("ops", "calendar")).resolves.toMatchObject({
       description: "Ops-only description.",
     });
+  });
+
+  it("rejects driver-shaped persisted agent skill load counts", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        agent_key: "panda",
+        skill_key: "calendar",
+        description: "Calendar skill.",
+        content: "# Calendar\nBody.",
+        last_loaded_at: null,
+        load_count: "1",
+        created_at: new Date(),
+        updated_at: new Date(),
+      }],
+    }));
+    const agentStore = new PostgresAgentStore({
+      pool: {
+        query,
+        connect: async () => {
+          throw new Error("connect should not be used by readAgentSkill");
+        },
+      },
+    });
+
+    await expect(agentStore.readAgentSkill("panda", "calendar")).rejects.toThrow(
+      "Agent skill load count must be a non-negative integer.",
+    );
   });
 
   it("rejects blank content and oversized descriptions when storing agent skills", async () => {

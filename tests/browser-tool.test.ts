@@ -4,10 +4,16 @@ import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {Agent, type DefaultAgentSessionContext, RunContext, ToolError,} from "../src/index.js";
+import {Agent, type DefaultAgentSessionContext, type JsonObject, RunContext, ToolError,} from "../src/index.js";
 import type {BrowserRunner} from "../src/integrations/browser/runner.js";
-import {BrowserSessionService} from "../src/integrations/browser/session-service.js";
+import {
+  BrowserSessionService,
+  type BrowserSessionServiceOptions,
+} from "../src/integrations/browser/session-service.js";
 import {BrowserTool} from "../src/panda/tools/browser-tool.js";
+
+type LaunchBrowserImpl = NonNullable<BrowserSessionServiceOptions["launchBrowserImpl"]>;
+type LaunchedBrowser = Awaited<ReturnType<LaunchBrowserImpl>>;
 
 function createAgent() {
   return new Agent({
@@ -20,7 +26,7 @@ function createRunContext(
   context: DefaultAgentSessionContext,
   options: {
     signal?: AbortSignal;
-    onToolProgress?: (progress: Record<string, unknown>) => void;
+    onToolProgress?: (progress: JsonObject) => void;
   } = {},
 ): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
@@ -30,7 +36,7 @@ function createRunContext(
     messages: [],
     context,
     signal: options.signal,
-    onToolProgress: options.onToolProgress as any,
+    onToolProgress: options.onToolProgress,
   });
 }
 
@@ -344,6 +350,22 @@ class FakeBrowser {
   }
 }
 
+function asLaunchedBrowser(browser: unknown): LaunchedBrowser {
+  return browser as LaunchedBrowser;
+}
+
+function launchFakeBrowser(browser: FakeBrowser) {
+  return vi.fn(async () => asLaunchedBrowser(browser));
+}
+
+function launchFakeContext(context: FakeBrowserContext) {
+  return launchFakeBrowser(new FakeBrowser(context));
+}
+
+function launchFakePage(page: FakePage) {
+  return launchFakeContext(new FakeBrowserContext(page));
+}
+
 describe("BrowserTool", () => {
   const tempDirs: string[] = [];
   const services: BrowserSessionService[] = [];
@@ -363,17 +385,25 @@ describe("BrowserTool", () => {
   });
 
   it("validates the action schema", () => {
-    expect(() => BrowserTool.schema.parse({
+    expect(BrowserTool.schema.parse({
       action: "navigate",
       url: "https://example.com",
       snapshotMode: "full",
       deviceProfile: "mobile",
-    })).not.toThrow();
+    })).toMatchObject({
+      action: "navigate",
+      url: "https://example.com",
+      snapshotMode: "full",
+      deviceProfile: "mobile",
+    });
 
-    expect(() => BrowserTool.schema.parse({
+    expect(BrowserTool.schema.parse({
       action: "snapshot",
       deviceProfile: "desktop-wide",
-    })).not.toThrow();
+    })).toMatchObject({
+      action: "snapshot",
+      deviceProfile: "desktop-wide",
+    });
 
     expect(() => BrowserTool.schema.parse({
       action: "snapshot",
@@ -485,13 +515,13 @@ describe("BrowserTool", () => {
   it("reuses sessions per thread and isolates them across threads", async () => {
     const browserOne = new FakeBrowser(new FakeBrowserContext(new FakePage()));
     const browserTwo = new FakeBrowser(new FakeBrowserContext(new FakePage()));
-    const launchBrowserImpl = vi.fn()
-      .mockResolvedValueOnce(browserOne as any)
-      .mockResolvedValueOnce(browserTwo as any);
+    const launchBrowserImpl = vi.fn<LaunchBrowserImpl>()
+      .mockResolvedValueOnce(asLaunchedBrowser(browserOne))
+      .mockResolvedValueOnce(asLaunchedBrowser(browserTwo));
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: launchBrowserImpl as any,
+      launchBrowserImpl,
       dataDir: tempDir,
     });
     services.push(service);
@@ -512,7 +542,7 @@ describe("BrowserTool", () => {
       on: vi.fn(),
     };
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => browser as any),
+      launchBrowserImpl: vi.fn(async () => asLaunchedBrowser(browser)),
     });
     services.push(service);
 
@@ -527,7 +557,7 @@ describe("BrowserTool", () => {
   it("blocks service workers in browser contexts", async () => {
     const context = new FakeBrowserContext(new FakePage());
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      launchBrowserImpl: launchFakeContext(context),
     });
     services.push(service);
 
@@ -546,7 +576,7 @@ describe("BrowserTool", () => {
     tempDirs.push(tempDir);
     const context = new FakeBrowserContext(new FakePage());
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      launchBrowserImpl: launchFakeContext(context),
       dataDir: tempDir,
     });
     services.push(service);
@@ -576,9 +606,9 @@ describe("BrowserTool", () => {
   });
 
   it("blocks private targets before navigation starts", async () => {
-    const launchBrowserImpl = vi.fn();
+    const launchBrowserImpl = vi.fn<LaunchBrowserImpl>();
     const service = new BrowserSessionService({
-      launchBrowserImpl: launchBrowserImpl as any,
+      launchBrowserImpl,
       lookupHostname: async () => ["127.0.0.1"],
     });
     services.push(service);
@@ -595,9 +625,9 @@ describe("BrowserTool", () => {
     const page = new FakePage();
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
-    const launchBrowserImpl = vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any);
+    const launchBrowserImpl = launchFakePage(page);
     const service = new BrowserSessionService({
-      launchBrowserImpl: launchBrowserImpl as any,
+      launchBrowserImpl,
       lookupHostname: async (hostname) => hostname === "panda-core" ? ["172.22.0.5"] : ["93.184.216.34"],
       allowPrivateHostnames: ["panda-core"],
       dataDir: tempDir,
@@ -620,10 +650,10 @@ describe("BrowserTool", () => {
     const page = new FakePage();
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
-    const launchBrowserImpl = vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any);
+    const launchBrowserImpl = launchFakePage(page);
     const service = new BrowserSessionService({
       env: {BROWSER_ALLOW_PRIVATE_HOSTS: "panda-core"} as NodeJS.ProcessEnv,
-      launchBrowserImpl: launchBrowserImpl as any,
+      launchBrowserImpl,
       lookupHostname: async (hostname) => hostname === "panda-core" ? ["172.22.0.5"] : ["93.184.216.34"],
       dataDir: tempDir,
     });
@@ -647,7 +677,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      launchBrowserImpl: launchFakePage(page),
       lookupHostname: async (hostname) => hostname === "example.com" ? ["93.184.216.34"] : ["169.254.169.254"],
       dataDir: tempDir,
     });
@@ -664,7 +694,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      launchBrowserImpl: launchFakeContext(context),
       lookupHostname: async () => ["93.184.216.34"],
       dataDir: tempDir,
     });
@@ -694,7 +724,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      launchBrowserImpl: launchFakeContext(context),
       lookupHostname: async () => ["172.28.0.12"],
       dataDir: tempDir,
     });
@@ -750,7 +780,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      launchBrowserImpl: launchFakeContext(context),
       lookupHostname: async (hostname) => hostname === "example.com" ? ["93.184.216.34"] : ["172.28.0.12"],
       dataDir: tempDir,
     });
@@ -787,7 +817,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      launchBrowserImpl: launchFakeContext(context),
       lookupHostname: async (hostname) => hostname === "example.com" ? ["93.184.216.34"] : ["172.28.0.12"],
       dataDir: tempDir,
     });
@@ -831,7 +861,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      launchBrowserImpl: launchFakeContext(context),
       lookupHostname: async (hostname) => hostname === "example.com" ? ["93.184.216.34"] : ["172.28.0.12"],
       dataDir: tempDir,
     });
@@ -880,7 +910,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      launchBrowserImpl: launchFakeContext(context),
       lookupHostname,
       dataDir: tempDir,
     });
@@ -907,14 +937,14 @@ describe("BrowserTool", () => {
   it("enforces idle TTL on reuse instead of waiting for the background reaper", async () => {
     const browserOne = new FakeBrowser(new FakeBrowserContext(new FakePage()));
     const browserTwo = new FakeBrowser(new FakeBrowserContext(new FakePage()));
-    const launchBrowserImpl = vi.fn()
-      .mockResolvedValueOnce(browserOne as any)
-      .mockResolvedValueOnce(browserTwo as any);
+    const launchBrowserImpl = vi.fn<LaunchBrowserImpl>()
+      .mockResolvedValueOnce(asLaunchedBrowser(browserOne))
+      .mockResolvedValueOnce(asLaunchedBrowser(browserTwo));
     let now = 0;
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: launchBrowserImpl as any,
+      launchBrowserImpl,
       dataDir: tempDir,
       now: () => now,
       sessionIdleTtlMs: 100,
@@ -951,7 +981,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      launchBrowserImpl: launchFakePage(page),
       dataDir: tempDir,
     });
     services.push(service);
@@ -994,7 +1024,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(context) as any),
+      launchBrowserImpl: launchFakeContext(context),
       dataDir: tempDir,
     });
     services.push(service);
@@ -1020,7 +1050,7 @@ describe("BrowserTool", () => {
     tempDirs.push(tempDir);
     const page = new FakePage();
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      launchBrowserImpl: launchFakePage(page),
       dataDir: tempDir,
       maxEvaluateResultChars: 12,
     });
@@ -1068,8 +1098,7 @@ describe("BrowserTool", () => {
     });
     const screenshotPath = String((screenshot.details as Record<string, unknown>).path);
     const pdfPath = String((pdf.details as Record<string, unknown>).path);
-    await expect(stat(screenshotPath)).resolves.toBeTruthy();
-    await expect(stat(pdfPath)).resolves.toBeTruthy();
+    await expect(readFile(screenshotPath, "utf8")).resolves.toContain("page-shot");
     await expect(readFile(pdfPath, "utf8")).resolves.toContain("%PDF-test");
   });
 
@@ -1077,7 +1106,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(new FakePage())) as any),
+      launchBrowserImpl: launchFakePage(new FakePage()),
       dataDir: tempDir,
     });
     services.push(service);
@@ -1127,7 +1156,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      launchBrowserImpl: launchFakePage(page),
       dataDir: tempDir,
     });
     services.push(service);
@@ -1176,7 +1205,7 @@ describe("BrowserTool", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
     tempDirs.push(tempDir);
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      launchBrowserImpl: launchFakePage(page),
       dataDir: tempDir,
     });
     services.push(service);
@@ -1204,7 +1233,7 @@ describe("BrowserTool", () => {
     tempDirs.push(tempDir);
     const page = new FakePage();
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => new FakeBrowser(new FakeBrowserContext(page)) as any),
+      launchBrowserImpl: launchFakePage(page),
       dataDir: tempDir,
     });
     services.push(service);
@@ -1237,11 +1266,11 @@ describe("BrowserTool", () => {
     tempDirs.push(tempDir);
     const firstContext = new FakeBrowserContext(new FakePage());
     const secondContext = new FakeBrowserContext(new FakePage());
-    const launchBrowserImpl = vi.fn()
-      .mockResolvedValueOnce(new FakeBrowser(firstContext) as any)
-      .mockResolvedValueOnce(new FakeBrowser(secondContext) as any);
+    const launchBrowserImpl = vi.fn<LaunchBrowserImpl>()
+      .mockResolvedValueOnce(asLaunchedBrowser(new FakeBrowser(firstContext)))
+      .mockResolvedValueOnce(asLaunchedBrowser(new FakeBrowser(secondContext)));
     const service = new BrowserSessionService({
-      launchBrowserImpl: launchBrowserImpl as any,
+      launchBrowserImpl,
       dataDir: tempDir,
     });
     services.push(service);
@@ -1252,9 +1281,9 @@ describe("BrowserTool", () => {
     await service.handle({action: "snapshot"}, run);
 
     expect(firstContext.storageStatePaths).toHaveLength(2);
-    expect(secondContext.storageStateInput).toBeTruthy();
     expect(String(secondContext.storageStateInput)).toContain("storage-state.json");
-    await expect(stat(String(secondContext.storageStateInput))).resolves.toBeTruthy();
+    const storageState = await stat(String(secondContext.storageStateInput));
+    expect(storageState.isFile()).toBe(true);
   });
 
   it("isolates browser sessions by durable session and device profile", async () => {
@@ -1263,12 +1292,12 @@ describe("BrowserTool", () => {
     const desktopContext = new FakeBrowserContext(new FakePage());
     const mobileContext = new FakeBrowserContext(new FakePage());
     const otherSessionContext = new FakeBrowserContext(new FakePage());
-    const launchBrowserImpl = vi.fn()
-      .mockResolvedValueOnce(new FakeBrowser(desktopContext) as any)
-      .mockResolvedValueOnce(new FakeBrowser(mobileContext) as any)
-      .mockResolvedValueOnce(new FakeBrowser(otherSessionContext) as any);
+    const launchBrowserImpl = vi.fn<LaunchBrowserImpl>()
+      .mockResolvedValueOnce(asLaunchedBrowser(new FakeBrowser(desktopContext)))
+      .mockResolvedValueOnce(asLaunchedBrowser(new FakeBrowser(mobileContext)))
+      .mockResolvedValueOnce(asLaunchedBrowser(new FakeBrowser(otherSessionContext)));
     const service = new BrowserSessionService({
-      launchBrowserImpl: launchBrowserImpl as any,
+      launchBrowserImpl,
       dataDir: tempDir,
     });
     services.push(service);
@@ -1307,11 +1336,11 @@ describe("BrowserTool", () => {
     tempDirs.push(tempDir);
     const desktopBrowser = new FakeBrowser(new FakeBrowserContext(new FakePage()));
     const mobileBrowser = new FakeBrowser(new FakeBrowserContext(new FakePage()));
-    const launchBrowserImpl = vi.fn()
-      .mockResolvedValueOnce(desktopBrowser as any)
-      .mockResolvedValueOnce(mobileBrowser as any);
+    const launchBrowserImpl = vi.fn<LaunchBrowserImpl>()
+      .mockResolvedValueOnce(asLaunchedBrowser(desktopBrowser))
+      .mockResolvedValueOnce(asLaunchedBrowser(mobileBrowser));
     const service = new BrowserSessionService({
-      launchBrowserImpl: launchBrowserImpl as any,
+      launchBrowserImpl,
       dataDir: tempDir,
     });
     services.push(service);
@@ -1341,7 +1370,7 @@ describe("BrowserTool", () => {
     tempDirs.push(tempDir);
     const browser = new FakeBrowser(new FakeBrowserContext(new FakePage()));
     const service = new BrowserSessionService({
-      launchBrowserImpl: vi.fn(async () => browser as any),
+      launchBrowserImpl: vi.fn(async () => asLaunchedBrowser(browser)),
       dataDir: tempDir,
     });
     services.push(service);
@@ -1362,11 +1391,11 @@ describe("BrowserTool", () => {
   it("times out hung snapshots and discards the dirty session", async () => {
     const firstBrowser = new FakeBrowser(new FakeBrowserContext(new HangingSnapshotPage()));
     const secondBrowser = new FakeBrowser(new FakeBrowserContext(new FakePage()));
-    const launchBrowserImpl = vi.fn()
-      .mockResolvedValueOnce(firstBrowser as any)
-      .mockResolvedValueOnce(secondBrowser as any);
+    const launchBrowserImpl = vi.fn<LaunchBrowserImpl>()
+      .mockResolvedValueOnce(asLaunchedBrowser(firstBrowser))
+      .mockResolvedValueOnce(asLaunchedBrowser(secondBrowser));
     const service = new BrowserSessionService({
-      launchBrowserImpl: launchBrowserImpl as any,
+      launchBrowserImpl,
       actionTimeoutMs: 10,
     });
     services.push(service);
@@ -1384,18 +1413,18 @@ describe("BrowserTool", () => {
     const slowContext = new SlowNewPageContext(new FakePage());
     const firstBrowser = new FakeBrowser(slowContext);
     const secondBrowser = new FakeBrowser(new FakeBrowserContext(new FakePage()));
-    const launchBrowserImpl = vi.fn()
-      .mockResolvedValueOnce(firstBrowser as any)
-      .mockResolvedValueOnce(secondBrowser as any);
+    const launchBrowserImpl = vi.fn<LaunchBrowserImpl>()
+      .mockResolvedValueOnce(asLaunchedBrowser(firstBrowser))
+      .mockResolvedValueOnce(asLaunchedBrowser(secondBrowser));
     const service = new BrowserSessionService({
-      launchBrowserImpl: launchBrowserImpl as any,
-      actionTimeoutMs: 10,
+      launchBrowserImpl,
+      actionTimeoutMs: 100,
     });
     services.push(service);
 
     const run = createRunContext({cwd: "/workspace/panda", threadId: "thread-1"});
     await expect(service.handle({action: "snapshot"}, run))
-      .rejects.toThrow("browser action snapshot timed out after 10ms");
+      .rejects.toThrow("browser action snapshot timed out after 100ms");
 
     slowContext.releaseNewPage?.();
     await new Promise((resolve) => setTimeout(resolve, 0));

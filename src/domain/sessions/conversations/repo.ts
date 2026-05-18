@@ -1,38 +1,25 @@
-import type {Pool, PoolClient} from "pg";
-
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, toJson, toMillis} from "../../threads/runtime/postgres-shared.js";
-import {buildSessionTableNames} from "../postgres-shared.js";
+import {requireTimestampMillis, toJson} from "../../../lib/postgres-values.js";
+import {readOptionalJsonValue} from "../../../lib/json.js";
+import type {PgPoolLike} from "../../../lib/postgres-query.js";
 import {isUniqueViolation} from "../../../lib/postgres-errors.js";
-import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
+import {requireNonEmptyString} from "../../../lib/strings.js";
 import {buildConversationSessionTableNames, type ConversationSessionTableNames} from "./postgres-shared.js";
+import {ensurePostgresConversationSessionSchema} from "./postgres-schema.js";
 import type {BindConversationInput, BindConversationResult, ConversationBinding, ConversationLookup,} from "./types.js";
-
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-interface PgPoolLike extends PgQueryable {
-  connect(): Promise<PoolClient>;
-}
 
 export interface ConversationRepoOptions {
   pool: PgPoolLike;
 }
 
-function requireTrimmedConversationKeyPart(field: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`Conversation binding ${field} must not be empty.`);
-  }
-
-  return trimmed;
+function requireConversationBindingString(field: string, value: unknown): string {
+  return requireNonEmptyString(value, `Conversation binding ${field} must not be empty.`);
 }
 
 function normalizeConversationLookup(lookup: ConversationLookup): ConversationLookup {
   return {
-    source: requireTrimmedConversationKeyPart("source", lookup.source),
-    connectorKey: requireTrimmedConversationKeyPart("connector key", lookup.connectorKey),
-    externalConversationId: requireTrimmedConversationKeyPart("external conversation id", lookup.externalConversationId),
+    source: requireConversationBindingString("source", lookup.source),
+    connectorKey: requireConversationBindingString("connector key", lookup.connectorKey),
+    externalConversationId: requireConversationBindingString("external conversation id", lookup.externalConversationId),
   };
 }
 
@@ -43,70 +30,34 @@ function normalizeBindConversationInput(
   return {
     ...input,
     ...lookup,
-    sessionId: requireTrimmedConversationKeyPart("session id", input.sessionId),
+    sessionId: requireConversationBindingString("session id", input.sessionId),
+    metadata: readOptionalJsonValue(input.metadata, "Conversation binding metadata"),
   };
 }
 
 function parseConversationBinding(row: Record<string, unknown>): ConversationBinding {
   return {
-    source: String(row.source),
-    connectorKey: String(row.connector_key),
-    externalConversationId: String(row.external_conversation_id),
-    sessionId: String(row.session_id),
-    metadata: row.metadata === null ? undefined : (row.metadata as ConversationBinding["metadata"]),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    source: requireConversationBindingString("source", row.source),
+    connectorKey: requireConversationBindingString("connector key", row.connector_key),
+    externalConversationId: requireConversationBindingString("external conversation id", row.external_conversation_id),
+    sessionId: requireConversationBindingString("session id", row.session_id),
+    metadata: readOptionalJsonValue(row.metadata, "Conversation binding metadata"),
+    createdAt: requireTimestampMillis(row.created_at, "Conversation binding created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Conversation binding updated_at must be a valid timestamp."),
   };
 }
 
 export class ConversationRepo {
   private readonly pool: PgPoolLike;
   private readonly tables: ConversationSessionTableNames;
-  private readonly sessionTableName: string;
 
   constructor(options: ConversationRepoOptions) {
     this.pool = options.pool;
     this.tables = buildConversationSessionTableNames();
-    this.sessionTableName = buildSessionTableNames().sessions;
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.conversationSessions} (
-        source TEXT NOT NULL,
-        connector_key TEXT NOT NULL,
-        external_conversation_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        metadata JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (source, connector_key, external_conversation_id)
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_conversation_sessions_session_id_idx`)}
-      ON ${this.tables.conversationSessions} (session_id)
-    `);
-    await assertIntegrityChecks(this.pool, "Conversation binding schema", [
-      {
-        label: "conversation_sessions.session_id orphaned from agent_sessions.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.conversationSessions} AS binding
-          LEFT JOIN ${this.sessionTableName} AS session
-            ON session.id = binding.session_id
-          WHERE session.id IS NULL
-        `,
-      },
-    ]);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.conversationSessions}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_conversation_sessions_session_fk`)}
-      FOREIGN KEY (session_id)
-      REFERENCES ${this.sessionTableName}(id)
-      ON DELETE CASCADE
-    `);
+    await ensurePostgresConversationSessionSchema(this.pool);
   }
 
   async getConversationBinding(lookup: ConversationLookup): Promise<ConversationBinding | null> {
@@ -195,7 +146,8 @@ export class ConversationRepo {
         throw new Error("Failed to lock existing conversation session after conflict.");
       }
 
-      const previousSessionId = String((existingRow as Record<string, unknown>).session_id);
+      const existingBinding = parseConversationBinding(existingRow as Record<string, unknown>);
+      const previousSessionId = existingBinding.sessionId;
 
       const updateResult = await client.query(
         `

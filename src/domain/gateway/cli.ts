@@ -2,28 +2,20 @@ import process from "node:process";
 
 import {Command, InvalidArgumentError} from "commander";
 
-import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {createPostgresPool, requireDatabaseUrl} from "../../app/runtime/database.js";
-import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
+import {DB_URL_OPTION_DESCRIPTION, parsePositiveIntegerOption} from "../../lib/cli.js";
+import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {parseAgentKey, ensureAgent} from "../agents/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {parseIdentityHandle} from "../identity/cli.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {PostgresSessionStore} from "../sessions/postgres.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
-import {PostgresGatewayStore, normalizeGatewaySourceId} from "./postgres.js";
+import {PostgresGatewayStore} from "./postgres.js";
+import {normalizeGatewaySourceId} from "./postgres-rows.js";
 import type {GatewayDeliveryMode} from "./types.js";
-import {createGatewayGuardFromEnv} from "../../integrations/gateway/guard.js";
-import {formatGatewayListenUrl, resolveGatewayServerOptions, startGatewayServer} from "../../integrations/gateway/http.js";
-import {startGatewayWorker} from "../../integrations/gateway/worker.js";
 
 interface GatewayCliOptions {
   dbUrl?: string;
-}
-
-interface GatewayRunOptions extends GatewayCliOptions {
-  host?: string;
-  port?: number;
 }
 
 interface GatewaySourceCreateOptions extends GatewayCliOptions {
@@ -40,34 +32,6 @@ interface GatewayAllowTypeOptions extends GatewayCliOptions {
 interface GatewayEventListOptions extends GatewayCliOptions {
   limit?: number;
   source?: string;
-}
-
-function parsePort(value: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) {
-    throw new InvalidArgumentError("Port must be an integer between 1 and 65535.");
-  }
-  return parsed;
-}
-
-function parsePositiveInteger(value: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new InvalidArgumentError("Value must be a positive integer.");
-  }
-  return parsed;
-}
-
-function readOptionalPositiveIntegerEnv(key: string): number | undefined {
-  const raw = process.env[key]?.trim();
-  if (!raw) {
-    return undefined;
-  }
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new Error(`${key} must be a positive integer.`);
-  }
-  return parsed;
 }
 
 function parseDelivery(value: string): GatewayDeliveryMode {
@@ -104,60 +68,6 @@ async function withGatewayStores<T>(
     ]);
     return fn(stores);
   });
-}
-
-async function runGateway(options: GatewayRunOptions): Promise<void> {
-  const pool = createPostgresPool({
-    connectionString: requireDatabaseUrl(options.dbUrl),
-    applicationName: "panda/gateway",
-    max: 5,
-  });
-  const gatewayStore = new PostgresGatewayStore({pool});
-  const identityStore = new PostgresIdentityStore({pool});
-  const agentStore = new PostgresAgentStore({pool});
-  const sessionStore = new PostgresSessionStore({pool});
-  const threadStore = new PostgresThreadRuntimeStore({pool});
-  await ensureSchemas([identityStore, agentStore, sessionStore, threadStore, gatewayStore]);
-
-  const guardTimeoutMs = readOptionalPositiveIntegerEnv("GATEWAY_GUARD_TIMEOUT_MS");
-  const worker = startGatewayWorker({
-    guard: createGatewayGuardFromEnv(process.env),
-    ...(guardTimeoutMs !== undefined ? {guardTimeoutMs} : {}),
-    store: gatewayStore,
-    sessionStore,
-    threadStore,
-  });
-  const server = await startGatewayServer({
-    ...resolveGatewayServerOptions(gatewayStore, worker, process.env),
-    ...(options.host ? {host: options.host} : {}),
-    ...(options.port !== undefined ? {port: options.port} : {}),
-  });
-
-  const shutdown = async () => {
-    await server.close().catch(() => undefined);
-  };
-  const handleSigint = () => {
-    void shutdown();
-  };
-  const handleSigterm = () => {
-    void shutdown();
-  };
-  process.once("SIGINT", handleSigint);
-  process.once("SIGTERM", handleSigterm);
-
-  try {
-    process.stdout.write(`Panda gateway listening on ${formatGatewayListenUrl(server)}\n`);
-    await new Promise<void>((resolve, reject) => {
-      server.server.once("close", resolve);
-      server.server.once("error", reject);
-    });
-  } finally {
-    process.off("SIGINT", handleSigint);
-    process.off("SIGTERM", handleSigterm);
-    await worker.close().catch(() => undefined);
-    await server.close().catch(() => undefined);
-    await pool.end();
-  }
 }
 
 async function createSource(sourceId: string, options: GatewaySourceCreateOptions): Promise<void> {
@@ -274,19 +184,7 @@ async function listEvents(options: GatewayEventListOptions): Promise<void> {
   });
 }
 
-export function registerGatewayCommands(program: Command): void {
-  const gateway = program
-    .command("gateway")
-    .description("Run and manage the public Panda gateway");
-
-  gateway
-    .command("run")
-    .description("Run the public gateway HTTP service")
-    .option("--host <host>", "Host to bind the gateway server")
-    .option("--port <port>", "Port to bind the gateway server", parsePort)
-    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
-    .action((options: GatewayRunOptions) => runGateway(options));
-
+export function registerGatewayManagementCommands(gateway: Command): void {
   const source = gateway
     .command("source")
     .description("Manage gateway sources");
@@ -345,7 +243,15 @@ export function registerGatewayCommands(program: Command): void {
     .command("event-list")
     .description("List recent gateway events")
     .option("--source <sourceId>", "Filter by source id", normalizeGatewaySourceId)
-    .option("--limit <count>", "Maximum events to list", parsePositiveInteger)
+    .option("--limit <count>", "Maximum events to list", parsePositiveIntegerOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: GatewayEventListOptions) => listEvents(options));
+}
+
+export function registerGatewayCommands(program: Command): void {
+  const gateway = program
+    .command("gateway")
+    .description("Run and manage the public Panda gateway");
+
+  registerGatewayManagementCommands(gateway);
 }

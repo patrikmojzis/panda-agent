@@ -6,10 +6,10 @@ import {
     RunContext,
     ScheduledTaskCancelTool,
     ScheduledTaskCreateTool,
+    type ScheduledTaskToolOptions,
     ScheduledTaskUpdateTool,
     ToolError,
 } from "../src/index.js";
-import type {ScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
 
 function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
@@ -24,9 +24,8 @@ function createRunContext(context: DefaultAgentSessionContext): RunContext<Defau
   });
 }
 
-function createStoreMock(): ScheduledTaskStore {
+function createStoreMock(): ScheduledTaskToolOptions["store"] {
   return {
-    ensureSchema: vi.fn(async () => {}),
     createTask: vi.fn(async (input) => ({
       id: "task-1",
       sessionId: input.sessionId,
@@ -68,16 +67,6 @@ function createStoreMock(): ScheduledTaskStore {
       createdAt: 1,
       updatedAt: 1,
     })),
-    getTask: vi.fn(),
-    listActiveTasks: vi.fn(),
-    listDueTasks: vi.fn(),
-    claimTask: vi.fn(),
-    startTaskRun: vi.fn(),
-    completeTaskRun: vi.fn(),
-    failTaskRun: vi.fn(),
-    clearTaskClaim: vi.fn(),
-    markTaskCompleted: vi.fn(),
-    markTaskFailed: vi.fn(),
   };
 }
 
@@ -157,7 +146,7 @@ describe("scheduled task Panda tools", () => {
       schedule: {
         kind: "recurring",
         cron: "0 8 * * *",
-      } as any,
+      },
     }, createRunContext(context))).rejects.toBeInstanceOf(ToolError);
   });
 

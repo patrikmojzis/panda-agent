@@ -1,7 +1,8 @@
-import {stringToUserMessage} from "../../../kernel/agent/index.js";
-import {runInBackground} from "../../../lib/async.js";
+import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
+import {DrainLoop} from "../../../lib/drain-loop.js";
 import {renderScheduledTaskPrompt} from "../../../prompts/runtime/scheduled-tasks.js";
-import type {SessionStore} from "../../sessions/index.js";
+import {resolveCurrentSessionThread, type CurrentSessionThread} from "../../sessions/current-thread.js";
+import type {SessionStore} from "../../sessions/store.js";
 import type {ThreadRuntimeCoordinator} from "../../threads/runtime/coordinator.js";
 import type {ThreadRuntimeStore} from "../../threads/runtime/store.js";
 import {computeClaimNextFireAt} from "./schedule.js";
@@ -17,12 +18,26 @@ const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const DEFAULT_CLAIM_TTL_MS = 10 * 60_000;
 const DEFAULT_BATCH_SIZE = 25;
 const SCHEDULED_TASK_SOURCE = "scheduled_task";
+type ScheduledTaskCoordinator = Pick<ThreadRuntimeCoordinator, "submitInput" | "waitForCurrentRun" | "waitForIdle">;
+type ScheduledTaskSessionStore = Pick<SessionStore, "getSession">;
+type ScheduledTaskRunnerStore = Pick<
+  ScheduledTaskStore,
+  | "claimTask"
+  | "clearTaskClaim"
+  | "completeTaskRun"
+  | "failTaskRun"
+  | "listDueTasks"
+  | "markTaskCompleted"
+  | "markTaskFailed"
+  | "startTaskRun"
+>;
+type ScheduledTaskThreadStore = Pick<ThreadRuntimeStore, "listRuns">;
 
 export interface ScheduledTaskRunnerOptions {
-  tasks: ScheduledTaskStore;
-  sessions: SessionStore;
-  threadStore: ThreadRuntimeStore;
-  coordinator: ThreadRuntimeCoordinator;
+  tasks: ScheduledTaskRunnerStore;
+  sessions: ScheduledTaskSessionStore;
+  threadStore: ScheduledTaskThreadStore;
+  coordinator: ScheduledTaskCoordinator;
   pollIntervalMs?: number;
   claimTtlMs?: number;
   onError?: (error: unknown, taskId?: string) => Promise<void> | void;
@@ -32,6 +47,10 @@ interface ThreadRunSummary {
   threadRunId: string;
   status: "completed" | "failed";
   error?: string;
+}
+
+function describeClaimFailure(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function buildScheduledTaskMetadata(
@@ -55,13 +74,8 @@ function buildScheduledTaskPrompt(task: ScheduledTaskRecord, scheduledFor: numbe
   });
 }
 
-async function resolveTargetThreadId(task: ScheduledTaskRecord, sessions: SessionStore): Promise<string | undefined> {
-  const session = await sessions.getSession(task.sessionId);
-  return session.currentThreadId;
-}
-
 async function readLatestThreadRunSummary(
-  threadStore: ThreadRuntimeStore,
+  threadStore: ScheduledTaskThreadStore,
   threadId: string,
   previousRunIds: ReadonlySet<string>,
 ): Promise<ThreadRunSummary> {
@@ -83,13 +97,12 @@ async function readLatestThreadRunSummary(
 }
 
 async function executeScheduledTaskThreadRun(options: {
-  coordinator: ThreadRuntimeCoordinator;
-  threadStore: ThreadRuntimeStore;
+  coordinator: ScheduledTaskCoordinator;
+  threadStore: ScheduledTaskThreadStore;
   threadId: string;
   task: ScheduledTaskRecord;
   run: ScheduledTaskRunRecord;
 }): Promise<ThreadRunSummary> {
-  await options.coordinator.waitForCurrentRun(options.threadId);
   const previousRunIds = new Set((await options.threadStore.listRuns(options.threadId)).map((entry) => entry.id));
 
   await options.coordinator.submitInput(options.threadId, {
@@ -104,85 +117,44 @@ async function executeScheduledTaskThreadRun(options: {
 }
 
 export class ScheduledTaskRunner {
-  private readonly tasks: ScheduledTaskStore;
-  private readonly sessions: SessionStore;
-  private readonly threadStore: ThreadRuntimeStore;
-  private readonly coordinator: ThreadRuntimeCoordinator;
-  private readonly pollIntervalMs: number;
+  private readonly tasks: ScheduledTaskRunnerStore;
+  private readonly sessions: ScheduledTaskSessionStore;
+  private readonly threadStore: ScheduledTaskThreadStore;
+  private readonly coordinator: ScheduledTaskCoordinator;
   private readonly claimTtlMs: number;
   private readonly onError?: (error: unknown, taskId?: string) => Promise<void> | void;
   private readonly claimOwner = "scheduled-task-runner";
-
-  private timer: NodeJS.Timeout | null = null;
-  private stopped = true;
-  private drainPromise: Promise<void> | null = null;
-  private pendingDrain = false;
+  private readonly drainLoop: DrainLoop;
 
   constructor(options: ScheduledTaskRunnerOptions) {
     this.tasks = options.tasks;
     this.sessions = options.sessions;
     this.threadStore = options.threadStore;
     this.coordinator = options.coordinator;
-    this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.claimTtlMs = options.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS;
     this.onError = options.onError;
-  }
-
-  async start(): Promise<void> {
-    if (!this.stopped) {
-      return;
-    }
-
-    this.stopped = false;
-    this.timer = setInterval(() => {
-      this.kickDrain();
-    }, this.pollIntervalMs);
-    this.kickDrain();
-  }
-
-  async stop(): Promise<void> {
-    this.stopped = true;
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-
-    if (this.drainPromise) {
-      await this.drainPromise;
-    }
-  }
-
-  async triggerDrain(): Promise<void> {
-    if (this.stopped) {
-      return;
-    }
-
-    if (this.drainPromise) {
-      this.pendingDrain = true;
-      return;
-    }
-
-    this.drainPromise = this.drain();
-    try {
-      await this.drainPromise;
-    } finally {
-      this.drainPromise = null;
-      if (this.pendingDrain && !this.stopped) {
-        this.pendingDrain = false;
-        await this.triggerDrain();
-      }
-    }
-  }
-
-  private kickDrain(): void {
-    runInBackground(() => this.triggerDrain(), {
+    this.drainLoop = new DrainLoop({
       label: "Scheduled task runner drain",
+      pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+      drain: () => this.drain(),
       onError: this.onError ? (error) => this.onError?.(error) : undefined,
     });
   }
 
+  async start(): Promise<void> {
+    this.drainLoop.start();
+  }
+
+  async stop(): Promise<void> {
+    await this.drainLoop.stop();
+  }
+
+  async triggerDrain(): Promise<void> {
+    await this.drainLoop.trigger();
+  }
+
   private async drain(): Promise<void> {
-    while (!this.stopped) {
+    while (!this.drainLoop.isStopped) {
       const dueTasks = await this.tasks.listDueTasks({
         limit: DEFAULT_BATCH_SIZE,
       });
@@ -192,7 +164,7 @@ export class ScheduledTaskRunner {
 
       let claimedAny = false;
       for (const task of dueTasks) {
-        if (this.stopped) {
+        if (this.drainLoop.isStopped) {
           return;
         }
 
@@ -225,57 +197,93 @@ export class ScheduledTaskRunner {
   }
 
   private async processExecutePhase(claim: ClaimScheduledTaskResult): Promise<void> {
-    const resolvedThreadId = await resolveTargetThreadId(claim.task, this.sessions);
-    if (!resolvedThreadId) {
-      await this.tasks.failTaskRun({
-        runId: claim.run.id,
-        error: `Scheduled task ${claim.task.id} has no resolved thread target.`,
-      });
-      if (claim.task.schedule.kind === "recurring") {
-        await this.tasks.clearTaskClaim(claim.task.id);
-      } else {
-        await this.tasks.markTaskFailed(claim.task.id);
-      }
+    let target = await this.resolveClaimTarget(claim);
+    if (!target) {
       return;
     }
+    await this.coordinator.waitForCurrentRun(target.threadId);
+
+    target = await this.resolveClaimTarget(claim);
+    if (!target) {
+      return;
+    }
+    const deliveryThreadId = target.threadId;
 
     await this.tasks.startTaskRun({
       runId: claim.run.id,
-      resolvedThreadId,
+      resolvedThreadId: deliveryThreadId,
     });
 
     const threadRun = await executeScheduledTaskThreadRun({
       coordinator: this.coordinator,
       threadStore: this.threadStore,
-      threadId: resolvedThreadId,
+      threadId: deliveryThreadId,
       task: claim.task,
       run: claim.run,
     });
 
     if (threadRun.status === "failed") {
-      await this.tasks.failTaskRun({
-        runId: claim.run.id,
-        resolvedThreadId,
+      await this.failClaim(claim, threadRun.error ?? "Scheduled task execution failed.", {
+        resolvedThreadId: deliveryThreadId,
         threadRunId: threadRun.threadRunId,
-        error: threadRun.error ?? "Scheduled task execution failed.",
       });
-      if (claim.task.schedule.kind === "recurring") {
-        await this.tasks.clearTaskClaim(claim.task.id);
-      } else {
-        await this.tasks.markTaskFailed(claim.task.id);
-      }
       return;
     }
 
-    await this.tasks.completeTaskRun({
-      runId: claim.run.id,
-      resolvedThreadId,
+    await this.completeClaim(claim, {
+      resolvedThreadId: deliveryThreadId,
       threadRunId: threadRun.threadRunId,
+    });
+  }
+
+  private async resolveClaimTarget(claim: ClaimScheduledTaskResult): Promise<CurrentSessionThread | null> {
+    try {
+      return await resolveCurrentSessionThread(this.sessions, claim.task.sessionId);
+    } catch (error) {
+      await this.failClaim(claim, error);
+      return null;
+    }
+  }
+
+  private async failClaim(
+    claim: ClaimScheduledTaskResult,
+    error: unknown,
+    details: {
+      resolvedThreadId?: string;
+      threadRunId?: string;
+    } = {},
+  ): Promise<void> {
+    await this.tasks.failTaskRun({
+      runId: claim.run.id,
+      error: describeClaimFailure(error),
+      ...(details.resolvedThreadId ? {resolvedThreadId: details.resolvedThreadId} : {}),
+      ...(details.threadRunId ? {threadRunId: details.threadRunId} : {}),
     });
     if (claim.task.schedule.kind === "recurring") {
       await this.tasks.clearTaskClaim(claim.task.id);
-    } else {
-      await this.tasks.markTaskCompleted(claim.task.id);
+      return;
     }
+
+    await this.tasks.markTaskFailed(claim.task.id);
+  }
+
+  private async completeClaim(
+    claim: ClaimScheduledTaskResult,
+    details: {
+      resolvedThreadId: string;
+      threadRunId: string;
+    },
+  ): Promise<void> {
+    await this.tasks.completeTaskRun({
+      runId: claim.run.id,
+      resolvedThreadId: details.resolvedThreadId,
+      threadRunId: details.threadRunId,
+    });
+    if (claim.task.schedule.kind === "recurring") {
+      await this.tasks.clearTaskClaim(claim.task.id);
+      return;
+    }
+
+    await this.tasks.markTaskCompleted(claim.task.id);
   }
 }

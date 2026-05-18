@@ -1,6 +1,7 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {createChatRuntime} from "../src/ui/tui/runtime.js";
-import {resolveChatDisplayedCwd} from "../src/ui/tui/chat-session.js";
+import {resolveStoredThreadDisplayedCwd} from "../src/ui/shared/stored-thread.js";
+import type {ThreadRecord} from "../src/domain/threads/runtime/index.js";
 
 const tuiRuntimeSessionMocks = vi.hoisted(() => {
   const client = {
@@ -130,7 +131,7 @@ describe("createChatRuntime session wiring", () => {
     vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
     vi.stubEnv("DATA_DIR", "/Users/tester/.panda");
 
-    expect(resolveChatDisplayedCwd({
+    const thread: ThreadRecord = {
       id: "thread-1",
       sessionId: "session-1",
       context: {
@@ -139,6 +140,8 @@ describe("createChatRuntime session wiring", () => {
       },
       createdAt: 1,
       updatedAt: 1,
-    } as any, "/Users/tester/Projects/panda-agent")).toBe("/root/.panda/agents/jozef");
+    };
+
+    expect(resolveStoredThreadDisplayedCwd(thread, "/Users/tester/Projects/panda-agent")).toBe("/root/.panda/agents/jozef");
   });
 });

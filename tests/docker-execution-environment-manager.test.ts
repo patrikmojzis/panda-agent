@@ -8,7 +8,9 @@ import type {
     DisposableEnvironmentCreateRequest,
     DisposableEnvironmentCreateResult,
     ExecutionEnvironmentManager,
-} from "../src/domain/execution-environments/index.js";
+} from "../src/domain/execution-environments/types.js";
+import {readExecutionEnvironmentFilesystemMetadata} from "../src/domain/execution-environments/filesystem.js";
+import {isRecord} from "../src/lib/records.js";
 import {
     DockerApiError,
     DockerExecutionEnvironmentManager,
@@ -109,6 +111,35 @@ class FakeManager implements ExecutionEnvironmentManager {
   async stopEnvironment(): Promise<void> {}
 }
 
+class BadMetadataManager implements ExecutionEnvironmentManager {
+  async createDisposableEnvironment(): Promise<DisposableEnvironmentCreateResult> {
+    return {
+      runnerUrl: "http://worker:8080",
+      runnerCwd: "/workspace",
+      metadata: Number.NaN,
+    };
+  }
+
+  async stopEnvironment(): Promise<void> {}
+}
+
+function requireFilesystemMetadata(metadata: DisposableEnvironmentCreateResult["metadata"]) {
+  const filesystem = readExecutionEnvironmentFilesystemMetadata(metadata);
+  if (!filesystem) {
+    throw new Error("Expected execution environment result metadata to include filesystem paths.");
+  }
+
+  return filesystem;
+}
+
+function requireContainerName(metadata: DisposableEnvironmentCreateResult["metadata"]): string {
+  if (!isRecord(metadata) || typeof metadata.containerName !== "string") {
+    throw new Error("Expected execution environment result metadata to include a container name.");
+  }
+
+  return metadata.containerName;
+}
+
 describe("DockerExecutionEnvironmentManager", () => {
   const directories: string[] = [];
 
@@ -148,7 +179,7 @@ describe("DockerExecutionEnvironmentManager", () => {
       runnerCwd: "/workspace",
       rootPath: "/workspace",
     });
-    const filesystem = (result.metadata as any).filesystem;
+    const filesystem = requireFilesystemMetadata(result.metadata);
     expect(filesystem).toMatchObject({
       envDir: expect.stringMatching(/^env-worker-[a-f0-9]{10}$/),
       root: {
@@ -166,9 +197,13 @@ describe("DockerExecutionEnvironmentManager", () => {
         workerPath: "/artifacts",
       },
     });
-    await expect(stat(filesystem.workspace.hostPath)).resolves.toBeTruthy();
-    await expect(stat(filesystem.inbox.hostPath)).resolves.toBeTruthy();
-    await expect(stat(filesystem.artifacts.hostPath)).resolves.toBeTruthy();
+    for (const hostPath of [
+      filesystem.workspace.hostPath,
+      filesystem.inbox.hostPath,
+      filesystem.artifacts.hostPath,
+    ]) {
+      expect((await stat(hostPath)).isDirectory()).toBe(true);
+    }
     expect(dockerClient.created).toHaveLength(1);
     const created = dockerClient.created[0]!;
     expect(created.config.Image).toBe("panda-runner:test");
@@ -238,7 +273,7 @@ describe("DockerExecutionEnvironmentManager", () => {
     expect(host.length).toBeLessThanOrEqual(63);
     expect(host).toMatch(/^[a-z0-9-]+$/);
     expect(host).toBe(dockerClient.created[0]!.name);
-    expect((result.metadata as any).containerName).toBe(host);
+    expect(requireContainerName(result.metadata)).toBe(host);
     expect(dockerClient.created[0]!.config.Labels["panda.environment.id"]).toBe(environmentId);
   });
 
@@ -259,7 +294,7 @@ describe("DockerExecutionEnvironmentManager", () => {
       createTimeoutMs: 10,
     });
 
-    await expect(manager.stopEnvironment("env-worker")).resolves.toBeUndefined();
+    await manager.stopEnvironment("env-worker");
     expect(dockerClient.stopped[0]).toMatch(/^panda-env-env-worker-[a-f0-9]{10}$/);
     expect(dockerClient.removed).toEqual(dockerClient.stopped);
   });
@@ -354,6 +389,72 @@ describe("execution environment manager HTTP boundary", () => {
         runnerCwd: "/workspace",
       });
       expect(fakeManager.created).toHaveLength(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects non-json manager request and response metadata", async () => {
+    const client = new HttpExecutionEnvironmentManagerClient({
+      managerUrl: "http://manager.local",
+      fetchImpl: async () => {
+        throw new Error("fetch should not run");
+      },
+    });
+
+    await expect(client.createDisposableEnvironment({
+      agentKey: "panda",
+      sessionId: "session-worker",
+      environmentId: "env-worker",
+      metadata: Number.NaN,
+    })).rejects.toThrow("Execution environment manager request metadata must be JSON-serializable.");
+
+    const responseClient = new HttpExecutionEnvironmentManagerClient({
+      managerUrl: "http://manager.local",
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          runnerUrl: "http://worker:8080",
+          runnerCwd: "/workspace",
+          metadata: Number.NaN,
+        }),
+      } as Response),
+    });
+
+    await expect(responseClient.createDisposableEnvironment({
+      agentKey: "panda",
+      sessionId: "session-worker",
+      environmentId: "env-worker",
+    })).rejects.toThrow("Execution environment manager response metadata must be JSON-serializable.");
+  });
+
+  it("rejects non-json metadata returned by the manager server adapter", async () => {
+    const server = await startExecutionEnvironmentManager({
+      host: "127.0.0.1",
+      port: 0,
+      sharedSecret: "secret",
+      manager: new BadMetadataManager(),
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.port}/environments/disposable`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          agentKey: "panda",
+          sessionId: "session-worker",
+          environmentId: "env-worker",
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        ok: false,
+        error: "Execution environment manager metadata must be JSON-serializable.",
+      });
     } finally {
       await server.close();
     }

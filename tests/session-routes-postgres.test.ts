@@ -1,4 +1,4 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {SessionRouteRepo} from "../src/domain/sessions/index.js";
@@ -11,6 +11,18 @@ function createPool() {
     args: [DataType.text, DataType.text],
     returns: DataType.text,
     implementation: () => "",
+  });
+  db.public.registerFunction({
+    name: "btrim",
+    args: [DataType.text],
+    returns: DataType.text,
+    implementation: (value: string) => value.trim(),
+  });
+  db.public.registerFunction({
+    name: "nullif",
+    args: [DataType.text, DataType.text],
+    returns: DataType.text,
+    implementation: (left: string, right: string) => left === right ? null : left,
   });
 
   const adapter = db.adapters.createPg();
@@ -129,6 +141,88 @@ describe("SessionRouteRepo", () => {
     });
   });
 
+  it("migrates legacy routes without surrogate ids", async () => {
+    const pool = createPool();
+    pools.push(pool);
+
+    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const identity = await identityStore.createIdentity({
+      id: "alice-id",
+      handle: "alice",
+      displayName: "Alice",
+    });
+    await sessionStore.createSession({
+      id: "session-a",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-a",
+      createdByIdentityId: identity.id,
+    });
+    await pool.query(`
+      CREATE TABLE "runtime"."session_routes" (
+        session_id TEXT NOT NULL,
+        identity_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        connector_key TEXT NOT NULL,
+        external_conversation_id TEXT NOT NULL,
+        external_actor_id TEXT,
+        external_message_id TEXT,
+        captured_at_ms BIGINT NOT NULL,
+        metadata JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      INSERT INTO "runtime"."session_routes" (
+        session_id,
+        identity_id,
+        channel,
+        connector_key,
+        external_conversation_id,
+        captured_at_ms
+      ) VALUES
+        ('session-a', '   ', 'telegram', 'bot-1', 'chat-global', 10),
+        ('session-a', 'alice-id', 'telegram', 'bot-1', 'chat-alice', 20)
+    `);
+
+    const store = new SessionRouteRepo({pool});
+    await store.ensureSchema();
+
+    await expect(pool.query(`
+      SELECT id
+      FROM "runtime"."session_routes"
+      LIMIT 1
+    `)).resolves.toBeDefined();
+
+    const rows = await pool.query(`
+      SELECT identity_id, external_conversation_id
+      FROM "runtime"."session_routes"
+      ORDER BY external_conversation_id
+    `);
+    expect(rows.rows).toEqual([
+      {
+        identity_id: "alice-id",
+        external_conversation_id: "chat-alice",
+      },
+      {
+        identity_id: null,
+        external_conversation_id: "chat-global",
+      },
+    ]);
+    await expect(store.getLastRoute({
+      sessionId: "session-a",
+    })).resolves.toMatchObject({
+      externalConversationId: "chat-global",
+    });
+    await expect(store.getLastRoute({
+      sessionId: "session-a",
+      identityId: "alice-id",
+    })).resolves.toMatchObject({
+      externalConversationId: "chat-alice",
+    });
+  });
+
   it("validates required fields", async () => {
     const pool = createPool();
     pools.push(pool);
@@ -158,27 +252,97 @@ describe("SessionRouteRepo", () => {
     await expect(store.getLastRoute({
       sessionId: "   ",
     })).rejects.toThrow("Session route session id must not be empty.");
-  });
-
-  it("does not accept thread-era route aliases", async () => {
-    const pool = createPool();
-    pools.push(pool);
-
-    await createRuntimeStores(pool);
-    const store = new SessionRouteRepo({pool});
-    await store.ensureSchema();
-
-    await expect(store.getLastRoute({
-      sessionId: undefined as unknown as string,
-    })).rejects.toThrow("Session route session id must not be empty.");
     await expect(store.saveLastRoute({
-      sessionId: undefined as unknown as string,
+      sessionId: "session-a",
       route: {
         source: "telegram",
         connectorKey: "bot-1",
         externalConversationId: "chat-1",
-        capturedAt: 100,
+        capturedAt: Number.NaN,
       },
-    })).rejects.toThrow("Session route session id must not be empty.");
+    })).rejects.toThrow("Session route capturedAt must be a safe integer.");
+  });
+
+  it("rejects malformed persisted session route rows", async () => {
+    const store = new SessionRouteRepo({
+      pool: {
+        connect: vi.fn(),
+        query: vi.fn(async () => ({
+          rows: [{
+            session_id: "session-a",
+            identity_id: null,
+            channel: "telegram",
+            connector_key: "bot-main",
+            external_conversation_id: "chat-1",
+            external_actor_id: null,
+            external_message_id: null,
+            captured_at_ms: "soon",
+            created_at: new Date(),
+            updated_at: new Date(),
+          }],
+        })),
+      },
+    });
+
+    await expect(store.getLastRoute({
+      sessionId: "session-a",
+      channel: "telegram",
+    })).rejects.toThrow("Session route capturedAt must be a safe integer.");
+  });
+
+  it("accepts postgres bigint-shaped persisted session route timestamps", async () => {
+    const store = new SessionRouteRepo({
+      pool: {
+        connect: vi.fn(),
+        query: vi.fn(async () => ({
+          rows: [{
+            session_id: "session-a",
+            identity_id: null,
+            channel: "telegram",
+            connector_key: "bot-main",
+            external_conversation_id: "chat-1",
+            external_actor_id: null,
+            external_message_id: null,
+            captured_at_ms: "200",
+            created_at: new Date(),
+            updated_at: new Date(),
+          }],
+        })),
+      },
+    });
+
+    await expect(store.getLastRoute({
+      sessionId: "session-a",
+      channel: "telegram",
+    })).resolves.toMatchObject({
+      capturedAt: 200,
+    });
+  });
+
+  it("rejects non-integral persisted session route timestamps", async () => {
+    const store = new SessionRouteRepo({
+      pool: {
+        connect: vi.fn(),
+        query: vi.fn(async () => ({
+          rows: [{
+            session_id: "session-a",
+            identity_id: null,
+            channel: "telegram",
+            connector_key: "bot-main",
+            external_conversation_id: "chat-1",
+            external_actor_id: null,
+            external_message_id: null,
+            captured_at_ms: "200.5",
+            created_at: new Date(),
+            updated_at: new Date(),
+          }],
+        })),
+      },
+    });
+
+    await expect(store.getLastRoute({
+      sessionId: "session-a",
+      channel: "telegram",
+    })).rejects.toThrow("Session route capturedAt must be a safe integer.");
   });
 });

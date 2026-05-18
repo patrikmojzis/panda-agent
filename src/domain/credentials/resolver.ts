@@ -1,17 +1,28 @@
 import {CredentialCrypto} from "./crypto.js";
-import {PostgresCredentialStore} from "./postgres.js";
 import type {
   CredentialListEntry,
   CredentialListFilter,
   CredentialRecord,
   CredentialResolutionContext,
   DecryptedCredentialRecord,
+  SetCredentialInput,
 } from "./types.js";
 import {
   maskCredentialValue,
   normalizeCredentialAgentKey,
   normalizeCredentialEnvKey,
 } from "./types.js";
+
+export interface CredentialResolverStore {
+  listResolvableCredentials(context: CredentialResolutionContext): Promise<readonly CredentialRecord[]>;
+  resolveCredential(envKey: string, context: CredentialResolutionContext): Promise<CredentialRecord | null>;
+}
+
+export interface CredentialServiceStore extends CredentialResolverStore {
+  deleteCredential(envKey: string, input: {agentKey: string}): Promise<boolean>;
+  listCredentials(filter?: CredentialListFilter): Promise<readonly CredentialRecord[]>;
+  setCredential(input: SetCredentialInput): Promise<CredentialRecord>;
+}
 
 function decryptRecord(
   record: CredentialRecord,
@@ -29,10 +40,10 @@ function decryptRecord(
 }
 
 export class CredentialResolver {
-  private readonly store: PostgresCredentialStore;
+  private readonly store: CredentialResolverStore;
   private readonly crypto: CredentialCrypto | null;
 
-  constructor(options: { store: PostgresCredentialStore; crypto?: CredentialCrypto | null }) {
+  constructor(options: { store: CredentialResolverStore; crypto?: CredentialCrypto | null }) {
     this.store = options.store;
     this.crypto = options.crypto ?? null;
   }
@@ -75,11 +86,11 @@ export class CredentialResolver {
 }
 
 export class CredentialService {
-  private readonly store: PostgresCredentialStore;
+  private readonly store: CredentialServiceStore;
   private readonly crypto: CredentialCrypto;
   private readonly resolver: CredentialResolver;
 
-  constructor(options: { store: PostgresCredentialStore; crypto: CredentialCrypto }) {
+  constructor(options: { store: CredentialServiceStore; crypto: CredentialCrypto }) {
     this.store = options.store;
     this.crypto = options.crypto;
     this.resolver = new CredentialResolver(options);

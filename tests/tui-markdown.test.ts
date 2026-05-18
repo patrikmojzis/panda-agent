@@ -1,18 +1,40 @@
 import {describe, expect, it} from "vitest";
+import type {AssistantMessage} from "@mariozechner/pi-ai";
 
 import {renderTranscriptEntries} from "../src/ui/tui/transcript.js";
 import {renderMarkdownLines} from "../src/ui/tui/markdown.js";
 
 describe("renderTranscriptEntries assistant markdown", () => {
   it("preserves assistant markdown structure instead of flattening whitespace", () => {
+    const message: AssistantMessage = {
+      role: "assistant",
+      content: [{
+        type: "text",
+        text: "## Plan\n\n- first\n- second",
+      }],
+      api: "openai-responses",
+      provider: "openai",
+      model: "gpt-5.1",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0,
+        },
+      },
+      stopReason: "stop",
+      timestamp: 1,
+    };
+
     const entries = renderTranscriptEntries(
-      {
-        role: "assistant",
-        content: [{
-          type: "text",
-          text: "## Plan\n\n- first\n- second",
-        }],
-      } as any,
+      message,
       { source: "assistant" },
     );
 

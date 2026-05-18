@@ -1,11 +1,15 @@
-import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord,} from "../../domain/threads/runtime/index.js";
+import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord} from "../../domain/threads/runtime/types.js";
+import {loadStoredThreadSnapshot} from "../shared/stored-thread.js";
 import {STORED_SYNC_MS} from "./chat-shared.js";
-import {loadChatThreadSnapshot} from "./chat-session.js";
-import type {ChatRuntimeServices} from "./runtime.js";
+import type {ChatRuntimeThreadStore} from "./runtime.js";
+
+interface ChatSyncServices {
+  store: ChatRuntimeThreadStore;
+}
 
 export interface ChatSyncHost {
   getCurrentThreadId(): string;
-  getServices(): ChatRuntimeServices | null;
+  getServices(): ChatSyncServices | null;
   getSyncDebounceTimer(): NodeJS.Timeout | null;
   setSyncDebounceTimer(timer: NodeJS.Timeout | null): void;
   getSyncInFlight(): boolean;
@@ -75,8 +79,8 @@ export async function syncChatStoredThreadState(
   host.setLastStoredSyncAt(Date.now());
 
   try {
-    const snapshot = await loadChatThreadSnapshot({
-      services,
+    const snapshot = await loadStoredThreadSnapshot({
+      store: services.store,
       threadId,
     });
 

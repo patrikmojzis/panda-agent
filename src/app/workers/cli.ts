@@ -19,7 +19,7 @@ import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.
 import {PostgresAgentStore} from "../../domain/agents/postgres.js";
 import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
-import {createExecutionEnvironmentManagerClientFromEnv} from "../../integrations/shell/index.js";
+import {createExecutionEnvironmentManagerClientFromEnv} from "../../integrations/shell/execution-environment-manager-client.js";
 import {parseAgentKey} from "../../domain/agents/cli.js";
 import {parseRequiredOptionValue, parseSessionIdOption} from "../../lib/cli.js";
 

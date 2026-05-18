@@ -3,9 +3,8 @@ import process from "node:process";
 import {Command} from "commander";
 import type {Pool} from "pg";
 
-import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
-import {parseSessionIdOption} from "../../lib/cli.js";
+import {DB_URL_OPTION_DESCRIPTION, parseSessionIdOption} from "../../lib/cli.js";
+import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {parseAgentKey} from "../agents/cli.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";

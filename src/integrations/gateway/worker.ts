@@ -1,27 +1,44 @@
-import type {JsonObject} from "../../kernel/agent/types.js";
-import {stringToUserMessage} from "../../kernel/agent/helpers/input.js";
-import type {GatewayEventRecord, GatewaySourceRecord, PostgresGatewayStore} from "../../domain/gateway/index.js";
-import type {PostgresSessionStore} from "../../domain/sessions/index.js";
-import type {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/index.js";
-import {renderGatewayInboundText} from "../../prompts/channels/gateway.js";
+import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
+import type {GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
+import {DrainLoop} from "../../lib/drain-loop.js";
+import type {JsonObject} from "../../lib/json.js";
+import {deliverGatewayEventToThread, type GatewayDeliverySessionStore, type GatewayDeliveryStore} from "./delivery.js";
 import type {GatewayGuard} from "./guard.js";
+import {
+  DEFAULT_GATEWAY_GUARD_THRESHOLD,
+  DEFAULT_GATEWAY_GUARD_TIMEOUT_MS,
+  evaluateGatewayGuardPolicy,
+} from "./guard-policy.js";
 
-export const DEFAULT_GATEWAY_GUARD_THRESHOLD = 0.85;
-export const DEFAULT_GATEWAY_GUARD_TIMEOUT_MS = 120_000;
 const DEFAULT_WORKER_POLL_MS = 1_000;
 const DEFAULT_WORKER_BATCH_SIZE = 10;
 const DEFAULT_WORKER_CONCURRENCY = 4;
-const STRIKE_WINDOW_MS = 10 * 60_000;
-const STRIKE_THRESHOLD = 3;
+
+export {DEFAULT_GATEWAY_GUARD_THRESHOLD, DEFAULT_GATEWAY_GUARD_TIMEOUT_MS};
+
+interface GatewayWorkerStore extends GatewayDeliveryStore {
+  claimPendingEvents(limit: number): Promise<readonly GatewayEventRecord[]>;
+  getEvent(eventId: string): Promise<GatewayEventRecord>;
+  getSource(sourceId: string): Promise<GatewaySourceRecord>;
+  recordStrikeAndMaybeSuspend(input: {
+    eventId?: string;
+    kind: "guard_high_risk";
+    metadata: JsonObject;
+    reason: string;
+    sourceId: string;
+    threshold: number;
+    windowMs: number;
+  }): Promise<unknown>;
+}
 
 export interface GatewayWorkerOptions {
   guard: GatewayGuard;
   guardThreshold?: number;
   guardTimeoutMs?: number;
   pollMs?: number;
-  store: PostgresGatewayStore;
-  sessionStore: PostgresSessionStore;
-  threadStore: PostgresThreadRuntimeStore;
+  store: GatewayWorkerStore;
+  sessionStore: GatewayDeliverySessionStore;
+  threadStore: Pick<ThreadRuntimeStore, "enqueueInput">;
   workerConcurrency?: number;
 }
 
@@ -38,27 +55,6 @@ export interface GatewayWorker {
   close(): Promise<void>;
 }
 
-function buildGatewayMetadata(input: {
-  event: GatewayEventRecord;
-  riskScore: number;
-}): JsonObject {
-  return {
-    gateway: {
-      sourceId: input.event.sourceId,
-      eventId: input.event.id,
-      eventType: input.event.type,
-      deliveryRequested: input.event.deliveryRequested,
-      deliveryEffective: input.event.deliveryEffective,
-      occurredAt: input.event.occurredAt ? new Date(input.event.occurredAt).toISOString() : null,
-      receivedAt: new Date(input.event.createdAt).toISOString(),
-      riskScore: input.riskScore,
-      textBytes: input.event.textBytes,
-      textSha256: input.event.textSha256,
-      metadataTrust: "external_untrusted",
-    },
-  };
-}
-
 async function quarantineSuspendedSource(
   options: GatewayWorkerOptions,
   event: GatewayEventRecord,
@@ -73,44 +69,6 @@ async function quarantineSuspendedSource(
   });
 }
 
-async function resolveTargetThreadId(
-  options: GatewayWorkerOptions,
-  source: GatewaySourceRecord,
-): Promise<string> {
-  if (source.sessionId) {
-    const session = await options.sessionStore.getSession(source.sessionId);
-    return session.currentThreadId;
-  }
-
-  const mainSession = await options.sessionStore.getMainSession(source.agentKey);
-  if (!mainSession) {
-    throw new Error(`Agent ${source.agentKey} does not have a main session.`);
-  }
-  return mainSession.currentThreadId;
-}
-
-async function scoreWithTimeout(
-  guard: GatewayGuard,
-  input: Parameters<GatewayGuard["score"]>[0],
-  timeoutMs: number,
-): Promise<{riskScore: number}> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  timer.unref();
-  try {
-    return await Promise.race([
-      guard.score({...input, signal: controller.signal}),
-      new Promise<never>((_, reject) => {
-        controller.signal.addEventListener("abort", () => {
-          reject(new Error(`guard timed out after ${String(timeoutMs)}ms`));
-        }, {once: true});
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function processGatewayEvent(options: GatewayWorkerOptions, event: GatewayEventRecord): Promise<void> {
   if (event.status !== "pending" && event.status !== "processing") {
     return;
@@ -122,89 +80,25 @@ async function processGatewayEvent(options: GatewayWorkerOptions, event: Gateway
     return;
   }
 
-  let riskScore: number;
-  try {
-    const verdict = await scoreWithTimeout(
-      options.guard,
-      {event, source},
-      options.guardTimeoutMs ?? DEFAULT_GATEWAY_GUARD_TIMEOUT_MS,
-    );
-    riskScore = verdict.riskScore;
-  } catch (error) {
-    await options.store.markEventQuarantined({
-      eventId: event.id,
-      claimId: event.claimId,
-      riskScore: 1,
-      reason: error instanceof Error ? `guard failed: ${error.message}` : "guard failed",
-      metadata: {gateway: {guardFailed: true}},
-    });
-    return;
-  }
-
-  if (riskScore >= (options.guardThreshold ?? DEFAULT_GATEWAY_GUARD_THRESHOLD)) {
-    await options.store.markEventQuarantined({
-      eventId: event.id,
-      claimId: event.claimId,
-      riskScore,
-      reason: "guard risk threshold exceeded",
-      metadata: {gateway: {guardThreshold: options.guardThreshold ?? DEFAULT_GATEWAY_GUARD_THRESHOLD}},
-    });
-    await options.store.recordStrikeAndMaybeSuspend({
-      sourceId: event.sourceId,
-      kind: "guard_high_risk",
-      reason: `guard risk score ${riskScore.toFixed(3)}`,
-      eventId: event.id,
-      threshold: STRIKE_THRESHOLD,
-      windowMs: STRIKE_WINDOW_MS,
-      metadata: {riskScore},
-    });
-    return;
-  }
-
-  const threadId = await resolveTargetThreadId(options, source);
-  const metadata = buildGatewayMetadata({event, riskScore});
-  if (!event.claimId) {
-    await options.store.markEventQuarantined({
-      eventId: event.id,
-      riskScore: 1,
-      reason: "gateway event is missing a processing claim",
-      metadata: {gateway: {missingClaim: true}},
-    });
-    return;
-  }
-  const reserved = await options.store.reserveEventDelivery({
-    eventId: event.id,
-    claimId: event.claimId,
-    riskScore,
-    metadata,
+  const guardResult = await evaluateGatewayGuardPolicy({
+    event,
+    guard: options.guard,
+    guardThreshold: options.guardThreshold,
+    guardTimeoutMs: options.guardTimeoutMs,
+    source,
+    store: options.store,
   });
-  if (!reserved) {
+  if (!guardResult.deliver) {
     return;
   }
-  await options.threadStore.enqueueInput(threadId, {
-    source: "gateway",
-    channelId: event.sourceId,
-    externalMessageId: event.id,
-    actorId: event.sourceId,
-    identityId: source.identityId,
-    message: stringToUserMessage(renderGatewayInboundText({
-      sourceId: event.sourceId,
-      eventId: event.id,
-      eventType: event.type,
-      delivery: event.deliveryEffective,
-      occurredAt: event.occurredAt ? new Date(event.occurredAt).toISOString() : undefined,
-      receivedAt: new Date(event.createdAt).toISOString(),
-      riskScore,
-      text: event.text,
-    })),
-    metadata,
-  }, event.deliveryEffective);
-  await options.store.markEventDelivered({
-    eventId: event.id,
-    claimId: event.claimId,
-    threadId,
-    riskScore,
-    metadata,
+
+  await deliverGatewayEventToThread({
+    event,
+    riskScore: guardResult.riskScore,
+    sessionStore: options.sessionStore,
+    source,
+    store: options.store,
+    threadStore: options.threadStore,
   });
 }
 
@@ -265,52 +159,27 @@ async function processSourceGroups(
 }
 
 export function startGatewayWorker(options: GatewayWorkerOptions): GatewayWorker {
-  let closed = false;
-  let running: Promise<void> | null = null;
-  let timer: NodeJS.Timeout | null = null;
-
-  const schedule = (delayMs: number): void => {
-    if (closed || timer) {
-      return;
-    }
-    timer = setTimeout(() => {
-      timer = null;
-      void run();
-    }, delayMs);
-    timer.unref();
-  };
-
-  const run = async (): Promise<void> => {
-    if (closed || running) {
-      return;
-    }
-    running = (async () => {
+  const drainLoop = new DrainLoop({
+    label: "Gateway worker drain",
+    pollIntervalMs: options.pollMs ?? DEFAULT_WORKER_POLL_MS,
+    drain: async () => {
       const events = await options.store.claimPendingEvents(DEFAULT_WORKER_BATCH_SIZE);
       await processSourceGroups(options, groupEventsBySource(events));
-    })().finally(() => {
-      running = null;
-      schedule(options.pollMs ?? DEFAULT_WORKER_POLL_MS);
-    });
-    await running;
-  };
-
-  schedule(0);
+    },
+    onError: (error) => {
+      console.error("Gateway worker drain failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    },
+  });
+  drainLoop.start();
 
   return {
     poke(): void {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      void run();
+      drainLoop.kick();
     },
     async close(): Promise<void> {
-      closed = true;
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      await running;
+      await drainLoop.stop();
     },
   };
 }

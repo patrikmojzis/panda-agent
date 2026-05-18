@@ -1,21 +1,15 @@
+import {optionalTimestampMillis, requireTimestampMillis} from "../../../lib/postgres-values.js";
 import {randomUUID} from "node:crypto";
 
-import type {PoolClient} from "pg";
-
+import {requireBoolean} from "../../../lib/booleans.js";
+import {hasActiveClaim} from "../../../lib/claims.js";
 import {toDateOrNull} from "../../../lib/dates.js";
-import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
-import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
-import type {PgPoolLike} from "../../threads/runtime/postgres-db.js";
-import {
-    buildThreadRuntimeTableNames,
-    CREATE_RUNTIME_SCHEMA_SQL,
-    quoteIdentifier,
-    toMillis
-} from "../../threads/runtime/postgres-shared.js";
-import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
+import type {PgClientLike, PgPoolLike} from "../../../lib/postgres-query.js";
+import {buildThreadRuntimeTableNames} from "../../threads/runtime/postgres-shared.js";
 import {computeInitialNextFireAt, normalizeScheduledTaskSchedule} from "./schedule.js";
+import {ensurePostgresScheduledTaskSchema} from "./postgres-schema.js";
 import {buildScheduledTaskTableNames, type ScheduledTaskTableNames} from "./postgres-shared.js";
-import {requireScheduledTaskString} from "./shared.js";
+import {optionalScheduledTaskString, requireScheduledTaskString} from "./shared.js";
 import type {ScheduledTaskStore} from "./store.js";
 import type {
     CancelScheduledTaskInput,
@@ -44,56 +38,77 @@ function missingTaskRunError(runId: string): Error {
   return new Error(`Unknown scheduled task run ${runId}`);
 }
 
-const requireTrimmed = requireScheduledTaskString;
 const toDate = toDateOrNull;
 
+function parseScheduleKind(value: unknown): ScheduledTaskRecord["schedule"]["kind"] {
+  if (value === "once" || value === "recurring") {
+    return value;
+  }
+
+  throw new Error(`Unsupported scheduled task schedule kind ${String(value)}.`);
+}
+
+function parseRunStatus(value: unknown): ScheduledTaskRunRecord["status"] {
+  if (
+    value === "claimed"
+    || value === "running"
+    || value === "succeeded"
+    || value === "failed"
+    || value === "cancelled"
+  ) {
+    return value;
+  }
+
+  throw new Error(`Unsupported scheduled task run status ${String(value)}.`);
+}
+
 function parseTaskRow(row: Record<string, unknown>): ScheduledTaskRecord {
-  const scheduleKind = String(row.schedule_kind) as ScheduledTaskRecord["schedule"]["kind"];
-  const schedule = scheduleKind === "once"
+  const scheduleKind = parseScheduleKind(row.schedule_kind);
+  const schedule = normalizeScheduledTaskSchedule(scheduleKind === "once"
     ? {
       kind: "once",
-      runAt: new Date(String(row.run_at)).toISOString(),
-    } satisfies ScheduledTaskRecord["schedule"]
+      runAt: new Date(requireTimestampMillis(row.run_at, "Scheduled task run_at must be a valid timestamp.")).toISOString(),
+    }
     : {
       kind: "recurring",
-      cron: String(row.cron_expr),
-      timezone: String(row.timezone),
-    } satisfies ScheduledTaskRecord["schedule"];
+      cron: requireScheduledTaskString("cron", row.cron_expr),
+      timezone: requireScheduledTaskString("timezone", row.timezone),
+    });
 
   return {
-    id: String(row.id),
-    sessionId: String(row.session_id),
-    createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
-    createdFromMessageId: row.created_from_message_id == null ? undefined : String(row.created_from_message_id),
-    title: String(row.title),
-    instruction: String(row.instruction),
+    id: requireScheduledTaskString("task id", row.id),
+    sessionId: requireScheduledTaskString("session id", row.session_id),
+    createdByIdentityId: optionalScheduledTaskString("created identity id", row.created_by_identity_id),
+    createdFromMessageId: optionalScheduledTaskString("created message id", row.created_from_message_id),
+    title: requireScheduledTaskString("title", row.title),
+    instruction: requireScheduledTaskString("instruction", row.instruction),
     schedule,
-    enabled: Boolean(row.enabled),
-    nextFireAt: row.next_fire_at === null ? undefined : toMillis(row.next_fire_at),
-    claimedAt: row.claimed_at === null ? undefined : toMillis(row.claimed_at),
-    claimedBy: row.claimed_by === null ? undefined : String(row.claimed_by),
-    claimExpiresAt: row.claim_expires_at === null ? undefined : toMillis(row.claim_expires_at),
-    completedAt: row.completed_at === null ? undefined : toMillis(row.completed_at),
-    cancelledAt: row.cancelled_at === null ? undefined : toMillis(row.cancelled_at),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    enabled: requireBoolean(row.enabled, "Scheduled task enabled flag must be a boolean."),
+    nextFireAt: optionalTimestampMillis(row.next_fire_at, "Scheduled task next_fire_at must be a valid timestamp."),
+    claimedAt: optionalTimestampMillis(row.claimed_at, "Scheduled task claimed_at must be a valid timestamp."),
+    claimedBy: optionalScheduledTaskString("claim owner", row.claimed_by),
+    claimExpiresAt: optionalTimestampMillis(row.claim_expires_at, "Scheduled task claim_expires_at must be a valid timestamp."),
+    completedAt: optionalTimestampMillis(row.completed_at, "Scheduled task completed_at must be a valid timestamp."),
+    cancelledAt: optionalTimestampMillis(row.cancelled_at, "Scheduled task cancelled_at must be a valid timestamp."),
+    createdAt: requireTimestampMillis(row.created_at, "Scheduled task created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Scheduled task updated_at must be a valid timestamp."),
   };
 }
 
 function parseTaskRunRow(row: Record<string, unknown>): ScheduledTaskRunRecord {
   return {
-    id: String(row.id),
-    taskId: String(row.task_id),
-    sessionId: String(row.session_id),
-    createdByIdentityId: row.created_by_identity_id === null ? undefined : String(row.created_by_identity_id),
-    resolvedThreadId: row.resolved_thread_id === null ? undefined : String(row.resolved_thread_id),
-    scheduledFor: toMillis(row.scheduled_for),
-    status: String(row.status) as ScheduledTaskRunRecord["status"],
-    threadRunId: row.thread_run_id === null ? undefined : String(row.thread_run_id),
-    error: row.error === null ? undefined : String(row.error),
-    createdAt: toMillis(row.created_at),
-    startedAt: row.started_at === null ? undefined : toMillis(row.started_at),
-    finishedAt: row.finished_at === null ? undefined : toMillis(row.finished_at),
+    id: requireScheduledTaskString("run id", row.id),
+    taskId: requireScheduledTaskString("task id", row.task_id),
+    sessionId: requireScheduledTaskString("session id", row.session_id),
+    createdByIdentityId: optionalScheduledTaskString("created identity id", row.created_by_identity_id),
+    resolvedThreadId: optionalScheduledTaskString("resolved thread id", row.resolved_thread_id),
+    scheduledFor: requireTimestampMillis(row.scheduled_for, "Scheduled task scheduled_for must be a valid timestamp."),
+    status: parseRunStatus(row.status),
+    threadRunId: optionalScheduledTaskString("thread run id", row.thread_run_id),
+    error: optionalScheduledTaskString("error", row.error),
+    createdAt: requireTimestampMillis(row.created_at, "Scheduled task created_at must be a valid timestamp."),
+    startedAt: optionalTimestampMillis(row.started_at, "Scheduled task started_at must be a valid timestamp."),
+    finishedAt: optionalTimestampMillis(row.finished_at, "Scheduled task finished_at must be a valid timestamp."),
   };
 }
 
@@ -110,25 +125,19 @@ function normalizeCreateInput(input: CreateScheduledTaskInput): {
   const schedule = normalizeScheduledTaskSchedule(input.schedule);
 
   return {
-    sessionId: requireTrimmed("session id", input.sessionId),
+    sessionId: requireScheduledTaskString("session id", input.sessionId),
     createdByIdentityId: input.createdByIdentityId?.trim() || undefined,
     createdFromMessageId: input.createdFromMessageId?.trim() || undefined,
-    title: requireTrimmed("title", input.title),
-    instruction: requireTrimmed("instruction", input.instruction),
+    title: requireScheduledTaskString("title", input.title),
+    instruction: requireScheduledTaskString("instruction", input.instruction),
     enabled: input.enabled ?? true,
     schedule,
     nextFireAt: computeInitialNextFireAt(schedule, Date.now()),
   };
 }
 
-function isActiveClaim(task: ScheduledTaskRecord, nowMs: number): boolean {
-  return task.claimedAt !== undefined
-    && task.claimExpiresAt !== undefined
-    && task.claimExpiresAt > nowMs;
-}
-
 async function readLockedTask(
-  client: PoolClient,
+  client: PgClientLike,
   tables: ScheduledTaskTableNames,
   input: Pick<UpdateScheduledTaskInput, "taskId" | "sessionId">,
 ): Promise<ScheduledTaskRecord> {
@@ -141,8 +150,8 @@ async function readLockedTask(
       FOR UPDATE
     `,
     [
-      requireTrimmed("task id", input.taskId),
-      requireTrimmed("session id", input.sessionId),
+      requireScheduledTaskString("task id", input.taskId),
+      requireScheduledTaskString("session id", input.sessionId),
     ],
   );
   const row = result.rows[0];
@@ -156,335 +165,25 @@ async function readLockedTask(
 export class PostgresScheduledTaskStore implements ScheduledTaskStore {
   private readonly pool: PgPoolLike;
   private readonly tables: ScheduledTaskTableNames;
-  private readonly identityTableName: string;
-  private readonly sessionTableName: string;
-  private readonly threadTableName: string;
-  private readonly messageTableName: string;
-  private readonly runTableName: string;
 
   constructor(options: PostgresScheduledTaskStoreOptions) {
     this.pool = options.pool;
     this.tables = buildScheduledTaskTableNames();
-    this.identityTableName = buildIdentityTableNames().identities;
-    this.sessionTableName = buildSessionTableNames().sessions;
-    const threadTables = buildThreadRuntimeTableNames();
-    this.threadTableName = threadTables.threads;
-    this.messageTableName = threadTables.messages;
-    this.runTableName = threadTables.runs;
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.scheduledTasks} (
-        id UUID PRIMARY KEY,
-        session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
-        created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
-        created_from_message_id UUID,
-        title TEXT NOT NULL,
-        instruction TEXT NOT NULL,
-        schedule_kind TEXT NOT NULL,
-        run_at TIMESTAMPTZ,
-        cron_expr TEXT,
-        timezone TEXT,
-        enabled BOOLEAN NOT NULL DEFAULT TRUE,
-        completed_at TIMESTAMPTZ,
-        cancelled_at TIMESTAMPTZ,
-        next_fire_at TIMESTAMPTZ,
-        claimed_at TIMESTAMPTZ,
-        claimed_by TEXT,
-        claim_expires_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_scheduled_tasks_due_idx`)}
-      ON ${this.tables.scheduledTasks} (enabled, cancelled_at, completed_at, next_fire_at, id)
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_scheduled_tasks_identity_agent_idx`)}
-      ON ${this.tables.scheduledTasks} (session_id, created_at DESC)
-    `);
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_scheduled_tasks_session_id_id_idx`)}
-      ON ${this.tables.scheduledTasks} (session_id, id)
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.tables.scheduledTaskRuns} (
-        id UUID PRIMARY KEY,
-        task_id UUID NOT NULL REFERENCES ${this.tables.scheduledTasks}(id) ON DELETE CASCADE,
-        session_id TEXT NOT NULL REFERENCES ${this.sessionTableName}(id) ON DELETE CASCADE,
-        created_by_identity_id TEXT REFERENCES ${this.identityTableName}(id) ON DELETE SET NULL,
-        resolved_thread_id TEXT,
-        resolved_thread_session_id TEXT,
-        scheduled_for TIMESTAMPTZ NOT NULL,
-        status TEXT NOT NULL,
-        thread_run_id UUID,
-        thread_run_thread_id TEXT,
-        error TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        started_at TIMESTAMPTZ,
-        finished_at TIMESTAMPTZ
-      )
-    `);
-    // Runtime boot recreates readonly session views after store schemas.
-    // CASCADE lets deployed DBs shed legacy columns even when old views depend on them.
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.scheduledTasks}
-      DROP COLUMN IF EXISTS deliver_at CASCADE,
-      DROP COLUMN IF EXISTS next_fire_kind CASCADE
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.scheduledTaskRuns}
-      DROP COLUMN IF EXISTS fire_kind CASCADE,
-      DROP COLUMN IF EXISTS delivery_status CASCADE
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_task_created_idx`)}
-      ON ${this.tables.scheduledTaskRuns} (task_id, created_at DESC)
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.scheduledTaskRuns}
-      ADD COLUMN IF NOT EXISTS resolved_thread_session_id TEXT
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.scheduledTaskRuns}
-      ADD COLUMN IF NOT EXISTS thread_run_thread_id TEXT
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.scheduledTasks}
-      ADD COLUMN IF NOT EXISTS created_from_message_id UUID
-    `);
-    const threadRunTypeResult = await this.pool.query(`
-      SELECT data_type
-      FROM information_schema.columns
-      WHERE table_schema = 'runtime'
-        AND table_name = 'scheduled_task_runs'
-        AND column_name = 'thread_run_id'
-    `);
-    const threadRunType = String((threadRunTypeResult.rows[0] as {data_type?: unknown} | undefined)?.data_type ?? "");
-    if (threadRunType && threadRunType !== "uuid") {
-      await assertIntegrityChecks(this.pool, "Scheduled task schema", [
-        {
-          label: "scheduled_task_runs.thread_run_id invalid UUID format",
-          sql: `
-            SELECT COUNT(*)::INTEGER AS count
-            FROM ${this.tables.scheduledTaskRuns}
-            WHERE thread_run_id IS NOT NULL
-              AND BTRIM(thread_run_id::text) !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-          `,
-        },
-      ]);
-      await this.pool.query(`
-        ALTER TABLE ${this.tables.scheduledTaskRuns}
-        ALTER COLUMN thread_run_id TYPE UUID
-        USING CASE
-          WHEN thread_run_id IS NULL THEN NULL
-          ELSE thread_run_id::uuid
-        END
-      `);
-    }
-    await assertIntegrityChecks(this.pool, "Scheduled task schema", [
-      {
-        label: "scheduled_tasks.created_from_message_id orphaned from messages.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.scheduledTasks} AS task
-          LEFT JOIN ${this.messageTableName} AS message
-            ON message.id = task.created_from_message_id
-          WHERE task.created_from_message_id IS NOT NULL
-            AND message.id IS NULL
-        `,
-      },
-      {
-        label: "scheduled_task_runs.task_id orphaned from scheduled_tasks.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.scheduledTaskRuns} AS run
-          LEFT JOIN ${this.tables.scheduledTasks} AS task
-            ON task.id = run.task_id
-          WHERE task.id IS NULL
-        `,
-      },
-      {
-        label: "scheduled_task_runs task/session mismatch",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.scheduledTaskRuns} AS run
-          INNER JOIN ${this.tables.scheduledTasks} AS task
-            ON task.id = run.task_id
-          WHERE task.session_id <> run.session_id
-        `,
-      },
-      {
-        label: "scheduled_task_runs.resolved_thread_id orphaned from threads.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.scheduledTaskRuns} AS run
-          LEFT JOIN ${this.threadTableName} AS thread
-            ON thread.id = run.resolved_thread_id
-          WHERE run.resolved_thread_id IS NOT NULL
-            AND thread.id IS NULL
-        `,
-      },
-      {
-        label: "scheduled_task_runs.resolved_thread_id bound to another session",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.scheduledTaskRuns} AS run
-          INNER JOIN ${this.threadTableName} AS thread
-            ON thread.id = run.resolved_thread_id
-          WHERE run.resolved_thread_id IS NOT NULL
-            AND thread.session_id <> run.session_id
-        `,
-      },
-      {
-        label: "scheduled_task_runs.thread_run_id orphaned from runs.id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.scheduledTaskRuns} AS run
-          LEFT JOIN ${this.runTableName} AS thread_run
-            ON thread_run.id = run.thread_run_id
-          WHERE run.thread_run_id IS NOT NULL
-            AND thread_run.id IS NULL
-        `,
-      },
-      {
-        label: "scheduled_task_runs.thread_run_id set without resolved_thread_id",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.scheduledTaskRuns}
-          WHERE thread_run_id IS NOT NULL
-            AND resolved_thread_id IS NULL
-        `,
-      },
-      {
-        label: "scheduled_task_runs.thread_run_id bound to another thread",
-        sql: `
-          SELECT COUNT(*)::INTEGER AS count
-          FROM ${this.tables.scheduledTaskRuns} AS run
-          INNER JOIN ${this.runTableName} AS thread_run
-            ON thread_run.id = run.thread_run_id
-          WHERE run.thread_run_id IS NOT NULL
-            AND thread_run.thread_id <> run.resolved_thread_id
-        `,
-      },
-    ]);
-    await this.pool.query(`
-      UPDATE ${this.tables.scheduledTaskRuns}
-      SET resolved_thread_session_id = NULL
-      WHERE resolved_thread_id IS NULL
-        AND resolved_thread_session_id IS NOT NULL
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.scheduledTaskRuns}
-      SET resolved_thread_session_id = thread.session_id
-      FROM ${this.threadTableName} AS thread
-      WHERE ${this.tables.scheduledTaskRuns}.resolved_thread_id IS NOT NULL
-        AND thread.id = ${this.tables.scheduledTaskRuns}.resolved_thread_id
-        AND (
-          ${this.tables.scheduledTaskRuns}.resolved_thread_session_id IS NULL
-          OR ${this.tables.scheduledTaskRuns}.resolved_thread_session_id <> thread.session_id
-        )
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.scheduledTaskRuns}
-      SET thread_run_thread_id = NULL
-      WHERE thread_run_id IS NULL
-        AND thread_run_thread_id IS NOT NULL
-    `);
-    await this.pool.query(`
-      UPDATE ${this.tables.scheduledTaskRuns}
-      SET thread_run_thread_id = thread_run.thread_id
-      FROM ${this.runTableName} AS thread_run
-      WHERE ${this.tables.scheduledTaskRuns}.thread_run_id IS NOT NULL
-        AND thread_run.id = ${this.tables.scheduledTaskRuns}.thread_run_id
-        AND (
-          ${this.tables.scheduledTaskRuns}.thread_run_thread_id IS NULL
-          OR ${this.tables.scheduledTaskRuns}.thread_run_thread_id <> thread_run.thread_id
-        )
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.scheduledTasks}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_tasks_created_from_message_fk`)}
-      FOREIGN KEY (created_from_message_id)
-      REFERENCES ${this.messageTableName}(id)
-      ON DELETE SET NULL
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.scheduledTaskRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_task_scope_fk`)}
-      FOREIGN KEY (session_id, task_id)
-      REFERENCES ${this.tables.scheduledTasks}(session_id, id)
-      ON DELETE CASCADE
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.scheduledTaskRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_resolved_thread_fk`)}
-      FOREIGN KEY (resolved_thread_id)
-      REFERENCES ${this.threadTableName}(id)
-      ON DELETE SET NULL
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.scheduledTaskRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_thread_run_fk`)}
-      FOREIGN KEY (thread_run_id)
-      REFERENCES ${this.runTableName}(id)
-      ON DELETE SET NULL
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.scheduledTaskRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_resolved_thread_scope_check`)}
-      CHECK (
-        (
-          resolved_thread_id IS NULL
-          AND resolved_thread_session_id IS NULL
-        ) OR (
-          resolved_thread_id IS NOT NULL
-          AND resolved_thread_session_id = session_id
-        )
-      )
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.scheduledTaskRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_resolved_thread_scope_fk`)}
-      FOREIGN KEY (resolved_thread_session_id, resolved_thread_id)
-      REFERENCES ${this.threadTableName}(session_id, id)
-      ON DELETE SET NULL
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.scheduledTaskRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_thread_run_scope_check`)}
-      CHECK (
-        (
-          thread_run_id IS NULL
-          AND thread_run_thread_id IS NULL
-        ) OR (
-          thread_run_id IS NOT NULL
-          AND thread_run_thread_id IS NOT NULL
-          AND resolved_thread_id IS NOT NULL
-          AND thread_run_thread_id = resolved_thread_id
-        )
-      )
-    `);
-    await addConstraint(this.pool, `
-      ALTER TABLE ${this.tables.scheduledTaskRuns}
-      ADD CONSTRAINT ${quoteIdentifier(`${this.tables.prefix}_scheduled_task_runs_thread_run_scope_fk`)}
-      FOREIGN KEY (thread_run_thread_id, thread_run_id)
-      REFERENCES ${this.runTableName}(thread_id, id)
-      ON DELETE SET NULL
-    `);
+    await ensurePostgresScheduledTaskSchema(this.pool);
   }
 
   async createTask(input: CreateScheduledTaskInput): Promise<ScheduledTaskRecord> {
     const normalized = normalizeCreateInput(input);
     if (normalized.createdFromMessageId) {
+      const threadTables = buildThreadRuntimeTableNames();
       const messageResult = await this.pool.query(
         `
           SELECT message.id
-          FROM ${this.messageTableName} AS message
-          INNER JOIN ${this.threadTableName} AS thread
+          FROM ${threadTables.messages} AS message
+          INNER JOIN ${threadTables.threads} AS thread
             ON thread.id = message.thread_id
           WHERE message.id = $1
             AND thread.session_id = $2
@@ -558,7 +257,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
 
       const existing = await readLockedTask(client, this.tables, input);
       const nowMs = Date.now();
-      if (isActiveClaim(existing, nowMs)) {
+      if (hasActiveClaim(existing, nowMs)) {
         throw new Error(`Scheduled task ${existing.id} is currently running and cannot be updated.`);
       }
 
@@ -585,8 +284,8 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         `,
         [
           existing.id,
-          input.title === undefined ? existing.title : requireTrimmed("title", input.title),
-          input.instruction === undefined ? existing.instruction : requireTrimmed("instruction", input.instruction),
+          input.title === undefined ? existing.title : requireScheduledTaskString("title", input.title),
+          input.instruction === undefined ? existing.instruction : requireScheduledTaskString("instruction", input.instruction),
           schedule.kind,
           schedule.kind === "once" ? schedule.runAt : null,
           schedule.kind === "recurring" ? schedule.cron : null,
@@ -624,8 +323,8 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         RETURNING *
       `,
       [
-        requireTrimmed("task id", input.taskId),
-        requireTrimmed("session id", input.sessionId),
+        requireScheduledTaskString("task id", input.taskId),
+        requireScheduledTaskString("session id", input.sessionId),
       ],
     );
     const row = result.rows[0];
@@ -643,7 +342,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         FROM ${this.tables.scheduledTasks}
         WHERE id = $1
       `,
-      [requireTrimmed("task id", taskId)],
+      [requireScheduledTaskString("task id", taskId)],
     );
     const row = result.rows[0];
     if (!row) {
@@ -668,7 +367,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         LIMIT $2
       `,
       [
-        requireTrimmed("session id", input.sessionId),
+        requireScheduledTaskString("session id", input.sessionId),
         limit,
       ],
     );
@@ -730,7 +429,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
             )
           FOR UPDATE
         `,
-        [requireTrimmed("task id", input.taskId)],
+        [requireScheduledTaskString("task id", input.taskId)],
       );
       const row = selectResult.rows[0];
       if (!row) {
@@ -781,7 +480,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         `,
         [
           task.id,
-          requireTrimmed("claim owner", input.claimedBy),
+          requireScheduledTaskString("claim owner", input.claimedBy),
           new Date(input.claimExpiresAt),
           toDate(input.nextFireAt),
         ],
@@ -819,7 +518,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         RETURNING *
       `,
       [
-        requireTrimmed("run id", input.runId),
+        requireScheduledTaskString("run id", input.runId),
         input.resolvedThreadId ?? null,
       ],
     );
@@ -852,7 +551,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         RETURNING *
       `,
       [
-        requireTrimmed("run id", input.runId),
+        requireScheduledTaskString("run id", input.runId),
         input.resolvedThreadId ?? null,
         input.threadRunId ?? null,
       ],
@@ -886,10 +585,10 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         RETURNING *
       `,
       [
-        requireTrimmed("run id", input.runId),
+        requireScheduledTaskString("run id", input.runId),
         input.resolvedThreadId ?? null,
         input.threadRunId ?? null,
-        requireTrimmed("error", input.error),
+        requireScheduledTaskString("error", input.error),
       ],
     );
     const row = result.rows[0];
@@ -911,7 +610,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         WHERE id = $1
         RETURNING *
       `,
-      [requireTrimmed("task id", taskId)],
+      [requireScheduledTaskString("task id", taskId)],
     );
     const row = result.rows[0];
     if (!row) {
@@ -937,7 +636,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         WHERE id = $1
         RETURNING *
       `,
-      [requireTrimmed("task id", taskId)],
+      [requireScheduledTaskString("task id", taskId)],
     );
     const row = result.rows[0];
     if (!row) {
@@ -963,7 +662,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
         WHERE id = $1
         RETURNING *
       `,
-      [requireTrimmed("task id", taskId)],
+      [requireScheduledTaskString("task id", taskId)],
     );
     const row = result.rows[0];
     if (!row) {

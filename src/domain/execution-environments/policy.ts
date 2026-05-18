@@ -1,5 +1,6 @@
 import {normalizeSkillKey} from "../agents/types.js";
 import {isRecord} from "../../lib/records.js";
+import {uniqueTrimmedStrings} from "../../lib/strings.js";
 import type {ExecutionSkillPolicy} from "./types.js";
 
 export function readExecutionSkillPolicy(context: unknown): ExecutionSkillPolicy {
@@ -10,13 +11,17 @@ export function readExecutionSkillPolicy(context: unknown): ExecutionSkillPolicy
         return {mode: policy.mode};
       }
       if (policy.mode === "allowlist") {
+        const skillKeys = Array.isArray(policy.skillKeys)
+          ? uniqueTrimmedStrings(policy.skillKeys.flatMap((key) => {
+            if (typeof key !== "string" || !key.trim()) {
+              return [];
+            }
+            return [normalizeSkillKey(key)];
+          }))
+          : [];
         return {
           mode: "allowlist",
-          skillKeys: Array.isArray(policy.skillKeys)
-            ? policy.skillKeys
-              .filter((key): key is string => typeof key === "string" && key.trim().length > 0)
-              .map((key) => normalizeSkillKey(key))
-            : [],
+          skillKeys,
         };
       }
     }

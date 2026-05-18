@@ -1,15 +1,9 @@
 import {randomUUID} from "node:crypto";
 
-import type {Pool, PoolClient} from "pg";
-
-import {buildAgentTableNames} from "../agents/postgres-shared.js";
-import {
-  CREATE_RUNTIME_SCHEMA_SQL,
-  quoteIdentifier,
-  quoteQualifiedIdentifier,
-  RUNTIME_SCHEMA,
-  toMillis,
-} from "../threads/runtime/postgres-shared.js";
+import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
+import {requireNonEmptyString} from "../../lib/strings.js";
+import {requireTimestampMillis} from "../../lib/postgres-values.js";
+import {ensurePostgresCredentialSchema} from "./postgres-schema.js";
 import {buildCredentialTableNames, type CredentialTableNames} from "./postgres-shared.js";
 import {
   type CredentialListFilter,
@@ -20,24 +14,9 @@ import {
   type SetCredentialInput,
 } from "./types.js";
 
-interface PgQueryable {
-  query: Pool["query"];
-}
-
-interface PgPoolLike extends PgQueryable {
-  connect(): Promise<PoolClient>;
-}
-
 export interface PostgresCredentialStoreOptions {
   pool: PgPoolLike;
 }
-
-const OLD_CREDENTIAL_INDEXES = [
-  "runtime_credentials_relationship_unique_idx",
-  "runtime_credentials_agent_unique_idx",
-  "runtime_credentials_identity_unique_idx",
-  "runtime_credentials_lookup_idx",
-] as const;
 
 function toBuffer(value: unknown): Buffer {
   if (Buffer.isBuffer(value)) {
@@ -59,38 +38,30 @@ function toBuffer(value: unknown): Buffer {
   throw new Error("Credential row is missing a binary field.");
 }
 
+function parseKeyVersion(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error("Credential key version must be a positive integer.");
+  }
+
+  return value;
+}
+
 function parseCredentialRow(row: Record<string, unknown>): CredentialRecord {
   return {
-    id: String(row.id),
-    envKey: String(row.env_key),
-    agentKey: String(row.agent_key),
+    id: requireNonEmptyString(row.id, "Credential row is missing id."),
+    envKey: normalizeCredentialEnvKey(
+      requireNonEmptyString(row.env_key, "Credential row is missing env key."),
+    ),
+    agentKey: normalizeCredentialAgentKey(
+      requireNonEmptyString(row.agent_key, "Credential row is missing agent key."),
+    ),
     valueCiphertext: toBuffer(row.value_ciphertext),
     valueIv: toBuffer(row.value_iv),
     valueTag: toBuffer(row.value_tag),
-    keyVersion: Number(row.key_version),
-    createdAt: toMillis(row.created_at),
-    updatedAt: toMillis(row.updated_at),
+    keyVersion: parseKeyVersion(row.key_version),
+    createdAt: requireTimestampMillis(row.created_at, "Credential created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Credential updated_at must be a valid timestamp."),
   };
-}
-
-function isDuplicateTableError(error: unknown): boolean {
-  return typeof error === "object"
-    && error !== null
-    && (
-      (error as {code?: unknown}).code === "42P07"
-      || /relation ".+" already exists/i.test(String((error as {message?: unknown}).message ?? error))
-    );
-}
-
-function isMissingRelationOrColumnError(error: unknown): boolean {
-  return typeof error === "object"
-    && error !== null
-    && (
-      (error as {code?: unknown}).code === "42P01"
-      || (error as {code?: unknown}).code === "42703"
-      || /relation ".+" does not exist/i.test(String((error as {message?: unknown}).message ?? error))
-      || /column ".+" does not exist/i.test(String((error as {message?: unknown}).message ?? error))
-    );
 }
 
 function buildCredentialWhere(
@@ -113,131 +84,14 @@ function buildCredentialWhere(
 export class PostgresCredentialStore {
   private readonly pool: PgPoolLike;
   private readonly tables: CredentialTableNames;
-  private readonly agentTables: ReturnType<typeof buildAgentTableNames>;
 
   constructor(options: PostgresCredentialStoreOptions) {
     this.pool = options.pool;
     this.tables = buildCredentialTableNames();
-    this.agentTables = buildAgentTableNames();
   }
 
   async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    if (!(await this.credentialTableExists())) {
-      try {
-        await this.pool.query(`
-          CREATE TABLE ${this.tables.credentials} (
-            id UUID PRIMARY KEY,
-            env_key TEXT NOT NULL,
-            agent_key TEXT NOT NULL REFERENCES ${this.agentTables.agents}(agent_key) ON DELETE CASCADE,
-            value_ciphertext BYTEA NOT NULL,
-            value_iv BYTEA NOT NULL,
-            value_tag BYTEA NOT NULL,
-            key_version SMALLINT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-          )
-        `);
-      } catch (error) {
-        if (!isDuplicateTableError(error)) {
-          throw error;
-        }
-      }
-    }
-    await this.migrateAgentOnlySchema();
-    await this.pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_credentials_agent_env_unique_idx`)}
-      ON ${this.tables.credentials} (agent_key, env_key)
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${this.tables.prefix}_credentials_lookup_idx`)}
-      ON ${this.tables.credentials} (env_key, agent_key)
-    `);
-  }
-
-  private async credentialTableExists(): Promise<boolean> {
-    try {
-      await this.pool.query(`SELECT 1 FROM ${this.tables.credentials} LIMIT 0`);
-      return true;
-    } catch (error) {
-      if (isMissingRelationOrColumnError(error)) {
-        return false;
-      }
-
-      throw error;
-    }
-  }
-
-  private async credentialColumnExists(columnName: string): Promise<boolean> {
-    try {
-      await this.pool.query(`SELECT ${quoteIdentifier(columnName)} FROM ${this.tables.credentials} LIMIT 0`);
-      return true;
-    } catch (error) {
-      if (isMissingRelationOrColumnError(error)) {
-        return false;
-      }
-
-      throw error;
-    }
-  }
-
-  private async migrateAgentOnlySchema(): Promise<void> {
-    const hasScopeColumn = await this.credentialColumnExists("scope");
-
-    if (hasScopeColumn) {
-      for (const indexName of OLD_CREDENTIAL_INDEXES) {
-        await this.pool.query(`DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(RUNTIME_SCHEMA, indexName)}`);
-      }
-
-      await this.pool.query(`
-        DELETE FROM ${this.tables.credentials}
-        WHERE agent_key IS NULL OR agent_key = ''
-      `);
-      await this.pool.query(`
-        DELETE FROM ${this.tables.credentials}
-        WHERE (scope <> 'agent' OR scope IS NULL)
-          AND CONCAT(agent_key, ':', env_key) IN (
-            SELECT CONCAT(agent_key, ':', env_key)
-            FROM ${this.tables.credentials}
-            WHERE scope = 'agent'
-          )
-      `);
-      await this.pool.query(`
-        DELETE FROM ${this.tables.credentials}
-        WHERE id IN (
-          SELECT duplicate.id
-          FROM ${this.tables.credentials} duplicate, ${this.tables.credentials} keeper
-          WHERE (duplicate.scope <> 'agent' OR duplicate.scope IS NULL)
-            AND (keeper.scope <> 'agent' OR keeper.scope IS NULL)
-            AND duplicate.agent_key = keeper.agent_key
-            AND duplicate.env_key = keeper.env_key
-            AND duplicate.id < keeper.id
-        )
-      `);
-      await this.pool.query(`
-        UPDATE ${this.tables.credentials}
-        SET scope = 'agent',
-            identity_id = NULL
-        WHERE scope <> 'agent' OR scope IS NULL
-      `);
-    }
-    await this.pool.query(`
-      DELETE FROM ${this.tables.credentials}
-      WHERE agent_key IS NULL OR agent_key = ''
-    `);
-
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.credentials}
-      DROP COLUMN IF EXISTS scope
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.credentials}
-      DROP COLUMN IF EXISTS identity_id
-    `);
-    await this.pool.query(`
-      ALTER TABLE ${this.tables.credentials}
-      ALTER COLUMN agent_key SET NOT NULL
-    `);
+    await ensurePostgresCredentialSchema(this.pool);
   }
 
   async listCredentials(filter: CredentialListFilter = {}): Promise<readonly CredentialRecord[]> {

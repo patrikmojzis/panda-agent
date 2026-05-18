@@ -1,6 +1,6 @@
 import type {ChannelOutboundAdapter} from "../outbound.js";
 import type {OutboundRequest} from "../types.js";
-import {runInBackground} from "../../../lib/async.js";
+import {DrainLoop} from "../../../lib/drain-loop.js";
 import type {
     CompleteDeliveryInput,
     DeliveryNotification,
@@ -50,9 +50,7 @@ export class ChannelOutboundDeliveryWorker {
   private readonly canSend?: () => boolean;
   private readonly onError?: (error: unknown, deliveryId?: string) => Promise<void> | void;
   private unsubscribe: (() => Promise<void>) | null = null;
-  private drainPromise: Promise<void> | null = null;
-  private stopped = false;
-  private pendingDrain = false;
+  private readonly drainLoop: DrainLoop;
 
   constructor(options: ChannelOutboundDeliveryWorkerOptions) {
     this.store = options.store;
@@ -63,10 +61,14 @@ export class ChannelOutboundDeliveryWorker {
     };
     this.canSend = options.canSend;
     this.onError = options.onError;
+    this.drainLoop = new DrainLoop({
+      label: "Outbound delivery worker drain",
+      drain: () => this.drain(),
+      onError: this.onError ? (error) => this.onError?.(error) : undefined,
+    });
   }
 
   async start(options: ChannelOutboundDeliveryWorkerStartOptions = {}): Promise<void> {
-    this.stopped = false;
     // Callers must already hold connector ownership before starting the worker.
     // start() recovers stale `sending` rows, then lets pending work drain in the background.
     await this.store.failSendingDeliveries(this.lookup, "Delivery worker stopped before completion.");
@@ -80,53 +82,24 @@ export class ChannelOutboundDeliveryWorker {
           return;
         }
 
-        this.kickDrain();
+        this.drainLoop.kick();
       });
     }
-    this.kickDrain();
+    this.drainLoop.start();
   }
 
   async stop(): Promise<void> {
-    this.stopped = true;
-
     const unsubscribe = this.unsubscribe;
     this.unsubscribe = null;
     if (unsubscribe) {
       await unsubscribe();
     }
 
-    if (this.drainPromise) {
-      await this.drainPromise;
-    }
+    await this.drainLoop.stop();
   }
 
   async triggerDrain(): Promise<void> {
-    if (this.stopped) {
-      return;
-    }
-
-    if (this.drainPromise) {
-      this.pendingDrain = true;
-      return;
-    }
-
-    this.drainPromise = this.drain();
-    try {
-      await this.drainPromise;
-    } finally {
-      this.drainPromise = null;
-      if (this.pendingDrain && !this.stopped) {
-        this.pendingDrain = false;
-        await this.triggerDrain();
-      }
-    }
-  }
-
-  private kickDrain(): void {
-    runInBackground(() => this.triggerDrain(), {
-      label: "Outbound delivery worker drain",
-      onError: this.onError ? (error) => this.onError?.(error) : undefined,
-    });
+    await this.drainLoop.trigger();
   }
 
   private async drain(): Promise<void> {
@@ -134,7 +107,7 @@ export class ChannelOutboundDeliveryWorker {
       return;
     }
 
-    while (!this.stopped) {
+    while (!this.drainLoop.isStopped) {
       if (this.canSend && !this.canSend()) {
         return;
       }

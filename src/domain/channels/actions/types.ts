@@ -1,6 +1,5 @@
 import type {ChannelTypingRequest} from "../types.js";
 
-export type ChannelActionKind = "typing" | "telegram_reaction";
 export type ChannelActionStatus = "pending" | "sending" | "sent" | "failed";
 
 export interface TelegramReactionActionPayload {
@@ -10,18 +9,28 @@ export interface TelegramReactionActionPayload {
   remove?: boolean;
 }
 
-export type ChannelActionPayload =
-  | ChannelTypingRequest
-  | TelegramReactionActionPayload;
-
-export interface ChannelActionInput {
-  channel: string;
-  connectorKey: string;
-  kind: ChannelActionKind;
-  payload: ChannelActionPayload;
+export interface ChannelActionPayloadByKind {
+  typing: ChannelTypingRequest;
+  telegram_reaction: TelegramReactionActionPayload;
 }
 
-export interface ChannelActionRecord extends ChannelActionInput {
+export type ChannelActionKind = keyof ChannelActionPayloadByKind;
+export type ChannelActionPayload = ChannelActionPayloadByKind[ChannelActionKind];
+
+export type ChannelActionInput<K extends ChannelActionKind = ChannelActionKind> = {
+  [Kind in K]: {
+    channel: string;
+    connectorKey: string;
+    kind: Kind;
+    payload: ChannelActionPayloadByKind[Kind];
+  };
+}[K];
+
+type ChannelActionRecordForKind<K extends ChannelActionKind> = {
+  channel: string;
+  connectorKey: string;
+  kind: K;
+  payload: ChannelActionPayloadByKind[K];
   id: string;
   status: ChannelActionStatus;
   attemptCount: number;
@@ -30,7 +39,11 @@ export interface ChannelActionRecord extends ChannelActionInput {
   completedAt?: number;
   createdAt: number;
   updatedAt: number;
-}
+};
+
+export type ChannelActionRecord<K extends ChannelActionKind = ChannelActionKind> = {
+  [Kind in K]: ChannelActionRecordForKind<Kind>;
+}[K];
 
 export interface ActionWorkerLookup {
   channel: string;

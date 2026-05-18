@@ -3,8 +3,8 @@ import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {DataType, newDb} from "pg-mem";
 
 import {Agent, stringToUserMessage,} from "../src/index.js";
-import {HeartbeatRunner} from "../src/domain/scheduling/heartbeats/runner.js";
-import {type SessionHeartbeatRecord, type SessionStore} from "../src/domain/sessions/index.js";
+import {HeartbeatRunner, type HeartbeatRunnerOptions} from "../src/domain/scheduling/heartbeats/runner.js";
+import {type SessionHeartbeatRecord, type SessionRecord} from "../src/domain/sessions/index.js";
 import {ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 import {waitFor} from "./helpers/wait-for.js";
@@ -51,6 +51,32 @@ class SelectiveLeaseManager {
       release: async () => {},
     };
   }
+}
+
+function createDueHeartbeatSessionStore(input: {
+  heartbeat: SessionHeartbeatRecord;
+  session: SessionRecord;
+}): {
+  getSession: ReturnType<typeof vi.fn>;
+  store: HeartbeatRunnerOptions["sessions"];
+} {
+  let listed = false;
+  const getSession = vi.fn(async () => input.session);
+  const store: HeartbeatRunnerOptions["sessions"] = {
+    getSession,
+    listDueHeartbeats: vi.fn(async () => {
+      if (listed) {
+        return [];
+      }
+
+      listed = true;
+      return [input.heartbeat];
+    }),
+    claimHeartbeat: vi.fn(async () => input.heartbeat),
+    recordHeartbeatResult: vi.fn(async () => input.heartbeat),
+  };
+
+  return {getSession, store};
 }
 
 async function createHarness(options: {
@@ -146,7 +172,7 @@ describe("HeartbeatRunner", () => {
     await harness.runner.start();
     await waitFor(async () => {
       const heartbeat = await harness.sessionStore.getHeartbeat("session-main");
-      expect(heartbeat?.lastFireAt).toBeDefined();
+      expect(heartbeat?.lastFireAt).toEqual(expect.any(Number));
     });
     await harness.coordinator.waitForIdle("session-thread");
     await harness.runner.stop();
@@ -171,7 +197,7 @@ describe("HeartbeatRunner", () => {
     expect(harness.runtime.complete).toHaveBeenCalledTimes(1);
 
     const heartbeat = await harness.sessionStore.getHeartbeat("session-main");
-    expect(heartbeat?.lastFireAt).toBeDefined();
+    expect(heartbeat?.lastFireAt).toEqual(expect.any(Number));
     expect(heartbeat?.lastSkipReason).toBeUndefined();
     expect(heartbeat?.nextFireAt).toBeGreaterThan(Date.now());
   });
@@ -209,6 +235,150 @@ describe("HeartbeatRunner", () => {
     expect(heartbeat?.nextFireAt).toBeGreaterThan(Date.now());
   });
 
+  it("records a skipped heartbeat when the session has no current thread", async () => {
+    const heartbeat: SessionHeartbeatRecord = {
+      sessionId: "session-main",
+      enabled: true,
+      everyMinutes: 30,
+      nextFireAt: Date.now() - 1_000,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const session: SessionRecord = {
+      id: "session-main",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: " ",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const {store: sessions} = createDueHeartbeatSessionStore({heartbeat, session});
+    const coordinator = {
+      isThreadBusy: vi.fn(async () => false),
+      submitInput: vi.fn(async () => {}),
+    };
+    const onError = vi.fn();
+    const runner = new HeartbeatRunner({
+      sessions,
+      coordinator,
+      onError,
+    });
+
+    await runner.start();
+    await waitFor(() => {
+      expect(sessions.recordHeartbeatResult).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "session-main",
+        claimedBy: "heartbeat-runner",
+        lastSkipReason: "Session session-main has no current thread.",
+      }));
+    });
+    await runner.stop();
+
+    expect(coordinator.isThreadBusy).not.toHaveBeenCalled();
+    expect(coordinator.submitInput).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), "session-main");
+  });
+
+  it("submits heartbeat input to the current thread after the busy check", async () => {
+    const heartbeat: SessionHeartbeatRecord = {
+      sessionId: "session-main",
+      enabled: true,
+      everyMinutes: 30,
+      nextFireAt: Date.now() - 1_000,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const session: SessionRecord = {
+      id: "session-main",
+      agentKey: "panda",
+      kind: "main" as const,
+      currentThreadId: "old-home",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const {store: sessions} = createDueHeartbeatSessionStore({heartbeat, session});
+    const submitInput = vi.fn(async (threadId: string) => {
+      expect(threadId).toBe("new-home");
+    });
+    const busyChecks: string[] = [];
+    const coordinator = {
+      isThreadBusy: vi.fn(async (threadId: string) => {
+        busyChecks.push(threadId);
+        if (threadId === "old-home") {
+          session.currentThreadId = "new-home";
+        }
+        return false;
+      }),
+      submitInput,
+    };
+
+    const runner = new HeartbeatRunner({
+      sessions,
+      coordinator,
+    });
+
+    await runner.start();
+    await waitFor(() => {
+      expect(submitInput).toHaveBeenCalled();
+    });
+    await runner.stop();
+
+    expect(busyChecks).toEqual(["old-home", "new-home"]);
+  });
+
+  it("skips when the reset target becomes busy before heartbeat submit", async () => {
+    const heartbeat: SessionHeartbeatRecord = {
+      sessionId: "session-main",
+      enabled: true,
+      everyMinutes: 30,
+      nextFireAt: Date.now() - 1_000,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const session: SessionRecord = {
+      id: "session-main",
+      agentKey: "panda",
+      kind: "main" as const,
+      currentThreadId: "old-home",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const {store: sessions} = createDueHeartbeatSessionStore({heartbeat, session});
+    const submitInput = vi.fn(async () => {});
+    const coordinator = {
+      isThreadBusy: vi.fn(async (threadId: string) => {
+        if (threadId === "old-home") {
+          session.currentThreadId = "new-home";
+          return false;
+        }
+        if (threadId === "new-home") {
+          return true;
+        }
+        throw new Error(`Unexpected heartbeat target ${threadId}`);
+      }),
+      submitInput,
+    };
+
+    const runner = new HeartbeatRunner({
+      sessions,
+      coordinator,
+    });
+
+    await runner.start();
+    await waitFor(() => {
+      expect(sessions.recordHeartbeatResult).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "session-main",
+        claimedBy: "heartbeat-runner",
+        lastSkipReason: "busy",
+      }));
+    });
+    await runner.stop();
+
+    expect(coordinator.isThreadBusy).toHaveBeenNthCalledWith(1, "old-home");
+    expect(coordinator.isThreadBusy).toHaveBeenNthCalledWith(2, "new-home");
+    expect(submitInput).not.toHaveBeenCalled();
+  });
+
   it("re-resolves the session after claim so a reset thread gets the heartbeat", async () => {
     const oldHeartbeat: SessionHeartbeatRecord = {
       sessionId: "session-main",
@@ -219,34 +389,17 @@ describe("HeartbeatRunner", () => {
       updatedAt: 1,
     };
 
-    let listed = false;
-    const sessions: SessionStore = {
-      ensureSchema: async () => {},
-      createSession: async () => { throw new Error("not needed"); },
-      getSession: vi.fn(async () => ({
+    const {getSession, store: sessions} = createDueHeartbeatSessionStore({
+      heartbeat: oldHeartbeat,
+      session: {
         id: "session-main",
         agentKey: "panda",
         kind: "main",
         currentThreadId: "new-home",
         createdAt: 1,
         updatedAt: 2,
-      })),
-      getMainSession: async () => null,
-      listAgentSessions: async () => [],
-      updateCurrentThread: async () => { throw new Error("not needed"); },
-      getHeartbeat: async () => oldHeartbeat,
-      listDueHeartbeats: vi.fn(async () => {
-        if (listed) {
-          return [];
-        }
-
-        listed = true;
-        return [oldHeartbeat];
-      }),
-      claimHeartbeat: vi.fn(async () => oldHeartbeat),
-      recordHeartbeatResult: vi.fn(async () => oldHeartbeat),
-      updateHeartbeatConfig: vi.fn(async () => oldHeartbeat),
-    };
+      },
+    });
     const coordinator = {
       isThreadBusy: vi.fn(async (threadId: string) => {
         expect(threadId).toBe("new-home");
@@ -255,7 +408,7 @@ describe("HeartbeatRunner", () => {
       submitInput: vi.fn(async (threadId: string) => {
         expect(threadId).toBe("new-home");
       }),
-    } as unknown as ThreadRuntimeCoordinator;
+    };
 
     const runner = new HeartbeatRunner({
       sessions,
@@ -264,10 +417,10 @@ describe("HeartbeatRunner", () => {
 
     await runner.start();
     await waitFor(() => {
-      expect(sessions.getSession).toHaveBeenCalledWith("session-main");
+      expect(getSession).toHaveBeenCalledWith("session-main");
     });
     await runner.stop();
 
-    expect(sessions.getSession).toHaveBeenCalledWith("session-main");
+    expect(getSession).toHaveBeenCalledWith("session-main");
   });
 });

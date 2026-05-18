@@ -519,10 +519,11 @@ describe("ThreadRuntimeCoordinator", () => {
 
     const input = (await store.loadTranscript("thread-input-message-context"))
       .find((entry) => entry.origin === "input");
-    expect(input).toBeDefined();
+    const inputId = input?.id;
+    expect(inputId).toEqual(expect.any(String));
     expect(capturedContext).toMatchObject({
       currentInput: {
-        messageId: input!.id,
+        messageId: inputId,
         source: "heartbeat",
         identityId: "identity-1",
       },
@@ -992,23 +993,12 @@ describe("ThreadRuntimeCoordinator", () => {
       buildBackgroundToolThreadInput({
         id: "job-cross-wake",
         threadId: "thread-cross-process-wake",
+        kind: "bash",
         status: "completed",
-        command: "printf done",
-        mode: "local",
-        initialCwd: "/workspace",
+        summary: "printf done",
         startedAt: Date.now() - 50,
         finishedAt: Date.now(),
         durationMs: 50,
-        timedOut: false,
-        stdout: "done",
-        stderr: "",
-        stdoutChars: 4,
-        stderrChars: 0,
-        stdoutTruncated: false,
-        stderrTruncated: false,
-        stdoutPersisted: false,
-        stderrPersisted: false,
-        trackedEnvKeys: [],
       }),
       "queue",
     );
@@ -1056,23 +1046,12 @@ describe("ThreadRuntimeCoordinator", () => {
       buildBackgroundToolThreadInput({
         id: "job-pending-wake-idle",
         threadId: "thread-pending-wake-idle",
+        kind: "bash",
         status: "completed",
-        command: "printf done",
-        mode: "local",
-        initialCwd: "/workspace",
+        summary: "printf done",
         startedAt: Date.now() - 25,
         finishedAt: Date.now(),
         durationMs: 25,
-        timedOut: false,
-        stdout: "done",
-        stderr: "",
-        stdoutChars: 4,
-        stderrChars: 0,
-        stdoutTruncated: false,
-        stderrTruncated: false,
-        stdoutPersisted: false,
-        stderrPersisted: false,
-        trackedEnvKeys: [],
       }),
       "queue",
     );

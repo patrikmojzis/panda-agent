@@ -1,4 +1,4 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentAppAuthService} from "../src/domain/apps/auth.js";
@@ -81,5 +81,51 @@ describe("PostgresAgentAppAuthService", () => {
       id: redeemed.session.id,
     });
     await expect(auth.redeemLaunchToken(launch.token)).rejects.toThrow("already used");
+  });
+
+  it("rejects corrupted persisted app session timestamps before returning sessions", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        id: "00000000-0000-0000-0000-000000000001",
+        agent_key: "panda",
+        app_slug: "period-tracker",
+        identity_id: "identity-patrik",
+        session_id: "session-main",
+        csrf_token_hash: "hash",
+        expires_at: "not-a-date",
+        created_at: new Date(),
+        last_seen_at: new Date(),
+      }],
+    }));
+    const auth = new PostgresAgentAppAuthService({
+      pool: {query},
+    });
+
+    await expect(auth.getSessionByToken("pas_test")).rejects.toThrow(
+      "App session expires_at must be a valid timestamp.",
+    );
+  });
+
+  it("rejects stringified persisted app session timestamps before returning sessions", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        id: "00000000-0000-0000-0000-000000000001",
+        agent_key: "panda",
+        app_slug: "period-tracker",
+        identity_id: "identity-patrik",
+        session_id: "session-main",
+        csrf_token_hash: "hash",
+        expires_at: "2026-05-01T12:00:00.000Z",
+        created_at: new Date(),
+        last_seen_at: new Date(),
+      }],
+    }));
+    const auth = new PostgresAgentAppAuthService({
+      pool: {query},
+    });
+
+    await expect(auth.getSessionByToken("pas_test")).rejects.toThrow(
+      "App session expires_at must be a valid timestamp.",
+    );
   });
 });

@@ -1,9 +1,9 @@
 import path from "node:path";
-import {access, readdir, readFile} from "node:fs/promises";
+import {readdir, readFile} from "node:fs/promises";
 
 import {z} from "zod";
 
-import {resolveAgentDir} from "../../app/runtime/data-dir.js";
+import {resolveAgentDir} from "../../lib/data-dir.js";
 import {normalizeAgentKey} from "../../domain/agents/types.js";
 import {
   type AgentAppActionDefinition,
@@ -19,6 +19,7 @@ import {
   normalizeAgentAppParamKey,
   normalizeAgentAppSlug,
 } from "../../domain/apps/types.js";
+import {pathExists} from "../../lib/fs.js";
 
 const manifestSchema = z.object({
   name: z.string().trim().min(1),
@@ -218,15 +219,6 @@ function ensureContainedPath(baseDir: string, relativePath: string, label: strin
   }
 
   return resolved;
-}
-
-async function pathExists(targetPath: string): Promise<boolean> {
-  try {
-    await access(targetPath);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function readJsonFile<TSchema extends z.ZodTypeAny>(

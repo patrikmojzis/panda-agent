@@ -1,7 +1,11 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {newDb} from "pg-mem";
 
-import {acquireManagedConnectorLease, PostgresConnectorLeaseRepo,} from "../src/domain/connector-leases/index.js";
+import {
+  acquireManagedConnectorLease,
+  type ConnectorLeaseRepository,
+  PostgresConnectorLeaseRepo,
+} from "../src/domain/connector-leases/repo.js";
 
 describe("PostgresConnectorLeaseRepo", () => {
   const pools: Array<{end(): Promise<void>}> = [];
@@ -95,9 +99,71 @@ describe("PostgresConnectorLeaseRepo", () => {
     });
   });
 
+  it("rejects corrupted persisted lease timestamps before returning records", async () => {
+    const client = {
+      query: vi.fn()
+        .mockResolvedValueOnce({rows: []})
+        .mockResolvedValueOnce({
+          rows: [{
+            source: "telegram",
+            connector_key: "bot-1",
+            holder_id: "holder-a",
+            leased_until: "not-a-date",
+            created_at: new Date(),
+            updated_at: new Date(),
+          }],
+        }),
+      release: vi.fn(),
+    };
+    const repo = new PostgresConnectorLeaseRepo({
+      pool: {
+        connect: async () => client,
+        query: vi.fn(),
+      },
+    });
+
+    await expect(repo.tryAcquire({
+      source: "telegram",
+      connectorKey: "bot-1",
+      holderId: "holder-a",
+      leasedUntil: Date.now() + 10_000,
+    })).rejects.toThrow("Connector lease leasedUntil must be a valid timestamp.");
+  });
+
+  it("rejects stringified persisted lease timestamps before returning records", async () => {
+    const client = {
+      query: vi.fn()
+        .mockResolvedValueOnce({rows: []})
+        .mockResolvedValueOnce({
+          rows: [{
+            source: "telegram",
+            connector_key: "bot-1",
+            holder_id: "holder-a",
+            leased_until: "2026-05-01T12:00:00.000Z",
+            created_at: new Date(),
+            updated_at: new Date(),
+          }],
+        }),
+      release: vi.fn(),
+    };
+    const repo = new PostgresConnectorLeaseRepo({
+      pool: {
+        connect: async () => client,
+        query: vi.fn(),
+      },
+    });
+
+    await expect(repo.tryAcquire({
+      source: "telegram",
+      connectorKey: "bot-1",
+      holderId: "holder-a",
+      leasedUntil: Date.now() + 10_000,
+    })).rejects.toThrow("Connector lease leasedUntil must be a valid timestamp.");
+  });
+
   it("marks a managed lease as lost when renewals stop matching", async () => {
     vi.useFakeTimers();
-    const repo = {
+    const repo: ConnectorLeaseRepository = {
       tryAcquire: vi.fn(async () => ({
         source: "telegram",
         connectorKey: "bot-1",
@@ -112,7 +178,7 @@ describe("PostgresConnectorLeaseRepo", () => {
     const onLeaseLost = vi.fn(async () => {});
 
     const lease = await acquireManagedConnectorLease({
-      repo: repo as any,
+      repo,
       source: "telegram",
       connectorKey: "bot-1",
       alreadyHeldMessage: "busy",

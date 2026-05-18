@@ -1,4 +1,4 @@
-export {DEFAULT_AGENT_INSTRUCTIONS} from "./prompt.js";
+export {DEFAULT_AGENT_INSTRUCTIONS} from "../prompts/runtime/default-agent.js";
 export {buildDefaultAgentTools} from "./definition.js";
 export {resolveDefaultAgentModelSelector} from "./defaults.js";
 export {
@@ -17,10 +17,12 @@ export {
 export {
   AgentPromptTool,
   type AgentPromptToolOptions,
+  type AgentPromptToolStore,
 } from "./tools/agent-prompt-tool.js";
 export {
   AgentSkillTool,
   type AgentSkillToolOptions,
+  type AgentSkillToolStore,
 } from "./tools/agent-skill-tool.js";
 export {BashTool, type BashToolOptions} from "./tools/bash-tool.js";
 export {
@@ -46,7 +48,7 @@ export type {
   BrowserSnapshotChanges,
   BrowserSnapshotElement,
   BrowserSnapshotMode,
-} from "./tools/browser-types.js";
+} from "../integrations/browser/action-types.js";
 export {
   ClearEnvValueTool,
   SetEnvValueTool,
@@ -77,6 +79,7 @@ export {
   ScheduledTaskCancelTool,
   ScheduledTaskCreateTool,
   ScheduledTaskUpdateTool,
+  type ScheduledTaskToolStore,
   type ScheduledTaskToolOptions,
 } from "./tools/scheduled-task-tools.js";
 export {

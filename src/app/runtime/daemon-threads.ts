@@ -1,26 +1,68 @@
 import {randomUUID} from "node:crypto";
 
-import {type MediaDescriptor, relocateMediaDescriptor} from "../../domain/channels/index.js";
-import type {IdentityRecord} from "../../domain/identity/index.js";
-import {
-  createSessionWithInitialThread,
-  resetSessionCurrentThread,
-  type SessionRecord
-} from "../../domain/sessions/index.js";
+import {relocateMediaDescriptor} from "../../domain/channels/media-store.js";
+import type {MediaDescriptor} from "../../domain/channels/types.js";
+import type {OutboundDeliveryInput} from "../../domain/channels/deliveries/types.js";
+import type {IdentityRecord} from "../../domain/identity/types.js";
+import type {IdentityStore} from "../../domain/identity/store.js";
+import {createSessionWithInitialThread, resetSessionCurrentThread} from "../../domain/sessions/lifecycle.js";
+import type {SessionRecord} from "../../domain/sessions/types.js";
+import {resolveCurrentSessionThread} from "../../domain/sessions/current-thread.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
+import type {SessionStore} from "../../domain/sessions/store.js";
+import type {BindConversationInput, ConversationBinding, ConversationLookup} from "../../domain/sessions/conversations/types.js";
+import type {SessionRouteInput} from "../../domain/sessions/routes/types.js";
 import type {
   CreateBranchSessionRequestPayload,
-  CreateWorkerSessionRequestPayload,
   ResetSessionRequestPayload,
+  ResetSessionResult,
   ResolveMainSessionThreadRequestPayload,
-} from "../../domain/threads/requests/index.js";
-import {PostgresThreadRuntimeStore, type ThreadRecord} from "../../domain/threads/runtime/index.js";
-import type {JsonValue} from "../../kernel/agent/types.js";
-import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
+} from "../../domain/threads/requests/types.js";
+import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
+import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
+import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
+import type {PgPoolLike} from "../../lib/postgres-query.js";
+import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
+import type {JsonValue} from "../../lib/json.js";
+import {trimToUndefined} from "../../lib/strings.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
-import type {DaemonContext} from "./daemon-bootstrap.js";
-import {requireIdentityId, trimNonEmptyString} from "./daemon-shared.js";
+import {requireIdentityId} from "./daemon-shared.js";
+import {
+  createDaemonWorkerSessionCreator,
+  type DaemonWorkerSessionContext,
+  type DaemonCreateWorkerSessionInput,
+} from "./daemon-worker-sessions.js";
 import type {CreateWorkerSessionResult} from "./worker-session-service.js";
+
+export interface DaemonThreadHelperContext {
+  fallbackContext: {cwd: string};
+  runtime: {
+    pool?: PgPoolLike;
+    agentStore: {
+      getAgent(agentKey: string): Promise<unknown>;
+      listIdentityPairings(identityId: string): Promise<readonly {agentKey: string}[]>;
+    };
+    backgroundJobService: {
+      cancelThreadJobs(threadId: string): Promise<void>;
+    };
+    coordinator: Pick<ThreadRuntimeCoordinator, "abort" | "waitForCurrentRun">;
+    identityStore: Pick<IdentityStore, "getIdentity">;
+    sessionStore: Pick<SessionStore, "createSession" | "getMainSession" | "getSession" | "updateCurrentThread">;
+    store: Pick<ThreadRuntimeStore, "createThread" | "discardPendingInputs" | "getThread" | "updateThread">;
+    workerSessions: DaemonWorkerSessionContext["workerSessions"];
+  };
+  a2aBindings: DaemonWorkerSessionContext["a2aBindings"];
+  conversationBindings: {
+    bindConversation(input: BindConversationInput): Promise<unknown>;
+    getConversationBinding(input: ConversationLookup): Promise<ConversationBinding | null>;
+  };
+  outboundDeliveries: {
+    enqueueDelivery(input: OutboundDeliveryInput): Promise<unknown>;
+  };
+  sessionRoutes: {
+    saveLastRoute(input: SessionRouteInput): Promise<unknown>;
+  };
+}
 
 export interface DaemonThreadHelpers {
   ensureIdentity(identityId: string): Promise<IdentityRecord>;
@@ -34,24 +76,7 @@ export interface DaemonThreadHelpers {
     inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
     context?: Record<string, unknown>;
   }): Promise<ThreadRecord>;
-  createWorkerSession(input: {
-    identity: IdentityRecord;
-    sessionId?: string;
-    threadId?: string;
-    agentKey?: string;
-    role?: string;
-    task: string;
-    context?: string;
-    model?: string;
-    thinking?: CreateWorkerSessionRequestPayload["thinking"];
-    inferenceProjection?: CreateWorkerSessionRequestPayload["inferenceProjection"];
-    credentialAllowlist?: readonly string[];
-    environmentId?: string;
-    skillAllowlist?: readonly string[];
-    toolPolicy?: CreateWorkerSessionRequestPayload["toolPolicy"];
-    ttlMs?: number;
-    parentSessionId?: string;
-  }): Promise<CreateWorkerSessionResult>;
+  createWorkerSession(input: DaemonCreateWorkerSessionInput): Promise<CreateWorkerSessionResult>;
   relocateThreadMedia(
     thread: ThreadRecord,
     media: readonly MediaDescriptor[],
@@ -74,18 +99,17 @@ export interface DaemonThreadHelpers {
     replyToMessageId?: string;
     threadId?: string;
   }): Promise<void>;
-  handleResetSession(payload: ResetSessionRequestPayload): Promise<Record<string, unknown>>;
+  handleResetSession(payload: ResetSessionRequestPayload): Promise<ResetSessionResult>;
 }
 
-async function listIdentityPairings(runtime: DaemonContext["runtime"], identityId: string) {
-  const store = runtime.agentStore as typeof runtime.agentStore & {
-    listIdentityPairings?: (identityId: string) => Promise<readonly {agentKey: string}[]>;
-  };
-  return store.listIdentityPairings ? await store.listIdentityPairings(identityId) : [];
+function isChannelBoundReset(
+  payload: ResetSessionRequestPayload,
+): payload is ResetSessionRequestPayload & {connectorKey: string; externalConversationId: string} {
+  return payload.source !== "operator" && Boolean(payload.connectorKey && payload.externalConversationId);
 }
 
 export function createDaemonThreadHelpers(
-  context: DaemonContext,
+  context: DaemonThreadHelperContext,
 ): DaemonThreadHelpers {
   const ensureIdentity = async (identityId: string): Promise<IdentityRecord> => {
     return context.runtime.identityStore.getIdentity(identityId);
@@ -95,8 +119,8 @@ export function createDaemonThreadHelpers(
     identity: IdentityRecord,
     explicitAgentKey?: string,
   ): Promise<string> => {
-    const pairings = await listIdentityPairings(context.runtime, identity.id);
-    const requestedAgentKey = trimNonEmptyString(explicitAgentKey);
+    const pairings = await context.runtime.agentStore.listIdentityPairings(identity.id);
+    const requestedAgentKey = trimToUndefined(explicitAgentKey);
     if (requestedAgentKey) {
       await context.runtime.agentStore.getAgent(requestedAgentKey);
       if (!pairings.some((pairing) => pairing.agentKey === requestedAgentKey)) {
@@ -219,8 +243,8 @@ export function createDaemonThreadHelpers(
   };
 
   const resolveCurrentThread = async (sessionId: string): Promise<ThreadRecord> => {
-    const session = await context.runtime.sessionStore.getSession(sessionId);
-    return context.runtime.store.getThread(session.currentThreadId);
+    const {threadId} = await resolveCurrentSessionThread(context.runtime.sessionStore, sessionId);
+    return context.runtime.store.getThread(threadId);
   };
 
   const createBranchSession = async (input: {
@@ -275,63 +299,12 @@ export function createDaemonThreadHelpers(
     return context.runtime.store.createThread(threadInput);
   };
 
-  const createWorkerSession = async (input: {
-    identity: IdentityRecord;
-    sessionId?: string;
-    threadId?: string;
-    agentKey?: string;
-    role?: string;
-    task: string;
-    context?: string;
-    model?: string;
-    thinking?: CreateWorkerSessionRequestPayload["thinking"];
-    inferenceProjection?: CreateWorkerSessionRequestPayload["inferenceProjection"];
-    credentialAllowlist?: readonly string[];
-    environmentId?: string;
-    skillAllowlist?: readonly string[];
-    toolPolicy?: CreateWorkerSessionRequestPayload["toolPolicy"];
-    ttlMs?: number;
-    parentSessionId?: string;
-  }): Promise<CreateWorkerSessionResult> => {
-    const agentKey = await resolveAccessibleAgentKey(input.identity, input.agentKey);
-    const parentSession = input.parentSessionId
-      ? await context.runtime.sessionStore.getSession(input.parentSessionId)
-      : null;
-    if (parentSession && parentSession.agentKey !== agentKey) {
-      throw new Error(`Worker session agent ${agentKey} must match parent session agent ${parentSession.agentKey}.`);
-    }
-    const created = await context.runtime.workerSessions.createWorkerSession({
-      agentKey,
-      sessionId: input.sessionId,
-      threadId: input.threadId,
-      role: input.role,
-      task: input.task,
-      context: input.context,
-      model: input.model,
-      thinking: input.thinking,
-      inferenceProjection: input.inferenceProjection,
-      credentialAllowlist: input.credentialAllowlist,
-      environmentId: input.environmentId,
-      skillAllowlist: input.skillAllowlist,
-      toolPolicy: input.toolPolicy,
-      ttlMs: input.ttlMs,
-      parentSessionId: input.parentSessionId,
-      createdByIdentityId: input.identity.id,
-      beforeHandoff: parentSession
-        ? async (result) => {
-          await context.a2aBindings.bindSession({
-            senderSessionId: parentSession.id,
-            recipientSessionId: result.session.id,
-          });
-          await context.a2aBindings.bindSession({
-            senderSessionId: result.session.id,
-            recipientSessionId: parentSession.id,
-          });
-        }
-        : undefined,
-    });
-    return created;
-  };
+  const createWorkerSession = createDaemonWorkerSessionCreator({
+    a2aBindings: context.a2aBindings,
+    resolveAccessibleAgentKey,
+    sessions: context.runtime.sessionStore,
+    workerSessions: context.runtime.workerSessions,
+  });
 
   const relocateThreadMedia = async (
     thread: ThreadRecord,
@@ -435,8 +408,8 @@ export function createDaemonThreadHelpers(
     inferenceProjection?: ResetSessionRequestPayload["inferenceProjection"];
     context?: Record<string, unknown>;
   }): Promise<{thread: ThreadRecord; previousThreadId: string}> => {
-    const session = await context.runtime.sessionStore.getSession(input.sessionId);
-    const previousThread = await context.runtime.store.getThread(session.currentThreadId);
+    const {session, threadId} = await resolveCurrentSessionThread(context.runtime.sessionStore, input.sessionId);
+    const previousThread = await context.runtime.store.getThread(threadId);
     await context.runtime.coordinator.abort(previousThread.id, `Reset requested from ${input.source}.`);
     await context.runtime.coordinator.waitForCurrentRun(previousThread.id);
     await context.runtime.backgroundJobService.cancelThreadJobs(previousThread.id);
@@ -484,10 +457,11 @@ export function createDaemonThreadHelpers(
 
   const handleResetSession = async (
     payload: ResetSessionRequestPayload,
-  ): Promise<Record<string, unknown>> => {
-    if (payload.source === TELEGRAM_SOURCE && payload.connectorKey && payload.externalConversationId) {
+  ): Promise<ResetSessionResult> => {
+    if (isChannelBoundReset(payload)) {
+      const externalMessageId = payload.externalMessageId ?? payload.commandExternalMessageId;
       const binding = await context.conversationBindings.getConversationBinding({
-        source: TELEGRAM_SOURCE,
+        source: payload.source,
         connectorKey: payload.connectorKey,
         externalConversationId: payload.externalConversationId,
       });
@@ -509,18 +483,18 @@ export function createDaemonThreadHelpers(
         model: payload.model,
         thinking: payload.thinking,
         inferenceProjection: payload.inferenceProjection,
-        context: {source: TELEGRAM_SOURCE},
+        context: {source: payload.source},
       });
 
       await context.conversationBindings.bindConversation({
-        source: TELEGRAM_SOURCE,
+        source: payload.source,
         connectorKey: payload.connectorKey,
         externalConversationId: payload.externalConversationId,
         sessionId,
-        metadata: payload.commandExternalMessageId
+        metadata: externalMessageId
           ? {
-            kind: "telegram_reset_receipt",
-            commandExternalMessageId: payload.commandExternalMessageId,
+            kind: "channel_reset_receipt",
+            externalMessageId,
           }
           : undefined,
       });
@@ -528,11 +502,11 @@ export function createDaemonThreadHelpers(
         sessionId,
         identityId: identity?.id,
         route: {
-          source: TELEGRAM_SOURCE,
+          source: payload.source,
           connectorKey: payload.connectorKey,
           externalConversationId: payload.externalConversationId,
           externalActorId: payload.externalActorId,
-          externalMessageId: payload.commandExternalMessageId,
+          externalMessageId,
           capturedAt: Date.now(),
         },
       });

@@ -32,6 +32,12 @@ class FakeReadonlyPool {
   }
 }
 
+function createBackgroundJobService(): BackgroundToolJobService {
+  return new BackgroundToolJobService({
+    store: new TestThreadRuntimeStore(),
+  });
+}
+
 describe("Panda feature surface", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -78,7 +84,7 @@ describe("Panda feature surface", () => {
   it("adds image generation only when background jobs are available", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
-    const jobService = {} as any;
+    const jobService = createBackgroundJobService();
     const tools = buildDefaultAgentTools([], {
       imageGenerate: {
         jobService,
@@ -103,7 +109,7 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildDefaultAgentTools([], {
       bash: {
-        jobService: {} as any,
+        jobService: createBackgroundJobService(),
       },
     });
 
@@ -184,7 +190,7 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     const tools = buildDefaultAgentTools([], {
       bash: {
-        jobService: {} as any,
+        jobService: createBackgroundJobService(),
       },
     });
 
@@ -195,7 +201,7 @@ describe("Panda feature surface", () => {
   it("appends extra tools without adding hidden defaults", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
-    const extraTool = { name: "extra-tool" } as any;
+    const extraTool = new WebFetchTool();
     const tools = buildDefaultAgentTools([extraTool]);
 
     expect(tools).toHaveLength(5);
@@ -317,7 +323,7 @@ describe("Panda feature surface", () => {
     expect(resolveStoredContext(
       {
         cwd: "/Users/patrikmojzis/Projects/panda-agent",
-      } as any,
+      },
       {
         cwd: "/Users/patrikmojzis/Projects/panda-agent",
       },
@@ -335,7 +341,7 @@ describe("Panda feature surface", () => {
     expect(resolveStoredContext(
       {
         cwd: "/Users/patrikmojzis/.panda/agents/jozef",
-      } as any,
+      },
       {
         cwd: "/Users/patrikmojzis/Projects/panda-agent",
       },
@@ -351,7 +357,7 @@ describe("Panda feature surface", () => {
     expect(resolveStoredContext(
       {
         cwd: "/Users/patrikmojzis/.panda/agents/jozef/projects/demo",
-      } as any,
+      },
       {
         cwd: "/Users/patrikmojzis/Projects/panda-agent",
       },
@@ -366,7 +372,7 @@ describe("Panda feature surface", () => {
     expect(resolveStoredContext(
       {
         cwd: "/workspace/shared/project",
-      } as any,
+      },
       {
         cwd: "/Users/patrikmojzis/Projects/panda-agent",
       },

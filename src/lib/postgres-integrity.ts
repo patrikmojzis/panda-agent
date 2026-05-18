@@ -1,10 +1,5 @@
-import type {Pool} from "pg";
-
 import {isDuplicateObjectError} from "./postgres-errors.js";
-
-export interface PgQueryable {
-  query: Pool["query"];
-}
+import type {PgQueryable} from "./postgres-query.js";
 
 export interface IntegrityCheck {
   label: string;
@@ -45,10 +40,6 @@ export async function addConstraint(queryable: PgQueryable, sql: string): Promis
 
     throw error;
   }
-}
-
-export async function addIndex(queryable: PgQueryable, sql: string): Promise<void> {
-  await queryable.query(sql);
 }
 
 export async function alterIfSupported(queryable: PgQueryable, sql: string): Promise<boolean> {

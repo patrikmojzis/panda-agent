@@ -7,12 +7,9 @@ import path from "node:path";
 
 import {Agent, BashTool, stringToUserMessage,} from "../src/index.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
-import {
-  CredentialCrypto,
-  CredentialResolver,
-  CredentialService,
-  PostgresCredentialStore,
-} from "../src/domain/credentials/index.js";
+import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
+import {CredentialResolver, CredentialService} from "../src/domain/credentials/resolver.js";
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
 import {SetEnvValueTool} from "../src/panda/index.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";

@@ -6,10 +6,13 @@ import type {
     WatchSourceConfig,
     WatchSourceKind,
 } from "../../domain/watches/types.js";
-import {isRecord} from "../../lib/records.js";
+import {
+  parseWatchDetectorConfig as parseDomainWatchDetectorConfig,
+  parseWatchSourceConfig as parseDomainWatchSourceConfig,
+} from "../../domain/watches/config.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {formatParameters} from "../../kernel/agent/helpers/schema.js";
-import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
 
 // Temporary context-budget escape hatch for watch creation and updates.
 //
@@ -369,7 +372,6 @@ function throwIssues(prefix: string, issues: readonly string[]): never {
 function parseKindEnvelope<TKind extends string>(options: {
   value: unknown;
   schema: z.ZodType<{kind: TKind}>;
-  missingKindMessage: string;
   invalidPrefix: string;
 }): TKind {
   const parsed = options.schema.safeParse(options.value);
@@ -387,7 +389,6 @@ export function parseWatchSourceConfig(value: unknown): WatchSourceConfig {
   const kind = parseKindEnvelope({
     value,
     schema: compactWatchSourceEnvelopeSchema,
-    missingKindMessage: "Watch source requires a kind.",
     invalidPrefix: "Invalid watch source",
   });
   const schema = watchSourceSchemaByKind[kind];
@@ -398,14 +399,19 @@ export function parseWatchSourceConfig(value: unknown): WatchSourceConfig {
       parsed.error.issues.map((issue) => issue.message),
     );
   }
-  return parsed.data;
+  try {
+    return parseDomainWatchSourceConfig(parsed.data);
+  } catch (error) {
+    throwIssues(`Invalid watch source for ${kind}`, [
+      error instanceof Error ? error.message : String(error),
+    ]);
+  }
 }
 
 export function parseWatchDetectorConfig(value: unknown): WatchDetectorConfig {
   const kind = parseKindEnvelope({
     value,
     schema: compactWatchDetectorEnvelopeSchema,
-    missingKindMessage: "Watch detector requires a kind.",
     invalidPrefix: "Invalid watch detector",
   });
   const schema = watchDetectorSchemaByKind[kind];
@@ -416,7 +422,13 @@ export function parseWatchDetectorConfig(value: unknown): WatchDetectorConfig {
       parsed.error.issues.map((issue) => issue.message),
     );
   }
-  return parsed.data;
+  try {
+    return parseDomainWatchDetectorConfig(parsed.data);
+  } catch (error) {
+    throwIssues(`Invalid watch detector for ${kind}`, [
+      error instanceof Error ? error.message : String(error),
+    ]);
+  }
 }
 
 export function getCompactWatchSourceEnvelopeSchema() {
@@ -457,33 +469,4 @@ export function getWatchSourceNotes(kind: WatchSourceKind): string[] {
 
 export function getWatchDetectorNotes(kind: WatchEventKind): string[] {
   return [...watchDetectorNotesByKind[kind]];
-}
-
-export function requireSchemaGetSelection(value: unknown): {
-  sourceKind?: WatchSourceKind;
-  detectorKind?: WatchEventKind;
-} {
-  if (!isRecord(value)) {
-    throw new ToolError("watch_schema_get requires an object.");
-  }
-
-  const sourceKind = value.sourceKind;
-  const detectorKind = value.detectorKind;
-  if (sourceKind === undefined && detectorKind === undefined) {
-    throw new ToolError("watch_schema_get requires sourceKind, detectorKind, or both.");
-  }
-
-  const parsed = z.object({
-    sourceKind: watchSourceKindSchema.optional(),
-    detectorKind: watchDetectorKindSchema.optional(),
-  }).safeParse(value);
-
-  if (!parsed.success) {
-    throwIssues(
-      "Invalid watch schema request",
-      parsed.error.issues.map((issue) => issue.message),
-    );
-  }
-
-  return parsed.data;
 }

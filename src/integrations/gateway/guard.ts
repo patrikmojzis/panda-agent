@@ -1,9 +1,11 @@
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 
 import {PiAiRuntime} from "../providers/shared/runtime.js";
+import {joinMessageTextParts} from "../../kernel/agent/helpers/message-text.js";
 import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import {stringToUserMessage} from "../../kernel/agent/helpers/input.js";
-import type {GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/index.js";
+import type {GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
+import {isRecord} from "../../lib/records.js";
 import {trimToNull} from "../../lib/strings.js";
 
 export interface GatewayGuardVerdict {
@@ -18,6 +20,8 @@ export interface GatewayGuard {
   }): Promise<GatewayGuardVerdict>;
 }
 
+type GatewayGuardRuntime = Pick<PiAiRuntime, "complete">;
+
 function clampRiskScore(value: number): number {
   if (!Number.isFinite(value)) {
     return 1;
@@ -26,10 +30,7 @@ function clampRiskScore(value: number): number {
 }
 
 function extractAssistantText(message: AssistantMessage): string {
-  return message.content
-    .flatMap((part) => part.type === "text" && part.text.trim() ? [part.text.trim()] : [])
-    .join("\n")
-    .trim();
+  return joinMessageTextParts(message.content, "\n");
 }
 
 function parseRiskScore(text: string): number | null {
@@ -38,13 +39,8 @@ function parseRiskScore(text: string): number | null {
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(candidate) as unknown;
-      if (
-        parsed
-        && typeof parsed === "object"
-        && !Array.isArray(parsed)
-        && typeof (parsed as {riskScore?: unknown}).riskScore === "number"
-      ) {
-        return clampRiskScore((parsed as {riskScore: number}).riskScore);
+      if (isRecord(parsed) && typeof parsed.riskScore === "number") {
+        return clampRiskScore(parsed.riskScore);
       }
     } catch {
       // Try the next shape. Some providers wrap JSON despite being asked not to.
@@ -54,11 +50,12 @@ function parseRiskScore(text: string): number | null {
 }
 
 export class LlmGatewayGuard implements GatewayGuard {
-  private readonly runtime = new PiAiRuntime();
   private readonly model: string;
+  private readonly runtime: GatewayGuardRuntime;
 
-  constructor(options: {model: string}) {
+  constructor(options: {model: string; runtime?: GatewayGuardRuntime}) {
     this.model = options.model;
+    this.runtime = options.runtime ?? new PiAiRuntime();
   }
 
   async score(input: {
@@ -89,8 +86,8 @@ export class LlmGatewayGuard implements GatewayGuard {
     });
     const responseText = extractAssistantText(response);
     const parsed = parseRiskScore(responseText);
-    const errorMessage = typeof (response as {errorMessage?: unknown}).errorMessage === "string"
-      ? (response as {errorMessage: string}).errorMessage.trim()
+    const errorMessage = isRecord(response) && typeof response.errorMessage === "string"
+      ? response.errorMessage.trim()
       : "";
     if (parsed === null && errorMessage) {
       throw new Error(errorMessage);

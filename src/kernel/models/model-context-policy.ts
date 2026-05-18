@@ -53,10 +53,6 @@ export const MODEL_CONTEXT_POLICY_RULES: readonly ModelContextPolicyRule[] = [
   },
 ] as const;
 
-function getDefaultCanonicalModel(): string {
-  return resolveRuntimeDefaultModelSelector();
-}
-
 function sanitizePositiveInteger(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return undefined;
@@ -66,7 +62,7 @@ function sanitizePositiveInteger(value: unknown): number | undefined {
 }
 
 function resolveModelIdentity(value?: string): {canonicalModel: string; modelId: string} {
-  const fallbackCanonicalModel = getDefaultCanonicalModel();
+  const fallbackCanonicalModel = resolveRuntimeDefaultModelSelector();
   const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) {
     const fallback = resolveModelSelector(fallbackCanonicalModel);

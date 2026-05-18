@@ -19,7 +19,7 @@ class FakeReadonlyClient {
   readonly queries: RecordedQuery[] = [];
 
   constructor(
-    private readonly rows: readonly Record<string, unknown>[] = [],
+    private readonly rows: readonly unknown[] = [],
     private readonly failingSql?: string,
   ) {}
 
@@ -48,7 +48,7 @@ class FakeReadonlyPool {
   readonly client: FakeReadonlyClient;
   connectCalls = 0;
 
-  constructor(rows: readonly Record<string, unknown>[] = [], failingSql?: string) {
+  constructor(rows: readonly unknown[] = [], failingSql?: string) {
     this.client = new FakeReadonlyClient(rows, failingSql);
   }
 
@@ -141,6 +141,7 @@ describe("PostgresReadonlyQueryTool", () => {
     const parsed = parseToolResult(result);
     const rows = parsed.rows as Array<Record<string, unknown>>;
 
+    expect(result.details).toEqual(parsed);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.created_at).toBe("2026-04-08T09:00:00.000Z");
     expect(JSON.stringify(rows[0])).toContain("[omitted image data:");
@@ -267,6 +268,23 @@ describe("PostgresReadonlyQueryTool", () => {
     )).rejects.toBeInstanceOf(ToolError);
 
     expect(pool.client.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("rejects malformed Postgres rows before building the model-visible payload", async () => {
+    const pool = new FakeReadonlyPool([null]);
+    const tool = new PostgresReadonlyQueryTool({
+      pool,
+    });
+
+    await expect(tool.run(
+      { sql: "select * from session.messages limit 1" },
+      createRunContext({
+        sessionId: "session-main",
+        identityId: "identity-alice",
+        threadId: "thread-1",
+        agentKey: "panda",
+      }),
+    )).rejects.toThrow("Postgres returned a non-object row.");
   });
 
   it("fails fast when sessionId is missing from the session context", async () => {

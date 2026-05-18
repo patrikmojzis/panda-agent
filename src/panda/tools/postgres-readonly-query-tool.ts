@@ -1,14 +1,16 @@
-import type {PoolClient} from "pg";
 import {z} from "zod";
 
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
-import type {JsonObject, JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
+import type {PgPoolLike} from "../../lib/postgres-query.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
-import {readExecutionSkillPolicy} from "../../domain/execution-environments/index.js";
+import {readExecutionSkillPolicy} from "../../domain/execution-environments/policy.js";
 import {isRecord} from "../../lib/records.js";
 import {truncateText} from "../../lib/strings.js";
+import {buildJsonToolPayload, readRequiredAgentSessionToolScope} from "./shared.js";
 
 const MAX_ROWS = 50;
 const MAX_OUTPUT_BYTES = 32_000;
@@ -17,10 +19,6 @@ const MAX_STRING_CHARS = 4_000;
 const STATEMENT_TIMEOUT_MS = 5_000;
 const LOCK_TIMEOUT_MS = 500;
 const IDLE_TX_TIMEOUT_MS = 5_000;
-
-interface PgPoolLike {
-  connect(): Promise<PoolClient>;
-}
 
 type PgPoolResolver = () => Promise<PgPoolLike> | PgPoolLike;
 
@@ -135,19 +133,18 @@ function sanitizeCell(value: unknown, maxStringChars: number, state: SanitizeSta
     if (looksLikeImageBlock) {
       const omittedBytes = (value.data as string).length;
       markTruncation(state, "cell_cap");
-      return {
-        ...Object.fromEntries(
-          Object.entries(value)
-            .filter(([key]) => key !== "data")
-            .map(([key, nested]) => [key, sanitizeCell(nested, maxStringChars, state)]),
-        ),
-        data: `[omitted image data: ${omittedBytes} chars]`,
-      } satisfies JsonObject;
+      const sanitized: JsonObject = {};
+      for (const [key, nested] of Object.entries(value)) {
+        if (key === "data") {
+          continue;
+        }
+        sanitized[key] = sanitizeCell(nested, maxStringChars, state);
+      }
+      sanitized.data = `[omitted image data: ${omittedBytes} chars]`;
+      return sanitized;
     }
 
-    return Object.fromEntries(
-      Object.entries(value).map(([key, nested]) => [key, sanitizeCell(nested, maxStringChars, state)]),
-    ) as JsonObject;
+    return sanitizeRow(value, maxStringChars, state);
   }
 
   markTruncation(state, "cell_cap");
@@ -155,9 +152,21 @@ function sanitizeCell(value: unknown, maxStringChars: number, state: SanitizeSta
 }
 
 function sanitizeRow(row: Record<string, unknown>, maxStringChars: number, state: SanitizeState): JsonObject {
-  return Object.fromEntries(
-    Object.entries(row).map(([key, value]) => [key, sanitizeCell(value, maxStringChars, state)]),
-  ) as JsonObject;
+  const sanitized: JsonObject = {};
+  for (const [key, value] of Object.entries(row)) {
+    sanitized[key] = sanitizeCell(value, maxStringChars, state);
+  }
+  return sanitized;
+}
+
+function sanitizeRows(rows: readonly unknown[], maxStringChars: number, state: SanitizeState): JsonObject[] {
+  return rows.map((row) => {
+    if (!isRecord(row)) {
+      throw new ToolError("Postgres returned a non-object row.");
+    }
+
+    return sanitizeRow(row, maxStringChars, state);
+  });
 }
 
 function fitRowsToByteBudget(
@@ -186,22 +195,10 @@ function fitRowsToByteBudget(
 }
 
 function readScope(context: unknown): { sessionId: string; agentKey: string } {
-  if (
-    !isRecord(context)
-    || typeof context.sessionId !== "string"
-    || !context.sessionId.trim()
-    || typeof context.agentKey !== "string"
-    || !context.agentKey.trim()
-  ) {
-    throw new ToolError(
-      "The readonly Postgres tool requires both sessionId and agentKey in the runtime session context.",
-    );
-  }
-
-  return {
-    sessionId: context.sessionId,
-    agentKey: context.agentKey,
-  };
+  return readRequiredAgentSessionToolScope(
+    context,
+    "The readonly Postgres tool requires both sessionId and agentKey in the runtime session context.",
+  );
 }
 
 function assertReadonlyToolAllowed(context: unknown, usesReadonlyRole: boolean): void {
@@ -292,7 +289,7 @@ export class PostgresReadonlyQueryTool<TContext = DefaultAgentSessionContext>
       const sanitizeState: SanitizeState = {
         reasons: new Set<TruncationReason>(),
       };
-      const sanitizedRows = result.rows.map((row) => sanitizeRow(row as Record<string, unknown>, this.maxStringChars, sanitizeState));
+      const sanitizedRows = sanitizeRows(result.rows, this.maxStringChars, sanitizeState);
       const rowTruncated = sanitizedRows.length > this.maxRows;
       const cappedRows = sanitizedRows.slice(0, this.maxRows);
       const { rows, truncated: byteTruncated } = fitRowsToByteBudget(cappedRows, this.maxOutputBytes);
@@ -312,12 +309,7 @@ export class PostgresReadonlyQueryTool<TContext = DefaultAgentSessionContext>
         rows: [...rows],
       };
 
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(payload, null, 2),
-        }],
-      };
+      return buildJsonToolPayload(payload);
     } catch (error) {
       try {
         await client.query("ROLLBACK");

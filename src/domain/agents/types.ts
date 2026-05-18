@@ -1,4 +1,4 @@
-import type {JsonValue} from "../../kernel/agent/types.js";
+import type {JsonValue} from "../../lib/json.js";
 
 export type AgentStatus = "active" | "deleted";
 export type AgentPromptSlug = "agent" | "heartbeat";

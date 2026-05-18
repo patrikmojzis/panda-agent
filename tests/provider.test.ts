@@ -10,11 +10,8 @@ import {
 } from "../src/index.js";
 import {resolveProviderModel} from "../src/integrations/providers/shared/model.js";
 import {
-    resolveDefaultAgentBrowserSubagentModelSelector,
-    resolveDefaultAgentMemorySubagentModelSelector,
     resolveDefaultAgentModelSelector,
-    resolveDefaultAgentWorkerModelSelector,
-    resolveDefaultAgentWorkspaceSubagentModelSelector,
+    resolveDefaultAgentSubagentModelSelector,
 } from "../src/panda/defaults.js";
 
 describe("model selector", () => {
@@ -107,36 +104,14 @@ describe("model selector", () => {
     expect(thread.model).toBe("anthropic-oauth/claude-opus-4-7");
   });
 
-  it("resolves the workspace subagent selector from WORKSPACE_SUBAGENT_MODEL", () => {
-    expect(resolveDefaultAgentWorkspaceSubagentModelSelector({
-      WORKSPACE_SUBAGENT_MODEL: "opus",
-    })).toBe("anthropic-oauth/claude-opus-4-7");
-
-    expect(resolveDefaultAgentWorkspaceSubagentModelSelector({})).toBeUndefined();
-  });
-
-  it("resolves the memory subagent selector from MEMORY_SUBAGENT_MODEL", () => {
-    expect(resolveDefaultAgentMemorySubagentModelSelector({
-      MEMORY_SUBAGENT_MODEL: "gpt",
-    })).toBe("openai-codex/gpt-5.4");
-
-    expect(resolveDefaultAgentMemorySubagentModelSelector({})).toBeUndefined();
-  });
-
-  it("resolves the browser subagent selector from BROWSER_SUBAGENT_MODEL", () => {
-    expect(resolveDefaultAgentBrowserSubagentModelSelector({
-      BROWSER_SUBAGENT_MODEL: "opus",
-    })).toBe("anthropic-oauth/claude-opus-4-7");
-
-    expect(resolveDefaultAgentBrowserSubagentModelSelector({})).toBeUndefined();
-  });
-
-  it("resolves the worker selector from WORKER_MODEL", () => {
-    expect(resolveDefaultAgentWorkerModelSelector({
-      WORKER_MODEL: "gpt",
-    })).toBe("openai-codex/gpt-5.4");
-
-    expect(resolveDefaultAgentWorkerModelSelector({})).toBeUndefined();
+  it.each([
+    ["workspace", "WORKSPACE_SUBAGENT_MODEL", "opus", "anthropic-oauth/claude-opus-4-7"],
+    ["memory", "MEMORY_SUBAGENT_MODEL", "gpt", "openai-codex/gpt-5.4"],
+    ["browser", "BROWSER_SUBAGENT_MODEL", "opus", "anthropic-oauth/claude-opus-4-7"],
+    ["skill_maintainer", "SKILL_MAINTAINER_SUBAGENT_MODEL", "gpt", "openai-codex/gpt-5.4"],
+  ] as const)("resolves the %s subagent selector from %s", (role, envKey, configured, expected) => {
+    expect(resolveDefaultAgentSubagentModelSelector(role, {[envKey]: configured})).toBe(expected);
+    expect(resolveDefaultAgentSubagentModelSelector(role, {})).toBeUndefined();
   });
 
   it("throws a configuration error for unknown model ids", () => {

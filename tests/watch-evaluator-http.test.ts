@@ -1,9 +1,9 @@
 import {describe, expect, it, vi} from "vitest";
 
 import type {WatchRecord} from "../src/domain/watches/index.js";
-import {evaluateWatch} from "../src/integrations/watches/evaluator.js";
+import {evaluateWatch, type WatchCredentialResolver} from "../src/integrations/watches/evaluator.js";
 
-function createCredentialResolver() {
+function createCredentialResolver(): WatchCredentialResolver {
   return {
     resolveCredential: vi.fn(async (envKey: string) => ({
       id: envKey,
@@ -82,7 +82,7 @@ describe("evaluateWatch HTTP sources", () => {
     });
 
     const first = await evaluateWatch(watch, {
-      credentialResolver: credentialResolver as any,
+      credentialResolver,
       credentialContext: {agentKey: "panda"},
       fetchImpl,
       lookupHostname,
@@ -98,7 +98,7 @@ describe("evaluateWatch HTTP sources", () => {
       ...watch,
       state: first.nextState,
     }, {
-      credentialResolver: credentialResolver as any,
+      credentialResolver,
       credentialContext: {agentKey: "panda"},
       fetchImpl,
       lookupHostname,
@@ -113,7 +113,7 @@ describe("evaluateWatch HTTP sources", () => {
       ...watch,
       state: second.nextState,
     }, {
-      credentialResolver: credentialResolver as any,
+      credentialResolver,
       credentialContext: {agentKey: "panda"},
       fetchImpl,
       lookupHostname,
@@ -134,7 +134,7 @@ describe("evaluateWatch HTTP sources", () => {
       ...watch,
       state: third.nextState,
     }, {
-      credentialResolver: credentialResolver as any,
+      credentialResolver,
       credentialContext: {agentKey: "panda"},
       fetchImpl,
       lookupHostname,
@@ -175,7 +175,7 @@ describe("evaluateWatch HTTP sources", () => {
     });
 
     const first = await evaluateWatch(watch, {
-      credentialResolver: credentialResolver as any,
+      credentialResolver,
       credentialContext: {agentKey: "panda"},
       fetchImpl,
       lookupHostname,
@@ -190,7 +190,7 @@ describe("evaluateWatch HTTP sources", () => {
       ...watch,
       state: first.nextState,
     }, {
-      credentialResolver: credentialResolver as any,
+      credentialResolver,
       credentialContext: {agentKey: "panda"},
       fetchImpl,
       lookupHostname,
@@ -204,5 +204,28 @@ describe("evaluateWatch HTTP sources", () => {
       previousExcerpt: "Old property listing",
       currentExcerpt: "New property listing with balcony",
     });
+  });
+
+  it("rejects invalid http_json response bodies before extracting observations", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("not-json", {
+      status: 200,
+      headers: {"content-type": "application/json"},
+    }));
+
+    await expect(evaluateWatch(createWatch({
+      source: {
+        kind: "http_json",
+        url: "https://example.com/bad-json",
+        result: {
+          observation: "scalar",
+          valuePath: "price",
+        },
+      },
+    }), {
+      credentialResolver: createCredentialResolver(),
+      credentialContext: {agentKey: "panda"},
+      fetchImpl,
+      lookupHostname,
+    })).rejects.toThrow("HTTP JSON watch response must be valid JSON");
   });
 });

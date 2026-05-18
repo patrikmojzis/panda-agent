@@ -1,4 +1,4 @@
-import type {JsonObject} from "../../../kernel/agent/types.js";
+import type {JsonObject} from "../../../lib/json.js";
 import type {MediaDescriptor, RememberedRoute} from "../../../domain/channels/types.js";
 import {renderTelegramInboundText, renderTelegramReactionText,} from "../../../prompts/channels/telegram.js";
 import {TELEGRAM_SOURCE} from "./config.js";

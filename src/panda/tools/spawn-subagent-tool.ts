@@ -59,7 +59,7 @@ export class SpawnSubagentTool<TContext = DefaultAgentSessionContext>
     }
 
     const context = run.context as DefaultAgentSessionContext | undefined;
-    const messages = [...(run as unknown as RunContext<DefaultAgentSessionContext>).messages];
+    const messages = [...run.messages];
     const job = await this.jobService.start({
       threadId: readThreadId(context),
       runId: context?.runId,

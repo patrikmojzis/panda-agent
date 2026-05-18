@@ -12,6 +12,7 @@ Core files:
 - `src/domain/watches/types.ts`
 - `src/domain/watches/store.ts`
 - `src/domain/watches/postgres.ts`
+- `src/domain/watches/postgres-schema.ts`
 - `src/domain/watches/evaluator.ts`
 - `src/integrations/watches/evaluator.ts`
 - `src/domain/watches/runner.ts`
@@ -24,15 +25,16 @@ The hot path is:
 
 1. `WatchRunner` lists due watches
 2. store claims one watch and creates a `watch_runs` row in `claimed`
-3. runner resolves the watch session and reads `session.current_thread_id`
+3. runner resolves the watch session and reads `session.current_thread_id` for evaluator/run context
 4. the integrations evaluator resolves the source and normalizes it into one of:
    - `collection`
    - `snapshot`
    - `scalar`
 5. the domain evaluator compares that observation against stored watch state
-6. if changed, store records a durable `watch_events` row
-7. runner injects one synthetic `watch_event` input into the resolved thread with `wake`
-8. Panda sees the structured watch-event prompt and decides whether to notify or act
+6. if changed, runner re-resolves `session.current_thread_id` for delivery
+7. store records a durable `watch_events` row for that delivery thread
+8. runner injects one synthetic `watch_event` input into the delivery thread with `wake`
+9. Panda sees the structured watch-event prompt and decides whether to notify or act
 
 That separation is the whole point.
 Don't blur it.
@@ -54,6 +56,9 @@ Readonly views:
 The watch row stores config plus detector state.
 Runs are execution history.
 Events are durable emitted changes.
+Postgres schema creation, migrations, and integrity checks live in
+`src/domain/watches/postgres-schema.ts`; `PostgresWatchStore` should stay focused
+on watch behavior and row persistence.
 
 Watches are session-owned:
 
@@ -95,12 +100,15 @@ Defaults:
 - first successful runner poll ignores existing state when no seed is present
 - delivery is wake-only
 - watch tools create watches for the current session automatically
-- the runner resolves the current thread dynamically from that session
+- changed-event delivery resolves the current thread dynamically from the session after evaluation
 
 ## Temporary Schema Escape Hatch
 
 `watch_create` and `watch_update` intentionally expose compact provider-visible schemas.
 Detailed branch schemas now live behind `watch_schema_get`.
+Those compact tool schemas still need to enforce the same invalid-config rules
+as the persisted domain parser in `src/domain/watches/config.ts`; otherwise bad
+watch config can be written and only fail later when Postgres rows are read.
 
 This is tactical, not architecture:
 

@@ -18,6 +18,7 @@ import {
   collectAssistantToolCalls,
 } from "../../integrations/providers/shared/messages.js";
 import {isCompactSummaryMessage} from "./helpers/compact.js";
+import {joinMessageTextParts} from "./helpers/message-text.js";
 import {PiAiRuntime} from "../../integrations/providers/shared/runtime.js";
 import {type ResolvedModelSelector, resolveModelSelector,} from "../models/model-selector.js";
 import {resolveRuntimeDefaultModelSelector} from "../models/default-model.js";
@@ -25,7 +26,6 @@ import {resolveModelRuntimeBudget} from "../models/model-context-policy.js";
 import {RunContext} from "./run-context.js";
 import type {LlmRuntime, LlmRuntimeRequest} from "./runtime.js";
 import type {RunPipeline} from "./run-pipeline.js";
-import {throwIfAborted} from "./abort.js";
 import type {ThreadCheckpointDecision, ThreadCheckpointHandler} from "./thread-checkpoint.js";
 import {isToolResultPayload} from "./tool.js";
 import type {JsonValue, ThreadRunEvent, ThreadStreamEvent, ToolProgressEvent, ToolResultContent,} from "./types.js";
@@ -98,6 +98,21 @@ function readContextIntegerField(context: unknown, key: string): number | undefi
   return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : undefined;
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal) {
+    return;
+  }
+
+  if (typeof signal.throwIfAborted === "function") {
+    signal.throwIfAborted();
+    return;
+  }
+
+  if (signal.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("The operation was aborted.");
+  }
+}
+
 function buildRuntimeRequestMetadata(
   context: unknown,
   turn: number,
@@ -113,9 +128,7 @@ function buildRuntimeRequestMetadata(
 }
 
 function extractMessageText(message: AssistantMessage): string {
-  const text = message.content.flatMap((part) => {
-    return part.type === "text" && part.text ? [part.text] : [];
-  }).join("");
+  const text = joinMessageTextParts(message.content, "");
 
   if (!text) {
     throw new InvalidJSONResponseError("No textual content found in output item");

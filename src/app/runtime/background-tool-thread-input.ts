@@ -7,17 +7,12 @@ function buildBackgroundToolExternalMessageId(record: ThreadToolJobRecord): stri
 }
 
 export function buildBackgroundToolThreadInput(record: ThreadToolJobRecord): ThreadInputPayload {
-  const looseRecord = record as ThreadToolJobRecord & {
-    command?: string;
-  };
-  const kind = looseRecord.kind ?? "bash";
-  const summary = looseRecord.summary ?? looseRecord.command ?? kind;
   return {
     message: stringToUserMessage(renderBackgroundToolJobEventPrompt({
       jobId: record.id,
-      kind,
+      kind: record.kind,
       status: record.status,
-      summary,
+      summary: record.summary,
       durationMs: record.durationMs,
       result: record.result,
       error: record.error,
@@ -28,7 +23,7 @@ export function buildBackgroundToolThreadInput(record: ThreadToolJobRecord): Thr
     metadata: {
       kind: "background_tool_job_update",
       jobId: record.id,
-      jobKind: kind,
+      jobKind: record.kind,
       status: record.status,
       finishedAt: record.finishedAt ?? null,
     },

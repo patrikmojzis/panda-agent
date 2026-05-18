@@ -1,9 +1,10 @@
 import path from "node:path";
 
+import {clamp} from "../../lib/numbers.js";
 import {collapseWhitespace} from "../../lib/strings.js";
 import type {SlashCompletionContext} from "./commands.js";
 import {COMPOSER_NEWLINE_HINT, WELCOME_NEWLINE_KEYS,} from "./input.js";
-import {clamp, formatDuration, padAnsiEnd, truncatePlainText,} from "./screen.js";
+import {formatDuration, padAnsiEnd, truncatePlainText,} from "./screen.js";
 import {stripAnsi, theme} from "./theme.js";
 
 export interface TranscriptLine {
@@ -194,8 +195,6 @@ function wrapWordText(text: string, width: number): string[] {
 
   return lines;
 }
-
-export const normalizeInlineText = collapseWhitespace;
 
 function homeRelativePath(value: string): string {
   const home = process.env.HOME;
@@ -403,7 +402,7 @@ function buildInfoLine(options: {
       : `${clamp(options.transcriptSearchSelection, 0, options.transcriptMatches.length - 1) + 1}/${options.transcriptMatches.length}`;
     const preview = options.selectedTranscriptLine === null
       ? null
-      : normalizeInlineText(options.transcriptLines[options.selectedTranscriptLine]?.plain ?? "");
+      : collapseWhitespace(options.transcriptLines[options.selectedTranscriptLine]?.plain ?? "");
 
     return buildPromptInfoLine(options.width, `find> ${options.transcriptSearchQuery}`, summary, preview);
   }
@@ -412,7 +411,7 @@ function buildInfoLine(options: {
     const summary = options.historyMatchCount === 0
       ? "no matches"
       : `${clamp(options.historySearchSelection, 0, options.historyMatchCount - 1) + 1}/${options.historyMatchCount}`;
-    const preview = normalizeInlineText(options.historyPreview ?? "");
+    const preview = collapseWhitespace(options.historyPreview ?? "");
 
     return buildPromptInfoLine(options.width, `history> ${options.historySearchQuery}`, summary, preview);
   }

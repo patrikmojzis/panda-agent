@@ -1,4 +1,4 @@
-import type {EncryptedCredentialValue} from "../credentials/index.js";
+import type {EncryptedCredentialValue} from "../credentials/types.js";
 
 function trimNonEmpty(value: string): string {
   const trimmed = value.trim();

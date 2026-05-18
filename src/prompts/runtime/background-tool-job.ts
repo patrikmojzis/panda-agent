@@ -1,4 +1,5 @@
-import type {JsonObject} from "../../kernel/agent/types.js";
+import type {JsonObject} from "../../lib/json.js";
+import {isRecord} from "../../lib/records.js";
 
 const SUMMARY_PREVIEW_CHARS = 360;
 const ERROR_PREVIEW_CHARS = 480;
@@ -18,10 +19,6 @@ function truncatePreview(value: string | undefined, maxChars: number): string {
 function readText(value: JsonObject | undefined, key: string): string {
   const next = value?.[key];
   return typeof next === "string" ? next.trim() : "";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readImagePaths(result: JsonObject | undefined): string[] {

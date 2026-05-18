@@ -1,4 +1,4 @@
-import {resolveModelSelector} from "../../../kernel/agent/index.js";
+import {resolveModelSelector} from "../../../kernel/models/model-selector.js";
 import {getProviderConfig, type ProviderName} from "./provider.js";
 import {resolveProviderApiKey} from "./auth.js";
 

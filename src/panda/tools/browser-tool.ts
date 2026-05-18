@@ -4,18 +4,19 @@ import {z} from "zod";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {stripToolArtifactInlineImages} from "../../kernel/agent/tool-artifacts.js";
 import {formatToolResultFallback, Tool} from "../../kernel/agent/tool.js";
-import type {JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import type {JsonValue} from "../../lib/json.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
-import {BrowserRunnerClient, getDefaultBrowserRunnerClient} from "../../integrations/browser/client.js";
-import {browserActionSchema} from "./browser-schema.js";
-import type {BrowserAction} from "./browser-types.js";
+import {browserActionSchema} from "../../integrations/browser/action-schema.js";
+import type {BrowserAction} from "../../integrations/browser/action-types.js";
+import {getDefaultBrowserRunnerClient} from "../../integrations/browser/client.js";
 
 export interface BrowserToolService<TContext = DefaultAgentSessionContext> {
   handle(action: BrowserAction, run: RunContext<TContext>): Promise<ToolResultPayload>;
 }
 
-export interface BrowserToolOptions {
-  service?: BrowserToolService;
+export interface BrowserToolOptions<TContext = DefaultAgentSessionContext> {
+  service?: BrowserToolService<TContext>;
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   actionTimeoutMs?: number;
@@ -33,14 +34,14 @@ export class BrowserTool<TContext = DefaultAgentSessionContext>
 
   private readonly service: BrowserToolService<TContext>;
 
-  constructor(options: BrowserToolOptions = {}) {
+  constructor(options: BrowserToolOptions<TContext> = {}) {
     super();
-    this.service = options.service as BrowserToolService<TContext> ?? getDefaultBrowserRunnerClient({
+    this.service = options.service ?? getDefaultBrowserRunnerClient({
       env: options.env,
       fetchImpl: options.fetchImpl,
       actionTimeoutMs: options.actionTimeoutMs,
       dataDir: options.dataDir,
-    }) as BrowserRunnerClient as BrowserToolService<TContext>;
+    }) as BrowserToolService<TContext>;
   }
 
   override formatCall(args: Record<string, unknown>): string {
@@ -126,6 +127,6 @@ export class BrowserTool<TContext = DefaultAgentSessionContext>
     args: z.output<typeof BrowserTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
-    return await this.service.handle(args as BrowserAction, run);
+    return this.service.handle(args as BrowserAction, run);
   }
 }

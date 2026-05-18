@@ -1,12 +1,15 @@
 import type {Api} from "grammy";
 
-import type {ChannelTypingAdapter, ChannelTypingRequest} from "../../../domain/channels/index.js";
+import type {ChannelTypingRequest} from "../../../domain/channels/types.js";
+import type {ChannelTypingAdapter} from "../../../domain/channels/typing.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 import {parseTelegramConversationId} from "./conversation-id.js";
 import {assertTelegramConnectorKey} from "./transport.js";
 
+export type TelegramTypingApi = Pick<Api, "sendChatAction">;
+
 export interface TelegramTypingAdapterOptions {
-  api: Api;
+  api: TelegramTypingApi;
   connectorKey: string;
 }
 

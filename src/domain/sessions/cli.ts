@@ -3,19 +3,15 @@ import process from "node:process";
 import {Command} from "commander";
 import type {Pool} from "pg";
 
-import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY} from "../../app/runtime/daemon.js";
-import {ensureSchemas, withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
-import {DaemonStateRepo} from "../../app/runtime/state/repo.js";
-import {parsePositiveIntegerOption} from "../../lib/cli.js";
+import {DB_URL_OPTION_DESCRIPTION, parsePositiveIntegerOption} from "../../lib/cli.js";
+import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
-import {RuntimeRequestRepo} from "../threads/requests/repo.js";
 import {ConversationRepo} from "./conversations/repo.js";
-import {PostgresThreadRuntimeStore} from "../threads/runtime/index.js";
+import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {PostgresSessionStore} from "./postgres.js";
 
-interface SessionCliOptions {
+export interface SessionCliOptions {
   dbUrl?: string;
 }
 
@@ -28,12 +24,10 @@ interface HeartbeatCliOptions extends SessionCliOptions {
 interface WithSessionStores {
   sessionStore: PostgresSessionStore;
   threadStore: PostgresThreadRuntimeStore;
-  requests: RuntimeRequestRepo;
-  daemonState: DaemonStateRepo;
   conversations: ConversationRepo;
 }
 
-function createSessionCliStores(pool: Pool): WithSessionStores & {
+export function createSessionCliStores(pool: Pool): WithSessionStores & {
   agentStore: PostgresAgentStore;
   identityStore: PostgresIdentityStore;
 } {
@@ -43,13 +37,11 @@ function createSessionCliStores(pool: Pool): WithSessionStores & {
     identityStore,
     sessionStore: new PostgresSessionStore({pool}),
     threadStore: new PostgresThreadRuntimeStore({pool}),
-    requests: new RuntimeRequestRepo({pool}),
-    daemonState: new DaemonStateRepo({pool}),
     conversations: new ConversationRepo({pool}),
   };
 }
 
-async function withSessionStores<T>(
+export async function withSessionStores<T>(
   options: SessionCliOptions,
   fn: (stores: WithSessionStores) => Promise<T>,
 ): Promise<T> {
@@ -60,40 +52,10 @@ async function withSessionStores<T>(
       stores.agentStore,
       stores.sessionStore,
       stores.threadStore,
-      stores.requests,
-      stores.daemonState,
       stores.conversations,
     ]);
     return fn(stores);
   });
-}
-
-async function waitForRequestResult(
-  requests: RuntimeRequestRepo,
-  requestId: string,
-  timeoutMs: number,
-): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
-    const request = await requests.getRequest(requestId);
-    if (request.status === "completed") {
-      return (request.result ?? {}) as Record<string, unknown>;
-    }
-    if (request.status === "failed") {
-      throw new Error(request.error ?? `Runtime request ${requestId} failed.`);
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-
-  throw new Error(`Timed out waiting for runtime request ${requestId}.`);
-}
-
-async function requireDaemonOnline(daemonState: DaemonStateRepo): Promise<void> {
-  const state = await daemonState.readState(DEFAULT_DAEMON_KEY);
-  if (!state || Date.now() - state.heartbeatAt > DAEMON_STALE_AFTER_MS) {
-    throw new Error(`panda run (${DEFAULT_DAEMON_KEY}) is offline.`);
-  }
 }
 
 async function listSessionsCommand(agentKey: string, options: SessionCliOptions): Promise<void> {
@@ -131,28 +93,6 @@ async function inspectSessionCommand(sessionId: string, options: SessionCliOptio
         `thread model ${thread.model ?? "-"}`,
         `heartbeat enabled ${heartbeat?.enabled ? "yes" : "no"}`,
         `heartbeat every ${heartbeat?.everyMinutes ?? "-"} minutes`,
-      ].join("\n") + "\n",
-    );
-  });
-}
-
-async function resetSessionCommand(sessionId: string, options: SessionCliOptions): Promise<void> {
-  await withSessionStores(options, async ({sessionStore, requests, daemonState}) => {
-    await requireDaemonOnline(daemonState);
-    const session = await sessionStore.getSession(sessionId);
-    const request = await requests.enqueueRequest({
-      kind: "reset_session",
-      payload: {
-        source: "operator",
-        sessionId: session.id,
-      },
-    });
-    const result = await waitForRequestResult(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
-    process.stdout.write(
-      [
-        `Reset session ${session.id}.`,
-        `new thread ${typeof result.threadId === "string" ? result.threadId : "-"}`,
-        `previous thread ${typeof result.previousThreadId === "string" ? result.previousThreadId : "-"}`,
       ].join("\n") + "\n",
     );
   });
@@ -203,11 +143,7 @@ async function bindConversationCommand(
   });
 }
 
-export function registerSessionCommands(program: Command): void {
-  const sessionProgram = program
-    .command("session")
-    .description("Manage Panda agent sessions");
-
+export function registerSessionManagementCommands(sessionProgram: Command): void {
   sessionProgram
     .command("list")
     .description("List sessions for an agent")
@@ -224,15 +160,6 @@ export function registerSessionCommands(program: Command): void {
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sessionId: string, options: SessionCliOptions) => {
       return inspectSessionCommand(sessionId, options);
-    });
-
-  sessionProgram
-    .command("reset")
-    .description("Reset one session through the daemon")
-    .argument("<sessionId>", "Session id")
-    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
-    .action((sessionId: string, options: SessionCliOptions) => {
-      return resetSessionCommand(sessionId, options);
     });
 
   sessionProgram
@@ -264,4 +191,12 @@ export function registerSessionCommands(program: Command): void {
     ) => {
       return bindConversationCommand(sessionId, source, connectorKey, externalConversationId, options);
     });
+}
+
+export function registerSessionCommands(program: Command): void {
+  registerSessionManagementCommands(
+    program
+      .command("session")
+      .description("Manage Panda agent sessions"),
+  );
 }

@@ -1,4 +1,4 @@
-import {buildRuntimeRelationNames} from "../../domain/threads/runtime/postgres-shared.js";
+import {buildRuntimeRelationNames} from "../../lib/postgres-relations.js";
 
 export interface AgentTableNames {
   prefix: string;

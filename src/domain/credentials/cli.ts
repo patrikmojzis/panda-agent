@@ -5,7 +5,7 @@ import {Command} from "commander";
 
 import {parseAgentKey} from "../agents/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
-import {withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {PostgresCredentialStore} from "./postgres.js";
 import {CredentialService} from "./resolver.js";
 import {resolveCredentialCrypto} from "./crypto.js";
@@ -18,10 +18,14 @@ interface CredentialCliOptions {
   stdin?: boolean;
 }
 
+type MaskedPromptReadline = ReturnType<typeof createInterface> & {
+  _writeToOutput?: (value: string) => void;
+};
+
 async function readSecretFromPrompt(prompt: string): Promise<string> {
-  const readline = createInterface(process.stdin, process.stdout);
-  const originalWrite = (readline as unknown as {_writeToOutput?: (value: string) => void})._writeToOutput;
-  (readline as unknown as {_writeToOutput?: (value: string) => void})._writeToOutput = (value: string) => {
+  const readline = createInterface(process.stdin, process.stdout) as MaskedPromptReadline;
+  const originalWrite = readline._writeToOutput;
+  readline._writeToOutput = (value: string) => {
     if (value === prompt || value.includes("\n")) {
       process.stdout.write(value);
     }
@@ -32,7 +36,7 @@ async function readSecretFromPrompt(prompt: string): Promise<string> {
     process.stdout.write("\n");
     return value;
   } finally {
-    (readline as unknown as {_writeToOutput?: (value: string) => void})._writeToOutput = originalWrite;
+    readline._writeToOutput = originalWrite;
     readline.close();
   }
 }
@@ -144,7 +148,7 @@ async function readCredentialValue(value: string | undefined, stdin: boolean | u
   return prompted;
 }
 
-export async function setCredentialCommand(
+async function setCredentialCommand(
   envKey: string,
   value: string | undefined,
   options: CredentialCliOptions,
@@ -171,7 +175,7 @@ export async function setCredentialCommand(
   });
 }
 
-export async function clearCredentialCommand(
+async function clearCredentialCommand(
   envKey: string,
   options: CredentialCliOptions,
 ): Promise<void> {
@@ -195,7 +199,7 @@ export async function clearCredentialCommand(
   });
 }
 
-export async function listCredentialsCommand(options: CredentialCliOptions): Promise<void> {
+async function listCredentialsCommand(options: CredentialCliOptions): Promise<void> {
   await withCredentialService(options, async ({agentStore, credentialService}) => {
     const agent = await resolveAgentOption(options, agentStore, "optional");
     const entries = await credentialService.listCredentials(agent ?? {});
@@ -209,7 +213,7 @@ export async function listCredentialsCommand(options: CredentialCliOptions): Pro
   });
 }
 
-export async function resolveCredentialCommand(
+async function resolveCredentialCommand(
   envKey: string,
   options: CredentialCliOptions,
 ): Promise<void> {

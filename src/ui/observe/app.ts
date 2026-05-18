@@ -2,15 +2,12 @@ import process from "node:process";
 
 import {createPostgresPool, requireDatabaseUrl} from "../../app/runtime/create-runtime.js";
 import {listenThreadRuntimeNotifications} from "../../app/runtime/store-notifications.js";
-import {PostgresSessionStore, type SessionStore} from "../../domain/sessions/index.js";
+import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
+import type {SessionStore} from "../../domain/sessions/store.js";
 import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
-import {
-    PostgresThreadRuntimeStore,
-    type ThreadMessageRecord,
-    type ThreadRecord,
-    type ThreadRunRecord,
-} from "../../domain/threads/runtime/index.js";
-import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres.js";
+import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
+import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord} from "../../domain/threads/runtime/types.js";
+import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres-notifications.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {buildDefaultAgentTools} from "../../panda/definition.js";
 import {buildStoredTranscriptLines} from "../shared/transcript-lines.js";

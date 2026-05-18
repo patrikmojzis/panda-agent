@@ -2,7 +2,7 @@ import path from "node:path";
 import {trimToNull} from "../../lib/strings.js";
 
 export const DEFAULT_SMOKE_TIMEOUT_MS = 120_000;
-export const DEFAULT_SMOKE_ARTIFACT_ROOT = ".temp/runtime-smoke";
+const DEFAULT_SMOKE_ARTIFACT_ROOT = ".temp/runtime-smoke";
 
 function normalizeArtifactSlug(value: string): string {
   const slug = value

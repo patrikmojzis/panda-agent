@@ -1,12 +1,12 @@
-import type {SessionRecord} from "../../domain/sessions/index.js";
+import type {SessionRecord} from "../../domain/sessions/types.js";
+import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {
   ExecutionCredentialPolicy,
   ExecutionEnvironmentRecord,
-  ExecutionEnvironmentStore,
   ExecutionSkillPolicy,
   ResolvedExecutionEnvironment,
-  SessionEnvironmentBindingRecord
-} from "../../domain/execution-environments/index.js";
+  SessionEnvironmentBindingRecord,
+} from "../../domain/execution-environments/types.js";
 import {
   resolveBashExecutionMode,
   resolveRunnerCwd,
@@ -15,8 +15,10 @@ import {
   resolveRunnerUrlTemplate,
 } from "../../integrations/shell/bash-executor.js";
 
+type ExecutionEnvironmentResolverStore = Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment">;
+
 export interface ExecutionEnvironmentResolverOptions {
-  store: ExecutionEnvironmentStore;
+  store: ExecutionEnvironmentResolverStore;
   lifecycle?: {
     ensureBoundEnvironmentReady(input: {
       session: Pick<SessionRecord, "id" | "agentKey">;
@@ -70,7 +72,7 @@ function resolveFallbackEnvironment(
 }
 
 export class ExecutionEnvironmentResolver {
-  private readonly store: ExecutionEnvironmentStore;
+  private readonly store: ExecutionEnvironmentResolverStore;
   private readonly lifecycle?: NonNullable<ExecutionEnvironmentResolverOptions["lifecycle"]>;
   private readonly env: NodeJS.ProcessEnv;
 

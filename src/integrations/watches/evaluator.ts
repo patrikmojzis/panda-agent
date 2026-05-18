@@ -4,7 +4,7 @@ import {MongoClient} from "mongodb";
 import {createConnection as createMysqlConnection} from "mysql2/promise";
 import {Pool as PgPool} from "pg";
 
-import type {CredentialResolver} from "../../domain/credentials/index.js";
+import type {CredentialResolver} from "../../domain/credentials/resolver.js";
 import {evaluateWatchObservation} from "../../domain/watches/evaluator.js";
 import {validateWatchPath, validateWatchSourcePaths} from "../../domain/watches/path-validation.js";
 import type {WatchEvaluator} from "../../domain/watches/runner.js";
@@ -20,22 +20,21 @@ import type {
     WatchSourceEvaluation,
     WatchSourceKind,
 } from "../../domain/watches/types.js";
-import {stableStringify} from "../../lib/json.js";
+import {normalizeToJsonValue, stableStringify} from "../../lib/json.js";
 import {collapseWhitespace, requireNonEmptyString} from "../../lib/strings.js";
-import type {JsonObject, JsonValue} from "../../kernel/agent/types.js";
-import {
-    extractReadableContentFromHtml,
-    type FetchImpl,
-    fetchSafeHttpResource,
-    type LookupHostname,
-} from "../../panda/tools/web-fetch.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
+import {extractReadableContentFromHtml} from "../web/html-content.js";
+import type {LookupHostname} from "../web/safe-web-target.js";
+import {type FetchImpl, fetchSafeHttpResource} from "../web/web-fetch.js";
 
 const SQL_WATCH_STATEMENT_TIMEOUT_MS = 5_000;
 const SQL_WATCH_LOCK_TIMEOUT_MS = 500;
 const SQL_WATCH_IDLE_TX_TIMEOUT_MS = 5_000;
 
+export type WatchCredentialResolver = Pick<CredentialResolver, "resolveCredential">;
+
 export interface WatchEvaluationOptions {
-  credentialResolver: CredentialResolver;
+  credentialResolver: WatchCredentialResolver;
   credentialContext?: {
     agentKey: string;
   };
@@ -62,44 +61,16 @@ interface HtmlQueryRoot {
   } | null;
 }
 
-function normalizeUnknownJson(value: unknown): JsonValue {
-  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return value;
+function readHtmlQueryRoot(value: unknown): HtmlQueryRoot {
+  if (
+    typeof value === "object"
+    && value !== null
+    && typeof (value as {querySelector?: unknown}).querySelector === "function"
+  ) {
+    return value as HtmlQueryRoot;
   }
 
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-
-  if (Buffer.isBuffer(value)) {
-    return value.toString("base64");
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((entry) => normalizeUnknownJson(entry));
-  }
-
-  if (typeof value === "object") {
-    const asObject = value as Record<string, unknown>;
-    if (typeof (asObject as {toHexString?: unknown}).toHexString === "function") {
-      return String((asObject as {toHexString(): string}).toHexString());
-    }
-
-    const normalized: JsonObject = {};
-    for (const [key, entry] of Object.entries(asObject)) {
-      if (entry === undefined) {
-        continue;
-      }
-      normalized[key] = normalizeUnknownJson(entry);
-    }
-    return normalized;
-  }
-
-  return String(value);
+  throw new Error("HTML collection item selector produced a node that cannot be queried.");
 }
 
 function parsePath(path: string): readonly string[] {
@@ -135,7 +106,7 @@ function readPath(value: JsonValue | undefined, path?: string): JsonValue | unde
       return undefined;
     }
 
-    cursor = (cursor as JsonObject)[segment];
+    cursor = cursor[segment];
   }
 
   return cursor;
@@ -169,6 +140,15 @@ function readNumber(value: JsonValue | undefined): number | undefined {
   return undefined;
 }
 
+function parseHttpJsonResponseBody(bodyText: string): JsonValue {
+  try {
+    return normalizeToJsonValue(JSON.parse(bodyText));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`HTTP JSON watch response must be valid JSON: ${message}`);
+  }
+}
+
 function readCursorValue(value: JsonValue | undefined): WatchCursorValue | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -195,6 +175,28 @@ function asArray(value: JsonValue | undefined, field: string): readonly JsonValu
   }
 
   return value;
+}
+
+function normalizeObject(value: unknown, field: string): JsonObject {
+  return asObject(normalizeToJsonValue(value), field);
+}
+
+function normalizeMongoSort(value: unknown): Record<string, 1 | -1> {
+  const sort = normalizeObject(value, "Mongo sort");
+  const normalized: Record<string, 1 | -1> = {};
+  for (const [key, direction] of Object.entries(sort)) {
+    if (direction !== 1 && direction !== -1) {
+      throw new Error(`Mongo sort field ${key} must be 1 or -1.`);
+    }
+    normalized[key] = direction;
+  }
+
+  return normalized;
+}
+
+function normalizeMongoPipeline(value: unknown): Record<string, unknown>[] {
+  return asArray(normalizeToJsonValue(value), "Mongo pipeline")
+    .map((stage) => normalizeObject(stage, "Mongo pipeline stage"));
 }
 
 function extractRowCollectionObservation(
@@ -347,7 +349,7 @@ function extractJsonObservation(
       const value = result.path ? readPath(payload, result.path) : payload;
       const text = typeof value === "string"
         ? value
-        : stableStringify(normalizeUnknownJson(value) as JsonValue);
+        : stableStringify(normalizeToJsonValue(value));
       return {
         observation: {
           kind: "snapshot",
@@ -408,7 +410,7 @@ function extractHtmlObservation(
 
   const {document} = parseHTML(html);
   const items = Array.from(document.querySelectorAll(result.itemSelector)).map((element) => {
-    const root = element as unknown as HtmlQueryRoot;
+    const root = readHtmlQueryRoot(element);
     const id = readHtmlField(root, result.itemId);
     if (!id) {
       throw new Error(`HTML collection id selector ${result.itemId.selector} did not resolve to a value.`);
@@ -454,7 +456,7 @@ function extractHtmlObservation(
 
 async function resolveCredentialValue(
   watch: WatchRecord,
-  resolver: CredentialResolver,
+  resolver: WatchCredentialResolver,
   context: WatchEvaluationOptions["credentialContext"],
   envKey: string,
 ): Promise<string> {
@@ -542,25 +544,25 @@ async function resolveMongoSource(
     const rows = source.operation === "find"
       ? await collection
           .find(
-            normalizeUnknownJson(source.filter ?? {}) as Record<string, unknown>,
+            normalizeObject(source.filter ?? {}, "Mongo filter"),
             {
               projection: source.projection === undefined
                 ? undefined
-                : normalizeUnknownJson(source.projection) as Record<string, unknown>,
+                : normalizeObject(source.projection, "Mongo projection"),
               sort: source.sort === undefined
                 ? undefined
-                : normalizeUnknownJson(source.sort) as Record<string, 1 | -1>,
+                : normalizeMongoSort(source.sort),
             },
           )
           .limit(Math.max(1, source.limit ?? 100))
           .toArray()
       : await collection
           .aggregate(
-            asArray(normalizeUnknownJson(source.pipeline), "Mongo pipeline") as Record<string, unknown>[],
+            normalizeMongoPipeline(source.pipeline),
           )
           .limit(Math.max(1, source.limit ?? 100))
           .toArray();
-    const normalizedRows = rows.map((row) => asObject(normalizeUnknownJson(row), "Mongo row"));
+    const normalizedRows = rows.map((row) => asObject(normalizeToJsonValue(row), "Mongo row"));
 
     return source.result.observation === "collection"
       ? extractRowCollectionObservation(normalizedRows, source.result)
@@ -605,7 +607,7 @@ async function resolveSqlSource(
       const result = await client.query(query, parameters);
       await client.query("COMMIT");
       inTransaction = false;
-      normalizedRows = result.rows.map((row) => asObject(normalizeUnknownJson(row), "SQL row"));
+      normalizedRows = result.rows.map((row) => asObject(normalizeToJsonValue(row), "SQL row"));
     } catch (error) {
       if (inTransaction) {
         await client.query("ROLLBACK").catch(() => undefined);
@@ -625,7 +627,7 @@ async function resolveSqlSource(
       await connection.query("COMMIT");
       inTransaction = false;
       normalizedRows = Array.isArray(rows)
-        ? rows.map((row) => asObject(normalizeUnknownJson(row), "SQL row"))
+        ? rows.map((row) => asObject(normalizeToJsonValue(row), "SQL row"))
         : [];
     } catch (error) {
       if (inTransaction) {
@@ -671,7 +673,7 @@ async function resolveHttpJsonSource(
     headers,
     body: source.body,
   });
-  const payload = normalizeUnknownJson(JSON.parse(response.bodyText));
+  const payload = parseHttpJsonResponseBody(response.bodyText);
   return extractJsonObservation(payload, source.result);
 }
 
@@ -884,7 +886,7 @@ export async function evaluateWatch(
 export function createWatchEvaluator(
   options: Omit<WatchEvaluationOptions, "credentialContext">,
 ): WatchEvaluator {
-  return async (watch, credentialContext) => await evaluateWatch(watch, {
+  return (watch, credentialContext) => evaluateWatch(watch, {
     ...options,
     credentialContext,
   });

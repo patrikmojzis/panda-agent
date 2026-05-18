@@ -8,16 +8,16 @@ import {promisify} from "node:util";
 import type {ToolResultMessage} from "@mariozechner/pi-ai";
 import {z} from "zod";
 
-import {resolveAgentMediaDir, resolveMediaDir} from "../../app/runtime/data-dir.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {stripToolArtifactInlineImages, withArtifactDetails} from "../../kernel/agent/tool-artifacts.js";
-import type {JsonValue, ToolResultPayload} from "../../kernel/agent/types.js";
+import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import type {JsonValue} from "../../lib/json.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
-import {trimToNull} from "../../lib/strings.js";
 import {assertPathReadable} from "../../lib/fs.js";
+import {resolveToolArtifactMediaRoot} from "./artifact-paths.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_PDF_PREVIEW_SIZE = 1600;
@@ -36,15 +36,6 @@ export interface MediaToolOptions {
   pdfPreviewSize?: number;
 }
 
-function resolveMediaArtifactRoot(context: DefaultAgentSessionContext | undefined, env: NodeJS.ProcessEnv): string {
-  const agentKey = trimToNull(context?.agentKey);
-  if (agentKey) {
-    return resolveAgentMediaDir(agentKey, env);
-  }
-
-  return resolveMediaDir(env);
-}
-
 async function writeDurablePdfPreview(
   previewPath: string,
   sourcePath: string,
@@ -52,7 +43,11 @@ async function writeDurablePdfPreview(
   context: DefaultAgentSessionContext | undefined,
   env: NodeJS.ProcessEnv,
 ): Promise<{path: string; bytes: Buffer}> {
-  const root = resolveMediaArtifactRoot(context, env);
+  const root = resolveToolArtifactMediaRoot({
+    context,
+    env,
+    source: "view_media",
+  });
   const artifactDir = path.join(root, "view_media", "previews");
   await mkdir(artifactDir, {recursive: true});
 

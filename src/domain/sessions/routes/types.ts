@@ -1,4 +1,4 @@
-import type {RememberedRoute} from "../../../domain/channels/types.js";
+import type {RememberedRoute} from "../../channels/types.js";
 
 export interface SessionRouteLookup {
   sessionId: string;

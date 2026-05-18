@@ -10,19 +10,22 @@ import type {
   DisposableEnvironmentCreateResult,
   ExecutionEnvironmentManager,
   ExecutionEnvironmentState,
-} from "../../domain/execution-environments/index.js";
+} from "../../domain/execution-environments/types.js";
 import {
   DEFAULT_PARENT_RUNNER_ENVIRONMENTS_ROOT,
   DEFAULT_WORKER_ARTIFACTS_PATH,
   DEFAULT_WORKER_INBOX_PATH,
   DEFAULT_WORKER_WORKSPACE_PATH,
   type ExecutionEnvironmentFilesystemMetadata,
-} from "../../domain/execution-environments/index.js";
-import type {JsonValue} from "../../kernel/agent/types.js";
+} from "../../domain/execution-environments/filesystem.js";
+import {sleep} from "../../lib/async.js";
+import {isJsonValue, type JsonValue} from "../../lib/json.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import {writeJsonResponse} from "../../lib/http.js";
+import {isLoopbackHttpHostname, writeJsonResponse} from "../../lib/http.js";
+import {readTcpPort} from "../../lib/numbers.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
+import {readJsonHttpBody} from "../http-body.js";
 
 const DEFAULT_MANAGER_HOST = "127.0.0.1";
 const DEFAULT_MANAGER_PORT = 8095;
@@ -36,6 +39,7 @@ const DEFAULT_CREATE_TIMEOUT_MS = 300_000;
 const DEFAULT_DOCKER_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CORE_ENVIRONMENTS_ROOT = "/root/.panda/environments";
 const DOCKER_DNS_LABEL_MAX_LENGTH = 63;
+const MAX_ENVIRONMENT_MANAGER_JSON_BODY_BYTES = 8 * 1024 * 1024;
 
 interface DockerRequestOptions {
   method: string;
@@ -270,8 +274,8 @@ function parsePort(value: string | null | undefined, fallback: number): number {
     return fallback;
   }
 
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) {
+  const parsed = readTcpPort(value);
+  if (parsed === undefined) {
     throw new Error(`Port must be an integer between 1 and 65535: ${value}`);
   }
   return parsed;
@@ -287,11 +291,6 @@ function parsePositiveInt(value: string | null | undefined, fallback: number, la
     throw new Error(`${label} must be a positive integer.`);
   }
   return parsed;
-}
-
-function isLoopbackBindHost(host: string): boolean {
-  const normalized = host.toLowerCase().replace(/^\[|\]$/g, "");
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
 function requireAuthorization(request: IncomingMessage, sharedSecret: string | undefined): void {
@@ -536,22 +535,16 @@ function isAutoRemoveInProgress(error: unknown): boolean {
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
+  return readJsonHttpBody(request, {
+    createError: createEnvironmentManagerBodyError,
+    invalidJsonPrefix: "Environment manager request body must be valid JSON",
+    maxBytes: MAX_ENVIRONMENT_MANAGER_JSON_BODY_BYTES,
+    tooLargeMessage: "Environment manager request body is too large.",
+  });
+}
 
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
-  if (!raw) {
-    return {};
-  }
-
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ToolError(`Environment manager request body must be valid JSON: ${message}`);
-  }
+function createEnvironmentManagerBodyError(statusCode: number, message: string): ToolError {
+  return new ToolError(message, {details: {statusCode}});
 }
 
 function validateCreateRequest(value: unknown): DisposableEnvironmentCreateRequest {
@@ -578,7 +571,30 @@ function validateCreateRequest(value: unknown): DisposableEnvironmentCreateReque
     sessionId,
     environmentId,
     ...(ttlMs === undefined ? {} : {ttlMs}),
-    ...(value.metadata === undefined ? {} : {metadata: value.metadata as JsonValue}),
+    ...(value.metadata === undefined ? {} : {metadata: validateManagerMetadata(value.metadata)}),
+  };
+}
+
+function validateManagerMetadata(value: unknown): JsonValue {
+  if (!isJsonValue(value)) {
+    throw new ToolError("Execution environment manager metadata must be JSON-serializable.");
+  }
+
+  return value;
+}
+
+function validateCreateResult(result: DisposableEnvironmentCreateResult): DisposableEnvironmentCreateResult {
+  const runnerUrl = trimToNull(result.runnerUrl);
+  const runnerCwd = trimToNull(result.runnerCwd);
+  if (!runnerUrl || !runnerCwd) {
+    throw new ToolError("Execution environment manager create response is missing runner connection details.");
+  }
+  const rootPath = trimToUndefined(result.rootPath);
+  return {
+    runnerUrl,
+    runnerCwd,
+    ...(rootPath ? {rootPath} : {}),
+    ...(result.metadata === undefined ? {} : {metadata: validateManagerMetadata(result.metadata)}),
   };
 }
 
@@ -634,7 +650,7 @@ export function resolveExecutionEnvironmentManagerServerOptions(
 ): ExecutionEnvironmentManagerServerOptions {
   const host = trimToUndefined(env.PANDA_EXECUTION_ENVIRONMENT_MANAGER_HOST) ?? DEFAULT_MANAGER_HOST;
   const sharedSecret = trimToUndefined(env.PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN);
-  if (!isLoopbackBindHost(host) && !sharedSecret) {
+  if (!isLoopbackHttpHostname(host) && !sharedSecret) {
     throw new Error("PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN is required when the environment manager binds outside loopback.");
   }
 
@@ -741,12 +757,12 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       runnerCwd: this.runnerCwd,
       rootPath: this.runnerCwd,
       metadata: {
-        filesystem: filesystem as unknown as JsonValue,
+        filesystem: validateManagerMetadata(filesystem),
         containerId: inspect.Id || containerId,
         containerName,
         image: this.image,
         ...(this.network ? {network: this.network} : {}),
-      } as JsonValue,
+      },
     };
   }
 
@@ -837,7 +853,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       }
 
       lastState = state;
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await sleep(500);
     }
 
     throw new Error(`Timed out waiting for disposable environment container ${container}; last state ${lastState}.`);
@@ -850,7 +866,7 @@ export async function startExecutionEnvironmentManager(
   const host = options.host ?? DEFAULT_MANAGER_HOST;
   const port = options.port ?? DEFAULT_MANAGER_PORT;
   const sharedSecret = trimToUndefined(options.sharedSecret);
-  if (!isLoopbackBindHost(host) && !sharedSecret) {
+  if (!isLoopbackHttpHostname(host) && !sharedSecret) {
     throw new Error("PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN is required when the environment manager binds outside loopback.");
   }
 
@@ -878,7 +894,7 @@ export async function startExecutionEnvironmentManager(
       requireAuthorization(request, sharedSecret);
       const body = await readJsonBody(request);
       if (requestUrl.pathname === "/environments/disposable") {
-        const result = await manager.createDisposableEnvironment(validateCreateRequest(body));
+        const result = validateCreateResult(await manager.createDisposableEnvironment(validateCreateRequest(body)));
         writeJsonResponse(response, 200, {
           ok: true,
           ...result,

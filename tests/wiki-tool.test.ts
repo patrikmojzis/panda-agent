@@ -1277,7 +1277,10 @@ describe("WikiTool", () => {
       },
     ]);
 
-    expect(pages.get("en/agents/panda/journal/2026/today")).toBeTruthy();
+    expect(pages.get("en/agents/panda/journal/2026/today")).toMatchObject({
+      path: "agents/panda/journal/2026/today",
+      content: expect.stringContaining("[Profile](../../profile)"),
+    });
     expect(pages.get("en/agents/panda/notes/today")).toBeUndefined();
     expect(String(pages.get("en/agents/panda/_archive/2026/04/old-index")?.content ?? "")).toContain(
       "[Today](/agents/panda/notes/today)",

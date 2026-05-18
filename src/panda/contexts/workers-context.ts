@@ -1,17 +1,19 @@
 import {LlmContext} from "../../kernel/agent/llm-context.js";
-import type {SessionRecord, SessionStore} from "../../domain/sessions/index.js";
+import type {SessionStore} from "../../domain/sessions/store.js";
+import type {SessionRecord} from "../../domain/sessions/types.js";
 import {readWorkerSessionMetadata} from "../../domain/sessions/worker-metadata.js";
 import type {
   ExecutionEnvironmentRecord,
-  ExecutionEnvironmentStore,
   SessionEnvironmentBindingRecord,
-} from "../../domain/execution-environments/index.js";
-import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/index.js";
+} from "../../domain/execution-environments/types.js";
+import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
+import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
 import {
   renderWorkersContext,
   type RenderWorkersContextEnvironment,
   type RenderWorkersContextWorker,
 } from "../../prompts/contexts/workers.js";
+import {resolveNow} from "./shared.js";
 
 const STOPPED_WORKER_CONTEXT_TTL_MS = 60 * 60 * 1_000;
 const MAX_RENDERED_ENVIRONMENTS = 12;
@@ -24,14 +26,6 @@ export interface WorkersContextOptions {
   parentSessionId: string;
   stoppedTtlMs?: number;
   now?: Date | (() => Date);
-}
-
-function resolveNow(now?: Date | (() => Date)): Date {
-  if (typeof now === "function") {
-    return now();
-  }
-
-  return now ?? new Date();
 }
 
 function formatTimestamp(timestamp: number): string {
