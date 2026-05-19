@@ -73,7 +73,7 @@ export interface DiscordRunService {
 }
 
 interface DiscordAccountOwnerCliOptions extends DiscordAccountCliOptions {
-  ownerAgent?: string;
+  agent?: string;
   ownerIdentity?: string;
 }
 
@@ -256,8 +256,8 @@ async function withDiscordActorPairingStores<T>(
 }
 
 function assertDiscordOwnerFlagsExclusive(options: DiscordAccountOwnerCliOptions): void {
-  if (options.ownerIdentity && options.ownerAgent) {
-    throw new Error("Choose only one Discord account owner: --owner-identity or --owner-agent.");
+  if (options.ownerIdentity && options.agent) {
+    throw new Error("Choose only one Discord account owner: --owner-identity or --agent.");
   }
 }
 
@@ -272,8 +272,8 @@ async function resolveDiscordAccountOwner(
     return {ownerIdentityId: identity.id};
   }
 
-  if (options.ownerAgent) {
-    const agent = await stores.agentStore.getAgent(options.ownerAgent);
+  if (options.agent) {
+    const agent = await stores.agentStore.getAgent(options.agent);
     return {ownerAgentKey: agent.agentKey};
   }
 
@@ -887,7 +887,7 @@ export function registerDiscordCommands(
     .argument("<accountKey>", "Discord connector account key", parseDiscordAccountKey)
     .requiredOption("--bot-token-stdin", "Read the Discord bot token from stdin")
     .option("--owner-identity <handle>", "Panda identity handle that owns this account", parseDiscordOwnerIdentity)
-    .option("--owner-agent <agentKey>", "Panda agent key that owns this account", parseDiscordOwnerAgent)
+    .option("--agent <agentKey>", "Panda agent key that owns this account", parseDiscordOwnerAgent)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((accountKey: string, options: DiscordAccountSetCliOptions) => {
       return discordAccountSetCommand(accountKey, options, dependencies);
@@ -899,7 +899,7 @@ export function registerDiscordCommands(
     .argument("<accountKey>", "Discord connector account key", parseDiscordAccountKey)
     .requiredOption("--env-key <ENV_VAR_NAME>", "Environment variable containing the Discord bot token", parseEnvKey)
     .option("--owner-identity <handle>", "Panda identity handle that owns this account", parseDiscordOwnerIdentity)
-    .option("--owner-agent <agentKey>", "Panda agent key that owns this account", parseDiscordOwnerAgent)
+    .option("--agent <agentKey>", "Panda agent key that owns this account", parseDiscordOwnerAgent)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((accountKey: string, options: DiscordAccountImportEnvCliOptions) => {
       return discordAccountImportEnvCommand(accountKey, options, dependencies);
