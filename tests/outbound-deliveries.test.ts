@@ -173,6 +173,99 @@ describe("PostgresOutboundDeliveryStore", () => {
     });
   });
 
+  it("round-trips target delivery context through reserved metadata", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    await createRuntimeStores(pool);
+    const store = new PostgresOutboundDeliveryStore({ pool });
+    await store.ensureSchema();
+    const deliveryContext = {
+      discord: {
+        channelId: "thread-1",
+        parentChannelId: "channel-1",
+        threadId: "thread-1",
+      },
+    };
+
+    const delivery = await store.enqueueDelivery({
+      channel: "discord",
+      target: {
+        source: "discord",
+        connectorKey: "bot-1",
+        externalConversationId: "channel-1",
+        deliveryContext,
+      },
+      items: [{ type: "text", text: "hello thread" }],
+      metadata: {custom: true},
+    });
+
+    expect(delivery).toMatchObject({
+      target: {deliveryContext},
+      metadata: {custom: true, deliveryContext},
+    });
+    await expect(store.getDelivery(delivery.id)).resolves.toMatchObject({
+      target: {deliveryContext},
+      metadata: {custom: true, deliveryContext},
+    });
+    const claimed = await store.claimNextPendingDelivery({
+      channel: "discord",
+      connectorKey: "bot-1",
+    });
+    expect(claimed).toMatchObject({
+      target: {deliveryContext},
+      metadata: {custom: true, deliveryContext},
+    });
+  });
+
+  it("rejects malformed delivery context before enqueueing", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    await createRuntimeStores(pool);
+    const store = new PostgresOutboundDeliveryStore({ pool });
+    await store.ensureSchema();
+
+    await expect(store.enqueueDelivery({
+      channel: "discord",
+      target: {
+        source: "discord",
+        connectorKey: "bot-1",
+        externalConversationId: "channel-1",
+        deliveryContext: [] as never,
+      },
+      items: [{ type: "text", text: "hello" }],
+    })).rejects.toThrow("Outbound delivery target delivery context must be a JSON object.");
+
+    await expect(store.enqueueDelivery({
+      channel: "discord",
+      target: {
+        source: "discord",
+        connectorKey: "bot-1",
+        externalConversationId: "channel-1",
+        deliveryContext: {discord: {channelId: "channel-1"}},
+      },
+      items: [{ type: "text", text: "hello" }],
+      metadata: "legacy metadata",
+    })).rejects.toThrow("Outbound delivery metadata must be a JSON object when target deliveryContext is provided.");
+  });
+
   it("rejects non-json delivery metadata before enqueueing", async () => {
     const db = newDb();
     db.public.registerFunction({

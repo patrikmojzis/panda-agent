@@ -6,6 +6,11 @@ export interface ConversationLookup {
   externalConversationId: string;
 }
 
+export interface ConversationBindingListFilter {
+  source: string;
+  connectorKey: string;
+}
+
 export interface BindConversationInput extends ConversationLookup {
   sessionId: string;
   metadata?: JsonValue;

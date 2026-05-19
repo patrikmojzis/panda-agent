@@ -64,6 +64,19 @@ interface ResolvedOutboundTarget {
   identityHandle?: string;
 }
 
+
+function shouldRememberDeliveryContext(source: string): boolean {
+  return source !== "discord";
+}
+
+function deliveryContextForRememberedRoute(route: RememberedRoute) {
+  return shouldRememberDeliveryContext(route.source) ? route.deliveryContext : undefined;
+}
+
+function deliveryContextForRememberedTarget(target: OutboundTarget) {
+  return shouldRememberDeliveryContext(target.source) ? target.deliveryContext : undefined;
+}
+
 function buildRouteMemoryLookup(channel?: string, identityId?: string): {
   channel?: string;
   identityId?: string;
@@ -94,6 +107,9 @@ async function readRememberedTarget(
       connectorKey: route.connectorKey,
       externalConversationId: route.externalConversationId,
       externalActorId: route.externalActorId,
+      ...(deliveryContextForRememberedRoute(route) !== undefined
+        ? {deliveryContext: deliveryContextForRememberedRoute(route)}
+        : {}),
     },
   };
 }
@@ -115,6 +131,9 @@ async function readRememberedTargetForChannel(
       connectorKey: route.connectorKey,
       externalConversationId: route.externalConversationId,
       externalActorId: route.externalActorId,
+      ...(deliveryContextForRememberedRoute(route) !== undefined
+        ? {deliveryContext: deliveryContextForRememberedRoute(route)}
+        : {}),
     },
   };
 }
@@ -172,6 +191,9 @@ function rememberRouteFromTarget(target: OutboundTarget): RememberedRoute {
     externalConversationId: target.externalConversationId,
     externalActorId: target.externalActorId,
     capturedAt: Date.now(),
+    ...(deliveryContextForRememberedTarget(target) !== undefined
+      ? {deliveryContext: deliveryContextForRememberedTarget(target)}
+      : {}),
   };
 }
 
@@ -311,6 +333,9 @@ export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<ty
       channel,
       target,
       items,
+      ...(target.deliveryContext !== undefined
+        ? {metadata: {deliveryContext: target.deliveryContext}}
+        : {}),
     });
     if (!args.to) {
       await sessionContext?.routeMemory?.saveLastRoute(rememberRouteFromTarget(target), {

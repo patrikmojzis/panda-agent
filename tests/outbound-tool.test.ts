@@ -142,6 +142,132 @@ describe("OutboundTool", () => {
     expect(JSON.stringify(result)).not.toContain("externalActorId");
   });
 
+  it("preserves Discord delivery context from the current input into queue metadata and route memory", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const deliveryContext = {
+      discord: {
+        channelId: "thread-1",
+        parentChannelId: "channel-1",
+        threadId: "thread-1",
+        guildId: "guild-1",
+        messageId: "message-1",
+      },
+    };
+    const context = createContext({
+      currentInput: {
+        source: "discord",
+        channelId: "channel-1",
+        identityId: "identity-patrik",
+        metadata: {
+          route: {
+            source: "discord",
+            connectorKey: "bot-1",
+            externalConversationId: "channel-1",
+            externalActorId: "user-1",
+          },
+          deliveryContext,
+        },
+      },
+    });
+
+    const result = await tool.run({
+      items: [{ type: "text", text: "hello thread" }],
+    }, createRunContext(context));
+
+    expect(context.queued).toEqual([{
+      threadId: "thread-1",
+      channel: "discord",
+      target: {
+        source: "discord",
+        connectorKey: "bot-1",
+        externalConversationId: "channel-1",
+        externalActorId: "user-1",
+        deliveryContext,
+      },
+      items: [{ type: "text", text: "hello thread" }],
+      metadata: {deliveryContext},
+    }]);
+    expect(context.rememberedRoutes).toEqual([expect.objectContaining({
+      source: "discord",
+      connectorKey: "bot-1",
+      externalConversationId: "channel-1",
+      externalActorId: "user-1",
+    })]);
+    expect(context.rememberedRoutes[0]).not.toHaveProperty("deliveryContext");
+    expect(context.rememberedRouteOptions).toEqual([{identityId: "identity-patrik"}]);
+    expect(result).toEqual({
+      ok: true,
+      status: "queued",
+      deliveryId: "delivery-1",
+      to: {
+        channel: "discord",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("channel-1");
+    expect(JSON.stringify(result)).not.toContain("thread-1");
+    expect(JSON.stringify(result)).not.toContain("bot-1");
+  });
+
+  it("uses remembered Discord identity routes as parent/general even if stale context exists", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const identity = createIdentity("identity-patrik", "patrik_mojzis");
+    const deliveryContext = {
+      discord: {
+        channelId: "thread-1",
+        parentChannelId: "channel-1",
+        threadId: "thread-1",
+      },
+    };
+    const context = createContext({
+      identityDirectory: {
+        getIdentityByHandle: async (handle) => {
+          context.identityLookups.push(handle);
+          return identity;
+        },
+      },
+      routeMemory: {
+        getLastRoute: async (lookup) => {
+          context.routeLookups.push(lookup);
+          return lookup?.identityId === "identity-patrik" && lookup.channel === "discord"
+            ? {
+              source: "discord",
+              connectorKey: "bot-1",
+              externalConversationId: "channel-1",
+              externalActorId: "user-1",
+              capturedAt: 123,
+              deliveryContext,
+            }
+            : null;
+        },
+        saveLastRoute: async (route, options) => {
+          context.rememberedRoutes.push(route);
+          context.rememberedRouteOptions.push(options);
+        },
+      },
+    });
+
+    await tool.run({
+      to: {identityHandle: "patrik_mojzis", channel: "discord"},
+      items: [{ type: "text", text: "remembered thread" }],
+    }, createRunContext(context));
+
+    expect(context.routeLookups).toEqual([{
+      identityId: "identity-patrik",
+      channel: "discord",
+    }]);
+    expect(context.queued).toEqual([{
+      threadId: "thread-1",
+      channel: "discord",
+      target: {
+        source: "discord",
+        connectorKey: "bot-1",
+        externalConversationId: "channel-1",
+        externalActorId: "user-1",
+      },
+      items: [{ type: "text", text: "remembered thread" }],
+    }]);
+  });
+
   it("can target the current TUI route just like any other channel lane", async () => {
     const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext({

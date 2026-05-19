@@ -10,6 +10,7 @@ import type {SessionRecord, SessionRouteInput, SessionRouteRecord} from "../src/
 import type {ThreadRecord} from "../src/domain/threads/runtime/index.js";
 import type {
   A2AMessageRequestPayload,
+  DiscordMessageRequestPayload,
   RuntimeRequestRecord,
   TelegramMessageRequestPayload,
   TuiInputRequestPayload,
@@ -62,6 +63,30 @@ function telegramMessageRequest(
       username: "patrik",
       firstName: "Patrik",
       media: [],
+      ...overrides,
+    },
+  };
+}
+
+function discordMessageRequest(
+  overrides: Partial<DiscordMessageRequestPayload> = {},
+): RuntimeRequestRecord<"discord_message"> {
+  return {
+    id: "request-discord",
+    kind: "discord_message",
+    status: "pending",
+    createdAt: 1,
+    updatedAt: 1,
+    payload: {
+      connectorKey: "bot-1",
+      externalConversationId: "channel-1",
+      externalActorId: "user-1",
+      externalMessageId: "message-1",
+      actualChannelId: "channel-1",
+      text: "hello from discord",
+      authorUsername: "patrik",
+      authorDisplayName: "Patrik Display",
+      attachmentSummaries: [],
       ...overrides,
     },
   };
@@ -185,6 +210,7 @@ function createThreadHelpers(overrides: Partial<DaemonRequestThreadHelpers> = {}
     openMainSession: unexpected,
     queueSystemReply: unexpected,
     relocateThreadMedia: vi.fn(async (_thread, media) => media),
+    resolveBoundConversationThread: unexpected,
     resolveOrCreateConversationThread: unexpected,
     ...overrides,
   };
@@ -205,7 +231,7 @@ function createHarness(options: {
   const submitInput = vi.fn(async () => {});
   const saveLastRoute = createSaveLastRouteMock();
   const getSession = vi.fn(async (sessionId: string) => createSession(sessionId, currentThreadId));
-  const resolveOrCreateConversationThread = vi.fn(async (): Promise<ThreadRecord | null> => {
+  const resolveThread = vi.fn(async (): Promise<ThreadRecord | null> => {
     return thread
       ? {
         id: thread.id,
@@ -216,6 +242,8 @@ function createHarness(options: {
       }
       : null;
   });
+  const resolveBoundConversationThread = vi.fn(resolveThread);
+  const resolveOrCreateConversationThread = vi.fn(resolveThread);
   const queueSystemReply = vi.fn(async () => {});
   const handleResetSession = vi.fn(async () => ({
     threadId: "thread-reset",
@@ -230,6 +258,7 @@ function createHarness(options: {
     submitInput,
   });
   const threads = createThreadHelpers({
+    resolveBoundConversationThread,
     resolveOrCreateConversationThread,
     queueSystemReply,
     handleResetSession,
@@ -240,6 +269,7 @@ function createHarness(options: {
     getSession,
     handleResetSession,
     queueSystemReply,
+    resolveBoundConversationThread,
     resolveOrCreateConversationThread,
     saveLastRoute,
     submitInput,
@@ -347,6 +377,195 @@ describe("daemon request processor", () => {
         content: expect.stringContaining("hello after reset"),
       }),
     }));
+  });
+
+
+  it("drops unbound Discord daemon requests without saving route or submitting input", async () => {
+    const harness = createHarness({
+      binding: null,
+      thread: null,
+    });
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(discordMessageRequest())).resolves.toEqual({
+      status: "dropped",
+      reason: "unbound_conversation",
+    });
+
+    expect(harness.resolveBoundConversationThread).toHaveBeenCalledWith({
+      source: "discord",
+      connectorKey: "bot-1",
+      externalConversationId: "channel-1",
+    });
+    expect(harness.resolveOrCreateConversationThread).not.toHaveBeenCalled();
+    expect(harness.saveLastRoute).not.toHaveBeenCalled();
+    expect(harness.submitInput).not.toHaveBeenCalled();
+  });
+
+  it("routes bound Discord messages to the bound session current thread and saves route before submit", async () => {
+    const harness = createHarness({
+      thread: {id: "thread-before-reset", sessionId: "session-1"},
+      currentThreadId: "thread-after-reset",
+    });
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(discordMessageRequest({
+      sentAt: Date.parse("2026-05-18T19:00:00.000Z"),
+      guildId: "guild-1",
+      threadId: "discord-thread-1",
+      actualChannelId: "discord-thread-1",
+      parentChannelId: "channel-1",
+      replyToMessageId: "reply-1",
+    }))).resolves.toEqual({
+      status: "queued",
+      threadId: "thread-after-reset",
+    });
+
+    expect(harness.submitInput).toHaveBeenCalledWith("thread-after-reset", expect.objectContaining({
+      source: "discord",
+      channelId: "channel-1",
+      externalMessageId: "message-1",
+      actorId: "user-1",
+      identityId: "identity-1",
+      message: expect.objectContaining({
+        content: expect.stringContaining("hello from discord"),
+      }),
+      metadata: expect.objectContaining({
+        deliveryContext: {
+          discord: {
+            channelId: "discord-thread-1",
+            parentChannelId: "channel-1",
+            threadId: "discord-thread-1",
+            guildId: "guild-1",
+            messageId: "message-1",
+            referencedMessageId: "reply-1",
+          },
+        },
+        route: expect.objectContaining({
+          deliveryContext: {
+            discord: {
+              channelId: "discord-thread-1",
+              parentChannelId: "channel-1",
+              threadId: "discord-thread-1",
+              guildId: "guild-1",
+              messageId: "message-1",
+              referencedMessageId: "reply-1",
+            },
+          },
+        }),
+        discord: expect.objectContaining({
+          actualChannelId: "discord-thread-1",
+          threadId: "discord-thread-1",
+          parentChannelId: "channel-1",
+          replyToMessageId: "reply-1",
+        }),
+      }),
+    }));
+    expect(harness.saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      identityId: "identity-1",
+      route: expect.objectContaining({
+        source: "discord",
+        connectorKey: "bot-1",
+        externalConversationId: "channel-1",
+        externalActorId: "user-1",
+        externalMessageId: "message-1",
+      }),
+    }));
+    expect(harness.saveLastRoute.mock.calls[0]?.[0].route).not.toHaveProperty("deliveryContext");
+    expectFirstCallBefore(harness.saveLastRoute, harness.submitInput);
+  });
+
+  it("routes Discord messages from unbound actors with safe author metadata and no identity id", async () => {
+    const harness = createHarness({
+      binding: null,
+    });
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(discordMessageRequest({
+      authorUsername: "discord-user",
+      authorGlobalName: "Discord Global",
+      authorDisplayName: "Discord Display",
+      authorIsBot: false,
+    }))).resolves.toEqual({
+      status: "queued",
+      threadId: "thread-1",
+    });
+
+    expect(harness.saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      identityId: undefined,
+      route: expect.objectContaining({
+        source: "discord",
+        externalConversationId: "channel-1",
+      }),
+    }));
+    expect(harness.saveLastRoute.mock.calls[0]?.[0].route).not.toHaveProperty("deliveryContext");
+    const submitted = harness.submitInput.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(submitted).not.toHaveProperty("identityId");
+    expect(submitted).toMatchObject({
+      metadata: {
+        deliveryContext: {
+          discord: {
+            channelId: "channel-1",
+            parentChannelId: "channel-1",
+            messageId: "message-1",
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(submitted)).toContain("discord-user");
+    expect(JSON.stringify(submitted)).toContain("Discord Display");
+  });
+
+  it("submits attachment-only Discord requests as useful text summaries", async () => {
+    const harness = createHarness();
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(discordMessageRequest({
+      text: undefined,
+      attachmentSummaries: [{
+        id: "attachment-1",
+        filename: "report.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 456,
+      }],
+    }))).resolves.toEqual({
+      status: "queued",
+      threadId: "thread-1",
+    });
+
+    expect(harness.submitInput).toHaveBeenCalledWith("thread-1", expect.objectContaining({
+      message: expect.objectContaining({
+        content: expect.stringContaining("Discord message with 1 attachment."),
+      }),
+      metadata: expect.objectContaining({
+        discord: expect.objectContaining({
+          attachments: [{
+            id: "attachment-1",
+            filename: "report.pdf",
+            contentType: "application/pdf",
+            sizeBytes: 456,
+          }],
+        }),
+      }),
+    }));
+  });
+
+  it("drops unsupported empty Discord shapes without saving route or submitting input", async () => {
+    const harness = createHarness();
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(discordMessageRequest({
+      text: " ",
+      attachmentSummaries: [],
+    }))).resolves.toEqual({
+      status: "dropped",
+      reason: "unsupported_message_shape",
+    });
+
+    expect(harness.saveLastRoute).not.toHaveBeenCalled();
+    expect(harness.submitInput).not.toHaveBeenCalled();
   });
 
   it("routes paired Telegram messages to the conversation thread", async () => {

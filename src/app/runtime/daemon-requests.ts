@@ -15,6 +15,7 @@ import type {IdentityStore} from "../../domain/identity/store.js";
 import type {SessionRouteRepo} from "../../domain/sessions/routes/repo.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import {handleA2AMessageRequest} from "../../integrations/channels/a2a/request-handler.js";
+import {handleDiscordMessageRequest} from "../../integrations/channels/discord/request-handler.js";
 import {
   handleTelegramReactionRequest,
   handleTelegramRuntimeMessageRequest,
@@ -56,6 +57,7 @@ export type DaemonRequestThreadHelpers = Pick<
   | "openMainSession"
   | "queueSystemReply"
   | "relocateThreadMedia"
+  | "resolveBoundConversationThread"
   | "resolveOrCreateConversationThread"
 >;
 
@@ -198,6 +200,14 @@ export function createDaemonRequestProcessor(
           bindings: context.a2aBindings,
           coordinator: context.runtime.coordinator,
           sessions: context.runtime.sessionStore,
+        });
+      case "discord_message":
+        return handleDiscordMessageRequest(request.payload, {
+          coordinator: context.runtime.coordinator,
+          identityStore: context.runtime.identityStore,
+          routes: context.sessionRoutes,
+          sessions: context.runtime.sessionStore,
+          threads,
         });
       case "telegram_message":
         return handleTelegramRuntimeMessageRequest(request.payload, {

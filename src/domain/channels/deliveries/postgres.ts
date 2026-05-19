@@ -1,14 +1,14 @@
 import {optionalTimestampMillis, requireTimestampMillis, toJson} from "../../../lib/postgres-values.js";
 import {randomUUID} from "node:crypto";
 
-import {readOptionalJsonValue} from "../../../lib/json.js";
+import {isJsonObject, readOptionalJsonValue, type JsonValue} from "../../../lib/json.js";
 import {listenPostgresChannel} from "../../../lib/postgres-listen.js";
 import {requireNonNegativeInteger} from "../../../lib/numbers.js";
 import type {PgListenClient, PgPoolLike} from "../../../lib/postgres-query.js";
 import {isRecord} from "../../../lib/records.js";
 import {optionalTrimmedString, requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import {normalizeChannelWorkerLookup, parseChannelNotification} from "../worker-shared.js";
-import type {OutboundItem, OutboundSentItem, OutboundTarget} from "../types.js";
+import type {DeliveryContext, OutboundItem, OutboundSentItem, OutboundTarget} from "../types.js";
 import {
     buildDeliveryNotificationChannel,
     buildOutboundDeliveryTableNames,
@@ -34,25 +34,85 @@ function missingDeliveryError(id: string): Error {
   return new Error(`Unknown outbound delivery ${id}`);
 }
 
+function readOptionalDeliveryContext(value: unknown, label: string): DeliveryContext | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!isJsonObject(value)) {
+    throw new Error(`${label} must be a JSON object.`);
+  }
+
+  return value;
+}
+
 function normalizeTarget(channel: string, target: OutboundTarget): OutboundTarget {
+  const deliveryContext = readOptionalDeliveryContext(
+    target.deliveryContext,
+    "Outbound delivery target delivery context",
+  );
+
   return {
     source: requireNonEmptyString(target.source || channel, "Outbound delivery target source must not be empty."),
     connectorKey: requireNonEmptyString(target.connectorKey, "Outbound delivery target connector key must not be empty."),
     externalConversationId: requireNonEmptyString(target.externalConversationId, "Outbound delivery target conversation id must not be empty."),
     externalActorId: trimToUndefined(target.externalActorId),
     replyToMessageId: trimToUndefined(target.replyToMessageId),
+    ...(deliveryContext !== undefined ? {deliveryContext} : {}),
+  };
+}
+
+function readMetadataDeliveryContext(metadata: JsonValue | undefined): DeliveryContext | undefined {
+  if (!isJsonObject(metadata) || !Object.hasOwn(metadata, "deliveryContext")) {
+    return undefined;
+  }
+
+  return readOptionalDeliveryContext(
+    metadata.deliveryContext,
+    "Outbound delivery metadata deliveryContext",
+  );
+}
+
+function mergeDeliveryMetadata(
+  metadata: JsonValue | undefined,
+  deliveryContext: DeliveryContext | undefined,
+): JsonValue | undefined {
+  const metadataDeliveryContext = readMetadataDeliveryContext(metadata);
+  const effectiveDeliveryContext = deliveryContext ?? metadataDeliveryContext;
+  if (effectiveDeliveryContext === undefined) {
+    return metadata;
+  }
+
+  if (metadata !== undefined && !isJsonObject(metadata)) {
+    throw new Error("Outbound delivery metadata must be a JSON object when target deliveryContext is provided.");
+  }
+
+  return {
+    ...(metadata ?? {}),
+    deliveryContext: effectiveDeliveryContext,
   };
 }
 
 function normalizeDeliveryInput(input: OutboundDeliveryInput): OutboundDeliveryInput {
   const channel = requireNonEmptyString(input.channel, "Outbound delivery channel must not be empty.");
+  const target = normalizeTarget(channel, input.target);
+  const metadata = readOptionalJsonValue(input.metadata, "Outbound delivery metadata");
+  const metadataDeliveryContext = readMetadataDeliveryContext(metadata);
+  const deliveryContext = target.deliveryContext ?? metadataDeliveryContext;
+  const normalizedTarget = deliveryContext === undefined
+    ? target
+    : {
+      ...target,
+      deliveryContext,
+    };
+
   return {
     ...input,
     threadId: trimToUndefined(input.threadId),
     channel,
-    target: normalizeTarget(channel, input.target),
+    target: normalizedTarget,
     items: parseItems(input.items),
-    metadata: readOptionalJsonValue(input.metadata, "Outbound delivery metadata"),
+    metadata: mergeDeliveryMetadata(metadata, target.deliveryContext),
   };
 }
 
@@ -143,7 +203,9 @@ function parseItems(value: unknown): readonly OutboundItem[] {
   });
 }
 
-function parseTarget(row: Record<string, unknown>): OutboundTarget {
+function parseTarget(row: Record<string, unknown>, metadata: JsonValue | undefined): OutboundTarget {
+  const deliveryContext = readMetadataDeliveryContext(metadata);
+
   return {
     source: requireNonEmptyString(row.channel, "Outbound delivery target source must not be empty."),
     connectorKey: requireNonEmptyString(row.connector_key, "Outbound delivery target connector key must not be empty."),
@@ -153,17 +215,20 @@ function parseTarget(row: Record<string, unknown>): OutboundTarget {
     ),
     externalActorId: readOptionalString(row.external_actor_id, "target actor id"),
     replyToMessageId: readOptionalString(row.reply_to_message_id, "reply target message id"),
+    ...(deliveryContext !== undefined ? {deliveryContext} : {}),
   };
 }
 
 function parseOutboundDeliveryRow(row: Record<string, unknown>): OutboundDeliveryRecord {
+  const metadata = readOptionalJsonValue(row.metadata, "Outbound delivery metadata");
+
   return {
     id: requireNonEmptyString(row.id, "Outbound delivery id must not be empty."),
     threadId: readOptionalString(row.thread_id, "thread id"),
     channel: requireNonEmptyString(row.channel, "Outbound delivery channel must not be empty."),
-    target: parseTarget(row),
+    target: parseTarget(row, metadata),
     items: parseItems(row.items),
-    metadata: readOptionalJsonValue(row.metadata, "Outbound delivery metadata"),
+    metadata,
     status: parseStatus(row.status),
     attemptCount: requireNonNegativeInteger(row.attempt_count, "Outbound delivery attempt count"),
     lastError: readOptionalString(row.last_error, "last error"),

@@ -1,4 +1,6 @@
-import type {JsonValue} from "../../lib/json.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
+
+export type DeliveryContext = JsonObject;
 
 export interface OutboundRoute {
   source: string;
@@ -9,16 +11,19 @@ export interface OutboundRoute {
 export interface OutboundTarget extends OutboundRoute {
   externalActorId?: string;
   replyToMessageId?: string;
+  deliveryContext?: DeliveryContext;
 }
 
 export interface ChannelTypingTarget extends OutboundRoute {
   externalActorId?: string;
+  deliveryContext?: DeliveryContext;
 }
 
 export interface RememberedRoute extends OutboundRoute {
   externalActorId?: string;
   externalMessageId?: string;
   capturedAt: number;
+  deliveryContext?: DeliveryContext;
 }
 
 export interface MediaDescriptor {

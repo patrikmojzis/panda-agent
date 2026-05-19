@@ -285,6 +285,100 @@ describe("ConversationRepo", () => {
     });
   });
 
+  it("lists, create-only inserts, and deletes scoped conversation bindings", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {sessionStore} = await createRuntimeStores(pool);
+    const store = new ConversationRepo({ pool });
+    await store.ensureSchema();
+    await sessionStore.createSession({
+      id: "session-a",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-a",
+    });
+    await sessionStore.createSession({
+      id: "session-b",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-b",
+    });
+
+    const created = await store.createConversationBinding({
+      source: "discord",
+      connectorKey: "bot-main",
+      externalConversationId: "channel-2",
+      sessionId: "session-a",
+      metadata: {
+        boundVia: "discord-cli",
+      },
+    });
+    expect(created).toMatchObject({
+      source: "discord",
+      connectorKey: "bot-main",
+      externalConversationId: "channel-2",
+      sessionId: "session-a",
+    });
+    await expect(store.createConversationBinding({
+      source: "discord",
+      connectorKey: "bot-main",
+      externalConversationId: "channel-2",
+      sessionId: "session-b",
+    })).resolves.toBeNull();
+
+    await store.bindConversation({
+      source: "discord",
+      connectorKey: "bot-main",
+      externalConversationId: "channel-1",
+      sessionId: "session-b",
+    });
+    await store.bindConversation({
+      source: "discord",
+      connectorKey: "bot-secondary",
+      externalConversationId: "channel-1",
+      sessionId: "session-a",
+    });
+
+    await expect(store.listConversationBindings({
+      source: "discord",
+      connectorKey: "bot-main",
+    })).resolves.toMatchObject([
+      {
+        externalConversationId: "channel-1",
+        sessionId: "session-b",
+      },
+      {
+        externalConversationId: "channel-2",
+        sessionId: "session-a",
+      },
+    ]);
+
+    await expect(store.deleteConversationBinding({
+      source: "discord",
+      connectorKey: "bot-main",
+      externalConversationId: "channel-2",
+    })).resolves.toBe(true);
+    await expect(store.deleteConversationBinding({
+      source: "discord",
+      connectorKey: "bot-main",
+      externalConversationId: "channel-2",
+    })).resolves.toBe(false);
+    await expect(store.getConversationBinding({
+      source: "discord",
+      connectorKey: "bot-main",
+      externalConversationId: "channel-2",
+    })).resolves.toBeNull();
+  });
+
   it("validates required lookup fields", async () => {
     const db = newDb();
     db.public.registerFunction({

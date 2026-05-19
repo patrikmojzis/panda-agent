@@ -90,6 +90,11 @@ export interface DaemonThreadHelpers {
     context?: Record<string, unknown>;
     metadata?: JsonValue;
   }): Promise<ThreadRecord | null>;
+  resolveBoundConversationThread(input: {
+    source: string;
+    connectorKey: string;
+    externalConversationId: string;
+  }): Promise<ThreadRecord | null>;
   queueSystemReply(input: {
     channel: string;
     connectorKey: string;
@@ -374,6 +379,23 @@ export function createDaemonThreadHelpers(
     return resolveCurrentThread(session.id);
   };
 
+  const resolveBoundConversationThread = async (input: {
+    source: string;
+    connectorKey: string;
+    externalConversationId: string;
+  }): Promise<ThreadRecord | null> => {
+    const existing = await context.conversationBindings.getConversationBinding({
+      source: input.source,
+      connectorKey: input.connectorKey,
+      externalConversationId: input.externalConversationId,
+    });
+    if (!existing) {
+      return null;
+    }
+
+    return resolveCurrentThread(existing.sessionId);
+  };
+
   const queueSystemReply = async (input: {
     channel: string;
     connectorKey: string;
@@ -576,6 +598,7 @@ export function createDaemonThreadHelpers(
     relocateThreadMedia,
     openMainSession,
     resolveOrCreateConversationThread,
+    resolveBoundConversationThread,
     queueSystemReply,
     handleResetSession,
   };
