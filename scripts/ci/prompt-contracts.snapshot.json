@@ -133,6 +133,12 @@
       "sha256": "5942903dd7d364d51edd43d0ce277cf1bc07ade617a33c26c446481433ee5992"
     },
     {
+      "bytes": 2372,
+      "lines": 69,
+      "path": "src/prompts/channels/discord.ts",
+      "sha256": "f98a89ccf6dc24e4a9ad46a4988262eec0b8100eb6ce1ca492ed405fe86421a7"
+    },
+    {
       "bytes": 952,
       "lines": 33,
       "path": "src/prompts/channels/gateway.ts",
