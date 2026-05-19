@@ -7,6 +7,7 @@ Start here:
 - [Architecture](./architecture.md)
 - [Architecture Review Chunks](./architecture-review-chunks.md)
 - [Runtime Architecture Guardrails ADR](./adr/0001-runtime-architecture-guardrails.md)
+- [CI](./ci.md)
 - [A2A Messaging](./a2a.md)
 - [Daemon](./daemon.md)
 - [Sessions](./sessions.md)

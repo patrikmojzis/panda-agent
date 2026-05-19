@@ -565,7 +565,7 @@ describe("SpawnSubagentTool", () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.providerName).toBe("openai-codex");
-    expect(requests[0]?.modelId).toBe("gpt-5.4");
+    expect(requests[0]?.modelId).toBe("gpt-5.5");
   });
 
   it("runs a browser child with artifact-inspection tools and returns a structured result", async () => {

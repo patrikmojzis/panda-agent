@@ -153,7 +153,7 @@ describe("worker control tools", () => {
       createdByIdentityId: "identity-1",
       role: "research",
       task: "Inspect docs.",
-      model: "openai-codex/gpt-5.4",
+      model: "openai-codex/gpt-5.5",
       credentialAllowlist: ["BRAVE_API_KEY"],
       skillAllowlist: ["debloater"],
       toolPolicy: {
