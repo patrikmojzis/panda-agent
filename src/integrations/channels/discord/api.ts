@@ -24,11 +24,17 @@ export interface DiscordMessageReferenceBody {
 }
 
 export interface DiscordCreateMessageBody {
-  content: string;
+  content?: string;
   allowed_mentions: {
     parse: readonly string[];
   };
   message_reference?: DiscordMessageReferenceBody;
+}
+
+export interface DiscordCreateMessageFile {
+  filename: string;
+  bytes: Buffer;
+  mimeType?: string;
 }
 
 export interface DiscordCreatedMessage {
@@ -44,6 +50,7 @@ export interface DiscordWorkerRestClient extends DiscordRestClient {
     botToken: string,
     channelId: string,
     body: DiscordCreateMessageBody,
+    files?: readonly DiscordCreateMessageFile[],
   ): Promise<DiscordCreatedMessage>;
   getChannelMetadata(botToken: string, channelId: string): Promise<DiscordChannelMetadata>;
 }
@@ -57,7 +64,7 @@ export interface DiscordApiFetchResponse {
 export interface DiscordApiFetchInit {
   method: "GET" | "POST";
   headers: Record<string, string>;
-  body?: string;
+  body?: string | FormData;
 }
 
 export type DiscordApiFetch = (url: string, init: DiscordApiFetchInit) => Promise<DiscordApiFetchResponse>;
@@ -182,6 +189,42 @@ function discordAuthorizationHeaders(botToken: string): Record<string, string> {
   };
 }
 
+function toUploadBytes(buffer: Buffer): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(buffer.byteLength);
+  bytes.set(buffer);
+  return bytes;
+}
+
+function buildDiscordCreateMessageRequest(input: {
+  botToken: string;
+  body: DiscordCreateMessageBody;
+  files?: readonly DiscordCreateMessageFile[];
+}): {headers: Record<string, string>; body: string | FormData} {
+  const headers = discordAuthorizationHeaders(input.botToken);
+  if (!input.files || input.files.length === 0) {
+    return {
+      headers: {
+        ...headers,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(input.body),
+    };
+  }
+
+  const form = new FormData();
+  form.append("payload_json", JSON.stringify(input.body));
+  input.files.forEach((file, index) => {
+    const filename = requireNonEmptyString(file.filename, "Discord upload filename must not be empty.");
+    const mimeType = trimToUndefined(file.mimeType) ?? "application/octet-stream";
+    form.append(`files[${index}]`, new Blob([toUploadBytes(file.bytes)], {type: mimeType}), filename);
+  });
+
+  return {
+    headers,
+    body: form,
+  };
+}
+
 export function createDiscordRestClient(options: CreateDiscordRestClientOptions = {}): DiscordWorkerRestClient {
   const apiBaseUrl = normalizeDiscordApiBaseUrl(options.apiBaseUrl);
   const fetcher = options.fetcher ?? defaultDiscordApiFetch;
@@ -242,17 +285,16 @@ export function createDiscordRestClient(options: CreateDiscordRestClientOptions 
       botToken: string,
       channelId: string,
       body: DiscordCreateMessageBody,
+      files?: readonly DiscordCreateMessageFile[],
     ): Promise<DiscordCreatedMessage> {
       const normalizedChannelId = requireNonEmptyString(channelId, "Discord channel id must not be empty.");
+      const request = buildDiscordCreateMessageRequest({botToken, body, files});
       let response: DiscordApiFetchResponse;
       try {
         response = await fetcher(`${apiBaseUrl}/channels/${encodeURIComponent(normalizedChannelId)}/messages`, {
           method: "POST",
-          headers: {
-            ...discordAuthorizationHeaders(botToken),
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(body),
+          headers: request.headers,
+          body: request.body,
         });
       } catch {
         throw new Error("Discord message send failed: request failed.");
