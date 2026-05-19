@@ -11,6 +11,7 @@ Start here:
 - [Browser](./browser.md)
 - [Postgres](./postgres.md)
 - [Identity](./identity.md)
+- [Discord](./discord.md)
 - [Credentials](./credentials.md)
 - [Skills](./skills.md)
 - [Heartbeat](./heartbeat.md)

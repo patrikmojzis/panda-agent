@@ -1013,6 +1013,41 @@ describe("Discord account CLI", () => {
     expect(output).not.toContain("value_ciphertext");
   });
 
+  it("sets an account from stdin, resolves owner agent, and prints only safe fields", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await createProgram({
+      readBotTokenFromStdin: async () => discordCliMocks.privateToken,
+    }).parseAsync([
+      "discord",
+      "account",
+      "set",
+      "ops",
+      "--bot-token-stdin",
+      "--agent",
+      "clawd",
+      "--db-url",
+      "postgres://discord-db",
+    ], {from: "user"});
+
+    expect(latestAgentStore().getAgent).toHaveBeenCalledWith("clawd");
+    expect(latestIdentityStore().getIdentityByHandle).not.toHaveBeenCalled();
+    expect(latestConnectorStore().upsertAccount).toHaveBeenCalledWith(expect.objectContaining({
+      ownerAgentKey: "clawd",
+    }));
+    expect(latestConnectorStore().setSecret).toHaveBeenCalledWith(
+      "account-1",
+      DISCORD_BOT_TOKEN_SECRET_KEY,
+      discordCliMocks.privateToken,
+      discordCliMocks.crypto,
+    );
+
+    const output = collectWrites(write);
+    expect(output).toContain("Stored Discord account ops.");
+    expect(output).toContain("status enabled");
+    expect(output).not.toContain(discordCliMocks.privateToken);
+  });
+
   it("imports from an env key, resolves owner agent, and does not print env values or env key refs", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
@@ -1025,7 +1060,7 @@ describe("Discord account CLI", () => {
       "ops",
       "--env-key",
       "DISCORD_TOKEN_FOR_TEST",
-      "--owner-agent",
+      "--agent",
       "clawd",
       "--db-url",
       "postgres://discord-db",
@@ -1098,9 +1133,9 @@ describe("Discord account CLI", () => {
       "--bot-token-stdin",
       "--owner-identity",
       "alice",
-      "--owner-agent",
+      "--agent",
       "clawd",
-    ], {from: "user"})).rejects.toThrow("Choose only one Discord account owner");
+    ], {from: "user"})).rejects.toThrow("Choose only one Discord account owner: --owner-identity or --agent.");
 
     await expect(createProgram({
       env: {},
@@ -1112,6 +1147,42 @@ describe("Discord account CLI", () => {
       "--env-key",
       "DISCORD_TOKEN_FOR_TEST",
     ], {from: "user"})).rejects.toThrow("Discord bot token environment variable is not set or empty.");
+  });
+
+  it("rejects legacy --owner-agent for Discord account owner selection", async () => {
+    const program = createProgram();
+    program.exitOverride();
+    const errorWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await expect(program.parseAsync([
+      "discord",
+      "account",
+      "set",
+      "ops",
+      "--bot-token-stdin",
+      "--owner-agent",
+      "clawd",
+    ], {from: "user"})).rejects.toThrow("process.exit unexpectedly called");
+    expect(collectWrites(errorWrite)).toContain("unknown option '--owner-agent'");
+
+    errorWrite.mockClear();
+    const importProgram = createProgram();
+    importProgram.exitOverride();
+
+    await expect(importProgram.parseAsync([
+      "discord",
+      "account",
+      "import-env",
+      "ops",
+      "--env-key",
+      "DISCORD_TOKEN_FOR_TEST",
+      "--owner-agent",
+      "clawd",
+    ], {from: "user"})).rejects.toThrow("process.exit unexpectedly called");
+    expect(collectWrites(errorWrite)).toContain("unknown option '--owner-agent'");
+    expect(discordCliMocks.connectorStoreInstances).toHaveLength(0);
+    expect(discordCliMocks.agentStoreInstances).toHaveLength(0);
+    expect(discordCliMocks.identityStoreInstances).toHaveLength(0);
   });
 
   it("redacts token material from unsafe setup failure messages", async () => {
