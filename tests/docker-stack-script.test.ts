@@ -121,6 +121,16 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     return stubPath;
   }
 
+  async function createFailingWikiLocalStub(): Promise<string> {
+    const stubPath = path.join(await makeTempDir("panda-wiki-local-stub-"), "wiki-local.sh");
+    await writeFile(stubPath, `#!/usr/bin/env bash
+set -euo pipefail
+printf 'wiki-local should not be called\n' >&2
+exit 42
+`, {mode: 0o755});
+    return stubPath;
+  }
+
   async function createEnvFile(contents: string): Promise<string> {
     const envPath = path.join(await makeTempDir("panda-stack-env-"), ".env");
     await writeFile(envPath, contents);
@@ -1010,6 +1020,39 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     expect(mismatchResult.stderr).toContain("PANDA_APPS_PUBLIC_HOST must match PANDA_APPS_BASE_URL host");
   });
 
+  it("skips wiki auto-bootstrap with a warning when no host-reachable wiki URL is configured", async () => {
+    const dockerLogPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(dockerLogPath);
+    const wikiLocalScript = await createFailingWikiLocalStub();
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "WIKI_URL=http://wiki:3000",
+      "WIKI_SITE_URL=   ",
+      "WIKI_PUBLISH_PORT=   ",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw",
+      "WIKI_ADMIN_EMAIL=admin@localhost",
+      "WIKI_ADMIN_PASSWORD=secret",
+    ].join("\n"));
+
+    const upResult = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+      wikiLocalScript,
+    });
+
+    expect(upResult.exitCode).toBe(0);
+    expect(upResult.stdout).toContain(
+      "Warning: Wiki.js auto-bootstrap skipped because neither WIKI_SITE_URL nor WIKI_PUBLISH_PORT is configured",
+    );
+    expect(upResult.stdout).toContain("WIKI_ENV_FILE=");
+    expect(upResult.stdout).toContain("bootstrap claw");
+    expect(upResult.stdout).toContain("Stack is up.");
+    expect(upResult.stderr).not.toContain("wiki-local should not be called");
+  });
+
   it("bootstraps wiki for all declared agents when admin credentials are set", async () => {
     const dockerLogPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
     const wikiLogPath = path.join(await makeTempDir("panda-wiki-log-"), "wiki.log");
@@ -1022,6 +1065,7 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
       "PANDA_AGENTS=claw,Luna",
       "WIKI_ADMIN_EMAIL=admin@localhost",
       "WIKI_ADMIN_PASSWORD=secret",
+      "WIKI_SITE_URL=http://127.0.0.1:3100",
     ].join("\n"));
 
     const homeDir = await makeTempDir("panda-home-");
@@ -1048,6 +1092,7 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
       "PANDA_AGENTS=claw",
       "WIKI_ADMIN_EMAIL=admin@localhost",
       "WIKI_ADMIN_PASSWORD=secret",
+      "WIKI_PUBLISH_PORT=3100",
     ].join("\n"));
 
     const homeDir = await makeTempDir("panda-home-");
