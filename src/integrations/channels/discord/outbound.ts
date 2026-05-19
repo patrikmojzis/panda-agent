@@ -1,5 +1,11 @@
+import {readFile} from "node:fs/promises";
+import path from "node:path";
+
 import type {ChannelOutboundAdapter} from "../../../domain/channels/outbound.js";
 import type {
+  OutboundFileItem,
+  OutboundImageItem,
+  OutboundItem,
   OutboundRequest,
   OutboundResult,
   OutboundSentItem,
@@ -11,6 +17,7 @@ import {isRecord} from "../../../lib/records.js";
 import {optionalTrimmedString, requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import type {
   DiscordCreateMessageBody,
+  DiscordCreateMessageFile,
   DiscordMessageReferenceBody,
   DiscordWorkerRestClient,
 } from "./api.js";
@@ -38,6 +45,12 @@ interface DiscordSendTarget {
   guildId?: string;
   replyToMessageId?: string;
 }
+
+type NormalizedDiscordOutboundItem = {
+  type: OutboundSentItem["type"];
+  content?: string;
+  files?: readonly [DiscordCreateMessageFile];
+};
 
 function buildSecretRedactionFragments(secret: string): readonly string[] {
   const exact = secret.trim();
@@ -161,23 +174,90 @@ function resolveDiscordSendTarget(request: OutboundRequest): DiscordSendTarget {
   };
 }
 
-function normalizeTextItems(items: readonly OutboundRequest["items"][number][]): readonly OutboundTextItem[] {
-  return items.map((item) => {
-    if (item.type !== "text") {
-      throw new Error("Discord outbound supports text items only in K8.");
-    }
+function assertDiscordContentLimit(content: string, label: string): void {
+  if (content.length > DISCORD_MESSAGE_CONTENT_LIMIT) {
+    throw new Error(`Discord outbound ${label} must be at most ${DISCORD_MESSAGE_CONTENT_LIMIT} characters.`);
+  }
+}
 
-    requireNonEmptyString(item.text, "Discord outbound text must not be empty.");
-    const text = item.text;
-    if (text.length > DISCORD_MESSAGE_CONTENT_LIMIT) {
-      throw new Error(`Discord outbound text must be at most ${DISCORD_MESSAGE_CONTENT_LIMIT} characters.`);
-    }
+function normalizeTextItem(item: OutboundTextItem): NormalizedDiscordOutboundItem {
+  const text = requireNonEmptyString(item.text, "Discord outbound text must not be empty.");
+  assertDiscordContentLimit(text, "text");
 
-    return {
-      type: "text",
-      text,
-    };
-  });
+  return {
+    type: "text",
+    content: text,
+  };
+}
+
+function normalizeCaption(caption: string | undefined): string | undefined {
+  const normalized = trimToUndefined(caption);
+  if (normalized === undefined) {
+    return undefined;
+  }
+
+  assertDiscordContentLimit(normalized, "caption");
+  return normalized;
+}
+
+async function buildImageFile(item: OutboundImageItem): Promise<DiscordCreateMessageFile> {
+  const filePath = requireNonEmptyString(item.path, "Discord outbound image path must not be empty.");
+  return {
+    filename: requireNonEmptyString(path.basename(filePath), "Discord outbound image filename must not be empty."),
+    bytes: await readFile(filePath),
+  };
+}
+
+async function buildDocumentFile(item: OutboundFileItem): Promise<DiscordCreateMessageFile> {
+  const filePath = requireNonEmptyString(item.path, "Discord outbound file path must not be empty.");
+  return {
+    filename: requireNonEmptyString(
+      item.filename?.trim() || path.basename(filePath),
+      "Discord outbound file filename must not be empty.",
+    ),
+    bytes: await readFile(filePath),
+    mimeType: trimToUndefined(item.mimeType) ?? "application/octet-stream",
+  };
+}
+
+async function normalizeImageItem(item: OutboundImageItem): Promise<NormalizedDiscordOutboundItem> {
+  const content = normalizeCaption(item.caption);
+  return {
+    type: "image",
+    ...(content !== undefined ? {content} : {}),
+    files: [await buildImageFile(item)],
+  };
+}
+
+async function normalizeFileItem(item: OutboundFileItem): Promise<NormalizedDiscordOutboundItem> {
+  const content = normalizeCaption(item.caption);
+  return {
+    type: "file",
+    ...(content !== undefined ? {content} : {}),
+    files: [await buildDocumentFile(item)],
+  };
+}
+
+async function normalizeDiscordItems(items: readonly OutboundItem[]): Promise<readonly NormalizedDiscordOutboundItem[]> {
+  const normalized: NormalizedDiscordOutboundItem[] = [];
+
+  for (const item of items) {
+    switch (item.type) {
+      case "text":
+        normalized.push(normalizeTextItem(item));
+        break;
+      case "image":
+        normalized.push(await normalizeImageItem(item));
+        break;
+      case "file":
+        normalized.push(await normalizeFileItem(item));
+        break;
+      default:
+        throw new Error(`Unsupported Discord outbound item type ${(item as {type?: string}).type ?? "unknown"}.`);
+    }
+  }
+
+  return normalized;
 }
 
 function buildMessageReference(target: DiscordSendTarget): DiscordMessageReferenceBody | undefined {
@@ -194,11 +274,11 @@ function buildMessageReference(target: DiscordSendTarget): DiscordMessageReferen
 }
 
 function buildDiscordMessageBody(
-  item: OutboundTextItem,
+  item: NormalizedDiscordOutboundItem,
   messageReference?: DiscordMessageReferenceBody,
 ): DiscordCreateMessageBody {
   return {
-    content: item.text,
+    ...(item.content !== undefined ? {content: item.content} : {}),
     allowed_mentions: {
       parse: [],
     },
@@ -206,9 +286,9 @@ function buildDiscordMessageBody(
   };
 }
 
-function sentTextItem(externalMessageId: string): OutboundSentItem {
+function sentItem(type: OutboundSentItem["type"], externalMessageId: string): OutboundSentItem {
   return {
-    type: "text",
+    type,
     externalMessageId,
   };
 }
@@ -222,18 +302,17 @@ export function createDiscordOutboundAdapter(options: DiscordOutboundAdapterOpti
     async send(request: OutboundRequest): Promise<OutboundResult> {
       assertDiscordRoute(request, connectorKey);
       const sendTarget = resolveDiscordSendTarget(request);
-      const textItems = normalizeTextItems(request.items);
+      const items = await normalizeDiscordItems(request.items);
       const sent: OutboundSentItem[] = [];
 
-      for (const [index, item] of textItems.entries()) {
+      for (const [index, item] of items.entries()) {
         try {
           const messageReference = index === 0 ? buildMessageReference(sendTarget) : undefined;
-          const message = await options.client.createMessage(
-            botToken,
-            sendTarget.channelId,
-            buildDiscordMessageBody(item, messageReference),
-          );
-          sent.push(sentTextItem(message.id));
+          const body = buildDiscordMessageBody(item, messageReference);
+          const message = item.files
+            ? await options.client.createMessage(botToken, sendTarget.channelId, body, item.files)
+            : await options.client.createMessage(botToken, sendTarget.channelId, body);
+          sent.push(sentItem(item.type, message.id));
         } catch (error) {
           throw sanitizeSecretError(error, botToken);
         }

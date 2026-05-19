@@ -1,3 +1,7 @@
+import {mkdtemp, rm, writeFile} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import path from "node:path";
+
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
@@ -36,12 +40,27 @@ function createAdapter(createMessage = vi.fn(async () => ({id: "message-1"}))) {
 
 describe("Discord outbound adapter", () => {
   const pools: Array<{end(): Promise<void>}> = [];
+  const tempDirs: string[] = [];
+
+  async function writeTempUpload(filename: string, bytes: Buffer): Promise<{filePath: string; bytes: Buffer}> {
+    const dir = await mkdtemp(path.join(tmpdir(), "discord-outbound-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, filename);
+    await writeFile(filePath, bytes);
+    return {filePath, bytes};
+  }
 
   afterEach(async () => {
     while (pools.length > 0) {
       const pool = pools.pop();
       if (pool) {
         await pool.end();
+      }
+    }
+    while (tempDirs.length > 0) {
+      const dir = tempDirs.pop();
+      if (dir) {
+        await rm(dir, {recursive: true, force: true});
       }
     }
   });
@@ -55,6 +74,7 @@ describe("Discord outbound adapter", () => {
       content: "hello",
       allowed_mentions: {parse: []},
     });
+    expect(createMessage.mock.calls[0]).toHaveLength(3);
     expect(result).toEqual({
       ok: true,
       channel: "discord",
@@ -84,15 +104,120 @@ describe("Discord outbound adapter", () => {
     ]);
   });
 
-  it("rejects unsupported item types before any Discord API call", async () => {
+  it("sends image items as multipart uploads with captions", async () => {
     const {adapter, createMessage} = createAdapter();
+    const upload = await writeTempUpload("photo.png", Buffer.from("fake-image"));
+
+    const result = await adapter.send(baseRequest({
+      items: [{type: "image", path: upload.filePath, caption: "look here"}],
+    }));
+
+    expect(createMessage).toHaveBeenCalledWith(privateToken, "channel-1", {
+      content: "look here",
+      allowed_mentions: {parse: []},
+    }, [{
+      filename: "photo.png",
+      bytes: upload.bytes,
+    }]);
+    expect(result.sent).toEqual([{type: "image", externalMessageId: "message-1"}]);
+  });
+
+  it("sends file items as multipart uploads with explicit filename, mime type, and caption", async () => {
+    const {adapter, createMessage} = createAdapter();
+    const upload = await writeTempUpload("report-source.bin", Buffer.from("fake-report"));
+
+    const result = await adapter.send(baseRequest({
+      items: [{
+        type: "file",
+        path: upload.filePath,
+        filename: "report.pdf",
+        mimeType: "application/pdf",
+        caption: "report attached",
+      }],
+    }));
+
+    expect(createMessage).toHaveBeenCalledWith(privateToken, "channel-1", {
+      content: "report attached",
+      allowed_mentions: {parse: []},
+    }, [{
+      filename: "report.pdf",
+      bytes: upload.bytes,
+      mimeType: "application/pdf",
+    }]);
+    expect(result.sent).toEqual([{type: "file", externalMessageId: "message-1"}]);
+  });
+
+  it("preserves mixed item order and applies reply references only to the first item", async () => {
+    const image = await writeTempUpload("first.png", Buffer.from("image-one"));
+    const file = await writeTempUpload("notes.txt", Buffer.from("file-two"));
+    const createMessage = vi
+      .fn()
+      .mockResolvedValueOnce({id: "message-1"})
+      .mockResolvedValueOnce({id: "message-2"})
+      .mockResolvedValueOnce({id: "message-3"});
+    const {adapter} = createAdapter(createMessage);
+
+    const result = await adapter.send(baseRequest({
+      target: {
+        source: "discord",
+        connectorKey: "bot-1",
+        externalConversationId: "channel-1",
+        replyToMessageId: "reply-1",
+        deliveryContext: {
+          discord: {
+            channelId: "thread-1",
+            parentChannelId: "channel-1",
+            threadId: "thread-1",
+            guildId: "guild-1",
+          },
+        },
+      },
+      items: [
+        {type: "image", path: image.filePath},
+        {type: "text", text: "middle"},
+        {type: "file", path: file.filePath},
+      ],
+    }));
+
+    expect(createMessage).toHaveBeenNthCalledWith(1, privateToken, "thread-1", {
+      allowed_mentions: {parse: []},
+      message_reference: {
+        message_id: "reply-1",
+        channel_id: "thread-1",
+        guild_id: "guild-1",
+        fail_if_not_exists: false,
+      },
+    }, [{
+      filename: "first.png",
+      bytes: image.bytes,
+    }]);
+    expect(createMessage).toHaveBeenNthCalledWith(2, privateToken, "thread-1", {
+      content: "middle",
+      allowed_mentions: {parse: []},
+    });
+    expect(createMessage.mock.calls[1]).toHaveLength(3);
+    expect(createMessage).toHaveBeenNthCalledWith(3, privateToken, "thread-1", {
+      allowed_mentions: {parse: []},
+    }, [{
+      filename: "notes.txt",
+      bytes: file.bytes,
+      mimeType: "application/octet-stream",
+    }]);
+    expect(result.sent).toEqual([
+      {type: "image", externalMessageId: "message-1"},
+      {type: "text", externalMessageId: "message-2"},
+      {type: "file", externalMessageId: "message-3"},
+    ]);
+  });
+
+  it("rejects unreadable media paths before any Discord API call", async () => {
+    const {adapter, createMessage} = createAdapter();
+    const dir = await mkdtemp(path.join(tmpdir(), "discord-outbound-missing-"));
+    tempDirs.push(dir);
 
     await expect(adapter.send(baseRequest({
-      items: [
-        {type: "text", text: "safe"},
-        {type: "image", path: "/tmp/private.png"},
-      ],
-    }))).rejects.toThrow("text items only");
+      items: [{type: "file", path: path.join(dir, "missing.txt")}],
+    }))).rejects.toThrow();
 
     expect(createMessage).not.toHaveBeenCalled();
   });
@@ -261,6 +386,21 @@ describe("Discord outbound adapter", () => {
     await expect(adapter.send(baseRequest({
       items: [{type: "text", text: "x".repeat(DISCORD_MESSAGE_CONTENT_LIMIT + 1)}],
     }))).rejects.toThrow(`at most ${DISCORD_MESSAGE_CONTENT_LIMIT} characters`);
+
+    expect(createMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects over-limit captions before any Discord API call", async () => {
+    const {adapter, createMessage} = createAdapter();
+    const upload = await writeTempUpload("photo.png", Buffer.from("fake-image"));
+
+    await expect(adapter.send(baseRequest({
+      items: [{
+        type: "image",
+        path: upload.filePath,
+        caption: "x".repeat(DISCORD_MESSAGE_CONTENT_LIMIT + 1),
+      }],
+    }))).rejects.toThrow(`caption must be at most ${DISCORD_MESSAGE_CONTENT_LIMIT} characters`);
 
     expect(createMessage).not.toHaveBeenCalled();
   });
