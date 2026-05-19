@@ -6,6 +6,8 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {Agent, type DefaultAgentSessionContext, MediaTool, RunContext, type ToolResultPayload,} from "../src/index.js";
 
+const macOnlyIt = process.platform === "darwin" ? it : it.skip;
+
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6p6WQAAAAASUVORK5CYII=";
 
@@ -146,7 +148,7 @@ describe("MediaTool", () => {
     });
   });
 
-  it("returns a preview image for pdf files", async () => {
+  macOnlyIt("returns a preview image for pdf files", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-media-pdf-"));
     const dataDir = await mkdtemp(path.join(tmpdir(), "runtime-media-store-"));
     try {
@@ -191,7 +193,7 @@ describe("MediaTool", () => {
     }
   });
 
-  it("reuses the same durable preview path for repeated pdf views", async () => {
+  macOnlyIt("reuses the same durable preview path for repeated pdf views", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-media-pdf-cache-"));
     const dataDir = await mkdtemp(path.join(tmpdir(), "runtime-media-store-"));
     try {

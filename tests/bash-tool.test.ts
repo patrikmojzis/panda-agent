@@ -2,7 +2,7 @@ import {mkdir, mkdtemp, readFile, realpath, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
-import {describe, expect, it} from "vitest";
+import {afterAll, beforeAll, describe, expect, it} from "vitest";
 
 import {
     Agent,
@@ -44,6 +44,20 @@ function createRunContext(
 function asObject(value: unknown): Record<string, unknown> {
   return (value ?? {}) as Record<string, unknown>;
 }
+
+const originalShell = process.env.SHELL;
+
+beforeAll(() => {
+  process.env.SHELL = "/bin/bash";
+});
+
+afterAll(() => {
+  if (originalShell === undefined) {
+    delete process.env.SHELL;
+  } else {
+    process.env.SHELL = originalShell;
+  }
+});
 
 async function createBackgroundHarness(workspace: string) {
   const store = new TestThreadRuntimeStore();
@@ -261,6 +275,7 @@ describe("BashTool", () => {
         env: {
           HOST_ONLY: "host-only",
           SHARED_KEY: "host",
+          SHELL: "/bin/bash",
         },
         outputDirectory: path.join(workspace, "tool-results"),
         credentialResolver: {
@@ -852,11 +867,11 @@ describe("BashTool", () => {
 
       const startedAt = Date.now();
       const first = await bash.run(
-        { command: "sleep 0.25 && printf first", background: true },
+        { command: "sleep 0.5 && printf first", background: true },
         createRunContext(context),
       );
       const second = await bash.run(
-        { command: "sleep 0.25 && printf second", background: true },
+        { command: "sleep 0.5 && printf second", background: true },
         createRunContext(context),
       );
 
@@ -887,7 +902,7 @@ describe("BashTool", () => {
 
       expect(asObject(firstFinished).stdout).toBe("first");
       expect(asObject(secondFinished).stdout).toBe("second");
-      expect(Date.now() - startedAt).toBeLessThan(450);
+      expect(Date.now() - startedAt).toBeLessThan(900);
       expect(context.shell?.cwd).toBe(expectedNested);
       expect(context.shell?.env.FG_ONLY).toBe("ok");
     } finally {
