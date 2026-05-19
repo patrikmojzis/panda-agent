@@ -997,6 +997,10 @@ ensure_declared_agents() {
   done
 }
 
+wiki_host_http_configured() {
+  [[ -n "$(trim "${WIKI_SITE_URL:-}")" ]] || [[ -n "$(trim "${WIKI_PUBLISH_PORT:-}")" ]]
+}
+
 bootstrap_wiki_if_configured() {
   if [[ -z "$(trim "${WIKI_ADMIN_EMAIL:-}")" ]] || [[ -z "$(trim "${WIKI_ADMIN_PASSWORD:-}")" ]]; then
     printf 'Wiki.js is running but not bootstrapped yet.\n'
@@ -1007,6 +1011,13 @@ bootstrap_wiki_if_configured() {
 
   if ! agents_declared; then
     printf 'Wiki.js is running, but PANDA_AGENTS is empty, so agent wiki bootstrap was skipped.\n'
+    return
+  fi
+
+  if ! wiki_host_http_configured; then
+    printf 'Warning: Wiki.js auto-bootstrap skipped because neither WIKI_SITE_URL nor WIKI_PUBLISH_PORT is configured for host-side HTTP access.\n'
+    printf 'Set WIKI_SITE_URL or WIKI_PUBLISH_PORT in %s, then run:\n' "$env_file"
+    printf '  WIKI_ENV_FILE=%s %s bootstrap %s\n' "$env_file" "$wiki_local_script" "${normalized_agents[*]}"
     return
   fi
 
