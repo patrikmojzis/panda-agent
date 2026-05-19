@@ -39,9 +39,9 @@ describe("model selector", () => {
     });
 
     expect(resolveModelSelector("gpt")).toEqual({
-      canonical: "openai-codex/gpt-5.4",
+      canonical: "openai-codex/gpt-5.5",
       providerName: "openai-codex",
-      modelId: "gpt-5.4",
+      modelId: "gpt-5.5",
     });
 
     expect(resolveModelSelector("opus")).toEqual({
@@ -72,7 +72,7 @@ describe("model selector", () => {
   it("resolves the default selector from DEFAULT_MODEL and auth heuristics", () => {
     expect(resolveDefaultAgentModelSelector({
       DEFAULT_MODEL: "gpt",
-    })).toBe("openai-codex/gpt-5.4");
+    })).toBe("openai-codex/gpt-5.5");
 
     expect(resolveDefaultAgentModelSelector({
       ANTHROPIC_AUTH_TOKEN: "anthropic-oauth-token",
@@ -106,9 +106,9 @@ describe("model selector", () => {
 
   it.each([
     ["workspace", "WORKSPACE_SUBAGENT_MODEL", "opus", "anthropic-oauth/claude-opus-4-7"],
-    ["memory", "MEMORY_SUBAGENT_MODEL", "gpt", "openai-codex/gpt-5.4"],
+    ["memory", "MEMORY_SUBAGENT_MODEL", "gpt", "openai-codex/gpt-5.5"],
     ["browser", "BROWSER_SUBAGENT_MODEL", "opus", "anthropic-oauth/claude-opus-4-7"],
-    ["skill_maintainer", "SKILL_MAINTAINER_SUBAGENT_MODEL", "gpt", "openai-codex/gpt-5.4"],
+    ["skill_maintainer", "SKILL_MAINTAINER_SUBAGENT_MODEL", "gpt", "openai-codex/gpt-5.5"],
   ] as const)("resolves the %s subagent selector from %s", (role, envKey, configured, expected) => {
     expect(resolveDefaultAgentSubagentModelSelector(role, {[envKey]: configured})).toBe(expected);
     expect(resolveDefaultAgentSubagentModelSelector(role, {})).toBeUndefined();

@@ -39,7 +39,7 @@ normally stay empty. After a cleanup chunk removes violations, update the baseli
 shrinking instead of normalizing old damage.
 
 CI runs the same ratchet in
-`.github/workflows/import-law-ratchet.yml`. A PR that adds a new dependency
+`.github/workflows/ci.yml`. A PR that adds a new dependency
 direction violation should fail there even if the report-only command still
 prints a readable local report.
 
