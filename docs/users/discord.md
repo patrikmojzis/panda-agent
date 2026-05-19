@@ -1,6 +1,6 @@
 # Discord
 
-Discord uses one stored bot account, channel-to-session bindings, and user-id-to-identity pairings.
+Discord uses stored bot accounts, channel-to-session bindings, and user-id-to-identity pairings.
 
 ## Setup
 
@@ -46,8 +46,38 @@ panda discord pair --account discord-main --identity alice --actor <discordUserI
 
 Use the stable Discord user id/snowflake for `--actor`, not a username or display name.
 
-Run the worker:
+## Run workers
+
+Run one account manually:
 
 ```bash
 panda discord run discord-main
 ```
+
+Run every enabled Discord connector account in one process:
+
+```bash
+panda discord run --all-enabled
+```
+
+`--all-enabled` starts accounts one at a time, keeps failures isolated per account, and keeps running as long as at least one account starts.
+
+## Docker stack
+
+After storing and enabling at least one Discord account, opt in from `.env`:
+
+```bash
+DISCORD_ENABLED=true
+PANDA_DISCORD_DB_POOL_MAX=2
+```
+
+Then run the stack normally:
+
+```bash
+./scripts/docker-stack.sh up --build
+./scripts/docker-stack.sh logs discord
+```
+
+The stack runs `panda discord run --all-enabled`. It also adds a Wiki.js dependency so the Discord runner container is started before Wiki.js.
+
+Budget Postgres connections explicitly: Discord opens one worker pool per enabled account, so the Discord ceiling is `enabled Discord accounts x PANDA_DISCORD_DB_POOL_MAX`.

@@ -356,7 +356,11 @@ vi.mock("../src/lib/postgres-bootstrap.js", () => ({
 }));
 
 function createProgram(overrides: {
-  createRunService?: (options: {accountKey: string; dbUrl?: string}) => {run(): Promise<void>; stop(): Promise<void>};
+  createRunService?: (options: {accountKey: string; dbUrl?: string; poolMaxFallback?: number}) => {
+    run(): Promise<void>;
+    start?(): Promise<void>;
+    stop(): Promise<void>;
+  };
   getCurrentUser?: (token: string) => Promise<typeof discordCliMocks.botUser>;
   env?: NodeJS.ProcessEnv;
   readBotTokenFromStdin?: () => Promise<string>;
@@ -487,6 +491,181 @@ describe("Discord account CLI", () => {
     expect(off).toHaveBeenCalledWith("SIGTERM", expect.any(Function));
     const output = collectWrites(write);
     expect(output).not.toContain(discordCliMocks.privateToken);
+  });
+
+  it("runs all enabled Discord accounts sequentially with a smaller pool fallback", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const order: string[] = [];
+    discordCliMocks.state.listAccountsResult = [
+      discordCliMocks.makeAccount({accountKey: "ops"}),
+      discordCliMocks.makeAccount({accountKey: "lab", connectorKey: "345678901234567890"}),
+    ];
+    const createRunService = vi.fn((options: {accountKey: string}) => ({
+      start: vi.fn(async () => {
+        order.push(`start:${options.accountKey}`);
+      }),
+      run: vi.fn(async () => {
+        order.push(`run:${options.accountKey}`);
+      }),
+      stop: vi.fn(async () => {
+        order.push(`stop:${options.accountKey}`);
+      }),
+    }));
+
+    await createProgram({createRunService}).parseAsync([
+      "discord",
+      "run",
+      "--all-enabled",
+      "--db-url",
+      "postgres://discord-db",
+    ], {from: "user"});
+
+    expect(latestConnectorStore().listAccounts).toHaveBeenCalledWith({
+      source: "discord",
+      status: "enabled",
+    });
+    expect(createRunService).toHaveBeenNthCalledWith(1, {
+      accountKey: "ops",
+      dbUrl: "postgres://discord-db",
+      poolMaxFallback: 2,
+    });
+    expect(createRunService).toHaveBeenNthCalledWith(2, {
+      accountKey: "lab",
+      dbUrl: "postgres://discord-db",
+      poolMaxFallback: 2,
+    });
+    expect(order.indexOf("start:ops")).toBeLessThan(order.indexOf("start:lab"));
+    expect(order).toContain("stop:ops");
+    expect(order).toContain("stop:lab");
+  });
+
+  it("requires all-enabled mode or one account key for Discord run", async () => {
+    await expect(createProgram().parseAsync([
+      "discord",
+      "run",
+    ], {from: "user"})).rejects.toThrow("Pass a Discord account key or --all-enabled.");
+
+    await expect(createProgram().parseAsync([
+      "discord",
+      "run",
+      "ops",
+      "--all-enabled",
+    ], {from: "user"})).rejects.toThrow("Choose either a Discord account key or --all-enabled, not both.");
+  });
+
+  it("fails helpfully when no Discord accounts are enabled for all-enabled run", async () => {
+    discordCliMocks.state.listAccountsResult = [];
+
+    await expect(createProgram().parseAsync([
+      "discord",
+      "run",
+      "--all-enabled",
+    ], {from: "user"})).rejects.toThrow("No enabled Discord accounts found. Configure or enable one");
+    expect(latestConnectorStore().listAccounts).toHaveBeenCalledWith({
+      source: "discord",
+      status: "enabled",
+    });
+  });
+
+  it("isolates all-enabled startup failures and runs accounts that can start", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    discordCliMocks.state.listAccountsResult = [
+      discordCliMocks.makeAccount({accountKey: "ops"}),
+      discordCliMocks.makeAccount({accountKey: "lab", connectorKey: "345678901234567890"}),
+    ];
+    const createRunService = vi.fn((options: {accountKey: string}) => {
+      const start = vi.fn(async () => {
+        if (options.accountKey === "ops") {
+          throw new Error("startup failed");
+        }
+      });
+      return {
+        start,
+        run: vi.fn(async () => {}),
+        stop: vi.fn(async () => {}),
+      };
+    });
+
+    await createProgram({createRunService}).parseAsync([
+      "discord",
+      "run",
+      "--all-enabled",
+    ], {from: "user"});
+
+    expect(createRunService).toHaveBeenCalledTimes(2);
+    const output = collectWrites(write);
+    expect(output).toContain("worker_start_failed");
+    expect(output).toContain("startup failed");
+    expect(output).toContain("worker_supervisor_started");
+    expect(output).not.toContain(discordCliMocks.privateToken);
+  });
+
+  it("fails all-enabled run when every enabled account fails startup", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    discordCliMocks.state.listAccountsResult = [
+      discordCliMocks.makeAccount({accountKey: "ops"}),
+      discordCliMocks.makeAccount({accountKey: "lab", connectorKey: "345678901234567890"}),
+    ];
+
+    await expect(createProgram({
+      createRunService: () => ({
+        start: vi.fn(async () => {
+          throw new Error("startup failed");
+        }),
+        run: vi.fn(async () => {}),
+        stop: vi.fn(async () => {}),
+      }),
+    }).parseAsync([
+      "discord",
+      "run",
+      "--all-enabled",
+    ], {from: "user"})).rejects.toThrow("No Discord workers started. Every enabled Discord account failed during startup.");
+  });
+
+  it("stops all-enabled Discord workers concurrently on SIGTERM", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const handlers: Record<string, () => void> = {};
+    vi.spyOn(process, "once").mockImplementation((event: string | symbol, listener: (...args: unknown[]) => void) => {
+      handlers[String(event)] = () => listener();
+      return process;
+    });
+    const off = vi.spyOn(process, "off").mockImplementation(() => process);
+    discordCliMocks.state.listAccountsResult = [
+      discordCliMocks.makeAccount({accountKey: "ops"}),
+      discordCliMocks.makeAccount({accountKey: "lab", connectorKey: "345678901234567890"}),
+    ];
+    const runResolvers: Record<string, () => void> = {};
+    const services: Record<string, {stop: ReturnType<typeof vi.fn>}> = {};
+    const createRunService = vi.fn((options: {accountKey: string}) => {
+      const service = {
+        start: vi.fn(async () => {
+          if (options.accountKey === "lab") {
+            setTimeout(() => handlers.SIGTERM?.(), 0);
+          }
+        }),
+        run: vi.fn(async () => {
+          await new Promise<void>((resolve) => {
+            runResolvers[options.accountKey] = resolve;
+          });
+        }),
+        stop: vi.fn(async () => {
+          runResolvers[options.accountKey]?.();
+        }),
+      };
+      services[options.accountKey] = service;
+      return service;
+    });
+
+    await createProgram({createRunService}).parseAsync([
+      "discord",
+      "run",
+      "--all-enabled",
+    ], {from: "user"});
+
+    expect(services.ops?.stop).toHaveBeenCalledOnce();
+    expect(services.lab?.stop).toHaveBeenCalledOnce();
+    expect(off).toHaveBeenCalledWith("SIGINT", expect.any(Function));
+    expect(off).toHaveBeenCalledWith("SIGTERM", expect.any(Function));
   });
 
 
