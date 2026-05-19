@@ -108,6 +108,28 @@ services:
       retries: 3
       start_period: 45s
 
+  panda-discord:
+    image: panda-app:latest
+    command: ["discord", "run", "--all-enabled"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    profiles: ["discord"]
+    env_file:
+      - ${PANDA_STACK_SERVICE_ENV_FILE:-../.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
+      PANDA_DISCORD_DB_POOL_MAX: ${PANDA_DISCORD_DB_POOL_MAX:-2}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ${HOME}/.panda:/root/.panda
+      - /etc/ssl/certs/panda-postgres-ca.crt:/etc/ssl/certs/panda-postgres-ca.crt:ro
+    depends_on:
+      panda-core:
+        condition: service_healthy
+    networks:
+      - runner_net
+
   panda-whatsapp:
     image: panda-app:latest
     command: ["whatsapp", "run"]

@@ -25,11 +25,15 @@ import {createDiscordRestClient, type DiscordCurrentUser, type DiscordRestClient
 import {DISCORD_SOURCE} from "./config.js";
 import {DiscordService} from "./service.js";
 
+const DISCORD_ALL_ENABLED_POOL_MAX_FALLBACK = 2;
+
 interface DiscordAccountCliOptions {
   dbUrl?: string;
 }
 
-type DiscordRunCliOptions = DiscordAccountCliOptions;
+interface DiscordRunCliOptions extends DiscordAccountCliOptions {
+  allEnabled?: boolean;
+}
 
 interface DiscordBindChannelCliOptions extends DiscordAccountCliOptions {
   account: string;
@@ -65,11 +69,24 @@ interface DiscordActorPairingsCliOptions extends DiscordAccountCliOptions {
 export interface DiscordRunServiceOptions {
   accountKey: string;
   dbUrl?: string;
+  poolMaxFallback?: number;
 }
 
 export interface DiscordRunService {
   run(): Promise<void>;
+  start?(): Promise<void>;
   stop(): Promise<void>;
+}
+
+interface StartedDiscordRunService {
+  accountKey: string;
+  runPromise: Promise<void>;
+  service: DiscordRunService;
+}
+
+interface DiscordRunServiceRef {
+  accountKey: string;
+  service: DiscordRunService;
 }
 
 interface DiscordAccountOwnerCliOptions extends DiscordAccountCliOptions {
@@ -763,20 +780,20 @@ export async function discordAccountDisableCommand(
   });
 }
 
-export async function discordRunCommand(
-  accountKey: string,
-  options: DiscordRunCliOptions,
-  dependencies: DiscordCliDependencies = {},
-): Promise<void> {
-  const service = createDiscordRunService({
-    accountKey,
-    dbUrl: options.dbUrl,
-  }, dependencies);
+function formatDiscordRunError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
-  const shutdown = async () => {
-    await service.stop();
-  };
+function logDiscordRunEvent(event: string, payload: Record<string, unknown>): void {
+  process.stdout.write(`${JSON.stringify({
+    source: DISCORD_SOURCE,
+    event,
+    timestamp: new Date().toISOString(),
+    ...payload,
+  })}\n`);
+}
 
+function registerDiscordRunShutdown(shutdown: () => Promise<void>): () => void {
   const handleSigint = () => {
     void shutdown();
   };
@@ -787,12 +804,189 @@ export async function discordRunCommand(
   process.once("SIGINT", handleSigint);
   process.once("SIGTERM", handleSigterm);
 
+  return () => {
+    process.off("SIGINT", handleSigint);
+    process.off("SIGTERM", handleSigterm);
+  };
+}
+
+async function listEnabledDiscordAccountKeys(options: DiscordRunCliOptions): Promise<readonly string[]> {
+  return withDiscordAccountStores(options, async ({connectorStore}) => {
+    const accounts = await connectorStore.listAccounts({
+      source: DISCORD_SOURCE,
+      status: "enabled",
+    });
+
+    return accounts.map((account) => account.accountKey);
+  });
+}
+
+async function stopDiscordRunServices(services: readonly DiscordRunServiceRef[]): Promise<void> {
+  await Promise.allSettled(services.map(async ({accountKey, service}) => {
+    try {
+      await service.stop();
+    } catch (error) {
+      logDiscordRunEvent("worker_stop_failed", {
+        accountKey,
+        message: formatDiscordRunError(error),
+      });
+    }
+  }));
+}
+
+function startDiscordRunLoop(accountKey: string, service: DiscordRunService): Promise<void> {
+  return service.run().catch((error) => {
+    logDiscordRunEvent("worker_run_failed", {
+      accountKey,
+      message: formatDiscordRunError(error),
+    });
+  });
+}
+
+async function discordRunAllEnabledCommand(
+  options: DiscordRunCliOptions,
+  dependencies: DiscordCliDependencies,
+): Promise<void> {
+  const started: StartedDiscordRunService[] = [];
+  let starting: DiscordRunServiceRef | null = null;
+  let shutdownRequested = false;
+  let shutdownPromise: Promise<void> | null = null;
+  let resolveStopWaiter: (() => void) | null = null;
+  const stopWaiter = new Promise<void>((resolve) => {
+    resolveStopWaiter = resolve;
+  });
+
+  const shutdown = async () => {
+    shutdownRequested = true;
+    if (!shutdownPromise) {
+      shutdownPromise = (async () => {
+        await stopDiscordRunServices([
+          ...started,
+          ...(starting ? [starting] : []),
+        ]);
+        resolveStopWaiter?.();
+      })();
+    }
+
+    await shutdownPromise;
+  };
+  const unregisterShutdown = registerDiscordRunShutdown(shutdown);
+
+  try {
+    const accountKeys = await listEnabledDiscordAccountKeys(options);
+    if (shutdownRequested) {
+      return;
+    }
+    if (accountKeys.length === 0) {
+      throw new Error("No enabled Discord accounts found. Configure or enable one, then run `panda discord run --all-enabled`.");
+    }
+
+    for (const accountKey of accountKeys) {
+      if (shutdownRequested) {
+        break;
+      }
+
+      const service = createDiscordRunService({
+        accountKey,
+        dbUrl: options.dbUrl,
+        poolMaxFallback: DISCORD_ALL_ENABLED_POOL_MAX_FALLBACK,
+      }, dependencies);
+      starting = {accountKey, service};
+      try {
+        if (!service.start) {
+          throw new Error("Discord run service does not support supervised startup.");
+        }
+        await service.start();
+        if (shutdownRequested) {
+          await service.stop();
+          break;
+        }
+
+        starting = null;
+        started.push({
+          accountKey,
+          runPromise: startDiscordRunLoop(accountKey, service),
+          service,
+        });
+      } catch (error) {
+        if (!shutdownRequested) {
+          logDiscordRunEvent("worker_start_failed", {
+            accountKey,
+            message: formatDiscordRunError(error),
+          });
+        }
+        await service.stop().catch((stopError) => {
+          logDiscordRunEvent("worker_stop_failed", {
+            accountKey,
+            message: formatDiscordRunError(stopError),
+          });
+        });
+      } finally {
+        starting = null;
+      }
+    }
+
+    if (started.length === 0) {
+      if (shutdownRequested) {
+        return;
+      }
+      throw new Error("No Discord workers started. Every enabled Discord account failed during startup.");
+    }
+
+    logDiscordRunEvent("worker_supervisor_started", {
+      accountCount: started.length,
+      accountKeys: started.map((service) => service.accountKey),
+      poolMaxFallback: DISCORD_ALL_ENABLED_POOL_MAX_FALLBACK,
+    });
+
+    await Promise.race([
+      stopWaiter,
+      Promise.all(started.map((service) => service.runPromise)).then(() => undefined),
+    ]);
+  } finally {
+    unregisterShutdown();
+    await shutdown();
+  }
+}
+
+async function discordRunSingleAccountCommand(
+  accountKey: string,
+  options: DiscordRunCliOptions,
+  dependencies: DiscordCliDependencies,
+): Promise<void> {
+  const service = createDiscordRunService({
+    accountKey,
+    dbUrl: options.dbUrl,
+  }, dependencies);
+
+  const unregisterShutdown = registerDiscordRunShutdown(async () => {
+    await service.stop();
+  });
+
   try {
     await service.run();
   } finally {
-    process.off("SIGINT", handleSigint);
-    process.off("SIGTERM", handleSigterm);
+    unregisterShutdown();
   }
+}
+
+export async function discordRunCommand(
+  accountKey: string | undefined,
+  options: DiscordRunCliOptions,
+  dependencies: DiscordCliDependencies = {},
+): Promise<void> {
+  if (options.allEnabled && accountKey !== undefined) {
+    throw new Error("Choose either a Discord account key or --all-enabled, not both.");
+  }
+  if (options.allEnabled) {
+    await discordRunAllEnabledCommand(options, dependencies);
+    return;
+  }
+  if (accountKey === undefined) {
+    throw new Error("Pass a Discord account key or --all-enabled.");
+  }
+
+  await discordRunSingleAccountCommand(accountKey, options, dependencies);
 }
 
 export function registerDiscordCommands(
@@ -805,10 +999,11 @@ export function registerDiscordCommands(
 
   discordProgram
     .command("run")
-    .description("Run one stored Discord connector account worker")
-    .argument("<accountKey>", "Discord connector account key", parseDiscordAccountKey)
+    .description("Run one stored Discord connector account worker, or all enabled accounts")
+    .argument("[accountKey]", "Discord connector account key", parseDiscordAccountKey)
+    .option("--all-enabled", "Run every enabled Discord connector account")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
-    .action((accountKey: string, options: DiscordRunCliOptions) => {
+    .action((accountKey: string | undefined, options: DiscordRunCliOptions) => {
       return discordRunCommand(accountKey, options, dependencies);
     });
 

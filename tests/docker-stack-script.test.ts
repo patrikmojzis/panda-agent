@@ -555,9 +555,13 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
 
     const baseCompose = await readFile(baseComposePath, "utf8");
     expect(baseCompose).toContain("  panda-telegram:\n    image: panda-app:latest");
+    expect(baseCompose).toContain("  panda-discord:\n    image: panda-app:latest");
+    expect(baseCompose).toContain('command: ["discord", "run", "--all-enabled"]');
+    expect(baseCompose).toContain("PANDA_DISCORD_DB_POOL_MAX: ${PANDA_DISCORD_DB_POOL_MAX:-2}");
     expect(baseCompose).toContain("  panda-whatsapp:\n    image: panda-app:latest");
     expect(baseCompose).toContain("${PANDA_ENVIRONMENTS_HOST_ROOT:-${HOME}/.panda/environments}:${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}");
     expect(baseCompose).not.toContain("  panda-telegram:\n    build:");
+    expect(baseCompose).not.toContain("  panda-discord:\n    build:");
     expect(baseCompose).not.toContain("  panda-whatsapp:\n    build:");
 
     const logContents = await readFile(logPath, "utf8");
@@ -578,6 +582,40 @@ printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
     });
     expect(logsResult.exitCode).toBe(0);
     expect(await readFile(logPath, "utf8")).toContain("logs -f panda-runner-luna");
+  });
+
+  it("enables discord explicitly, orders wiki after discord, and maps discord logs", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "DISCORD_ENABLED=true",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const homeDir = await makeTempDir("panda-home-");
+    const upResult = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+
+    expect(upResult.exitCode).toBe(0);
+    expect(upResult.stdout).toContain("./scripts/docker-stack.sh logs discord");
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents).toContain("--profile discord");
+    const generatedWikiCompose = await readFile(generatedWikiComposePath, "utf8");
+    expect(generatedWikiCompose).toMatch(/services:\n  wiki:\n    depends_on:\n      panda-discord:\n        condition: service_started/);
+
+    const logsResult = await runScript(["logs", "discord"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+    expect(logsResult.exitCode).toBe(0);
+    expect(await readFile(logPath, "utf8")).toContain("logs -f panda-discord");
   });
 
   it("enables whatsapp explicitly and maps whatsapp logs", async () => {

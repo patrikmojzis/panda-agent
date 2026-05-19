@@ -8,7 +8,7 @@ Usage:
   ./scripts/docker-stack.sh up [--build]
   ./scripts/docker-stack.sh down
   ./scripts/docker-stack.sh ps
-  ./scripts/docker-stack.sh logs [core|browser|gateway|telegram|whatsapp|wiki|<agentKey>|<service>]
+  ./scripts/docker-stack.sh logs [core|browser|gateway|telegram|discord|whatsapp|wiki|<agentKey>|<service>]
   ./scripts/docker-stack.sh panda <panda args...>
   ./scripts/docker-stack.sh restart
 
@@ -22,6 +22,7 @@ Notes:
   - Disposable worker runners are enabled only when PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true.
   - The browser runner is shared.
   - Telegram polling is auto-enabled when TELEGRAM_BOT_TOKEN is set in .env.
+  - Discord all-enabled workers are enabled when DISCORD_ENABLED=true in .env.
   - WhatsApp polling is enabled when WHATSAPP_ENABLED=true in .env.
   - Wiki.js is part of the stack.
   - Wiki bootstrap follows PANDA_AGENTS.
@@ -215,7 +216,7 @@ render_generated_wiki_compose() {
   wiki_db_ssl_cert_file="$(trim "${WIKI_DB_SSL_CERT_FILE:-}")"
   wiki_publish_port="$(trim "${WIKI_PUBLISH_PORT:-}")"
 
-  if [[ -z "$wiki_db_ssl_cert_file" && -z "$wiki_publish_port" ]]; then
+  if [[ -z "$wiki_db_ssl_cert_file" && -z "$wiki_publish_port" ]] && (( ! enable_discord_profile )); then
     cat > "$generated_wiki_compose" <<'EOF'
 services: {}
 EOF
@@ -226,6 +227,14 @@ EOF
 services:
   wiki:
 EOF
+
+  if (( enable_discord_profile )); then
+    cat >> "$generated_wiki_compose" <<'EOF'
+    depends_on:
+      panda-discord:
+        condition: service_started
+EOF
+  fi
 
   if [[ -n "$wiki_db_ssl_cert_file" ]]; then
     cat >> "$generated_wiki_compose" <<EOF
@@ -243,7 +252,6 @@ EOF
 }
 
 export WIKI_DB_SSL_CERT_FILE="${WIKI_DB_SSL_CERT_FILE:-$(resolve_wiki_ssl_cert_file)}"
-render_generated_wiki_compose
 
 agents_declared() {
   [[ -n "$(trim "${PANDA_AGENTS:-}")" ]]
@@ -446,6 +454,11 @@ if is_truthy "${WHATSAPP_ENABLED:-}"; then
   enable_whatsapp_profile=1
 fi
 
+enable_discord_profile=0
+if is_truthy "${DISCORD_ENABLED:-}"; then
+  enable_discord_profile=1
+fi
+
 enable_apps_edge=0
 if [[ -n "$(trim "${PANDA_APPS_BASE_URL:-}")" ]]; then
   enable_apps_edge=1
@@ -516,6 +529,7 @@ configure_disposable_environment_defaults
 validate_apps_edge_config
 validate_gateway_edge_config
 validate_public_edge_config
+render_generated_wiki_compose
 
 compose_args=(
   "$docker_bin" compose
@@ -535,6 +549,9 @@ if (( enable_telegram_profile )); then
 fi
 if (( enable_whatsapp_profile )); then
   compose_args+=(--profile whatsapp)
+fi
+if (( enable_discord_profile )); then
+  compose_args+=(--profile discord)
 fi
 
 run_compose() {
@@ -919,6 +936,10 @@ resolve_service_name() {
       printf 'panda-whatsapp\n'
       return
       ;;
+    discord|panda-discord)
+      printf 'panda-discord\n'
+      return
+      ;;
   esac
 
   if ! agents_declared; then
@@ -1022,6 +1043,9 @@ print_up_summary() {
   fi
   if (( enable_whatsapp_profile )); then
     printf '  ./scripts/docker-stack.sh logs whatsapp\n'
+  fi
+  if (( enable_discord_profile )); then
+    printf '  ./scripts/docker-stack.sh logs discord\n'
   fi
   if ! agents_declared; then
     return

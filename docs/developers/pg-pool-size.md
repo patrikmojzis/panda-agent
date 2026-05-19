@@ -30,6 +30,7 @@ Today the expensive pieces are not just burst traffic. They are the always-on cl
 - `panda-core` uses `PANDA_CORE_THREAD_LEASE_DB_POOL_MAX` for advisory-lock thread leases. Default: `4`.
 - `panda-core` has a separate readonly pool, but it is lazy and only exists after the readonly tool is actually used.
 - `panda-telegram/<connectorKey>` keeps one shared worker `LISTEN` client.
+- `panda-discord/<accountKey>` runs one pool per enabled Discord account in all-enabled mode.
 - `panda-whatsapp/<connectorKey>` keeps one shared worker `LISTEN` client.
 - Connector ownership uses lease rows with TTL, not pinned advisory-lock sessions.
 - Docker healthchecks hit local HTTP endpoints, not the database.
@@ -45,11 +46,12 @@ For a small 22-slot Postgres plan like `clankerino`, use this core budget:
 - `panda-core` thread lease pool: `4`
 - `panda-core` readonly pool: `2`, lazy
 - `panda-telegram`: `5`
+- `panda-discord`: `2` per enabled Discord account in the Docker stack
 - `panda-whatsapp`: `5`
 
-Core plus one connector totals `18` active slots, or `20` after the lazy readonly pool is used.
+Core plus one `5`-slot connector totals `18` active slots, or `20` after the lazy readonly pool is used.
 
-Core plus both connector defaults totals `23` active slots, or `25` after readonly. Do not run that on a 22-slot plan without lowering connector pool caps or upsizing the database.
+Core plus Telegram, WhatsApp, and Discord accounts can exceed a 22-slot plan quickly. Budget Discord as `enabled accounts x PANDA_DISCORD_DB_POOL_MAX`, lower connector pool caps, or upsize the database before enabling several channel daemons together.
 
 That is intentionally explicit. It gives Panda room to breathe without pretending the database is infinite.
 
@@ -103,7 +105,7 @@ ORDER BY connections DESC, application_name ASC, state ASC;
 
 These are worthwhile, but they are not the root fix:
 
-- use `restart: unless-stopped` for `panda-core`, `panda-telegram`, and `panda-whatsapp`
+- use `restart: unless-stopped` for `panda-core`, `panda-telegram`, `panda-discord`, and `panda-whatsapp`
 - add healthchecks for long-running channel daemons
 - keep those healthchecks cheap and avoid opening fresh DB pools every few seconds
 
@@ -111,7 +113,7 @@ Restart policies help Panda recover from transient failure. They do not fix bad 
 
 ## Remaining Questions
 
-- If we add more always-on connectors, re-budget before shipping them.
+- If we add more always-on connectors or enable more Discord accounts, re-budget before shipping them.
 - If readonly Postgres usage becomes frequent, recheck whether a separate `panda/core-ro` pool still earns its keep.
 - If Postgres pressure returns, inspect `pg_stat_activity` first instead of guessing and cargo-culting lower pool caps.
 

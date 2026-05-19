@@ -48,6 +48,7 @@ export interface DiscordServiceOptions {
   dbUrl?: string;
   dependencies?: DiscordServiceDependencies;
   onBoundMessage?: DiscordBoundMessageHandler;
+  poolMaxFallback?: number;
 }
 
 export interface DiscordServicePoolFactoryInput {
@@ -218,6 +219,7 @@ export class DiscordService {
   private readonly dbUrl?: string;
   private readonly dependencies: DiscordServiceDependencies;
   private readonly onBoundMessage?: DiscordBoundMessageHandler;
+  private readonly poolMaxFallback?: number;
   private botTokenForRedaction: string | null = null;
   private gateway: DiscordServiceGateway | null = null;
   private lease: ManagedConnectorLease | null = null;
@@ -233,6 +235,7 @@ export class DiscordService {
     this.dbUrl = options.dbUrl;
     this.dependencies = options.dependencies ?? {};
     this.onBoundMessage = options.onBoundMessage;
+    this.poolMaxFallback = options.poolMaxFallback;
   }
 
   private log(event: string, payload: Record<string, unknown>): void {
@@ -267,7 +270,7 @@ export class DiscordService {
     const poolConfig = buildObservedPoolConfig(
       `panda/discord/${this.accountKey}`,
       "PANDA_DISCORD_DB_POOL_MAX",
-      DISCORD_POOL_MAX_FALLBACK,
+      this.poolMaxFallback ?? DISCORD_POOL_MAX_FALLBACK,
     );
     const pool = (this.dependencies.createPool ?? createDefaultPool)({
       accountKey: this.accountKey,

@@ -41,6 +41,7 @@ function createFixture(options: {
   botUserId?: string;
   crypto?: CredentialCrypto | null;
   leaseAlreadyHeld?: boolean;
+  poolMaxFallback?: number;
   secret?: string | null;
 } = {}) {
   const order: string[] = [];
@@ -195,6 +196,7 @@ function createFixture(options: {
     accountKey: "ops",
     dbUrl: "postgres://discord-db",
     dependencies,
+    poolMaxFallback: options.poolMaxFallback,
   });
 
   return {
@@ -221,6 +223,28 @@ function createFixture(options: {
 describe("DiscordService", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("uses the optional pool max fallback when the Discord pool env override is unset", async () => {
+    const previousPoolMax = process.env.PANDA_DISCORD_DB_POOL_MAX;
+    delete process.env.PANDA_DISCORD_DB_POOL_MAX;
+    try {
+      vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      const fixture = createFixture({poolMaxFallback: 2});
+
+      await fixture.service.start();
+
+      expect(fixture.dependencies.createPool).toHaveBeenCalledWith(expect.objectContaining({
+        max: 2,
+      }));
+      await fixture.service.stop();
+    } finally {
+      if (previousPoolMax === undefined) {
+        delete process.env.PANDA_DISCORD_DB_POOL_MAX;
+      } else {
+        process.env.PANDA_DISCORD_DB_POOL_MAX = previousPoolMax;
+      }
+    }
   });
 
   it("starts one enabled stored account, validates token identity, takes lease, starts outbound and Gateway, then stops safely", async () => {
