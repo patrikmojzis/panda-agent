@@ -11,7 +11,7 @@ import {PostgresSessionStore} from "../../../domain/sessions/postgres.js";
 import {normalizeConnectorAccountKey, type ConnectorAccountOwnerInput, type ConnectorAccountRecord} from "../../../domain/connectors/types.js";
 import {resolveCredentialCrypto, type CredentialCrypto} from "../../../domain/credentials/crypto.js";
 import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
-import {normalizeIdentityHandle} from "../../../domain/identity/types.js";
+import {normalizeIdentityHandle, type IdentityBindingRecord, type IdentityRecord} from "../../../domain/identity/types.js";
 import {DB_URL_OPTION_DESCRIPTION, parseRequiredOptionValue, parseSessionIdOption} from "../../../lib/cli.js";
 import {withPostgresPool} from "../../../lib/postgres-bootstrap.js";
 import {trimToUndefined} from "../../../lib/strings.js";
@@ -45,6 +45,21 @@ interface DiscordChannelBindingCliOptions extends DiscordAccountCliOptions {
 
 interface DiscordBindingListCliOptions extends DiscordAccountCliOptions {
   account: string;
+}
+
+interface DiscordActorPairCliOptions extends DiscordAccountCliOptions {
+  account?: string;
+  actor: string;
+  identity: string;
+}
+
+interface DiscordActorUnpairCliOptions extends DiscordAccountCliOptions {
+  account?: string;
+  actor: string;
+}
+
+interface DiscordActorPairingsCliOptions extends DiscordAccountCliOptions {
+  account?: string;
 }
 
 export interface DiscordRunServiceOptions {
@@ -92,6 +107,11 @@ interface DiscordBindingStores {
   sessionStore: PostgresSessionStore;
 }
 
+interface DiscordActorPairingStores {
+  connectorStore: PostgresConnectorAccountStore;
+  identityStore: PostgresIdentityStore;
+}
+
 function parseCliValue(value: string, normalize: (raw: string) => string): string {
   try {
     return normalize(value);
@@ -113,8 +133,23 @@ function parseDiscordSessionId(value: string): string {
   return parseSessionIdOption(value);
 }
 
-function parseDiscordOwnerIdentity(value: string): string {
+function parseDiscordActorId(value: string): string {
+  const trimmed = value.trim();
+  if (!/^\d{1,20}$/.test(trimmed) || !/[1-9]/.test(trimmed)) {
+    throw new InvalidArgumentError(
+      "Discord actor must be a numeric Discord user id/snowflake, not a username or display name.",
+    );
+  }
+
+  return trimmed;
+}
+
+function parseDiscordIdentityHandle(value: string): string {
   return parseCliValue(value, normalizeIdentityHandle);
+}
+
+function parseDiscordOwnerIdentity(value: string): string {
+  return parseDiscordIdentityHandle(value);
 }
 
 function parseDiscordOwnerAgent(value: string): string {
@@ -201,6 +236,21 @@ async function withDiscordBindingStores<T>(
     await stores.connectorStore.ensureSchema();
     await stores.sessionStore.ensureSchema();
     await stores.conversations.ensureSchema();
+    return fn(stores);
+  });
+}
+
+async function withDiscordActorPairingStores<T>(
+  options: DiscordAccountCliOptions,
+  fn: (stores: DiscordActorPairingStores) => Promise<T>,
+): Promise<T> {
+  return withPostgresPool(options.dbUrl, async (pool) => {
+    const stores: DiscordActorPairingStores = {
+      connectorStore: new PostgresConnectorAccountStore({pool}),
+      identityStore: new PostgresIdentityStore({pool}),
+    };
+    await stores.connectorStore.ensureSchema();
+    await stores.identityStore.ensureSchema();
     return fn(stores);
   });
 }
@@ -335,6 +385,124 @@ function renderDiscordUnbindResult(
   ].join("\n");
 }
 
+function buildDiscordActorLookup(account: ConnectorAccountRecord, actorId: string) {
+  return {
+    source: DISCORD_SOURCE,
+    connectorKey: account.connectorKey,
+    externalActorId: actorId,
+  };
+}
+
+function buildDiscordActorPairingMetadata(account: ConnectorAccountRecord) {
+  return {
+    pairedVia: "discord-cli",
+    accountKey: account.accountKey,
+  };
+}
+
+function renderDiscordActorPairSummary(
+  headline: string,
+  account: ConnectorAccountRecord,
+  identity: IdentityRecord,
+  binding: IdentityBindingRecord,
+): string {
+  return [
+    headline,
+    `identity ${identity.handle}`,
+    `identityId ${binding.identityId}`,
+    `accountKey ${account.accountKey}`,
+    `connectorKey ${binding.connectorKey}`,
+    `actorId ${binding.externalActorId}`,
+  ].join("\n");
+}
+
+function renderDiscordActorUnpairResult(
+  deleted: boolean,
+  account: ConnectorAccountRecord,
+  actorId: string,
+): string {
+  return [
+    deleted
+      ? `Unpaired Discord actor ${actorId}.`
+      : `No Discord pairing found for actor ${actorId}.`,
+    `accountKey ${account.accountKey}`,
+    `connectorKey ${account.connectorKey}`,
+    `actorId ${actorId}`,
+  ].join("\n");
+}
+
+function renderDiscordActorPairingListEntry(
+  account: ConnectorAccountRecord,
+  identity: IdentityRecord,
+  binding: IdentityBindingRecord,
+): string {
+  return [
+    `${DISCORD_SOURCE}/${account.accountKey}/${binding.externalActorId}`,
+    `  identity ${identity.handle}`,
+    `  identityId ${binding.identityId}`,
+    `  accountKey ${account.accountKey}`,
+    `  connectorKey ${binding.connectorKey}`,
+    `  actorId ${binding.externalActorId}`,
+  ].join("\n");
+}
+
+async function resolveExplicitDiscordActorPairingAccount(
+  stores: Pick<DiscordActorPairingStores, "connectorStore">,
+  accountKey: string,
+  options: {requireEnabled: boolean},
+): Promise<ConnectorAccountRecord> {
+  const account = await stores.connectorStore.getAccountByKey(DISCORD_SOURCE, accountKey);
+  if (!account) {
+    throw new Error(`Unknown Discord account ${accountKey}.`);
+  }
+  if (account.source !== DISCORD_SOURCE) {
+    throw new Error(`Discord account ${accountKey} resolved to unsupported source ${account.source}.`);
+  }
+  if (options.requireEnabled && account.status !== "enabled") {
+    throw new Error(`Discord account ${account.accountKey} is ${account.status}; enable it before pairing Discord actors.`);
+  }
+
+  return account;
+}
+
+async function resolveDiscordActorPairingAccount(
+  stores: Pick<DiscordActorPairingStores, "connectorStore">,
+  accountKey: string | undefined,
+  options: {requireEnabled: boolean},
+): Promise<ConnectorAccountRecord> {
+  if (accountKey !== undefined) {
+    return resolveExplicitDiscordActorPairingAccount(stores, accountKey, options);
+  }
+
+  const accounts = await stores.connectorStore.listAccounts({
+    source: DISCORD_SOURCE,
+    status: "enabled",
+  });
+
+  for (const account of accounts) {
+    if (account.source !== DISCORD_SOURCE) {
+      throw new Error(`Discord account lookup returned unsupported source ${account.source}.`);
+    }
+    if (account.status !== "enabled") {
+      throw new Error(`Discord account lookup returned ${account.accountKey} with status ${account.status}.`);
+    }
+  }
+
+  if (accounts.length === 0) {
+    throw new Error(
+      "No enabled Discord accounts found. Configure or enable one, or pass --account <accountKey>.",
+    );
+  }
+  if (accounts.length > 1) {
+    const accountKeys = accounts.map((account) => account.accountKey).join(", ");
+    throw new Error(
+      `Multiple enabled Discord accounts found (${accountKeys}). Pass --account <accountKey> to choose one.`,
+    );
+  }
+
+  return accounts[0]!;
+}
+
 async function resolveDiscordBindingAccount(
   stores: Pick<DiscordBindingStores, "connectorStore">,
   accountKey: string,
@@ -352,6 +520,66 @@ async function resolveDiscordBindingAccount(
   }
 
   return account;
+}
+
+export async function discordPairCommand(options: DiscordActorPairCliOptions): Promise<void> {
+  await withDiscordActorPairingStores(options, async ({connectorStore, identityStore}) => {
+    const account = await resolveDiscordActorPairingAccount({connectorStore}, options.account, {
+      requireEnabled: true,
+    });
+    const identity = await identityStore.getIdentityByHandle(options.identity);
+    const binding = await identityStore.ensureIdentityBinding({
+      ...buildDiscordActorLookup(account, options.actor),
+      identityId: identity.id,
+      metadata: buildDiscordActorPairingMetadata(account),
+    });
+
+    process.stdout.write(renderDiscordActorPairSummary(
+      `Paired Discord actor ${binding.externalActorId}.`,
+      account,
+      identity,
+      binding,
+    ) + "\n");
+  });
+}
+
+export async function discordUnpairCommand(options: DiscordActorUnpairCliOptions): Promise<void> {
+  await withDiscordActorPairingStores(options, async ({connectorStore, identityStore}) => {
+    const account = await resolveDiscordActorPairingAccount({connectorStore}, options.account, {
+      requireEnabled: false,
+    });
+    const deleted = await identityStore.deleteIdentityBinding(
+      buildDiscordActorLookup(account, options.actor),
+    );
+
+    process.stdout.write(renderDiscordActorUnpairResult(deleted, account, options.actor) + "\n");
+  });
+}
+
+export async function discordPairingsCommand(options: DiscordActorPairingsCliOptions): Promise<void> {
+  await withDiscordActorPairingStores(options, async ({connectorStore, identityStore}) => {
+    const account = await resolveDiscordActorPairingAccount({connectorStore}, options.account, {
+      requireEnabled: false,
+    });
+    const identities = await identityStore.listIdentities();
+    const entries: string[] = [];
+
+    for (const identity of identities) {
+      const bindings = await identityStore.listIdentityBindings(identity.id);
+      for (const binding of bindings) {
+        if (binding.source === DISCORD_SOURCE && binding.connectorKey === account.connectorKey) {
+          entries.push(renderDiscordActorPairingListEntry(account, identity, binding));
+        }
+      }
+    }
+
+    if (entries.length === 0) {
+      process.stdout.write(`No Discord actor pairings for account ${account.accountKey}.\n`);
+      return;
+    }
+
+    process.stdout.write(entries.join("\n\n") + "\n");
+  });
 }
 
 export async function discordBindChannelCommand(options: DiscordBindChannelCliOptions): Promise<void> {
@@ -582,6 +810,36 @@ export function registerDiscordCommands(
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((accountKey: string, options: DiscordRunCliOptions) => {
       return discordRunCommand(accountKey, options, dependencies);
+    });
+
+  discordProgram
+    .command("pair")
+    .description("Pair a Discord user id to a Panda identity")
+    .requiredOption("--identity <handle>", "Identity handle to pair", parseDiscordIdentityHandle)
+    .requiredOption("--actor <discordUserId>", "Discord user id/snowflake to pair, not a username", parseDiscordActorId)
+    .option("--account <accountKey>", "Discord connector account key", parseDiscordAccountKey)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((options: DiscordActorPairCliOptions) => {
+      return discordPairCommand(options);
+    });
+
+  discordProgram
+    .command("unpair")
+    .description("Remove a Discord user identity pairing")
+    .requiredOption("--actor <discordUserId>", "Discord user id/snowflake to unpair, not a username", parseDiscordActorId)
+    .option("--account <accountKey>", "Discord connector account key", parseDiscordAccountKey)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((options: DiscordActorUnpairCliOptions) => {
+      return discordUnpairCommand(options);
+    });
+
+  discordProgram
+    .command("pairings")
+    .description("List Discord user identity pairings for an account")
+    .option("--account <accountKey>", "Discord connector account key", parseDiscordAccountKey)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((options: DiscordActorPairingsCliOptions) => {
+      return discordPairingsCommand(options);
     });
 
   discordProgram

@@ -29,14 +29,28 @@ const discordCliMocks = vi.hoisted(() => {
     account: Record<string, unknown> | null;
     binding: Record<string, unknown> | null;
     deleteBindingResult: boolean;
+    deleteIdentityBindingResult: boolean;
+    ensureIdentityBindingError: Error | null;
+    getIdentityByHandleError: Error | null;
+    identityBinding: Record<string, unknown> | null;
+    listAccountsResult: Record<string, unknown>[];
     listBindingsResult: Record<string, unknown>[];
+    listIdentitiesResult: Record<string, unknown>[];
+    listIdentityBindingsResult: Record<string, Record<string, unknown>[]>;
     sessionExists: boolean;
     storedSecret: string | null;
   } = {
-    account: {},
+    account: null,
     binding: null,
     deleteBindingResult: true,
+    deleteIdentityBindingResult: true,
+    ensureIdentityBindingError: null,
+    getIdentityByHandleError: null,
+    identityBinding: null,
+    listAccountsResult: [],
     listBindingsResult: [],
+    listIdentitiesResult: [],
+    listIdentityBindingsResult: {},
     sessionExists: true,
     storedSecret: privateToken,
   };
@@ -78,11 +92,48 @@ const discordCliMocks = vi.hoisted(() => {
     };
   }
 
+  function makeIdentity(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: "identity-patrik",
+      handle: "patrik",
+      displayName: "Patrik",
+      status: "active",
+      createdAt: 1,
+      updatedAt: 2,
+      ...overrides,
+    };
+  }
+
+  function makeIdentityBinding(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: "identity-binding-1",
+      identityId: "identity-patrik",
+      source: "discord",
+      connectorKey: botUser.id,
+      externalActorId: "234567890123456789",
+      metadata: {
+        pairedVia: "discord-cli",
+        accountKey: "ops",
+      },
+      createdAt: 1,
+      updatedAt: 2,
+      ...overrides,
+    };
+  }
+
   function resetFixtures(): void {
-    state.account = makeAccount();
+    const account = makeAccount();
+    state.account = account;
     state.binding = null;
     state.deleteBindingResult = true;
+    state.deleteIdentityBindingResult = true;
+    state.ensureIdentityBindingError = null;
+    state.getIdentityByHandleError = null;
+    state.identityBinding = null;
+    state.listAccountsResult = [account];
     state.listBindingsResult = [];
+    state.listIdentitiesResult = [];
+    state.listIdentityBindingsResult = {};
     state.sessionExists = true;
     state.storedSecret = privateToken;
   }
@@ -101,14 +152,17 @@ const discordCliMocks = vi.hoisted(() => {
         externalUsername: input.externalUsername,
         status: input.status,
       });
+      state.listAccountsResult = state.account ? [state.account] : [];
       return state.account;
     });
     readonly getAccountByKey = vi.fn(async (_source: string, _accountKey: string) => state.account);
+    readonly listAccounts = vi.fn(async () => state.listAccountsResult);
     readonly disableAccount = vi.fn(async (_source: string, accountKey: string) => {
       state.account = makeAccount({
         accountKey,
         status: "disabled",
       });
+      state.listAccountsResult = state.account ? [state.account] : [];
       return state.account;
     });
     readonly setSecret = vi.fn(async (_accountId: string, _secretKey: string, plaintext: string) => {
@@ -187,14 +241,37 @@ const discordCliMocks = vi.hoisted(() => {
   }
 
   class MockPostgresIdentityStore {
-    readonly getIdentityByHandle = vi.fn(async (handle: string) => ({
-      id: `identity-${handle}`,
-      handle,
-      displayName: handle,
-      status: "active",
-      createdAt: 1,
-      updatedAt: 2,
-    }));
+    readonly ensureSchema = vi.fn(async () => {});
+    readonly getIdentityByHandle = vi.fn(async (handle: string) => {
+      if (state.getIdentityByHandleError) {
+        throw state.getIdentityByHandleError;
+      }
+
+      return makeIdentity({
+        id: `identity-${handle}`,
+        handle,
+        displayName: handle,
+      });
+    });
+    readonly ensureIdentityBinding = vi.fn(async (input: Record<string, unknown>) => {
+      if (state.ensureIdentityBindingError) {
+        throw state.ensureIdentityBindingError;
+      }
+
+      state.identityBinding = makeIdentityBinding({
+        identityId: input.identityId,
+        source: input.source,
+        connectorKey: input.connectorKey,
+        externalActorId: input.externalActorId,
+        metadata: input.metadata,
+      });
+      return state.identityBinding;
+    });
+    readonly deleteIdentityBinding = vi.fn(async () => state.deleteIdentityBindingResult);
+    readonly listIdentities = vi.fn(async () => state.listIdentitiesResult);
+    readonly listIdentityBindings = vi.fn(async (identityId: string) => (
+      state.listIdentityBindingsResult[identityId] ?? []
+    ));
 
     constructor(_options: unknown) {
       identityStoreInstances.push(this);
@@ -226,6 +303,8 @@ const discordCliMocks = vi.hoisted(() => {
     identityStoreInstances,
     makeAccount,
     makeBinding,
+    makeIdentity,
+    makeIdentityBinding,
     pool,
     privateMetadataSentinel,
     privateToken,
@@ -407,6 +486,291 @@ describe("Discord account CLI", () => {
     expect(off).toHaveBeenCalledWith("SIGINT", expect.any(Function));
     expect(off).toHaveBeenCalledWith("SIGTERM", expect.any(Function));
     const output = collectWrites(write);
+    expect(output).not.toContain(discordCliMocks.privateToken);
+  });
+
+
+  it("pairs a Discord actor to an identity using the selected account connector key", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await createProgram().parseAsync([
+      "discord",
+      "pair",
+      "--account",
+      "ops",
+      "--identity",
+      "patrik",
+      "--actor",
+      "234567890123456789",
+      "--db-url",
+      "postgres://discord-db",
+    ], {from: "user"});
+
+    expect(latestConnectorStore().ensureSchema).toHaveBeenCalledOnce();
+    expect(latestIdentityStore().ensureSchema).toHaveBeenCalledOnce();
+    expect(latestConnectorStore().getAccountByKey).toHaveBeenCalledWith("discord", "ops");
+    expect(latestIdentityStore().getIdentityByHandle).toHaveBeenCalledWith("patrik");
+    expect(latestIdentityStore().ensureIdentityBinding).toHaveBeenCalledWith({
+      source: "discord",
+      connectorKey: discordCliMocks.botUser.id,
+      externalActorId: "234567890123456789",
+      identityId: "identity-patrik",
+      metadata: {
+        pairedVia: "discord-cli",
+        accountKey: "ops",
+      },
+    });
+
+    const output = collectWrites(write);
+    expect(output).toContain("Paired Discord actor 234567890123456789.");
+    expect(output).toContain("identity patrik");
+    expect(output).toContain("identityId identity-patrik");
+    expect(output).toContain("accountKey ops");
+    expect(output).toContain(`connectorKey ${discordCliMocks.botUser.id}`);
+    expect(output).toContain("actorId 234567890123456789");
+    expect(output).not.toContain(discordCliMocks.privateToken);
+  });
+
+  it("infers the Discord account only when exactly one enabled account exists", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    discordCliMocks.state.listAccountsResult = [discordCliMocks.makeAccount({
+      accountKey: "solo",
+      connectorKey: "987654321098765432",
+    })];
+
+    await createProgram().parseAsync([
+      "discord",
+      "pair",
+      "--identity",
+      "patrik",
+      "--actor",
+      "234567890123456789",
+    ], {from: "user"});
+
+    expect(latestConnectorStore().listAccounts).toHaveBeenCalledWith({
+      source: "discord",
+      status: "enabled",
+    });
+    expect(latestConnectorStore().getAccountByKey).not.toHaveBeenCalled();
+    expect(latestIdentityStore().ensureIdentityBinding).toHaveBeenCalledWith(expect.objectContaining({
+      source: "discord",
+      connectorKey: "987654321098765432",
+      externalActorId: "234567890123456789",
+      identityId: "identity-patrik",
+      metadata: {
+        pairedVia: "discord-cli",
+        accountKey: "solo",
+      },
+    }));
+
+    const output = collectWrites(write);
+    expect(output).toContain("accountKey solo");
+    expect(output).toContain("connectorKey 987654321098765432");
+  });
+
+  it("fails loudly when omitted Discord account cannot resolve to exactly one enabled account", async () => {
+    discordCliMocks.state.listAccountsResult = [];
+
+    await expect(createProgram().parseAsync([
+      "discord",
+      "pair",
+      "--identity",
+      "patrik",
+      "--actor",
+      "234567890123456789",
+    ], {from: "user"})).rejects.toThrow("No enabled Discord accounts found");
+
+    discordCliMocks.state.listAccountsResult = [
+      discordCliMocks.makeAccount({accountKey: "ops"}),
+      discordCliMocks.makeAccount({accountKey: "lab", connectorKey: "345678901234567890"}),
+    ];
+
+    await expect(createProgram().parseAsync([
+      "discord",
+      "pair",
+      "--identity",
+      "patrik",
+      "--actor",
+      "234567890123456789",
+    ], {from: "user"})).rejects.toThrow("Multiple enabled Discord accounts found (ops, lab). Pass --account <accountKey> to choose one.");
+  });
+
+  it("rejects Discord usernames or display names as actor values before store writes", async () => {
+    const program = createProgram();
+    program.exitOverride();
+    const errorWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await expect(program.parseAsync([
+      "discord",
+      "pair",
+      "--account",
+      "ops",
+      "--identity",
+      "patrik",
+      "--actor",
+      "@patrik",
+    ], {from: "user"})).rejects.toThrow("process.exit unexpectedly called");
+
+    expect(collectWrites(errorWrite)).toContain(
+      "Discord actor must be a numeric Discord user id/snowflake, not a username or display name.",
+    );
+    expect(discordCliMocks.connectorStoreInstances).toHaveLength(0);
+    expect(discordCliMocks.identityStoreInstances).toHaveLength(0);
+  });
+
+  it("rejects wrong-source explicit accounts before identity binding", async () => {
+    discordCliMocks.state.account = discordCliMocks.makeAccount({source: "slack"});
+
+    await expect(createProgram().parseAsync([
+      "discord",
+      "pair",
+      "--account",
+      "ops",
+      "--identity",
+      "patrik",
+      "--actor",
+      "234567890123456789",
+    ], {from: "user"})).rejects.toThrow("unsupported source slack");
+
+    expect(latestIdentityStore().getIdentityByHandle).not.toHaveBeenCalled();
+    expect(latestIdentityStore().ensureIdentityBinding).not.toHaveBeenCalled();
+  });
+
+  it("surfaces missing identity and existing different-identity pairing errors", async () => {
+    discordCliMocks.state.getIdentityByHandleError = new Error("Unknown identity handle missing");
+
+    await expect(createProgram().parseAsync([
+      "discord",
+      "pair",
+      "--account",
+      "ops",
+      "--identity",
+      "missing",
+      "--actor",
+      "234567890123456789",
+    ], {from: "user"})).rejects.toThrow("Unknown identity handle missing");
+    expect(latestIdentityStore().ensureIdentityBinding).not.toHaveBeenCalled();
+
+    discordCliMocks.state.getIdentityByHandleError = null;
+    discordCliMocks.state.ensureIdentityBindingError = new Error(
+      "Identity binding discord/123456789012345678/234567890123456789 already belongs to identity identity-alice, not identity-patrik.",
+    );
+
+    await expect(createProgram().parseAsync([
+      "discord",
+      "pair",
+      "--account",
+      "ops",
+      "--identity",
+      "patrik",
+      "--actor",
+      "234567890123456789",
+    ], {from: "user"})).rejects.toThrow("already belongs to identity identity-alice");
+    expect(latestIdentityStore().ensureIdentityBinding).toHaveBeenCalledWith(expect.objectContaining({
+      source: "discord",
+      connectorKey: discordCliMocks.botUser.id,
+      externalActorId: "234567890123456789",
+      identityId: "identity-patrik",
+    }));
+  });
+
+  it("requires enabled accounts for pair but allows disabled-account unpair cleanup and no-op reporting", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    discordCliMocks.state.account = discordCliMocks.makeAccount({status: "disabled"});
+
+    await expect(createProgram().parseAsync([
+      "discord",
+      "pair",
+      "--account",
+      "ops",
+      "--identity",
+      "patrik",
+      "--actor",
+      "234567890123456789",
+    ], {from: "user"})).rejects.toThrow("disabled");
+    expect(latestIdentityStore().getIdentityByHandle).not.toHaveBeenCalled();
+
+    await createProgram().parseAsync([
+      "discord",
+      "unpair",
+      "--account",
+      "ops",
+      "--actor",
+      "234567890123456789",
+    ], {from: "user"});
+    expect(latestIdentityStore().deleteIdentityBinding).toHaveBeenCalledWith({
+      source: "discord",
+      connectorKey: discordCliMocks.botUser.id,
+      externalActorId: "234567890123456789",
+    });
+
+    discordCliMocks.state.deleteIdentityBindingResult = false;
+    await createProgram().parseAsync([
+      "discord",
+      "unpair",
+      "--account",
+      "ops",
+      "--actor",
+      "234567890123456789",
+    ], {from: "user"});
+
+    const output = collectWrites(write);
+    expect(output).toContain("Unpaired Discord actor 234567890123456789.");
+    expect(output).toContain("No Discord pairing found for actor 234567890123456789.");
+    expect(output).toContain("accountKey ops");
+    expect(output).toContain(`connectorKey ${discordCliMocks.botUser.id}`);
+    expect(output).not.toContain(discordCliMocks.privateToken);
+  });
+
+  it("lists Discord actor pairings for an explicit account without leaking metadata", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    discordCliMocks.state.account = discordCliMocks.makeAccount({status: "disabled"});
+    discordCliMocks.state.listIdentitiesResult = [
+      discordCliMocks.makeIdentity({id: "identity-patrik", handle: "patrik"}),
+      discordCliMocks.makeIdentity({id: "identity-alice", handle: "alice"}),
+    ];
+    discordCliMocks.state.listIdentityBindingsResult = {
+      "identity-patrik": [
+        discordCliMocks.makeIdentityBinding({
+          identityId: "identity-patrik",
+          externalActorId: "234567890123456789",
+          metadata: {
+            privateMetadataSentinel: discordCliMocks.privateMetadataSentinel,
+          },
+        }),
+        discordCliMocks.makeIdentityBinding({
+          identityId: "identity-patrik",
+          source: "telegram",
+          externalActorId: "999",
+        }),
+      ],
+      "identity-alice": [discordCliMocks.makeIdentityBinding({
+        identityId: "identity-alice",
+        connectorKey: "other-bot",
+        externalActorId: "888888888888888888",
+      })],
+    };
+
+    await createProgram().parseAsync([
+      "discord",
+      "pairings",
+      "--account",
+      "ops",
+    ], {from: "user"});
+
+    expect(latestIdentityStore().listIdentities).toHaveBeenCalledOnce();
+    expect(latestIdentityStore().listIdentityBindings).toHaveBeenCalledWith("identity-patrik");
+    expect(latestIdentityStore().listIdentityBindings).toHaveBeenCalledWith("identity-alice");
+
+    const output = collectWrites(write);
+    expect(output).toContain("discord/ops/234567890123456789");
+    expect(output).toContain("  identity patrik");
+    expect(output).toContain("  identityId identity-patrik");
+    expect(output).toContain(`  connectorKey ${discordCliMocks.botUser.id}`);
+    expect(output).toContain("  actorId 234567890123456789");
+    expect(output).not.toContain("actorId 999");
+    expect(output).not.toContain("actorId 888888888888888888");
+    expect(output).not.toContain(discordCliMocks.privateMetadataSentinel);
     expect(output).not.toContain(discordCliMocks.privateToken);
   });
 
