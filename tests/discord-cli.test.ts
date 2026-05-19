@@ -356,7 +356,7 @@ vi.mock("../src/lib/postgres-bootstrap.js", () => ({
 }));
 
 function createProgram(overrides: {
-  createRunService?: (options: {accountKey: string; dbUrl?: string; poolMaxFallback?: number}) => {
+  createRunService?: (options: {accountKey: string; dataDir: string; dbUrl?: string; poolMaxFallback?: number}) => {
     run(): Promise<void>;
     start?(): Promise<void>;
     stop(): Promise<void>;
@@ -456,6 +456,7 @@ describe("Discord account CLI", () => {
 
     expect(createRunService).toHaveBeenCalledWith({
       accountKey: "ops",
+      dataDir: expect.any(String),
       dbUrl: "postgres://discord-db",
     });
     expect(run).toHaveBeenCalledOnce();
@@ -500,7 +501,7 @@ describe("Discord account CLI", () => {
       discordCliMocks.makeAccount({accountKey: "ops"}),
       discordCliMocks.makeAccount({accountKey: "lab", connectorKey: "345678901234567890"}),
     ];
-    const createRunService = vi.fn((options: {accountKey: string}) => ({
+    const createRunService = vi.fn((options: {accountKey: string; dataDir: string}) => ({
       start: vi.fn(async () => {
         order.push(`start:${options.accountKey}`);
       }),
@@ -526,11 +527,13 @@ describe("Discord account CLI", () => {
     });
     expect(createRunService).toHaveBeenNthCalledWith(1, {
       accountKey: "ops",
+      dataDir: expect.any(String),
       dbUrl: "postgres://discord-db",
       poolMaxFallback: 2,
     });
     expect(createRunService).toHaveBeenNthCalledWith(2, {
       accountKey: "lab",
+      dataDir: expect.any(String),
       dbUrl: "postgres://discord-db",
       poolMaxFallback: 2,
     });
@@ -573,7 +576,7 @@ describe("Discord account CLI", () => {
       discordCliMocks.makeAccount({accountKey: "ops"}),
       discordCliMocks.makeAccount({accountKey: "lab", connectorKey: "345678901234567890"}),
     ];
-    const createRunService = vi.fn((options: {accountKey: string}) => {
+    const createRunService = vi.fn((options: {accountKey: string; dataDir: string}) => {
       const start = vi.fn(async () => {
         if (options.accountKey === "ops") {
           throw new Error("startup failed");
@@ -636,7 +639,7 @@ describe("Discord account CLI", () => {
     ];
     const runResolvers: Record<string, () => void> = {};
     const services: Record<string, {stop: ReturnType<typeof vi.fn>}> = {};
-    const createRunService = vi.fn((options: {accountKey: string}) => {
+    const createRunService = vi.fn((options: {accountKey: string; dataDir: string}) => {
       const service = {
         start: vi.fn(async () => {
           if (options.accountKey === "lab") {

@@ -95,6 +95,22 @@ function createFixture(options: {
       order.push("schema:outbound");
     }),
   };
+  const mediaStore = {
+    writeMedia: vi.fn(async (input) => {
+      order.push("media:write");
+      return {
+        id: "media-discord-1",
+        source: input.source,
+        connectorKey: input.connectorKey,
+        mimeType: input.mimeType,
+        sizeBytes: input.bytes.byteLength,
+        localPath: "/tmp/discord-media.png",
+        originalFilename: input.hintFilename,
+        metadata: input.metadata,
+        createdAt: 1,
+      };
+    }),
+  };
   const runtimeRequests = {
     ensureSchema: vi.fn(async () => {
       order.push("schema:requests");
@@ -121,6 +137,7 @@ function createFixture(options: {
     connectorStore,
     conversationRepo,
     outboundDeliveries,
+    mediaStore,
     pool,
     runtimeRequests,
     sessionStore,
@@ -194,6 +211,7 @@ function createFixture(options: {
   };
   const service = new DiscordService({
     accountKey: "ops",
+    dataDir: "/tmp/panda-media",
     dbUrl: "postgres://discord-db",
     dependencies,
     poolMaxFallback: options.poolMaxFallback,
@@ -211,6 +229,7 @@ function createFixture(options: {
       return leaseOptions;
     },
     lease,
+    mediaStore,
     order,
     outboundWorker,
     pool,
@@ -222,6 +241,7 @@ function createFixture(options: {
 
 describe("DiscordService", () => {
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -368,6 +388,81 @@ describe("DiscordService", () => {
     expect(output).toContain("request-discord-1");
     expect(output).not.toContain("PRIVATE_DISCORD_TEXT");
     expect(output).not.toContain("https://cdn.example/private");
+    expect(output).not.toContain(privateToken);
+  });
+
+  it("downloads successful bound Gateway attachments into media storage before queueing", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const fixture = createFixture();
+    await fixture.service.start();
+    fixture.order.length = 0;
+    const attachmentUrl = "https://cdn.discordapp.com/attachments/channel/attachment/image.png?secret=1";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(Buffer.from("media"), {
+      status: 200,
+      headers: {"content-length": "5"},
+    })));
+
+    fixture.conversationRepo.getConversationBinding.mockResolvedValue({
+      source: "discord",
+      connectorKey,
+      externalConversationId: "channel-1",
+      sessionId: "session-1",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    await fixture.gatewayOptions?.onMessageCreate({
+      id: "message-2",
+      channel_id: "channel-1",
+      guild_id: "guild-1",
+      author: {
+        id: "user-1",
+      },
+      content: "image attached",
+      attachments: [{
+        id: "attachment-2",
+        filename: "image.png",
+        content_type: "image/png",
+        size: 5,
+        url: attachmentUrl,
+      }],
+    });
+
+    expect(fixture.order).toEqual(["media:write", "request:enqueue"]);
+    expect(fixture.mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({
+      source: "discord",
+      connectorKey,
+      mimeType: "image/png",
+      sizeBytes: 5,
+      hintFilename: "image.png",
+      metadata: {
+        discordAttachmentId: "attachment-2",
+      },
+    }));
+    expect(JSON.stringify(fixture.mediaStore.writeMedia.mock.calls[0]?.[0])).not.toContain(attachmentUrl);
+    expect(fixture.runtimeRequests.enqueueRequest).toHaveBeenCalledWith({
+      kind: "discord_message",
+      payload: expect.objectContaining({
+        externalMessageId: "message-2",
+        attachmentSummaries: [{
+          id: "attachment-2",
+          filename: "image.png",
+          contentType: "image/png",
+          sizeBytes: 5,
+        }],
+        media: [expect.objectContaining({
+          id: "media-discord-1",
+          localPath: "/tmp/discord-media.png",
+          metadata: {
+            discordAttachmentId: "attachment-2",
+          },
+        })],
+      }),
+    });
+    const output = collectWrites(write);
+    expect(output).toContain("message_queued");
+    expect(output).toContain('"mediaCount":1');
+    expect(output).not.toContain(attachmentUrl);
     expect(output).not.toContain(privateToken);
   });
 

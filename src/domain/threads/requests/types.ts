@@ -135,6 +135,7 @@ export interface DiscordMessageRequestPayload extends BaseRuntimeRequestPayload 
   externalMessageId: string;
   actualChannelId: string;
   attachmentSummaries: readonly DiscordAttachmentSummary[];
+  media: readonly MediaDescriptor[];
   sentAt?: number;
   guildId?: string;
   threadId?: string;

@@ -1,8 +1,10 @@
+import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import type {DiscordMessageRequestPayload, DiscordAttachmentSummary} from "../../../domain/threads/requests/types.js";
 import type {ConversationBinding, ConversationLookup} from "../../../domain/sessions/conversations/types.js";
 import type {JsonObject} from "../../../lib/json.js";
 import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import {DISCORD_SOURCE} from "./config.js";
+import type {DiscordAttachmentDownloadResult} from "./media.js";
 
 export interface DiscordMessageAuthorPayload {
   id?: unknown;
@@ -66,6 +68,7 @@ export interface IngestDiscordMessageCreateOptions {
   accountKey: string;
   connectorKey: string;
   conversationRepo: DiscordConversationBindingReader;
+  downloadAttachments?: (attachments: unknown) => Promise<DiscordAttachmentDownloadResult>;
   log: (event: string, payload: Record<string, unknown>) => void;
   onBoundMessage: DiscordBoundMessageHandler;
   resolveParentChannelId(actualChannelId: string): Promise<DiscordParentChannelResolution | null>;
@@ -197,7 +200,9 @@ function buildDeliveryContext(
 }
 
 function buildRequestPayload(input: {
+  attachmentSummaries: readonly DiscordAttachmentSummary[];
   externalActorId: string;
+  media: readonly MediaDescriptor[];
   payload: DiscordMessageCreatePayload;
   route: DiscordMessageRouteEnvelope;
 }): DiscordMessageRequestPayload {
@@ -219,7 +224,8 @@ function buildRequestPayload(input: {
     externalActorId: input.externalActorId,
     externalMessageId: input.route.externalMessageId,
     actualChannelId: input.route.actualChannelId,
-    attachmentSummaries: readAttachmentSummaries(input.payload.attachments),
+    attachmentSummaries: input.attachmentSummaries,
+    media: input.media,
     ...(sentAt !== undefined ? {sentAt} : {}),
     ...(input.route.guildId !== undefined ? {guildId: input.route.guildId} : {}),
     ...(input.route.threadId !== undefined ? {threadId: input.route.threadId} : {}),
@@ -250,6 +256,24 @@ function logRouteDrop(
     guildId: route.guildId ?? null,
     externalMessageId: route.externalMessageId,
   });
+}
+
+async function downloadBoundAttachments(
+  attachments: unknown,
+  attachmentSummaries: readonly DiscordAttachmentSummary[],
+  route: DiscordMessageRouteEnvelope,
+  options: IngestDiscordMessageCreateOptions,
+): Promise<DiscordAttachmentDownloadResult> {
+  if (!options.downloadAttachments || attachmentSummaries.length === 0) {
+    return {media: [], unavailable: []};
+  }
+
+  try {
+    return await options.downloadAttachments(attachments);
+  } catch {
+    logRouteDrop(options.log, "media_download_failed", route, "attachment_download_failed");
+    return {media: [], unavailable: []};
+  }
 }
 
 export function createDefaultDiscordBoundMessageHandler(
@@ -334,15 +358,21 @@ export async function ingestDiscordMessageCreate(
     return {status: "dropped", reason: "unbound_conversation"};
   }
 
-  const requestPayload = buildRequestPayload({
-    externalActorId,
-    payload,
-    route,
-  });
-  if (!(requestPayload.text?.trim()) && requestPayload.attachmentSummaries.length === 0) {
+  const attachmentSummaries = readAttachmentSummaries(payload.attachments);
+  const text = trimToUndefined(payload.content);
+  if (!text && attachmentSummaries.length === 0) {
     logRouteDrop(options.log, "message_dropped", route, "unsupported_message_shape");
     return {status: "dropped", reason: "unsupported_message_shape"};
   }
+
+  const mediaDownload = await downloadBoundAttachments(payload.attachments, attachmentSummaries, route, options);
+  const requestPayload = buildRequestPayload({
+    attachmentSummaries,
+    externalActorId,
+    media: mediaDownload.media,
+    payload,
+    route,
+  });
 
   await options.onBoundMessage({
     binding,

@@ -51,6 +51,7 @@ describe("Discord message ingestion privacy preflight", () => {
   it("drops unbound thread messages after safe parent binding lookup without leaking content, attachments, or author display fields", async () => {
     const log = vi.fn();
     const onBoundMessage = vi.fn();
+    const downloadAttachments = vi.fn();
     const getConversationBinding = vi.fn(async () => null);
     const payload = messagePayload({
       channel_id: "thread-1",
@@ -66,6 +67,7 @@ describe("Discord message ingestion privacy preflight", () => {
       accountKey: "ops",
       connectorKey: "bot-1",
       conversationRepo: {getConversationBinding},
+      downloadAttachments,
       log,
       onBoundMessage,
       resolveParentChannelId: vi.fn(async () => ({
@@ -82,6 +84,7 @@ describe("Discord message ingestion privacy preflight", () => {
       externalConversationId: "channel-1",
     });
     expect(onBoundMessage).not.toHaveBeenCalled();
+    expect(downloadAttachments).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith("message_dropped", expect.objectContaining({
       reason: "unbound_conversation",
       connectorKey: "bot-1",
@@ -379,6 +382,104 @@ describe("Discord message ingestion privacy preflight", () => {
     expect(JSON.stringify(onBoundMessage.mock.calls[0]?.[0])).not.toContain("https://cdn.example/private-report");
   });
 
+  it("downloads attachments only after a binding is found and queues only successful media", async () => {
+    const media = [{
+      id: "media-1",
+      source: "discord",
+      connectorKey: "bot-1",
+      mimeType: "image/png",
+      sizeBytes: 5,
+      localPath: "/tmp/discord-media.png",
+      originalFilename: "image.png",
+      metadata: {discordAttachmentId: "attachment-1"},
+      createdAt: 1,
+    }];
+    const downloadAttachments = vi.fn(async () => ({
+      media,
+      unavailable: [{
+        id: "attachment-2",
+        contentType: "image/png",
+        reason: "Discord attachment download failed.",
+      }],
+    }));
+    const onBoundMessage = vi.fn();
+
+    const result = await ingestDiscordMessageCreate(messagePayload({
+      content: " ",
+      attachments: [
+        {
+          id: "attachment-1",
+          filename: "image.png",
+          content_type: "image/png",
+          size: 5,
+          url: "https://cdn.discordapp.com/attachments/channel/attachment/image.png",
+        },
+        {
+          id: "attachment-2",
+          filename: "failed.png",
+          content_type: "image/png",
+          size: 5,
+          url: "https://cdn.discordapp.com/attachments/channel/attachment/failed.png",
+        },
+      ],
+    }), {
+      accountKey: "ops",
+      connectorKey: "bot-1",
+      conversationRepo: {getConversationBinding: vi.fn(async () => binding())},
+      downloadAttachments,
+      log: vi.fn(),
+      onBoundMessage,
+      resolveParentChannelId: vi.fn(async () => ({parentChannelId: "channel-1"})),
+    });
+
+    expect(result.status).toBe("bound");
+    expect(downloadAttachments).toHaveBeenCalledOnce();
+    expect(onBoundMessage).toHaveBeenCalledWith(expect.objectContaining({
+      requestPayload: expect.objectContaining({
+        attachmentSummaries: [
+          expect.objectContaining({id: "attachment-1"}),
+          expect.objectContaining({id: "attachment-2"}),
+        ],
+        media,
+      }),
+    }));
+    expect(JSON.stringify(onBoundMessage.mock.calls[0]?.[0])).not.toContain("cdn.discordapp.com");
+  });
+
+  it("keeps bound messages when attachment download fails before returning a result", async () => {
+    const onBoundMessage = vi.fn();
+
+    const result = await ingestDiscordMessageCreate(messagePayload({
+      content: "message survives",
+      attachments: [{
+        id: "attachment-1",
+        filename: "image.png",
+        content_type: "image/png",
+        size: 5,
+        url: "https://cdn.discordapp.com/attachments/channel/attachment/image.png",
+      }],
+    }), {
+      accountKey: "ops",
+      connectorKey: "bot-1",
+      conversationRepo: {getConversationBinding: vi.fn(async () => binding())},
+      downloadAttachments: vi.fn(async () => {
+        throw new Error("unexpected downloader failure");
+      }),
+      log: vi.fn(),
+      onBoundMessage,
+      resolveParentChannelId: vi.fn(async () => ({parentChannelId: "channel-1"})),
+    });
+
+    expect(result.status).toBe("bound");
+    expect(onBoundMessage).toHaveBeenCalledWith(expect.objectContaining({
+      requestPayload: expect.objectContaining({
+        text: "message survives",
+        attachmentSummaries: [expect.objectContaining({id: "attachment-1"})],
+        media: [],
+      }),
+    }));
+  });
+
   it("default bound callback logs only safe route ids and drops", async () => {
     const log = vi.fn();
     const handler = createDefaultDiscordBoundMessageHandler(log);
@@ -393,6 +494,7 @@ describe("Discord message ingestion privacy preflight", () => {
         actualChannelId: "channel-1",
         text: "PRIVATE_SENTINEL_TEXT",
         attachmentSummaries: [],
+        media: [],
       },
       route: {
         source: "discord",

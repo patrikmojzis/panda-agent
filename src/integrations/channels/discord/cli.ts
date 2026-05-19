@@ -13,6 +13,7 @@ import {resolveCredentialCrypto, type CredentialCrypto} from "../../../domain/cr
 import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
 import {normalizeIdentityHandle, type IdentityBindingRecord, type IdentityRecord} from "../../../domain/identity/types.js";
 import {DB_URL_OPTION_DESCRIPTION, parseRequiredOptionValue, parseSessionIdOption} from "../../../lib/cli.js";
+import {resolveMediaDir} from "../../../lib/data-dir.js";
 import {withPostgresPool} from "../../../lib/postgres-bootstrap.js";
 import {trimToUndefined} from "../../../lib/strings.js";
 import {
@@ -68,6 +69,7 @@ interface DiscordActorPairingsCliOptions extends DiscordAccountCliOptions {
 
 export interface DiscordRunServiceOptions {
   accountKey: string;
+  dataDir: string;
   dbUrl?: string;
   poolMaxFallback?: number;
 }
@@ -888,6 +890,7 @@ async function discordRunAllEnabledCommand(
 
       const service = createDiscordRunService({
         accountKey,
+        dataDir: resolveMediaDir(),
         dbUrl: options.dbUrl,
         poolMaxFallback: DISCORD_ALL_ENABLED_POOL_MAX_FALLBACK,
       }, dependencies);
@@ -956,6 +959,7 @@ async function discordRunSingleAccountCommand(
 ): Promise<void> {
   const service = createDiscordRunService({
     accountKey,
+    dataDir: resolveMediaDir(),
     dbUrl: options.dbUrl,
   }, dependencies);
 
