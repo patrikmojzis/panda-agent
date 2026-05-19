@@ -822,6 +822,32 @@ describe("Discord account CLI", () => {
     expect(output).not.toContain(discordCliMocks.privateToken);
   });
 
+  it("accepts readable session ids when binding Discord channels", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await createProgram().parseAsync([
+      "discord",
+      "bind-channel",
+      "--account",
+      "ops",
+      "--channel",
+      "channel-1",
+      "--session",
+      "panda:ops-inbox",
+      "--db-url",
+      "postgres://discord-db",
+    ], {from: "user"});
+
+    expect(latestSessionStore().getSession).toHaveBeenCalledWith("panda:ops-inbox");
+    expect(latestConversationRepo().createConversationBinding).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "panda:ops-inbox",
+    }));
+
+    const output = collectWrites(write);
+    expect(output).toContain("Bound Discord channel channel-1 to session panda:ops-inbox.");
+    expect(output).toContain("sessionId panda:ops-inbox");
+  });
+
   it("treats same-session Discord channel binds as no-op success", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     discordCliMocks.state.binding = discordCliMocks.makeBinding({

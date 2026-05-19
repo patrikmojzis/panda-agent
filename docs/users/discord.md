@@ -22,11 +22,21 @@ Or pipe it through stdin:
 printf '%s' "$DISCORD_BOT_TOKEN" | panda discord account set discord-main --bot-token-stdin --agent panda
 ```
 
-Bind a Discord channel to a Panda session:
+Create a branch session for the Discord channel. A readable ref is easiest to reuse:
 
 ```bash
-panda discord bind-channel --account discord-main --channel <discordChannelId> --session <sessionId>
+panda session create panda discord-main
 ```
+
+The ref is normalized to lowercase and the real session id is `panda:discord-main`.
+
+Bind a Discord channel to that Panda session:
+
+```bash
+panda discord bind-channel --account discord-main --channel <discordChannelId> --session panda:discord-main
+```
+
+You can also pass any existing session id as `--session <sessionId>`.
 
 Pair Discord users to Panda identities:
 

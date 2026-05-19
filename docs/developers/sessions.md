@@ -44,6 +44,18 @@ Agent bootstrap creates:
 - creates that session's first thread
 - switches the TUI to that session
 
+`panda session create <agentKey> [sessionRef]`:
+
+- creates only `branch` sessions
+- validates the agent exists first
+- creates the session row and first thread in one `createSessionWithInitialThread` transaction
+- uses a UUID session id when no ref is supplied
+- uses `${agentKey}:${sessionRef}` when a ref is supplied, after lowercase normalization and conservative ref validation
+- relies on the existing `session_heartbeats` row behavior, so branch heartbeat starts disabled
+
+Readable refs are not aliases. There is no alias table, display-name column, or resolver layer.
+The readable string is the stored `agent_sessions.id`, and existing raw session-id commands consume it directly.
+
 `/reset`:
 
 - keeps the same `session_id`
@@ -133,6 +145,7 @@ So:
 ## Code Map
 
 - [src/domain/sessions](../../src/domain/sessions)
+- [src/domain/sessions/cli.ts](../../src/domain/sessions/cli.ts) owns `panda session create` and shared session management commands
 - [src/domain/sessions/current-thread.ts](../../src/domain/sessions/current-thread.ts) resolves and submits session-owned runtime work onto the session's current thread
 - [src/app/runtime/daemon-threads.ts](../../src/app/runtime/daemon-threads.ts)
 - [src/app/runtime/thread-definition.ts](../../src/app/runtime/thread-definition.ts)

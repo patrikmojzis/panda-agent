@@ -1,14 +1,18 @@
+import {randomUUID} from "node:crypto";
 import process from "node:process";
 
-import {Command} from "commander";
+import {Command, InvalidArgumentError} from "commander";
 import type {Pool} from "pg";
 
 import {DB_URL_OPTION_DESCRIPTION, parsePositiveIntegerOption} from "../../lib/cli.js";
+import {resolveAgentDir} from "../../lib/data-dir.js";
 import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
+import {normalizeAgentKey} from "../agents/types.js";
 import {ConversationRepo} from "./conversations/repo.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
+import {createSessionWithInitialThread} from "./lifecycle.js";
 import {PostgresSessionStore} from "./postgres.js";
 
 export interface SessionCliOptions {
@@ -22,17 +26,19 @@ interface HeartbeatCliOptions extends SessionCliOptions {
 }
 
 interface WithSessionStores {
+  pool: Pool;
+  agentStore: PostgresAgentStore;
   sessionStore: PostgresSessionStore;
   threadStore: PostgresThreadRuntimeStore;
   conversations: ConversationRepo;
 }
 
 export function createSessionCliStores(pool: Pool): WithSessionStores & {
-  agentStore: PostgresAgentStore;
   identityStore: PostgresIdentityStore;
 } {
   const identityStore = new PostgresIdentityStore({pool});
   return {
+    pool,
     agentStore: new PostgresAgentStore({pool}),
     identityStore,
     sessionStore: new PostgresSessionStore({pool}),
@@ -55,6 +61,146 @@ export async function withSessionStores<T>(
       stores.conversations,
     ]);
     return fn(stores);
+  });
+}
+
+function normalizeSessionRef(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    throw new Error("Session ref must not be empty.");
+  }
+
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(normalized)) {
+    throw new Error(
+      "Session ref must use letters, numbers, hyphens, or underscores, and start with a letter or number.",
+    );
+  }
+
+  return normalized;
+}
+
+function parseCliValue<T>(value: string, parser: (value: string) => T): T {
+  try {
+    return parser(value);
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new InvalidArgumentError(error.message);
+    }
+
+    throw error;
+  }
+}
+
+function parseCreateAgentKey(value: string): string {
+  return parseCliValue(value, normalizeAgentKey);
+}
+
+function parseSessionRefArgument(value: string): string {
+  return parseCliValue(value, normalizeSessionRef);
+}
+
+function isUnknownSessionError(error: unknown, sessionId: string): boolean {
+  return error instanceof Error && error.message === `Unknown session ${sessionId}`;
+}
+
+function isDuplicateSessionIdError(error: unknown): boolean {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as {code?: unknown}).code;
+    if (code === "23505") {
+      return true;
+    }
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return message.toLowerCase().includes("duplicate key");
+}
+
+function duplicateSessionRefError(sessionId: string): Error {
+  return new Error(`Session ${sessionId} already exists. Pick a different session ref.`);
+}
+
+async function assertSessionIdAvailable(sessionStore: PostgresSessionStore, sessionId: string): Promise<void> {
+  try {
+    await sessionStore.getSession(sessionId);
+  } catch (error) {
+    if (isUnknownSessionError(error, sessionId)) {
+      return;
+    }
+
+    throw error;
+  }
+
+  throw duplicateSessionRefError(sessionId);
+}
+
+function buildSessionCreateOutput(input: {
+  agentKey: string;
+  sessionRef?: string;
+  sessionId: string;
+  threadId: string;
+}): string {
+  return [
+    "Created branch session.",
+    `agent ${input.agentKey}`,
+    ...(input.sessionRef ? [`ref ${input.sessionRef}`] : []),
+    `sessionId ${input.sessionId}`,
+    `initialThread ${input.threadId}`,
+    "",
+    "Discord bind example:",
+    `panda discord bind-channel --account <accountKey> --channel <discordChannelId> --session ${input.sessionId}`,
+  ].join("\n") + "\n";
+}
+
+async function createSessionCommand(
+  agentKey: string,
+  sessionRef: string | undefined,
+  options: SessionCliOptions,
+): Promise<void> {
+  await withSessionStores(options, async ({pool, agentStore, sessionStore, threadStore}) => {
+    const agent = await agentStore.getAgent(agentKey);
+    const normalizedRef = sessionRef ? normalizeSessionRef(sessionRef) : undefined;
+    const sessionId = normalizedRef ? `${agent.agentKey}:${normalizedRef}` : randomUUID();
+    const threadId = randomUUID();
+
+    if (normalizedRef) {
+      await assertSessionIdAvailable(sessionStore, sessionId);
+    }
+
+    try {
+      await createSessionWithInitialThread({
+        pool,
+        sessionStore,
+        threadStore,
+        session: {
+          id: sessionId,
+          agentKey: agent.agentKey,
+          kind: "branch",
+          currentThreadId: threadId,
+        },
+        thread: {
+          id: threadId,
+          sessionId,
+          context: {
+            agentKey: agent.agentKey,
+            sessionId,
+            cwd: resolveAgentDir(agent.agentKey),
+          },
+        },
+      });
+    } catch (error) {
+      if (normalizedRef && isDuplicateSessionIdError(error)) {
+        throw duplicateSessionRefError(sessionId);
+      }
+
+      throw error;
+    }
+
+    process.stdout.write(buildSessionCreateOutput({
+      agentKey: agent.agentKey,
+      sessionRef: normalizedRef,
+      sessionId,
+      threadId,
+    }));
   });
 }
 
@@ -144,6 +290,16 @@ async function bindConversationCommand(
 }
 
 export function registerSessionManagementCommands(sessionProgram: Command): void {
+  sessionProgram
+    .command("create")
+    .description("Create a branch session for an agent")
+    .argument("<agentKey>", "Agent key", parseCreateAgentKey)
+    .argument("[sessionRef]", "Optional readable session ref", parseSessionRefArgument)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((agentKey: string, sessionRef: string | undefined, options: SessionCliOptions) => {
+      return createSessionCommand(agentKey, sessionRef, options);
+    });
+
   sessionProgram
     .command("list")
     .description("List sessions for an agent")

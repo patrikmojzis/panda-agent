@@ -43,6 +43,24 @@ It keeps the same `session_id` and swaps the backing thread.
 
 ## CLI
 
+Create a fresh branch session for an agent:
+
+```bash
+panda session create luna
+```
+
+That prints the generated `sessionId`, the first thread id, and a copy-paste Discord bind example.
+
+Create a branch session with a readable stable id:
+
+```bash
+panda session create luna ops-inbox
+```
+
+Readable refs are normalized to lowercase, must start with a letter or number, and must use only letters, numbers, hyphens, or underscores.
+The session id becomes `luna:ops-inbox`. No alias row is created; that string is the real session id.
+Branch-session heartbeat starts disabled.
+
 List sessions for an agent:
 
 ```bash
@@ -53,6 +71,8 @@ Inspect one session:
 
 ```bash
 panda session inspect 2c8d0a1e-...
+# or a readable branch id
+panda session inspect luna:ops-inbox
 ```
 
 Reset one session through the daemon:
@@ -88,6 +108,7 @@ You can also open a session directly:
 
 ```bash
 panda chat --identity alice --session 2c8d0a1e-...
+panda chat --identity alice --session luna:ops-inbox
 ```
 
 Watch a session without opening chat:
