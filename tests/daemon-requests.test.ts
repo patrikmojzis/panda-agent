@@ -87,6 +87,7 @@ function discordMessageRequest(
       authorUsername: "patrik",
       authorDisplayName: "Patrik Display",
       attachmentSummaries: [],
+      media: [],
       ...overrides,
     },
   };
@@ -400,6 +401,7 @@ describe("daemon request processor", () => {
     expect(harness.resolveOrCreateConversationThread).not.toHaveBeenCalled();
     expect(harness.saveLastRoute).not.toHaveBeenCalled();
     expect(harness.submitInput).not.toHaveBeenCalled();
+    expect(harness.threads.relocateThreadMedia).not.toHaveBeenCalled();
   });
 
   it("routes bound Discord messages to the bound session current thread and saves route before submit", async () => {
@@ -550,6 +552,70 @@ describe("daemon request processor", () => {
         }),
       }),
     }));
+  });
+
+  it("relocates bound Discord media and surfaces inspectable local paths", async () => {
+    const harness = createHarness();
+    const stagedMedia = {
+      id: "media-1",
+      source: "discord",
+      connectorKey: "bot-1",
+      mimeType: "image/png",
+      sizeBytes: 5,
+      localPath: "/tmp/staged-discord.png",
+      originalFilename: "image.png",
+      metadata: {discordAttachmentId: "attachment-1"},
+      createdAt: 1,
+    };
+    const relocatedMedia = {
+      ...stagedMedia,
+      localPath: "/root/.panda/agents/panda/media/discord/bot-1/2026-05/media-1.png",
+    };
+    const relocateThreadMedia = vi.fn(async () => [relocatedMedia]);
+    harness.threads.relocateThreadMedia = relocateThreadMedia;
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(discordMessageRequest({
+      text: undefined,
+      attachmentSummaries: [{
+        id: "attachment-1",
+        filename: "image.png",
+        contentType: "image/png",
+        sizeBytes: 5,
+      }],
+      media: [stagedMedia],
+    }))).resolves.toEqual({
+      status: "queued",
+      threadId: "thread-1",
+    });
+
+    expect(relocateThreadMedia).toHaveBeenCalledWith(expect.objectContaining({
+      id: "thread-1",
+      sessionId: "session-1",
+    }), [stagedMedia]);
+    expect(harness.submitInput).toHaveBeenCalledWith("thread-1", expect.objectContaining({
+      message: expect.objectContaining({
+        content: expect.stringContaining("downloaded_media:"),
+      }),
+      metadata: expect.objectContaining({
+        discord: expect.objectContaining({
+          attachments: [{
+            id: "attachment-1",
+            filename: "image.png",
+            contentType: "image/png",
+            sizeBytes: 5,
+          }],
+          media: [expect.objectContaining({
+            id: "media-1",
+            localPath: "/root/.panda/agents/panda/media/discord/bot-1/2026-05/media-1.png",
+            metadata: {discordAttachmentId: "attachment-1"},
+          })],
+        }),
+      }),
+    }));
+    const submitted = harness.submitInput.mock.calls[0]?.[1] as {message?: {content?: unknown}; metadata?: unknown};
+    expect(String(submitted.message?.content)).toContain("path: /root/.panda/agents/panda/media/discord/bot-1/2026-05/media-1.png");
+    expect(JSON.stringify(submitted.metadata)).not.toContain("/tmp/staged-discord.png");
   });
 
   it("drops unsupported empty Discord shapes without saving route or submitting input", async () => {

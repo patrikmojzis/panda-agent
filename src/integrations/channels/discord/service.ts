@@ -1,5 +1,6 @@
 import type {Pool} from "pg";
 
+import {FileSystemMediaStore} from "../../../domain/channels/media-store.js";
 import {ChannelOutboundDeliveryWorker} from "../../../domain/channels/deliveries/worker.js";
 import {PostgresOutboundDeliveryStore} from "../../../domain/channels/deliveries/postgres.js";
 import type {ChannelOutboundAdapter} from "../../../domain/channels/outbound.js";
@@ -37,6 +38,7 @@ import {
   type DiscordBoundMessageHandler,
   ingestDiscordMessageCreate,
 } from "./message-ingestion.js";
+import {downloadDiscordSupportedAttachments, type DiscordAttachmentDownloadResult} from "./media.js";
 import {createDiscordOutboundAdapter} from "./outbound.js";
 
 const DISCORD_POOL_MAX_FALLBACK = 5;
@@ -45,6 +47,7 @@ type DiscordPostgresPool = Pool & PgPoolLike<PgListenClient>;
 
 export interface DiscordServiceOptions {
   accountKey: string;
+  dataDir: string;
   dbUrl?: string;
   dependencies?: DiscordServiceDependencies;
   onBoundMessage?: DiscordBoundMessageHandler;
@@ -65,6 +68,7 @@ export interface DiscordWorkerStores {
   connectorStore: PostgresConnectorAccountStore;
   conversationRepo: ConversationRepo;
   outboundDeliveries: PostgresOutboundDeliveryStore;
+  mediaStore: FileSystemMediaStore;
   pool: DiscordPostgresPool;
   runtimeRequests: RuntimeRequestRepo;
   sessionStore: PostgresSessionStore;
@@ -154,12 +158,15 @@ function createDefaultPool(input: DiscordServicePoolFactoryInput): DiscordPostgr
   }) as DiscordPostgresPool;
 }
 
-function createDefaultStores(pool: DiscordPostgresPool): DiscordWorkerStores {
+function createDefaultStores(pool: DiscordPostgresPool, dataDir: string): DiscordWorkerStores {
   return {
     connectorLeases: new PostgresConnectorLeaseRepo({pool}),
     connectorStore: new PostgresConnectorAccountStore({pool}),
     conversationRepo: new ConversationRepo({pool}),
     outboundDeliveries: new PostgresOutboundDeliveryStore({pool}),
+    mediaStore: new FileSystemMediaStore({
+      rootDir: dataDir,
+    }),
     pool,
     runtimeRequests: new RuntimeRequestRepo({pool}),
     sessionStore: new PostgresSessionStore({pool}),
@@ -199,6 +206,7 @@ function createRuntimeRequestDiscordBoundMessageHandler(input: {
       guildId: message.route.guildId ?? null,
       externalMessageId: message.route.externalMessageId,
       attachmentCount: message.requestPayload.attachmentSummaries.length,
+      mediaCount: message.requestPayload.media.length,
     });
   };
 }
@@ -216,6 +224,7 @@ function requireEnabledDiscordAccount(account: ConnectorAccountRecord | null, ac
 
 export class DiscordService {
   private readonly accountKey: string;
+  private readonly dataDir: string;
   private readonly dbUrl?: string;
   private readonly dependencies: DiscordServiceDependencies;
   private readonly onBoundMessage?: DiscordBoundMessageHandler;
@@ -232,6 +241,7 @@ export class DiscordService {
 
   constructor(options: DiscordServiceOptions) {
     this.accountKey = options.accountKey;
+    this.dataDir = options.dataDir;
     this.dbUrl = options.dbUrl;
     this.dependencies = options.dependencies ?? {};
     this.onBoundMessage = options.onBoundMessage;
@@ -280,7 +290,9 @@ export class DiscordService {
       idleTimeoutMillis: poolConfig.idleTimeoutMillis,
       acquireTimeoutMillis: poolConfig.acquireTimeoutMillis,
     });
-    const stores = (this.dependencies.createStores ?? createDefaultStores)(pool);
+    const stores = this.dependencies.createStores
+      ? this.dependencies.createStores(pool)
+      : createDefaultStores(pool, this.dataDir);
     this.stores = stores;
     this.poolObserver = (this.dependencies.observePool ?? ((input) => observePostgresPool({
       pool: input.pool,
@@ -393,6 +405,26 @@ export class DiscordService {
     });
   }
 
+  private async downloadSupportedAttachments(
+    attachments: unknown,
+    stores: DiscordWorkerStores,
+    connectorKey: string,
+  ): Promise<DiscordAttachmentDownloadResult> {
+    return downloadDiscordSupportedAttachments(attachments, {
+      connectorKey,
+      mediaStore: stores.mediaStore,
+      onUnavailable: (item) => {
+        this.log("media_download_skipped", {
+          connectorKey,
+          attachmentId: item.id,
+          contentType: item.contentType ?? null,
+          sizeBytes: item.sizeBytes ?? null,
+          reason: item.reason,
+        });
+      },
+    });
+  }
+
   private createGateway(input: {
     botToken: string;
     connectorKey: string;
@@ -426,6 +458,11 @@ export class DiscordService {
           accountKey: this.accountKey,
           connectorKey: input.connectorKey,
           conversationRepo: input.stores.conversationRepo,
+          downloadAttachments: (attachments) => this.downloadSupportedAttachments(
+            attachments,
+            input.stores,
+            input.connectorKey,
+          ),
           log: (event, eventPayload) => this.log(event, eventPayload),
           onBoundMessage,
           resolveParentChannelId: (actualChannelId) => channelResolver.resolveParentChannelId(actualChannelId),

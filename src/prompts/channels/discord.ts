@@ -35,13 +35,16 @@ export function renderDiscordInboundText(options: {
   authorIsBot?: boolean;
   replyToMessageId?: string;
   attachments: readonly DiscordAttachmentSummaryPromptInput[];
+  media?: readonly string[];
   body?: string;
 }): string {
   const attachments = options.attachments.length === 0
     ? "- none"
     : options.attachments.map(formatAttachment).join("\n");
+  const downloadedMedia = !options.media?.length ? "- none" : options.media.join("\n");
   const trimmedBody = options.body?.trim() ?? "";
-  const body = trimmedBody || `Discord message with ${options.attachments.length} attachment${options.attachments.length === 1 ? "" : "s"}.`;
+  const attachmentCount = Math.max(options.attachments.length, options.media?.length ?? 0);
+  const body = trimmedBody || `Discord message with ${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"}.`;
 
   return `
 <runtime-channel-context>
@@ -62,6 +65,8 @@ author_is_bot: ${formatMaybeBoolean(options.authorIsBot)}
 reply_to_message_id: ${formatMaybeValue(options.replyToMessageId)}
 attachments:
 ${attachments}
+downloaded_media:
+${downloadedMedia}
 </runtime-channel-context>
 
 ${body}

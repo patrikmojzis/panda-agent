@@ -1,4 +1,4 @@
-import type {RememberedRoute} from "../../../domain/channels/types.js";
+import type {MediaDescriptor, RememberedRoute} from "../../../domain/channels/types.js";
 import type {IdentityStore} from "../../../domain/identity/store.js";
 import type {SessionRouteRepo} from "../../../domain/sessions/routes/repo.js";
 import type {SessionStore} from "../../../domain/sessions/store.js";
@@ -11,9 +11,14 @@ import {isRecord} from "../../../lib/records.js";
 import {trimToUndefined} from "../../../lib/strings.js";
 import {renderDiscordInboundText} from "../../../prompts/channels/discord.js";
 import {submitRememberedChannelInput} from "../inbound-delivery.js";
+import {describeMediaDescriptor, serializeMediaDescriptor} from "../media-shared.js";
 import {DISCORD_SOURCE} from "./config.js";
 
 interface DiscordBoundThreadResolver {
+  relocateThreadMedia(
+    thread: ThreadRecord,
+    media: readonly MediaDescriptor[],
+  ): Promise<readonly MediaDescriptor[]>;
   resolveBoundConversationThread(input: {
     source: string;
     connectorKey: string;
@@ -100,6 +105,7 @@ function buildMetadata(
   payload: DiscordMessageRequestPayload,
   sentAt: string | undefined,
   deliveryContext: JsonObject,
+  media: readonly MediaDescriptor[],
 ): JsonObject {
   return {
     route: {
@@ -126,6 +132,7 @@ function buildMetadata(
         isBot: payload.authorIsBot ?? null,
       },
       attachments: payload.attachmentSummaries.map(serializeAttachmentSummary),
+      media: media.map((descriptor) => serializeMediaDescriptor(descriptor)),
     },
   };
 }
@@ -143,9 +150,11 @@ export async function handleDiscordMessageRequest(
     return {status: "dropped", reason: "unbound_conversation"};
   }
 
-  if (!(payload.text?.trim()) && payload.attachmentSummaries.length === 0) {
+  if (!(payload.text?.trim()) && payload.attachmentSummaries.length === 0 && payload.media.length === 0) {
     return {status: "dropped", reason: "unsupported_message_shape"};
   }
+
+  const media = await options.threads.relocateThreadMedia(thread, payload.media);
 
   const actorBinding = await options.identityStore.resolveIdentityBinding({
     source: DISCORD_SOURCE,
@@ -171,6 +180,7 @@ export async function handleDiscordMessageRequest(
     authorIsBot: payload.authorIsBot,
     replyToMessageId: payload.replyToMessageId,
     attachments: payload.attachmentSummaries,
+    media: media.map((descriptor) => describeMediaDescriptor(descriptor)),
     body: payload.text,
   });
   const identityId = actorBinding?.identityId;
@@ -189,7 +199,7 @@ export async function handleDiscordMessageRequest(
       actorId: payload.externalActorId,
       ...(identityId !== undefined ? {identityId} : {}),
       message: stringToUserMessage(text),
-      metadata: buildMetadata(payload, sentAt, deliveryContext),
+      metadata: buildMetadata(payload, sentAt, deliveryContext, media),
     },
   });
 

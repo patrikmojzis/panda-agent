@@ -21,6 +21,7 @@ function validDiscordPayload(overrides: Partial<DiscordMessageRequestPayload> = 
     actualChannelId: "channel-1",
     text: "hello",
     attachmentSummaries: [],
+    media: [],
     ...overrides,
   };
 }
@@ -426,9 +427,21 @@ describe("RuntimeRequestRepo", () => {
             contentType: "application/pdf",
             sizeBytes: 123,
           }],
+          media: [{
+            id: "media-1",
+            source: "discord",
+            connectorKey: "bot-1",
+            mimeType: "image/png",
+            sizeBytes: 5,
+            localPath: "/tmp/discord-media.png",
+            originalFilename: "image.png",
+            metadata: {discordAttachmentId: "attachment-1"},
+            createdAt: 1,
+          }],
         }),
         rawGatewayPayload: {content: "should disappear", privateLink: "cdn-private"},
         rawAttachmentField: [{privateLink: "cdn-private"}],
+        rawMediaUrl: "https://cdn.discordapp.com/attachments/private",
       } as DiscordMessageRequestPayload & Record<string, unknown>,
     });
 
@@ -445,6 +458,17 @@ describe("RuntimeRequestRepo", () => {
         filename: "report.pdf",
         contentType: "application/pdf",
         sizeBytes: 123,
+      }],
+      media: [{
+        id: "media-1",
+        source: "discord",
+        connectorKey: "bot-1",
+        mimeType: "image/png",
+        sizeBytes: 5,
+        localPath: "/tmp/discord-media.png",
+        originalFilename: "image.png",
+        metadata: {discordAttachmentId: "attachment-1"},
+        createdAt: 1,
       }],
       guildId: "guild-1",
       threadId: "thread-1",
@@ -468,19 +492,25 @@ describe("RuntimeRequestRepo", () => {
     });
     expect(request.payload).not.toHaveProperty("rawGatewayPayload");
     expect(request.payload).not.toHaveProperty("rawAttachmentField");
+    expect(request.payload).not.toHaveProperty("rawMediaUrl");
     expect(JSON.stringify(request.payload)).not.toContain("cdn-private");
+    expect(JSON.stringify(request.payload)).not.toContain("cdn.discordapp.com");
   });
 
-  it("keeps discord attachmentSummaries as a required normalized array", async () => {
+  it("keeps discord attachmentSummaries required and defaults missing media to an empty array", async () => {
     const {repo} = createEnqueueRepo();
 
     const request = await repo.enqueueRequest({
       kind: "discord_message",
-      payload: validDiscordPayload({attachmentSummaries: []}),
+      payload: {
+        ...validDiscordPayload({attachmentSummaries: []}),
+        media: undefined,
+      } as unknown as DiscordMessageRequestPayload,
     });
 
     expect(request.payload).toMatchObject({
       attachmentSummaries: [],
+      media: [],
     });
   });
 
@@ -493,6 +523,8 @@ describe("RuntimeRequestRepo", () => {
     ["attachment summaries", {attachmentSummaries: {}}, "Discord attachment summaries must be an array"],
     ["negative attachment size", {attachmentSummaries: [{id: "attachment-1", sizeBytes: -1}]}, "Discord attachment summaries 1 size must not be negative"],
     ["non-finite attachment size", {attachmentSummaries: [{id: "attachment-1", sizeBytes: Number.POSITIVE_INFINITY}]}, "Discord attachment summaries 1 size must be a finite number"],
+    ["media", {media: {}}, "Discord media must be an array"],
+    ["negative media size", {media: [{id: "media-1", source: "discord", connectorKey: "bot-1", mimeType: "image/png", sizeBytes: -1, localPath: "/tmp/media.png", createdAt: 1}]}, "Discord media 1 size must not be negative"],
     ["delivery context", {deliveryContext: []}, "Discord delivery context must be a JSON object"],
     ["non-json delivery context", {deliveryContext: {bad: () => undefined}}, "Discord delivery context must be a JSON object"],
   ])("rejects malformed discord_message %s", async (_label, overrides, expected) => {

@@ -180,6 +180,17 @@ function parseMediaArray(value: unknown, label: string): readonly RuntimeRequest
   return value.map((entry, index) => parseMediaDescriptor(entry, `${label} ${index + 1}`));
 }
 
+function parseOptionalMediaArray(
+  value: unknown,
+  label: string,
+): readonly RuntimeRequestPayloadByKind["telegram_message"]["media"][number][] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+
+  return parseMediaArray(value, label);
+}
+
 function parseDiscordAttachmentSummary(
   value: unknown,
   label: string,
@@ -417,6 +428,7 @@ function parsePayload<K extends RuntimeRequestKind>(
         externalMessageId: parseRequiredString(payload.externalMessageId, "Discord message id"),
         actualChannelId: parseRequiredString(payload.actualChannelId, "Discord actual channel id"),
         attachmentSummaries: parseDiscordAttachmentSummaries(payload.attachmentSummaries, "Discord attachment summaries"),
+        media: parseOptionalMediaArray(payload.media, "Discord media"),
         guildId: parseOptionalString(payload.guildId),
         threadId: parseOptionalString(payload.threadId),
         parentChannelId: parseOptionalString(payload.parentChannelId),
