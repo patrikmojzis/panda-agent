@@ -102,8 +102,18 @@ They do not own sessions.
 That means:
 
 - pair Telegram or WhatsApp to an identity
+- for Discord, bind the channel to a session and pair the Discord user id separately
 - pair that identity to the right agent
 - let `panda run` resolve session bindings and thread execution
+
+Discord example:
+
+```bash
+panda discord bind-channel --account discord-main --channel <discordChannelId> --session <sessionId>
+panda discord pair --account discord-main --identity alice --actor <discordUserId>
+```
+
+Use the stable Discord user id/snowflake for `--actor`, not a username or display name.
 
 ## Hard Rules
 
