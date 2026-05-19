@@ -13,6 +13,7 @@ export interface RenderWorkersContextEnvironment {
   inboxPath?: string;
   artifactsPath?: string;
   workers: readonly RenderWorkersContextWorker[];
+  omittedWorkerCount?: number;
 }
 
 export function renderWorkersContext(environments: readonly RenderWorkersContextEnvironment[]): string {
@@ -34,12 +35,17 @@ export function renderWorkersContext(environments: readonly RenderWorkersContext
         environment.inboxPath ? `inbox ${environment.inboxPath}` : "",
         environment.artifactsPath ? `artifacts ${environment.artifactsPath}` : "",
       ].filter(Boolean);
-      const workers = environment.workers.length
-        ? ` | workers ${environment.workers.map((worker) => [
-          worker.sessionId,
-          `role ${worker.role}`,
-          `started ${worker.startedAt}`,
-        ].join(" ")).join("; ")}`
+      const renderedWorkers = environment.workers.map((worker) => [
+        worker.sessionId,
+        `role ${worker.role}`,
+        `started ${worker.startedAt}`,
+      ].join(" ")).join("; ");
+      const omittedWorkerCount = environment.omittedWorkerCount ?? 0;
+      const omittedWorkers = omittedWorkerCount > 0
+        ? `${renderedWorkers ? "; " : ""}${omittedWorkerCount} older ${omittedWorkerCount === 1 ? "worker" : "workers"} omitted`
+        : "";
+      const workers = renderedWorkers || omittedWorkers
+        ? ` | workers ${renderedWorkers}${omittedWorkers}`
         : " | workers none";
       return `- ${parts.join(" | ")}${paths.length ? ` | ${paths.join(" | ")}` : ""}${workers}`;
     }),
