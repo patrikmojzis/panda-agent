@@ -97,10 +97,10 @@
       "sha256": "6bfee7b7a0c9f7891087c08b5704f01a6d5127df82804ab2005af9098fdc5eb6"
     },
     {
-      "bytes": 4728,
-      "lines": 120,
+      "bytes": 6474,
+      "lines": 176,
       "path": "src/panda/contexts/workers-context.ts",
-      "sha256": "95a83e1ec82dadfbc690d8e4ea914feecb3b1ce69633f833e5fa3b2a968b7cc0"
+      "sha256": "a29f588888b6977b751d7d65ac4bbde359b57d9e261ab9f204d83aa4c16ae62d"
     },
     {
       "bytes": 1123,
@@ -223,10 +223,10 @@
       "sha256": "470fbd0a35ad10204dd724e6f035f6613d073b2ca76dd6cdf5850dbd9b114c16"
     },
     {
-      "bytes": 1524,
-      "lines": 47,
+      "bytes": 1883,
+      "lines": 53,
       "path": "src/prompts/contexts/workers.ts",
-      "sha256": "0d1f5253794b0bad94ec63b8448ec973ec76ca18e7acbbfcdb88ed085a001adf"
+      "sha256": "6a39735bdd94fd21b68da929bf2f1af5013773476bb09e83e6957403cfdf3f3c"
     },
     {
       "bytes": 773,

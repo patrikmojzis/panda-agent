@@ -31,7 +31,11 @@ function createWorkerSession(
   };
 }
 
-function createBinding(sessionId: string, environmentId: string): SessionEnvironmentBindingRecord {
+function createBinding(
+  sessionId: string,
+  environmentId: string,
+  overrides: Partial<SessionEnvironmentBindingRecord> = {},
+): SessionEnvironmentBindingRecord {
   return {
     sessionId,
     environmentId,
@@ -48,6 +52,7 @@ function createBinding(sessionId: string, environmentId: string): SessionEnviron
     toolPolicy: {},
     createdAt: NOW.getTime(),
     updatedAt: NOW.getTime(),
+    ...overrides,
   };
 }
 
@@ -185,6 +190,92 @@ describe("WorkersContext", () => {
     expect(rendered).toContain("worker-recent");
     expect(rendered).toContain("state stopped");
     expect(rendered).not.toContain("worker-old");
+  });
+
+  it("caps rendered workers per environment and summarizes older attached workers", async () => {
+    const sessions = [
+      createWorkerSession("worker-alpha", "parent-session"),
+      createWorkerSession("worker-bravo", "parent-session"),
+      createWorkerSession("worker-charlie", "parent-session"),
+      createWorkerSession("worker-delta", "parent-session"),
+      createWorkerSession("worker-echo", "parent-session"),
+      createWorkerSession("worker-foreign", "other-parent"),
+    ] satisfies SessionRecord[];
+    const bindings = [
+      createBinding("worker-alpha", "env-shared", {
+        createdAt: NOW.getTime() - 5 * 60 * 1_000,
+      }),
+      createBinding("worker-bravo", "env-shared", {
+        createdAt: NOW.getTime() - 4 * 60 * 1_000,
+      }),
+      createBinding("worker-charlie", "env-shared", {
+        createdAt: NOW.getTime() - 3 * 60 * 1_000,
+      }),
+      createBinding("worker-delta", "env-shared", {
+        createdAt: NOW.getTime() - 2 * 60 * 1_000,
+      }),
+      createBinding("worker-echo", "env-shared", {
+        createdAt: NOW.getTime() - 1 * 60 * 1_000,
+      }),
+      createBinding("worker-foreign", "env-shared", {
+        createdAt: NOW.getTime(),
+      }),
+    ];
+
+    const context = new WorkersContext({
+      sessions: {
+        listAgentSessions: async () => sessions,
+      },
+      environments: {
+        listDisposableEnvironmentsByOwner: async () => [createEnvironment("env-shared", "env-shared")],
+        listBindingsForEnvironments: async () => bindings,
+      },
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      maxWorkersPerEnvironment: 3,
+      now: NOW,
+    });
+
+    const rendered = await context.getContent();
+
+    const echoIndex = rendered.indexOf("worker-echo");
+    const deltaIndex = rendered.indexOf("worker-delta");
+    const charlieIndex = rendered.indexOf("worker-charlie");
+    const summaryIndex = rendered.indexOf("2 older workers omitted");
+    expect(echoIndex).toBeGreaterThan(-1);
+    expect(deltaIndex).toBeGreaterThan(echoIndex);
+    expect(charlieIndex).toBeGreaterThan(deltaIndex);
+    expect(summaryIndex).toBeGreaterThan(charlieIndex);
+    expect(rendered).not.toContain("worker-alpha");
+    expect(rendered).not.toContain("worker-bravo");
+    expect(rendered).not.toContain("worker-foreign");
+  });
+
+  it("uses an eight-worker default cap", async () => {
+    const workerIds = Array.from({length: 9}, (_, index) => `worker-${index + 1}`);
+    const sessions = workerIds.map((workerId) => createWorkerSession(workerId, "parent-session"));
+    const bindings = workerIds.map((workerId, index) => createBinding(workerId, "env-default-cap", {
+      createdAt: NOW.getTime() - index * 60 * 1_000,
+    }));
+
+    const context = new WorkersContext({
+      sessions: {
+        listAgentSessions: async () => sessions,
+      },
+      environments: {
+        listDisposableEnvironmentsByOwner: async () => [createEnvironment("env-default-cap", "env-default-cap")],
+        listBindingsForEnvironments: async () => bindings,
+      },
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      now: NOW,
+    });
+
+    const rendered = await context.getContent();
+
+    expect(rendered.match(/worker-\d role research/g)).toHaveLength(8);
+    expect(rendered).toContain("1 older worker omitted");
+    expect(rendered).not.toContain("worker-9");
   });
 
   it("renders parent-owned environments even when no worker is attached", async () => {
