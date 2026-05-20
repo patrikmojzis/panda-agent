@@ -73,7 +73,7 @@ RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
     git \
     python3
 
-COPY package.json pnpm-lock.yaml tsconfig.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
 RUN --mount=type=cache,id=panda-pnpm-store,target=/pnpm/store,sharing=locked \
   pnpm install --frozen-lockfile --store-dir /pnpm/store
 
@@ -84,7 +84,7 @@ RUN --mount=type=cache,id=panda-pnpm-store,target=/pnpm/store,sharing=locked \
 
 FROM node-base AS app
 
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY docs/agents ./docs/agents
@@ -150,7 +150,7 @@ FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble AS browser-runner
 
 WORKDIR /app
 
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 
