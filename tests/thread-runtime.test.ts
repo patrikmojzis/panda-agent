@@ -2359,7 +2359,40 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(recovered.map((run) => run.id)).toEqual([freeRun.id]);
     expect((await store.getRun(freeRun.id)).status).toBe("failed");
+    expect((await store.getRun(freeRun.id)).error).toBe("recover");
     expect((await store.getRun(heldRun.id)).status).toBe("running");
+  });
+
+  it("records diagnostic context when recovering orphaned runs without an explicit reason", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-20T01:10:00.000Z"));
+
+    try {
+      const store = new TestThreadRuntimeStore();
+      await createRuntimeThread(store, { id: "thread-free-default", agentKey: "panda" });
+      await createRuntimeThread(store, { id: "thread-held-default", agentKey: "panda" });
+      const freeRun = await store.createRun("thread-free-default");
+      const heldRun = await store.createRun("thread-held-default");
+
+      const coordinator = new ThreadRuntimeCoordinator({
+        store,
+        resolveDefinition: async () => {
+          throw new Error("Not used in this test");
+        },
+        leaseManager: new SelectiveLeaseManager(["thread-held-default"]),
+      });
+
+      const recovered = await coordinator.recoverOrphanedRuns();
+
+      expect(recovered.map((run) => run.id)).toEqual([freeRun.id]);
+      expect((await store.getRun(freeRun.id)).error).toBe(
+        "Run marked failed during orphaned-run recovery; recoveryTrigger=coordinator_call; recoveryMechanism=thread_lease_gated_orphan_sweep; probableCause=unknown; recoveredAt=2026-05-20T01:10:00.000Z.",
+      );
+      expect((await store.getRun(heldRun.id)).status).toBe("running");
+      expect((await store.getRun(heldRun.id)).error).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("can abort an active run from another coordinator instance", async () => {

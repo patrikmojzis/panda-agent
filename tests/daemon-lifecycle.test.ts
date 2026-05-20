@@ -308,6 +308,11 @@ describe("createDaemonLifecycle", () => {
         "release",
         "runtime-close",
       ]);
+      expect(context.runtime.coordinator.recoverOrphanedRuns).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^Run marked failed during orphaned-run recovery; recoveryTrigger=daemon_startup_or_restart; recoveryMechanism=thread_lease_gated_orphan_sweep; probableCause=previous_runtime_stopped_before_run_completed; recoveredAt=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\.$/,
+        ),
+      );
       expect(processRequest).not.toHaveBeenCalled();
     } finally {
       if (previousAppsPort === undefined) {
