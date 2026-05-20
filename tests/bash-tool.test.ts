@@ -45,6 +45,14 @@ function asObject(value: unknown): Record<string, unknown> {
   return (value ?? {}) as Record<string, unknown>;
 }
 
+const NUL_PLACEHOLDER = "␀";
+
+function expectNoJsonNul(value: unknown): void {
+  const serialized = JSON.stringify(value);
+  expect(serialized).not.toContain("\\u0000");
+  expect(serialized).not.toContain("\0");
+}
+
 const originalShell = process.env.SHELL;
 
 beforeAll(() => {
@@ -669,6 +677,69 @@ describe("BashTool", () => {
     }
   });
 
+  it("sanitizes NUL bytes in foreground stdout and stderr previews before persistence", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-nul-output-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+      });
+
+      const result = await tool.run(
+        { command: "printf 'hello\\0stdout'; printf 'warn\\0stderr' >&2" },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+
+      expect(output.stdout).toBe(`hello${NUL_PLACEHOLDER}stdout`);
+      expect(output.stderr).toBe(`warn${NUL_PLACEHOLDER}stderr`);
+      expect(output.stdoutChars).toBe("hello\0stdout".length);
+      expect(output.stderrChars).toBe("warn\0stderr".length);
+      expectNoJsonNul(output);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("sanitizes NUL bytes in bash error details before persistence", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-nul-error-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+      });
+
+      try {
+        await tool.run(
+          { command: "printf 'bad\\0out'; printf 'bad\\0err' >&2; exit 7" },
+          createRunContext(context),
+        );
+        throw new Error("Expected bash command to fail.");
+      } catch (error) {
+        expect(error).toBeInstanceOf(ToolError);
+        const details = asObject((error as ToolError).details);
+        expect(details.stdout).toBe(`bad${NUL_PLACEHOLDER}out`);
+        expect(details.stderr).toBe(`bad${NUL_PLACEHOLDER}err`);
+        expect(details.exitCode).toBe(7);
+        expectNoJsonNul(details);
+      }
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("does not persist large output files for secret-bearing bash calls", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-secret-output-"));
     try {
@@ -1003,6 +1074,35 @@ describe("BashTool", () => {
       expect(secretOutput.stdoutPath).toBeUndefined();
       expect(String(secretOutput.stdout)).toContain("[redacted]");
       expect(String(secretOutput.stdout)).not.toContain("secret");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("sanitizes NUL bytes in persisted background bash previews", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-nul-output-"));
+    try {
+      const {bash, wait, context, store} = await createBackgroundHarness(workspace);
+
+      const started = await bash.run(
+        { command: "printf 'bg\\0out'; printf 'bg\\0err' >&2", background: true },
+        createRunContext(context),
+      );
+      const jobId = String(asObject(started).jobId);
+      const finished = await wait.run(
+        { jobId, timeoutMs: 1_000 },
+        createRunContext(context),
+      );
+      const output = asObject(finished);
+
+      expect(output.status).toBe("completed");
+      expect(output.stdout).toBe(`bg${NUL_PLACEHOLDER}out`);
+      expect(output.stderr).toBe(`bg${NUL_PLACEHOLDER}err`);
+      expectNoJsonNul(output);
+
+      const stored = await store.getToolJob(jobId);
+      expectNoJsonNul(stored.result);
+      expectNoJsonNul(stored.progress);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

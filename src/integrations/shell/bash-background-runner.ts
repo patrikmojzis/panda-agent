@@ -27,6 +27,7 @@ import type {
 } from "./bash-protocol.js";
 import {parseBashRunnerJobResponse} from "./bash-protocol.js";
 import {redactSecretsInString} from "./redaction.js";
+import {sanitizeBashOutputPreview} from "./bash-output.js";
 import type {ShellExecutionContext} from "./types.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 
@@ -63,14 +64,17 @@ function readAgentKey(context: ShellExecutionContext | undefined): string {
 }
 
 function sanitizeSnapshot(snapshot: BashJobSnapshot, secrets: readonly string[]): BashJobSnapshot {
-  if (secrets.length === 0) {
-    return snapshot;
-  }
+  const stdout = secrets.length === 0
+    ? snapshot.stdout
+    : redactSecretsInString(snapshot.stdout, secrets);
+  const stderr = secrets.length === 0
+    ? snapshot.stderr
+    : redactSecretsInString(snapshot.stderr, secrets);
 
   return {
     ...snapshot,
-    stdout: redactSecretsInString(snapshot.stdout, secrets),
-    stderr: redactSecretsInString(snapshot.stderr, secrets),
+    stdout: sanitizeBashOutputPreview(stdout),
+    stderr: sanitizeBashOutputPreview(stderr),
   };
 }
 

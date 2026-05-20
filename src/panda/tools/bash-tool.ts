@@ -20,6 +20,7 @@ import {
   RemoteShellExecutor,
 } from "../../integrations/shell/bash-executor.js";
 import {startBashBackgroundJob} from "../../integrations/shell/bash-background-runner.js";
+import {sanitizeBashOutputPreview} from "../../integrations/shell/bash-output.js";
 import {readThreadId} from "../../integrations/shell/runtime-context.js";
 import {redactSecretsInJsonObject} from "../../integrations/shell/redaction.js";
 import {applyPersistedEnv, collectTrackedEnvKeys, resolveCommandCwd,} from "../../integrations/shell/bash-session.js";
@@ -129,6 +130,18 @@ function assertBashAllowed(executionEnvironment: ResolvedExecutionEnvironment | 
   if (executionEnvironment?.toolPolicy.bash?.allowed === false) {
     throw new ToolError("Bash is not allowed in this execution environment.");
   }
+}
+
+function sanitizeBashPayloadOutputFields(payload: JsonObject): JsonObject {
+  const sanitized: JsonObject = {...payload};
+  if (typeof payload.stdout === "string") {
+    sanitized.stdout = sanitizeBashOutputPreview(payload.stdout);
+  }
+  if (typeof payload.stderr === "string") {
+    sanitized.stderr = sanitizeBashOutputPreview(payload.stderr);
+  }
+
+  return sanitized;
 }
 
 type BashCredentialResolver = Pick<CredentialResolver, "resolveEnvironment">;
@@ -372,9 +385,10 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       ...(result.stdoutPath ? { stdoutPath: result.stdoutPath } : {}),
       ...(result.stderrPath ? { stderrPath: result.stderrPath } : {}),
     };
-    const sanitizedPayload = redactedSecrets.length > 0
+    const redactedPayload = redactedSecrets.length > 0
       ? redactSecretsInJsonObject(payload, redactedSecrets)
       : payload;
+    const sanitizedPayload = sanitizeBashPayloadOutputFields(redactedPayload);
 
     if (result.timedOut) {
       throw new ToolError(`Command timed out after ${timeoutMs}ms`, { details: sanitizedPayload });

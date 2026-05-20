@@ -7,6 +7,16 @@ interface CapturedOutput {
   truncated: boolean;
 }
 
+const BASH_NUL_PLACEHOLDER = "␀";
+
+/**
+ * Postgres jsonb rejects JSON strings that contain \u0000. Keep bash output
+ * previews human-readable while leaving raw persisted output files untouched.
+ */
+export function sanitizeBashOutputPreview(value: string): string {
+  return value.includes("\0") ? value.replaceAll("\0", BASH_NUL_PLACEHOLDER) : value;
+}
+
 export interface OutputCaptureState {
   preview: string;
   previewTruncated: boolean;
@@ -57,7 +67,8 @@ export function createOutputCapture(filePath: string): OutputCaptureState {
 
 export function appendOutput(capture: OutputCaptureState, chunk: string, previewLimit: number): void {
   capture.totalChars += chunk.length;
-  const next = appendChunk(capture.preview, chunk, previewLimit);
+  const previewChunk = sanitizeBashOutputPreview(chunk);
+  const next = appendChunk(capture.preview, previewChunk, previewLimit);
   capture.preview = next.value;
   capture.previewTruncated ||= next.truncated;
   capture.writer.write(chunk);

@@ -2,7 +2,7 @@ import {type ChildProcess, spawn} from "node:child_process";
 import {rm} from "node:fs/promises";
 
 import {withFallbackTimeout} from "../../lib/async.js";
-import {createOutputCapture, finalizeOutputCapture, type OutputCaptureState} from "./bash-output.js";
+import {appendOutput, createOutputCapture, finalizeOutputCapture, type OutputCaptureState} from "./bash-output.js";
 import type {BashJobSnapshot} from "./bash-protocol.js";
 import {buildWrappedCommand, createInvocationPaths, readPersistedCwd} from "./bash-session.js";
 
@@ -114,27 +114,11 @@ export class ManagedBashJob {
     child.stderr?.setEncoding("utf8");
 
     child.stdout?.on("data", (chunk: string) => {
-      this.stdoutCapture.totalChars += chunk.length;
-      if (this.stdoutCapture.preview.length < this.options.maxOutputChars) {
-        const remaining = this.options.maxOutputChars - this.stdoutCapture.preview.length;
-        this.stdoutCapture.preview += chunk.slice(0, remaining);
-        this.stdoutCapture.previewTruncated ||= chunk.length > remaining;
-      } else {
-        this.stdoutCapture.previewTruncated = true;
-      }
-      this.stdoutCapture.writer.write(chunk);
+      appendOutput(this.stdoutCapture, chunk, this.options.maxOutputChars);
     });
 
     child.stderr?.on("data", (chunk: string) => {
-      this.stderrCapture.totalChars += chunk.length;
-      if (this.stderrCapture.preview.length < this.options.maxOutputChars) {
-        const remaining = this.options.maxOutputChars - this.stderrCapture.preview.length;
-        this.stderrCapture.preview += chunk.slice(0, remaining);
-        this.stderrCapture.previewTruncated ||= chunk.length > remaining;
-      } else {
-        this.stderrCapture.previewTruncated = true;
-      }
-      this.stderrCapture.writer.write(chunk);
+      appendOutput(this.stderrCapture, chunk, this.options.maxOutputChars);
     });
 
     const timeoutTimer = setTimeout(() => {

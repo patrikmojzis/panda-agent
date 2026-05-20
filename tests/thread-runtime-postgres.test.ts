@@ -352,6 +352,60 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(completedAfterAbort.error).toBe("recover me");
   });
 
+  it("persists bash tool results with sanitized NUL output previews", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {threadStore: store} = await createRuntimeStores(pool);
+
+    await seedSession(pool, {
+      sessionId: "session-bash-nul",
+      threadId: "pg-thread-bash-nul",
+    });
+    await store.createThread({
+      id: "pg-thread-bash-nul",
+      sessionId: "session-bash-nul",
+      context: {
+        agentKey: "panda",
+        sessionId: "session-bash-nul",
+      },
+    });
+    const run = await store.createRun("pg-thread-bash-nul");
+
+    await store.appendRuntimeMessage("pg-thread-bash-nul", {
+      message: {
+        role: "toolResult",
+        toolCallId: "call-bash-nul",
+        toolName: "bash",
+        content: [{ type: "text", text: "{\"stdout\":\"hello␀stdout\"}" }],
+        details: {
+          stdout: "hello␀stdout",
+          stderr: "warn␀stderr",
+          exitCode: 0,
+          timedOut: false,
+        },
+        isError: false,
+        timestamp: Date.now(),
+      },
+      source: "tool:bash",
+      runId: run.id,
+    });
+
+    const [persisted] = await store.loadTranscript("pg-thread-bash-nul");
+    const message = persisted?.message as {details?: {stdout?: unknown; stderr?: unknown}} | undefined;
+    expect(message?.details?.stdout).toBe("hello␀stdout");
+    expect(message?.details?.stderr).toBe("warn␀stderr");
+    expect(JSON.stringify(persisted?.message)).not.toContain("\\u0000");
+  });
+
   it("rejects malformed persisted thread summary counts", async () => {
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("FROM \"runtime\".\"threads\"") && !sql.includes("COUNT(*)")) {
