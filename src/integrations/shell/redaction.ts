@@ -1,7 +1,20 @@
 import type {JsonObject, JsonValue} from "../../lib/json.js";
 
+export const UNSAFE_SECRET_OUTPUT_MESSAGE =
+  "[redacted: bash output hidden because configured secret material is too low-entropy to safely redact]";
+export const UNSAFE_SECRET_METADATA_MESSAGE =
+  "[redacted: bash metadata hidden because configured secret material is too low-entropy to safely disclose]";
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isWordLikeSecret(value: string): boolean {
+  return /^[A-Za-z0-9_]+$/.test(value);
+}
+
 /**
- * Replaces every exact secret occurrence in `value` with a redaction marker.
+ * Replaces secret occurrences in `value` with a redaction marker.
  *
  * Secrets are expected to be pre-sorted longest-first by the caller when
  * overlap matters.
@@ -13,7 +26,16 @@ export function redactSecretsInString(value: string, secrets: readonly string[])
       continue;
     }
 
-    redacted = redacted.split(secret).join("[redacted]");
+    const escaped = escapeRegExp(secret);
+    if (isWordLikeSecret(secret)) {
+      redacted = redacted.replace(
+        new RegExp(`(^|[^A-Za-z0-9_])${escaped}(?=$|[^A-Za-z0-9_])`, "g"),
+        "$1[redacted]",
+      );
+      continue;
+    }
+
+    redacted = redacted.replace(new RegExp(escaped, "g"), "[redacted]");
   }
 
   return redacted;

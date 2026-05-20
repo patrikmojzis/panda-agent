@@ -29,7 +29,7 @@ function createAgent() {
 
 function createRunContext(
   context: DefaultAgentSessionContext,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; onToolProgress?: (progress: JsonObject) => void } = {},
 ): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: createAgent(),
@@ -38,6 +38,7 @@ function createRunContext(
     messages: [],
     context,
     signal: options.signal,
+    onToolProgress: options.onToolProgress,
   });
 }
 
@@ -46,6 +47,8 @@ function asObject(value: unknown): Record<string, unknown> {
 }
 
 const NUL_PLACEHOLDER = "␀";
+const UNSAFE_SECRET_OUTPUT_MESSAGE =
+  "[redacted: bash output hidden because configured secret material is too low-entropy to safely redact]";
 
 function expectNoJsonNul(value: unknown): void {
   const serialized = JSON.stringify(value);
@@ -289,7 +292,7 @@ describe("BashTool", () => {
         credentialResolver: {
           resolveEnvironment: async () => ({
             CREDENTIAL_ONLY: "credential-only",
-            SHARED_KEY: "credential",
+            SHARED_KEY: "credential-value",
           }),
         },
       });
@@ -344,8 +347,8 @@ describe("BashTool", () => {
         outputDirectory: path.join(workspace, "tool-results"),
         credentialResolver: {
           resolveEnvironment: async () => ({
-            ALLOWED_SECRET: "allowed",
-            DENIED_SECRET: "denied",
+            ALLOWED_SECRET: "allowed-secret-value",
+            DENIED_SECRET: "denied-secret-value",
           }),
         },
       });
@@ -353,7 +356,7 @@ describe("BashTool", () => {
       const result = await tool.run(
         {
           command: [
-            'test "${ALLOWED_SECRET:-missing}" = "allowed"',
+            'test "${ALLOWED_SECRET:-missing}" = "allowed-secret-value"',
             'test "${DENIED_SECRET:-missing}" = "missing"',
             "printf ok",
           ].join(" && "),
@@ -559,6 +562,225 @@ describe("BashTool", () => {
     }
   });
 
+  it("keeps neutral common per-call env values observable and persistable", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-neutral-env-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        maxOutputChars: 80,
+        persistOutputThresholdChars: 8,
+      });
+
+      const result = await tool.run(
+        {
+          command: "printf 'test contest latest call'",
+          env: {
+            NODE_ENV: "test",
+            CALL_MARKER: "call",
+            LANG: "C.UTF-8",
+            TZ: "UTC",
+          },
+        },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+
+      expect(output.stdout).toBe("test contest latest call");
+      expect(String(output.stdout)).not.toContain("[redacted]");
+      expect(output.appliedEnvKeys).toEqual(["NODE_ENV", "CALL_MARKER", "LANG", "TZ"]);
+      expect(output.stdoutPersisted).toBe(true);
+      await expect(readFile(String(output.stdoutPath), "utf8")).resolves.toBe("test contest latest call");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses unsafe low-entropy source secret output without content-specific redaction", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-unsafe-secret-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        maxOutputChars: 80,
+        persistOutputThresholdChars: 1,
+      });
+
+      const secretResult = await tool.run(
+        {
+          command: 'export SAVED_SECRET="$CALL_SECRET" && printf "%s" "$CALL_SECRET"',
+          env: {
+            CALL_SECRET: "test",
+          },
+        },
+        createRunContext(context),
+      );
+      const unrelatedResult = await tool.run(
+        {
+          command: "printf unrelated",
+          env: {
+            CALL_SECRET: "test",
+          },
+        },
+        createRunContext(context),
+      );
+      const secretOutput = asObject(secretResult);
+      const unrelatedOutput = asObject(unrelatedResult);
+
+      expect(secretOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
+      expect(unrelatedOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
+      expect(secretOutput.stdout).toBe(unrelatedOutput.stdout);
+      expect(secretOutput.appliedEnvKeys).toEqual([]);
+      expect(secretOutput.trackedEnvKeys).toEqual([]);
+      expect(secretOutput.sessionEnvKeys).toEqual([]);
+      expect(secretOutput.sessionEnvChanged).toBe(false);
+      expect(unrelatedOutput.appliedEnvKeys).toEqual([]);
+      expect(unrelatedOutput.trackedEnvKeys).toEqual([]);
+      expect(JSON.stringify(secretOutput)).not.toContain("test");
+      expect(JSON.stringify(secretOutput)).not.toContain("CALL_SECRET");
+      expect(JSON.stringify(secretOutput)).not.toContain("SAVED_SECRET");
+      expect(JSON.stringify(unrelatedOutput)).not.toContain("CALL_SECRET");
+      expect(secretOutput.stdoutPersisted).toBe(false);
+      expect(unrelatedOutput.stdoutPersisted).toBe(false);
+      expect(secretOutput.stdoutPath).toBeUndefined();
+      expect(unrelatedOutput.stdoutPath).toBeUndefined();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+
+  it("keeps neutral foreground bash progress observable", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-progress-neutral-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const progress: JsonObject[] = [];
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        progressIntervalMs: 10,
+      });
+
+      const result = await tool.run(
+        {
+          command: 'printf "test contest latest call"; sleep 0.1',
+          env: {
+            NODE_ENV: "test",
+            CALL_MARKER: "call",
+          },
+        },
+        createRunContext(context, {onToolProgress: (entry) => progress.push(entry)}),
+      );
+      const output = asObject(result);
+
+      expect(output.stdout).toBe("test contest latest call");
+      expect(progress.length).toBeGreaterThan(0);
+      expect(progress.some((entry) => entry.stdoutTail === "test contest latest call")).toBe(true);
+      expect(JSON.stringify(progress)).not.toContain("[redacted]");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts foreground bash progress tails for safe source secrets", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-progress-redaction-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const progress: JsonObject[] = [];
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        progressIntervalMs: 10,
+      });
+
+      const result = await tool.run(
+        {
+          command: 'printf "%s" "$CALL_SECRET"; printf "%s" "$CALL_SECRET" >&2; sleep 0.1',
+          env: {
+            CALL_SECRET: "call-secret-value",
+          },
+        },
+        createRunContext(context, {onToolProgress: (entry) => progress.push(entry)}),
+      );
+      const output = asObject(result);
+
+      expect(output.stdout).toBe("[redacted]");
+      expect(output.stderr).toBe("[redacted]");
+      expect(progress.length).toBeGreaterThan(0);
+      expect(progress.some((entry) => entry.stdoutTail === "[redacted]" && entry.stderrTail === "[redacted]")).toBe(true);
+      expect(JSON.stringify(progress)).not.toContain("call-secret-value");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses foreground bash progress tails for unsafe low-entropy source secrets", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-progress-unsafe-secret-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const progress: JsonObject[] = [];
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        progressIntervalMs: 10,
+      });
+
+      const result = await tool.run(
+        {
+          command: 'export SAVED_SECRET="$CALL_SECRET"; printf unrelated; printf error >&2; sleep 0.1',
+          env: {
+            CALL_SECRET: "test",
+          },
+        },
+        createRunContext(context, {onToolProgress: (entry) => progress.push(entry)}),
+      );
+      const output = asObject(result);
+
+      expect(output.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
+      expect(output.stderr).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
+      expect(progress.length).toBeGreaterThan(0);
+      expect(progress.some((entry) =>
+        entry.stdoutTail === UNSAFE_SECRET_OUTPUT_MESSAGE
+        && entry.stderrTail === UNSAFE_SECRET_OUTPUT_MESSAGE,
+      )).toBe(true);
+      const serialized = JSON.stringify(progress);
+      expect(serialized).not.toContain("test");
+      expect(serialized).not.toContain("CALL_SECRET");
+      expect(serialized).not.toContain("SAVED_SECRET");
+      expect(serialized).not.toContain("unrelated");
+      expect(serialized).not.toContain("error");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("redacts credential and per-call env values from bash output", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-redaction-"));
     try {
@@ -578,7 +800,7 @@ describe("BashTool", () => {
         outputDirectory: path.join(workspace, "tool-results"),
         credentialResolver: {
           resolveEnvironment: async () => ({
-            OPENAI_API_KEY: "stored-secret",
+            OPENAI_API_KEY: "stored-secret-123",
           }),
         },
       });
@@ -587,7 +809,7 @@ describe("BashTool", () => {
         {
           command: 'printf "%s|%s" "${OPENAI_API_KEY:-missing}" "${CALL_SECRET:-missing}"',
           env: {
-            CALL_SECRET: "call-secret",
+            CALL_SECRET: "call-secret-value",
           },
         },
         createRunContext(context),
@@ -595,6 +817,8 @@ describe("BashTool", () => {
       const output = asObject(result);
 
       expect(String(output.stdout)).toBe("[redacted]|[redacted]");
+      expect(JSON.stringify(output)).not.toContain("stored-secret-123");
+      expect(JSON.stringify(output)).not.toContain("call-secret-value");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -623,13 +847,13 @@ describe("BashTool", () => {
         {
           command: 'export SAVED_SECRET="$CALL_SECRET"',
           env: {
-            CALL_SECRET: "call-secret",
+            CALL_SECRET: "call-secret-value",
           },
         },
         createRunContext(context),
       );
 
-      expect(context.shell?.env.SAVED_SECRET).toBe("call-secret");
+      expect(context.shell?.env.SAVED_SECRET).toBe("call-secret-value");
       expect(context.shell?.secretEnvKeys).toEqual(["SAVED_SECRET"]);
 
       const result = await tool.run(
@@ -641,6 +865,44 @@ describe("BashTool", () => {
       const output = asObject(result);
 
       expect(String(output.stdout)).toBe("[redacted]");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mark neutral exported values as session secrets", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-neutral-session-env-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+      });
+
+      await tool.run(
+        {
+          command: 'export WORKER_TMP_MARKER="$CALL_MARKER"',
+          env: {
+            CALL_MARKER: "call",
+          },
+        },
+        createRunContext(context),
+      );
+
+      expect(context.shell?.env.WORKER_TMP_MARKER).toBe("call");
+      expect(context.shell?.secretEnvKeys ?? []).not.toContain("WORKER_TMP_MARKER");
+
+      const result = await tool.run(
+        { command: 'printf "%s" "$WORKER_TMP_MARKER"' },
+        createRunContext(context),
+      );
+
+      expect(asObject(result).stdout).toBe("call");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -765,7 +1027,7 @@ describe("BashTool", () => {
         {
           command: 'printf "%s%s%s%s" "$CALL_SECRET" "$CALL_SECRET" "$CALL_SECRET" "$CALL_SECRET"',
           env: {
-            CALL_SECRET: "secret",
+            CALL_SECRET: "secret-1",
           },
         },
         createRunContext(context),
@@ -901,7 +1163,7 @@ describe("BashTool", () => {
         {
           command: 'cd nested && export BG_ONLY="$CALL_SECRET" && printf done',
           env: {
-            CALL_SECRET: "call-secret",
+            CALL_SECRET: "call-secret-value",
           },
           background: true,
         },
@@ -924,6 +1186,68 @@ describe("BashTool", () => {
       expect(context.shell?.cwd).toBe(workspace);
       expect(context.shell?.env.BG_ONLY).toBeUndefined();
       expect(JSON.stringify(output)).not.toContain("call-secret");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses unsafe low-entropy source secret output for background jobs", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-unsafe-secret-"));
+    try {
+      const {bash, status, wait, context} = await createBackgroundHarness(workspace);
+
+      const first = await bash.run(
+        {
+          command: 'export BG_ONLY="$CALL_SECRET" && sleep 0.05 && printf "%s" "$CALL_SECRET"',
+          env: {
+            CALL_SECRET: "test",
+          },
+          background: true,
+        },
+        createRunContext(context),
+      );
+      const second = await bash.run(
+        {
+          command: "printf unrelated",
+          env: {
+            CALL_SECRET: "test",
+          },
+          background: true,
+        },
+        createRunContext(context),
+      );
+
+      const firstStarted = asObject(first);
+      const firstJobId = String(firstStarted.jobId);
+      const firstStatus = asObject(await status.run(
+        { jobId: firstJobId },
+        createRunContext(context),
+      ));
+      const firstOutput = asObject(await wait.run(
+        { jobId: firstJobId, timeoutMs: 1_000 },
+        createRunContext(context),
+      ));
+      const secondOutput = asObject(await wait.run(
+        { jobId: String(asObject(second).jobId), timeoutMs: 1_000 },
+        createRunContext(context),
+      ));
+
+      expect(firstOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
+      expect(secondOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
+      expect(firstOutput.stdout).toBe(secondOutput.stdout);
+      expect(firstStarted.trackedEnvKeys).toEqual([]);
+      expect(firstStatus.trackedEnvKeys).toEqual([]);
+      expect(firstOutput.trackedEnvKeys).toEqual([]);
+      for (const output of [firstStarted, firstStatus, firstOutput, secondOutput]) {
+        const serialized = JSON.stringify(output);
+        expect(serialized).not.toContain("test");
+        expect(serialized).not.toContain("CALL_SECRET");
+        expect(serialized).not.toContain("BG_ONLY");
+      }
+      expect(firstOutput.stdoutPersisted).toBe(false);
+      expect(secondOutput.stdoutPersisted).toBe(false);
+      expect(firstOutput.stdoutPath).toBeUndefined();
+      expect(secondOutput.stdoutPath).toBeUndefined();
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -1061,7 +1385,7 @@ describe("BashTool", () => {
         {
           command: 'printf "%s%s%s%s" "$CALL_SECRET" "$CALL_SECRET" "$CALL_SECRET" "$CALL_SECRET"',
           env: {
-            CALL_SECRET: "secret",
+            CALL_SECRET: "secret-1",
           },
           background: true,
         },

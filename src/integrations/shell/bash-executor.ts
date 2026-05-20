@@ -1,10 +1,12 @@
 import {randomUUID} from "node:crypto";
 
 import {buildEndpointUrl} from "../../lib/http.js";
+import type {JsonObject} from "../../lib/json.js";
 import {trimToNull} from "../../lib/strings.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {executeBashCommand} from "./bash-execution.js";
+import {sanitizeBashOutputPreview} from "./bash-output.js";
 import type {
   BashExecutionResult,
   BashRunnerAbortRequest,
@@ -24,6 +26,11 @@ import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import type {ShellExecutionContext} from "./types.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 import {buildShellProcessEnv, SAFE_SHELL} from "./environment.js";
+import {
+  redactSecretsInJsonObject,
+  UNSAFE_SECRET_METADATA_MESSAGE,
+  UNSAFE_SECRET_OUTPUT_MESSAGE,
+} from "./redaction.js";
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
 
@@ -39,6 +46,8 @@ export interface BashExecutorOptions {
   maxOutputChars: number;
   persistOutputThresholdChars: number;
   persistOutputFiles?: boolean;
+  redactionValues?: readonly string[];
+  suppressOutputForUnsafeSecrets?: boolean;
   outputDirectory: string;
   env?: Record<string, string>;
   resolvedEnv?: Record<string, string>;
@@ -62,6 +71,50 @@ export interface RemoteShellExecutorOptions {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   runnerUrlTemplate?: string;
+}
+
+interface BashDiagnosticSanitizationOptions {
+  redactionValues?: readonly string[];
+  suppressOutputForUnsafeSecrets?: boolean;
+}
+
+function suppressProgressOutputField(payload: JsonObject, key: string, countKey: string): void {
+  const value = payload[key];
+  if (typeof value !== "string" || value.length === 0) {
+    return;
+  }
+
+  payload[key] = UNSAFE_SECRET_OUTPUT_MESSAGE;
+  if (typeof payload[countKey] === "number") {
+    payload[countKey] = UNSAFE_SECRET_OUTPUT_MESSAGE.length;
+  }
+}
+
+function sanitizeBashDiagnosticPayload(
+  payload: JsonObject,
+  options: BashDiagnosticSanitizationOptions,
+): JsonObject {
+  let sanitized: JsonObject = {...payload};
+  if (options.suppressOutputForUnsafeSecrets === true) {
+    if (typeof sanitized.command === "string") {
+      sanitized.command = UNSAFE_SECRET_METADATA_MESSAGE;
+    }
+    suppressProgressOutputField(sanitized, "stdoutTail", "stdoutChars");
+    suppressProgressOutputField(sanitized, "stderrTail", "stderrChars");
+  }
+
+  if (options.redactionValues && options.redactionValues.length > 0) {
+    sanitized = redactSecretsInJsonObject(sanitized, options.redactionValues);
+  }
+
+  if (typeof sanitized.stdoutTail === "string") {
+    sanitized.stdoutTail = sanitizeBashOutputPreview(sanitized.stdoutTail);
+  }
+  if (typeof sanitized.stderrTail === "string") {
+    sanitized.stderrTail = sanitizeBashOutputPreview(sanitized.stderrTail);
+  }
+
+  return sanitized;
 }
 
 function readAgentKey(context: ShellExecutionContext | undefined): string {
@@ -222,7 +275,7 @@ export class LocalShellExecutor implements BashExecutor {
       progressTailChars: options.progressTailChars,
       outputDirectory: options.outputDirectory,
       signal: options.run.signal,
-      onProgress: (progress) => options.run.emitToolProgress(progress),
+      onProgress: (progress) => options.run.emitToolProgress(sanitizeBashDiagnosticPayload(progress, options)),
     });
 
     if (!outcome.spawnErrorMessage) {
@@ -230,7 +283,9 @@ export class LocalShellExecutor implements BashExecutor {
     }
 
     throw new ToolError(`Failed to spawn shell: ${outcome.spawnErrorMessage}`, {
-      details: outcome.spawnErrorDetails,
+      ...(outcome.spawnErrorDetails
+        ? {details: sanitizeBashDiagnosticPayload(outcome.spawnErrorDetails, options)}
+        : {}),
     });
   }
 }
