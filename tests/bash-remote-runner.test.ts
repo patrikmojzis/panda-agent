@@ -49,6 +49,9 @@ function asObject(value: unknown): Record<string, unknown> {
   return (value ?? {}) as Record<string, unknown>;
 }
 
+const UNSAFE_SECRET_OUTPUT_MESSAGE =
+  "[redacted: bash output hidden because configured secret material is too low-entropy to safely redact]";
+
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
   const startedAt = Date.now();
 
@@ -420,9 +423,9 @@ describe("remote bash runner", () => {
 
     const result = await tool.run(
       {
-        command: 'test "${OPENAI_API_KEY:-missing}" = "sk-test" && printf ok',
+        command: 'test "${OPENAI_API_KEY:-missing}" = "sk-test-123" && printf ok',
         env: {
-          OPENAI_API_KEY: "sk-test",
+          OPENAI_API_KEY: "sk-test-123",
         },
       },
       createRunContext({
@@ -449,8 +452,8 @@ describe("remote bash runner", () => {
       },
       credentialResolver: {
         resolveEnvironment: async () => ({
-          OPENAI_API_KEY: "stored-secret",
-          NOTION_API_KEY: "notion-secret",
+          OPENAI_API_KEY: "stored-secret-123",
+          NOTION_API_KEY: "notion-secret-123",
         }),
       },
     });
@@ -458,8 +461,8 @@ describe("remote bash runner", () => {
     const result = await tool.run(
       {
         command: [
-          'test "${OPENAI_API_KEY:-missing}" = "stored-secret"',
-          'test "${NOTION_API_KEY:-missing}" = "notion-secret"',
+          'test "${OPENAI_API_KEY:-missing}" = "stored-secret-123"',
+          'test "${NOTION_API_KEY:-missing}" = "notion-secret-123"',
           "printf ok",
         ].join(" && "),
       },
@@ -540,10 +543,11 @@ describe("remote bash runner", () => {
       createRunContext(context),
     );
 
-    expect(String(asObject(result).stdout)).toBe("sk-ephemeral");
+    expect(String(asObject(result).stdout)).toBe("[redacted]");
     expect(context.shell?.env).toEqual({
       OPENAI_API_KEY: "sk-ephemeral",
     });
+    expect(context.shell?.secretEnvKeys).toEqual(["OPENAI_API_KEY"]);
   });
 
   it("supports remote background job start, status, wait, and cancel endpoints", async () => {
@@ -695,9 +699,9 @@ describe("remote bash runner", () => {
 
     const started = await bash.run(
       {
-        command: 'cd /tmp && export BG_ONLY="$CALL_SECRET" && printf "%s|%s" "${SESSION_MARKER:-missing}" "${CALL_MARKER:-missing}"',
+        command: 'cd /tmp && export BG_ONLY="$CALL_SECRET" && printf "%s|%s|%s" "${SESSION_MARKER:-missing}" "${CALL_MARKER:-missing}" "${CALL_SECRET:-missing}"',
         env: {
-          CALL_SECRET: "call-secret",
+          CALL_SECRET: "call-secret-value",
           CALL_MARKER: "call",
         },
         background: true,
@@ -712,12 +716,71 @@ describe("remote bash runner", () => {
     const output = asObject(finished);
 
     expect(output.status).toBe("completed");
-    expect(String(output.stdout)).toBe("session|[redacted]");
+    expect(String(output.stdout)).toBe("session|call|[redacted]");
     expect(output.trackedEnvKeys).toEqual(["BG_ONLY"]);
     expect(context.shell?.cwd).toBe(agentHome);
     expect(context.shell?.env.BG_ONLY).toBeUndefined();
     expect(context.shell?.env.SESSION_MARKER).toBe("session");
     expect(JSON.stringify(output)).not.toContain("call-secret");
+  });
+
+  it("suppresses unsafe low-entropy source secret output for remote background jobs", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const runner = await createRunner("panda");
+    const {bash, status, wait, context} = await createRemoteBackgroundHarness(agentHome, runner);
+
+    const first = await bash.run(
+      {
+        command: 'export BG_ONLY="$CALL_SECRET" && sleep 0.05 && printf "%s" "$CALL_SECRET"',
+        env: {
+          CALL_SECRET: "test",
+        },
+        background: true,
+      },
+      createRunContext(context),
+    );
+    const second = await bash.run(
+      {
+        command: "printf unrelated",
+        env: {
+          CALL_SECRET: "test",
+        },
+        background: true,
+      },
+      createRunContext(context),
+    );
+
+    const firstStarted = asObject(first);
+    const firstJobId = String(firstStarted.jobId);
+    const firstStatus = asObject(await status.run(
+      { jobId: firstJobId },
+      createRunContext(context),
+    ));
+    const firstOutput = asObject(await wait.run(
+      { jobId: firstJobId, timeoutMs: 1_000 },
+      createRunContext(context),
+    ));
+    const secondOutput = asObject(await wait.run(
+      { jobId: String(asObject(second).jobId), timeoutMs: 1_000 },
+      createRunContext(context),
+    ));
+
+    expect(firstOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
+    expect(secondOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
+    expect(firstOutput.stdout).toBe(secondOutput.stdout);
+    expect(firstStarted.trackedEnvKeys).toEqual([]);
+    expect(firstStatus.trackedEnvKeys).toEqual([]);
+    expect(firstOutput.trackedEnvKeys).toEqual([]);
+    for (const output of [firstStarted, firstStatus, firstOutput, secondOutput]) {
+      const serialized = JSON.stringify(output);
+      expect(serialized).not.toContain("test");
+      expect(serialized).not.toContain("CALL_SECRET");
+      expect(serialized).not.toContain("BG_ONLY");
+    }
+    expect(firstOutput.stdoutPersisted).toBe(false);
+    expect(secondOutput.stdoutPersisted).toBe(false);
+    expect(firstOutput.stdoutPath).toBeUndefined();
+    expect(secondOutput.stdoutPath).toBeUndefined();
   });
 
   it("runs multiple remote background jobs concurrently", async () => {
