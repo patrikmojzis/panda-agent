@@ -30,10 +30,59 @@ function createRunContext(
   });
 }
 
+type FakeRuntimeDevice = {
+  viewport: {width: number; height: number};
+  deviceScaleFactor: number;
+  userAgent: string;
+  maxTouchPoints: number;
+  hasTouch: boolean;
+};
+
+const FAKE_DESKTOP_RUNTIME_DEVICE: FakeRuntimeDevice = {
+  viewport: {width: 1280, height: 720},
+  deviceScaleFactor: 1,
+  userAgent: "Mozilla/5.0 (X11; Linux x86_64) HeadlessChrome/120 Safari/537.36",
+  maxTouchPoints: 0,
+  hasTouch: false,
+};
+
+function cloneFakeViewport(value: unknown): {width: number; height: number} | undefined {
+  if (
+    typeof value === "object"
+    && value !== null
+    && "width" in value
+    && "height" in value
+    && typeof (value as {width?: unknown}).width === "number"
+    && typeof (value as {height?: unknown}).height === "number"
+  ) {
+    return {
+      width: (value as {width: number}).width,
+      height: (value as {height: number}).height,
+    };
+  }
+  return undefined;
+}
+
+function fakeRuntimeDeviceFromContextOptions(options: unknown): FakeRuntimeDevice {
+  const raw = typeof options === "object" && options !== null
+    ? options as Record<string, unknown>
+    : {};
+  const viewport = cloneFakeViewport(raw.viewport) ?? FAKE_DESKTOP_RUNTIME_DEVICE.viewport;
+  const hasTouch = raw.hasTouch === true;
+  return {
+    viewport,
+    deviceScaleFactor: typeof raw.deviceScaleFactor === "number" ? raw.deviceScaleFactor : 1,
+    userAgent: typeof raw.userAgent === "string" ? raw.userAgent : FAKE_DESKTOP_RUNTIME_DEVICE.userAgent,
+    maxTouchPoints: hasTouch ? 5 : 0,
+    hasTouch,
+  };
+}
+
 class FakePage {
   currentUrl = "https://example.com/";
   currentTitle = "Example";
   closed = false;
+  runtimeDevice: FakeRuntimeDevice = {...FAKE_DESKTOP_RUNTIME_DEVICE};
 
   readonly keyboard = {
     press: async () => undefined,
@@ -58,7 +107,15 @@ class FakePage {
 
   async waitForFunction(): Promise<void> {}
 
-  async evaluate(_pageFunction: unknown, arg?: unknown): Promise<unknown> {
+  async setContent(): Promise<void> {}
+
+  async evaluate(pageFunction: unknown, arg?: unknown): Promise<unknown> {
+    if (typeof pageFunction === "function") {
+      const source = String(pageFunction);
+      if (source.includes("maxTouchPoints") && source.includes("devicePixelRatio")) {
+        return this.runtimeDevice;
+      }
+    }
     if (
       arg
       && typeof arg === "object"
@@ -117,8 +174,10 @@ class FakeBrowserContext {
   constructor(private readonly initialPage: FakePage) {}
 
   async newPage(): Promise<FakePage> {
-    this.pagesList.push(this.initialPage);
-    return this.initialPage;
+    const page = this.pagesList.length === 0 ? this.initialPage : new FakePage();
+    page.runtimeDevice = fakeRuntimeDeviceFromContextOptions(this.newContextOptions);
+    this.pagesList.push(page);
+    return page;
   }
 
   pages(): FakePage[] {
@@ -257,18 +316,29 @@ describe("browser runner transport", () => {
         device: {
           profile: "mobile",
           viewport: {width: 412, height: 839},
+          deviceScaleFactor: 2.625,
           isMobile: true,
+          hasTouch: true,
+        },
+        runtimeDevice: {
+          profile: "mobile",
+          viewport: {width: 412, height: 839},
+          deviceScaleFactor: 2.625,
+          userAgent: expect.stringContaining("Mobile"),
+          maxTouchPoints: 5,
           hasTouch: true,
         },
       },
     });
     expect(context.newContextOptions).toMatchObject({
       viewport: {width: 412, height: 839},
+      deviceScaleFactor: 2.625,
       isMobile: true,
       hasTouch: true,
     });
     expect(log.mock.calls.some(([line]) => String(line).includes('"deviceProfile":"mobile"'))).toBe(true);
     expect(log.mock.calls.some(([line]) => String(line).includes('"device":{"profile":"mobile"'))).toBe(true);
+    expect(log.mock.calls.some(([line]) => String(line).includes('"runtimeDevice":{"profile":"mobile"'))).toBe(true);
   });
 
   it("rewrites disposable worker loopback preview URLs to the worker container origin", async () => {

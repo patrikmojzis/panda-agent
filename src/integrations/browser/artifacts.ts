@@ -19,6 +19,7 @@ export type BrowserArtifactSession = {
   scope: BrowserSessionScope;
   deviceProfile: BrowserDeviceProfile;
   device: JsonObject;
+  runtimeDevice?: JsonObject;
   artifactDir: string;
 };
 
@@ -86,6 +87,7 @@ export async function buildBrowserScreenshotArtifactPayload(params: {
     scope: params.session.scope,
     deviceProfile: params.session.deviceProfile,
     device: params.session.device,
+    ...(params.session.runtimeDevice ? {runtimeDevice: params.session.runtimeDevice} : {}),
     path: filePath,
     mimeType: "image/png",
     bytes: buffer.length,
@@ -145,6 +147,7 @@ export async function buildBrowserPdfArtifactPayload(params: {
       scope: params.session.scope,
       deviceProfile: params.session.deviceProfile,
       device: params.session.device,
+      ...(params.session.runtimeDevice ? {runtimeDevice: params.session.runtimeDevice} : {}),
       path: filePath,
       mimeType: "application/pdf",
       bytes: buffer.length,
