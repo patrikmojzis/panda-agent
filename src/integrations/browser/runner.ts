@@ -80,6 +80,7 @@ function buildDeviceLogFields(response: BrowserRunnerActionResponse): Record<str
   return {
     ...(typeof response.details.deviceProfile === "string" ? {deviceProfile: response.details.deviceProfile} : {}),
     ...(isRecord(response.details.device) ? {device: response.details.device} : {}),
+    ...(isRecord(response.details.runtimeDevice) ? {runtimeDevice: response.details.runtimeDevice} : {}),
   };
 }
 

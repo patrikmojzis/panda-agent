@@ -1,5 +1,6 @@
 import {devices, type BrowserContextOptions} from "playwright-core";
 
+import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject} from "../../lib/json.js";
 import type {BrowserDeviceProfile} from "./action-types.js";
 
@@ -20,8 +21,22 @@ function cloneViewportSize(value: unknown): {width: number; height: number} | un
   return undefined;
 }
 
-function stripDeviceDescriptor(name: string): BrowserContextOptions {
-  const descriptor = devices[name] as BrowserContextOptions & {defaultBrowserType?: unknown};
+function stripDeviceDescriptor(
+  deviceProfile: BrowserDeviceProfile,
+  name: string,
+): BrowserContextOptions {
+  const descriptor = devices[name] as (BrowserContextOptions & {defaultBrowserType?: unknown}) | undefined;
+  if (!descriptor) {
+    throw new ToolError(
+      `browser deviceProfile=${deviceProfile} requires Playwright device descriptor "${name}", but it is not available.`,
+      {
+        details: {
+          deviceProfile,
+          descriptor: name,
+        },
+      },
+    );
+  }
   const {defaultBrowserType: _ignored, ...options} = descriptor;
   return options;
 }
@@ -36,11 +51,11 @@ export function buildBrowserDeviceContextOptions(deviceProfile: BrowserDevicePro
         viewport: {width: 1440, height: 900},
       };
     case "mobile-compact":
-      return stripDeviceDescriptor("Galaxy S24");
+      return stripDeviceDescriptor(deviceProfile, "Galaxy S24");
     case "mobile":
-      return stripDeviceDescriptor("Pixel 7");
+      return stripDeviceDescriptor(deviceProfile, "Pixel 7");
     case "tablet":
-      return stripDeviceDescriptor("iPad (gen 11)");
+      return stripDeviceDescriptor(deviceProfile, "iPad (gen 11)");
   }
 }
 
@@ -77,4 +92,19 @@ export function buildBrowserContextOptions(
 /** Returns stable JSON details for the selected device profile. */
 export function buildBrowserDeviceDetailsForProfile(deviceProfile: BrowserDeviceProfile): JsonObject {
   return buildBrowserDeviceDetails(deviceProfile, buildBrowserDeviceContextOptions(deviceProfile));
+}
+
+/** Returns the runtime-visible metrics that must match the selected profile. */
+export function buildBrowserRuntimeDeviceExpectationForProfile(deviceProfile: BrowserDeviceProfile): JsonObject {
+  const contextOptions = buildBrowserDeviceContextOptions(deviceProfile);
+  const viewport = cloneViewportSize(contextOptions.viewport);
+  return {
+    profile: deviceProfile,
+    ...(viewport ? {viewport} : {}),
+    ...(typeof contextOptions.deviceScaleFactor === "number"
+      ? {deviceScaleFactor: contextOptions.deviceScaleFactor}
+      : {}),
+    ...(typeof contextOptions.userAgent === "string" ? {userAgent: contextOptions.userAgent} : {}),
+    ...(contextOptions.hasTouch === true ? {hasTouch: true} : {}),
+  };
 }

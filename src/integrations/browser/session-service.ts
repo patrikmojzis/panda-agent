@@ -35,6 +35,7 @@ import {buildBrowserExternalContentDetails, wrapBrowserExternalContent,} from ".
 import {
     buildBrowserContextOptions,
     buildBrowserDeviceDetailsForProfile,
+    buildBrowserRuntimeDeviceExpectationForProfile,
 } from "./device-profiles.js";
 import {
     browserNavigationProtocols,
@@ -82,6 +83,7 @@ interface BrowserSessionRecord {
   page: Page;
   deviceProfile: BrowserDeviceProfile;
   device: JsonObject;
+  runtimeDevice?: JsonObject;
   artifactDir: string;
   storageStatePath?: string;
   createdAtMs: number;
@@ -114,6 +116,146 @@ type BrowserResolvedSessionScope = {
   key: string;
   deviceProfile: BrowserDeviceProfile;
 };
+
+const RUNTIME_DEVICE_PROBE_HTML = `<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Panda browser device profile probe</title>
+</head>
+<body>probe</body>
+</html>`;
+
+function shouldAssertRuntimeDeviceProfile(deviceProfile: BrowserDeviceProfile): boolean {
+  return deviceProfile !== "desktop";
+}
+
+function cloneRuntimeViewport(value: unknown): {width: number; height: number} | undefined {
+  if (
+    typeof value === "object"
+    && value !== null
+    && "width" in value
+    && "height" in value
+    && typeof (value as {width?: unknown}).width === "number"
+    && typeof (value as {height?: unknown}).height === "number"
+  ) {
+    return {
+      width: (value as {width: number}).width,
+      height: (value as {height: number}).height,
+    };
+  }
+  return undefined;
+}
+
+function readRuntimeDeviceProbeInPage(): JsonObject {
+  const root = globalThis as {
+    innerWidth?: unknown;
+    innerHeight?: unknown;
+    devicePixelRatio?: unknown;
+    navigator?: {
+      userAgent?: unknown;
+      maxTouchPoints?: unknown;
+    };
+  };
+  const maxTouchPoints = typeof root.navigator?.maxTouchPoints === "number"
+    ? root.navigator.maxTouchPoints
+    : 0;
+
+  return {
+    viewport: {
+      width: typeof root.innerWidth === "number" ? root.innerWidth : 0,
+      height: typeof root.innerHeight === "number" ? root.innerHeight : 0,
+    },
+    deviceScaleFactor: typeof root.devicePixelRatio === "number" ? root.devicePixelRatio : 0,
+    userAgent: typeof root.navigator?.userAgent === "string" ? root.navigator.userAgent : "",
+    maxTouchPoints,
+    hasTouch: maxTouchPoints > 0,
+  };
+}
+
+function normalizeRuntimeDeviceProbe(
+  deviceProfile: BrowserDeviceProfile,
+  value: unknown,
+): JsonObject {
+  const raw = typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const viewport = cloneRuntimeViewport(raw.viewport) ?? {width: 0, height: 0};
+  const maxTouchPoints = typeof raw.maxTouchPoints === "number" && Number.isFinite(raw.maxTouchPoints)
+    ? raw.maxTouchPoints
+    : 0;
+
+  return {
+    profile: deviceProfile,
+    viewport,
+    deviceScaleFactor: typeof raw.deviceScaleFactor === "number" && Number.isFinite(raw.deviceScaleFactor)
+      ? raw.deviceScaleFactor
+      : 0,
+    userAgent: typeof raw.userAgent === "string" ? raw.userAgent : "",
+    maxTouchPoints,
+    hasTouch: raw.hasTouch === true || maxTouchPoints > 0,
+  };
+}
+
+function buildRuntimeDeviceMismatches(expected: JsonObject, actual: JsonObject): JsonObject[] {
+  const mismatches: JsonObject[] = [];
+  const expectedViewport = cloneRuntimeViewport(expected.viewport);
+  if (expectedViewport) {
+    const actualViewport = cloneRuntimeViewport(actual.viewport);
+    if (
+      !actualViewport
+      || actualViewport.width !== expectedViewport.width
+      || actualViewport.height !== expectedViewport.height
+    ) {
+      mismatches.push({
+        field: "viewport",
+        expected: expectedViewport,
+        actual: actualViewport ?? null,
+      });
+    }
+  }
+
+  if (typeof expected.deviceScaleFactor === "number") {
+    const actualDeviceScaleFactor = typeof actual.deviceScaleFactor === "number"
+      ? actual.deviceScaleFactor
+      : null;
+    if (actualDeviceScaleFactor === null || Math.abs(actualDeviceScaleFactor - expected.deviceScaleFactor) > 0.001) {
+      mismatches.push({
+        field: "deviceScaleFactor",
+        expected: expected.deviceScaleFactor,
+        actual: actualDeviceScaleFactor,
+      });
+    }
+  }
+
+  if (typeof expected.userAgent === "string" && actual.userAgent !== expected.userAgent) {
+    mismatches.push({
+      field: "userAgent",
+      expected: expected.userAgent,
+      actual: typeof actual.userAgent === "string" ? actual.userAgent : null,
+    });
+  }
+
+  const actualHasTouch = actual.hasTouch === true;
+  if (expected.hasTouch === true && !actualHasTouch) {
+    mismatches.push({
+      field: "hasTouch",
+      expected: true,
+      actual: actualHasTouch,
+      maxTouchPoints: typeof actual.maxTouchPoints === "number" ? actual.maxTouchPoints : 0,
+    });
+  }
+
+  return mismatches;
+}
+
+function buildSessionDeviceResultDetails(session: BrowserSessionRecord): JsonObject {
+  return {
+    deviceProfile: session.deviceProfile,
+    device: session.device,
+    ...(session.runtimeDevice ? {runtimeDevice: session.runtimeDevice} : {}),
+  };
+}
 
 function runSnapshotScriptInPage(input: {
   script?: unknown;
@@ -474,6 +616,54 @@ export class BrowserSessionService {
     }
   }
 
+  private async probeRuntimeDeviceProfile(
+    context: BrowserContext,
+    deviceProfile: BrowserDeviceProfile,
+    timeoutMs: number,
+  ): Promise<JsonObject> {
+    return await withTimeout((async () => {
+      const page = await context.newPage();
+      try {
+        await page.setContent(RUNTIME_DEVICE_PROBE_HTML, {
+          waitUntil: "domcontentloaded",
+          timeout: Math.min(timeoutMs, 10_000),
+        });
+        const raw = await page.evaluate(readRuntimeDeviceProbeInPage);
+        return normalizeRuntimeDeviceProbe(deviceProfile, raw);
+      } finally {
+        await page.close().catch(() => undefined);
+      }
+    })(), Math.min(timeoutMs, 10_000), "browser deviceProfile probe", {
+      deviceProfile,
+    });
+  }
+
+  private async assertRuntimeDeviceProfile(
+    context: BrowserContext,
+    deviceProfile: BrowserDeviceProfile,
+    timeoutMs: number,
+  ): Promise<JsonObject | undefined> {
+    if (!shouldAssertRuntimeDeviceProfile(deviceProfile)) {
+      return undefined;
+    }
+
+    const expected = buildBrowserRuntimeDeviceExpectationForProfile(deviceProfile);
+    const actual = await this.probeRuntimeDeviceProfile(context, deviceProfile, timeoutMs);
+    const mismatches = buildRuntimeDeviceMismatches(expected, actual);
+    if (mismatches.length > 0) {
+      throw new ToolError(`browser deviceProfile=${deviceProfile} did not apply expected runtime metrics.`, {
+        details: {
+          deviceProfile,
+          expected,
+          actual,
+          mismatches,
+        },
+      });
+    }
+
+    return actual;
+  }
+
   private async persistStorageState(session: BrowserSessionRecord | null | undefined): Promise<void> {
     if (!session?.storageStatePath || session.scope === "ephemeral") {
       return;
@@ -508,6 +698,7 @@ export class BrowserSessionService {
     try {
       browser = await this.launchBrowserImpl(this.launchOptions);
       context = await this.createBrowserContext(browser, scope.deviceProfile, storageStatePath);
+      const runtimeDevice = await this.assertRuntimeDeviceProfile(context, scope.deviceProfile, _timeoutMs);
       await context.route("**/*", async (route) => {
         const request = route.request();
         const requestUrl = trimToUndefined(request.url());
@@ -558,6 +749,7 @@ export class BrowserSessionService {
         page,
         deviceProfile: scope.deviceProfile,
         device: buildBrowserDeviceDetailsForProfile(scope.deviceProfile),
+        runtimeDevice,
         artifactDir,
         storageStatePath,
         createdAtMs: startedAtMs,
@@ -773,8 +965,7 @@ export class BrowserSessionService {
       truncated: capture.truncated,
       elementCount: capture.elementCount,
       scope: session.scope,
-      deviceProfile: session.deviceProfile,
-      device: session.device,
+      ...buildSessionDeviceResultDetails(session),
       snapshotMode: mode,
       signals: [...capture.snapshot.signals],
       elements: capture.snapshot.elements.map((element) => ({...element})),
@@ -862,8 +1053,7 @@ export class BrowserSessionService {
         details: {
           action: "evaluate",
           scope: session.scope,
-          deviceProfile: session.deviceProfile,
-          device: session.device,
+          ...buildSessionDeviceResultDetails(session),
           url: page.url(),
           result: null,
           truncated: false,
@@ -881,8 +1071,7 @@ export class BrowserSessionService {
       details: {
         action: "evaluate",
         scope: session.scope,
-        deviceProfile: session.deviceProfile,
-        device: session.device,
+        ...buildSessionDeviceResultDetails(session),
         url: page.url(),
         truncated: truncated.truncated,
         result: truncated.text,

@@ -67,6 +67,54 @@ type SnapshotResult = {
   }>;
 };
 
+type FakeRuntimeDevice = {
+  viewport: {width: number; height: number};
+  deviceScaleFactor: number;
+  userAgent: string;
+  maxTouchPoints: number;
+  hasTouch: boolean;
+};
+
+const FAKE_DESKTOP_RUNTIME_DEVICE: FakeRuntimeDevice = {
+  viewport: {width: 1280, height: 720},
+  deviceScaleFactor: 1,
+  userAgent: "Mozilla/5.0 (X11; Linux x86_64) HeadlessChrome/120 Safari/537.36",
+  maxTouchPoints: 0,
+  hasTouch: false,
+};
+
+function cloneFakeViewport(value: unknown): {width: number; height: number} | undefined {
+  if (
+    typeof value === "object"
+    && value !== null
+    && "width" in value
+    && "height" in value
+    && typeof (value as {width?: unknown}).width === "number"
+    && typeof (value as {height?: unknown}).height === "number"
+  ) {
+    return {
+      width: (value as {width: number}).width,
+      height: (value as {height: number}).height,
+    };
+  }
+  return undefined;
+}
+
+function fakeRuntimeDeviceFromContextOptions(options: unknown): FakeRuntimeDevice {
+  const raw = typeof options === "object" && options !== null
+    ? options as Record<string, unknown>
+    : {};
+  const viewport = cloneFakeViewport(raw.viewport) ?? FAKE_DESKTOP_RUNTIME_DEVICE.viewport;
+  const hasTouch = raw.hasTouch === true;
+  return {
+    viewport,
+    deviceScaleFactor: typeof raw.deviceScaleFactor === "number" ? raw.deviceScaleFactor : 1,
+    userAgent: typeof raw.userAgent === "string" ? raw.userAgent : FAKE_DESKTOP_RUNTIME_DEVICE.userAgent,
+    maxTouchPoints: hasTouch ? 5 : 0,
+    hasTouch,
+  };
+}
+
 class FakeLocator {
   constructor(private readonly page: FakePage, private readonly selector: string) {}
 
@@ -143,6 +191,7 @@ class FakePage {
   keyboardInsertedText: string[] = [];
   labelOverlaysInstalled = 0;
   labelOverlaysRemoved = 0;
+  runtimeDevice: FakeRuntimeDevice = {...FAKE_DESKTOP_RUNTIME_DEVICE};
   onLocatorClick?: (selector: string) => Promise<void> | void;
 
   readonly keyboard = {
@@ -172,6 +221,8 @@ class FakePage {
 
   async waitForFunction(): Promise<void> {}
 
+  async setContent(): Promise<void> {}
+
   async evaluate(pageFunction: unknown, arg?: unknown): Promise<unknown> {
     if (
       arg
@@ -183,6 +234,9 @@ class FakePage {
     }
     if (typeof pageFunction === "function") {
       const source = String(pageFunction);
+      if (source.includes("maxTouchPoints") && source.includes("devicePixelRatio")) {
+        return this.runtimeDevice;
+      }
       if (source.includes("runtime-browser-ref-overlays")) {
         if (arg && typeof arg === "object" && "refAttribute" in arg) {
           this.labelOverlaysInstalled += 1;
@@ -250,6 +304,7 @@ class FakeBrowserContext {
   newContextOptions: unknown = undefined;
   storageStateInput: unknown = undefined;
   storageStatePaths: string[] = [];
+  runtimeDeviceOverride: FakeRuntimeDevice | null = null;
 
   constructor(initialPage: FakePage) {
     this.pageQueue = [initialPage];
@@ -257,6 +312,7 @@ class FakeBrowserContext {
 
   async newPage(): Promise<FakePage> {
     const page = this.pageQueue.shift() ?? new FakePage();
+    page.runtimeDevice = this.runtimeDeviceOverride ?? fakeRuntimeDeviceFromContextOptions(this.newContextOptions);
     this.pagesList.push(page);
     return page;
   }
@@ -599,10 +655,139 @@ describe("BrowserTool", () => {
       device: {
         profile: "mobile",
         viewport: {width: 412, height: 839},
+        deviceScaleFactor: 2.625,
         isMobile: true,
         hasTouch: true,
       },
+      runtimeDevice: {
+        profile: "mobile",
+        viewport: {width: 412, height: 839},
+        deviceScaleFactor: 2.625,
+        userAgent: expect.stringContaining("Mobile"),
+        maxTouchPoints: 5,
+        hasTouch: true,
+      },
     });
+  });
+
+  it("verifies mobile-compact as actual page-visible runtime metrics", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
+    tempDirs.push(tempDir);
+    const context = new FakeBrowserContext(new FakePage());
+    const service = new BrowserSessionService({
+      launchBrowserImpl: launchFakeContext(context),
+      dataDir: tempDir,
+    });
+    services.push(service);
+
+    const result = await service.handle(
+      {action: "snapshot", deviceProfile: "mobile-compact"},
+      createRunContext({cwd: "/workspace/panda", sessionId: "session-1", threadId: "thread-1"}),
+    );
+
+    expect(context.newContextOptions).toMatchObject({
+      serviceWorkers: "block",
+      viewport: {width: 360, height: 780},
+      deviceScaleFactor: 3,
+      isMobile: true,
+      hasTouch: true,
+    });
+    expect(result.details).toMatchObject({
+      action: "snapshot",
+      deviceProfile: "mobile-compact",
+      device: {
+        profile: "mobile-compact",
+        viewport: {width: 360, height: 780},
+        deviceScaleFactor: 3,
+        hasTouch: true,
+      },
+      runtimeDevice: {
+        profile: "mobile-compact",
+        viewport: {width: 360, height: 780},
+        deviceScaleFactor: 3,
+        userAgent: expect.stringContaining("Mobile"),
+        maxTouchPoints: 5,
+        hasTouch: true,
+      },
+    });
+  });
+
+  it("fails loudly when the runtime browser ignores a requested mobile profile", async () => {
+    const context = new FakeBrowserContext(new FakePage());
+    context.runtimeDeviceOverride = FAKE_DESKTOP_RUNTIME_DEVICE;
+    const service = new BrowserSessionService({
+      launchBrowserImpl: launchFakeContext(context),
+    });
+    services.push(service);
+
+    let error: unknown;
+    try {
+      await service.handle(
+        {action: "snapshot", deviceProfile: "mobile"},
+        createRunContext({cwd: "/workspace/panda", threadId: "thread-1"}),
+      );
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ToolError);
+    expect((error as ToolError).message).toBe("browser deviceProfile=mobile did not apply expected runtime metrics.");
+    expect((error as ToolError).details).toMatchObject({
+      deviceProfile: "mobile",
+      expected: {
+        profile: "mobile",
+        viewport: {width: 412, height: 839},
+        deviceScaleFactor: 2.625,
+        hasTouch: true,
+      },
+      actual: {
+        profile: "mobile",
+        viewport: {width: 1280, height: 720},
+        deviceScaleFactor: 1,
+        userAgent: expect.stringContaining("HeadlessChrome"),
+        maxTouchPoints: 0,
+        hasTouch: false,
+      },
+      mismatches: expect.arrayContaining([
+        expect.objectContaining({field: "viewport"}),
+        expect.objectContaining({field: "deviceScaleFactor"}),
+        expect.objectContaining({field: "userAgent"}),
+        expect.objectContaining({field: "hasTouch"}),
+      ]),
+    });
+  });
+
+  it("fails clearly when a whitelisted Playwright device descriptor is missing", async () => {
+    vi.resetModules();
+    vi.doMock("playwright-core", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("playwright-core")>();
+      return {
+        ...actual,
+        devices: {},
+      };
+    });
+
+    try {
+      const {buildBrowserDeviceContextOptions} = await import("../src/integrations/browser/device-profiles.js");
+      let error: unknown;
+      try {
+        buildBrowserDeviceContextOptions("mobile");
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toMatchObject({
+        name: "ToolError",
+        message: 'browser deviceProfile=mobile requires Playwright device descriptor "Pixel 7", but it is not available.',
+        details: {
+          deviceProfile: "mobile",
+          descriptor: "Pixel 7",
+        },
+      });
+    } finally {
+      vi.doUnmock("playwright-core");
+      vi.resetModules();
+    }
   });
 
   it("blocks private targets before navigation starts", async () => {
