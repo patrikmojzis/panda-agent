@@ -1,6 +1,14 @@
 import {describe, expect, it, vi} from "vitest";
 
-import {Agent, RunContext} from "../src/kernel/agent/index.js";
+import {
+  Agent,
+  type AssistantMessage,
+  type LlmRuntime,
+  RunContext,
+  stringToUserMessage,
+  Thread,
+  type ThreadRunEvent,
+} from "../src/kernel/agent/index.js";
 import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
 import type {CreateWorkerSessionInput, CreateWorkerSessionResult} from "../src/app/runtime/worker-session-service.js";
 import type {ExecutionEnvironmentRecord} from "../src/domain/execution-environments/types.js";
@@ -18,6 +26,33 @@ function createRunContext(context: DefaultAgentSessionContext): RunContext<Defau
     messages: [],
     context,
   });
+}
+
+function createAssistantMessage(
+  content: AssistantMessage["content"],
+): AssistantMessage {
+  const stopReason = content.some((block) => block.type === "toolCall") ? "toolUse" : "stop";
+
+  return {
+    role: "assistant",
+    content,
+    api: "openai-responses",
+    model: "openai/gpt-4o-mini",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason,
+    timestamp: Date.now(),
+  };
+}
+
+function message(text: string): AssistantMessage {
+  return createAssistantMessage([{ type: "text", text }]);
 }
 
 function createFilesystemMetadata(envDir = "worker-session") {
@@ -324,6 +359,86 @@ describe("worker control tools", () => {
       message: 'Invalid worker model "gpt-5.1": Unknown model alias "gpt-5.1". Use a canonical selector like `provider/model` or one of `gpt`, `opus`.',
     });
     expect(createWorkerSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("recovers parent runs from invalid worker model tool calls", async () => {
+    const createWorkerSessionMock = vi.fn();
+    const bindParentWorker = vi.fn(async () => {});
+    const tool = new WorkerSpawnTool({
+      workerSessions: {
+        createWorkerSession: createWorkerSessionMock,
+      },
+    });
+    const runtime: LlmRuntime = {
+      complete: vi.fn()
+        .mockResolvedValueOnce(createAssistantMessage([
+          {
+            type: "toolCall",
+            id: "call_worker_spawn",
+            name: "worker_spawn",
+            arguments: {
+              task: "Smoke test frontend.",
+              model: "gpt-5.1",
+            },
+          },
+        ]))
+        .mockResolvedValueOnce(message("Recovered from invalid worker model.")),
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
+    const thread = new Thread({
+      agent: new Agent({
+        name: "parent",
+        instructions: "Spawn workers when requested.",
+        tools: [tool],
+      }),
+      model: "openai/gpt-4o-mini",
+      messages: [stringToUserMessage("spawn a worker with an invalid model")],
+      runtime,
+      context: {
+        cwd: "/workspace/panda",
+        agentKey: "panda",
+        sessionId: "parent-session",
+        threadId: "parent-thread",
+        workerA2A: {
+          bindParentWorker,
+        },
+      } satisfies DefaultAgentSessionContext,
+    });
+
+    const outputs: ThreadRunEvent[] = [];
+    for await (const output of thread.run()) {
+      outputs.push(output);
+    }
+
+    expect(outputs.map((output) => output.role)).toEqual([
+      "assistant",
+      "toolResult",
+      "assistant",
+    ]);
+    expect(outputs[1]).toMatchObject({
+      role: "toolResult",
+      toolName: "worker_spawn",
+      isError: true,
+      details: {
+        model: "gpt-5.1",
+      },
+    });
+
+    const toolResult = outputs[1];
+    if (!toolResult || toolResult.role !== "toolResult") {
+      throw new Error("Expected worker_spawn tool result.");
+    }
+    const contentText = toolResult.content
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n");
+    expect(contentText).toContain('Invalid worker model "gpt-5.1"');
+    expect(contentText).toContain('Unknown model alias "gpt-5.1"');
+    expect(createWorkerSessionMock).not.toHaveBeenCalled();
+    expect(bindParentWorker).not.toHaveBeenCalled();
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
   });
 
   it("refuses to spawn workers when A2A binding is unavailable", async () => {
