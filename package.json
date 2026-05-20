@@ -86,6 +86,7 @@
     "ci:prompt-contracts": "tsx scripts/ci/prompt-contracts.ts --check",
     "ci:prompt-contracts:update": "tsx scripts/ci/prompt-contracts.ts --update",
     "ci:postgres-startup": "tsx scripts/ci/postgres-startup-rehearsal.ts",
+    "ci:audit": "pnpm audit --audit-level high",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "smoke": "tsx src/app/cli.ts smoke",
@@ -106,13 +107,9 @@
   "packageManager": "pnpm@10.33.0",
   "overrides": {
     "@anthropic-ai/sdk": "0.91.1",
-    "protobufjs": "7.5.5"
-  },
-  "pnpm": {
-    "overrides": {
-      "@anthropic-ai/sdk": "0.91.1",
-      "protobufjs": "7.5.5"
-    }
+    "protobufjs": "7.5.6",
+    "basic-ftp": "5.3.1",
+    "fast-xml-builder": "1.1.7"
   },
   "dependencies": {
     "@mariozechner/pi-ai": "^0.70.2",
