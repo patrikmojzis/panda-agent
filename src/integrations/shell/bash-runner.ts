@@ -22,6 +22,7 @@ import {ManagedBashJob} from "./bash-background-job.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import {executeBashCommand} from "./bash-execution.js";
 import {readJsonHttpBody} from "../http-body.js";
+import {buildSafeCommandEnv, SAFE_SHELL} from "./environment.js";
 
 const DEFAULT_RUNNER_PORT = 8080;
 const DEFAULT_RUNNER_HOST = "0.0.0.0";
@@ -385,7 +386,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
   const requestedPort = options.port ?? DEFAULT_RUNNER_PORT;
   const host = options.host ?? DEFAULT_RUNNER_HOST;
   const env = options.env ?? process.env;
-  const shell = options.shell ?? env.SHELL ?? "/bin/zsh";
+  const shell = options.shell ?? SAFE_SHELL;
   const outputDirectory = path.resolve(options.outputDirectory ?? path.join(os.tmpdir(), "runtime-runner-results"));
   const activeRequests = new Map<string, ActiveRunnerRequest>();
   const backgroundJobs = new Map<string, ManagedBashJob>();
@@ -497,12 +498,12 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         });
 
         try {
-          // Remote bash starts from an empty env. The shell may synthesize a few
-          // defaults like PATH/PWD, but Panda does not inject host or caller values.
+          // Remote bash starts from Panda's safe non-secret command env plus
+          // request-scoped env. It must not inherit arbitrary runner process env.
           const outcome = await executeBashCommand({
             command: parsed.command,
             cwd: resolvedCwd,
-            childEnv: parsed.env ?? {},
+            childEnv: buildSafeCommandEnv({env: parsed.env, processEnv: env, home: resolvedCwd}),
             shell,
             timeoutMs: parsed.timeoutMs,
             trackedEnvKeys: parsed.trackedEnvKeys,
@@ -555,7 +556,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           jobId: parsed.jobId,
           command: parsed.command,
           cwd: resolvedCwd,
-          childEnv: parsed.env ?? {},
+          childEnv: buildSafeCommandEnv({env: parsed.env, processEnv: env, home: resolvedCwd}),
           shell,
           timeoutMs: parsed.timeoutMs,
           trackedEnvKeys: parsed.trackedEnvKeys,

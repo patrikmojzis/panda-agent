@@ -48,6 +48,11 @@ tool policy apply to a session.
   shell state should be written only to `context.shellSessions`.
 - Remote runners receive credentials only in the per-command/job env snapshot.
   Runners do not load credentials themselves.
+- Remote runner commands start from a safe non-secret base env (`PATH`, `SHELL`,
+  `HOME`, `TMPDIR`, `LANG`, optional `TZ`) and then merge policy-filtered
+  credentials, session env, and per-call env. If user/project `PATH` entries are
+  present, they stay first and missing system dirs are appended so wrappers like
+  Vite/esbuild can still find core tools.
 
 ## Worker Controls
 
@@ -155,6 +160,11 @@ The manager provides:
 Disposable runner containers do not mount `/root/.panda`, the agent home, or
 the Codex home by default. Credentials are passed only per bash request through
 the environment binding credential policy.
+
+`scripts/docker-stack.sh up --build` builds `panda-runner:latest` with
+`PANDA_RUNNER_NODE_MAJOR=${PANDA_RUNNER_NODE_MAJOR:-22}`. Supported values are
+`20`, `22`, and `24`; the Dockerfile default remains Node 24 for app/browser
+targets unless those builds explicitly pass another `NODE_MAJOR`.
 
 Disposable workers do mount agent-scoped file-sharing dirs:
 

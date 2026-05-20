@@ -26,6 +26,7 @@ import {readTcpPort} from "../../lib/numbers.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
 import {readJsonHttpBody} from "../http-body.js";
+import {buildSafeCommandBaseEnv} from "./environment.js";
 
 const DEFAULT_MANAGER_HOST = "127.0.0.1";
 const DEFAULT_MANAGER_PORT = 8095;
@@ -383,13 +384,19 @@ function buildContainerConfig(input: {
   hostBindIp: string;
 }): DockerContainerCreateConfig {
   const portKey = `${input.runnerPort}/tcp`;
+  const safeEnv = buildSafeCommandBaseEnv({TZ: process.env.TZ ?? "UTC"});
   return {
     Image: input.image,
     Cmd: ["runner"],
     Env: [
+      `PATH=${safeEnv.PATH ?? ""}`,
+      `SHELL=${safeEnv.SHELL ?? ""}`,
+      `HOME=${safeEnv.HOME ?? ""}`,
+      `TMPDIR=${safeEnv.TMPDIR ?? ""}`,
+      `LANG=${safeEnv.LANG ?? ""}`,
       `RUNNER_AGENT_KEY=${input.request.agentKey}`,
       `RUNNER_PORT=${input.runnerPort}`,
-      `TZ=${process.env.TZ ?? "UTC"}`,
+      `TZ=${safeEnv.TZ ?? "UTC"}`,
     ],
     WorkingDir: input.runnerCwd,
     Labels: buildLabels(input.request),

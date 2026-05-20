@@ -246,6 +246,168 @@ describe("remote bash runner", () => {
     expect(String(asObject(result).stdout)).toBe("missing");
   });
 
+  it("starts remote commands with a safe non-leaking command env", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const runner = await createRunner("panda", {
+      env: {
+        ...process.env,
+        PATH: "/runner-only-bin",
+        SHELL: "/runner-shell",
+        RUNNER_MARKER: "runner-secret",
+      },
+    });
+    const tool = new BashTool({
+      env: {
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+      },
+    });
+
+    const result = await tool.run(
+      {
+        command: [
+          'test "${RUNNER_MARKER:-missing}" = "missing"',
+          'test "$SHELL" = "/bin/bash"',
+          `test "$HOME" = ${JSON.stringify(agentHome)}`,
+          'case "$(readlink /proc/$$/exe)" in */bash) ;; *) exit 31 ;; esac',
+          'test "${PATH#*/runner-only-bin}" = "$PATH"',
+          "command -v sed >/dev/null",
+          "command -v dirname >/dev/null",
+          "command -v uname >/dev/null",
+          "command -v node >/dev/null",
+          'printf "%s" "$PATH"',
+        ].join(" && "),
+      },
+      createRunContext({
+        agentKey: "panda",
+        cwd: agentHome,
+        shell: {
+          cwd: agentHome,
+          env: {},
+        },
+      }),
+    );
+
+    expect(String(asObject(result).stdout).split(":")).toEqual(expect.arrayContaining([
+      "/usr/local/sbin",
+      "/usr/local/bin",
+      "/usr/sbin",
+      "/usr/bin",
+      "/sbin",
+      "/bin",
+    ]));
+  });
+
+  it("starts remote background jobs with SAFE_SHELL despite hostile runner SHELL", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const runner = await createRunner("panda", {
+      env: {
+        ...process.env,
+        PATH: "/runner-only-bin",
+        SHELL: "/runner-shell",
+        RUNNER_MARKER: "runner-secret",
+      },
+    });
+
+    const startResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/start`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [RUNNER_AGENT_KEY_HEADER]: "panda",
+        [RUNNER_PATH_SCOPED_HEADER]: "1",
+        [RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
+      },
+      body: JSON.stringify({
+        jobId: "job-safe-shell",
+        command: [
+          'test "${RUNNER_MARKER:-missing}" = "missing"',
+          'test "$SHELL" = "/bin/bash"',
+          `test "$HOME" = ${JSON.stringify(agentHome)}`,
+          'case "$(readlink /proc/$$/exe)" in */bash) ;; *) exit 31 ;; esac',
+          'test "${PATH#*/runner-only-bin}" = "$PATH"',
+          "command -v sed >/dev/null",
+          "printf background-ok",
+        ].join(" && "),
+        cwd: agentHome,
+        timeoutMs: 1_000,
+        trackedEnvKeys: [],
+        maxOutputChars: 8_000,
+        persistOutputThresholdChars: 8_000,
+      }),
+    });
+
+    expect(startResponse.status).toBe(200);
+
+    const waitResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/wait`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [RUNNER_AGENT_KEY_HEADER]: "panda",
+        [RUNNER_PATH_SCOPED_HEADER]: "1",
+        [RUNNER_EXPECTED_PATH_HEADER]: "/agents/panda",
+      },
+      body: JSON.stringify({
+        jobId: "job-safe-shell",
+        timeoutMs: 1_000,
+      }),
+    });
+
+    expect(waitResponse.status).toBe(200);
+    await expect(waitResponse.json()).resolves.toMatchObject({
+      ok: true,
+      status: "completed",
+      stdout: "background-ok",
+    });
+  });
+
+  it("appends safe system PATH entries after a persisted project PATH", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const projectBin = path.join(agentHome, "node_modules", ".bin");
+    const runner = await createRunner("panda", {
+      env: {
+        ...process.env,
+        SHELL: "/bin/bash",
+      },
+    });
+    const tool = new BashTool({
+      env: {
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+      },
+    });
+    const context: DefaultAgentSessionContext = {
+      agentKey: "panda",
+      cwd: agentHome,
+      shell: {
+        cwd: agentHome,
+        env: {},
+      },
+    };
+
+    await tool.run(
+      { command: `export PATH=${JSON.stringify(projectBin)}` },
+      createRunContext(context),
+    );
+
+    expect(context.shell?.env.PATH).toBe(projectBin);
+
+    const result = await tool.run(
+      {
+        command: [
+          `case "$PATH" in ${projectBin}:*) ;; *) exit 21 ;; esac`,
+          "command -v sed >/dev/null",
+          "command -v node >/dev/null",
+          'printf "%s" "$PATH"',
+        ].join(" && "),
+      },
+      createRunContext(context),
+    );
+
+    const pathEntries = String(asObject(result).stdout).split(":");
+    expect(pathEntries[0]).toBe(projectBin);
+    expect(pathEntries).toEqual(expect.arrayContaining(["/usr/bin", "/bin"]));
+  });
+
   it("accepts env overrides in remote mode", async () => {
     const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
@@ -398,7 +560,7 @@ describe("remote bash runner", () => {
       },
       body: JSON.stringify({
         jobId: "job-direct-1",
-        command: "sleep 0.2 && printf done",
+        command: "command -v sed >/dev/null && sleep 0.2 && printf done",
         cwd: agentHome,
         timeoutMs: 1_000,
         trackedEnvKeys: [],

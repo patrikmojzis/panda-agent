@@ -23,7 +23,7 @@ import {
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import type {ShellExecutionContext} from "./types.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
-import {buildShellProcessEnv} from "./environment.js";
+import {buildShellProcessEnv, SAFE_SHELL} from "./environment.js";
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
 
@@ -190,7 +190,7 @@ export class LocalShellExecutor implements BashExecutor {
   async execute<TContext extends ShellExecutionContext>(
     options: BashExecutorOptions & {run: RunContext<TContext>},
   ): Promise<BashExecutionResult> {
-    const shell = this.shell ?? this.env.SHELL ?? "/bin/zsh";
+    const shell = this.shell ?? this.env.SHELL ?? SAFE_SHELL;
     const spawnFailure = await readBashSpawnPreflightFailure({
       cwd: options.cwd,
       shell,

@@ -165,6 +165,17 @@ So if you logged in earlier in the same session/profile, try reopening the brows
 
 Mobile and desktop contexts are separate. Switching to `mobile` does not resize the existing desktop context.
 
+## Disposable Vite Validation
+
+Disposable runners built by the Docker stack use Node 22 LTS by default and
+remote bash appends safe system PATH dirs, so missing `sed`, `dirname`, `uname`,
+`node`, `pnpm`, or `corepack` should be treated as a Panda runtime bug.
+
+If a Vite/Tailwind app still times out or gets killed during install, typecheck,
+build, or dev-server startup on a tiny host, report `BLOCKED_RESOURCE`. Do not
+call it product failure, and do not claim browser `PASS` unless you captured
+real DOM, screenshot, or network evidence.
+
 ## Good Habits
 
 - keep the browsing goal narrow

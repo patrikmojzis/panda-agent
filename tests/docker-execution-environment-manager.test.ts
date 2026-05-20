@@ -209,7 +209,14 @@ describe("DockerExecutionEnvironmentManager", () => {
     expect(created.config.Image).toBe("panda-runner:test");
     expect(created.config.Cmd).toEqual(["runner"]);
     expect(created.config.WorkingDir).toBe("/workspace");
-    expect(created.config.Env).toContain("RUNNER_AGENT_KEY=panda");
+    expect(created.config.Env).toEqual(expect.arrayContaining([
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "SHELL=/bin/bash",
+      "HOME=/root",
+      "TMPDIR=/tmp",
+      "LANG=C.UTF-8",
+      "RUNNER_AGENT_KEY=panda",
+    ]));
     expect(created.config.HostConfig.AutoRemove).toBe(true);
     expect(created.config.HostConfig.PortBindings).toEqual({
       "8080/tcp": [

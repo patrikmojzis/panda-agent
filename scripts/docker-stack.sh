@@ -135,6 +135,25 @@ array_contains() {
   return 1
 }
 
+validate_node_major() {
+  local value=$1
+  local label=$2
+  case "$value" in
+    20|22|24)
+      ;;
+    *)
+      die "$label must be one of: 20, 22, 24."
+      ;;
+  esac
+}
+
+read_runner_node_major() {
+  local value
+  value="$(trim "${PANDA_RUNNER_NODE_MAJOR:-22}")"
+  validate_node_major "$value" "PANDA_RUNNER_NODE_MAJOR"
+  printf '%s\n' "$value"
+}
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 env_file="${PANDA_STACK_ENV_FILE:-$repo_root/.env}"
@@ -571,7 +590,12 @@ run_docker_build() {
 build_stack_images() {
   local failed=0
   local pid
+  local runner_node_major
   local build_pids=()
+
+  if agents_declared || (( enable_disposable_environments )); then
+    runner_node_major="$(read_runner_node_major)"
+  fi
 
   run_docker_build --target app -t panda-app:latest "$repo_root"
 
@@ -579,7 +603,7 @@ build_stack_images() {
   build_pids+=("$!")
 
   if agents_declared || (( enable_disposable_environments )); then
-    run_docker_build --target runner -t panda-runner:latest "$repo_root" &
+    run_docker_build --target runner --build-arg "NODE_MAJOR=$runner_node_major" -t panda-runner:latest "$repo_root" &
     build_pids+=("$!")
   fi
 

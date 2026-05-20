@@ -13,6 +13,7 @@ Options:
   --shared-root <path>        Host path mounted as /workspace/shared
                               (default: $HOME/.panda/shared)
   --name <container-name>     Container name override
+  --node-major <20|22|24>     Node major for --build runner image (default: 22)
   --build                     Build the image from the repo root before running
   --detach                    Run the container in the background
   --dry-run                   Print the commands without executing them
@@ -65,6 +66,17 @@ normalize_agent_key() {
   printf '%s\n' "$normalized"
 }
 
+validate_node_major() {
+  local value=$1
+  case "$value" in
+    20|22|24)
+      ;;
+    *)
+      die "node major must be one of: 20, 22, 24."
+      ;;
+  esac
+}
+
 command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH."
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -81,6 +93,8 @@ fi
 host_port="${RUNNER_PORT:-8080}"
 image="${RUNNER_IMAGE:-panda:latest}"
 shared_root="${SHARED_ROOT:-$HOME/.panda/shared}"
+node_major="${PANDA_RUNNER_NODE_MAJOR:-22}"
+node_major_set=0
 detach=0
 build=0
 dry_run=0
@@ -111,6 +125,12 @@ while [[ $# -gt 0 ]]; do
     --name)
       [[ $# -ge 2 ]] || die "--name requires a value."
       container_name="$2"
+      shift 2
+      ;;
+    --node-major)
+      [[ $# -ge 2 ]] || die "--node-major requires a value."
+      node_major="$2"
+      node_major_set=1
       shift 2
       ;;
     --build)
@@ -144,6 +164,9 @@ done
 agent_key="$(normalize_agent_key "$agent_key")"
 [[ "$host_port" =~ ^[0-9]+$ ]] || die "port must be an integer."
 (( host_port >= 1 && host_port <= 65535 )) || die "port must be between 1 and 65535."
+if (( build || node_major_set )); then
+  validate_node_major "$node_major"
+fi
 
 shared_root="$(expand_home "$shared_root")"
 agent_dir="$HOME/.panda/agents/$agent_key"
@@ -154,7 +177,7 @@ if [[ "$host_port" != "8080" ]]; then
 fi
 container_name="${container_name:-$default_container_name}"
 
-build_cmd=(env "DOCKER_BUILDKIT=${DOCKER_BUILDKIT:-1}" docker build --target runner -t "$image" "$repo_root")
+build_cmd=(env "DOCKER_BUILDKIT=${DOCKER_BUILDKIT:-1}" docker build --target runner --build-arg "NODE_MAJOR=$node_major" -t "$image" "$repo_root")
 run_cmd=(
   docker run --rm
   --name "$container_name"
@@ -178,6 +201,7 @@ printf '  container: %s\n' "$container_name"
 printf '  host port: %s\n' "$host_port"
 printf '  agent dir: %s\n' "$agent_dir"
 printf '  shared root: %s\n' "$shared_root"
+printf '  node major: %s%s\n' "$node_major" "$([[ $build -eq 1 ]] && printf ' (build)' || printf ' (not building)')"
 printf '  timezone: %s\n' "$runner_tz"
 printf '\n'
 printf 'Local shell env for panda run:\n'
