@@ -10,6 +10,12 @@ import {
   parseToolJobRow,
 } from "../src/domain/threads/runtime/postgres-rows.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {
+  THREAD_RUNTIME_JSONB_NUL_PLACEHOLDER,
+} from "../src/domain/threads/runtime/postgres-jsonb-safety.js";
+
+const NUL = "\0";
+const NUL_PLACEHOLDER = THREAD_RUNTIME_JSONB_NUL_PLACEHOLDER;
 
 type ThreadRuntimePool = ConstructorParameters<typeof PostgresThreadRuntimeStore>[0]["pool"];
 
@@ -404,6 +410,107 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(message?.details?.stdout).toBe("hello␀stdout");
     expect(message?.details?.stderr).toBe("warn␀stderr");
     expect(JSON.stringify(persisted?.message)).not.toContain("\\u0000");
+  });
+
+  it("sanitizes actual NULs in runtime input and message JSONB fields", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {threadStore: store} = await createRuntimeStores(pool);
+
+    await seedSession(pool, {
+      sessionId: "session-jsonb-nul",
+      threadId: "pg-thread-jsonb-nul",
+    });
+    await store.createThread({
+      id: "pg-thread-jsonb-nul",
+      sessionId: "session-jsonb-nul",
+      context: {
+        agentKey: "panda",
+        sessionId: "session-jsonb-nul",
+      },
+    });
+
+    const inputMessage = stringToUserMessage(`hello${NUL}input`);
+    const inputMetadata = {
+      label: `meta${NUL}data`,
+      nested: {
+        [`key${NUL}name`]: `value${NUL}text`,
+      },
+    };
+
+    const queued = await store.enqueueInput("pg-thread-jsonb-nul", {
+      message: inputMessage,
+      source: "telegram",
+      metadata: inputMetadata,
+    });
+
+    expect((queued.input.message as {content?: unknown}).content).toBe(`hello${NUL_PLACEHOLDER}input`);
+    expect(queued.input.metadata).toEqual({
+      label: `meta${NUL_PLACEHOLDER}data`,
+      nested: {
+        [`key${NUL_PLACEHOLDER}name`]: `value${NUL_PLACEHOLDER}text`,
+      },
+    });
+    expect(inputMessage.content).toBe(`hello${NUL}input`);
+    expect(inputMetadata.label).toBe(`meta${NUL}data`);
+    expect(Object.keys(inputMetadata.nested)).toEqual([`key${NUL}name`]);
+
+    const applied = await store.applyPendingInputs("pg-thread-jsonb-nul");
+    expect((applied[0]?.message as {content?: unknown} | undefined)?.content).toBe(`hello${NUL_PLACEHOLDER}input`);
+    expect(applied[0]?.metadata).toEqual({
+      label: `meta${NUL_PLACEHOLDER}data`,
+      nested: {
+        [`key${NUL_PLACEHOLDER}name`]: `value${NUL_PLACEHOLDER}text`,
+      },
+    });
+
+    const run = await store.createRun("pg-thread-jsonb-nul");
+    const assistantMessage = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: `assistant${NUL}reply` }],
+      api: "openai-responses",
+      model: "openai/gpt-5.1",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    };
+    const assistantMetadata = {
+      note: `assistant${NUL}meta`,
+    };
+
+    await store.appendRuntimeMessage("pg-thread-jsonb-nul", {
+      message: assistantMessage,
+      metadata: assistantMetadata,
+      source: "assistant",
+      runId: run.id,
+    });
+
+    const transcript = await store.loadTranscript("pg-thread-jsonb-nul");
+    const persistedAssistant = transcript[1]?.message as {content?: Array<{text?: string}>} | undefined;
+    expect(persistedAssistant?.content?.[0]?.text).toBe(`assistant${NUL_PLACEHOLDER}reply`);
+    expect(transcript[1]?.metadata).toEqual({
+      note: `assistant${NUL_PLACEHOLDER}meta`,
+    });
+    expect(assistantMessage.content[0]?.text).toBe(`assistant${NUL}reply`);
+    expect(assistantMetadata.note).toBe(`assistant${NUL}meta`);
+    expect(JSON.stringify(transcript)).not.toContain("\\u0000");
+    expect(JSON.stringify(transcript)).not.toContain(NUL);
   });
 
   it("rejects malformed persisted thread summary counts", async () => {

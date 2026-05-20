@@ -20,7 +20,7 @@ import {
     enqueueThreadInput,
     promoteQueuedThreadInputs,
 } from "./postgres-inputs.js";
-import type {PgPoolLike, PgQueryable} from "../../../lib/postgres-query.js";
+import type {PgPoolLike, PgQueryResult, PgQueryable} from "../../../lib/postgres-query.js";
 import type {ThreadEnqueueResult, ThreadInputApplyScope, ThreadRuntimeStore} from "./store.js";
 import {
     type CreateThreadInput,
@@ -39,6 +39,10 @@ import {
     type ThreadUpdate,
 } from "./types.js";
 import {resolveThreadPromptCacheKey} from "./prompt-cache-key.js";
+import {
+  createThreadRuntimeJsonbPersistenceError,
+  serializeThreadRuntimeJsonb,
+} from "./postgres-jsonb-safety.js";
 
 interface PostgresThreadRuntimeStoreOptions {
   pool: PgPoolLike;
@@ -469,52 +473,67 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     payload: ThreadRuntimeMessagePayload,
   ): Promise<ThreadMessageRecord> {
     const createdAt = new Date(payload.createdAt ?? Date.now());
-    const result = await this.pool.query(`
-      INSERT INTO ${this.tables.messages} (
-        id,
-        thread_id,
-        origin,
-        source,
-        channel_id,
-        external_message_id,
-        actor_id,
-        identity_id,
-        run_id,
-        run_thread_id,
-        created_at,
-        metadata,
-        message
-      ) VALUES (
-        $1,
-        $2,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7,
-        $8,
-        $9,
-        $10,
-        $11,
-        $12::jsonb,
-        $13::jsonb
-      )
-      RETURNING *
-    `, [
-      randomUUID(),
-      threadId,
-      payload.origin ?? "runtime",
-      payload.source,
-      payload.channelId ?? null,
-      payload.externalMessageId ?? null,
-      payload.actorId ?? null,
-      payload.identityId ?? null,
-      payload.runId ?? null,
-      payload.runId ? threadId : null,
-      createdAt,
-      toJson(payload.metadata),
-      toJson(payload.message),
-    ]);
+    const metadataJson = serializeThreadRuntimeJsonb(payload.metadata);
+    const messageJson = serializeThreadRuntimeJsonb(payload.message);
+    let result: PgQueryResult;
+    try {
+      result = await this.pool.query(`
+        INSERT INTO ${this.tables.messages} (
+          id,
+          thread_id,
+          origin,
+          source,
+          channel_id,
+          external_message_id,
+          actor_id,
+          identity_id,
+          run_id,
+          run_thread_id,
+          created_at,
+          metadata,
+          message
+        ) VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10,
+          $11,
+          $12::jsonb,
+          $13::jsonb
+        )
+        RETURNING *
+      `, [
+        randomUUID(),
+        threadId,
+        payload.origin ?? "runtime",
+        payload.source,
+        payload.channelId ?? null,
+        payload.externalMessageId ?? null,
+        payload.actorId ?? null,
+        payload.identityId ?? null,
+        payload.runId ?? null,
+        payload.runId ? threadId : null,
+        createdAt,
+        metadataJson.json,
+        messageJson.json,
+      ]);
+    } catch (error) {
+      const jsonbError = createThreadRuntimeJsonbPersistenceError(error, {
+        operation: "appendRuntimeMessage",
+        table: this.tables.messages,
+        fields: [
+          {name: "metadata", nulCount: metadataJson.nulCount},
+          {name: "message", nulCount: messageJson.nulCount},
+        ],
+      });
+      throw jsonbError ?? error;
+    }
 
     await this.touchThread(threadId);
 
