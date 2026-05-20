@@ -85,7 +85,7 @@ export interface RuntimeClient {
   createWorkerSession(options: RuntimeClientWorkerSessionOptions): Promise<RuntimeClientWorkerSessionResult>;
   openMainSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
   resetSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
-  openSession(sessionId: string): Promise<ThreadRecord>;
+  openSession(sessionRef: string, agentKey?: string): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
   resolveThreadRunConfig(threadId: string): Promise<{
     model: string;
@@ -273,13 +273,25 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
     const resetSession = async (
       sessionOptions: RuntimeClientSessionOptions = {},
     ): Promise<ThreadRecord> => {
+      const requestedSessionRef = trimToUndefined(sessionOptions.sessionId);
+      const requestedAgentKey = trimToUndefined(sessionOptions.agentKey);
+      const resolvedSession = requestedSessionRef
+        ? await sessionStore.resolveSessionRef({
+          sessionRef: requestedSessionRef,
+          agentKey: requestedAgentKey,
+        })
+        : null;
+      if (resolvedSession) {
+        await assertIdentityCanAccessAgent(resolvedSession.agentKey);
+      }
+
       const result = await enqueueDaemonRequest<{threadId: string}>({
         kind: "reset_session",
         payload: {
           identityId: identity.id,
           source: "tui",
-          sessionId: trimToUndefined(sessionOptions.sessionId),
-          agentKey: trimToUndefined(sessionOptions.agentKey),
+          sessionId: resolvedSession?.id,
+          agentKey: requestedAgentKey,
           model: sessionOptions.model,
           thinking: sessionOptions.thinking,
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
@@ -288,8 +300,11 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       return store.getThread(result.threadId);
     };
 
-    const openSession = async (sessionId: string): Promise<ThreadRecord> => {
-      const session = await sessionStore.getSession(sessionId);
+    const openSession = async (sessionRef: string, agentKey?: string): Promise<ThreadRecord> => {
+      const session = await sessionStore.resolveSessionRef({
+        sessionRef,
+        agentKey: trimToUndefined(agentKey),
+      });
       await assertIdentityCanAccessAgent(session.agentKey);
       const {threadId} = await resolveCurrentSessionThread(sessionStore, session.id);
       return store.getThread(threadId);

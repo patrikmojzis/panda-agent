@@ -245,6 +245,8 @@ describe("ensureReadonlySessionQuerySchema", () => {
 
     expect(queryable.queries).toHaveLength(2);
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_sessions\"");
+    expect(queryable.queries[0]).toContain("s.alias");
+    expect(queryable.queries[0]).toContain("s.display_name");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"messages_raw\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"messages\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"tool_results\"");

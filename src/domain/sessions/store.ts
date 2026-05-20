@@ -3,18 +3,23 @@ import type {
     CreateSessionInput,
     ListDueSessionHeartbeatsInput,
     RecordSessionHeartbeatResultInput,
+    ResolveSessionRefInput,
     SessionHeartbeatRecord,
     SessionRecord,
     UpdateSessionCurrentThreadInput,
     UpdateSessionHeartbeatConfigInput,
+    UpdateSessionLabelInput,
 } from "./types.js";
 
 export interface SessionStore {
   ensureSchema(): Promise<void>;
   createSession(input: CreateSessionInput): Promise<SessionRecord>;
   getSession(sessionId: string): Promise<SessionRecord>;
+  getSessionByAlias(agentKey: string, alias: string): Promise<SessionRecord | null>;
+  resolveSessionRef(input: ResolveSessionRefInput): Promise<SessionRecord>;
   getMainSession(agentKey: string): Promise<SessionRecord | null>;
   listAgentSessions(agentKey: string): Promise<readonly SessionRecord[]>;
+  updateSessionLabel(input: UpdateSessionLabelInput): Promise<SessionRecord>;
   updateCurrentThread(input: UpdateSessionCurrentThreadInput): Promise<SessionRecord>;
   getHeartbeat(sessionId: string): Promise<SessionHeartbeatRecord | null>;
   listDueHeartbeats(input?: ListDueSessionHeartbeatsInput): Promise<readonly SessionHeartbeatRecord[]>;

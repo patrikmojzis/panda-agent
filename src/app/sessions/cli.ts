@@ -1,9 +1,10 @@
 import process from "node:process";
 
-import {Command} from "commander";
+import {Command, InvalidArgumentError} from "commander";
 import type {Pool} from "pg";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
+import {normalizeAgentKey} from "../../domain/agents/types.js";
 import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {PostgresAgentStore} from "../../domain/agents/postgres.js";
 import {
@@ -17,6 +18,10 @@ import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
 import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY} from "../runtime/daemon.js";
 import {DaemonStateRepo} from "../runtime/state/repo.js";
+
+interface SessionResetCliOptions extends SessionCliOptions {
+  agent?: string;
+}
 
 interface WithSessionResetStores {
   sessionStore: PostgresSessionStore;
@@ -81,6 +86,14 @@ async function waitForRequestResult(
   throw new Error(`Timed out waiting for runtime request ${requestId}.`);
 }
 
+function parseAgentKeyOption(value: string): string {
+  try {
+    return normalizeAgentKey(value);
+  } catch (error) {
+    throw new InvalidArgumentError(error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function requireDaemonOnline(daemonState: DaemonStateRepo): Promise<void> {
   const state = await daemonState.readState(DEFAULT_DAEMON_KEY);
   if (!state || Date.now() - state.heartbeatAt > DAEMON_STALE_AFTER_MS) {
@@ -88,10 +101,13 @@ async function requireDaemonOnline(daemonState: DaemonStateRepo): Promise<void> 
   }
 }
 
-async function resetSessionCommand(sessionId: string, options: SessionCliOptions): Promise<void> {
+async function resetSessionCommand(sessionRef: string, options: SessionResetCliOptions): Promise<void> {
   await withSessionResetStores(options, async ({sessionStore, requests, daemonState}) => {
     await requireDaemonOnline(daemonState);
-    const session = await sessionStore.getSession(sessionId);
+    const session = await sessionStore.resolveSessionRef({
+      sessionRef,
+      agentKey: options.agent,
+    });
     const request = await requests.enqueueRequest({
       kind: "reset_session",
       payload: {
@@ -120,9 +136,10 @@ export function registerSessionCommands(program: Command): void {
   sessionProgram
     .command("reset")
     .description("Reset one session through the daemon")
-    .argument("<sessionId>", "Session id")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
-    .action((sessionId: string, options: SessionCliOptions) => {
-      return resetSessionCommand(sessionId, options);
+    .action((sessionRef: string, options: SessionResetCliOptions) => {
+      return resetSessionCommand(sessionRef, options);
     });
 }

@@ -4,6 +4,7 @@ import {stringToUserMessage, type ThinkingLevel} from "../src/kernel/agent/index
 import {createCompactBoundaryMessage, type ThreadRecord, type ThreadRunRecord} from "../src/domain/threads/runtime/index.js";
 import * as markdown from "../src/ui/tui/markdown.js";
 import {buildChatHelpText} from "../src/ui/tui/chat-commands.js";
+import {buildChatView} from "../src/ui/tui/chat-render.js";
 import {buildChatViewModel, buildWelcomeTranscriptLines} from "../src/ui/tui/chat-view.js";
 import type {ChatRuntimeServices} from "../src/ui/tui/runtime.js";
 import * as tuiRuntime from "../src/ui/tui/runtime.js";
@@ -744,6 +745,67 @@ describe("ChatApp session picker", () => {
     expect(app.switchThread).toHaveBeenCalledWith(selectedThread);
     expect(app.sessionPicker.active).toBe(false);
     expect(app.setNotice).toHaveBeenCalledWith("Opened session session-c.", "info");
+  });
+
+
+  it("renders display names and aliases in the picker without hiding canonical ids", () => {
+    const view = buildChatView({
+      terminalWidth: 120,
+      terminalRows: 30,
+      transcript: [],
+      transcriptLineCache: new Map(),
+      shouldShowSplash: false,
+      model: "openai/gpt-5.1",
+      cwd: "/tmp/panda",
+      sessionPicker: {
+        active: true,
+        loading: false,
+        selected: 0,
+        error: null,
+        sessions: [
+          {
+            id: "display1",
+            agentKey: "panda",
+            kind: "branch" as const,
+            currentThreadId: "thread1",
+            displayName: "Ops Inbox",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          {
+            id: "alias1",
+            agentKey: "panda",
+            kind: "branch" as const,
+            currentThreadId: "thread2",
+            alias: "ops-room",
+            createdAt: 2,
+            updatedAt: 2,
+          },
+        ],
+      },
+      currentSessionId: "display1",
+      currentThreadId: "thread1",
+      pendingLocalInputs: [],
+      composer: createComposerState(),
+      historySearch: {active: false, query: "", selected: 0},
+      transcriptSearch: {active: false, query: "", selected: 0},
+      historyMatchCount: 0,
+      historyPreview: null,
+      notice: null,
+      slashContext: null,
+      slashCompletionIndex: 0,
+      followTranscript: true,
+      scrollTop: 0,
+      isRunning: false,
+      runStartedAt: 0,
+      agentLabel: "Panda",
+      identityHandle: "alice",
+      modeLabel: "sessions",
+    });
+
+    const pickerText = view.composerVisibleLines.map(stripAnsi).join("\n");
+    expect(pickerText).toContain("Ops Inbox · session display1");
+    expect(pickerText).toContain("ops-room · session alias1");
   });
 
   it("keeps the picker open and refreshes when the selected session goes stale", async () => {

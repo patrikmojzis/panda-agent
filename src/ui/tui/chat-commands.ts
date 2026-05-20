@@ -27,7 +27,7 @@ export function buildChatHelpText(thinkingCommandUsage: string): string {
     "/compact [instructions] summarizes older context and keeps recent turns verbatim.",
     "/new starts a fresh branch session.",
     "/reset replaces the current session thread with a fresh empty thread.",
-    "/resume <session-id> opens another stored session.",
+    "/resume <session-id-or-alias> opens another stored session.",
     "/thread shows the current session and thread ids plus active settings.",
     "/sessions opens the session picker for the current agent.",
     "/abort aborts the active run.",

@@ -19,7 +19,7 @@ The current shape is:
 
 - `agents`
 - `agent_pairings`
-- `agent_sessions`
+- `agent_sessions` (`alias` + `display_name` are nullable operator labels)
 - `session_heartbeats`
 - `conversation_sessions`
 - `session_routes`
@@ -51,10 +51,20 @@ Agent bootstrap creates:
 - creates the session row and first thread in one `createSessionWithInitialThread` transaction
 - uses a UUID session id when no ref is supplied
 - uses `${agentKey}:${sessionRef}` when a ref is supplied, after lowercase normalization and conservative ref validation
+- can set nullable `alias` and `display_name` labels via `--alias`/`--display-name` without changing the canonical id
 - relies on the existing `session_heartbeats` row behavior, so branch heartbeat starts disabled
 
-Readable refs are not aliases. There is no alias table, display-name column, or resolver layer.
-The readable string is the stored `agent_sessions.id`, and existing raw session-id commands consume it directly.
+Readable refs are not aliases. The readable string is still the stored `agent_sessions.id`, and existing raw session-id commands consume it directly.
+
+Aliases are a separate operator affordance:
+
+- one nullable `alias` column per session
+- unique per `(agent_key, alias)` when non-null
+- normalized lowercase with `[a-z0-9][a-z0-9_-]*`
+- resolved exact canonical id first, then alias scoped by agent key
+- never stored into conversation bindings, routes, thread context, prompts, outbound messages, or A2A payloads by default
+
+`panda session label` updates or clears `alias`/`display_name`; TUI alias editing is intentionally out of scope.
 
 `/reset`:
 
@@ -81,7 +91,7 @@ For a new external conversation:
 - if the paired identity has exactly one paired agent, Panda can auto-bind to that agent's main session
 - if the identity has multiple paired agents, an operator must bind the conversation explicitly
 
-That explicit bind lives in `panda session bind-conversation`.
+That explicit bind lives in `panda session bind-conversation`; aliases must be resolved to canonical session ids before writing `conversation_sessions`.
 Channel UIs should not invent hidden session-management UX in-band. New direct
 conversations bind to a session; explicit rebinding is an operator/admin action.
 

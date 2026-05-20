@@ -19,7 +19,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "/compact", summary: "Summarize older context", expectsValue: true },
   { name: "/new", summary: "Start a fresh branch session" },
   { name: "/reset", summary: "Reset the current session onto a fresh thread" },
-  { name: "/resume", summary: "Open a stored session", expectsValue: true },
+  { name: "/resume", summary: "Open a stored session id/ref/alias", expectsValue: true },
   { name: "/thread", summary: "Show the current session and thread ids" },
   { name: "/sessions", summary: "Open the current agent's session picker" },
   { name: "/abort", summary: "Abort the active run" },

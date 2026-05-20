@@ -234,6 +234,13 @@ const discordCliMocks = vi.hoisted(() => {
         updatedAt: 2,
       };
     });
+    readonly resolveSessionRef = vi.fn(async (input: {sessionRef: string; agentKey?: string}) => {
+      if (input.sessionRef === "ops-inbox" && input.agentKey === "panda") {
+        return this.getSession("session-canonical");
+      }
+
+      return this.getSession(input.sessionRef);
+    });
 
     constructor(_options: unknown) {
       sessionStoreInstances.push(this);
@@ -1028,6 +1035,35 @@ describe("Discord account CLI", () => {
     const output = collectWrites(write);
     expect(output).toContain("Bound Discord channel channel-1 to session panda:ops-inbox.");
     expect(output).toContain("sessionId panda:ops-inbox");
+  });
+
+
+  it("resolves session aliases when binding Discord channels with an agent scope", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await createProgram().parseAsync([
+      "discord",
+      "bind-channel",
+      "--account",
+      "ops",
+      "--channel",
+      "channel-1",
+      "--session",
+      "ops-inbox",
+      "--agent",
+      "panda",
+      "--db-url",
+      "postgres://discord-db",
+    ], {from: "user"});
+
+    expect(latestSessionStore().resolveSessionRef).toHaveBeenCalledWith({
+      sessionRef: "ops-inbox",
+      agentKey: "panda",
+    });
+    expect(latestConversationRepo().createConversationBinding).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-canonical",
+    }));
+    expect(collectWrites(write)).toContain("Bound Discord channel channel-1 to session session-canonical.");
   });
 
   it("treats same-session Discord channel binds as no-op success", async () => {
