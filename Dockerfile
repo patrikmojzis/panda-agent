@@ -5,6 +5,7 @@ ARG UBUNTU_MIRROR=http://mirrors.digitalocean.com/ubuntu
 
 FROM ubuntu:24.04 AS node-base
 ARG UBUNTU_MIRROR
+ARG NODE_MAJOR=24
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SHELL=/bin/bash
@@ -39,10 +40,11 @@ RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
     gnupg \
     tzdata \
     xz-utils; \
+  case "$NODE_MAJOR" in 20|22|24) ;; *) echo "Unsupported NODE_MAJOR: $NODE_MAJOR" >&2; exit 1 ;; esac; \
   mkdir -p /etc/apt/keyrings; \
   curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg; \
-  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
     > /etc/apt/sources.list.d/nodesource.list; \
   apt_retry apt-get update; \
   apt_retry apt-get install -y --no-install-recommends nodejs; \

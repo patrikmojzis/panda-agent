@@ -15,7 +15,7 @@ import {
     resolveRunnerUrlTemplate,
 } from "./bash-executor.js";
 import {ManagedBashJob} from "./bash-background-job.js";
-import {buildShellProcessEnv} from "./environment.js";
+import {buildShellProcessEnv, SAFE_SHELL} from "./environment.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import type {
     BashJobSnapshot,
@@ -142,7 +142,7 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
   options: StartBashBackgroundJobOptions<TContext>,
 ): Promise<BackgroundToolJobHandle> {
   const processEnv = options.processEnv ?? process.env;
-  const shell = options.shell ?? processEnv.SHELL ?? "/bin/zsh";
+  const shell = options.shell ?? processEnv.SHELL ?? SAFE_SHELL;
   const fetchImpl = options.fetchImpl ?? fetch;
   const mode = options.executionEnvironment?.executionMode ?? resolveBashExecutionMode(processEnv);
 

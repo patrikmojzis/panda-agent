@@ -137,9 +137,9 @@ export function buildWrappedCommand(options: {
 
     for (const key of options.trackedEnvKeys) {
       const quotedKey = shellQuote(key);
-      lines.push(`  if printenv ${quotedKey} >/dev/null 2>&1; then`);
+      lines.push(`  if [ "\${${key}+x}" = "x" ]; then`);
       lines.push(
-        `    printf '%s\\0present\\0%s\\0' ${quotedKey} "$(printenv ${quotedKey})" >> ${shellQuote(options.envStatePath)}`,
+        `    printf '%s\\0present\\0%s\\0' ${quotedKey} "\${${key}}" >> ${shellQuote(options.envStatePath)}`,
       );
       lines.push("  else");
       lines.push(

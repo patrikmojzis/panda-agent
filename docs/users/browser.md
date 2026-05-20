@@ -101,7 +101,7 @@ Build images:
 
 ```bash
 docker build --target app -t panda-app:latest .
-docker build --target runner -t panda-runner:latest .
+docker build --target runner --build-arg NODE_MAJOR="${PANDA_RUNNER_NODE_MAJOR:-22}" -t panda-runner:latest .
 docker build --target browser-runner -t panda-browser-runner:latest .
 ```
 

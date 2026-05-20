@@ -58,6 +58,9 @@ BASH_EXECUTION_MODE=remote
 PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true
 PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=<long-random-secret>
 
+# Build-time default for panda-runner:latest; Node 22 LTS is the safer
+# disposable/browser validation baseline. Override only deliberately.
+PANDA_RUNNER_NODE_MAJOR=22
 PANDA_DISPOSABLE_RUNNER_IMAGE=panda-runner:latest
 PANDA_DISPOSABLE_RUNNER_CWD=/workspace
 PANDA_ENVIRONMENTS_HOST_ROOT=$HOME/.panda/environments
@@ -326,7 +329,9 @@ access; `panda-core` and runners do not.
 The disposable runner image is missing
 
 Run `./scripts/docker-stack.sh up --build` so `panda-runner:latest` is built
-before the manager tries to create disposable runners.
+before the manager tries to create disposable runners. The stack builds the
+runner with `PANDA_RUNNER_NODE_MAJOR=${PANDA_RUNNER_NODE_MAJOR:-22}`; supported
+values are `20`, `22`, and `24`.
 
 The runner never becomes healthy
 
@@ -342,6 +347,14 @@ Core receives a runner URL but cannot connect
 The disposable runner is probably on the wrong network. Check
 `PANDA_DISPOSABLE_RUNNER_NETWORK` and make sure `panda-core` is attached to that
 network.
+
+Vite/Tailwind validation still fails after Node 22 and safe PATH
+
+Treat this as `BLOCKED_RESOURCE` unless the app itself produced a clear product
+failure. The runner now starts commands with safe system PATH entries appended
+and the default stack runner build uses Node 22 LTS, but a ~2GiB host can still
+time out or kill installs, typechecks, Vite builds, or dev servers. Browser
+validators must not claim `PASS` without real DOM/screenshot/network evidence.
 
 Gateway or Caddy can see disposable runners
 

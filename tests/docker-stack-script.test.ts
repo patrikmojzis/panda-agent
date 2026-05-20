@@ -237,7 +237,7 @@ exit 42
     const logContents = await readFile(logPath, "utf8");
     expect(logContents.match(/build --target app -t panda-app:latest/g)).toHaveLength(1);
     expect(logContents.match(/build --target browser-runner -t panda-browser-runner:latest/g)).toHaveLength(1);
-    expect(logContents).not.toContain("build --target runner -t panda-runner:latest");
+    expect(logContents).not.toContain("build --target runner --build-arg NODE_MAJOR=22 -t panda-runner:latest");
     expect(logContents).toContain("up -d --no-build --remove-orphans");
     expect(logContents).not.toContain("up -d --build --remove-orphans");
   });
@@ -290,7 +290,7 @@ exit 42
     expect(generatedCompose).toContain("disposable_runner_net:\n    name: ${PANDA_DISPOSABLE_RUNNER_NETWORK}");
     expect(generatedCompose).not.toContain("gateway_edge_net");
     const logContents = await readFile(logPath, "utf8");
-    expect(logContents.match(/build --target runner -t panda-runner:latest/g)).toHaveLength(1);
+    expect(logContents.match(/build --target runner --build-arg NODE_MAJOR=22 -t panda-runner:latest/g)).toHaveLength(1);
 
     const logsResult = await runScript(["logs", "environment-manager"], {
       envFile,
@@ -444,6 +444,55 @@ exit 42
     expect(generatedCompose).not.toContain("disposable_runner_net");
   });
 
+  it("uses the configured Node major when building runner images", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw",
+      "PANDA_RUNNER_NODE_MAJOR=20",
+    ].join("\n"));
+
+    const result = await runScript(["up", "--build"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents.match(/build --target app -t panda-app:latest/g)).toHaveLength(1);
+    expect(logContents.match(/build --target browser-runner -t panda-browser-runner:latest/g)).toHaveLength(1);
+    expect(logContents.match(/build --target runner --build-arg NODE_MAJOR=20 -t panda-runner:latest/g)).toHaveLength(1);
+  });
+
+  it("rejects unsupported runner Node majors", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw",
+      "PANDA_RUNNER_NODE_MAJOR=19",
+    ].join("\n"));
+
+    const result = await runScript(["up", "--build"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("PANDA_RUNNER_NODE_MAJOR must be one of: 20, 22, 24.");
+    const logContents = await readFile(logPath, "utf8").catch(() => "");
+    expect(logContents).not.toContain("build --target app");
+    expect(logContents).not.toContain("build --target browser-runner");
+    expect(logContents).not.toContain("build --target runner");
+  });
+
   it("builds runner and browser images in parallel before starting compose", async () => {
     const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
     const dockerBin = await createSynchronizedBuildDockerStub(logPath);
@@ -579,7 +628,7 @@ exit 42
     expect(logContents).toContain("compose --env-file");
     expect(logContents.match(/build --target app -t panda-app:latest/g)).toHaveLength(1);
     expect(logContents.match(/build --target browser-runner -t panda-browser-runner:latest/g)).toHaveLength(1);
-    expect(logContents.match(/build --target runner -t panda-runner:latest/g)).toHaveLength(1);
+    expect(logContents.match(/build --target runner --build-arg NODE_MAJOR=22 -t panda-runner:latest/g)).toHaveLength(1);
     expect(logContents).toContain("up -d --no-build --remove-orphans");
     expect(logContents).not.toContain("up -d --build --remove-orphans");
     expect(logContents).toContain("exec -T panda-core panda agent ensure claw");
