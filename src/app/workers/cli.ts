@@ -102,6 +102,10 @@ function formatBytes(bytes: number | undefined): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
 }
 
+function formatExternalFileReferenceCount(count: number | null): string {
+  return count === null ? "not scanned in dry-run" : String(count);
+}
+
 function formatCandidate(candidate: WorkerPurgeCandidate, now: number): string {
   const counts = candidate.dbCounts;
   const lines = [
@@ -116,7 +120,7 @@ function formatCandidate(candidate: WorkerPurgeCandidate, now: number): string {
     `  files: ${candidate.filesystem.status}${candidate.filesystem.reason ? ` (${candidate.filesystem.reason})` : ""}`,
     `  envRootBytes: ${formatBytes(candidate.filesystem.bytes)}`,
     `  dbRows: sessions=${counts.sessions}, threads=${counts.threads}, messages=${counts.messages}, inputs=${counts.inputs}, runs=${counts.runs}, toolJobs=${counts.toolJobs}, bashJobs=${counts.bashJobs}, outbound=${counts.outboundDeliveries}, runtimeRequests=${counts.runtimeRequests}, envBindings=${counts.sessionEnvironmentBindings}, a2aBindings=${counts.a2aSessionBindings}`,
-    `  externalFileRefs: ${candidate.externalFileReferenceCount}`,
+    `  externalFileRefs: ${formatExternalFileReferenceCount(candidate.externalFileReferenceCount)}`,
   ];
   if (candidate.refusedReason) {
     lines.push(`  refused: ${candidate.refusedReason}`);
@@ -174,16 +178,18 @@ async function runWorkerPurgeCommand(options: WorkerPurgeCliOptions): Promise<vo
     const a2a = new A2ASessionBindingRepo({pool});
     const outbound = new PostgresOutboundDeliveryStore({pool});
     const requests = new RuntimeRequestRepo({pool});
-    await ensureSchemas([
-      identityStore,
-      agentStore,
-      sessionStore,
-      threadStore,
-      environmentStore,
-      a2a,
-      outbound,
-      requests,
-    ]);
+    if (input.execute) {
+      await ensureSchemas([
+        identityStore,
+        agentStore,
+        sessionStore,
+        threadStore,
+        environmentStore,
+        a2a,
+        outbound,
+        requests,
+      ]);
+    }
 
     const service = new WorkerPurgeService({
       pool,

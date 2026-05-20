@@ -90,7 +90,7 @@ export interface WorkerPurgeCandidate {
   containerName?: string;
   filesystem: WorkerPurgeFilesystemPlan;
   dbCounts: WorkerPurgeDbCounts;
-  externalFileReferenceCount: number;
+  externalFileReferenceCount: number | null;
   refusedReason?: string;
 }
 
@@ -539,6 +539,19 @@ export class WorkerPurgeService {
           agentKey: row.environment_agent_key,
           environment,
         });
+      const dbCounts = await this.countDbRows({
+        sessionIds,
+        environmentId: environment.id,
+        threadIds,
+      });
+      const externalFileReferenceCount = input.execute
+        ? await this.countExternalFileReferences({
+          sessionIds,
+          environmentId: environment.id,
+          threadIds,
+          environmentRootPath: filesystem.status === "safe" ? filesystem.rootPath : undefined,
+        })
+        : null;
       candidates.push({
         sessionId: sessionIds[0] ?? "",
         sessionIds,
@@ -550,17 +563,8 @@ export class WorkerPurgeService {
         environment,
         ...(readContainerName(environment.metadata) ? {containerName: readContainerName(environment.metadata)} : {}),
         filesystem,
-        dbCounts: await this.countDbRows({
-          sessionIds,
-          environmentId: environment.id,
-          threadIds,
-        }),
-        externalFileReferenceCount: await this.countExternalFileReferences({
-          sessionIds,
-          environmentId: environment.id,
-          threadIds,
-          environmentRootPath: filesystem.status === "safe" ? filesystem.rootPath : undefined,
-        }),
+        dbCounts,
+        externalFileReferenceCount,
         ...(isActiveUnexpiredReady(environment, now) && !input.force
           ? {refusedReason: "active ready worker is not expired; pass --force to purge it"}
           : {}),

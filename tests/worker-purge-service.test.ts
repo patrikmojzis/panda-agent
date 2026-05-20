@@ -301,11 +301,42 @@ describe("WorkerPurgeService", () => {
         sessionEnvironmentBindings: 1,
         runtimeRequests: 1,
       },
-      externalFileReferenceCount: 1,
+      externalFileReferenceCount: null,
     });
     await expect(service.plan({selector: {sessionId: "main-session"}})).rejects.toThrow(
       "No disposable worker environment matched",
     );
+  });
+
+  it("does not scan transcript JSON references while planning dry-run candidates", async () => {
+    const {pool, environmentStore, environmentsRoot, manager} = await createHarness();
+    const service = new WorkerPurgeService({
+      pool: {
+        query: async (queryText: string, values?: readonly unknown[]) => {
+          if (typeof queryText === "string" && queryText.includes("::text LIKE")) {
+            throw new Error("dry-run should not scan JSON/text references");
+          }
+
+          return pool.query(queryText, values);
+        },
+        connect: () => pool.connect(),
+      },
+      environmentStore,
+      manager,
+      env: {
+        PANDA_ENVIRONMENTS_HOST_ROOT: environmentsRoot,
+        PANDA_CORE_ENVIRONMENTS_ROOT: environmentsRoot,
+      } as NodeJS.ProcessEnv,
+    });
+
+    const plan = await service.purge({
+      selector: {
+        stopped: true,
+      },
+    });
+
+    expect(plan.dryRun).toBe(true);
+    expect(plan.candidates[0]?.externalFileReferenceCount).toBeNull();
   });
 
   it("rejects corrupted environment state before planning purge actions", async () => {
@@ -425,6 +456,25 @@ describe("WorkerPurgeService", () => {
       },
     });
     await pool.query(`
+      INSERT INTO "runtime"."runtime_requests" (
+        id,
+        kind,
+        status,
+        payload,
+        result
+      ) VALUES (
+        $1,
+        'a2a_message',
+        'completed',
+        $2::jsonb,
+        $3::jsonb
+      )
+    `, [
+      randomUUID(),
+      JSON.stringify({sessionId: "worker-session"}),
+      JSON.stringify({media: {localPath: path.join(path.dirname(envRoot), "..", "media", "copied.txt")}}),
+    ]);
+    await pool.query(`
       INSERT INTO "runtime"."outbound_deliveries" (
         id,
         thread_id,
@@ -504,6 +554,7 @@ describe("WorkerPurgeService", () => {
     });
 
     expect(plan.dryRun).toBe(false);
+    expect(plan.candidates[0]?.externalFileReferenceCount).toBe(1);
     expect(manager.stopped).toEqual([]);
     await expect(sessionStore.getSession("worker-session")).rejects.toThrow("Unknown session");
     await expect(environmentStore.getEnvironment("worker:worker-session")).rejects.toThrow("Unknown execution environment");
