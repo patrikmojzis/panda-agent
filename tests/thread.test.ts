@@ -264,6 +264,108 @@ describe("Thread", () => {
     });
   });
 
+  it("classifies OpenAI/Codex server errors as retryable provider failures", async () => {
+    const failure = Object.assign(new Error("OpenAI request failed"), {
+      status: 501,
+      requestID: "req_server_123",
+      error: {
+        message: "The server had an error while processing your request.",
+        type: "server_error",
+        code: "server_error",
+      },
+    });
+    const runtime: LlmRuntime = {
+      complete: vi.fn().mockRejectedValue(failure),
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "core",
+        instructions: "Reply briefly",
+      }),
+      model: "openai-codex/gpt-5.4",
+      messages: [stringToUserMessage("hi")],
+      runtime,
+    });
+
+    let caught: unknown;
+    try {
+      for await (const _output of thread.run()) {
+        // Exhaust the generator.
+      }
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ProviderRuntimeError);
+    const error = caught as ProviderRuntimeError;
+    expect(error).toMatchObject({
+      providerName: "openai-codex",
+      modelId: "gpt-5.4",
+      failureKind: "provider_server_error",
+      retryable: true,
+      status: 501,
+      requestId: "req_server_123",
+      providerMessage: "The server had an error while processing your request.",
+    });
+    expect(error.message).toContain("failureKind=provider_server_error");
+    expect(error.message).toContain("retryable=true");
+    expect(error.message).toContain("status=501");
+    expect(error.message).toContain("requestId=req_server_123");
+    expect(error.message).toContain("detail=The server had an error while processing your request.");
+  });
+
+  it("extracts safe detail from raw Codex server_error payloads", async () => {
+    const runtime = createMockRuntime(createAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: JSON.stringify({
+        error: {
+          message: "The server had an error while processing your request. apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321",
+          type: "server_error",
+          code: "server_error",
+        },
+        request_id: "req_payload_123",
+        debug: {
+          prompt: "NEVER_PERSIST_THIS_PROMPT",
+        },
+      }),
+    }));
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "core",
+        instructions: "Reply briefly",
+      }),
+      model: "openai-codex/gpt-5.4",
+      messages: [stringToUserMessage("hi")],
+      runtime,
+    });
+
+    let caught: unknown;
+    try {
+      for await (const _output of thread.run()) {
+        // Exhaust the generator.
+      }
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ProviderRuntimeError);
+    const error = caught as ProviderRuntimeError;
+    expect(error.failureKind).toBe("provider_server_error");
+    expect(error.retryable).toBe(true);
+    expect(error.requestId).toBe("req_payload_123");
+    expect(error.providerMessage).toContain("apiKey=[redacted]");
+    expect(error.providerMessage).not.toContain("sk-abcdefghijklmnopqrstuvwxyz987654321");
+    expect(error.message).toContain("retryable=true");
+    expect(error.message).toContain("requestId=req_payload_123");
+    expect(error.message).not.toContain("NEVER_PERSIST_THIS_PROMPT");
+    expect(error.message).not.toContain('"debug"');
+  });
+
   it("redacts and caps provider failure details", async () => {
     const runtime = createMockRuntime(createAssistantMessage([], {
       stopReason: "error",

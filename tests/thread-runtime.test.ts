@@ -2621,6 +2621,81 @@ describe("ThreadRuntimeCoordinator", () => {
     ]);
   });
 
+  it("marks server_error failures retryable and resumes on same-thread wake", async () => {
+    const serverError = Object.assign(new Error("OpenAI request failed"), {
+      status: 501,
+      requestID: "req_server_resume",
+      error: {
+        message: "The server had an error while processing your request.",
+        type: "server_error",
+        code: "server_error",
+      },
+    });
+    const runtime: LlmRuntime & { complete: ReturnType<typeof vi.fn> } = {
+      complete: vi.fn()
+        .mockRejectedValueOnce(serverError)
+        .mockResolvedValueOnce(message("resumed reply"))
+        .mockResolvedValueOnce(message("resumed wake drain")),
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
+
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("provider-server-error-agent", {
+      agent: new Agent({
+        name: "provider-server-error-agent",
+        instructions: "Reply plainly.",
+      }),
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-provider-server-error",
+      agentKey: "provider-server-error-agent",
+      model: "openai-codex/gpt-5.4",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-provider-server-error", {
+      message: stringToUserMessage("worker handoff"),
+      source: "worker",
+    });
+
+    await expect(coordinator.waitForIdle("thread-provider-server-error")).rejects.toThrow(
+      "failureKind=provider_server_error",
+    );
+
+    let runs = await store.listRuns("thread-provider-server-error");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.error).toContain("failureKind=provider_server_error");
+    expect(runs[0]?.error).toContain("retryable=true");
+    expect(runs[0]?.error).toContain("status=501");
+    expect(runs[0]?.error).toContain("requestId=req_server_resume");
+    expect(runs[0]?.error).toContain("detail=The server had an error while processing your request.");
+
+    await coordinator.wake("thread-provider-server-error");
+    await coordinator.waitForIdle("thread-provider-server-error");
+
+    runs = await store.listRuns("thread-provider-server-error");
+    expect(runs.map((run) => run.status)).toEqual(["failed", "completed"]);
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
+
+    const transcript = await store.loadTranscript("thread-provider-server-error");
+    expect(transcript.filter((entry) => entry.origin === "input" && entry.source === "worker")).toHaveLength(1);
+    expect(transcript.map((entry) => entry.source)).toEqual([
+      "worker",
+      "assistant",
+      "assistant",
+    ]);
+  });
+
   it("fails a timed out complete call without wedging the thread for later inputs", async () => {
     const runtime = new DeferredRuntime();
     runtime.queue(new Promise<AssistantMessage>((_resolve, reject) => {
