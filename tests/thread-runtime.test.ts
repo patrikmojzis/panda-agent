@@ -2557,7 +2557,7 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(run?.error).toContain("crash-tool boom");
   });
 
-  it("fails the run when the provider returns an error stop reason after a tool call", async () => {
+  it("persists contextual provider diagnostics when the provider returns terminated after a tool call", async () => {
     const runtime = createMockRuntime(
       createAssistantMessage([
         {
@@ -2569,7 +2569,7 @@ describe("ThreadRuntimeCoordinator", () => {
       ]),
       createAssistantMessage([], {
         stopReason: "error",
-        errorMessage: "Overloaded",
+        errorMessage: "terminated",
       }),
     );
 
@@ -2586,6 +2586,7 @@ describe("ThreadRuntimeCoordinator", () => {
     await createRuntimeThread(store, {
       id: "thread-provider-error",
       agentKey: "provider-error-agent",
+      model: "openai/gpt-4o-mini",
     });
 
     const coordinator = new ThreadRuntimeCoordinator({
@@ -2599,11 +2600,18 @@ describe("ThreadRuntimeCoordinator", () => {
       source: "telegram",
     });
 
-    await expect(coordinator.waitForIdle("thread-provider-error")).rejects.toThrow("Overloaded");
+    await expect(coordinator.waitForIdle("thread-provider-error")).rejects.toThrow(
+      "failureKind=provider_transport_terminated",
+    );
 
     const [run] = await store.listRuns("thread-provider-error");
     expect(run?.status).toBe("failed");
-    expect(run?.error).toContain("Overloaded");
+    expect(run?.error).toContain("Provider runtime failed");
+    expect(run?.error).toContain("provider=openai");
+    expect(run?.error).toContain("model=gpt-4o-mini");
+    expect(run?.error).toContain("stopReason=error");
+    expect(run?.error).toContain("failureKind=provider_transport_terminated");
+    expect(run?.error).toContain("detail=terminated");
 
     const transcript = await store.loadTranscript("thread-provider-error");
     expect(transcript.map((entry) => entry.source)).toEqual([
@@ -2649,12 +2657,13 @@ describe("ThreadRuntimeCoordinator", () => {
     });
 
     await expect(coordinator.waitForIdle("thread-provider-timeout")).rejects.toThrow(
-      "Provider request timed out after 20ms.",
+      "failureKind=provider_timeout",
     );
 
     let runs = await store.listRuns("thread-provider-timeout");
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.error).toContain("failureKind=provider_timeout");
     expect(runs[0]?.error).toContain("Provider request timed out after 20ms.");
     expect(await store.listRunningRuns()).toEqual([]);
 

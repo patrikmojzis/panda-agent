@@ -6,6 +6,8 @@ export {
   InvalidSchemaResponseError,
   MaxTurnsReachedError,
   ProviderRuntimeError,
+  type ProviderRuntimeFailureKind,
+  type ProviderRuntimeErrorOptions,
   RefusalError,
   StreamingFailedError,
   ToolError,
