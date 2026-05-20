@@ -1,3 +1,5 @@
+import type {PostgresListenSnapshot} from "../../../lib/postgres-listen.js";
+
 export type WhatsAppSocketHealthState = "idle" | "connecting" | "open" | "reconnecting" | "closed" | "stopped";
 
 export interface WhatsAppHealthSnapshot {
@@ -7,6 +9,9 @@ export interface WhatsAppHealthSnapshot {
   initialized: boolean;
   lockHeld: boolean;
   listenersActive: boolean;
+  listenerStatus: PostgresListenSnapshot["status"] | null;
+  listenerLastErrorAt: number | null;
+  listenerLastError: string | null;
   socketState: WhatsAppSocketHealthState;
   socketStateAt: number | null;
   stopping: boolean;
@@ -27,6 +32,7 @@ export class WhatsAppHealthState {
   private initialized = false;
   private lockHeld = false;
   private listenersActive = false;
+  private listenerSnapshot: PostgresListenSnapshot | null = null;
   private socketState: WhatsAppSocketHealthState = "idle";
   private socketStateAt = 0;
 
@@ -40,6 +46,7 @@ export class WhatsAppHealthState {
     this.initialized = false;
     this.lockHeld = false;
     this.listenersActive = false;
+    this.listenerSnapshot = null;
     this.markSocketState("idle");
   }
 
@@ -55,6 +62,11 @@ export class WhatsAppHealthState {
     this.listenersActive = value;
   }
 
+  markListenerSnapshot(snapshot: PostgresListenSnapshot): void {
+    this.listenerSnapshot = snapshot;
+    this.listenersActive = snapshot.listening;
+  }
+
   markSocketState(state: WhatsAppSocketHealthState): void {
     this.socketState = state;
     this.socketStateAt = this.now();
@@ -64,6 +76,13 @@ export class WhatsAppHealthState {
     this.initialized = false;
     this.lockHeld = false;
     this.listenersActive = false;
+    this.listenerSnapshot = this.listenerSnapshot
+      ? {
+        ...this.listenerSnapshot,
+        status: "closed",
+        listening: false,
+      }
+      : null;
     this.markSocketState("stopped");
   }
 
@@ -84,6 +103,9 @@ export class WhatsAppHealthState {
       initialized: this.initialized,
       lockHeld: this.lockHeld,
       listenersActive: this.listenersActive,
+      listenerStatus: this.listenerSnapshot?.status ?? null,
+      listenerLastErrorAt: this.listenerSnapshot?.lastErrorAt ?? null,
+      listenerLastError: this.listenerSnapshot?.lastError ?? null,
       socketState: this.socketState,
       socketStateAt: this.socketStateAt || null,
       stopping,

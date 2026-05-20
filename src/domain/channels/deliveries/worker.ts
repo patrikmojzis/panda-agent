@@ -10,6 +10,8 @@ import type {
 } from "./types.js";
 import {isMatchingChannelNotification} from "../worker-shared.js";
 
+export const DEFAULT_CHANNEL_OUTBOUND_DELIVERY_POLL_INTERVAL_MS = 15_000;
+
 type ChannelOutboundDeliveryWorkerStore = {
   failSendingDeliveries(lookup: DeliveryWorkerLookup, error: string): Promise<number>;
   listenPendingDeliveries?(
@@ -30,6 +32,7 @@ export interface ChannelOutboundDeliveryWorkerOptions {
   connectorKey: string;
   canSend?: () => boolean;
   onError?: (error: unknown, deliveryId?: string) => Promise<void> | void;
+  pollIntervalMs?: number;
 }
 
 function toRequest(delivery: OutboundDeliveryRecord): OutboundRequest {
@@ -64,6 +67,7 @@ export class ChannelOutboundDeliveryWorker {
     this.drainLoop = new DrainLoop({
       label: "Outbound delivery worker drain",
       drain: () => this.drain(),
+      pollIntervalMs: options.pollIntervalMs ?? DEFAULT_CHANNEL_OUTBOUND_DELIVERY_POLL_INTERVAL_MS,
       onError: this.onError ? (error) => this.onError?.(error) : undefined,
     });
   }

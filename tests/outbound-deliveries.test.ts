@@ -108,7 +108,7 @@ describe("PostgresOutboundDeliveryStore", () => {
 
     await expect(store.listenPendingDeliveries(() => {})).rejects.toThrow("listen blew up");
 
-    expect(client.off).toHaveBeenCalledTimes(1);
+    expect(client.off).toHaveBeenCalledTimes(3);
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
@@ -608,6 +608,50 @@ describe("ChannelOutboundDeliveryWorker", () => {
       lastError: "socket unavailable",
       attemptCount: 1,
     });
+  });
+
+  it("polls as a fallback when delivery notifications are not subscribed", async () => {
+    const store = new MemoryDeliveryStore();
+    const send = vi.fn(async (request: OutboundRequest): Promise<OutboundResult> => ({
+      ok: true,
+      channel: request.channel,
+      target: request.target,
+      sent: [{ type: "text", externalMessageId: "101" }],
+    }));
+    const worker = new ChannelOutboundDeliveryWorker({
+      store,
+      adapter: {
+        channel: "telegram",
+        send,
+      },
+      connectorKey: "bot-1",
+      pollIntervalMs: 1,
+    });
+
+    await worker.start({
+      subscribeToNotifications: false,
+    });
+    await store.enqueueDelivery({
+      threadId: "thread-1",
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-1",
+        externalConversationId: "chat-1",
+      },
+      items: [{ type: "text", text: "hello" }],
+    });
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+    await worker.stop();
+
+    expect(store.deliveries[0]).toMatchObject({
+      status: "sent",
+      sent: [{ type: "text", externalMessageId: "101" }],
+    });
+    expect(store.listener).toBeNull();
   });
 
   it("can start without owning the notification subscription", async () => {

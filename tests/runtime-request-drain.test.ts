@@ -53,6 +53,31 @@ describe("RuntimeRequestDrain", () => {
     expect(requests.failRequest).not.toHaveBeenCalled();
   });
 
+  it("polls as a fallback when a request appears after startup without a kick", async () => {
+    const pending: RuntimeRequestRecord[] = [];
+    const requests = {
+      claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
+      completeRequest: vi.fn(async () => undefined),
+      failRequest: vi.fn(async () => undefined),
+    };
+    const drain = new RuntimeRequestDrain({
+      requests,
+      pollIntervalMs: 1,
+      processRequest: vi.fn(async (request) => ({processed: request.id})),
+    });
+
+    drain.start();
+    await waitFor(() => {
+      expect(requests.claimNextPendingRequest).toHaveBeenCalled();
+    });
+    pending.push(requestRecord("late"));
+
+    await waitFor(() => {
+      expect(requests.completeRequest).toHaveBeenCalledWith("late", {processed: "late"});
+    });
+    await drain.stop();
+  });
+
   it("marks failed requests and keeps draining the queue", async () => {
     const pending = [requestRecord("bad"), requestRecord("good")];
     const requests = {

@@ -37,6 +37,51 @@ describe("WhatsApp health state", () => {
     });
   });
 
+  it("derives listener readiness from the Postgres listener snapshot", () => {
+    const health = new WhatsAppHealthState({
+      connectorKey: "main",
+      now: () => 5_000,
+    });
+
+    health.resetForRun();
+    health.markInitialized(true);
+    health.markLockHeld(true);
+    health.markSocketState("open");
+    health.markListenerSnapshot({
+      status: "listening",
+      listening: true,
+      channels: ["runtime_channel_action_events", "runtime_outbound_delivery_events"],
+      lastConnectedAt: 4_000,
+      lastErrorAt: null,
+      lastError: null,
+    });
+
+    expect(health.snapshot(false)).toMatchObject({
+      ok: true,
+      listenersActive: true,
+      listenerStatus: "listening",
+      listenerLastErrorAt: null,
+      listenerLastError: null,
+    });
+
+    health.markListenerSnapshot({
+      status: "reconnecting",
+      listening: false,
+      channels: ["runtime_channel_action_events", "runtime_outbound_delivery_events"],
+      lastConnectedAt: 4_000,
+      lastErrorAt: 4_500,
+      lastError: "listen lost",
+    });
+
+    expect(health.snapshot(false)).toMatchObject({
+      ok: false,
+      listenersActive: false,
+      listenerStatus: "reconnecting",
+      listenerLastErrorAt: 4_500,
+      listenerLastError: "listen lost",
+    });
+  });
+
   it("keeps reconnecting sockets healthy only inside the reconnect grace window", () => {
     let now = 10_000;
     const health = new WhatsAppHealthState({

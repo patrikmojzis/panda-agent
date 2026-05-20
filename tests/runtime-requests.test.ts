@@ -116,7 +116,7 @@ describe("RuntimeRequestRepo", () => {
 
     await expect(repo.listenPendingRequests(() => {})).rejects.toThrow("listen blew up");
 
-    expect(client.off).toHaveBeenCalledTimes(1);
+    expect(client.off).toHaveBeenCalledTimes(3);
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 

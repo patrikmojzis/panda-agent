@@ -3,6 +3,7 @@ import {
   type ChannelOutboundDeliveryWorkerOptions,
 } from "../../domain/channels/deliveries/worker.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
+import type {PostgresListenSnapshot} from "../../lib/postgres-listen.js";
 import {
   startChannelWorkerNotificationListener,
   type PostgresNotificationListenerHandle,
@@ -23,6 +24,7 @@ export interface ConnectorWorkerRuntimeLease {
 
 export interface ConnectorWorkerRuntimeListener {
   close(): Promise<void>;
+  getSnapshot?(): PostgresListenSnapshot;
 }
 
 export interface ConnectorWorkerRuntimeCleanupStep {
@@ -65,7 +67,8 @@ export function startConnectorWorkerNotificationListener(input: {
   actionWorker: ChannelWorkerNotificationListenerOptions["actionWorker"];
   connectorKey: string;
   log: ConnectorWorkerLogger;
-  onListenerFailure?: (error: unknown) => Promise<void> | void;
+  onListenerError?: (error: unknown) => Promise<void> | void;
+  onListenerStateChange?: (snapshot: PostgresListenSnapshot) => Promise<void> | void;
   outboundWorker: ChannelWorkerNotificationListenerOptions["outboundWorker"];
   pool: ChannelWorkerNotificationListenerOptions["pool"];
   source: string;
@@ -81,7 +84,10 @@ export function startConnectorWorkerNotificationListener(input: {
         connectorKey: input.connectorKey,
         message: errorMessage(error),
       });
-      await input.onListenerFailure?.(error);
+      await input.onListenerError?.(error);
+    },
+    onStateChange: async (snapshot) => {
+      await input.onListenerStateChange?.(snapshot);
     },
   });
 }

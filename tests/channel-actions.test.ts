@@ -124,7 +124,7 @@ describe("PostgresChannelActionStore", () => {
 
     await expect(store.listenPendingActions(() => {})).rejects.toThrow("listen blew up");
 
-    expect(client.off).toHaveBeenCalledTimes(1);
+    expect(client.off).toHaveBeenCalledTimes(3);
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
