@@ -18,6 +18,8 @@ vi.mock("../src/integrations/shell/bash-output.js", async () => {
   };
 });
 
+const NUL_PLACEHOLDER = "␀";
+
 describe("ManagedBashJob", () => {
   const directories: string[] = [];
 
@@ -57,5 +59,34 @@ describe("ManagedBashJob", () => {
       throw new Error("Expected stdout to be persisted.");
     }
     await expect(readFile(final.stdoutPath, "utf8")).resolves.toBe("0123456789ABCDEF");
+  });
+
+  it("sanitizes NUL bytes in snapshots while preserving raw persisted output files", async () => {
+    const {ManagedBashJob} = await import("../src/integrations/shell/bash-background-job.js");
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-job-nul-"));
+    directories.push(workspace);
+
+    const job = await ManagedBashJob.start({
+      jobId: "job-nul",
+      command: "printf 'raw\\0preview'",
+      cwd: workspace,
+      childEnv: process.env,
+      shell: process.env.SHELL ?? "/bin/zsh",
+      timeoutMs: 5_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 64,
+      persistOutputThresholdChars: 1,
+      persistOutputFiles: true,
+      outputDirectory: path.join(workspace, "tool-results"),
+    });
+
+    const final = await job.wait(1_000);
+    expect(final.status).toBe("completed");
+    expect(final.stdout).toBe(`raw${NUL_PLACEHOLDER}preview`);
+    expect(JSON.stringify(final)).not.toContain("\\u0000");
+    if (!final.stdoutPath) {
+      throw new Error("Expected stdout to be persisted.");
+    }
+    await expect(readFile(final.stdoutPath)).resolves.toEqual(Buffer.from("raw\0preview", "utf8"));
   });
 });
