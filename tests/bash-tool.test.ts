@@ -936,7 +936,6 @@ describe("BashTool", () => {
       const expectedNested = await realpath(path.join(workspace, "nested"));
       const {bash, status, wait, context} = await createBackgroundHarness(workspace);
 
-      const startedAt = Date.now();
       const first = await bash.run(
         { command: "sleep 0.5 && printf first", background: true },
         createRunContext(context),
@@ -949,11 +948,16 @@ describe("BashTool", () => {
       const firstJobId = String(asObject(first).jobId);
       const secondJobId = String(asObject(second).jobId);
 
-      const stillRunning = await status.run(
+      const firstStillRunning = await status.run(
         { jobId: firstJobId },
         createRunContext(context),
       );
-      expect(asObject(stillRunning).status).toBe("running");
+      const secondStillRunning = await status.run(
+        { jobId: secondJobId },
+        createRunContext(context),
+      );
+      expect(asObject(firstStillRunning).status).toBe("running");
+      expect(asObject(secondStillRunning).status).toBe("running");
 
       await bash.run(
         { command: 'cd nested && export FG_ONLY="ok"' },
@@ -973,7 +977,6 @@ describe("BashTool", () => {
 
       expect(asObject(firstFinished).stdout).toBe("first");
       expect(asObject(secondFinished).stdout).toBe("second");
-      expect(Date.now() - startedAt).toBeLessThan(900);
       expect(context.shell?.cwd).toBe(expectedNested);
       expect(context.shell?.env.FG_ONLY).toBe("ok");
     } finally {
