@@ -21,6 +21,7 @@ export interface ToolArtifactDescriptor {
   kind: "image" | "pdf";
   source: "browser" | "telepathy" | "view_media" | "image_generate";
   path: string;
+  storagePath?: string;
   mimeType: string;
   bytes?: number;
   width?: number;
@@ -69,6 +70,7 @@ export function readToolArtifact(details: JsonValue | undefined): ToolArtifactDe
   }
 
   const artifactBytes = readNonNegativeNumber(artifact.bytes);
+  const storagePath = trimToNull(artifact.storagePath);
   const artifactWidth = readPositiveInteger(artifact.width);
   const artifactHeight = readPositiveInteger(artifact.height);
   const originalPath = trimToNull(artifact.originalPath);
@@ -77,6 +79,7 @@ export function readToolArtifact(details: JsonValue | undefined): ToolArtifactDe
     kind,
     source,
     path,
+    ...(storagePath ? {storagePath} : {}),
     mimeType,
     ...(artifactBytes !== undefined ? {bytes: artifactBytes} : {}),
     ...(artifactWidth !== undefined ? {width: artifactWidth} : {}),
@@ -138,7 +141,7 @@ export async function rehydrateToolArtifactMessage(
   }
 
   const imageSource = artifact.kind === "image"
-    ? {path: artifact.path, mimeType: artifact.mimeType}
+    ? {path: artifact.storagePath ?? artifact.path, mimeType: artifact.mimeType}
     : artifact.preview
       ? {path: artifact.preview.path, mimeType: artifact.preview.mimeType}
       : null;

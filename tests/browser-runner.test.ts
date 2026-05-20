@@ -478,9 +478,159 @@ describe("browser runner transport", () => {
       data: imageBase64,
     });
     const screenshotPath = String((result.details as Record<string, unknown>).path);
+    const artifact = (result.details as {artifact: Record<string, unknown>}).artifact;
     expect(screenshotPath).toContain(path.join("agents", "panda", "media", "browser", "thread-1"));
+    expect(artifact.storagePath).toBeUndefined();
     expect((result.content[0] as {type: string; text: string}).text).toContain(screenshotPath);
     await expect(readFile(screenshotPath, "utf8")).resolves.toContain("fake-image");
+  });
+
+  it("copies bound worker screenshot and PDF artifacts into shared artifact paths", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-client-worker-"));
+    tempDirs.push(tempDir);
+    const imageBase64 = Buffer.from("fake-image").toString("base64");
+    const pdfBase64 = Buffer.from("%PDF-test").toString("base64");
+    const environmentRoot = path.join(tempDir, "worker-env");
+    const artifactsCorePath = path.join(environmentRoot, "artifacts");
+    const responses: unknown[] = [
+      {
+        ok: true,
+        text: "Browser screenshot saved to /runner/shot.png",
+        details: {
+          action: "screenshot",
+          path: "/runner/shot.png",
+          artifact: {
+            kind: "image",
+            source: "browser",
+            path: "/runner/shot.png",
+            mimeType: "image/png",
+            bytes: 10,
+          },
+        },
+        artifact: {
+          kind: "image",
+          mimeType: "image/png",
+          data: imageBase64,
+          bytes: 10,
+          path: "/runner/shot.png",
+        },
+      },
+      {
+        ok: true,
+        text: "Browser PDF saved to /runner/report.pdf",
+        details: {
+          action: "pdf",
+          path: "/runner/report.pdf",
+          artifact: {
+            kind: "pdf",
+            source: "browser",
+            path: "/runner/report.pdf",
+            mimeType: "application/pdf",
+            bytes: 9,
+          },
+        },
+        artifact: {
+          kind: "pdf",
+          mimeType: "application/pdf",
+          data: pdfBase64,
+          bytes: 9,
+          path: "/runner/report.pdf",
+        },
+      },
+    ];
+    const client = new BrowserRunnerClient({
+      runnerUrl: "http://runner.internal",
+      sharedSecret: "secret-123",
+      dataDir: tempDir,
+      fetchImpl: vi.fn(async () => {
+        const payload = responses.shift();
+        if (!payload) {
+          throw new Error("Unexpected browser runner request.");
+        }
+
+        return new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: {"content-type": "application/json"},
+        });
+      }) as typeof fetch,
+    });
+
+    const workerContext: DefaultAgentSessionContext = {
+      agentKey: "panda",
+      sessionId: "worker-session-1",
+      threadId: "worker-thread-1",
+      cwd: "/workspace",
+      executionEnvironment: {
+        id: "env-1",
+        agentKey: "panda",
+        kind: "disposable_container",
+        state: "ready",
+        executionMode: "remote",
+        metadata: {
+          filesystem: {
+            envDir: "worker-a",
+            root: {
+              corePath: environmentRoot,
+              parentRunnerPath: "/environments/worker-a",
+            },
+            workspace: {
+              corePath: path.join(environmentRoot, "workspace"),
+              workerPath: "/workspace",
+              parentRunnerPath: "/environments/worker-a/workspace",
+            },
+            inbox: {
+              corePath: path.join(environmentRoot, "inbox"),
+              workerPath: "/inbox",
+              parentRunnerPath: "/environments/worker-a/inbox",
+            },
+            artifacts: {
+              corePath: artifactsCorePath,
+              workerPath: "/artifacts",
+              parentRunnerPath: "/environments/worker-a/artifacts",
+            },
+          },
+        },
+        credentialPolicy: {mode: "allowlist", envKeys: []},
+        skillPolicy: {mode: "allowlist", skillKeys: []},
+        toolPolicy: {},
+        source: "binding",
+      },
+    };
+
+    const screenshot = await client.handle(
+      {action: "screenshot", fullPage: true},
+      createRunContext(workerContext),
+    );
+    const pdf = await client.handle(
+      {action: "pdf"},
+      createRunContext(workerContext),
+    );
+
+    const screenshotDetails = screenshot.details as Record<string, unknown> & {artifact: Record<string, unknown>};
+    const screenshotPath = String(screenshotDetails.path);
+    const screenshotStoragePath = String(screenshotDetails.artifact.storagePath);
+    expect(screenshotPath).toMatch(/^\/artifacts\/media\/browser\/worker-thread-1\/.+\.png$/);
+    expect(screenshotDetails.artifact.path).toBe(screenshotPath);
+    expect(screenshotStoragePath).toContain(path.join(artifactsCorePath, "media", "browser", "worker-thread-1"));
+    expect(screenshotStoragePath).not.toBe(screenshotPath);
+    expect(Object.prototype.hasOwnProperty.call(screenshotDetails, "storagePath")).toBe(false);
+    expect((screenshot.content[0] as {type: string; text: string}).text).toContain(screenshotPath);
+    expect((screenshot.content[0] as {type: string; text: string}).text).not.toContain(artifactsCorePath);
+    expect((screenshot.content[0] as {type: string; text: string}).text).not.toContain("storagePath");
+    await expect(readFile(screenshotStoragePath, "utf8")).resolves.toContain("fake-image");
+
+    const pdfDetails = pdf.details as Record<string, unknown> & {artifact: Record<string, unknown>};
+    const pdfPath = String(pdfDetails.path);
+    const pdfStoragePath = String(pdfDetails.artifact.storagePath);
+    expect(pdfPath).toMatch(/^\/artifacts\/media\/browser\/worker-thread-1\/.+\.pdf$/);
+    expect(pdfDetails.artifact.path).toBe(pdfPath);
+    expect(pdfStoragePath).toContain(path.join(artifactsCorePath, "media", "browser", "worker-thread-1"));
+    expect(pdfStoragePath).not.toBe(pdfPath);
+    expect(Object.prototype.hasOwnProperty.call(pdfDetails, "storagePath")).toBe(false);
+    expect((pdf.content[0] as {type: string; text: string}).text).toContain(pdfPath);
+    expect((pdf.content[0] as {type: string; text: string}).text).not.toContain(artifactsCorePath);
+    expect((pdf.content[0] as {type: string; text: string}).text).not.toContain("storagePath");
+    await expect(readFile(pdfStoragePath, "utf8")).resolves.toContain("%PDF-test");
   });
 
   it("rejects missing and wrong bearer tokens at the runner boundary", async () => {
