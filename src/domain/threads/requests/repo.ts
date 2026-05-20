@@ -3,7 +3,7 @@ import {randomUUID} from "node:crypto";
 
 import {isJsonObject, isJsonValue, type JsonObject, type JsonValue} from "../../../lib/json.js";
 import {optionalTrimmedString, requireNonEmptyString} from "../../../lib/strings.js";
-import {listenPostgresChannel} from "../../../lib/postgres-listen.js";
+import {listenPostgresChannel, type PostgresListenSnapshot} from "../../../lib/postgres-listen.js";
 import type {PgListenClient, PgPoolLike} from "../../../lib/postgres-query.js";
 import {
     buildRuntimeRequestTableNames,
@@ -762,7 +762,13 @@ export class RuntimeRequestRepo {
     return parseRecord(row as Record<string, unknown>);
   }
 
-  async listenPendingRequests(listener: () => Promise<void> | void): Promise<() => Promise<void>> {
+  async listenPendingRequests(
+    listener: () => Promise<void> | void,
+    options: {
+      onError?: (error: unknown) => Promise<void> | void;
+      onStateChange?: (snapshot: PostgresListenSnapshot) => Promise<void> | void;
+    } = {},
+  ): Promise<() => Promise<void>> {
     return listenPostgresChannel({
       pool: this.notificationPool,
       channel: this.notificationChannel,
@@ -771,6 +777,8 @@ export class RuntimeRequestRepo {
       listener: async () => {
         await listener();
       },
+      onError: options.onError,
+      onStateChange: options.onStateChange,
     });
   }
 }

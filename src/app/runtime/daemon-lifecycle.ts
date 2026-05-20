@@ -17,6 +17,7 @@ import {
     resolveOptionalAgentAppServerBinding,
 } from "../../integrations/apps/http-config.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
+import type {PostgresListenSnapshot} from "../../lib/postgres-listen.js";
 import {readPositiveIntegerEnv} from "./database.js";
 import {DAEMON_HEARTBEAT_INTERVAL_MS, type DaemonServices} from "./daemon-shared.js";
 import {RuntimeRequestDrain, type RuntimeRequestDrainStore} from "./request-drain.js";
@@ -32,7 +33,13 @@ interface StartStopService {
 }
 
 interface DaemonLifecycleRequests extends RuntimeRequestDrainStore {
-  listenPendingRequests(onRequest: () => void): Promise<() => Promise<void>>;
+  listenPendingRequests(
+    onRequest: () => void,
+    options?: {
+      onError?: (error: unknown) => Promise<void> | void;
+      onStateChange?: (snapshot: PostgresListenSnapshot) => Promise<void> | void;
+    },
+  ): Promise<() => Promise<void>>;
 }
 
 export interface DaemonLifecycleRuntime {
@@ -78,6 +85,8 @@ export function createDaemonLifecycle(input: {
   let stopPromise: Promise<void> | null = null;
   let queryPoolWaitingSince: number | null = null;
   let wakeRunLoop: (() => void) | null = null;
+  let requestListenerStarted = false;
+  let requestListenerSnapshot: PostgresListenSnapshot | null = null;
   const queryPoolWaitingStaleAfterMs = readPositiveIntegerEnv(
     "PANDA_CORE_HEALTH_POOL_WAITING_STALE_MS",
     DAEMON_HEALTH_POOL_WAITING_STALE_AFTER_MS,
@@ -112,6 +121,15 @@ export function createDaemonLifecycle(input: {
     shuttingDown = true;
     stopped = true;
     running = false;
+    if (requestListenerStarted) {
+      requestListenerSnapshot = requestListenerSnapshot
+        ? {
+          ...requestListenerSnapshot,
+          status: "closed",
+          listening: false,
+        }
+        : null;
+    }
     wakeRunLoop?.();
     wakeRunLoop = null;
     stopPromise = (async () => {
@@ -274,6 +292,8 @@ export function createDaemonLifecycle(input: {
       stopped = false;
       shuttingDown = false;
       stopPromise = null;
+      requestListenerStarted = false;
+      requestListenerSnapshot = null;
       try {
         await acquireLease();
         healthServer = await (async () => {
@@ -290,12 +310,14 @@ export function createDaemonLifecycle(input: {
             getSnapshot: () => {
               const queryPool = getQueryPoolHealth();
               const heartbeatAgeMs = lastHeartbeatAt ? Date.now() - lastHeartbeatAt : null;
+              const requestListenerActive = requestListenerSnapshot?.listening ?? false;
               return {
                 ok: running
                   && !shuttingDown
                   && heartbeatAgeMs !== null
                   && heartbeatAgeMs <= DAEMON_HEALTH_STALE_AFTER_MS
-                  && queryPool.ok,
+                  && queryPool.ok
+                  && (!requestListenerStarted || requestListenerActive),
                 daemonKey: input.context.daemonKey,
                 running,
                 shuttingDown,
@@ -303,6 +325,10 @@ export function createDaemonLifecycle(input: {
                 heartbeatAgeMs,
                 queryPoolWaitingCount: queryPool.waitingCount,
                 queryPoolWaitingForMs: queryPool.waitingForMs,
+                requestListenerStatus: requestListenerSnapshot?.status ?? null,
+                requestListenerActive,
+                requestListenerLastErrorAt: requestListenerSnapshot?.lastErrorAt ?? null,
+                requestListenerLastError: requestListenerSnapshot?.lastError ?? null,
               };
             },
           });
@@ -337,7 +363,26 @@ export function createDaemonLifecycle(input: {
         }, DAEMON_HEARTBEAT_INTERVAL_MS);
         requestUnsubscribe = await input.context.requests.listenPendingRequests(() => {
           requestDrain.kick();
+        }, {
+          onStateChange: (snapshot) => {
+            requestListenerSnapshot = snapshot;
+          },
+          onError: (error) => {
+            console.error("Daemon request listener failed", {
+              daemonKey: input.context.daemonKey,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
         });
+        requestListenerStarted = true;
+        requestListenerSnapshot ??= {
+          status: "listening",
+          listening: true,
+          channels: [],
+          lastConnectedAt: Date.now(),
+          lastErrorAt: null,
+          lastError: null,
+        };
         const recoveredAt = Date.now();
         await input.context.runtime.coordinator.recoverOrphanedRuns(formatOrphanedRunRecoveryReason({
           recoveryTrigger: "daemon_startup_or_restart",

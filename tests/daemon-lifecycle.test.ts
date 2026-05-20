@@ -776,4 +776,104 @@ describe("createDaemonLifecycle", () => {
       }
     }
   });
+
+  it("includes request listener state in health and marks reconnecting listeners unhealthy", async () => {
+    const previousAppsPort = process.env.PANDA_APPS_PORT;
+    const previousHealthPort = process.env.PANDA_CORE_HEALTH_PORT;
+    process.env.PANDA_APPS_PORT = "0";
+    process.env.PANDA_CORE_HEALTH_PORT = String(await getFreePort());
+
+    let resolveRecovered!: () => void;
+    const recovered = new Promise<void>((resolve) => {
+      resolveRecovered = resolve;
+    });
+    let updateListenerState: ((snapshot: {
+      status: "listening" | "reconnecting" | "closed";
+      listening: boolean;
+      channels: readonly string[];
+      lastConnectedAt: number | null;
+      lastErrorAt: number | null;
+      lastError: string | null;
+    }) => void) | undefined;
+    const context = createDaemonLifecycleContext({
+      daemonKey: "primary",
+      requests: {
+        claimNextPendingRequest: vi.fn(async () => null),
+        listenPendingRequests: vi.fn(async (_onRequest, options) => {
+          updateListenerState = options?.onStateChange;
+          updateListenerState?.({
+            status: "listening",
+            listening: true,
+            channels: ["runtime_request_events"],
+            lastConnectedAt: Date.now(),
+            lastErrorAt: null,
+            lastError: null,
+          });
+          return async () => undefined;
+        }),
+      },
+      runtime: {
+        close: vi.fn(async () => {}),
+        pool: {waitingCount: 0},
+        coordinator: {
+          recoverOrphanedRuns: vi.fn(async () => {
+            resolveRecovered();
+          }),
+        },
+      },
+    });
+    const lifecycle = createDaemonLifecycle({
+      context,
+      processRequest: vi.fn(async () => undefined),
+    });
+    const runPromise = lifecycle.run();
+
+    try {
+      await recovered;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const healthy = await fetch(`http://127.0.0.1:${process.env.PANDA_CORE_HEALTH_PORT}/health`);
+      expect(healthy.status).toBe(200);
+      await expect(healthy.json()).resolves.toMatchObject({
+        ok: true,
+        requestListenerStatus: "listening",
+        requestListenerActive: true,
+        requestListenerLastErrorAt: null,
+        requestListenerLastError: null,
+      });
+
+      updateListenerState?.({
+        status: "reconnecting",
+        listening: false,
+        channels: ["runtime_request_events"],
+        lastConnectedAt: Date.now() - 1_000,
+        lastErrorAt: 123,
+        lastError: "listen lost",
+      });
+
+      const unhealthy = await fetch(`http://127.0.0.1:${process.env.PANDA_CORE_HEALTH_PORT}/health`);
+      expect(unhealthy.status).toBe(503);
+      await expect(unhealthy.json()).resolves.toMatchObject({
+        ok: false,
+        requestListenerStatus: "reconnecting",
+        requestListenerActive: false,
+        requestListenerLastErrorAt: 123,
+        requestListenerLastError: "listen lost",
+      });
+    } finally {
+      await lifecycle.stop();
+      await runPromise;
+      if (previousAppsPort === undefined) {
+        delete process.env.PANDA_APPS_PORT;
+      } else {
+        process.env.PANDA_APPS_PORT = previousAppsPort;
+      }
+      if (previousHealthPort === undefined) {
+        delete process.env.PANDA_CORE_HEALTH_PORT;
+      } else {
+        process.env.PANDA_CORE_HEALTH_PORT = previousHealthPort;
+      }
+    }
+  });
+
 });

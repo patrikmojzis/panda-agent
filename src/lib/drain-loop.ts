@@ -43,6 +43,7 @@ export class DrainLoop {
       this.timer = setInterval(() => {
         this.kick();
       }, this.pollIntervalMs);
+      this.timer.unref?.();
     }
     this.kick();
   }

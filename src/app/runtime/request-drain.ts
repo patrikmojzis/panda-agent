@@ -1,6 +1,8 @@
 import type {RuntimeRequestRecord} from "../../domain/threads/requests/types.js";
 import {DrainLoop} from "../../lib/drain-loop.js";
 
+export const DEFAULT_RUNTIME_REQUEST_DRAIN_POLL_INTERVAL_MS = 15_000;
+
 export interface RuntimeRequestDrainStore {
   claimNextPendingRequest(): Promise<RuntimeRequestRecord | null>;
   completeRequest(id: string, result?: unknown): Promise<unknown>;
@@ -12,6 +14,7 @@ interface RuntimeRequestDrainOptions {
   processRequest(request: RuntimeRequestRecord): Promise<unknown>;
   label?: string;
   onError?: (error: unknown) => Promise<void> | void;
+  pollIntervalMs?: number;
 }
 
 /**
@@ -28,6 +31,7 @@ export class RuntimeRequestDrain {
     this.loop = new DrainLoop({
       label: options.label ?? "runtime request drain",
       drain: () => this.drain(),
+      pollIntervalMs: options.pollIntervalMs ?? DEFAULT_RUNTIME_REQUEST_DRAIN_POLL_INTERVAL_MS,
       onError: options.onError,
     });
   }

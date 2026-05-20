@@ -30,6 +30,7 @@ import {createTelegramTypingAdapter} from "./typing.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {sleep} from "../../../lib/async.js";
+import type {PostgresListenSnapshot} from "../../../lib/postgres-listen.js";
 import {
   createConnectorOutboundWorker,
   startConnectorWorkerRuntime,
@@ -90,6 +91,7 @@ export class TelegramService {
   private healthInitialized = false;
   private healthLockHeld = false;
   private healthListenersActive = false;
+  private healthListenerSnapshot: PostgresListenSnapshot | null = null;
   private lastPollActivityAt = 0;
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
@@ -291,9 +293,9 @@ export class TelegramService {
       actionWorker: workers.actionWorker,
       outboundWorker: workers.outboundWorker,
       log: (event, payload) => this.log(event, payload),
-      onListenerFailure: async () => {
-        this.healthListenersActive = false;
-        await this.stop();
+      onListenerStateChange: (snapshot) => {
+        this.healthListenerSnapshot = snapshot;
+        this.healthListenersActive = snapshot.listening;
       },
     });
   }
@@ -354,6 +356,7 @@ export class TelegramService {
   async run(): Promise<void> {
     this.stopping = false;
     this.stopPromise = null;
+    this.healthListenerSnapshot = null;
 
     try {
       const {stores, connectorKey, botUsername} = await this.ensureInitialized();
@@ -378,6 +381,9 @@ export class TelegramService {
             initialized: this.healthInitialized,
             lockHeld: this.healthLockHeld,
             listenersActive: this.healthListenersActive,
+            listenerStatus: this.healthListenerSnapshot?.status ?? null,
+            listenerLastErrorAt: this.healthListenerSnapshot?.lastErrorAt ?? null,
+            listenerLastError: this.healthListenerSnapshot?.lastError ?? null,
             stopping: this.stopping,
             lastPollActivityAt: this.lastPollActivityAt || null,
           }),
@@ -403,7 +409,8 @@ export class TelegramService {
         },
       });
       this.healthLockHeld = true;
-      this.healthListenersActive = true;
+      this.healthListenerSnapshot = this.workerRuntime.notificationListener?.getSnapshot?.() ?? this.healthListenerSnapshot;
+      this.healthListenersActive = this.healthListenerSnapshot?.listening ?? true;
       await this.bot.api.setMyCommands([
         {command: "start", description: "Pair this Telegram account with Panda"},
         {command: "reset", description: "Reset Panda to a fresh empty session"},
@@ -494,6 +501,13 @@ export class TelegramService {
 
     this.stopping = true;
     this.healthListenersActive = false;
+    this.healthListenerSnapshot = this.healthListenerSnapshot
+      ? {
+        ...this.healthListenerSnapshot,
+        status: "closed",
+        listening: false,
+      }
+      : null;
     this.healthLockHeld = false;
     this.healthInitialized = false;
     this.pollAbortController?.abort();

@@ -92,9 +92,10 @@ describe("connector worker runtime", () => {
     });
   });
 
-  it("logs notification listener failures before running connector recovery", async () => {
+  it("logs notification listener errors and reports reconnecting state without connector recovery", async () => {
     const log = vi.fn();
-    const onListenerFailure = vi.fn();
+    const onListenerError = vi.fn();
+    const onListenerStateChange = vi.fn();
     const client = new EventEmitter() as EventEmitter & {
       query: ReturnType<typeof vi.fn>;
       release: ReturnType<typeof vi.fn>;
@@ -117,7 +118,8 @@ describe("connector worker runtime", () => {
         triggerDrain: vi.fn(),
       },
       log,
-      onListenerFailure,
+      onListenerError,
+      onListenerStateChange,
     });
 
     client.emit("error", new Error("listen failed"));
@@ -128,8 +130,13 @@ describe("connector worker runtime", () => {
       connectorKey: "telegram-bot",
       message: "listen failed",
     });
-    expect(onListenerFailure).toHaveBeenCalledWith(expect.objectContaining({
+    expect(onListenerError).toHaveBeenCalledWith(expect.objectContaining({
       message: "listen failed",
+    }));
+    expect(onListenerStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      status: "reconnecting",
+      listening: false,
+      lastError: "listen failed",
     }));
   });
 

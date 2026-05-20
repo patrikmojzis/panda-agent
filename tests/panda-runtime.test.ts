@@ -165,7 +165,7 @@ describe("createRuntime", () => {
       resolveDefinition: vi.fn(),
     })).rejects.toThrow("listen blew up");
 
-    expect(runtimeMocks.client.off).toHaveBeenCalledTimes(1);
+    expect(runtimeMocks.client.off).toHaveBeenCalledTimes(3);
     expect(runtimeMocks.client.release).toHaveBeenCalledTimes(1);
     expect(runtimeMocks.poolInstances).toHaveLength(3);
     expect(runtimeMocks.poolInstances.map((pool) => pool.end.mock.calls.length)).toEqual([1, 1, 1]);

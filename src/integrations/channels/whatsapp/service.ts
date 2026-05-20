@@ -336,9 +336,8 @@ export class WhatsAppService {
       actionWorker: workers.actionWorker,
       outboundWorker: workers.outboundWorker,
       log: (event, payload) => this.log(event, payload),
-      onListenerFailure: async () => {
-        this.healthState.markListenersActive(false);
-        await this.stop();
+      onListenerStateChange: (snapshot) => {
+        this.healthState.markListenerSnapshot(snapshot);
       },
     });
   }
@@ -473,7 +472,12 @@ export class WhatsAppService {
         },
       });
       this.healthState.markLockHeld(true);
-      this.healthState.markListenersActive(true);
+      const listenerSnapshot = this.workerRuntime.notificationListener?.getSnapshot?.();
+      if (listenerSnapshot) {
+        this.healthState.markListenerSnapshot(listenerSnapshot);
+      } else {
+        this.healthState.markListenersActive(true);
+      }
       this.log("run_started", {
         connectorKey: this.options.connectorKey,
         accountId: identity.accountId,
