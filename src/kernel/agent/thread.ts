@@ -185,32 +185,15 @@ function sanitizeProviderErrorDetail(value: string, stopReason?: string): string
   return truncateProviderErrorDetail(redactProviderErrorDetail(normalized));
 }
 
-function classifyProviderRuntimeFailure(input: {
-  message: string;
-  stopReason?: string;
-  signal?: AbortSignal;
-}): ProviderRuntimeFailureKind {
-  const message = input.message.toLowerCase();
+const PROVIDER_SERVER_ERROR_STATUSES = new Set([500, 501, 502, 503, 504]);
 
-  if (input.stopReason === "aborted"
-    || input.signal?.aborted
-    || /\b(abort(?:ed)?|cancelled|canceled|aborterror)\b/.test(message)) {
-    return "provider_abort";
-  }
-
-  if (/\b(timed out|timeout|etimedout|und_err_connect_timeout)\b/.test(message)) {
-    return "provider_timeout";
-  }
-
-  if (/(^|\s)terminated(\s|$|\.)/.test(message)) {
-    return "provider_transport_terminated";
-  }
-
-  if (/\b(fetch failed|socket|econnreset|econnrefused|enotfound|epipe|network|connection reset|connection closed|connection aborted|und_err_socket)\b/.test(message)) {
-    return "provider_transport_network";
-  }
-
-  return "provider_error";
+interface ProviderFailureDetails {
+  rawMessage: string;
+  providerMessage: string;
+  status?: number;
+  requestId?: string;
+  providerCode?: string;
+  providerType?: string;
 }
 
 function readErrorStringField(error: unknown, keys: readonly string[]): string | undefined {
@@ -243,6 +226,165 @@ function readErrorNumberField(error: unknown, keys: readonly string[]): number |
   return undefined;
 }
 
+function readErrorStringFieldFromSources(
+  sources: readonly unknown[],
+  keys: readonly string[],
+): string | undefined {
+  for (const source of sources) {
+    const value = readErrorStringField(source, keys);
+    if (value) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function readErrorNumberFieldFromSources(
+  sources: readonly unknown[],
+  keys: readonly string[],
+): number | undefined {
+  for (const source of sources) {
+    const value = readErrorNumberField(source, keys);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function readNestedProviderError(error: unknown): unknown {
+  if (!isRecord(error)) {
+    return undefined;
+  }
+
+  return isRecord(error.error) ? error.error : undefined;
+}
+
+function parseProviderErrorJson(rawMessage: string): unknown {
+  const trimmed = rawMessage.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const candidates = [trimmed];
+  const objectStart = trimmed.indexOf("{");
+  const objectEnd = trimmed.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    candidates.push(trimmed.slice(objectStart, objectEnd + 1));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (isRecord(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // Provider messages are often plain text. Ignore non-JSON details.
+    }
+  }
+
+  return undefined;
+}
+
+function buildProviderFailureDetails(
+  error: unknown,
+  stopReason?: string,
+): ProviderFailureDetails {
+  const rawMessage = typeof error === "string"
+    ? error
+    : stringifyUnknown(error, { preferErrorMessage: true });
+  const parsedError = parseProviderErrorJson(rawMessage);
+  const nestedError = readNestedProviderError(error);
+  const nestedParsedError = readNestedProviderError(parsedError);
+  const messageSources = [
+    nestedError,
+    nestedParsedError,
+    error,
+    parsedError,
+  ];
+  const metadataSources = [
+    error,
+    parsedError,
+    nestedError,
+    nestedParsedError,
+  ];
+
+  return {
+    rawMessage,
+    providerMessage: sanitizeProviderErrorDetail(
+      readErrorStringFieldFromSources(messageSources, ["message"]) ?? rawMessage,
+      stopReason,
+    ),
+    status: readErrorNumberFieldFromSources(metadataSources, ["status", "statusCode"]),
+    requestId: readErrorStringFieldFromSources(metadataSources, ["requestID", "requestId", "request_id"]),
+    providerCode: readErrorStringFieldFromSources(messageSources, ["code"]),
+    providerType: readErrorStringFieldFromSources(messageSources, ["type"]),
+  };
+}
+
+function hasProviderServerErrorSignal(input: {
+  message: string;
+  status?: number;
+  providerCode?: string;
+  providerType?: string;
+}): boolean {
+  const status = input.status === undefined ? undefined : Math.trunc(input.status);
+  if (status !== undefined && PROVIDER_SERVER_ERROR_STATUSES.has(status)) {
+    return true;
+  }
+
+  const text = [input.message, input.providerCode, input.providerType]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(" ")
+    .toLowerCase();
+
+  return /(^|[^a-z0-9])(?:internal[_-])?server[_-]error([^a-z0-9]|$)/.test(text)
+    || /\binternal[\s_-]+server[\s_-]+error\b/.test(text)
+    || /\bserver\s+(?:had|encountered)\s+an\s+error\b/.test(text);
+}
+
+function classifyProviderRuntimeFailure(input: {
+  message: string;
+  stopReason?: string;
+  signal?: AbortSignal;
+  status?: number;
+  providerCode?: string;
+  providerType?: string;
+}): ProviderRuntimeFailureKind {
+  const message = input.message.toLowerCase();
+
+  if (input.stopReason === "aborted"
+    || input.signal?.aborted
+    || /\b(abort(?:ed)?|cancelled|canceled|aborterror)\b/.test(message)) {
+    return "provider_abort";
+  }
+
+  if (hasProviderServerErrorSignal(input)) {
+    return "provider_server_error";
+  }
+
+  if (/\b(timed out|timeout|etimedout|und_err_connect_timeout)\b/.test(message)) {
+    return "provider_timeout";
+  }
+
+  if (/(^|\s)terminated(\s|$|\.)/.test(message)) {
+    return "provider_transport_terminated";
+  }
+
+  if (/\b(fetch failed|socket|econnreset|econnrefused|enotfound|epipe|network|connection reset|connection closed|connection aborted|und_err_socket)\b/.test(message)) {
+    return "provider_transport_network";
+  }
+
+  return "provider_error";
+}
+
+function isRetryableProviderRuntimeFailure(failureKind: ProviderRuntimeFailureKind): boolean {
+  return failureKind === "provider_server_error";
+}
+
 function formatProviderRuntimeErrorMessage(input: {
   request: LlmRuntimeRequest;
   stopReason?: string;
@@ -250,6 +392,7 @@ function formatProviderRuntimeErrorMessage(input: {
   providerMessage: string;
   status?: number;
   requestId?: string;
+  retryable?: boolean;
 }): string {
   const parts = [
     "Provider runtime failed",
@@ -257,6 +400,7 @@ function formatProviderRuntimeErrorMessage(input: {
     `model=${input.request.modelId}`,
     ...(input.stopReason ? [`stopReason=${input.stopReason}`] : []),
     `failureKind=${input.failureKind}`,
+    ...(input.retryable ? ["retryable=true"] : []),
     ...(input.status !== undefined ? [`status=${input.status}`] : []),
     ...(input.requestId ? [`requestId=${sanitizeProviderErrorDetail(input.requestId)}`] : []),
     `detail=${input.providerMessage}`,
@@ -273,15 +417,21 @@ function buildProviderRuntimeError(input: {
   stopReason?: string;
   status?: number;
   requestId?: string;
+  retryable?: boolean;
   cause?: unknown;
 }): ProviderRuntimeError {
-  return new ProviderRuntimeError(formatProviderRuntimeErrorMessage(input), {
+  const retryable = input.retryable ?? isRetryableProviderRuntimeFailure(input.failureKind);
+  return new ProviderRuntimeError(formatProviderRuntimeErrorMessage({
+    ...input,
+    retryable,
+  }), {
     providerName: input.request.providerName,
     modelId: input.request.modelId,
     status: input.status,
     requestId: input.requestId,
     durationMs: Math.max(0, Date.now() - input.startedAt),
     timedOut: input.failureKind === "provider_timeout",
+    retryable,
     stopReason: input.stopReason,
     failureKind: input.failureKind,
     providerMessage: input.providerMessage,
@@ -289,7 +439,7 @@ function buildProviderRuntimeError(input: {
   });
 }
 
-function wrapTransportProviderFailure(
+function wrapClassifiedProviderFailure(
   error: unknown,
   request: LlmRuntimeRequest,
   startedAt: number,
@@ -298,11 +448,13 @@ function wrapTransportProviderFailure(
     return error;
   }
 
-  const rawMessage = stringifyUnknown(error, { preferErrorMessage: true });
-  const providerMessage = sanitizeProviderErrorDetail(rawMessage);
+  const details = buildProviderFailureDetails(error);
   const failureKind = classifyProviderRuntimeFailure({
-    message: rawMessage,
+    message: details.rawMessage,
     signal: request.signal,
+    status: details.status,
+    providerCode: details.providerCode,
+    providerType: details.providerType,
   });
   if (failureKind === "provider_error") {
     return null;
@@ -310,11 +462,11 @@ function wrapTransportProviderFailure(
 
   return buildProviderRuntimeError({
     request,
-    providerMessage,
+    providerMessage: details.providerMessage,
     failureKind,
     startedAt,
-    status: readErrorNumberField(error, ["status", "statusCode"]),
-    requestId: readErrorStringField(error, ["requestID", "requestId", "request_id"]),
+    status: details.status,
+    requestId: details.requestId,
     cause: error,
   });
 }
@@ -328,20 +480,27 @@ function throwIfAssistantResponseFailed(
     return;
   }
 
-  const rawMessage = response.errorMessage ?? fallbackProviderFailureMessage(response.stopReason);
-  const providerMessage = sanitizeProviderErrorDetail(rawMessage, response.stopReason);
+  const details = buildProviderFailureDetails(
+    response.errorMessage ?? fallbackProviderFailureMessage(response.stopReason),
+    response.stopReason,
+  );
   const failureKind = classifyProviderRuntimeFailure({
-    message: rawMessage,
+    message: details.rawMessage,
     stopReason: response.stopReason,
     signal: request.signal,
+    status: details.status,
+    providerCode: details.providerCode,
+    providerType: details.providerType,
   });
 
   throw buildProviderRuntimeError({
     request,
-    providerMessage,
+    providerMessage: details.providerMessage,
     failureKind,
     startedAt,
     stopReason: response.stopReason,
+    status: details.status,
+    requestId: details.requestId,
   });
 }
 
@@ -770,7 +929,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     try {
       response = await this.runtime.complete(request);
     } catch (error) {
-      throw wrapTransportProviderFailure(error, request, startedAt) ?? error;
+      throw wrapClassifiedProviderFailure(error, request, startedAt) ?? error;
     }
     throwIfAborted(this.signal);
     throwIfAssistantResponseFailed(response, request, startedAt);
@@ -844,7 +1003,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
 
       response = await stream.result();
     } catch (error) {
-      throw wrapTransportProviderFailure(error, request, startedAt) ?? error;
+      throw wrapClassifiedProviderFailure(error, request, startedAt) ?? error;
     }
     throwIfAssistantResponseFailed(response, request, startedAt);
 

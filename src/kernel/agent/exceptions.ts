@@ -28,6 +28,7 @@ export class ConfigurationError extends AgentError {}
 export type ProviderRuntimeFailureKind =
   | "provider_abort"
   | "provider_timeout"
+  | "provider_server_error"
   | "provider_transport_terminated"
   | "provider_transport_network"
   | "provider_error";
@@ -39,6 +40,7 @@ export interface ProviderRuntimeErrorOptions {
   requestId?: string;
   durationMs?: number;
   timedOut?: boolean;
+  retryable?: boolean;
   stopReason?: string;
   failureKind?: ProviderRuntimeFailureKind;
   providerMessage?: string;
@@ -52,6 +54,7 @@ export class ProviderRuntimeError extends StreamingFailedError {
   readonly requestId?: string;
   readonly durationMs?: number;
   readonly timedOut: boolean;
+  readonly retryable: boolean;
   readonly stopReason?: string;
   readonly failureKind?: ProviderRuntimeFailureKind;
   readonly providerMessage?: string;
@@ -64,6 +67,7 @@ export class ProviderRuntimeError extends StreamingFailedError {
     this.requestId = options.requestId;
     this.durationMs = options.durationMs;
     this.timedOut = options.timedOut === true;
+    this.retryable = options.retryable === true;
     this.stopReason = options.stopReason;
     this.failureKind = options.failureKind;
     this.providerMessage = options.providerMessage;
