@@ -2,6 +2,7 @@ import {randomUUID} from "node:crypto";
 import {mkdir, writeFile} from "node:fs/promises";
 import path from "node:path";
 
+import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
 import {resolveAgentMediaDir, resolveMediaDir} from "../../lib/data-dir.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
@@ -54,6 +55,51 @@ function resolveBrowserMediaRoot(
   return resolveMediaDir(env);
 }
 
+function resolveWorkerBrowserMediaRoots(context: BrowserRuntimeContext): {
+  storageRoot: string;
+  displayRoot: string;
+} | null {
+  const agentKey = trimToUndefined(context.agentKey);
+  const executionEnvironment = context.executionEnvironment;
+  if (
+    !agentKey
+    || !executionEnvironment
+    || executionEnvironment.agentKey !== agentKey
+    || executionEnvironment.kind !== "disposable_container"
+    || executionEnvironment.source !== "binding"
+  ) {
+    return null;
+  }
+
+  const filesystem = readExecutionEnvironmentFilesystemMetadata(executionEnvironment.metadata);
+  const workerArtifactsPath = trimToUndefined(filesystem?.artifacts.workerPath);
+  if (!filesystem || !workerArtifactsPath) {
+    return null;
+  }
+
+  return {
+    storageRoot: path.join(filesystem.artifacts.corePath, "media"),
+    displayRoot: path.join(workerArtifactsPath, "media"),
+  };
+}
+
+function resolveBrowserMediaRoots(
+  context: BrowserRuntimeContext,
+  dataDir: string | undefined,
+  env: NodeJS.ProcessEnv,
+): {storageRoot: string; displayRoot: string} {
+  const workerRoots = resolveWorkerBrowserMediaRoots(context);
+  if (workerRoots) {
+    return workerRoots;
+  }
+
+  const root = resolveBrowserMediaRoot(context, dataDir, env);
+  return {
+    storageRoot: root,
+    displayRoot: root,
+  };
+}
+
 function makeNetworkTimeoutSignal(timeoutMs: number): AbortSignal {
   const controller = new AbortController();
   setTimeout(() => {
@@ -102,6 +148,7 @@ function rewriteBrowserDetails(
   details: JsonObject | undefined,
   runnerPath: string,
   localPath: string,
+  storagePath: string,
   bytes: number,
 ): JsonObject | undefined {
   if (!details) {
@@ -120,6 +167,11 @@ function rewriteBrowserDetails(
     const artifact = {...next.artifact};
     if (artifact.path === runnerPath) {
       artifact.path = localPath;
+    }
+    if (storagePath !== localPath) {
+      artifact.storagePath = storagePath;
+    } else {
+      delete artifact.storagePath;
     }
     artifact.bytes = bytes;
     next.artifact = artifact;
@@ -215,21 +267,23 @@ export class BrowserRunnerClient<TContext extends BrowserRuntimeContext = Browse
   private async persistArtifact(
     context: BrowserRuntimeContext,
     artifact: BrowserRunnerArtifact,
-  ): Promise<{path: string; bytes: number}> {
+  ): Promise<{path: string; storagePath: string; bytes: number}> {
     const scope = normalizeScopeKey(context);
-    const root = resolveBrowserMediaRoot(context, this.dataDir, this.env);
-    const artifactDir = path.join(root, "browser", normalizeBrowserLabelValue(scope.key));
-    await mkdir(artifactDir, {recursive: true});
+    const roots = resolveBrowserMediaRoots(context, this.dataDir, this.env);
+    const artifactSubdir = path.join("browser", normalizeBrowserLabelValue(scope.key));
+    const storageDir = path.join(roots.storageRoot, artifactSubdir);
+    const displayDir = path.join(roots.displayRoot, artifactSubdir);
+    await mkdir(storageDir, {recursive: true});
 
     const buffer = Buffer.from(artifact.data, "base64");
-    const filePath = path.join(
-      artifactDir,
-      `${Date.now()}-${randomUUID()}${resolveExtension(artifact.kind, artifact.mimeType)}`,
-    );
-    await writeFile(filePath, buffer);
+    const fileName = `${Date.now()}-${randomUUID()}${resolveExtension(artifact.kind, artifact.mimeType)}`;
+    const storagePath = path.join(storageDir, fileName);
+    const displayPath = path.join(displayDir, fileName);
+    await writeFile(storagePath, buffer);
 
     return {
-      path: filePath,
+      path: displayPath,
+      storagePath,
       bytes: buffer.length,
     };
   }
@@ -278,7 +332,13 @@ export class BrowserRunnerClient<TContext extends BrowserRuntimeContext = Browse
     if (payload.artifact) {
       const persisted = await this.persistArtifact(context, payload.artifact);
       text = rewriteBrowserText(text, payload.artifact.path, persisted.path);
-      details = rewriteBrowserDetails(details, payload.artifact.path, persisted.path, persisted.bytes);
+      details = rewriteBrowserDetails(
+        details,
+        payload.artifact.path,
+        persisted.path,
+        persisted.storagePath,
+        persisted.bytes,
+      );
       content[0] = {
         type: "text",
         text,

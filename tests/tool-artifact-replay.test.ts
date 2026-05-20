@@ -46,6 +46,43 @@ describe("tool artifact replay", () => {
     }
   });
 
+  it("rehydrates worker-visible image artifacts from their internal storage path", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "runtime-tool-artifact-worker-image-"));
+
+    try {
+      const storagePath = path.join(directory, "shot.png");
+      await writeFile(storagePath, Buffer.from(ONE_PIXEL_PNG_BASE64, "base64"));
+
+      const message = await rehydrateToolArtifactMessage({
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "browser",
+        isError: false,
+        timestamp: Date.now(),
+        content: [
+          {type: "text", text: "Browser screenshot saved to /artifacts/media/browser/thread-1/shot.png"},
+        ],
+        details: {
+          action: "screenshot",
+          artifact: {
+            kind: "image",
+            source: "browser",
+            path: "/artifacts/media/browser/thread-1/shot.png",
+            storagePath,
+            mimeType: "image/png",
+          },
+        },
+      });
+
+      expect(message.content).toMatchObject([
+        {type: "text", text: "Browser screenshot saved to /artifacts/media/browser/thread-1/shot.png"},
+        {type: "image", mimeType: "image/png"},
+      ]);
+    } finally {
+      await rm(directory, {recursive: true, force: true});
+    }
+  });
+
   it("rehydrates pdf artifacts from their preview image when available", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "runtime-tool-artifact-pdf-"));
 
