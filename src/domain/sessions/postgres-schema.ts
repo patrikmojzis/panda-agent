@@ -20,15 +20,30 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
       kind TEXT NOT NULL,
       current_thread_id TEXT NOT NULL,
       created_by_identity_id TEXT,
+      alias TEXT,
+      display_name TEXT,
       metadata JSONB,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
   await pool.query(`
+    ALTER TABLE ${tables.sessions}
+    ADD COLUMN IF NOT EXISTS alias TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.sessions}
+    ADD COLUMN IF NOT EXISTS display_name TEXT
+  `);
+  await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_agent_sessions_main_idx`)}
     ON ${tables.sessions} (agent_key)
     WHERE kind = 'main'
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_agent_sessions_agent_alias_idx`)}
+    ON ${tables.sessions} (agent_key, alias)
+    WHERE alias IS NOT NULL
   `);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_agent_sessions_agent_idx`)}

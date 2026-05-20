@@ -3,6 +3,7 @@ import {Command} from "commander";
 import {DataType, newDb} from "pg-mem";
 
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {ConversationRepo} from "../src/domain/sessions/conversations/repo.js";
 import {registerSessionCommands} from "../src/app/sessions/cli.js";
 import {resolveAgentDir} from "../src/lib/data-dir.js";
 
@@ -205,6 +206,205 @@ describe("Session create CLI", () => {
     });
   }, SESSION_CREATE_TEST_TIMEOUT_MS);
 
+
+  it("creates labels and resolves aliases for inspect heartbeat and conversation bind", async () => {
+    vi.stubEnv("DATA_DIR", "/tmp/panda-session-create-alias");
+    const {pool, sessionStore} = await createHarness();
+    pools.push(pool);
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await createProgram().parseAsync([
+      "session",
+      "create",
+      "panda",
+      "--alias",
+      "Ops-Inbox",
+      "--display-name",
+      "Ops Inbox",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+
+    const createOutput = collectWrites(write);
+    const sessionId = readOutputValue(createOutput, "sessionId");
+    const threadId = readOutputValue(createOutput, "initialThread");
+    expect(createOutput).toContain("alias ops-inbox\n");
+    expect(createOutput).toContain("displayName Ops Inbox\n");
+    await expect(sessionStore.getSession(sessionId)).resolves.toMatchObject({
+      id: sessionId,
+      alias: "ops-inbox",
+      displayName: "Ops Inbox",
+      currentThreadId: threadId,
+    });
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "inspect",
+      "OPS-INBOX",
+      "--agent",
+      "panda",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    const inspectOutput = collectWrites(write);
+    expect(inspectOutput).toContain(`Session ${sessionId}\n`);
+    expect(inspectOutput).toContain("alias ops-inbox\n");
+    expect(inspectOutput).toContain("displayName Ops Inbox\n");
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "inspect",
+      "panda:ops-inbox",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    expect(collectWrites(write)).toContain(`Session ${sessionId}\n`);
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "heartbeat",
+      "ops-inbox",
+      "--agent",
+      "panda",
+      "--enable",
+      "--every",
+      "15",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    const heartbeatOutput = collectWrites(write);
+    expect(heartbeatOutput).toContain(`Updated heartbeat for ${sessionId}.\n`);
+    await expect(sessionStore.getHeartbeat(sessionId)).resolves.toMatchObject({
+      sessionId,
+      enabled: true,
+      everyMinutes: 15,
+    });
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "bind-conversation",
+      "ops-inbox",
+      "telegram",
+      "main",
+      "chat-1",
+      "--agent",
+      "panda",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    const bindOutput = collectWrites(write);
+    expect(bindOutput).toContain(`Bound conversation to session ${sessionId}.\n`);
+    const conversations = new ConversationRepo({pool});
+    await expect(conversations.getConversationBinding({
+      source: "telegram",
+      connectorKey: "main",
+      externalConversationId: "chat-1",
+    })).resolves.toMatchObject({
+      sessionId,
+    });
+  }, SESSION_CREATE_TEST_TIMEOUT_MS);
+
+  it("updates and clears aliases with the label command", async () => {
+    const {pool, sessionStore} = await createHarness();
+    pools.push(pool);
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await createProgram().parseAsync([
+      "session",
+      "create",
+      "panda",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    const sessionId = readOutputValue(collectWrites(write), "sessionId");
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "label",
+      sessionId,
+      "--alias",
+      "Room-One",
+      "--display-name",
+      "Room One",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    expect(collectWrites(write)).toContain("alias room-one\n");
+    await expect(sessionStore.resolveSessionRef({
+      sessionRef: "room-one",
+      agentKey: "panda",
+    })).resolves.toMatchObject({
+      id: sessionId,
+      displayName: "Room One",
+    });
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "label",
+      "room-one",
+      "--agent",
+      "panda",
+      "--clear-alias",
+      "--clear-display-name",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    expect(collectWrites(write)).toContain("alias -\n");
+    await expect(sessionStore.getSession(sessionId)).resolves.toMatchObject({
+      id: sessionId,
+      alias: undefined,
+      displayName: undefined,
+    });
+  }, SESSION_CREATE_TEST_TIMEOUT_MS);
+
+  it("keeps alias resolution exact-id-first and enforces agent scope", async () => {
+    const {pool, agentStore, sessionStore} = await createHarness();
+    pools.push(pool);
+
+    await sessionStore.createSession({
+      id: "session-a",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-a",
+    });
+    await sessionStore.createSession({
+      id: "session-b",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-b",
+      alias: "session-a",
+    });
+    await agentStore.bootstrapAgent({agentKey: "other", displayName: "Other"});
+    await sessionStore.createSession({
+      id: "session-other",
+      agentKey: "other",
+      kind: "branch",
+      currentThreadId: "thread-other",
+    });
+
+    await expect(sessionStore.resolveSessionRef({
+      sessionRef: "session-a",
+      agentKey: "panda",
+    })).resolves.toMatchObject({
+      id: "session-a",
+    });
+    await expect(sessionStore.resolveSessionRef({
+      sessionRef: "panda:session-a",
+    })).resolves.toMatchObject({
+      id: "session-b",
+    });
+    await expect(sessionStore.resolveSessionRef({
+      sessionRef: "session-other",
+      agentKey: "panda",
+    })).rejects.toThrow("Session session-other belongs to agent other, not panda.");
+  }, SESSION_CREATE_TEST_TIMEOUT_MS);
+
   it("rejects unsafe readable refs before opening the database", async () => {
     await expect(createProgram().parseAsync([
       "session",
@@ -241,6 +441,87 @@ describe("Session create CLI", () => {
       "--db-url",
       "postgres://session-create-test",
     ], {from: "user"})).rejects.toThrow("Session panda:daily already exists. Pick a different session ref.");
+
+    await expect(rowCounts(pool)).resolves.toEqual(before);
+  }, SESSION_CREATE_TEST_TIMEOUT_MS);
+
+
+
+  it("rejects aliases that collide with legacy readable canonical ids", async () => {
+    const {pool} = await createHarness();
+    pools.push(pool);
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await createProgram().parseAsync([
+      "session",
+      "create",
+      "panda",
+      "ops-inbox",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "create",
+      "panda",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    const generatedSessionId = readOutputValue(collectWrites(write), "sessionId");
+    const before = await rowCounts(pool);
+
+    await expect(createProgram().parseAsync([
+      "session",
+      "create",
+      "panda",
+      "--alias",
+      "ops-inbox",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"})).rejects.toThrow(
+      "Session alias ops-inbox collides with canonical session panda:ops-inbox. Pick a different alias.",
+    );
+    await expect(createProgram().parseAsync([
+      "session",
+      "label",
+      generatedSessionId,
+      "--alias",
+      "ops-inbox",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"})).rejects.toThrow(
+      "Session alias ops-inbox collides with canonical session panda:ops-inbox. Pick a different alias.",
+    );
+
+    await expect(rowCounts(pool)).resolves.toEqual(before);
+  }, SESSION_CREATE_TEST_TIMEOUT_MS);
+
+  it("rejects duplicate aliases scoped to an agent without partial creation", async () => {
+    const {pool} = await createHarness();
+    pools.push(pool);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await createProgram().parseAsync([
+      "session",
+      "create",
+      "panda",
+      "--alias",
+      "daily",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    const before = await rowCounts(pool);
+
+    await expect(createProgram().parseAsync([
+      "session",
+      "create",
+      "panda",
+      "--alias",
+      "DAILY",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"})).rejects.toThrow("Session alias daily already exists for agent panda. Pick a different alias.");
 
     await expect(rowCounts(pool)).resolves.toEqual(before);
   }, SESSION_CREATE_TEST_TIMEOUT_MS);

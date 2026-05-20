@@ -14,12 +14,29 @@ import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {createSessionWithInitialThread} from "./lifecycle.js";
 import {PostgresSessionStore} from "./postgres.js";
+import {normalizeSessionAlias, type SessionRecord} from "./types.js";
 
 export interface SessionCliOptions {
   dbUrl?: string;
 }
 
-interface HeartbeatCliOptions extends SessionCliOptions {
+interface CreateSessionCliOptions extends SessionCliOptions {
+  alias?: string;
+  displayName?: string;
+}
+
+interface ScopedSessionRefCliOptions extends SessionCliOptions {
+  agent?: string;
+}
+
+interface LabelCliOptions extends ScopedSessionRefCliOptions {
+  alias?: string;
+  displayName?: string;
+  clearAlias?: boolean;
+  clearDisplayName?: boolean;
+}
+
+interface HeartbeatCliOptions extends ScopedSessionRefCliOptions {
   enable?: boolean;
   disable?: boolean;
   every?: number;
@@ -99,6 +116,25 @@ function parseSessionRefArgument(value: string): string {
   return parseCliValue(value, normalizeSessionRef);
 }
 
+function parseSessionAliasOption(value: string): string {
+  return parseCliValue(value, normalizeSessionAlias);
+}
+
+function parseDisplayNameOption(value: string): string {
+  return parseCliValue(value, (raw) => {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      throw new Error("Session display name must not be empty.");
+    }
+
+    return trimmed;
+  });
+}
+
+function parseAgentKeyOption(value: string): string {
+  return parseCliValue(value, normalizeAgentKey);
+}
+
 function isUnknownSessionError(error: unknown, sessionId: string): boolean {
   return error instanceof Error && error.message === `Unknown session ${sessionId}`;
 }
@@ -119,6 +155,10 @@ function duplicateSessionRefError(sessionId: string): Error {
   return new Error(`Session ${sessionId} already exists. Pick a different session ref.`);
 }
 
+function duplicateSessionAliasError(agentKey: string, alias: string): Error {
+  return new Error(`Session alias ${alias} already exists for agent ${agentKey}. Pick a different alias.`);
+}
+
 async function assertSessionIdAvailable(sessionStore: PostgresSessionStore, sessionId: string): Promise<void> {
   try {
     await sessionStore.getSession(sessionId);
@@ -133,9 +173,38 @@ async function assertSessionIdAvailable(sessionStore: PostgresSessionStore, sess
   throw duplicateSessionRefError(sessionId);
 }
 
+async function assertSessionAliasAvailable(input: {
+  sessionStore: PostgresSessionStore;
+  agentKey: string;
+  alias?: string;
+  currentSessionId?: string;
+}): Promise<void> {
+  if (!input.alias) {
+    return;
+  }
+
+  const existing = await input.sessionStore.getSessionByAlias(input.agentKey, input.alias);
+  if (existing && existing.id !== input.currentSessionId) {
+    throw duplicateSessionAliasError(input.agentKey, input.alias);
+  }
+}
+
+async function resolveSessionCliRef(
+  sessionStore: PostgresSessionStore,
+  sessionRef: string,
+  options: ScopedSessionRefCliOptions,
+): Promise<SessionRecord> {
+  return sessionStore.resolveSessionRef({
+    sessionRef,
+    agentKey: options.agent,
+  });
+}
+
 function buildSessionCreateOutput(input: {
   agentKey: string;
   sessionRef?: string;
+  alias?: string;
+  displayName?: string;
   sessionId: string;
   threadId: string;
 }): string {
@@ -143,6 +212,8 @@ function buildSessionCreateOutput(input: {
     "Created branch session.",
     `agent ${input.agentKey}`,
     ...(input.sessionRef ? [`ref ${input.sessionRef}`] : []),
+    ...(input.alias ? [`alias ${input.alias}`] : []),
+    ...(input.displayName ? [`displayName ${input.displayName}`] : []),
     `sessionId ${input.sessionId}`,
     `initialThread ${input.threadId}`,
     "",
@@ -154,7 +225,7 @@ function buildSessionCreateOutput(input: {
 async function createSessionCommand(
   agentKey: string,
   sessionRef: string | undefined,
-  options: SessionCliOptions,
+  options: CreateSessionCliOptions,
 ): Promise<void> {
   await withSessionStores(options, async ({pool, agentStore, sessionStore, threadStore}) => {
     const agent = await agentStore.getAgent(agentKey);
@@ -165,6 +236,11 @@ async function createSessionCommand(
     if (normalizedRef) {
       await assertSessionIdAvailable(sessionStore, sessionId);
     }
+    await assertSessionAliasAvailable({
+      sessionStore,
+      agentKey: agent.agentKey,
+      alias: options.alias,
+    });
 
     try {
       await createSessionWithInitialThread({
@@ -176,6 +252,8 @@ async function createSessionCommand(
           agentKey: agent.agentKey,
           kind: "branch",
           currentThreadId: threadId,
+          alias: options.alias,
+          displayName: options.displayName,
         },
         thread: {
           id: threadId,
@@ -188,6 +266,9 @@ async function createSessionCommand(
         },
       });
     } catch (error) {
+      if (options.alias && isDuplicateSessionIdError(error)) {
+        throw duplicateSessionAliasError(agent.agentKey, options.alias);
+      }
       if (normalizedRef && isDuplicateSessionIdError(error)) {
         throw duplicateSessionRefError(sessionId);
       }
@@ -198,6 +279,8 @@ async function createSessionCommand(
     process.stdout.write(buildSessionCreateOutput({
       agentKey: agent.agentKey,
       sessionRef: normalizedRef,
+      alias: options.alias,
+      displayName: options.displayName,
       sessionId,
       threadId,
     }));
@@ -215,8 +298,8 @@ async function listSessionsCommand(agentKey: string, options: SessionCliOptions)
     for (const session of sessions) {
       process.stdout.write(
         [
-          session.id,
-          `  kind ${session.kind} · current thread ${session.currentThreadId}`,
+          session.displayName ? `${session.displayName} (${session.id})` : session.id,
+          `  alias ${session.alias ?? "-"} · kind ${session.kind} · current thread ${session.currentThreadId}`,
           `  created by ${session.createdByIdentityId ?? "-"}`,
         ].join("\n") + "\n\n",
       );
@@ -224,15 +307,17 @@ async function listSessionsCommand(agentKey: string, options: SessionCliOptions)
   });
 }
 
-async function inspectSessionCommand(sessionId: string, options: SessionCliOptions): Promise<void> {
+async function inspectSessionCommand(sessionRef: string, options: ScopedSessionRefCliOptions): Promise<void> {
   await withSessionStores(options, async ({sessionStore, threadStore}) => {
-    const session = await sessionStore.getSession(sessionId);
+    const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
     const thread = await threadStore.getThread(session.currentThreadId);
     const heartbeat = await sessionStore.getHeartbeat(session.id);
     process.stdout.write(
       [
         `Session ${session.id}`,
         `agent ${session.agentKey}`,
+        `alias ${session.alias ?? "-"}`,
+        `displayName ${session.displayName ?? "-"}`,
         `kind ${session.kind}`,
         `current thread ${session.currentThreadId}`,
         `created by ${session.createdByIdentityId ?? "-"}`,
@@ -244,20 +329,21 @@ async function inspectSessionCommand(sessionId: string, options: SessionCliOptio
   });
 }
 
-async function heartbeatCommand(sessionId: string, options: HeartbeatCliOptions): Promise<void> {
+async function heartbeatCommand(sessionRef: string, options: HeartbeatCliOptions): Promise<void> {
   if (options.enable && options.disable) {
     throw new Error("Pick one: --enable or --disable.");
   }
 
   await withSessionStores(options, async ({sessionStore}) => {
+    const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
     const heartbeat = await sessionStore.updateHeartbeatConfig({
-      sessionId,
+      sessionId: session.id,
       enabled: options.disable ? false : options.enable ? true : undefined,
       everyMinutes: options.every,
     });
     process.stdout.write(
       [
-        `Updated heartbeat for ${sessionId}.`,
+        `Updated heartbeat for ${session.id}.`,
         `enabled ${heartbeat.enabled ? "yes" : "no"}`,
         `every ${heartbeat.everyMinutes} minutes`,
       ].join("\n") + "\n",
@@ -266,24 +352,77 @@ async function heartbeatCommand(sessionId: string, options: HeartbeatCliOptions)
 }
 
 async function bindConversationCommand(
-  sessionId: string,
+  sessionRef: string,
   source: string,
   connectorKey: string,
   externalConversationId: string,
-  options: SessionCliOptions,
+  options: ScopedSessionRefCliOptions,
 ): Promise<void> {
   await withSessionStores(options, async ({conversations, sessionStore}) => {
-    await sessionStore.getSession(sessionId);
+    const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
     const binding = await conversations.bindConversation({
       source,
       connectorKey,
       externalConversationId,
-      sessionId,
+      sessionId: session.id,
     });
     process.stdout.write(
       [
         `Bound conversation to session ${binding.binding.sessionId}.`,
         `${binding.binding.source}/${binding.binding.connectorKey}/${binding.binding.externalConversationId}`,
+      ].join("\n") + "\n",
+    );
+  });
+}
+
+async function labelSessionCommand(
+  sessionRef: string,
+  options: LabelCliOptions,
+): Promise<void> {
+  if (options.alias && options.clearAlias) {
+    throw new Error("Pick one: --alias or --clear-alias.");
+  }
+  if (options.displayName && options.clearDisplayName) {
+    throw new Error("Pick one: --display-name or --clear-display-name.");
+  }
+
+  const updatesAlias = options.alias !== undefined || options.clearAlias === true;
+  const updatesDisplayName = options.displayName !== undefined || options.clearDisplayName === true;
+  if (!updatesAlias && !updatesDisplayName) {
+    throw new Error("Pass --alias, --display-name, --clear-alias, or --clear-display-name.");
+  }
+
+  await withSessionStores(options, async ({sessionStore}) => {
+    const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
+    if (options.alias) {
+      await assertSessionAliasAvailable({
+        sessionStore,
+        agentKey: session.agentKey,
+        alias: options.alias,
+        currentSessionId: session.id,
+      });
+    }
+
+    let updated: SessionRecord;
+    try {
+      updated = await sessionStore.updateSessionLabel({
+        sessionId: session.id,
+        ...(updatesAlias ? {alias: options.clearAlias ? null : options.alias ?? null} : {}),
+        ...(updatesDisplayName ? {displayName: options.clearDisplayName ? null : options.displayName ?? null} : {}),
+      });
+    } catch (error) {
+      if (options.alias && isDuplicateSessionIdError(error)) {
+        throw duplicateSessionAliasError(session.agentKey, options.alias);
+      }
+
+      throw error;
+    }
+
+    process.stdout.write(
+      [
+        `Updated session ${updated.id}.`,
+        `alias ${updated.alias ?? "-"}`,
+        `displayName ${updated.displayName ?? "-"}`,
       ].join("\n") + "\n",
     );
   });
@@ -295,8 +434,10 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
     .description("Create a branch session for an agent")
     .argument("<agentKey>", "Agent key", parseCreateAgentKey)
     .argument("[sessionRef]", "Optional readable session ref", parseSessionRefArgument)
+    .option("--alias <alias>", "Alias for this session scoped to the agent", parseSessionAliasOption)
+    .option("--display-name <name>", "Human-readable display name", parseDisplayNameOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
-    .action((agentKey: string, sessionRef: string | undefined, options: SessionCliOptions) => {
+    .action((agentKey: string, sessionRef: string | undefined, options: CreateSessionCliOptions) => {
       return createSessionCommand(agentKey, sessionRef, options);
     });
 
@@ -310,18 +451,34 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
     });
 
   sessionProgram
+    .command("label")
+    .description("Set or clear a session alias/display name")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--alias <alias>", "Alias scoped to this session's agent", parseSessionAliasOption)
+    .option("--display-name <name>", "Human-readable display name", parseDisplayNameOption)
+    .option("--clear-alias", "Clear the session alias")
+    .option("--clear-display-name", "Clear the display name")
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sessionRef: string, options: LabelCliOptions) => {
+      return labelSessionCommand(sessionRef, options);
+    });
+
+  sessionProgram
     .command("inspect")
     .description("Inspect one session")
-    .argument("<sessionId>", "Session id")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
-    .action((sessionId: string, options: SessionCliOptions) => {
-      return inspectSessionCommand(sessionId, options);
+    .action((sessionRef: string, options: ScopedSessionRefCliOptions) => {
+      return inspectSessionCommand(sessionRef, options);
     });
 
   sessionProgram
     .command("heartbeat")
     .description("Configure session heartbeat")
-    .argument("<sessionId>", "Session id")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
     .option("--enable", "Enable heartbeat")
     .option("--disable", "Disable heartbeat")
     .option("--every <minutes>", "Heartbeat interval in minutes", parsePositiveIntegerOption)
@@ -333,19 +490,20 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
   sessionProgram
     .command("bind-conversation")
     .description("Bind an external conversation to a session")
-    .argument("<sessionId>", "Session id")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
     .argument("<source>", "Channel source, for example telegram")
     .argument("<connectorKey>", "Connector key")
     .argument("<externalConversationId>", "External conversation id")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((
-      sessionId: string,
+      sessionRef: string,
       source: string,
       connectorKey: string,
       externalConversationId: string,
-      options: SessionCliOptions,
+      options: ScopedSessionRefCliOptions,
     ) => {
-      return bindConversationCommand(sessionId, source, connectorKey, externalConversationId, options);
+      return bindConversationCommand(sessionRef, source, connectorKey, externalConversationId, options);
     });
 }
 

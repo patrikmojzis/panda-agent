@@ -255,7 +255,7 @@ function configureChatOptions(command: Command): Command {
   return command
     .option("--identity <handle>", "Identity handle to use as the active participant (required)", parseIdentityHandle)
     .option("--agent <agentKey>", "Agent key to use", parseAgentKey)
-    .option("--session <sessionId>", "Open a chat on an existing session id")
+    .option("--session <sessionRef>", "Open a chat on an existing session id, or alias with --agent")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION);
 }
 

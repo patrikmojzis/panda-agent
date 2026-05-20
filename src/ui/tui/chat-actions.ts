@@ -227,13 +227,13 @@ async function handleResumeCommand(host: ChatCommandHost, value: string): Promis
   }
 
   if (!value) {
-    host.showCommandError("session", "Usage: /resume <session-id>");
+    host.showCommandError("session", "Usage: /resume <session-id-or-alias>");
     return true;
   }
 
   try {
-    const thread = await host.requireServices().openSession(value);
     const currentAgentKey = host.getCurrentAgentKey();
+    const thread = await host.requireServices().openSession(value, currentAgentKey);
     const nextAgentKey = readThreadAgentKey(thread);
     if (currentAgentKey && nextAgentKey !== currentAgentKey) {
       throw new Error(`Session ${value} belongs to agent ${nextAgentKey}, not current agent ${currentAgentKey}.`);

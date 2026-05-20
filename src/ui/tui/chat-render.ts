@@ -102,8 +102,13 @@ function buildSessionPickerLayout(input: {
       const shortThreadId = session.currentThreadId.length > 12
         ? `${session.currentThreadId.slice(0, 8)}…${session.currentThreadId.slice(-4)}`
         : session.currentThreadId;
+      const label = session.displayName
+        ? `${session.displayName} · `
+        : session.alias
+          ? `${session.alias} · `
+          : "";
       lines.push(prefix + truncatePlainText(
-        `${session.kind} · session ${shortId}${current} · thread ${shortThreadId}`,
+        `${session.kind} · ${label}session ${shortId}${current} · thread ${shortThreadId}`,
         Math.max(1, width - stripAnsi(prefix).length),
       ));
     }

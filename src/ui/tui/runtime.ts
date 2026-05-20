@@ -31,7 +31,7 @@ export interface ChatRuntimeServices {
   createBranchSession(options?: CreateChatSessionOptions): Promise<ThreadRecord>;
   openMainSession(options?: CreateChatSessionOptions): Promise<ThreadRecord>;
   resetSession(options?: CreateChatSessionOptions): Promise<ThreadRecord>;
-  openSession(sessionId: string): Promise<ThreadRecord>;
+  openSession(sessionRef: string, agentKey?: string): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
   resolveThreadRunConfig(threadId: string): Promise<{
     model: string;
@@ -87,7 +87,7 @@ export async function createChatRuntime(options: ChatRuntimeOptions): Promise<Ch
     createBranchSession: (sessionOptions) => client.createBranchSession(applyDefaults(sessionOptions)),
     openMainSession: (sessionOptions) => client.openMainSession(applyDefaults(sessionOptions)),
     resetSession: (sessionOptions) => client.resetSession(applyDefaults(sessionOptions)),
-    openSession: (sessionId) => client.openSession(sessionId),
+    openSession: (sessionRef, agentKey) => client.openSession(sessionRef, agentKey),
     getThread: (threadId) => client.getThread(threadId),
     resolveThreadRunConfig: (threadId) => client.resolveThreadRunConfig(threadId),
     listAgentSessions: (agentKey) => client.listAgentSessions(agentKey),

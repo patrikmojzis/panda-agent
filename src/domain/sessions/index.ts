@@ -14,6 +14,7 @@ export {
   createSessionWithInitialThread,
   resetSessionCurrentThread,
 } from "./lifecycle.js";
+export {resolveSessionRef} from "./refs.js";
 export type {
   BindConversationInput,
   BindConversationResult,
@@ -30,8 +31,10 @@ export type {
   AgentSessionKind,
   CreateSessionInput,
   SessionHeartbeatRecord,
+  ResolveSessionRefInput,
   SessionRecord,
   UpdateSessionCurrentThreadInput,
   UpdateSessionHeartbeatConfigInput,
+  UpdateSessionLabelInput,
 } from "./types.js";
-export {DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES} from "./types.js";
+export {DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES, normalizeSessionAlias} from "./types.js";

@@ -38,6 +38,7 @@ interface DiscordRunCliOptions extends DiscordAccountCliOptions {
 
 interface DiscordBindChannelCliOptions extends DiscordAccountCliOptions {
   account: string;
+  agent?: string;
   channel: string;
   force?: boolean;
   session: string;
@@ -606,12 +607,15 @@ export async function discordBindChannelCommand(options: DiscordBindChannelCliOp
     const account = await resolveDiscordBindingAccount({connectorStore}, options.account, {
       requireEnabled: true,
     });
-    await sessionStore.getSession(options.session);
+    const session = await sessionStore.resolveSessionRef({
+      sessionRef: options.session,
+      agentKey: options.agent,
+    });
 
     const lookup = buildDiscordChannelLookup(account, options.channel);
     const input = {
       ...lookup,
-      sessionId: options.session,
+      sessionId: session.id,
       metadata: buildDiscordBindingMetadata(account, options.channel),
     };
 
@@ -633,7 +637,7 @@ export async function discordBindChannelCommand(options: DiscordBindChannelCliOp
       }
     }
 
-    if (existing.sessionId === options.session) {
+    if (existing.sessionId === session.id) {
       process.stdout.write(renderDiscordBindingSummary(
         `Discord channel ${options.channel} already bound to session ${existing.sessionId}.`,
         account,
@@ -1046,7 +1050,8 @@ export function registerDiscordCommands(
     .description("Bind a Discord channel to a Panda session")
     .requiredOption("--account <accountKey>", "Discord connector account key", parseDiscordAccountKey)
     .requiredOption("--channel <discordChannelId>", "Discord channel id", parseDiscordChannelId)
-    .requiredOption("--session <sessionId>", "Panda session id", parseDiscordSessionId)
+    .requiredOption("--session <sessionRef>", "Panda session id, or alias when --agent is provided", parseDiscordSessionId)
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseDiscordOwnerAgent)
     .option("--force", "Rebind when the channel is already bound to another session")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: DiscordBindChannelCliOptions) => {

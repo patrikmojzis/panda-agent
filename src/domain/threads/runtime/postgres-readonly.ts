@@ -174,6 +174,8 @@ export async function ensureReadonlySessionQuerySchema(
       s.current_thread_id,
       s.created_by_identity_id,
       creator.handle AS created_by_identity_handle,
+      s.alias,
+      s.display_name,
       s.metadata,
       s.created_at,
       s.updated_at

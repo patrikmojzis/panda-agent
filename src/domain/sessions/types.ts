@@ -8,12 +8,25 @@ export interface CreateSessionInput {
   kind: AgentSessionKind;
   currentThreadId: string;
   createdByIdentityId?: string;
+  alias?: string;
+  displayName?: string;
   metadata?: JsonValue;
 }
 
 export interface SessionRecord extends CreateSessionInput {
   createdAt: number;
   updatedAt: number;
+}
+
+export interface ResolveSessionRefInput {
+  sessionRef: string;
+  agentKey?: string;
+}
+
+export interface UpdateSessionLabelInput {
+  sessionId: string;
+  alias?: string | null;
+  displayName?: string | null;
 }
 
 export interface UpdateSessionCurrentThreadInput {
@@ -63,3 +76,18 @@ export interface UpdateSessionHeartbeatConfigInput {
 }
 
 export const DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES = 60;
+
+export function normalizeSessionAlias(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    throw new Error("Session alias must not be empty.");
+  }
+
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(normalized)) {
+    throw new Error(
+      "Session alias must use letters, numbers, hyphens, or underscores, and start with a letter or number.",
+    );
+  }
+
+  return normalized;
+}

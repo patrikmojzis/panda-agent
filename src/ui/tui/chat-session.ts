@@ -31,7 +31,7 @@ export async function resolveInitialChatSessionThread(input: {
   defaults: ChatSessionDefaults;
 }): Promise<ThreadRecord> {
   if (input.sessionId) {
-    return await input.services.openSession(input.sessionId);
+    return await input.services.openSession(input.sessionId, input.defaults.agentKey);
   }
 
   return await input.services.openMainSession(input.defaults);

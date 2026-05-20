@@ -5,18 +5,22 @@ import {readOptionalJsonValue, stringifyOptionalJsonValue} from "../../lib/json.
 import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
 import {withTransaction} from "../../lib/postgres-transaction.js";
 import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
+import {resolveSessionRef} from "./refs.js";
 import {buildSessionTableNames, type SessionTableNames} from "./postgres-shared.js";
 import {ensurePostgresSessionSchema} from "./postgres-schema.js";
 import type {SessionStore} from "./store.js";
+import {normalizeSessionAlias} from "./types.js";
 import type {
     ClaimSessionHeartbeatInput,
     CreateSessionInput,
     ListDueSessionHeartbeatsInput,
     RecordSessionHeartbeatResultInput,
+    ResolveSessionRefInput,
     SessionHeartbeatRecord,
     SessionRecord,
     UpdateSessionCurrentThreadInput,
     UpdateSessionHeartbeatConfigInput,
+    UpdateSessionLabelInput,
 } from "./types.js";
 
 export interface PostgresSessionStoreOptions {
@@ -29,6 +33,27 @@ function requireSessionString(field: string, value: unknown): string {
 
 function optionalSessionString(field: string, value: unknown): string | undefined {
   return optionalNonEmptyString(value, `Session ${field} must not be empty.`);
+}
+
+function normalizeOptionalSessionAlias(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  return normalizeSessionAlias(value);
+}
+
+function normalizeOptionalDisplayName(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("Session display name must not be empty.");
+  }
+
+  return trimmed;
 }
 
 function parseSessionKind(value: unknown): SessionRecord["kind"] {
@@ -62,6 +87,8 @@ function parseSessionRow(row: Record<string, unknown>): SessionRecord {
     kind: parseSessionKind(row.kind),
     currentThreadId: requireSessionString("current thread id", row.current_thread_id),
     createdByIdentityId: optionalSessionString("created identity id", row.created_by_identity_id),
+    alias: optionalSessionString("alias", row.alias),
+    displayName: optionalSessionString("display name", row.display_name),
     metadata: readOptionalJsonValue(row.metadata, "Session metadata"),
     createdAt: requireTimestampMillis(row.created_at, "Session created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Session updated_at must be a valid timestamp."),
@@ -93,6 +120,37 @@ function missingHeartbeatError(sessionId: string): Error {
   return new Error(`Unknown heartbeat for session ${sessionId}`);
 }
 
+async function assertAliasDoesNotCollideWithCanonicalId(input: {
+  queryable: PgQueryable;
+  tableName: string;
+  agentKey: string;
+  alias: string | null;
+  currentSessionId?: string;
+}): Promise<void> {
+  if (!input.alias) {
+    return;
+  }
+
+  const canonicalSessionId = `${input.agentKey}:${input.alias}`;
+  const result = await input.queryable.query(
+    `SELECT * FROM ${input.tableName} WHERE id = $1 LIMIT 1`,
+    [canonicalSessionId],
+  );
+  const row = result.rows[0];
+  if (!row) {
+    return;
+  }
+
+  const session = parseSessionRow(row as Record<string, unknown>);
+  if (session.id === input.currentSessionId) {
+    return;
+  }
+
+  throw new Error(
+    `Session alias ${input.alias} collides with canonical session ${canonicalSessionId}. Pick a different alias.`,
+  );
+}
+
 export class PostgresSessionStore implements SessionStore {
   private readonly pool: PgPoolLike;
   private readonly tables: SessionTableNames;
@@ -120,6 +178,16 @@ export class PostgresSessionStore implements SessionStore {
   }
 
   async createSessionRecord(input: CreateSessionInput, queryable: PgQueryable = this.pool): Promise<SessionRecord> {
+    const agentKey = requireSessionString("agent key", input.agentKey);
+    const alias = normalizeOptionalSessionAlias(input.alias);
+    await assertAliasDoesNotCollideWithCanonicalId({
+      queryable,
+      tableName: this.tables.sessions,
+      agentKey,
+      alias,
+      currentSessionId: input.id,
+    });
+
     const result = await queryable.query(`
       INSERT INTO ${this.tables.sessions} (
         id,
@@ -127,6 +195,8 @@ export class PostgresSessionStore implements SessionStore {
         kind,
         current_thread_id,
         created_by_identity_id,
+        alias,
+        display_name,
         metadata
       ) VALUES (
         $1,
@@ -134,15 +204,19 @@ export class PostgresSessionStore implements SessionStore {
         $3,
         $4,
         $5,
-        $6::jsonb
+        $6,
+        $7,
+        $8::jsonb
       )
       RETURNING *
     `, [
       requireSessionString("id", input.id),
-      requireSessionString("agent key", input.agentKey),
+      agentKey,
       parseSessionKind(input.kind),
       requireSessionString("current thread id", input.currentThreadId),
       input.createdByIdentityId?.trim() || null,
+      alias,
+      normalizeOptionalDisplayName(input.displayName),
       stringifyOptionalJsonValue(input.metadata, "Session metadata"),
     ]);
 
@@ -198,6 +272,25 @@ export class PostgresSessionStore implements SessionStore {
     return parseSessionRow(row as Record<string, unknown>);
   }
 
+
+  async getSessionByAlias(agentKey: string, alias: string): Promise<SessionRecord | null> {
+    const normalizedAgentKey = requireSessionString("agent key", agentKey);
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.sessions}
+      WHERE alias = $1
+    `, [
+      normalizeSessionAlias(alias),
+    ]);
+
+    const sessions = result.rows.map((row) => parseSessionRow(row as Record<string, unknown>));
+    return sessions.find((session) => session.agentKey === normalizedAgentKey) ?? null;
+  }
+
+  async resolveSessionRef(input: ResolveSessionRefInput): Promise<SessionRecord> {
+    return resolveSessionRef(this, input);
+  }
+
   async getMainSession(agentKey: string): Promise<SessionRecord | null> {
     const result = await this.pool.query(`
       SELECT *
@@ -220,6 +313,50 @@ export class PostgresSessionStore implements SessionStore {
     `, [requireSessionString("agent key", agentKey)]);
 
     return result.rows.map((row) => parseSessionRow(row as Record<string, unknown>));
+  }
+
+
+  async updateSessionLabel(input: UpdateSessionLabelInput): Promise<SessionRecord> {
+    const updatesAlias = input.alias !== undefined;
+    const updatesDisplayName = input.displayName !== undefined;
+    if (!updatesAlias && !updatesDisplayName) {
+      return this.getSession(input.sessionId);
+    }
+
+    const existingSession = updatesAlias && input.alias !== null
+      ? await this.getSession(input.sessionId)
+      : null;
+    const alias = updatesAlias ? normalizeOptionalSessionAlias(input.alias) : null;
+    if (existingSession) {
+      await assertAliasDoesNotCollideWithCanonicalId({
+        queryable: this.pool,
+        tableName: this.tables.sessions,
+        agentKey: existingSession.agentKey,
+        alias,
+        currentSessionId: existingSession.id,
+      });
+    }
+
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.sessions}
+      SET alias = CASE WHEN $2 THEN $3::text ELSE alias END,
+          display_name = CASE WHEN $4 THEN $5::text ELSE display_name END,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `, [
+      requireSessionString("id", input.sessionId),
+      updatesAlias,
+      alias,
+      updatesDisplayName,
+      updatesDisplayName ? normalizeOptionalDisplayName(input.displayName) : null,
+    ]);
+    const row = result.rows[0];
+    if (!row) {
+      throw missingSessionError(input.sessionId);
+    }
+
+    return parseSessionRow(row as Record<string, unknown>);
   }
 
   async updateCurrentThreadRecord(
