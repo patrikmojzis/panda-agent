@@ -25,6 +25,13 @@ export class StreamingFailedError extends AgentError {
 
 export class ConfigurationError extends AgentError {}
 
+export type ProviderRuntimeFailureKind =
+  | "provider_abort"
+  | "provider_timeout"
+  | "provider_transport_terminated"
+  | "provider_transport_network"
+  | "provider_error";
+
 export interface ProviderRuntimeErrorOptions {
   providerName: string;
   modelId: string;
@@ -32,16 +39,22 @@ export interface ProviderRuntimeErrorOptions {
   requestId?: string;
   durationMs?: number;
   timedOut?: boolean;
+  stopReason?: string;
+  failureKind?: ProviderRuntimeFailureKind;
+  providerMessage?: string;
   cause?: unknown;
 }
 
-export class ProviderRuntimeError extends AgentError {
+export class ProviderRuntimeError extends StreamingFailedError {
   readonly providerName: string;
   readonly modelId: string;
   readonly status?: number;
   readonly requestId?: string;
   readonly durationMs?: number;
   readonly timedOut: boolean;
+  readonly stopReason?: string;
+  readonly failureKind?: ProviderRuntimeFailureKind;
+  readonly providerMessage?: string;
 
   constructor(message: string, options: ProviderRuntimeErrorOptions) {
     super(message);
@@ -51,6 +64,9 @@ export class ProviderRuntimeError extends AgentError {
     this.requestId = options.requestId;
     this.durationMs = options.durationMs;
     this.timedOut = options.timedOut === true;
+    this.stopReason = options.stopReason;
+    this.failureKind = options.failureKind;
+    this.providerMessage = options.providerMessage;
 
     if (options.cause !== undefined) {
       Object.defineProperty(this, "cause", {

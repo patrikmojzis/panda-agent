@@ -5,7 +5,8 @@ import {
   InvalidJSONResponseError,
   InvalidSchemaResponseError,
   MaxTurnsReachedError,
-  StreamingFailedError,
+  ProviderRuntimeError,
+  type ProviderRuntimeFailureKind,
   ToolError,
 } from "./exceptions.js";
 import {stringifyUnknown} from "./helpers/stringify.js";
@@ -158,10 +159,190 @@ function isAssistantMessage(event: ThreadRunEvent): event is AssistantMessage {
   return "role" in event && event.role === "assistant";
 }
 
-function throwIfAssistantResponseFailed(response: AssistantMessage): void {
-  if (response.stopReason === "error" || response.stopReason === "aborted") {
-    throw new StreamingFailedError(response.errorMessage ?? "Streaming failed");
+const PROVIDER_ERROR_DETAIL_MAX_CHARS = 800;
+
+function fallbackProviderFailureMessage(stopReason?: string): string {
+  return stopReason === "aborted" ? "Provider request was aborted." : "Streaming failed";
+}
+
+function truncateProviderErrorDetail(value: string): string {
+  if (value.length <= PROVIDER_ERROR_DETAIL_MAX_CHARS) {
+    return value;
   }
+
+  return `${value.slice(0, PROVIDER_ERROR_DETAIL_MAX_CHARS)}... [truncated ${value.length - PROVIDER_ERROR_DETAIL_MAX_CHARS} chars]`;
+}
+
+function redactProviderErrorDetail(value: string): string {
+  return value
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer [redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
+    .replace(/\b(x-api-key|api[_-]?key|access[_-]?token|auth(?:orization)?|token)(=|:)\s*[^\s;&,]+/gi, "$1$2[redacted]");
+}
+
+function sanitizeProviderErrorDetail(value: string, stopReason?: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim() || fallbackProviderFailureMessage(stopReason);
+  return truncateProviderErrorDetail(redactProviderErrorDetail(normalized));
+}
+
+function classifyProviderRuntimeFailure(input: {
+  message: string;
+  stopReason?: string;
+  signal?: AbortSignal;
+}): ProviderRuntimeFailureKind {
+  const message = input.message.toLowerCase();
+
+  if (input.stopReason === "aborted"
+    || input.signal?.aborted
+    || /\b(abort(?:ed)?|cancelled|canceled|aborterror)\b/.test(message)) {
+    return "provider_abort";
+  }
+
+  if (/\b(timed out|timeout|etimedout|und_err_connect_timeout)\b/.test(message)) {
+    return "provider_timeout";
+  }
+
+  if (/(^|\s)terminated(\s|$|\.)/.test(message)) {
+    return "provider_transport_terminated";
+  }
+
+  if (/\b(fetch failed|socket|econnreset|econnrefused|enotfound|epipe|network|connection reset|connection closed|connection aborted|und_err_socket)\b/.test(message)) {
+    return "provider_transport_network";
+  }
+
+  return "provider_error";
+}
+
+function readErrorStringField(error: unknown, keys: readonly string[]): string | undefined {
+  if (!isRecord(error)) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = error[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function readErrorNumberField(error: unknown, keys: readonly string[]): number | undefined {
+  if (!isRecord(error)) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = error[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function formatProviderRuntimeErrorMessage(input: {
+  request: LlmRuntimeRequest;
+  stopReason?: string;
+  failureKind: ProviderRuntimeFailureKind;
+  providerMessage: string;
+  status?: number;
+  requestId?: string;
+}): string {
+  const parts = [
+    "Provider runtime failed",
+    `provider=${input.request.providerName}`,
+    `model=${input.request.modelId}`,
+    ...(input.stopReason ? [`stopReason=${input.stopReason}`] : []),
+    `failureKind=${input.failureKind}`,
+    ...(input.status !== undefined ? [`status=${input.status}`] : []),
+    ...(input.requestId ? [`requestId=${sanitizeProviderErrorDetail(input.requestId)}`] : []),
+    `detail=${input.providerMessage}`,
+  ];
+
+  return `${parts.join("; ")}.`;
+}
+
+function buildProviderRuntimeError(input: {
+  request: LlmRuntimeRequest;
+  providerMessage: string;
+  failureKind: ProviderRuntimeFailureKind;
+  startedAt: number;
+  stopReason?: string;
+  status?: number;
+  requestId?: string;
+  cause?: unknown;
+}): ProviderRuntimeError {
+  return new ProviderRuntimeError(formatProviderRuntimeErrorMessage(input), {
+    providerName: input.request.providerName,
+    modelId: input.request.modelId,
+    status: input.status,
+    requestId: input.requestId,
+    durationMs: Math.max(0, Date.now() - input.startedAt),
+    timedOut: input.failureKind === "provider_timeout",
+    stopReason: input.stopReason,
+    failureKind: input.failureKind,
+    providerMessage: input.providerMessage,
+    cause: input.cause,
+  });
+}
+
+function wrapTransportProviderFailure(
+  error: unknown,
+  request: LlmRuntimeRequest,
+  startedAt: number,
+): ProviderRuntimeError | null {
+  if (error instanceof ProviderRuntimeError) {
+    return error;
+  }
+
+  const rawMessage = stringifyUnknown(error, { preferErrorMessage: true });
+  const providerMessage = sanitizeProviderErrorDetail(rawMessage);
+  const failureKind = classifyProviderRuntimeFailure({
+    message: rawMessage,
+    signal: request.signal,
+  });
+  if (failureKind === "provider_error") {
+    return null;
+  }
+
+  return buildProviderRuntimeError({
+    request,
+    providerMessage,
+    failureKind,
+    startedAt,
+    status: readErrorNumberField(error, ["status", "statusCode"]),
+    requestId: readErrorStringField(error, ["requestID", "requestId", "request_id"]),
+    cause: error,
+  });
+}
+
+function throwIfAssistantResponseFailed(
+  response: AssistantMessage,
+  request: LlmRuntimeRequest,
+  startedAt: number,
+): void {
+  if (response.stopReason !== "error" && response.stopReason !== "aborted") {
+    return;
+  }
+
+  const rawMessage = response.errorMessage ?? fallbackProviderFailureMessage(response.stopReason);
+  const providerMessage = sanitizeProviderErrorDetail(rawMessage, response.stopReason);
+  const failureKind = classifyProviderRuntimeFailure({
+    message: rawMessage,
+    stopReason: response.stopReason,
+    signal: request.signal,
+  });
+
+  throw buildProviderRuntimeError({
+    request,
+    providerMessage,
+    failureKind,
+    startedAt,
+    stopReason: response.stopReason,
+  });
 }
 
 export class Thread<TContext = unknown, TOutput = unknown> {
@@ -583,9 +764,16 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     const { runMessages, runContext } = await this.prepareTurn();
 
     throwIfAborted(this.signal);
-    const response = await this.runtime.complete(await this.buildRuntimeRequest(runMessages));
+    const request = await this.buildRuntimeRequest(runMessages);
+    const startedAt = Date.now();
+    let response: AssistantMessage;
+    try {
+      response = await this.runtime.complete(request);
+    } catch (error) {
+      throw wrapTransportProviderFailure(error, request, startedAt) ?? error;
+    }
     throwIfAborted(this.signal);
-    throwIfAssistantResponseFailed(response);
+    throwIfAssistantResponseFailed(response, request, startedAt);
 
     yield response;
 
@@ -644,14 +832,21 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     const { runMessages, runContext } = await this.prepareTurn();
 
     throwIfAborted(this.signal);
-    const stream = this.runtime.stream(await this.buildRuntimeRequest(runMessages));
+    const request = await this.buildRuntimeRequest(runMessages);
+    const startedAt = Date.now();
+    let response: AssistantMessage;
+    try {
+      const stream = this.runtime.stream(request);
 
-    for await (const event of stream) {
-      yield event;
+      for await (const event of stream) {
+        yield event;
+      }
+
+      response = await stream.result();
+    } catch (error) {
+      throw wrapTransportProviderFailure(error, request, startedAt) ?? error;
     }
-
-    const response = await stream.result();
-    throwIfAssistantResponseFailed(response);
+    throwIfAssistantResponseFailed(response, request, startedAt);
 
     const functionCalls = await this.finalizeAssistantTurn(response, runContext);
     if (functionCalls.length === 0) {

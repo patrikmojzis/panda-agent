@@ -12,6 +12,7 @@ import {
     Hook,
     type LlmRuntime,
     type LlmRuntimeRequest,
+    ProviderRuntimeError,
     type RunContext,
     RunPipeline,
     StreamingFailedError,
@@ -194,11 +195,52 @@ function eventKind(event: ThreadRunEvent): string {
 }
 
 describe("Thread", () => {
-  it("throws when a non-streaming provider returns an error stop reason", async () => {
+  it("contextualizes terminated provider responses while preserving streaming failure compatibility", async () => {
     const runtime = createMockRuntime(createAssistantMessage([], {
       stopReason: "error",
-      errorMessage: "Overloaded",
+      errorMessage: "terminated",
     }));
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "core",
+        instructions: "Reply briefly",
+      }),
+      model: "openai/gpt-4o-mini",
+      messages: [stringToUserMessage("hi")],
+      runtime,
+    });
+
+    let caught: unknown;
+    try {
+      for await (const _output of thread.run()) {
+        // Exhaust the generator.
+      }
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ProviderRuntimeError);
+    expect(caught).toBeInstanceOf(StreamingFailedError);
+    const error = caught as ProviderRuntimeError;
+    expect(error.providerName).toBe("openai");
+    expect(error.modelId).toBe("gpt-4o-mini");
+    expect(error.stopReason).toBe("error");
+    expect(error.failureKind).toBe("provider_transport_terminated");
+    expect(error.providerMessage).toBe("terminated");
+    expect(error.message).toContain("provider=openai");
+    expect(error.message).toContain("model=gpt-4o-mini");
+    expect(error.message).toContain("failureKind=provider_transport_terminated");
+    expect(error.message).toContain("detail=terminated");
+  });
+
+  it("wraps transport-like runtime throws with provider diagnostics", async () => {
+    const runtime: LlmRuntime = {
+      complete: vi.fn().mockRejectedValue(new Error("fetch failed")),
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
 
     const thread = new Thread({
       agent: new Agent({
@@ -214,7 +256,47 @@ describe("Thread", () => {
       for await (const _output of thread.run()) {
         // Exhaust the generator.
       }
-    }).rejects.toBeInstanceOf(StreamingFailedError);
+    }).rejects.toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-4o-mini",
+      failureKind: "provider_transport_network",
+      providerMessage: "fetch failed",
+    });
+  });
+
+  it("redacts and caps provider failure details", async () => {
+    const runtime = createMockRuntime(createAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: `fetch failed Bearer abcdefghijklmnopqrstuvwxyz987654321 apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321 ${"x".repeat(1_000)}`,
+    }));
+
+    const thread = new Thread({
+      agent: new Agent({
+        name: "core",
+        instructions: "Reply briefly",
+      }),
+      model: "openai/gpt-4o-mini",
+      messages: [stringToUserMessage("hi")],
+      runtime,
+    });
+
+    let caught: unknown;
+    try {
+      for await (const _output of thread.run()) {
+        // Exhaust the generator.
+      }
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ProviderRuntimeError);
+    const error = caught as ProviderRuntimeError;
+    expect(error.failureKind).toBe("provider_transport_network");
+    expect(error.providerMessage).toContain("Bearer [redacted]");
+    expect(error.providerMessage).toContain("apiKey=[redacted]");
+    expect(error.providerMessage).toContain("[truncated");
+    expect(error.providerMessage).not.toContain("abcdefghijklmnopqrstuvwxyz987654321");
+    expect(error.message.length).toBeLessThan(1_100);
   });
 
   it("runs recursive tool calls and hook/pipeline callbacks", async () => {
