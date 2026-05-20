@@ -201,7 +201,9 @@ or `--environment-id`. It deletes the execution environment row, attached
 worker sessions, cascaded runtime rows, non-cascading outbound/runtime request
 rows, and the worker environment filesystem root. It also handles standalone
 environments with no workers. External copied media/artifact files outside the
-environment root are reported, not deleted. Active unexpired `ready`
+environment root are reported during `--execute`, not deleted. Dry-run is
+bounded and does not scan transcript JSON for those external references, so it
+prints them as not scanned rather than `0`. Active unexpired `ready`
 environments require `--force`.
 
 The parent agent context includes a worker-environments section for active

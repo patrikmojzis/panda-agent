@@ -101,7 +101,9 @@ bash jobs, heartbeats, environment bindings, and A2A bindings. The purge
 explicitly deletes non-cascading `runtime.outbound_deliveries` and
 `runtime.runtime_requests` rows that reference the environment or attached
 workers before deleting the sessions. External copied media outside the worker
-environment root is report-only in v1.
+environment root is report-only in v1. Dry-run is bounded and does not scan
+transcript JSON for those external references, so it prints them as not scanned
+rather than `0`.
 
 Worker sessions do not receive `worker_spawn`, `environment_create`, or
 `environment_stop` in their toolset. `worker_spawn.toolAllowlist` can grant
