@@ -21,6 +21,7 @@ import {readPositiveIntegerEnv} from "./database.js";
 import {DAEMON_HEARTBEAT_INTERVAL_MS, type DaemonServices} from "./daemon-shared.js";
 import {RuntimeRequestDrain, type RuntimeRequestDrainStore} from "./request-drain.js";
 import type {RuntimeServices} from "./create-runtime.js";
+import {formatOrphanedRunRecoveryReason} from "../../domain/threads/runtime/coordinator.js";
 
 const DAEMON_HEALTH_STALE_AFTER_MS = DAEMON_HEARTBEAT_INTERVAL_MS * 3;
 const DAEMON_HEALTH_POOL_WAITING_STALE_AFTER_MS = 60_000;
@@ -337,7 +338,12 @@ export function createDaemonLifecycle(input: {
         requestUnsubscribe = await input.context.requests.listenPendingRequests(() => {
           requestDrain.kick();
         });
-        await input.context.runtime.coordinator.recoverOrphanedRuns("Run marked failed before recovery.");
+        const recoveredAt = Date.now();
+        await input.context.runtime.coordinator.recoverOrphanedRuns(formatOrphanedRunRecoveryReason({
+          recoveryTrigger: "daemon_startup_or_restart",
+          probableCause: "previous_runtime_stopped_before_run_completed",
+          recoveredAt,
+        }));
         if (stopped) {
           return;
         }

@@ -38,8 +38,26 @@ import {isRecord} from "../../../lib/records.js";
 import {renderRuntimeAutonomyContext} from "../../../prompts/runtime/autonomy-context.js";
 
 export type ThreadWakeMode = "wake" | "queue";
+
+export type OrphanedRunRecoveryTrigger = "coordinator_call" | "daemon_startup_or_restart";
+export type OrphanedRunRecoveryProbableCause =
+  | "unknown"
+  | "previous_runtime_stopped_before_run_completed";
+
 const ABORT_POLL_MS = 250;
 const LEASE_RETRY_BACKOFF_MS = 250;
+const ORPHANED_RUN_RECOVERY_MECHANISM = "thread_lease_gated_orphan_sweep";
+
+export function formatOrphanedRunRecoveryReason(input: {
+  recoveryTrigger: OrphanedRunRecoveryTrigger;
+  probableCause?: OrphanedRunRecoveryProbableCause;
+  recoveredAt?: number;
+}): string {
+  const recoveredAt = new Date(input.recoveredAt ?? Date.now()).toISOString();
+  const probableCause = input.probableCause ?? "unknown";
+
+  return `Run marked failed during orphaned-run recovery; recoveryTrigger=${input.recoveryTrigger}; recoveryMechanism=${ORPHANED_RUN_RECOVERY_MECHANISM}; probableCause=${probableCause}; recoveredAt=${recoveredAt}.`;
+}
 
 export interface ThreadLease {
   threadId: string;
@@ -379,7 +397,7 @@ export class ThreadRuntimeCoordinator {
   }
 
   async recoverOrphanedRuns(
-    reason = "Run marked failed before recovery.",
+    reason = formatOrphanedRunRecoveryReason({ recoveryTrigger: "coordinator_call" }),
   ): Promise<readonly ThreadRunRecord[]> {
     const recoveredRuns: ThreadRunRecord[] = [];
     const runningRuns = await this.store.listRunningRuns();
