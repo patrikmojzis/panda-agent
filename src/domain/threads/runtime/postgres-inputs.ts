@@ -1,12 +1,15 @@
-import {toJson} from "../../../lib/postgres-values.js";
 import {randomUUID} from "node:crypto";
 
 import type {ThreadEnqueueResult, ThreadInputApplyScope} from "./store.js";
 import {type ThreadRuntimeTableNames} from "./postgres-shared.js";
 import {parseInputRow, parseInputThreadIdRow, parseMessageRow} from "./postgres-rows.js";
-import type {PgPoolLike, PgQueryable} from "../../../lib/postgres-query.js";
+import type {PgPoolLike, PgQueryResult, PgQueryable} from "../../../lib/postgres-query.js";
 import {withTransaction} from "../../../lib/postgres-transaction.js";
 import type {ThreadInputDeliveryMode, ThreadInputPayload, ThreadMessageRecord,} from "./types.js";
+import {
+  createThreadRuntimeJsonbPersistenceError,
+  serializeThreadRuntimeJsonb,
+} from "./postgres-jsonb-safety.js";
 
 interface ThreadMutationCallbacks {
   touchThread(threadId: string, queryable?: PgQueryable): Promise<void>;
@@ -76,6 +79,9 @@ export async function enqueueThreadInput(
   const id = randomUUID();
   const createdAt = new Date();
 
+  const metadataJson = serializeThreadRuntimeJsonb(payload.metadata);
+  const messageJson = serializeThreadRuntimeJsonb(payload.message);
+
   try {
     const insertResult = await pool.query(`
       INSERT INTO ${tables.inputs} (
@@ -114,8 +120,8 @@ export async function enqueueThreadInput(
       payload.actorId ?? null,
       payload.identityId ?? null,
       createdAt,
-      toJson(payload.metadata),
-      toJson(payload.message),
+      metadataJson.json,
+      messageJson.json,
     ]);
 
     await options.touchThread(threadId, pool);
@@ -127,6 +133,18 @@ export async function enqueueThreadInput(
       inserted: true,
     };
   } catch (error) {
+    const jsonbError = createThreadRuntimeJsonbPersistenceError(error, {
+      operation: "enqueueThreadInput",
+      table: tables.inputs,
+      fields: [
+        {name: "metadata", nulCount: metadataJson.nulCount},
+        {name: "message", nulCount: messageJson.nulCount},
+      ],
+    });
+    if (jsonbError) {
+      throw jsonbError;
+    }
+
     const duplicateKey = error as { code?: string };
     if (duplicateKey.code === "23505" && payload.externalMessageId) {
       return enqueueThreadInput(options);
@@ -169,45 +187,60 @@ async function applyThreadInputs(
         [input.id],
       );
 
-      const insertResult = await client.query(`
-        INSERT INTO ${options.tables.messages} (
-          id,
-          thread_id,
-          origin,
-          source,
-          channel_id,
-          external_message_id,
-          actor_id,
-          identity_id,
-          created_at,
-          metadata,
-          message
-        ) VALUES (
-          $1,
-          $2,
-          'input',
-          $3,
-          $4,
-          $5,
-          $6,
-          $7,
-          $8,
-          $9::jsonb,
-          $10::jsonb
-        )
-        RETURNING *
-      `, [
-        randomUUID(),
-        options.threadId,
-        input.source,
-        input.channelId ?? null,
-        input.externalMessageId ?? null,
-        input.actorId ?? null,
-        input.identityId ?? null,
-        new Date(input.createdAt),
-        toJson(input.metadata ?? null),
-        toJson(input.message),
-      ]);
+      const metadataJson = serializeThreadRuntimeJsonb(input.metadata ?? null);
+      const messageJson = serializeThreadRuntimeJsonb(input.message);
+      let insertResult: PgQueryResult;
+      try {
+        insertResult = await client.query(`
+          INSERT INTO ${options.tables.messages} (
+            id,
+            thread_id,
+            origin,
+            source,
+            channel_id,
+            external_message_id,
+            actor_id,
+            identity_id,
+            created_at,
+            metadata,
+            message
+          ) VALUES (
+            $1,
+            $2,
+            'input',
+            $3,
+            $4,
+            $5,
+            $6,
+            $7,
+            $8,
+            $9::jsonb,
+            $10::jsonb
+          )
+          RETURNING *
+        `, [
+          randomUUID(),
+          options.threadId,
+          input.source,
+          input.channelId ?? null,
+          input.externalMessageId ?? null,
+          input.actorId ?? null,
+          input.identityId ?? null,
+          new Date(input.createdAt),
+          metadataJson.json,
+          messageJson.json,
+        ]);
+      } catch (error) {
+        const jsonbError = createThreadRuntimeJsonbPersistenceError(error, {
+          operation: "applyPendingThreadInputs",
+          table: options.tables.messages,
+          fields: [
+            {name: "metadata", nulCount: metadataJson.nulCount},
+            {name: "message", nulCount: messageJson.nulCount},
+          ],
+        });
+        throw jsonbError ?? error;
+      }
 
       inserted.push(parseMessageRow(insertResult.rows[0] as Record<string, unknown>));
     }
