@@ -13,10 +13,10 @@
       "sha256": "58aa68e655a031f2e9b4a847f4b2e56f12b6d8f1aebc61364e1124c91a5da1f3"
     },
     {
-      "bytes": 13717,
-      "lines": 373,
+      "bytes": 13818,
+      "lines": 375,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "214c5626795a6fca17324fcf694f437fe858865065a80175240571002eaddc2e"
+      "sha256": "236473bb357841ddb68dd93d999bed8ddc924b139a363ed46c9baad3d8e4066d"
     },
     {
       "bytes": 12121,
@@ -37,10 +37,10 @@
       "sha256": "145495db587148edf5d0d6e0678a5439c0d7fd373a0043e883dc9937fdd991ef"
     },
     {
-      "bytes": 9944,
-      "lines": 244,
+      "bytes": 10189,
+      "lines": 247,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "90ebba4240cbf1dba3f05efbc7dc85c33f78f9d36f5c6e4986cf44643005de8b"
+      "sha256": "5e5541cd5a8c0726b20dd3b3be223163096d674522fb4631a00c1115f0bdfcec"
     },
     {
       "bytes": 2612,
@@ -55,10 +55,10 @@
       "sha256": "c9dba92c99c1b215b5d3e5545677395423b39853d8ebe04fabf857aa246ca3d8"
     },
     {
-      "bytes": 4965,
-      "lines": 141,
+      "bytes": 5973,
+      "lines": 161,
       "path": "src/panda/contexts/builder.ts",
-      "sha256": "a2a602e4e2f9d117ba8b4852fd43bc1fcae08feb30d6e0018b8c56ea8ccd61b4"
+      "sha256": "f5207a13ef0e0e55b33d6bf9a3cbb5e0556cb306f987ce05d285a7a938b8867b"
     },
     {
       "bytes": 1541,
@@ -77,6 +77,12 @@
       "lines": 77,
       "path": "src/panda/contexts/scheduled-reminders-context.ts",
       "sha256": "73e9f64e98a34cc9b9b275a00d1ea7957bfb9ff467bc615a985566fc2adfb2bf"
+    },
+    {
+      "bytes": 1150,
+      "lines": 30,
+      "path": "src/panda/contexts/session-briefing-context.ts",
+      "sha256": "1152531e3bd22cf5ecd78fe47ea15e9ede480272db3a06497ba6ade67c68c4e9"
     },
     {
       "bytes": 216,
@@ -209,6 +215,12 @@
       "lines": 34,
       "path": "src/prompts/contexts/scheduled-reminders.ts",
       "sha256": "ecd43d637f495cee2bfd5996458c66f0b1314242de77f71c60cf6f0cf43f3c41"
+    },
+    {
+      "bytes": 136,
+      "lines": 3,
+      "path": "src/prompts/contexts/session-briefing.ts",
+      "sha256": "ce1e613f2ffde43b9d0d698d3e9cee8f0e7440f3d49db85ec97c59d778fba2d7"
     },
     {
       "bytes": 1371,
