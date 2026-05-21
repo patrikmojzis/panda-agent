@@ -48,6 +48,40 @@ export interface EmailAllowedRecipientRecord {
   createdAt: number;
 }
 
+export interface EmailRouteRecord {
+  id: string;
+  agentKey: string;
+  accountKey: string;
+  mailbox?: string;
+  sessionId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SetEmailRouteInput {
+  agentKey: string;
+  accountKey: string;
+  mailbox?: string;
+  sessionId: string;
+}
+
+export interface EmailRouteLookupInput {
+  agentKey: string;
+  accountKey: string;
+  mailbox?: string;
+}
+
+export interface EmailAccountSendOwnershipInput {
+  agentKey: string;
+  accountKey: string;
+  sessionId: string;
+}
+
+export interface EmailMessageOwnershipInput {
+  messageId: string;
+  sessionId: string;
+}
+
 export type EmailMessageDirection = "inbound" | "outbound";
 export type EmailRecipientRole = "from" | "reply_to" | "to" | "cc";
 export type EmailAuthVerdict = "pass" | "fail" | "softfail" | "neutral" | "none" | "temperror" | "permerror" | "unknown";
@@ -71,6 +105,8 @@ export interface EmailMessageRecord {
   id: string;
   agentKey: string;
   accountKey: string;
+  sessionId?: string;
+  routeId?: string;
   direction: EmailMessageDirection;
   mailbox?: string;
   uid?: number;
@@ -100,6 +136,8 @@ export interface EmailMessageRecord {
 export interface RecordEmailMessageInput {
   agentKey: string;
   accountKey: string;
+  sessionId?: string;
+  routeId?: string;
   direction: EmailMessageDirection;
   mailbox?: string;
   uid?: number;
@@ -161,6 +199,12 @@ export interface EmailStore {
   removeAllowedRecipient(agentKey: string, accountKey: string, address: string): Promise<boolean>;
   listAllowedRecipients(agentKey: string, accountKey: string): Promise<readonly EmailAllowedRecipientRecord[]>;
   assertRecipientsAllowed(agentKey: string, accountKey: string, addresses: readonly string[]): Promise<void>;
+  setRoute(input: SetEmailRouteInput): Promise<EmailRouteRecord>;
+  removeRoute(input: EmailRouteLookupInput): Promise<boolean>;
+  listRoutes(agentKey: string, accountKey?: string): Promise<readonly EmailRouteRecord[]>;
+  resolveRoute(input: EmailRouteLookupInput): Promise<EmailRouteRecord | null>;
+  assertAccountSendableBySession(input: EmailAccountSendOwnershipInput): Promise<void>;
+  assertMessageOwnedBySession(input: EmailMessageOwnershipInput): Promise<void>;
   recordMessage(input: RecordEmailMessageInput): Promise<RecordEmailMessageResult>;
   getMessage(messageId: string): Promise<EmailMessageRecord>;
   listMessageRecipients(messageId: string): Promise<readonly EmailMessageRecipientRecord[]>;

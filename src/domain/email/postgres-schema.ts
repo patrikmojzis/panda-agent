@@ -2,12 +2,14 @@ import {quoteIdentifier, CREATE_RUNTIME_SCHEMA_SQL} from "../../lib/postgres-rel
 
 import {addConstraint, assertIntegrityChecks} from "../../lib/postgres-integrity.js";
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
+import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {buildEmailTableNames} from "./postgres-shared.js";
 
 export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void> {
   const tables = buildEmailTableNames();
   const agentTableName = buildAgentTableNames().agents;
+  const sessionTableName = buildSessionTableNames().sessions;
   await pool.query(CREATE_RUNTIME_SCHEMA_SQL);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.emailAccounts} (
@@ -35,10 +37,23 @@ export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void
     )
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.emailRoutes} (
+      id UUID PRIMARY KEY,
+      agent_key TEXT NOT NULL,
+      account_key TEXT NOT NULL,
+      mailbox TEXT,
+      session_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.emailMessages} (
       id UUID PRIMARY KEY,
       agent_key TEXT NOT NULL,
       account_key TEXT NOT NULL,
+      session_id TEXT,
+      route_id UUID,
       direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
       mailbox TEXT,
       uid INTEGER CHECK (uid IS NULL OR uid >= 0),
@@ -88,12 +103,34 @@ export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void
     )
   `);
   await pool.query(`
+    ALTER TABLE ${tables.emailMessages}
+    ADD COLUMN IF NOT EXISTS session_id TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.emailMessages}
+    ADD COLUMN IF NOT EXISTS route_id UUID
+  `);
+  await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_accounts_key_idx`)}
     ON ${tables.emailAccounts} (agent_key, account_key)
   `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_allowed_key_idx`)}
     ON ${tables.emailAllowedRecipients} (agent_key, account_key, address)
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_routes_account_idx`)}
+    ON ${tables.emailRoutes} (agent_key, account_key)
+    WHERE mailbox IS NULL
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_routes_mailbox_idx`)}
+    ON ${tables.emailRoutes} (agent_key, account_key, mailbox)
+    WHERE mailbox IS NOT NULL
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_routes_session_idx`)}
+    ON ${tables.emailRoutes} (session_id, agent_key, account_key)
   `);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_accounts_enabled_idx`)}
@@ -108,10 +145,39 @@ export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void
     ON ${tables.emailMessages} (agent_key, account_key, thread_key, COALESCE(received_at, sent_at, created_at))
   `);
   await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_messages_session_idx`)}
+    ON ${tables.emailMessages} (session_id, agent_key, COALESCE(received_at, sent_at, created_at))
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_messages_route_idx`)}
+    ON ${tables.emailMessages} (route_id)
+  `);
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_recipients_message_idx`)}
     ON ${tables.emailMessageRecipients} (message_id, role)
   `);
   await assertIntegrityChecks(pool, "Email schema", [
+    {
+      label: "email_routes.session_id orphaned from agent_sessions.id",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.emailRoutes} AS route
+        LEFT JOIN ${sessionTableName} AS session
+          ON session.id = route.session_id
+        WHERE session.id IS NULL
+      `,
+    },
+    {
+      label: "email_messages.session_id orphaned from agent_sessions.id",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.emailMessages} AS message
+        LEFT JOIN ${sessionTableName} AS session
+          ON session.id = message.session_id
+        WHERE message.session_id IS NOT NULL
+          AND session.id IS NULL
+      `,
+    },
     {
       label: "email_accounts.agent_key orphaned from agents.agent_key",
       sql: `
@@ -138,10 +204,38 @@ export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void
     ON DELETE CASCADE
   `);
   await addConstraint(pool, `
+    ALTER TABLE ${tables.emailRoutes}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_email_routes_account_fk`)}
+    FOREIGN KEY (agent_key, account_key)
+    REFERENCES ${tables.emailAccounts}(agent_key, account_key)
+    ON DELETE CASCADE
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.emailRoutes}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_email_routes_session_fk`)}
+    FOREIGN KEY (session_id)
+    REFERENCES ${sessionTableName}(id)
+    ON DELETE CASCADE
+  `);
+  await addConstraint(pool, `
     ALTER TABLE ${tables.emailMessages}
     ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_email_messages_account_fk`)}
     FOREIGN KEY (agent_key, account_key)
     REFERENCES ${tables.emailAccounts}(agent_key, account_key)
     ON DELETE CASCADE
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.emailMessages}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_email_messages_session_fk`)}
+    FOREIGN KEY (session_id)
+    REFERENCES ${sessionTableName}(id)
+    ON DELETE SET NULL
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.emailMessages}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_email_messages_route_fk`)}
+    FOREIGN KEY (route_id)
+    REFERENCES ${tables.emailRoutes}(id)
+    ON DELETE SET NULL
   `);
 }

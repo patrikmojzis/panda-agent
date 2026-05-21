@@ -4,6 +4,7 @@ import type {
     EmailAccountRecord,
     EmailAccountSyncState,
     EmailMessageRecord,
+    EmailRouteRecord,
     RecordEmailMessageInput,
     RecordEmailMessageResult,
 } from "../src/domain/email/types.js";
@@ -44,13 +45,18 @@ class MemoryEmailStore implements EmailSyncStore {
     this.account = {...this.account, syncState};
     return this.account;
   }
-  async recordMessage(_input: RecordEmailMessageInput): Promise<RecordEmailMessageResult> {
+  async resolveRoute(): Promise<EmailRouteRecord | null> {
+    return null;
+  }
+  async recordMessage(input: RecordEmailMessageInput): Promise<RecordEmailMessageResult> {
     return {
       inserted: true,
       message: {
         id: "email-recorded",
         agentKey: this.account.agentKey,
         accountKey: this.account.accountKey,
+        sessionId: input.sessionId,
+        routeId: input.routeId,
         direction: "inbound",
         threadKey: "thread",
         hasAttachments: false,
@@ -139,6 +145,63 @@ describe("EmailSyncRunner", () => {
     const prompt = (submitted[0] as {input: {message: {content: string}}}).input.message.content;
     expect(prompt).toContain("Authentication summary: \"suspicious\"");
     expect(prompt).toContain("provider authentication checks did not pass cleanly");
+  });
+
+  it("wakes the routed message session before falling back to main", async () => {
+    const store = new MemoryEmailStore();
+    const submitted: Array<{threadId: string}> = [];
+    const mainSession: SessionRecord = {
+      id: "main-session",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "main-thread",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const branchSession: SessionRecord = {
+      id: "branch-session",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "branch-thread",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const runner = new EmailSyncRunner({
+      store,
+      sessions: {
+        getMainSession: async () => mainSession,
+        getSession: async (sessionId) => {
+          expect(sessionId).toBe(branchSession.id);
+          return branchSession;
+        },
+      },
+      coordinator: {
+        submitInput: async (threadId: string) => {
+          submitted.push({threadId});
+        },
+      },
+      credentialResolver: fakeCredentialResolver,
+      pollIntervalMs: 60 * 60 * 1000,
+      syncAccount: async () => [{
+        id: "email-routed",
+        agentKey: "panda",
+        accountKey: "work",
+        sessionId: branchSession.id,
+        direction: "inbound",
+        threadKey: "<email-routed@example.com>",
+        subject: "Routed",
+        fromAddress: "alice@example.com",
+        receivedAt: Date.parse("2026-05-05T10:00:00Z"),
+        hasAttachments: false,
+        createdAt: 1,
+      }],
+    });
+
+    await runner.start();
+    await waitFor(() => {
+      expect(submitted).toEqual([{threadId: "branch-thread"}]);
+    });
+    await runner.stop();
   });
 
   it("re-resolves the main session current thread when waking for synced mail", async () => {

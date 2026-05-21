@@ -10,6 +10,7 @@ function validEmailPayload(): EmailSendPayload {
     kind: "email_send",
     agentKey: "panda",
     accountKey: "work",
+    sessionId: "session-1",
     fromAddress: "panda@example.com",
     to: [{address: "alice@example.com"}],
     cc: [],

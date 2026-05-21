@@ -6,6 +6,8 @@ import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
 import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {parseAgentKey} from "../agents/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
+import {PostgresIdentityStore} from "../identity/postgres.js";
+import {PostgresSessionStore} from "../sessions/postgres.js";
 import {parseLabeledPortOption} from "../../lib/cli.js";
 import {DEFAULT_EMAIL_MAILBOXES, normalizeEmailAddress, normalizeEmailMailbox} from "./shared.js";
 import {PostgresEmailStore} from "./postgres.js";
@@ -40,6 +42,15 @@ interface EmailAccountLookupOptions extends EmailCliOptions {
 
 interface EmailAllowOptions extends EmailAccountLookupOptions {}
 
+interface EmailRouteSetOptions extends EmailAccountLookupOptions {
+  session: string;
+  mailbox?: string;
+}
+
+interface EmailRouteLookupOptions extends EmailAccountLookupOptions {
+  mailbox?: string;
+}
+
 function collectMailbox(value: string, previous: string[] = []): string[] {
   return [...previous, normalizeEmailMailbox(value)];
 }
@@ -64,18 +75,20 @@ function endpoint(input: {
 
 async function withEmailStores<T>(
   options: EmailCliOptions,
-  fn: (store: PostgresEmailStore) => Promise<T>,
+  fn: (stores: {email: PostgresEmailStore; sessions: PostgresSessionStore}) => Promise<T>,
 ): Promise<T> {
   return withPostgresPool(options.dbUrl, async (pool) => {
+    const identities = new PostgresIdentityStore({pool});
     const agents = new PostgresAgentStore({pool});
+    const sessions = new PostgresSessionStore({pool});
     const email = new PostgresEmailStore({pool});
-    await ensureSchemas([agents, email]);
-    return fn(email);
+    await ensureSchemas([identities, agents, sessions, email]);
+    return fn({email, sessions});
   });
 }
 
 async function emailAccountSetCommand(accountKey: string, options: EmailAccountOptions): Promise<void> {
-  await withEmailStores(options, async (store) => {
+  await withEmailStores(options, async ({email: store}) => {
     const secureFallback = options.secure;
     const account = await store.upsertAccount({
       agentKey: options.agent,
@@ -113,7 +126,7 @@ async function emailAccountSetCommand(accountKey: string, options: EmailAccountO
 }
 
 async function emailAccountDisableCommand(accountKey: string, options: EmailAccountLookupOptions): Promise<void> {
-  await withEmailStores(options, async (store) => {
+  await withEmailStores(options, async ({email: store}) => {
     const account = await store.disableAccount(options.agent, accountKey);
     process.stdout.write(`Disabled email account ${account.accountKey} for ${account.agentKey}.\n`);
   });
@@ -124,7 +137,7 @@ async function emailAllowAddCommand(
   address: string,
   options: EmailAllowOptions,
 ): Promise<void> {
-  await withEmailStores(options, async (store) => {
+  await withEmailStores(options, async ({email: store}) => {
     const recipient = await store.addAllowedRecipient(options.agent, accountKey, address);
     process.stdout.write(`Allowed ${recipient.address} for email account ${recipient.accountKey}.\n`);
   });
@@ -135,7 +148,7 @@ async function emailAllowRemoveCommand(
   address: string,
   options: EmailAllowOptions,
 ): Promise<void> {
-  await withEmailStores(options, async (store) => {
+  await withEmailStores(options, async ({email: store}) => {
     const normalized = normalizeEmailAddress(address);
     const removed = await store.removeAllowedRecipient(options.agent, accountKey, normalized);
     process.stdout.write(removed
@@ -145,7 +158,7 @@ async function emailAllowRemoveCommand(
 }
 
 async function emailAllowListCommand(accountKey: string, options: EmailAllowOptions): Promise<void> {
-  await withEmailStores(options, async (store) => {
+  await withEmailStores(options, async ({email: store}) => {
     const recipients = await store.listAllowedRecipients(options.agent, accountKey);
     if (recipients.length === 0) {
       process.stdout.write("No allowed recipients.\n");
@@ -153,6 +166,60 @@ async function emailAllowListCommand(accountKey: string, options: EmailAllowOpti
     }
 
     process.stdout.write(recipients.map((recipient) => recipient.address).join("\n") + "\n");
+  });
+}
+
+async function emailRouteSetCommand(accountKey: string, options: EmailRouteSetOptions): Promise<void> {
+  await withEmailStores(options, async ({email, sessions}) => {
+    const session = await sessions.resolveSessionRef({
+      sessionRef: options.session,
+      agentKey: options.agent,
+    });
+    const route = await email.setRoute({
+      agentKey: options.agent,
+      accountKey,
+      ...(options.mailbox ? {mailbox: options.mailbox} : {}),
+      sessionId: session.id,
+    });
+
+    process.stdout.write([
+      `Configured email route ${route.id}.`,
+      `agent ${route.agentKey}`,
+      `account ${route.accountKey}`,
+      `mailbox ${route.mailbox ?? "<account>"}`,
+      `session ${route.sessionId}`,
+    ].join("\n") + "\n");
+  });
+}
+
+async function emailRouteRemoveCommand(accountKey: string, options: EmailRouteLookupOptions): Promise<void> {
+  await withEmailStores(options, async ({email}) => {
+    const removed = await email.removeRoute({
+      agentKey: options.agent,
+      accountKey,
+      ...(options.mailbox ? {mailbox: options.mailbox} : {}),
+    });
+    const mailbox = options.mailbox ?? "<account>";
+    process.stdout.write(removed
+      ? `Removed email route for ${accountKey} ${mailbox}.\n`
+      : `No email route removed for ${accountKey} ${mailbox}.\n`);
+  });
+}
+
+async function emailRouteListCommand(accountKey: string | undefined, options: EmailAccountLookupOptions): Promise<void> {
+  await withEmailStores(options, async ({email}) => {
+    const routes = await email.listRoutes(options.agent, accountKey);
+    if (routes.length === 0) {
+      process.stdout.write("No email routes.\n");
+      return;
+    }
+
+    process.stdout.write(routes.map((route) => [
+      route.accountKey,
+      route.mailbox ?? "<account>",
+      route.sessionId,
+      route.id,
+    ].join("\t")).join("\n") + "\n");
   });
 }
 
@@ -234,5 +301,42 @@ export function registerEmailCommands(program: Command): void {
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((accountKey: string, options: EmailAllowOptions) => {
       return emailAllowListCommand(accountKey, options);
+    });
+
+  const routeProgram = emailProgram
+    .command("route")
+    .description("Manage deterministic email account/mailbox session routes");
+
+  routeProgram
+    .command("set")
+    .description("Route an email account or mailbox to a session")
+    .argument("<accountKey>", "Stable email account key")
+    .requiredOption("--agent <agentKey>", "Agent that owns the account", parseAgentKey)
+    .requiredOption("--session <sessionRef>", "Target session id or alias")
+    .option("--mailbox <mailbox>", "Mailbox-specific route; omit for account route", normalizeEmailMailbox)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((accountKey: string, options: EmailRouteSetOptions) => {
+      return emailRouteSetCommand(accountKey, options);
+    });
+
+  routeProgram
+    .command("remove")
+    .description("Remove an email account or mailbox route")
+    .argument("<accountKey>", "Stable email account key")
+    .requiredOption("--agent <agentKey>", "Agent that owns the account", parseAgentKey)
+    .option("--mailbox <mailbox>", "Mailbox-specific route; omit for account route", normalizeEmailMailbox)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((accountKey: string, options: EmailRouteLookupOptions) => {
+      return emailRouteRemoveCommand(accountKey, options);
+    });
+
+  routeProgram
+    .command("list")
+    .description("List email routes")
+    .argument("[accountKey]", "Optional email account key")
+    .requiredOption("--agent <agentKey>", "Agent that owns the account", parseAgentKey)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((accountKey: string | undefined, options: EmailAccountLookupOptions) => {
+      return emailRouteListCommand(accountKey, options);
     });
 }

@@ -37,6 +37,8 @@ class MemoryEmailStore implements EmailSendStore {
     updatedAt: 1,
   };
   allowed = new Set<string>();
+  accountSendable = true;
+  messageOwned = true;
   messages = new Map<string, EmailMessageRecord>();
   recipients = new Map<string, EmailMessageRecipientRecord[]>();
 
@@ -56,6 +58,16 @@ class MemoryEmailStore implements EmailSendStore {
       .filter((address) => !this.allowed.has(address));
     if (blocked.length > 0) {
       throw new Error(`Email account ${accountKey} is not allowed to send to ${blocked.join(", ")}.`);
+    }
+  }
+  async assertAccountSendableBySession(): Promise<void> {
+    if (!this.accountSendable) {
+      throw new Error("Email account work is not routed to session session-1.");
+    }
+  }
+  async assertMessageOwnedBySession(): Promise<void> {
+    if (!this.messageOwned) {
+      throw new Error("Email message email-1 is not visible to session session-1.");
     }
   }
   async getMessage(messageId: string): Promise<EmailMessageRecord> {
@@ -153,6 +165,22 @@ describe("EmailSendTool", () => {
     })]);
   });
 
+  it("blocks fresh sends from sessions that do not own the account", async () => {
+    const store = new MemoryEmailStore();
+    store.allowRecipient("alice@example.com");
+    store.accountSendable = false;
+    const context = createContext();
+    const tool = new EmailSendTool<DefaultAgentSessionContext>({store});
+
+    await expect(tool.run({
+      accountKey: "work",
+      to: [{address: "alice@example.com"}],
+      subject: "Nope",
+      text: "Nope",
+    }, createRunContext(context))).rejects.toThrow("not routed to session");
+    expect(context.queued).toEqual([]);
+  });
+
   it("derives reply-all recipients and threading headers from stored email", async () => {
     const store = new MemoryEmailStore();
     for (const address of ["alice@example.com", "bob@example.com", "carol@example.com"]) {
@@ -227,6 +255,32 @@ describe("EmailSendTool", () => {
       subject: "Nope",
       text: "Nope",
     }, createRunContext(context))).rejects.toThrow("Unknown email account missing");
+    expect(context.queued).toEqual([]);
+  });
+
+  it("blocks replies to messages outside the current session", async () => {
+    const store = new MemoryEmailStore();
+    store.messageOwned = false;
+    store.messages.set("email-1", {
+      id: "email-1",
+      agentKey: "panda",
+      accountKey: "work",
+      direction: "inbound",
+      threadKey: "<email-1@example.com>",
+      subject: "Other lane",
+      fromAddress: "alice@example.com",
+      authSummary: "trusted",
+      hasAttachments: false,
+      createdAt: 1,
+    });
+    const context = createContext();
+    const tool = new EmailSendTool<DefaultAgentSessionContext>({store});
+
+    await expect(tool.run({
+      accountKey: "work",
+      replyToEmailId: "email-1",
+      text: "Nope",
+    }, createRunContext(context))).rejects.toThrow("not visible to session");
     expect(context.queued).toEqual([]);
   });
 

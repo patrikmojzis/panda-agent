@@ -25,7 +25,7 @@ const MAX_EMAIL_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
 type EmailSendStore = Pick<
   EmailStore,
-  "getAccount" | "getMessage" | "listMessageRecipients" | "assertRecipientsAllowed"
+  "assertAccountSendableBySession" | "assertMessageOwnedBySession" | "getAccount" | "getMessage" | "listMessageRecipients" | "assertRecipientsAllowed"
 >;
 
 const emailRecipientSchema = z.object({
@@ -122,8 +122,8 @@ function ensureOutboundQueue(context: DefaultAgentSessionContext | undefined): N
 }
 
 function requireContext(context: DefaultAgentSessionContext | undefined): DefaultAgentSessionContext {
-  if (!context?.agentKey || !context.threadId) {
-    throw new ToolError("Email send requires agentKey and threadId in the current runtime context.");
+  if (!context?.agentKey || !context.sessionId || !context.threadId) {
+    throw new ToolError("Email send requires agentKey, sessionId, and threadId in the current runtime context.");
   }
 
   return context;
@@ -286,6 +286,7 @@ export class EmailSendTool<TContext = DefaultAgentSessionContext> extends Tool<t
   private async resolveDraft(
     args: z.output<typeof EmailSendTool.schema>,
     agentKey: string,
+    sessionId: string,
     fromAddress: string,
   ): Promise<ResolvedEmailDraft> {
     if (!args.replyToEmailId) {
@@ -298,6 +299,8 @@ export class EmailSendTool<TContext = DefaultAgentSessionContext> extends Tool<t
     }
 
     const message = await this.store.getMessage(args.replyToEmailId).catch((error: unknown) => rethrowAsToolError(error));
+    await this.store.assertMessageOwnedBySession({messageId: message.id, sessionId})
+      .catch((error: unknown) => rethrowAsToolError(error));
     if (message.agentKey !== agentKey || message.accountKey !== args.accountKey) {
       throw new ToolError(`Email message ${args.replyToEmailId} does not belong to account ${args.accountKey}.`);
     }
@@ -333,7 +336,15 @@ export class EmailSendTool<TContext = DefaultAgentSessionContext> extends Tool<t
       throw new ToolError(`Email account ${args.accountKey} is disabled.`);
     }
 
-    const draft = await this.resolveDraft(args, context.agentKey, account.fromAddress);
+    if (!args.replyToEmailId) {
+      await this.store.assertAccountSendableBySession({
+        agentKey: context.agentKey,
+        accountKey: account.accountKey,
+        sessionId: context.sessionId,
+      }).catch((error: unknown) => rethrowAsToolError(error));
+    }
+
+    const draft = await this.resolveDraft(args, context.agentKey, context.sessionId, account.fromAddress);
     const recipientAddresses = [...draft.to, ...draft.cc].map((recipient) => recipient.address);
     if (recipientAddresses.length === 0) {
       throw new ToolError("Email has no recipients after removing the sender account address.");
@@ -346,6 +357,7 @@ export class EmailSendTool<TContext = DefaultAgentSessionContext> extends Tool<t
       kind: "email_send",
       agentKey: context.agentKey,
       accountKey: account.accountKey,
+      sessionId: context.sessionId,
       fromAddress: account.fromAddress,
       ...(account.fromName ? {fromName: account.fromName} : {}),
       to: draft.to,
