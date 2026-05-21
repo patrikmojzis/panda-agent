@@ -14,7 +14,7 @@ import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {createSessionWithInitialThread} from "./lifecycle.js";
 import {PostgresSessionStore} from "./postgres.js";
-import {normalizeSessionAlias, type SessionRecord} from "./types.js";
+import {SESSION_BRIEFING_PROMPT_SLUG, normalizeSessionAlias, type SessionRecord} from "./types.js";
 
 export interface SessionCliOptions {
   dbUrl?: string;
@@ -40,6 +40,11 @@ interface HeartbeatCliOptions extends ScopedSessionRefCliOptions {
   enable?: boolean;
   disable?: boolean;
   every?: number;
+}
+
+interface SessionPromptCliOptions extends ScopedSessionRefCliOptions {
+  content?: string;
+  stdin?: boolean;
 }
 
 interface WithSessionStores {
@@ -200,6 +205,46 @@ async function resolveSessionCliRef(
   });
 }
 
+async function readStdinText(): Promise<string> {
+  const chunks: string[] = [];
+
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
+  }
+
+  return chunks.join("");
+}
+
+async function resolvePromptContent(
+  positionalContent: string | undefined,
+  options: SessionPromptCliOptions,
+): Promise<string> {
+  const inputPaths = [
+    positionalContent !== undefined,
+    options.content !== undefined,
+    options.stdin === true,
+  ].filter(Boolean).length;
+
+  if (inputPaths > 1) {
+    throw new Error("Pick one session prompt input path: positional content, --content, or --stdin.");
+  }
+
+  const content = options.stdin ? await readStdinText() : options.content ?? positionalContent;
+  if (content === undefined) {
+    throw new Error("Pass session prompt content as an argument, with --content, or pipe it with --stdin.");
+  }
+
+  if (!content.trim()) {
+    throw new Error("Session prompt content must not be empty.");
+  }
+
+  return content;
+}
+
+function writePromptContent(content: string): void {
+  process.stdout.write(content.endsWith("\n") ? content : `${content}\n`);
+}
+
 function buildSessionCreateOutput(input: {
   agentKey: string;
   sessionRef?: string;
@@ -295,12 +340,17 @@ async function listSessionsCommand(agentKey: string, options: SessionCliOptions)
       return;
     }
 
+    const promptEntries = await Promise.all(sessions.map(async (session) => {
+      return [session.id, await sessionStore.readSessionPrompt(session.id)] as const;
+    }));
+    const promptsBySessionId = new Map(promptEntries);
+
     for (const session of sessions) {
       process.stdout.write(
         [
           session.displayName ? `${session.displayName} (${session.id})` : session.id,
-          `  alias ${session.alias ?? "-"} · kind ${session.kind} · current thread ${session.currentThreadId}`,
-          `  created by ${session.createdByIdentityId ?? "-"}`,
+          ` alias ${session.alias ?? "-"} · kind ${session.kind} · current thread ${session.currentThreadId} · has brief ${promptsBySessionId.get(session.id) ? "yes" : "no"}`,
+          ` created by ${session.createdByIdentityId ?? "-"}`,
         ].join("\n") + "\n\n",
       );
     }
@@ -312,18 +362,108 @@ async function inspectSessionCommand(sessionRef: string, options: ScopedSessionR
     const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
     const thread = await threadStore.getThread(session.currentThreadId);
     const heartbeat = await sessionStore.getHeartbeat(session.id);
+    const prompt = await sessionStore.readSessionPrompt(session.id);
+
     process.stdout.write(
       [
         `Session ${session.id}`,
         `agent ${session.agentKey}`,
         `alias ${session.alias ?? "-"}`,
         `displayName ${session.displayName ?? "-"}`,
+        `has brief ${prompt ? "yes" : "no"}`,
         `kind ${session.kind}`,
         `current thread ${session.currentThreadId}`,
         `created by ${session.createdByIdentityId ?? "-"}`,
         `thread model ${thread.model ?? "-"}`,
         `heartbeat enabled ${heartbeat?.enabled ? "yes" : "no"}`,
         `heartbeat every ${heartbeat?.everyMinutes ?? "-"} minutes`,
+      ].join("\n") + "\n",
+    );
+  });
+}
+
+async function showSessionPromptCommand(
+  sessionRef: string,
+  options: ScopedSessionRefCliOptions,
+): Promise<void> {
+  await withSessionStores(options, async ({sessionStore}) => {
+    const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
+    const prompt = await sessionStore.readSessionPrompt(session.id, SESSION_BRIEFING_PROMPT_SLUG);
+    if (!prompt) {
+      process.stdout.write(
+        [
+          `Session prompt for ${session.id}.`,
+          `slug ${SESSION_BRIEFING_PROMPT_SLUG}`,
+          "has brief no",
+        ].join("\n") + "\n",
+      );
+      return;
+    }
+
+    process.stdout.write(
+      [
+        `Session prompt for ${session.id}.`,
+        `slug ${prompt.slug}`,
+        "has brief yes",
+        `updated ${new Date(prompt.updatedAt).toISOString()}`,
+        "",
+        prompt.content,
+      ].join("\n") + "\n",
+    );
+  });
+}
+
+async function readSessionPromptCommand(
+  sessionRef: string,
+  options: ScopedSessionRefCliOptions,
+): Promise<void> {
+  await withSessionStores(options, async ({sessionStore}) => {
+    const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
+    const prompt = await sessionStore.readSessionPrompt(session.id, SESSION_BRIEFING_PROMPT_SLUG);
+    if (prompt) {
+      writePromptContent(prompt.content);
+    }
+  });
+}
+
+async function setSessionPromptCommand(
+  sessionRef: string,
+  content: string | undefined,
+  options: SessionPromptCliOptions,
+): Promise<void> {
+  const resolvedContent = await resolvePromptContent(content, options);
+  await withSessionStores(options, async ({sessionStore}) => {
+    const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
+    const prompt = await sessionStore.setSessionPrompt({
+      sessionId: session.id,
+      slug: SESSION_BRIEFING_PROMPT_SLUG,
+      content: resolvedContent,
+    });
+    process.stdout.write(
+      [
+        `Updated session prompt for ${session.id}.`,
+        `slug ${prompt.slug}`,
+        "has brief yes",
+      ].join("\n") + "\n",
+    );
+  });
+}
+
+async function clearSessionPromptCommand(
+  sessionRef: string,
+  options: ScopedSessionRefCliOptions,
+): Promise<void> {
+  await withSessionStores(options, async ({sessionStore}) => {
+    const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
+    await sessionStore.deleteSessionPrompt({
+      sessionId: session.id,
+      slug: SESSION_BRIEFING_PROMPT_SLUG,
+    });
+    process.stdout.write(
+      [
+        `Cleared session prompt for ${session.id}.`,
+        `slug ${SESSION_BRIEFING_PROMPT_SLUG}`,
+        "has brief no",
       ].join("\n") + "\n",
     );
   });
@@ -472,6 +612,53 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sessionRef: string, options: ScopedSessionRefCliOptions) => {
       return inspectSessionCommand(sessionRef, options);
+    });
+
+  const promptProgram = sessionProgram
+    .command("prompt")
+    .description("Manage a session briefing prompt");
+
+  promptProgram
+    .command("show")
+    .description("Show a session briefing prompt with metadata")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sessionRef: string, options: ScopedSessionRefCliOptions) => {
+      return showSessionPromptCommand(sessionRef, options);
+    });
+
+  promptProgram
+    .command("read")
+    .description("Print the raw session briefing prompt content")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sessionRef: string, options: ScopedSessionRefCliOptions) => {
+      return readSessionPromptCommand(sessionRef, options);
+    });
+
+  promptProgram
+    .command("set")
+    .description("Set a session briefing prompt")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .argument("[content]", "Prompt content. Prefer --stdin for multiline content.")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--content <content>", "Prompt content")
+    .option("--stdin", "Read prompt content from stdin")
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sessionRef: string, content: string | undefined, options: SessionPromptCliOptions) => {
+      return setSessionPromptCommand(sessionRef, content, options);
+    });
+
+  promptProgram
+    .command("clear")
+    .description("Clear a session briefing prompt")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sessionRef: string, options: ScopedSessionRefCliOptions) => {
+      return clearSessionPromptCommand(sessionRef, options);
     });
 
   sessionProgram

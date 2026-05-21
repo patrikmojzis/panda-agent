@@ -9,18 +9,22 @@ import {resolveSessionRef} from "./refs.js";
 import {buildSessionTableNames, type SessionTableNames} from "./postgres-shared.js";
 import {ensurePostgresSessionSchema} from "./postgres-schema.js";
 import type {SessionStore} from "./store.js";
-import {normalizeSessionAlias} from "./types.js";
+import {SESSION_BRIEFING_PROMPT_SLUG, normalizeSessionAlias, normalizeSessionPromptSlug} from "./types.js";
 import type {
-    ClaimSessionHeartbeatInput,
-    CreateSessionInput,
-    ListDueSessionHeartbeatsInput,
-    RecordSessionHeartbeatResultInput,
-    ResolveSessionRefInput,
-    SessionHeartbeatRecord,
-    SessionRecord,
-    UpdateSessionCurrentThreadInput,
-    UpdateSessionHeartbeatConfigInput,
-    UpdateSessionLabelInput,
+  ClaimSessionHeartbeatInput,
+  CreateSessionInput,
+  DeleteSessionPromptInput,
+  ListDueSessionHeartbeatsInput,
+  RecordSessionHeartbeatResultInput,
+  ResolveSessionRefInput,
+  SessionHeartbeatRecord,
+  SessionPromptRecord,
+  SessionPromptSlug,
+  SessionRecord,
+  SetSessionPromptInput,
+  UpdateSessionCurrentThreadInput,
+  UpdateSessionHeartbeatConfigInput,
+  UpdateSessionLabelInput,
 } from "./types.js";
 
 export interface PostgresSessionStoreOptions {
@@ -110,6 +114,28 @@ function parseHeartbeatRow(row: Record<string, unknown>): SessionHeartbeatRecord
     createdAt: requireTimestampMillis(row.created_at, "Session created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Session updated_at must be a valid timestamp."),
   };
+}
+
+function normalizeSessionPromptContent(value: string): string {
+  if (!value.trim()) {
+    throw new Error("Session prompt content must not be empty.");
+  }
+
+  return value;
+}
+
+function parseSessionPromptRow(row: Record<string, unknown>): SessionPromptRecord {
+  return {
+    sessionId: requireSessionString("id", row.session_id),
+    slug: normalizeSessionPromptSlug(requireSessionString("prompt slug", row.slug)),
+    content: typeof row.content === "string" ? row.content : requireSessionString("prompt content", row.content),
+    createdAt: requireTimestampMillis(row.created_at, "Session prompt created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Session prompt updated_at must be a valid timestamp."),
+  };
+}
+
+function resolveSessionPromptSlug(slug?: SessionPromptSlug): SessionPromptSlug {
+  return normalizeSessionPromptSlug(slug ?? SESSION_BRIEFING_PROMPT_SLUG);
 }
 
 function missingSessionError(sessionId: string): Error {
@@ -399,6 +425,64 @@ export class PostgresSessionStore implements SessionStore {
 
   async updateCurrentThread(input: UpdateSessionCurrentThreadInput): Promise<SessionRecord> {
     return this.updateCurrentThreadRecord(input);
+  }
+
+  async readSessionPrompt(
+    sessionId: string,
+    slug: SessionPromptSlug = SESSION_BRIEFING_PROMPT_SLUG,
+  ): Promise<SessionPromptRecord | null> {
+    const result = await this.pool.query(`
+      SELECT * FROM ${this.tables.sessionPrompts}
+      WHERE session_id = $1 AND slug = $2
+    `, [
+      requireSessionString("id", sessionId),
+      resolveSessionPromptSlug(slug),
+    ]);
+    const row = result.rows[0];
+    return row ? parseSessionPromptRow(row as Record<string, unknown>) : null;
+  }
+
+  async listSessionPrompts(sessionId: string): Promise<readonly SessionPromptRecord[]> {
+    const result = await this.pool.query(`
+      SELECT * FROM ${this.tables.sessionPrompts}
+      WHERE session_id = $1
+      ORDER BY slug ASC
+    `, [requireSessionString("id", sessionId)]);
+    return result.rows.map((row) => parseSessionPromptRow(row as Record<string, unknown>));
+  }
+
+  async setSessionPrompt(input: SetSessionPromptInput): Promise<SessionPromptRecord> {
+    const result = await this.pool.query(`
+      INSERT INTO ${this.tables.sessionPrompts} (
+        session_id,
+        slug,
+        content
+      ) VALUES (
+        $1,
+        $2,
+        $3
+      )
+      ON CONFLICT (session_id, slug) DO UPDATE SET
+        content = EXCLUDED.content,
+        updated_at = NOW()
+      RETURNING *
+    `, [
+      requireSessionString("id", input.sessionId),
+      resolveSessionPromptSlug(input.slug),
+      normalizeSessionPromptContent(input.content),
+    ]);
+    return parseSessionPromptRow(result.rows[0] as Record<string, unknown>);
+  }
+
+  async deleteSessionPrompt(input: DeleteSessionPromptInput): Promise<boolean> {
+    const result = await this.pool.query(`
+      DELETE FROM ${this.tables.sessionPrompts}
+      WHERE session_id = $1 AND slug = $2
+    `, [
+      requireSessionString("id", input.sessionId),
+      resolveSessionPromptSlug(input.slug),
+    ]);
+    return (result.rowCount ?? 0) > 0;
   }
 
   async getHeartbeat(sessionId: string): Promise<SessionHeartbeatRecord | null> {

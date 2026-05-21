@@ -1,14 +1,18 @@
 import type {
-    ClaimSessionHeartbeatInput,
-    CreateSessionInput,
-    ListDueSessionHeartbeatsInput,
-    RecordSessionHeartbeatResultInput,
-    ResolveSessionRefInput,
-    SessionHeartbeatRecord,
-    SessionRecord,
-    UpdateSessionCurrentThreadInput,
-    UpdateSessionHeartbeatConfigInput,
-    UpdateSessionLabelInput,
+  ClaimSessionHeartbeatInput,
+  CreateSessionInput,
+  DeleteSessionPromptInput,
+  ListDueSessionHeartbeatsInput,
+  RecordSessionHeartbeatResultInput,
+  ResolveSessionRefInput,
+  SessionHeartbeatRecord,
+  SessionPromptRecord,
+  SessionPromptSlug,
+  SessionRecord,
+  SetSessionPromptInput,
+  UpdateSessionCurrentThreadInput,
+  UpdateSessionHeartbeatConfigInput,
+  UpdateSessionLabelInput,
 } from "./types.js";
 
 export interface SessionStore {
@@ -21,6 +25,10 @@ export interface SessionStore {
   listAgentSessions(agentKey: string): Promise<readonly SessionRecord[]>;
   updateSessionLabel(input: UpdateSessionLabelInput): Promise<SessionRecord>;
   updateCurrentThread(input: UpdateSessionCurrentThreadInput): Promise<SessionRecord>;
+  readSessionPrompt(sessionId: string, slug?: SessionPromptSlug): Promise<SessionPromptRecord | null>;
+  listSessionPrompts(sessionId: string): Promise<readonly SessionPromptRecord[]>;
+  setSessionPrompt(input: SetSessionPromptInput): Promise<SessionPromptRecord>;
+  deleteSessionPrompt(input: DeleteSessionPromptInput): Promise<boolean>;
   getHeartbeat(sessionId: string): Promise<SessionHeartbeatRecord | null>;
   listDueHeartbeats(input?: ListDueSessionHeartbeatsInput): Promise<readonly SessionHeartbeatRecord[]>;
   claimHeartbeat(input: ClaimSessionHeartbeatInput): Promise<SessionHeartbeatRecord | null>;

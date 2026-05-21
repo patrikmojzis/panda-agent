@@ -572,4 +572,128 @@ describe("Session create CLI", () => {
     expect(output).toContain("kind branch\n");
     expect(output).toContain("heartbeat enabled no\n");
   }, SESSION_CREATE_TEST_TIMEOUT_MS);
+
+  it("sets, shows, reads, clears, and indicates a session briefing prompt", async () => {
+    const {pool, sessionStore} = await createHarness();
+    pools.push(pool);
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await createProgram().parseAsync([
+      "session",
+      "create",
+      "panda",
+      "brief-room",
+      "--alias",
+      "BriefRoom",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    const sessionId = "panda:brief-room";
+    await expect(sessionStore.readSessionPrompt(sessionId)).resolves.toBeNull();
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "prompt",
+      "show",
+      "briefroom",
+      "--agent",
+      "panda",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    expect(collectWrites(write)).toContain("has brief no\n");
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "prompt",
+      "set",
+      "briefroom",
+      "--agent",
+      "panda",
+      "--content",
+      "Follow the session runbook.\nSecond line.",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    expect(collectWrites(write)).toContain(`Updated session prompt for ${sessionId}.\n`);
+    await expect(sessionStore.readSessionPrompt(sessionId)).resolves.toMatchObject({
+      content: "Follow the session runbook.\nSecond line.",
+    });
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "inspect",
+      "briefroom",
+      "--agent",
+      "panda",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    expect(collectWrites(write)).toContain("has brief yes\n");
+
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "prompt",
+      "read",
+      "briefroom",
+      "--agent",
+      "panda",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    expect(collectWrites(write)).toBe("Follow the session runbook.\nSecond line.\n");
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "prompt",
+      "clear",
+      "briefroom",
+      "--agent",
+      "panda",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    expect(collectWrites(write)).toContain("has brief no\n");
+    await expect(sessionStore.readSessionPrompt(sessionId)).resolves.toBeNull();
+  }, SESSION_CREATE_TEST_TIMEOUT_MS);
+
+
+  it("shows a has-brief indicator in session inspect output", async () => {
+    const {pool, sessionStore, threadStore} = await createHarness();
+    pools.push(pool);
+    await sessionStore.createSession({
+      id: "session-listed",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-listed",
+    });
+    await threadStore.createThread({
+      id: "thread-listed",
+      sessionId: "session-listed",
+    });
+    await sessionStore.setSessionPrompt({
+      sessionId: "session-listed",
+      content: "List indicator briefing.",
+    });
+
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    await createProgram().parseAsync([
+      "session",
+      "inspect",
+      "session-listed",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+
+    const output = collectWrites(write);
+    expect(output).toContain("Session session-listed");
+    expect(output).toContain("has brief yes");
+  }, SESSION_CREATE_TEST_TIMEOUT_MS);
+
 });

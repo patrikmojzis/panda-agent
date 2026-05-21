@@ -75,6 +75,37 @@ export interface UpdateSessionHeartbeatConfigInput {
   asOf?: number;
 }
 
+
+export const SESSION_BRIEFING_PROMPT_SLUG = "session" as const;
+export type SessionPromptSlug = typeof SESSION_BRIEFING_PROMPT_SLUG;
+
+export interface SessionPromptRecord {
+  sessionId: string;
+  slug: SessionPromptSlug;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SetSessionPromptInput {
+  sessionId: string;
+  slug?: SessionPromptSlug;
+  content: string;
+}
+
+export interface DeleteSessionPromptInput {
+  sessionId: string;
+  slug?: SessionPromptSlug;
+}
+
+export function normalizeSessionPromptSlug(value: string): SessionPromptSlug {
+  if (value === SESSION_BRIEFING_PROMPT_SLUG) {
+    return value;
+  }
+
+  throw new Error(`Unsupported session prompt slug ${value}.`);
+}
+
 export const DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES = 60;
 
 export function normalizeSessionAlias(value: string): string {
