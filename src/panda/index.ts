@@ -4,8 +4,6 @@ export {resolveDefaultAgentModelSelector} from "./defaults.js";
 export {
   AgentProfileContext,
   type AgentProfileContextOptions,
-  SessionBriefingContext,
-  type SessionBriefingContextOptions,
   buildDefaultAgentLlmContexts,
   DEFAULT_AGENT_LLM_CONTEXT_SECTIONS,
   type AgentProfileContextSection,
