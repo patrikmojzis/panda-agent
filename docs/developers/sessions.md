@@ -66,6 +66,16 @@ Aliases are a separate operator affordance:
 
 `panda session label` updates or clears `alias`/`display_name`; TUI alias editing is intentionally out of scope.
 
+Session briefing prompts are stored per session in `session_prompts` with the supported slug `session`. They are operator-managed through `panda session prompt show|set|read|clear`; the TUI does not edit them. The prompt is rendered by `SessionBriefingContext` after the shared agent profile and before the normal runtime contexts.
+
+Rules:
+
+- prompts are keyed by canonical `session_id`, so aliases resolve before reads/writes
+- content must be non-empty when set; `read` prints raw content, while `show` prints metadata plus content
+- prompts survive `/reset` because reset only swaps `current_thread_id`
+- new branch sessions and worker/subagent sessions do not copy another session's prompt
+- prompt-cache affinity includes the briefing slug, update time, and a content hash so edits force a fresh prompt lane
+
 `/reset`:
 
 - keeps the same `session_id`
@@ -155,7 +165,7 @@ So:
 ## Code Map
 
 - [src/domain/sessions](../../src/domain/sessions)
-- [src/domain/sessions/cli.ts](../../src/domain/sessions/cli.ts) owns `panda session create` and shared session management commands
+- [src/domain/sessions/cli.ts](../../src/domain/sessions/cli.ts) owns `panda session create`, `panda session prompt`, and shared session management commands
 - [src/domain/sessions/current-thread.ts](../../src/domain/sessions/current-thread.ts) resolves and submits session-owned runtime work onto the session's current thread
 - [src/app/runtime/daemon-threads.ts](../../src/app/runtime/daemon-threads.ts)
 - [src/app/runtime/thread-definition.ts](../../src/app/runtime/thread-definition.ts)
