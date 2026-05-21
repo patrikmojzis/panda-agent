@@ -2,6 +2,7 @@ import type {LlmContext} from "../../kernel/agent/llm-context.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {ExecutionSkillPolicy} from "../../domain/execution-environments/types.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
+import type {SessionPromptRecord} from "../../domain/sessions/types.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {WikiBindingService} from "../../domain/wiki/service.js";
@@ -10,6 +11,7 @@ import {BackgroundJobsContext} from "./background-jobs-context.js";
 import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
 import {ScheduledRemindersContext} from "./scheduled-reminders-context.js";
+import {SessionBriefingContext} from "./session-briefing-context.js";
 import {WorkersContext} from "./workers-context.js";
 import {WikiOverviewContext} from "./wiki-overview-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
@@ -21,6 +23,7 @@ export type DefaultAgentLlmContextSection =
   | "wiki_overview"
   | "background_jobs"
   | "workers"
+  | "session_briefing"
   | AgentProfileContextSection;
 
 const PROFILE_SECTIONS = new Set<AgentProfileContextSection>([
@@ -36,12 +39,13 @@ export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContext
   "workers",
   "prompts",
   "skills",
+  "session_briefing",
 ];
 
 export interface BuildDefaultAgentLlmContextsOptions {
   context?: DefaultAgentSessionContext;
   agentStore?: AgentProfileStore;
-  sessionStore?: Pick<SessionStore, "listAgentSessions">;
+  sessionStore?: Partial<Pick<SessionStore, "listAgentSessions" | "readSessionPrompt">>;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner">;
@@ -50,6 +54,7 @@ export interface BuildDefaultAgentLlmContextsOptions {
   threadId?: string;
   sections?: readonly DefaultAgentLlmContextSection[];
   skillPolicy?: ExecutionSkillPolicy;
+  sessionPrompt?: SessionPromptRecord | null;
   extraLlmContexts?: readonly LlmContext[];
 }
 
@@ -60,6 +65,7 @@ export {
   type AgentProfileStore,
 } from "./agent-profile-context.js";
 export {DateTimeContext, type DateTimeContextOptions} from "./datetime-context.js";
+export {SessionBriefingContext, type SessionBriefingContextOptions} from "./session-briefing-context.js";
 export {EnvironmentContext, type EnvironmentContextOptions} from "./environment-context.js";
 export {WorkersContext, type WorkersContextOptions} from "./workers-context.js";
 
@@ -105,13 +111,13 @@ export function buildDefaultAgentLlmContexts(
 
   if (
     uniqueSections.has("workers")
-    && options.sessionStore
+    && typeof options.sessionStore?.listAgentSessions === "function"
     && options.executionEnvironments
     && options.agentKey
     && options.context?.sessionId
   ) {
     llmContexts.push(new WorkersContext({
-      sessions: options.sessionStore,
+      sessions: options.sessionStore as Pick<SessionStore, "listAgentSessions">,
       environments: options.executionEnvironments,
       agentKey: options.agentKey,
       parentSessionId: options.context.sessionId,
@@ -131,6 +137,20 @@ export function buildDefaultAgentLlmContexts(
       sections: profileSections,
       skillPolicy: options.skillPolicy,
     }));
+  }
+
+  if (uniqueSections.has("session_briefing") && options.context?.sessionId) {
+    if (options.sessionPrompt !== undefined) {
+      llmContexts.push(new SessionBriefingContext({
+        sessionId: options.context.sessionId,
+        prompt: options.sessionPrompt,
+      }));
+    } else if (typeof options.sessionStore?.readSessionPrompt === "function") {
+      llmContexts.push(new SessionBriefingContext({
+        sessionId: options.context.sessionId,
+        store: options.sessionStore as Pick<SessionStore, "readSessionPrompt">,
+      }));
+    }
   }
 
   if (options.extraLlmContexts?.length) {

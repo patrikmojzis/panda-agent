@@ -124,6 +124,7 @@ export async function bootstrapDaemonContext(
     },
     resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, sessionStore, store, telepathyService, wikiBindingService, mainTools, workerTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
+      const sessionPrompt = await sessionStore.readSessionPrompt(session.id);
       const executionEnvironment = await executionEnvironmentResolver.resolveDefault(session);
       const sessionMainTools = session.kind === "worker"
         ? workerTools.filter((tool) => !WORKER_CONTROL_TOOL_NAMES.has(tool.name))
@@ -135,6 +136,7 @@ export async function bootstrapDaemonContext(
         executionEnvironment,
         agentStore,
         sessionStore,
+        sessionPrompt,
         threadStore: store,
         scheduledTasks,
         executionEnvironments,

@@ -5,7 +5,7 @@ import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
-import type {AgentSessionKind, SessionRecord} from "../../domain/sessions/types.js";
+import type {AgentSessionKind, SessionPromptRecord, SessionRecord} from "../../domain/sessions/types.js";
 import type {InferenceProjection, ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {buildDefaultAgentLlmContexts, type AgentProfileStore, type DefaultAgentLlmContextSection,} from "../../panda/contexts/builder.js";
@@ -28,7 +28,7 @@ import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {WikiBindingService} from "../../domain/wiki/service.js";
 import {isRecord} from "../../lib/records.js";
-import {resolveThreadPromptCacheKey} from "../../domain/threads/runtime/prompt-cache-key.js";
+import {resolveSessionPromptCacheKey, resolveThreadPromptCacheKey} from "../../domain/threads/runtime/prompt-cache-key.js";
 import {readWorkerContextValue} from "../../domain/sessions/worker-metadata.js";
 
 const HOUR_MS = 60 * 60 * 1_000;
@@ -73,6 +73,7 @@ export interface CreateThreadDefinitionOptions {
   telepathyToolOptions?: TelepathyScreenshotToolOptions;
   executionEnvironment?: ResolvedExecutionEnvironment;
   tools?: readonly Tool[];
+  sessionPrompt?: SessionPromptRecord | null;
   extraLlmContexts?: readonly LlmContext[];
   llmContextSections?: readonly DefaultAgentLlmContextSection[];
   extraContext?: Omit<
@@ -217,6 +218,7 @@ export function createThreadDefinition(
     threadId: options.thread.id,
     sections: resolveLlmContextSections(session, options.llmContextSections),
     skillPolicy: options.executionEnvironment?.skillPolicy,
+    sessionPrompt: options.sessionPrompt,
     extraLlmContexts: options.extraLlmContexts,
   });
   if (isWorkerSession(session)) {
@@ -226,6 +228,7 @@ export function createThreadDefinition(
     }));
   }
   const tools = resolveSessionTools(options.tools, options);
+  const threadPromptCacheKey = resolveThreadPromptCacheKey(options.thread.id, options.thread.promptCacheKey);
 
   return {
     agent: new Agent({
@@ -235,7 +238,7 @@ export function createThreadDefinition(
     }),
     context,
     llmContexts,
-    promptCacheKey: resolveThreadPromptCacheKey(options.thread.id, options.thread.promptCacheKey),
+    promptCacheKey: resolveSessionPromptCacheKey(threadPromptCacheKey, options.sessionPrompt),
     inferenceProjection: mergeInferenceProjection(
       DEFAULT_INFERENCE_PROJECTION,
       options.thread.inferenceProjection,

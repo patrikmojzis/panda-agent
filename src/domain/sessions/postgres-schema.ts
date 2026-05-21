@@ -68,6 +68,22 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_session_heartbeats_due_idx`)}
     ON ${tables.sessionHeartbeats} (enabled, next_fire_at, claim_expires_at, session_id)
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.sessionPrompts} (
+      session_id TEXT NOT NULL REFERENCES ${tables.sessions}(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (session_id, slug)
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_session_prompts_session_idx`)}
+      ON ${tables.sessionPrompts} (session_id)
+  `);
+
   await assertIntegrityChecks(pool, "Session schema", [
     {
       label: "agent_sessions.agent_key orphaned from agents.agent_key",
