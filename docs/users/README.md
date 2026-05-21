@@ -12,6 +12,7 @@ Start here:
 - [Postgres](./postgres.md)
 - [Identity](./identity.md)
 - [Discord](./discord.md)
+- [Email](./email.md)
 - [Credentials](./credentials.md)
 - [Skills](./skills.md)
 - [Heartbeat](./heartbeat.md)

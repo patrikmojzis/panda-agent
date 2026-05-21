@@ -92,6 +92,25 @@ panda session inspect luna:ops-inbox
 panda session inspect ops-inbox --agent luna
 ```
 
+Manage the CLI-only session briefing prompt:
+
+```bash
+panda session prompt show ops-inbox --agent luna
+panda session prompt set ops-inbox --agent luna --content "Follow the ops runbook."
+cat briefing.md | panda session prompt set ops-inbox --agent luna --stdin
+panda session prompt read ops-inbox --agent luna
+panda session prompt clear ops-inbox --agent luna
+```
+
+The briefing prompt is inserted into that one session's model context after the shared agent profile. `show` includes metadata and content; `read` prints only the raw content for scripts. Session list and inspect show `has brief yes/no`.
+
+Briefings are session-scoped:
+
+- `/reset` and `panda session reset` keep the briefing because they replace the backing thread, not the session
+- `/new` and `panda session create` start with no briefing
+- worker/subagent sessions start with no briefing and do not inherit the parent or current session's briefing
+- there is no TUI editor yet; use `panda session prompt ...`
+
 Reset one session through the daemon:
 
 ```bash
