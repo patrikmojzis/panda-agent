@@ -35,7 +35,7 @@ export interface EmailSendMailResult {
   messageId?: string;
 }
 
-type EmailOutboundStore = Pick<EmailStore, "assertRecipientsAllowed" | "getAccount" | "recordMessage">;
+type EmailOutboundStore = Pick<EmailStore, "assertAccountSendableBySession" | "assertMessageOwnedBySession" | "assertRecipientsAllowed" | "getAccount" | "getMessage" | "recordMessage">;
 type EmailOutboundCredentialResolver = Pick<CredentialResolver, "resolveCredential">;
 
 export interface CreateEmailOutboundAdapterOptions {
@@ -154,6 +154,22 @@ export function createEmailOutboundAdapter(options: CreateEmailOutboundAdapterOp
         throw new Error(`Email account ${payload.accountKey} is disabled.`);
       }
       assertPayloadMatchesAccount(payload, account);
+      if (payload.replyToEmailId) {
+        const replyMessage = await options.store.getMessage(payload.replyToEmailId);
+        if (replyMessage.agentKey !== payload.agentKey || replyMessage.accountKey !== payload.accountKey) {
+          throw new Error(`Email message ${payload.replyToEmailId} does not belong to account ${payload.accountKey}.`);
+        }
+        await options.store.assertMessageOwnedBySession({
+          messageId: payload.replyToEmailId,
+          sessionId: payload.sessionId,
+        });
+      } else {
+        await options.store.assertAccountSendableBySession({
+          agentKey: payload.agentKey,
+          accountKey: payload.accountKey,
+          sessionId: payload.sessionId,
+        });
+      }
       const recipients = [...payload.to, ...payload.cc].map((recipient) => recipient.address);
       await options.store.assertRecipientsAllowed(payload.agentKey, payload.accountKey, recipients);
       await assertAttachmentsSafe(payload);
@@ -204,6 +220,7 @@ export function createEmailOutboundAdapter(options: CreateEmailOutboundAdapterOp
       await options.store.recordMessage({
         agentKey: payload.agentKey,
         accountKey: payload.accountKey,
+        sessionId: payload.sessionId,
         direction: "outbound",
         messageIdHeader: result.messageId,
         inReplyTo: payload.inReplyTo,

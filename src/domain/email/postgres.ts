@@ -15,8 +15,10 @@ import {
 import {normalizeEmailMessageInput} from "./message-input.js";
 import {ensurePostgresEmailSchema} from "./postgres-schema.js";
 import {buildEmailTableNames, type EmailTableNames} from "./postgres-shared.js";
+import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {
     EmailAccountRecord,
+    EmailAccountSendOwnershipInput,
     EmailAccountSyncState,
     EmailAllowedRecipientRecord,
     EmailAttachmentInput,
@@ -25,13 +27,17 @@ import type {
     EmailAuthVerdict,
     EmailEndpointConfig,
     EmailMessageDirection,
+    EmailMessageOwnershipInput,
     EmailMessageRecipientRecord,
     EmailMessageRecord,
     EmailRecipientRole,
     EmailRecipientInput,
+    EmailRouteLookupInput,
+    EmailRouteRecord,
     EmailStore,
     RecordEmailMessageInput,
     RecordEmailMessageResult,
+    SetEmailRouteInput,
     UpsertEmailAccountInput,
 } from "./types.js";
 
@@ -211,11 +217,25 @@ function parseAllowedRecipientRow(row: Record<string, unknown>): EmailAllowedRec
   };
 }
 
+function parseRouteRow(row: Record<string, unknown>): EmailRouteRecord {
+  return {
+    id: requireTrimmed("route id", row.id),
+    agentKey: requireTrimmed("route agent key", row.agent_key),
+    accountKey: normalizeEmailAccountKey(requireTrimmed("route account key", row.account_key)),
+    mailbox: parseOptionalString("route mailbox", row.mailbox),
+    sessionId: requireTrimmed("route session id", row.session_id),
+    createdAt: requireTimestampMillis(row.created_at, "Email route created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Email route updated_at must be a valid timestamp."),
+  };
+}
+
 function parseMessageRow(row: Record<string, unknown>): EmailMessageRecord {
   return {
     id: requireTrimmed("message id", row.id),
     agentKey: requireTrimmed("message agent key", row.agent_key),
     accountKey: normalizeEmailAccountKey(requireTrimmed("message account key", row.account_key)),
+    sessionId: parseOptionalString("message session id", row.session_id),
+    routeId: parseOptionalString("message route id", row.route_id),
     direction: parseMessageDirection(row.direction),
     mailbox: parseOptionalString("message mailbox", row.mailbox),
     uid: parseOptionalNonNegativeInteger("message uid", row.uid),
@@ -254,6 +274,11 @@ function parseMessageRecipientRow(row: Record<string, unknown>): EmailMessageRec
   };
 }
 
+function normalizeOptionalRouteMailbox(mailbox: string | undefined): string | null {
+  const normalized = trimToUndefined(mailbox);
+  return normalized ? normalizeEmailMailbox(normalized) : null;
+}
+
 function parseAttachmentRow(row: Record<string, unknown>): EmailAttachmentRecord {
   return {
     id: requireTrimmed("attachment id", row.id),
@@ -270,10 +295,12 @@ function parseAttachmentRow(row: Record<string, unknown>): EmailAttachmentRecord
 export class PostgresEmailStore implements EmailStore {
   private readonly pool: PgPoolLike;
   private readonly tables: EmailTableNames;
+  private readonly sessionTableName: string;
 
   constructor(options: PostgresEmailStoreOptions) {
     this.pool = options.pool;
     this.tables = buildEmailTableNames();
+    this.sessionTableName = buildSessionTableNames().sessions;
   }
 
   async ensureSchema(): Promise<void> {
@@ -470,6 +497,160 @@ export class PostgresEmailStore implements EmailStore {
     }
   }
 
+  async setRoute(input: SetEmailRouteInput): Promise<EmailRouteRecord> {
+    const agentKey = requireTrimmed("route agent key", input.agentKey);
+    const accountKey = normalizeEmailAccountKey(input.accountKey);
+    const mailbox = normalizeOptionalRouteMailbox(input.mailbox);
+    const sessionId = requireTrimmed("route session id", input.sessionId);
+    await this.assertSessionBelongsToAgent(sessionId, agentKey);
+
+    return withTransaction(this.pool, async (client) => {
+      const updated = await client.query(`
+        UPDATE ${this.tables.emailRoutes}
+        SET session_id = $4,
+            updated_at = NOW()
+        WHERE agent_key = $1
+          AND account_key = $2
+          AND ((mailbox IS NULL AND $3::TEXT IS NULL) OR mailbox = $3)
+        RETURNING *
+      `, [agentKey, accountKey, mailbox, sessionId]);
+      const updatedRow = updated.rows[0];
+      if (updatedRow) {
+        return parseRouteRow(updatedRow as Record<string, unknown>);
+      }
+
+      const inserted = await client.query(`
+        INSERT INTO ${this.tables.emailRoutes} (
+          id,
+          agent_key,
+          account_key,
+          mailbox,
+          session_id
+        ) VALUES ($1, $2, $3, $4, $5)
+        RETURNING *
+      `, [randomUUID(), agentKey, accountKey, mailbox, sessionId]);
+      return parseRouteRow(inserted.rows[0] as Record<string, unknown>);
+    });
+  }
+
+  async removeRoute(input: EmailRouteLookupInput): Promise<boolean> {
+    const result = await this.pool.query(`
+      DELETE FROM ${this.tables.emailRoutes}
+      WHERE agent_key = $1
+        AND account_key = $2
+        AND ((mailbox IS NULL AND $3::TEXT IS NULL) OR mailbox = $3)
+    `, [
+      requireTrimmed("route agent key", input.agentKey),
+      normalizeEmailAccountKey(input.accountKey),
+      normalizeOptionalRouteMailbox(input.mailbox),
+    ]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async listRoutes(agentKey: string, accountKey?: string): Promise<readonly EmailRouteRecord[]> {
+    const normalizedAgentKey = requireTrimmed("route agent key", agentKey);
+    const normalizedAccountKey = accountKey === undefined ? undefined : normalizeEmailAccountKey(accountKey);
+    const whereAccount = normalizedAccountKey ? "AND account_key = $2" : "";
+    const values = normalizedAccountKey ? [normalizedAgentKey, normalizedAccountKey] : [normalizedAgentKey];
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.emailRoutes}
+      WHERE agent_key = $1
+        ${whereAccount}
+      ORDER BY account_key ASC, CASE WHEN mailbox IS NULL THEN 0 ELSE 1 END ASC, mailbox ASC, created_at ASC
+    `, values);
+    return result.rows.map((row) => parseRouteRow(row as Record<string, unknown>));
+  }
+
+  async resolveRoute(input: EmailRouteLookupInput): Promise<EmailRouteRecord | null> {
+    const agentKey = requireTrimmed("route agent key", input.agentKey);
+    const accountKey = normalizeEmailAccountKey(input.accountKey);
+    const mailbox = normalizeOptionalRouteMailbox(input.mailbox);
+    const result = mailbox
+      ? await this.pool.query(`
+        SELECT *
+        FROM ${this.tables.emailRoutes}
+        WHERE agent_key = $1
+          AND account_key = $2
+          AND (mailbox = $3 OR mailbox IS NULL)
+        ORDER BY CASE WHEN mailbox = $3 THEN 0 ELSE 1 END ASC
+        LIMIT 1
+      `, [agentKey, accountKey, mailbox])
+      : await this.pool.query(`
+        SELECT *
+        FROM ${this.tables.emailRoutes}
+        WHERE agent_key = $1
+          AND account_key = $2
+          AND mailbox IS NULL
+        LIMIT 1
+      `, [agentKey, accountKey]);
+    const row = result.rows[0];
+    return row ? parseRouteRow(row as Record<string, unknown>) : null;
+  }
+
+  async assertAccountSendableBySession(input: EmailAccountSendOwnershipInput): Promise<void> {
+    const agentKey = requireTrimmed("ownership agent key", input.agentKey);
+    const accountKey = normalizeEmailAccountKey(input.accountKey);
+    const session = await this.readSessionSummary(requireTrimmed("ownership session id", input.sessionId));
+    if (session.agentKey !== agentKey) {
+      throw new Error(`Session ${session.id} belongs to agent ${session.agentKey}, not ${agentKey}.`);
+    }
+
+    const route = await this.resolveRoute({agentKey, accountKey});
+    if (route) {
+      if (route.sessionId !== session.id) {
+        throw new Error(`Email account ${accountKey} is routed to session ${route.sessionId}, not ${session.id}.`);
+      }
+      return;
+    }
+
+    if (session.kind !== "main") {
+      throw new Error(`Email account ${accountKey} is not routed to session ${session.id}.`);
+    }
+  }
+
+  async assertMessageOwnedBySession(input: EmailMessageOwnershipInput): Promise<void> {
+    const message = await this.getMessage(input.messageId);
+    const session = await this.readSessionSummary(requireTrimmed("ownership session id", input.sessionId));
+    if (session.agentKey !== message.agentKey) {
+      throw new Error(`Email message ${message.id} belongs to agent ${message.agentKey}, not ${session.agentKey}.`);
+    }
+    if (message.sessionId === session.id) {
+      return;
+    }
+    if (!message.sessionId && session.kind === "main") {
+      return;
+    }
+
+    throw new Error(`Email message ${message.id} is not visible to session ${session.id}.`);
+  }
+
+  private async assertSessionBelongsToAgent(sessionId: string, agentKey: string): Promise<void> {
+    const session = await this.readSessionSummary(sessionId);
+    if (session.agentKey !== agentKey) {
+      throw new Error(`Session ${session.id} belongs to agent ${session.agentKey}, not ${agentKey}.`);
+    }
+  }
+
+  private async readSessionSummary(sessionId: string): Promise<{id: string; agentKey: string; kind: string}> {
+    const result = await this.pool.query(`
+      SELECT id, agent_key, kind
+      FROM ${this.sessionTableName}
+      WHERE id = $1
+      LIMIT 1
+    `, [requireTrimmed("session id", sessionId)]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new Error(`Unknown session ${sessionId}`);
+    }
+
+    return {
+      id: requireTrimmed("session id", row.id),
+      agentKey: requireTrimmed("session agent key", row.agent_key),
+      kind: requireTrimmed("session kind", row.kind),
+    };
+  }
+
   async recordMessage(input: RecordEmailMessageInput): Promise<RecordEmailMessageResult> {
     return withTransaction(this.pool, async (client) => await this.recordMessageInTransaction(client, input));
   }
@@ -481,6 +662,11 @@ export class PostgresEmailStore implements EmailStore {
     const agentKey = requireTrimmed("agent key", input.agentKey);
     const accountKey = normalizeEmailAccountKey(input.accountKey);
     const normalizedMessage = normalizeEmailMessageInput(input);
+    const sessionId = trimToUndefined(input.sessionId) ?? null;
+    const routeId = trimToUndefined(input.routeId) ?? null;
+    if (routeId && !sessionId) {
+      throw new Error("Email message route_id requires session_id.");
+    }
     const uid = input.uid === undefined ? null : Math.floor(input.uid);
     const uidValidity = trimToUndefined(input.uidValidity) ?? null;
     const mailbox = trimToUndefined(input.mailbox) ?? null;
@@ -505,6 +691,8 @@ export class PostgresEmailStore implements EmailStore {
         id,
         agent_key,
         account_key,
+        session_id,
+        route_id,
         direction,
         mailbox,
         uid,
@@ -554,7 +742,9 @@ export class PostgresEmailStore implements EmailStore {
         $23,
         $24,
         $25,
-        $26
+        $26,
+        $27,
+        $28
       )
       ON CONFLICT (agent_key, account_key, mailbox, uid_validity, uid)
       DO NOTHING
@@ -563,6 +753,8 @@ export class PostgresEmailStore implements EmailStore {
       randomUUID(),
       agentKey,
       accountKey,
+      sessionId,
+      routeId,
       input.direction,
       mailbox,
       uid,

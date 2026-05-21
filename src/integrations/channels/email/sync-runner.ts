@@ -27,7 +27,7 @@ import {renderEmailEventPrompt} from "../../../prompts/runtime/email-events.js";
 const DEFAULT_EMAIL_POLL_INTERVAL_MS = 60_000;
 const EMAIL_EVENT_SOURCE = "email_event";
 type EmailSyncCoordinator = Pick<ThreadRuntimeCoordinator, "submitInput">;
-type EmailSyncStore = Pick<EmailStore, "listEnabledAccounts" | "recordMessage" | "updateAccountSyncState">;
+type EmailSyncStore = Pick<EmailStore, "listEnabledAccounts" | "recordMessage" | "resolveRoute" | "updateAccountSyncState">;
 type EmailSyncCredentialResolver = Pick<CredentialResolver, "resolveCredential">;
 
 export interface EmailSyncRunnerOptions {
@@ -309,6 +309,13 @@ export class EmailSyncRunner {
       const range = initialized && lastUid !== undefined
         ? `${lastUid + 1}:*`
         : `${Math.max(1, exists - this.backfillLimit + 1)}:*`;
+      const route = await this.store.resolveRoute({
+        agentKey: account.agentKey,
+        accountKey: account.accountKey,
+        mailbox,
+      });
+      const fallbackSession = route ? null : await this.sessions.getMainSession(account.agentKey);
+      const targetSessionId = route?.sessionId ?? fallbackSession?.id;
       const visible: EmailMessageRecord[] = [];
       let maxUid = lastUid ?? 0;
 
@@ -341,6 +348,8 @@ export class EmailSyncRunner {
         const recorded = await this.store.recordMessage({
           agentKey: account.agentKey,
           accountKey: account.accountKey,
+          ...(targetSessionId ? {sessionId: targetSessionId} : {}),
+          ...(route ? {routeId: route.id} : {}),
           direction: "inbound",
           mailbox,
           uid,
@@ -378,7 +387,9 @@ export class EmailSyncRunner {
   }
 
   private async wakeForMessage(account: EmailAccountRecord, message: EmailMessageRecord): Promise<void> {
-    const session = await this.sessions.getMainSession(account.agentKey);
+    const session = message.sessionId
+      ? await this.sessions.getSession(message.sessionId).catch(() => null)
+      : await this.sessions.getMainSession(account.agentKey);
     if (!session) {
       return;
     }

@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresEmailStore} from "../src/domain/email/postgres.js";
+import {createSessionWithInitialThread} from "../src/domain/sessions/lifecycle.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createScopedPool() {
@@ -52,7 +53,7 @@ describe("PostgresEmailStore", () => {
   it("stores accounts, allowlists, messages, and thread history", async () => {
     const {pool} = createScopedPool();
     pools.push(pool);
-    const {emailStore: email} = await createRuntimeStores(pool);
+    const {emailStore: email, sessionStore, threadStore} = await createRuntimeStores(pool);
 
     const account = await email.upsertAccount({
       agentKey: "panda",
@@ -70,6 +71,80 @@ describe("PostgresEmailStore", () => {
       },
     });
     expect(account.fromAddress).toBe("panda@example.com");
+    await createSessionWithInitialThread({
+      pool,
+      sessionStore,
+      threadStore,
+      session: {
+        id: "panda-main",
+        agentKey: "panda",
+        kind: "main",
+        currentThreadId: "panda-main-thread",
+      },
+      thread: {
+        id: "panda-main-thread",
+        sessionId: "panda-main",
+      },
+    });
+    await createSessionWithInitialThread({
+      pool,
+      sessionStore,
+      threadStore,
+      session: {
+        id: "panda-branch",
+        agentKey: "panda",
+        kind: "branch",
+        currentThreadId: "panda-branch-thread",
+      },
+      thread: {
+        id: "panda-branch-thread",
+        sessionId: "panda-branch",
+      },
+    });
+
+    await expect(email.assertAccountSendableBySession({
+      agentKey: "panda",
+      accountKey: "work",
+      sessionId: "panda-main",
+    })).resolves.toBeUndefined();
+    await expect(email.assertAccountSendableBySession({
+      agentKey: "panda",
+      accountKey: "work",
+      sessionId: "panda-branch",
+    })).rejects.toThrow("not routed");
+
+    const accountRoute = await email.setRoute({
+      agentKey: "panda",
+      accountKey: "work",
+      sessionId: "panda-branch",
+    });
+    expect(accountRoute).toMatchObject({
+      accountKey: "work",
+      sessionId: "panda-branch",
+    });
+    await expect(email.assertAccountSendableBySession({
+      agentKey: "panda",
+      accountKey: "work",
+      sessionId: "panda-main",
+    })).rejects.toThrow("routed to session panda-branch");
+    await expect(email.assertAccountSendableBySession({
+      agentKey: "panda",
+      accountKey: "work",
+      sessionId: "panda-branch",
+    })).resolves.toBeUndefined();
+
+    const mailboxRoute = await email.setRoute({
+      agentKey: "panda",
+      accountKey: "work",
+      mailbox: "INBOX",
+      sessionId: "panda-main",
+    });
+    await expect(email.resolveRoute({agentKey: "panda", accountKey: "work", mailbox: "INBOX"}))
+      .resolves.toMatchObject({id: mailboxRoute.id, sessionId: "panda-main"});
+    await expect(email.resolveRoute({agentKey: "panda", accountKey: "work", mailbox: "Archive"}))
+      .resolves.toMatchObject({id: accountRoute.id, sessionId: "panda-branch"});
+    await expect(email.listRoutes("panda", "work")).resolves.toHaveLength(2);
+
     await expect(email.upsertAccount({
       agentKey: "panda",
       accountKey: "bad",
@@ -149,6 +224,39 @@ describe("PostgresEmailStore", () => {
       expect.objectContaining({role: "from", address: "alice@example.com"}),
       expect.objectContaining({role: "to", address: "panda@example.com"}),
     ]);
+    await expect(email.assertMessageOwnedBySession({
+      messageId: inbound.message.id,
+      sessionId: "panda-main",
+    })).resolves.toBeUndefined();
+    await expect(email.assertMessageOwnedBySession({
+      messageId: inbound.message.id,
+      sessionId: "panda-branch",
+    })).rejects.toThrow("not visible");
+
+    const routedInbound = await email.recordMessage({
+      agentKey: "panda",
+      accountKey: "work",
+      sessionId: "panda-branch",
+      routeId: accountRoute.id,
+      direction: "inbound",
+      mailbox: "Archive",
+      uid: 9,
+      uidValidity: "uv-1",
+      subject: "Routed",
+      fromAddress: "alice@example.com",
+    });
+    expect(routedInbound.message).toMatchObject({
+      sessionId: "panda-branch",
+      routeId: accountRoute.id,
+    });
+    await expect(email.assertMessageOwnedBySession({
+      messageId: routedInbound.message.id,
+      sessionId: "panda-branch",
+    })).resolves.toBeUndefined();
+    await expect(email.assertMessageOwnedBySession({
+      messageId: routedInbound.message.id,
+      sessionId: "panda-main",
+    })).rejects.toThrow("not visible");
 
     const hostile = await email.recordMessage({
       agentKey: "panda",

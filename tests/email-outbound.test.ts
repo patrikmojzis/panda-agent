@@ -42,6 +42,9 @@ class MemoryEmailStore implements EmailOutboundStore {
     updatedAt: 1,
   };
   allowed = new Set(["alice@example.com"]);
+  accountSendable = true;
+  messageOwned = true;
+  messages = new Map<string, EmailMessageRecord>();
   recorded: RecordEmailMessageInput[] = [];
 
   async getAccount(): Promise<EmailAccountRecord> {
@@ -56,12 +59,31 @@ class MemoryEmailStore implements EmailOutboundStore {
       throw new Error(`Email account ${accountKey} is not allowed to send to ${blocked.join(", ")}.`);
     }
   }
+  async assertAccountSendableBySession(): Promise<void> {
+    if (!this.accountSendable) {
+      throw new Error("Email account work is not routed to session session-1.");
+    }
+  }
+  async assertMessageOwnedBySession(): Promise<void> {
+    if (!this.messageOwned) {
+      throw new Error("Email message email-1 is not visible to session session-1.");
+    }
+  }
+  async getMessage(messageId: string): Promise<EmailMessageRecord> {
+    const message = this.messages.get(messageId);
+    if (!message) {
+      throw new Error(`Unknown email message ${messageId}`);
+    }
+
+    return message;
+  }
   async recordMessage(input: RecordEmailMessageInput): Promise<RecordEmailMessageResult> {
     this.recorded.push(input);
     const message: EmailMessageRecord = {
       id: "email-outbound-1",
       agentKey: input.agentKey,
       accountKey: input.accountKey,
+      sessionId: input.sessionId,
       direction: input.direction,
       threadKey: input.threadKey ?? "thread",
       authSummary: input.authSummary ?? "trusted",
@@ -111,6 +133,7 @@ describe("Email outbound adapter", () => {
           kind: "email_send",
           agentKey: "panda",
           accountKey: "work",
+          sessionId: "session-1",
           fromAddress: "panda@example.com",
           to: [{address: "alice@example.com"}],
           cc: [],
@@ -138,6 +161,7 @@ describe("Email outbound adapter", () => {
     }));
     expect(store.recorded).toEqual([expect.objectContaining({
       direction: "outbound",
+      sessionId: "session-1",
       messageIdHeader: "<sent@example.com>",
       sourceDeliveryId: "delivery-1",
       recipients: [
@@ -178,6 +202,7 @@ describe("Email outbound adapter", () => {
           kind: "email_send",
           agentKey: "panda",
           accountKey: "work",
+          sessionId: "session-1",
           fromAddress: "panda@example.com",
           to: [{address: "alice@example.com"}],
           cc: [],
@@ -196,6 +221,90 @@ describe("Email outbound adapter", () => {
         requireTLS: true,
       }),
     }));
+  });
+
+  it("checks account ownership again in the adapter", async () => {
+    const store = new MemoryEmailStore();
+    store.accountSendable = false;
+    const sendMail = vi.fn(async () => ({messageId: "<sent@example.com>"}));
+    const adapter = createEmailOutboundAdapter({
+      store,
+      credentialResolver: fakeResolver(),
+      sendMail,
+    });
+
+    await expect(adapter.send({
+      channel: "email",
+      target: {
+        source: "email",
+        connectorKey: "smtp",
+        externalConversationId: "work",
+      },
+      items: [{type: "text", text: "Hello"}],
+      metadata: {
+        email: {
+          kind: "email_send",
+          agentKey: "panda",
+          accountKey: "work",
+          sessionId: "session-1",
+          fromAddress: "panda@example.com",
+          to: [{address: "alice@example.com"}],
+          cc: [],
+          subject: "Hello",
+          text: "Hello",
+          attachments: [],
+          threadKey: "Hello",
+        },
+      },
+    })).rejects.toThrow("not routed to session");
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it("checks reply message ownership account in the adapter", async () => {
+    const store = new MemoryEmailStore();
+    store.messages.set("email-1", {
+      id: "email-1",
+      agentKey: "panda",
+      accountKey: "personal",
+      direction: "inbound",
+      threadKey: "thread",
+      authSummary: "trusted",
+      hasAttachments: false,
+      createdAt: 1,
+    });
+    const sendMail = vi.fn(async () => ({messageId: "<sent@example.com>"}));
+    const adapter = createEmailOutboundAdapter({
+      store,
+      credentialResolver: fakeResolver(),
+      sendMail,
+    });
+
+    await expect(adapter.send({
+      channel: "email",
+      target: {
+        source: "email",
+        connectorKey: "smtp",
+        externalConversationId: "work",
+      },
+      items: [{type: "text", text: "Hello"}],
+      metadata: {
+        email: {
+          kind: "email_send",
+          agentKey: "panda",
+          accountKey: "work",
+          sessionId: "session-1",
+          fromAddress: "panda@example.com",
+          to: [{address: "alice@example.com"}],
+          cc: [],
+          subject: "Re: Hello",
+          text: "Hello",
+          attachments: [],
+          replyToEmailId: "email-1",
+          threadKey: "thread",
+        },
+      },
+    })).rejects.toThrow("does not belong to account work");
+    expect(sendMail).not.toHaveBeenCalled();
   });
 
   it("checks the allowlist again in the adapter", async () => {
@@ -219,6 +328,7 @@ describe("Email outbound adapter", () => {
           kind: "email_send",
           agentKey: "panda",
           accountKey: "work",
+          sessionId: "session-1",
           fromAddress: "panda@example.com",
           to: [{address: "mallory@example.com"}],
           cc: [],
@@ -253,6 +363,7 @@ describe("Email outbound adapter", () => {
           kind: "email_send",
           agentKey: "panda",
           accountKey: "work",
+          sessionId: "session-1",
           fromAddress: "ceo@example.com",
           to: [{address: "alice@example.com"}],
           cc: [],
@@ -288,6 +399,7 @@ describe("Email outbound adapter", () => {
           kind: "email_send",
           agentKey: "panda",
           accountKey: "work",
+          sessionId: "session-1",
           fromAddress: "panda@example.com",
           to: [{}],
           cc: [],
@@ -313,6 +425,7 @@ describe("Email outbound adapter", () => {
           kind: "email_send",
           agentKey: "panda",
           accountKey: "work",
+          sessionId: "session-1",
           fromAddress: "panda@example.com",
           fromName: 42,
           to: [{address: "alice@example.com"}],
@@ -352,6 +465,7 @@ describe("Email outbound adapter", () => {
           kind: "email_send",
           agentKey: "panda",
           accountKey: "work",
+          sessionId: "session-1",
           fromAddress: "panda@example.com",
           to: [{address: "alice@example.com"}],
           cc: [],
@@ -382,6 +496,7 @@ describe("Email outbound adapter", () => {
           kind: "email_send",
           agentKey: "panda",
           accountKey: "work",
+          sessionId: "session-1",
           fromAddress: "panda@example.com",
           to: [{address: "alice@example.com"}],
           cc: [],

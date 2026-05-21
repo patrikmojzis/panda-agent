@@ -16,6 +16,7 @@ export interface EmailSendPayload {
   kind: "email_send";
   agentKey: string;
   accountKey: string;
+  sessionId: string;
   fromAddress: string;
   fromName?: string;
   to: EmailSendRecipientPayload[];
@@ -51,6 +52,7 @@ export function isEmailSendPayload(value: unknown): value is EmailSendPayload {
   return value.kind === "email_send"
     && typeof value.agentKey === "string"
     && typeof value.accountKey === "string"
+    && typeof value.sessionId === "string"
     && typeof value.fromAddress === "string"
     && (value.fromName === undefined || typeof value.fromName === "string")
     && Array.isArray(value.to)

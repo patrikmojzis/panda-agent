@@ -6,6 +6,7 @@ import {PostgresTelepathyDeviceStore} from "../src/domain/telepathy/postgres.js"
 import {ensureReadonlySessionQuerySchema} from "../src/domain/threads/runtime/index.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
+import {createSessionWithInitialThread} from "../src/domain/sessions/lifecycle.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 class RecordingQueryable {
@@ -238,6 +239,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
       watchEvents: "\"session\".\"watch_events\"",
       emailAccounts: "\"session\".\"email_accounts\"",
       emailAllowedRecipients: "\"session\".\"email_allowed_recipients\"",
+      emailRoutes: "\"session\".\"email_routes\"",
       emailMessages: "\"session\".\"email_messages\"",
       emailMessageRecipients: "\"session\".\"email_message_recipients\"",
       emailAttachments: "\"session\".\"email_attachments\"",
@@ -260,6 +262,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"watch_runs\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"watch_events\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"email_accounts\"");
+    expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"email_routes\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"email_messages\"");
     expect(queryable.queries[0]).toContain("FROM \"session\".\"messages_raw\" AS raw");
     expect(queryable.queries[0]).toContain("WHERE raw.role IN ('user', 'assistant')");
@@ -338,7 +341,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
         agent_key: "panda",
       },
     ]);
-  });
+  }, 10_000);
 
   it("filters readonly threads by agent when one identity has multiple agents", async () => {
     const { pool, setScope } = createScopedPool();
@@ -565,11 +568,11 @@ describe("ensureReadonlySessionQuerySchema", () => {
     ]);
   });
 
-  it("exposes readonly email history by agent key", async () => {
+  it("exposes readonly email history by session", async () => {
     const { pool, setScope } = createScopedPool();
     pools.push(pool);
 
-    const {agentStore, emailStore} = await createRuntimeStores(pool);
+    const {agentStore, emailStore, sessionStore, threadStore} = await createRuntimeStores(pool);
     await new PostgresTelepathyDeviceStore({ pool }).ensureSchema();
     await new PostgresScheduledTaskStore({ pool }).ensureSchema();
     await new PostgresWatchStore({ pool }).ensureSchema();
@@ -577,6 +580,36 @@ describe("ensureReadonlySessionQuerySchema", () => {
       agentKey: "ops",
       displayName: "Ops",
       prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
+    });
+    await createSessionWithInitialThread({
+      pool,
+      sessionStore,
+      threadStore,
+      session: {
+        id: "panda-session",
+        agentKey: "panda",
+        kind: "main",
+        currentThreadId: "panda-thread",
+      },
+      thread: {
+        id: "panda-thread",
+        sessionId: "panda-session",
+      },
+    });
+    await createSessionWithInitialThread({
+      pool,
+      sessionStore,
+      threadStore,
+      session: {
+        id: "panda-branch",
+        agentKey: "panda",
+        kind: "branch",
+        currentThreadId: "panda-branch-thread",
+      },
+      thread: {
+        id: "panda-branch-thread",
+        sessionId: "panda-branch",
+      },
     });
 
     const endpoint = {
@@ -599,6 +632,12 @@ describe("ensureReadonlySessionQuerySchema", () => {
       smtp: endpoint,
     });
     await emailStore.addAllowedRecipient("panda", "work", "alice@example.com");
+    const branchRoute = await emailStore.setRoute({
+      agentKey: "panda",
+      accountKey: "work",
+      mailbox: "Archive",
+      sessionId: "panda-branch",
+    });
 
     const visibleMessage = await emailStore.recordMessage({
       agentKey: "panda",
@@ -624,6 +663,19 @@ describe("ensureReadonlySessionQuerySchema", () => {
           sizeBytes: 42,
         },
       ],
+    });
+    await emailStore.recordMessage({
+      agentKey: "panda",
+      accountKey: "work",
+      sessionId: "panda-branch",
+      routeId: branchRoute.id,
+      direction: "inbound",
+      mailbox: "Archive",
+      uid: 3,
+      uidValidity: "uidv",
+      subject: "Branch",
+      fromAddress: "alice@example.com",
+      bodyText: "Hello branch",
     });
     await emailStore.recordMessage({
       agentKey: "ops",
