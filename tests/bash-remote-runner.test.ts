@@ -550,6 +550,54 @@ describe("remote bash runner", () => {
     expect(context.shell?.secretEnvKeys).toEqual(["OPENAI_API_KEY"]);
   });
 
+  it("does not keep unsafe low-entropy exported env sticky across remote calls", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const runner = await createRunner("panda");
+    const tool = new BashTool({
+      env: {
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+      },
+    });
+    const context: DefaultAgentSessionContext = {
+      agentKey: "panda",
+      cwd: agentHome,
+      shell: {
+        cwd: agentHome,
+        env: {},
+      },
+    };
+
+    const unsafeResult = await tool.run(
+      {
+        command: 'export SAVED_SECRET="$CALL_SECRET" && printf "%s" "$CALL_SECRET"',
+        env: {
+          CALL_SECRET: "test",
+        },
+      },
+      createRunContext(context),
+    );
+    const harmlessResult = await tool.run(
+      { command: "printf remote-ok" },
+      createRunContext(context),
+    );
+    const unsafeOutput = asObject(unsafeResult);
+    const harmlessOutput = asObject(harmlessResult);
+
+    expect(unsafeOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
+    expect(JSON.stringify(unsafeOutput)).not.toContain("test");
+    expect(JSON.stringify(unsafeOutput)).not.toContain("CALL_SECRET");
+    expect(JSON.stringify(unsafeOutput)).not.toContain("SAVED_SECRET");
+    expect(context.shell?.env.SAVED_SECRET).toBeUndefined();
+    expect(context.shell?.secretEnvKeys ?? []).not.toContain("SAVED_SECRET");
+
+    expect(harmlessOutput.command).toBe("printf remote-ok");
+    expect(harmlessOutput.stdout).toBe("remote-ok");
+    expect(harmlessOutput.appliedEnvKeys).toEqual([]);
+    expect(harmlessOutput.trackedEnvKeys).toEqual([]);
+    expect(JSON.stringify(harmlessOutput)).not.toContain(UNSAFE_SECRET_OUTPUT_MESSAGE);
+  });
+
   it("supports remote background job start, status, wait, and cancel endpoints", async () => {
     const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");

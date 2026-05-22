@@ -246,16 +246,44 @@ function readSecretSessionEnv(shellSession: ShellSession | null): Record<string,
   );
 }
 
+function pruneUnsafeSecretSessionEnv(shellSession: ShellSession | null): void {
+  if (!shellSession || !Array.isArray(shellSession.secretEnvKeys) || shellSession.secretEnvKeys.length === 0) {
+    return;
+  }
+
+  const nextSecretKeys = new Set<string>();
+  for (const key of shellSession.secretEnvKeys) {
+    const value = shellSession.env[key];
+    if (typeof value !== "string" || value.length === 0) {
+      continue;
+    }
+
+    if (isSafeRedactionValue(value)) {
+      nextSecretKeys.add(key);
+      continue;
+    }
+
+    delete shellSession.env[key];
+  }
+
+  shellSession.secretEnvKeys = [...nextSecretKeys];
+}
+
+interface SecretSessionUpdateResult {
+  hasUnsafeSecretMaterial: boolean;
+}
+
 function updateSecretSessionKeys(
   shellSession: ShellSession | null,
   entries: readonly PersistedEnvEntry[],
   sourceSecretValues: ReadonlySet<string>,
-): void {
+): SecretSessionUpdateResult {
   if (!shellSession) {
-    return;
+    return {hasUnsafeSecretMaterial: false};
   }
 
   const nextSecretKeys = new Set(shellSession.secretEnvKeys ?? []);
+  let hasUnsafeSecretMaterial = false;
 
   for (const entry of entries) {
     if (!entry.present) {
@@ -263,15 +291,29 @@ function updateSecretSessionKeys(
       continue;
     }
 
-    if (isSecretLikeEnvKey(entry.key) || sourceSecretValues.has(entry.value) || sourceSecretValues.has(entry.value.trim())) {
+    const trimmedValue = entry.value.trim();
+    const hasValue = trimmedValue.length > 0;
+    const matchesSourceSecret = hasValue
+      && (sourceSecretValues.has(entry.value) || sourceSecretValues.has(trimmedValue));
+    const isSecretMaterial = hasValue && (isSecretLikeEnvKey(entry.key) || matchesSourceSecret);
+
+    if (!isSecretMaterial) {
+      nextSecretKeys.delete(entry.key);
+      continue;
+    }
+
+    if (isSafeRedactionValue(entry.value)) {
       nextSecretKeys.add(entry.key);
       continue;
     }
 
+    hasUnsafeSecretMaterial = true;
     nextSecretKeys.delete(entry.key);
+    delete shellSession.env[entry.key];
   }
 
   shellSession.secretEnvKeys = [...nextSecretKeys];
+  return {hasUnsafeSecretMaterial};
 }
 
 function filterCredentialEnv(
@@ -468,6 +510,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     const executionEnvironment = context?.executionEnvironment;
     assertBashAllowed(executionEnvironment);
     const shellSession = ensureShellSession(run.context);
+    pruneUnsafeSecretSessionEnv(shellSession);
     const baseCwd = shellSession?.cwd ?? readBaseCwd(run.context);
     const cwd = resolveCommandCwd(args.cwd, baseCwd);
     const timeoutMs = args.timeoutMs ?? this.defaultTimeoutMs;
@@ -545,7 +588,11 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       run: run as RunContext<DefaultAgentSessionContext>,
     });
     const appliedSessionEnvKeys = applyPersistedEnv(shellSession, result.persistedEnvEntries);
-    updateSecretSessionKeys(shellSession, result.persistedEnvEntries, secretInventory.sourceSecretValues);
+    const secretSessionUpdate = updateSecretSessionKeys(
+      shellSession,
+      result.persistedEnvEntries,
+      secretInventory.sourceSecretValues,
+    );
     const resultSecretInventory = buildBashSecretInventory({
       resolvedCredentialEnv,
       callEnv: args.env,
@@ -595,7 +642,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     };
     const suppressedPayload = suppressUnsafeSecretPayloadFields(
       payload,
-      resultSecretInventory.hasUnsafeSecretMaterial,
+      secretInventory.hasUnsafeSecretMaterial || secretSessionUpdate.hasUnsafeSecretMaterial,
     );
     const redactedPayload = resultSecretInventory.redactionValues.length > 0
       ? redactSecretsInJsonObject(suppressedPayload, resultSecretInventory.redactionValues)

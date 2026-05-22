@@ -602,7 +602,7 @@ describe("BashTool", () => {
     }
   });
 
-  it("suppresses unsafe low-entropy source secret output without content-specific redaction", async () => {
+  it("suppresses active unsafe low-entropy source secrets without making later calls sticky", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-unsafe-secret-"));
     try {
       const context: DefaultAgentSessionContext = {
@@ -627,7 +627,7 @@ describe("BashTool", () => {
         },
         createRunContext(context),
       );
-      const unrelatedResult = await tool.run(
+      const activeUnsafeResult = await tool.run(
         {
           command: "printf unrelated",
           env: {
@@ -636,31 +636,82 @@ describe("BashTool", () => {
         },
         createRunContext(context),
       );
+      const harmlessResult = await tool.run(
+        {
+          command: "printf harmless",
+        },
+        createRunContext(context),
+      );
       const secretOutput = asObject(secretResult);
-      const unrelatedOutput = asObject(unrelatedResult);
+      const activeUnsafeOutput = asObject(activeUnsafeResult);
+      const harmlessOutput = asObject(harmlessResult);
 
       expect(secretOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
-      expect(unrelatedOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
-      expect(secretOutput.stdout).toBe(unrelatedOutput.stdout);
+      expect(activeUnsafeOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
+      expect(secretOutput.stdout).toBe(activeUnsafeOutput.stdout);
       expect(secretOutput.appliedEnvKeys).toEqual([]);
       expect(secretOutput.trackedEnvKeys).toEqual([]);
       expect(secretOutput.sessionEnvKeys).toEqual([]);
       expect(secretOutput.sessionEnvChanged).toBe(false);
-      expect(unrelatedOutput.appliedEnvKeys).toEqual([]);
-      expect(unrelatedOutput.trackedEnvKeys).toEqual([]);
+      expect(activeUnsafeOutput.appliedEnvKeys).toEqual([]);
+      expect(activeUnsafeOutput.trackedEnvKeys).toEqual([]);
       expect(JSON.stringify(secretOutput)).not.toContain("test");
       expect(JSON.stringify(secretOutput)).not.toContain("CALL_SECRET");
       expect(JSON.stringify(secretOutput)).not.toContain("SAVED_SECRET");
-      expect(JSON.stringify(unrelatedOutput)).not.toContain("CALL_SECRET");
+      expect(JSON.stringify(activeUnsafeOutput)).not.toContain("CALL_SECRET");
       expect(secretOutput.stdoutPersisted).toBe(false);
-      expect(unrelatedOutput.stdoutPersisted).toBe(false);
+      expect(activeUnsafeOutput.stdoutPersisted).toBe(false);
       expect(secretOutput.stdoutPath).toBeUndefined();
-      expect(unrelatedOutput.stdoutPath).toBeUndefined();
+      expect(activeUnsafeOutput.stdoutPath).toBeUndefined();
+      expect(context.shell?.env.SAVED_SECRET).toBeUndefined();
+      expect(context.shell?.secretEnvKeys ?? []).not.toContain("SAVED_SECRET");
+
+      expect(harmlessOutput.command).toBe("printf harmless");
+      expect(harmlessOutput.stdout).toBe("harmless");
+      expect(harmlessOutput.stdoutChars).toBe(8);
+      expect(harmlessOutput.stdoutTruncated).toBe(false);
+      expect(harmlessOutput.appliedEnvKeys).toEqual([]);
+      expect(harmlessOutput.trackedEnvKeys).toEqual([]);
+      expect(JSON.stringify(harmlessOutput)).not.toContain(UNSAFE_SECRET_OUTPUT_MESSAGE);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
   });
 
+  it("prunes legacy unsafe low-entropy session secrets before harmless foreground calls", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-legacy-unsafe-secret-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {
+            SAVED_SECRET: "test",
+          },
+          secretEnvKeys: ["SAVED_SECRET"],
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+      });
+
+      const result = await tool.run(
+        { command: "printf ok" },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+
+      expect(output.command).toBe("printf ok");
+      expect(output.stdout).toBe("ok");
+      expect(output.appliedEnvKeys).toEqual([]);
+      expect(output.trackedEnvKeys).toEqual([]);
+      expect(context.shell?.env.SAVED_SECRET).toBeUndefined();
+      expect(context.shell?.secretEnvKeys ?? []).not.toContain("SAVED_SECRET");
+      expect(JSON.stringify(output)).not.toContain(UNSAFE_SECRET_OUTPUT_MESSAGE);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
 
   it("keeps neutral foreground bash progress observable", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-progress-neutral-"));
