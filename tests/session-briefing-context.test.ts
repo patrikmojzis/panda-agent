@@ -71,4 +71,22 @@ describe("SessionBriefingContext", () => {
     expect(editedSameTimestamp).not.toBe(first);
     expect(editedTimestamp).not.toBe(first);
   });
+
+  it("keeps session briefing prompt cache keys within the provider limit", () => {
+    const base = resolveThreadPromptCacheKey("00000000-0000-4000-8000-000000000000");
+    const withSessionPrompt = resolveSessionPromptCacheKey(base, basePrompt);
+
+    expect(withSessionPrompt.length).toBeLessThanOrEqual(64);
+  });
+
+  it("bounds explicit prompt cache keys before provider dispatch", () => {
+    const longStoredKey = `thread:${"stored-thread-key-".repeat(5)}`;
+    const base = resolveThreadPromptCacheKey("thread-one", longStoredKey);
+    const withSessionPrompt = resolveSessionPromptCacheKey(base, basePrompt);
+
+    expect(base.length).toBeLessThanOrEqual(64);
+    expect(withSessionPrompt.length).toBeLessThanOrEqual(64);
+    expect(base).not.toBe(longStoredKey);
+    expect(resolveSessionPromptCacheKey(longStoredKey, null).length).toBeLessThanOrEqual(64);
+  });
 });

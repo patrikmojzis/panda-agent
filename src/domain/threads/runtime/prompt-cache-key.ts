@@ -1,11 +1,34 @@
 import {createHash} from "node:crypto";
 
+const MAX_PROMPT_CACHE_KEY_LENGTH = 64;
+const HASHED_PROMPT_CACHE_KEY_PREFIX = "pc:";
+
 /**
  * Returns the stable cache-affinity key for one append-only thread transcript.
  * Resets create a new thread, which intentionally starts a fresh cache lane.
  */
 function buildThreadPromptCacheKey(threadId: string): string {
   return `thread:${threadId}`;
+}
+
+function hashPromptCacheParts(parts: readonly string[]): string {
+  const hash = createHash("sha256");
+  for (const part of parts) {
+    hash.update(part);
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function boundPromptCacheKey(key: string): string {
+  if (key.length <= MAX_PROMPT_CACHE_KEY_LENGTH) {
+    return key;
+  }
+
+  return `${HASHED_PROMPT_CACHE_KEY_PREFIX}${hashPromptCacheParts([key]).slice(
+    0,
+    MAX_PROMPT_CACHE_KEY_LENGTH - HASHED_PROMPT_CACHE_KEY_PREFIX.length,
+  )}`;
 }
 
 /**
@@ -17,7 +40,9 @@ export function resolveThreadPromptCacheKey(
   promptCacheKey?: string | null,
 ): string {
   const trimmed = promptCacheKey?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : buildThreadPromptCacheKey(threadId);
+  return boundPromptCacheKey(
+    trimmed && trimmed.length > 0 ? trimmed : buildThreadPromptCacheKey(threadId),
+  );
 }
 
 export interface SessionPromptCacheVersion {
@@ -26,8 +51,12 @@ export interface SessionPromptCacheVersion {
   updatedAt: number;
 }
 
-function hashSessionPromptContent(content: string): string {
-  return createHash("sha256").update(content).digest("hex").slice(0, 16);
+function buildSessionPromptCacheVersion(sessionPrompt: SessionPromptCacheVersion): string {
+  return hashPromptCacheParts([
+    sessionPrompt.slug,
+    String(sessionPrompt.updatedAt),
+    sessionPrompt.content,
+  ]).slice(0, 16);
 }
 
 export function resolveSessionPromptCacheKey(
@@ -35,14 +64,12 @@ export function resolveSessionPromptCacheKey(
   sessionPrompt?: SessionPromptCacheVersion | null,
 ): string {
   if (!sessionPrompt) {
-    return basePromptCacheKey;
+    return boundPromptCacheKey(basePromptCacheKey);
   }
 
-  return [
+  return boundPromptCacheKey([
     basePromptCacheKey,
-    "session-prompt",
-    sessionPrompt.slug,
-    String(sessionPrompt.updatedAt),
-    hashSessionPromptContent(sessionPrompt.content),
-  ].join(":");
+    "sp",
+    buildSessionPromptCacheVersion(sessionPrompt),
+  ].join(":"));
 }
