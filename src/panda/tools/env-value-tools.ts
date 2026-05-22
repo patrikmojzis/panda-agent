@@ -75,6 +75,17 @@ export class SetEnvValueTool<TContext = DefaultAgentSessionContext> extends Tool
     return key;
   }
 
+  override redactCallArguments(args: Record<string, unknown>): Record<string, unknown> {
+    if (!Object.prototype.hasOwnProperty.call(args, "value")) {
+      return args;
+    }
+
+    return {
+      ...args,
+      value: "[redacted]",
+    };
+  }
+
   async handle(
     args: z.output<typeof SetEnvValueTool.schema>,
     run: RunContext<TContext>,

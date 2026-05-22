@@ -333,8 +333,14 @@ describe("Env value tools", () => {
     )).rejects.toThrow("Credential tools require agentKey");
   });
 
-  it("keeps set_env_value call arguments in history but returns only confirmation facts", async () => {
-    const {service} = await createHarness();
+  it("redacts set_env_value call arguments in history but returns only confirmation facts", async () => {
+    const {resolver, service} = await createHarness();
+    expect(new SetEnvValueTool({service}).redactCallArguments({
+      key: "OPENAI_API_KEY",
+    })).toEqual({
+      key: "OPENAI_API_KEY",
+    });
+
     const runtime = createMockRuntime(
       createAssistantMessage([{
         type: "toolCall",
@@ -381,6 +387,12 @@ describe("Env value tools", () => {
     });
     await coordinator.waitForIdle("thread-credentials-redaction");
 
+    await expect(resolver.resolveEnvironment({
+      agentKey: "panda",
+    })).resolves.toEqual({
+      OPENAI_API_KEY: "sk-live-123456",
+    });
+
     const transcript = await store.loadTranscript("thread-credentials-redaction");
     const assistant = transcript[1]?.message;
     const toolResult = transcript[2]?.message;
@@ -392,9 +404,10 @@ describe("Env value tools", () => {
       name: "set_env_value",
       arguments: {
         key: "OPENAI_API_KEY",
-        value: "sk-live-123456",
+        value: "[redacted]",
       },
     });
+    expect(JSON.stringify(assistant)).not.toContain("sk-live-123456");
 
     const toolResultText = JSON.stringify(toolResult);
     expect(toolResultText).not.toContain("sk-live-123456");

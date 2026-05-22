@@ -3,6 +3,7 @@ import {DataType, newDb} from "pg-mem";
 
 import {stringToUserMessage} from "../src/index.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
+import {buildThreadRuntimeTableNames} from "../src/domain/threads/runtime/postgres-shared.js";
 import {
   parseInputRow,
   parseMessageRow,
@@ -34,6 +35,7 @@ function createQueryOnlyThreadRuntimePool(
 describe("PostgresThreadRuntimeStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
   const SESSION_TABLE = "\"runtime\".\"agent_sessions\"";
+  const MESSAGES_TABLE = buildThreadRuntimeTableNames().messages;
 
   afterEach(async () => {
     while (pools.length > 0) {
@@ -74,6 +76,100 @@ describe("PostgresThreadRuntimeStore", () => {
       ],
     );
   }
+
+  it("backfills legacy set_env_value assistant tool-call values during schema ensure", async () => {
+    let persistedMessage = {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "call_set_env",
+          name: "set_env_value",
+          arguments: {
+            key: "OPENAI_API_KEY",
+            value: "sk-legacy-secret",
+          },
+        },
+        {
+          type: "toolCall",
+          id: "call_bash",
+          name: "bash",
+          arguments: {
+            command: "printf ok",
+          },
+        },
+      ],
+      timestamp: Date.now(),
+    };
+    let migrationApplied = false;
+    let markerInsertCount = 0;
+    let candidateSelectCount = 0;
+    let updateCount = 0;
+    const pool = createQueryOnlyThreadRuntimePool(async (text, values) => {
+      if (text.includes("FROM") && text.includes("thread_runtime_migrations")) {
+        return { rows: migrationApplied ? [{ "?column?": 1 }] : [] };
+      }
+
+      if (text.includes("INSERT INTO") && text.includes("thread_runtime_migrations")) {
+        markerInsertCount += 1;
+        migrationApplied = true;
+        return { rows: [] };
+      }
+
+      if (text.includes("SELECT id, message") && text.includes(MESSAGES_TABLE)) {
+        candidateSelectCount += 1;
+        expect(text).toContain("message->>'content' LIKE '%set_env_value%'");
+        expect(text).toContain("message->>'content' LIKE '%value%'");
+        return {
+          rows: [{
+            id: "00000000-0000-4000-8000-000000000001",
+            message: persistedMessage,
+          }],
+        };
+      }
+
+      if (text.includes("UPDATE") && text.includes(MESSAGES_TABLE) && text.includes("SET message")) {
+        updateCount += 1;
+        persistedMessage = JSON.parse(String(values?.[1]));
+        return { rows: [] };
+      }
+
+      if (text.includes("COUNT(*)::INTEGER AS count")) {
+        return { rows: [{ count: 0 }] };
+      }
+
+      return { rows: [] };
+    }, "connect was not expected for schema ensure");
+    const store = new PostgresThreadRuntimeStore({pool});
+
+    await store.ensureSchema();
+    await store.ensureSchema();
+
+    expect(candidateSelectCount).toBe(1);
+    expect(updateCount).toBe(1);
+    expect(markerInsertCount).toBe(1);
+    expect(persistedMessage).toMatchObject({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "set_env_value",
+          arguments: {
+            key: "OPENAI_API_KEY",
+            value: "[redacted]",
+          },
+        },
+        {
+          type: "toolCall",
+          name: "bash",
+          arguments: {
+            command: "printf ok",
+          },
+        },
+      ],
+    });
+    expect(JSON.stringify(persistedMessage)).not.toContain("sk-legacy-secret");
+  });
 
   it("persists threads, pending inputs, transcript messages, and runs", async () => {
     const db = newDb();
