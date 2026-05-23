@@ -49,9 +49,6 @@ function asObject(value: unknown): Record<string, unknown> {
   return (value ?? {}) as Record<string, unknown>;
 }
 
-const UNSAFE_SECRET_OUTPUT_MESSAGE =
-  "[redacted: bash output hidden because configured secret material is too low-entropy to safely redact]";
-
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
   const startedAt = Date.now();
 
@@ -724,7 +721,7 @@ describe("remote bash runner", () => {
     expect(JSON.stringify(output)).not.toContain("call-secret");
   });
 
-  it("suppresses unsafe low-entropy source secret output for remote background jobs", async () => {
+  it("redacts explicit short source secret output for remote background jobs without hiding unrelated output", async () => {
     const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const {bash, status, wait, context} = await createRemoteBackgroundHarness(agentHome, runner);
@@ -765,18 +762,17 @@ describe("remote bash runner", () => {
       createRunContext(context),
     ));
 
-    expect(firstOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
-    expect(secondOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
-    expect(firstOutput.stdout).toBe(secondOutput.stdout);
-    expect(firstStarted.trackedEnvKeys).toEqual([]);
-    expect(firstStatus.trackedEnvKeys).toEqual([]);
-    expect(firstOutput.trackedEnvKeys).toEqual([]);
+    expect(firstOutput.stdout).toBe("[redacted]");
+    expect(secondOutput.stdout).toBe("unrelated");
+    expect(firstStarted.trackedEnvKeys).toEqual(["BG_ONLY"]);
+    expect(firstStatus.trackedEnvKeys).toEqual(["BG_ONLY"]);
+    expect(firstOutput.trackedEnvKeys).toEqual(["BG_ONLY"]);
+    expect(secondOutput.trackedEnvKeys).toEqual([]);
     for (const output of [firstStarted, firstStatus, firstOutput, secondOutput]) {
-      const serialized = JSON.stringify(output);
-      expect(serialized).not.toContain("test");
-      expect(serialized).not.toContain("CALL_SECRET");
-      expect(serialized).not.toContain("BG_ONLY");
+      expect(JSON.stringify(output)).not.toContain("test");
     }
+    expect(JSON.stringify(firstOutput)).toContain("BG_ONLY");
+    expect(JSON.stringify(secondOutput)).toContain("unrelated");
     expect(firstOutput.stdoutPersisted).toBe(false);
     expect(secondOutput.stdoutPersisted).toBe(false);
     expect(firstOutput.stdoutPath).toBeUndefined();

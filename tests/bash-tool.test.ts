@@ -47,8 +47,6 @@ function asObject(value: unknown): Record<string, unknown> {
 }
 
 const NUL_PLACEHOLDER = "␀";
-const UNSAFE_SECRET_OUTPUT_MESSAGE =
-  "[redacted: bash output hidden because configured secret material is too low-entropy to safely redact]";
 
 function expectNoJsonNul(value: unknown): void {
   const serialized = JSON.stringify(value);
@@ -602,8 +600,51 @@ describe("BashTool", () => {
     }
   });
 
-  it("suppresses unsafe low-entropy source secret output without content-specific redaction", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-unsafe-secret-"));
+  it("keeps random-looking non-secret env values ordinary", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-random-env-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+      });
+      const marker = "Aa0!Bb1@Cc2#Dd3$Ee4%Ff5^";
+
+      const first = await tool.run(
+        {
+          command: 'export SAVED_RANDOM="$RANDOM_VALUE" && printf "%s" "$RANDOM_VALUE"',
+          env: {
+            RANDOM_VALUE: marker,
+          },
+        },
+        createRunContext(context),
+      );
+      const firstOutput = asObject(first);
+
+      expect(firstOutput.stdout).toBe(marker);
+      expect(firstOutput.appliedEnvKeys).toEqual(["RANDOM_VALUE"]);
+      expect(firstOutput.trackedEnvKeys).toEqual(["SAVED_RANDOM"]);
+      expect(context.shell?.env.SAVED_RANDOM).toBe(marker);
+      expect(context.shell?.secretEnvKeys ?? []).not.toContain("SAVED_RANDOM");
+
+      const second = await tool.run(
+        { command: 'printf "%s" "$SAVED_RANDOM"' },
+        createRunContext(context),
+      );
+
+      expect(asObject(second).stdout).toBe(marker);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts explicit short secret values without hiding unrelated output", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-short-secret-"));
     try {
       const context: DefaultAgentSessionContext = {
         cwd: workspace,
@@ -630,28 +671,23 @@ describe("BashTool", () => {
       const unrelatedResult = await tool.run(
         {
           command: "printf unrelated",
-          env: {
-            CALL_SECRET: "test",
-          },
         },
         createRunContext(context),
       );
       const secretOutput = asObject(secretResult);
       const unrelatedOutput = asObject(unrelatedResult);
 
-      expect(secretOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
-      expect(unrelatedOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
-      expect(secretOutput.stdout).toBe(unrelatedOutput.stdout);
-      expect(secretOutput.appliedEnvKeys).toEqual([]);
-      expect(secretOutput.trackedEnvKeys).toEqual([]);
-      expect(secretOutput.sessionEnvKeys).toEqual([]);
-      expect(secretOutput.sessionEnvChanged).toBe(false);
+      expect(secretOutput.stdout).toBe("[redacted]");
+      expect(unrelatedOutput.stdout).toBe("unrelated");
+      expect(secretOutput.appliedEnvKeys).toEqual(["CALL_SECRET"]);
+      expect(secretOutput.trackedEnvKeys).toEqual(["SAVED_SECRET"]);
+      expect(secretOutput.sessionEnvKeys).toEqual(["SAVED_SECRET"]);
+      expect(secretOutput.sessionEnvChanged).toBe(true);
       expect(unrelatedOutput.appliedEnvKeys).toEqual([]);
       expect(unrelatedOutput.trackedEnvKeys).toEqual([]);
       expect(JSON.stringify(secretOutput)).not.toContain("test");
-      expect(JSON.stringify(secretOutput)).not.toContain("CALL_SECRET");
-      expect(JSON.stringify(secretOutput)).not.toContain("SAVED_SECRET");
-      expect(JSON.stringify(unrelatedOutput)).not.toContain("CALL_SECRET");
+      expect(JSON.stringify(unrelatedOutput)).not.toContain("test");
+      expect(JSON.stringify(unrelatedOutput)).toContain("unrelated");
       expect(secretOutput.stdoutPersisted).toBe(false);
       expect(unrelatedOutput.stdoutPersisted).toBe(false);
       expect(secretOutput.stdoutPath).toBeUndefined();
@@ -660,7 +696,6 @@ describe("BashTool", () => {
       await rm(workspace, { recursive: true, force: true });
     }
   });
-
 
   it("keeps neutral foreground bash progress observable", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-progress-neutral-"));
@@ -699,7 +734,7 @@ describe("BashTool", () => {
     }
   });
 
-  it("redacts foreground bash progress tails for safe source secrets", async () => {
+  it("redacts foreground bash progress tails for explicit source secrets", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-progress-redaction-"));
     try {
       const context: DefaultAgentSessionContext = {
@@ -736,8 +771,8 @@ describe("BashTool", () => {
     }
   });
 
-  it("suppresses foreground bash progress tails for unsafe low-entropy source secrets", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-progress-unsafe-secret-"));
+  it("redacts explicit short secrets in foreground progress without hiding unrelated output", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-progress-short-secret-"));
     try {
       const context: DefaultAgentSessionContext = {
         cwd: workspace,
@@ -754,7 +789,7 @@ describe("BashTool", () => {
 
       const result = await tool.run(
         {
-          command: 'export SAVED_SECRET="$CALL_SECRET"; printf unrelated; printf error >&2; sleep 0.1',
+          command: 'export SAVED_SECRET="$CALL_SECRET"; printf "%s:unrelated" "$CALL_SECRET"; printf "error:%s" "$CALL_SECRET" >&2; sleep 0.1',
           env: {
             CALL_SECRET: "test",
           },
@@ -763,19 +798,17 @@ describe("BashTool", () => {
       );
       const output = asObject(result);
 
-      expect(output.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
-      expect(output.stderr).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
+      expect(output.stdout).toBe("[redacted]:unrelated");
+      expect(output.stderr).toBe("error:[redacted]");
       expect(progress.length).toBeGreaterThan(0);
       expect(progress.some((entry) =>
-        entry.stdoutTail === UNSAFE_SECRET_OUTPUT_MESSAGE
-        && entry.stderrTail === UNSAFE_SECRET_OUTPUT_MESSAGE,
+        entry.stdoutTail === "[redacted]:unrelated"
+        && entry.stderrTail === "error:[redacted]",
       )).toBe(true);
       const serialized = JSON.stringify(progress);
       expect(serialized).not.toContain("test");
-      expect(serialized).not.toContain("CALL_SECRET");
-      expect(serialized).not.toContain("SAVED_SECRET");
-      expect(serialized).not.toContain("unrelated");
-      expect(serialized).not.toContain("error");
+      expect(serialized).toContain("unrelated");
+      expect(serialized).toContain("error");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -1191,8 +1224,8 @@ describe("BashTool", () => {
     }
   });
 
-  it("suppresses unsafe low-entropy source secret output for background jobs", async () => {
-    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-unsafe-secret-"));
+  it("redacts explicit short source secret output for background jobs without hiding unrelated output", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-short-secret-"));
     try {
       const {bash, status, wait, context} = await createBackgroundHarness(workspace);
 
@@ -1232,18 +1265,17 @@ describe("BashTool", () => {
         createRunContext(context),
       ));
 
-      expect(firstOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
-      expect(secondOutput.stdout).toBe(UNSAFE_SECRET_OUTPUT_MESSAGE);
-      expect(firstOutput.stdout).toBe(secondOutput.stdout);
-      expect(firstStarted.trackedEnvKeys).toEqual([]);
-      expect(firstStatus.trackedEnvKeys).toEqual([]);
-      expect(firstOutput.trackedEnvKeys).toEqual([]);
+      expect(firstOutput.stdout).toBe("[redacted]");
+      expect(secondOutput.stdout).toBe("unrelated");
+      expect(firstStarted.trackedEnvKeys).toEqual(["BG_ONLY"]);
+      expect(firstStatus.trackedEnvKeys).toEqual(["BG_ONLY"]);
+      expect(firstOutput.trackedEnvKeys).toEqual(["BG_ONLY"]);
+      expect(secondOutput.trackedEnvKeys).toEqual([]);
       for (const output of [firstStarted, firstStatus, firstOutput, secondOutput]) {
-        const serialized = JSON.stringify(output);
-        expect(serialized).not.toContain("test");
-        expect(serialized).not.toContain("CALL_SECRET");
-        expect(serialized).not.toContain("BG_ONLY");
+        expect(JSON.stringify(output)).not.toContain("test");
       }
+      expect(JSON.stringify(firstOutput)).toContain("BG_ONLY");
+      expect(JSON.stringify(secondOutput)).toContain("unrelated");
       expect(firstOutput.stdoutPersisted).toBe(false);
       expect(secondOutput.stdoutPersisted).toBe(false);
       expect(firstOutput.stdoutPath).toBeUndefined();
