@@ -169,6 +169,33 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).toContain("Follow up");
   });
 
+  it("shows session todo context in the default Panda contexts when available", async () => {
+    const dump = await gatherContexts(buildDefaultAgentLlmContexts({
+      context: {
+        cwd: "/workspace/panda",
+        agentKey: "panda",
+        sessionId: "session-main",
+        threadId: "thread-main",
+      },
+      sessionStore: {
+        readSessionTodo: async () => ({
+          sessionId: "session-main",
+          items: [
+            {status: "in_progress", content: "Implement todo context"},
+            {status: "pending", content: "Run validation"},
+          ],
+          itemsHash: "hash",
+          createdAt: 1,
+          updatedAt: 2,
+        }),
+      },
+    }));
+
+    expect(dump).toContain("**Todo Context:**");
+    expect(dump).toContain("- [in_progress] Implement todo context");
+    expect(dump).toContain("- [pending] Run validation");
+  });
+
   it("omits the background bash section when no jobs are running", async () => {
     const threadStore = new TestThreadRuntimeStore();
     await threadStore.createThread({

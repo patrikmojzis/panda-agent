@@ -31,16 +31,16 @@
       "sha256": "af68038f516ac4ccf5602715f551192eec53f8263857819eaab203e5dc1167b1"
     },
     {
-      "bytes": 23568,
-      "lines": 722,
+      "bytes": 23704,
+      "lines": 726,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "145495db587148edf5d0d6e0678a5439c0d7fd373a0043e883dc9937fdd991ef"
+      "sha256": "2fde32484f1627e3c5bf7aa326351e96688b6bb040a11a70e7f8eee689837ce1"
     },
     {
-      "bytes": 10189,
-      "lines": 247,
+      "bytes": 10227,
+      "lines": 248,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "5e5541cd5a8c0726b20dd3b3be223163096d674522fb4631a00c1115f0bdfcec"
+      "sha256": "db05ac7ee087f225bf49c87f2da404c12f4875f6ca827a992793c3397263b403"
     },
     {
       "bytes": 2612,
@@ -55,10 +55,10 @@
       "sha256": "c9dba92c99c1b215b5d3e5545677395423b39853d8ebe04fabf857aa246ca3d8"
     },
     {
-      "bytes": 5973,
-      "lines": 161,
+      "bytes": 6504,
+      "lines": 173,
       "path": "src/panda/contexts/builder.ts",
-      "sha256": "f5207a13ef0e0e55b33d6bf9a3cbb5e0556cb306f987ce05d285a7a938b8867b"
+      "sha256": "0cda38a91fc116fcee7d4c0178fd526fff6f1e6e351a18bac3d25800b32cac2a"
     },
     {
       "bytes": 1541,
@@ -83,6 +83,12 @@
       "lines": 30,
       "path": "src/panda/contexts/session-briefing-context.ts",
       "sha256": "1152531e3bd22cf5ecd78fe47ea15e9ede480272db3a06497ba6ade67c68c4e9"
+    },
+    {
+      "bytes": 1160,
+      "lines": 37,
+      "path": "src/panda/contexts/session-todo-context.ts",
+      "sha256": "04dc2d805aeab012478c16d4d16a6650f976f8a2611cec9ad6f2a8bacd2755fe"
     },
     {
       "bytes": 216,
@@ -127,10 +133,10 @@
       "sha256": "986ffdbbb165d18f672c6326e8399048ca4c5a7581dd0e8a5ff8f3ec757ece6b"
     },
     {
-      "bytes": 1538,
-      "lines": 69,
+      "bytes": 1572,
+      "lines": 71,
       "path": "src/panda/worker-tool-policy.ts",
-      "sha256": "c62f68769cc8f2203fc2a87d882854dde0c73a619dda7cccff678e580971fb63"
+      "sha256": "0d3efaf96bcfa05e8c8c223f0fb25c4fa3ea5ed34466eaf81d58fc14d67dbe50"
     },
     {
       "bytes": 2898,
@@ -221,6 +227,12 @@
       "lines": 3,
       "path": "src/prompts/contexts/session-briefing.ts",
       "sha256": "ce1e613f2ffde43b9d0d698d3e9cee8f0e7440f3d49db85ec97c59d778fba2d7"
+    },
+    {
+      "bytes": 1653,
+      "lines": 40,
+      "path": "src/prompts/contexts/session-todo.ts",
+      "sha256": "5d8f837c7391c253665f98c26d2ae41bca38d593854b29b030cb6c995a2a61e8"
     },
     {
       "bytes": 1371,
@@ -1380,7 +1392,7 @@
       }
     },
     {
-      "description": "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. A single read-only SELECT or WITH query. Prefer session.agent_sessions for the current session row. session.agent_sessions exposes current_thread_id, not thread_id. The readonly tool already scopes session.threads, session.messages, session.tool_results, session.inputs, session.runs, session.scheduled_tasks, session.scheduled_task_runs, session.watches, session.watch_runs, and session.watch_events to the current session. The readonly tool also scopes session.agent_prompts, session.agent_pairings, session.agent_skills, and session.agent_telepathy_devices to the current agent. Do not invent is_active flags or extra session_id subqueries unless you are joining raw tables outside the session.* views. Use session.agent_prompts for agent docs, session.agent_pairings for known identities, session.agent_skills for stored skills, and session.agent_telepathy_devices for registered Mac receivers. For exploratory reads, prefer left(...), substring(...), regex filters, full-text search, or other narrow projections instead of pulling giant content blobs blindly. For session automation, query session.scheduled_tasks or session.watches directly with ORDER BY/LIMIT. Prefer session.agent_skills for stored skill bodies and session.messages_raw only when you truly need raw JSONB. Large skill bodies may need substring(...) or targeted column selection. If you need schema help, query information_schema.columns. Always use LIMIT on exploratory queries.",
+      "description": "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. A single read-only SELECT or WITH query. Prefer session.agent_sessions for the current session row. session.agent_sessions exposes current_thread_id, not thread_id. The readonly tool already scopes session.threads, session.messages, session.tool_results, session.inputs, session.runs, session.todos, session.scheduled_tasks, session.scheduled_task_runs, session.watches, session.watch_runs, and session.watch_events to the current session. The readonly tool also scopes session.agent_prompts, session.agent_pairings, session.agent_skills, and session.agent_telepathy_devices to the current agent. Do not invent is_active flags or extra session_id subqueries unless you are joining raw tables outside the session.* views. Use session.agent_prompts for agent docs, session.agent_pairings for known identities, session.agent_skills for stored skills, and session.agent_telepathy_devices for registered Mac receivers. For exploratory reads, prefer left(...), substring(...), regex filters, full-text search, or other narrow projections instead of pulling giant content blobs blindly. For durable session todo context, query session.todos. For session automation, query session.scheduled_tasks or session.watches directly with ORDER BY/LIMIT. Prefer session.agent_skills for stored skill bodies and session.messages_raw only when you truly need raw JSONB. Large skill bodies may need substring(...) or targeted column selection. If you need schema help, query information_schema.columns. Always use LIMIT on exploratory queries.",
       "name": "postgres_readonly_query",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2385,7 +2397,8 @@
       "brave_search",
       "browser",
       "agent_skill",
-      "image_generate"
+      "image_generate",
+      "todo_update"
     ],
     "defaultAllowedWithReadonlyPostgres": [
       "bash",
@@ -2400,6 +2413,7 @@
       "browser",
       "agent_skill",
       "image_generate",
+      "todo_update",
       "postgres_readonly_query"
     ],
     "knownToolNames": [
@@ -2435,6 +2449,7 @@
       "telegram_react",
       "telepathy_screenshot",
       "thinking_set",
+      "todo_update",
       "view_media",
       "watch_create",
       "watch_disable",

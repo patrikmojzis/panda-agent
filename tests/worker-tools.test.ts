@@ -205,6 +205,7 @@ describe("worker control tools", () => {
           "browser",
           "agent_skill",
           "image_generate",
+          "todo_update",
           "postgres_readonly_query",
         ],
         bash: {allowed: true},

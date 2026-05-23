@@ -84,6 +84,16 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
       ON ${tables.sessionPrompts} (session_id)
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.sessionTodos} (
+      session_id TEXT PRIMARY KEY REFERENCES ${tables.sessions}(id) ON DELETE CASCADE,
+      items JSONB NOT NULL,
+      items_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   await assertIntegrityChecks(pool, "Session schema", [
     {
       label: "agent_sessions.agent_key orphaned from agents.agent_key",

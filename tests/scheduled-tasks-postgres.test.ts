@@ -183,6 +183,12 @@ function createScopedPool() {
     returns: DataType.integer,
     implementation: (value: Buffer) => value.length,
   });
+  db.public.registerFunction({
+    name: "jsonb_array_length",
+    args: [DataType.jsonb],
+    returns: DataType.integer,
+    implementation: (value: unknown) => Array.isArray(value) ? value.length : 0,
+  });
 
   const adapter = db.adapters.createPg();
   const pool = new adapter.Pool();

@@ -242,6 +242,7 @@ Treat these views as the public interface:
 - `session.tool_results`
 - `session.inputs`
 - `session.runs`
+- `session.todos`
 - `session.agent_prompts`
 - `session.agent_pairings`
 - `session.agent_skills`

@@ -37,6 +37,7 @@ const WORKER_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "environment",
   "background_jobs",
   "skills",
+  "todo_context",
 ];
 
 export const DEFAULT_INFERENCE_PROJECTION: InferenceProjection = {
@@ -62,7 +63,7 @@ export interface CreateThreadDefinitionOptions {
   session: Pick<SessionRecord, "id" | "agentKey"> & {kind?: AgentSessionKind};
   fallbackContext: Pick<DefaultAgentSessionContext, "cwd">;
   agentStore?: AgentProfileStore;
-  sessionStore?: Pick<SessionStore, "listAgentSessions">;
+  sessionStore?: Pick<SessionStore, "listAgentSessions" | "readSessionTodo">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner">;

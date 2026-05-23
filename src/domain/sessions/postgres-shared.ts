@@ -5,6 +5,7 @@ export interface SessionTableNames {
   sessions: string;
   sessionHeartbeats: string;
   sessionPrompts: string;
+  sessionTodos: string;
 }
 
 export function buildSessionTableNames(): SessionTableNames {
@@ -12,5 +13,6 @@ export function buildSessionTableNames(): SessionTableNames {
     sessions: "agent_sessions",
     sessionHeartbeats: "session_heartbeats",
     sessionPrompts: "session_prompts",
+    sessionTodos: "session_todos",
   });
 }

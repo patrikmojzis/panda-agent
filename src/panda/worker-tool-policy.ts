@@ -20,6 +20,7 @@ export const DEFAULT_WORKER_ALLOWED_TOOL_NAMES = [
   "browser",
   "agent_skill",
   "image_generate",
+  "todo_update",
 ] as const;
 
 export const POSTGRES_READONLY_TOOL_NAME = "postgres_readonly_query";
@@ -28,6 +29,7 @@ export const KNOWN_WORKER_TOOL_NAMES = new Set([
   ...DEFAULT_WORKER_ALLOWED_TOOL_NAMES,
   POSTGRES_READONLY_TOOL_NAME,
   "thinking_set",
+  "todo_update",
   "spawn_subagent",
   "agent_prompt",
   "app_create",
