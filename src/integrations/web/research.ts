@@ -6,7 +6,7 @@ import {readResponseError} from "../../lib/http.js";
 const OPENAI_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses";
 const DEFAULT_WEB_RESEARCH_MODEL = "gpt-5";
 const DEFAULT_WEB_RESEARCH_REASONING_EFFORT = "low";
-const DEFAULT_WEB_RESEARCH_TIMEOUT_MS = 60_000;
+const DEFAULT_WEB_RESEARCH_TIMEOUT_MS = 600_000;
 const MAX_ERROR_CHARS = 4_000;
 const MAX_VISIBLE_SOURCES = 10;
 const MAX_DETAIL_SOURCES = 20;
