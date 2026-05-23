@@ -11,7 +11,8 @@ import {
 } from "./exceptions.js";
 import {stringifyUnknown} from "./helpers/stringify.js";
 import {estimateTokensFromString, type TokenCounter} from "./helpers/token-count.js";
-import {gatherContexts, type LlmContext} from "./llm-context.js";
+import {gatherContextsForRuntime, type LlmContext} from "./llm-context.js";
+import {appendPromptCacheKeyParts} from "./prompt-cache-key.js";
 import type {Hook} from "./hook.js";
 import {
   buildConversationContext,
@@ -900,21 +901,27 @@ export class Thread<TContext = unknown, TOutput = unknown> {
   }
 
   private async buildRuntimeRequest(runMessages: Message[]): Promise<LlmRuntimeRequest> {
-    const llmContextDump = this.llmContexts?.length ? await gatherContexts([...this.llmContexts]) : undefined;
+    const llmContextRuntimeDump = this.llmContexts?.length
+      ? await gatherContextsForRuntime([...this.llmContexts])
+      : undefined;
 
     return {
       providerName: this.modelSelection.providerName,
       modelId: this.modelSelection.modelId,
       temperature: this.temperature,
       thinking: this.effectiveThinking,
-      promptCacheKey: this.promptCacheKey,
+      promptCacheKey: appendPromptCacheKeyParts(
+        this.promptCacheKey,
+        "ctx",
+        llmContextRuntimeDump?.promptCacheKeyParts ?? [],
+      ),
       signal: this.signal,
       metadata: buildRuntimeRequestMetadata(this.context, this.turnCount),
       context: buildConversationContext({
         agent: this.agent,
         messages: runMessages,
         systemPrompt: this.systemPrompt,
-        llmContextDump,
+        llmContextDump: llmContextRuntimeDump?.dump,
       }),
     };
   }

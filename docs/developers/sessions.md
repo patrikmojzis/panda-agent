@@ -76,6 +76,17 @@ Rules:
 - new branch sessions and worker/subagent sessions do not copy another session's prompt
 - prompt-cache affinity includes the briefing slug, update time, and a content hash so edits force a fresh prompt lane
 
+Session todo context is stored per session in `session_todos`. It is agent-managed through the `todo_update` tool, not a CLI/TUI editor. The tool replaces the full ordered list for the current runtime session; it never accepts a session id from the model. Items are structured `{status, content}` with `pending | in_progress | blocked | done`, and `items: []` clears the context.
+
+Rules:
+
+- todos are keyed by canonical `session_id` and survive `/reset` because reset only swaps `current_thread_id`
+- todo state is structured JSONB, not markdown parsed from transcript history
+- `Todo Context` is rendered through the default LLM context lane, including worker sessions by default
+- prompt-cache affinity includes the todo hash/update version so `todo_update` is visible on the next model request
+- rendering caps completed-heavy lists; done items are not auto-deleted
+- no due dates, reminders, priorities, owners, global/project todos, or auto-spawn behavior in V1
+
 `/reset`:
 
 - keeps the same `session_id`

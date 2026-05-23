@@ -193,6 +193,29 @@ describe("worker thread definitions", () => {
     ]);
   });
 
+  it("keeps todo_update in the default worker allowlist", () => {
+    const definition = createThreadDefinition({
+      thread: createThread(),
+      session: {
+        id: "session-worker",
+        agentKey: "panda",
+        kind: "worker",
+      },
+      fallbackContext: {
+        cwd: "/tmp/panda",
+      },
+      executionEnvironment: createEnvironment(),
+      tools: [
+        new NamedTool("todo_update"),
+        new NamedTool("wiki"),
+      ],
+    });
+
+    expect(definition.agent.tools.map((tool) => tool.name)).toEqual([
+      "todo_update",
+    ]);
+  });
+
   it("uses the worker toolset when no explicit tools are supplied", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
@@ -321,5 +344,35 @@ describe("worker thread definitions", () => {
     expect(dump).not.toContain("[agent]");
     expect(dump).not.toContain("**Wiki Overview:**");
     expect(dump).not.toContain("**Workers:**");
+  });
+
+  it("renders worker session todo context when the session store provides it", async () => {
+    const definition = createThreadDefinition({
+      thread: createThread(),
+      session: {
+        id: "session-worker",
+        agentKey: "panda",
+        kind: "worker",
+      },
+      fallbackContext: {
+        cwd: "/tmp/panda",
+      },
+      executionEnvironment: createEnvironment(),
+      sessionStore: {
+        listAgentSessions: async () => [],
+        readSessionTodo: async () => ({
+          sessionId: "session-worker",
+          items: [{status: "pending", content: "Report to parent"}],
+          itemsHash: "hash",
+          createdAt: 1,
+          updatedAt: 2,
+        }),
+      },
+    });
+
+    const dump = await gatherContexts(definition.llmContexts ?? []);
+
+    expect(dump).toContain("**Todo Context:**");
+    expect(dump).toContain("- [pending] Report to parent");
   });
 });

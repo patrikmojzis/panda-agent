@@ -1,3 +1,4 @@
+import type {ReplaceSessionTodoInput, SessionTodoRecord} from "./todos.js";
 import type {
   ClaimSessionHeartbeatInput,
   CreateSessionInput,
@@ -29,6 +30,8 @@ export interface SessionStore {
   listSessionPrompts(sessionId: string): Promise<readonly SessionPromptRecord[]>;
   setSessionPrompt(input: SetSessionPromptInput): Promise<SessionPromptRecord>;
   deleteSessionPrompt(input: DeleteSessionPromptInput): Promise<boolean>;
+  readSessionTodo(sessionId: string): Promise<SessionTodoRecord | null>;
+  replaceSessionTodo(input: ReplaceSessionTodoInput): Promise<SessionTodoRecord | null>;
   getHeartbeat(sessionId: string): Promise<SessionHeartbeatRecord | null>;
   listDueHeartbeats(input?: ListDueSessionHeartbeatsInput): Promise<readonly SessionHeartbeatRecord[]>;
   claimHeartbeat(input: ClaimSessionHeartbeatInput): Promise<SessionHeartbeatRecord | null>;

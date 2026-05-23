@@ -64,6 +64,7 @@ import {
 } from "../../panda/tools/watch-tools.js";
 import {SpawnSubagentTool} from "../../panda/tools/spawn-subagent-tool.js";
 import {ThinkingSetTool} from "../../panda/tools/thinking-set-tool.js";
+import {TodoUpdateTool} from "../../panda/tools/todo-update-tool.js";
 import {DefaultAgentSubagentService} from "../../panda/subagents/service.js";
 import {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import {
@@ -638,6 +639,9 @@ export async function bootstrapRuntime(
       }),
       new ScheduledTaskCancelTool({
         store: scheduledTasks,
+      }),
+      new TodoUpdateTool({
+        store: sessionStore,
       }),
       new WatchCreateTool({
         mutations: watchMutations,

@@ -9,6 +9,8 @@ import {resolveSessionRef} from "./refs.js";
 import {buildSessionTableNames, type SessionTableNames} from "./postgres-shared.js";
 import {ensurePostgresSessionSchema} from "./postgres-schema.js";
 import type {SessionStore} from "./store.js";
+import {calculateSessionTodoItemsHash, normalizeSessionTodoItems} from "./todos.js";
+import type {ReplaceSessionTodoInput, SessionTodoRecord} from "./todos.js";
 import {SESSION_BRIEFING_PROMPT_SLUG, normalizeSessionAlias, normalizeSessionPromptSlug} from "./types.js";
 import type {
   ClaimSessionHeartbeatInput,
@@ -131,6 +133,32 @@ function parseSessionPromptRow(row: Record<string, unknown>): SessionPromptRecor
     content: typeof row.content === "string" ? row.content : requireSessionString("prompt content", row.content),
     createdAt: requireTimestampMillis(row.created_at, "Session prompt created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Session prompt updated_at must be a valid timestamp."),
+  };
+}
+
+function parseSessionTodoItems(value: unknown): readonly unknown[] {
+  if (typeof value === "string") {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) {
+      throw new Error("Session todo items must be an array.");
+    }
+    return parsed;
+  }
+
+  if (!Array.isArray(value)) {
+    throw new Error("Session todo items must be an array.");
+  }
+
+  return value;
+}
+
+function parseSessionTodoRow(row: Record<string, unknown>): SessionTodoRecord {
+  return {
+    sessionId: requireSessionString("id", row.session_id),
+    items: normalizeSessionTodoItems(parseSessionTodoItems(row.items)),
+    itemsHash: requireSessionString("todo items hash", row.items_hash),
+    createdAt: requireTimestampMillis(row.created_at, "Session todo created_at must be a valid timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Session todo updated_at must be a valid timestamp."),
   };
 }
 
@@ -483,6 +511,62 @@ export class PostgresSessionStore implements SessionStore {
       resolveSessionPromptSlug(input.slug),
     ]);
     return (result.rowCount ?? 0) > 0;
+  }
+
+  async readSessionTodo(sessionId: string): Promise<SessionTodoRecord | null> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.sessionTodos}
+      WHERE session_id = $1
+    `, [requireSessionString("id", sessionId)]);
+    const row = result.rows[0];
+    return row ? parseSessionTodoRow(row as Record<string, unknown>) : null;
+  }
+
+  async replaceSessionTodo(input: ReplaceSessionTodoInput): Promise<SessionTodoRecord | null> {
+    const sessionId = requireSessionString("id", input.sessionId);
+    const items = normalizeSessionTodoItems(input.items);
+    if (items.length === 0) {
+      const deleteResult = await this.pool.query(`
+        DELETE FROM ${this.tables.sessionTodos}
+        WHERE session_id = $1
+      `, [sessionId]);
+      if ((deleteResult.rowCount ?? 0) === 0) {
+        const sessionResult = await this.pool.query(`
+          SELECT 1
+          FROM ${this.tables.sessions}
+          WHERE id = $1
+          LIMIT 1
+        `, [sessionId]);
+        if (sessionResult.rows.length === 0) {
+          throw missingSessionError(sessionId);
+        }
+      }
+      return null;
+    }
+
+    const itemsHash = calculateSessionTodoItemsHash(items);
+    const result = await this.pool.query(`
+      INSERT INTO ${this.tables.sessionTodos} (
+        session_id,
+        items,
+        items_hash
+      ) VALUES (
+        $1,
+        $2::jsonb,
+        $3
+      )
+      ON CONFLICT (session_id) DO UPDATE SET
+        items = EXCLUDED.items,
+        items_hash = EXCLUDED.items_hash,
+        updated_at = NOW()
+      RETURNING *
+    `, [
+      sessionId,
+      JSON.stringify(items),
+      itemsHash,
+    ]);
+    return parseSessionTodoRow(result.rows[0] as Record<string, unknown>);
   }
 
   async getHeartbeat(sessionId: string): Promise<SessionHeartbeatRecord | null> {

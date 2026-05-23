@@ -111,6 +111,8 @@ Briefings are session-scoped:
 - worker/subagent sessions start with no briefing and do not inherit the parent or current session's briefing
 - there is no TUI editor yet; use `panda session prompt ...`
 
+Agents can also maintain a durable session todo context with the `todo_update` tool. It stores an ordered list of `{status, content}` items for the current session and renders them back into model context as `Todo Context`. Passing `items: []` clears it. Todo context survives `/reset`, is separate from scheduled reminders, and has no due dates or notifications in V1.
+
 Reset one session through the daemon:
 
 ```bash

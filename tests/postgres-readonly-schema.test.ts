@@ -34,6 +34,22 @@ class PgMemReadonlySchemaQueryable {
         continue;
       }
 
+      if (/^CREATE VIEW "session"."todos"/i.test(statement)) {
+        await this.pool.query(`
+          CREATE VIEW "session"."todos" AS
+          SELECT
+            todos.session_id,
+            todos.items,
+            0::INTEGER AS item_count,
+            todos.items_hash,
+            todos.created_at,
+            todos.updated_at
+          FROM "runtime"."session_todos" AS todos
+          WHERE todos.session_id = current_setting('runtime.session_id', true)
+        `);
+        continue;
+      }
+
       if (/^CREATE VIEW "session"."threads"/i.test(statement)) {
         const whereMatches = [...statement.matchAll(/\bWHERE\b/gi)];
         const whereIndex = whereMatches.at(-1)?.index;
@@ -222,6 +238,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
 
     expect(views).toEqual({
       agentSessions: "\"session\".\"agent_sessions\"",
+      todos: "\"session\".\"todos\"",
       threads: "\"session\".\"threads\"",
       messages: "\"session\".\"messages\"",
       messagesRaw: "\"session\".\"messages_raw\"",
@@ -247,6 +264,8 @@ describe("ensureReadonlySessionQuerySchema", () => {
 
     expect(queryable.queries).toHaveLength(2);
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_sessions\"");
+    expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"todos\"");
+    expect(queryable.queries[0]).toContain("jsonb_array_length(todo.items)");
     expect(queryable.queries[0]).toContain("s.alias");
     expect(queryable.queries[0]).toContain("s.display_name");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"messages_raw\"");
@@ -272,7 +291,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("pairing.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("skill.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("device.agent_key = current_setting('runtime.agent_key', true)");
-    expect(queryable.queries[1]).toContain("GRANT SELECT ON \"session\".\"agent_sessions\", \"session\".\"threads\", \"session\".\"messages\", \"session\".\"messages_raw\", \"session\".\"tool_results\", \"session\".\"inputs\", \"session\".\"runs\", \"session\".\"agent_prompts\", \"session\".\"agent_pairings\", \"session\".\"agent_skills\", \"session\".\"agent_telepathy_devices\", \"session\".\"scheduled_tasks\", \"session\".\"scheduled_task_runs\", \"session\".\"watches\", \"session\".\"watch_runs\", \"session\".\"watch_events\"");
+    expect(queryable.queries[1]).toContain("GRANT SELECT ON \"session\".\"agent_sessions\", \"session\".\"todos\", \"session\".\"threads\", \"session\".\"messages\", \"session\".\"messages_raw\", \"session\".\"tool_results\", \"session\".\"inputs\", \"session\".\"runs\", \"session\".\"agent_prompts\", \"session\".\"agent_pairings\", \"session\".\"agent_skills\", \"session\".\"agent_telepathy_devices\", \"session\".\"scheduled_tasks\", \"session\".\"scheduled_task_runs\", \"session\".\"watches\", \"session\".\"watch_runs\", \"session\".\"watch_events\"");
   });
 
   it("filters readonly threads by session when multiple identities share an agent", async () => {
@@ -341,6 +360,22 @@ describe("ensureReadonlySessionQuerySchema", () => {
         agent_key: "panda",
       },
     ]);
+
+    await sessionStore.replaceSessionTodo({
+      sessionId: "alice-session",
+      items: [{status: "pending", content: "Scoped todo"}],
+    });
+    await sessionStore.replaceSessionTodo({
+      sessionId: "bob-session",
+      items: [{status: "pending", content: "Hidden todo"}],
+    });
+    const todos = await pool.query(
+      "SELECT session_id, items_hash FROM \"session\".\"todos\" ORDER BY session_id",
+    );
+    expect(todos.rows).toHaveLength(1);
+    expect(todos.rows[0]).toMatchObject({
+      session_id: "alice-session",
+    });
   }, 10_000);
 
   it("filters readonly threads by agent when one identity has multiple agents", async () => {

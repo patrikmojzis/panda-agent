@@ -12,6 +12,7 @@ import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
 import {ScheduledRemindersContext} from "./scheduled-reminders-context.js";
 import {SessionBriefingContext} from "./session-briefing-context.js";
+import {SessionTodoContext} from "./session-todo-context.js";
 import {WorkersContext} from "./workers-context.js";
 import {WikiOverviewContext} from "./wiki-overview-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
@@ -24,6 +25,7 @@ export type DefaultAgentLlmContextSection =
   | "background_jobs"
   | "workers"
   | "session_briefing"
+  | "todo_context"
   | AgentProfileContextSection;
 
 const PROFILE_SECTIONS = new Set<AgentProfileContextSection>([
@@ -40,12 +42,13 @@ export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContext
   "prompts",
   "skills",
   "session_briefing",
+  "todo_context",
 ];
 
 export interface BuildDefaultAgentLlmContextsOptions {
   context?: DefaultAgentSessionContext;
   agentStore?: AgentProfileStore;
-  sessionStore?: Partial<Pick<SessionStore, "listAgentSessions" | "readSessionPrompt">>;
+  sessionStore?: Partial<Pick<SessionStore, "listAgentSessions" | "readSessionPrompt" | "readSessionTodo">>;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner">;
@@ -66,6 +69,7 @@ export {
 } from "./agent-profile-context.js";
 export {DateTimeContext, type DateTimeContextOptions} from "./datetime-context.js";
 export {SessionBriefingContext, type SessionBriefingContextOptions} from "./session-briefing-context.js";
+export {SessionTodoContext, type SessionTodoContextOptions} from "./session-todo-context.js";
 export {EnvironmentContext, type EnvironmentContextOptions} from "./environment-context.js";
 export {WorkersContext, type WorkersContextOptions} from "./workers-context.js";
 
@@ -151,6 +155,14 @@ export function buildDefaultAgentLlmContexts(
         store: options.sessionStore as Pick<SessionStore, "readSessionPrompt">,
       }));
     }
+  }
+
+
+  if (uniqueSections.has("todo_context") && options.context?.sessionId && typeof options.sessionStore?.readSessionTodo === "function") {
+    llmContexts.push(new SessionTodoContext({
+      sessionId: options.context.sessionId,
+      store: options.sessionStore as Pick<SessionStore, "readSessionTodo">,
+    }));
   }
 
   if (options.extraLlmContexts?.length) {

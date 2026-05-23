@@ -14,6 +14,7 @@ export {
 } from "./exceptions.js";
 export { Hook } from "./hook.js";
 export { LlmContext, gatherContexts } from "./llm-context.js";
+export type { LlmContextRuntimeDump, LlmContextSnapshot } from "./llm-context.js";
 export {
   buildCanonicalModelSelector,
   resolveModelSelector,
