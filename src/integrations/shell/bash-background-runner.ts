@@ -26,11 +26,7 @@ import type {
     BashRunnerJobWaitRequest,
 } from "./bash-protocol.js";
 import {parseBashRunnerJobResponse} from "./bash-protocol.js";
-import {
-    redactSecretsInString,
-    UNSAFE_SECRET_METADATA_MESSAGE,
-    UNSAFE_SECRET_OUTPUT_MESSAGE,
-} from "./redaction.js";
+import {redactSecretsInString} from "./redaction.js";
 import {sanitizeBashOutputPreview} from "./bash-output.js";
 import type {ShellExecutionContext} from "./types.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
@@ -52,7 +48,6 @@ export interface StartBashBackgroundJobOptions<TContext extends ShellExecutionCo
   outputDirectory: string;
   redactionValues: readonly string[];
   persistOutputFiles: boolean;
-  suppressOutputForUnsafeSecrets: boolean;
   executionEnvironment?: ResolvedExecutionEnvironment;
   context?: TContext;
   processEnv?: NodeJS.ProcessEnv;
@@ -71,34 +66,17 @@ function readAgentKey(context: ShellExecutionContext | undefined): string {
 
 interface SnapshotSanitizationOptions {
   redactionValues: readonly string[];
-  suppressOutputForUnsafeSecrets: boolean;
 }
 
 function sanitizeSnapshot(
   snapshot: BashJobSnapshot,
   options: SnapshotSanitizationOptions,
 ): BashJobSnapshot {
-  const suppressStdout = options.suppressOutputForUnsafeSecrets && snapshot.stdout.length > 0;
-  const suppressStderr = options.suppressOutputForUnsafeSecrets && snapshot.stderr.length > 0;
-  const stdout = suppressStdout
-    ? UNSAFE_SECRET_OUTPUT_MESSAGE
-    : redactSecretsInString(snapshot.stdout, options.redactionValues);
-  const stderr = suppressStderr
-    ? UNSAFE_SECRET_OUTPUT_MESSAGE
-    : redactSecretsInString(snapshot.stderr, options.redactionValues);
-
   return {
     ...snapshot,
-    command: options.suppressOutputForUnsafeSecrets
-      ? UNSAFE_SECRET_METADATA_MESSAGE
-      : redactSecretsInString(snapshot.command, options.redactionValues),
-    stdout: sanitizeBashOutputPreview(stdout),
-    stderr: sanitizeBashOutputPreview(stderr),
-    stdoutChars: suppressStdout ? UNSAFE_SECRET_OUTPUT_MESSAGE.length : snapshot.stdoutChars,
-    stderrChars: suppressStderr ? UNSAFE_SECRET_OUTPUT_MESSAGE.length : snapshot.stderrChars,
-    stdoutTruncated: suppressStdout ? false : snapshot.stdoutTruncated,
-    stderrTruncated: suppressStderr ? false : snapshot.stderrTruncated,
-    trackedEnvKeys: options.suppressOutputForUnsafeSecrets ? [] : snapshot.trackedEnvKeys,
+    command: redactSecretsInString(snapshot.command, options.redactionValues),
+    stdout: sanitizeBashOutputPreview(redactSecretsInString(snapshot.stdout, options.redactionValues)),
+    stderr: sanitizeBashOutputPreview(redactSecretsInString(snapshot.stderr, options.redactionValues)),
   };
 }
 

@@ -25,8 +25,6 @@ import {readThreadId} from "../../integrations/shell/runtime-context.js";
 import {
   redactSecretsInJsonObject,
   redactSecretsInString,
-  UNSAFE_SECRET_METADATA_MESSAGE,
-  UNSAFE_SECRET_OUTPUT_MESSAGE,
 } from "../../integrations/shell/redaction.js";
 import {applyPersistedEnv, collectTrackedEnvKeys, resolveCommandCwd,} from "../../integrations/shell/bash-session.js";
 import type {PersistedEnvEntry} from "../../integrations/shell/bash-protocol.js";
@@ -69,7 +67,7 @@ function formatBashStatus(details: Record<string, unknown>): string {
   return "command failed";
 }
 
-type BashSecretCandidateSource = "credential" | "session" | "call-env-key" | "call-env-value";
+type BashSecretCandidateSource = "credential" | "session" | "call-env-key";
 
 interface BashSecretCandidate {
   source: BashSecretCandidateSource;
@@ -80,42 +78,8 @@ interface BashSecretCandidate {
 interface BashSecretInventory {
   redactionValues: string[];
   hasSecretMaterial: boolean;
-  hasUnsafeSecretMaterial: boolean;
   sourceSecretValues: Set<string>;
 }
-
-const COMMON_LOW_ENTROPY_SECRET_VALUES = new Set([
-  "0",
-  "1",
-  "false",
-  "true",
-  "yes",
-  "no",
-  "none",
-  "null",
-  "nil",
-  "undefined",
-  "empty",
-  "test",
-  "dev",
-  "development",
-  "prod",
-  "production",
-  "local",
-  "localhost",
-  "root",
-  "admin",
-  "user",
-  "password",
-  "secret",
-  "token",
-  "credential",
-  "/tmp",
-  "/root",
-  "/bin/bash",
-  "c.utf-8",
-  "utc",
-]);
 
 function isSecretLikeEnvKey(key: string): boolean {
   const normalized = key.trim().toUpperCase();
@@ -126,43 +90,6 @@ function isSecretLikeEnvKey(key: string): boolean {
   return /(^|[_-])(SECRET|TOKEN|PASSWORD|PASSCODE|API_KEY|PRIVATE_KEY|ACCESS_KEY|AUTH|BEARER|CREDENTIAL)([_-]|$)/.test(normalized);
 }
 
-function isSafeRedactionValue(value: string): boolean {
-  const trimmed = value.trim();
-  if (trimmed.length < 8) {
-    return false;
-  }
-
-  const lower = trimmed.toLowerCase();
-  if (COMMON_LOW_ENTROPY_SECRET_VALUES.has(lower)) {
-    return false;
-  }
-
-  if (/^\d+$/.test(trimmed)) {
-    return false;
-  }
-
-  if (/^[A-Za-z]+$/.test(trimmed)) {
-    return false;
-  }
-
-  return true;
-}
-
-function isClearlyHighEntropyValue(value: string): boolean {
-  const trimmed = value.trim();
-  if (!isSafeRedactionValue(trimmed) || trimmed.length < 24) {
-    return false;
-  }
-
-  const characterClasses = [
-    /[a-z]/.test(trimmed),
-    /[A-Z]/.test(trimmed),
-    /\d/.test(trimmed),
-    /[^A-Za-z0-9]/.test(trimmed),
-  ].filter(Boolean).length;
-
-  return characterClasses >= 3;
-}
 
 function addSecretCandidate(
   candidates: BashSecretCandidate[],
@@ -210,25 +137,17 @@ function buildBashSecretInventory(options: {
   for (const [key, value] of Object.entries(options.callEnv ?? {})) {
     if (isSecretLikeEnvKey(key)) {
       addSecretCandidate(candidates, "call-env-key", key, value);
-      continue;
-    }
-
-    if (isClearlyHighEntropyValue(value)) {
-      addSecretCandidate(candidates, "call-env-value", key, value);
     }
   }
 
   const sourceSecretValues = new Set(candidates.map((candidate) => candidate.value));
   const redactionValues = uniqueTrimmedStrings(
-    candidates
-      .map((candidate) => candidate.value)
-      .filter(isSafeRedactionValue),
+    candidates.map((candidate) => candidate.value),
   ).sort((left, right) => right.length - left.length);
 
   return {
     redactionValues,
     hasSecretMaterial: candidates.length > 0,
-    hasUnsafeSecretMaterial: candidates.some((candidate) => !isSafeRedactionValue(candidate.value)),
     sourceSecretValues,
   };
 }
@@ -295,38 +214,6 @@ function assertBashAllowed(executionEnvironment: ResolvedExecutionEnvironment | 
   }
 }
 
-function suppressUnsafeSecretPayloadFields(payload: JsonObject, suppress: boolean): JsonObject {
-  if (!suppress) {
-    return payload;
-  }
-
-  const suppressed: JsonObject = {...payload};
-  if (typeof suppressed.command === "string") {
-    suppressed.command = UNSAFE_SECRET_METADATA_MESSAGE;
-  }
-  if (typeof suppressed.stdout === "string" && suppressed.stdout.length > 0) {
-    suppressed.stdout = UNSAFE_SECRET_OUTPUT_MESSAGE;
-    suppressed.stdoutChars = UNSAFE_SECRET_OUTPUT_MESSAGE.length;
-    suppressed.stdoutTruncated = false;
-  }
-  if (typeof suppressed.stderr === "string" && suppressed.stderr.length > 0) {
-    suppressed.stderr = UNSAFE_SECRET_OUTPUT_MESSAGE;
-    suppressed.stderrChars = UNSAFE_SECRET_OUTPUT_MESSAGE.length;
-    suppressed.stderrTruncated = false;
-  }
-  if (Array.isArray(suppressed.sessionEnvKeys)) {
-    suppressed.sessionEnvKeys = [];
-    suppressed.sessionEnvChanged = false;
-  }
-  if (Array.isArray(suppressed.appliedEnvKeys)) {
-    suppressed.appliedEnvKeys = [];
-  }
-  if (Array.isArray(suppressed.trackedEnvKeys)) {
-    suppressed.trackedEnvKeys = [];
-  }
-
-  return suppressed;
-}
 
 function sanitizeBashPayloadOutputFields(payload: JsonObject): JsonObject {
   const sanitized: JsonObject = {...payload};
@@ -497,9 +384,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
         threadId: readThreadId(context),
         runId: context?.runId,
         kind: "bash",
-        summary: secretInventory.hasUnsafeSecretMaterial
-          ? UNSAFE_SECRET_METADATA_MESSAGE
-          : redactSecretsInString(args.command, secretInventory.redactionValues),
+        summary: redactSecretsInString(args.command, secretInventory.redactionValues),
         start: ({jobId}) => startBashBackgroundJob({
           jobId,
           command: args.command,
@@ -515,7 +400,6 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
           executionEnvironment,
           redactionValues: secretInventory.redactionValues,
           persistOutputFiles,
-          suppressOutputForUnsafeSecrets: secretInventory.hasUnsafeSecretMaterial,
           context,
           processEnv: this.env,
           shell: this.shell,
@@ -536,7 +420,6 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       persistOutputThresholdChars: this.persistOutputThresholdChars,
       persistOutputFiles,
       redactionValues: secretInventory.redactionValues,
-      suppressOutputForUnsafeSecrets: secretInventory.hasUnsafeSecretMaterial,
       outputDirectory: this.outputDirectory,
       env: args.env,
       resolvedEnv: resolvedCredentialEnv,
@@ -593,13 +476,9 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       ...(result.stdoutPath ? { stdoutPath: result.stdoutPath } : {}),
       ...(result.stderrPath ? { stderrPath: result.stderrPath } : {}),
     };
-    const suppressedPayload = suppressUnsafeSecretPayloadFields(
-      payload,
-      resultSecretInventory.hasUnsafeSecretMaterial,
-    );
     const redactedPayload = resultSecretInventory.redactionValues.length > 0
-      ? redactSecretsInJsonObject(suppressedPayload, resultSecretInventory.redactionValues)
-      : suppressedPayload;
+      ? redactSecretsInJsonObject(payload, resultSecretInventory.redactionValues)
+      : payload;
     const sanitizedPayload = sanitizeBashPayloadOutputFields(redactedPayload);
 
     if (result.timedOut) {

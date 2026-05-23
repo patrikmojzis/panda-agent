@@ -26,11 +26,7 @@ import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import type {ShellExecutionContext} from "./types.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 import {buildShellProcessEnv, SAFE_SHELL} from "./environment.js";
-import {
-  redactSecretsInJsonObject,
-  UNSAFE_SECRET_METADATA_MESSAGE,
-  UNSAFE_SECRET_OUTPUT_MESSAGE,
-} from "./redaction.js";
+import {redactSecretsInJsonObject} from "./redaction.js";
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
 
@@ -47,7 +43,6 @@ export interface BashExecutorOptions {
   persistOutputThresholdChars: number;
   persistOutputFiles?: boolean;
   redactionValues?: readonly string[];
-  suppressOutputForUnsafeSecrets?: boolean;
   outputDirectory: string;
   env?: Record<string, string>;
   resolvedEnv?: Record<string, string>;
@@ -75,19 +70,6 @@ export interface RemoteShellExecutorOptions {
 
 interface BashDiagnosticSanitizationOptions {
   redactionValues?: readonly string[];
-  suppressOutputForUnsafeSecrets?: boolean;
-}
-
-function suppressProgressOutputField(payload: JsonObject, key: string, countKey: string): void {
-  const value = payload[key];
-  if (typeof value !== "string" || value.length === 0) {
-    return;
-  }
-
-  payload[key] = UNSAFE_SECRET_OUTPUT_MESSAGE;
-  if (typeof payload[countKey] === "number") {
-    payload[countKey] = UNSAFE_SECRET_OUTPUT_MESSAGE.length;
-  }
 }
 
 function sanitizeBashDiagnosticPayload(
@@ -95,14 +77,6 @@ function sanitizeBashDiagnosticPayload(
   options: BashDiagnosticSanitizationOptions,
 ): JsonObject {
   let sanitized: JsonObject = {...payload};
-  if (options.suppressOutputForUnsafeSecrets === true) {
-    if (typeof sanitized.command === "string") {
-      sanitized.command = UNSAFE_SECRET_METADATA_MESSAGE;
-    }
-    suppressProgressOutputField(sanitized, "stdoutTail", "stdoutChars");
-    suppressProgressOutputField(sanitized, "stderrTail", "stderrChars");
-  }
-
   if (options.redactionValues && options.redactionValues.length > 0) {
     sanitized = redactSecretsInJsonObject(sanitized, options.redactionValues);
   }

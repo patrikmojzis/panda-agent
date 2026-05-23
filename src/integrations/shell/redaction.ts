@@ -1,10 +1,5 @@
 import type {JsonObject, JsonValue} from "../../lib/json.js";
 
-export const UNSAFE_SECRET_OUTPUT_MESSAGE =
-  "[redacted: bash output hidden because configured secret material is too low-entropy to safely redact]";
-export const UNSAFE_SECRET_METADATA_MESSAGE =
-  "[redacted: bash metadata hidden because configured secret material is too low-entropy to safely disclose]";
-
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
