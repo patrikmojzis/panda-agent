@@ -199,6 +199,18 @@ describe("credentials end-to-end", () => {
       "runtime",
       "assistant",
     ]);
+    expect(transcript[1]?.message).toMatchObject({
+      role: "assistant",
+      content: [{
+        type: "toolCall",
+        name: "set_env_value",
+        arguments: {
+          key: "NOTION_API_KEY",
+          value: "[redacted]",
+        },
+      }],
+    });
+    expect(JSON.stringify(transcript[1]?.message)).not.toContain("notion-secret");
     expect(JSON.stringify(transcript[2]?.message)).not.toContain("notion-secret");
     expect(transcript[4]?.message).toMatchObject({
       role: "toolResult",
@@ -284,10 +296,11 @@ describe("credentials end-to-end", () => {
         name: "set_env_value",
         arguments: {
           key: "NOTION_API_KEY",
-          value: "notion-secret",
+          value: "[redacted]",
         },
       }],
     });
+    expect(JSON.stringify(transcript[1]?.message)).not.toContain("notion-secret");
     expect(JSON.stringify(transcript[2]?.message)).not.toContain("notion-secret");
     expect(transcript[4]?.message).toMatchObject({
       role: "toolResult",
