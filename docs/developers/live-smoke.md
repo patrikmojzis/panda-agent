@@ -132,4 +132,4 @@ Keep them blunt and structural:
 - prefer one or two clear inputs over giant scripts
 - let the artifact dump do the forensic work when something flakes
 
-There is a shared helper in [tests/helpers/live-smoke.ts](/Users/patrikmojzis/Projects/panda-agent/tests/helpers/live-smoke.ts) so the CLI path and the Vitest path hit the same harness.
+There is a shared helper in [tests/helpers/live-smoke.ts](../../tests/helpers/live-smoke.ts) so the CLI path and the Vitest path hit the same harness.

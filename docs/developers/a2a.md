@@ -30,16 +30,16 @@ That means:
 
 ## File Map
 
-- [src/panda/tools/message-agent-tool.ts](/Users/patrikmojzis/Projects/panda-agent/src/panda/tools/message-agent-tool.ts)
-- [src/domain/a2a/constants.ts](/Users/patrikmojzis/Projects/panda-agent/src/domain/a2a/constants.ts)
-- [src/domain/a2a/service.ts](/Users/patrikmojzis/Projects/panda-agent/src/domain/a2a/service.ts)
-- [src/domain/a2a/repo.ts](/Users/patrikmojzis/Projects/panda-agent/src/domain/a2a/repo.ts)
-- [src/domain/a2a/cli.ts](/Users/patrikmojzis/Projects/panda-agent/src/domain/a2a/cli.ts)
-- [src/integrations/channels/a2a/config.ts](/Users/patrikmojzis/Projects/panda-agent/src/integrations/channels/a2a/config.ts)
-- [src/integrations/channels/a2a/outbound.ts](/Users/patrikmojzis/Projects/panda-agent/src/integrations/channels/a2a/outbound.ts)
-- [src/integrations/channels/a2a/helpers.ts](/Users/patrikmojzis/Projects/panda-agent/src/integrations/channels/a2a/helpers.ts)
-- [src/prompts/channels/a2a.ts](/Users/patrikmojzis/Projects/panda-agent/src/prompts/channels/a2a.ts)
-- [src/app/runtime/daemon-requests.ts](/Users/patrikmojzis/Projects/panda-agent/src/app/runtime/daemon-requests.ts)
+- [src/panda/tools/message-agent-tool.ts](../../src/panda/tools/message-agent-tool.ts)
+- [src/domain/a2a/constants.ts](../../src/domain/a2a/constants.ts)
+- [src/domain/a2a/service.ts](../../src/domain/a2a/service.ts)
+- [src/domain/a2a/repo.ts](../../src/domain/a2a/repo.ts)
+- [src/domain/a2a/cli.ts](../../src/domain/a2a/cli.ts)
+- [src/integrations/channels/a2a/config.ts](../../src/integrations/channels/a2a/config.ts)
+- [src/integrations/channels/a2a/outbound.ts](../../src/integrations/channels/a2a/outbound.ts)
+- [src/integrations/channels/a2a/helpers.ts](../../src/integrations/channels/a2a/helpers.ts)
+- [src/prompts/channels/a2a.ts](../../src/prompts/channels/a2a.ts)
+- [src/app/runtime/daemon-requests.ts](../../src/app/runtime/daemon-requests.ts)
 
 ## Tool Contract
 
@@ -216,7 +216,7 @@ That makes retries survive session resets cleanly.
 
 ## Prompting And Identity
 
-Inbound A2A has its own wrapper in [src/prompts/channels/a2a.ts](/Users/patrikmojzis/Projects/panda-agent/src/prompts/channels/a2a.ts).
+Inbound A2A has its own wrapper in [src/prompts/channels/a2a.ts](../../src/prompts/channels/a2a.ts).
 
 The model sees:
 
@@ -259,9 +259,9 @@ Inbound A2A does **not** fake a human:
 
 Current automated coverage includes:
 
-- [tests/a2a.test.ts](/Users/patrikmojzis/Projects/panda-agent/tests/a2a.test.ts)
-- [tests/message-agent-tool.test.ts](/Users/patrikmojzis/Projects/panda-agent/tests/message-agent-tool.test.ts)
-- [tests/outbound-tool.test.ts](/Users/patrikmojzis/Projects/panda-agent/tests/outbound-tool.test.ts)
+- [tests/a2a.test.ts](../../tests/a2a.test.ts)
+- [tests/message-agent-tool.test.ts](../../tests/message-agent-tool.test.ts)
+- [tests/outbound-tool.test.ts](../../tests/outbound-tool.test.ts)
 
 There is not yet a dedicated live `a2a.live.test.ts`.
 The current live verification path is smoke-driven.
