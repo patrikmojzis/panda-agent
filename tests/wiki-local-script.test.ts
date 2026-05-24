@@ -1,5 +1,5 @@
 import {spawn, spawnSync} from "node:child_process";
-import {mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
+import {mkdtemp, readFile, rm, symlink, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
@@ -36,13 +36,47 @@ describe.sequential("wiki-local.sh", () => {
     return envPath;
   }
 
+  function resolveRequiredCommand(command: string): string {
+    const resolved = spawnSync("bash", ["-lc", `command -v ${command}`], {encoding: "utf8"}).stdout.trim();
+    if (!resolved || !path.isAbsolute(resolved)) {
+      throw new Error(`${command} is required for wiki-local.sh tests.`);
+    }
+
+    return resolved;
+  }
+
+  async function linkSystemCommand(binDir: string, command: string): Promise<void> {
+    await symlink(resolveRequiredCommand(command), path.join(binDir, command));
+  }
+
+  function expectScriptSuccess(result: ScriptResult): void {
+    expect(result.exitCode, `stdout:
+${result.stdout}
+stderr:
+${result.stderr}`).toBe(0);
+  }
+
   async function createCommandStubs(logPath: string): Promise<string> {
     const binDir = await makeTempDir("panda-wiki-bin-");
     const jqPath = process.env.JQ_PATH
-      ?? spawnSync("bash", ["-lc", "command -v jq"], {encoding: "utf8"}).stdout.trim();
+      ?? resolveRequiredCommand("jq");
     if (!jqPath) {
       throw new Error("jq is required for wiki-local.sh tests.");
     }
+
+    await Promise.all([
+      "awk",
+      "bash",
+      "cat",
+      "date",
+      "dirname",
+      "grep",
+      "head",
+      "mkdir",
+      "sed",
+      "sleep",
+      "tr",
+    ].map((command) => linkSystemCommand(binDir, command)));
 
     await writeFile(path.join(binDir, "docker"), `#!/usr/bin/env bash
 set -euo pipefail
@@ -126,11 +160,11 @@ exec "${jqPath}" "$@"
     const stderrChunks: Buffer[] = [];
 
     return await new Promise((resolve, reject) => {
-      const child = spawn("bash", [scriptPath, ...args], {
+      const child = spawn(resolveRequiredCommand("bash"), [scriptPath, ...args], {
         cwd: repoRoot,
         env: {
           ...process.env,
-          PATH: `${options.pathPrefix}:/usr/bin:/bin`,
+          PATH: options.pathPrefix,
           WIKI_ENV_FILE: options.envFile,
         },
       });
@@ -170,7 +204,7 @@ exec "${jqPath}" "$@"
       pathPrefix: binDir,
     });
 
-    expect(result.exitCode).toBe(0);
+    expectScriptSuccess(result);
     const logs = await readFile(logPath, "utf8");
     expect(logs).toContain("docker compose --env-file");
     expect(logs).toContain("exec -T panda-core panda wiki binding set claw --group-id 7 --namespace agents/claw --stdin");
@@ -195,7 +229,7 @@ exec "${jqPath}" "$@"
       pathPrefix: binDir,
     });
 
-    expect(result.exitCode).toBe(0);
+    expectScriptSuccess(result);
     const logs = await readFile(logPath, "utf8");
     expect(logs).toContain('"read:assets"');
     expect(logs).toContain('"write:assets"');
