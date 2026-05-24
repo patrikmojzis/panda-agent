@@ -8,6 +8,7 @@ private struct StoredConfig: Codable {
     let label: String?
     let reconnectDelaySeconds: UInt64
     let allowPullScreenshots: Bool
+    let intervalScreenshots: IntervalScreenshotConfig
     let pushToTalkShortcuts: PushToTalkShortcutBindings
     let tunnel: TunnelConfig?
 
@@ -20,6 +21,7 @@ private struct StoredConfig: Codable {
         case label
         case reconnectDelaySeconds
         case allowPullScreenshots
+        case intervalScreenshots
         case pushToTalkShortcuts
         case tunnel
     }
@@ -32,6 +34,7 @@ private struct StoredConfig: Codable {
         label = config.label
         reconnectDelaySeconds = config.reconnectDelaySeconds
         allowPullScreenshots = config.allowPullScreenshots
+        intervalScreenshots = config.intervalScreenshots
         pushToTalkShortcuts = config.pushToTalkShortcuts
         tunnel = config.tunnel
     }
@@ -47,6 +50,7 @@ private struct StoredConfig: Codable {
         label = try container.decodeIfPresent(String.self, forKey: .label)
         reconnectDelaySeconds = try container.decode(UInt64.self, forKey: .reconnectDelaySeconds)
         allowPullScreenshots = try container.decodeIfPresent(Bool.self, forKey: .allowPullScreenshots) ?? true
+        intervalScreenshots = try container.decodeIfPresent(IntervalScreenshotConfig.self, forKey: .intervalScreenshots) ?? IntervalScreenshotConfig(intervalSeconds: IntervalScreenshotConfig.defaultIntervalSeconds)
         pushToTalkShortcuts = try container.decodeIfPresent(PushToTalkShortcutBindings.self, forKey: .pushToTalkShortcuts) ?? .defaults
         tunnel = try container.decodeIfPresent(TunnelConfig.self, forKey: .tunnel)
     }
@@ -60,6 +64,7 @@ private struct StoredConfig: Codable {
         try container.encodeIfPresent(label, forKey: .label)
         try container.encode(reconnectDelaySeconds, forKey: .reconnectDelaySeconds)
         try container.encode(allowPullScreenshots, forKey: .allowPullScreenshots)
+        try container.encode(intervalScreenshots, forKey: .intervalScreenshots)
         try container.encode(pushToTalkShortcuts, forKey: .pushToTalkShortcuts)
         try container.encodeIfPresent(tunnel, forKey: .tunnel)
     }
@@ -73,6 +78,7 @@ private struct StoredConfig: Codable {
             label: label,
             reconnectDelaySeconds: reconnectDelaySeconds,
             allowPullScreenshots: allowPullScreenshots,
+            intervalScreenshots: intervalScreenshots,
             pushToTalkShortcuts: pushToTalkShortcuts,
             tunnel: tunnel
         )

@@ -23,6 +23,7 @@ struct Config: Codable {
     let label: String?
     let reconnectDelaySeconds: UInt64
     let allowPullScreenshots: Bool
+    let intervalScreenshots: IntervalScreenshotConfig
     let pushToTalkShortcuts: PushToTalkShortcutBindings
     let tunnel: TunnelConfig?
 
@@ -35,6 +36,7 @@ struct Config: Codable {
         case label
         case reconnectDelaySeconds
         case allowPullScreenshots
+        case intervalScreenshots
         case pushToTalkShortcuts
         case tunnel
     }
@@ -47,6 +49,7 @@ struct Config: Codable {
         label: String?,
         reconnectDelaySeconds: UInt64,
         allowPullScreenshots: Bool = true,
+        intervalScreenshots: IntervalScreenshotConfig = IntervalScreenshotConfig(intervalSeconds: IntervalScreenshotConfig.defaultIntervalSeconds),
         pushToTalkShortcuts: PushToTalkShortcutBindings = .defaults,
         tunnel: TunnelConfig?
     ) {
@@ -57,6 +60,7 @@ struct Config: Codable {
         self.label = label
         self.reconnectDelaySeconds = reconnectDelaySeconds
         self.allowPullScreenshots = allowPullScreenshots
+        self.intervalScreenshots = intervalScreenshots
         self.pushToTalkShortcuts = pushToTalkShortcuts
         self.tunnel = tunnel
     }
@@ -72,6 +76,7 @@ struct Config: Codable {
         label = try container.decodeIfPresent(String.self, forKey: .label)
         reconnectDelaySeconds = try container.decode(UInt64.self, forKey: .reconnectDelaySeconds)
         allowPullScreenshots = try container.decodeIfPresent(Bool.self, forKey: .allowPullScreenshots) ?? true
+        intervalScreenshots = try container.decodeIfPresent(IntervalScreenshotConfig.self, forKey: .intervalScreenshots) ?? IntervalScreenshotConfig(intervalSeconds: IntervalScreenshotConfig.defaultIntervalSeconds)
         pushToTalkShortcuts = try container.decodeIfPresent(PushToTalkShortcutBindings.self, forKey: .pushToTalkShortcuts) ?? .defaults
         tunnel = try container.decodeIfPresent(TunnelConfig.self, forKey: .tunnel)
     }
@@ -84,6 +89,7 @@ struct Config: Codable {
         try container.encodeIfPresent(label, forKey: .label)
         try container.encode(reconnectDelaySeconds, forKey: .reconnectDelaySeconds)
         try container.encode(allowPullScreenshots, forKey: .allowPullScreenshots)
+        try container.encode(intervalScreenshots, forKey: .intervalScreenshots)
         try container.encode(pushToTalkShortcuts, forKey: .pushToTalkShortcuts)
         try container.encodeIfPresent(tunnel, forKey: .tunnel)
     }
@@ -125,6 +131,7 @@ struct Config: Codable {
         tunnelUserRaw: String,
         tunnelPortRaw: String,
         tunnelLocalPortRaw: String,
+        intervalMinutesRaw: String,
         allowPullScreenshots: Bool = true,
         pushToTalkShortcuts: PushToTalkShortcutBindings = .defaults
     ) throws -> Config {
@@ -138,6 +145,7 @@ struct Config: Codable {
         let tunnelUserTrimmed = tunnelUserRaw.trimmingCharacters(in: .whitespacesAndNewlines)
         let tunnelPortTrimmed = tunnelPortRaw.trimmingCharacters(in: .whitespacesAndNewlines)
         let tunnelLocalPortTrimmed = tunnelLocalPortRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let intervalScreenshots = try IntervalScreenshotConfig.resolve(intervalMinutesRaw: intervalMinutesRaw)
 
         let gatewayBaseURL = try validateGatewayBaseURL(rawValue: gatewayTrimmed)
 
@@ -209,6 +217,7 @@ struct Config: Codable {
             label: labelTrimmed.isEmpty ? nil : labelTrimmed,
             reconnectDelaySeconds: reconnectDelaySeconds,
             allowPullScreenshots: allowPullScreenshots,
+            intervalScreenshots: intervalScreenshots,
             pushToTalkShortcuts: pushToTalkShortcuts,
             tunnel: tunnelConfig
         )
@@ -300,6 +309,7 @@ struct Config: Codable {
         let token = overrides["token"] ?? savedConfig?.token
         let label = resolvedLabel(overrides["label"], fallback: savedConfig?.label)
         let reconnectDelaySeconds = try resolveReconnectDelay(overrides["reconnect-delay"], fallback: savedConfig?.reconnectDelaySeconds)
+        let intervalScreenshots = try resolveIntervalScreenshots(overrides["interval-minutes"], fallback: savedConfig?.intervalScreenshots)
         let tunnelHost = disableTunnel ? nil : resolvedTunnelHost(overrides["ssh-host"], fallback: savedConfig?.tunnel?.host)
         let tunnelUser = disableTunnel ? nil : resolvedTunnelUser(overrides["ssh-user"], fallback: savedConfig?.tunnel?.user)
         let sshPort = try resolveTunnelPort(overrides["ssh-port"], fallback: savedConfig?.tunnel?.sshPort)
@@ -341,6 +351,7 @@ struct Config: Codable {
             label: label,
             reconnectDelaySeconds: reconnectDelaySeconds,
             allowPullScreenshots: savedConfig?.allowPullScreenshots ?? true,
+            intervalScreenshots: intervalScreenshots,
             pushToTalkShortcuts: savedConfig?.pushToTalkShortcuts ?? .defaults,
             tunnel: tunnelHost.map { host in
                 TunnelConfig(
@@ -362,6 +373,7 @@ struct Config: Codable {
           --token shared-secret \
           [--label "Patrik MacBook"] \
           [--reconnect-delay 2] \
+          [--interval-minutes 5] \
           [--save-config] \
           [--print-config-path] \
           [--dump-config] \
@@ -396,6 +408,15 @@ struct Config: Codable {
         return reconnectDelay
     }
 
+
+
+    private static func resolveIntervalScreenshots(_ override: String?, fallback: IntervalScreenshotConfig?) throws -> IntervalScreenshotConfig {
+        if let override {
+            return try IntervalScreenshotConfig.resolve(intervalMinutesRaw: override)
+        }
+
+        return fallback ?? IntervalScreenshotConfig(intervalSeconds: IntervalScreenshotConfig.defaultIntervalSeconds)
+    }
     private static func parseLaunchAtLoginCommand(rawValue: String?) throws -> LaunchAtLoginCommand? {
         guard let rawValue else {
             return nil

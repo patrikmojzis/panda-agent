@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 enum ReceiverConnectionState: Sendable {
@@ -24,6 +25,7 @@ private struct GatewayContextAttachment: Sendable {
 
 actor ReceiverService {
     private static let contextEventType = "mac.context.push"
+    private static let intervalScreenshotEventType = "mac.screenshot.interval"
     private static let connectedHeartbeatIntervalSeconds: UInt64 = 45
 
     private let config: Config
@@ -153,6 +155,45 @@ actor ReceiverService {
         )
     }
 
+
+
+    func sendIntervalScreenshot(intervalSeconds: UInt64, frontmostApp: String?) async throws {
+        guard isEnabled else {
+            throw ReceiverError.telepathyPaused
+        }
+
+        guard CGPreflightScreenCaptureAccess() else {
+            throw ReceiverError.screenRecordingDenied
+        }
+
+        let capturedAt = Date()
+        let jpeg = try await screenshotCapture.captureJPEG()
+
+        let requestId = UUID().uuidString.lowercased()
+        let client = try gatewayClient()
+        let uploadResponse = try await client.uploadAttachment(GatewayAttachmentUpload(
+            data: jpeg,
+            mimeType: "image/jpeg",
+            filename: "mac-interval-screenshot.jpg",
+            idempotencyKey: "mac.screenshot.interval:\(requestId):attachment:0"
+        ))
+
+        let refs = [GatewayAttachmentRef(id: uploadResponse.attachmentId, sha256: uploadResponse.sha256)]
+        _ = try await client.postEvent(
+            type: Self.intervalScreenshotEventType,
+            delivery: .wake,
+            text: intervalScreenshotText(
+                intervalSeconds: intervalSeconds,
+                frontmostApp: frontmostApp,
+                capturedAt: capturedAt
+            ),
+            attachments: refs,
+            occurredAt: capturedAt,
+            idempotencyKey: "mac.screenshot.interval:\(requestId):event"
+        )
+
+        await publish(.connected, connectedLabel())
+    }
     func shutdown() async {
         isEnabled = false
         await stopRunning(reportDisabled: false)
@@ -309,6 +350,22 @@ actor ReceiverService {
         return lines.joined(separator: "\n")
     }
 
+
+
+    private func intervalScreenshotText(intervalSeconds: UInt64, frontmostApp: String?, capturedAt: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        var lines = [
+            "Mac interval screenshot.",
+            "interval_seconds: \(intervalSeconds)",
+            "captured_at: \(formatter.string(from: capturedAt))",
+        ]
+        if let frontmostApp, !frontmostApp.isEmpty {
+            lines.append("frontmost_app: \(frontmostApp)")
+        }
+        return lines.joined(separator: "\n")
+    }
     private func manualScreenshotText(frontmostApp: String?) -> String {
         var lines = ["Mac manual screenshot push."]
         if let frontmostApp, !frontmostApp.isEmpty {
