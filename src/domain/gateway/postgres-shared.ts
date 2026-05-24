@@ -4,6 +4,7 @@ export function buildGatewayTableNames() {
   return buildRuntimeRelationNames({
     sources: "gateway_sources",
     devices: "gateway_devices",
+    commands: "gateway_device_commands",
     deviceAuditEvents: "gateway_device_audit_events",
     eventTypes: "gateway_event_types",
     accessTokens: "gateway_access_tokens",

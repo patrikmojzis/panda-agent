@@ -1,8 +1,10 @@
+import * as fs from "node:fs/promises";
 import process from "node:process";
 
 import {Command, InvalidArgumentError} from "commander";
 
 import {DB_URL_OPTION_DESCRIPTION, parsePositiveIntegerOption} from "../../lib/cli.js";
+import {requireJsonValue, type JsonValue} from "../../lib/json.js";
 import {generateOpaqueToken, hashOpaqueToken} from "../../lib/opaque-tokens.js";
 import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {parseAgentKey, ensureAgent} from "../agents/cli.js";
@@ -12,8 +14,18 @@ import {PostgresIdentityStore} from "../identity/postgres.js";
 import {PostgresSessionStore} from "../sessions/postgres.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import {PostgresGatewayStore} from "./postgres.js";
-import {normalizeGatewayDeviceId, normalizeGatewaySourceId} from "./postgres-rows.js";
-import type {GatewayDeliveryMode, GatewayDeviceCapability} from "./types.js";
+import {
+  normalizeGatewayDeviceId,
+  normalizeGatewaySourceId,
+  parseGatewayDeviceCommandKind,
+  parseGatewayDeviceCommandStatus,
+} from "./postgres-rows.js";
+import type {
+  GatewayDeliveryMode,
+  GatewayDeviceCapability,
+  GatewayDeviceCommandKind,
+  GatewayDeviceCommandStatus,
+} from "./types.js";
 
 interface GatewayCliOptions {
   dbUrl?: string;
@@ -44,6 +56,27 @@ interface GatewayDeviceRegisterOptions extends GatewayCliOptions {
   capability?: string[];
 }
 
+interface GatewayDeviceCommandEnqueueOptions extends GatewayCliOptions {
+  payloadFile?: string;
+  payloadJson?: string;
+}
+
+interface GatewayDeviceCommandListOptions extends GatewayCliOptions {
+  device?: string;
+  limit?: number;
+  status?: GatewayDeviceCommandStatus;
+}
+
+interface GatewayDeviceCommandCancelOptions extends GatewayCliOptions {
+  reason?: string;
+}
+
+interface GatewayDeviceCommandTimeoutSweepOptions extends GatewayCliOptions {
+  limit?: number;
+  source?: string;
+  staleMs: number;
+}
+
 function parseDelivery(value: string): GatewayDeliveryMode {
   if (value !== "queue" && value !== "wake") {
     throw new InvalidArgumentError("Delivery must be queue or wake.");
@@ -69,6 +102,22 @@ function parseDeviceCapability(value: string): GatewayDeviceCapability {
   }
 
   throw new InvalidArgumentError(`Unsupported gateway device capability ${value}.`);
+}
+
+function parseDeviceCommandKindOption(value: string): GatewayDeviceCommandKind {
+  try {
+    return parseGatewayDeviceCommandKind(value);
+  } catch (error) {
+    throw new InvalidArgumentError(error instanceof Error ? error.message : `Unsupported gateway device command kind ${value}.`);
+  }
+}
+
+function parseDeviceCommandStatusOption(value: string): GatewayDeviceCommandStatus {
+  try {
+    return parseGatewayDeviceCommandStatus(value);
+  } catch (error) {
+    throw new InvalidArgumentError(error instanceof Error ? error.message : `Unsupported gateway device command status ${value}.`);
+  }
 }
 
 const DEFAULT_GATEWAY_DEVICE_CAPABILITIES: readonly GatewayDeviceCapability[] = [
@@ -290,6 +339,112 @@ async function setDeviceEnabled(
   });
 }
 
+async function readCommandPayload(options: GatewayDeviceCommandEnqueueOptions): Promise<JsonValue | undefined> {
+  if (options.payloadJson && options.payloadFile) {
+    throw new Error("Use either --payload-json or --payload-file, not both.");
+  }
+
+  const raw = options.payloadFile
+    ? await fs.readFile(options.payloadFile, "utf8")
+    : options.payloadJson;
+  if (raw === undefined) {
+    return undefined;
+  }
+
+  try {
+    return requireJsonValue(JSON.parse(raw) as unknown, "Gateway device command payload");
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : "Gateway device command payload must be valid JSON.");
+  }
+}
+
+function formatCommandTime(value: number | undefined): string {
+  return value === undefined ? "-" : new Date(value).toISOString();
+}
+
+async function enqueueDeviceCommand(
+  sourceId: string,
+  deviceId: string,
+  kind: GatewayDeviceCommandKind,
+  options: GatewayDeviceCommandEnqueueOptions,
+): Promise<void> {
+  await withGatewayStores(options, async ({gatewayStore}) => {
+    const command = await gatewayStore.enqueueDeviceCommand({
+      sourceId,
+      deviceId,
+      kind,
+      payload: await readCommandPayload(options),
+    });
+    process.stdout.write([
+      `Enqueued gateway device command ${command.id}.`,
+      `source ${command.sourceId}`,
+      `device ${command.deviceId}`,
+      `kind ${command.kind}`,
+      `status ${command.status}`,
+      `created ${new Date(command.createdAt).toISOString()}`,
+    ].join("\n") + "\n");
+  });
+}
+
+async function listDeviceCommands(sourceId: string, options: GatewayDeviceCommandListOptions): Promise<void> {
+  await withGatewayStores(options, async ({gatewayStore}) => {
+    const commands = await gatewayStore.listDeviceCommands({
+      sourceId,
+      deviceId: options.device,
+      status: options.status,
+      limit: options.limit,
+    });
+    if (commands.length === 0) {
+      process.stdout.write("No gateway device commands.\n");
+      return;
+    }
+
+    for (const command of commands) {
+      process.stdout.write([
+        `${command.id} ${command.status}`,
+        `  device ${command.deviceId}`,
+        `  kind ${command.kind}`,
+        `  created ${formatCommandTime(command.createdAt)}`,
+        `  updated ${formatCommandTime(command.updatedAt)}`,
+        `  claimed ${formatCommandTime(command.claimedAt)}`,
+        `  completed ${formatCommandTime(command.completedAt)}`,
+        ...(command.error ? [`  error ${command.error}`] : []),
+      ].join("\n") + "\n");
+    }
+  });
+}
+
+async function cancelDeviceCommand(
+  sourceId: string,
+  deviceId: string,
+  commandId: string,
+  options: GatewayDeviceCommandCancelOptions,
+): Promise<void> {
+  await withGatewayStores(options, async ({gatewayStore}) => {
+    const command = await gatewayStore.cancelQueuedDeviceCommand({
+      sourceId,
+      deviceId,
+      commandId,
+      reason: options.reason,
+    });
+    process.stdout.write(`Cancelled gateway device command ${command.id}.\n`);
+  });
+}
+
+async function timeoutSweepDeviceCommands(options: GatewayDeviceCommandTimeoutSweepOptions): Promise<void> {
+  await withGatewayStores(options, async ({gatewayStore}) => {
+    const commands = await gatewayStore.markStaleClaimedDeviceCommandsTimedOut({
+      sourceId: options.source,
+      staleMs: options.staleMs,
+      limit: options.limit,
+    });
+    process.stdout.write([
+      `Timed out ${String(commands.length)} gateway device command(s).`,
+      ...(commands.length > 0 ? [`ids ${commands.map((command) => command.id).join(", ")}`] : []),
+    ].join("\n") + "\n");
+  });
+}
+
 async function listEvents(options: GatewayEventListOptions): Promise<void> {
   await withGatewayStores(options, async ({gatewayStore}) => {
     const events = await gatewayStore.listEvents({
@@ -421,6 +576,60 @@ export function registerGatewayManagementCommands(gateway: Command): void {
     .option("--capability <capability>", "Optional capability to grant; repeatable", collectCapability, [])
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sourceId: string, deviceId: string, options: GatewayDeviceRegisterOptions) => rotateDeviceToken(sourceId, deviceId, options));
+
+  const deviceCommand = device
+    .command("command")
+    .description("Manage queued commands for gateway devices");
+
+  deviceCommand
+    .command("enqueue")
+    .description("Enqueue a command for a gateway device")
+    .argument("<sourceId>", "Gateway source id", normalizeGatewaySourceId)
+    .argument("<deviceId>", "Device id", normalizeGatewayDeviceId)
+    .argument("<kind>", "Command kind", parseDeviceCommandKindOption)
+    .option("--payload-json <json>", "JSON payload for the command")
+    .option("--payload-file <path>", "Read JSON payload from a file")
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((
+      sourceId: string,
+      deviceId: string,
+      kind: GatewayDeviceCommandKind,
+      options: GatewayDeviceCommandEnqueueOptions,
+    ) => enqueueDeviceCommand(sourceId, deviceId, kind, options));
+
+  deviceCommand
+    .command("list")
+    .description("List commands for a gateway source or device")
+    .argument("<sourceId>", "Gateway source id", normalizeGatewaySourceId)
+    .option("--device <deviceId>", "Filter by device id", normalizeGatewayDeviceId)
+    .option("--status <status>", "Filter by command status", parseDeviceCommandStatusOption)
+    .option("--limit <count>", "Maximum commands to list", parsePositiveIntegerOption)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sourceId: string, options: GatewayDeviceCommandListOptions) => listDeviceCommands(sourceId, options));
+
+  deviceCommand
+    .command("cancel")
+    .description("Cancel a queued command")
+    .argument("<sourceId>", "Gateway source id", normalizeGatewaySourceId)
+    .argument("<deviceId>", "Device id", normalizeGatewayDeviceId)
+    .argument("<commandId>", "Command id")
+    .option("--reason <text>", "Cancellation reason")
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((
+      sourceId: string,
+      deviceId: string,
+      commandId: string,
+      options: GatewayDeviceCommandCancelOptions,
+    ) => cancelDeviceCommand(sourceId, deviceId, commandId, options));
+
+  deviceCommand
+    .command("timeout-sweep")
+    .description("Mark stale claimed commands as timed out")
+    .option("--source <sourceId>", "Filter by source id", normalizeGatewaySourceId)
+    .requiredOption("--stale-ms <ms>", "Claim age in milliseconds before timeout", parsePositiveIntegerOption)
+    .option("--limit <count>", "Maximum commands to time out", parsePositiveIntegerOption)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((options: GatewayDeviceCommandTimeoutSweepOptions) => timeoutSweepDeviceCommands(options));
 
   gateway
     .command("event-list")

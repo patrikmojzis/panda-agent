@@ -16,6 +16,7 @@ export const DEFAULT_GATEWAY_MAX_EVENT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 export const DEFAULT_GATEWAY_ATTACHMENT_BYTES_PER_HOUR = 100 * 1024 * 1024;
 export const DEFAULT_GATEWAY_MAX_PENDING_ATTACHMENTS_PER_SOURCE = 100;
 export const DEFAULT_GATEWAY_ATTACHMENT_UPLOAD_TTL_MS = 60 * 60_000;
+export const DEFAULT_GATEWAY_DEVICE_COMMAND_MAX_WAIT_MS = 30_000;
 export const DEFAULT_GATEWAY_ATTACHMENT_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export const DEFAULT_GATEWAY_ATTACHMENT_QUARANTINE_TTL_MS = 24 * 60 * 60_000;
 export const DEFAULT_GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES = [
@@ -39,6 +40,7 @@ export interface GatewayServerOptions {
   attachmentQuarantineTtlMs?: number;
   attachmentRetentionMs?: number;
   attachmentUploadTtlMs?: number;
+  deviceCommandMaxWaitMs?: number;
   env?: NodeJS.ProcessEnv;
   host?: string;
   maxActiveTokensPerSource?: number;
@@ -139,6 +141,10 @@ export function resolveGatewayHttpConfig(env: NodeJS.ProcessEnv = process.env): 
     attachmentUploadTtlMs: readPositiveInteger(
       trimToNull(env.GATEWAY_ATTACHMENT_UPLOAD_TTL_MS),
       DEFAULT_GATEWAY_ATTACHMENT_UPLOAD_TTL_MS,
+    ),
+    deviceCommandMaxWaitMs: readPositiveInteger(
+      trimToNull(env.GATEWAY_DEVICE_COMMAND_MAX_WAIT_MS),
+      DEFAULT_GATEWAY_DEVICE_COMMAND_MAX_WAIT_MS,
     ),
     attachmentRetentionMs: readPositiveInteger(
       trimToNull(env.GATEWAY_ATTACHMENT_RETENTION_MS),

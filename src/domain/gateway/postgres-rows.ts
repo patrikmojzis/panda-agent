@@ -8,6 +8,9 @@ import type {
   GatewayAttachmentStatus,
   GatewayDeliveryMode,
   GatewayDeviceCapability,
+  GatewayDeviceCommandKind,
+  GatewayDeviceCommandRecord,
+  GatewayDeviceCommandStatus,
   GatewayDeviceRecord,
   GatewayEventAttachmentRecord,
   GatewayEventRecord,
@@ -128,6 +131,30 @@ function parseAttachmentScanStatus(value: unknown): GatewayAttachmentScanStatus 
   throw new Error(`Unsupported gateway attachment scan status ${String(value)}.`);
 }
 
+export function parseGatewayDeviceCommandStatus(value: unknown): GatewayDeviceCommandStatus {
+  if (
+    value === "queued"
+    || value === "claimed"
+    || value === "completed"
+    || value === "failed"
+    || value === "cancelled"
+    || value === "timed_out"
+    || value === "rejected"
+  ) {
+    return value;
+  }
+
+  throw new Error(`Unsupported gateway device command status ${String(value)}.`);
+}
+
+export function parseGatewayDeviceCommandKind(value: unknown): GatewayDeviceCommandKind {
+  if (value === "screenshot.capture") {
+    return value;
+  }
+
+  throw new Error(`Unsupported gateway device command kind ${String(value)}.`);
+}
+
 export function parseOptionalGatewayMetadata(label: string, value: unknown): JsonValue | undefined {
   return readOptionalJsonValue(value, label);
 }
@@ -244,6 +271,31 @@ export function parseGatewayDeviceRow(row: Record<string, unknown>): GatewayDevi
     lastSeenAt: optionalTimestampMillis(row.last_seen_at, "Gateway device last_seen_at must be a finite timestamp."),
     createdAt: requireTimestampMillis(row.created_at, "Gateway device created_at must be a finite timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Gateway device updated_at must be a finite timestamp."),
+  };
+}
+
+export function gatewayDeviceAllowedCommandKinds(
+  capabilities: readonly GatewayDeviceCapability[],
+): readonly GatewayDeviceCommandKind[] {
+  return capabilities.includes("screenshot.capture") ? ["screenshot.capture"] : [];
+}
+
+export function parseGatewayDeviceCommandRow(row: Record<string, unknown>): GatewayDeviceCommandRecord {
+  return {
+    id: requireGatewayTrimmedString("Gateway device command id", row.id),
+    sourceId: normalizeGatewaySourceId(requireGatewayTrimmedString("Gateway source id", row.source_id)),
+    deviceId: normalizeGatewayDeviceId(requireGatewayTrimmedString("Gateway device id", row.device_id)),
+    kind: parseGatewayDeviceCommandKind(row.kind),
+    payload: parseOptionalGatewayMetadata("Gateway device command payload", row.payload),
+    status: parseGatewayDeviceCommandStatus(row.status),
+    createdAt: requireTimestampMillis(row.created_at, "Gateway device command created_at must be a finite timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Gateway device command updated_at must be a finite timestamp."),
+    claimId: parseOptionalTrimmed("Gateway device command claim id", row.claim_id),
+    claimedAt: optionalTimestampMillis(row.claimed_at, "Gateway device command claimed_at must be a finite timestamp."),
+    completedAt: optionalTimestampMillis(row.completed_at, "Gateway device command completed_at must be a finite timestamp."),
+    error: parseOptionalTrimmed("Gateway device command error", row.error),
+    result: parseOptionalGatewayMetadata("Gateway device command result", row.result),
+    resultAttachmentId: parseOptionalTrimmed("Gateway device command result attachment id", row.result_attachment_id),
   };
 }
 
