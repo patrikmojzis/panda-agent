@@ -98,6 +98,60 @@ export async function ensurePostgresGatewaySchema(pool: PgQueryable): Promise<vo
     ON ${tables.events} (status, created_at)
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.attachments} (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL REFERENCES ${tables.sources}(source_id) ON DELETE CASCADE,
+      idempotency_key TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'uploaded',
+      scan_status TEXT NOT NULL DEFAULT 'not_scanned',
+      mime_type TEXT NOT NULL,
+      sniffed_mime_type TEXT,
+      filename TEXT,
+      size_bytes BIGINT NOT NULL,
+      sha256 TEXT NOT NULL,
+      local_path TEXT NOT NULL,
+      media_source TEXT NOT NULL DEFAULT 'gateway',
+      connector_key TEXT NOT NULL,
+      media_metadata JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL,
+      bound_at TIMESTAMPTZ,
+      delivered_at TIMESTAMPTZ,
+      quarantined_at TIMESTAMPTZ,
+      scrubbed_at TIMESTAMPTZ,
+      UNIQUE (source_id, idempotency_key)
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_gateway_attachments_source_status_created_idx`)}
+    ON ${tables.attachments} (source_id, status, created_at)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_gateway_attachments_source_expires_idx`)}
+    ON ${tables.attachments} (source_id, expires_at)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_gateway_attachments_sha256_idx`)}
+    ON ${tables.attachments} (sha256)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_gateway_attachments_expires_idx`)}
+    ON ${tables.attachments} (expires_at)
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.eventAttachments} (
+      event_id TEXT NOT NULL REFERENCES ${tables.events}(id) ON DELETE CASCADE,
+      attachment_id TEXT NOT NULL REFERENCES ${tables.attachments}(id) ON DELETE RESTRICT,
+      position INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      size_bytes BIGINT NOT NULL,
+      mime_type TEXT NOT NULL,
+      PRIMARY KEY (event_id, position),
+      UNIQUE (event_id, attachment_id),
+      UNIQUE (attachment_id)
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.rateLimits} (
       bucket_key TEXT PRIMARY KEY,
       window_start TIMESTAMPTZ NOT NULL,

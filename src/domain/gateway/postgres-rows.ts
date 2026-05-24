@@ -3,7 +3,11 @@ import {requireNonNegativeInteger} from "../../lib/numbers.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireTrimmedString} from "../../lib/strings.js";
 import type {
+  GatewayAttachmentRecord,
+  GatewayAttachmentScanStatus,
+  GatewayAttachmentStatus,
   GatewayDeliveryMode,
+  GatewayEventAttachmentRecord,
   GatewayEventRecord,
   GatewayEventStatus,
   GatewayEventTypeRecord,
@@ -86,6 +90,29 @@ function parseEventStatus(value: unknown): GatewayEventStatus {
   throw new Error(`Unsupported gateway event status ${String(value)}.`);
 }
 
+function parseAttachmentStatus(value: unknown): GatewayAttachmentStatus {
+  if (
+    value === "uploaded"
+    || value === "bound"
+    || value === "delivered"
+    || value === "quarantined"
+    || value === "scrubbed"
+    || value === "expired"
+  ) {
+    return value;
+  }
+
+  throw new Error(`Unsupported gateway attachment status ${String(value)}.`);
+}
+
+function parseAttachmentScanStatus(value: unknown): GatewayAttachmentScanStatus {
+  if (value === "not_scanned") {
+    return value;
+  }
+
+  throw new Error(`Unsupported gateway attachment scan status ${String(value)}.`);
+}
+
 export function parseOptionalGatewayMetadata(label: string, value: unknown): JsonValue | undefined {
   return readOptionalJsonValue(value, label);
 }
@@ -166,5 +193,38 @@ export function parseGatewayStrikeRow(row: Record<string, unknown>): GatewayStri
     eventId: parseOptionalTrimmed("Gateway strike event id", row.event_id),
     metadata: parseOptionalGatewayMetadata("Gateway strike metadata", row.metadata),
     createdAt: requireTimestampMillis(row.created_at, "Gateway strike created_at must be a finite timestamp."),
+  };
+}
+
+export function parseGatewayAttachmentRow(row: Record<string, unknown>): GatewayAttachmentRecord {
+  return {
+    id: requireGatewayTrimmedString("Gateway attachment id", row.id),
+    sourceId: normalizeGatewaySourceId(requireGatewayTrimmedString("Gateway source id", row.source_id)),
+    idempotencyKey: requireGatewayTrimmedString("Gateway attachment idempotency key", row.idempotency_key),
+    status: parseAttachmentStatus(row.status),
+    scanStatus: parseAttachmentScanStatus(row.scan_status),
+    mimeType: requireGatewayTrimmedString("Gateway attachment MIME type", row.mime_type).toLowerCase(),
+    sniffedMimeType: parseOptionalTrimmed("Gateway attachment sniffed MIME type", row.sniffed_mime_type),
+    filename: parseOptionalTrimmed("Gateway attachment filename", row.filename),
+    sizeBytes: parseNonNegativeBigintCounter("Gateway attachment size bytes", row.size_bytes),
+    sha256: requireGatewayTrimmedString("Gateway attachment sha256", row.sha256),
+    localPath: requireGatewayTrimmedString("Gateway attachment local path", row.local_path),
+    mediaSource: requireGatewayTrimmedString("Gateway attachment media source", row.media_source),
+    connectorKey: requireGatewayTrimmedString("Gateway attachment connector key", row.connector_key),
+    mediaMetadata: parseOptionalGatewayMetadata("Gateway attachment media metadata", row.media_metadata),
+    createdAt: requireTimestampMillis(row.created_at, "Gateway attachment created_at must be a finite timestamp."),
+    expiresAt: requireTimestampMillis(row.expires_at, "Gateway attachment expires_at must be a finite timestamp."),
+    boundAt: optionalTimestampMillis(row.bound_at, "Gateway attachment bound_at must be a finite timestamp."),
+    deliveredAt: optionalTimestampMillis(row.delivered_at, "Gateway attachment delivered_at must be a finite timestamp."),
+    quarantinedAt: optionalTimestampMillis(row.quarantined_at, "Gateway attachment quarantined_at must be a finite timestamp."),
+    scrubbedAt: optionalTimestampMillis(row.scrubbed_at, "Gateway attachment scrubbed_at must be a finite timestamp."),
+  };
+}
+
+export function parseGatewayEventAttachmentRow(row: Record<string, unknown>): GatewayEventAttachmentRecord {
+  return {
+    ...parseGatewayAttachmentRow(row),
+    eventId: requireGatewayTrimmedString("Gateway event attachment event id", row.event_id),
+    position: requireNonNegativeInteger(row.position, "Gateway event attachment position"),
   };
 }

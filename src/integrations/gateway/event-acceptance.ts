@@ -1,10 +1,12 @@
 import type {IncomingMessage} from "node:http";
 
-import type {GatewayDeliveryMode} from "../../domain/gateway/types.js";
+import type {GatewayAttachmentRefInput, GatewayDeliveryMode} from "../../domain/gateway/types.js";
+import {GatewayAttachmentReferenceError} from "../../domain/gateway/postgres.js";
 import {GatewayHttpError} from "./http-body.js";
 import {
   readGatewayBearerToken,
   readGatewayEventRequest,
+  readGatewayEventWithAttachmentsRequest,
   resolveGatewayEffectiveDelivery,
 } from "./event-request.js";
 import type {GatewayWorker} from "./worker.js";
@@ -40,6 +42,25 @@ interface GatewayEventAcceptanceStore {
     };
     inserted: boolean;
   }>;
+  storeEventWithAttachments(input: {
+    attachments: readonly GatewayAttachmentRefInput[];
+    deliveryEffective: GatewayDeliveryMode;
+    deliveryRequested: GatewayDeliveryMode;
+    idempotencyKey: string;
+    maxAttachmentBytes: number;
+    occurredAt?: number;
+    sourceId: string;
+    text: string;
+    textBytes: number;
+    textSha256: string;
+    type: string;
+  }): Promise<{
+    event: {
+      deliveryEffective: GatewayDeliveryMode;
+      id: string;
+    };
+    inserted: boolean;
+  }>;
   useRateLimit(input: {
     cost?: number;
     key: string;
@@ -60,6 +81,64 @@ async function requireGatewaySource(input: {
   return source;
 }
 
+async function assertEventTypeAllowed(input: {
+  eventType: string;
+  sourceId: string;
+  store: GatewayEventAcceptanceStore;
+}): Promise<{delivery: GatewayDeliveryMode}> {
+  const allowedType = await input.store.getEventType(input.sourceId, input.eventType);
+  if (!allowedType) {
+    await input.store.recordStrikeAndMaybeSuspend({
+      sourceId: input.sourceId,
+      kind: "unexpected_type",
+      reason: "unexpected gateway event type",
+      threshold: STRIKE_THRESHOLD,
+      windowMs: STRIKE_WINDOW_MS,
+      metadata: {type: input.eventType},
+    });
+    throw new GatewayHttpError(403, "Event type is not allowed.");
+  }
+  return allowedType;
+}
+
+async function enforceTextBudgets(input: {
+  eventTextBytes: number;
+  maxTextBytes: number;
+  sourceId: string;
+  store: Pick<GatewayEventAcceptanceStore, "useRateLimit">;
+  textBytesPerHour: number;
+}): Promise<void> {
+  if (input.eventTextBytes > input.maxTextBytes) {
+    throw new GatewayHttpError(413, "Event text is too large.");
+  }
+  const textBudget = await input.store.useRateLimit({
+    key: `gateway:source:${input.sourceId}:text_bytes`,
+    windowMs: 60 * 60_000,
+    cost: input.eventTextBytes,
+    limit: input.textBytesPerHour,
+  });
+  if (!textBudget.allowed) {
+    throw new GatewayHttpError(429, "Text byte budget exceeded.");
+  }
+}
+
+function acceptedBody(input: {
+  delivery: GatewayDeliveryMode;
+  eventId: string;
+}): {
+  accepted: true;
+  delivery: GatewayDeliveryMode;
+  eventId: string;
+  ok: true;
+} {
+  return {
+    ok: true,
+    eventId: input.eventId,
+    accepted: true,
+    delivery: input.delivery,
+  };
+}
+
 export async function acceptGatewayEventRequest(input: {
   maxJsonBytes: number;
   maxTextBytes: number;
@@ -68,12 +147,7 @@ export async function acceptGatewayEventRequest(input: {
   textBytesPerHour: number;
   worker?: Pick<GatewayWorker, "poke">;
 }): Promise<{
-  body: {
-    accepted: true;
-    delivery: GatewayDeliveryMode;
-    eventId: string;
-    ok: true;
-  };
+  body: ReturnType<typeof acceptedBody>;
   status: 200 | 202;
 }> {
   const source = await requireGatewaySource({
@@ -81,31 +155,18 @@ export async function acceptGatewayEventRequest(input: {
     store: input.store,
   });
   const event = await readGatewayEventRequest(input.request, input.maxJsonBytes);
-  const allowedType = await input.store.getEventType(source.sourceId, event.type);
-  if (!allowedType) {
-    await input.store.recordStrikeAndMaybeSuspend({
-      sourceId: source.sourceId,
-      kind: "unexpected_type",
-      reason: "unexpected gateway event type",
-      threshold: STRIKE_THRESHOLD,
-      windowMs: STRIKE_WINDOW_MS,
-      metadata: {type: event.type},
-    });
-    throw new GatewayHttpError(403, "Event type is not allowed.");
-  }
-
-  if (event.textBytes > input.maxTextBytes) {
-    throw new GatewayHttpError(413, "Event text is too large.");
-  }
-  const textBudget = await input.store.useRateLimit({
-    key: `gateway:source:${source.sourceId}:text_bytes`,
-    windowMs: 60 * 60_000,
-    cost: event.textBytes,
-    limit: input.textBytesPerHour,
+  const allowedType = await assertEventTypeAllowed({
+    eventType: event.type,
+    sourceId: source.sourceId,
+    store: input.store,
   });
-  if (!textBudget.allowed) {
-    throw new GatewayHttpError(429, "Text byte budget exceeded.");
-  }
+  await enforceTextBudgets({
+    eventTextBytes: event.textBytes,
+    maxTextBytes: input.maxTextBytes,
+    sourceId: source.sourceId,
+    store: input.store,
+    textBytesPerHour: input.textBytesPerHour,
+  });
 
   const deliveryEffective = resolveGatewayEffectiveDelivery({
     allowedDelivery: allowedType.delivery,
@@ -128,11 +189,74 @@ export async function acceptGatewayEventRequest(input: {
 
   return {
     status: stored.inserted ? 202 : 200,
-    body: {
-      ok: true,
-      eventId: stored.event.id,
-      accepted: true,
-      delivery: stored.event.deliveryEffective,
-    },
+    body: acceptedBody({eventId: stored.event.id, delivery: stored.event.deliveryEffective}),
   };
+}
+
+export async function acceptGatewayEventWithAttachmentsRequest(input: {
+  maxAttachmentsPerEvent: number;
+  maxEventAttachmentBytes: number;
+  maxJsonBytes: number;
+  maxTextBytes: number;
+  request: IncomingMessage;
+  store: GatewayEventAcceptanceStore;
+  textBytesPerHour: number;
+  worker?: Pick<GatewayWorker, "poke">;
+}): Promise<{
+  body: ReturnType<typeof acceptedBody>;
+  status: 200 | 202;
+}> {
+  const source = await requireGatewaySource({
+    request: input.request,
+    store: input.store,
+  });
+  const event = await readGatewayEventWithAttachmentsRequest(
+    input.request,
+    input.maxJsonBytes,
+    input.maxAttachmentsPerEvent,
+  );
+  const allowedType = await assertEventTypeAllowed({
+    eventType: event.type,
+    sourceId: source.sourceId,
+    store: input.store,
+  });
+  await enforceTextBudgets({
+    eventTextBytes: event.textBytes,
+    maxTextBytes: input.maxTextBytes,
+    sourceId: source.sourceId,
+    store: input.store,
+    textBytesPerHour: input.textBytesPerHour,
+  });
+
+  const deliveryEffective = resolveGatewayEffectiveDelivery({
+    allowedDelivery: allowedType.delivery,
+    requestedDelivery: event.delivery,
+  });
+  try {
+    const stored = await input.store.storeEventWithAttachments({
+      sourceId: source.sourceId,
+      type: event.type,
+      deliveryRequested: event.delivery,
+      deliveryEffective,
+      occurredAt: event.occurredAt,
+      idempotencyKey: event.idempotencyKey,
+      text: event.text,
+      textBytes: event.textBytes,
+      textSha256: event.textSha256,
+      attachments: event.attachments ?? [],
+      maxAttachmentBytes: input.maxEventAttachmentBytes,
+    });
+    if (stored.inserted) {
+      input.worker?.poke();
+    }
+    return {
+      status: stored.inserted ? 202 : 200,
+      body: acceptedBody({eventId: stored.event.id, delivery: stored.event.deliveryEffective}),
+    };
+  } catch (error) {
+    if (error instanceof GatewayAttachmentReferenceError) {
+      throw new GatewayHttpError(error.statusCode, error.message);
+    }
+    throw error;
+  }
 }

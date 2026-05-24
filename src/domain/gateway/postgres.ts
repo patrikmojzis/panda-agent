@@ -1,15 +1,21 @@
 import {randomUUID} from "node:crypto";
+import * as fs from "node:fs/promises";
+import path from "node:path";
 
 import {requireNonNegativeInteger} from "../../lib/numbers.js";
 import {generateOpaqueToken, hashOpaqueToken, opaqueTokenMatches} from "../../lib/opaque-tokens.js";
 import {isUniqueViolation} from "../../lib/postgres-errors.js";
-import type {PgQueryable} from "../../lib/postgres-query.js";
+import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
+import {withTransaction} from "../../lib/postgres-transaction.js";
+import {resolveAgentMediaDir} from "../../lib/data-dir.js";
 import {toJson} from "../../lib/postgres-values.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {
   normalizeGatewayEventType,
   normalizeGatewaySourceId,
+  parseGatewayAttachmentRow,
   parseGatewayDeliveryMode,
+  parseGatewayEventAttachmentRow,
   parseGatewayEventRow,
   parseGatewayEventTypeRow,
   parseGatewaySourceRow,
@@ -23,12 +29,17 @@ import {buildGatewayTableNames} from "./postgres-shared.js";
 import type {
   CreateGatewaySourceInput,
   GatewayAccessTokenRecord,
+  GatewayAttachmentRecord,
+  GatewayAttachmentRefInput,
+  GatewayAttachmentUploadInput,
   GatewayDeliveryMode,
+  GatewayEventAttachmentRecord,
   GatewayEventInput,
   GatewayEventRecord,
   GatewayEventTypeRecord,
   GatewaySourceRecord,
   GatewaySourceSecretResult,
+  GatewayStoredAttachmentResult,
   GatewayStoredEventResult,
   GatewayStrikeRecord,
 } from "./types.js";
@@ -40,6 +51,8 @@ const DEFAULT_MAX_ACTIVE_ACCESS_TOKENS = 20;
 const PROCESSING_STALE_MS = 5 * 60_000;
 const RATE_LIMIT_CLEANUP_INTERVAL_MS = 60_000;
 const RATE_LIMIT_BUCKET_RETENTION_MS = 24 * 60 * 60_000;
+const DEFAULT_ATTACHMENT_RETENTION_MS = 7 * 24 * 60 * 60_000;
+const DEFAULT_ATTACHMENT_QUARANTINE_TTL_MS = 24 * 60 * 60_000;
 
 export class GatewayEventConflictError extends Error {
   constructor(readonly existing: GatewayEventRecord) {
@@ -56,6 +69,91 @@ function sameIdempotentEventBody(existing: GatewayEventRecord, input: GatewayEve
     && existing.textSha256 === input.textSha256;
 }
 
+export class GatewayAttachmentConflictError extends Error {
+  constructor(readonly existing: GatewayAttachmentRecord) {
+    super("Idempotency key already exists with a different attachment upload.");
+    this.name = "GatewayAttachmentConflictError";
+  }
+}
+
+export class GatewayAttachmentReferenceError extends Error {
+  constructor(message: string, readonly statusCode: 400 | 409 | 413 = 400) {
+    super(message);
+    this.name = "GatewayAttachmentReferenceError";
+  }
+}
+
+function normalizeAttachmentRefs(refs: readonly GatewayAttachmentRefInput[] | undefined): readonly GatewayAttachmentRefInput[] {
+  return (refs ?? []).map((ref) => ({
+    id: requireGatewayTrimmedString("Gateway attachment id", ref.id),
+    ...(ref.sha256 ? {sha256: requireGatewayTrimmedString("Gateway attachment sha256", ref.sha256).toLowerCase()} : {}),
+  }));
+}
+
+function sameAttachmentRefs(
+  expected: readonly GatewayAttachmentRefInput[],
+  existing: readonly GatewayEventAttachmentRecord[],
+): boolean {
+  if (expected.length !== existing.length) {
+    return false;
+  }
+
+  return expected.every((ref, index) => {
+    const attachment = existing[index];
+    if (!attachment) {
+      return false;
+    }
+    return attachment.id === ref.id
+      && attachment.sha256 === (ref.sha256 ?? attachment.sha256);
+  });
+}
+
+export function sameIdempotentAttachmentUpload(
+  existing: GatewayAttachmentRecord,
+  input: Pick<GatewayAttachmentUploadInput, "mimeType" | "sha256"> & {descriptor: {sizeBytes: number}},
+): boolean {
+  return existing.sha256 === input.sha256
+    && existing.sizeBytes === input.descriptor.sizeBytes
+    && existing.mimeType === input.mimeType.toLowerCase();
+}
+
+function hasTransactionSupport(pool: PgQueryable): pool is PgPoolLike {
+  return "connect" in pool && typeof (pool as {connect?: unknown}).connect === "function";
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function isPathInsideRoot(rootPath: string, candidatePath: string): boolean {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+async function requireGatewayAttachmentPathWithinMediaRoot(input: {
+  agentKey: string;
+  env?: NodeJS.ProcessEnv;
+  localPath: string;
+}): Promise<void> {
+  const rootPath = await fs.realpath(resolveAgentMediaDir(input.agentKey, input.env));
+  let candidatePath: string;
+  try {
+    candidatePath = await fs.realpath(input.localPath);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+    candidatePath = path.resolve(input.localPath);
+  }
+
+  if (!isPathInsideRoot(rootPath, candidatePath)) {
+    throw new Error(`Refusing to scrub gateway attachment outside media root: ${input.localPath}`);
+  }
+}
+
 export class PostgresGatewayStore {
   private readonly pool: PgQueryable;
   private readonly tables = buildGatewayTableNames();
@@ -68,6 +166,13 @@ export class PostgresGatewayStore {
 
   async ensureSchema(): Promise<void> {
     await ensurePostgresGatewaySchema(this.pool);
+  }
+
+  private requireTransactionalPool(): PgPoolLike {
+    if (!hasTransactionSupport(this.pool)) {
+      throw new Error("Gateway attachment event storage requires a transactional Postgres pool.");
+    }
+    return this.pool;
   }
 
   async createSource(input: CreateGatewaySourceInput): Promise<GatewaySourceSecretResult> {
@@ -353,6 +458,291 @@ export class PostgresGatewayStore {
     }
   }
 
+  async getAttachment(attachmentId: string): Promise<GatewayAttachmentRecord> {
+    const result = await this.pool.query(
+      `SELECT * FROM ${this.tables.attachments} WHERE id = $1`,
+      [requireGatewayTrimmedString("Gateway attachment id", attachmentId)],
+    );
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new Error(`Unknown gateway attachment ${attachmentId}.`);
+    }
+    return parseGatewayAttachmentRow(row);
+  }
+
+  async getAttachmentByIdempotencyKey(
+    sourceId: string,
+    idempotencyKey: string,
+  ): Promise<GatewayAttachmentRecord | null> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.attachments}
+      WHERE source_id = $1 AND idempotency_key = $2
+    `, [
+      normalizeGatewaySourceId(sourceId),
+      requireGatewayTrimmedString("Gateway attachment idempotency key", idempotencyKey),
+    ]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    return row ? parseGatewayAttachmentRow(row) : null;
+  }
+
+  async countPendingAttachmentsForSource(sourceId: string): Promise<number> {
+    const result = await this.pool.query(`
+      SELECT COUNT(*)::BIGINT AS count
+      FROM ${this.tables.attachments}
+      WHERE source_id = $1
+        AND status = 'uploaded'
+        AND expires_at > NOW()
+    `, [normalizeGatewaySourceId(sourceId)]);
+    return parseNonNegativeBigintCounter(
+      "Gateway pending attachment count",
+      (result.rows[0] as {count?: unknown} | undefined)?.count ?? 0,
+    );
+  }
+
+  async storeAttachmentUpload(input: GatewayAttachmentUploadInput): Promise<GatewayStoredAttachmentResult> {
+    try {
+      const result = await this.pool.query(`
+        INSERT INTO ${this.tables.attachments} (
+          id,
+          source_id,
+          idempotency_key,
+          mime_type,
+          sniffed_mime_type,
+          filename,
+          size_bytes,
+          sha256,
+          local_path,
+          media_source,
+          connector_key,
+          media_metadata,
+          created_at,
+          expires_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14)
+        RETURNING *
+      `, [
+        requireGatewayTrimmedString("Gateway attachment id", input.descriptor.id),
+        normalizeGatewaySourceId(input.sourceId),
+        requireGatewayTrimmedString("Gateway attachment idempotency key", input.idempotencyKey),
+        requireGatewayTrimmedString("Gateway attachment MIME type", input.mimeType).toLowerCase(),
+        input.sniffedMimeType ?? null,
+        input.filename ?? null,
+        input.descriptor.sizeBytes,
+        requireGatewayTrimmedString("Gateway attachment sha256", input.sha256).toLowerCase(),
+        requireGatewayTrimmedString("Gateway attachment local path", input.descriptor.localPath),
+        requireGatewayTrimmedString("Gateway attachment media source", input.descriptor.source),
+        requireGatewayTrimmedString("Gateway attachment connector key", input.descriptor.connectorKey),
+        toJson(parseOptionalGatewayMetadata("Gateway attachment media metadata", input.descriptor.metadata)),
+        new Date(input.descriptor.createdAt),
+        new Date(input.expiresAt),
+      ]);
+      return {
+        attachment: parseGatewayAttachmentRow(result.rows[0] as Record<string, unknown>),
+        inserted: true,
+      };
+    } catch (error) {
+      if (!isUniqueViolation(error)) {
+        throw error;
+      }
+      const existing = await this.getAttachmentByIdempotencyKey(input.sourceId, input.idempotencyKey);
+      if (!existing || !sameIdempotentAttachmentUpload(existing, input)) {
+        throw new GatewayAttachmentConflictError(existing ?? await this.getAttachment(input.descriptor.id));
+      }
+      return {
+        attachment: existing,
+        inserted: false,
+      };
+    }
+  }
+
+  private async listEventAttachmentsWithClient(
+    client: PgQueryable,
+    eventId: string,
+  ): Promise<readonly GatewayEventAttachmentRecord[]> {
+    const result = await client.query(`
+      SELECT
+        a.id,
+        a.source_id,
+        a.idempotency_key,
+        a.status,
+        a.scan_status,
+        ea.mime_type AS mime_type,
+        a.sniffed_mime_type,
+        a.filename,
+        ea.size_bytes AS size_bytes,
+        ea.sha256 AS sha256,
+        a.local_path,
+        a.media_source,
+        a.connector_key,
+        a.media_metadata,
+        a.created_at,
+        a.expires_at,
+        a.bound_at,
+        a.delivered_at,
+        a.quarantined_at,
+        a.scrubbed_at,
+        ea.event_id,
+        ea.position
+      FROM ${this.tables.eventAttachments} AS ea
+      JOIN ${this.tables.attachments} AS a
+        ON a.id = ea.attachment_id
+      WHERE ea.event_id = $1
+      ORDER BY ea.position ASC
+    `, [requireGatewayTrimmedString("Gateway event id", eventId)]);
+    return result.rows.map((row) => parseGatewayEventAttachmentRow(row as Record<string, unknown>));
+  }
+
+  async listEventAttachments(eventId: string): Promise<readonly GatewayEventAttachmentRecord[]> {
+    return this.listEventAttachmentsWithClient(this.pool, eventId);
+  }
+
+  private async validateAndBindAttachments(input: {
+    attachments: readonly GatewayAttachmentRefInput[];
+    client: PgQueryable;
+    eventId: string;
+    maxAttachmentBytes: number;
+    sourceId: string;
+  }): Promise<void> {
+    const seen = new Set<string>();
+    const resolved: GatewayAttachmentRecord[] = [];
+    for (const ref of input.attachments) {
+      if (seen.has(ref.id)) {
+        throw new GatewayAttachmentReferenceError("Duplicate attachment refs are not allowed.");
+      }
+      seen.add(ref.id);
+      const result = await input.client.query(
+        `SELECT * FROM ${this.tables.attachments} WHERE id = $1`,
+        [ref.id],
+      );
+      const row = result.rows[0] as Record<string, unknown> | undefined;
+      if (!row) {
+        throw new GatewayAttachmentReferenceError("Attachment ref is not available.");
+      }
+      const attachment = parseGatewayAttachmentRow(row);
+      if (attachment.sourceId !== input.sourceId) {
+        throw new GatewayAttachmentReferenceError("Attachment ref is not available for this source.");
+      }
+      if (attachment.expiresAt <= Date.now()) {
+        await input.client.query(
+          `UPDATE ${this.tables.attachments} SET status = 'expired' WHERE id = $1 AND status = 'uploaded'`,
+          [attachment.id],
+        );
+        throw new GatewayAttachmentReferenceError("Attachment ref has expired.");
+      }
+      if (attachment.status !== "uploaded") {
+        throw new GatewayAttachmentReferenceError("Attachment ref is already bound or unavailable.", 409);
+      }
+      if (ref.sha256 && attachment.sha256 !== ref.sha256) {
+        throw new GatewayAttachmentReferenceError("Attachment ref sha256 does not match.", 409);
+      }
+      resolved.push(attachment);
+    }
+
+    const totalBytes = resolved.reduce((sum, attachment) => sum + attachment.sizeBytes, 0);
+    if (totalBytes > input.maxAttachmentBytes) {
+      throw new GatewayAttachmentReferenceError("Event attachment bytes exceed the per-event limit.", 413);
+    }
+
+    for (const [position, attachment] of resolved.entries()) {
+      const updated = await input.client.query(`
+        UPDATE ${this.tables.attachments}
+        SET status = 'bound', bound_at = NOW()
+        WHERE id = $1 AND status = 'uploaded'
+        RETURNING *
+      `, [attachment.id]);
+      if (updated.rows.length === 0) {
+        throw new GatewayAttachmentReferenceError("Attachment ref is already bound or unavailable.", 409);
+      }
+      await input.client.query(`
+        INSERT INTO ${this.tables.eventAttachments} (
+          event_id,
+          attachment_id,
+          position,
+          sha256,
+          size_bytes,
+          mime_type
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+      `, [
+        input.eventId,
+        attachment.id,
+        position,
+        attachment.sha256,
+        attachment.sizeBytes,
+        attachment.mimeType,
+      ]);
+    }
+  }
+
+  async storeEventWithAttachments(input: GatewayEventInput & {
+    attachments: readonly GatewayAttachmentRefInput[];
+    maxAttachmentBytes: number;
+  }): Promise<GatewayStoredEventResult> {
+    const attachments = normalizeAttachmentRefs(input.attachments);
+    const pool = this.requireTransactionalPool();
+    return withTransaction(pool, async (client) => {
+      const existingResult = await client.query(`
+        SELECT *
+        FROM ${this.tables.events}
+        WHERE source_id = $1 AND idempotency_key = $2
+      `, [
+        normalizeGatewaySourceId(input.sourceId),
+        requireGatewayTrimmedString("Idempotency key", input.idempotencyKey),
+      ]);
+      const existingRow = existingResult.rows[0] as Record<string, unknown> | undefined;
+      if (existingRow) {
+        const existing = parseGatewayEventRow(existingRow);
+        const existingAttachments = await this.listEventAttachmentsWithClient(client, existing.id);
+        if (!sameIdempotentEventBody(existing, input) || !sameAttachmentRefs(attachments, existingAttachments)) {
+          throw new GatewayEventConflictError(existing);
+        }
+        return {
+          event: existing,
+          inserted: false,
+        };
+      }
+
+      const id = randomUUID();
+      const result = await client.query(`
+        INSERT INTO ${this.tables.events} (
+          id,
+          source_id,
+          event_type,
+          delivery_requested,
+          delivery_effective,
+          occurred_at,
+          idempotency_key,
+          text,
+          text_bytes,
+          text_sha256
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING *
+      `, [
+        id,
+        normalizeGatewaySourceId(input.sourceId),
+        normalizeGatewayEventType(input.type),
+        parseGatewayDeliveryMode(input.deliveryRequested),
+        parseGatewayDeliveryMode(input.deliveryEffective),
+        input.occurredAt === undefined ? null : new Date(input.occurredAt),
+        requireGatewayTrimmedString("Idempotency key", input.idempotencyKey),
+        input.text,
+        input.textBytes,
+        input.textSha256,
+      ]);
+      const event = parseGatewayEventRow(result.rows[0] as Record<string, unknown>);
+      await this.validateAndBindAttachments({
+        attachments,
+        client,
+        eventId: event.id,
+        maxAttachmentBytes: input.maxAttachmentBytes,
+        sourceId: normalizeGatewaySourceId(input.sourceId),
+      });
+      return {
+        event,
+        inserted: true,
+      };
+    });
+  }
+
   async getEvent(eventId: string): Promise<GatewayEventRecord> {
     const result = await this.pool.query(
       `SELECT * FROM ${this.tables.events} WHERE id = $1`,
@@ -522,6 +912,7 @@ export class PostgresGatewayStore {
     threadId: string;
     riskScore: number;
     metadata?: GatewayEventRecord["metadata"];
+    attachmentRetentionMs?: number;
   }): Promise<GatewayEventRecord> {
     const result = await this.pool.query(`
       UPDATE ${this.tables.events}
@@ -545,6 +936,24 @@ export class PostgresGatewayStore {
       input.claimId ?? null,
     ]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (row) {
+      const attachmentExpiresAt = new Date(Date.now() + Math.max(
+        1,
+        Math.floor(input.attachmentRetentionMs ?? DEFAULT_ATTACHMENT_RETENTION_MS),
+      ));
+      await this.pool.query(`
+        UPDATE ${this.tables.attachments}
+        SET status = 'delivered',
+            delivered_at = COALESCE(delivered_at, NOW()),
+            expires_at = $2
+        WHERE id IN (
+          SELECT attachment_id
+          FROM ${this.tables.eventAttachments}
+          WHERE event_id = $1
+        )
+          AND status IN ('bound', 'delivered')
+      `, [input.eventId, attachmentExpiresAt]);
+    }
     return row ? parseGatewayEventRow(row) : await this.getEvent(input.eventId);
   }
 
@@ -554,6 +963,7 @@ export class PostgresGatewayStore {
     riskScore: number;
     reason: string;
     metadata?: GatewayEventRecord["metadata"];
+    attachmentQuarantineTtlMs?: number;
   }): Promise<GatewayEventRecord> {
     const result = await this.pool.query(`
       UPDATE ${this.tables.events}
@@ -576,7 +986,67 @@ export class PostgresGatewayStore {
       input.claimId ?? null,
     ]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (row) {
+      const attachmentExpiresAt = new Date(Date.now() + Math.max(
+        1,
+        Math.floor(input.attachmentQuarantineTtlMs ?? DEFAULT_ATTACHMENT_QUARANTINE_TTL_MS),
+      ));
+      await this.pool.query(`
+        UPDATE ${this.tables.attachments}
+        SET status = 'quarantined',
+            quarantined_at = COALESCE(quarantined_at, NOW()),
+            expires_at = $2
+        WHERE id IN (
+          SELECT attachment_id
+          FROM ${this.tables.eventAttachments}
+          WHERE event_id = $1
+        )
+          AND status IN ('uploaded', 'bound', 'quarantined')
+      `, [input.eventId, attachmentExpiresAt]);
+    }
     return row ? parseGatewayEventRow(row) : await this.getEvent(input.eventId);
+  }
+
+  async scrubExpiredAttachments(input: {
+    env?: NodeJS.ProcessEnv;
+    limit?: number;
+    now?: number;
+  } = {}): Promise<{scrubbed: number}> {
+    const limit = Math.min(500, Math.max(1, Math.floor(input.limit ?? 100)));
+    const now = new Date(input.now ?? Date.now());
+    const result = await this.pool.query(`
+      SELECT a.*, s.agent_key
+      FROM ${this.tables.attachments} AS a
+      JOIN ${this.tables.sources} AS s
+        ON s.source_id = a.source_id
+      WHERE a.expires_at <= $1
+        AND a.status <> 'scrubbed'
+      ORDER BY a.expires_at ASC, a.created_at ASC
+      LIMIT $2
+    `, [now, limit]);
+    const attachments = result.rows.map((row) => ({
+      agentKey: requireGatewayTrimmedString("Gateway attachment source agent key", (row as {agent_key?: unknown}).agent_key),
+      attachment: parseGatewayAttachmentRow(row as Record<string, unknown>),
+    }));
+    for (const {agentKey, attachment} of attachments) {
+      await requireGatewayAttachmentPathWithinMediaRoot({
+        agentKey,
+        env: input.env,
+        localPath: attachment.localPath,
+      });
+      await fs.unlink(attachment.localPath).catch((error: unknown) => {
+        if (isNotFoundError(error)) {
+          return;
+        }
+        throw error;
+      });
+      await this.pool.query(`
+        UPDATE ${this.tables.attachments}
+        SET status = 'scrubbed', scrubbed_at = NOW()
+        WHERE id = $1
+      `, [attachment.id]);
+    }
+    return {scrubbed: attachments.length};
   }
 
   async recordStrike(input: {

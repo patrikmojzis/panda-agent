@@ -16,6 +16,15 @@ describe("gateway HTTP config", () => {
       maxTextBytes: 65_536,
       rateLimitPerMinute: 120,
       textBytesPerHour: 5_242_880,
+      maxAttachmentBytes: 10_485_760,
+      maxAttachmentsPerEvent: 5,
+      maxEventAttachmentBytes: 26_214_400,
+      attachmentBytesPerHour: 104_857_600,
+      maxPendingAttachmentsPerSource: 100,
+      attachmentUploadTtlMs: 3_600_000,
+      attachmentRetentionMs: 604_800_000,
+      attachmentQuarantineTtlMs: 86_400_000,
+      attachmentAllowedMimeTypes: expect.arrayContaining(["image/png", "application/pdf"]),
     });
 
     expect(resolveGatewayHttpConfig({
@@ -26,6 +35,15 @@ describe("gateway HTTP config", () => {
       GATEWAY_MAX_TEXT_BYTES: "256",
       GATEWAY_RATE_LIMIT_PER_MINUTE: "3",
       GATEWAY_TEXT_BYTES_PER_HOUR: "4096",
+      GATEWAY_MAX_ATTACHMENT_BYTES: "1024",
+      GATEWAY_MAX_ATTACHMENTS_PER_EVENT: "2",
+      GATEWAY_MAX_EVENT_ATTACHMENT_BYTES: "2048",
+      GATEWAY_ATTACHMENT_BYTES_PER_HOUR: "8192",
+      GATEWAY_MAX_PENDING_ATTACHMENTS_PER_SOURCE: "7",
+      GATEWAY_ATTACHMENT_UPLOAD_TTL_MS: "60000",
+      GATEWAY_ATTACHMENT_RETENTION_MS: "120000",
+      GATEWAY_ATTACHMENT_QUARANTINE_TTL_MS: "30000",
+      GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES: "text/plain,image/png",
     })).toMatchObject({
       host: "0.0.0.0",
       port: 8095,
@@ -34,6 +52,15 @@ describe("gateway HTTP config", () => {
       maxTextBytes: 256,
       rateLimitPerMinute: 3,
       textBytesPerHour: 4096,
+      maxAttachmentBytes: 1024,
+      maxAttachmentsPerEvent: 2,
+      maxEventAttachmentBytes: 2048,
+      attachmentBytesPerHour: 8192,
+      maxPendingAttachmentsPerSource: 7,
+      attachmentUploadTtlMs: 60_000,
+      attachmentRetentionMs: 120_000,
+      attachmentQuarantineTtlMs: 30_000,
+      attachmentAllowedMimeTypes: ["text/plain", "image/png"],
     });
   });
 

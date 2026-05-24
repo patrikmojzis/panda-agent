@@ -12,7 +12,7 @@ import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import {createGatewayGuardFromEnv} from "../../integrations/gateway/guard.js";
 import {formatGatewayListenUrl, startGatewayServer} from "../../integrations/gateway/http.js";
-import {resolveGatewayServerOptions} from "../../integrations/gateway/http-config.js";
+import {resolveGatewayHttpConfig} from "../../integrations/gateway/http-config.js";
 import {startGatewayWorker} from "../../integrations/gateway/worker.js";
 import {DB_URL_OPTION_DESCRIPTION, parsePortOption} from "../../lib/cli.js";
 import {createPostgresPool, requireDatabaseUrl} from "../../lib/postgres-database.js";
@@ -50,15 +50,20 @@ async function runGateway(options: GatewayRunOptions): Promise<void> {
   await ensureSchemas([identityStore, agentStore, sessionStore, threadStore, gatewayStore]);
 
   const guardTimeoutMs = readOptionalPositiveIntegerEnv("GATEWAY_GUARD_TIMEOUT_MS");
+  const gatewayConfig = resolveGatewayHttpConfig(process.env);
   const worker = startGatewayWorker({
     guard: createGatewayGuardFromEnv(process.env),
     ...(guardTimeoutMs !== undefined ? {guardTimeoutMs} : {}),
+    attachmentRetentionMs: gatewayConfig.attachmentRetentionMs,
+    attachmentQuarantineTtlMs: gatewayConfig.attachmentQuarantineTtlMs,
     store: gatewayStore,
     sessionStore,
     threadStore,
   });
   const server = await startGatewayServer({
-    ...resolveGatewayServerOptions(gatewayStore, worker, process.env),
+    ...gatewayConfig,
+    store: gatewayStore,
+    worker,
     ...(options.host ? {host: options.host} : {}),
     ...(options.port !== undefined ? {port: options.port} : {}),
   });

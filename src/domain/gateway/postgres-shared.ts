@@ -6,6 +6,8 @@ export function buildGatewayTableNames() {
     eventTypes: "gateway_event_types",
     accessTokens: "gateway_access_tokens",
     events: "gateway_events",
+    attachments: "gateway_attachments",
+    eventAttachments: "gateway_event_attachments",
     rateLimits: "gateway_rate_limits",
     strikes: "gateway_strikes",
   });

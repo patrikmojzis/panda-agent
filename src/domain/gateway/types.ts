@@ -1,8 +1,11 @@
+import type {MediaDescriptor} from "../channels/types.js";
 import type {JsonValue} from "../../lib/json.js";
 
 export type GatewayDeliveryMode = "queue" | "wake";
 export type GatewaySourceStatus = "active" | "suspended";
 export type GatewayEventStatus = "pending" | "processing" | "delivering" | "delivered" | "quarantined";
+export type GatewayAttachmentStatus = "uploaded" | "bound" | "delivered" | "quarantined" | "scrubbed" | "expired";
+export type GatewayAttachmentScanStatus = "not_scanned";
 
 export interface GatewaySourceRecord {
   sourceId: string;
@@ -61,8 +64,41 @@ export interface GatewayEventRecord {
   textScrubbedAt?: number;
 }
 
+export interface GatewayAttachmentRecord {
+  id: string;
+  sourceId: string;
+  idempotencyKey: string;
+  status: GatewayAttachmentStatus;
+  scanStatus: GatewayAttachmentScanStatus;
+  mimeType: string;
+  sniffedMimeType?: string;
+  filename?: string;
+  sizeBytes: number;
+  sha256: string;
+  localPath: string;
+  mediaSource: string;
+  connectorKey: string;
+  mediaMetadata?: JsonValue;
+  createdAt: number;
+  expiresAt: number;
+  boundAt?: number;
+  deliveredAt?: number;
+  quarantinedAt?: number;
+  scrubbedAt?: number;
+}
+
+export interface GatewayEventAttachmentRecord extends GatewayAttachmentRecord {
+  eventId: string;
+  position: number;
+}
+
 export interface GatewayStoredEventResult {
   event: GatewayEventRecord;
+  inserted: boolean;
+}
+
+export interface GatewayStoredAttachmentResult {
+  attachment: GatewayAttachmentRecord;
   inserted: boolean;
 }
 
@@ -84,6 +120,22 @@ export interface CreateGatewaySourceInput {
   sessionId?: string;
 }
 
+export interface GatewayAttachmentRefInput {
+  id: string;
+  sha256?: string;
+}
+
+export interface GatewayAttachmentUploadInput {
+  sourceId: string;
+  idempotencyKey: string;
+  descriptor: MediaDescriptor;
+  sha256: string;
+  mimeType: string;
+  sniffedMimeType?: string;
+  filename?: string;
+  expiresAt: number;
+}
+
 export interface GatewayEventInput {
   sourceId: string;
   type: string;
@@ -94,4 +146,19 @@ export interface GatewayEventInput {
   text: string;
   textBytes: number;
   textSha256: string;
+  attachments?: readonly GatewayAttachmentRefInput[];
+}
+
+export function gatewayAttachmentToMediaDescriptor(attachment: GatewayAttachmentRecord): MediaDescriptor {
+  return {
+    id: attachment.id,
+    source: attachment.mediaSource,
+    connectorKey: attachment.connectorKey,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    localPath: attachment.localPath,
+    ...(attachment.filename ? {originalFilename: attachment.filename} : {}),
+    ...(attachment.mediaMetadata !== undefined ? {metadata: attachment.mediaMetadata} : {}),
+    createdAt: attachment.createdAt,
+  };
 }
