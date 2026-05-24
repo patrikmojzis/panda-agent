@@ -4,7 +4,7 @@ import {PiAiRuntime} from "../providers/shared/runtime.js";
 import {joinMessageTextParts} from "../../kernel/agent/helpers/message-text.js";
 import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import {stringToUserMessage} from "../../kernel/agent/helpers/input.js";
-import type {GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
+import type {GatewayEventAttachmentRecord, GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToNull} from "../../lib/strings.js";
 
@@ -14,6 +14,7 @@ export interface GatewayGuardVerdict {
 
 export interface GatewayGuard {
   score(input: {
+    attachments?: readonly GatewayEventAttachmentRecord[];
     event: GatewayEventRecord;
     source: GatewaySourceRecord;
     signal?: AbortSignal;
@@ -31,6 +32,24 @@ function clampRiskScore(value: number): number {
 
 function extractAssistantText(message: AssistantMessage): string {
   return joinMessageTextParts(message.content, "\n");
+}
+
+function formatAttachmentGuardMetadata(attachments: readonly GatewayEventAttachmentRecord[] | undefined): string {
+  if (!attachments || attachments.length === 0) {
+    return "attachments: []";
+  }
+  return [
+    "attachments:",
+    ...attachments.map((attachment) => [
+      `- id: ${attachment.id}`,
+      `  filename: ${attachment.filename ?? ""}`,
+      `  mime_type: ${attachment.mimeType}`,
+      `  size_bytes: ${String(attachment.sizeBytes)}`,
+      `  sha256: ${attachment.sha256}`,
+      `  status: ${attachment.status}`,
+      `  scan_status: ${attachment.scanStatus}`,
+    ].join("\n")),
+  ].join("\n");
 }
 
 function parseRiskScore(text: string): number | null {
@@ -59,6 +78,7 @@ export class LlmGatewayGuard implements GatewayGuard {
   }
 
   async score(input: {
+    attachments?: readonly GatewayEventAttachmentRecord[];
     event: GatewayEventRecord;
     source: GatewaySourceRecord;
     signal?: AbortSignal;
@@ -79,6 +99,7 @@ export class LlmGatewayGuard implements GatewayGuard {
           `sourceId: ${input.source.sourceId}`,
           `eventId: ${input.event.id}`,
           `eventType: ${input.event.type}`,
+          formatAttachmentGuardMetadata(input.attachments),
           "untrustedText:",
           input.event.text,
         ].join("\n"))],

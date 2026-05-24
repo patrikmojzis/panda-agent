@@ -1,6 +1,6 @@
 import {describe, expect, it, vi} from "vitest";
 
-import type {GatewayEventRecord, GatewaySourceRecord} from "../src/domain/gateway/types.js";
+import type {GatewayEventAttachmentRecord, GatewayEventRecord, GatewaySourceRecord} from "../src/domain/gateway/types.js";
 import type {SessionRecord} from "../src/domain/sessions/index.js";
 import {deliverGatewayEventToThread} from "../src/integrations/gateway/delivery.js";
 
@@ -195,4 +195,84 @@ describe("gateway delivery", () => {
       reason: "Session session-1 has no current thread.",
     }));
   });
+
+  it("delivers untrusted attachment descriptors in prompt and metadata", async () => {
+    const attachment: GatewayEventAttachmentRecord = {
+      id: "attachment-1",
+      eventId: "event-1",
+      position: 0,
+      sourceId: "work-prod",
+      idempotencyKey: "upload-1",
+      status: "bound",
+      scanStatus: "not_scanned",
+      mimeType: "image/png",
+      filename: "screenshot.png",
+      sizeBytes: 123,
+      sha256: "a".repeat(64),
+      localPath: "/root/.panda/agents/panda/media/gateway/work-prod/2026-05/attachment-1.png",
+      mediaSource: "gateway",
+      connectorKey: "work-prod",
+      mediaMetadata: {schemaVersion: 1},
+      createdAt: 1,
+      expiresAt: Date.now() + 60_000,
+    };
+    const enqueueInput = vi.fn(async (threadId, payload, deliveryMode) => ({
+      inserted: true,
+      input: {
+        id: "input-1",
+        threadId,
+        order: 1,
+        deliveryMode: deliveryMode ?? "wake",
+        source: payload.source,
+        message: payload.message,
+        metadata: payload.metadata,
+        createdAt: 1,
+      },
+    }));
+    const markEventDelivered = vi.fn(async () => undefined);
+
+    await deliverGatewayEventToThread({
+      event: gatewayEvent(),
+      riskScore: 0.1,
+      source: gatewaySource(),
+      attachments: [attachment],
+      attachmentRetentionMs: 1000,
+      sessionStore: {
+        getSession: vi.fn(async () => ({
+          id: "session-1",
+          agentKey: "panda",
+          kind: "main" as const,
+          currentThreadId: "thread-1",
+          createdAt: 1,
+          updatedAt: 1,
+        })),
+        getMainSession: vi.fn(async () => null),
+      },
+      store: {
+        markEventDelivered,
+        markEventQuarantined: vi.fn(async () => undefined),
+        reserveEventDelivery: vi.fn(async () => gatewayEvent({status: "delivering"})),
+      },
+      threadStore: {enqueueInput},
+    });
+
+    const payload = enqueueInput.mock.calls[0]?.[1];
+    expect(JSON.stringify(payload?.message)).toContain("attachments:");
+    expect(JSON.stringify(payload?.message)).toContain(attachment.localPath);
+    expect(payload?.metadata).toMatchObject({
+      gateway: {
+        attachments: [expect.objectContaining({
+          id: "attachment-1",
+          sha256: attachment.sha256,
+          localPath: attachment.localPath,
+          metadataTrust: "external_untrusted",
+        })],
+      },
+    });
+    expect(markEventDelivered).toHaveBeenCalledWith(expect.objectContaining({
+      attachmentRetentionMs: 1000,
+      threadId: "thread-1",
+    }));
+  });
+
 });

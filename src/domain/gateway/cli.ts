@@ -34,6 +34,10 @@ interface GatewayEventListOptions extends GatewayCliOptions {
   source?: string;
 }
 
+interface GatewayAttachmentScrubOptions extends GatewayCliOptions {
+  limit?: number;
+}
+
 function parseDelivery(value: string): GatewayDeliveryMode {
   if (value !== "queue" && value !== "wake") {
     throw new InvalidArgumentError("Delivery must be queue or wake.");
@@ -183,6 +187,12 @@ async function listEvents(options: GatewayEventListOptions): Promise<void> {
     }
   });
 }
+async function scrubExpiredAttachments(options: GatewayAttachmentScrubOptions): Promise<void> {
+  await withGatewayStores(options, async ({gatewayStore}) => {
+    const result = await gatewayStore.scrubExpiredAttachments({limit: options.limit});
+    process.stdout.write(`Scrubbed ${String(result.scrubbed)} expired gateway attachment(s).\n`);
+  });
+}
 
 export function registerGatewayManagementCommands(gateway: Command): void {
   const source = gateway
@@ -246,6 +256,13 @@ export function registerGatewayManagementCommands(gateway: Command): void {
     .option("--limit <count>", "Maximum events to list", parsePositiveIntegerOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: GatewayEventListOptions) => listEvents(options));
+
+  gateway
+    .command("attachment-scrub-expired")
+    .description("Delete expired gateway attachment bytes while keeping metadata")
+    .option("--limit <count>", "Maximum attachments to scrub", parsePositiveIntegerOption)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((options: GatewayAttachmentScrubOptions) => scrubExpiredAttachments(options));
 }
 
 export function registerGatewayCommands(program: Command): void {

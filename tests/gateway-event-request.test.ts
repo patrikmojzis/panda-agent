@@ -7,6 +7,7 @@ import {describe, expect, it} from "vitest";
 import {
   readGatewayBearerToken,
   readGatewayEventRequest,
+  readGatewayEventWithAttachmentsRequest,
   resolveGatewayEffectiveDelivery,
 } from "../src/integrations/gateway/event-request.js";
 
@@ -87,6 +88,52 @@ describe("gateway event requests", () => {
     }), 1024)).rejects.toMatchObject({
       statusCode: 415,
       message: "Unsupported Content-Type. Expected application/json.",
+    });
+  });
+
+
+  it("rejects v1 attachment keys and parses v2 ordered attachment refs", async () => {
+    const attachmentId = "11111111-1111-4111-8111-111111111111";
+    const sha256 = "a".repeat(64);
+    await expect(readGatewayEventRequest(createRequest(JSON.stringify({
+      type: "meeting.transcript",
+      delivery: "queue",
+      text: "hello",
+      attachments: [{id: attachmentId}],
+    }), {
+      "content-type": "application/json",
+      "idempotency-key": "event-1",
+    }), 1024)).rejects.toMatchObject({
+      statusCode: 400,
+      message: "Attachments require /v2/events.",
+    });
+
+    await expect(readGatewayEventWithAttachmentsRequest(createRequest(JSON.stringify({
+      type: "meeting.transcript",
+      delivery: "queue",
+      text: "hello",
+      attachments: [{id: attachmentId, sha256}],
+    }), {
+      "content-type": "application/json",
+      "idempotency-key": "event-1",
+    }), 1024, 5)).resolves.toMatchObject({
+      idempotencyKey: "event-1",
+      type: "meeting.transcript",
+      delivery: "queue",
+      attachments: [{id: attachmentId, sha256}],
+    });
+
+    await expect(readGatewayEventWithAttachmentsRequest(createRequest(JSON.stringify({
+      type: "meeting.transcript",
+      delivery: "queue",
+      text: "hello",
+      attachments: [],
+    }), {
+      "content-type": "application/json",
+      "idempotency-key": "event-1",
+    }), 1024, 5)).rejects.toMatchObject({
+      statusCode: 400,
+      message: "attachments must contain at least one ref when present.",
     });
   });
 

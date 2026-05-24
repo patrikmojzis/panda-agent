@@ -1,4 +1,7 @@
 import {createHash} from "node:crypto";
+import * as fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
@@ -222,6 +225,119 @@ describe("Panda gateway", () => {
       expect(JSON.stringify(transcript[0]?.message)).toContain("External untrusted event");
     } finally {
       await closeHarness(harness);
+    }
+  });
+
+
+  it("accepts v2 raw attachments and delivers local descriptors with events", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "panda-gateway-attachments-"));
+    const harness = await createHarness({env: {DATA_DIR: dataDir}});
+    try {
+      const token = await getToken(harness);
+      const attachmentBytes = Buffer.from("hello gateway attachment", "utf8");
+      const attachmentSha256 = createHash("sha256").update(attachmentBytes).digest("hex");
+      const upload = await fetch(`${harness.baseUrl}/v2/attachments`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "text/plain",
+          "idempotency-key": "upload-1",
+          "x-content-sha256": attachmentSha256,
+          "x-filename": "note.txt",
+        },
+        body: attachmentBytes,
+      });
+      expect(upload.status).toBe(201);
+      const uploadBody = await upload.json() as {attachmentId: string; filename: string | null; sha256: string};
+      expect(uploadBody.sha256).toBe(attachmentSha256);
+      expect(uploadBody.filename).toBe("note.txt");
+
+      const replayWithoutFilename = await fetch(`${harness.baseUrl}/v2/attachments`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "text/plain",
+          "idempotency-key": "upload-1",
+          "x-content-sha256": attachmentSha256,
+        },
+        body: attachmentBytes,
+      });
+      expect(replayWithoutFilename.status).toBe(200);
+      await expect(replayWithoutFilename.json()).resolves.toMatchObject({
+        attachmentId: uploadBody.attachmentId,
+        filename: "note.txt",
+      });
+
+      const replayWithChangedFilename = await fetch(`${harness.baseUrl}/v2/attachments`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "text/plain",
+          "idempotency-key": "upload-1",
+          "x-content-sha256": attachmentSha256,
+          "x-filename": "renamed.txt",
+        },
+        body: attachmentBytes,
+      });
+      expect(replayWithChangedFilename.status).toBe(200);
+      await expect(replayWithChangedFilename.json()).resolves.toMatchObject({
+        attachmentId: uploadBody.attachmentId,
+        filename: "note.txt",
+      });
+
+      const event = await fetch(`${harness.baseUrl}/v2/events`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "idempotency-key": "v2-event-1",
+        },
+        body: JSON.stringify({
+          type: "meeting.transcript",
+          delivery: "wake",
+          occurredAt: "2026-04-28T10:00:00Z",
+          text: "Meeting text with attachment.",
+          attachments: [{id: uploadBody.attachmentId, sha256: uploadBody.sha256}],
+        }),
+      });
+      expect(event.status).toBe(202);
+      const eventBody = await event.json() as {eventId: string};
+
+      const gatewayTables = buildGatewayTableNames();
+      await harness.pool.query(`
+        UPDATE ${gatewayTables.attachments}
+        SET sha256 = $2,
+            size_bytes = $3,
+            mime_type = $4
+        WHERE id = $1
+      `, [uploadBody.attachmentId, "b".repeat(64), 999, "application/json"]);
+
+      harness.worker.poke();
+      await waitForEventStatus(harness, eventBody.eventId, "delivered");
+
+      const attachments = await harness.gatewayStore.listEventAttachments(eventBody.eventId);
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0]).toMatchObject({
+        id: uploadBody.attachmentId,
+        status: "delivered",
+        sha256: uploadBody.sha256,
+        sizeBytes: attachmentBytes.length,
+        mimeType: "text/plain",
+      });
+      expect(attachments[0]?.localPath).toContain(path.join(dataDir, "agents", "panda", "media", "gateway", "work-prod"));
+      await expect(fs.readFile(attachments[0]?.localPath ?? "", "utf8")).resolves.toBe("hello gateway attachment");
+
+      const transcript = await harness.threadStore.applyPendingInputs("thread-1", "all");
+      const renderedMessage = JSON.stringify(transcript[0]?.message);
+      expect(renderedMessage).toContain("attachments:");
+      expect(renderedMessage).toContain(attachments[0]?.localPath);
+      expect(renderedMessage).toContain(`sha256: ${attachmentSha256}`);
+      expect(renderedMessage).toContain(`size_bytes: ${String(attachmentBytes.length)}`);
+      expect(renderedMessage).toContain("mime_type: text/plain");
+      expect(renderedMessage).not.toContain("b".repeat(64));
+    } finally {
+      await closeHarness(harness);
+      await fs.rm(dataDir, {recursive: true, force: true});
     }
   });
 
@@ -790,7 +906,7 @@ describe("Panda gateway", () => {
       expect(response.status).toBe(202);
       const body = await response.json() as {eventId: string};
       harness.worker.poke();
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await waitForEventStatus(harness, body.eventId, "quarantined");
       const event = await harness.gatewayStore.getEvent(body.eventId);
       expect(event.status).toBe("quarantined");
       expect(event.text).toBe("");
@@ -849,7 +965,7 @@ describe("Panda gateway", () => {
       const body = await response.json() as {eventId: string};
 
       harness.worker.poke();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await waitForEventStatus(harness, body.eventId, "quarantined");
 
       const event = await harness.gatewayStore.getEvent(body.eventId);
       expect(event.status).toBe("quarantined");
@@ -949,12 +1065,16 @@ describe("Panda gateway", () => {
       const body = await response.json() as {eventId: string};
 
       harness.worker.poke();
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await waitForEventStatus(harness, body.eventId, "delivering");
 
       const event = await harness.gatewayStore.getEvent(body.eventId);
       expect(event.status).toBe("delivering");
       expect(event.text).toBe("Already enqueued before commit failed.");
-      expect(await harness.threadStore.hasPendingInputs("thread-1")).toBe(true);
+      const inputDeadline = Date.now() + 500;
+      while (!(await harness.threadStore.hasRunnableInputs("thread-1")) && Date.now() < inputDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(await harness.threadStore.hasRunnableInputs("thread-1")).toBe(true);
     } finally {
       await closeHarness(harness);
     }

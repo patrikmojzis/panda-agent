@@ -10,6 +10,7 @@ todo.md
 .temp
 .playwright-cli/
 .pnpm-store/
+.cache/
 
 # Swift / Xcode
 apps/panda-receiver-macos/.build/

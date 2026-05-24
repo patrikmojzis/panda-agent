@@ -1,5 +1,5 @@
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import type {GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
+import type {GatewayEventAttachmentRecord, GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
 import {DrainLoop} from "../../lib/drain-loop.js";
 import type {JsonObject} from "../../lib/json.js";
 import {deliverGatewayEventToThread, type GatewayDeliverySessionStore, type GatewayDeliveryStore} from "./delivery.js";
@@ -20,6 +20,7 @@ interface GatewayWorkerStore extends GatewayDeliveryStore {
   claimPendingEvents(limit: number): Promise<readonly GatewayEventRecord[]>;
   getEvent(eventId: string): Promise<GatewayEventRecord>;
   getSource(sourceId: string): Promise<GatewaySourceRecord>;
+  listEventAttachments(eventId: string): Promise<readonly GatewayEventAttachmentRecord[]>;
   recordStrikeAndMaybeSuspend(input: {
     eventId?: string;
     kind: "guard_high_risk";
@@ -32,6 +33,8 @@ interface GatewayWorkerStore extends GatewayDeliveryStore {
 }
 
 export interface GatewayWorkerOptions {
+  attachmentQuarantineTtlMs?: number;
+  attachmentRetentionMs?: number;
   guard: GatewayGuard;
   guardThreshold?: number;
   guardTimeoutMs?: number;
@@ -66,6 +69,7 @@ async function quarantineSuspendedSource(
     riskScore: 1,
     reason: `source ${source.sourceId} is suspended`,
     metadata: {gateway: {sourceSuspended: true}},
+    attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,
   });
 }
 
@@ -80,7 +84,10 @@ async function processGatewayEvent(options: GatewayWorkerOptions, event: Gateway
     return;
   }
 
+  const attachments = await options.store.listEventAttachments(event.id);
   const guardResult = await evaluateGatewayGuardPolicy({
+    attachments,
+    attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,
     event,
     guard: options.guard,
     guardThreshold: options.guardThreshold,
@@ -95,6 +102,9 @@ async function processGatewayEvent(options: GatewayWorkerOptions, event: Gateway
   await deliverGatewayEventToThread({
     event,
     riskScore: guardResult.riskScore,
+    attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,
+    attachmentRetentionMs: options.attachmentRetentionMs,
+    attachments,
     sessionStore: options.sessionStore,
     source,
     store: options.store,
@@ -131,6 +141,7 @@ async function processClaimedGatewayEvent(
       riskScore: 1,
       reason: error instanceof Error ? error.message : "gateway worker failed",
       metadata: {gateway: {workerFailed: true}},
+      attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,
     }).catch(() => undefined);
   }
 }

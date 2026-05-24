@@ -1,13 +1,24 @@
 import {createServer, type Server} from "node:http";
 import type {AddressInfo} from "node:net";
 
-import {GatewayEventConflictError} from "../../domain/gateway/postgres.js";
+import {
+  GatewayAttachmentConflictError,
+  GatewayEventConflictError,
+} from "../../domain/gateway/postgres.js";
 import {writeJsonResponse} from "../../lib/http.js";
+import {acceptGatewayAttachmentUploadRequest} from "./attachment-acceptance.js";
 import {GatewayHttpError} from "./http-body.js";
 import {
   DEFAULT_GATEWAY_ACCESS_TOKEN_TTL_MS,
+  DEFAULT_GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES,
+  DEFAULT_GATEWAY_ATTACHMENT_BYTES_PER_HOUR,
+  DEFAULT_GATEWAY_ATTACHMENT_UPLOAD_TTL_MS,
   DEFAULT_GATEWAY_HOST,
   DEFAULT_GATEWAY_MAX_ACTIVE_TOKENS_PER_SOURCE,
+  DEFAULT_GATEWAY_MAX_ATTACHMENT_BYTES,
+  DEFAULT_GATEWAY_MAX_ATTACHMENTS_PER_EVENT,
+  DEFAULT_GATEWAY_MAX_EVENT_ATTACHMENT_BYTES,
+  DEFAULT_GATEWAY_MAX_PENDING_ATTACHMENTS_PER_SOURCE,
   DEFAULT_GATEWAY_MAX_TEXT_BYTES,
   DEFAULT_GATEWAY_PORT,
   DEFAULT_GATEWAY_RATE_LIMIT_PER_MINUTE,
@@ -16,7 +27,10 @@ import {
 } from "./http-config.js";
 import {resolveGatewayNetworkControls} from "./network-controls.js";
 import {issueGatewayAccessToken} from "./oauth-token.js";
-import {acceptGatewayEventRequest} from "./event-acceptance.js";
+import {
+  acceptGatewayEventRequest,
+  acceptGatewayEventWithAttachmentsRequest,
+} from "./event-acceptance.js";
 import {admitGatewayHttpRequest} from "./request-admission.js";
 
 export interface GatewayServer {
@@ -40,6 +54,14 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
   const maxJsonBytes = maxTextBytes + 8 * 1024;
   const rateLimitPerMinute = options.rateLimitPerMinute ?? DEFAULT_GATEWAY_RATE_LIMIT_PER_MINUTE;
   const textBytesPerHour = options.textBytesPerHour ?? DEFAULT_GATEWAY_TEXT_BYTES_PER_HOUR;
+  const maxAttachmentBytes = options.maxAttachmentBytes ?? DEFAULT_GATEWAY_MAX_ATTACHMENT_BYTES;
+  const maxAttachmentsPerEvent = options.maxAttachmentsPerEvent ?? DEFAULT_GATEWAY_MAX_ATTACHMENTS_PER_EVENT;
+  const maxEventAttachmentBytes = options.maxEventAttachmentBytes ?? DEFAULT_GATEWAY_MAX_EVENT_ATTACHMENT_BYTES;
+  const attachmentBytesPerHour = options.attachmentBytesPerHour ?? DEFAULT_GATEWAY_ATTACHMENT_BYTES_PER_HOUR;
+  const maxPendingAttachmentsPerSource = options.maxPendingAttachmentsPerSource
+    ?? DEFAULT_GATEWAY_MAX_PENDING_ATTACHMENTS_PER_SOURCE;
+  const attachmentUploadTtlMs = options.attachmentUploadTtlMs ?? DEFAULT_GATEWAY_ATTACHMENT_UPLOAD_TTL_MS;
+  const attachmentAllowedMimeTypes = options.attachmentAllowedMimeTypes ?? DEFAULT_GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES;
   const network = resolveGatewayNetworkControls({env, host});
 
   const server = createServer(async (request, response) => {
@@ -81,6 +103,36 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
         return;
       }
 
+      if (request.method === "POST" && requestUrl.pathname === "/v2/attachments") {
+        const accepted = await acceptGatewayAttachmentUploadRequest({
+          allowedMimeTypes: attachmentAllowedMimeTypes,
+          attachmentBytesPerHour,
+          attachmentUploadTtlMs,
+          env,
+          maxBytes: maxAttachmentBytes,
+          maxPendingAttachmentsPerSource,
+          request,
+          store: options.store,
+        });
+        writeJsonResponse(response, accepted.status, accepted.body);
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/v2/events") {
+        const accepted = await acceptGatewayEventWithAttachmentsRequest({
+          maxAttachmentsPerEvent,
+          maxEventAttachmentBytes,
+          maxJsonBytes,
+          maxTextBytes,
+          request,
+          store: options.store,
+          textBytesPerHour,
+          worker: options.worker,
+        });
+        writeJsonResponse(response, accepted.status, accepted.body);
+        return;
+      }
+
       throw new GatewayHttpError(404, "Not found.");
     } catch (error) {
       if (error instanceof GatewayEventConflictError) {
@@ -88,6 +140,14 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
           ok: false,
           error: error.message,
           eventId: error.existing.id,
+        });
+        return;
+      }
+      if (error instanceof GatewayAttachmentConflictError) {
+        writeJsonResponse(response, 409, {
+          ok: false,
+          error: error.message,
+          attachmentId: error.existing.id,
         });
         return;
       }

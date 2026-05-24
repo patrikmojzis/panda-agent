@@ -1,4 +1,4 @@
-import type {GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
+import type {GatewayEventAttachmentRecord, GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
 import type {JsonObject} from "../../lib/json.js";
 import type {GatewayGuard} from "./guard.js";
 
@@ -15,6 +15,7 @@ interface GatewayGuardPolicyStore {
     metadata: JsonObject;
     reason: string;
     riskScore: number;
+    attachmentQuarantineTtlMs?: number;
   }): Promise<unknown>;
   recordStrikeAndMaybeSuspend(input: {
     eventId?: string;
@@ -50,6 +51,8 @@ async function scoreWithTimeout(
 }
 
 export async function evaluateGatewayGuardPolicy(input: {
+  attachmentQuarantineTtlMs?: number;
+  attachments?: readonly GatewayEventAttachmentRecord[];
   event: GatewayEventRecord;
   guard: GatewayGuard;
   guardThreshold?: number;
@@ -61,7 +64,7 @@ export async function evaluateGatewayGuardPolicy(input: {
   try {
     const verdict = await scoreWithTimeout(
       input.guard,
-      {event: input.event, source: input.source},
+      {event: input.event, source: input.source, attachments: input.attachments},
       input.guardTimeoutMs ?? DEFAULT_GATEWAY_GUARD_TIMEOUT_MS,
     );
     riskScore = verdict.riskScore;
@@ -72,6 +75,7 @@ export async function evaluateGatewayGuardPolicy(input: {
       riskScore: 1,
       reason: error instanceof Error ? `guard failed: ${error.message}` : "guard failed",
       metadata: {gateway: {guardFailed: true}},
+      attachmentQuarantineTtlMs: input.attachmentQuarantineTtlMs,
     });
     return {deliver: false};
   }
@@ -84,6 +88,7 @@ export async function evaluateGatewayGuardPolicy(input: {
       riskScore,
       reason: "guard risk threshold exceeded",
       metadata: {gateway: {guardThreshold: threshold}},
+      attachmentQuarantineTtlMs: input.attachmentQuarantineTtlMs,
     });
     await input.store.recordStrikeAndMaybeSuspend({
       sourceId: input.event.sourceId,

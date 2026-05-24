@@ -1,4 +1,5 @@
-import type {GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
+import type {GatewayEventAttachmentRecord, GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
+import {gatewayAttachmentToMediaDescriptor} from "../../domain/gateway/types.js";
 import {
   enqueueCurrentSessionInput,
 } from "../../domain/sessions/current-thread.js";
@@ -6,10 +7,13 @@ import type {SessionStore} from "../../domain/sessions/store.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {stringToUserMessage} from "../../kernel/agent/helpers/input.js";
 import type {JsonObject} from "../../lib/json.js";
+import {describeMediaDescriptor, serializeMediaDescriptor} from "../channels/media-shared.js";
 import {renderGatewayInboundText} from "../../prompts/channels/gateway.js";
 
 export interface GatewayDeliveryStore {
+  listEventAttachments?(eventId: string): Promise<readonly GatewayEventAttachmentRecord[]>;
   markEventDelivered(input: {
+    attachmentRetentionMs?: number;
     claimId?: string;
     eventId: string;
     metadata: JsonObject;
@@ -17,6 +21,7 @@ export interface GatewayDeliveryStore {
     threadId: string;
   }): Promise<unknown>;
   markEventQuarantined(input: {
+    attachmentQuarantineTtlMs?: number;
     claimId?: string;
     eventId: string;
     metadata: JsonObject;
@@ -33,12 +38,35 @@ export interface GatewayDeliveryStore {
 
 export type GatewayDeliverySessionStore = Pick<SessionStore, "getSession" | "getMainSession">;
 
+function serializeGatewayAttachment(attachment: GatewayEventAttachmentRecord): JsonObject {
+  return {
+    ...serializeMediaDescriptor(gatewayAttachmentToMediaDescriptor(attachment)),
+    eventId: attachment.eventId,
+    position: attachment.position,
+    sha256: attachment.sha256,
+    status: attachment.status,
+    scanStatus: attachment.scanStatus,
+    metadataTrust: "external_untrusted",
+  };
+}
+
+function describeGatewayAttachment(attachment: GatewayEventAttachmentRecord): string {
+  return describeMediaDescriptor(gatewayAttachmentToMediaDescriptor(attachment), [
+    `sha256: ${attachment.sha256}`,
+    `status: ${attachment.status}`,
+    `scan_status: ${attachment.scanStatus}`,
+    "metadata_trust: external_untrusted",
+  ]);
+}
+
 function buildGatewayMetadata(input: {
+  attachments: readonly GatewayEventAttachmentRecord[];
   event: GatewayEventRecord;
   riskScore: number;
 }): JsonObject {
   return {
     gateway: {
+      schemaVersion: 1,
       sourceId: input.event.sourceId,
       eventId: input.event.id,
       eventType: input.event.type,
@@ -50,6 +78,7 @@ function buildGatewayMetadata(input: {
       textBytes: input.event.textBytes,
       textSha256: input.event.textSha256,
       metadataTrust: "external_untrusted",
+      attachments: input.attachments.map(serializeGatewayAttachment),
     },
   };
 }
@@ -73,7 +102,21 @@ async function resolveTargetSessionId(input: {
   return mainSession.id;
 }
 
+async function resolveEventAttachments(input: {
+  attachments?: readonly GatewayEventAttachmentRecord[];
+  eventId: string;
+  store: GatewayDeliveryStore;
+}): Promise<readonly GatewayEventAttachmentRecord[]> {
+  if (input.attachments) {
+    return input.attachments;
+  }
+  return input.store.listEventAttachments ? await input.store.listEventAttachments(input.eventId) : [];
+}
+
 export async function deliverGatewayEventToThread(input: {
+  attachmentQuarantineTtlMs?: number;
+  attachmentRetentionMs?: number;
+  attachments?: readonly GatewayEventAttachmentRecord[];
   event: GatewayEventRecord;
   riskScore: number;
   sessionStore: GatewayDeliverySessionStore;
@@ -81,7 +124,13 @@ export async function deliverGatewayEventToThread(input: {
   store: GatewayDeliveryStore;
   threadStore: Pick<ThreadRuntimeStore, "enqueueInput">;
 }): Promise<void> {
+  const attachments = await resolveEventAttachments({
+    attachments: input.attachments,
+    eventId: input.event.id,
+    store: input.store,
+  });
   const metadata = buildGatewayMetadata({
+    attachments,
     event: input.event,
     riskScore: input.riskScore,
   });
@@ -92,6 +141,7 @@ export async function deliverGatewayEventToThread(input: {
       riskScore: 1,
       reason: "gateway event is missing a processing claim",
       metadata: {gateway: {missingClaim: true}},
+      attachmentQuarantineTtlMs: input.attachmentQuarantineTtlMs,
     });
     return;
   }
@@ -119,6 +169,7 @@ export async function deliverGatewayEventToThread(input: {
       riskScore: 1,
       reason: describeGatewayDeliveryFailure(error),
       metadata,
+      attachmentQuarantineTtlMs: input.attachmentQuarantineTtlMs,
     });
     return;
   }
@@ -145,6 +196,7 @@ export async function deliverGatewayEventToThread(input: {
           receivedAt: new Date(input.event.createdAt).toISOString(),
           riskScore: input.riskScore,
           text: input.event.text,
+          attachments: attachments.map(describeGatewayAttachment),
         })),
         metadata,
       },
@@ -156,6 +208,7 @@ export async function deliverGatewayEventToThread(input: {
       riskScore: 1,
       reason: describeGatewayDeliveryFailure(error),
       metadata,
+      attachmentQuarantineTtlMs: input.attachmentQuarantineTtlMs,
     });
     return;
   }
@@ -166,5 +219,6 @@ export async function deliverGatewayEventToThread(input: {
     threadId: target.threadId,
     riskScore: input.riskScore,
     metadata,
+    attachmentRetentionMs: input.attachmentRetentionMs,
   });
 }
