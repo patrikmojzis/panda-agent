@@ -15,6 +15,12 @@ body:
     validations:
       required: true
   - type: textarea
+    id: related
+    attributes:
+      label: Related issues / PRs / context
+      description: Link related issues, PRs, discussions, or context that is safe to share. Do not include tokens, private payloads, secrets, or user data.
+      placeholder: "#123, PR #456, or safe-to-share context."
+  - type: textarea
     id: problem
     attributes:
       label: Problem / user pain
