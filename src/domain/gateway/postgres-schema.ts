@@ -172,6 +172,34 @@ export async function ensurePostgresGatewaySchema(pool: PgQueryable): Promise<vo
     ON ${tables.attachments} (expires_at)
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.commands} (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      device_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      payload JSONB,
+      status TEXT NOT NULL DEFAULT 'queued',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      claim_id TEXT,
+      claimed_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ,
+      error TEXT,
+      result JSONB,
+      result_attachment_id TEXT REFERENCES ${tables.attachments}(id) ON DELETE SET NULL,
+      FOREIGN KEY (source_id, device_id)
+        REFERENCES ${tables.devices}(source_id, device_id) ON DELETE CASCADE
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_gateway_device_commands_claim_idx`)}
+    ON ${tables.commands} (source_id, device_id, status, created_at)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_gateway_device_commands_stale_idx`)}
+    ON ${tables.commands} (status, updated_at)
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.eventAttachments} (
       event_id TEXT NOT NULL REFERENCES ${tables.events}(id) ON DELETE CASCADE,
       attachment_id TEXT NOT NULL REFERENCES ${tables.attachments}(id) ON DELETE RESTRICT,

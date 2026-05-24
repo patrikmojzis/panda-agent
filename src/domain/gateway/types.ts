@@ -58,6 +58,26 @@ export interface GatewayDeviceRecord {
   updatedAt: number;
 }
 
+export type GatewayDeviceCommandStatus = "queued" | "claimed" | "completed" | "failed" | "cancelled" | "timed_out" | "rejected";
+export type GatewayDeviceCommandKind = "screenshot.capture";
+
+export interface GatewayDeviceCommandRecord {
+  id: string;
+  sourceId: string;
+  deviceId: string;
+  kind: GatewayDeviceCommandKind;
+  payload?: JsonValue;
+  status: GatewayDeviceCommandStatus;
+  createdAt: number;
+  updatedAt: number;
+  claimId?: string;
+  claimedAt?: number;
+  completedAt?: number;
+  error?: string;
+  result?: JsonValue;
+  resultAttachmentId?: string;
+}
+
 export interface GatewayEventRecord {
   id: string;
   sourceId: string;

@@ -2,6 +2,7 @@ import {randomUUID} from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 
+import {requireJsonValue, type JsonValue} from "../../lib/json.js";
 import {requireNonNegativeInteger} from "../../lib/numbers.js";
 import {generateOpaqueToken, hashOpaqueToken, opaqueTokenMatches} from "../../lib/opaque-tokens.js";
 import {isUniqueViolation} from "../../lib/postgres-errors.js";
@@ -11,11 +12,15 @@ import {resolveAgentMediaDir} from "../../lib/data-dir.js";
 import {toJson} from "../../lib/postgres-values.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {
+  gatewayDeviceAllowedCommandKinds,
   normalizeGatewayDeviceId,
   normalizeGatewayEventType,
   normalizeGatewaySourceId,
   parseGatewayAttachmentRow,
   parseGatewayDeliveryMode,
+  parseGatewayDeviceCommandKind,
+  parseGatewayDeviceCommandRow,
+  parseGatewayDeviceCommandStatus,
   parseGatewayDeviceRow,
   parseGatewayEventAttachmentRow,
   parseGatewayEventRow,
@@ -36,6 +41,9 @@ import type {
   GatewayAttachmentUploadInput,
   GatewayDeliveryMode,
   GatewayDeviceCapability,
+  GatewayDeviceCommandKind,
+  GatewayDeviceCommandRecord,
+  GatewayDeviceCommandStatus,
   GatewayDeviceRecord,
   GatewayEventAttachmentRecord,
   GatewayEventInput,
@@ -85,6 +93,36 @@ export class GatewayAttachmentReferenceError extends Error {
     super(message);
     this.name = "GatewayAttachmentReferenceError";
   }
+}
+
+export type GatewayDeviceCommandErrorReason = "bad_request" | "conflict" | "forbidden" | "not_found";
+
+export class GatewayDeviceCommandError extends Error {
+  constructor(
+    readonly reason: GatewayDeviceCommandErrorReason,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GatewayDeviceCommandError";
+  }
+}
+
+function normalizeCommandPayload(value: JsonValue | undefined): JsonValue | undefined {
+  return value === undefined ? undefined : requireJsonValue(value, "Gateway device command payload");
+}
+
+function normalizeCommandResult(value: JsonValue | undefined): JsonValue | undefined {
+  return value === undefined ? undefined : requireJsonValue(value, "Gateway device command result");
+}
+
+function normalizeAllowedCommandKinds(
+  allowedKinds: readonly GatewayDeviceCommandKind[],
+): readonly GatewayDeviceCommandKind[] {
+  return [...new Set(allowedKinds.map((kind) => parseGatewayDeviceCommandKind(kind)))];
+}
+
+function deviceCommandResultConnectorKey(sourceId: string, deviceId: string): string {
+  return `${sourceId}__${deviceId}`;
 }
 
 function normalizeAttachmentRefs(refs: readonly GatewayAttachmentRefInput[] | undefined): readonly GatewayAttachmentRefInput[] {
@@ -174,7 +212,7 @@ export class PostgresGatewayStore {
 
   private requireTransactionalPool(): PgPoolLike {
     if (!hasTransactionSupport(this.pool)) {
-      throw new Error("Gateway attachment event storage requires a transactional Postgres pool.");
+      throw new Error("Gateway attachment operations require a transactional Postgres pool.");
     }
     return this.pool;
   }
@@ -385,6 +423,67 @@ export class PostgresGatewayStore {
     return result.rows[0] as Record<string, unknown> | undefined;
   }
 
+  private async getDeviceCommandWithClient(
+    client: PgQueryable,
+    input: {
+      sourceId: string;
+      deviceId: string;
+      commandId: string;
+    },
+  ): Promise<GatewayDeviceCommandRecord | null> {
+    const result = await client.query(`
+      SELECT *
+      FROM ${this.tables.commands}
+      WHERE source_id = $1
+        AND device_id = $2
+        AND id = $3
+      LIMIT 1
+    `, [
+      normalizeGatewaySourceId(input.sourceId),
+      normalizeGatewayDeviceId(input.deviceId),
+      requireGatewayTrimmedString("Gateway device command id", input.commandId),
+    ]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    return row ? parseGatewayDeviceCommandRow(row) : null;
+  }
+
+  async getDeviceCommand(input: {
+    sourceId: string;
+    deviceId: string;
+    commandId: string;
+  }): Promise<GatewayDeviceCommandRecord | null> {
+    return this.getDeviceCommandWithClient(this.pool, input);
+  }
+
+  private async requireClaimedDeviceCommand(input: {
+    allowedKinds: readonly GatewayDeviceCommandKind[];
+    client: PgQueryable;
+    commandId: string;
+    deviceId: string;
+    claimId: string;
+    sourceId: string;
+  }): Promise<GatewayDeviceCommandRecord> {
+    const command = await this.getDeviceCommandWithClient(input.client, input);
+    if (!command) {
+      throw new GatewayDeviceCommandError("not_found", "Gateway device command was not found.");
+    }
+
+    const allowedKinds = normalizeAllowedCommandKinds(input.allowedKinds);
+    if (!allowedKinds.includes(command.kind)) {
+      throw new GatewayDeviceCommandError("forbidden", "Device is no longer allowed to operate this command kind.");
+    }
+
+    if (command.status !== "claimed") {
+      throw new GatewayDeviceCommandError("conflict", `Gateway device command is ${command.status}, not claimed.`);
+    }
+
+    if (command.claimId !== requireGatewayTrimmedString("Gateway device command claim id", input.claimId)) {
+      throw new GatewayDeviceCommandError("conflict", "Gateway device command claim id does not match.");
+    }
+
+    return command;
+  }
+
   private async recordDeviceAuditEvent(input: {
     sourceId: string;
     deviceId: string;
@@ -582,6 +681,399 @@ export class PostgresGatewayStore {
       deviceId,
       "device.heartbeat",
     ]);
+  }
+
+  async enqueueDeviceCommand(input: {
+    sourceId: string;
+    deviceId: string;
+    kind: GatewayDeviceCommandKind;
+    payload?: JsonValue;
+  }): Promise<GatewayDeviceCommandRecord> {
+    const sourceId = normalizeGatewaySourceId(input.sourceId);
+    const deviceId = normalizeGatewayDeviceId(input.deviceId);
+    const kind = parseGatewayDeviceCommandKind(input.kind);
+    const payload = normalizeCommandPayload(input.payload);
+    const deviceRow = await this.getDeviceRow({sourceId, deviceId});
+    if (!deviceRow) {
+      throw new GatewayDeviceCommandError("not_found", `Unknown gateway device ${deviceId} for source ${sourceId}.`);
+    }
+
+    const device = parseGatewayDeviceRow(deviceRow);
+    if (!device.enabled) {
+      throw new GatewayDeviceCommandError("forbidden", `Gateway device ${deviceId} is disabled.`);
+    }
+
+    if (!device.capabilities.includes("claim_commands")) {
+      throw new GatewayDeviceCommandError("forbidden", `Gateway device ${deviceId} is missing the claim_commands capability.`);
+    }
+
+    if (!gatewayDeviceAllowedCommandKinds(device.capabilities).includes(kind)) {
+      throw new GatewayDeviceCommandError("forbidden", `Gateway device ${deviceId} is missing the ${kind} capability.`);
+    }
+
+    const result = await this.pool.query(`
+      INSERT INTO ${this.tables.commands} (
+        id,
+        source_id,
+        device_id,
+        kind,
+        payload
+      ) VALUES ($1, $2, $3, $4, $5::jsonb)
+      RETURNING *
+    `, [
+      randomUUID(),
+      sourceId,
+      deviceId,
+      kind,
+      toJson(payload),
+    ]);
+    return parseGatewayDeviceCommandRow(result.rows[0] as Record<string, unknown>);
+  }
+
+  async listDeviceCommands(input: {
+    sourceId: string;
+    deviceId?: string;
+    status?: GatewayDeviceCommandStatus;
+    limit?: number;
+  }): Promise<readonly GatewayDeviceCommandRecord[]> {
+    const params: unknown[] = [normalizeGatewaySourceId(input.sourceId)];
+    const conditions = ["source_id = $1"];
+    if (input.deviceId !== undefined) {
+      params.push(normalizeGatewayDeviceId(input.deviceId));
+      conditions.push(`device_id = $${String(params.length)}`);
+    }
+    if (input.status !== undefined) {
+      params.push(parseGatewayDeviceCommandStatus(input.status));
+      conditions.push(`status = $${String(params.length)}`);
+    }
+    params.push(Math.min(500, Math.max(1, Math.floor(input.limit ?? 50))));
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.commands}
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY created_at DESC
+      LIMIT $${String(params.length)}
+    `, params);
+    return result.rows.map((row) => parseGatewayDeviceCommandRow(row as Record<string, unknown>));
+  }
+
+  async claimNextDeviceCommand(input: {
+    sourceId: string;
+    deviceId: string;
+    allowedKinds: readonly GatewayDeviceCommandKind[];
+  }): Promise<{claimed: false} | {claimed: true; command: GatewayDeviceCommandRecord}> {
+    const sourceId = normalizeGatewaySourceId(input.sourceId);
+    const deviceId = normalizeGatewayDeviceId(input.deviceId);
+    const allowedKinds = normalizeAllowedCommandKinds(input.allowedKinds);
+    if (allowedKinds.length === 0) {
+      return {claimed: false};
+    }
+
+    const claimId = randomUUID();
+    const kindPlaceholders = allowedKinds.map((_, index) => `$${String(index + 4)}`).join(", ");
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.commands}
+      SET status = 'claimed',
+          claim_id = $1,
+          claimed_at = NOW(),
+          updated_at = NOW()
+      WHERE id IN (
+        SELECT id
+        FROM ${this.tables.commands}
+        WHERE source_id = $2
+          AND device_id = $3
+          AND status = 'queued'
+          AND kind IN (${kindPlaceholders})
+        ORDER BY created_at ASC
+        LIMIT 1
+      )
+        AND source_id = $2
+        AND device_id = $3
+        AND status = 'queued'
+      RETURNING *
+    `, [claimId, sourceId, deviceId, ...allowedKinds]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    return row ? {claimed: true, command: parseGatewayDeviceCommandRow(row)} : {claimed: false};
+  }
+
+  async heartbeatDeviceCommand(input: {
+    sourceId: string;
+    deviceId: string;
+    commandId: string;
+    claimId: string;
+    allowedKinds: readonly GatewayDeviceCommandKind[];
+  }): Promise<GatewayDeviceCommandRecord> {
+    const sourceId = normalizeGatewaySourceId(input.sourceId);
+    const deviceId = normalizeGatewayDeviceId(input.deviceId);
+    const commandId = requireGatewayTrimmedString("Gateway device command id", input.commandId);
+    const claimId = requireGatewayTrimmedString("Gateway device command claim id", input.claimId);
+    const allowedKinds = normalizeAllowedCommandKinds(input.allowedKinds);
+    await this.requireClaimedDeviceCommand({
+      allowedKinds,
+      client: this.pool,
+      commandId,
+      deviceId,
+      claimId,
+      sourceId,
+    });
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.commands}
+      SET updated_at = NOW()
+      WHERE id = $1
+        AND source_id = $2
+        AND device_id = $3
+        AND claim_id = $4
+        AND status = 'claimed'
+        AND kind IN (${allowedKinds.map((_, index) => `$${String(index + 5)}`).join(", ")})
+      RETURNING *
+    `, [commandId, sourceId, deviceId, claimId, ...allowedKinds]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new GatewayDeviceCommandError("conflict", "Gateway device command heartbeat conflicted with a lifecycle update.");
+    }
+    return parseGatewayDeviceCommandRow(row);
+  }
+
+  private async validateAndDeliverCommandResultAttachment(input: {
+    attachmentId: string;
+    attachmentRetentionMs?: number;
+    client: PgQueryable;
+    deviceId: string;
+    sourceId: string;
+  }): Promise<void> {
+    const attachmentId = requireGatewayTrimmedString("Gateway command result attachment id", input.attachmentId);
+    const result = await input.client.query(
+      `SELECT * FROM ${this.tables.attachments} WHERE id = $1 LIMIT 1`,
+      [attachmentId],
+    );
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new GatewayDeviceCommandError("conflict", "Command result attachment is not available.");
+    }
+
+    const attachment = parseGatewayAttachmentRow(row);
+    if (attachment.sourceId !== input.sourceId) {
+      throw new GatewayDeviceCommandError("conflict", "Command result attachment is not available for this source.");
+    }
+    if (attachment.connectorKey !== deviceCommandResultConnectorKey(input.sourceId, input.deviceId)) {
+      throw new GatewayDeviceCommandError("conflict", "Command result attachment was not uploaded by this device.");
+    }
+    if (attachment.expiresAt <= Date.now()) {
+      await input.client.query(
+        `UPDATE ${this.tables.attachments} SET status = 'expired' WHERE id = $1 AND status = 'uploaded'`,
+        [attachment.id],
+      );
+      throw new GatewayDeviceCommandError("conflict", "Command result attachment has expired.");
+    }
+    if (attachment.status !== "uploaded") {
+      throw new GatewayDeviceCommandError("conflict", "Command result attachment is already bound or unavailable.");
+    }
+
+    const attachmentExpiresAt = new Date(Date.now() + Math.max(
+      1,
+      Math.floor(input.attachmentRetentionMs ?? DEFAULT_ATTACHMENT_RETENTION_MS),
+    ));
+    const updated = await input.client.query(`
+      UPDATE ${this.tables.attachments}
+      SET status = 'delivered',
+          delivered_at = COALESCE(delivered_at, NOW()),
+          expires_at = $2
+      WHERE id = $1
+        AND status = 'uploaded'
+      RETURNING *
+    `, [attachment.id, attachmentExpiresAt]);
+    if (updated.rows.length === 0) {
+      throw new GatewayDeviceCommandError("conflict", "Command result attachment is already bound or unavailable.");
+    }
+  }
+
+  async completeDeviceCommand(input: {
+    sourceId: string;
+    deviceId: string;
+    commandId: string;
+    claimId: string;
+    allowedKinds: readonly GatewayDeviceCommandKind[];
+    result?: JsonValue;
+    resultAttachmentId?: string;
+    attachmentRetentionMs?: number;
+  }): Promise<GatewayDeviceCommandRecord> {
+    const sourceId = normalizeGatewaySourceId(input.sourceId);
+    const deviceId = normalizeGatewayDeviceId(input.deviceId);
+    const commandId = requireGatewayTrimmedString("Gateway device command id", input.commandId);
+    const claimId = requireGatewayTrimmedString("Gateway device command claim id", input.claimId);
+    const allowedKinds = normalizeAllowedCommandKinds(input.allowedKinds);
+    const resultJson = normalizeCommandResult(input.result);
+    const resultAttachmentId = input.resultAttachmentId === undefined
+      ? undefined
+      : requireGatewayTrimmedString("Gateway command result attachment id", input.resultAttachmentId);
+
+    const completeWithClient = async (client: PgQueryable): Promise<GatewayDeviceCommandRecord> => {
+      await this.requireClaimedDeviceCommand({
+        allowedKinds,
+        client,
+        commandId,
+        deviceId,
+        claimId,
+        sourceId,
+      });
+      if (resultAttachmentId) {
+        await this.validateAndDeliverCommandResultAttachment({
+          attachmentId: resultAttachmentId,
+          attachmentRetentionMs: input.attachmentRetentionMs,
+          client,
+          deviceId,
+          sourceId,
+        });
+      }
+      const update = await client.query(`
+        UPDATE ${this.tables.commands}
+        SET status = 'completed',
+            completed_at = NOW(),
+            updated_at = NOW(),
+            result = $5::jsonb,
+            result_attachment_id = $6
+        WHERE id = $1
+          AND source_id = $2
+          AND device_id = $3
+          AND claim_id = $4
+          AND status = 'claimed'
+          AND kind IN (${allowedKinds.map((_, index) => `$${String(index + 7)}`).join(", ")})
+        RETURNING *
+      `, [commandId, sourceId, deviceId, claimId, toJson(resultJson), resultAttachmentId ?? null, ...allowedKinds]);
+      const row = update.rows[0] as Record<string, unknown> | undefined;
+      if (!row) {
+        throw new GatewayDeviceCommandError("conflict", "Gateway device command completion conflicted with a lifecycle update.");
+      }
+      return parseGatewayDeviceCommandRow(row);
+    };
+
+    if (resultAttachmentId) {
+      return withTransaction(this.requireTransactionalPool(), completeWithClient);
+    }
+    return completeWithClient(this.pool);
+  }
+
+  async failDeviceCommand(input: {
+    sourceId: string;
+    deviceId: string;
+    commandId: string;
+    claimId: string;
+    allowedKinds: readonly GatewayDeviceCommandKind[];
+    status: Extract<GatewayDeviceCommandStatus, "failed" | "rejected">;
+    error: string;
+  }): Promise<GatewayDeviceCommandRecord> {
+    const sourceId = normalizeGatewaySourceId(input.sourceId);
+    const deviceId = normalizeGatewayDeviceId(input.deviceId);
+    const commandId = requireGatewayTrimmedString("Gateway device command id", input.commandId);
+    const claimId = requireGatewayTrimmedString("Gateway device command claim id", input.claimId);
+    const allowedKinds = normalizeAllowedCommandKinds(input.allowedKinds);
+    const status = input.status === "rejected" ? "rejected" : "failed";
+    await this.requireClaimedDeviceCommand({
+      allowedKinds,
+      client: this.pool,
+      commandId,
+      deviceId,
+      claimId,
+      sourceId,
+    });
+    const update = await this.pool.query(`
+      UPDATE ${this.tables.commands}
+      SET status = $5,
+          error = $6,
+          completed_at = NOW(),
+          updated_at = NOW()
+      WHERE id = $1
+        AND source_id = $2
+        AND device_id = $3
+        AND claim_id = $4
+        AND status = 'claimed'
+        AND kind IN (${allowedKinds.map((_, index) => `$${String(index + 7)}`).join(", ")})
+      RETURNING *
+    `, [
+      commandId,
+      sourceId,
+      deviceId,
+      claimId,
+      status,
+      requireGatewayTrimmedString("Gateway device command error", input.error),
+      ...allowedKinds,
+    ]);
+    const row = update.rows[0] as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new GatewayDeviceCommandError("conflict", "Gateway device command failure conflicted with a lifecycle update.");
+    }
+    return parseGatewayDeviceCommandRow(row);
+  }
+
+  async cancelQueuedDeviceCommand(input: {
+    sourceId: string;
+    deviceId: string;
+    commandId: string;
+    reason?: string;
+  }): Promise<GatewayDeviceCommandRecord> {
+    const sourceId = normalizeGatewaySourceId(input.sourceId);
+    const deviceId = normalizeGatewayDeviceId(input.deviceId);
+    const commandId = requireGatewayTrimmedString("Gateway device command id", input.commandId);
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.commands}
+      SET status = 'cancelled',
+          error = $4,
+          completed_at = NOW(),
+          updated_at = NOW()
+      WHERE id = $1
+        AND source_id = $2
+        AND device_id = $3
+        AND status = 'queued'
+      RETURNING *
+    `, [
+      commandId,
+      sourceId,
+      deviceId,
+      input.reason?.trim() ? input.reason.trim() : "Cancelled by admin.",
+    ]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (row) {
+      return parseGatewayDeviceCommandRow(row);
+    }
+
+    const existing = await this.getDeviceCommand({sourceId, deviceId, commandId});
+    if (!existing) {
+      throw new GatewayDeviceCommandError("not_found", "Gateway device command was not found.");
+    }
+    throw new GatewayDeviceCommandError("conflict", `Gateway device command is ${existing.status}, not queued.`);
+  }
+
+  async markStaleClaimedDeviceCommandsTimedOut(input: {
+    sourceId?: string;
+    staleMs: number;
+    limit?: number;
+  }): Promise<readonly GatewayDeviceCommandRecord[]> {
+    const staleBefore = new Date(Date.now() - Math.max(1, Math.floor(input.staleMs)));
+    const limit = Math.min(500, Math.max(1, Math.floor(input.limit ?? 100)));
+    const params: unknown[] = [staleBefore, limit];
+    const sourceFilter = input.sourceId ? "AND source_id = $3" : "";
+    if (input.sourceId) {
+      params.push(normalizeGatewaySourceId(input.sourceId));
+    }
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.commands}
+      SET status = 'timed_out',
+          error = 'Command timed out after stale claim sweep.',
+          completed_at = NOW(),
+          updated_at = NOW()
+      WHERE id IN (
+        SELECT id
+        FROM ${this.tables.commands}
+        WHERE status = 'claimed'
+          AND updated_at < $1
+          ${sourceFilter}
+        ORDER BY updated_at ASC, created_at ASC
+        LIMIT $2
+      )
+        AND status = 'claimed'
+      RETURNING *
+    `, params);
+    return result.rows.map((row) => parseGatewayDeviceCommandRow(row as Record<string, unknown>));
   }
 
   async upsertEventType(input: {

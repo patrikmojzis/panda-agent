@@ -7,12 +7,15 @@ import {
 } from "../../domain/gateway/postgres.js";
 import {writeJsonResponse} from "../../lib/http.js";
 import {acceptGatewayAttachmentUploadRequest} from "./attachment-acceptance.js";
+import {acceptGatewayDeviceCommandRequest} from "./device-commands.js";
 import {GatewayHttpError} from "./http-body.js";
 import {
   DEFAULT_GATEWAY_ACCESS_TOKEN_TTL_MS,
   DEFAULT_GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES,
   DEFAULT_GATEWAY_ATTACHMENT_BYTES_PER_HOUR,
+  DEFAULT_GATEWAY_ATTACHMENT_RETENTION_MS,
   DEFAULT_GATEWAY_ATTACHMENT_UPLOAD_TTL_MS,
+  DEFAULT_GATEWAY_DEVICE_COMMAND_MAX_WAIT_MS,
   DEFAULT_GATEWAY_HOST,
   DEFAULT_GATEWAY_MAX_ACTIVE_TOKENS_PER_SOURCE,
   DEFAULT_GATEWAY_MAX_ATTACHMENT_BYTES,
@@ -61,6 +64,8 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
   const maxPendingAttachmentsPerSource = options.maxPendingAttachmentsPerSource
     ?? DEFAULT_GATEWAY_MAX_PENDING_ATTACHMENTS_PER_SOURCE;
   const attachmentUploadTtlMs = options.attachmentUploadTtlMs ?? DEFAULT_GATEWAY_ATTACHMENT_UPLOAD_TTL_MS;
+  const attachmentRetentionMs = options.attachmentRetentionMs ?? DEFAULT_GATEWAY_ATTACHMENT_RETENTION_MS;
+  const deviceCommandMaxWaitMs = options.deviceCommandMaxWaitMs ?? DEFAULT_GATEWAY_DEVICE_COMMAND_MAX_WAIT_MS;
   const attachmentAllowedMimeTypes = options.attachmentAllowedMimeTypes ?? DEFAULT_GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES;
   const network = resolveGatewayNetworkControls({env, host});
 
@@ -87,6 +92,18 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
           store: options.store,
           tokenTtlMs,
         }));
+        return;
+      }
+
+      const deviceCommandResult = await acceptGatewayDeviceCommandRequest({
+        attachmentRetentionMs,
+        maxWaitMs: deviceCommandMaxWaitMs,
+        request,
+        requestUrl,
+        store: options.store,
+      });
+      if (deviceCommandResult) {
+        writeJsonResponse(response, deviceCommandResult.status, deviceCommandResult.body);
         return;
       }
 

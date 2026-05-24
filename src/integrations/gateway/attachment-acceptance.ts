@@ -174,10 +174,11 @@ export async function acceptGatewayAttachmentUploadRequest(input: {
   const mediaStore = new FileSystemMediaStore({
     rootDir: resolveAgentMediaDir(source.agentKey, input.env),
   });
+  const deviceId = resolved.device?.deviceId;
   const descriptor = await mediaStore.writeMedia({
     bytes: upload.bytes,
     source: "gateway",
-    connectorKey: source.sourceId,
+    connectorKey: deviceId ? `${source.sourceId}__${deviceId}` : source.sourceId,
     mimeType: upload.mimeType,
     sizeBytes: upload.sizeBytes,
     hintFilename: upload.filename,
@@ -185,6 +186,7 @@ export async function acceptGatewayAttachmentUploadRequest(input: {
       schemaVersion: 1,
       gateway: {
         sourceId: source.sourceId,
+        ...(deviceId ? {deviceId} : {}),
         sha256: upload.sha256,
         scanStatus: "not_scanned",
         trust: "external_untrusted",

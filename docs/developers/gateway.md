@@ -91,23 +91,29 @@ Event requests must use `application/json`; the gateway rejects ambiguous public
 bodies before parsing. `/v1/events` is intentionally text-only and rejects an
 `attachments` key; use `/v2/attachments` plus `/v2/events` when files are needed.
 
-### Gateway device tokens (PR1 registry)
+### Gateway device tokens and command mailbox
 
 Gateway sources may register one or more devices, each with its own bearer token
 and capability set. Device tokens are write-only (stored hashed) and can be
 rotated/disabled independently without touching the source OAuth credentials.
 
-Device tokens are currently accepted for:
+Device tokens are accepted for:
 
 - `POST /v2/attachments` (requires `upload_attachments`)
 - `POST /v2/events` (requires `push_context`)
+- `POST /v1/device/heartbeat`
+- `POST /v1/device/commands/claim` and command lifecycle endpoints (requires `claim_commands` plus a command kind capability)
 
 Register a device token with the CLI:
 
 ```bash
 panda gateway device register work-prod macbook-pro --label "MacBook Pro"
 # Optional: repeatable capability flags
-panda gateway device register work-prod macbook-pro --capability push_context --capability upload_attachments
+panda gateway device register work-prod macbook-pro \
+  --capability push_context \
+  --capability upload_attachments \
+  --capability claim_commands \
+  --capability screenshot.capture
 ```
 
 List/enable/disable/rotate:
@@ -123,8 +129,96 @@ Capabilities are a small allowlist (unknown strings are rejected):
 
 - `push_context`
 - `upload_attachments`
-- `claim_commands` (reserved for PR2)
-- `screenshot.capture` (reserved for PR2)
+- `claim_commands`
+- `screenshot.capture`
+
+The command mailbox is durable Postgres polling, not WebSocket/SSE. PR2 ships the
+server/admin substrate only: no Mac app migration, no Telepathy removal, no
+interval scheduling, and no Panda screenshot tool/default tool.
+
+Admin enqueue/list/cancel/timeout sweep stays local CLI-backed DB access:
+
+```bash
+panda gateway device command enqueue work-prod macbook-pro screenshot.capture --payload-json '{"display":"main"}'
+panda gateway device command list work-prod --device macbook-pro --status queued
+panda gateway device command cancel work-prod macbook-pro <commandId> --reason "obsolete"
+panda gateway device command timeout-sweep --source work-prod --stale-ms 300000 --limit 100
+```
+
+Device heartbeat:
+
+```http
+POST /v1/device/heartbeat
+Authorization: Bearer <device_token>
+Content-Type: application/json
+
+{}
+```
+
+Claim/long-poll:
+
+```http
+POST /v1/device/commands/claim
+Authorization: Bearer <device_token>
+Content-Type: application/json
+
+{"waitMs":30000,"kinds":["screenshot.capture"]}
+```
+
+Empty response after waiting:
+
+```json
+{"ok":true,"claimed":false}
+```
+
+Claimed response:
+
+```json
+{
+  "ok": true,
+  "claimed": true,
+  "command": {
+    "id": "<commandId>",
+    "kind": "screenshot.capture",
+    "payload": {},
+    "claimId": "<claimId>",
+    "createdAt": "2026-04-28T10:00:00.000Z"
+  }
+}
+```
+
+Long-poll loop sketch:
+
+```text
+while running:
+  POST /v1/device/heartbeat
+  POST /v1/device/commands/claim {waitMs: 30000}
+  if claimed:
+    do work
+    optionally POST /v2/attachments with result bytes
+    POST /v1/device/commands/<id>/complete {claimId, result, resultAttachmentId}
+  else:
+    continue
+```
+
+Lifecycle endpoints:
+
+```http
+POST /v1/device/commands/<commandId>/heartbeat
+{"claimId":"<claimId>"}
+
+POST /v1/device/commands/<commandId>/complete
+{"claimId":"<claimId>","result":{},"resultAttachmentId":"<attachmentId>"}
+
+POST /v1/device/commands/<commandId>/fail
+{"claimId":"<claimId>","status":"failed","error":"..."}
+```
+
+Only admins can cancel queued commands. Claimed commands finish by heartbeat plus
+complete/fail/reject, or become `timed_out` only when an admin runs the stale
+claim sweep. Device-uploaded result attachments must be from the same source,
+same device connector key, still `uploaded`, and unexpired; completion marks them
+`delivered` and extends retention.
 
 ## Safety Rules
 
@@ -133,6 +227,7 @@ Capabilities are a small allowlist (unknown strings are rejected):
 - Token, event, and attachment bodies must declare a supported `Content-Type`.
 - Attachment uploads use bounded raw bodies only: no multipart, resumable uploads, base64 JSON, or public download URLs.
 - Uploaded bytes are stored under the target agent media root as untrusted local media descriptors.
+- Device-uploaded events and attachments remain `external_untrusted` even after device pairing.
 - Event attachment refs must belong to the same source, be unexpired, unbound, and digest-matched when a digest is supplied.
 - Event types must be explicitly allowed per source.
 - Unknown event types are rejected and strike the source.
@@ -154,6 +249,7 @@ Budgets are stored in Postgres, not local process memory:
 - `GATEWAY_MAX_ACTIVE_TOKENS_PER_SOURCE`
 - `GATEWAY_ATTACHMENT_BYTES_PER_HOUR`
 - `GATEWAY_MAX_PENDING_ATTACHMENTS_PER_SOURCE`
+- `GATEWAY_DEVICE_COMMAND_MAX_WAIT_MS` (default/cap for device command long-polling)
 
 Attachment defaults:
 
