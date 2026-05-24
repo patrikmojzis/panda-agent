@@ -11,10 +11,12 @@ import {resolveAgentMediaDir} from "../../lib/data-dir.js";
 import {toJson} from "../../lib/postgres-values.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {
+  normalizeGatewayDeviceId,
   normalizeGatewayEventType,
   normalizeGatewaySourceId,
   parseGatewayAttachmentRow,
   parseGatewayDeliveryMode,
+  parseGatewayDeviceRow,
   parseGatewayEventAttachmentRow,
   parseGatewayEventRow,
   parseGatewayEventTypeRow,
@@ -33,6 +35,8 @@ import type {
   GatewayAttachmentRefInput,
   GatewayAttachmentUploadInput,
   GatewayDeliveryMode,
+  GatewayDeviceCapability,
+  GatewayDeviceRecord,
   GatewayEventAttachmentRecord,
   GatewayEventInput,
   GatewayEventRecord,
@@ -363,6 +367,221 @@ export class PostgresGatewayStore {
     `, [hashOpaqueToken(requireGatewayTrimmedString("Access token", token))]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
     return row ? parseGatewaySourceRow(row) : null;
+  }
+
+  private async getDeviceRow(input: {
+    sourceId: string;
+    deviceId: string;
+  }): Promise<Record<string, unknown> | undefined> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.devices}
+      WHERE source_id = $1 AND device_id = $2
+      LIMIT 1
+    `, [
+      normalizeGatewaySourceId(input.sourceId),
+      normalizeGatewayDeviceId(input.deviceId),
+    ]);
+    return result.rows[0] as Record<string, unknown> | undefined;
+  }
+
+  private async recordDeviceAuditEvent(input: {
+    sourceId: string;
+    deviceId: string;
+    kind: string;
+    metadata?: unknown;
+  }): Promise<void> {
+    await this.pool.query(`
+      INSERT INTO ${this.tables.deviceAuditEvents} (
+        id,
+        source_id,
+        device_id,
+        kind,
+        metadata
+      ) VALUES ($1, $2, $3, $4, $5::jsonb)
+    `, [
+      randomUUID(),
+      normalizeGatewaySourceId(input.sourceId),
+      normalizeGatewayDeviceId(input.deviceId),
+      requireGatewayTrimmedString("Gateway device audit kind", input.kind),
+      toJson(parseOptionalGatewayMetadata("Gateway device audit metadata", input.metadata)),
+    ]);
+  }
+
+  async registerDevice(input: {
+    sourceId: string;
+    deviceId: string;
+    tokenHash: string;
+    label?: string;
+    capabilities?: readonly GatewayDeviceCapability[];
+  }): Promise<GatewayDeviceRecord> {
+    const sourceId = normalizeGatewaySourceId(input.sourceId);
+    const deviceId = normalizeGatewayDeviceId(input.deviceId);
+    const tokenHash = requireGatewayTrimmedString("Gateway device token hash", input.tokenHash);
+    const label = input.label?.trim() ? input.label.trim() : undefined;
+
+    const existingRow = await this.getDeviceRow({sourceId, deviceId});
+    const existing = existingRow ? parseGatewayDeviceRow(existingRow) : undefined;
+
+    const capabilitiesInsert = input.capabilities ?? existing?.capabilities ?? [];
+    const capabilitiesUpdate = input.capabilities;
+
+    const result = await this.pool.query(`
+      INSERT INTO ${this.tables.devices} (
+        source_id,
+        device_id,
+        label,
+        token_hash,
+        capabilities,
+        disabled_at
+      ) VALUES ($1, $2, $3, $4, $5::jsonb, NULL)
+      ON CONFLICT (source_id, device_id) DO UPDATE
+      SET
+        label = COALESCE(EXCLUDED.label, ${this.tables.devices}.label),
+        token_hash = EXCLUDED.token_hash,
+        capabilities = COALESCE($6::jsonb, ${this.tables.devices}.capabilities),
+        disabled_at = NULL,
+        updated_at = NOW()
+      RETURNING *
+    `, [
+      sourceId,
+      deviceId,
+      label ?? null,
+      tokenHash,
+      toJson(capabilitiesInsert),
+      toJson(capabilitiesUpdate),
+    ]);
+
+    const device = parseGatewayDeviceRow(result.rows[0] as Record<string, unknown>);
+    await this.recordDeviceAuditEvent({
+      sourceId,
+      deviceId,
+      kind: existing ? "device.token_rotated" : "device.registered",
+      metadata: {
+        ...(label ? {label} : {}),
+        ...(input.capabilities ? {capabilities: input.capabilities} : {}),
+      },
+    });
+    return device;
+  }
+
+  async listDevices(input: {sourceId: string}): Promise<readonly GatewayDeviceRecord[]> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.devices}
+      WHERE source_id = $1
+      ORDER BY device_id ASC
+    `, [normalizeGatewaySourceId(input.sourceId)]);
+    return result.rows.map((row) => parseGatewayDeviceRow(row as Record<string, unknown>));
+  }
+
+  async setDeviceEnabled(input: {
+    sourceId: string;
+    deviceId: string;
+    enabled: boolean;
+  }): Promise<GatewayDeviceRecord> {
+    const sourceId = normalizeGatewaySourceId(input.sourceId);
+    const deviceId = normalizeGatewayDeviceId(input.deviceId);
+    const enabled = Boolean(input.enabled);
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.devices}
+      SET
+        disabled_at = CASE WHEN $3::boolean THEN NULL ELSE NOW() END,
+        updated_at = NOW()
+      WHERE source_id = $1
+        AND device_id = $2
+      RETURNING *
+    `, [sourceId, deviceId, enabled]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new Error(`Unknown gateway device ${deviceId} for source ${sourceId}. Register it first.`);
+    }
+    const device = parseGatewayDeviceRow(row);
+    await this.recordDeviceAuditEvent({
+      sourceId,
+      deviceId,
+      kind: enabled ? "device.enabled" : "device.disabled",
+    });
+    return device;
+  }
+
+  async resolveDeviceToken(token: string): Promise<{
+    device: GatewayDeviceRecord;
+    source: GatewaySourceRecord;
+  } | null> {
+    const trimmed = requireGatewayTrimmedString("Device token", token);
+    const result = await this.pool.query(`
+      SELECT
+        source.*,
+        device.source_id AS device_source_id,
+        device.device_id AS device_device_id,
+        device.label AS device_label,
+        device.capabilities AS device_capabilities,
+        device.disabled_at AS device_disabled_at,
+        device.last_seen_at AS device_last_seen_at,
+        device.created_at AS device_created_at,
+        device.updated_at AS device_updated_at
+      FROM ${this.tables.devices} AS device
+      JOIN ${this.tables.sources} AS source
+        ON source.source_id = device.source_id
+      WHERE device.token_hash = $1
+        AND source.status = 'active'
+        AND device.disabled_at IS NULL
+      LIMIT 1
+    `, [hashOpaqueToken(trimmed)]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) {
+      return null;
+    }
+
+    const source = parseGatewaySourceRow(row);
+    const device = parseGatewayDeviceRow({
+      source_id: (row as {device_source_id?: unknown}).device_source_id,
+      device_id: (row as {device_device_id?: unknown}).device_device_id,
+      label: (row as {device_label?: unknown}).device_label,
+      capabilities: (row as {device_capabilities?: unknown}).device_capabilities,
+      disabled_at: (row as {device_disabled_at?: unknown}).device_disabled_at,
+      last_seen_at: (row as {device_last_seen_at?: unknown}).device_last_seen_at,
+      created_at: (row as {device_created_at?: unknown}).device_created_at,
+      updated_at: (row as {device_updated_at?: unknown}).device_updated_at,
+    } as Record<string, unknown>);
+    return {device, source};
+  }
+
+  async touchDeviceSeen(input: {
+    sourceId: string;
+    deviceId: string;
+  }): Promise<void> {
+    const sourceId = normalizeGatewaySourceId(input.sourceId);
+    const deviceId = normalizeGatewayDeviceId(input.deviceId);
+    await this.pool.query(`
+      UPDATE ${this.tables.devices}
+      SET last_seen_at = NOW(), updated_at = NOW()
+      WHERE source_id = $1 AND device_id = $2
+    `, [sourceId, deviceId]);
+    await this.pool.query(`
+      INSERT INTO ${this.tables.deviceAuditEvents} (
+        id,
+        source_id,
+        device_id,
+        kind,
+        metadata
+      )
+      SELECT $1, $2, $3, $4, NULL
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM ${this.tables.deviceAuditEvents}
+        WHERE source_id = $2
+          AND device_id = $3
+          AND kind = $4
+          AND created_at > NOW() - INTERVAL '5 minutes'
+      )
+    `, [
+      randomUUID(),
+      sourceId,
+      deviceId,
+      "device.heartbeat",
+    ]);
   }
 
   async upsertEventType(input: {

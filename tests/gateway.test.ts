@@ -17,6 +17,7 @@ import {startGatewayServer} from "../src/integrations/gateway/http.js";
 import {createGatewayGuardFromEnv, type GatewayGuard, LlmGatewayGuard} from "../src/integrations/gateway/guard.js";
 import {startGatewayWorker} from "../src/integrations/gateway/worker.js";
 import {ensureSchemas} from "../src/app/runtime/postgres-bootstrap.js";
+import {hashOpaqueToken} from "../src/lib/opaque-tokens.js";
 
 describe("Panda gateway", () => {
   const pools: Array<{end(): Promise<void>}> = [];
@@ -335,6 +336,87 @@ describe("Panda gateway", () => {
       expect(renderedMessage).toContain(`size_bytes: ${String(attachmentBytes.length)}`);
       expect(renderedMessage).toContain("mime_type: text/plain");
       expect(renderedMessage).not.toContain("b".repeat(64));
+    } finally {
+      await closeHarness(harness);
+      await fs.rm(dataDir, {recursive: true, force: true});
+    }
+  });
+
+  it("accepts device bearer tokens for v2 attachments and events", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "panda-gateway-device-token-"));
+    const harness = await createHarness({env: {DATA_DIR: dataDir}});
+    try {
+      const deviceToken = "pgd_device_token";
+      await harness.gatewayStore.registerDevice({
+        sourceId: "work-prod",
+        deviceId: "device-1",
+        tokenHash: hashOpaqueToken(deviceToken),
+        capabilities: ["push_context", "upload_attachments"],
+      });
+
+
+
+      const v1 = await fetch(`${harness.baseUrl}/v1/events`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${deviceToken}`,
+          "content-type": "application/json",
+          "idempotency-key": "device-v1-event-1",
+        },
+        body: JSON.stringify({
+          type: "meeting.transcript",
+          delivery: "wake",
+          occurredAt: "2026-04-28T10:00:00Z",
+          text: "v1 should reject device tokens",
+        }),
+      });
+      expect(v1.status).toBe(401);
+      const before = await harness.gatewayStore.listDevices({sourceId: "work-prod"});
+      expect(before[0]?.lastSeenAt).toBeUndefined();
+
+      const attachmentBytes = Buffer.from("hello from device", "utf8");
+      const attachmentSha256 = createHash("sha256").update(attachmentBytes).digest("hex");
+      const upload = await fetch(`${harness.baseUrl}/v2/attachments`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${deviceToken}`,
+          "content-type": "text/plain",
+          "idempotency-key": "device-upload-1",
+          "x-content-sha256": attachmentSha256,
+          "x-filename": "note.txt",
+        },
+        body: attachmentBytes,
+      });
+      expect(upload.status).toBe(201);
+      const uploadBody = await upload.json() as {attachmentId: string; sha256: string};
+
+      const event = await fetch(`${harness.baseUrl}/v2/events`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${deviceToken}`,
+          "content-type": "application/json",
+          "idempotency-key": "device-event-1",
+        },
+        body: JSON.stringify({
+          type: "meeting.transcript",
+          delivery: "wake",
+          occurredAt: "2026-04-28T10:00:00Z",
+          text: "Device message.",
+          attachments: [{id: uploadBody.attachmentId, sha256: uploadBody.sha256}],
+        }),
+      });
+      expect(event.status).toBe(202);
+      const eventBody = await event.json() as {eventId: string};
+
+      harness.worker.poke();
+      await waitForEventStatus(harness, eventBody.eventId, "delivered");
+
+      const attachments = await harness.gatewayStore.listEventAttachments(eventBody.eventId);
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0]?.localPath).toContain(path.join(dataDir, "agents", "panda", "media", "gateway", "work-prod"));
+
+      const after = await harness.gatewayStore.listDevices({sourceId: "work-prod"});
+      expect(after[0]?.lastSeenAt).toBeTypeOf("number");
     } finally {
       await closeHarness(harness);
       await fs.rm(dataDir, {recursive: true, force: true});

@@ -21,7 +21,10 @@ It is deliberately separate from Panda core:
 
 ## Public API
 
+### OAuth source tokens
+
 Token:
+
 
 ```http
 POST /oauth/token
@@ -87,6 +90,41 @@ Token requests must use `application/x-www-form-urlencoded` or `application/json
 Event requests must use `application/json`; the gateway rejects ambiguous public
 bodies before parsing. `/v1/events` is intentionally text-only and rejects an
 `attachments` key; use `/v2/attachments` plus `/v2/events` when files are needed.
+
+### Gateway device tokens (PR1 registry)
+
+Gateway sources may register one or more devices, each with its own bearer token
+and capability set. Device tokens are write-only (stored hashed) and can be
+rotated/disabled independently without touching the source OAuth credentials.
+
+Device tokens are currently accepted for:
+
+- `POST /v2/attachments` (requires `upload_attachments`)
+- `POST /v2/events` (requires `push_context`)
+
+Register a device token with the CLI:
+
+```bash
+panda gateway device register work-prod macbook-pro --label "MacBook Pro"
+# Optional: repeatable capability flags
+panda gateway device register work-prod macbook-pro --capability push_context --capability upload_attachments
+```
+
+List/enable/disable/rotate:
+
+```bash
+panda gateway device list work-prod
+panda gateway device disable work-prod macbook-pro
+panda gateway device enable work-prod macbook-pro
+panda gateway device rotate-token work-prod macbook-pro
+```
+
+Capabilities are a small allowlist (unknown strings are rejected):
+
+- `push_context`
+- `upload_attachments`
+- `claim_commands` (reserved for PR2)
+- `screenshot.capture` (reserved for PR2)
 
 ## Safety Rules
 

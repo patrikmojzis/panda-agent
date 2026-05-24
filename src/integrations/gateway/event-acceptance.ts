@@ -25,6 +25,15 @@ interface GatewayEventAcceptanceStore {
     windowMs: number;
   }): Promise<unknown>;
   resolveAccessToken(token: string): Promise<{sourceId: string} | null>;
+  resolveDeviceToken(token: string): Promise<{
+    device: {
+      capabilities: readonly string[];
+      deviceId: string;
+      sourceId: string;
+    };
+    source: {sourceId: string};
+  } | null>;
+  touchDeviceSeen(input: {sourceId: string; deviceId: string}): Promise<void>;
   storeEvent(input: {
     deliveryEffective: GatewayDeliveryMode;
     deliveryRequested: GatewayDeliveryMode;
@@ -71,14 +80,25 @@ interface GatewayEventAcceptanceStore {
 
 async function requireGatewaySource(input: {
   request: IncomingMessage;
-  store: Pick<GatewayEventAcceptanceStore, "resolveAccessToken">;
+  store: Pick<GatewayEventAcceptanceStore, "resolveAccessToken" | "resolveDeviceToken" | "touchDeviceSeen">;
 }): Promise<{sourceId: string}> {
   const token = readGatewayBearerToken(input.request);
   const source = await input.store.resolveAccessToken(token);
-  if (!source) {
+  if (source) {
+    return source;
+  }
+
+  const resolved = await input.store.resolveDeviceToken(token);
+  if (!resolved) {
     throw new GatewayHttpError(401, "Invalid bearer token.");
   }
-  return source;
+
+  if (!resolved.device.capabilities.includes("push_context")) {
+    throw new GatewayHttpError(403, "Device token is missing the push_context capability.");
+  }
+
+  await input.store.touchDeviceSeen({sourceId: resolved.source.sourceId, deviceId: resolved.device.deviceId});
+  return {sourceId: resolved.source.sourceId};
 }
 
 async function assertEventTypeAllowed(input: {

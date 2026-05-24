@@ -3,6 +3,7 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 
 import {DB_URL_OPTION_DESCRIPTION, parsePositiveIntegerOption} from "../../lib/cli.js";
+import {generateOpaqueToken, hashOpaqueToken} from "../../lib/opaque-tokens.js";
 import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {parseAgentKey, ensureAgent} from "../agents/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
@@ -11,8 +12,8 @@ import {PostgresIdentityStore} from "../identity/postgres.js";
 import {PostgresSessionStore} from "../sessions/postgres.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import {PostgresGatewayStore} from "./postgres.js";
-import {normalizeGatewaySourceId} from "./postgres-rows.js";
-import type {GatewayDeliveryMode} from "./types.js";
+import {normalizeGatewayDeviceId, normalizeGatewaySourceId} from "./postgres-rows.js";
+import type {GatewayDeliveryMode, GatewayDeviceCapability} from "./types.js";
 
 interface GatewayCliOptions {
   dbUrl?: string;
@@ -38,11 +39,50 @@ interface GatewayAttachmentScrubOptions extends GatewayCliOptions {
   limit?: number;
 }
 
+interface GatewayDeviceRegisterOptions extends GatewayCliOptions {
+  label?: string;
+  capability?: string[];
+}
+
 function parseDelivery(value: string): GatewayDeliveryMode {
   if (value !== "queue" && value !== "wake") {
     throw new InvalidArgumentError("Delivery must be queue or wake.");
   }
   return value;
+}
+
+const GATEWAY_DEVICE_TOKEN_PREFIX = "pgd";
+const GATEWAY_DEVICE_TOKEN_BYTES = 24;
+
+function collectCapability(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+function parseDeviceCapability(value: string): GatewayDeviceCapability {
+  if (
+    value === "push_context"
+    || value === "upload_attachments"
+    || value === "claim_commands"
+    || value === "screenshot.capture"
+  ) {
+    return value;
+  }
+
+  throw new InvalidArgumentError(`Unsupported gateway device capability ${value}.`);
+}
+
+const DEFAULT_GATEWAY_DEVICE_CAPABILITIES: readonly GatewayDeviceCapability[] = [
+  "push_context",
+  "upload_attachments",
+];
+
+function parseDeviceCapabilities(options: GatewayDeviceRegisterOptions): readonly GatewayDeviceCapability[] | undefined {
+  const raw = options.capability ?? [];
+  if (raw.length === 0) {
+    return undefined;
+  }
+
+  return raw.map((capability) => parseDeviceCapability(capability));
 }
 
 async function withGatewayStores<T>(
@@ -164,6 +204,92 @@ async function resumeSource(sourceId: string, options: GatewayCliOptions): Promi
   });
 }
 
+async function registerDevice(
+  sourceId: string,
+  deviceId: string,
+  options: GatewayDeviceRegisterOptions,
+): Promise<void> {
+  await withGatewayStores(options, async ({gatewayStore}) => {
+    const token = generateOpaqueToken(GATEWAY_DEVICE_TOKEN_PREFIX, GATEWAY_DEVICE_TOKEN_BYTES);
+    const device = await gatewayStore.registerDevice({
+      sourceId,
+      deviceId,
+      label: options.label,
+      capabilities: parseDeviceCapabilities(options) ?? DEFAULT_GATEWAY_DEVICE_CAPABILITIES,
+      tokenHash: hashOpaqueToken(token),
+    });
+
+    process.stdout.write([
+      `Registered gateway device ${device.deviceId} for source ${device.sourceId}.`,
+      ...(device.label ? [`label ${device.label}`] : []),
+      `capabilities ${device.capabilities.join(", ") || "-"}`,
+      `token ${token}`,
+      "Paste that token into the device configuration.",
+    ].join("\n") + "\n");
+  });
+}
+
+async function rotateDeviceToken(
+  sourceId: string,
+  deviceId: string,
+  options: GatewayDeviceRegisterOptions,
+): Promise<void> {
+  await withGatewayStores(options, async ({gatewayStore}) => {
+    const token = generateOpaqueToken(GATEWAY_DEVICE_TOKEN_PREFIX, GATEWAY_DEVICE_TOKEN_BYTES);
+    const device = await gatewayStore.registerDevice({
+      sourceId,
+      deviceId,
+      label: options.label,
+      capabilities: parseDeviceCapabilities(options),
+      tokenHash: hashOpaqueToken(token),
+    });
+
+    process.stdout.write([
+      `Rotated token for gateway device ${device.deviceId} on source ${device.sourceId}.`,
+      `token ${token}`,
+    ].join("\n") + "\n");
+  });
+}
+
+async function listDevices(sourceId: string, options: GatewayCliOptions): Promise<void> {
+  await withGatewayStores(options, async ({gatewayStore}) => {
+    const devices = await gatewayStore.listDevices({sourceId});
+    if (devices.length === 0) {
+      process.stdout.write(`No gateway devices registered for source ${sourceId}.\n`);
+      return;
+    }
+
+    for (const device of devices) {
+      process.stdout.write([
+        device.deviceId,
+        ...(device.label ? [`  label ${device.label}`] : []),
+        `  enabled ${device.enabled}`,
+        `  capabilities ${device.capabilities.join(", ") || "-"}`,
+        ...(device.lastSeenAt ? [`  last_seen ${new Date(device.lastSeenAt).toISOString()}`] : []),
+      ].join("\n") + "\n");
+    }
+  });
+}
+
+async function setDeviceEnabled(
+  sourceId: string,
+  deviceId: string,
+  enabled: boolean,
+  options: GatewayCliOptions,
+): Promise<void> {
+  await withGatewayStores(options, async ({gatewayStore}) => {
+    const device = await gatewayStore.setDeviceEnabled({
+      sourceId,
+      deviceId,
+      enabled,
+    });
+    process.stdout.write([
+      `${enabled ? "Enabled" : "Disabled"} gateway device ${device.deviceId}.`,
+      `source ${device.sourceId}`,
+    ].join("\n") + "\n");
+  });
+}
+
 async function listEvents(options: GatewayEventListOptions): Promise<void> {
   await withGatewayStores(options, async ({gatewayStore}) => {
     const events = await gatewayStore.listEvents({
@@ -248,6 +374,53 @@ export function registerGatewayManagementCommands(gateway: Command): void {
     .argument("<sourceId>", "Gateway source id", normalizeGatewaySourceId)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sourceId: string, options: GatewayCliOptions) => resumeSource(sourceId, options));
+
+  const device = gateway
+    .command("device")
+    .description("Manage gateway devices registered under a source");
+
+  device
+    .command("register")
+    .description("Create or rotate a per-device gateway token")
+    .argument("<sourceId>", "Gateway source id", normalizeGatewaySourceId)
+    .argument("<deviceId>", "Device id", normalizeGatewayDeviceId)
+    .option("--label <label>", "Human label for the device")
+    .option("--capability <capability>", "Capability to grant; repeatable", collectCapability, [])
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sourceId: string, deviceId: string, options: GatewayDeviceRegisterOptions) => registerDevice(sourceId, deviceId, options));
+
+  device
+    .command("list")
+    .description("List devices registered for one gateway source")
+    .argument("<sourceId>", "Gateway source id", normalizeGatewaySourceId)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sourceId: string, options: GatewayCliOptions) => listDevices(sourceId, options));
+
+  device
+    .command("disable")
+    .description("Disable a gateway device token immediately")
+    .argument("<sourceId>", "Gateway source id", normalizeGatewaySourceId)
+    .argument("<deviceId>", "Device id", normalizeGatewayDeviceId)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sourceId: string, deviceId: string, options: GatewayCliOptions) => setDeviceEnabled(sourceId, deviceId, false, options));
+
+  device
+    .command("enable")
+    .description("Re-enable a gateway device")
+    .argument("<sourceId>", "Gateway source id", normalizeGatewaySourceId)
+    .argument("<deviceId>", "Device id", normalizeGatewayDeviceId)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sourceId: string, deviceId: string, options: GatewayCliOptions) => setDeviceEnabled(sourceId, deviceId, true, options));
+
+  device
+    .command("rotate-token")
+    .description("Rotate a gateway device token and print the new one-time token")
+    .argument("<sourceId>", "Gateway source id", normalizeGatewaySourceId)
+    .argument("<deviceId>", "Device id", normalizeGatewayDeviceId)
+    .option("--label <label>", "Optional new device label")
+    .option("--capability <capability>", "Optional capability to grant; repeatable", collectCapability, [])
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sourceId: string, deviceId: string, options: GatewayDeviceRegisterOptions) => rotateDeviceToken(sourceId, deviceId, options));
 
   gateway
     .command("event-list")

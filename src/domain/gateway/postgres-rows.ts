@@ -7,6 +7,8 @@ import type {
   GatewayAttachmentScanStatus,
   GatewayAttachmentStatus,
   GatewayDeliveryMode,
+  GatewayDeviceCapability,
+  GatewayDeviceRecord,
   GatewayEventAttachmentRecord,
   GatewayEventRecord,
   GatewayEventStatus,
@@ -34,6 +36,19 @@ export function normalizeGatewayEventType(value: string): string {
     throw new Error("Gateway event type must use letters, numbers, dots, colons, underscores, or hyphens.");
   }
   return normalized;
+}
+
+export function normalizeGatewayDeviceId(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("Gateway device id must not be empty.");
+  }
+
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/.test(trimmed)) {
+    throw new Error("Gateway device id may only contain letters, numbers, dot, underscore, colon, and dash.");
+  }
+
+  return trimmed;
 }
 
 function parseRequiredString(label: string, value: unknown): string {
@@ -181,6 +196,54 @@ export function parseGatewayEventRow(row: Record<string, unknown>): GatewayEvent
     processedAt: optionalTimestampMillis(row.processed_at, "Gateway event processed_at must be a finite timestamp."),
     deliveredAt: optionalTimestampMillis(row.delivered_at, "Gateway event delivered_at must be a finite timestamp."),
     textScrubbedAt: optionalTimestampMillis(row.text_scrubbed_at, "Gateway event text_scrubbed_at must be a finite timestamp."),
+  };
+}
+
+
+const GATEWAY_DEVICE_CAPABILITIES: ReadonlySet<GatewayDeviceCapability> = new Set([
+  "push_context",
+  "upload_attachments",
+  "claim_commands",
+  "screenshot.capture",
+]);
+
+function parseGatewayDeviceCapabilities(value: unknown): readonly GatewayDeviceCapability[] {
+  if (value === null || value === undefined) {
+    return [];
+  }
+
+  const parsed = readOptionalJsonValue(value, "Gateway device capabilities");
+  if (parsed === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("Gateway device capabilities must be an array.");
+  }
+
+  return parsed.map((entry) => {
+    if (typeof entry !== "string") {
+      throw new Error("Gateway device capabilities must be strings.");
+    }
+    if (!GATEWAY_DEVICE_CAPABILITIES.has(entry as GatewayDeviceCapability)) {
+      throw new Error(`Unsupported gateway device capability ${entry}.`);
+    }
+    return entry as GatewayDeviceCapability;
+  });
+}
+
+export function parseGatewayDeviceRow(row: Record<string, unknown>): GatewayDeviceRecord {
+  const disabledAt = optionalTimestampMillis(row.disabled_at, "Gateway device disabled_at must be a finite timestamp.");
+  return {
+    sourceId: normalizeGatewaySourceId(requireGatewayTrimmedString("Gateway source id", row.source_id)),
+    deviceId: normalizeGatewayDeviceId(requireGatewayTrimmedString("Gateway device id", row.device_id)),
+    label: parseOptionalTrimmed("Gateway device label", row.label),
+    capabilities: parseGatewayDeviceCapabilities(row.capabilities),
+    enabled: disabledAt === undefined,
+    disabledAt,
+    lastSeenAt: optionalTimestampMillis(row.last_seen_at, "Gateway device last_seen_at must be a finite timestamp."),
+    createdAt: requireTimestampMillis(row.created_at, "Gateway device created_at must be a finite timestamp."),
+    updatedAt: requireTimestampMillis(row.updated_at, "Gateway device updated_at must be a finite timestamp."),
   };
 }
 

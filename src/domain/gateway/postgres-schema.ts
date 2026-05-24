@@ -29,6 +29,39 @@ export async function ensurePostgresGatewaySchema(pool: PgQueryable): Promise<vo
     )
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.devices} (
+      source_id TEXT NOT NULL REFERENCES ${tables.sources}(source_id) ON DELETE CASCADE,
+      device_id TEXT NOT NULL,
+      label TEXT,
+      token_hash TEXT NOT NULL UNIQUE,
+      capabilities JSONB NOT NULL DEFAULT '[]',
+      disabled_at TIMESTAMPTZ,
+      last_seen_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (source_id, device_id)
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_gateway_devices_source_idx`)}
+    ON ${tables.devices} (source_id, updated_at DESC)
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.deviceAuditEvents} (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL REFERENCES ${tables.sources}(source_id) ON DELETE CASCADE,
+      device_id TEXT,
+      kind TEXT NOT NULL,
+      metadata JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_gateway_device_audit_events_source_device_idx`)}
+    ON ${tables.deviceAuditEvents} (source_id, device_id, created_at DESC)
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.eventTypes} (
       source_id TEXT NOT NULL REFERENCES ${tables.sources}(source_id) ON DELETE CASCADE,
       event_type TEXT NOT NULL,
