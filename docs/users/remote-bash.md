@@ -1,13 +1,13 @@
-# Remote Bash
+# Remote Bash / Bash Server
 
 Panda can run `bash` in two modes:
 
 - `local`: in-process shell execution inside `panda-core`
-- `remote`: `panda-core` calls a runner over HTTP
+- `remote`: `panda-core` calls a private bash server over HTTP
 
 In both modes, foreground bash mutates the shared shell session and background bash is isolated.
 
-Use remote mode when you want Docker or another sandbox boundary between the core runtime and shell execution.
+Use remote mode when you want Docker, a VPS, Tailscale, or another private execution boundary between the core runtime and shell execution.
 
 For on-demand throwaway runners, start with
 [Disposable Execution Environments](./disposable-execution-environments.md).
@@ -23,7 +23,7 @@ The core is for:
 - connector credentials
 - everything else you would hate arbitrary shell to see
 
-The runner is for bash. Nothing more.
+The bash server is for bash. Nothing more.
 
 ## Credentials And Secret Env
 
@@ -43,7 +43,7 @@ For remote background jobs, `panda-core` sends the same snapshot precedence at s
 
 Those values exist only for that process execution. The runner does not store them in Postgres, files, or long-lived process env.
 
-That also means the core-to-runner link is sensitive. Keep it private.
+That also means the core-to-runner link is sensitive. Keep it private; `RUNNER_SHARED_SECRET` is defense-in-depth, not permission to expose it publicly.
 
 ## Mental Model
 
@@ -79,6 +79,8 @@ Set this in `panda-core`:
 BASH_EXECUTION_MODE=remote
 RUNNER_URL_TEMPLATE=http://panda-runner-{agentKey}:8080
 RUNNER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
+# Optional: set the same value on core and bash servers to require bearer auth on POST endpoints.
+RUNNER_SHARED_SECRET=<long-random-secret>
 PANDA_APPS_HOST=0.0.0.0
 PANDA_APPS_PORT=8092
 PANDA_APPS_INTERNAL_BASE_URL=http://panda-core:8092
@@ -105,9 +107,13 @@ Each runner gets its own agent key:
 ```bash
 RUNNER_AGENT_KEY=panda
 RUNNER_PORT=8080
+# Optional initial-cwd guard; include every expected starting root.
+RUNNER_ALLOWED_ROOTS=/root/.panda/agents/panda:/workspace/shared:/environments
+# Optional bearer auth for POST /exec and /jobs/*; /health stays unauthenticated.
+RUNNER_SHARED_SECRET=<same-long-random-secret-as-core>
 ```
 
-The runner serves one agent. Container mounts and sandboxing decide what files it can touch.
+The bash server serves one agent. Container mounts and sandboxing decide what files it can touch. `RUNNER_ALLOWED_ROOTS` only validates the requested starting cwd; it is not a filesystem sandbox.
 
 If you also want the browser lane to inspect Panda-hosted micro-apps inside Docker, set this on `browser-runner`:
 
@@ -137,7 +143,7 @@ docker run --rm -p 8080:8080 \
   -e RUNNER_AGENT_KEY=panda \
   -v "$HOME/.panda/agents/panda:/root/.panda/agents/panda" \
   -v "$HOME/.panda/shared:/workspace/shared" \
-  panda:latest runner
+  panda:latest bash-server
 ```
 
 Then start Panda locally against that runner:
@@ -163,7 +169,7 @@ pnpm smoke --agent panda --input "Run pwd and tell me where you are." --expect-t
 This is the cleaner deployment shape:
 
 - `panda-core` in Docker
-- one `panda-runner-<agentKey>` container per agent boundary
+- one `panda-runner-<agentKey>` bash-server container per agent boundary
 - external Postgres
 - provider tokens only on `panda-core`
 
@@ -186,7 +192,7 @@ That wrapper:
 
 - starts `panda-core`
 - starts the shared `panda-browser-runner`
-- generates one `panda-runner-<agentKey>` service per agent
+- generates one `panda-runner-<agentKey>` service per agent running `panda bash-server`
 - auto-runs `panda agent ensure <agentKey>` inside core after startup
 - auto-enables the `panda-telegram` worker when `TELEGRAM_BOT_TOKEN` is set
 
@@ -233,7 +239,7 @@ docker compose --env-file .env \
   exec -T panda-runner-claw curl -fsS http://127.0.0.1:8080/health
 ```
 
-It should return the runner agent key.
+It should return the bash server agent key. `/health` is intentionally unauthenticated so private network health checks stay simple.
 
 Then verify the core is actually using remote mode:
 
@@ -274,12 +280,21 @@ Remote background jobs add:
 - `POST /jobs/wait`
 - `POST /jobs/cancel`
 
-Those endpoints are runner-internal plumbing for Panda core. They are not meant as a public API contract for random clients.
+Those endpoints are runner-internal plumbing for Panda core. They are not meant as a public API contract for random clients. When `RUNNER_SHARED_SECRET` is set on both sides, all POST endpoints require `Authorization: Bearer <secret>`; `/health` remains open inside the private network.
 
 ## Disposable Runners
 
 Disposable runner setup lives in
 [Disposable Execution Environments](./disposable-execution-environments.md).
+
+## Compatibility
+
+This PR keeps the old names working for one compatibility window:
+
+- `panda bash-server` is preferred
+- `panda runner` still works
+- Docker target `bash-runner` is preferred
+- Docker target `runner`, image/service names like `panda-runner:latest` and `panda-runner-<agent>` still work
 
 ## Hard Rules
 
@@ -288,7 +303,7 @@ Disposable runner setup lives in
 - do not mount the Docker socket into `panda-core`
 - do not mount the Docker socket into runners
 - do not let runners reach Postgres over the network
-- do not expose the core-to-runner HTTP hop on a public network
+- do not expose the core-to-runner HTTP hop on a public network, even with `RUNNER_SHARED_SECRET`
 - do not mount a giant shared parent directory unless you really want the runner to see all of it
 - shared workspaces are opt-in and collisions are expected if multiple agents use them at the same time
 

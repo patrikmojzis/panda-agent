@@ -1,4 +1,4 @@
-import {mkdir, mkdtemp, realpath, rm} from "node:fs/promises";
+import {mkdir, mkdtemp, readFile, realpath, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
@@ -19,6 +19,7 @@ import {RemoteShellExecutor, resolveRunnerUrl,} from "../src/integrations/shell/
 import {type BashRunner, startBashRunner,} from "../src/integrations/shell/bash-runner.js";
 import {
     RUNNER_AGENT_KEY_HEADER,
+    RUNNER_AUTHORIZATION_HEADER,
     RUNNER_EXPECTED_PATH_HEADER,
     RUNNER_PATH_SCOPED_HEADER,
 } from "../src/integrations/shell/bash-protocol.js";
@@ -79,12 +80,17 @@ describe("remote bash runner", () => {
     }
   });
 
-  async function createRunner(agentKey: string, options: { env?: NodeJS.ProcessEnv } = {}): Promise<BashRunner> {
+  async function createRunner(
+    agentKey: string,
+    options: { env?: NodeJS.ProcessEnv; sharedSecret?: string; allowedRoots?: readonly string[] } = {},
+  ): Promise<BashRunner> {
     const runner = await startBashRunner({
       agentKey,
       host: "127.0.0.1",
       port: 0,
       env: options.env,
+      sharedSecret: options.sharedSecret,
+      allowedRoots: options.allowedRoots,
     });
     runners.push(runner);
     return runner;
@@ -96,7 +102,22 @@ describe("remote bash runner", () => {
     return directory;
   }
 
-  async function createRemoteBackgroundHarness(workspace: string, runner: BashRunner) {
+
+  function buildDirectRunnerHeaders(agentKey: string, options: {sharedSecret?: string} = {}): Record<string, string> {
+    return {
+      "content-type": "application/json",
+      [RUNNER_AGENT_KEY_HEADER]: agentKey,
+      [RUNNER_PATH_SCOPED_HEADER]: "1",
+      [RUNNER_EXPECTED_PATH_HEADER]: `/agents/${agentKey}`,
+      ...(options.sharedSecret ? {[RUNNER_AUTHORIZATION_HEADER]: `Bearer ${options.sharedSecret}`} : {}),
+    };
+  }
+
+  async function createRemoteBackgroundHarness(
+    workspace: string,
+    runner: BashRunner,
+    options: {runnerSharedSecret?: string} = {},
+  ) {
     const store = new TestThreadRuntimeStore();
     const sessionId = "session-bg-remote";
     await store.createThread({
@@ -113,12 +134,14 @@ describe("remote bash runner", () => {
         ...process.env,
         BASH_EXECUTION_MODE: "remote",
         RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        ...(options.runnerSharedSecret ? {RUNNER_SHARED_SECRET: options.runnerSharedSecret} : {}),
       },
     });
     const bash = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
         RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        ...(options.runnerSharedSecret ? {RUNNER_SHARED_SECRET: options.runnerSharedSecret} : {}),
       },
       outputDirectory: path.join(workspace, "tool-results"),
       jobService: service,
@@ -1014,6 +1037,9 @@ describe("remote bash runner", () => {
     const executor = new RemoteShellExecutor({
       fetchImpl: fetchImpl as typeof fetch,
       runnerUrlTemplate: "http://runner-{agentKey}:8080/base/{agentKey}",
+      env: {
+        RUNNER_SHARED_SECRET: "secret-123",
+      },
     });
 
     await executor.execute({
@@ -1041,12 +1067,156 @@ describe("remote bash runner", () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("http://runner-work:8080/base/work/exec");
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
+      [RUNNER_AUTHORIZATION_HEADER]: "Bearer secret-123",
+    });
     expect(resolveRunnerUrl("http://runner-{agentKey}:8080/base", "work")).toBe("http://runner-work:8080/base");
     await expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
       env: {
         CALL_MARKER: "hello",
       },
     });
+  });
+
+  it("uses optional runner bearer auth for foreground and background remote bash", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const runner = await createRunner("panda", {sharedSecret: "secret-123"});
+    const tool = new BashTool({
+      env: {
+        BASH_EXECUTION_MODE: "remote",
+        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        RUNNER_SHARED_SECRET: "secret-123",
+      },
+    });
+
+    const result = await tool.run(
+      { command: "printf foreground" },
+      createRunContext({
+        agentKey: "panda",
+        cwd: agentHome,
+        shell: {
+          cwd: agentHome,
+          env: {},
+        },
+      }),
+    );
+    expect(String(asObject(result).stdout)).toBe("foreground");
+
+    const {bash, wait, context} = await createRemoteBackgroundHarness(agentHome, runner, {
+      runnerSharedSecret: "secret-123",
+    });
+    const started = await bash.run(
+      { command: "printf background", background: true },
+      createRunContext(context),
+    );
+    const finished = await wait.run(
+      { jobId: String(asObject(started).jobId), timeoutMs: 1_000 },
+      createRunContext(context),
+    );
+
+    expect(asObject(finished)).toMatchObject({
+      status: "completed",
+      stdout: "background",
+    });
+  });
+
+  it("rejects missing and wrong runner bearer tokens while leaving health public", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const markerPath = path.join(agentHome, "should-not-run.txt");
+    const runner = await createRunner("panda", {sharedSecret: "secret-123"});
+
+    const health = await fetch(`http://127.0.0.1:${runner.port}/health`);
+    expect(health.status).toBe(200);
+
+    const requestBody = {
+      requestId: "request-auth-1",
+      command: `printf nope > ${JSON.stringify(markerPath)}`,
+      cwd: agentHome,
+      timeoutMs: 1_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 8_000,
+    };
+    const missing = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/exec`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify(requestBody),
+    });
+    expect(missing.status).toBe(401);
+
+    const wrong = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/exec`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda", {sharedSecret: "wrong"}),
+      body: JSON.stringify({...requestBody, requestId: "request-auth-2"}),
+    });
+    expect(wrong.status).toBe(403);
+    await expect(readFile(markerPath, "utf8")).rejects.toMatchObject({code: "ENOENT"});
+
+    const correct = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/exec`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda", {sharedSecret: "secret-123"}),
+      body: JSON.stringify({...requestBody, requestId: "request-auth-3", command: `printf ok > ${JSON.stringify(markerPath)}`}),
+    });
+    expect(correct.status).toBe(200);
+    await expect(readFile(markerPath, "utf8")).resolves.toBe("ok");
+  });
+
+  it("enforces optional allowed roots for foreground and background initial cwd", async () => {
+    const allowedRoot = await createWorkspace("runtime-allowed-root-");
+    const deniedRoot = await createWorkspace("runtime-denied-root-");
+    const nested = path.join(allowedRoot, "nested");
+    await mkdir(nested);
+    const runner = await createRunner("panda", {allowedRoots: [allowedRoot]});
+
+    const allowed = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/exec`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({
+        requestId: "request-root-1",
+        command: "pwd",
+        cwd: nested,
+        timeoutMs: 1_000,
+        trackedEnvKeys: [],
+        maxOutputChars: 8_000,
+      }),
+    });
+    expect(allowed.status).toBe(200);
+    await expect(allowed.json()).resolves.toMatchObject({
+      ok: true,
+      stdout: `${await realpath(nested)}\n`,
+    });
+
+    const denied = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/exec`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({
+        requestId: "request-root-2",
+        command: "pwd",
+        cwd: deniedRoot,
+        timeoutMs: 1_000,
+        trackedEnvKeys: [],
+        maxOutputChars: 8_000,
+      }),
+    });
+    expect(denied.status).toBe(400);
+    await expect(denied.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Runner cwd is outside RUNNER_ALLOWED_ROOTS.",
+    });
+
+    const deniedJob = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/start`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({
+        jobId: "job-root-denied",
+        command: "pwd",
+        cwd: deniedRoot,
+        timeoutMs: 1_000,
+        trackedEnvKeys: [],
+        maxOutputChars: 8_000,
+        persistOutputThresholdChars: 8_000,
+      }),
+    });
+    expect(deniedJob.status).toBe(400);
   });
 
   it("supports a single runner url without an agent key placeholder", async () => {

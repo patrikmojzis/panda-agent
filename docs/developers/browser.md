@@ -177,11 +177,11 @@ That is SSRF protection, not full browsing isolation.
 The repo now has three stack image targets:
 
 - `--target app` for `panda-core`, channel workers, and gateway
-- `--target runner` for per-agent bash runners
+- `--target bash-runner` for per-agent bash servers (`runner` remains a compatibility target)
 - `--target browser-runner` for the dedicated browser image
 
 The default/final image still points at the runner target so standalone
-`panda:latest runner` usage keeps working.
+`panda:latest bash-server` is preferred; `panda:latest runner` keeps working for compatibility.
 
 The compose example now keeps browser-runner state on a separate host path by default instead of nesting it under the core-mounted `~/.panda` tree.
 

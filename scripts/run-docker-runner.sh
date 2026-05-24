@@ -8,12 +8,12 @@ Usage:
   ./scripts/run-docker-runner.sh <agentKey> [options]
 
 Options:
-  --port <port>               Host port to bind to the runner (default: 8080)
+  --port <port>               Host port to bind to the bash server (default: 8080)
   --image <image>             Docker image to run (default: panda:latest)
   --shared-root <path>        Host path mounted as /workspace/shared
                               (default: $HOME/.panda/shared)
   --name <container-name>     Container name override
-  --node-major <20|22|24>     Node major for --build runner image (default: 22)
+  --node-major <20|22|24>     Node major for --build bash-runner image (default: 22)
   --build                     Build the image from the repo root before running
   --detach                    Run the container in the background
   --dry-run                   Print the commands without executing them
@@ -22,7 +22,7 @@ Options:
 Examples:
   ./scripts/run-docker-runner.sh panda
   ./scripts/run-docker-runner.sh jozef --port 18080 --detach
-  ./scripts/run-docker-runner.sh panda --build
+  RUNNER_SHARED_SECRET=$(openssl rand -hex 32) ./scripts/run-docker-runner.sh panda --build
 EOF
 }
 
@@ -177,7 +177,7 @@ if [[ "$host_port" != "8080" ]]; then
 fi
 container_name="${container_name:-$default_container_name}"
 
-build_cmd=(env "DOCKER_BUILDKIT=${DOCKER_BUILDKIT:-1}" docker build --target runner --build-arg "NODE_MAJOR=$node_major" -t "$image" "$repo_root")
+build_cmd=(env "DOCKER_BUILDKIT=${DOCKER_BUILDKIT:-1}" docker build --target bash-runner --build-arg "NODE_MAJOR=$node_major" -t "$image" "$repo_root")
 run_cmd=(
   docker run --rm
   --name "$container_name"
@@ -188,13 +188,20 @@ run_cmd=(
   -v "$shared_root:/workspace/shared"
 )
 
+if [[ -n "${RUNNER_SHARED_SECRET:-}" ]]; then
+  run_cmd+=(-e RUNNER_SHARED_SECRET)
+fi
+if [[ -n "${RUNNER_ALLOWED_ROOTS:-}" ]]; then
+  run_cmd+=(-e "RUNNER_ALLOWED_ROOTS=$RUNNER_ALLOWED_ROOTS")
+fi
+
 if (( detach )); then
   run_cmd+=(-d)
 fi
 
-run_cmd+=("$image" runner)
+run_cmd+=("$image" bash-server)
 
-printf 'Runner config:\n'
+printf 'Bash server config:\n'
 printf '  agentKey: %s\n' "$agent_key"
 printf '  image: %s\n' "$image"
 printf '  container: %s\n' "$container_name"
@@ -203,6 +210,8 @@ printf '  agent dir: %s\n' "$agent_dir"
 printf '  shared root: %s\n' "$shared_root"
 printf '  node major: %s%s\n' "$node_major" "$([[ $build -eq 1 ]] && printf ' (build)' || printf ' (not building)')"
 printf '  timezone: %s\n' "$runner_tz"
+printf '  shared secret: %s\n' "$([[ -n "${RUNNER_SHARED_SECRET:-}" ]] && printf 'configured' || printf 'not configured')"
+printf '  allowed roots: %s\n' "${RUNNER_ALLOWED_ROOTS:-not configured}"
 printf '\n'
 printf 'Local shell env for panda run:\n'
 printf '  export BASH_EXECUTION_MODE=remote\n'

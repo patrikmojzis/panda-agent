@@ -1,3 +1,4 @@
+import {realpath} from "node:fs/promises";
 import {createServer, type IncomingMessage, type Server} from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -17,7 +18,12 @@ import type {
     BashRunnerJobStartRequest,
     BashRunnerJobWaitRequest,
 } from "./bash-protocol.js";
-import {RUNNER_AGENT_KEY_HEADER, RUNNER_EXPECTED_PATH_HEADER, RUNNER_PATH_SCOPED_HEADER,} from "./bash-protocol.js";
+import {
+  RUNNER_AGENT_KEY_HEADER,
+  RUNNER_AUTHORIZATION_HEADER,
+  RUNNER_EXPECTED_PATH_HEADER,
+  RUNNER_PATH_SCOPED_HEADER,
+} from "./bash-protocol.js";
 import {ManagedBashJob} from "./bash-background-job.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import {executeBashCommand} from "./bash-execution.js";
@@ -39,6 +45,8 @@ export interface BashRunnerOptions {
   env?: NodeJS.ProcessEnv;
   shell?: string;
   outputDirectory?: string;
+  sharedSecret?: string | null;
+  allowedRoots?: readonly string[];
 }
 
 export interface BashRunner {
@@ -60,6 +68,31 @@ function parsePort(value: string | null, fallback: number): number {
   }
 
   return parsed;
+}
+
+function parseAllowedRoots(value: string | null): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(path.delimiter)
+    .map((entry) => trimToNull(entry))
+    .filter((entry): entry is string => entry !== null);
+}
+
+async function resolveAllowedRoots(roots: readonly string[] | undefined): Promise<string[]> {
+  const resolved: string[] = [];
+  for (const root of roots ?? []) {
+    resolved.push(await realpath(path.resolve(root)));
+  }
+
+  return [...new Set(resolved)];
+}
+
+function isPathInsideRoot(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function validateExecRequest(value: unknown): BashRunnerExecRequest {
@@ -263,6 +296,21 @@ function readHeaderValue(value: string | string[] | undefined): string | null {
   return trimToNull(value);
 }
 
+function requireRunnerAuthorization(request: IncomingMessage, sharedSecret: string | null): void {
+  if (!sharedSecret) {
+    return;
+  }
+
+  const header = readHeaderValue(request.headers[RUNNER_AUTHORIZATION_HEADER]);
+  if (!header) {
+    throw new ToolError("Missing runner Authorization header.", {details: {statusCode: 401}});
+  }
+
+  if (header !== `Bearer ${sharedSecret}`) {
+    throw new ToolError("Invalid runner Authorization header.", {details: {statusCode: 403}});
+  }
+}
+
 function readRequestPathSegments(rawUrl: string | undefined): string[] {
   if (!rawUrl) {
     return [];
@@ -371,12 +419,46 @@ function buildAbortedResult(request: BashRunnerExecRequest, shell: string, reaso
   };
 }
 
+
+async function resolveRequestCwd(cwd: string, allowedRoots: readonly string[]): Promise<string> {
+  const resolvedCwd = path.resolve(cwd);
+  if (allowedRoots.length === 0) {
+    return resolvedCwd;
+  }
+
+  let realCwd: string;
+  try {
+    realCwd = await realpath(resolvedCwd);
+  } catch (error) {
+    throw new ToolError("Runner cwd could not be resolved.", {
+      details: {
+        statusCode: 400,
+        cwd: resolvedCwd,
+        cause: error instanceof Error ? error.message : "unknown",
+      },
+    });
+  }
+
+  if (!allowedRoots.some((root) => isPathInsideRoot(realCwd, root))) {
+    throw new ToolError("Runner cwd is outside RUNNER_ALLOWED_ROOTS.", {
+      details: {
+        statusCode: 400,
+        cwd: realCwd,
+      },
+    });
+  }
+
+  return realCwd;
+}
+
 export function resolveBashRunnerOptions(env: NodeJS.ProcessEnv = process.env): BashRunnerOptions {
   const agentKey = normalizeAgentKey(trimToNull(env.RUNNER_AGENT_KEY) ?? "");
   return {
     agentKey,
     port: parsePort(trimToNull(env.RUNNER_PORT), DEFAULT_RUNNER_PORT),
     host: trimToNull(env.RUNNER_HOST) ?? DEFAULT_RUNNER_HOST,
+    sharedSecret: trimToNull(env.RUNNER_SHARED_SECRET),
+    allowedRoots: parseAllowedRoots(trimToNull(env.RUNNER_ALLOWED_ROOTS)),
     env,
   };
 }
@@ -388,6 +470,8 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
   const env = options.env ?? process.env;
   const shell = options.shell ?? SAFE_SHELL;
   const outputDirectory = path.resolve(options.outputDirectory ?? path.join(os.tmpdir(), "runtime-runner-results"));
+  const sharedSecret = trimToNull(options.sharedSecret ?? null);
+  const allowedRoots = await resolveAllowedRoots(options.allowedRoots);
   const activeRequests = new Map<string, ActiveRunnerRequest>();
   const backgroundJobs = new Map<string, ManagedBashJob>();
   const pendingAborts = new Map<string, NodeJS.Timeout>();
@@ -447,6 +531,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "abort")) {
+        requireRunnerAuthorization(request, sharedSecret);
         validateRunnerRequestTarget(request, agentKey, "abort");
         const parsed = validateAbortRequest(await readJsonBody(request));
         const active = activeRequests.get(parsed.requestId);
@@ -468,9 +553,10 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "exec")) {
+        requireRunnerAuthorization(request, sharedSecret);
         validateRunnerRequestTarget(request, agentKey, "exec");
         const parsed = validateExecRequest(await readJsonBody(request));
-        const resolvedCwd = path.resolve(parsed.cwd);
+        const resolvedCwd = await resolveRequestCwd(parsed.cwd, allowedRoots);
         const spawnFailure = await readBashSpawnPreflightFailure({
           cwd: resolvedCwd,
           shell,
@@ -536,13 +622,14 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/start")) {
+        requireRunnerAuthorization(request, sharedSecret);
         validateRunnerRequestTarget(request, agentKey, "jobs/start");
         const parsed = validateJobStartRequest(await readJsonBody(request));
         if (backgroundJobs.has(parsed.jobId)) {
           throw new ToolError(`Background job ${parsed.jobId} already exists.`);
         }
 
-        const resolvedCwd = path.resolve(parsed.cwd);
+        const resolvedCwd = await resolveRequestCwd(parsed.cwd, allowedRoots);
         const spawnFailure = await readBashSpawnPreflightFailure({
           cwd: resolvedCwd,
           shell,
@@ -578,6 +665,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/status")) {
+        requireRunnerAuthorization(request, sharedSecret);
         validateRunnerRequestTarget(request, agentKey, "jobs/status");
         const parsed = validateJobQueryRequest(await readJsonBody(request));
         const job = backgroundJobs.get(parsed.jobId);
@@ -600,6 +688,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/wait")) {
+        requireRunnerAuthorization(request, sharedSecret);
         validateRunnerRequestTarget(request, agentKey, "jobs/wait");
         const parsed = validateJobWaitRequest(await readJsonBody(request));
         const job = backgroundJobs.get(parsed.jobId);
@@ -622,6 +711,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/cancel")) {
+        requireRunnerAuthorization(request, sharedSecret);
         validateRunnerRequestTarget(request, agentKey, "jobs/cancel");
         const parsed = validateJobWaitRequest(await readJsonBody(request));
         const job = backgroundJobs.get(parsed.jobId);

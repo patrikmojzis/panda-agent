@@ -19,6 +19,7 @@ import {
   parseBashRunnerExecResponse,
   parseBashRunnerResponse,
   RUNNER_AGENT_KEY_HEADER,
+  RUNNER_AUTHORIZATION_HEADER,
   RUNNER_EXPECTED_PATH_HEADER,
   RUNNER_PATH_SCOPED_HEADER,
 } from "./bash-protocol.js";
@@ -112,6 +113,10 @@ export function resolveRunnerCwdTemplate(env: NodeJS.ProcessEnv = process.env): 
   return trimToNull(env.RUNNER_CWD_TEMPLATE);
 }
 
+export function resolveRunnerSharedSecret(env: NodeJS.ProcessEnv = process.env): string | null {
+  return trimToNull(env.RUNNER_SHARED_SECRET);
+}
+
 function resolveAgentTemplateValue(template: string, agentKey: string): string {
   if (!template.includes("{agentKey}")) {
     return template;
@@ -156,6 +161,7 @@ export function buildRunnerRequestHeaders(
   agentKey: string,
   runnerUrlTemplate: string,
   runnerUrl: string,
+  sharedSecret?: string | null,
 ): Record<string, string> {
   const pathScoped = isPathScopedRunnerTemplate(runnerUrlTemplate);
   const headers: Record<string, string> = {
@@ -168,6 +174,10 @@ export function buildRunnerRequestHeaders(
     // The runner compares this against the request URL so agent-aware routes
     // still fail loudly even when {agentKey} is buried inside a longer path.
     headers[RUNNER_EXPECTED_PATH_HEADER] = normalizeUrlPathname(new URL(runnerUrl).pathname);
+  }
+
+  if (sharedSecret) {
+    headers[RUNNER_AUTHORIZATION_HEADER] = `Bearer ${sharedSecret}`;
   }
 
   return headers;
@@ -267,11 +277,13 @@ export class LocalShellExecutor implements BashExecutor {
 export class RemoteShellExecutor implements BashExecutor {
   private readonly fetchImpl: typeof fetch;
   private readonly runnerUrlTemplate: string | null;
+  private readonly sharedSecret: string | null;
 
   constructor(options: RemoteShellExecutorOptions = {}) {
     const env = options.env ?? process.env;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.runnerUrlTemplate = options.runnerUrlTemplate ?? resolveRunnerUrlTemplate(env);
+    this.sharedSecret = resolveRunnerSharedSecret(env);
   }
 
   private async sendAbort(requestId: string, runnerUrl: string, headers: Record<string, string>): Promise<void> {
@@ -338,7 +350,7 @@ export class RemoteShellExecutor implements BashExecutor {
     const runnerUrl = options.executionEnvironment?.runnerUrl
       ?? resolveRunnerUrl(this.runnerUrlTemplate ?? "", agentKey);
     const runnerUrlTemplate = this.runnerUrlTemplate ?? runnerUrl;
-    const headers = buildRunnerRequestHeaders(agentKey, runnerUrlTemplate, runnerUrl);
+    const headers = buildRunnerRequestHeaders(agentKey, runnerUrlTemplate, runnerUrl, this.sharedSecret);
     let requestId = randomUUID();
     const abortHandler = (): void => {
       void this.sendAbort(requestId, runnerUrl, headers).catch(() => {});

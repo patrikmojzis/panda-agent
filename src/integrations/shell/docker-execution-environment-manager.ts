@@ -247,6 +247,7 @@ export interface DockerExecutionEnvironmentManagerOptions {
   hostRunnerHost?: string;
   runnerPort?: number;
   runnerCwd?: string;
+  runnerSharedSecret?: string;
   hostEnvironmentsRoot?: string;
   managerEnvironmentsRoot?: string;
   coreEnvironmentsRoot?: string;
@@ -379,6 +380,7 @@ function buildContainerConfig(input: {
   image: string;
   runnerPort: number;
   runnerCwd: string;
+  runnerSharedSecret?: string;
   filesystem: ExecutionEnvironmentFilesystemMetadata;
   network?: string;
   hostBindIp: string;
@@ -387,7 +389,7 @@ function buildContainerConfig(input: {
   const safeEnv = buildSafeCommandBaseEnv({TZ: process.env.TZ ?? "UTC"});
   return {
     Image: input.image,
-    Cmd: ["runner"],
+    Cmd: ["bash-server"],
     Env: [
       `PATH=${safeEnv.PATH ?? ""}`,
       `SHELL=${safeEnv.SHELL ?? ""}`,
@@ -396,6 +398,7 @@ function buildContainerConfig(input: {
       `LANG=${safeEnv.LANG ?? ""}`,
       `RUNNER_AGENT_KEY=${input.request.agentKey}`,
       `RUNNER_PORT=${input.runnerPort}`,
+      ...(input.runnerSharedSecret ? [`RUNNER_SHARED_SECRET=${input.runnerSharedSecret}`] : []),
       `TZ=${safeEnv.TZ ?? "UTC"}`,
     ],
     WorkingDir: input.runnerCwd,
@@ -629,6 +632,7 @@ export function resolveDockerExecutionEnvironmentManagerOptions(
     hostRunnerHost: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_PUBLIC_HOST) ?? DEFAULT_HOST_BIND_IP,
     runnerPort: parsePort(trimToNull(env.PANDA_DISPOSABLE_RUNNER_PORT), DEFAULT_RUNNER_PORT),
     runnerCwd: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_CWD) ?? DEFAULT_RUNNER_CWD,
+    runnerSharedSecret: trimToUndefined(env.RUNNER_SHARED_SECRET),
     hostEnvironmentsRoot: resolveEnvironmentRootPath(
       env.PANDA_ENVIRONMENTS_HOST_ROOT,
       resolveDefaultHostEnvironmentsRoot(),
@@ -677,6 +681,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
   private readonly hostRunnerHost: string;
   private readonly runnerPort: number;
   private readonly runnerCwd: string;
+  private readonly runnerSharedSecret?: string;
   private readonly hostEnvironmentsRoot: string;
   private readonly managerEnvironmentsRoot: string;
   private readonly coreEnvironmentsRoot: string;
@@ -696,6 +701,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
     this.hostRunnerHost = resolved.hostRunnerHost ?? DEFAULT_HOST_BIND_IP;
     this.runnerPort = resolved.runnerPort ?? DEFAULT_RUNNER_PORT;
     this.runnerCwd = resolved.runnerCwd ?? DEFAULT_RUNNER_CWD;
+    this.runnerSharedSecret = trimToUndefined(resolved.runnerSharedSecret);
     this.hostEnvironmentsRoot = resolveEnvironmentRootPath(
       resolved.hostEnvironmentsRoot,
       resolveDefaultHostEnvironmentsRoot(),
@@ -742,6 +748,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       image: this.image,
       runnerPort: this.runnerPort,
       runnerCwd: this.runnerCwd,
+      ...(this.runnerSharedSecret ? {runnerSharedSecret: this.runnerSharedSecret} : {}),
       filesystem,
       network: this.network,
       hostBindIp: this.hostBindIp,

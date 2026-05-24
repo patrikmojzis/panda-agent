@@ -156,7 +156,7 @@ async function runRunnerCommand(options: RunnerCliOptions): Promise<void> {
 
   try {
     process.stdout.write(
-      `Panda bash runner for ${runner.agentKey} listening on http://${runner.host}:${runner.port}\n`,
+      `Panda bash server for ${runner.agentKey} listening on http://${runner.host}:${runner.port}\n`,
     );
     await new Promise<void>((resolve, reject) => {
       runner.server.once("close", resolve);
@@ -295,16 +295,27 @@ program
     return runRuntimeCommand(options);
   });
 
-program
-  .command("runner")
-  .description("Run a per-agent remote bash runner")
-  .option("--agent <agentKey>", "Agent key this runner serves", parseAgentKey)
-  .option("--host <host>", "Host to bind the runner server")
-  .option("--port <port>", "Port to bind the runner server", parsePortOption)
-  .option("--output-directory <path>", "Directory used for temporary runner output capture")
-  .action((options: RunnerCliOptions) => {
-    return runRunnerCommand(options);
-  });
+function registerBashServerCommand(command: Command, description: string): void {
+  command
+    .description(description)
+    .option("--agent <agentKey>", "Agent key this bash server serves", parseAgentKey)
+    .option("--host <host>", "Host to bind the bash server")
+    .option("--port <port>", "Port to bind the bash server", parsePortOption)
+    .option("--output-directory <path>", "Directory used for temporary bash server output capture")
+    .action((options: RunnerCliOptions) => {
+      return runRunnerCommand(options);
+    });
+}
+
+registerBashServerCommand(
+  program.command("bash-server"),
+  "Run a per-agent remote bash server",
+);
+
+registerBashServerCommand(
+  program.command("runner"),
+  "Compatibility alias for bash-server; run a per-agent remote bash server",
+);
 
 program
   .command("browser-runner")

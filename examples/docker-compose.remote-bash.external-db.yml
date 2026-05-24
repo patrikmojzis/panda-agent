@@ -27,6 +27,7 @@ services:
       CODEX_HOME: /root/.codex
       RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
       RUNNER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
+      RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:-}
       PANDA_ENVIRONMENTS_ROOT: ${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}
       PANDA_RUNNER_ENVIRONMENTS_ROOT: ${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}
       BROWSER_RUNNER_URL: http://panda-browser-runner:8080

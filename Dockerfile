@@ -98,7 +98,14 @@ EXPOSE 8080 8094
 ENTRYPOINT ["panda"]
 CMD ["--help"]
 
-FROM app AS runner
+FROM node-base AS bash-runner
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+
+RUN ln -sf /app/dist/app/cli.js /usr/local/bin/panda \
+  && chmod +x /app/dist/app/cli.js
 
 RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,id=panda-apt-lists,target=/var/lib/apt/lists,sharing=locked \
@@ -146,6 +153,13 @@ RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
     whois \
     zip
 
+EXPOSE 8080
+
+ENTRYPOINT ["panda"]
+CMD ["bash-server"]
+
+FROM bash-runner AS runner
+
 FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble AS browser-runner
 
 WORKDIR /app
@@ -166,4 +180,4 @@ EXPOSE 8080
 ENTRYPOINT ["panda"]
 CMD ["browser-runner"]
 
-FROM runner AS final
+FROM app AS final

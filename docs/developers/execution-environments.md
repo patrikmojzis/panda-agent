@@ -5,7 +5,7 @@ Execution environments are the session-scoped boundary for bash execution.
 For operator setup, use
 [Disposable Execution Environments](../users/disposable-execution-environments.md).
 
-The runner is still dumb: it exposes the bash HTTP protocol and runs commands.
+The bash server is still dumb: it exposes the bash HTTP protocol and runs commands.
 The environment decides which runner endpoint, cwd/root, credential policy, and
 tool policy apply to a session.
 
@@ -46,9 +46,9 @@ tool policy apply to a session.
 - Shell cwd/env state is tracked per environment id in `context.shellSessions`.
 - Legacy `context.shell` is read and migrated when old context is loaded; new
   shell state should be written only to `context.shellSessions`.
-- Remote runners receive credentials only in the per-command/job env snapshot.
+- Remote bash servers receive credentials only in the per-command/job env snapshot.
   Runners do not load credentials themselves.
-- Remote runner commands start from a safe non-secret base env (`PATH`, `SHELL`,
+- Remote bash-server commands start from a safe non-secret base env (`PATH`, `SHELL`,
   `HOME`, `TMPDIR`, `LANG`, optional `TZ`) and then merge policy-filtered
   credentials, session env, and per-call env. If user/project `PATH` entries are
   present, they stay first and missing system dirs are appended so wrappers like
@@ -138,7 +138,7 @@ PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL=http://127.0.0.1:8095
 PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=...
 ```
 
-For a Dockerized core, put the manager and disposable runner containers on a
+For a Dockerized core, put the manager and disposable bash-server containers on a
 Docker network that `panda-core` can reach:
 
 ```bash
@@ -157,7 +157,7 @@ The manager provides:
 - health/readiness check
 - runner URL and cwd/root discovery
 
-Disposable runner containers do not mount `/root/.panda`, the agent home, or
+Disposable bash-server containers do not mount `/root/.panda`, the agent home, or
 the Codex home by default. Credentials are passed only per bash request through
 the environment binding credential policy.
 
@@ -178,3 +178,5 @@ Path resolution maps worker and parent-runner paths back to core-visible paths
 before attachments are read.
 
 Do not mount the Docker socket into `panda-core`.
+
+If `RUNNER_SHARED_SECRET` is enabled, wire the same value through `panda-core`, `panda-environment-manager`, and the disposable bash-server containers. It authenticates runner POST endpoints; it does not make runner networks public-safe.
