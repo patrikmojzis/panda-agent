@@ -603,7 +603,7 @@ build_stack_images() {
   build_pids+=("$!")
 
   if agents_declared || (( enable_disposable_environments )); then
-    run_docker_build --target runner --build-arg "NODE_MAJOR=$runner_node_major" -t panda-runner:latest "$repo_root" &
+    run_docker_build --target bash-runner --build-arg "NODE_MAJOR=$runner_node_major" -t panda-runner:latest "$repo_root" &
     build_pids+=("$!")
   fi
 
@@ -743,6 +743,7 @@ EOF
       PANDA_RUNNER_ENVIRONMENTS_ROOT: \${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}
       PANDA_DISPOSABLE_CONTAINER_PREFIX: \${PANDA_DISPOSABLE_CONTAINER_PREFIX:-panda-env}
       PANDA_DISPOSABLE_CREATE_TIMEOUT_MS: \${PANDA_DISPOSABLE_CREATE_TIMEOUT_MS:-300000}
+      RUNNER_SHARED_SECRET: \${RUNNER_SHARED_SECRET:-}
       TZ: \${TZ:-UTC}
     volumes:
 EOF
@@ -865,11 +866,13 @@ EOF
         cat <<EOF
   panda-runner-$agent_key:
     image: panda-runner:latest
-    command: ["runner"]
+    command: ["bash-server"]
     restart: unless-stopped
     environment:
       RUNNER_AGENT_KEY: $agent_key
       RUNNER_PORT: 8080
+      RUNNER_SHARED_SECRET: \${RUNNER_SHARED_SECRET:-}
+      RUNNER_ALLOWED_ROOTS: \${RUNNER_ALLOWED_ROOTS:-}
       TZ: \${TZ:-UTC}
     volumes:
       - \${HOME}/.panda/agents/$agent_key:/root/.panda/agents/$agent_key

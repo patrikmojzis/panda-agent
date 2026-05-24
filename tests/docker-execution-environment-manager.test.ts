@@ -165,6 +165,7 @@ describe("DockerExecutionEnvironmentManager", () => {
       managerEnvironmentsRoot: environmentsRoot,
       coreEnvironmentsRoot: "/core/environments",
       parentRunnerEnvironmentsRoot: "/environments",
+      runnerSharedSecret: "runner-secret",
       createTimeoutMs: 10,
     });
 
@@ -207,7 +208,7 @@ describe("DockerExecutionEnvironmentManager", () => {
     expect(dockerClient.created).toHaveLength(1);
     const created = dockerClient.created[0]!;
     expect(created.config.Image).toBe("panda-runner:test");
-    expect(created.config.Cmd).toEqual(["runner"]);
+    expect(created.config.Cmd).toEqual(["bash-server"]);
     expect(created.config.WorkingDir).toBe("/workspace");
     expect(created.config.Env).toEqual(expect.arrayContaining([
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -216,6 +217,8 @@ describe("DockerExecutionEnvironmentManager", () => {
       "TMPDIR=/tmp",
       "LANG=C.UTF-8",
       "RUNNER_AGENT_KEY=panda",
+      "RUNNER_PORT=8080",
+      "RUNNER_SHARED_SECRET=runner-secret",
     ]));
     expect(created.config.HostConfig.AutoRemove).toBe(true);
     expect(created.config.HostConfig.PortBindings).toEqual({

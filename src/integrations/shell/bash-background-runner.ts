@@ -11,6 +11,7 @@ import {
     makeNetworkTimeoutSignal,
     readRunnerError,
     resolveBashExecutionMode,
+    resolveRunnerSharedSecret,
     resolveRunnerUrl,
     resolveRunnerUrlTemplate,
 } from "./bash-executor.js";
@@ -203,7 +204,12 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
   const runnerUrl = options.executionEnvironment?.runnerUrl
     ?? resolveRunnerUrl(runnerUrlTemplate ?? "", agentKey);
   const requestTemplate = runnerUrlTemplate ?? runnerUrl;
-  const headers = buildRunnerRequestHeaders(agentKey, requestTemplate, runnerUrl);
+  const headers = buildRunnerRequestHeaders(
+    agentKey,
+    requestTemplate,
+    runnerUrl,
+    resolveRunnerSharedSecret(processEnv),
+  );
   const request: BashRunnerJobStartRequest = {
     jobId: options.jobId,
     command: options.command,

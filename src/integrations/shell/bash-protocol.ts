@@ -7,6 +7,7 @@ import {isRecord} from "../../lib/records.js";
 export const RUNNER_AGENT_KEY_HEADER = "x-runtime-agent-key";
 export const RUNNER_PATH_SCOPED_HEADER = "x-runtime-agent-path-scoped";
 export const RUNNER_EXPECTED_PATH_HEADER = "x-runtime-expected-path";
+export const RUNNER_AUTHORIZATION_HEADER = "authorization";
 
 export interface PersistedEnvEntry {
   key: string;

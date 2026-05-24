@@ -87,7 +87,7 @@ case "$cmd" in
       sleep 0.01
     done
     ;;
-  build*'--target runner '*)
+  build*'--target bash-runner '*)
     touch "${syncDir}/runner.started"
     attempts=0
     while [[ ! -f "${syncDir}/browser-runner.started" && "$attempts" -lt 200 ]]; do
@@ -237,7 +237,7 @@ exit 42
     const logContents = await readFile(logPath, "utf8");
     expect(logContents.match(/build --target app -t panda-app:latest/g)).toHaveLength(1);
     expect(logContents.match(/build --target browser-runner -t panda-browser-runner:latest/g)).toHaveLength(1);
-    expect(logContents).not.toContain("build --target runner --build-arg NODE_MAJOR=22 -t panda-runner:latest");
+    expect(logContents).not.toContain("build --target bash-runner --build-arg NODE_MAJOR=22 -t panda-runner:latest");
     expect(logContents).toContain("up -d --no-build --remove-orphans");
     expect(logContents).not.toContain("up -d --build --remove-orphans");
   });
@@ -276,6 +276,7 @@ exit 42
     expect(generatedCompose).toContain(`- "${environmentsRoot}:${"${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}"}"`);
     expect(generatedCompose).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL}");
     expect(generatedCompose).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN}");
+    expect(generatedCompose).toContain("RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:-}");
     expect(generatedCompose).toContain("      - execution_manager_net");
     expect(generatedCompose).toContain("      - disposable_runner_net");
     const browserStart = generatedCompose.indexOf("  panda-browser-runner:");
@@ -290,7 +291,7 @@ exit 42
     expect(generatedCompose).toContain("disposable_runner_net:\n    name: ${PANDA_DISPOSABLE_RUNNER_NETWORK}");
     expect(generatedCompose).not.toContain("gateway_edge_net");
     const logContents = await readFile(logPath, "utf8");
-    expect(logContents.match(/build --target runner --build-arg NODE_MAJOR=22 -t panda-runner:latest/g)).toHaveLength(1);
+    expect(logContents.match(/build --target bash-runner --build-arg NODE_MAJOR=22 -t panda-runner:latest/g)).toHaveLength(1);
 
     const logsResult = await runScript(["logs", "environment-manager"], {
       envFile,
@@ -465,7 +466,7 @@ exit 42
     const logContents = await readFile(logPath, "utf8");
     expect(logContents.match(/build --target app -t panda-app:latest/g)).toHaveLength(1);
     expect(logContents.match(/build --target browser-runner -t panda-browser-runner:latest/g)).toHaveLength(1);
-    expect(logContents.match(/build --target runner --build-arg NODE_MAJOR=20 -t panda-runner:latest/g)).toHaveLength(1);
+    expect(logContents.match(/build --target bash-runner --build-arg NODE_MAJOR=20 -t panda-runner:latest/g)).toHaveLength(1);
   });
 
   it("rejects unsupported runner Node majors", async () => {
@@ -490,7 +491,7 @@ exit 42
     const logContents = await readFile(logPath, "utf8").catch(() => "");
     expect(logContents).not.toContain("build --target app");
     expect(logContents).not.toContain("build --target browser-runner");
-    expect(logContents).not.toContain("build --target runner");
+    expect(logContents).not.toContain("build --target bash-runner");
   });
 
   it("builds runner and browser images in parallel before starting compose", async () => {
@@ -524,8 +525,8 @@ exit 42
     const appEnd = findBuildIndex("END", "app");
     const browserStart = findBuildIndex("START", "browser-runner");
     const browserEnd = findBuildIndex("END", "browser-runner");
-    const runnerStart = findBuildIndex("START", "runner");
-    const runnerEnd = findBuildIndex("END", "runner");
+    const runnerStart = findBuildIndex("START", "bash-runner");
+    const runnerEnd = findBuildIndex("END", "bash-runner");
     const composeStart = findLogIndex(
       (line) => line.startsWith("START compose ") && line.includes(" up -d --no-build --remove-orphans"),
     );
@@ -605,6 +606,9 @@ exit 42
     expect(generatedCompose).toContain("panda-runner-claw");
     expect(generatedCompose).toContain("panda-runner-luna");
     expect(generatedCompose).toContain("image: panda-runner:latest");
+    expect(generatedCompose).toContain('command: ["bash-server"]');
+    expect(generatedCompose).toContain("RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:-}");
+    expect(generatedCompose).toContain("RUNNER_ALLOWED_ROOTS: ${RUNNER_ALLOWED_ROOTS:-}");
     expect(generatedCompose.match(/restart: unless-stopped/g)).toHaveLength(2);
     expect(generatedCompose).not.toContain("panda-runner-Luna");
     expect(generatedCompose).not.toContain("image: panda:latest");
@@ -619,6 +623,7 @@ exit 42
     expect(baseCompose).toContain("PANDA_DISCORD_DB_POOL_MAX: ${PANDA_DISCORD_DB_POOL_MAX:-2}");
     expect(baseCompose).toContain("  panda-whatsapp:\n    image: panda-app:latest");
     expect(baseCompose).toContain("${PANDA_ENVIRONMENTS_HOST_ROOT:-${HOME}/.panda/environments}:${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}");
+    expect(baseCompose).toContain("RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:-}");
     expect(baseCompose).not.toContain("  panda-telegram:\n    build:");
     expect(baseCompose).not.toContain("  panda-discord:\n    build:");
     expect(baseCompose).not.toContain("  panda-whatsapp:\n    build:");
@@ -628,7 +633,7 @@ exit 42
     expect(logContents).toContain("compose --env-file");
     expect(logContents.match(/build --target app -t panda-app:latest/g)).toHaveLength(1);
     expect(logContents.match(/build --target browser-runner -t panda-browser-runner:latest/g)).toHaveLength(1);
-    expect(logContents.match(/build --target runner --build-arg NODE_MAJOR=22 -t panda-runner:latest/g)).toHaveLength(1);
+    expect(logContents.match(/build --target bash-runner --build-arg NODE_MAJOR=22 -t panda-runner:latest/g)).toHaveLength(1);
     expect(logContents).toContain("up -d --no-build --remove-orphans");
     expect(logContents).not.toContain("up -d --build --remove-orphans");
     expect(logContents).toContain("exec -T panda-core panda agent ensure claw");

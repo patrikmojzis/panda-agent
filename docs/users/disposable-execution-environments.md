@@ -1,6 +1,6 @@
 # Disposable Execution Environments
 
-Disposable execution environments are throwaway bash runners that Panda can
+Disposable execution environments are throwaway bash-server runners that Panda can
 create for scoped work. Use them when you want parallel shell work without
 sharing the main agent runner's cwd, shell env, or mounted agent home.
 
@@ -8,7 +8,7 @@ They are not a new brain. They are an execution boundary for a session.
 
 ## What You Get
 
-- on-demand `panda-runner` containers
+- on-demand `panda-runner` containers running `panda bash-server`
 - no `/root/.panda`, agent home, or Codex home mount by default
 - per-environment shell cwd/env state
 - credential allowlist by default, empty unless explicitly granted
@@ -80,6 +80,9 @@ PANDA_DISPOSABLE_RUNNER_NETWORK=<project>_disposable_runner_net
 Set the network names yourself only when you need stable names across compose
 projects.
 
+
+If `RUNNER_SHARED_SECRET` is enabled, wire the same value through `panda-core`, `panda-environment-manager`, and the disposable bash-server containers. It authenticates runner POST endpoints; it does not make runner networks public-safe.
+
 ## Start It
 
 ```bash
@@ -93,7 +96,7 @@ The stack should include:
 - `panda-core`
 - `panda-environment-manager`
 - the normal persistent `panda-runner-<agent>` services
-- disposable runner containers only after a worker/disposable environment is
+- disposable bash-server containers only after a worker/disposable environment is
   created
 
 ## Verify Isolation
