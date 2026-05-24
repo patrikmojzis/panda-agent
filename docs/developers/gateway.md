@@ -132,9 +132,72 @@ Capabilities are a small allowlist (unknown strings are rejected):
 - `claim_commands`
 - `screenshot.capture`
 
-The command mailbox is durable Postgres polling, not WebSocket/SSE. PR2 ships the
-server/admin substrate only: no Mac app migration, no Telepathy removal, no
-interval scheduling, and no Panda screenshot tool/default tool.
+### Gateway Mac receiver setup
+
+The macOS receiver's PR1 Gateway lane is push-only: explicit push-to-talk,
+`Send Clipboard Text`, and `Send Screenshot Now`. It does not start interval
+screenshots, does not poll the command mailbox, and does not replace
+`telepathy_screenshot` pull parity yet.
+
+Create a source, allow the Mac event type, then register a device token with only
+the capabilities this PR needs:
+
+```bash
+panda gateway source create mac-local --agent panda --identity patrik
+panda gateway source allow-type mac-local mac.context.push --delivery wake
+panda gateway device register mac-local home-mac \
+  --label "Home Mac" \
+  --capability push_context \
+  --capability upload_attachments
+```
+
+Paste the printed one-time device token into the app settings or save it from the
+CLI. The Mac keeps the token in Keychain; `config.json` stores the Gateway base
+URL, agent key, device id, label, shortcuts, privacy toggles, and tunnel settings
+but not the token.
+
+```bash
+swift build --package-path apps/panda-receiver-macos
+apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/panda-receiver-macos \
+  --gateway http://127.0.0.1:8094 \
+  --agent panda \
+  --device-id home-mac \
+  --token 'paste-device-token-here' \
+  --label "Home Mac" \
+  --save-config
+```
+
+Use `http://` or `https://` for `--gateway`. The Gateway-mode app rejects
+`ws://` and `wss://`; the old WebSocket Telepathy setup is legacy/transitional.
+If Gateway is private behind SSH, keep the Gateway URL as the remote endpoint and
+add tunnel flags:
+
+```bash
+--ssh-host clankerino
+--ssh-user patrik
+--ssh-port 22
+--tunnel-local-port 43190
+```
+
+The app forwards `127.0.0.1:<local-port>` to the Gateway host/port and sends HTTP
+through that local port. The `--agent` value is retained for display and Keychain
+account scoping; Gateway HTTP requests authenticate with the device bearer token
+and do not send agent, source, session, or identity ids.
+
+Operational notes:
+
+- `mac.context.push` must stay allow-listed before testing; unexpected event
+  types are rejected and can strike/suspend the source after repeated failures.
+- Push-to-talk uploads `audio/m4a` plus an optional `image/jpeg` screenshot via
+  `/v2/attachments`, then posts `/v2/events` with attachment refs.
+- `Send Clipboard Text` posts text only. `Send Screenshot Now` uploads one
+  explicit screenshot and posts the same `mac.context.push` event type.
+- The menu kill switch pauses health checks and local explicit sends. There is no
+  hidden screenshot auto-start in this PR.
+
+The command mailbox is durable Postgres polling, not WebSocket/SSE. The mailbox
+substrate does not imply Mac command polling, Telepathy removal, interval
+scheduling, or a Panda screenshot tool/default tool.
 
 Admin enqueue/list/cancel/timeout sweep stays local CLI-backed DB access:
 
@@ -268,6 +331,7 @@ Attachment defaults:
 ```bash
 panda gateway source create work-prod --agent panda --identity patrik
 panda gateway source allow-type work-prod meeting.transcript --delivery queue
+panda gateway source allow-type work-prod mac.context.push --delivery wake
 panda gateway run
 ```
 

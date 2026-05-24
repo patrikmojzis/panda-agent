@@ -16,7 +16,7 @@ struct TunnelConfig: Codable, Sendable {
 }
 
 struct Config: Codable {
-    let serverURL: URL
+    let gatewayBaseURL: URL
     let agentKey: String
     let deviceId: String
     let token: String
@@ -27,7 +27,8 @@ struct Config: Codable {
     let tunnel: TunnelConfig?
 
     private enum CodingKeys: String, CodingKey {
-        case serverURL
+        case gatewayBaseURL
+        case legacyServerURL = "serverURL"
         case agentKey
         case deviceId
         case token
@@ -39,7 +40,7 @@ struct Config: Codable {
     }
 
     init(
-        serverURL: URL,
+        gatewayBaseURL: URL,
         agentKey: String,
         deviceId: String,
         token: String,
@@ -49,7 +50,7 @@ struct Config: Codable {
         pushToTalkShortcuts: PushToTalkShortcutBindings = .defaults,
         tunnel: TunnelConfig?
     ) {
-        self.serverURL = serverURL
+        self.gatewayBaseURL = gatewayBaseURL
         self.agentKey = agentKey
         self.deviceId = deviceId
         self.token = token
@@ -62,7 +63,9 @@ struct Config: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        serverURL = try container.decode(URL.self, forKey: .serverURL)
+        let decodedBaseURL = try container.decodeIfPresent(URL.self, forKey: .gatewayBaseURL)
+            ?? container.decode(URL.self, forKey: .legacyServerURL)
+        gatewayBaseURL = try Config.validateGatewayBaseURL(url: decodedBaseURL)
         agentKey = try container.decode(String.self, forKey: .agentKey)
         deviceId = try container.decode(String.self, forKey: .deviceId)
         token = try container.decode(String.self, forKey: .token)
@@ -75,7 +78,7 @@ struct Config: Codable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(serverURL, forKey: .serverURL)
+        try container.encode(gatewayBaseURL, forKey: .gatewayBaseURL)
         try container.encode(agentKey, forKey: .agentKey)
         try container.encode(deviceId, forKey: .deviceId)
         try container.encodeIfPresent(label, forKey: .label)
@@ -90,25 +93,29 @@ struct Config: Codable {
         return trimmedLabel.isEmpty ? deviceId : trimmedLabel
     }
 
-    private static func validateServerURL(rawValue: String) throws -> URL {
+    static func validateGatewayBaseURL(rawValue: String) throws -> URL {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let serverURL = URL(string: trimmed) else {
-            throw ReceiverError("Enter a valid server WebSocket URL")
+        guard !trimmed.isEmpty, let gatewayBaseURL = URL(string: trimmed) else {
+            throw ReceiverError("Enter a valid Gateway base URL")
         }
 
-        guard let scheme = serverURL.scheme?.lowercased(), scheme == "ws" || scheme == "wss" else {
-            throw ReceiverError("Server URL must use ws:// or wss://")
+        return try validateGatewayBaseURL(url: gatewayBaseURL)
+    }
+
+    static func validateGatewayBaseURL(url gatewayBaseURL: URL) throws -> URL {
+        guard let scheme = gatewayBaseURL.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            throw ReceiverError("Gateway base URL must use http:// or https://")
         }
 
-        guard serverURL.host != nil else {
-            throw ReceiverError("Server URL must include a host")
+        guard gatewayBaseURL.host != nil else {
+            throw ReceiverError("Gateway base URL must include a host")
         }
 
-        return serverURL
+        return gatewayBaseURL
     }
 
     static func make(
-        serverURLRaw: String,
+        gatewayBaseURLRaw: String,
         agentKeyRaw: String,
         deviceIdRaw: String,
         tokenRaw: String,
@@ -121,7 +128,7 @@ struct Config: Codable {
         allowPullScreenshots: Bool = true,
         pushToTalkShortcuts: PushToTalkShortcutBindings = .defaults
     ) throws -> Config {
-        let serverTrimmed = serverURLRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let gatewayTrimmed = gatewayBaseURLRaw.trimmingCharacters(in: .whitespacesAndNewlines)
         let agentTrimmed = agentKeyRaw.trimmingCharacters(in: .whitespacesAndNewlines)
         let deviceTrimmed = deviceIdRaw.trimmingCharacters(in: .whitespacesAndNewlines)
         let tokenTrimmed = tokenRaw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -132,7 +139,7 @@ struct Config: Codable {
         let tunnelPortTrimmed = tunnelPortRaw.trimmingCharacters(in: .whitespacesAndNewlines)
         let tunnelLocalPortTrimmed = tunnelLocalPortRaw.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let serverURL = try validateServerURL(rawValue: serverTrimmed)
+        let gatewayBaseURL = try validateGatewayBaseURL(rawValue: gatewayTrimmed)
 
         guard !agentTrimmed.isEmpty else {
             throw ReceiverError("Agent key is required")
@@ -195,7 +202,7 @@ struct Config: Codable {
         }
 
         return Config(
-            serverURL: serverURL,
+            gatewayBaseURL: gatewayBaseURL,
             agentKey: agentTrimmed,
             deviceId: deviceTrimmed,
             token: tokenTrimmed,
@@ -287,7 +294,7 @@ struct Config: Codable {
     }
 
     private static func merge(savedConfig: Config?, overrides: [String: String], disableTunnel: Bool) throws -> Config? {
-        let serverRaw = overrides["server"] ?? savedConfig?.serverURL.absoluteString
+        let gatewayRaw = overrides["gateway"] ?? overrides["server"] ?? savedConfig?.gatewayBaseURL.absoluteString
         let agentKey = overrides["agent"] ?? savedConfig?.agentKey
         let deviceId = overrides["device-id"] ?? savedConfig?.deviceId
         let token = overrides["token"] ?? savedConfig?.token
@@ -298,7 +305,7 @@ struct Config: Codable {
         let sshPort = try resolveTunnelPort(overrides["ssh-port"], fallback: savedConfig?.tunnel?.sshPort)
         let tunnelLocalPort = try resolveTunnelLocalPort(overrides["tunnel-local-port"], fallback: savedConfig?.tunnel?.localPort)
 
-        let hasAnyConfig = [serverRaw, agentKey, deviceId, token].contains { value in
+        let hasAnyConfig = [gatewayRaw, agentKey, deviceId, token].contains { value in
             guard let value else {
                 return false
             }
@@ -309,10 +316,10 @@ struct Config: Codable {
             return nil
         }
 
-        guard let serverRaw else {
-            throw ReceiverError("Missing or invalid --server value")
+        guard let gatewayRaw else {
+            throw ReceiverError("Missing or invalid --gateway value")
         }
-        let serverURL = try validateServerURL(rawValue: serverRaw)
+        let gatewayBaseURL = try validateGatewayBaseURL(rawValue: gatewayRaw)
 
         guard let agentKey, !agentKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ReceiverError("Missing --agent")
@@ -327,7 +334,7 @@ struct Config: Codable {
         }
 
         return Config(
-            serverURL: serverURL,
+            gatewayBaseURL: gatewayBaseURL,
             agentKey: agentKey,
             deviceId: deviceId,
             token: token,
@@ -349,7 +356,7 @@ struct Config: Codable {
     static func usage() -> String {
         """
         panda-receiver-macos \
-          --server ws://127.0.0.1:8787/telepathy \
+          --gateway http://127.0.0.1:8094 \
           --agent panda \
           --device-id home-mac \
           --token shared-secret \
@@ -493,7 +500,7 @@ struct NormalizedReceiverIssue: Sendable {
     let message: String
 }
 
-func normalizeReceiverIssue(_ error: Error, serverURL: URL? = nil) -> NormalizedReceiverIssue {
+func normalizeReceiverIssue(_ error: Error, gatewayBaseURL: URL? = nil) -> NormalizedReceiverIssue {
     if let receiverError = error as? ReceiverError {
         if receiverError.message == ReceiverError.screenRecordingDenied.message {
             return NormalizedReceiverIssue(state: .screenRecordingDenied, message: receiverError.message)
@@ -513,9 +520,9 @@ func normalizeReceiverIssue(_ error: Error, serverURL: URL? = nil) -> Normalized
     if nsError.domain == NSURLErrorDomain {
         switch nsError.code {
         case NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost:
-            if let serverURL {
-                let host = serverURL.host ?? serverURL.absoluteString
-                let port = serverURL.port.map { ":\($0)" } ?? ""
+            if let gatewayBaseURL {
+                let host = gatewayBaseURL.host ?? gatewayBaseURL.absoluteString
+                let port = gatewayBaseURL.port.map { ":\($0)" } ?? ""
                 return NormalizedReceiverIssue(
                     state: .waitingForPanda,
                     message: "Waiting for Panda at \(host)\(port)"
@@ -542,8 +549,8 @@ func normalizeReceiverIssue(_ error: Error, serverURL: URL? = nil) -> Normalized
     return NormalizedReceiverIssue(state: .error, message: String(describing: error))
 }
 
-func normalizeReceiverError(_ error: Error, serverURL: URL? = nil) -> ReceiverError {
-    ReceiverError(normalizeReceiverIssue(error, serverURL: serverURL).message)
+func normalizeReceiverError(_ error: Error, gatewayBaseURL: URL? = nil) -> ReceiverError {
+    ReceiverError(normalizeReceiverIssue(error, gatewayBaseURL: gatewayBaseURL).message)
 }
 
 func isScreenRecordingDeniedError(_ error: Error) -> Bool {

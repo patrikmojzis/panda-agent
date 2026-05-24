@@ -1,6 +1,12 @@
 # Telepathy
 
-Telepathy is Panda's desktop bridge for a paired Mac.
+> Legacy/transitional: the WebSocket Telepathy lane remains for existing pull
+> screenshot parity while Gateway push and command parity are rolled out. New
+> macOS receiver push setup uses Gateway HTTP (`--gateway http://...`) and
+> `mac.context.push`; see `docs/developers/gateway.md`. Do not set up new
+> Gateway-mode receivers with `ws://` / `--server`.
+
+Telepathy is Panda's legacy WebSocket desktop bridge for a paired Mac.
 
 The shape is intentionally boring:
 
@@ -12,9 +18,9 @@ The shape is intentionally boring:
 
 That last bit matters. We are trying to keep tool count low, so `telepathy_screenshot` stays the action tool and Postgres stays the discovery surface.
 
-## Transport Shape
+## Legacy Transport Shape
 
-Telepathy now has two lanes:
+Legacy WebSocket Telepathy has two lanes:
 
 - pull: Panda asks the device for something and gets a direct response back
 - push: the device sends Panda context because you triggered it locally
@@ -43,12 +49,12 @@ That gives us sane long-term flexibility:
 Implemented now:
 
 - `telepathy_screenshot(deviceId)`
-- `context.submit` push ingress for telepathy-triggered context
+- legacy `context.submit` push ingress for WebSocket telepathy-triggered context
 - per-device durable token registry in Postgres
 - `session.agent_telepathy_devices` readonly view for discovery
 - screenshot artifact persistence under Panda media paths
 - pushed audio and screenshot artifact persistence under Panda media paths
-- macOS Swift menu bar receiver with connection status, kill switch, and test screenshot
+- macOS Swift menu bar receiver; current pushes use Gateway HTTP, while legacy WebSocket pull remains documented here
 - global push-to-talk hotkeys:
   - `Ctrl+Opt+Cmd+V` for voice only
   - `Ctrl+Opt+Cmd+S` for voice + screenshot
@@ -65,8 +71,8 @@ Implemented now:
 
 Not implemented yet:
 
+- Gateway pull-command parity
 - command execution
-- configurable shortcuts
 - spoken reply
 - local transcription
 - notarized distribution polish
@@ -101,9 +107,11 @@ macOS receiver:
 - `apps/panda-receiver-macos/Package.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Config.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/ConfigStore.swift`
+- `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/GatewayClient.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/GlobalHotkeyService.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/PushToTalkController.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/Receiver.swift`
+- `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/ScreenshotCaptureService.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/TunnelSupervisor.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/LaunchAtLogin.swift`
 - `apps/panda-receiver-macos/Sources/PandaReceiverMacOS/SettingsWindow.swift`
@@ -127,9 +135,11 @@ For the Docker stack, set both `TELEPATHY_ENABLED=true` and `TELEPATHY_PORT=8787
 If neither is set, Panda does not start the telepathy hub and does not expose `telepathy_screenshot`.
 Use `127.0.0.1` only for local non-Docker runs.
 
-## Pairing
+## Legacy WebSocket Pairing
 
-Generate or rotate a device token with the CLI:
+For current Gateway Mac pushes, register a Gateway device token instead (see `docs/developers/gateway.md`). The commands below are only for legacy WebSocket Telepathy pairing and old receiver builds.
+
+Generate or rotate a legacy Telepathy device token with the CLI:
 
 ```bash
 pnpm exec tsx src/app/cli.ts telepathy register local-mac \
@@ -138,7 +148,7 @@ pnpm exec tsx src/app/cli.ts telepathy register local-mac \
   --db-url postgresql://localhost/panda
 ```
 
-That prints a fresh token. Paste it into Panda Telepathy settings.
+That prints a fresh legacy token. Paste it only into old WebSocket Telepathy settings; Gateway-mode settings expect a Gateway device token.
 
 Useful management commands:
 
@@ -168,14 +178,25 @@ Build:
 swift build --package-path apps/panda-receiver-macos
 ```
 
-Run:
+Current Gateway push setup uses HTTP and rejects WebSocket URLs:
+
+```bash
+apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/panda-receiver-macos \
+  --gateway http://127.0.0.1:8094 \
+  --agent panda \
+  --device-id local-mac \
+  --token 'paste-gateway-device-token-here' \
+  --label "Local Mac"
+```
+
+Legacy WebSocket receiver builds used this shape for pull screenshots:
 
 ```bash
 apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/panda-receiver-macos \
   --server ws://127.0.0.1:8787/telepathy \
   --agent panda \
   --device-id local-mac \
-  --token 'paste-token-here' \
+  --token 'paste-legacy-telepathy-token-here' \
   --label "Local Mac"
 ```
 
@@ -187,9 +208,11 @@ Running the binary launches a menu bar app. The menu shows:
 - microphone permission state
 - push-to-talk status
 - shortcut summary
-- a `Capture Enabled` kill switch
+- a `Gateway Enabled` kill switch
 - `Request Microphone Access`
 - `Take Test Screenshot`
+- `Send Clipboard Text`
+- `Send Screenshot Now`
 - `Settings…`
 - `Open At Login`
 - `Reveal Saved Config`
@@ -204,7 +227,7 @@ On macOS 14 and newer, the receiver uses `ScreenCaptureKit` to capture the prima
 
 Push-to-talk uses `AVAudioRecorder` and the app bundle now declares `NSMicrophoneUsageDescription`, so the packaged app can request mic access cleanly instead of dying in a ditch.
 
-If you leave the SSH tunnel fields empty, the receiver connects directly to the server URL.
+If you leave the SSH tunnel fields empty, the receiver connects directly to the Gateway URL.
 
 If you set an SSH host, the receiver owns the tunnel itself and connects through `ssh -L`. That is the real deployment lane when Panda stays closed from the public internet.
 
@@ -248,10 +271,10 @@ First-time setup from Terminal:
 
 ```bash
 "/Applications/Panda Telepathy.app/Contents/MacOS/panda-receiver-macos" \
-  --server ws://127.0.0.1:8787/telepathy \
+  --gateway http://127.0.0.1:8094 \
   --agent panda \
   --device-id local-mac \
-  --token 'paste-token-here' \
+  --token 'paste-gateway-device-token-here' \
   --label "Local Mac" \
   --save-config
 ```
@@ -271,10 +294,10 @@ Useful management commands:
 
 ```bash
 "/Applications/Panda Telepathy.app/Contents/MacOS/panda-receiver-macos" \
-  --server ws://127.0.0.1:8787/telepathy \
+  --gateway http://127.0.0.1:8094 \
   --agent panda \
   --device-id home-mac \
-  --token 'paste-token-here' \
+  --token 'paste-gateway-device-token-here' \
   --label "Home Mac" \
   --ssh-host clankerino \
   --ssh-user patrik \
@@ -284,10 +307,10 @@ Useful management commands:
 That makes the app own a local forward that looks like this in spirit:
 
 ```bash
-ssh -NT -L 127.0.0.1:43190:127.0.0.1:8787 patrik@clankerino
+ssh -NT -L 127.0.0.1:43190:127.0.0.1:8094 patrik@clankerino
 ```
 
-The WebSocket then connects to the forwarded local port instead of talking to Panda directly.
+The Gateway HTTP client then talks to the forwarded local port instead of exposing Panda publicly.
 
 ## Push-To-Talk
 
@@ -297,7 +320,7 @@ The first push feature is intentionally simple:
 - hold `Ctrl+Opt+Cmd+S` to record a voice note and attach a fresh screenshot
 - release the keys to stop recording and send the context
 
-When the receiver sends pushed context, Panda stores every item separately as normal telepathy media and wakes the agent's `main` session with one inbound telepathy message.
+In Gateway mode, push-to-talk uploads `audio/m4a` plus an optional `image/jpeg` screenshot through `/v2/attachments`, then posts one `mac.context.push` event through `/v2/events`.
 
 That means Panda can:
 
@@ -305,7 +328,7 @@ That means Panda can:
 - use `view_media` on screenshot attachment paths
 - answer with real desktop context instead of guessing what "this" means
 
-The push lane is event-based. It does not replace `telepathy_screenshot(deviceId)`.
+The Gateway push lane is event-based. It does not replace `telepathy_screenshot(deviceId)` yet.
 It sits next to it:
 
 - pull: Panda asks the device for a screenshot
@@ -313,7 +336,9 @@ It sits next to it:
 
 ## Local Verification
 
-I verified the secured flow locally with:
+Gateway PR1 manual verification should cover Gateway setup, `mac.context.push` allow-listing, push-to-talk voice-only, voice+screenshot, `Send Clipboard Text`, and `Send Screenshot Now`.
+
+Legacy WebSocket verification used:
 
 - `panda telepathy register ...`
 - Panda querying `session.agent_telepathy_devices`

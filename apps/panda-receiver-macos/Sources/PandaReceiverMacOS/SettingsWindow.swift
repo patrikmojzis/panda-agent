@@ -160,12 +160,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tabView.addTabViewItem(
             makeTabItem(
                 title: "Connection",
-                subtitle: "Where Panda Telepathy connects and how aggressively it retries.",
+                subtitle: "Where the Panda Gateway lives and how aggressively the app retries.",
                 rows: [
                     formRow(
-                        title: "Server URL",
+                        title: "Gateway URL",
                         control: serverField,
-                        help: "Usually ws://127.0.0.1:8787/telepathy through your local tunnel."
+                        help: "Usually http://127.0.0.1:8094 for local Gateway development, or https://gateway.example.com in production."
                     ),
                     formRow(
                         title: "Reconnect",
@@ -178,12 +178,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tabView.addTabViewItem(
             makeTabItem(
                 title: "Identity",
-                subtitle: "This is how Panda knows which Mac just checked in.",
+                subtitle: "This is how the app labels the Mac locally; Gateway auth comes from the device token.",
                 rows: [
                     formRow(
                         title: "Agent Key",
                         control: agentField,
-                        help: "Your Panda persona key, like panda or clawd."
+                        help: "Used for local display and Keychain scoping, like panda or clawd."
                     ),
                     formRow(
                         title: "Device ID",
@@ -193,12 +193,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                     formRow(
                         title: "Label",
                         control: labelField,
-                        help: "Human-friendly name shown in SQL and the UI."
+                        help: "Human-friendly name shown in the menu and Gateway admin output."
                     ),
                     formRow(
                         title: "Token",
                         control: tokenField,
-                        help: "Paste the device token from `panda telepathy register ...`."
+                        help: "Paste the Gateway device token from `panda gateway device register ...`."
                     ),
                 ]
             )
@@ -247,7 +247,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                     formRow(
                         title: "Local Port",
                         control: tunnelLocalPortField,
-                        help: "Local forwarded port used by the app to reach Panda."
+                        help: "Local forwarded port used by the app to reach Gateway."
                     ),
                 ]
             )
@@ -255,12 +255,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tabView.addTabViewItem(
             makeTabItem(
                 title: "Privacy",
-                subtitle: "Use this when you want push-to-talk to stay live but do not want Panda pulling screenshots from your screen.",
+                subtitle: "Legacy pull-screenshot preference. Local explicit pushes still work when the Gateway receiver is enabled.",
                 rows: [
                     toggleRow(
                         title: "Pull Screenshots",
                         control: allowPullScreenshotsButton,
-                        help: "When off, `telepathy_screenshot(...)` and other agent-driven screenshot pulls are rejected. Local push-to-talk still works."
+                        help: "Reserved for legacy/pull screenshot flows. It does not block explicit Gateway pushes like push-to-talk or Send Screenshot Now."
                     ),
                 ]
             )
@@ -270,7 +270,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func applyInitialConfig(_ config: Config?) {
-        serverField.placeholderString = "ws://127.0.0.1:8787/telepathy"
+        serverField.placeholderString = "http://127.0.0.1:8094"
         agentField.placeholderString = "panda"
         deviceField.placeholderString = "local-mac"
         tokenField.placeholderString = "device token"
@@ -290,7 +290,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
-        serverField.stringValue = config.serverURL.absoluteString
+        serverField.stringValue = config.gatewayBaseURL.absoluteString
         agentField.stringValue = config.agentKey
         deviceField.stringValue = config.deviceId
         tokenField.stringValue = config.token
@@ -309,7 +309,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         Task { @MainActor in
             do {
                 let config = try Config.make(
-                    serverURLRaw: serverField.stringValue,
+                    gatewayBaseURLRaw: serverField.stringValue,
                     agentKeyRaw: agentField.stringValue,
                     deviceIdRaw: deviceField.stringValue,
                     tokenRaw: tokenField.stringValue,

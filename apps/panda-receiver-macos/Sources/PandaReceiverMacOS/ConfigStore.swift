@@ -1,7 +1,7 @@
 import Foundation
 
 private struct StoredConfig: Codable {
-    let serverURL: URL
+    let gatewayBaseURL: URL
     let agentKey: String
     let deviceId: String
     let token: String?
@@ -11,8 +11,21 @@ private struct StoredConfig: Codable {
     let pushToTalkShortcuts: PushToTalkShortcutBindings
     let tunnel: TunnelConfig?
 
+    private enum CodingKeys: String, CodingKey {
+        case gatewayBaseURL
+        case legacyServerURL = "serverURL"
+        case agentKey
+        case deviceId
+        case token
+        case label
+        case reconnectDelaySeconds
+        case allowPullScreenshots
+        case pushToTalkShortcuts
+        case tunnel
+    }
+
     init(config: Config) {
-        serverURL = config.serverURL
+        gatewayBaseURL = config.gatewayBaseURL
         agentKey = config.agentKey
         deviceId = config.deviceId
         token = nil
@@ -25,7 +38,9 @@ private struct StoredConfig: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        serverURL = try container.decode(URL.self, forKey: .serverURL)
+        let decodedBaseURL = try container.decodeIfPresent(URL.self, forKey: .gatewayBaseURL)
+            ?? container.decode(URL.self, forKey: .legacyServerURL)
+        gatewayBaseURL = try Config.validateGatewayBaseURL(url: decodedBaseURL)
         agentKey = try container.decode(String.self, forKey: .agentKey)
         deviceId = try container.decode(String.self, forKey: .deviceId)
         token = try container.decodeIfPresent(String.self, forKey: .token)
@@ -36,9 +51,22 @@ private struct StoredConfig: Codable {
         tunnel = try container.decodeIfPresent(TunnelConfig.self, forKey: .tunnel)
     }
 
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(gatewayBaseURL, forKey: .gatewayBaseURL)
+        try container.encode(agentKey, forKey: .agentKey)
+        try container.encode(deviceId, forKey: .deviceId)
+        try container.encodeIfPresent(token, forKey: .token)
+        try container.encodeIfPresent(label, forKey: .label)
+        try container.encode(reconnectDelaySeconds, forKey: .reconnectDelaySeconds)
+        try container.encode(allowPullScreenshots, forKey: .allowPullScreenshots)
+        try container.encode(pushToTalkShortcuts, forKey: .pushToTalkShortcuts)
+        try container.encodeIfPresent(tunnel, forKey: .tunnel)
+    }
+
     func makeConfig(token resolvedToken: String) -> Config {
         Config(
-            serverURL: serverURL,
+            gatewayBaseURL: gatewayBaseURL,
             agentKey: agentKey,
             deviceId: deviceId,
             token: resolvedToken,
@@ -92,29 +120,39 @@ enum ConfigStore {
         tokenStore: any TokenSecretStoring = KeychainTokenStore()
     ) throws -> Config? {
         for configURL in configURLs {
+            let data: Data
             do {
-                let data = try Data(contentsOf: configURL)
-                let storedConfig = try JSONDecoder().decode(StoredConfig.self, from: data)
-                let keychainToken = try trimmedToken(tokenStore.loadToken(
-                    agentKey: storedConfig.agentKey,
-                    deviceId: storedConfig.deviceId
-                ))
-                let legacyToken = trimmedToken(storedConfig.token)
-                guard let token = keychainToken ?? legacyToken else {
-                    return nil
-                }
-
-                let config = storedConfig.makeConfig(token: token)
-                if keychainToken == nil {
-                    try tokenStore.saveToken(token, agentKey: config.agentKey, deviceId: config.deviceId)
-                }
-                if legacyToken != nil {
-                    try writeStoredConfig(StoredConfig(config: config), to: configURL)
-                }
-                return config
+                data = try Data(contentsOf: configURL)
             } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
                 continue
             }
+
+            let storedConfig: StoredConfig
+            do {
+                storedConfig = try JSONDecoder().decode(StoredConfig.self, from: data)
+            } catch is ReceiverError {
+                continue
+            } catch is DecodingError {
+                continue
+            }
+
+            let keychainToken = try trimmedToken(tokenStore.loadToken(
+                agentKey: storedConfig.agentKey,
+                deviceId: storedConfig.deviceId
+            ))
+            let legacyToken = trimmedToken(storedConfig.token)
+            guard let token = keychainToken ?? legacyToken else {
+                return nil
+            }
+
+            let config = storedConfig.makeConfig(token: token)
+            if keychainToken == nil {
+                try tokenStore.saveToken(token, agentKey: config.agentKey, deviceId: config.deviceId)
+            }
+            if legacyToken != nil {
+                try writeStoredConfig(StoredConfig(config: config), to: configURL)
+            }
+            return config
         }
 
         return nil

@@ -21,10 +21,10 @@ func normalizesScreenRecordingDeniedErrors() {
 func normalizesConnectionRefusedIntoWaitingForPanda() {
     let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost)
 
-    let issue = normalizeReceiverIssue(error, serverURL: URL(string: "ws://127.0.0.1:8897/telepathy"))
+    let issue = normalizeReceiverIssue(error, gatewayBaseURL: URL(string: "http://127.0.0.1:8094"))
 
     #expect(issue.state == .waitingForPanda)
-    #expect(issue.message == "Waiting for Panda at 127.0.0.1:8897")
+    #expect(issue.message == "Waiting for Panda at 127.0.0.1:8094")
 }
 
 @Test
