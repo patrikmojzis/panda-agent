@@ -40,6 +40,24 @@ export interface GatewayAccessTokenRecord {
   expiresAt: number;
 }
 
+export type GatewayDeviceCapability =
+  | "push_context"
+  | "upload_attachments"
+  | "claim_commands"
+  | "screenshot.capture";
+
+export interface GatewayDeviceRecord {
+  sourceId: string;
+  deviceId: string;
+  label?: string;
+  capabilities: readonly GatewayDeviceCapability[];
+  enabled: boolean;
+  disabledAt?: number;
+  lastSeenAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface GatewayEventRecord {
   id: string;
   sourceId: string;

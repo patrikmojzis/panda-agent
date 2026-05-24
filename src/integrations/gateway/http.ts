@@ -91,11 +91,51 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
       }
 
       if (request.method === "POST" && requestUrl.pathname === "/v1/events") {
+        const accessTokenOnlyStore = {
+          getEventType: (sourceId: string, type: string) => options.store.getEventType(sourceId, type),
+          recordStrikeAndMaybeSuspend: (input: {
+            kind: "unexpected_type";
+            metadata: {type: string};
+            reason: string;
+            sourceId: string;
+            threshold: number;
+            windowMs: number;
+          }) => options.store.recordStrikeAndMaybeSuspend(input),
+          resolveAccessToken: (token: string) => options.store.resolveAccessToken(token),
+          resolveDeviceToken: async (_token: string) => null,
+          touchDeviceSeen: async (_input: {sourceId: string; deviceId: string}) => {},
+          storeEvent: (input: {
+            deliveryEffective: "queue" | "wake";
+            deliveryRequested: "queue" | "wake";
+            idempotencyKey: string;
+            occurredAt?: number;
+            sourceId: string;
+            text: string;
+            textBytes: number;
+            textSha256: string;
+            type: string;
+          }) => options.store.storeEvent(input),
+          storeEventWithAttachments: (input: {
+            attachments: readonly {id: string; sha256?: string}[];
+            deliveryEffective: "queue" | "wake";
+            deliveryRequested: "queue" | "wake";
+            idempotencyKey: string;
+            maxAttachmentBytes: number;
+            occurredAt?: number;
+            sourceId: string;
+            text: string;
+            textBytes: number;
+            textSha256: string;
+            type: string;
+          }) => options.store.storeEventWithAttachments(input),
+          useRateLimit: (input: {cost?: number; key: string; limit: number; windowMs: number}) => options.store.useRateLimit(input),
+        };
+
         const accepted = await acceptGatewayEventRequest({
           maxJsonBytes,
           maxTextBytes,
           request,
-          store: options.store,
+          store: accessTokenOnlyStore,
           textBytesPerHour,
           worker: options.worker,
         });

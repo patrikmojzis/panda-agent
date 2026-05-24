@@ -18,6 +18,15 @@ interface GatewayAttachmentAcceptanceStore {
   countPendingAttachmentsForSource(sourceId: string): Promise<number>;
   getAttachmentByIdempotencyKey(sourceId: string, idempotencyKey: string): Promise<GatewayAttachmentRecord | null>;
   resolveAccessToken(token: string): Promise<GatewaySourceRecord | null>;
+  resolveDeviceToken(token: string): Promise<{
+    device: {
+      capabilities: readonly string[];
+      deviceId: string;
+      sourceId: string;
+    };
+    source: GatewaySourceRecord;
+  } | null>;
+  touchDeviceSeen(input: {sourceId: string; deviceId: string}): Promise<void>;
   storeAttachmentUpload(input: {
     descriptor: {
       id: string;
@@ -87,14 +96,25 @@ async function safeUnlink(localPath: string): Promise<void> {
 
 async function requireGatewaySource(input: {
   request: IncomingMessage;
-  store: Pick<GatewayAttachmentAcceptanceStore, "resolveAccessToken">;
-}): Promise<GatewaySourceRecord> {
+  store: Pick<GatewayAttachmentAcceptanceStore, "resolveAccessToken" | "resolveDeviceToken" | "touchDeviceSeen">;
+}): Promise<{source: GatewaySourceRecord; device?: {deviceId: string; capabilities: readonly string[]}}> {
   const token = readGatewayBearerToken(input.request);
   const source = await input.store.resolveAccessToken(token);
-  if (!source) {
+  if (source) {
+    return {source};
+  }
+
+  const resolved = await input.store.resolveDeviceToken(token);
+  if (!resolved) {
     throw new GatewayHttpError(401, "Invalid bearer token.");
   }
-  return source;
+
+  if (!resolved.device.capabilities.includes("upload_attachments")) {
+    throw new GatewayHttpError(403, "Device token is missing the upload_attachments capability.");
+  }
+
+  await input.store.touchDeviceSeen({sourceId: resolved.source.sourceId, deviceId: resolved.device.deviceId});
+  return {source: resolved.source, device: {deviceId: resolved.device.deviceId, capabilities: resolved.device.capabilities}};
 }
 
 export async function acceptGatewayAttachmentUploadRequest(input: {
@@ -110,10 +130,11 @@ export async function acceptGatewayAttachmentUploadRequest(input: {
   body: ReturnType<typeof serializeAttachmentResponse>;
   status: 200 | 201;
 }> {
-  const source = await requireGatewaySource({
+  const resolved = await requireGatewaySource({
     request: input.request,
     store: input.store,
   });
+  const source = resolved.source;
   const upload = await readGatewayAttachmentUploadRequest({
     allowedMimeTypes: input.allowedMimeTypes,
     maxBytes: input.maxBytes,
