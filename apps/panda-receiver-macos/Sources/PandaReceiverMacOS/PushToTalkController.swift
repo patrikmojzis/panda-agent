@@ -124,7 +124,7 @@ private final class PushToTalkRecorder {
         }
 
         let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("telepathy-voice-\(UUID().uuidString)")
+            .appendingPathComponent("gateway-voice-\(UUID().uuidString)")
             .appendingPathExtension("m4a")
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -236,8 +236,8 @@ final class PushToTalkController {
         }
 
         guard receiverProvider() != nil else {
-            onError(ReceiverError("Panda Telepathy is not configured"))
-            onStatusChanged(idleStatus(detail: "Receiver is not configured"))
+            onError(ReceiverError("Panda Gateway is not configured"))
+            onStatusChanged(idleStatus(detail: "Gateway receiver is not configured"))
             return
         }
 
@@ -318,8 +318,8 @@ final class PushToTalkController {
 
         guard let receiver = receiverProvider() else {
             phase = .idle
-            onStatusChanged(idleStatus(detail: "Receiver is not configured"))
-            onError(ReceiverError("Panda Telepathy is not configured"))
+            onStatusChanged(idleStatus(detail: "Gateway receiver is not configured"))
+            onError(ReceiverError("Panda Gateway is not configured"))
             return
         }
 
@@ -332,27 +332,12 @@ final class PushToTalkController {
 
         Task { @MainActor in
             do {
-                var items: [ContextSubmitItem] = [
-                    .audio(ContextAudioItem(
-                        mimeType: "audio/m4a",
-                        data: recordedAudio.data.base64EncodedString(),
-                        bytes: recordedAudio.data.count,
-                        filename: "telepathy-voice-note.m4a"
-                    )),
-                ]
-                if mode.includesScreenshot {
-                    items.append(try await receiver.makeScreenshotContextItem())
-                }
-
-                try await receiver.submitContext(
-                    mode: .pushToTalk,
-                    items: items,
-                    metadata: ContextSubmitMetadata(
-                        submittedAt: Int64(Date().timeIntervalSince1970 * 1_000),
-                        frontmostApp: frontmostApp,
-                        windowTitle: nil,
-                        trigger: mode.trigger
-                    )
+                try await receiver.submitPushToTalk(
+                    audioData: recordedAudio.data,
+                    durationMs: recordedAudio.durationMs,
+                    includeScreenshot: mode.includesScreenshot,
+                    frontmostApp: frontmostApp,
+                    trigger: mode.trigger
                 )
                 let time = DateFormatter.localizedString(
                     from: Date(),
@@ -380,7 +365,7 @@ final class PushToTalkController {
 }
 
 private func logPushToTalkTooShort(_ audio: RecordedPushToTalkAudio) {
-    let line = "[telepathy] voice clip too short: durationMs=\(audio.durationMs) bytes=\(audio.data.count)\n"
+    let line = "[gateway] voice clip too short: durationMs=\(audio.durationMs) bytes=\(audio.data.count)\n"
     if let data = line.data(using: .utf8) {
         FileHandle.standardError.write(data)
     }

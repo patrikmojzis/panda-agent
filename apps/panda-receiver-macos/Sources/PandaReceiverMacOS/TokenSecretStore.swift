@@ -8,13 +8,14 @@ protocol TokenSecretStoring {
 }
 
 struct KeychainTokenStore: TokenSecretStoring {
-    private let service = "\(AppIdentity.bundleIdentifier).telepathy-token"
+    private let service = "\(AppIdentity.bundleIdentifier).gateway-device-token"
+    private let legacyService = "\(AppIdentity.bundleIdentifier).telepathy-token"
 
     private func account(agentKey: String, deviceId: String) -> String {
         "\(agentKey)::\(deviceId)"
     }
 
-    private func baseQuery(agentKey: String, deviceId: String) -> [CFString: Any] {
+    private func baseQuery(service: String, agentKey: String, deviceId: String) -> [CFString: Any] {
         [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -23,13 +24,25 @@ struct KeychainTokenStore: TokenSecretStoring {
         ]
     }
 
+    private func baseQuery(agentKey: String, deviceId: String) -> [CFString: Any] {
+        baseQuery(service: service, agentKey: agentKey, deviceId: deviceId)
+    }
+
     private func keychainError(_ status: OSStatus, action: String) -> ReceiverError {
         let message = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
-        return ReceiverError("Could not \(action) Telepathy token in Keychain: \(message)")
+        return ReceiverError("Could not \(action) Gateway token in Keychain: \(message)")
     }
 
     func loadToken(agentKey: String, deviceId: String) throws -> String? {
-        var query = baseQuery(agentKey: agentKey, deviceId: deviceId)
+        if let token = try loadToken(service: service, agentKey: agentKey, deviceId: deviceId) {
+            return token
+        }
+
+        return try loadToken(service: legacyService, agentKey: agentKey, deviceId: deviceId)
+    }
+
+    private func loadToken(service: String, agentKey: String, deviceId: String) throws -> String? {
+        var query = baseQuery(service: service, agentKey: agentKey, deviceId: deviceId)
         query[kSecMatchLimit] = kSecMatchLimitOne
         query[kSecReturnData] = kCFBooleanTrue
 
@@ -46,7 +59,7 @@ struct KeychainTokenStore: TokenSecretStoring {
         guard let data = result as? Data,
               let token = String(data: data, encoding: .utf8),
               !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ReceiverError("Telepathy token in Keychain is unreadable")
+            throw ReceiverError("Gateway token in Keychain is unreadable")
         }
 
         return token
@@ -55,7 +68,7 @@ struct KeychainTokenStore: TokenSecretStoring {
     func saveToken(_ token: String, agentKey: String, deviceId: String) throws {
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedToken.isEmpty else {
-            throw ReceiverError("Telepathy token must not be empty")
+            throw ReceiverError("Gateway token must not be empty")
         }
 
         let data = Data(trimmedToken.utf8)
@@ -81,12 +94,14 @@ struct KeychainTokenStore: TokenSecretStoring {
     }
 
     func deleteAllTokens() throws {
-        let status = SecItemDelete([
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-        ] as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw keychainError(status, action: "delete")
+        for tokenService in [service, legacyService] {
+            let status = SecItemDelete([
+                kSecClass: kSecClassGenericPassword,
+                kSecAttrService: tokenService,
+            ] as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw keychainError(status, action: "delete")
+            }
         }
     }
 }

@@ -19,16 +19,18 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     private let pushStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let shortcutMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let launchAtLoginStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private lazy var enableCaptureItem = NSMenuItem(title: "Telepathy Enabled", action: #selector(toggleCaptureEnabled), keyEquivalent: "")
+    private lazy var enableCaptureItem = NSMenuItem(title: "Gateway Enabled", action: #selector(toggleCaptureEnabled), keyEquivalent: "")
     private lazy var allowPullScreenshotsItem = NSMenuItem(title: "Allow Agent Screenshots", action: #selector(toggleAllowPullScreenshots), keyEquivalent: "")
     private lazy var launchAtLoginToggleItem = NSMenuItem(title: "Open At Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "l")
     private lazy var requestAccessItem = NSMenuItem(title: "Request Screen Recording Access", action: #selector(requestScreenRecordingAccess), keyEquivalent: "")
     private lazy var requestMicrophoneAccessItem = NSMenuItem(title: "Request Microphone Access", action: #selector(requestMicrophoneAccess), keyEquivalent: "")
     private lazy var testScreenshotItem = NSMenuItem(title: "Take Test Screenshot", action: #selector(takeTestScreenshot), keyEquivalent: "t")
+    private lazy var sendClipboardTextItem = NSMenuItem(title: "Send Clipboard Text", action: #selector(sendClipboardText), keyEquivalent: "")
+    private lazy var sendScreenshotNowItem = NSMenuItem(title: "Send Screenshot Now", action: #selector(sendScreenshotNow), keyEquivalent: "")
     private lazy var settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
     private lazy var revealConfigItem = NSMenuItem(title: "Reveal Saved Config", action: #selector(revealSavedConfig), keyEquivalent: "")
     private lazy var quitItem = NSMenuItem(title: "Quit \(AppIdentity.appDisplayName)", action: #selector(quit), keyEquivalent: "q")
-    private var latestStatus = ReceiverStatus(state: .starting, detail: "Starting receiver")
+    private var latestStatus = ReceiverStatus(state: .starting, detail: "Starting Gateway receiver")
     private var latestPushStatus = PushToTalkStatus(detail: "Starting push-to-talk", isPreparing: false, isRecording: false, isSending: false)
     private var statusTask: Task<Void, Never>?
     private var settingsWindowController: SettingsWindowController?
@@ -92,6 +94,8 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         requestAccessItem.target = self
         requestMicrophoneAccessItem.target = self
         testScreenshotItem.target = self
+        sendClipboardTextItem.target = self
+        sendScreenshotNowItem.target = self
         settingsItem.target = self
         revealConfigItem.target = self
         quitItem.target = self
@@ -111,6 +115,8 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         menu.addItem(requestAccessItem)
         menu.addItem(requestMicrophoneAccessItem)
         menu.addItem(testScreenshotItem)
+        menu.addItem(sendClipboardTextItem)
+        menu.addItem(sendScreenshotNowItem)
         menu.addItem(settingsItem)
         menu.addItem(revealConfigItem)
         menu.addItem(.separator())
@@ -141,6 +147,8 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         allowPullScreenshotsItem.state = (currentConfig?.allowPullScreenshots ?? true) ? .on : .off
         allowPullScreenshotsItem.isEnabled = currentConfig != nil && status.state != .disabled
         testScreenshotItem.isEnabled = currentConfig != nil && status.state != .disabled
+        sendClipboardTextItem.isEnabled = currentConfig != nil && status.state != .disabled
+        sendScreenshotNowItem.isEnabled = currentConfig != nil && status.state != .disabled
         revealConfigItem.isEnabled = currentConfig != nil
         refreshLaunchAtLoginState()
         updateButton(for: status)
@@ -273,7 +281,7 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
 
         Task {
             let updatedConfig = Config(
-                serverURL: currentConfig.serverURL,
+                gatewayBaseURL: currentConfig.gatewayBaseURL,
                 agentKey: currentConfig.agentKey,
                 deviceId: currentConfig.deviceId,
                 token: currentConfig.token,
@@ -387,6 +395,118 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     }
 
     @objc
+    private func sendClipboardText() {
+        guard let receiver else {
+            openSettings(nil)
+            return
+        }
+
+        let text = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else {
+            presentAlert(
+                title: "Clipboard Is Empty",
+                message: "Copy text first, then choose Send Clipboard Text."
+            )
+            return
+        }
+
+        let frontmostApp = NSWorkspace.shared.frontmostApplication?.localizedName
+        sendClipboardTextItem.isEnabled = false
+        latestPushStatus = PushToTalkStatus(detail: "Sending clipboard text…", isPreparing: false, isRecording: false, isSending: true)
+        apply(status: latestStatus)
+        sendClipboardTextItem.isEnabled = false
+
+        Task {
+            do {
+                try await receiver.sendClipboardText(text, frontmostApp: frontmostApp)
+                let time = DateFormatter.localizedString(
+                    from: Date(),
+                    dateStyle: .none,
+                    timeStyle: .medium
+                )
+                await MainActor.run {
+                    self.latestPushStatus = PushToTalkStatus(
+                        detail: "Last sent clipboard text at \(time)",
+                        isPreparing: false,
+                        isRecording: false,
+                        isSending: false
+                    )
+                    self.apply(status: self.latestStatus)
+                }
+            } catch {
+                await MainActor.run {
+                    self.latestPushStatus = PushToTalkStatus(
+                        detail: "Ready: \(self.currentConfig?.pushToTalkShortcuts.voiceOnly.displayLabel ?? "Push")",
+                        isPreparing: false,
+                        isRecording: false,
+                        isSending: false
+                    )
+                    self.apply(status: self.latestStatus)
+                    self.presentAlert(
+                        title: "Clipboard Send Failed",
+                        message: normalizeReceiverError(error).message
+                    )
+                }
+            }
+        }
+    }
+
+    @objc
+    private func sendScreenshotNow() {
+        guard let receiver else {
+            openSettings(nil)
+            return
+        }
+
+        let frontmostApp = NSWorkspace.shared.frontmostApplication?.localizedName
+        sendScreenshotNowItem.isEnabled = false
+        latestPushStatus = PushToTalkStatus(detail: "Sending screenshot…", isPreparing: false, isRecording: false, isSending: true)
+        apply(status: latestStatus)
+        sendScreenshotNowItem.isEnabled = false
+
+        Task {
+            do {
+                try await receiver.sendScreenshotNow(frontmostApp: frontmostApp)
+                let time = DateFormatter.localizedString(
+                    from: Date(),
+                    dateStyle: .none,
+                    timeStyle: .medium
+                )
+                await MainActor.run {
+                    self.permissionMenuItem.title = self.screenRecordingLabel()
+                    self.latestPushStatus = PushToTalkStatus(
+                        detail: "Last sent screenshot at \(time)",
+                        isPreparing: false,
+                        isRecording: false,
+                        isSending: false
+                    )
+                    self.apply(status: self.latestStatus)
+                }
+            } catch {
+                await MainActor.run {
+                    self.permissionMenuItem.title = self.screenRecordingLabel()
+                    self.latestPushStatus = PushToTalkStatus(
+                        detail: "Ready: \(self.currentConfig?.pushToTalkShortcuts.voiceOnly.displayLabel ?? "Push")",
+                        isPreparing: false,
+                        isRecording: false,
+                        isSending: false
+                    )
+                    self.apply(status: self.latestStatus)
+                    let normalizedError = normalizeReceiverError(error)
+                    if normalizedError.message == ReceiverError.screenRecordingDenied.message {
+                        self.presentScreenRecordingDeniedAlert(message: normalizedError.message)
+                    } else {
+                        self.presentAlert(
+                            title: "Screenshot Send Failed",
+                            message: normalizedError.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @objc
     private func openSettings(_ sender: Any?) {
         if let settingsWindowController,
            settingsWindowController.window?.isVisible == true {
@@ -451,15 +571,12 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
             await receiver.shutdown()
         }
 
-        latestStatus = ReceiverStatus(state: .starting, detail: "Starting receiver")
+        latestStatus = ReceiverStatus(state: .starting, detail: "Starting Gateway receiver")
         apply(status: latestStatus)
 
         let newReceiver = ReceiverService(
             config: config,
-            statusContinuation: statusContinuation,
-            onPullScreenshot: { [weak self] in
-                self?.pushFeedback.presentPullScreenshot()
-            }
+            statusContinuation: statusContinuation
         )
         receiver = newReceiver
         await newReceiver.start()

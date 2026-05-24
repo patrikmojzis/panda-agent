@@ -1,0 +1,38 @@
+name: macOS receiver (Swift)
+
+on:
+  pull_request:
+    paths:
+      - "apps/panda-receiver-macos/**"
+      - ".github/workflows/panda-receiver-macos-swift.yml"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "apps/panda-receiver-macos/**"
+      - ".github/workflows/panda-receiver-macos-swift.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Swift build + test
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Xcode / Swift versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Swift build
+        run: swift build --package-path apps/panda-receiver-macos
+
+      - name: Swift test
+        run: swift test --package-path apps/panda-receiver-macos

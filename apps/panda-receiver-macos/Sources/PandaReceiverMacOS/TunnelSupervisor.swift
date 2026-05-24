@@ -23,13 +23,17 @@ final class TunnelSupervisor {
         return components.url ?? remoteURL
     }
 
+    var isRunning: Bool {
+        process.isRunning
+    }
+
     func start() throws {
         guard let remoteHost = remoteURL.host else {
-            throw ReceiverError("Server URL must include a host and port for SSH tunnel mode")
+            throw ReceiverError("Gateway base URL must include a host and port for SSH tunnel mode")
         }
         let remotePort = remoteURL.port ?? defaultPort(for: remoteURL)
         guard let remotePort else {
-            throw ReceiverError("Server URL must include a host and port for SSH tunnel mode")
+            throw ReceiverError("Gateway base URL must include a host and port for SSH tunnel mode")
         }
 
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -123,9 +127,9 @@ final class TunnelSupervisor {
 
     private func defaultPort(for url: URL) -> Int? {
         switch url.scheme?.lowercased() {
-        case "ws":
+        case "http":
             return 80
-        case "wss":
+        case "https":
             return 443
         default:
             return nil
