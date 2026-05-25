@@ -31,6 +31,7 @@ const runtimeRequestKinds = [
   "a2a_message",
   "telegram_message",
   "telegram_reaction",
+  "telegram_react_command",
   "whatsapp_message",
   "whatsapp_reaction",
   "discord_message",
@@ -328,6 +329,20 @@ function parseThreadUpdate(value: unknown): RuntimeRequestPayloadByKind["update_
   return parseJsonObject(value, "thread update") as RuntimeRequestPayloadByKind["update_thread"]["update"];
 }
 
+function parseTelegramReactCommandTarget(
+  value: unknown,
+): RuntimeRequestPayloadByKind["telegram_react_command"]["target"] {
+  const record = parseOptionalJsonObject(value, "Telegram react command target");
+  if (!record) {
+    return undefined;
+  }
+
+  return {
+    connectorKey: parseRequiredString(record.connectorKey, "Telegram react command target connector key"),
+    conversationId: parseRequiredString(record.conversationId, "Telegram react command target conversation id"),
+  };
+}
+
 function parsePayload<K extends RuntimeRequestKind>(
   kind: K,
   value: unknown,
@@ -385,6 +400,19 @@ function parsePayload<K extends RuntimeRequestKind>(
         username: parseOptionalString(payload.username),
         firstName: parseOptionalString(payload.firstName),
         lastName: parseOptionalString(payload.lastName),
+      } as RuntimeRequestPayloadByKind[K];
+
+    case "telegram_react_command":
+      return {
+        identityId,
+        agentKey: parseRequiredString(payload.agentKey, "Telegram react command agent key"),
+        sessionId: parseRequiredString(payload.sessionId, "Telegram react command session id"),
+        threadId: parseRequiredString(payload.threadId, "Telegram react command thread id"),
+        runId: parseRequiredString(payload.runId, "Telegram react command run id"),
+        emoji: parseOptionalString(payload.emoji),
+        remove: parseOptionalBoolean(payload.remove, "Telegram react command remove"),
+        messageId: parseOptionalString(payload.messageId),
+        target: parseTelegramReactCommandTarget(payload.target),
       } as RuntimeRequestPayloadByKind[K];
 
     case "whatsapp_message":

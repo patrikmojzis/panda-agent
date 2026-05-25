@@ -19,6 +19,7 @@ import {
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import type {ThreadToolJobRecord} from "../src/domain/threads/runtime/types.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
+import {ACTIVE_PANDA_RUN_ENV} from "../src/app/runtime/active-run-command-client.js";
 
 function createAgent() {
   return new Agent({
@@ -216,6 +217,39 @@ describe("BashTool", () => {
       expect(String(pwdOutput.stdout).trim()).toBe(expectedNested);
     } finally {
       await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("injects active Panda run ids into command env without persisting them", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-active-run-env-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        agentKey: "panda",
+        sessionId: "session-1",
+        threadId: "thread-1",
+        runId: "run-1",
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const bash = new BashTool({outputDirectory: path.join(workspace, "tool-results")});
+
+      const result = await bash.run({
+        command: [
+          `printf '%s|%s|%s|%s' "$${ACTIVE_PANDA_RUN_ENV.agentKey}" "$${ACTIVE_PANDA_RUN_ENV.sessionId}" "$${ACTIVE_PANDA_RUN_ENV.threadId}" "$${ACTIVE_PANDA_RUN_ENV.runId}"`,
+          `export ${ACTIVE_PANDA_RUN_ENV.runId}=mutated`,
+        ].join("; "),
+      }, createRunContext(context));
+
+      expect(asObject(result).stdout).toBe("panda|session-1|thread-1|run-1");
+      expect(context.shell?.env[ACTIVE_PANDA_RUN_ENV.agentKey]).toBeUndefined();
+      expect(context.shell?.env[ACTIVE_PANDA_RUN_ENV.sessionId]).toBeUndefined();
+      expect(context.shell?.env[ACTIVE_PANDA_RUN_ENV.threadId]).toBeUndefined();
+      expect(context.shell?.env[ACTIVE_PANDA_RUN_ENV.runId]).toBeUndefined();
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
     }
   });
 
