@@ -1,12 +1,12 @@
 import CryptoKit
 import Foundation
 
-struct GatewayHTTPResponse {
+struct GatewayHTTPResponse: Sendable {
     let statusCode: Int
     let data: Data
 }
 
-protocol GatewayHTTPTransport {
+protocol GatewayHTTPTransport: Sendable {
     func data(for request: URLRequest, body: Data?) async throws -> GatewayHTTPResponse
 }
 
@@ -29,19 +29,19 @@ final class URLSessionGatewayHTTPTransport: GatewayHTTPTransport {
     }
 }
 
-enum GatewayDelivery: String, Codable {
+enum GatewayDelivery: String, Codable, Sendable {
     case queue
     case wake
 }
 
-struct GatewayAttachmentUpload {
+struct GatewayAttachmentUpload: Sendable {
     let data: Data
     let mimeType: String
     let filename: String?
     let idempotencyKey: String
 }
 
-struct GatewayAttachmentUploadResponse: Decodable {
+struct GatewayAttachmentUploadResponse: Decodable, Sendable {
     let attachmentId: String
     let sha256: String
     let sizeBytes: Int
@@ -51,25 +51,25 @@ struct GatewayAttachmentUploadResponse: Decodable {
     let expiresAt: String
 }
 
-struct GatewayAttachmentRef: Codable, Equatable {
+struct GatewayAttachmentRef: Codable, Equatable, Sendable {
     let id: String
     let sha256: String?
 }
 
-struct GatewayEventResponse: Decodable {
+struct GatewayEventResponse: Decodable, Sendable {
     let eventId: String
     let accepted: Bool
     let delivery: GatewayDelivery
 }
 
-struct GatewayDeviceHeartbeatResponse: Decodable {
+struct GatewayDeviceHeartbeatResponse: Decodable, Sendable {
     let ok: Bool
     let sourceId: String?
     let deviceId: String?
     let seenAt: String?
 }
 
-private struct GatewayEventBody: Encodable {
+private struct GatewayEventBody: Encodable, Sendable {
     let type: String
     let delivery: GatewayDelivery
     let occurredAt: String
@@ -77,12 +77,12 @@ private struct GatewayEventBody: Encodable {
     let attachments: [GatewayAttachmentRef]?
 }
 
-private struct GatewayErrorBody: Decodable {
+private struct GatewayErrorBody: Decodable, Sendable {
     let error: String?
     let message: String?
 }
 
-enum GatewayClientError: LocalizedError, Equatable {
+enum GatewayClientError: LocalizedError, Equatable, Sendable {
     case invalidHTTPResponse
     case invalidResponse(message: String)
     case httpStatus(statusCode: Int, message: String)
@@ -102,12 +102,10 @@ enum GatewayClientError: LocalizedError, Equatable {
     }
 }
 
-final class GatewayClient: @unchecked Sendable {
+final class GatewayClient: Sendable {
     private let baseURL: URL
     private let token: String
     private let transport: GatewayHTTPTransport
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
 
     init(
         baseURL: URL,
@@ -117,7 +115,6 @@ final class GatewayClient: @unchecked Sendable {
         self.baseURL = baseURL
         self.token = token
         self.transport = transport
-        encoder.outputFormatting = [.sortedKeys]
     }
 
     func checkHealth() async throws {
@@ -133,7 +130,7 @@ final class GatewayClient: @unchecked Sendable {
         request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let response = try await send(request, body: Data("{}".utf8), acceptedStatusCodes: 200..<300)
-        let heartbeat = try decoder.decode(GatewayDeviceHeartbeatResponse.self, from: response)
+        let heartbeat = try JSONDecoder().decode(GatewayDeviceHeartbeatResponse.self, from: response)
         guard heartbeat.ok else {
             throw GatewayClientError.invalidResponse(message: "Gateway heartbeat did not report success")
         }
@@ -151,7 +148,7 @@ final class GatewayClient: @unchecked Sendable {
         }
 
         let response = try await send(request, body: upload.data, acceptedStatusCodes: 200..<300)
-        return try decoder.decode(GatewayAttachmentUploadResponse.self, from: response)
+        return try JSONDecoder().decode(GatewayAttachmentUploadResponse.self, from: response)
     }
 
     func postEvent(
@@ -165,6 +162,8 @@ final class GatewayClient: @unchecked Sendable {
         var request = authorizedRequest(url: endpoint("v2/events"), idempotencyKey: idempotencyKey)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
         let body = try encoder.encode(GatewayEventBody(
             type: type,
             delivery: delivery,
@@ -173,7 +172,7 @@ final class GatewayClient: @unchecked Sendable {
             attachments: attachments.isEmpty ? nil : attachments
         ))
         let response = try await send(request, body: body, acceptedStatusCodes: 200..<300)
-        return try decoder.decode(GatewayEventResponse.self, from: response)
+        return try JSONDecoder().decode(GatewayEventResponse.self, from: response)
     }
 
     static func makeIdempotencyKey(prefix: String) -> String {
@@ -227,7 +226,7 @@ final class GatewayClient: @unchecked Sendable {
     }
 
     private func errorMessage(from data: Data) -> String? {
-        if let body = try? decoder.decode(GatewayErrorBody.self, from: data) {
+        if let body = try? JSONDecoder().decode(GatewayErrorBody.self, from: data) {
             return body.error ?? body.message
         }
 
