@@ -5,7 +5,12 @@ import type {JsonObject, JsonValue} from "../../lib/json.js";
 import {createSessionWithInitialThread} from "../../domain/sessions/lifecycle.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
-import type {CreateSessionInput, SessionRecord, UpdateSessionRuntimeConfigInput} from "../../domain/sessions/types.js";
+import type {
+  CreateSessionInput,
+  SessionRecord,
+  SessionRuntimeConfigRecord,
+  UpdateSessionRuntimeConfigInput,
+} from "../../domain/sessions/types.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
@@ -44,7 +49,7 @@ export interface CreateWorkerSessionInput {
   parentSessionId?: string;
   createdByIdentityId?: string;
   model?: string;
-  thinking?: ThinkingLevel;
+  thinking?: ThinkingLevel | null;
   inferenceProjection?: InferenceProjection;
   credentialAllowlist?: readonly string[];
   credentialPolicy?: ExecutionCredentialPolicy;
@@ -66,7 +71,11 @@ export interface CreateWorkerSessionResult {
   binding: SessionEnvironmentBindingRecord;
 }
 
-type WorkerSessionStore = Pick<SessionStore, "createSession" | "getSession" | "updateSessionRuntimeConfig">;
+type WorkerRuntimeConfig = Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
+type WorkerSessionStore = Pick<
+  SessionStore,
+  "createSession" | "getSession" | "getSessionRuntimeConfig" | "updateSessionRuntimeConfig"
+>;
 type WorkerThreadStore = Pick<ThreadRuntimeStore, "createThread" | "enqueueInput" | "getThread">;
 
 interface WorkerSessionServiceOptions {
@@ -169,13 +178,41 @@ function sameJson(left: JsonValue | undefined, right: JsonValue | undefined): bo
 
 function buildWorkerRuntimeConfig(
   input: CreateWorkerSessionInput,
-): Omit<UpdateSessionRuntimeConfigInput, "sessionId"> | undefined {
+): WorkerRuntimeConfig | undefined {
   const runtimeConfig = {
     ...(input.model !== undefined ? {model: input.model} : {}),
     ...(input.thinking !== undefined ? {thinking: input.thinking} : {}),
     ...(input.inferenceProjection !== undefined ? {inferenceProjection: input.inferenceProjection} : {}),
-  } satisfies Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
+  } satisfies WorkerRuntimeConfig;
   return Object.keys(runtimeConfig).length > 0 ? runtimeConfig : undefined;
+}
+
+function requestedRuntimeConfigMatches(
+  existing: SessionRuntimeConfigRecord,
+  requested: WorkerRuntimeConfig,
+): boolean {
+  if (requested.model !== undefined && existing.model !== requested.model) {
+    return false;
+  }
+
+  if (requested.thinking !== undefined) {
+    const requestedThinking = requested.thinking ?? undefined;
+    if (!existing.thinkingConfigured || existing.thinking !== requestedThinking) {
+      return false;
+    }
+  }
+
+  if (
+    requested.inferenceProjection !== undefined
+    && !sameJson(
+      existing.inferenceProjection as JsonValue | undefined,
+      requested.inferenceProjection as JsonValue | undefined,
+    )
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 export class WorkerSessionService {
@@ -298,9 +335,9 @@ export class WorkerSessionService {
   private async createSessionAndThread(
     session: CreateSessionInput,
     thread: CreateThreadInput,
-    runtimeConfig: Omit<UpdateSessionRuntimeConfigInput, "sessionId"> | undefined,
+    runtimeConfig: WorkerRuntimeConfig | undefined,
   ): Promise<{session: SessionRecord; thread: ThreadRecord; wasCreated: boolean}> {
-    const existing = await this.readExistingSessionAndThread(session, thread);
+    const existing = await this.readExistingSessionAndThread(session, thread, runtimeConfig);
     if (existing) {
       return {
         ...existing,
@@ -357,6 +394,7 @@ export class WorkerSessionService {
   private async readExistingSessionAndThread(
     session: CreateSessionInput,
     thread: CreateThreadInput,
+    runtimeConfig: WorkerRuntimeConfig | undefined,
   ): Promise<{session: SessionRecord; thread: ThreadRecord} | null> {
     const existingSession = await this.sessions.getSession(session.id).catch(() => null);
     const existingThread = await this.threads.getThread(thread.id).catch(() => null);
@@ -381,6 +419,13 @@ export class WorkerSessionService {
       || !sameJson(existingThread.systemPrompt as JsonValue | undefined, thread.systemPrompt as JsonValue | undefined)
     ) {
       throw new Error(`Worker session ${session.id} already exists with different input.`);
+    }
+
+    if (runtimeConfig) {
+      const existingRuntimeConfig = await this.sessions.getSessionRuntimeConfig(session.id);
+      if (!requestedRuntimeConfigMatches(existingRuntimeConfig, runtimeConfig)) {
+        throw new Error(`Worker session ${session.id} already exists with different runtime config.`);
+      }
     }
 
     return {
