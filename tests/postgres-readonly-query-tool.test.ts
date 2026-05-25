@@ -103,12 +103,12 @@ describe("PostgresReadonlyQueryTool", () => {
     });
 
     expect(tool.description).toContain("session.agent_sessions exposes current_thread_id, not thread_id.");
-    expect(tool.description).toContain("session.agent_prompts, session.agent_pairings, session.agent_skills, and session.agent_telepathy_devices");
+    expect(tool.description).toContain("session.agent_prompts, session.agent_pairings, and session.agent_skills");
     expect(tool.description).toContain("left(...), substring(...), regex filters, full-text search");
     expect(tool.description).toContain("Do not invent is_active flags or extra session_id subqueries");
     expect(tool.description).toContain("query session.todos");
     expect(tool.description).toContain("query session.scheduled_tasks or session.watches directly");
-    expect(tool.description).toContain("session.agent_telepathy_devices for registered Mac receivers");
+    expect(tool.description).not.toContain("agent_telepathy_devices");
   });
 
   it("runs queries inside a read-only transaction and scopes them by session and agent", async () => {

@@ -3,7 +3,6 @@ import {DataType, newDb} from "pg-mem";
 
 import {ensureReadonlySessionQuerySchema,} from "../src/domain/threads/runtime/index.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
-import {PostgresTelepathyDeviceStore} from "../src/domain/telepathy/postgres.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
@@ -62,7 +61,7 @@ class PgMemReadonlySchemaQueryable {
         continue;
       }
 
-      if (/^CREATE VIEW "session"."(messages_raw|tool_results|inputs|runs|agent_prompts|agent_pairings|agent_skills|agent_telepathy_devices|agent_sessions)"/i.test(statement)) {
+      if (/^CREATE VIEW "session"."(messages_raw|tool_results|inputs|runs|agent_prompts|agent_pairings|agent_skills|agent_sessions)"/i.test(statement)) {
         continue;
       }
 
@@ -514,7 +513,6 @@ describe("PostgresScheduledTaskStore", () => {
     const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
     const scheduledTasks = new PostgresScheduledTaskStore({pool});
     await scheduledTasks.ensureSchema();
-    await new PostgresTelepathyDeviceStore({pool}).ensureSchema();
     await new PostgresWatchStore({pool}).ensureSchema();
 
     const alice = await identityStore.createIdentity({

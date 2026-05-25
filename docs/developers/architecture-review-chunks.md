@@ -9,7 +9,7 @@ broad; the reviewer should not have to load it all at once.
 2. Session-owned delivery and wake routing
 3. Runtime daemon, request drain, and app assembly boundaries
 4. Postgres schema/store/row-parser split
-5. Public gateway, Telepathy, and micro-app surfaces
+5. Public gateway and micro-app surfaces
 6. Channel worker lifecycle and connector delivery
 7. Panda tools, browser, web, prompts, and kernel transcript cleanup
 8. Tests, import-law ratchet, and stabilization notes
@@ -21,7 +21,6 @@ broad; the reviewer should not have to load it all at once.
 - `src/lib/postgres-*`: chunk 4 owns database, schema, query, transaction, relation, integrity, and value helpers.
 - `src/lib/data-dir.ts` and `src/lib/health-server.ts`: chunk 3 owns the app-runtime helper demotion.
 - `docs/developers/architecture.md`: chunk 1 owns source-lane descriptions; chunk 8 owns ratchet/stabilization rules.
-- Public edge changes must not be hidden in other chunks. Gateway, Telepathy websocket, and micro-app HTTP behavior belong in chunk 5.
 
 ## Single-PR Rule
 
@@ -46,7 +45,6 @@ Primary files:
 - `docs/developers/email.md`
 - `docs/developers/gateway.md`
 - `docs/developers/sessions.md`
-- `docs/developers/telepathy.md`
 - `docs/developers/watches.md`
 - `docs/developers/whatsapp.md`
 - `docs/developers/wiki.md`
@@ -91,14 +89,11 @@ Primary files:
 - `src/integrations/channels/email/sync-runner.ts`
 - `src/app/runtime/daemon-requests.ts`
 - `src/app/runtime/daemon-threads.ts`
-- `src/app/runtime/telepathy-context-ingress.ts`
 - `src/prompts/runtime/email-events.ts`
 - `src/prompts/runtime/watch-events.ts`
-- tests: `tests/current-thread.test.ts`, `tests/gateway-delivery.test.ts`, `tests/email-sync-runner.test.ts`, `tests/telepathy-context-ingress.test.ts`, `tests/watch-runner.test.ts`, `tests/scheduled-task-runner.test.ts`, `tests/heartbeat-runner.test.ts`
 
 Review for:
 
-- No scheduled task, heartbeat, watch, email sync, gateway delivery, or Telepathy input stores a stale thread as the durable target.
 - `session.currentThreadId` is the late-bound runtime target.
 - Branch sessions are not treated as private ACL boundaries.
 
@@ -110,7 +105,7 @@ Keep out:
 Checks:
 
 ```sh
-pnpm vitest run tests/current-thread.test.ts tests/gateway-delivery.test.ts tests/email-sync-runner.test.ts tests/telepathy-context-ingress.test.ts tests/watch-runner.test.ts tests/scheduled-task-runner.test.ts tests/heartbeat-runner.test.ts
+pnpm vitest run tests/current-thread.test.ts tests/gateway-delivery.test.ts tests/email-sync-runner.test.ts tests/watch-runner.test.ts tests/scheduled-task-runner.test.ts tests/heartbeat-runner.test.ts
 ```
 
 ## 3. Runtime Daemon, Request Drain, And App Assembly Boundaries
@@ -202,7 +197,8 @@ Checks:
 pnpm vitest run tests/db-integrity-postgres.test.ts tests/scheduled-tasks-postgres.test.ts tests/watches-postgres.test.ts tests/thread-runtime-postgres.test.ts tests/thread-lease-postgres.test.ts tests/runtime-requests.test.ts tests/gateway.test.ts tests/credentials-postgres.test.ts tests/app-auth-postgres.test.ts tests/wiki-bindings-postgres.test.ts tests/email-postgres.test.ts tests/session-routes-postgres.test.ts tests/sessions-postgres.test.ts
 ```
 
-## 5. Public Gateway, Telepathy, And Micro-App Surfaces
+
+## 5. Public Gateway And Micro-App Surfaces
 
 Intent: public and semi-public edges stay small, explicit, and security-reviewable.
 
@@ -222,10 +218,6 @@ Primary files:
 - `src/integrations/gateway/guard-policy.ts`
 - `src/integrations/gateway/worker.ts`
 - `src/integrations/http-body.ts`
-- `src/integrations/telepathy/websocket.ts`
-- `src/integrations/telepathy/device-hello.ts`
-- `src/integrations/telepathy/context-media.ts`
-- `src/integrations/telepathy/screenshot-artifact.ts`
 - `src/integrations/apps/http-api.ts`
 - `src/integrations/apps/http-auth.ts`
 - `src/integrations/apps/http-body.ts`
@@ -239,7 +231,6 @@ Primary files:
 - `src/integrations/apps/http-security-headers.ts`
 - `src/integrations/apps/http-server.ts`
 - `src/integrations/apps/http-static.ts`
-- tests: `tests/gateway-http-body.test.ts`, `tests/gateway-event-request.test.ts`, `tests/gateway-network-controls.test.ts`, `tests/gateway-http-config.test.ts`, `tests/app-http-body.test.ts`, `tests/app-http-runtime.test.ts`, `tests/app-server.test.ts`, `tests/app-service.test.ts`, `tests/telepathy-websocket.test.ts`, `tests/telepathy-context-ingress.test.ts`, `tests/telepathy-context-media.test.ts`, `tests/telepathy-screenshot-artifact.test.ts`
 
 Review for:
 
@@ -247,7 +238,6 @@ Review for:
 - Trusted proxy and IP allowlist behavior is explicit.
 - App links expose launch tokens, not raw identity/session ids.
 - Public error responses do not echo tokens, local paths, identity ids, or session ids.
-- Telepathy websocket/device trust assumptions are tested.
 
 Keep out:
 
@@ -257,7 +247,7 @@ Keep out:
 Checks:
 
 ```sh
-pnpm vitest run tests/gateway-http-body.test.ts tests/gateway-event-request.test.ts tests/gateway-network-controls.test.ts tests/gateway-http-config.test.ts tests/app-http-body.test.ts tests/app-http-runtime.test.ts tests/app-server.test.ts tests/app-service.test.ts tests/telepathy-websocket.test.ts tests/telepathy-context-ingress.test.ts tests/telepathy-context-media.test.ts tests/telepathy-screenshot-artifact.test.ts
+pnpm vitest run tests/gateway-http-body.test.ts tests/gateway-event-request.test.ts tests/gateway-network-controls.test.ts tests/gateway-http-config.test.ts tests/app-http-body.test.ts tests/app-http-runtime.test.ts tests/app-server.test.ts tests/app-service.test.ts
 ```
 
 ## 6. Channel Worker Lifecycle And Connector Delivery

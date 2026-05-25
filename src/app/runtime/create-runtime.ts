@@ -19,7 +19,6 @@ import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-j
 import type {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import type {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import type {AgentAppAuthService} from "../../domain/apps/auth.js";
-import type {TelepathyHub} from "../../integrations/telepathy/hub.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundToolThreadInput} from "./background-tool-thread-input.js";
@@ -58,7 +57,6 @@ export interface DefinitionResolverContext {
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
-  telepathyService: TelepathyHub | null;
   wikiBindingService: WikiBindingService | null;
   mainTools: readonly Tool[];
   workerTools: readonly Tool[];
@@ -92,7 +90,6 @@ export interface RuntimeServices {
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
-  telepathyService: TelepathyHub | null;
   watches: WatchStore;
   workerSessions: WorkerSessionService;
   coordinator: ThreadRuntimeCoordinator;
@@ -123,7 +120,6 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     store: runtime.store,
     scheduledTasks: runtime.scheduledTasks,
     email: runtime.email,
-    telepathyService: runtime.telepathyService,
     wikiBindingService: runtime.wikiBindingService,
     mainTools: runtime.mainTools,
     workerTools: runtime.workerTools,
@@ -189,7 +185,6 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     store: runtime.store,
     scheduledTasks: runtime.scheduledTasks,
     email: runtime.email,
-    telepathyService: runtime.telepathyService,
     watches: runtime.watches,
     workerSessions,
     coordinator,

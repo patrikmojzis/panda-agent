@@ -14,7 +14,6 @@ import {
 } from "./tools/postgres-readonly-query-tool.js";
 import {CurrentDateTimeTool} from "./tools/current-datetime-tool.js";
 import {ImageGenerateTool, type ImageGenerateToolOptions} from "./tools/image-generate-tool.js";
-import {TelepathyScreenshotTool, type TelepathyScreenshotToolOptions,} from "./tools/telepathy-screenshot-tool.js";
 import {WebFetchTool} from "./tools/web-fetch-tool.js";
 import {WebResearchTool, type WebResearchToolOptions} from "./tools/web-research-tool.js";
 import {hasOpenAiApiKey, WhisperTool} from "./tools/whisper-tool.js";
@@ -25,7 +24,6 @@ export interface BuildDefaultAgentToolsOptions {
   browser?: BrowserToolOptions;
   imageGenerate?: ImageGenerateToolOptions;
   postgresReadonly?: PostgresReadonlyQueryToolOptions;
-  telepathy?: TelepathyScreenshotToolOptions;
   webResearch?: WebResearchToolOptions;
 }
 
@@ -42,7 +40,6 @@ export interface DefaultAgentToolRegistry {
   grepFiles: GrepFilesTool;
   imageGenerate?: ImageGenerateTool;
   media: MediaTool;
-  telepathy?: TelepathyScreenshotTool;
   webFetch: WebFetchTool;
   browser: BrowserTool;
   braveSearch?: BraveSearchTool;
@@ -82,11 +79,6 @@ export function createDefaultAgentToolRegistry(
           ...options.imageGenerate,
           jobService,
         }),
-      }
-      : {}),
-    ...(options.telepathy
-      ? {
-        telepathy: new TelepathyScreenshotTool(options.telepathy),
       }
       : {}),
     webFetch: new WebFetchTool(),
@@ -142,7 +134,6 @@ export function buildDefaultAgentToolsetsFromRegistry(
       registry.currentDateTime,
       registry.media,
       registry.imageGenerate,
-      registry.telepathy,
       registry.webFetch,
       registry.postgresReadonlyQuery,
       registry.webResearch,

@@ -9,7 +9,6 @@ protocol TokenSecretStoring {
 
 struct KeychainTokenStore: TokenSecretStoring {
     private let service = "\(AppIdentity.bundleIdentifier).gateway-device-token"
-    private let legacyService = "\(AppIdentity.bundleIdentifier).telepathy-token"
 
     private func account(agentKey: String, deviceId: String) -> String {
         "\(agentKey)::\(deviceId)"
@@ -34,11 +33,7 @@ struct KeychainTokenStore: TokenSecretStoring {
     }
 
     func loadToken(agentKey: String, deviceId: String) throws -> String? {
-        if let token = try loadToken(service: service, agentKey: agentKey, deviceId: deviceId) {
-            return token
-        }
-
-        return try loadToken(service: legacyService, agentKey: agentKey, deviceId: deviceId)
+        try loadToken(service: service, agentKey: agentKey, deviceId: deviceId)
     }
 
     private func loadToken(service: String, agentKey: String, deviceId: String) throws -> String? {
@@ -94,14 +89,12 @@ struct KeychainTokenStore: TokenSecretStoring {
     }
 
     func deleteAllTokens() throws {
-        for tokenService in [service, legacyService] {
-            let status = SecItemDelete([
-                kSecClass: kSecClassGenericPassword,
-                kSecAttrService: tokenService,
-            ] as CFDictionary)
-            guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw keychainError(status, action: "delete")
-            }
+        let status = SecItemDelete([
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+        ] as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw keychainError(status, action: "delete")
         }
     }
 }

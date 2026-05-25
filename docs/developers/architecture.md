@@ -99,11 +99,6 @@ For Panda runtime assembly, keep the public facade thin:
   disposable workers. It may stop environments through the narrow
   `stopExecutionEnvironment` seam, but purge planning must not depend on the
   full execution-environment repository.
-- `telepathy-context-ingress.ts` owns Telepathy context persistence and session
-  wakeup. Its external seam should require only main-session lookup/creation,
-  thread lookup/creation, and coordinator submit. The concrete Postgres
-  transaction fast path is internal and optional, not something tests should
-  have to fake.
 - `worker-session-service.ts` owns worker session/thread creation, environment
   binding, and initial handoff enqueueing. Its store seam should require only
   session create/get and thread create/get/enqueue methods; Postgres transaction
@@ -200,7 +195,6 @@ Put here:
 - threads
 - scheduling
 - channels, deliveries, and queue semantics
-- credentials, apps, watches, gateway, wiki, and telepathy domain records
 
 This layer owns names and concepts. It should not know how Telegram polls or how Anthropic formats a request.
 Postgres stores and schema helpers should type only the database seam they
@@ -263,7 +257,6 @@ claim scheduled tasks, watches, or heartbeats own the complete/skip/fail policy
 for that claim, including current-thread resolution failures. Do not leave those
 failures to outer error logging or TTL expiry.
 
-Gateway, apps, credentials, wiki bindings, and telepathy are sensitive surfaces.
 Their stores must parse persisted state before decryption, public delivery,
 token issuance, or device/session trust decisions. Privacy belongs in scoped DB
 roles and constrained views, not prompt instructions.
@@ -325,7 +318,6 @@ Public surfaces are security-sensitive:
   App scaffold result shapes should expose facts callers can use, not constant
   success flags. The observable contract is the created app definition, written
   file paths, schema application state, and the actual database file.
-- Telepathy owns path/origin/frame limits, device authentication, media/artifact
   decoding, and compact close/error surfaces.
   The hub should depend only on the connection/auth lifecycle store slice;
   registration, listing, and admin enablement stay out of the websocket seam.
@@ -402,7 +394,6 @@ When a tiny helper starts showing up in multiple files, stop cloning it.
   public transports should not clone their own localhost allow rules.
 - Opaque bearer/launch/device token generation, storage hashing, and timing-safe
   hash comparison live in `src/lib/opaque-tokens.ts`; gateway, public app auth,
-  and Telepathy should not clone credential comparison policy.
 - Filesystem-safe path segment guards and label normalization live in
   `src/lib/path-segments.ts`; subsystem modules should keep their own error
   wording but reuse the same path-safety rule.
@@ -502,7 +493,6 @@ Internal stays internal.
   concrete adapter can `implements` them; TypeScript's structural typing already
   gives the test seam.
 - Panda tool artifact media-root, agent-key, and scope-key rules live in
-  `src/panda/tools/artifact-paths.ts`; image, telepathy, view_media, wiki, and
   future media tools should not clone filesystem path guards.
 - `src/panda/subagents/service.ts` and related Panda helpers are internal, not public persona API
 - shared web-fetch, web-research, and SSRF helpers live under `src/integrations/web`; Panda tool leaf files call them instead of owning them
@@ -514,7 +504,6 @@ Leaf-folder barrels are gone on purpose.
 If you feel tempted to add `tools/index.ts` or `contexts/index.ts` again, don't.
 The same rule applies to internal domain and integration folders that are not
 listed as supported entrypoints above. Import the real module instead of
-recreating `index.ts` wrappers for A2A, wiki, telepathy, credentials, email,
 gateway, connector leases, execution environments, or browser internals.
 Sibling imports follow the same rule: `../sessions/store.js` is clearer than
 `../sessions/index.js` when the caller already needs the store contract.

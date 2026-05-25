@@ -3,10 +3,9 @@ import {buildAgentTableNames} from "../../agents/postgres-shared.js";
 import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
 import {buildScheduledTaskTableNames} from "../../scheduling/tasks/postgres-shared.js";
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
-import {buildTelepathyTableNames} from "../../telepathy/postgres-shared.js";
 import {buildWatchTableNames} from "../../watches/postgres-shared.js";
 import {buildEmailTableNames} from "../../email/postgres-shared.js";
-import {buildSessionRelationNames, quoteIdentifier, RUNTIME_SCHEMA, SESSION_SCHEMA} from "../../../lib/postgres-relations.js";
+import {buildSessionRelationNames, quoteIdentifier, quoteQualifiedIdentifier, RUNTIME_SCHEMA, SESSION_SCHEMA} from "../../../lib/postgres-relations.js";
 import {buildThreadRuntimeTableNames} from "./postgres-shared.js";
 
 export interface ReadonlySessionViewNames {
@@ -22,7 +21,6 @@ export interface ReadonlySessionViewNames {
   agentPrompts: string;
   agentPairings: string;
   agentSkills: string;
-  agentTelepathyDevices: string;
   scheduledTasks: string;
   scheduledTaskRuns: string;
   watches: string;
@@ -62,11 +60,10 @@ export async function ensureReadonlySessionQuerySchema(
   const agentTables = buildAgentTableNames();
   const identityTables = buildIdentityTableNames();
   const sessionTables = buildSessionTableNames();
-  const telepathyTables = buildTelepathyTableNames();
   const scheduledTaskTables = buildScheduledTaskTableNames();
   const watchTables = buildWatchTableNames();
   const emailTables = buildEmailTableNames();
-  const { agentSessions, todos, runtimeConfig, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentPairings, agentSkills, agentTelepathyDevices, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents, emailAccounts, emailAllowedRecipients, emailRoutes, emailMessages, emailMessageRecipients, emailAttachments } = buildSessionRelationNames({
+  const { agentSessions, todos, runtimeConfig, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentPairings, agentSkills, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents, emailAccounts, emailAllowedRecipients, emailRoutes, emailMessages, emailMessageRecipients, emailAttachments } = buildSessionRelationNames({
     agentSessions: "agent_sessions",
     todos: "todos",
     runtimeConfig: "runtime_config",
@@ -79,7 +76,6 @@ export async function ensureReadonlySessionQuerySchema(
     agentPrompts: "agent_prompts",
     agentPairings: "agent_pairings",
     agentSkills: "agent_skills",
-    agentTelepathyDevices: "agent_telepathy_devices",
     scheduledTasks: "scheduled_tasks",
     scheduledTaskRuns: "scheduled_task_runs",
     watches: "watches",
@@ -105,7 +101,6 @@ export async function ensureReadonlySessionQuerySchema(
     agentPrompts,
     agentPairings,
     agentSkills,
-    agentTelepathyDevices,
     scheduledTasks,
     scheduledTaskRuns,
     watches,
@@ -161,7 +156,10 @@ export async function ensureReadonlySessionQuerySchema(
     DROP VIEW IF EXISTS ${views.emailRoutes};
     DROP VIEW IF EXISTS ${views.emailAllowedRecipients};
     DROP VIEW IF EXISTS ${views.emailAccounts};
-    DROP VIEW IF EXISTS ${views.agentTelepathyDevices};
+    DROP VIEW IF EXISTS ${quoteQualifiedIdentifier(SESSION_SCHEMA, "agent_telepathy_devices")};
+    DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(RUNTIME_SCHEMA, "runtime_telepathy_devices_agent_idx")};
+    DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(RUNTIME_SCHEMA, "runtime_telepathy_devices_connected_idx")};
+    DROP TABLE IF EXISTS ${quoteQualifiedIdentifier(RUNTIME_SCHEMA, "telepathy_devices")} CASCADE;
     DROP VIEW IF EXISTS ${views.agentPairings};
     DROP VIEW IF EXISTS ${views.agentPrompts};
     DROP VIEW IF EXISTS ${views.agentSkills};
@@ -430,22 +428,6 @@ export async function ensureReadonlySessionQuerySchema(
           AND STRPOS(',' || COALESCE(current_setting('runtime.skill_allowlist', true), '') || ',', ',' || skill.skill_key || ',') > 0
         )
       );
-
-    CREATE VIEW ${views.agentTelepathyDevices}
-    WITH (security_barrier = true) AS
-    SELECT
-      device.agent_key,
-      device.device_id,
-      device.label,
-      device.connected,
-      (device.disabled_at IS NULL) AS enabled,
-      device.connected_at,
-      device.last_seen_at,
-      device.last_disconnected_at,
-      device.created_at,
-      device.updated_at
-    FROM ${telepathyTables.devices} AS device
-    WHERE device.agent_key = current_setting('runtime.agent_key', true);
 
     CREATE VIEW ${views.scheduledTasks}
     WITH (security_barrier = true) AS
@@ -717,7 +699,7 @@ export async function ensureReadonlySessionQuerySchema(
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA ${quoteIdentifier(SESSION_SCHEMA)} TO ${readonlyRole};
-      GRANT SELECT ON ${views.agentSessions}, ${views.todos}, ${views.runtimeConfig}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.agentTelepathyDevices}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents}, ${views.emailAccounts}, ${views.emailAllowedRecipients}, ${views.emailRoutes}, ${views.emailMessages}, ${views.emailMessageRecipients}, ${views.emailAttachments} TO ${readonlyRole};
+      GRANT SELECT ON ${views.agentSessions}, ${views.todos}, ${views.runtimeConfig}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents}, ${views.emailAccounts}, ${views.emailAllowedRecipients}, ${views.emailRoutes}, ${views.emailMessages}, ${views.emailMessageRecipients}, ${views.emailAttachments} TO ${readonlyRole};
     `);
   }
 

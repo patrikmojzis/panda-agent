@@ -56,7 +56,7 @@ private func sampleConfig(token: String = "secret") throws -> Config {
 func rejectsWebSocketGatewayBaseURL() throws {
     #expect(throws: ReceiverError.self) {
         try Config.make(
-            gatewayBaseURLRaw: "ws://127.0.0.1:8787/telepathy",
+            gatewayBaseURLRaw: "ws://127.0.0.1:8787/gateway",
             agentKeyRaw: "panda",
             deviceIdRaw: "home-mac",
             tokenRaw: "secret",
@@ -72,7 +72,7 @@ func rejectsWebSocketGatewayBaseURL() throws {
 
     #expect(throws: ReceiverError.self) {
         try Config.make(
-            gatewayBaseURLRaw: "wss://example.com/telepathy",
+            gatewayBaseURLRaw: "wss://example.com/gateway",
             agentKeyRaw: "panda",
             deviceIdRaw: "home-mac",
             tokenRaw: "secret",
@@ -120,61 +120,6 @@ func configStoreSavesTokenInSecretStoreOnly() throws {
     #expect(loaded?.token == "super-secret-token")
     #expect(loaded?.agentKey == "panda")
     #expect(loaded?.gatewayBaseURL.scheme == "http")
-}
-
-@Test
-func configStoreMigratesLegacyPlaintextTokenToSecretStore() throws {
-    let configURL = try temporaryConfigURL()
-    defer {
-        try? FileManager.default.removeItem(at: configURL.deletingLastPathComponent())
-    }
-    let tokenStore = FakeTokenSecretStore()
-    let legacyJSON = """
-    {
-      "serverURL": "http://127.0.0.1:8094",
-      "agentKey": "panda",
-      "deviceId": "home-mac",
-      "token": "legacy-secret-token",
-      "label": "Home Mac",
-      "reconnectDelaySeconds": 2
-    }
-    """
-    try legacyJSON.write(to: configURL, atomically: true, encoding: .utf8)
-
-    let loaded = try ConfigStore.load(from: [configURL], tokenStore: tokenStore)
-
-    #expect(loaded?.token == "legacy-secret-token")
-    #expect(loaded?.gatewayBaseURL.absoluteString == "http://127.0.0.1:8094")
-    #expect(tokenStore.tokens["panda::home-mac"] == "legacy-secret-token")
-    let migratedText = try String(contentsOf: configURL, encoding: .utf8)
-    #expect(!migratedText.contains("legacy-secret-token"))
-    #expect(!migratedText.contains("\"token\""))
-    #expect(migratedText.contains("\"gatewayBaseURL\""))
-}
-
-@Test
-func configStoreSkipsLegacyWebSocketConfigSoSetupCanStart() throws {
-    let configURL = try temporaryConfigURL()
-    defer {
-        try? FileManager.default.removeItem(at: configURL.deletingLastPathComponent())
-    }
-    let tokenStore = FakeTokenSecretStore()
-    let legacyJSON = """
-    {
-      "serverURL": "ws://127.0.0.1:8787/telepathy",
-      "agentKey": "panda",
-      "deviceId": "home-mac",
-      "token": "legacy-secret-token",
-      "label": "Home Mac",
-      "reconnectDelaySeconds": 2
-    }
-    """
-    try legacyJSON.write(to: configURL, atomically: true, encoding: .utf8)
-
-    let loaded = try ConfigStore.load(from: [configURL], tokenStore: tokenStore)
-
-    #expect(loaded == nil)
-    #expect(tokenStore.tokens.isEmpty)
 }
 
 @Test
@@ -226,67 +171,6 @@ func acceptsHTTPAndHTTPSGatewayBaseURLs() throws {
     #expect(httpConfig.gatewayBaseURL.host == "127.0.0.1")
     #expect(httpsConfig.gatewayBaseURL.scheme == "https")
     #expect(httpsConfig.gatewayBaseURL.host == "gateway.example.com")
-    #expect(httpsConfig.allowPullScreenshots)
-}
-
-@Test
-func decodesLegacyConfigWithoutShortcutOverrides() throws {
-    let legacyJSON = """
-    {
-      "serverURL": "http://127.0.0.1:8094",
-      "agentKey": "panda",
-      "deviceId": "home-mac",
-      "token": "secret",
-      "label": "Home Mac",
-      "reconnectDelaySeconds": 2
-    }
-    """
-
-    let config = try JSONDecoder().decode(Config.self, from: Data(legacyJSON.utf8))
-
-    #expect(config.gatewayBaseURL.absoluteString == "http://127.0.0.1:8094")
-    #expect(config.allowPullScreenshots)
-    #expect(config.intervalScreenshots.intervalSeconds == IntervalScreenshotConfig.defaultIntervalSeconds)
-    #expect(config.pushToTalkShortcuts.voiceOnly == .defaultVoiceOnly)
-    #expect(config.pushToTalkShortcuts.voiceWithScreenshot == .defaultVoiceWithScreenshot)
-}
-
-@Test
-func rejectsLegacyWebSocketConfigInGatewayMode() throws {
-    let legacyJSON = """
-    {
-      "serverURL": "ws://127.0.0.1:8787/telepathy",
-      "agentKey": "panda",
-      "deviceId": "home-mac",
-      "token": "secret",
-      "label": "Home Mac",
-      "reconnectDelaySeconds": 2
-    }
-    """
-
-    #expect(throws: ReceiverError.self) {
-        try JSONDecoder().decode(Config.self, from: Data(legacyJSON.utf8))
-    }
-}
-
-@Test
-func acceptsPullScreenshotsDisabled() throws {
-    let config = try Config.make(
-        gatewayBaseURLRaw: "http://127.0.0.1:8094",
-        agentKeyRaw: "panda",
-        deviceIdRaw: "home-mac",
-        tokenRaw: "secret",
-        labelRaw: "Home Mac",
-        reconnectDelayRaw: "2",
-        tunnelHostRaw: "",
-        tunnelUserRaw: "",
-        tunnelPortRaw: "",
-        tunnelLocalPortRaw: "",
-        intervalMinutesRaw: "",
-        allowPullScreenshots: false
-    )
-
-    #expect(config.allowPullScreenshots == false)
 }
 
 @Test

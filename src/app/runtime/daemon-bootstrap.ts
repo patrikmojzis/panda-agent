@@ -33,7 +33,6 @@ import {EmailSendTool} from "../../panda/tools/email-send-tool.js";
 import {OutboundTool} from "../../panda/tools/outbound-tool.js";
 import {MessageAgentTool} from "../../panda/tools/message-agent-tool.js";
 import {WORKER_CONTROL_TOOL_NAMES} from "../../panda/worker-tool-policy.js";
-import {TelepathyContextIngress} from "./telepathy-context-ingress.js";
 import {readPositiveIntegerEnv} from "./database.js";
 
 interface DaemonContext {
@@ -122,7 +121,7 @@ export async function bootstrapDaemonContext(
           notificationPokesInFlight.delete(notification.threadId);
         });
     },
-    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, sessionStore, store, telepathyService, wikiBindingService, mainTools, workerTools}) => {
+    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, sessionStore, store, wikiBindingService, mainTools, workerTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
       const sessionPrompt = await sessionStore.readSessionPrompt(session.id);
       const runtimeConfig = await sessionStore.getSessionRuntimeConfig(session.id);
@@ -153,13 +152,6 @@ export async function bootstrapDaemonContext(
         browserToolOptions: {
           service: browserService,
         },
-        ...(telepathyService
-          ? {
-            telepathyToolOptions: {
-              service: telepathyService,
-            },
-          }
-          : {}),
         tools: [
           ...sessionMainTools,
           new EmailSendTool({store: runtime.email}),
@@ -342,15 +334,6 @@ export async function bootstrapDaemonContext(
         });
       },
     });
-    const telepathyContextIngress = new TelepathyContextIngress({
-      coordinator: runtime.coordinator,
-      fallbackContext,
-      pool: runtime.pool,
-      sessionStore: runtime.sessionStore,
-      store: runtime.store,
-    });
-    runtime.telepathyService?.setContextSubmitHandler((input) => telepathyContextIngress.ingest(input));
-
     return {
       fallbackContext,
       daemonKey,

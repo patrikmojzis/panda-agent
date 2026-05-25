@@ -22,20 +22,17 @@ struct Config: Codable {
     let token: String
     let label: String?
     let reconnectDelaySeconds: UInt64
-    let allowPullScreenshots: Bool
     let intervalScreenshots: IntervalScreenshotConfig
     let pushToTalkShortcuts: PushToTalkShortcutBindings
     let tunnel: TunnelConfig?
 
     private enum CodingKeys: String, CodingKey {
         case gatewayBaseURL
-        case legacyServerURL = "serverURL"
         case agentKey
         case deviceId
         case token
         case label
         case reconnectDelaySeconds
-        case allowPullScreenshots
         case intervalScreenshots
         case pushToTalkShortcuts
         case tunnel
@@ -48,7 +45,6 @@ struct Config: Codable {
         token: String,
         label: String?,
         reconnectDelaySeconds: UInt64,
-        allowPullScreenshots: Bool = true,
         intervalScreenshots: IntervalScreenshotConfig = IntervalScreenshotConfig(intervalSeconds: IntervalScreenshotConfig.defaultIntervalSeconds),
         pushToTalkShortcuts: PushToTalkShortcutBindings = .defaults,
         tunnel: TunnelConfig?
@@ -59,7 +55,6 @@ struct Config: Codable {
         self.token = token
         self.label = label
         self.reconnectDelaySeconds = reconnectDelaySeconds
-        self.allowPullScreenshots = allowPullScreenshots
         self.intervalScreenshots = intervalScreenshots
         self.pushToTalkShortcuts = pushToTalkShortcuts
         self.tunnel = tunnel
@@ -67,15 +62,12 @@ struct Config: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let decodedBaseURL = try container.decodeIfPresent(URL.self, forKey: .gatewayBaseURL)
-            ?? container.decode(URL.self, forKey: .legacyServerURL)
-        gatewayBaseURL = try Config.validateGatewayBaseURL(url: decodedBaseURL)
+        gatewayBaseURL = try Config.validateGatewayBaseURL(url: container.decode(URL.self, forKey: .gatewayBaseURL))
         agentKey = try container.decode(String.self, forKey: .agentKey)
         deviceId = try container.decode(String.self, forKey: .deviceId)
         token = try container.decode(String.self, forKey: .token)
         label = try container.decodeIfPresent(String.self, forKey: .label)
         reconnectDelaySeconds = try container.decode(UInt64.self, forKey: .reconnectDelaySeconds)
-        allowPullScreenshots = try container.decodeIfPresent(Bool.self, forKey: .allowPullScreenshots) ?? true
         intervalScreenshots = try container.decodeIfPresent(IntervalScreenshotConfig.self, forKey: .intervalScreenshots) ?? IntervalScreenshotConfig(intervalSeconds: IntervalScreenshotConfig.defaultIntervalSeconds)
         pushToTalkShortcuts = try container.decodeIfPresent(PushToTalkShortcutBindings.self, forKey: .pushToTalkShortcuts) ?? .defaults
         tunnel = try container.decodeIfPresent(TunnelConfig.self, forKey: .tunnel)
@@ -88,7 +80,6 @@ struct Config: Codable {
         try container.encode(deviceId, forKey: .deviceId)
         try container.encodeIfPresent(label, forKey: .label)
         try container.encode(reconnectDelaySeconds, forKey: .reconnectDelaySeconds)
-        try container.encode(allowPullScreenshots, forKey: .allowPullScreenshots)
         try container.encode(intervalScreenshots, forKey: .intervalScreenshots)
         try container.encode(pushToTalkShortcuts, forKey: .pushToTalkShortcuts)
         try container.encodeIfPresent(tunnel, forKey: .tunnel)
@@ -132,7 +123,6 @@ struct Config: Codable {
         tunnelPortRaw: String,
         tunnelLocalPortRaw: String,
         intervalMinutesRaw: String,
-        allowPullScreenshots: Bool = true,
         pushToTalkShortcuts: PushToTalkShortcutBindings = .defaults
     ) throws -> Config {
         let gatewayTrimmed = gatewayBaseURLRaw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -216,7 +206,6 @@ struct Config: Codable {
             token: tokenTrimmed,
             label: labelTrimmed.isEmpty ? nil : labelTrimmed,
             reconnectDelaySeconds: reconnectDelaySeconds,
-            allowPullScreenshots: allowPullScreenshots,
             intervalScreenshots: intervalScreenshots,
             pushToTalkShortcuts: pushToTalkShortcuts,
             tunnel: tunnelConfig
@@ -303,7 +292,7 @@ struct Config: Codable {
     }
 
     private static func merge(savedConfig: Config?, overrides: [String: String], disableTunnel: Bool) throws -> Config? {
-        let gatewayRaw = overrides["gateway"] ?? overrides["server"] ?? savedConfig?.gatewayBaseURL.absoluteString
+        let gatewayRaw = overrides["gateway"] ?? savedConfig?.gatewayBaseURL.absoluteString
         let agentKey = overrides["agent"] ?? savedConfig?.agentKey
         let deviceId = overrides["device-id"] ?? savedConfig?.deviceId
         let token = overrides["token"] ?? savedConfig?.token
@@ -350,7 +339,6 @@ struct Config: Codable {
             token: token,
             label: label,
             reconnectDelaySeconds: reconnectDelaySeconds,
-            allowPullScreenshots: savedConfig?.allowPullScreenshots ?? true,
             intervalScreenshots: intervalScreenshots,
             pushToTalkShortcuts: savedConfig?.pushToTalkShortcuts ?? .defaults,
             tunnel: tunnelHost.map { host in
@@ -507,12 +495,8 @@ extension ReceiverError {
         "Microphone permission is denied. Re-enable \(AppIdentity.appDisplayName) in System Settings -> Privacy & Security -> Microphone, then retry."
     )
 
-    static let telepathyPaused = ReceiverError(
+    static let receiverPaused = ReceiverError(
         "\(AppIdentity.appDisplayName) is paused from the menu bar toggle."
-    )
-
-    static let pullScreenshotsDisabled = ReceiverError(
-        "Agent screenshot requests are disabled in \(AppIdentity.appDisplayName) settings."
     )
 }
 
@@ -576,111 +560,4 @@ func normalizeReceiverError(_ error: Error, gatewayBaseURL: URL? = nil) -> Recei
 
 func isScreenRecordingDeniedError(_ error: Error) -> Bool {
     normalizeReceiverIssue(error).state == .screenRecordingDenied
-}
-
-struct DeviceHello: Encodable {
-    let type = "device.hello"
-    let agentKey: String
-    let deviceId: String
-    let token: String
-    let label: String?
-}
-
-struct DeviceReady: Decodable {
-    let type: String
-    let agentKey: String
-    let deviceId: String
-}
-
-struct ContextAccepted: Decodable {
-    let type: String
-    let requestId: String
-}
-
-struct ScreenshotRequest: Decodable {
-    let type: String
-    let requestId: String
-}
-
-struct ScreenshotSuccess: Encodable {
-    let type = "screenshot.result"
-    let requestId: String
-    let ok = true
-    let mimeType: String
-    let data: String
-    let bytes: Int
-}
-
-struct ScreenshotFailure: Encodable {
-    let type = "screenshot.result"
-    let requestId: String
-    let ok = false
-    let error: String
-}
-
-struct RequestError: Decodable {
-    let type: String
-    let requestId: String?
-    let error: String
-}
-
-enum TelepathyContextMode: String, Sendable {
-    case pushToTalk = "push_to_talk"
-}
-
-struct ContextSubmitMetadata: Encodable, Sendable {
-    let submittedAt: Int64
-    let frontmostApp: String?
-    let windowTitle: String?
-    let trigger: String?
-}
-
-struct ContextTextItem: Encodable, Sendable {
-    let type = "text"
-    let text: String
-}
-
-struct ContextAudioItem: Encodable, Sendable {
-    let type = "audio"
-    let mimeType: String
-    let data: String
-    let bytes: Int
-    let filename: String?
-}
-
-struct ContextImageItem: Encodable, Sendable {
-    let type = "image"
-    let mimeType: String
-    let data: String
-    let bytes: Int
-    let filename: String?
-}
-
-enum ContextSubmitItem: Encodable, Sendable {
-    case text(ContextTextItem)
-    case audio(ContextAudioItem)
-    case image(ContextImageItem)
-
-    func encode(to encoder: Encoder) throws {
-        switch self {
-        case .text(let item):
-            try item.encode(to: encoder)
-        case .audio(let item):
-            try item.encode(to: encoder)
-        case .image(let item):
-            try item.encode(to: encoder)
-        }
-    }
-}
-
-struct ContextSubmit: Encodable, Sendable {
-    let type = "context.submit"
-    let requestId: String
-    let mode: String
-    let items: [ContextSubmitItem]
-    let metadata: ContextSubmitMetadata?
-}
-
-struct MessageEnvelope: Decodable {
-    let type: String
 }

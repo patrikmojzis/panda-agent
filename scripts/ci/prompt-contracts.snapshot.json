@@ -7,16 +7,16 @@
       "sha256": "5bdd27237cdbea0029962f848523647def7fb81053ec670d6d708d4eb51a8c10"
     },
     {
-      "bytes": 7934,
-      "lines": 202,
+      "bytes": 7685,
+      "lines": 197,
       "path": "src/app/runtime/create-runtime.ts",
-      "sha256": "58aa68e655a031f2e9b4a847f4b2e56f12b6d8f1aebc61364e1124c91a5da1f3"
+      "sha256": "2e6c4bbe945dce242ef2ac730bcd29fb4f32c3b252367ae7eefdb0140f868198"
     },
     {
-      "bytes": 13925,
-      "lines": 377,
+      "bytes": 13332,
+      "lines": 360,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "2a81195c428de38fd762360ad78afdb0db636adb4adf317b5af124b790d72520"
+      "sha256": "88dad78b0c0b78048a0c175006dd1001a4196f96fbc5319c688df3610fc8c8e9"
     },
     {
       "bytes": 12121,
@@ -31,16 +31,16 @@
       "sha256": "af68038f516ac4ccf5602715f551192eec53f8263857819eaab203e5dc1167b1"
     },
     {
-      "bytes": 23871,
-      "lines": 730,
+      "bytes": 22741,
+      "lines": 694,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "9400fbcbae463a0cdf17e4b318e74589c7c74175e3319b37ac15155f7615c31c"
+      "sha256": "160304a3ac8776eb9714a94088966ea5253933e973ea584d2f0ddb0dd401d2ae"
     },
     {
-      "bytes": 10745,
-      "lines": 262,
+      "bytes": 10516,
+      "lines": 259,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "4cbe67b41d5a3237435db4254e043dfcb0e21d0618b9d4ae74e3d21c90b0436d"
+      "sha256": "c1e683780a40fdbc2f2a708807e7bc5ecbe044e633d8daa6cf3800d6383a2871"
     },
     {
       "bytes": 2612,
@@ -121,10 +121,10 @@
       "sha256": "274cbf284ffa7b98c2e05de5d97b9bfb07095e6bdbd9dd6def2ea9246a7dce9f"
     },
     {
-      "bytes": 6442,
-      "lines": 206,
+      "bytes": 6091,
+      "lines": 197,
       "path": "src/panda/definition.ts",
-      "sha256": "fb043790054a66f8abd56fe2ead13ac827cabf91130806ef919668f0ca87e2ce"
+      "sha256": "f74136637ecd50fdfcd8722073462aa8310da40397961a9c4d6cc0ae611da2ce"
     },
     {
       "bytes": 1924,
@@ -133,10 +133,10 @@
       "sha256": "986ffdbbb165d18f672c6326e8399048ca4c5a7581dd0e8a5ff8f3ec757ece6b"
     },
     {
-      "bytes": 1572,
-      "lines": 71,
+      "bytes": 1546,
+      "lines": 70,
       "path": "src/panda/worker-tool-policy.ts",
-      "sha256": "0d3efaf96bcfa05e8c8c223f0fb25c4fa3ea5ed34466eaf81d58fc14d67dbe50"
+      "sha256": "5897738e567aedf446777a8240df0ffbd82e81b5a029ae5f9127a4a2ebeb4bd5"
     },
     {
       "bytes": 2898,
@@ -167,12 +167,6 @@
       "lines": 118,
       "path": "src/prompts/channels/telegram.ts",
       "sha256": "04e39341b5350952e1f735aff666926cd1c2fb3e254079f690281393427116ee"
-    },
-    {
-      "bytes": 1565,
-      "lines": 53,
-      "path": "src/prompts/channels/telepathy.ts",
-      "sha256": "677dab13c005e7ba72eb4c1c14a8f80bd8796813a539692f73c58d57a41f2fb1"
     },
     {
       "bytes": 761,
@@ -1392,7 +1386,7 @@
       }
     },
     {
-      "description": "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. A single read-only SELECT or WITH query. Prefer session.agent_sessions for the current session row. session.agent_sessions exposes current_thread_id, not thread_id. The readonly tool already scopes session.threads, session.messages, session.tool_results, session.inputs, session.runs, session.todos, session.scheduled_tasks, session.scheduled_task_runs, session.watches, session.watch_runs, and session.watch_events to the current session. The readonly tool also scopes session.agent_prompts, session.agent_pairings, session.agent_skills, and session.agent_telepathy_devices to the current agent. Do not invent is_active flags or extra session_id subqueries unless you are joining raw tables outside the session.* views. Use session.agent_prompts for agent docs, session.agent_pairings for known identities, session.agent_skills for stored skills, and session.agent_telepathy_devices for registered Mac receivers. For exploratory reads, prefer left(...), substring(...), regex filters, full-text search, or other narrow projections instead of pulling giant content blobs blindly. For durable session todo context, query session.todos. For session automation, query session.scheduled_tasks or session.watches directly with ORDER BY/LIMIT. Prefer session.agent_skills for stored skill bodies and session.messages_raw only when you truly need raw JSONB. Large skill bodies may need substring(...) or targeted column selection. If you need schema help, query information_schema.columns. Always use LIMIT on exploratory queries.",
+      "description": "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. A single read-only SELECT or WITH query. Prefer session.agent_sessions for the current session row. session.agent_sessions exposes current_thread_id, not thread_id. The readonly tool already scopes session.threads, session.messages, session.tool_results, session.inputs, session.runs, session.todos, session.scheduled_tasks, session.scheduled_task_runs, session.watches, session.watch_runs, and session.watch_events to the current session. The readonly tool also scopes session.agent_prompts, session.agent_pairings, and session.agent_skills to the current agent. Do not invent is_active flags or extra session_id subqueries unless you are joining raw tables outside the session.* views. Use session.agent_prompts for agent docs, session.agent_pairings for known identities, and session.agent_skills for stored skills. For exploratory reads, prefer left(...), substring(...), regex filters, full-text search, or other narrow projections instead of pulling giant content blobs blindly. For durable session todo context, query session.todos. For session automation, query session.scheduled_tasks or session.watches directly with ORDER BY/LIMIT. Prefer session.agent_skills for stored skill bodies and session.messages_raw only when you truly need raw JSONB. Large skill bodies may need substring(...) or targeted column selection. If you need schema help, query information_schema.columns. Always use LIMIT on exploratory queries.",
       "name": "postgres_readonly_query",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1716,31 +1710,6 @@
             "type": "object"
           }
         },
-        "type": "object"
-      }
-    },
-    {
-      "description": "Capture a screenshot from a connected telepathy device by its deviceId. Use this only when the user explicitly wants Panda to inspect their Mac screen.",
-      "name": "telepathy_screenshot",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "deviceId": {
-            "description": "Connected telepathy device id, for example home-mac.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "timeoutMs": {
-            "description": "Optional request timeout in milliseconds. Use this if the Mac is slow to respond.",
-            "maximum": 120000,
-            "minimum": 100,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "deviceId"
-        ],
         "type": "object"
       }
     },
@@ -2259,7 +2228,6 @@
       "current_datetime",
       "view_media",
       "image_generate",
-      "telepathy_screenshot",
       "web_fetch",
       "postgres_readonly_query",
       "web_research",
@@ -2308,7 +2276,6 @@
       "current_datetime",
       "view_media",
       "image_generate",
-      "telepathy_screenshot",
       "web_fetch",
       "postgres_readonly_query",
       "web_research",
@@ -2347,7 +2314,6 @@
       "browser",
       "image_generate",
       "agent_skill",
-      "telepathy_screenshot",
       "postgres_readonly_query",
       "web_research",
       "whisper",
@@ -2447,7 +2413,6 @@
       "set_env_value",
       "spawn_subagent",
       "telegram_react",
-      "telepathy_screenshot",
       "thinking_set",
       "todo_update",
       "view_media",

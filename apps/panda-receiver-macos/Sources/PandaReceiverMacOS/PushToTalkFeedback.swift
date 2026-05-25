@@ -121,16 +121,6 @@ final class PushToTalkFeedbackController {
         sounds.playError()
     }
 
-    func presentPullScreenshot() {
-        hud.show(
-            style: .sending,
-            title: "Screen Shared",
-            detail: "Panda requested a screenshot",
-            autoDismissAfter: 1.4
-        )
-        sounds.playNotice()
-    }
-
     private func phase(for status: PushToTalkStatus) -> PushToTalkFeedbackPhase {
         if status.isPreparing {
             return .preparing
@@ -165,10 +155,6 @@ private final class PushToTalkSoundPlayer {
 
     func playError() {
         play(named: "Basso")
-    }
-
-    func playNotice() {
-        play(named: "Tink")
     }
 
     private func play(named name: String) {

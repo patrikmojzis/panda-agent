@@ -31,7 +31,6 @@ const EXPECTED_PERSONA_EXPORTS = [
   "ScheduledTaskUpdateTool",
   "SetEnvValueTool",
   "SpawnSubagentTool",
-  "TelepathyScreenshotTool",
   "ThinkingSetTool",
   "WatchCreateTool",
   "WatchDisableTool",
