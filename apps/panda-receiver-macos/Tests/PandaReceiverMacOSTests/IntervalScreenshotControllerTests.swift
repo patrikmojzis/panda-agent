@@ -293,8 +293,7 @@ func pauseWhileSendIsInFlightKeepsPausedStateAndClearsTransientError() async thr
     }
 
     await MainActor.run { controller.start() }
-    await Task.yield()
-    #expect(started.value == 1)
+    #expect(await awaitEventually { started.value == 1 })
 
     await MainActor.run { controller.pause() }
 
@@ -339,8 +338,7 @@ func stopWhileSendIsInFlightKeepsStoppedStateAndClearsTransientError() async thr
     }
 
     await MainActor.run { controller.start() }
-    await Task.yield()
-    #expect(started.value == 1)
+    #expect(await awaitEventually { started.value == 1 })
 
     await MainActor.run { controller.stop() }
 
