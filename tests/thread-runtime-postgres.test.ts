@@ -530,6 +530,66 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(columns.rows).toEqual([]);
   });
 
+  it("merges legacy thread runtime fields into existing partial session runtime config rows", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {sessionStore, threadStore: store} = await createRuntimeStores(pool);
+    await seedSession(pool, {
+      sessionId: "partial-config-session",
+      threadId: "partial-config-thread",
+    });
+    await store.createThread({id: "partial-config-thread", sessionId: "partial-config-session"});
+    await sessionStore.updateSessionRuntimeConfig({
+      sessionId: "partial-config-session",
+      model: "openai/gpt-5.1",
+      thinking: null,
+    });
+
+    const threadTable = buildThreadRuntimeTableNames().threads;
+    const pendingWakeAt = Date.parse("2035-01-02T03:04:05.000Z");
+    const legacyProjection = {dropThinking: {preserveRecentUserTurns: 4}};
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN model TEXT`);
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN thinking TEXT`);
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN pending_wake_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN prompt_cache_key TEXT`);
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN inference_projection JSONB`);
+    await pool.query(`
+      UPDATE ${threadTable}
+      SET model = 'openai/gpt-5.2',
+          thinking = 'high',
+          pending_wake_at = $2,
+          prompt_cache_key = 'thread:' || id,
+          inference_projection = $3::jsonb
+      WHERE id = $1
+    `, [
+      "partial-config-thread",
+      new Date(pendingWakeAt),
+      JSON.stringify(legacyProjection),
+    ]);
+
+    await migrateSessionRuntimeConfigFromThreadRows(pool, buildThreadRuntimeTableNames());
+
+    const migratedConfig = await sessionStore.getSessionRuntimeConfig("partial-config-session");
+    expect(migratedConfig).toMatchObject({
+      sessionId: "partial-config-session",
+      model: "openai/gpt-5.1",
+      thinkingConfigured: true,
+      inferenceProjection: legacyProjection,
+      pendingWakeAt,
+    });
+    expect(migratedConfig.thinking).toBeUndefined();
+    await expect(store.hasPendingWake("partial-config-thread")).resolves.toBe(true);
+  });
+
   it("refuses to drop custom legacy prompt cache keys", async () => {
     const db = newDb();
     db.public.registerFunction({

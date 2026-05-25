@@ -218,14 +218,14 @@ export async function migrateSessionRuntimeConfigFromThreadRows(
     const inferenceProjectionExpression = hasInferenceProjection ? "t.inference_projection" : "NULL::jsonb";
     const pendingWakeExpression = hasPendingWake ? "t.pending_wake_at" : "NULL::timestamptz";
     const predicates = [
-      ...(hasModel ? ["t.model IS NOT NULL"] : []),
+      ...(hasModel ? ["t.model IS NOT NULL AND t.model <> ''"] : []),
       ...(hasThinking ? ["t.thinking IS NOT NULL AND NOT (s.kind = 'worker' AND t.thinking = 'xhigh')"] : []),
       ...(hasInferenceProjection ? ["t.inference_projection IS NOT NULL"] : []),
       ...(hasPendingWake ? ["t.pending_wake_at IS NOT NULL"] : []),
     ];
 
     await pool.query(`
-      INSERT INTO ${sessionTables.sessionRuntimeConfig} (
+      INSERT INTO ${sessionTables.sessionRuntimeConfig} AS config (
         session_id,
         model,
         thinking,
@@ -245,7 +245,20 @@ export async function migrateSessionRuntimeConfigFromThreadRows(
         ON t.id = s.current_thread_id
        AND t.session_id = s.id
       WHERE ${predicates.length > 0 ? predicates.map((predicate) => `(${predicate})`).join(" OR ") : "FALSE"}
-      ON CONFLICT (session_id) DO NOTHING
+      ON CONFLICT (session_id) DO UPDATE
+      SET model = COALESCE(config.model, EXCLUDED.model),
+          thinking = CASE
+            WHEN config.thinking_configured THEN config.thinking
+            ELSE EXCLUDED.thinking
+          END,
+          thinking_configured = config.thinking_configured OR EXCLUDED.thinking_configured,
+          inference_projection = COALESCE(config.inference_projection, EXCLUDED.inference_projection),
+          pending_wake_at = COALESCE(config.pending_wake_at, EXCLUDED.pending_wake_at),
+          updated_at = NOW()
+      WHERE (config.model IS NULL AND EXCLUDED.model IS NOT NULL)
+         OR (NOT config.thinking_configured AND EXCLUDED.thinking_configured)
+         OR (config.inference_projection IS NULL AND EXCLUDED.inference_projection IS NOT NULL)
+         OR (config.pending_wake_at IS NULL AND EXCLUDED.pending_wake_at IS NOT NULL)
     `);
   }
 
