@@ -8,6 +8,44 @@ function isWordLikeSecret(value: string): boolean {
   return /^[A-Za-z0-9_]+$/.test(value);
 }
 
+const BASH_TRUNCATION_MARKER_PATTERN = "\n\n…\\d+ chars truncated…\n\n";
+
+function minimumTruncatedFragmentLength(secret: string): number {
+  return Math.max(6, Math.ceil(secret.length * 0.75));
+}
+
+function redactSecretFragmentsAtTruncationMarkers(value: string, secrets: readonly string[]): string {
+  // Head/tail previews can cut through a secret before exact-value redaction runs.
+  // Redact only long fragments touching the truncation marker to avoid broad over-redaction.
+  if (!value.includes(" chars truncated")) {
+    return value;
+  }
+
+  let redacted = value;
+  for (const secret of secrets) {
+    const minimumLength = minimumTruncatedFragmentLength(secret);
+    if (secret.length <= minimumLength) {
+      continue;
+    }
+
+    for (let length = secret.length - 1; length >= minimumLength; length -= 1) {
+      const prefix = escapeRegExp(secret.slice(0, length));
+      redacted = redacted.replace(
+        new RegExp(`${prefix}(?=${BASH_TRUNCATION_MARKER_PATTERN})`, "g"),
+        "[redacted]",
+      );
+
+      const suffix = escapeRegExp(secret.slice(secret.length - length));
+      redacted = redacted.replace(
+        new RegExp(`(${BASH_TRUNCATION_MARKER_PATTERN})${suffix}`, "g"),
+        "$1[redacted]",
+      );
+    }
+  }
+
+  return redacted;
+}
+
 /**
  * Replaces secret occurrences in `value` with a redaction marker.
  *
@@ -33,7 +71,7 @@ export function redactSecretsInString(value: string, secrets: readonly string[])
     redacted = redacted.replace(new RegExp(escaped, "g"), "[redacted]");
   }
 
-  return redacted;
+  return redactSecretFragmentsAtTruncationMarkers(redacted, secrets);
 }
 
 /**
