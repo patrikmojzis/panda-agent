@@ -37,6 +37,7 @@ export interface ChatRuntimeServices {
   resolveThreadRunConfig(threadId: string): Promise<{
     model: string;
     thinking?: ThinkingLevel;
+    inferenceProjection?: InferenceProjection;
   }>;
   listAgentSessions(agentKey: string): Promise<readonly SessionRecord[]>;
   submitTextInput(input: {

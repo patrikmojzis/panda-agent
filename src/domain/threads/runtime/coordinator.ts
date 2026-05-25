@@ -9,6 +9,7 @@ import type {ThreadRunEvent} from "../../../kernel/agent/types.js";
 import {stringifyUnknown} from "../../../kernel/agent/helpers/stringify.js";
 import type {
   AutoCompactionRuntimeState,
+  InferenceProjection,
   ResolvedThreadDefinition,
   ThreadDefinitionResolver,
   ThreadInputPayload,
@@ -256,6 +257,7 @@ export class ThreadRuntimeCoordinator {
   ): Promise<{
     model: string;
     thinking: ThinkingLevel | undefined;
+    inferenceProjection: InferenceProjection | undefined;
   }> {
     const thread = typeof threadOrId === "string"
       ? await this.store.getThread(threadOrId)
@@ -550,11 +552,13 @@ export class ThreadRuntimeCoordinator {
   ): {
     model: string;
     thinking: ThinkingLevel | undefined;
+    inferenceProjection: InferenceProjection | undefined;
   } {
     const defaultModel = resolveRuntimeDefaultModelSelector();
     return {
       model: definition.model ?? defaultModel,
       thinking: definition.thinking,
+      inferenceProjection: definition.inferenceProjection,
     };
   }
 

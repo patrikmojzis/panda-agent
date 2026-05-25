@@ -183,6 +183,7 @@ export function createDaemonRequestProcessor(
     return {
       model: config.model,
       thinking: config.thinking ?? null,
+      ...(config.inferenceProjection ? {inferenceProjection: config.inferenceProjection} : {}),
     };
   };
 

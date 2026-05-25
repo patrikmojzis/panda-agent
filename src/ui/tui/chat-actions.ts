@@ -170,6 +170,7 @@ async function handleUsageCommand(host: ChatCommandHost): Promise<boolean> {
     const fallbackRunConfig = {
       model: host.getModel(),
       thinking: host.getThinking(),
+      inferenceProjection: undefined,
     };
     const runConfig = services.resolveThreadRunConfig
       ? await services.resolveThreadRunConfig(threadId).catch(() => fallbackRunConfig)
@@ -179,6 +180,7 @@ async function handleUsageCommand(host: ChatCommandHost): Promise<boolean> {
       transcript,
       model: runConfig.model,
       thinking: runConfig.thinking,
+      inferenceProjection: runConfig.inferenceProjection,
       isRunning: host.isRunning(),
     }));
 
