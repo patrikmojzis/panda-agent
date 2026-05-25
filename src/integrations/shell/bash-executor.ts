@@ -24,6 +24,7 @@ import {
   RUNNER_PATH_SCOPED_HEADER,
 } from "./bash-protocol.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
+import {assertNoDeprecatedBashServerEnv, CORE_BASH_SERVER_ENV_NAMES} from "./bash-server-env.js";
 import type {ShellExecutionContext} from "./types.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 import {buildShellProcessEnv, SAFE_SHELL} from "./environment.js";
@@ -106,15 +107,18 @@ export function resolveBashExecutionMode(env: NodeJS.ProcessEnv = process.env): 
 }
 
 export function resolveRunnerUrlTemplate(env: NodeJS.ProcessEnv = process.env): string | null {
-  return trimToNull(env.RUNNER_URL_TEMPLATE);
+  assertNoDeprecatedBashServerEnv(env, ["RUNNER_URL_TEMPLATE"]);
+  return trimToNull(env.BASH_SERVER_URL_TEMPLATE);
 }
 
 export function resolveRunnerCwdTemplate(env: NodeJS.ProcessEnv = process.env): string | null {
-  return trimToNull(env.RUNNER_CWD_TEMPLATE);
+  assertNoDeprecatedBashServerEnv(env, ["RUNNER_CWD_TEMPLATE"]);
+  return trimToNull(env.BASH_SERVER_CWD_TEMPLATE);
 }
 
 export function resolveRunnerSharedSecret(env: NodeJS.ProcessEnv = process.env): string | null {
-  return trimToNull(env.RUNNER_SHARED_SECRET);
+  assertNoDeprecatedBashServerEnv(env, ["RUNNER_SHARED_SECRET"]);
+  return trimToNull(env.BASH_SERVER_SHARED_SECRET);
 }
 
 function resolveAgentTemplateValue(template: string, agentKey: string): string {
@@ -281,6 +285,7 @@ export class RemoteShellExecutor implements BashExecutor {
 
   constructor(options: RemoteShellExecutorOptions = {}) {
     const env = options.env ?? process.env;
+    assertNoDeprecatedBashServerEnv(env, CORE_BASH_SERVER_ENV_NAMES);
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.runnerUrlTemplate = options.runnerUrlTemplate ?? resolveRunnerUrlTemplate(env);
     this.sharedSecret = resolveRunnerSharedSecret(env);
@@ -343,7 +348,7 @@ export class RemoteShellExecutor implements BashExecutor {
     options: BashExecutorOptions & {run: RunContext<TContext>},
   ): Promise<BashExecutionResult> {
     if (!this.runnerUrlTemplate && !options.executionEnvironment?.runnerUrl) {
-      throw new ToolError("Remote bash execution requires RUNNER_URL_TEMPLATE.");
+      throw new ToolError("Remote bash execution requires BASH_SERVER_URL_TEMPLATE.");
     }
 
     const agentKey = readAgentKey(options.run.context);

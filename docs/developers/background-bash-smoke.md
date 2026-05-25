@@ -42,8 +42,8 @@ If you want remote mode, also set:
 
 ```bash
 export BASH_EXECUTION_MODE=remote
-export RUNNER_URL_TEMPLATE=http://127.0.0.1:8080
-export RUNNER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
+export BASH_SERVER_URL_TEMPLATE=http://127.0.0.1:8080
+export BASH_SERVER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
 ```
 
 and start the runner separately.

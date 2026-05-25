@@ -128,7 +128,7 @@ describe("createChatRuntime session wiring", () => {
 
   it("shows the remote runner cwd for stored agent-home paths", () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
     vi.stubEnv("DATA_DIR", "/Users/tester/.panda");
 
     const thread: ThreadRecord = {

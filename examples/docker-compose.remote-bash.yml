@@ -28,8 +28,8 @@ services:
       DATABASE_URL: postgres://panda_app:app_pw@db:5432/panda
       BASH_EXECUTION_MODE: remote
       CODEX_HOME: /root/.codex
-      RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
-      RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:-}
+      BASH_SERVER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
+      BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}
       TZ: ${TZ:-UTC}
     volumes:
       - ${HOME}/.panda:/root/.panda
@@ -79,10 +79,10 @@ services:
     command: ["bash-server"]
     restart: unless-stopped
     environment:
-      RUNNER_AGENT_KEY: panda
-      RUNNER_PORT: 8080
-      RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:-}
-      RUNNER_ALLOWED_ROOTS: ${RUNNER_ALLOWED_ROOTS:-}
+      BASH_SERVER_AGENT_KEY: panda
+      BASH_SERVER_PORT: 8080
+      BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}
+      BASH_SERVER_ALLOWED_ROOTS: ${BASH_SERVER_ALLOWED_ROOTS:-}
       TZ: ${TZ:-UTC}
     volumes:
       - ${HOME}/.panda/agents/panda:/root/.panda/agents/panda
@@ -101,10 +101,10 @@ services:
     command: ["bash-server"]
     restart: unless-stopped
     environment:
-      RUNNER_AGENT_KEY: ops
-      RUNNER_PORT: 8080
-      RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:-}
-      RUNNER_ALLOWED_ROOTS: ${RUNNER_ALLOWED_ROOTS:-}
+      BASH_SERVER_AGENT_KEY: ops
+      BASH_SERVER_PORT: 8080
+      BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}
+      BASH_SERVER_ALLOWED_ROOTS: ${BASH_SERVER_ALLOWED_ROOTS:-}
       TZ: ${TZ:-UTC}
     volumes:
       - ${HOME}/.panda/agents/ops:/root/.panda/agents/ops

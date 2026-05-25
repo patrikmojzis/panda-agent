@@ -27,6 +27,7 @@ import {isRecord} from "../../lib/records.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
 import {readJsonHttpBody} from "../http-body.js";
 import {buildSafeCommandBaseEnv} from "./environment.js";
+import {assertNoDeprecatedBashServerEnv, DOCKER_MANAGER_BASH_SERVER_ENV_NAMES} from "./bash-server-env.js";
 
 const DEFAULT_MANAGER_HOST = "127.0.0.1";
 const DEFAULT_MANAGER_PORT = 8095;
@@ -396,9 +397,9 @@ function buildContainerConfig(input: {
       `HOME=${safeEnv.HOME ?? ""}`,
       `TMPDIR=${safeEnv.TMPDIR ?? ""}`,
       `LANG=${safeEnv.LANG ?? ""}`,
-      `RUNNER_AGENT_KEY=${input.request.agentKey}`,
-      `RUNNER_PORT=${input.runnerPort}`,
-      ...(input.runnerSharedSecret ? [`RUNNER_SHARED_SECRET=${input.runnerSharedSecret}`] : []),
+      `BASH_SERVER_AGENT_KEY=${input.request.agentKey}`,
+      `BASH_SERVER_PORT=${input.runnerPort}`,
+      ...(input.runnerSharedSecret ? [`BASH_SERVER_SHARED_SECRET=${input.runnerSharedSecret}`] : []),
       `TZ=${safeEnv.TZ ?? "UTC"}`,
     ],
     WorkingDir: input.runnerCwd,
@@ -623,6 +624,7 @@ function validateEnvironmentIdRequest(value: unknown): {environmentId: string} {
 export function resolveDockerExecutionEnvironmentManagerOptions(
   env: NodeJS.ProcessEnv = process.env,
 ): DockerExecutionEnvironmentManagerOptions {
+  assertNoDeprecatedBashServerEnv(env, DOCKER_MANAGER_BASH_SERVER_ENV_NAMES);
   return {
     env,
     dockerHost: trimToUndefined(env.PANDA_DOCKER_HOST) ?? trimToUndefined(env.DOCKER_HOST) ?? DEFAULT_DOCKER_HOST,
@@ -632,7 +634,7 @@ export function resolveDockerExecutionEnvironmentManagerOptions(
     hostRunnerHost: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_PUBLIC_HOST) ?? DEFAULT_HOST_BIND_IP,
     runnerPort: parsePort(trimToNull(env.PANDA_DISPOSABLE_RUNNER_PORT), DEFAULT_RUNNER_PORT),
     runnerCwd: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_CWD) ?? DEFAULT_RUNNER_CWD,
-    runnerSharedSecret: trimToUndefined(env.RUNNER_SHARED_SECRET),
+    runnerSharedSecret: trimToUndefined(env.BASH_SERVER_SHARED_SECRET),
     hostEnvironmentsRoot: resolveEnvironmentRootPath(
       env.PANDA_ENVIRONMENTS_HOST_ROOT,
       resolveDefaultHostEnvironmentsRoot(),

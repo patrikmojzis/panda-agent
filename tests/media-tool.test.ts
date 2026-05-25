@@ -224,7 +224,7 @@ describe("MediaTool", () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "runtime-media-remote-"));
     try {
       vi.stubEnv("BASH_EXECUTION_MODE", "remote");
-      vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+      vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
       vi.stubEnv("DATA_DIR", dataDir);
 
       const localImagePath = path.join(dataDir, "agents", "jozef", "media", "telegram", "photo.png");
