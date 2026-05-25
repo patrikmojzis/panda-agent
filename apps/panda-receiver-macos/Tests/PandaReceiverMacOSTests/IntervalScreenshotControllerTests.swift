@@ -153,8 +153,8 @@ func pauseStopsFurtherSends() async throws {
     }
 
     await MainActor.run { controller.start() }
-    await Task.yield()
-    #expect(sentCount.value == 1)
+    #expect(await awaitEventually { sentCount.value == 1 })
+    #expect(await awaitEventually { await sleeper.hasWaiters() })
 
     await MainActor.run { controller.pause() }
 
@@ -193,14 +193,12 @@ func resumeSendsImmediatelyAgain() async throws {
     }
 
     await MainActor.run { controller.start() }
-    await Task.yield()
-    #expect(sentCount.value == 1)
+    #expect(await awaitEventually { sentCount.value == 1 })
 
     await MainActor.run { controller.pause() }
     await MainActor.run { controller.resume() }
-    await Task.yield()
 
-    #expect(sentCount.value == 2)
+    #expect(await awaitEventually { sentCount.value == 2 })
 }
 
 @Test
@@ -376,12 +374,19 @@ func fatalGatewayAuthErrorStopsController() async throws {
     }
 
     await MainActor.run { controller.start() }
-    await Task.yield()
 
-    let state = await MainActor.run { controller.state }
-    if case .error = state {
+    let isError = await awaitEventually {
+        let state = await MainActor.run { controller.state }
+        if case .error = state {
+            return true
+        }
+        return false
+    }
+
+    if isError {
         #expect(true)
     } else {
+        let state = await MainActor.run { controller.state }
         Issue.record("Expected error state, got: \(state)")
     }
 }
@@ -407,12 +412,23 @@ func screenRecordingDeniedStopsController() async throws {
     }
 
     await MainActor.run { controller.start() }
-    await Task.yield()
 
-    let state = await MainActor.run { controller.state }
-    if case .error(let message, _) = state {
-        #expect(message == ReceiverError.screenRecordingDenied.message)
+    let isScreenRecordingError = await awaitEventually {
+        let state = await MainActor.run { controller.state }
+        if case .error(let message, _) = state {
+            return message == ReceiverError.screenRecordingDenied.message
+        }
+        return false
+    }
+
+    if isScreenRecordingError {
+        #expect(true)
     } else {
-        Issue.record("Expected error state, got: \(state)")
+        let state = await MainActor.run { controller.state }
+        if case .error(let message, _) = state {
+            #expect(message == ReceiverError.screenRecordingDenied.message)
+        } else {
+            Issue.record("Expected error state, got: \(state)")
+        }
     }
 }
