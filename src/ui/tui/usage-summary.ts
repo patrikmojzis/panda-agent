@@ -8,6 +8,7 @@ import {
 } from "../../kernel/transcript/compaction.js";
 import {projectTranscriptForInference} from "../../kernel/transcript/inference-projection.js";
 import {
+    type InferenceProjection,
     type ThreadMessageRecord,
     type ThreadRecord,
 } from "../../domain/threads/runtime/types.js";
@@ -261,6 +262,7 @@ export function collectThreadUsageSnapshot(options: {
   transcript: readonly ThreadMessageRecord[];
   model: string;
   thinking?: ThinkingLevel;
+  inferenceProjection?: InferenceProjection;
   isRunning: boolean;
   now?: number;
 }): ThreadUsageSnapshot {
@@ -268,7 +270,7 @@ export function collectThreadUsageSnapshot(options: {
   // shows the context the model is actually likely to see, not just stored junk.
   const effectiveProjection = mergeInferenceProjection(
     DEFAULT_INFERENCE_PROJECTION,
-    undefined,
+    options.inferenceProjection,
   );
   const runTranscript = projectTranscriptForRun(options.transcript);
   const visibleTranscript = projectTranscriptForInference(

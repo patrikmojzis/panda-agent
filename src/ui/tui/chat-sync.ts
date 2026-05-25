@@ -1,4 +1,4 @@
-import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord} from "../../domain/threads/runtime/types.js";
+import type {InferenceProjection, ThreadMessageRecord, ThreadRecord, ThreadRunRecord} from "../../domain/threads/runtime/types.js";
 import {loadStoredThreadSnapshot, resolveStoredThreadDisplayConfig} from "../shared/stored-thread.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {STORED_SYNC_MS} from "./chat-shared.js";
@@ -6,7 +6,11 @@ import type {ChatRuntimeThreadStore} from "./runtime.js";
 
 interface ChatSyncServices {
   store: ChatRuntimeThreadStore;
-  resolveThreadRunConfig?(threadId: string): Promise<{model: string; thinking?: ThinkingLevel}>;
+  resolveThreadRunConfig?(threadId: string): Promise<{
+    model: string;
+    thinking?: ThinkingLevel;
+    inferenceProjection?: InferenceProjection;
+  }>;
 }
 
 export interface ChatSyncHost {

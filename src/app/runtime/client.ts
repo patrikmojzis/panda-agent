@@ -90,6 +90,7 @@ export interface RuntimeClient {
   resolveThreadRunConfig(threadId: string): Promise<{
     model: string;
     thinking?: ThinkingLevel;
+    inferenceProjection?: InferenceProjection;
   }>;
   listAgentSessions(agentKey: string): Promise<readonly SessionRecord[]>;
   submitTextInput(input: {
@@ -386,8 +387,12 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
 
     const resolveThreadRunConfig = async (
       threadId: string,
-    ): Promise<{model: string; thinking?: ThinkingLevel}> => {
-      const result = await enqueueDaemonRequest<{model: string; thinking?: ThinkingLevel | null}>({
+    ): Promise<{model: string; thinking?: ThinkingLevel; inferenceProjection?: InferenceProjection}> => {
+      const result = await enqueueDaemonRequest<{
+        model: string;
+        thinking?: ThinkingLevel | null;
+        inferenceProjection?: InferenceProjection;
+      }>({
         kind: "resolve_thread_run_config",
         payload: {
           identityId: identity.id,
@@ -397,6 +402,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       return {
         model: result.model,
         thinking: result.thinking ?? undefined,
+        ...(result.inferenceProjection ? {inferenceProjection: result.inferenceProjection} : {}),
       };
     };
 

@@ -1,7 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {stringToUserMessage, type ThinkingLevel} from "../src/kernel/agent/index.js";
-import {createCompactBoundaryMessage, type ThreadRecord, type ThreadRunRecord} from "../src/domain/threads/runtime/index.js";
+import {createCompactBoundaryMessage, type InferenceProjection, type ThreadRecord, type ThreadRunRecord} from "../src/domain/threads/runtime/index.js";
 import * as markdown from "../src/ui/tui/markdown.js";
 import {buildChatHelpText} from "../src/ui/tui/chat-commands.js";
 import {buildChatView} from "../src/ui/tui/chat-render.js";
@@ -1058,6 +1058,87 @@ describe("thread usage snapshots", () => {
     expect(formatted).toContain("**Last compaction:** manual");
     expect(formatted).toContain("**Thread total:** 2 responses");
   });
+
+  it("uses session-level inference projection and ignores stale thread projection baggage", () => {
+    const staleThreadProjection = {
+      dropMessages: {preserveTailMessages: 1},
+    } satisfies InferenceProjection;
+    const sessionProjection = {
+      dropMessages: {preserveTailMessages: 3},
+      dropImages: {preserveRecentUserTurns: 0, preserveTailMessages: 1},
+    } satisfies InferenceProjection;
+    const thread = {
+      id: "thread-usage-projection",
+      identityId: "test-user",
+      agentKey: "panda",
+      model: "anthropic/claude-opus-4-7",
+      thinking: "high" as const,
+      inferenceProjection: staleThreadProjection,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const transcript = [
+      {
+        id: "message-1",
+        threadId: "thread-usage-projection",
+        sequence: 1,
+        origin: "input" as const,
+        source: "tui",
+        message: stringToUserMessage("old request"),
+        createdAt: 1,
+      },
+      {
+        id: "message-2",
+        threadId: "thread-usage-projection",
+        sequence: 2,
+        origin: "input" as const,
+        source: "tui",
+        message: {
+          role: "user" as const,
+          content: [
+            {type: "text" as const, text: "older image request"},
+            {type: "image" as const, data: "A".repeat(4096), mimeType: "image/png"},
+          ],
+          timestamp: 2,
+        },
+        createdAt: 2,
+      },
+      {
+        id: "message-3",
+        threadId: "thread-usage-projection",
+        sequence: 3,
+        origin: "runtime" as const,
+        source: "assistant",
+        message: assistantWithUsage("middle reply"),
+        createdAt: 3,
+      },
+      {
+        id: "message-4",
+        threadId: "thread-usage-projection",
+        sequence: 4,
+        origin: "input" as const,
+        source: "tui",
+        message: stringToUserMessage("tail request"),
+        createdAt: 4,
+      },
+    ];
+
+    const snapshot = collectThreadUsageSnapshot({
+      thread,
+      transcript,
+      model: thread.model,
+      thinking: thread.thinking,
+      inferenceProjection: sessionProjection,
+      isRunning: false,
+      now: 10,
+    });
+
+    expect(snapshot.storedMessages).toBe(4);
+    expect(snapshot.runMessages).toBe(4);
+    expect(snapshot.visibleMessages).toBe(3);
+    expect(snapshot.storedImages.count).toBe(1);
+    expect(snapshot.visibleImages.count).toBe(0);
+  });
 });
 
 describe("ChatApp usage command", () => {
@@ -1068,6 +1149,7 @@ describe("ChatApp usage command", () => {
       agentKey: "panda",
       model: "anthropic/claude-opus-4-7",
       thinking: "high" as const,
+      inferenceProjection: {dropMessages: {preserveTailMessages: 3}},
       createdAt: 1,
       updatedAt: 2,
     };
@@ -1091,10 +1173,20 @@ describe("ChatApp usage command", () => {
         message: assistantWithUsage("hi"),
         createdAt: 2,
       },
+      {
+        id: "message-3",
+        threadId: "thread-usage",
+        sequence: 3,
+        origin: "input" as const,
+        source: "tui",
+        message: stringToUserMessage("latest"),
+        createdAt: 3,
+      },
     ]);
     const resolveThreadRunConfig = vi.fn(async () => ({
       model: "openai/gpt-5.4",
       thinking: "medium" as const,
+      inferenceProjection: {dropMessages: {preserveTailMessages: 1}},
     }));
     const app = createAppHarness();
 
@@ -1120,6 +1212,8 @@ describe("ChatApp usage command", () => {
       body: expect.stringContaining("**Context policy:**"),
     });
     expect(app.transcript.at(-1)?.body).toContain("`openai/gpt-5.4`");
+    expect(app.transcript.at(-1)?.body).toContain("**Visible now:** 1 msgs");
+    expect(app.transcript.at(-1)?.body).toContain("**Run input:** 3 msgs");
   });
 
   it("falls back to stored thread config when live config is unavailable", async () => {
