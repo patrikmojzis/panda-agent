@@ -6,7 +6,7 @@ import type {ChatRuntimeThreadStore} from "./runtime.js";
 
 interface ChatSyncServices {
   store: ChatRuntimeThreadStore;
-  resolveThreadRunConfig(threadId: string): Promise<{model: string; thinking?: ThinkingLevel}>;
+  resolveThreadRunConfig?(threadId: string): Promise<{model: string; thinking?: ThinkingLevel}>;
 }
 
 export interface ChatSyncHost {
@@ -91,8 +91,9 @@ export async function syncChatStoredThreadState(
       return;
     }
 
-    const displayConfig = await services.resolveThreadRunConfig(snapshot.thread.id)
-      .catch(() => resolveStoredThreadDisplayConfig());
+    const displayConfig = services.resolveThreadRunConfig
+      ? await services.resolveThreadRunConfig(snapshot.thread.id).catch(() => resolveStoredThreadDisplayConfig())
+      : resolveStoredThreadDisplayConfig();
     host.applyLoadedSnapshot(snapshot.thread, snapshot.transcript, snapshot.runs, displayConfig);
     host.requestRender();
   } catch {

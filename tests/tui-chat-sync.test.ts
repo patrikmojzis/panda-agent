@@ -1,6 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {syncChatStoredThreadState} from "../src/ui/tui/chat-sync.js";
+import {resolveStoredThreadDisplayConfig} from "../src/ui/shared/stored-thread.js";
 
 describe("syncChatStoredThreadState", () => {
   it("applies the stored snapshot during background sync without daemon config", async () => {
@@ -44,7 +45,12 @@ describe("syncChatStoredThreadState", () => {
       refreshSessionPicker: vi.fn(async () => {}),
     }, true);
 
-    expect(applyLoadedSnapshot).toHaveBeenCalledWith(thread, [], []);
+    expect(applyLoadedSnapshot).toHaveBeenCalledWith(
+      thread,
+      [],
+      [],
+      resolveStoredThreadDisplayConfig(),
+    );
     expect(requestRender).toHaveBeenCalledOnce();
   });
 });

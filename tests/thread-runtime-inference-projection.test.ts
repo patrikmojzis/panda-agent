@@ -305,6 +305,11 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
       ]),
     );
     const store = new TestThreadRuntimeStore();
+    const inferenceProjection = {
+      dropMessages: {
+        preserveRecentUserTurns: 1,
+      },
+    };
 
     await store.createThread({
       id: "thread-inference-projection",
@@ -312,11 +317,6 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
       context: {
         sessionId: "session-inference-projection",
         agentKey: "projection-agent",
-      },
-      inferenceProjection: {
-        dropMessages: {
-          preserveRecentUserTurns: 1,
-        },
       },
     });
 
@@ -335,6 +335,7 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
         name: "projection-agent",
         instructions: "Reply briefly",
       }),
+      inferenceProjection,
       runtime,
     };
     const coordinator = new ThreadRuntimeCoordinator({
@@ -534,11 +535,6 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
           sessionId: "session-browser-drop-images",
           agentKey: "projection-agent",
         },
-        inferenceProjection: {
-          dropImages: {
-            olderThanMs: 0,
-          },
-        },
       });
 
       const browserTool = new BrowserTool({
@@ -570,6 +566,11 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
           tools: [browserTool],
         }),
         runtime,
+        inferenceProjection: {
+          dropImages: {
+            olderThanMs: 0,
+          },
+        },
       };
       const coordinator = new ThreadRuntimeCoordinator({
         store,
