@@ -498,6 +498,7 @@ describe("ChatApp fresh-session agent selection", () => {
     const app = createAppHarness();
     const expectedModel = "openai/gpt-5.1";
 
+    app.model = expectedModel;
     app.currentThreadId = "thread-current";
     app.currentThread = {
       id: "thread-current",
@@ -573,10 +574,7 @@ describe("ChatApp fresh-session agent selection", () => {
     await expect(app.handleCommand("/reset")).resolves.toBe(true);
 
     expect(resetSession).toHaveBeenCalledWith({
-      agentKey: undefined,
-      model: expectedModel,
       sessionId: "session-main",
-      thinking: undefined,
     });
   });
 
@@ -634,7 +632,7 @@ describe("ChatApp fresh-session agent selection", () => {
     expect(createBranchSession).toHaveBeenCalledWith({
       sessionId: undefined,
       agentKey: undefined,
-      model: undefined,
+      model: "anthropic-oauth/claude-opus-4-7",
       thinking: undefined,
     });
 
@@ -646,9 +644,6 @@ describe("ChatApp fresh-session agent selection", () => {
     await expect(resetApp.handleCommand("/reset")).resolves.toBe(true);
     expect(resetSession).toHaveBeenCalledWith({
       sessionId: "session-main",
-      agentKey: undefined,
-      model: undefined,
-      thinking: undefined,
     });
   });
 });

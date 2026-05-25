@@ -1,10 +1,12 @@
 import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord} from "../../domain/threads/runtime/types.js";
-import {loadStoredThreadSnapshot} from "../shared/stored-thread.js";
+import {loadStoredThreadSnapshot, resolveStoredThreadDisplayConfig} from "../shared/stored-thread.js";
+import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {STORED_SYNC_MS} from "./chat-shared.js";
 import type {ChatRuntimeThreadStore} from "./runtime.js";
 
 interface ChatSyncServices {
   store: ChatRuntimeThreadStore;
+  resolveThreadRunConfig(threadId: string): Promise<{model: string; thinking?: ThinkingLevel}>;
 }
 
 export interface ChatSyncHost {
@@ -22,6 +24,7 @@ export interface ChatSyncHost {
     thread: ThreadRecord,
     transcript: readonly ThreadMessageRecord[],
     runs: readonly ThreadRunRecord[],
+    displayConfig: {model: string; thinking?: ThinkingLevel},
   ): void;
   requestRender(): void;
   isClosed(): boolean;
@@ -88,7 +91,9 @@ export async function syncChatStoredThreadState(
       return;
     }
 
-    host.applyLoadedSnapshot(snapshot.thread, snapshot.transcript, snapshot.runs);
+    const displayConfig = await services.resolveThreadRunConfig(snapshot.thread.id)
+      .catch(() => resolveStoredThreadDisplayConfig());
+    host.applyLoadedSnapshot(snapshot.thread, snapshot.transcript, snapshot.runs, displayConfig);
     host.requestRender();
   } catch {
     // Ignore background sync failures here. Foreground actions surface their own errors.

@@ -129,39 +129,140 @@ async function redactLegacySetEnvValueToolCallArguments(
   await markThreadRuntimeMigration(pool, SET_ENV_VALUE_ARGUMENT_REDACTION_MIGRATION);
 }
 
+async function readExistingThreadColumns(
+  pool: PgPoolLike,
+  tables: ThreadRuntimeTableNames,
+  columns: readonly string[],
+): Promise<ReadonlySet<string>> {
+  const existing = new Set<string>();
+  for (const column of columns) {
+    try {
+      await pool.query(`SELECT ${quoteIdentifier(column)} FROM ${tables.threads} LIMIT 0`);
+      existing.add(column);
+    } catch {
+      // Missing columns are expected on the post-migration schema.
+    }
+  }
+
+  return existing;
+}
+
+async function ensureThreadsTable(
+  pool: PgPoolLike,
+  tables: ThreadRuntimeTableNames,
+): Promise<void> {
+  try {
+    await pool.query(`SELECT 1 FROM ${tables.threads} LIMIT 0`);
+    return;
+  } catch {
+    // Missing table: create it below.
+  }
+
+  await pool.query(`
+    CREATE TABLE ${tables.threads} (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      system_prompt JSONB,
+      max_turns INTEGER,
+      context JSONB,
+      runtime_state JSONB,
+      temperature DOUBLE PRECISION,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
+export async function migrateSessionRuntimeConfigFromThreadRows(
+  pool: PgPoolLike,
+  tables: ThreadRuntimeTableNames,
+): Promise<void> {
+  const sessionTables = buildSessionTableNames();
+  const movedColumns = [
+    "model",
+    "thinking",
+    "pending_wake_at",
+    "prompt_cache_key",
+    "inference_projection",
+  ] as const;
+  const existingColumns = await readExistingThreadColumns(pool, tables, movedColumns);
+
+  if (existingColumns.has("prompt_cache_key")) {
+    const customPromptCacheKeys = await pool.query(`
+      SELECT id, prompt_cache_key
+      FROM ${tables.threads}
+      WHERE prompt_cache_key IS NOT NULL
+        AND prompt_cache_key <> ('thread:' || id)
+      LIMIT 1
+    `);
+    if (customPromptCacheKeys.rows.length > 0) {
+      const row = customPromptCacheKeys.rows[0] as Record<string, unknown>;
+      throw new Error(
+        `Cannot drop runtime.threads.prompt_cache_key while custom key exists on thread ${String(row.id)}.`,
+      );
+    }
+  }
+
+  const hasModel = existingColumns.has("model");
+  const hasThinking = existingColumns.has("thinking");
+  const hasPendingWake = existingColumns.has("pending_wake_at");
+  const hasInferenceProjection = existingColumns.has("inference_projection");
+  if (hasModel || hasThinking || hasPendingWake || hasInferenceProjection) {
+    const modelExpression = hasModel ? "CASE WHEN t.model = '' THEN NULL ELSE t.model END" : "NULL::text";
+    const thinkingExpression = hasThinking
+      ? "CASE WHEN t.thinking IS NOT NULL AND NOT (s.kind = 'worker' AND t.thinking = 'xhigh') THEN t.thinking ELSE NULL END"
+      : "NULL::text";
+    const thinkingConfiguredExpression = hasThinking
+      ? "CASE WHEN t.thinking IS NOT NULL AND NOT (s.kind = 'worker' AND t.thinking = 'xhigh') THEN TRUE ELSE FALSE END"
+      : "FALSE";
+    const inferenceProjectionExpression = hasInferenceProjection ? "t.inference_projection" : "NULL::jsonb";
+    const pendingWakeExpression = hasPendingWake ? "t.pending_wake_at" : "NULL::timestamptz";
+    const predicates = [
+      ...(hasModel ? ["t.model IS NOT NULL"] : []),
+      ...(hasThinking ? ["t.thinking IS NOT NULL AND NOT (s.kind = 'worker' AND t.thinking = 'xhigh')"] : []),
+      ...(hasInferenceProjection ? ["t.inference_projection IS NOT NULL"] : []),
+      ...(hasPendingWake ? ["t.pending_wake_at IS NOT NULL"] : []),
+    ];
+
+    await pool.query(`
+      INSERT INTO ${sessionTables.sessionRuntimeConfig} (
+        session_id,
+        model,
+        thinking,
+        thinking_configured,
+        inference_projection,
+        pending_wake_at
+      )
+      SELECT
+        s.id,
+        ${modelExpression},
+        ${thinkingExpression},
+        ${thinkingConfiguredExpression},
+        ${inferenceProjectionExpression},
+        ${pendingWakeExpression}
+      FROM ${sessionTables.sessions} AS s
+      INNER JOIN ${tables.threads} AS t
+        ON t.id = s.current_thread_id
+       AND t.session_id = s.id
+      WHERE ${predicates.length > 0 ? predicates.map((predicate) => `(${predicate})`).join(" OR ") : "FALSE"}
+      ON CONFLICT (session_id) DO NOTHING
+    `);
+  }
+
+  for (const column of movedColumns) {
+    await pool.query(`ALTER TABLE ${tables.threads} DROP COLUMN IF EXISTS ${quoteIdentifier(column)}`);
+  }
+}
+
 export function buildThreadRuntimeSchemaSql(
   tables: ThreadRuntimeTableNames,
-  sessionTableName: string,
   identityTableName: string,
 ): string {
   return `
     ${CREATE_RUNTIME_SCHEMA_SQL}
 
-    CREATE TABLE IF NOT EXISTS ${tables.threads} (
-      id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL REFERENCES ${sessionTableName}(id) ON DELETE CASCADE,
-      system_prompt JSONB,
-      max_turns INTEGER,
-      context JSONB,
-      runtime_state JSONB,
-      inference_projection JSONB,
-      prompt_cache_key TEXT,
-      model TEXT,
-      temperature DOUBLE PRECISION,
-      thinking TEXT,
-      pending_wake_at TIMESTAMPTZ,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
     ALTER TABLE ${tables.threads}
     ADD COLUMN IF NOT EXISTS runtime_state JSONB;
-
-    ALTER TABLE ${tables.threads}
-    ADD COLUMN IF NOT EXISTS inference_projection JSONB;
-
-    ALTER TABLE ${tables.threads}
-    ADD COLUMN IF NOT EXISTS pending_wake_at TIMESTAMPTZ;
 
     ALTER TABLE ${tables.threads}
     DROP COLUMN IF EXISTS max_input_tokens;
@@ -318,9 +419,21 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
   const sessionTableName = buildSessionTableNames().sessions;
 
   await pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-  await pool.query(buildThreadRuntimeSchemaSql(tables, sessionTableName, identityTableName));
+  await ensureThreadsTable(pool, tables);
+  await pool.query(buildThreadRuntimeSchemaSql(tables, identityTableName));
+  await migrateSessionRuntimeConfigFromThreadRows(pool, tables);
   await redactLegacySetEnvValueToolCallArguments(pool, tables);
   await assertIntegrityChecks(pool, "Thread runtime schema", [
+    {
+      label: "threads.session_id orphaned from agent_sessions.id",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.threads} AS thread
+        LEFT JOIN ${sessionTableName} AS session
+          ON session.id = thread.session_id
+        WHERE session.id IS NULL
+      `,
+    },
     {
       label: "agent_sessions.current_thread_id orphaned from threads.id",
       sql: `
@@ -436,6 +549,13 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
         ${tables.bashJobs}.run_thread_id IS NULL
         OR ${tables.bashJobs}.run_thread_id <> run.thread_id
       )
+  `);
+  await alterIfSupported(pool, `
+    ALTER TABLE ${tables.threads}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_threads_session_fk`)}
+    FOREIGN KEY (session_id)
+    REFERENCES ${sessionTableName}(id)
+    ON DELETE CASCADE
   `);
   await addConstraint(pool, `
     ALTER TABLE ${tables.messages}

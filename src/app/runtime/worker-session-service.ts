@@ -5,7 +5,7 @@ import type {JsonObject, JsonValue} from "../../lib/json.js";
 import {createSessionWithInitialThread} from "../../domain/sessions/lifecycle.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
-import type {CreateSessionInput, SessionRecord} from "../../domain/sessions/types.js";
+import type {CreateSessionInput, SessionRecord, UpdateSessionRuntimeConfigInput} from "../../domain/sessions/types.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
@@ -33,7 +33,6 @@ import {
 
 const WORKER_INPUT_SOURCE = "worker";
 export const DEFAULT_WORKER_ENVIRONMENT_TTL_MS = DEFAULT_DISPOSABLE_ENVIRONMENT_TTL_MS;
-const DEFAULT_WORKER_THINKING: ThinkingLevel = "xhigh";
 
 export interface CreateWorkerSessionInput {
   agentKey: string;
@@ -67,7 +66,7 @@ export interface CreateWorkerSessionResult {
   binding: SessionEnvironmentBindingRecord;
 }
 
-type WorkerSessionStore = Pick<SessionStore, "createSession" | "getSession">;
+type WorkerSessionStore = Pick<SessionStore, "createSession" | "getSession" | "updateSessionRuntimeConfig">;
 type WorkerThreadStore = Pick<ThreadRuntimeStore, "createThread" | "enqueueInput" | "getThread">;
 
 interface WorkerSessionServiceOptions {
@@ -168,6 +167,17 @@ function sameJson(left: JsonValue | undefined, right: JsonValue | undefined): bo
   return stableStringify(left) === stableStringify(right);
 }
 
+function buildWorkerRuntimeConfig(
+  input: CreateWorkerSessionInput,
+): Omit<UpdateSessionRuntimeConfigInput, "sessionId"> | undefined {
+  const runtimeConfig = {
+    ...(input.model !== undefined ? {model: input.model} : {}),
+    ...(input.thinking !== undefined ? {thinking: input.thinking} : {}),
+    ...(input.inferenceProjection !== undefined ? {inferenceProjection: input.inferenceProjection} : {}),
+  } satisfies Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
+  return Object.keys(runtimeConfig).length > 0 ? runtimeConfig : undefined;
+}
+
 export class WorkerSessionService {
   private readonly pool?: PgPoolLike;
   private readonly sessions: WorkerSessionStore;
@@ -219,12 +229,10 @@ export class WorkerSessionService {
         workerMetadata,
       }),
       systemPrompt: input.systemPrompt,
-      model: input.model,
-      thinking: input.thinking ?? DEFAULT_WORKER_THINKING,
-      inferenceProjection: input.inferenceProjection,
     };
+    const runtimeConfig = buildWorkerRuntimeConfig(input);
 
-    const created = await this.createSessionAndThread(sessionInput, threadInput);
+    const created = await this.createSessionAndThread(sessionInput, threadInput, runtimeConfig);
     const environmentId = trimToUndefined(input.environmentId) ?? buildWorkerEnvironmentId(created.session.id);
     const createsFreshEnvironment = !trimToUndefined(input.environmentId);
     let result: CreateWorkerSessionResult | null = null;
@@ -290,6 +298,7 @@ export class WorkerSessionService {
   private async createSessionAndThread(
     session: CreateSessionInput,
     thread: CreateThreadInput,
+    runtimeConfig: Omit<UpdateSessionRuntimeConfigInput, "sessionId"> | undefined,
   ): Promise<{session: SessionRecord; thread: ThreadRecord; wasCreated: boolean}> {
     const existing = await this.readExistingSessionAndThread(session, thread);
     if (existing) {
@@ -310,6 +319,7 @@ export class WorkerSessionService {
         threadStore: this.threads,
         session,
         thread,
+        runtimeConfig,
       });
       return {
         ...created,
@@ -319,6 +329,12 @@ export class WorkerSessionService {
 
     const createdSession = await this.sessions.createSession(session);
     const createdThread = await this.threads.createThread(thread);
+    if (runtimeConfig) {
+      await this.sessions.updateSessionRuntimeConfig({
+        sessionId: createdSession.id,
+        ...runtimeConfig,
+      });
+    }
     return {
       session: createdSession,
       thread: createdThread,
@@ -363,9 +379,6 @@ export class WorkerSessionService {
       !sameJson(existingSession.metadata, session.metadata)
       || !sameJson(existingThread.context, thread.context)
       || !sameJson(existingThread.systemPrompt as JsonValue | undefined, thread.systemPrompt as JsonValue | undefined)
-      || existingThread.model !== thread.model
-      || existingThread.thinking !== thread.thinking
-      || !sameJson(existingThread.inferenceProjection as JsonValue | undefined, thread.inferenceProjection as JsonValue | undefined)
     ) {
       throw new Error(`Worker session ${session.id} already exists with different input.`);
     }

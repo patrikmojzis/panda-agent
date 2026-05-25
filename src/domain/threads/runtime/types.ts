@@ -32,18 +32,11 @@ export interface CreateThreadInput {
   maxTurns?: number;
   context?: JsonValue;
   runtimeState?: ThreadRuntimeState;
-  promptCacheKey?: string;
-  model?: string;
   temperature?: number;
-  thinking?: ThinkingLevel;
-  inferenceProjection?: InferenceProjection;
 }
 
-export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "sessionId" | "thinking" | "runtimeState" | "model">> & {
-  model?: string | null;
-  thinking?: ThinkingLevel | null;
+export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "sessionId" | "runtimeState">> & {
   runtimeState?: ThreadRuntimeState | null;
-  inferenceProjection?: InferenceProjection | null;
 };
 
 export interface ThreadRecord extends CreateThreadInput {

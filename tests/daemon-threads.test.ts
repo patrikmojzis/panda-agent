@@ -112,6 +112,13 @@ describe("createDaemonThreadHelpers", () => {
           updatedAt: Date.now(),
         };
       }),
+      updateSessionRuntimeConfig: vi.fn(async (input) => ({
+        sessionId: input.sessionId,
+        model: input.model ?? undefined,
+        thinking: input.thinking ?? undefined,
+        thinkingConfigured: input.thinking !== undefined,
+        inferenceProjection: input.inferenceProjection ?? undefined,
+      })),
       updateCurrentThread: vi.fn(async ({sessionId, currentThreadId}: UpdateSessionCurrentThreadInput) => {
         boundThreadId = currentThreadId;
         const existing = sessions.get(sessionId) ?? {
@@ -308,26 +315,26 @@ describe("createDaemonThreadHelpers", () => {
   });
 
   it("leaves new main sessions unpinned when no explicit model was requested", async () => {
-    const {helpers, identity} = createHelpers({
+    const {helpers, identity, sessionStore} = createHelpers({
       pairings: [{agentKey: "panda"}],
     });
 
-    const thread = await helpers.openMainSession({
+    await helpers.openMainSession({
       identityId: identity.id,
     });
 
-    expect(thread.model).toBeUndefined();
+    expect(sessionStore.updateSessionRuntimeConfig).not.toHaveBeenCalled();
   });
 
   it("applies an explicit model when opening an existing main session", async () => {
-    const {helpers, identity} = createHelpers({
+    const {helpers, identity, sessionStore} = createHelpers({
       pairings: [{agentKey: "panda"}],
     });
 
     const initial = await helpers.openMainSession({
       identityId: identity.id,
     });
-    expect(initial.model).toBeUndefined();
+    expect(sessionStore.updateSessionRuntimeConfig).not.toHaveBeenCalled();
 
     const updated = await helpers.openMainSession({
       identityId: identity.id,
@@ -335,7 +342,10 @@ describe("createDaemonThreadHelpers", () => {
     });
 
     expect(updated.id).toBe(initial.id);
-    expect(updated.model).toBe("anthropic-oauth/claude-opus-4-7");
+    expect(sessionStore.updateSessionRuntimeConfig).toHaveBeenCalledWith({
+      sessionId: initial.sessionId,
+      model: "anthropic-oauth/claude-opus-4-7",
+    });
   });
 
   it("cancels old-thread background jobs during session reset", async () => {

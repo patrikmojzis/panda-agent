@@ -1,7 +1,8 @@
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
 import {createRuntimeClient} from "../../app/runtime/client.js";
-import type {InferenceProjection, ThreadRecord, ThreadUpdate} from "../../domain/threads/runtime/types.js";
+import type {InferenceProjection, ThreadRecord} from "../../domain/threads/runtime/types.js";
+import type {RuntimeThreadUpdate} from "../../domain/threads/requests/types.js";
 import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres-notifications.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {IdentityRecord} from "../../domain/identity/types.js";
@@ -46,7 +47,7 @@ export interface ChatRuntimeServices {
   }): Promise<{threadId: string}>;
   abortThread(threadId: string, reason?: string): Promise<boolean>;
   waitForCurrentRun(threadId: string, timeoutMs?: number): Promise<void>;
-  updateThread(threadId: string, update: ThreadUpdate): Promise<ThreadRecord>;
+  updateThread(threadId: string, update: RuntimeThreadUpdate): Promise<ThreadRecord>;
   compactThread(threadId: string, customInstructions: string): Promise<{
     compacted: boolean;
     tokensBefore?: number;

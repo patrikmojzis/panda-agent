@@ -336,7 +336,12 @@ export class ChatApp {
       setLastStoredSyncAt: (value) => {
         this.lastStoredSyncAt = value;
       },
-      applyLoadedSnapshot: (thread, transcript, runs) => this.applyLoadedSnapshot(thread, transcript, runs),
+      applyLoadedSnapshot: (thread, transcript, runs, displayConfig) => this.applyLoadedSnapshot(
+        thread,
+        transcript,
+        runs,
+        displayConfig,
+      ),
       requestRender: () => this.requestRender(),
       isClosed: () => this.closed,
       isSessionPickerActive: () => this.sessionPicker.active,
@@ -388,14 +393,21 @@ export class ChatApp {
   } {
     return buildChatSessionDefaults({
       defaultAgentKey: this.defaultAgentKey,
-      model: this.currentThread?.model,
+      model: this.model,
       thinking: this.thinking,
       overrides,
     });
   }
 
+  private async resolveThreadDisplayConfig(thread: ThreadRecord): Promise<{model: string; thinking?: ThinkingLevel}> {
+    const services = this.requireServices();
+    return services.resolveThreadRunConfig
+      ? services.resolveThreadRunConfig(thread.id).catch(() => resolveStoredThreadDisplayConfig())
+      : resolveStoredThreadDisplayConfig();
+  }
+
   private async switchThread(thread: ThreadRecord): Promise<void> {
-    const displayConfig = resolveStoredThreadDisplayConfig(thread);
+    const displayConfig = await this.resolveThreadDisplayConfig(thread);
     this.currentThread = thread;
     this.currentThreadId = thread.id;
     this.currentAgentLabel = readThreadAgentKey(thread) ?? "unknown";
@@ -513,8 +525,8 @@ export class ChatApp {
     thread: ThreadRecord,
     transcript: Parameters<typeof appendStoredTranscriptMessages>[0]["records"],
     runs: Parameters<typeof observeLatestStoredRun>[0]["runs"],
+    displayConfig: {model: string; thinking?: ThinkingLevel},
   ): void {
-    const displayConfig = resolveStoredThreadDisplayConfig(thread);
     this.currentThread = thread;
     this.currentThreadId = thread.id;
     this.currentAgentLabel = readThreadAgentKey(thread) ?? "unknown";
@@ -871,7 +883,6 @@ export class ChatApp {
       setCurrentThread: (thread) => {
         this.currentThread = thread;
         this.currentThreadId = thread.id;
-        this.thinking = thread.thinking;
       },
       setModel: (model) => {
         this.model = model;

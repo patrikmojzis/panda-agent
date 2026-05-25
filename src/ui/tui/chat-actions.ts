@@ -90,12 +90,15 @@ async function handleModelCommand(host: ChatCommandHost, value: string): Promise
     const trimmed = value.trim();
     const services = host.requireServices();
     const resetToDefault = trimmed.toLowerCase() === "default";
+    const requestedModel = resetToDefault ? null : resolveModelSelector(trimmed).canonical;
     const thread = await services.updateThread(host.getCurrentThreadId(), {
-      model: resetToDefault ? null : resolveModelSelector(trimmed).canonical,
+      model: requestedModel,
     });
-    const runConfig = resetToDefault
-      ? await services.resolveThreadRunConfig(thread.id).catch(() => resolveStoredThreadDisplayConfig(thread))
-      : {model: thread.model ?? host.getModel()};
+    const runConfig = await services.resolveThreadRunConfig(thread.id)
+      .catch(() => ({
+        ...resolveStoredThreadDisplayConfig(),
+        ...(requestedModel ? {model: requestedModel} : {}),
+      }));
     host.setCurrentThread(thread);
     host.setModel(runConfig.model);
     if (resetToDefault) {
@@ -133,10 +136,18 @@ async function handleThinkingCommand(host: ChatCommandHost, value: string): Prom
       thinking: nextThinking === "off" ? null : nextThinking,
     });
     host.setCurrentThread(thread);
-    host.setThinking(thread.thinking);
-    if (thread.thinking) {
-      host.pushEntry("meta", "config", `Thinking set to ${thread.thinking}.`);
-      host.setNotice(`Thinking ${thread.thinking}`, "info");
+    const services = host.requireServices();
+    const fallbackRunConfig = {
+      ...resolveStoredThreadDisplayConfig(),
+      thinking: nextThinking === "off" ? undefined : nextThinking,
+    };
+    const runConfig = services.resolveThreadRunConfig
+      ? await services.resolveThreadRunConfig(thread.id).catch(() => fallbackRunConfig)
+      : fallbackRunConfig;
+    host.setThinking(runConfig.thinking);
+    if (runConfig.thinking) {
+      host.pushEntry("meta", "config", `Thinking set to ${runConfig.thinking}.`);
+      host.setNotice(`Thinking ${runConfig.thinking}`, "info");
     } else {
       host.pushEntry("meta", "config", "Thinking disabled.");
       host.setNotice("Thinking off", "info");
@@ -156,8 +167,13 @@ async function handleUsageCommand(host: ChatCommandHost): Promise<boolean> {
       services.getThread(threadId),
       services.store.loadTranscript(threadId),
     ]);
-    const runConfig = await services.resolveThreadRunConfig(threadId)
-      .catch(() => resolveStoredThreadDisplayConfig(thread));
+    const fallbackRunConfig = {
+      model: host.getModel(),
+      thinking: host.getThinking(),
+    };
+    const runConfig = services.resolveThreadRunConfig
+      ? await services.resolveThreadRunConfig(threadId).catch(() => fallbackRunConfig)
+      : fallbackRunConfig;
     const summary = formatThreadUsageSnapshot(collectThreadUsageSnapshot({
       thread,
       transcript,
@@ -208,7 +224,6 @@ async function handleResetSessionCommand(host: ChatCommandHost): Promise<boolean
 
   try {
     const thread = await host.requireServices().resetSession({
-      ...host.buildSessionDefaults(),
       sessionId: host.getCurrentSessionId(),
     });
     await host.switchThread(thread);

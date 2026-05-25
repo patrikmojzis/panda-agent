@@ -3,6 +3,7 @@ import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import type {Tool} from "../../kernel/agent/tool.js";
 import {resolveStoredContext} from "../../app/runtime/create-runtime.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
+import type {SessionRuntimeConfigRecord} from "../../domain/sessions/types.js";
 import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord,} from "../../domain/threads/runtime/types.js";
 import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
 import {type EntryRole, type RunPhase, type TranscriptEntry,} from "../tui/chat-shared.js";
@@ -27,13 +28,16 @@ export function resolveStoredThreadDisplayedCwd(
   ).cwd ?? fallbackCwd;
 }
 
-export function resolveStoredThreadDisplayConfig(thread: Pick<ThreadRecord, "model" | "thinking">): {
+export function resolveStoredThreadDisplayConfig(runtimeConfig?: Pick<
+  SessionRuntimeConfigRecord,
+  "model" | "thinking" | "thinkingConfigured"
+>): {
   model: string;
   thinking?: ThinkingLevel;
 } {
   return {
-    model: thread.model ?? resolveDefaultAgentModelSelector(),
-    thinking: thread.thinking,
+    model: runtimeConfig?.model ?? resolveDefaultAgentModelSelector(),
+    thinking: runtimeConfig?.thinkingConfigured ? runtimeConfig.thinking : undefined,
   };
 }
 

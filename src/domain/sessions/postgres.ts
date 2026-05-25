@@ -1,7 +1,10 @@
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
+import type {ThinkingLevel} from "@mariozechner/pi-ai";
+
+import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
 import {requireBoolean} from "../../lib/booleans.js";
-import {readOptionalJsonValue, stringifyOptionalJsonValue} from "../../lib/json.js";
+import {readOptionalJsonValue, stringifyOptionalJsonValue, type JsonValue} from "../../lib/json.js";
 import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
 import {withTransaction} from "../../lib/postgres-transaction.js";
 import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
@@ -23,10 +26,12 @@ import type {
   SessionPromptRecord,
   SessionPromptSlug,
   SessionRecord,
+  SessionRuntimeConfigRecord,
   SetSessionPromptInput,
   UpdateSessionCurrentThreadInput,
   UpdateSessionHeartbeatConfigInput,
   UpdateSessionLabelInput,
+  UpdateSessionRuntimeConfigInput,
 } from "./types.js";
 
 export interface PostgresSessionStoreOptions {
@@ -159,6 +164,46 @@ function parseSessionTodoRow(row: Record<string, unknown>): SessionTodoRecord {
     itemsHash: requireSessionString("todo items hash", row.items_hash),
     createdAt: requireTimestampMillis(row.created_at, "Session todo created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Session todo updated_at must be a valid timestamp."),
+  };
+}
+
+function parseSessionRuntimeThinking(value: unknown): ThinkingLevel | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+    return value;
+  }
+
+  throw new Error(`Unsupported session runtime thinking level ${String(value)}.`);
+}
+
+function parseSessionRuntimeConfigRow(row: Record<string, unknown>): SessionRuntimeConfigRecord {
+  const inferenceProjection = readOptionalJsonValue(
+    row.inference_projection,
+    "Session runtime inference projection",
+  ) as SessionRuntimeConfigRecord["inferenceProjection"];
+  return {
+    sessionId: requireSessionString("id", row.session_id),
+    model: optionalSessionString("runtime model", row.model),
+    thinking: parseSessionRuntimeThinking(row.thinking),
+    thinkingConfigured: requireBoolean(
+      row.thinking_configured,
+      "Session runtime thinking_configured flag must be a boolean.",
+    ),
+    inferenceProjection,
+    pendingWakeAt: optionalTimestampMillis(
+      row.pending_wake_at,
+      "Session runtime pending_wake_at must be a valid timestamp.",
+    ),
+    createdAt: optionalTimestampMillis(
+      row.created_at,
+      "Session runtime created_at must be a valid timestamp.",
+    ),
+    updatedAt: optionalTimestampMillis(
+      row.updated_at,
+      "Session runtime updated_at must be a valid timestamp.",
+    ),
   };
 }
 
@@ -453,6 +498,104 @@ export class PostgresSessionStore implements SessionStore {
 
   async updateCurrentThread(input: UpdateSessionCurrentThreadInput): Promise<SessionRecord> {
     return this.updateCurrentThreadRecord(input);
+  }
+
+  async getSessionRuntimeConfigRecord(
+    sessionId: string,
+    queryable: PgQueryable = this.pool,
+  ): Promise<SessionRuntimeConfigRecord> {
+    const normalizedSessionId = requireSessionString("id", sessionId);
+    const result = await queryable.query(`
+      SELECT *
+      FROM ${this.tables.sessionRuntimeConfig}
+      WHERE session_id = $1
+    `, [normalizedSessionId]);
+    const row = result.rows[0];
+    if (row) {
+      return parseSessionRuntimeConfigRow(row as Record<string, unknown>);
+    }
+
+    await this.getSession(normalizedSessionId);
+    return {
+      sessionId: normalizedSessionId,
+      thinkingConfigured: false,
+    };
+  }
+
+  async getSessionRuntimeConfig(sessionId: string): Promise<SessionRuntimeConfigRecord> {
+    return this.getSessionRuntimeConfigRecord(sessionId);
+  }
+
+  async updateSessionRuntimeConfigRecord(
+    input: UpdateSessionRuntimeConfigInput,
+    queryable: PgQueryable = this.pool,
+  ): Promise<SessionRuntimeConfigRecord> {
+    const updatesModel = input.model !== undefined;
+    const updatesThinking = input.thinking !== undefined;
+    const updatesInferenceProjection = input.inferenceProjection !== undefined;
+    const updatesPendingWake = input.pendingWakeAt !== undefined;
+    if (!updatesModel && !updatesThinking && !updatesInferenceProjection && !updatesPendingWake) {
+      return this.getSessionRuntimeConfigRecord(input.sessionId, queryable);
+    }
+
+    const sessionId = requireSessionString("id", input.sessionId);
+    const model = updatesModel && input.model !== null && input.model !== undefined
+      ? resolveModelSelector(input.model).canonical
+      : null;
+    const inferenceProjectionValue = updatesInferenceProjection && input.inferenceProjection !== null
+      ? input.inferenceProjection as JsonValue
+      : undefined;
+    const inferenceProjection = updatesInferenceProjection
+      ? stringifyOptionalJsonValue(inferenceProjectionValue, "Session runtime inference projection")
+      : null;
+    const pendingWakeAt = updatesPendingWake && input.pendingWakeAt !== null && input.pendingWakeAt !== undefined
+      ? new Date(input.pendingWakeAt)
+      : null;
+
+    const result = await queryable.query(`
+      INSERT INTO ${this.tables.sessionRuntimeConfig} (
+        session_id,
+        model,
+        thinking,
+        thinking_configured,
+        inference_projection,
+        pending_wake_at
+      ) VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5::jsonb,
+        $6
+      )
+      ON CONFLICT (session_id) DO UPDATE
+      SET model = CASE WHEN $7 THEN EXCLUDED.model ELSE ${this.tables.sessionRuntimeConfig}.model END,
+          thinking = CASE WHEN $8 THEN EXCLUDED.thinking ELSE ${this.tables.sessionRuntimeConfig}.thinking END,
+          thinking_configured = CASE WHEN $8 THEN TRUE ELSE ${this.tables.sessionRuntimeConfig}.thinking_configured END,
+          inference_projection = CASE WHEN $9 THEN EXCLUDED.inference_projection ELSE ${this.tables.sessionRuntimeConfig}.inference_projection END,
+          pending_wake_at = CASE WHEN $10 THEN EXCLUDED.pending_wake_at ELSE ${this.tables.sessionRuntimeConfig}.pending_wake_at END,
+          updated_at = NOW()
+      RETURNING *
+    `, [
+      sessionId,
+      model,
+      updatesThinking ? input.thinking : null,
+      updatesThinking,
+      inferenceProjection,
+      pendingWakeAt,
+      updatesModel,
+      updatesThinking,
+      updatesInferenceProjection,
+      updatesPendingWake,
+    ]);
+
+    return parseSessionRuntimeConfigRow(result.rows[0] as Record<string, unknown>);
+  }
+
+  async updateSessionRuntimeConfig(
+    input: UpdateSessionRuntimeConfigInput,
+  ): Promise<SessionRuntimeConfigRecord> {
+    return this.updateSessionRuntimeConfigRecord(input);
   }
 
   async readSessionPrompt(

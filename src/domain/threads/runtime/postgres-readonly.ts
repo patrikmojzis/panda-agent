@@ -12,6 +12,7 @@ import {buildThreadRuntimeTableNames} from "./postgres-shared.js";
 export interface ReadonlySessionViewNames {
   agentSessions: string;
   todos: string;
+  runtimeConfig: string;
   threads: string;
   messages: string;
   messagesRaw: string;
@@ -65,9 +66,10 @@ export async function ensureReadonlySessionQuerySchema(
   const scheduledTaskTables = buildScheduledTaskTableNames();
   const watchTables = buildWatchTableNames();
   const emailTables = buildEmailTableNames();
-  const { agentSessions, todos, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentPairings, agentSkills, agentTelepathyDevices, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents, emailAccounts, emailAllowedRecipients, emailRoutes, emailMessages, emailMessageRecipients, emailAttachments } = buildSessionRelationNames({
+  const { agentSessions, todos, runtimeConfig, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentPairings, agentSkills, agentTelepathyDevices, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents, emailAccounts, emailAllowedRecipients, emailRoutes, emailMessages, emailMessageRecipients, emailAttachments } = buildSessionRelationNames({
     agentSessions: "agent_sessions",
     todos: "todos",
+    runtimeConfig: "runtime_config",
     threads: "threads",
     messages: "messages",
     messagesRaw: "messages_raw",
@@ -93,6 +95,7 @@ export async function ensureReadonlySessionQuerySchema(
   const views: ReadonlySessionViewNames = {
     agentSessions,
     todos,
+    runtimeConfig,
     threads,
     messages,
     messagesRaw,
@@ -170,6 +173,7 @@ export async function ensureReadonlySessionQuerySchema(
     DROP VIEW IF EXISTS ${views.inputs};
     DROP VIEW IF EXISTS ${views.runs};
     DROP VIEW IF EXISTS ${views.todos};
+    DROP VIEW IF EXISTS ${views.runtimeConfig};
     DROP VIEW IF EXISTS ${views.threads};
     DROP VIEW IF EXISTS ${views.agentSessions};
 
@@ -203,6 +207,23 @@ export async function ensureReadonlySessionQuerySchema(
     FROM ${sessionTables.sessionTodos} AS todo
     WHERE todo.session_id = current_setting('runtime.session_id', true);
 
+    CREATE VIEW ${views.runtimeConfig}
+    WITH (security_barrier = true) AS
+    SELECT
+      config.session_id,
+      session.agent_key,
+      session.kind AS session_kind,
+      config.model,
+      config.thinking,
+      config.thinking_configured,
+      config.inference_projection,
+      config.pending_wake_at,
+      config.created_at,
+      config.updated_at
+    FROM ${sessionTables.sessionRuntimeConfig} AS config
+    INNER JOIN ${sessionTables.sessions} AS session ON session.id = config.session_id
+    WHERE config.session_id = current_setting('runtime.session_id', true);
+
     CREATE VIEW ${views.threads}
     WITH (security_barrier = true) AS
     SELECT
@@ -213,11 +234,7 @@ export async function ensureReadonlySessionQuerySchema(
       t.system_prompt,
       t.max_turns,
       t.context,
-      t.inference_projection,
-      t.prompt_cache_key,
-      t.model,
       t.temperature,
-      t.thinking,
       t.created_at,
       t.updated_at,
       COALESCE((
@@ -700,7 +717,7 @@ export async function ensureReadonlySessionQuerySchema(
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA ${quoteIdentifier(SESSION_SCHEMA)} TO ${readonlyRole};
-      GRANT SELECT ON ${views.agentSessions}, ${views.todos}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.agentTelepathyDevices}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents}, ${views.emailAccounts}, ${views.emailAllowedRecipients}, ${views.emailRoutes}, ${views.emailMessages}, ${views.emailMessageRecipients}, ${views.emailAttachments} TO ${readonlyRole};
+      GRANT SELECT ON ${views.agentSessions}, ${views.todos}, ${views.runtimeConfig}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.agentTelepathyDevices}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents}, ${views.emailAccounts}, ${views.emailAllowedRecipients}, ${views.emailRoutes}, ${views.emailMessages}, ${views.emailMessageRecipients}, ${views.emailAttachments} TO ${readonlyRole};
     `);
   }
 

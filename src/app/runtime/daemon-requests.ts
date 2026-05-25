@@ -36,7 +36,7 @@ export interface DaemonRequestProcessorContext {
       "abort" | "resolveThreadRunConfig" | "runExclusively" | "submitInput"
     >;
     identityStore: Pick<IdentityStore, "getIdentity" | "resolveIdentityBinding">;
-    sessionStore: Pick<SessionStore, "getSession">;
+    sessionStore: Pick<SessionStore, "getSession" | "updateSessionRuntimeConfig">;
     store: DaemonRequestStore;
   };
   a2aBindings: Parameters<typeof handleA2AMessageRequest>[1]["bindings"];
@@ -189,7 +189,21 @@ export function createDaemonRequestProcessor(
   const handleUpdateThread = async (
     payload: UpdateThreadRequestPayload,
   ): Promise<Record<string, unknown>> => {
-    const thread = await context.runtime.store.updateThread(payload.threadId, payload.update);
+    const {model, thinking, inferenceProjection, pendingWakeAt, ...threadUpdate} = payload.update;
+    const existingThread = await context.runtime.store.getThread(payload.threadId);
+    if (model !== undefined || thinking !== undefined || inferenceProjection !== undefined || pendingWakeAt !== undefined) {
+      await context.runtime.sessionStore.updateSessionRuntimeConfig({
+        sessionId: existingThread.sessionId,
+        ...(model !== undefined ? {model} : {}),
+        ...(thinking !== undefined ? {thinking} : {}),
+        ...(inferenceProjection !== undefined ? {inferenceProjection} : {}),
+        ...(pendingWakeAt !== undefined ? {pendingWakeAt} : {}),
+      });
+    }
+
+    const thread = Object.keys(threadUpdate).length > 0
+      ? await context.runtime.store.updateThread(payload.threadId, threadUpdate)
+      : existingThread;
     return {threadId: thread.id};
   };
 

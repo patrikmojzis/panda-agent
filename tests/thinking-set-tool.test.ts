@@ -39,7 +39,7 @@ function createHarness(options: {
 describe("ThinkingSetTool", () => {
   it("updates only live thinking when persist is omitted", async () => {
     const persistence = {
-      updateThreadThinking: vi.fn(),
+      updateSessionThinkingForThread: vi.fn(),
     };
     const tool = new ThinkingSetTool({persistence});
     const harness = createHarness({
@@ -54,7 +54,7 @@ describe("ThinkingSetTool", () => {
     }, harness.run);
 
     expect(harness.getThinking()).toBe("high");
-    expect(persistence.updateThreadThinking).not.toHaveBeenCalled();
+    expect(persistence.updateSessionThinkingForThread).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       details: {
         requestedLevel: "high",
@@ -67,7 +67,7 @@ describe("ThinkingSetTool", () => {
 
   it("persists the stored thread thinking before updating live thinking", async () => {
     const persistence = {
-      updateThreadThinking: vi.fn(async (_threadId: string, thinking: ThinkingLevel | null) => ({
+      updateSessionThinkingForThread: vi.fn(async (_threadId: string, thinking: ThinkingLevel | null) => ({
         thinking: thinking ?? undefined,
       })),
     };
@@ -85,7 +85,7 @@ describe("ThinkingSetTool", () => {
       reason: "Tool output showed the task is harder.",
     }, harness.run);
 
-    expect(persistence.updateThreadThinking).toHaveBeenCalledWith("thread-1", "high");
+    expect(persistence.updateSessionThinkingForThread).toHaveBeenCalledWith("thread-1", "high");
     expect(harness.getThinking()).toBe("high");
     expect(result).toMatchObject({
       details: {
@@ -101,7 +101,7 @@ describe("ThinkingSetTool", () => {
 
   it("maps off to cleared live thinking and null persistence", async () => {
     const persistence = {
-      updateThreadThinking: vi.fn(async () => ({
+      updateSessionThinkingForThread: vi.fn(async () => ({
         thinking: undefined,
       })),
     };
@@ -118,7 +118,7 @@ describe("ThinkingSetTool", () => {
       persist: true,
     }, harness.run);
 
-    expect(persistence.updateThreadThinking).toHaveBeenCalledWith("thread-1", null);
+    expect(persistence.updateSessionThinkingForThread).toHaveBeenCalledWith("thread-1", null);
     expect(harness.getThinking()).toBeUndefined();
     expect(result).toMatchObject({
       details: {
@@ -134,7 +134,7 @@ describe("ThinkingSetTool", () => {
   it("requires threadId when persistence is requested", async () => {
     const tool = new ThinkingSetTool({
       persistence: {
-        updateThreadThinking: vi.fn(),
+        updateSessionThinkingForThread: vi.fn(),
       },
     });
 
@@ -152,7 +152,7 @@ describe("ThinkingSetTool", () => {
   it("leaves live thinking unchanged when persistence fails", async () => {
     const tool = new ThinkingSetTool({
       persistence: {
-        updateThreadThinking: vi.fn(async () => {
+        updateSessionThinkingForThread: vi.fn(async () => {
           throw new Error("db exploded");
         }),
       },
@@ -195,7 +195,7 @@ describe("ThinkingSetTool", () => {
 
   it("does not persist when live thinking control is unavailable", async () => {
     const persistence = {
-      updateThreadThinking: vi.fn(),
+      updateSessionThinkingForThread: vi.fn(),
     };
     const tool = new ThinkingSetTool({persistence});
     const run = new RunContext<DefaultAgentSessionContext>({
@@ -217,6 +217,6 @@ describe("ThinkingSetTool", () => {
       level: "high",
       persist: true,
     }, run)).rejects.toThrow("Live thinking control is unavailable");
-    expect(persistence.updateThreadThinking).not.toHaveBeenCalled();
+    expect(persistence.updateSessionThinkingForThread).not.toHaveBeenCalled();
   });
 });

@@ -222,11 +222,7 @@ export function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
     maxTurns: parseOptionalInteger(row.max_turns, "max_turns"),
     context: parseOptionalJsonValue(row.context, "context"),
     runtimeState: parseOptionalJsonObject(row.runtime_state, "runtime state") as ThreadRecord["runtimeState"],
-    inferenceProjection: parseOptionalJsonObject(row.inference_projection, "inference projection") as ThreadRecord["inferenceProjection"],
-    promptCacheKey: parseOptionalString(row.prompt_cache_key),
-    model: parseOptionalString(row.model),
     temperature: parseOptionalNumber(row.temperature, "temperature"),
-    thinking: parseOptionalString(row.thinking) as ThreadRecord["thinking"],
     createdAt: requireTimestampMillis(row.created_at, "Thread runtime created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Thread runtime updated_at must be a valid timestamp."),
   };

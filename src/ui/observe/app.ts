@@ -4,6 +4,7 @@ import {createPostgresPool, requireDatabaseUrl} from "../../app/runtime/create-r
 import {listenThreadRuntimeNotifications} from "../../app/runtime/store-notifications.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
+import type {SessionRuntimeConfigRecord} from "../../domain/sessions/types.js";
 import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord} from "../../domain/threads/runtime/types.js";
@@ -37,7 +38,7 @@ export interface ObserveRunOptions {
 }
 
 export interface ObserveServices {
-  sessionStore: Pick<SessionStore, "getMainSession" | "getSession">;
+  sessionStore: Pick<SessionStore, "getMainSession" | "getSession" | "getSessionRuntimeConfig">;
   store: Pick<ThreadRuntimeStore, "getThread" | "loadTranscript" | "listRuns">;
   subscribe(
     listener: (notification: ThreadRuntimeNotification) => Promise<void> | void,
@@ -268,16 +269,21 @@ export class ObserveApp {
     thread: ThreadRecord;
     transcript: readonly ThreadMessageRecord[];
     runs: readonly ThreadRunRecord[];
+    runtimeConfig: SessionRuntimeConfigRecord;
   }> {
     const services = this.requireServices();
     const resolved = await this.resolveTarget();
-    const snapshot = await loadStoredThreadSnapshot({
-      store: services.store,
-      threadId: resolved.threadId,
-    });
+    const [snapshot, runtimeConfig] = await Promise.all([
+      loadStoredThreadSnapshot({
+        store: services.store,
+        threadId: resolved.threadId,
+      }),
+      services.sessionStore.getSessionRuntimeConfig(resolved.sessionId),
+    ]);
 
     return {
       resolved,
+      runtimeConfig,
       ...snapshot,
     };
   }
@@ -287,6 +293,7 @@ export class ObserveApp {
     thread: ThreadRecord;
     transcript: readonly ThreadMessageRecord[];
     runs: readonly ThreadRunRecord[];
+    runtimeConfig: SessionRuntimeConfigRecord;
   }): Promise<void> {
     const previousThreadId = this.currentThread?.id ?? "";
     const threadSwitched = Boolean(previousThreadId) && previousThreadId !== snapshot.thread.id;
@@ -305,7 +312,7 @@ export class ObserveApp {
     this.currentThread = snapshot.thread;
 
     if (isInitial) {
-      this.renderHeader(snapshot.thread, snapshot.resolved.sessionId, snapshot.runs);
+      this.renderHeader(snapshot.thread, snapshot.resolved.sessionId, snapshot.runs, snapshot.runtimeConfig);
       this.renderInitialTranscript(snapshot.transcript);
       this.seedRunState(snapshot.runs);
       return;
@@ -425,8 +432,9 @@ export class ObserveApp {
     thread: ThreadRecord,
     sessionId: string,
     runs: readonly ThreadRunRecord[],
+    runtimeConfig: SessionRuntimeConfigRecord,
   ): void {
-    const displayConfig = resolveStoredThreadDisplayConfig(thread);
+    const displayConfig = resolveStoredThreadDisplayConfig(runtimeConfig);
     const latestRun = runs.at(-1);
     this.writeLines([
       this.renderHeaderLine("target", this.describeTarget()),

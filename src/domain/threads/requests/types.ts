@@ -3,6 +3,7 @@ import type {MediaDescriptor} from "../../channels/types.js";
 import type {ExecutionEnvironmentKind, ExecutionToolPolicy} from "../../execution-environments/types.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import type {InferenceProjection, ThreadUpdate} from "../runtime/types.js";
+import type {UpdateSessionRuntimeConfigInput} from "../../sessions/types.js";
 
 export type RuntimeRequestStatus = "pending" | "running" | "completed" | "failed";
 
@@ -228,9 +229,11 @@ export interface CompactThreadRequestPayload extends BaseRuntimeRequestPayload {
   customInstructions: string;
 }
 
+export type RuntimeThreadUpdate = ThreadUpdate & Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
+
 export interface UpdateThreadRequestPayload extends BaseRuntimeRequestPayload {
   threadId: string;
-  update: ThreadUpdate;
+  update: RuntimeThreadUpdate;
 }
 
 export interface RuntimeRequestPayloadByKind {

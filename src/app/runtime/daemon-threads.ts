@@ -6,7 +6,7 @@ import type {OutboundDeliveryInput} from "../../domain/channels/deliveries/types
 import type {IdentityRecord} from "../../domain/identity/types.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import {createSessionWithInitialThread, resetSessionCurrentThread} from "../../domain/sessions/lifecycle.js";
-import type {SessionRecord} from "../../domain/sessions/types.js";
+import type {SessionRecord, UpdateSessionRuntimeConfigInput} from "../../domain/sessions/types.js";
 import {resolveCurrentSessionThread} from "../../domain/sessions/current-thread.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
@@ -47,8 +47,8 @@ export interface DaemonThreadHelperContext {
     };
     coordinator: Pick<ThreadRuntimeCoordinator, "abort" | "waitForCurrentRun">;
     identityStore: Pick<IdentityStore, "getIdentity">;
-    sessionStore: Pick<SessionStore, "createSession" | "getMainSession" | "getSession" | "updateCurrentThread">;
-    store: Pick<ThreadRuntimeStore, "createThread" | "discardPendingInputs" | "getThread" | "updateThread">;
+    sessionStore: Pick<SessionStore, "createSession" | "getMainSession" | "getSession" | "updateCurrentThread" | "updateSessionRuntimeConfig">;
+    store: Pick<ThreadRuntimeStore, "createThread" | "discardPendingInputs" | "getThread">;
     workerSessions: DaemonWorkerSessionContext["workerSessions"];
   };
   a2aBindings: DaemonWorkerSessionContext["a2aBindings"];
@@ -150,10 +150,6 @@ export function createDaemonThreadHelpers(
     sessionId: string;
     agentKey?: string;
     id?: string;
-    promptCacheKey?: string;
-    model?: string;
-    thinking?: CreateBranchSessionRequestPayload["thinking"];
-    inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
     context?: Record<string, unknown>;
   }) => {
     return {
@@ -169,11 +165,33 @@ export function createDaemonThreadHelpers(
           : {}),
         ...(input.context ?? {}),
       },
-      promptCacheKey: input.promptCacheKey,
-      model: input.model,
-      thinking: input.thinking,
-      inferenceProjection: input.inferenceProjection,
     };
+  };
+
+  const buildRuntimeConfigPatch = (input: {
+    model?: string;
+    thinking?: CreateBranchSessionRequestPayload["thinking"];
+    inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
+  }): Omit<UpdateSessionRuntimeConfigInput, "sessionId"> | undefined => {
+    const patch = {
+      ...(input.model !== undefined ? {model: input.model} : {}),
+      ...(input.thinking !== undefined ? {thinking: input.thinking} : {}),
+      ...(input.inferenceProjection !== undefined ? {inferenceProjection: input.inferenceProjection} : {}),
+    } satisfies Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
+    return Object.keys(patch).length > 0 ? patch : undefined;
+  };
+
+  const updateSessionRuntimeConfig = async (
+    sessionId: string,
+    patch: Omit<UpdateSessionRuntimeConfigInput, "sessionId"> | undefined,
+  ): Promise<void> => {
+    if (!patch) {
+      return;
+    }
+    await context.runtime.sessionStore.updateSessionRuntimeConfig({
+      sessionId,
+      ...patch,
+    });
   };
 
   const ensureMainSession = async (
@@ -215,6 +233,8 @@ export function createDaemonThreadHelpers(
           sessionId,
           agentKey,
           id: threadId,
+        }),
+        runtimeConfig: buildRuntimeConfigPatch({
           model: initialThread?.model,
           thinking: initialThread?.thinking,
           inferenceProjection: initialThread?.inferenceProjection,
@@ -237,6 +257,8 @@ export function createDaemonThreadHelpers(
       sessionId,
       agentKey,
       id: threadId,
+    }));
+    await updateSessionRuntimeConfig(sessionId, buildRuntimeConfigPatch({
       model: initialThread?.model,
       thinking: initialThread?.thinking,
       inferenceProjection: initialThread?.inferenceProjection,
@@ -268,11 +290,9 @@ export function createDaemonThreadHelpers(
       sessionId,
       agentKey,
       id: threadId,
-      model: input.model,
-      thinking: input.thinking,
-      inferenceProjection: input.inferenceProjection,
       context: input.context,
     });
+    const runtimeConfig = buildRuntimeConfigPatch(input);
     if (
       context.runtime.pool
       && context.runtime.sessionStore instanceof PostgresSessionStore
@@ -290,6 +310,7 @@ export function createDaemonThreadHelpers(
           createdByIdentityId: input.identity.id,
         },
         thread: threadInput,
+        runtimeConfig,
       });
       return created.thread;
     }
@@ -301,7 +322,9 @@ export function createDaemonThreadHelpers(
       currentThreadId: threadId,
       createdByIdentityId: input.identity.id,
     });
-    return context.runtime.store.createThread(threadInput);
+    const thread = await context.runtime.store.createThread(threadInput);
+    await updateSessionRuntimeConfig(sessionId, runtimeConfig);
+    return thread;
   };
 
   const createWorkerSession = createDaemonWorkerSessionCreator({
@@ -334,15 +357,11 @@ export function createDaemonThreadHelpers(
       thinking: input.thinking,
       inferenceProjection: input.inferenceProjection,
     });
-    let thread = await resolveCurrentThread(session.id);
-    if (!created && (input.model !== undefined || input.thinking !== undefined || input.inferenceProjection !== undefined)) {
-      thread = await context.runtime.store.updateThread(thread.id, {
-        ...(input.model !== undefined ? {model: input.model} : {}),
-        ...(input.thinking !== undefined ? {thinking: input.thinking} : {}),
-        ...(input.inferenceProjection !== undefined ? {inferenceProjection: input.inferenceProjection} : {}),
-      });
+    const runtimeConfig = buildRuntimeConfigPatch(input);
+    if (!created) {
+      await updateSessionRuntimeConfig(session.id, runtimeConfig);
     }
-    return thread;
+    return resolveCurrentThread(session.id);
   };
 
   const resolveOrCreateConversationThread = async (input: {
@@ -440,11 +459,9 @@ export function createDaemonThreadHelpers(
     const nextThread = buildInitialSessionThreadInput({
       sessionId: session.id,
       agentKey: session.agentKey,
-      model: input.model,
-      thinking: input.thinking,
-      inferenceProjection: input.inferenceProjection,
       context: input.context,
     });
+    const runtimeConfig = buildRuntimeConfigPatch(input);
     const thread = (
       context.runtime.pool
       && context.runtime.sessionStore instanceof PostgresSessionStore
@@ -459,12 +476,14 @@ export function createDaemonThreadHelpers(
           sessionId: session.id,
           currentThreadId: nextThread.id,
         },
+        runtimeConfig,
       })
       : await context.runtime.store.createThread(nextThread);
     if (!(context.runtime.pool
       && context.runtime.sessionStore instanceof PostgresSessionStore
       && context.runtime.store instanceof PostgresThreadRuntimeStore)
     ) {
+      await updateSessionRuntimeConfig(session.id, runtimeConfig);
       await context.runtime.sessionStore.updateCurrentThread({
         sessionId: session.id,
         currentThreadId: nextThread.id,
