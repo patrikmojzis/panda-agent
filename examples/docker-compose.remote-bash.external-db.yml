@@ -21,9 +21,9 @@ services:
       PANDA_APPS_INTERNAL_BASE_URL: ${PANDA_APPS_INTERNAL_BASE_URL:-http://panda-core:${PANDA_APPS_PORT:-8092}}
       BASH_EXECUTION_MODE: remote
       CODEX_HOME: /root/.codex
-      RUNNER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
-      RUNNER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
-      RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:-}
+      BASH_SERVER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
+      BASH_SERVER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
+      BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}
       PANDA_ENVIRONMENTS_ROOT: ${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}
       PANDA_RUNNER_ENVIRONMENTS_ROOT: ${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}
       BROWSER_RUNNER_URL: http://panda-browser-runner:8080

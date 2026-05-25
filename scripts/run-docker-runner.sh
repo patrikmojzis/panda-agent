@@ -22,7 +22,7 @@ Options:
 Examples:
   ./scripts/run-docker-runner.sh panda
   ./scripts/run-docker-runner.sh jozef --port 18080 --detach
-  RUNNER_SHARED_SECRET=$(openssl rand -hex 32) ./scripts/run-docker-runner.sh panda --build
+  BASH_SERVER_SHARED_SECRET=$(openssl rand -hex 32) ./scripts/run-docker-runner.sh panda --build
 EOF
 }
 
@@ -77,12 +77,33 @@ validate_node_major() {
   esac
 }
 
-command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH."
+check_deprecated_bash_server_env() {
+  local old_name new_name
+  while [[ $# -gt 0 ]]; do
+    old_name="$1"
+    new_name="$2"
+    if [[ -n "${!old_name+x}" ]]; then
+      die "$old_name was renamed to $new_name; remove the old variable. BASH_SERVER_* is a hard cut with no RUNNER_* aliases."
+    fi
+    shift 2
+  done
+}
+
+check_deprecated_bash_server_env \
+  RUNNER_URL_TEMPLATE BASH_SERVER_URL_TEMPLATE \
+  RUNNER_CWD_TEMPLATE BASH_SERVER_CWD_TEMPLATE \
+  RUNNER_AGENT_KEY BASH_SERVER_AGENT_KEY \
+  RUNNER_HOST BASH_SERVER_HOST \
+  RUNNER_PORT BASH_SERVER_PORT \
+  RUNNER_SHARED_SECRET BASH_SERVER_SHARED_SECRET \
+  RUNNER_ALLOWED_ROOTS BASH_SERVER_ALLOWED_ROOTS \
+  RUNNER_IMAGE BASH_SERVER_IMAGE \
+  RUNNER_ENV_FILE BASH_SERVER_ENV_FILE
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 env_loader="$script_dir/lib/load-env-file.sh"
-env_file="${RUNNER_ENV_FILE:-$repo_root/.env}"
+env_file="${BASH_SERVER_ENV_FILE:-$repo_root/.env}"
 
 if [[ -f "$env_loader" && -f "$env_file" ]]; then
   # shellcheck source=/dev/null
@@ -90,8 +111,21 @@ if [[ -f "$env_loader" && -f "$env_file" ]]; then
   load_env_file "$env_file"
 fi
 
-host_port="${RUNNER_PORT:-8080}"
-image="${RUNNER_IMAGE:-panda:latest}"
+check_deprecated_bash_server_env \
+  RUNNER_URL_TEMPLATE BASH_SERVER_URL_TEMPLATE \
+  RUNNER_CWD_TEMPLATE BASH_SERVER_CWD_TEMPLATE \
+  RUNNER_AGENT_KEY BASH_SERVER_AGENT_KEY \
+  RUNNER_HOST BASH_SERVER_HOST \
+  RUNNER_PORT BASH_SERVER_PORT \
+  RUNNER_SHARED_SECRET BASH_SERVER_SHARED_SECRET \
+  RUNNER_ALLOWED_ROOTS BASH_SERVER_ALLOWED_ROOTS \
+  RUNNER_IMAGE BASH_SERVER_IMAGE \
+  RUNNER_ENV_FILE BASH_SERVER_ENV_FILE
+
+command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH."
+
+host_port="${BASH_SERVER_PORT:-8080}"
+image="${BASH_SERVER_IMAGE:-panda:latest}"
 shared_root="${SHARED_ROOT:-$HOME/.panda/shared}"
 node_major="${PANDA_RUNNER_NODE_MAJOR:-22}"
 node_major_set=0
@@ -182,17 +216,17 @@ run_cmd=(
   docker run --rm
   --name "$container_name"
   -p "${host_port}:8080"
-  -e "RUNNER_AGENT_KEY=$agent_key"
+  -e "BASH_SERVER_AGENT_KEY=$agent_key"
   -e "TZ=$runner_tz"
   -v "$agent_dir:/root/.panda/agents/$agent_key"
   -v "$shared_root:/workspace/shared"
 )
 
-if [[ -n "${RUNNER_SHARED_SECRET:-}" ]]; then
-  run_cmd+=(-e RUNNER_SHARED_SECRET)
+if [[ -n "${BASH_SERVER_SHARED_SECRET:-}" ]]; then
+  run_cmd+=(-e BASH_SERVER_SHARED_SECRET)
 fi
-if [[ -n "${RUNNER_ALLOWED_ROOTS:-}" ]]; then
-  run_cmd+=(-e "RUNNER_ALLOWED_ROOTS=$RUNNER_ALLOWED_ROOTS")
+if [[ -n "${BASH_SERVER_ALLOWED_ROOTS:-}" ]]; then
+  run_cmd+=(-e "BASH_SERVER_ALLOWED_ROOTS=$BASH_SERVER_ALLOWED_ROOTS")
 fi
 
 if (( detach )); then
@@ -210,12 +244,12 @@ printf '  agent dir: %s\n' "$agent_dir"
 printf '  shared root: %s\n' "$shared_root"
 printf '  node major: %s%s\n' "$node_major" "$([[ $build -eq 1 ]] && printf ' (build)' || printf ' (not building)')"
 printf '  timezone: %s\n' "$runner_tz"
-printf '  shared secret: %s\n' "$([[ -n "${RUNNER_SHARED_SECRET:-}" ]] && printf 'configured' || printf 'not configured')"
-printf '  allowed roots: %s\n' "${RUNNER_ALLOWED_ROOTS:-not configured}"
+printf '  shared secret: %s\n' "$([[ -n "${BASH_SERVER_SHARED_SECRET:-}" ]] && printf 'configured' || printf 'not configured')"
+printf '  allowed roots: %s\n' "${BASH_SERVER_ALLOWED_ROOTS:-not configured}"
 printf '\n'
 printf 'Local shell env for panda run:\n'
 printf '  export BASH_EXECUTION_MODE=remote\n'
-printf '  export RUNNER_URL_TEMPLATE=http://127.0.0.1:%s/{agentKey}\n' "$host_port"
+printf '  export BASH_SERVER_URL_TEMPLATE=http://127.0.0.1:%s/{agentKey}\n' "$host_port"
 printf '\n'
 
 if (( dry_run )); then

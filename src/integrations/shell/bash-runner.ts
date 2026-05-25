@@ -26,6 +26,7 @@ import {
 } from "./bash-protocol.js";
 import {ManagedBashJob} from "./bash-background-job.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
+import {assertNoDeprecatedBashServerEnv, BASH_SERVER_PROCESS_ENV_NAMES} from "./bash-server-env.js";
 import {executeBashCommand} from "./bash-execution.js";
 import {readJsonHttpBody} from "../http-body.js";
 import {buildSafeCommandEnv, SAFE_SHELL} from "./environment.js";
@@ -440,7 +441,7 @@ async function resolveRequestCwd(cwd: string, allowedRoots: readonly string[]): 
   }
 
   if (!allowedRoots.some((root) => isPathInsideRoot(realCwd, root))) {
-    throw new ToolError("Runner cwd is outside RUNNER_ALLOWED_ROOTS.", {
+    throw new ToolError("Runner cwd is outside BASH_SERVER_ALLOWED_ROOTS.", {
       details: {
         statusCode: 400,
         cwd: realCwd,
@@ -452,13 +453,14 @@ async function resolveRequestCwd(cwd: string, allowedRoots: readonly string[]): 
 }
 
 export function resolveBashRunnerOptions(env: NodeJS.ProcessEnv = process.env): BashRunnerOptions {
-  const agentKey = normalizeAgentKey(trimToNull(env.RUNNER_AGENT_KEY) ?? "");
+  assertNoDeprecatedBashServerEnv(env, BASH_SERVER_PROCESS_ENV_NAMES);
+  const agentKey = normalizeAgentKey(trimToNull(env.BASH_SERVER_AGENT_KEY) ?? "");
   return {
     agentKey,
-    port: parsePort(trimToNull(env.RUNNER_PORT), DEFAULT_RUNNER_PORT),
-    host: trimToNull(env.RUNNER_HOST) ?? DEFAULT_RUNNER_HOST,
-    sharedSecret: trimToNull(env.RUNNER_SHARED_SECRET),
-    allowedRoots: parseAllowedRoots(trimToNull(env.RUNNER_ALLOWED_ROOTS)),
+    port: parsePort(trimToNull(env.BASH_SERVER_PORT), DEFAULT_RUNNER_PORT),
+    host: trimToNull(env.BASH_SERVER_HOST) ?? DEFAULT_RUNNER_HOST,
+    sharedSecret: trimToNull(env.BASH_SERVER_SHARED_SECRET),
+    allowedRoots: parseAllowedRoots(trimToNull(env.BASH_SERVER_ALLOWED_ROOTS)),
     env,
   };
 }

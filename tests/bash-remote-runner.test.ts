@@ -16,7 +16,7 @@ import {
 } from "../src/index.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {RemoteShellExecutor, resolveRunnerUrl,} from "../src/integrations/shell/bash-executor.js";
-import {type BashRunner, startBashRunner,} from "../src/integrations/shell/bash-runner.js";
+import {resolveBashRunnerOptions, type BashRunner, startBashRunner,} from "../src/integrations/shell/bash-runner.js";
 import {
     RUNNER_AGENT_KEY_HEADER,
     RUNNER_AUTHORIZATION_HEADER,
@@ -102,6 +102,23 @@ describe("remote bash runner", () => {
     return directory;
   }
 
+  it("rejects deprecated core-side RUNNER_* env even when BASH_SERVER_* is set", () => {
+    expect(() => new RemoteShellExecutor({
+      runnerUrlTemplate: "http://runner-new/{agentKey}",
+      env: {
+        RUNNER_URL_TEMPLATE: "http://runner-old/{agentKey}",
+        BASH_SERVER_URL_TEMPLATE: "http://runner-new/{agentKey}",
+      },
+    })).toThrow("RUNNER_URL_TEMPLATE was renamed to BASH_SERVER_URL_TEMPLATE");
+  });
+
+  it("rejects deprecated bash-server process RUNNER_* env even when BASH_SERVER_* is set", () => {
+    expect(() => resolveBashRunnerOptions({
+      RUNNER_AGENT_KEY: "panda",
+      BASH_SERVER_AGENT_KEY: "panda",
+    })).toThrow("RUNNER_AGENT_KEY was renamed to BASH_SERVER_AGENT_KEY");
+  });
+
 
   function buildDirectRunnerHeaders(agentKey: string, options: {sharedSecret?: string} = {}): Record<string, string> {
     return {
@@ -133,15 +150,15 @@ describe("remote bash runner", () => {
       env: {
         ...process.env,
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
-        ...(options.runnerSharedSecret ? {RUNNER_SHARED_SECRET: options.runnerSharedSecret} : {}),
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        ...(options.runnerSharedSecret ? {BASH_SERVER_SHARED_SECRET: options.runnerSharedSecret} : {}),
       },
     });
     const bash = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
-        ...(options.runnerSharedSecret ? {RUNNER_SHARED_SECRET: options.runnerSharedSecret} : {}),
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        ...(options.runnerSharedSecret ? {BASH_SERVER_SHARED_SECRET: options.runnerSharedSecret} : {}),
       },
       outputDirectory: path.join(workspace, "tool-results"),
       jobService: service,
@@ -179,7 +196,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
     const context: DefaultAgentSessionContext = {
@@ -211,7 +228,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
         OPENAI_API_KEY: "sk-secret",
         HOST_MARKER: "host",
       },
@@ -248,7 +265,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
 
@@ -282,7 +299,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
 
@@ -395,7 +412,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
     const context: DefaultAgentSessionContext = {
@@ -437,7 +454,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
 
@@ -467,7 +484,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
         OPENAI_API_KEY: "host-secret",
       },
       credentialResolver: {
@@ -541,7 +558,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
     const context: DefaultAgentSessionContext = {
@@ -880,7 +897,7 @@ describe("remote bash runner", () => {
     const bash = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: "http://runner.local/{agentKey}",
+        BASH_SERVER_URL_TEMPLATE: "http://runner.local/{agentKey}",
       },
       fetchImpl: fetchImpl as typeof fetch,
       jobService: service,
@@ -939,7 +956,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
     const context: DefaultAgentSessionContext = {
@@ -967,7 +984,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
 
@@ -1038,7 +1055,7 @@ describe("remote bash runner", () => {
       fetchImpl: fetchImpl as typeof fetch,
       runnerUrlTemplate: "http://runner-{agentKey}:8080/base/{agentKey}",
       env: {
-        RUNNER_SHARED_SECRET: "secret-123",
+        BASH_SERVER_SHARED_SECRET: "secret-123",
       },
     });
 
@@ -1084,8 +1101,8 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
-        RUNNER_SHARED_SECRET: "secret-123",
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_SERVER_SHARED_SECRET: "secret-123",
       },
     });
 
@@ -1200,7 +1217,7 @@ describe("remote bash runner", () => {
     expect(denied.status).toBe(400);
     await expect(denied.json()).resolves.toMatchObject({
       ok: false,
-      error: "Runner cwd is outside RUNNER_ALLOWED_ROOTS.",
+      error: "Runner cwd is outside BASH_SERVER_ALLOWED_ROOTS.",
     });
 
     const deniedJob = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/start`, {
@@ -1225,7 +1242,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}`,
       },
     });
 
@@ -1251,7 +1268,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/{agentKey}`,
       },
     });
 
@@ -1274,7 +1291,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/runners/{agentKey}/bash`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/runners/{agentKey}/bash`,
       },
     });
 
@@ -1333,13 +1350,13 @@ describe("remote bash runner", () => {
     const primaryTool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runnerA.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runnerA.port}/agents/{agentKey}`,
       },
     });
     const opsTool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runnerB.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runnerB.port}/agents/{agentKey}`,
       },
     });
 
@@ -1370,7 +1387,7 @@ describe("remote bash runner", () => {
     const tool = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
       },
     });
     const controller = new AbortController();

@@ -81,7 +81,7 @@ Set the network names yourself only when you need stable names across compose
 projects.
 
 
-If `RUNNER_SHARED_SECRET` is enabled, wire the same value through `panda-core`, `panda-environment-manager`, and the disposable bash-server containers. It authenticates runner POST endpoints; it does not make runner networks public-safe.
+If `BASH_SERVER_SHARED_SECRET` is enabled, wire the same value through `panda-core`, `panda-environment-manager`, and the disposable bash-server containers. It authenticates runner POST endpoints; it does not make runner networks public-safe.
 
 ## Start It
 

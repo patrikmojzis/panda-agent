@@ -18,6 +18,7 @@ import {
 import {ManagedBashJob} from "./bash-background-job.js";
 import {buildShellProcessEnv, SAFE_SHELL} from "./environment.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
+import {assertNoDeprecatedBashServerEnv, CORE_BASH_SERVER_ENV_NAMES} from "./bash-server-env.js";
 import type {
     BashJobSnapshot,
     BashRunnerJobCancelRequest,
@@ -195,9 +196,10 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
     };
   }
 
+  assertNoDeprecatedBashServerEnv(processEnv, CORE_BASH_SERVER_ENV_NAMES);
   const runnerUrlTemplate = resolveRunnerUrlTemplate(processEnv);
   if (!runnerUrlTemplate && !options.executionEnvironment?.runnerUrl) {
-    throw new ToolError("Remote background bash requires RUNNER_URL_TEMPLATE.");
+    throw new ToolError("Remote background bash requires BASH_SERVER_URL_TEMPLATE.");
   }
 
   const agentKey = readAgentKey(options.context);

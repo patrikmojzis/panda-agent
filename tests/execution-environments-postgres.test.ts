@@ -289,8 +289,8 @@ describe("PostgresExecutionEnvironmentStore", () => {
       store: environmentStore,
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: "http://runner-{agentKey}:8080",
-        RUNNER_CWD_TEMPLATE: "/root/.panda/agents/{agentKey}",
+        BASH_SERVER_URL_TEMPLATE: "http://runner-{agentKey}:8080",
+        BASH_SERVER_CWD_TEMPLATE: "/root/.panda/agents/{agentKey}",
       } as NodeJS.ProcessEnv,
     });
 
@@ -313,8 +313,8 @@ describe("PostgresExecutionEnvironmentStore", () => {
       store: environmentStore,
       env: {
         BASH_EXECUTION_MODE: "remote",
-        RUNNER_URL_TEMPLATE: "http://runner-{agentKey}:8080",
-        RUNNER_CWD_TEMPLATE: "/root/.panda/agents/{agentKey}",
+        BASH_SERVER_URL_TEMPLATE: "http://runner-{agentKey}:8080",
+        BASH_SERVER_CWD_TEMPLATE: "/root/.panda/agents/{agentKey}",
       } as NodeJS.ProcessEnv,
     });
 

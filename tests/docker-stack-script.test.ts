@@ -276,7 +276,7 @@ exit 42
     expect(generatedCompose).toContain(`- "${environmentsRoot}:${"${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}"}"`);
     expect(generatedCompose).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL}");
     expect(generatedCompose).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN}");
-    expect(generatedCompose).toContain("RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:-}");
+    expect(generatedCompose).toContain("BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}");
     expect(generatedCompose).toContain("      - execution_manager_net");
     expect(generatedCompose).toContain("      - disposable_runner_net");
     const browserStart = generatedCompose.indexOf("  panda-browser-runner:");
@@ -564,8 +564,8 @@ exit 42
     expect(generatedCompose).toContain("panda-runner-luna");
     expect(generatedCompose).toContain("image: panda-runner:latest");
     expect(generatedCompose).toContain('command: ["bash-server"]');
-    expect(generatedCompose).toContain("RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:-}");
-    expect(generatedCompose).toContain("RUNNER_ALLOWED_ROOTS: ${RUNNER_ALLOWED_ROOTS:-}");
+    expect(generatedCompose).toContain("BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}");
+    expect(generatedCompose).toContain("BASH_SERVER_ALLOWED_ROOTS: ${BASH_SERVER_ALLOWED_ROOTS:-}");
     expect(generatedCompose.match(/restart: unless-stopped/g)).toHaveLength(2);
     expect(generatedCompose).not.toContain("panda-runner-Luna");
     expect(generatedCompose).not.toContain("image: panda:latest");
@@ -580,7 +580,7 @@ exit 42
     expect(baseCompose).toContain("PANDA_DISCORD_DB_POOL_MAX: ${PANDA_DISCORD_DB_POOL_MAX:-2}");
     expect(baseCompose).toContain("  panda-whatsapp:\n    image: panda-app:latest");
     expect(baseCompose).toContain("${PANDA_ENVIRONMENTS_HOST_ROOT:-${HOME}/.panda/environments}:${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}");
-    expect(baseCompose).toContain("RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:-}");
+    expect(baseCompose).toContain("BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}");
     expect(baseCompose).not.toContain("  panda-telegram:\n    build:");
     expect(baseCompose).not.toContain("  panda-discord:\n    build:");
     expect(baseCompose).not.toContain("  panda-whatsapp:\n    build:");

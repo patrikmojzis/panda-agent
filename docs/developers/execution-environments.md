@@ -12,7 +12,7 @@ tool policy apply to a session.
 ## Current Shape
 
 - `main` and `branch` sessions without a binding keep the old behavior.
-- fallback remote bash still uses `RUNNER_URL_TEMPLATE` and `RUNNER_CWD_TEMPLATE`
+- fallback remote bash still uses `BASH_SERVER_URL_TEMPLATE` and `BASH_SERVER_CWD_TEMPLATE`
   with `{agentKey}`.
 - fallback persistent agent runners keep access to all stored credentials for the
   current agent.
@@ -179,4 +179,4 @@ before attachments are read.
 
 Do not mount the Docker socket into `panda-core`.
 
-If `RUNNER_SHARED_SECRET` is enabled, wire the same value through `panda-core`, `panda-environment-manager`, and the disposable bash-server containers. It authenticates runner POST endpoints; it does not make runner networks public-safe.
+If `BASH_SERVER_SHARED_SECRET` is enabled, wire the same value through `panda-core`, `panda-environment-manager`, and the disposable bash-server containers. It authenticates runner POST endpoints; it does not make runner networks public-safe.

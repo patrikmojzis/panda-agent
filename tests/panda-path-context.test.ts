@@ -65,7 +65,7 @@ describe("resolveContextPath", () => {
 
   it("maps remote runner agent-home paths back to the local agent home", () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
     vi.stubEnv("DATA_DIR", "/Users/tester/.panda");
 
     expect(resolveContextPath("/root/.panda/agents/jozef/media/browser/shot.png", {
@@ -75,7 +75,7 @@ describe("resolveContextPath", () => {
 
   it("maps relative paths resolved from the remote runner cwd", () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
     vi.stubEnv("DATA_DIR", "/Users/tester/.panda");
 
     expect(resolveContextPath("media/telegram/photo.jpg", {
@@ -89,7 +89,7 @@ describe("resolveContextPath", () => {
 
   it("leaves non-agent-home paths alone in remote mode", () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
     vi.stubEnv("DATA_DIR", "/Users/tester/.panda");
 
     expect(resolveContextPath("/workspace/shared/report.png", {
@@ -99,7 +99,7 @@ describe("resolveContextPath", () => {
 
   it("does not map disposable environment paths into the host agent home", () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
-    vi.stubEnv("RUNNER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
+    vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
     vi.stubEnv("DATA_DIR", "/Users/tester/.panda");
 
     expect(resolveContextPath("/root/.panda/agents/jozef/media/browser/shot.png", {

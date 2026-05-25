@@ -15,6 +15,7 @@ import {
     DockerApiError,
     DockerExecutionEnvironmentManager,
     HttpExecutionEnvironmentManagerClient,
+    resolveDockerExecutionEnvironmentManagerOptions,
     startExecutionEnvironmentManager,
 } from "../src/integrations/shell/index.js";
 import type {
@@ -143,6 +144,13 @@ function requireContainerName(metadata: DisposableEnvironmentCreateResult["metad
 describe("DockerExecutionEnvironmentManager", () => {
   const directories: string[] = [];
 
+  it("rejects deprecated RUNNER_SHARED_SECRET when resolving manager options", () => {
+    expect(() => resolveDockerExecutionEnvironmentManagerOptions({
+      RUNNER_SHARED_SECRET: "old-secret",
+      BASH_SERVER_SHARED_SECRET: "new-secret",
+    })).toThrow("RUNNER_SHARED_SECRET was renamed to BASH_SERVER_SHARED_SECRET");
+  });
+
   afterEach(async () => {
     while (directories.length > 0) {
       await rm(directories.pop() ?? "", {recursive: true, force: true});
@@ -216,9 +224,9 @@ describe("DockerExecutionEnvironmentManager", () => {
       "HOME=/root",
       "TMPDIR=/tmp",
       "LANG=C.UTF-8",
-      "RUNNER_AGENT_KEY=panda",
-      "RUNNER_PORT=8080",
-      "RUNNER_SHARED_SECRET=runner-secret",
+      "BASH_SERVER_AGENT_KEY=panda",
+      "BASH_SERVER_PORT=8080",
+      "BASH_SERVER_SHARED_SECRET=runner-secret",
     ]));
     expect(created.config.HostConfig.AutoRemove).toBe(true);
     expect(created.config.HostConfig.PortBindings).toEqual({

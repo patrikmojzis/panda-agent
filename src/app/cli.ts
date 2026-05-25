@@ -127,9 +127,9 @@ async function runRuntimeCommand(options: RunCliOptions): Promise<void> {
 async function runRunnerCommand(options: RunnerCliOptions): Promise<void> {
   const resolved = resolveBashRunnerOptions({
     ...process.env,
-    ...(options.agent ? { RUNNER_AGENT_KEY: options.agent } : {}),
-    ...(options.port !== undefined ? { RUNNER_PORT: String(options.port) } : {}),
-    ...(options.host ? { RUNNER_HOST: options.host } : {}),
+    ...(options.agent ? { BASH_SERVER_AGENT_KEY: options.agent } : {}),
+    ...(options.port !== undefined ? { BASH_SERVER_PORT: String(options.port) } : {}),
+    ...(options.host ? { BASH_SERVER_HOST: options.host } : {}),
   });
   const runner = await startBashRunner({
     ...resolved,
