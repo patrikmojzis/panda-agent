@@ -10,6 +10,7 @@ import {
   parseThreadRow,
   parseToolJobRow,
 } from "../src/domain/threads/runtime/postgres-rows.js";
+import {migrateSessionRuntimeConfigFromThreadRows} from "../src/domain/threads/runtime/postgres-schema.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 import {
   THREAD_RUNTIME_JSONB_NUL_PLACEHOLDER,
@@ -183,7 +184,7 @@ describe("PostgresThreadRuntimeStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const {agentStore, identityStore, threadStore: store} = await createRuntimeStores(pool);
+    const {agentStore, identityStore, sessionStore, threadStore: store} = await createRuntimeStores(pool);
 
     const alice = await identityStore.createIdentity({
       id: "alice-id",
@@ -224,13 +225,6 @@ describe("PostgresThreadRuntimeStore", () => {
         identityHandle: alice.handle,
       },
       maxTurns: 5,
-      model: "openai/gpt-5.1",
-      thinking: "medium",
-      inferenceProjection: {
-        dropThinking: {
-          preserveRecentUserTurns: 2,
-        },
-      },
     });
 
     expect(created.sessionId).toBe("session-alice");
@@ -239,8 +233,21 @@ describe("PostgresThreadRuntimeStore", () => {
       identityId: alice.id,
     });
     expect(created.systemPrompt).toEqual(["You are the default agent."]);
-    expect(created.thinking).toBe("medium");
-    expect(created.inferenceProjection).toEqual({
+
+    const runtimeConfig = await sessionStore.updateSessionRuntimeConfig({
+      sessionId: "session-alice",
+      model: "openai/gpt-5.1",
+      thinking: "medium",
+      inferenceProjection: {
+        dropThinking: {
+          preserveRecentUserTurns: 2,
+        },
+      },
+    });
+    expect(runtimeConfig.model).toBe("openai/gpt-5.1");
+    expect(runtimeConfig.thinking).toBe("medium");
+    expect(runtimeConfig.thinkingConfigured).toBe(true);
+    expect(runtimeConfig.inferenceProjection).toEqual({
       dropThinking: {
         preserveRecentUserTurns: 2,
       },
@@ -263,44 +270,30 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(localSummaries).toHaveLength(1);
     expect(localSummaries[0]?.thread.id).toBe("pg-thread-local");
 
-    const updated = await store.updateThread("pg-thread", {
-      promptCacheKey: "thread:pg-thread",
+    const updatedRuntimeConfig = await sessionStore.updateSessionRuntimeConfig({
+      sessionId: "session-alice",
       inferenceProjection: {
         dropMessages: {
           olderThanMs: 172_800_000,
         },
       },
     });
-
-    expect(updated.sessionId).toBe("session-alice");
-    expect(updated.promptCacheKey).toBe("thread:pg-thread");
-    expect(updated.inferenceProjection).toEqual({
-      dropMessages: {
-        olderThanMs: 172_800_000,
-      },
-    });
-    expect((await store.getThread("pg-thread")).inferenceProjection).toEqual({
+    expect(updatedRuntimeConfig.inferenceProjection).toEqual({
       dropMessages: {
         olderThanMs: 172_800_000,
       },
     });
 
-    const clearedThinking = await store.updateThread("pg-thread", {
-      thinking: null,
-    });
-    expect(clearedThinking.thinking).toBeUndefined();
-
-    const clearedModel = await store.updateThread("pg-thread", {
+    const clearedRuntimeConfig = await sessionStore.updateSessionRuntimeConfig({
+      sessionId: "session-alice",
       model: null,
-    });
-    expect(clearedModel.model).toBeUndefined();
-    expect((await store.getThread("pg-thread")).model).toBeUndefined();
-
-    const clearedProjection = await store.updateThread("pg-thread", {
+      thinking: null,
       inferenceProjection: null,
     });
-    expect(clearedProjection.inferenceProjection).toBeUndefined();
-    expect((await store.getThread("pg-thread")).inferenceProjection).toBeUndefined();
+    expect(clearedRuntimeConfig.model).toBeUndefined();
+    expect(clearedRuntimeConfig.thinking).toBeUndefined();
+    expect(clearedRuntimeConfig.thinkingConfigured).toBe(true);
+    expect(clearedRuntimeConfig.inferenceProjection).toBeUndefined();
 
     const telegramInput = await store.enqueueInput("pg-thread", {
       message: stringToUserMessage("hello from telegram"),
@@ -453,6 +446,121 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(completedAfterAbort.status).toBe("failed");
     expect(completedAfterAbort.error).toBe("recover me");
   });
+
+
+
+  it("migrates session runtime config off legacy thread columns and drops them", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {agentStore, sessionStore, threadStore: store} = await createRuntimeStores(pool);
+    await agentStore.bootstrapAgent({
+      agentKey: "panda-worker",
+      displayName: "Panda Worker",
+      prompts: {},
+    });
+    await seedSession(pool, {
+      sessionId: "legacy-session",
+      threadId: "legacy-thread",
+    });
+    await seedSession(pool, {
+      sessionId: "legacy-worker-session",
+      threadId: "legacy-worker-thread",
+      agentKey: "panda-worker",
+    });
+    await pool.query(`UPDATE ${SESSION_TABLE} SET kind = 'worker' WHERE id = $1`, ["legacy-worker-session"]);
+    await store.createThread({id: "legacy-thread", sessionId: "legacy-session"});
+    await store.createThread({id: "legacy-worker-thread", sessionId: "legacy-worker-session"});
+
+    const threadTable = buildThreadRuntimeTableNames().threads;
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN model TEXT`);
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN thinking TEXT`);
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN pending_wake_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN prompt_cache_key TEXT`);
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN inference_projection JSONB`);
+    await pool.query(`
+      UPDATE ${threadTable}
+      SET model = 'openai/gpt-5.1',
+          thinking = 'medium',
+          pending_wake_at = NOW(),
+          prompt_cache_key = 'thread:' || id,
+          inference_projection = $2::jsonb
+      WHERE id = $1
+    `, [
+      "legacy-thread",
+      JSON.stringify({dropThinking: {preserveRecentUserTurns: 3}}),
+    ]);
+    await pool.query(`
+      UPDATE ${threadTable}
+      SET thinking = 'xhigh',
+          prompt_cache_key = 'thread:' || id
+      WHERE id = $1
+    `, ["legacy-worker-thread"]);
+
+    await migrateSessionRuntimeConfigFromThreadRows(pool, buildThreadRuntimeTableNames());
+
+    await expect(sessionStore.getSessionRuntimeConfig("legacy-session")).resolves.toMatchObject({
+      sessionId: "legacy-session",
+      model: "openai/gpt-5.1",
+      thinking: "medium",
+      thinkingConfigured: true,
+      inferenceProjection: {dropThinking: {preserveRecentUserTurns: 3}},
+    });
+    await expect(store.hasPendingWake("legacy-thread")).resolves.toBe(true);
+    await expect(sessionStore.getSessionRuntimeConfig("legacy-worker-session")).resolves.toMatchObject({
+      sessionId: "legacy-worker-session",
+      thinkingConfigured: false,
+    });
+
+    const columns = await pool.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'runtime'
+        AND table_name = 'threads'
+        AND column_name IN ('model', 'thinking', 'pending_wake_at', 'prompt_cache_key', 'inference_projection')
+    `);
+    expect(columns.rows).toEqual([]);
+  });
+
+  it("refuses to drop custom legacy prompt cache keys", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {threadStore: store} = await createRuntimeStores(pool);
+    await seedSession(pool, {
+      sessionId: "custom-cache-session",
+      threadId: "custom-cache-thread",
+    });
+    await store.createThread({id: "custom-cache-thread", sessionId: "custom-cache-session"});
+    const threadTable = buildThreadRuntimeTableNames().threads;
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN prompt_cache_key TEXT`);
+    await pool.query(`UPDATE ${threadTable} SET prompt_cache_key = 'custom:key' WHERE id = $1`, [
+      "custom-cache-thread",
+    ]);
+
+    await expect(
+      migrateSessionRuntimeConfigFromThreadRows(pool, buildThreadRuntimeTableNames()),
+    ).rejects.toThrow(
+      "Cannot drop runtime.threads.prompt_cache_key while custom key exists on thread custom-cache-thread.",
+    );
+  });
+
 
   it("persists bash tool results with sanitized NUL output previews", async () => {
     const db = newDb();

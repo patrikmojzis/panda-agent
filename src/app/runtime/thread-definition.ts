@@ -5,7 +5,7 @@ import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
-import type {AgentSessionKind, SessionPromptRecord, SessionRecord} from "../../domain/sessions/types.js";
+import type {AgentSessionKind, SessionPromptRecord, SessionRecord, SessionRuntimeConfigRecord} from "../../domain/sessions/types.js";
 import type {InferenceProjection, ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {buildDefaultAgentLlmContexts, type AgentProfileStore, type DefaultAgentLlmContextSection,} from "../../panda/contexts/builder.js";
@@ -75,6 +75,7 @@ export interface CreateThreadDefinitionOptions {
   executionEnvironment?: ResolvedExecutionEnvironment;
   tools?: readonly Tool[];
   sessionPrompt?: SessionPromptRecord | null;
+  runtimeConfig?: SessionRuntimeConfigRecord;
   extraLlmContexts?: readonly LlmContext[];
   llmContextSections?: readonly DefaultAgentLlmContextSection[];
   extraContext?: Omit<
@@ -189,6 +190,17 @@ export function resolveStoredContext(
   };
 }
 
+function resolveSessionThinking(
+  session: Pick<SessionRecord, "id" | "agentKey"> & {kind?: AgentSessionKind},
+  runtimeConfig: SessionRuntimeConfigRecord | undefined,
+): SessionRuntimeConfigRecord["thinking"] {
+  if (runtimeConfig?.thinkingConfigured) {
+    return runtimeConfig.thinking;
+  }
+
+  return isWorkerSession(session) ? "xhigh" : undefined;
+}
+
 export function createThreadDefinition(
   options: CreateThreadDefinitionOptions,
 ): ResolvedThreadDefinition {
@@ -229,7 +241,7 @@ export function createThreadDefinition(
     }));
   }
   const tools = resolveSessionTools(options.tools, options);
-  const threadPromptCacheKey = resolveThreadPromptCacheKey(options.thread.id, options.thread.promptCacheKey);
+  const threadPromptCacheKey = resolveThreadPromptCacheKey(options.thread.id);
 
   return {
     agent: new Agent({
@@ -240,9 +252,11 @@ export function createThreadDefinition(
     context,
     llmContexts,
     promptCacheKey: resolveSessionPromptCacheKey(threadPromptCacheKey, options.sessionPrompt),
+    model: options.runtimeConfig?.model,
+    thinking: resolveSessionThinking(session, options.runtimeConfig),
     inferenceProjection: mergeInferenceProjection(
       DEFAULT_INFERENCE_PROJECTION,
-      options.thread.inferenceProjection,
+      options.runtimeConfig?.inferenceProjection,
     ),
   };
 }

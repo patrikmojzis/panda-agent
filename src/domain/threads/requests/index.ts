@@ -19,6 +19,7 @@ export type {
   RuntimeRequestPayload,
   RuntimeRequestRecord,
   RuntimeRequestStatus,
+  RuntimeThreadUpdate,
   ResetSessionRequestPayload,
   ResetSessionResult,
   ResolveMainSessionThreadRequestPayload,

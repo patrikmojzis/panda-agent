@@ -117,7 +117,6 @@ describe("WorkerSessionService", () => {
     expect(created.thread).toMatchObject({
       id: "worker-thread",
       sessionId: "worker-session",
-      thinking: "xhigh",
       context: {
         cwd: "/host/workspace",
         agentKey: "panda",

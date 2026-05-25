@@ -358,11 +358,11 @@ async function listSessionsCommand(agentKey: string, options: SessionCliOptions)
 }
 
 async function inspectSessionCommand(sessionRef: string, options: ScopedSessionRefCliOptions): Promise<void> {
-  await withSessionStores(options, async ({sessionStore, threadStore}) => {
+  await withSessionStores(options, async ({sessionStore}) => {
     const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
-    const thread = await threadStore.getThread(session.currentThreadId);
     const heartbeat = await sessionStore.getHeartbeat(session.id);
     const prompt = await sessionStore.readSessionPrompt(session.id);
+    const runtimeConfig = await sessionStore.getSessionRuntimeConfig(session.id);
 
     process.stdout.write(
       [
@@ -374,7 +374,8 @@ async function inspectSessionCommand(sessionRef: string, options: ScopedSessionR
         `kind ${session.kind}`,
         `current thread ${session.currentThreadId}`,
         `created by ${session.createdByIdentityId ?? "-"}`,
-        `thread model ${thread.model ?? "-"}`,
+        `runtime model ${runtimeConfig.model ?? "-"}`,
+        `runtime thinking ${runtimeConfig.thinkingConfigured ? runtimeConfig.thinking ?? "off" : "-"}`,
         `heartbeat enabled ${heartbeat?.enabled ? "yes" : "no"}`,
         `heartbeat every ${heartbeat?.everyMinutes ?? "-"} minutes`,
       ].join("\n") + "\n",

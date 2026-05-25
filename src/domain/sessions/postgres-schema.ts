@@ -50,6 +50,35 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
     ON ${tables.sessions} (agent_key, created_at DESC)
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.sessionRuntimeConfig} (
+      session_id TEXT NOT NULL,
+      model TEXT,
+      thinking TEXT,
+      thinking_configured BOOLEAN NOT NULL DEFAULT FALSE,
+      inference_projection JSONB,
+      pending_wake_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_session_runtime_config_session_idx`)}
+    ON ${tables.sessionRuntimeConfig} (session_id)
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.sessionRuntimeConfig}
+    ADD COLUMN IF NOT EXISTS thinking_configured BOOLEAN NOT NULL DEFAULT FALSE
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.sessionRuntimeConfig}
+    ADD COLUMN IF NOT EXISTS inference_projection JSONB
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.sessionRuntimeConfig}
+    ADD COLUMN IF NOT EXISTS pending_wake_at TIMESTAMPTZ
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.sessionHeartbeats} (
       session_id TEXT PRIMARY KEY REFERENCES ${tables.sessions}(id) ON DELETE CASCADE,
       enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -116,6 +145,16 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
           AND identity.id IS NULL
       `,
     },
+    {
+      label: "session_runtime_config.session_id orphaned from agent_sessions.id",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.sessionRuntimeConfig} AS config
+        LEFT JOIN ${tables.sessions} AS session
+          ON session.id = config.session_id
+        WHERE session.id IS NULL
+      `,
+    },
   ]);
   await addConstraint(pool, `
     ALTER TABLE ${tables.sessions}
@@ -130,5 +169,12 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
     FOREIGN KEY (created_by_identity_id)
     REFERENCES ${identityTableName}(id)
     ON DELETE SET NULL
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.sessionRuntimeConfig}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_session_runtime_config_session_fk`)}
+    FOREIGN KEY (session_id)
+    REFERENCES ${tables.sessions}(id)
+    ON DELETE CASCADE
   `);
 }

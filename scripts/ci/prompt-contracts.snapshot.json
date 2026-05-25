@@ -13,10 +13,10 @@
       "sha256": "58aa68e655a031f2e9b4a847f4b2e56f12b6d8f1aebc61364e1124c91a5da1f3"
     },
     {
-      "bytes": 13818,
-      "lines": 375,
+      "bytes": 13925,
+      "lines": 377,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "236473bb357841ddb68dd93d999bed8ddc924b139a363ed46c9baad3d8e4066d"
+      "sha256": "2a81195c428de38fd762360ad78afdb0db636adb4adf317b5af124b790d72520"
     },
     {
       "bytes": 12121,
@@ -31,16 +31,16 @@
       "sha256": "af68038f516ac4ccf5602715f551192eec53f8263857819eaab203e5dc1167b1"
     },
     {
-      "bytes": 23704,
-      "lines": 726,
+      "bytes": 23871,
+      "lines": 730,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "2fde32484f1627e3c5bf7aa326351e96688b6bb040a11a70e7f8eee689837ce1"
+      "sha256": "9400fbcbae463a0cdf17e4b318e74589c7c74175e3319b37ac15155f7615c31c"
     },
     {
-      "bytes": 10227,
-      "lines": 248,
+      "bytes": 10745,
+      "lines": 262,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "db05ac7ee087f225bf49c87f2da404c12f4875f6ca827a992793c3397263b403"
+      "sha256": "4cbe67b41d5a3237435db4254e043dfcb0e21d0618b9d4ae74e3d21c90b0436d"
     },
     {
       "bytes": 2612,
@@ -1745,7 +1745,7 @@
       }
     },
     {
-      "description": "Adjust the current run's thinking effort for the next model turn.\nUse persist=true to also update the current thread's stored default.",
+      "description": "Adjust the current run's thinking effort for the next model turn.\nUse persist=true to also update the current session's stored default.",
       "name": "thinking_set",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

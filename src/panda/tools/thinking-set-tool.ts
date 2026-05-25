@@ -61,7 +61,7 @@ function applyLiveThinking<TContext>(
 }
 
 export interface ThinkingSetPersistence {
-  updateThreadThinking(
+  updateSessionThinkingForThread(
     threadId: string,
     thinking: ThinkingLevel | null,
   ): Promise<{thinking?: ThinkingLevel}>;
@@ -78,7 +78,7 @@ export class ThinkingSetTool<TContext = DefaultAgentSessionContext>
   name = "thinking_set";
   description = [
     "Adjust the current run's thinking effort for the next model turn.",
-    "Use persist=true to also update the current thread's stored default.",
+    "Use persist=true to also update the current session's stored default.",
   ].join("\n");
   schema = thinkingSetToolSchema;
 
@@ -136,7 +136,7 @@ export class ThinkingSetTool<TContext = DefaultAgentSessionContext>
 
     let storedThinking: ThinkingLevel | undefined;
     try {
-      const persisted = await this.persistence.updateThreadThinking(threadId, nextThinking ?? null);
+      const persisted = await this.persistence.updateSessionThinkingForThread(threadId, nextThinking ?? null);
       storedThinking = persisted.thinking;
     } catch (error) {
       throw new ToolError(`Failed to persist thinking: ${stringifyUnknown(error, {preferErrorMessage: true})}`);

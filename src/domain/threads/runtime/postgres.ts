@@ -1,7 +1,6 @@
 import {toJson} from "../../../lib/postgres-values.js";
 import {randomUUID} from "node:crypto";
 
-import {resolveModelSelector} from "../../../kernel/models/model-selector.js";
 import {
     buildThreadRuntimeTableNames, type ThreadRuntimeTableNames} from "./postgres-shared.js";
 import {buildThreadRuntimeNotificationChannel, type ThreadRuntimeNotification} from "./postgres-notifications.js";
@@ -38,7 +37,7 @@ import {
     type ThreadToolJobUpdate,
     type ThreadUpdate,
 } from "./types.js";
-import {resolveThreadPromptCacheKey} from "./prompt-cache-key.js";
+import {buildSessionTableNames, type SessionTableNames} from "../../sessions/postgres-shared.js";
 import {
   createThreadRuntimeJsonbPersistenceError,
   serializeThreadRuntimeJsonb,
@@ -75,11 +74,13 @@ function parseThreadSummaryCount(row: Record<string, unknown>, column: string): 
 export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   private readonly pool: PgPoolLike;
   private readonly tables: ThreadRuntimeTableNames;
+  private readonly sessionTables: SessionTableNames;
   private readonly notificationChannel: string;
 
   constructor(options: PostgresThreadRuntimeStoreOptions) {
     this.pool = options.pool;
     this.tables = buildThreadRuntimeTableNames();
+    this.sessionTables = buildSessionTableNames();
     this.notificationChannel = buildThreadRuntimeNotificationChannel();
   }
 
@@ -106,9 +107,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     if (!sessionId) {
       throw new Error(`Thread ${input.id} is missing sessionId.`);
     }
-    const model = input.model === undefined ? null : resolveModelSelector(input.model).canonical;
-    const promptCacheKey = resolveThreadPromptCacheKey(input.id, input.promptCacheKey);
-
     const result = await queryable.query(`
       INSERT INTO ${this.tables.threads} (
         id,
@@ -117,11 +115,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         max_turns,
         context,
         runtime_state,
-        inference_projection,
-        prompt_cache_key,
-        model,
-        temperature,
-        thinking
+        temperature
       ) VALUES (
         $1,
         $2,
@@ -129,34 +123,21 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
         $4,
         $5::jsonb,
         $6::jsonb,
-        $7::jsonb,
-        $8,
-        $9,
-        $10,
-        $11
+        $7
       )
       ON CONFLICT (id) DO UPDATE
       SET system_prompt = EXCLUDED.system_prompt,
           max_turns = EXCLUDED.max_turns,
           context = EXCLUDED.context,
           runtime_state = EXCLUDED.runtime_state,
-          inference_projection = EXCLUDED.inference_projection,
-          prompt_cache_key = EXCLUDED.prompt_cache_key,
-          model = EXCLUDED.model,
           temperature = EXCLUDED.temperature,
-          thinking = EXCLUDED.thinking,
           updated_at = NOW()
       WHERE ${this.tables.threads}.session_id = EXCLUDED.session_id
         AND ${this.tables.threads}.system_prompt IS NULL
         AND ${this.tables.threads}.max_turns IS NULL
         AND ${this.tables.threads}.context IS NULL
         AND ${this.tables.threads}.runtime_state IS NULL
-        AND ${this.tables.threads}.inference_projection IS NULL
-        AND ${this.tables.threads}.prompt_cache_key IS NULL
-        AND ${this.tables.threads}.model IS NULL
         AND ${this.tables.threads}.temperature IS NULL
-        AND ${this.tables.threads}.thinking IS NULL
-        AND ${this.tables.threads}.pending_wake_at IS NULL
       RETURNING *
     `, [
       input.id,
@@ -165,11 +146,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       input.maxTurns ?? null,
       toJson(input.context),
       toJson(input.runtimeState),
-      toJson(input.inferenceProjection),
-      promptCacheKey,
-      model,
       input.temperature ?? null,
-      input.thinking ?? null,
     ]);
     const row = result.rows[0];
     if (!row) {
@@ -306,24 +283,8 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       push("runtime_state", toJson(update.runtimeState ?? null), "::jsonb");
     }
 
-    if (update.inferenceProjection !== undefined) {
-      push("inference_projection", toJson(update.inferenceProjection ?? null), "::jsonb");
-    }
-
-    if (update.promptCacheKey !== undefined) {
-      push("prompt_cache_key", update.promptCacheKey);
-    }
-
-    if (update.model !== undefined) {
-      push("model", update.model === null ? null : resolveModelSelector(update.model).canonical);
-    }
-
     if (update.temperature !== undefined) {
       push("temperature", update.temperature);
-    }
-
-    if (update.thinking !== undefined) {
-      push("thinking", update.thinking);
     }
 
     if (assignments.length === 0) {
@@ -418,8 +379,15 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
 
   async hasPendingWake(threadId: string): Promise<boolean> {
     const result = await this.pool.query(
-      `SELECT 1 FROM ${this.tables.threads}
-       WHERE id = $1 AND pending_wake_at IS NOT NULL
+      `SELECT 1
+       FROM ${this.tables.threads} AS thread
+       INNER JOIN ${this.sessionTables.sessions} AS session
+         ON session.id = thread.session_id
+        AND session.current_thread_id = thread.id
+       INNER JOIN ${this.sessionTables.sessionRuntimeConfig} AS config
+         ON config.session_id = session.id
+       WHERE thread.id = $1
+         AND config.pending_wake_at IS NOT NULL
        LIMIT 1`,
       [threadId],
     );
@@ -438,26 +406,51 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
   }
 
   async requestWake(threadId: string): Promise<void> {
-    const result = await this.pool.query(
-      `UPDATE ${this.tables.threads}
-       SET pending_wake_at = COALESCE(pending_wake_at, NOW())
-       WHERE id = $1
-       RETURNING id`,
-      [threadId],
-    );
-    if (result.rows.length === 0) {
+    const targetResult = await this.pool.query(`
+      SELECT thread.session_id, session.current_thread_id
+      FROM ${this.tables.threads} AS thread
+      INNER JOIN ${this.sessionTables.sessions} AS session
+        ON session.id = thread.session_id
+      WHERE thread.id = $1
+      LIMIT 1
+    `, [threadId]);
+    const target = targetResult.rows[0] as {session_id?: unknown; current_thread_id?: unknown} | undefined;
+    if (!target || typeof target.session_id !== "string" || typeof target.current_thread_id !== "string") {
       throw missingThreadError(threadId);
     }
 
-    await this.notifyThreadChanged(threadId);
+    await this.pool.query(`
+      INSERT INTO ${this.sessionTables.sessionRuntimeConfig} (
+        session_id,
+        pending_wake_at
+      ) VALUES (
+        $1,
+        NOW()
+      )
+      ON CONFLICT (session_id) DO UPDATE
+      SET pending_wake_at = COALESCE(${this.sessionTables.sessionRuntimeConfig}.pending_wake_at, NOW()),
+          updated_at = NOW()
+    `, [target.session_id]);
+
+    await this.notifyThreadChanged(target.current_thread_id);
   }
 
   async consumePendingWake(threadId: string): Promise<boolean> {
     const result = await this.pool.query(
-      `UPDATE ${this.tables.threads}
-       SET pending_wake_at = NULL
-       WHERE id = $1 AND pending_wake_at IS NOT NULL
-       RETURNING id`,
+      `UPDATE ${this.sessionTables.sessionRuntimeConfig}
+       SET pending_wake_at = NULL,
+           updated_at = NOW()
+       WHERE pending_wake_at IS NOT NULL
+         AND session_id = (
+           SELECT thread.session_id
+           FROM ${this.tables.threads} AS thread
+           INNER JOIN ${this.sessionTables.sessions} AS session
+             ON session.id = thread.session_id
+            AND session.current_thread_id = thread.id
+           WHERE thread.id = $1
+           LIMIT 1
+         )
+       RETURNING session_id`,
       [threadId],
     );
     if (result.rows.length > 0) {

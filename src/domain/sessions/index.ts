@@ -48,11 +48,13 @@ export type {
   SessionHeartbeatRecord,
   SessionPromptRecord,
   SessionPromptSlug,
+  SessionRuntimeConfigRecord,
   ResolveSessionRefInput,
   SessionRecord,
   UpdateSessionCurrentThreadInput,
   UpdateSessionHeartbeatConfigInput,
   SetSessionPromptInput,
+  UpdateSessionRuntimeConfigInput,
   UpdateSessionLabelInput,
 } from "./types.js";
 export {DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES, SESSION_BRIEFING_PROMPT_SLUG, normalizeSessionAlias, normalizeSessionPromptSlug} from "./types.js";

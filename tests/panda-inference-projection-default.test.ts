@@ -36,9 +36,19 @@ describe("createThreadDefinition inference projection defaults", () => {
     expect(definition.inferenceProjection).toEqual(DEFAULT_INFERENCE_PROJECTION);
   });
 
-  it("merges thread overrides on top of the Panda default", () => {
+  it("merges session runtime overrides on top of the Panda default", () => {
     const definition = createThreadDefinition({
-      thread: createThread({
+      thread: createThread(),
+      session: {
+        id: "session-main",
+        agentKey: "panda",
+      },
+      fallbackContext: {
+        cwd: "/tmp/panda",
+      },
+      runtimeConfig: {
+        sessionId: "session-main",
+        thinkingConfigured: false,
         inferenceProjection: {
           dropMessages: {
             preserveRecentUserTurns: 1,
@@ -47,13 +57,6 @@ describe("createThreadDefinition inference projection defaults", () => {
             olderThanMs: 60_000,
           },
         },
-      }),
-      session: {
-        id: "session-main",
-        agentKey: "panda",
-      },
-      fallbackContext: {
-        cwd: "/tmp/panda",
       },
     });
 

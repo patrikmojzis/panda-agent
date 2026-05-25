@@ -268,7 +268,7 @@ export function collectThreadUsageSnapshot(options: {
   // shows the context the model is actually likely to see, not just stored junk.
   const effectiveProjection = mergeInferenceProjection(
     DEFAULT_INFERENCE_PROJECTION,
-    options.thread.inferenceProjection,
+    undefined,
   );
   const runTranscript = projectTranscriptForRun(options.transcript);
   const visibleTranscript = projectTranscriptForInference(
@@ -278,14 +278,14 @@ export function collectThreadUsageSnapshot(options: {
   );
   const replayVisibleArtifacts = effectiveProjection?.dropImages === undefined;
   const {total, last} = collectUsageTotals(options.transcript);
-  const model = options.model ?? options.thread.model;
+  const model = options.model;
   const budget = resolveModelRuntimeBudget(model);
 
   return {
     threadId: options.thread.id,
     agentKey: readThreadAgentKey(options.thread) ?? "unknown",
     model,
-    thinking: options.thinking ?? options.thread.thinking,
+    thinking: options.thinking,
     runState: options.isRunning ? "thinking" : "idle",
     storedMessages: options.transcript.length,
     runMessages: runTranscript.length,

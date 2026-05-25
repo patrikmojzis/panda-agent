@@ -11,9 +11,11 @@ import type {
   SessionPromptSlug,
   SessionRecord,
   SetSessionPromptInput,
+  SessionRuntimeConfigRecord,
   UpdateSessionCurrentThreadInput,
   UpdateSessionHeartbeatConfigInput,
   UpdateSessionLabelInput,
+  UpdateSessionRuntimeConfigInput,
 } from "./types.js";
 
 export interface SessionStore {
@@ -26,6 +28,8 @@ export interface SessionStore {
   listAgentSessions(agentKey: string): Promise<readonly SessionRecord[]>;
   updateSessionLabel(input: UpdateSessionLabelInput): Promise<SessionRecord>;
   updateCurrentThread(input: UpdateSessionCurrentThreadInput): Promise<SessionRecord>;
+  getSessionRuntimeConfig(sessionId: string): Promise<SessionRuntimeConfigRecord>;
+  updateSessionRuntimeConfig(input: UpdateSessionRuntimeConfigInput): Promise<SessionRuntimeConfigRecord>;
   readSessionPrompt(sessionId: string, slug?: SessionPromptSlug): Promise<SessionPromptRecord | null>;
   listSessionPrompts(sessionId: string): Promise<readonly SessionPromptRecord[]>;
   setSessionPrompt(input: SetSessionPromptInput): Promise<SessionPromptRecord>;

@@ -1,4 +1,7 @@
+import type {ThinkingLevel} from "@mariozechner/pi-ai";
+
 import type {JsonValue} from "../../lib/json.js";
+import type {InferenceProjection} from "../../kernel/transcript/types.js";
 
 export type AgentSessionKind = "main" | "branch" | "worker";
 
@@ -21,6 +24,25 @@ export interface SessionRecord extends CreateSessionInput {
 export interface ResolveSessionRefInput {
   sessionRef: string;
   agentKey?: string;
+}
+
+export interface SessionRuntimeConfigRecord {
+  sessionId: string;
+  model?: string;
+  thinking?: ThinkingLevel;
+  thinkingConfigured: boolean;
+  inferenceProjection?: InferenceProjection;
+  pendingWakeAt?: number;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface UpdateSessionRuntimeConfigInput {
+  sessionId: string;
+  model?: string | null;
+  thinking?: ThinkingLevel | null;
+  inferenceProjection?: InferenceProjection | null;
+  pendingWakeAt?: number | null;
 }
 
 export interface UpdateSessionLabelInput {

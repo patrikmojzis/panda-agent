@@ -10,7 +10,7 @@ import type {AgentStore} from "../../domain/agents/store.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ThreadDefinitionResolver} from "../../domain/threads/runtime/types.js";
 import {renderSubagentHandoff} from "../../prompts/runtime/subagents.js";
-import {resolveDefaultAgentSubagentModelSelector} from "../defaults.js";
+import {resolveDefaultAgentModelSelector, resolveDefaultAgentSubagentModelSelector} from "../defaults.js";
 import {buildDefaultAgentLlmContexts} from "../contexts/builder.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import type {WikiBindingService} from "../../domain/wiki/service.js";
@@ -138,9 +138,9 @@ export class DefaultAgentSubagentService {
         threadId,
         sections: policy.visibleContextSections,
       }),
-      promptCacheKey: parentDefinition.promptCacheKey ?? threadRecord.promptCacheKey,
+      promptCacheKey: parentDefinition.promptCacheKey,
       runPipelines: parentDefinition.runPipelines,
-      model: input.model ?? defaultRoleModel ?? parentDefinition.model ?? threadRecord.model,
+      model: input.model ?? defaultRoleModel ?? parentDefinition.model ?? resolveDefaultAgentModelSelector(),
       temperature: parentDefinition.temperature ?? threadRecord.temperature,
       thinking: policy.thinking,
       runtime: parentDefinition.runtime,

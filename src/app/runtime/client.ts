@@ -8,13 +8,13 @@ import type {ExecutionToolPolicy} from "../../domain/execution-environments/type
 import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
 import {type IdentityRecord, normalizeIdentityHandle} from "../../domain/identity/types.js";
 import type {JsonValue} from "../../lib/json.js";
-import type {CreateRuntimeRequestInput, RuntimeRequestKind} from "../../domain/threads/requests/types.js";
+import type {CreateRuntimeRequestInput, RuntimeRequestKind, RuntimeThreadUpdate} from "../../domain/threads/requests/types.js";
 import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {DaemonStateRepo} from "./state/repo.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres-notifications.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import type {InferenceProjection, ThreadRecord, ThreadUpdate,} from "../../domain/threads/runtime/types.js";
+import type {InferenceProjection, ThreadRecord,} from "../../domain/threads/runtime/types.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionRecord} from "../../domain/sessions/types.js";
 import {resolveCurrentSessionThread} from "../../domain/sessions/current-thread.js";
@@ -100,7 +100,7 @@ export interface RuntimeClient {
   }): Promise<{threadId: string}>;
   abortThread(threadId: string, reason?: string): Promise<boolean>;
   waitForCurrentRun(threadId: string, timeoutMs?: number): Promise<void>;
-  updateThread(threadId: string, update: ThreadUpdate): Promise<ThreadRecord>;
+  updateThread(threadId: string, update: RuntimeThreadUpdate): Promise<ThreadRecord>;
   compactThread(threadId: string, customInstructions: string): Promise<RuntimeClientCompactResult>;
   close(): Promise<void>;
 }
@@ -361,7 +361,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       throw new Error(`Timed out waiting for thread ${threadId} to become idle.`);
     };
 
-    const updateThread = async (threadId: string, update: ThreadUpdate): Promise<ThreadRecord> => {
+    const updateThread = async (threadId: string, update: RuntimeThreadUpdate): Promise<ThreadRecord> => {
       const result = await enqueueDaemonRequest<{threadId: string}>({
         kind: "update_thread",
         payload: {

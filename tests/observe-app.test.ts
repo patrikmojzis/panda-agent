@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {stringToUserMessage} from "../src/kernel/agent/index.js";
-import type {SessionRecord} from "../src/domain/sessions/index.js";
+import type {SessionRecord, SessionRuntimeConfigRecord} from "../src/domain/sessions/index.js";
 import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord,} from "../src/domain/threads/runtime/index.js";
 import {ObserveApp, type ObserveServices,} from "../src/ui/observe/app.js";
 
@@ -36,6 +36,14 @@ function createSession(
     currentThreadId,
     createdAt: 1,
     updatedAt: 1,
+  };
+}
+
+function createRuntimeConfig(sessionId = "session-1"): SessionRuntimeConfigRecord {
+  return {
+    sessionId,
+    model: "openai/gpt-5.4",
+    thinkingConfigured: false,
   };
 }
 
@@ -91,11 +99,13 @@ function createServices(input: {
   getThread: (threadId: string) => Promise<ThreadRecord>;
   loadTranscript: (threadId: string) => Promise<readonly ThreadMessageRecord[]>;
   listRuns?: (threadId: string) => Promise<readonly ThreadRunRecord[]>;
+  getSessionRuntimeConfig?: (sessionId: string) => Promise<SessionRuntimeConfigRecord>;
 }): ObserveServices {
   return {
     sessionStore: {
       getMainSession: input.getMainSession ?? (async () => null),
       getSession: input.getSession ?? (async () => createSession("session-1", "thread-1")),
+      getSessionRuntimeConfig: input.getSessionRuntimeConfig ?? (async (sessionId) => createRuntimeConfig(sessionId)),
     },
     store: {
       getThread: input.getThread,

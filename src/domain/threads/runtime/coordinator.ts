@@ -1,4 +1,4 @@
-import type {Message} from "@mariozechner/pi-ai";
+import type {Message, ThinkingLevel} from "@mariozechner/pi-ai";
 
 import {sleep} from "../../../lib/async.js";
 import {runThreadStep, Thread, type ThreadResumeState, type ThreadStepResult} from "../../../kernel/agent/thread.js";
@@ -255,13 +255,13 @@ export class ThreadRuntimeCoordinator {
     threadOrId: ThreadRecord | string,
   ): Promise<{
     model: string;
-    thinking: ThreadRecord["thinking"];
+    thinking: ThinkingLevel | undefined;
   }> {
     const thread = typeof threadOrId === "string"
       ? await this.store.getThread(threadOrId)
       : threadOrId;
     const definition = await this.resolveDefinition(thread);
-    return this.resolveModelConfig(thread, definition);
+    return this.resolveModelConfig(definition);
   }
 
   async submitInput(
@@ -508,7 +508,7 @@ export class ThreadRuntimeCoordinator {
     signal?: AbortSignal,
     resumeState?: ThreadResumeState,
   ): ConstructorParameters<typeof Thread>[0] {
-    const modelConfig = this.resolveModelConfig(thread, definition);
+    const modelConfig = this.resolveModelConfig(definition);
 
     return {
       agent: definition.agent,
@@ -518,7 +518,7 @@ export class ThreadRuntimeCoordinator {
       context: buildRunContextValue(definition.context ?? thread.context, messages, run.id),
       llmContexts: definition.llmContexts,
       hooks: definition.hooks,
-      promptCacheKey: definition.promptCacheKey ?? thread.promptCacheKey,
+      promptCacheKey: definition.promptCacheKey,
       runPipelines: definition.runPipelines,
       model: modelConfig.model,
       temperature: definition.temperature ?? thread.temperature,
@@ -546,16 +546,15 @@ export class ThreadRuntimeCoordinator {
   }
 
   private resolveModelConfig(
-    thread: ThreadRecord,
     definition: ResolvedThreadDefinition,
   ): {
     model: string;
-    thinking: ThreadRecord["thinking"];
+    thinking: ThinkingLevel | undefined;
   } {
     const defaultModel = resolveRuntimeDefaultModelSelector();
     return {
-      model: definition.model ?? thread.model ?? defaultModel,
-      thinking: definition.thinking ?? thread.thinking,
+      model: definition.model ?? defaultModel,
+      thinking: definition.thinking,
     };
   }
 
@@ -634,7 +633,7 @@ export class ThreadRuntimeCoordinator {
     const transcriptTokens = estimateTranscriptTokens(options.transcript, {
       replayToolArtifacts: true,
     });
-    const modelConfig = this.resolveModelConfig(thread, options.definition);
+    const modelConfig = this.resolveModelConfig(options.definition);
     const budget = resolveModelRuntimeBudget(modelConfig.model);
     const autoCompactCheck = shouldAutoCompactThread({
       thread,
@@ -745,7 +744,7 @@ export class ThreadRuntimeCoordinator {
           continue;
         }
 
-        const inferenceProjection = definition.inferenceProjection ?? preflight.thread.inferenceProjection;
+        const inferenceProjection = definition.inferenceProjection;
         const projectedTranscript = projectTranscriptForInference(
           transcript,
           inferenceProjection

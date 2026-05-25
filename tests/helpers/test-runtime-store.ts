@@ -176,11 +176,7 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       maxTurns: input.maxTurns,
       context: input.context,
       runtimeState: input.runtimeState,
-      promptCacheKey: input.promptCacheKey,
-      model: input.model,
       temperature: input.temperature,
-      thinking: input.thinking,
-      inferenceProjection: input.inferenceProjection,
       createdAt: now,
       updatedAt: now,
     };
@@ -232,25 +228,13 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       throw missingThreadError(threadId);
     }
 
-    const nextThinking = update.thinking === undefined
-      ? thread.thread.thinking
-      : update.thinking ?? undefined;
     const nextRuntimeState = update.runtimeState === undefined
       ? thread.thread.runtimeState
       : update.runtimeState ?? undefined;
-    const nextInferenceProjection = update.inferenceProjection === undefined
-      ? thread.thread.inferenceProjection
-      : update.inferenceProjection ?? undefined;
-    const nextModel = update.model === undefined
-      ? thread.thread.model
-      : update.model ?? undefined;
     thread.thread = {
       ...thread.thread,
       ...update,
-      model: nextModel,
-      thinking: nextThinking,
       runtimeState: nextRuntimeState,
-      inferenceProjection: nextInferenceProjection,
       id: thread.thread.id,
       updatedAt: Date.now(),
     };

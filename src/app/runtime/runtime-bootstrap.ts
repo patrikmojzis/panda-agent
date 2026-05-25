@@ -598,10 +598,14 @@ export async function bootstrapRuntime(
     mainTools = buildDefaultAgentToolsetsFromRegistry(toolRegistry, [
       new ThinkingSetTool({
         persistence: {
-          updateThreadThinking: async (threadId, thinking) => {
-            const thread = await store.updateThread(threadId, {thinking});
+          updateSessionThinkingForThread: async (threadId, thinking) => {
+            const thread = await store.getThread(threadId);
+            const runtimeConfig = await sessionStore.updateSessionRuntimeConfig({
+              sessionId: thread.sessionId,
+              thinking,
+            });
             return {
-              thinking: thread.thinking,
+              thinking: runtimeConfig.thinking,
             };
           },
         },

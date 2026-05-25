@@ -449,21 +449,6 @@ async function seedAutoCompactionTranscript(store: TestThreadRuntimeStore, threa
 }
 
 describe("ThreadRuntimeCoordinator", () => {
-  it("clears thinking when updated to null", async () => {
-    const store = new TestThreadRuntimeStore();
-
-    await createRuntimeThread(store, {
-      id: "thread-thinking",
-      agentKey: "panda",
-      thinking: "medium",
-    });
-
-    const updated = await store.updateThread("thread-thinking", { thinking: null });
-
-    expect(updated.thinking).toBeUndefined();
-    expect((await store.getThread("thread-thinking")).thinking).toBeUndefined();
-  });
-
   it("passes the latest input message id into tool context", async () => {
     let capturedContext: unknown;
     class CaptureContextTool extends Tool<typeof CaptureContextTool.schema> {
@@ -2581,12 +2566,12 @@ describe("ThreadRuntimeCoordinator", () => {
         tools: [new EchoTool()],
       }),
       runtime,
+      model: "openai/gpt-4o-mini",
     });
 
     await createRuntimeThread(store, {
       id: "thread-provider-error",
       agentKey: "provider-error-agent",
-      model: "openai/gpt-4o-mini",
     });
 
     const coordinator = new ThreadRuntimeCoordinator({
