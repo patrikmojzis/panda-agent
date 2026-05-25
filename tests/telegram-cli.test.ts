@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {TELEGRAM_SOURCE} from "../src/integrations/channels/telegram/config.js";
 import {
     telegramPairCommand,
+    telegramReactCommand,
     telegramUnpairCommand,
     telegramWhoamiCommand
 } from "../src/integrations/channels/telegram/cli.js";
@@ -253,4 +254,116 @@ describe("Telegram CLI", () => {
       ].join("\n") + "\n",
     );
   });
+  it("routes reactions through the active-run runtime request bridge", async () => {
+    const submitRuntimeRequest = vi.fn(async () => ({
+      ok: true,
+      connectorKey: "8669743878",
+      conversationId: "1615376408",
+      messageId: "555",
+      added: "🔥",
+      queued: true,
+    }));
+    const stdout = {write: vi.fn(() => true)};
+
+    await telegramReactCommand("🔥", {
+      messageId: "555",
+      connectorKey: "8669743878",
+      conversationId: "1615376408",
+      dbUrl: "postgres://telegram-db",
+    }, {
+      env: {
+        PANDA_ACTIVE_AGENT_KEY: "panda",
+        PANDA_ACTIVE_SESSION_ID: "session-1",
+        PANDA_ACTIVE_THREAD_ID: "thread-1",
+        PANDA_ACTIVE_RUN_ID: "run-1",
+      },
+      stdout,
+      submitRuntimeRequest: submitRuntimeRequest as never,
+    });
+
+    expect(submitRuntimeRequest).toHaveBeenCalledWith({
+      kind: "telegram_react_command",
+      payload: {
+        agentKey: "panda",
+        sessionId: "session-1",
+        threadId: "thread-1",
+        runId: "run-1",
+        emoji: "🔥",
+        messageId: "555",
+        target: {
+          connectorKey: "8669743878",
+          conversationId: "1615376408",
+        },
+      },
+    }, {
+      dbUrl: "postgres://telegram-db",
+    });
+    expect(stdout.write).toHaveBeenCalledWith(
+      "Queued Telegram reaction 🔥 for message 555 in conversation 1615376408.\n",
+    );
+    expect(telegramCliMocks.serviceConstructor).not.toHaveBeenCalled();
+  });
+
+  it("routes reaction removals through the active-run runtime request bridge", async () => {
+    const submitRuntimeRequest = vi.fn(async () => ({
+      ok: true,
+      connectorKey: "8669743878",
+      conversationId: "1615376408",
+      messageId: "555",
+      removed: true,
+      queued: true,
+    }));
+    const stdout = {write: vi.fn(() => true)};
+
+    await telegramReactCommand(undefined, {
+      remove: true,
+    }, {
+      env: {
+        PANDA_ACTIVE_AGENT_KEY: "panda",
+        PANDA_ACTIVE_SESSION_ID: "session-1",
+        PANDA_ACTIVE_THREAD_ID: "thread-1",
+        PANDA_ACTIVE_RUN_ID: "run-1",
+      },
+      stdout,
+      submitRuntimeRequest: submitRuntimeRequest as never,
+    });
+
+    expect(submitRuntimeRequest).toHaveBeenCalledWith({
+      kind: "telegram_react_command",
+      payload: {
+        agentKey: "panda",
+        sessionId: "session-1",
+        threadId: "thread-1",
+        runId: "run-1",
+        remove: true,
+      },
+    }, {
+      dbUrl: undefined,
+    });
+    expect(stdout.write).toHaveBeenCalledWith(
+      "Queued Telegram reaction removal for message 555 in conversation 1615376408.\n",
+    );
+  });
+
+  it("fails loudly when react is not called from an active agent bash run", async () => {
+    await expect(telegramReactCommand("🔥", {}, {
+      env: {},
+      submitRuntimeRequest: vi.fn() as never,
+    })).rejects.toThrow("panda telegram react must be run from an active Panda agent bash run");
+  });
+
+  it("requires complete explicit targets for react", async () => {
+    await expect(telegramReactCommand("🔥", {
+      connectorKey: "8669743878",
+    }, {
+      env: {
+        PANDA_ACTIVE_AGENT_KEY: "panda",
+        PANDA_ACTIVE_SESSION_ID: "session-1",
+        PANDA_ACTIVE_THREAD_ID: "thread-1",
+        PANDA_ACTIVE_RUN_ID: "run-1",
+      },
+      submitRuntimeRequest: vi.fn() as never,
+    })).rejects.toThrow("explicit targets require both --connector-key and --conversation-id");
+  });
+
 });

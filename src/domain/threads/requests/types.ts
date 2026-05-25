@@ -95,6 +95,22 @@ export interface TelegramReactionRequestPayload extends BaseRuntimeRequestPayloa
   lastName?: string;
 }
 
+export interface TelegramReactCommandTarget {
+  connectorKey: string;
+  conversationId: string;
+}
+
+export interface TelegramReactCommandRequestPayload extends BaseRuntimeRequestPayload {
+  agentKey: string;
+  sessionId: string;
+  threadId: string;
+  runId: string;
+  emoji?: string;
+  remove?: boolean;
+  messageId?: string;
+  target?: TelegramReactCommandTarget;
+}
+
 export interface WhatsAppMessageRequestPayload extends BaseRuntimeRequestPayload {
   connectorKey: string;
   sentAt?: number;
@@ -240,6 +256,7 @@ export interface RuntimeRequestPayloadByKind {
   a2a_message: A2AMessageRequestPayload;
   telegram_message: TelegramMessageRequestPayload;
   telegram_reaction: TelegramReactionRequestPayload;
+  telegram_react_command: TelegramReactCommandRequestPayload;
   whatsapp_message: WhatsAppMessageRequestPayload;
   whatsapp_reaction: WhatsAppReactionRequestPayload;
   discord_message: DiscordMessageRequestPayload;

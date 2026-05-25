@@ -33,12 +33,19 @@ const telegramReactToolSchema = z.object({
   }
 });
 
-interface TelegramReactionTarget {
+export interface TelegramReactionTarget {
   connectorKey: string;
   conversationId: string;
 }
 
-interface TelegramReactContext {
+export interface TelegramReactInput {
+  emoji?: string;
+  remove?: boolean;
+  messageId?: string;
+  target?: TelegramReactionTarget;
+}
+
+export interface TelegramReactContext {
   currentInput?: {
     source: string;
     channelId?: string;
@@ -137,7 +144,7 @@ function readReactionTargetMessageId(context: TelegramReactContext | undefined):
 }
 
 function resolveTelegramMessageId(
-  args: z.output<typeof telegramReactToolSchema>,
+  args: TelegramReactInput,
   context: TelegramReactContext | undefined,
 ): string | undefined {
   return (
@@ -145,6 +152,66 @@ function resolveTelegramMessageId(
     ?? readReactionTargetMessageId(context)
     ?? readCurrentTelegramExternalMessageId(context)
   );
+}
+
+export async function enqueueTelegramReaction(
+  args: TelegramReactInput,
+  context: TelegramReactContext | undefined,
+): Promise<JsonObject> {
+  const queue = context?.channelActionQueue;
+  if (!queue) {
+    throw new ToolError("telegram_react is unavailable in this runtime.");
+  }
+
+  const target = args.target ?? readCurrentTelegramTarget(context);
+  if (!target) {
+    throw new ToolError("telegram_react requires a current Telegram input or an explicit target.");
+  }
+
+  const messageIdValue = resolveTelegramMessageId(args, context);
+  if (!messageIdValue) {
+    throw new ToolError("telegram_react requires a target message id.");
+  }
+
+  parseReactionConversationId(target.conversationId);
+  const messageId = parseTelegramMessageId(messageIdValue);
+  const remove = args.remove === true;
+  const emoji = trimToUndefined(args.emoji);
+  if (!remove && !emoji) {
+    throw new ToolError("telegram_react emoji is required unless remove=true");
+  }
+  const resolvedEmoji = remove ? "" : requireAllowedTelegramReactionEmoji(emoji!);
+  await queue.enqueueAction({
+    channel: TELEGRAM_SOURCE,
+    connectorKey: target.connectorKey,
+    kind: "telegram_reaction",
+    payload: {
+      conversationId: target.conversationId,
+      messageId: String(messageId),
+      emoji: remove ? undefined : resolvedEmoji,
+      remove,
+    },
+  });
+
+  if (remove) {
+    return {
+      ok: true,
+      connectorKey: target.connectorKey,
+      conversationId: target.conversationId,
+      messageId: String(messageId),
+      removed: true,
+      queued: true,
+    };
+  }
+
+  return {
+    ok: true,
+    connectorKey: target.connectorKey,
+    conversationId: target.conversationId,
+    messageId: String(messageId),
+    added: resolvedEmoji,
+    queued: true,
+  };
 }
 
 export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, TelegramReactContext> {
@@ -167,55 +234,6 @@ export class TelegramReactTool extends Tool<typeof telegramReactToolSchema, Tele
     args: z.output<typeof TelegramReactTool.schema>,
     run: RunContext<TelegramReactContext>,
   ): Promise<JsonObject> {
-    const queue = run.context?.channelActionQueue;
-    if (!queue) {
-      throw new ToolError("telegram_react is unavailable in this runtime.");
-    }
-
-    const target = args.target ?? readCurrentTelegramTarget(run.context);
-    if (!target) {
-      throw new ToolError("telegram_react requires a current Telegram input or an explicit target.");
-    }
-
-    const messageIdValue = resolveTelegramMessageId(args, run.context);
-    if (!messageIdValue) {
-      throw new ToolError("telegram_react requires a target message id.");
-    }
-
-    parseReactionConversationId(target.conversationId);
-    const messageId = parseTelegramMessageId(messageIdValue);
-    const remove = args.remove === true;
-    const resolvedEmoji = remove ? "" : requireAllowedTelegramReactionEmoji(args.emoji!.trim());
-    await queue.enqueueAction({
-      channel: TELEGRAM_SOURCE,
-      connectorKey: target.connectorKey,
-      kind: "telegram_reaction",
-      payload: {
-        conversationId: target.conversationId,
-        messageId: String(messageId),
-        emoji: remove ? undefined : resolvedEmoji,
-        remove,
-      },
-    });
-
-    if (remove) {
-      return {
-        ok: true,
-        connectorKey: target.connectorKey,
-        conversationId: target.conversationId,
-        messageId: String(messageId),
-        removed: true,
-        queued: true,
-      };
-    }
-
-    return {
-      ok: true,
-      connectorKey: target.connectorKey,
-      conversationId: target.conversationId,
-      messageId: String(messageId),
-      added: resolvedEmoji,
-      queued: true,
-    };
+    return enqueueTelegramReaction(args, run.context);
   }
 }

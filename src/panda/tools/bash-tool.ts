@@ -35,6 +35,7 @@ import type {
   ResolvedExecutionEnvironment
 } from "../../domain/execution-environments/types.js";
 import {buildBackgroundJobPayload, formatBackgroundJobResult} from "./background-job-tools.js";
+import {buildActivePandaRunEnv, isActivePandaRunEnvKey} from "../../domain/threads/requests/active-run-env.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 40_000;
@@ -367,9 +368,13 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       })
       : {}, executionEnvironment?.credentialPolicy);
     const shellEnv = shellSession?.env ?? {};
+    const commandEnv = {
+      ...(args.env ?? {}),
+      ...buildActivePandaRunEnv(context),
+    };
     const secretInventory = buildBashSecretInventory({
       resolvedCredentialEnv,
-      callEnv: args.env,
+      callEnv: commandEnv,
       priorSecretSessionEnv,
     });
     const trackedEnvKeys = collectTrackedEnvKeys(args.command);
@@ -394,7 +399,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
           maxOutputChars: this.maxOutputChars,
           persistOutputThresholdChars: this.persistOutputThresholdChars,
           outputDirectory: this.outputDirectory,
-          env: args.env,
+          env: commandEnv,
           resolvedEnv: resolvedCredentialEnv,
           shellEnv,
           executionEnvironment,
@@ -421,17 +426,19 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       persistOutputFiles,
       redactionValues: secretInventory.redactionValues,
       outputDirectory: this.outputDirectory,
-      env: args.env,
+      env: commandEnv,
       resolvedEnv: resolvedCredentialEnv,
       shellEnv,
       executionEnvironment,
       run: run as RunContext<DefaultAgentSessionContext>,
     });
-    const appliedSessionEnvKeys = applyPersistedEnv(shellSession, result.persistedEnvEntries);
-    updateSecretSessionKeys(shellSession, result.persistedEnvEntries, secretInventory.sourceSecretValues);
+    const persistedEnvEntries = result.persistedEnvEntries
+      .filter((entry) => !isActivePandaRunEnvKey(entry.key));
+    const appliedSessionEnvKeys = applyPersistedEnv(shellSession, persistedEnvEntries);
+    updateSecretSessionKeys(shellSession, persistedEnvEntries, secretInventory.sourceSecretValues);
     const resultSecretInventory = buildBashSecretInventory({
       resolvedCredentialEnv,
-      callEnv: args.env,
+      callEnv: commandEnv,
       priorSecretSessionEnv,
       currentSecretSessionEnv: readSecretSessionEnv(shellSession),
     });

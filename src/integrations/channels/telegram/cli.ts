@@ -4,18 +4,61 @@ import {Command, InvalidArgumentError} from "commander";
 import {Bot} from "grammy";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../../lib/cli.js";
+import {trimToUndefined} from "../../../lib/strings.js";
 import {resolveMediaDir} from "../../../lib/data-dir.js";
 import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
 import {parseIdentityHandle} from "../../../domain/identity/cli.js";
 import {ensureSchemas, withPostgresPool} from "../../../lib/postgres-bootstrap.js";
 import {requireTelegramBotToken, TELEGRAM_SOURCE} from "./config.js";
 import {TelegramService} from "./service.js";
+import {readActivePandaRunContext} from "../../../domain/threads/requests/active-run-env.js";
+import type {
+  CreateRuntimeRequestInput,
+  RuntimeRequestKind,
+  TelegramReactCommandTarget,
+} from "../../../domain/threads/requests/types.js";
 
 interface TelegramIdentityCliOptions {
   dbUrl?: string;
 }
 
 type TelegramRunCliOptions = TelegramIdentityCliOptions;
+
+interface TelegramReactCliOptions extends TelegramIdentityCliOptions {
+  remove?: boolean;
+  messageId?: string;
+  connectorKey?: string;
+  conversationId?: string;
+}
+
+interface TelegramReactCommandResult {
+  ok?: boolean;
+  connectorKey?: string;
+  conversationId?: string;
+  messageId?: string;
+  added?: string;
+  removed?: boolean;
+  queued?: boolean;
+}
+
+interface TelegramReactRuntimeRequestOptions {
+  dbUrl?: string;
+  timeoutMs?: number;
+}
+
+type SubmitTelegramRuntimeRequest = <
+  TResult,
+  K extends RuntimeRequestKind = RuntimeRequestKind,
+>(
+  input: CreateRuntimeRequestInput<K>,
+  options?: TelegramReactRuntimeRequestOptions,
+) => Promise<TResult>;
+
+interface TelegramReactCommandDependencies {
+  env?: NodeJS.ProcessEnv;
+  stdout?: Pick<typeof process.stdout, "write">;
+  submitRuntimeRequest?: SubmitTelegramRuntimeRequest;
+}
 
 interface TelegramPairCliOptions extends TelegramIdentityCliOptions {
   identity: string;
@@ -126,6 +169,68 @@ export async function telegramUnpairCommand(options: TelegramUnpairCliOptions): 
   });
 }
 
+function resolveTelegramReactTarget(options: TelegramReactCliOptions): TelegramReactCommandTarget | undefined {
+  const connectorKey = trimToUndefined(options.connectorKey);
+  const conversationId = trimToUndefined(options.conversationId);
+  if (!connectorKey && !conversationId) {
+    return undefined;
+  }
+
+  if (!connectorKey || !conversationId) {
+    throw new Error("panda telegram react explicit targets require both --connector-key and --conversation-id.");
+  }
+
+  return {
+    connectorKey,
+    conversationId,
+  };
+}
+
+function formatTelegramReactCommandResult(result: TelegramReactCommandResult): string {
+  const messageId = result.messageId ?? "unknown";
+  const conversationId = result.conversationId ?? "unknown";
+  if (result.removed === true) {
+    return `Queued Telegram reaction removal for message ${messageId} in conversation ${conversationId}.\n`;
+  }
+
+  return `Queued Telegram reaction ${result.added ?? ""} for message ${messageId} in conversation ${conversationId}.\n`;
+}
+
+export async function telegramReactCommand(
+  emoji: string | undefined,
+  options: TelegramReactCliOptions,
+  dependencies: TelegramReactCommandDependencies = {},
+): Promise<void> {
+  const activeRun = readActivePandaRunContext(dependencies.env ?? process.env);
+  const remove = options.remove === true;
+  const emojiValue = trimToUndefined(emoji);
+  if (!remove && !emojiValue) {
+    throw new Error("panda telegram react requires an emoji unless --remove is set.");
+  }
+
+  const messageId = trimToUndefined(options.messageId);
+  const target = resolveTelegramReactTarget(options);
+  const submitRuntimeRequest = dependencies.submitRuntimeRequest;
+  if (!submitRuntimeRequest) {
+    throw new Error("panda telegram react runtime request submitter is not configured.");
+  }
+
+  const result = await submitRuntimeRequest<TelegramReactCommandResult>({
+    kind: "telegram_react_command",
+    payload: {
+      ...activeRun,
+      ...(emojiValue ? {emoji: emojiValue} : {}),
+      ...(remove ? {remove} : {}),
+      ...(messageId ? {messageId} : {}),
+      ...(target ? {target} : {}),
+    },
+  }, {
+    dbUrl: options.dbUrl,
+  });
+
+  (dependencies.stdout ?? process.stdout).write(formatTelegramReactCommandResult(result));
+}
+
 async function telegramRunCommand(options: TelegramRunCliOptions): Promise<void> {
   const service = createTelegramRunService(options);
 
@@ -151,7 +256,10 @@ async function telegramRunCommand(options: TelegramRunCliOptions): Promise<void>
   }
 }
 
-export function registerTelegramCommands(program: Command): void {
+export function registerTelegramCommands(
+  program: Command,
+  dependencies: TelegramReactCommandDependencies = {},
+): void {
   const telegramProgram = program
     .command("telegram")
     .description("Run and manage the Telegram channel");
@@ -180,6 +288,19 @@ export function registerTelegramCommands(program: Command): void {
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: TelegramUnpairCliOptions) => {
       return telegramUnpairCommand(options);
+    });
+
+  telegramProgram
+    .command("react")
+    .description("Add or remove a Telegram reaction through the active Panda runtime context")
+    .argument("[emoji]", "Telegram reaction emoji")
+    .option("--remove", "Remove the reaction from the target message")
+    .option("--message-id <id>", "Telegram message id to react to")
+    .option("--connector-key <key>", "Telegram connector key for an explicit target")
+    .option("--conversation-id <id>", "Telegram conversation id for an explicit target")
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((emoji: string | undefined, options: TelegramReactCliOptions) => {
+      return telegramReactCommand(emoji, options, dependencies);
     });
 
   telegramProgram
