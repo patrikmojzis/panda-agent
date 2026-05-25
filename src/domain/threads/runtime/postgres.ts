@@ -111,42 +111,27 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       INSERT INTO ${this.tables.threads} (
         id,
         session_id,
-        system_prompt,
-        max_turns,
         context,
-        runtime_state,
-        temperature
+        runtime_state
       ) VALUES (
         $1,
         $2,
         $3::jsonb,
-        $4,
-        $5::jsonb,
-        $6::jsonb,
-        $7
+        $4::jsonb
       )
       ON CONFLICT (id) DO UPDATE
-      SET system_prompt = EXCLUDED.system_prompt,
-          max_turns = EXCLUDED.max_turns,
-          context = EXCLUDED.context,
+      SET context = EXCLUDED.context,
           runtime_state = EXCLUDED.runtime_state,
-          temperature = EXCLUDED.temperature,
           updated_at = NOW()
       WHERE ${this.tables.threads}.session_id = EXCLUDED.session_id
-        AND ${this.tables.threads}.system_prompt IS NULL
-        AND ${this.tables.threads}.max_turns IS NULL
         AND ${this.tables.threads}.context IS NULL
         AND ${this.tables.threads}.runtime_state IS NULL
-        AND ${this.tables.threads}.temperature IS NULL
       RETURNING *
     `, [
       input.id,
       sessionId,
-      toJson(input.systemPrompt),
-      input.maxTurns ?? null,
       toJson(input.context),
       toJson(input.runtimeState),
-      input.temperature ?? null,
     ]);
     const row = result.rows[0];
     if (!row) {
@@ -267,24 +252,12 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       index += 1;
     };
 
-    if (update.systemPrompt !== undefined) {
-      push("system_prompt", toJson(update.systemPrompt), "::jsonb");
-    }
-
-    if (update.maxTurns !== undefined) {
-      push("max_turns", update.maxTurns);
-    }
-
     if (update.context !== undefined) {
       push("context", toJson(update.context), "::jsonb");
     }
 
     if (update.runtimeState !== undefined) {
       push("runtime_state", toJson(update.runtimeState ?? null), "::jsonb");
-    }
-
-    if (update.temperature !== undefined) {
-      push("temperature", update.temperature);
     }
 
     if (assignments.length === 0) {

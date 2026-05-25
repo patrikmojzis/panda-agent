@@ -28,11 +28,8 @@ export type {
 export interface CreateThreadInput {
   id: string;
   sessionId: string;
-  systemPrompt?: string | ReadonlyArray<string>;
-  maxTurns?: number;
   context?: JsonValue;
   runtimeState?: ThreadRuntimeState;
-  temperature?: number;
 }
 
 export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "sessionId" | "runtimeState">> & {

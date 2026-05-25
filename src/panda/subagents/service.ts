@@ -127,7 +127,7 @@ export class DefaultAgentSubagentService {
       // Subagents get only their role prompt and scoped runtime context.
       // Reusing the parent's prompt leaks main-agent policy into specialist workers.
       systemPrompt: policy.prompt,
-      maxTurns: parentDefinition.maxTurns ?? threadRecord.maxTurns,
+      maxTurns: parentDefinition.maxTurns,
       context: childContext,
       llmContexts: buildDefaultAgentLlmContexts({
         context: childContext,
@@ -141,7 +141,7 @@ export class DefaultAgentSubagentService {
       promptCacheKey: parentDefinition.promptCacheKey,
       runPipelines: parentDefinition.runPipelines,
       model: input.model ?? defaultRoleModel ?? parentDefinition.model ?? resolveDefaultAgentModelSelector(),
-      temperature: parentDefinition.temperature ?? threadRecord.temperature,
+      temperature: parentDefinition.temperature,
       thinking: policy.thinking,
       runtime: parentDefinition.runtime,
       countTokens: parentDefinition.countTokens,

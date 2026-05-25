@@ -172,11 +172,8 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     const thread: ThreadRecord = {
       id: input.id,
       sessionId: input.sessionId,
-      systemPrompt: input.systemPrompt,
-      maxTurns: input.maxTurns,
       context: input.context,
       runtimeState: input.runtimeState,
-      temperature: input.temperature,
       createdAt: now,
       updatedAt: now,
     };

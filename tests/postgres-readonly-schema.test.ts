@@ -159,6 +159,83 @@ class PgMemReadonlySchemaQueryable {
   }
 }
 
+class PgMemPoolWithDropViewIfExistsSupport {
+  private readonlyThreadsViewDropped = false;
+  private threadRuntimeSchemaEnsured = false;
+  private threadRuntimeMigrationsTableEnsured = false;
+
+  constructor(
+    private readonly pool: {
+      connect(): Promise<any>;
+      end(): Promise<void>;
+      query(text: string, values?: readonly unknown[]): Promise<any>;
+    },
+  ) {}
+
+  async connect(): Promise<any> {
+    return this.pool.connect();
+  }
+
+  async end(): Promise<void> {
+    await this.pool.end();
+  }
+
+  async query(text: string, values?: readonly unknown[]): Promise<any> {
+    const normalized = text.trim().replace(/;$/, "");
+    if (/^DROP VIEW IF EXISTS "session"\."threads"$/i.test(normalized)) {
+      this.readonlyThreadsViewDropped = true;
+      return { rows: [] };
+    }
+
+    if (/^CREATE VIEW "session"\."threads"(?:\s|$)/i.test(normalized)) {
+      this.readonlyThreadsViewDropped = false;
+    }
+
+    if (
+      this.readonlyThreadsViewDropped
+      && /\bFROM\s+"session"\."threads"(?:\s|$)/i.test(text)
+    ) {
+      throw new Error('relation "session.threads" does not exist');
+    }
+
+    if (
+      this.threadRuntimeMigrationsTableEnsured
+      && text.includes('CREATE TABLE IF NOT EXISTS "runtime"."thread_runtime_migrations"')
+    ) {
+      return { rows: [] };
+    }
+
+    if (
+      this.threadRuntimeSchemaEnsured
+      && text.includes('CREATE TABLE IF NOT EXISTS "runtime"."messages"')
+    ) {
+      const statements = text
+        .split(";")
+        .map((statement) => statement.trim())
+        .filter(Boolean);
+
+      for (const statement of statements) {
+        if (/^CREATE TABLE IF NOT EXISTS "runtime"\."(messages|inputs|runs|tool_jobs|bash_jobs)"(?:\s|\()/i.test(statement)) {
+          continue;
+        }
+
+        await this.query(statement);
+      }
+
+      return { rows: [] };
+    }
+
+    const result = await this.pool.query(text, values);
+    if (text.includes('CREATE TABLE IF NOT EXISTS "runtime"."messages"')) {
+      this.threadRuntimeSchemaEnsured = true;
+    }
+    if (text.includes('CREATE TABLE IF NOT EXISTS "runtime"."thread_runtime_migrations"')) {
+      this.threadRuntimeMigrationsTableEnsured = true;
+    }
+    return result;
+  }
+}
+
 function createScopedPool() {
   const db = newDb();
   const scope = new Map<string, string | null>();
@@ -287,6 +364,9 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"email_messages\"");
     expect(queryable.queries[0]).toContain("FROM \"session\".\"messages_raw\" AS raw");
     expect(queryable.queries[0]).toContain("WHERE raw.role IN ('user', 'assistant')");
+    expect(queryable.queries[0]).not.toContain("t.system_prompt");
+    expect(queryable.queries[0]).not.toContain("t.max_turns");
+    expect(queryable.queries[0]).not.toContain("t.temperature");
     expect(queryable.queries[0]).not.toContain("t.inference_projection");
     expect(queryable.queries[0]).toContain("t.session_id = current_setting('runtime.session_id', true)");
     expect(queryable.queries[0]).toContain("prompt.agent_key = current_setting('runtime.agent_key', true)");
@@ -376,6 +456,55 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(todos.rows[0]).toMatchObject({
       session_id: "alice-session",
     });
+  }, 10_000);
+
+  it("preserves readonly threads view when thread runtime schema ensure reruns after scalar cleanup", async () => {
+    const scoped = createScopedPool();
+    const pool = new PgMemPoolWithDropViewIfExistsSupport(scoped.pool);
+    const { setScope } = scoped;
+    pools.push(pool);
+
+    const {sessionStore, threadStore} = await createRuntimeStores(pool);
+    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
+    await new PostgresWatchStore({ pool }).ensureSchema();
+
+    await sessionStore.createSession({
+      id: "schema-rerun-session",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "schema-rerun-thread",
+    });
+    await threadStore.createThread({
+      id: "schema-rerun-thread",
+      sessionId: "schema-rerun-session",
+      context: { durable: true },
+    });
+
+    setScope({
+      sessionId: "schema-rerun-session",
+      agentKey: "panda",
+    });
+    const queryable = new PgMemReadonlySchemaQueryable(pool);
+    await ensureReadonlySessionQuerySchema({ queryable });
+
+    const expectedRows = [
+      {
+        id: "schema-rerun-thread",
+        session_id: "schema-rerun-session",
+        agent_key: "panda",
+      },
+    ];
+    const before = await pool.query(
+      "SELECT id, session_id, agent_key FROM \"session\".\"threads\" ORDER BY id",
+    );
+    expect(before.rows).toEqual(expectedRows);
+
+    await threadStore.ensureSchema();
+
+    const after = await pool.query(
+      "SELECT id, session_id, agent_key FROM \"session\".\"threads\" ORDER BY id",
+    );
+    expect(after.rows).toEqual(expectedRows);
   }, 10_000);
 
   it("filters readonly threads by agent when one identity has multiple agents", async () => {

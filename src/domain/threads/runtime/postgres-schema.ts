@@ -2,7 +2,13 @@ import {addConstraint, alterIfSupported, assertIntegrityChecks} from "../../../l
 import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import type {PgPoolLike} from "../../../lib/postgres-query.js";
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, RUNTIME_SCHEMA} from "../../../lib/postgres-relations.js";
+import {
+  CREATE_RUNTIME_SCHEMA_SQL,
+  quoteIdentifier,
+  quoteQualifiedIdentifier,
+  RUNTIME_SCHEMA,
+  SESSION_SCHEMA,
+} from "../../../lib/postgres-relations.js";
 import {buildThreadRuntimeTableNames, type ThreadRuntimeTableNames} from "./postgres-shared.js";
 
 const REDACTED_SET_ENV_VALUE = "[redacted]";
@@ -10,6 +16,7 @@ const THREAD_RUNTIME_MIGRATIONS_TABLE =
   `${quoteIdentifier(RUNTIME_SCHEMA)}.${quoteIdentifier("thread_runtime_migrations")}`;
 const SET_ENV_VALUE_ARGUMENT_REDACTION_MIGRATION =
   "set_env_value_tool_call_argument_redaction_2026_05_22";
+const LEGACY_THREAD_SCALAR_COLUMNS = ["system_prompt", "max_turns", "temperature"] as const;
 
 function isJsonRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -147,6 +154,27 @@ async function readExistingThreadColumns(
   return existing;
 }
 
+async function dropReadonlyThreadsViewForScalarColumnCleanup(
+  pool: PgPoolLike,
+  existingLegacyScalarColumns: ReadonlySet<string>,
+): Promise<void> {
+  if (existingLegacyScalarColumns.size === 0) {
+    return;
+  }
+
+  await pool.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(SESSION_SCHEMA)}`);
+  try {
+    await pool.query(`DROP VIEW IF EXISTS ${quoteQualifiedIdentifier(SESSION_SCHEMA, "threads")}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("pg-mem") && message.includes("Unexpected word token")) {
+      return;
+    }
+
+    throw error;
+  }
+}
+
 async function ensureThreadsTable(
   pool: PgPoolLike,
   tables: ThreadRuntimeTableNames,
@@ -162,11 +190,8 @@ async function ensureThreadsTable(
     CREATE TABLE ${tables.threads} (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
-      system_prompt JSONB,
-      max_turns INTEGER,
       context JSONB,
       runtime_state JSONB,
-      temperature DOUBLE PRECISION,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -282,6 +307,15 @@ export function buildThreadRuntimeSchemaSql(
 
     ALTER TABLE ${tables.threads}
     DROP COLUMN IF EXISTS provider;
+
+    ALTER TABLE ${tables.threads}
+    DROP COLUMN IF EXISTS system_prompt;
+
+    ALTER TABLE ${tables.threads}
+    DROP COLUMN IF EXISTS max_turns;
+
+    ALTER TABLE ${tables.threads}
+    DROP COLUMN IF EXISTS temperature;
 
     CREATE TABLE IF NOT EXISTS ${tables.messages} (
       id UUID PRIMARY KEY,
@@ -433,6 +467,12 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
 
   await pool.query(CREATE_RUNTIME_SCHEMA_SQL);
   await ensureThreadsTable(pool, tables);
+  const existingLegacyScalarColumns = await readExistingThreadColumns(
+    pool,
+    tables,
+    LEGACY_THREAD_SCALAR_COLUMNS,
+  );
+  await dropReadonlyThreadsViewForScalarColumnCleanup(pool, existingLegacyScalarColumns);
   await pool.query(buildThreadRuntimeSchemaSql(tables, identityTableName));
   await migrateSessionRuntimeConfigFromThreadRows(pool, tables);
   await redactLegacySetEnvValueToolCallArguments(pool, tables);
