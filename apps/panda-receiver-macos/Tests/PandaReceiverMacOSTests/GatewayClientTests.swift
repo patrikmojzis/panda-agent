@@ -3,9 +3,9 @@ import Testing
 
 @testable import PandaReceiverMacOS
 
-private final class FakeGatewayHTTPTransport: GatewayHTTPTransport {
+private actor FakeGatewayHTTPTransport: GatewayHTTPTransport {
     private var responses: [GatewayHTTPResponse]
-    private(set) var requests: [(request: URLRequest, body: Data?)] = []
+    private var requests: [(request: URLRequest, body: Data?)] = []
 
     init(responses: [GatewayHTTPResponse]) {
         self.responses = responses
@@ -14,6 +14,10 @@ private final class FakeGatewayHTTPTransport: GatewayHTTPTransport {
     func data(for request: URLRequest, body: Data?) async throws -> GatewayHTTPResponse {
         requests.append((request: request, body: body))
         return responses.removeFirst()
+    }
+
+    func firstRequest() -> (request: URLRequest, body: Data?)? {
+        requests.first
     }
 }
 
@@ -39,13 +43,14 @@ func deviceHeartbeatBuildsAuthenticatedRequestAndRequiresOkResponse() async thro
 
     let response = try await client.deviceHeartbeat()
 
-    let request = try #require(transport.requests.first?.request)
+    let recordedRequest = try #require(await transport.firstRequest())
+    let request = recordedRequest.request
     #expect(request.httpMethod == "POST")
     #expect(request.url?.absoluteString == "https://gateway.example.com/v1/device/heartbeat")
     #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer device-token")
     #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
     #expect(request.value(forHTTPHeaderField: "Idempotency-Key") == nil)
-    #expect(transport.requests.first?.body == Data("{}".utf8))
+    #expect(recordedRequest.body == Data("{}".utf8))
     #expect(response.ok)
     #expect(response.deviceId == "home-mac")
 }
@@ -98,7 +103,8 @@ func uploadAttachmentBuildsGatewayRequestWithAuthDigestAndIdempotency() async th
         idempotencyKey: "mac.context.push:test:attachment:0"
     ))
 
-    let request = try #require(transport.requests.first?.request)
+    let recordedRequest = try #require(await transport.firstRequest())
+    let request = recordedRequest.request
     #expect(request.httpMethod == "POST")
     #expect(request.url?.absoluteString == "https://gateway.example.com/v2/attachments")
     #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer device-token")
@@ -106,7 +112,7 @@ func uploadAttachmentBuildsGatewayRequestWithAuthDigestAndIdempotency() async th
     #expect(request.value(forHTTPHeaderField: "Content-Type") == "text/plain")
     #expect(request.value(forHTTPHeaderField: "X-Filename") == "note.txt")
     #expect(request.value(forHTTPHeaderField: "X-Content-Sha256") == sha256)
-    #expect(transport.requests.first?.body == bytes)
+    #expect(recordedRequest.body == bytes)
     #expect(response.attachmentId == "00000000-0000-0000-0000-000000000001")
     #expect(response.sha256 == sha256)
 }
@@ -136,8 +142,9 @@ func postEventBuildsAttachmentAwareGatewayEventWithoutTokenInBody() async throws
         idempotencyKey: "mac.context.push:test:event"
     )
 
-    let request = try #require(transport.requests.first?.request)
-    let bodyData = try #require(transport.requests.first?.body)
+    let recordedRequest = try #require(await transport.firstRequest())
+    let request = recordedRequest.request
+    let bodyData = try #require(recordedRequest.body)
     let body = try #require(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
     let attachments = try #require(body["attachments"] as? [[String: Any]])
     #expect(request.httpMethod == "POST")

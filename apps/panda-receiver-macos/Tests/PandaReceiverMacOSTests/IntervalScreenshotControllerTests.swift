@@ -17,10 +17,11 @@ private final class LockIsolated<Value>: @unchecked Sendable {
         return _value
     }
 
-    func withValue(_ body: (inout Value) -> Void) {
+    @discardableResult
+    func withValue<Result>(_ body: (inout Value) -> Result) -> Result {
         lock.lock()
         defer { lock.unlock() }
-        body(&_value)
+        return body(&_value)
     }
 }
 
@@ -351,6 +352,84 @@ func stopWhileSendIsInFlightKeepsStoppedStateAndClearsTransientError() async thr
 
     let transient = await MainActor.run { controller.transientErrorMessage }
     #expect(transient == nil)
+}
+
+@Test
+func transientSendErrorKeepsControllerRunningAndClearsAfterNextSuccess() async throws {
+    let clock = LockIsolated(Date(timeIntervalSince1970: 100))
+    let sleeper = ManualSleeper()
+    let attempts = LockIsolated(0)
+
+    let controller = await MainActor.run {
+        IntervalScreenshotController(
+            intervalSeconds: 60,
+            frontmostAppProvider: { nil },
+            sendScreenshot: { _, _ in
+                let attempt = attempts.withValue { value in
+                    value += 1
+                    return value
+                }
+
+                if attempt == 1 {
+                    throw NSError(
+                        domain: NSURLErrorDomain,
+                        code: NSURLErrorNetworkConnectionLost
+                    )
+                }
+            },
+            now: { clock.value },
+            sleep: { nanos in
+                try await sleeper.sleep(nanoseconds: nanos)
+            },
+            onStateChanged: { _ in }
+        )
+    }
+
+    await MainActor.run { controller.start() }
+
+    #expect(await awaitEventually { attempts.value == 1 })
+    #expect(await awaitEventually {
+        let transientErrorMessage = await MainActor.run { controller.transientErrorMessage }
+        let state = await MainActor.run { controller.state }
+        if case .running = state {
+            return transientErrorMessage == "Panda connection dropped. Reconnecting…"
+        }
+        return false
+    })
+    #expect(await awaitEventually { await sleeper.hasWaiters() })
+
+    let transientErrorMessage = await MainActor.run { controller.transientErrorMessage }
+    #expect(transientErrorMessage == "Panda connection dropped. Reconnecting…")
+
+    let runningAfterError = await MainActor.run { controller.state }
+    if case .running = runningAfterError {
+        #expect(true)
+    } else {
+        Issue.record("Expected running state after transient send error, got: \(runningAfterError)")
+    }
+
+    clock.withValue { $0 = $0.addingTimeInterval(60) }
+    await sleeper.resumeAll()
+
+    #expect(await awaitEventually { attempts.value == 2 })
+    #expect(await awaitEventually {
+        let transientErrorMessage = await MainActor.run { controller.transientErrorMessage }
+        let state = await MainActor.run { controller.state }
+        if case .running(_, let lastSentAt) = state {
+            return transientErrorMessage == nil && lastSentAt != nil
+        }
+        return false
+    })
+
+    let finalTransientErrorMessage = await MainActor.run { controller.transientErrorMessage }
+    #expect(finalTransientErrorMessage == nil)
+
+    let finalState = await MainActor.run { controller.state }
+    if case .running(_, let lastSentAt) = finalState {
+        #expect(lastSentAt != nil)
+    } else {
+        Issue.record("Expected running state after transient send recovery, got: \(finalState)")
+    }
 }
 
 @Test
