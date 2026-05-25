@@ -5,7 +5,6 @@ import type {
   CreateWorkerSessionRequestPayload,
   ResolveThreadRunConfigRequestPayload,
   RuntimeRequestRecord,
-  TelegramReactCommandRequestPayload,
   TuiInputRequestPayload,
   UpdateThreadRequestPayload,
 } from "../../domain/threads/requests/types.js";
@@ -15,14 +14,12 @@ import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import type {SessionRouteRepo} from "../../domain/sessions/routes/repo.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
-import type {DefaultAgentChannelActionQueue} from "./panda-session-context.js";
 import {handleA2AMessageRequest} from "../../integrations/channels/a2a/request-handler.js";
 import {handleDiscordMessageRequest} from "../../integrations/channels/discord/request-handler.js";
 import {
   handleTelegramReactionRequest,
   handleTelegramRuntimeMessageRequest,
 } from "../../integrations/channels/telegram/request-handler.js";
-import {handleTelegramReactCommandRequest} from "../../integrations/channels/telegram/react-command-handler.js";
 import {handleTuiInputRequest} from "../../integrations/channels/tui/request-handler.js";
 import {
   handleWhatsAppMessageRequest,
@@ -42,14 +39,13 @@ export interface DaemonRequestProcessorContext {
     sessionStore: Pick<SessionStore, "getSession" | "updateSessionRuntimeConfig">;
     store: DaemonRequestStore;
   };
-  channelActions: DefaultAgentChannelActionQueue;
   a2aBindings: Parameters<typeof handleA2AMessageRequest>[1]["bindings"];
   sessionRoutes: Pick<SessionRouteRepo, "saveLastRoute">;
 }
 
 type DaemonRequestStore = Pick<
   ThreadRuntimeStore,
-  "appendRuntimeMessage" | "getRun" | "getThread" | "hasRunnableInputs" | "loadTranscript" | "updateThread"
+  "appendRuntimeMessage" | "getThread" | "hasRunnableInputs" | "loadTranscript" | "updateThread"
 >;
 
 export type DaemonRequestThreadHelpers = Pick<
@@ -211,16 +207,6 @@ export function createDaemonRequestProcessor(
     return {threadId: thread.id};
   };
 
-  const handleTelegramReactCommand = async (
-    payload: TelegramReactCommandRequestPayload,
-  ): Promise<Record<string, unknown>> => {
-    return handleTelegramReactCommandRequest(payload, {
-      sessions: context.runtime.sessionStore,
-      store: context.runtime.store,
-      channelActionQueue: context.channelActions,
-    });
-  };
-
   return async (request: RuntimeRequestRecord): Promise<unknown> => {
     switch (request.kind) {
       case "a2a_message":
@@ -253,8 +239,6 @@ export function createDaemonRequestProcessor(
           sessions: context.runtime.sessionStore,
           threads,
         });
-      case "telegram_react_command":
-        return handleTelegramReactCommand(request.payload);
       case "whatsapp_message":
         return handleWhatsAppMessageRequest(request.payload, {
           coordinator: context.runtime.coordinator,

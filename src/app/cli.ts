@@ -7,7 +7,6 @@ import {Command} from "commander";
 import {DB_URL_OPTION_DESCRIPTION} from "./cli-shared.js";
 import {parsePortOption} from "../lib/cli.js";
 import {createDaemon} from "./runtime/daemon.js";
-import {submitActivePandaRunRuntimeRequest} from "./runtime/active-run-command-client.js";
 import {registerA2ACommands} from "../domain/a2a/cli.js";
 import {parseAgentKey, registerAgentCommands} from "../domain/agents/cli.js";
 import {registerCredentialCommands} from "../domain/credentials/cli.js";
@@ -353,9 +352,7 @@ registerIdentityCommands(program);
 registerSessionCommands(program);
 registerTelepathyCommands(program);
 registerWikiCommands(program);
-registerTelegramCommands(program, {
-  submitRuntimeRequest: submitActivePandaRunRuntimeRequest,
-});
+registerTelegramCommands(program);
 registerDiscordCommands(program);
 registerWhatsAppCommands(program);
 
