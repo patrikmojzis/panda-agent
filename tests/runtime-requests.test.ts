@@ -1,7 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {RuntimeRequestRepo} from "../src/domain/threads/requests/repo.js";
-import type {DiscordMessageRequestPayload, TelegramReactCommandRequestPayload} from "../src/domain/threads/requests/types.js";
+import type {DiscordMessageRequestPayload} from "../src/domain/threads/requests/types.js";
 
 function createFakeNotificationClient() {
   return {
@@ -393,46 +393,6 @@ describe("RuntimeRequestRepo", () => {
     await expect(repo.getRequest("7a0b9429-d5bf-41dc-9224-088cff4d2137")).rejects.toThrow(
       "Unsupported runtime request status pending",
     );
-  });
-
-  it("normalizes telegram_react_command payloads and strips raw unknown fields before enqueue", async () => {
-    const {repo} = createEnqueueRepo();
-
-    const request = await repo.enqueueRequest({
-      kind: "telegram_react_command",
-      payload: {
-        agentKey: "panda",
-        sessionId: "session-1",
-        threadId: "thread-1",
-        runId: "run-1",
-        emoji: "🔥",
-        remove: false,
-        messageId: "555",
-        target: {
-          connectorKey: "8669743878",
-          conversationId: "1615376408",
-          ignored: "drop-me",
-        },
-        rawTelegramUpdate: {private: "drop-me"},
-      } as TelegramReactCommandRequestPayload & Record<string, unknown>,
-    });
-
-    expect(request.kind).toBe("telegram_react_command");
-    expect(request.payload).toEqual({
-      agentKey: "panda",
-      sessionId: "session-1",
-      threadId: "thread-1",
-      runId: "run-1",
-      emoji: "🔥",
-      remove: false,
-      messageId: "555",
-      target: {
-        connectorKey: "8669743878",
-        conversationId: "1615376408",
-      },
-    });
-    expect(request.payload).not.toHaveProperty("rawTelegramUpdate");
-    expect(JSON.stringify(request.payload)).not.toContain("drop-me");
   });
 
   it("normalizes discord_message payloads and strips raw unknown fields before enqueue", async () => {

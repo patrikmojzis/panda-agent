@@ -24,8 +24,6 @@ export type {
   ResetSessionResult,
   ResolveMainSessionThreadRequestPayload,
   TelegramMessageRequestPayload,
-  TelegramReactCommandRequestPayload,
-  TelegramReactCommandTarget,
   TelegramReactionRequestPayload,
   TuiInputRequestPayload,
   UpdateThreadRequestPayload,

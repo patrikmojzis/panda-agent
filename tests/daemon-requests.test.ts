@@ -13,12 +13,10 @@ import type {
   DiscordMessageRequestPayload,
   RuntimeRequestRecord,
   TelegramMessageRequestPayload,
-  TelegramReactCommandRequestPayload,
   TuiInputRequestPayload,
   WhatsAppReactionRequestPayload,
 } from "../src/domain/threads/requests/index.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
-import {stringToUserMessage} from "../src/kernel/agent/index.js";
 
 function whatsappReactionRequest(
   overrides: Partial<WhatsAppReactionRequestPayload> = {},
@@ -65,26 +63,6 @@ function telegramMessageRequest(
       username: "patrik",
       firstName: "Patrik",
       media: [],
-      ...overrides,
-    },
-  };
-}
-
-function telegramReactCommandRequest(
-  overrides: Partial<TelegramReactCommandRequestPayload> = {},
-): RuntimeRequestRecord<"telegram_react_command"> {
-  return {
-    id: "request-telegram-react-command",
-    kind: "telegram_react_command",
-    status: "pending",
-    createdAt: 1,
-    updatedAt: 1,
-    payload: {
-      agentKey: "panda",
-      sessionId: "session-1",
-      threadId: "thread-1",
-      runId: "run-1",
-      emoji: "🔥",
       ...overrides,
     },
   };
@@ -195,7 +173,6 @@ function createRequestContext(input: {
   currentThreadId?: string;
   getSession?: (sessionId: string) => Promise<SessionRecord>;
   saveLastRoute?: ReturnType<typeof createSaveLastRouteMock>;
-  channelActions?: {enqueueAction: ReturnType<typeof vi.fn>};
   store?: TestThreadRuntimeStore;
   submitInput?: ReturnType<typeof vi.fn>;
 } = {}): DaemonRequestProcessorContext {
@@ -211,16 +188,6 @@ function createRequestContext(input: {
         getSession: input.getSession ?? vi.fn(async (sessionId: string) => createSession(sessionId, currentThreadId)),
       },
       store: input.store ?? new TestThreadRuntimeStore(),
-    },
-    channelActions: input.channelActions ?? {
-      enqueueAction: vi.fn(async (action) => ({
-        id: "action-1",
-        status: "pending",
-        attemptCount: 0,
-        createdAt: 1,
-        updatedAt: 1,
-        ...action,
-      })),
     },
     a2aBindings: {
       hasBinding: vi.fn(async () => true),
@@ -324,137 +291,6 @@ function expectFirstCallBefore(
 }
 
 describe("daemon request processor", () => {
-  async function createTelegramReactCommandHarness(options: {withCurrentInput?: boolean} = {}) {
-    const store = new TestThreadRuntimeStore();
-    await store.createThread({
-      id: "thread-1",
-      sessionId: "session-1",
-      context: {},
-    });
-    if (options.withCurrentInput !== false) {
-      await store.appendRuntimeMessage("thread-1", {
-        origin: "input",
-        source: "telegram",
-        channelId: "1615376408",
-        externalMessageId: "555",
-        message: stringToUserMessage("hello from Telegram"),
-        metadata: {
-          route: {
-            connectorKey: "8669743878",
-            externalConversationId: "1615376408",
-          },
-        },
-      });
-    }
-    const run = await store.createRun("thread-1");
-    const channelActions = {
-      enqueueAction: vi.fn(async (action) => ({
-        id: "action-1",
-        status: "pending",
-        attemptCount: 0,
-        createdAt: 1,
-        updatedAt: 1,
-        ...action,
-      })),
-    };
-    const context = createRequestContext({
-      store,
-      channelActions,
-    });
-    const processor = createDaemonRequestProcessor(context, createThreadHelpers());
-    return {channelActions, processor, run, store};
-  }
-
-  it("handles telegram react commands through daemon-owned current Telegram input", async () => {
-    const {channelActions, processor, run} = await createTelegramReactCommandHarness();
-
-    const result = await processor(telegramReactCommandRequest({
-      runId: run.id,
-    }));
-
-    expect(channelActions.enqueueAction).toHaveBeenCalledWith({
-      channel: "telegram",
-      connectorKey: "8669743878",
-      kind: "telegram_reaction",
-      payload: {
-        conversationId: "1615376408",
-        messageId: "555",
-        emoji: "🔥",
-        remove: false,
-      },
-    });
-    expect(result).toEqual({
-      ok: true,
-      connectorKey: "8669743878",
-      conversationId: "1615376408",
-      messageId: "555",
-      added: "🔥",
-      queued: true,
-    });
-  });
-
-  it("handles telegram react commands with explicit target and message id", async () => {
-    const {channelActions, processor, run} = await createTelegramReactCommandHarness({
-      withCurrentInput: false,
-    });
-
-    await processor(telegramReactCommandRequest({
-      runId: run.id,
-      emoji: "👀",
-      messageId: "888",
-      target: {
-        connectorKey: "8669743878",
-        conversationId: "999999",
-      },
-    }));
-
-    expect(channelActions.enqueueAction).toHaveBeenCalledWith({
-      channel: "telegram",
-      connectorKey: "8669743878",
-      kind: "telegram_reaction",
-      payload: {
-        conversationId: "999999",
-        messageId: "888",
-        emoji: "👀",
-        remove: false,
-      },
-    });
-  });
-
-  it("rejects telegram react commands outside the active running run", async () => {
-    const {channelActions, processor, run, store} = await createTelegramReactCommandHarness();
-    await store.completeRun(run.id);
-
-    await expect(processor(telegramReactCommandRequest({
-      runId: run.id,
-    }))).rejects.toThrow("panda telegram react requires an active running agent run.");
-    expect(channelActions.enqueueAction).not.toHaveBeenCalled();
-  });
-
-  it("rejects telegram react commands for a mismatched run thread before queueing", async () => {
-    const {channelActions, processor, run} = await createTelegramReactCommandHarness();
-
-    await expect(processor(telegramReactCommandRequest({
-      runId: run.id,
-      threadId: "thread-other",
-    }))).rejects.toThrow("panda telegram react run/thread mismatch.");
-    expect(channelActions.enqueueAction).not.toHaveBeenCalled();
-  });
-
-  it("rejects telegram react commands for a mismatched session or agent", async () => {
-    const {channelActions, processor, run} = await createTelegramReactCommandHarness();
-
-    await expect(processor(telegramReactCommandRequest({
-      runId: run.id,
-      sessionId: "session-other",
-    }))).rejects.toThrow("panda telegram react session/thread mismatch.");
-    await expect(processor(telegramReactCommandRequest({
-      runId: run.id,
-      agentKey: "other-agent",
-    }))).rejects.toThrow("panda telegram react agent/session mismatch.");
-    expect(channelActions.enqueueAction).not.toHaveBeenCalled();
-  });
-
   it("routes TUI input through the terminal channel adapter", async () => {
     const store = new TestThreadRuntimeStore();
     await store.createThread({
