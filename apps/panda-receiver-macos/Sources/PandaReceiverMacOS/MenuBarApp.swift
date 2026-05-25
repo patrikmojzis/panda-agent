@@ -17,6 +17,7 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     private let permissionMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let microphoneMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let pushStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let intervalStatusItem = NSMenuItem(title: "Interval: Stopped", action: nil, keyEquivalent: "")
     private let shortcutMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let launchAtLoginStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private lazy var enableCaptureItem = NSMenuItem(title: "Gateway Enabled", action: #selector(toggleCaptureEnabled), keyEquivalent: "")
@@ -27,6 +28,10 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     private lazy var testScreenshotItem = NSMenuItem(title: "Take Test Screenshot", action: #selector(takeTestScreenshot), keyEquivalent: "t")
     private lazy var sendClipboardTextItem = NSMenuItem(title: "Send Clipboard Text", action: #selector(sendClipboardText), keyEquivalent: "")
     private lazy var sendScreenshotNowItem = NSMenuItem(title: "Send Screenshot Now", action: #selector(sendScreenshotNow), keyEquivalent: "")
+    private lazy var startIntervalItem = NSMenuItem(title: "Start Interval Screenshots", action: #selector(startIntervalScreenshots), keyEquivalent: "")
+    private lazy var pauseIntervalItem = NSMenuItem(title: "Pause Interval Screenshots", action: #selector(pauseIntervalScreenshots), keyEquivalent: "")
+    private lazy var resumeIntervalItem = NSMenuItem(title: "Resume Interval Screenshots", action: #selector(resumeIntervalScreenshots), keyEquivalent: "")
+    private lazy var stopIntervalItem = NSMenuItem(title: "Stop Interval Screenshots", action: #selector(stopIntervalScreenshots), keyEquivalent: "")
     private lazy var settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
     private lazy var revealConfigItem = NSMenuItem(title: "Reveal Saved Config", action: #selector(revealSavedConfig), keyEquivalent: "")
     private lazy var quitItem = NSMenuItem(title: "Quit \(AppIdentity.appDisplayName)", action: #selector(quit), keyEquivalent: "q")
@@ -35,6 +40,7 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     private var statusTask: Task<Void, Never>?
     private var settingsWindowController: SettingsWindowController?
     private var pushToTalkController: PushToTalkController?
+    private var intervalController: IntervalScreenshotController?
     private let pushFeedback = PushToTalkFeedbackController()
 
     init(config: Config?) {
@@ -85,6 +91,7 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         permissionMenuItem.isEnabled = false
         microphoneMenuItem.isEnabled = false
         pushStatusItem.isEnabled = false
+        intervalStatusItem.isEnabled = false
         shortcutMenuItem.isEnabled = false
         launchAtLoginStatusItem.isEnabled = false
 
@@ -96,6 +103,10 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         testScreenshotItem.target = self
         sendClipboardTextItem.target = self
         sendScreenshotNowItem.target = self
+        startIntervalItem.target = self
+        pauseIntervalItem.target = self
+        resumeIntervalItem.target = self
+        stopIntervalItem.target = self
         settingsItem.target = self
         revealConfigItem.target = self
         quitItem.target = self
@@ -117,6 +128,11 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         menu.addItem(testScreenshotItem)
         menu.addItem(sendClipboardTextItem)
         menu.addItem(sendScreenshotNowItem)
+        menu.addItem(intervalStatusItem)
+        menu.addItem(startIntervalItem)
+        menu.addItem(pauseIntervalItem)
+        menu.addItem(resumeIntervalItem)
+        menu.addItem(stopIntervalItem)
         menu.addItem(settingsItem)
         menu.addItem(revealConfigItem)
         menu.addItem(.separator())
@@ -145,11 +161,12 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         enableCaptureItem.state = status.state == .disabled ? .off : .on
         enableCaptureItem.isEnabled = currentConfig != nil
         allowPullScreenshotsItem.state = (currentConfig?.allowPullScreenshots ?? true) ? .on : .off
-        allowPullScreenshotsItem.isEnabled = currentConfig != nil && status.state != .disabled
-        testScreenshotItem.isEnabled = currentConfig != nil && status.state != .disabled
-        sendClipboardTextItem.isEnabled = currentConfig != nil && status.state != .disabled
-        sendScreenshotNowItem.isEnabled = currentConfig != nil && status.state != .disabled
+        allowPullScreenshotsItem.isEnabled = receiver != nil && currentConfig != nil && status.state != .disabled
+        testScreenshotItem.isEnabled = receiver != nil && currentConfig != nil && status.state != .disabled
+        sendClipboardTextItem.isEnabled = receiver != nil && currentConfig != nil && status.state != .disabled
+        sendScreenshotNowItem.isEnabled = receiver != nil && currentConfig != nil && status.state != .disabled
         revealConfigItem.isEnabled = currentConfig != nil
+        applyIntervalMenu(for: status)
         refreshLaunchAtLoginState()
         updateButton(for: status)
     }
@@ -261,6 +278,10 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         let shouldEnable = enableCaptureItem.state == .off
         enableCaptureItem.isEnabled = false
 
+        if !shouldEnable {
+            intervalController?.stop()
+        }
+
         Task {
             await receiver?.setEnabled(shouldEnable)
             await MainActor.run {
@@ -288,6 +309,7 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
                 label: currentConfig.label,
                 reconnectDelaySeconds: currentConfig.reconnectDelaySeconds,
                 allowPullScreenshots: shouldAllow,
+                intervalScreenshots: currentConfig.intervalScreenshots,
                 pushToTalkShortcuts: currentConfig.pushToTalkShortcuts,
                 tunnel: currentConfig.tunnel
             )
@@ -567,9 +589,13 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     }
 
     private func replaceReceiver(with config: Config) async {
+        intervalController?.stop()
+        intervalController = nil
+
         if let receiver {
             await receiver.shutdown()
         }
+        receiver = nil
 
         latestStatus = ReceiverStatus(state: .starting, detail: "Starting Gateway receiver")
         apply(status: latestStatus)
@@ -580,6 +606,9 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         )
         receiver = newReceiver
         await newReceiver.start()
+
+        intervalController = makeIntervalScreenshotController(for: config, receiver: newReceiver)
+        applyIntervalMenu(for: latestStatus)
     }
 
     private func rebuildPushToTalkController() {
@@ -650,6 +679,144 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         apply(status: latestStatus)
     }
 
+
+
+    private func applyIntervalMenu(for status: ReceiverStatus) {
+        guard let currentConfig else {
+            intervalStatusItem.title = "Interval: Not configured"
+            startIntervalItem.isEnabled = false
+            pauseIntervalItem.isEnabled = false
+            resumeIntervalItem.isEnabled = false
+            stopIntervalItem.isEnabled = false
+            return
+        }
+
+        let receiverAvailable = receiver != nil && status.state != .disabled
+        let controllerState = intervalController?.state ?? .stopped
+        intervalStatusItem.title = intervalMenuLabel(
+            state: controllerState,
+            intervalSeconds: currentConfig.intervalScreenshots.intervalSeconds,
+            transientErrorMessage: intervalController?.transientErrorMessage
+        )
+
+        startIntervalItem.isEnabled = receiverAvailable && (controllerState == .stopped || isIntervalErrorState(controllerState))
+        pauseIntervalItem.isEnabled = receiverAvailable && isIntervalRunningState(controllerState)
+        resumeIntervalItem.isEnabled = receiverAvailable && isIntervalPausedState(controllerState)
+        stopIntervalItem.isEnabled = receiverAvailable && controllerState != .stopped
+    }
+
+    private func isIntervalRunningState(_ state: IntervalScreenshotState) -> Bool {
+        switch state {
+        case .running, .sending:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isIntervalPausedState(_ state: IntervalScreenshotState) -> Bool {
+        switch state {
+        case .paused:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isIntervalErrorState(_ state: IntervalScreenshotState) -> Bool {
+        switch state {
+        case .error:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func intervalMenuLabel(
+        state: IntervalScreenshotState,
+        intervalSeconds: UInt64,
+        transientErrorMessage: String?
+    ) -> String {
+        let minutes = max(UInt64(1), intervalSeconds / 60)
+        let intervalLabel = "every \(minutes) min"
+
+        func timeLabel(_ date: Date) -> String {
+            DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
+        }
+
+        let transientSuffix: String
+        if let transientErrorMessage, !transientErrorMessage.isEmpty {
+            transientSuffix = " (last error: \(transientErrorMessage))"
+        } else {
+            transientSuffix = ""
+        }
+
+        switch state {
+        case .stopped:
+            return "Interval: Stopped"
+        case .running(let nextCaptureAt, let lastSentAt):
+            let lastLabel = lastSentAt.map(timeLabel) ?? "never"
+            return "Interval: Running \(intervalLabel); next \(timeLabel(nextCaptureAt)); last \(lastLabel)\(transientSuffix)"
+        case .sending(let nextCaptureAt, let lastSentAt):
+            let lastLabel = lastSentAt.map(timeLabel) ?? "never"
+            return "Interval: Sending… next \(timeLabel(nextCaptureAt)); last \(lastLabel)\(transientSuffix)"
+        case .paused(let lastSentAt):
+            let lastLabel = lastSentAt.map(timeLabel) ?? "never"
+            return "Interval: Paused; last \(lastLabel)"
+        case .error(let message, _):
+            return "Interval: Error: \(message)"
+        }
+    }
+
+    private func makeIntervalScreenshotController(for config: Config, receiver: ReceiverService) -> IntervalScreenshotController {
+        IntervalScreenshotController(
+            intervalSeconds: config.intervalScreenshots.intervalSeconds,
+            frontmostAppProvider: { NSWorkspace.shared.frontmostApplication?.localizedName },
+            sendScreenshot: { frontmostApp, intervalSeconds in
+                try await receiver.sendIntervalScreenshot(intervalSeconds: intervalSeconds, frontmostApp: frontmostApp)
+            },
+            onStateChanged: { [weak self] state in
+                guard let self else {
+                    return
+                }
+
+                self.applyIntervalMenu(for: self.latestStatus)
+
+                if case .error(let message, _) = state {
+                    if message == ReceiverError.screenRecordingDenied.message {
+                        self.presentScreenRecordingDeniedAlert(message: message)
+                    } else {
+                        self.presentAlert(title: "Interval Screenshot Stopped", message: message)
+                    }
+                }
+            }
+        )
+    }
+
+    @objc
+    private func startIntervalScreenshots() {
+        guard currentConfig != nil else {
+            openSettings(nil)
+            return
+        }
+
+        intervalController?.start()
+    }
+
+    @objc
+    private func pauseIntervalScreenshots() {
+        intervalController?.pause()
+    }
+
+    @objc
+    private func resumeIntervalScreenshots() {
+        intervalController?.resume()
+    }
+
+    @objc
+    private func stopIntervalScreenshots() {
+        intervalController?.stop()
+    }
     private func presentAlert(title: String, message: String) {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()

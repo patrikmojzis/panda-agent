@@ -47,7 +47,8 @@ private func sampleConfig(token: String = "secret") throws -> Config {
         tunnelHostRaw: "",
         tunnelUserRaw: "",
         tunnelPortRaw: "",
-        tunnelLocalPortRaw: ""
+        tunnelLocalPortRaw: "",
+        intervalMinutesRaw: ""
     )
 }
 
@@ -64,7 +65,8 @@ func rejectsWebSocketGatewayBaseURL() throws {
             tunnelHostRaw: "",
             tunnelUserRaw: "",
             tunnelPortRaw: "",
-            tunnelLocalPortRaw: ""
+            tunnelLocalPortRaw: "",
+            intervalMinutesRaw: ""
         )
     }
 
@@ -79,7 +81,8 @@ func rejectsWebSocketGatewayBaseURL() throws {
             tunnelHostRaw: "",
             tunnelUserRaw: "",
             tunnelPortRaw: "",
-            tunnelLocalPortRaw: ""
+            tunnelLocalPortRaw: "",
+            intervalMinutesRaw: ""
         )
     }
 }
@@ -202,7 +205,8 @@ func acceptsHTTPAndHTTPSGatewayBaseURLs() throws {
         tunnelHostRaw: "",
         tunnelUserRaw: "",
         tunnelPortRaw: "",
-        tunnelLocalPortRaw: ""
+        tunnelLocalPortRaw: "",
+        intervalMinutesRaw: ""
     )
     let httpsConfig = try Config.make(
         gatewayBaseURLRaw: "https://gateway.example.com",
@@ -214,7 +218,8 @@ func acceptsHTTPAndHTTPSGatewayBaseURLs() throws {
         tunnelHostRaw: "",
         tunnelUserRaw: "",
         tunnelPortRaw: "",
-        tunnelLocalPortRaw: ""
+        tunnelLocalPortRaw: "",
+        intervalMinutesRaw: ""
     )
 
     #expect(httpConfig.gatewayBaseURL.scheme == "http")
@@ -241,6 +246,7 @@ func decodesLegacyConfigWithoutShortcutOverrides() throws {
 
     #expect(config.gatewayBaseURL.absoluteString == "http://127.0.0.1:8094")
     #expect(config.allowPullScreenshots)
+    #expect(config.intervalScreenshots.intervalSeconds == IntervalScreenshotConfig.defaultIntervalSeconds)
     #expect(config.pushToTalkShortcuts.voiceOnly == .defaultVoiceOnly)
     #expect(config.pushToTalkShortcuts.voiceWithScreenshot == .defaultVoiceWithScreenshot)
 }
@@ -276,6 +282,7 @@ func acceptsPullScreenshotsDisabled() throws {
         tunnelUserRaw: "",
         tunnelPortRaw: "",
         tunnelLocalPortRaw: "",
+        intervalMinutesRaw: "",
         allowPullScreenshots: false
     )
 
@@ -296,10 +303,54 @@ func rejectsDuplicatePushToTalkShortcuts() {
             tunnelUserRaw: "",
             tunnelPortRaw: "",
             tunnelLocalPortRaw: "",
+            intervalMinutesRaw: "",
             pushToTalkShortcuts: PushToTalkShortcutBindings(
                 voiceOnly: .defaultVoiceOnly,
                 voiceWithScreenshot: .defaultVoiceOnly
             )
         )
     }
+}
+
+@Test
+func validatesIntervalScreenshotMinutesRange() throws {
+    #expect(throws: ReceiverError.self) {
+        _ = try IntervalScreenshotConfig.resolve(intervalMinutesRaw: "0")
+    }
+
+    #expect(try IntervalScreenshotConfig.resolve(intervalMinutesRaw: "1").intervalSeconds == 60)
+    #expect(try IntervalScreenshotConfig.resolve(intervalMinutesRaw: "1440").intervalSeconds == 86_400)
+
+    #expect(throws: ReceiverError.self) {
+        _ = try IntervalScreenshotConfig.resolve(intervalMinutesRaw: "1441")
+    }
+}
+
+@Test
+func configStoreRoundTripPersistsIntervalScreenshots() throws {
+    let configURL = try temporaryConfigURL()
+    defer {
+        try? FileManager.default.removeItem(at: configURL.deletingLastPathComponent())
+    }
+
+    let tokenStore = FakeTokenSecretStore()
+    let config = try Config.make(
+        gatewayBaseURLRaw: "http://127.0.0.1:8094",
+        agentKeyRaw: "panda",
+        deviceIdRaw: "home-mac",
+        tokenRaw: "super-secret-token",
+        labelRaw: "Home Mac",
+        reconnectDelayRaw: "2",
+        tunnelHostRaw: "",
+        tunnelUserRaw: "",
+        tunnelPortRaw: "",
+        tunnelLocalPortRaw: "",
+        intervalMinutesRaw: "10"
+    )
+
+    try ConfigStore.save(config, to: configURL, tokenStore: tokenStore)
+
+    let loaded = try ConfigStore.load(from: [configURL], tokenStore: tokenStore)
+
+    #expect(loaded?.intervalScreenshots.intervalSeconds == 600)
 }
