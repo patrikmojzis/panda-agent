@@ -101,6 +101,18 @@ Background bash job results include:
 - `trackedEnvKeys`
 - `sessionStateIsolated: true`
 
+`stdout` and `stderr` are previews. Short output is returned unchanged. Long output keeps the beginning and a rolling tail with an in-band marker, for example:
+
+```text
+<head>
+
+…12345 chars truncated…
+
+<tail>
+```
+
+The marker is part of the preview budget. `stdoutChars` and `stderrChars` still report the full stream sizes, and persisted output files still contain the raw original streams when persistence is allowed.
+
 Panda reports tracked env key names only. It does not expose exported env values from background jobs.
 
 Image generation jobs return generated image paths and artifact metadata without inline image data. Subagent jobs return the child role, final message, tool-call count, and duration. Web research jobs return the cited answer and source metadata.

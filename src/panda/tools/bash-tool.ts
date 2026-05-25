@@ -37,7 +37,7 @@ import type {
 import {buildBackgroundJobPayload, formatBackgroundJobResult} from "./background-job-tools.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-const DEFAULT_MAX_OUTPUT_CHARS = 8_000;
+const DEFAULT_MAX_OUTPUT_CHARS = 40_000;
 const DEFAULT_PROGRESS_INTERVAL_MS = 250;
 const DEFAULT_PROGRESS_TAIL_CHARS = 1_200;
 const DEFAULT_OUTPUT_DIRECTORY = path.join(tmpdir(), "runtime-tool-results");

@@ -941,7 +941,37 @@ describe("BashTool", () => {
     }
   });
 
-  it("persists large stdout to disk while returning a truncated preview", async () => {
+  it("returns short stdout previews unchanged without a truncation marker", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-output-short-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        maxOutputChars: 80,
+      });
+
+      const result = await tool.run(
+        { command: "printf 'short output'" },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+
+      expect(output.stdout).toBe("short output");
+      expect(output.stdoutTruncated).toBe(false);
+      expect(output.stdoutChars).toBe("short output".length);
+      expect(String(output.stdout)).not.toContain("chars truncated");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("persists large stdout to disk while returning a head/tail truncated preview", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-output-"));
     try {
       const context: DefaultAgentSessionContext = {
@@ -953,20 +983,114 @@ describe("BashTool", () => {
       };
       const tool = new BashTool({
         outputDirectory: path.join(workspace, "tool-results"),
-        maxOutputChars: 8,
-        persistOutputThresholdChars: 8,
+        maxOutputChars: 80,
+        persistOutputThresholdChars: 80,
       });
+      const fullOutput = `HEAD-${"M".repeat(200)}-TAIL`;
 
       const result = await tool.run(
-        { command: "printf '0123456789ABCDEF'" },
+        { command: "node -e \"process.stdout.write('HEAD-' + 'M'.repeat(200) + '-TAIL')\"" },
         createRunContext(context),
       );
       const output = asObject(result);
+      const stdout = String(output.stdout);
 
       expect(output.stdoutTruncated).toBe(true);
+      expect(output.stdoutChars).toBe(fullOutput.length);
+      expect(stdout.length).toBeLessThanOrEqual(80);
+      expect(stdout).toMatch(/^HEAD-/);
+      expect(stdout).toMatch(/\n\n…\d+ chars truncated…\n\n/);
+      expect(stdout.endsWith("-TAIL")).toBe(true);
+      expect(stdout).not.toBe(fullOutput);
       expect(output.stdoutPersisted).toBe(true);
       expect(typeof output.stdoutPath).toBe("string");
-      await expect(readFile(String(output.stdoutPath), "utf8")).resolves.toBe("0123456789ABCDEF");
+      await expect(readFile(String(output.stdoutPath), "utf8")).resolves.toBe(fullOutput);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts source secret prefixes split by the head truncation marker", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-secret-head-boundary-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        maxOutputChars: 80,
+        persistOutputThresholdChars: 80,
+      });
+      const secret = "sk-1234567890abcdef1234567890abcdef";
+
+      const result = await tool.run(
+        {
+          command: "node -e \"process.stdout.write(process.env.CALL_SECRET + 'M'.repeat(200) + 'TAIL')\"",
+          env: {
+            CALL_SECRET: secret,
+          },
+        },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+      const stdout = String(output.stdout);
+
+      expect(output.stdoutTruncated).toBe(true);
+      expect(output.stdoutPersisted).toBe(false);
+      expect(output.stdoutPath).toBeUndefined();
+      expect(stdout).toContain("[redacted]");
+      expect(stdout).toMatch(/\n\n…\d+ chars truncated…\n\n/);
+      expect(stdout.endsWith("TAIL")).toBe(true);
+      expect(stdout).not.toContain(secret);
+      expect(stdout).not.toContain(secret.slice(0, 6));
+      expect(stdout).not.toContain(secret.slice(0, 22));
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts source secret suffixes split by the tail truncation marker", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-secret-tail-boundary-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        maxOutputChars: 80,
+        persistOutputThresholdChars: 80,
+      });
+      const secret = "ABCDEFGHIJKL";
+      const tailPadding = "Z".repeat(27);
+
+      const result = await tool.run(
+        {
+          command: "node -e \"process.stdout.write('HEAD-' + 'M'.repeat(200) + process.env.CALL_SECRET + 'Z'.repeat(27))\"",
+          env: {
+            CALL_SECRET: secret,
+          },
+        },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+      const stdout = String(output.stdout);
+
+      expect(output.stdoutTruncated).toBe(true);
+      expect(output.stdoutPersisted).toBe(false);
+      expect(output.stdoutPath).toBeUndefined();
+      expect(stdout).toContain("[redacted]");
+      expect(stdout).toMatch(/\n\n…\d+ chars truncated…\n\n/);
+      expect(stdout.endsWith(tailPadding)).toBe(true);
+      expect(stdout).not.toContain(secret);
+      expect(stdout).not.toContain(secret.slice(-6));
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -1384,8 +1508,8 @@ describe("BashTool", () => {
       const service = new BackgroundToolJobService({ store });
       const bash = new BashTool({
         outputDirectory: path.join(workspace, "tool-results"),
-        maxOutputChars: 8,
-        persistOutputThresholdChars: 8,
+        maxOutputChars: 80,
+        persistOutputThresholdChars: 80,
         jobService: service,
       });
       const wait = new BackgroundJobWaitTool({ service });
@@ -1400,22 +1524,29 @@ describe("BashTool", () => {
         },
       };
 
+      const fullOutput = `BG-${"N".repeat(200)}-DONE`;
       const large = await bash.run(
-        { command: "printf '0123456789ABCDEF'", background: true },
+        { command: "node -e \"process.stdout.write('BG-' + 'N'.repeat(200) + '-DONE')\"", background: true },
         createRunContext(context),
       );
       const largeOutput = asObject(await wait.run(
         { jobId: String(asObject(large).jobId), timeoutMs: 1_000 },
         createRunContext(context),
       ));
+      const stdout = String(largeOutput.stdout);
 
       expect(largeOutput.stdoutTruncated).toBe(true);
+      expect(largeOutput.stdoutChars).toBe(fullOutput.length);
+      expect(stdout.length).toBeLessThanOrEqual(80);
+      expect(stdout).toMatch(/^BG-/);
+      expect(stdout).toMatch(/\n\n…\d+ chars truncated…\n\n/);
+      expect(stdout.endsWith("-DONE")).toBe(true);
       expect(largeOutput.stdoutPersisted).toBe(true);
-      await expect(readFile(String(largeOutput.stdoutPath), "utf8")).resolves.toBe("0123456789ABCDEF");
+      await expect(readFile(String(largeOutput.stdoutPath), "utf8")).resolves.toBe(fullOutput);
 
       const secret = await bash.run(
         {
-          command: 'printf "%s%s%s%s" "$CALL_SECRET" "$CALL_SECRET" "$CALL_SECRET" "$CALL_SECRET"',
+          command: 'for i in {1..24}; do printf "%s" "$CALL_SECRET"; done',
           env: {
             CALL_SECRET: "secret-1",
           },
