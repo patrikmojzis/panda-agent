@@ -318,9 +318,6 @@ Public surfaces are security-sensitive:
   App scaffold result shapes should expose facts callers can use, not constant
   success flags. The observable contract is the created app definition, written
   file paths, schema application state, and the actual database file.
-  decoding, and compact close/error surfaces.
-  The hub should depend only on the connection/auth lifecycle store slice;
-  registration, listing, and admin enablement stay out of the websocket seam.
 - Web fetch/watch HTTP owns URL protocol checks, private-address blocking, DNS
   pinning, redirect validation, byte limits, and credential-header privacy
   across redirects.
@@ -492,8 +489,9 @@ Internal stays internal.
   modules share them. Do not add one-interface integration files just so one
   concrete adapter can `implements` them; TypeScript's structural typing already
   gives the test seam.
-- Panda tool artifact media-root, agent-key, and scope-key rules live in
-  future media tools should not clone filesystem path guards.
+- Panda tool artifact media-root, agent-key, and scope-key handling is centralized
+  in `src/panda/tools/artifact-paths.ts`; image, view_media, wiki, and future
+  media tools should not clone filesystem path guards.
 - `src/panda/subagents/service.ts` and related Panda helpers are internal, not public persona API
 - shared web-fetch, web-research, and SSRF helpers live under `src/integrations/web`; Panda tool leaf files call them instead of owning them
 - readable HTML cleanup/extraction lives in `src/integrations/web/html-content.ts`;
