@@ -207,9 +207,6 @@ function collectTools(): {
       postgresReadonly: {
         pool: postgresPool,
       },
-      telepathy: {
-        service,
-      },
       webResearch: {
         env: process.env,
         jobService,

@@ -70,16 +70,9 @@ actor ReceiverService {
         await stopRunning(reportDisabled: true)
     }
 
-    func setPullScreenshotsEnabled(_ enabled: Bool) {
-        _ = enabled
-        // Pull screenshots are still a legacy Telepathy concern until Gateway
-        // command parity lands. Keep the setting persisted, but PR1 does not
-        // start a Gateway pull-command loop.
-    }
-
     func captureTestScreenshot() async throws -> URL {
         guard isEnabled else {
-            throw ReceiverError.telepathyPaused
+            throw ReceiverError.receiverPaused
         }
 
         let screenshotData = try await screenshotCapture.captureJPEG()
@@ -94,7 +87,7 @@ actor ReceiverService {
         trigger: String
     ) async throws {
         guard isEnabled else {
-            throw ReceiverError.telepathyPaused
+            throw ReceiverError.receiverPaused
         }
 
         var attachments = [GatewayContextAttachment(
@@ -124,7 +117,7 @@ actor ReceiverService {
 
     func sendClipboardText(_ text: String, frontmostApp: String?) async throws {
         guard isEnabled else {
-            throw ReceiverError.telepathyPaused
+            throw ReceiverError.receiverPaused
         }
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -140,7 +133,7 @@ actor ReceiverService {
 
     func sendScreenshotNow(frontmostApp: String?) async throws {
         guard isEnabled else {
-            throw ReceiverError.telepathyPaused
+            throw ReceiverError.receiverPaused
         }
 
         let screenshotData = try await screenshotCapture.captureJPEG()
@@ -154,11 +147,9 @@ actor ReceiverService {
         )
     }
 
-
-
     func sendIntervalScreenshot(intervalSeconds: UInt64, frontmostApp: String?) async throws {
         guard isEnabled else {
-            throw ReceiverError.telepathyPaused
+            throw ReceiverError.receiverPaused
         }
 
         guard CGPreflightScreenCaptureAccess() else {
@@ -297,7 +288,7 @@ actor ReceiverService {
         hasConnectedOnce = false
 
         if reportDisabled {
-            await publish(.disabled, ReceiverError.telepathyPaused.message)
+            await publish(.disabled, ReceiverError.receiverPaused.message)
         }
     }
 

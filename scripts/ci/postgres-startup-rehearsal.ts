@@ -20,7 +20,6 @@ import {
   ensureReadonlySessionQuerySchema,
   PostgresThreadRuntimeStore,
 } from "../../src/domain/threads/runtime/index.js";
-import {PostgresTelepathyDeviceStore} from "../../src/domain/telepathy/postgres.js";
 import {PostgresWatchStore} from "../../src/domain/watches/index.js";
 import {PostgresWikiBindingStore} from "../../src/domain/wiki/postgres.js";
 import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
@@ -57,7 +56,6 @@ function createStores(pool: ReturnType<typeof createPostgresPool>) {
     scheduledTasks: new PostgresScheduledTaskStore({pool}),
     sessionRoutes: new SessionRouteRepo({pool}),
     sessionStore: new PostgresSessionStore({pool}),
-    telepathyDevices: new PostgresTelepathyDeviceStore({pool}),
     threadStore: new PostgresThreadRuntimeStore({pool}),
     watches: new PostgresWatchStore({pool}),
     wikiBindings: new PostgresWikiBindingStore({pool}),
@@ -92,7 +90,6 @@ async function ensureRuntimeStartupSchemas(
     stores.agentStore,
     stores.sessionStore,
     stores.executionEnvironments,
-    stores.telepathyDevices,
     stores.threadStore,
     stores.credentials,
     stores.appAuth,

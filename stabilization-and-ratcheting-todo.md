@@ -15,7 +15,6 @@ Work one item at a time. Do not mix unrelated cleanup into these chunks.
 - Keep each chunk small enough to review in one sitting.
 - Prefer shrinking a module's interface over adding another seam.
 - Preserve the ADR guardrails: session-owned delivery, public body admission, connector lifecycle locality, Postgres module responsibility split, explicit entrypoints, and behavior-focused tests.
-- Public gateway, telepathy, and micro-app changes require security-minded review.
 - Postgres schema changes require migration/backfill reasoning and focused tests.
 - Import-law cleanup should reduce or freeze violations; it must not hide violations behind vague exceptions.
 
@@ -366,7 +365,6 @@ Do not over-purify this area. `panda` is allowed to depend on narrow app runtime
 **Scope**
 
 - `src/integrations/gateway/**`
-- `src/integrations/telepathy/**`
 - `src/integrations/apps/http-*`
 - public URL/link creation helpers
 - logs and error responses
@@ -380,7 +378,6 @@ The architecture refactor touched public and semi-public surfaces. These surface
 - Confirm accepted content types and body limits.
 - Confirm trusted proxy and network controls.
 - Confirm app links do not expose raw identity/session ids.
-- Confirm telepathy websocket/device trust assumptions.
 - Confirm public logs/errors do not leak secrets, tokens, local paths, identity ids, or session ids.
 - Patch only proven risks or unclear invariants.
 
@@ -394,7 +391,6 @@ Do not use this as a pretext for speculative hardening. Each change needs a conc
 
 **Verification**
 
-- `pnpm vitest run tests/gateway-http-body.test.ts tests/gateway-event-request.test.ts tests/gateway-network-controls.test.ts tests/app-http-body.test.ts tests/app-http-runtime.test.ts tests/telepathy-websocket.test.ts tests/telepathy-context-ingress.test.ts`
 - `pnpm typecheck`
 - Optional live smoke only if the environment is already configured.
 
@@ -405,7 +401,6 @@ Do not use this as a pretext for speculative hardening. Each change needs a conc
 
 **Completed context**
 
-- 2026-05-18: Reviewed gateway, apps, and Telepathy public paths. Confirmed gateway content-type/body limits, IP allowlist/trusted proxy handling, Telepathy path/origin/payload/rate controls, and app launch-token/CSRF flow through focused tests. Patched app HTTP explicit-session errors so public responses no longer echo raw session ids or ownership details.
 
 ## 9. [x] Review Postgres Migration Safety By Domain
 
@@ -562,5 +557,3 @@ Do not block on an unrelated flaky full-suite failure without isolating it. But 
 - The PR/merge notes explain chunk scope, risk, and verification.
 
 **Completed context**
-
-- 2026-05-18: Ran the review-stack checks from `docs/developers/architecture-review-chunks.md` in focused batches: docs/public entrypoints, session delivery, daemon/request drain, Postgres schemas, public gateway/apps/Telepathy, channel workers/connectors, and Panda/browser/kernel tools all passed. Ran `pnpm typecheck`, `pnpm architecture:import-law`, `pnpm architecture:import-law:ratchet`, and `git diff --check`; all passed with zero import-law baseline violations. Reviewed the only deleted test file, `tests/whatsapp-service.test.ts`, and confirmed its monolithic private-service coverage is replaced by focused WhatsApp/runtime/message/connection/pairing tests. Ran a public-edge leak scan and confirmed the explicit-session app errors now use the sanitized `Requested session is not valid for this app.` response.

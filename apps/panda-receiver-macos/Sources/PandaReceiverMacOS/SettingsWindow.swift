@@ -22,7 +22,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let tunnelPortField = NSTextField(string: "22")
     private let tunnelLocalPortField = NSTextField(string: "43190")
     private let intervalMinutesField = NSTextField(string: "5")
-    private let allowPullScreenshotsButton = NSButton(checkboxWithTitle: "Allow Panda to take screenshots on request", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
     private let saveButton = NSButton(title: "Save", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Close", target: nil, action: nil)
@@ -256,17 +255,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tabView.addTabViewItem(
             makeTabItem(
                 title: "Screenshots",
-                subtitle: "Interval mode and legacy pull-screenshot preference. Interval mode never auto-starts.",
+                subtitle: "Manual and interval Gateway screenshot sends. Interval mode never auto-starts.",
                 rows: [
                     formRow(
                         title: "Interval (min)",
                         control: intervalMinutesField,
                         help: "When running, the app captures immediately and then every N minutes. Min 1, max 1440. Interval mode never auto-starts."
-                    ),
-                    toggleRow(
-                        title: "Pull Screenshots",
-                        control: allowPullScreenshotsButton,
-                        help: "Reserved for legacy/pull screenshot flows. It does not block explicit Gateway pushes like push-to-talk or Send Screenshot Now."
                     ),
                 ]
             )
@@ -287,7 +281,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tunnelPortField.placeholderString = "22"
         tunnelLocalPortField.placeholderString = "43190"
         intervalMinutesField.placeholderString = "5"
-        allowPullScreenshotsButton.state = .on
 
         let resolvedConfig = config
         voiceShortcut = resolvedConfig?.pushToTalkShortcuts.voiceOnly ?? .defaultVoiceOnly
@@ -309,7 +302,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tunnelLocalPortField.stringValue = String(config.tunnel?.localPort ?? 43190)
         let intervalMinutes = max(UInt64(1), config.intervalScreenshots.intervalSeconds / 60)
         intervalMinutesField.stringValue = String(intervalMinutes)
-        allowPullScreenshotsButton.state = config.allowPullScreenshots ? .on : .off
     }
 
     @objc
@@ -329,7 +321,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                     tunnelPortRaw: tunnelPortField.stringValue,
                     tunnelLocalPortRaw: tunnelLocalPortField.stringValue,
                     intervalMinutesRaw: intervalMinutesField.stringValue,
-                    allowPullScreenshots: allowPullScreenshotsButton.state == .on,
                     pushToTalkShortcuts: PushToTalkShortcutBindings(
                         voiceOnly: voiceShortcut,
                         voiceWithScreenshot: voiceWithScreenshotShortcut

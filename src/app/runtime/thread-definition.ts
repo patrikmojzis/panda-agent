@@ -22,7 +22,6 @@ import type {DefaultAgentSessionContext} from "./panda-session-context.js";
 import type {BashToolOptions} from "../../panda/tools/bash-tool.js";
 import type {BrowserToolOptions} from "../../panda/tools/browser-tool.js";
 import type {ImageGenerateToolOptions} from "../../panda/tools/image-generate-tool.js";
-import type {TelepathyScreenshotToolOptions} from "../../panda/tools/telepathy-screenshot-tool.js";
 import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js";
 import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js";
 import type {Tool} from "../../kernel/agent/tool.js";
@@ -71,7 +70,6 @@ export interface CreateThreadDefinitionOptions {
   bashToolOptions?: BashToolOptions;
   browserToolOptions?: BrowserToolOptions;
   imageGenerateToolOptions?: ImageGenerateToolOptions;
-  telepathyToolOptions?: TelepathyScreenshotToolOptions;
   executionEnvironment?: ResolvedExecutionEnvironment;
   tools?: readonly Tool[];
   sessionPrompt?: SessionPromptRecord | null;
@@ -131,14 +129,13 @@ function isWorkerToolAllowed(toolName: string, executionEnvironment?: ResolvedEx
 
 function resolveSessionTools(
   tools: readonly Tool[] | undefined,
-  options: Pick<CreateThreadDefinitionOptions, "bashToolOptions" | "browserToolOptions" | "imageGenerateToolOptions" | "telepathyToolOptions" | "executionEnvironment" | "session">,
+  options: Pick<CreateThreadDefinitionOptions, "bashToolOptions" | "browserToolOptions" | "imageGenerateToolOptions" | "executionEnvironment" | "session">,
 ): readonly Tool[] {
   const baseTools = tools ?? (() => {
     const toolsets = buildDefaultAgentToolsetsFromRegistry(createDefaultAgentToolRegistry({
       bash: options.bashToolOptions,
       browser: options.browserToolOptions,
       imageGenerate: options.imageGenerateToolOptions,
-      telepathy: options.telepathyToolOptions,
     }));
     return isWorkerSession(options.session) ? toolsets.worker : toolsets.main;
   })();

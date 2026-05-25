@@ -4,10 +4,10 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 PACKAGE_DIR="$ROOT_DIR/apps/panda-receiver-macos"
 ASSETS_DIR="$PACKAGE_DIR/Assets"
-APP_NAME="Panda Telepathy.app"
+APP_NAME="Panda Receiver.app"
 APP_IDENTIFIER="dev.panda.receiver.macos"
-APP_ICON_NAME="PandaTelepathy"
-OUTPUT_DIR="${1:-$ROOT_DIR/dist/panda-telepathy-macos}"
+APP_ICON_NAME="PandaReceiver"
+OUTPUT_DIR="${1:-$ROOT_DIR/dist/panda-receiver-macos}"
 BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-release}"
 SOURCE_ICON="$ASSETS_DIR/panda-icon.png"
 
@@ -21,7 +21,7 @@ build_swift_package() {
   fi
 
   if rg -q "PCH was compiled with module cache path|missing required module 'SwiftShims'" "$build_log"; then
-    echo "[telepathy] Swift build cache is stale; cleaning package artifacts and retrying"
+    echo "[panda-receiver] Swift build cache is stale; cleaning package artifacts and retrying"
     swift package --package-path "$PACKAGE_DIR" clean
     rm -f "$build_log"
     swift build --package-path "$PACKAGE_DIR" -c "$BUILD_CONFIGURATION"
@@ -40,12 +40,12 @@ if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
   CODESIGN_IDENTITY="${DETECTED_IDENTITY:--}"
 fi
 
-echo "[telepathy] building Swift package ($BUILD_CONFIGURATION)"
+echo "[panda-receiver] building Swift package ($BUILD_CONFIGURATION)"
 build_swift_package
 
 EXECUTABLE_PATH=$(find "$PACKAGE_DIR/.build" -type f -name "panda-receiver-macos" -perm -111 | rg "/$BUILD_CONFIGURATION/" | head -n 1)
 if [[ -z "$EXECUTABLE_PATH" ]]; then
-  echo "[telepathy] could not find built panda-receiver-macos executable" >&2
+  echo "[panda-receiver] could not find built panda-receiver-macos executable" >&2
   exit 1
 fi
 
@@ -95,7 +95,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Panda Telepathy</string>
+  <string>Panda Receiver</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -109,14 +109,14 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Panda Telepathy records short push-to-talk voice notes that you explicitly trigger with a keyboard shortcut.</string>
+  <string>Panda Receiver records short push-to-talk voice notes that you explicitly trigger with a keyboard shortcut.</string>
 </dict>
 </plist>
 EOF
 
 printf 'APPL????' > "$CONTENTS_DIR/PkgInfo"
 
-echo "[telepathy] signing app bundle with identity: $CODESIGN_IDENTITY"
+echo "[panda-receiver] signing app bundle with identity: $CODESIGN_IDENTITY"
 /usr/bin/codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_BUNDLE"
 
-echo "[telepathy] built app bundle: $APP_BUNDLE"
+echo "[panda-receiver] built app bundle: $APP_BUNDLE"

@@ -51,7 +51,6 @@ export const KNOWN_WORKER_TOOL_NAMES = new Set([
   "wiki",
   "set_env_value",
   "clear_env_value",
-  "telepathy_screenshot",
   "web_research",
   "whisper",
   "read_file",

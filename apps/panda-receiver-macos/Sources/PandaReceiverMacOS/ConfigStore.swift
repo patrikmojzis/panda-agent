@@ -4,23 +4,18 @@ private struct StoredConfig: Codable {
     let gatewayBaseURL: URL
     let agentKey: String
     let deviceId: String
-    let token: String?
     let label: String?
     let reconnectDelaySeconds: UInt64
-    let allowPullScreenshots: Bool
     let intervalScreenshots: IntervalScreenshotConfig
     let pushToTalkShortcuts: PushToTalkShortcutBindings
     let tunnel: TunnelConfig?
 
     private enum CodingKeys: String, CodingKey {
         case gatewayBaseURL
-        case legacyServerURL = "serverURL"
         case agentKey
         case deviceId
-        case token
         case label
         case reconnectDelaySeconds
-        case allowPullScreenshots
         case intervalScreenshots
         case pushToTalkShortcuts
         case tunnel
@@ -30,10 +25,8 @@ private struct StoredConfig: Codable {
         gatewayBaseURL = config.gatewayBaseURL
         agentKey = config.agentKey
         deviceId = config.deviceId
-        token = nil
         label = config.label
         reconnectDelaySeconds = config.reconnectDelaySeconds
-        allowPullScreenshots = config.allowPullScreenshots
         intervalScreenshots = config.intervalScreenshots
         pushToTalkShortcuts = config.pushToTalkShortcuts
         tunnel = config.tunnel
@@ -41,15 +34,11 @@ private struct StoredConfig: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let decodedBaseURL = try container.decodeIfPresent(URL.self, forKey: .gatewayBaseURL)
-            ?? container.decode(URL.self, forKey: .legacyServerURL)
-        gatewayBaseURL = try Config.validateGatewayBaseURL(url: decodedBaseURL)
+        gatewayBaseURL = try Config.validateGatewayBaseURL(url: container.decode(URL.self, forKey: .gatewayBaseURL))
         agentKey = try container.decode(String.self, forKey: .agentKey)
         deviceId = try container.decode(String.self, forKey: .deviceId)
-        token = try container.decodeIfPresent(String.self, forKey: .token)
         label = try container.decodeIfPresent(String.self, forKey: .label)
         reconnectDelaySeconds = try container.decode(UInt64.self, forKey: .reconnectDelaySeconds)
-        allowPullScreenshots = try container.decodeIfPresent(Bool.self, forKey: .allowPullScreenshots) ?? true
         intervalScreenshots = try container.decodeIfPresent(IntervalScreenshotConfig.self, forKey: .intervalScreenshots) ?? IntervalScreenshotConfig(intervalSeconds: IntervalScreenshotConfig.defaultIntervalSeconds)
         pushToTalkShortcuts = try container.decodeIfPresent(PushToTalkShortcutBindings.self, forKey: .pushToTalkShortcuts) ?? .defaults
         tunnel = try container.decodeIfPresent(TunnelConfig.self, forKey: .tunnel)
@@ -60,10 +49,8 @@ private struct StoredConfig: Codable {
         try container.encode(gatewayBaseURL, forKey: .gatewayBaseURL)
         try container.encode(agentKey, forKey: .agentKey)
         try container.encode(deviceId, forKey: .deviceId)
-        try container.encodeIfPresent(token, forKey: .token)
         try container.encodeIfPresent(label, forKey: .label)
         try container.encode(reconnectDelaySeconds, forKey: .reconnectDelaySeconds)
-        try container.encode(allowPullScreenshots, forKey: .allowPullScreenshots)
         try container.encode(intervalScreenshots, forKey: .intervalScreenshots)
         try container.encode(pushToTalkShortcuts, forKey: .pushToTalkShortcuts)
         try container.encodeIfPresent(tunnel, forKey: .tunnel)
@@ -77,7 +64,6 @@ private struct StoredConfig: Codable {
             token: resolvedToken,
             label: label,
             reconnectDelaySeconds: reconnectDelaySeconds,
-            allowPullScreenshots: allowPullScreenshots,
             intervalScreenshots: intervalScreenshots,
             pushToTalkShortcuts: pushToTalkShortcuts,
             tunnel: tunnel
@@ -106,10 +92,6 @@ enum ConfigStore {
 
     static func defaultURL() throws -> URL {
         try configURL(forSupportDirectoryName: AppIdentity.supportDirectoryName)
-    }
-
-    private static func legacyURLs() throws -> [URL] {
-        try AppIdentity.legacySupportDirectoryNames.map(configURL(forSupportDirectoryName:))
     }
 
     private static func fileSystemPath(_ url: URL) -> String {
@@ -142,30 +124,21 @@ enum ConfigStore {
                 continue
             }
 
-            let keychainToken = try trimmedToken(tokenStore.loadToken(
+            guard let token = try trimmedToken(tokenStore.loadToken(
                 agentKey: storedConfig.agentKey,
                 deviceId: storedConfig.deviceId
-            ))
-            let legacyToken = trimmedToken(storedConfig.token)
-            guard let token = keychainToken ?? legacyToken else {
+            )) else {
                 return nil
             }
 
-            let config = storedConfig.makeConfig(token: token)
-            if keychainToken == nil {
-                try tokenStore.saveToken(token, agentKey: config.agentKey, deviceId: config.deviceId)
-            }
-            if legacyToken != nil {
-                try writeStoredConfig(StoredConfig(config: config), to: configURL)
-            }
-            return config
+            return storedConfig.makeConfig(token: token)
         }
 
         return nil
     }
 
     static func load() throws -> Config? {
-        try load(from: try [defaultURL()] + legacyURLs())
+        try load(from: try [defaultURL()])
     }
 
     @discardableResult
@@ -219,6 +192,6 @@ enum ConfigStore {
     }
 
     static func remove() throws {
-        try remove(from: try [defaultURL()] + legacyURLs())
+        try remove(from: try [defaultURL()])
     }
 }

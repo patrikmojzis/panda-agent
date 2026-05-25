@@ -246,7 +246,6 @@ Treat these views as the public interface:
 - `session.agent_prompts`
 - `session.agent_pairings`
 - `session.agent_skills`
-- `session.agent_telepathy_devices`
 - `session.scheduled_tasks`
 - `session.scheduled_task_runs`
 - `session.watches`

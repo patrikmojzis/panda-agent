@@ -51,7 +51,6 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "SetEnvValueTool",
   "SpawnSubagentTool",
   "StreamingFailedError",
-  "TelepathyScreenshotTool",
   "ThinkingSetTool",
   "Thread",
   "Tool",

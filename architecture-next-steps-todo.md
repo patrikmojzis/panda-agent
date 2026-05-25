@@ -18,17 +18,14 @@ These are the next cleanup chunks worth doing after the recent architecture refa
 
 ## 3. [x] Finish Session-Owned Delivery Consolidation
 
-- Reason: scheduled tasks, watches, heartbeats, email sync, gateway, telepathy, app wakes, and daemon request paths all need the same rule: resolve the session current thread at delivery time.
 - Do: deepen the current-thread delivery module so callers get more leverage from one small seam.
 - Avoid: building a generic delivery framework; keep the module boring and explicit.
 - Context: `src/domain/sessions/current-thread.ts` now has direct behavior coverage for blank sessions, live daemon submission, and queued store delivery. `docs/developers/sessions.md` documents when to use `resolveCurrentSessionThread`, `submitCurrentSessionInput`, and `enqueueCurrentSessionInput`, so `/reset`-safe delivery stays concentrated in one explicit seam.
 
 ## 4. [x] Run A Public-Surface Security Pass
 
-- Reason: gateway, telepathy, and micro-apps carry sensitive personal data and sit on public or semi-public ingress paths.
 - Do: verify token handling, trusted proxy assumptions, body limits, CSRF/cookie locality, raw-content quarantine, and current-thread delivery.
 - Avoid: speculative hardening churn; patch proven risk or unclear invariants.
-- Context: reviewed gateway, telepathy, and micro-app HTTP seams against the public-surface architecture rules. The concrete patch tightened gateway body admission so OAuth token requests require `application/x-www-form-urlencoded` or `application/json`, event requests require `application/json`, and unsupported content types fail before body parsing.
 
 ## 5. [x] Delete Useless Tests
 

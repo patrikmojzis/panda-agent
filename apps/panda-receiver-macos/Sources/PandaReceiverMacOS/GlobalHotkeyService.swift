@@ -38,7 +38,7 @@ final class GlobalHotkeyService {
             &eventHandler
         )
         guard installStatus == noErr else {
-            throw ReceiverError("Could not install Panda Telepathy hotkeys (status \(installStatus))")
+            throw ReceiverError("Could not install Panda Receiver hotkeys (status \(installStatus))")
         }
 
         do {
@@ -60,7 +60,7 @@ final class GlobalHotkeyService {
     private func register(shortcuts: [Shortcut]) throws {
         for shortcut in shortcuts {
             var hotKeyRef: EventHotKeyRef?
-            let hotKeyID = EventHotKeyID(signature: fourCharCode(from: "PTLK"), id: shortcut.id)
+            let hotKeyID = EventHotKeyID(signature: fourCharCode(from: "PRCV"), id: shortcut.id)
             let status = RegisterEventHotKey(
                 shortcut.keyCode,
                 shortcut.modifiers,
@@ -74,7 +74,7 @@ final class GlobalHotkeyService {
                     throw ReceiverError("That push-to-talk shortcut is already in use. Pick a different combo in Settings.")
                 }
 
-                throw ReceiverError("Could not register Panda Telepathy hotkey \(shortcut.id) (status \(status))")
+                throw ReceiverError("Could not register Panda Receiver hotkey \(shortcut.id) (status \(status))")
             }
 
             hotKeyRefs.append(hotKeyRef)

@@ -21,7 +21,6 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
     private let shortcutMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let launchAtLoginStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private lazy var enableCaptureItem = NSMenuItem(title: "Gateway Enabled", action: #selector(toggleCaptureEnabled), keyEquivalent: "")
-    private lazy var allowPullScreenshotsItem = NSMenuItem(title: "Allow Agent Screenshots", action: #selector(toggleAllowPullScreenshots), keyEquivalent: "")
     private lazy var launchAtLoginToggleItem = NSMenuItem(title: "Open At Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "l")
     private lazy var requestAccessItem = NSMenuItem(title: "Request Screen Recording Access", action: #selector(requestScreenRecordingAccess), keyEquivalent: "")
     private lazy var requestMicrophoneAccessItem = NSMenuItem(title: "Request Microphone Access", action: #selector(requestMicrophoneAccess), keyEquivalent: "")
@@ -96,7 +95,6 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         launchAtLoginStatusItem.isEnabled = false
 
         enableCaptureItem.target = self
-        allowPullScreenshotsItem.target = self
         launchAtLoginToggleItem.target = self
         requestAccessItem.target = self
         requestMicrophoneAccessItem.target = self
@@ -121,7 +119,6 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         menu.addItem(launchAtLoginStatusItem)
         menu.addItem(.separator())
         menu.addItem(enableCaptureItem)
-        menu.addItem(allowPullScreenshotsItem)
         menu.addItem(launchAtLoginToggleItem)
         menu.addItem(requestAccessItem)
         menu.addItem(requestMicrophoneAccessItem)
@@ -160,8 +157,6 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
         shortcutMenuItem.title = "Shortcuts: \(pushToTalkController?.shortcutsDescription() ?? "Unavailable")"
         enableCaptureItem.state = status.state == .disabled ? .off : .on
         enableCaptureItem.isEnabled = currentConfig != nil
-        allowPullScreenshotsItem.state = (currentConfig?.allowPullScreenshots ?? true) ? .on : .off
-        allowPullScreenshotsItem.isEnabled = receiver != nil && currentConfig != nil && status.state != .disabled
         testScreenshotItem.isEnabled = receiver != nil && currentConfig != nil && status.state != .disabled
         sendClipboardTextItem.isEnabled = receiver != nil && currentConfig != nil && status.state != .disabled
         sendScreenshotNowItem.isEnabled = receiver != nil && currentConfig != nil && status.state != .disabled
@@ -286,50 +281,6 @@ final class MenuBarAppController: NSObject, NSApplicationDelegate {
             await receiver?.setEnabled(shouldEnable)
             await MainActor.run {
                 self.enableCaptureItem.isEnabled = true
-            }
-        }
-    }
-
-    @objc
-    private func toggleAllowPullScreenshots() {
-        guard let currentConfig else {
-            openSettings(nil)
-            return
-        }
-
-        let shouldAllow = allowPullScreenshotsItem.state == .off
-        allowPullScreenshotsItem.isEnabled = false
-
-        Task {
-            let updatedConfig = Config(
-                gatewayBaseURL: currentConfig.gatewayBaseURL,
-                agentKey: currentConfig.agentKey,
-                deviceId: currentConfig.deviceId,
-                token: currentConfig.token,
-                label: currentConfig.label,
-                reconnectDelaySeconds: currentConfig.reconnectDelaySeconds,
-                allowPullScreenshots: shouldAllow,
-                intervalScreenshots: currentConfig.intervalScreenshots,
-                pushToTalkShortcuts: currentConfig.pushToTalkShortcuts,
-                tunnel: currentConfig.tunnel
-            )
-
-            do {
-                try ConfigStore.save(updatedConfig)
-                await receiver?.setPullScreenshotsEnabled(shouldAllow)
-                await MainActor.run {
-                    self.currentConfig = updatedConfig
-                    self.apply(status: self.latestStatus)
-                    self.allowPullScreenshotsItem.isEnabled = true
-                }
-            } catch {
-                await MainActor.run {
-                    self.allowPullScreenshotsItem.isEnabled = true
-                    self.presentAlert(
-                        title: "Privacy Toggle Failed",
-                        message: String(describing: error)
-                    )
-                }
             }
         }
     }

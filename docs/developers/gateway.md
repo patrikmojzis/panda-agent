@@ -134,10 +134,9 @@ Capabilities are a small allowlist (unknown strings are rejected):
 
 ### Gateway Mac receiver setup
 
-The macOS receiver's PR1 Gateway lane is push-only: explicit push-to-talk,
-`Send Clipboard Text`, and `Send Screenshot Now`. It does not start interval
-screenshots, does not poll the command mailbox, and does not replace
-`telepathy_screenshot` pull parity yet.
+The macOS receiver is Gateway-only: heartbeat, explicit push-to-talk,
+`Send Clipboard Text`, `Send Screenshot Now`, and opt-in interval screenshot
+sends all use the Gateway HTTP device lane.
 
 Create a source, allow the Mac event type, then register a device token with only
 the capabilities this PR needs:
@@ -153,7 +152,7 @@ panda gateway device register mac-local home-mac \
 
 Paste the printed one-time device token into the app settings or save it from the
 CLI. The Mac keeps the token in Keychain; `config.json` stores the Gateway base
-URL, agent key, device id, label, shortcuts, privacy toggles, and tunnel settings
+URL, agent key, device id, label, shortcuts, interval settings, and tunnel settings
 but not the token.
 
 ```bash
@@ -167,8 +166,7 @@ apps/panda-receiver-macos/.build/arm64-apple-macosx/debug/panda-receiver-macos \
   --save-config
 ```
 
-Use `http://` or `https://` for `--gateway`. The Gateway-mode app rejects
-`ws://` and `wss://`; the old WebSocket Telepathy setup is legacy/transitional.
+Use `http://` or `https://` for `--gateway`; the receiver does not support WebSocket URLs.
 If Gateway is private behind SSH, keep the Gateway URL as the remote endpoint and
 add tunnel flags:
 
@@ -195,9 +193,8 @@ Operational notes:
 - The menu kill switch pauses health checks and local explicit sends. There is no
   hidden screenshot auto-start in this PR.
 
-The command mailbox is durable Postgres polling, not WebSocket/SSE. The mailbox
-substrate does not imply Mac command polling, Telepathy removal, interval
-scheduling, or a Panda screenshot tool/default tool.
+The command mailbox is durable Postgres polling, not WebSocket/SSE. It is the
+Gateway device command path and stays separate from manual/interval pushes.
 
 Admin enqueue/list/cancel/timeout sweep stays local CLI-backed DB access:
 

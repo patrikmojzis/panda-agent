@@ -17,7 +17,6 @@ Start here:
 - [Credentials](./credentials.md)
 - [Email](./email.md)
 - [Gateway](./gateway.md)
-- [Telepathy](./telepathy.md)
 - [Wiki](./wiki.md)
 - [DB Integrity](./db-integrity.md)
 - [Prompt Caching](./caching.md)

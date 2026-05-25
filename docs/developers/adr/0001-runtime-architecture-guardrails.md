@@ -18,7 +18,6 @@ This ADR records the decisions that should not be reopened casually during follo
 Anything that wakes Panda later must resolve `session.currentThreadId` at delivery time:
 
 - gateway delivery
-- telepathy context ingress
 - scheduled tasks
 - heartbeats
 - watches
@@ -34,7 +33,6 @@ Do not store a thread id early and reuse it after `/reset`. If a runner claims d
 
 Public and semi-public surfaces must reject ambiguous bodies before parsing them. Gateway event requests require `application/json`; OAuth token requests accept only `application/json` or `application/x-www-form-urlencoded`.
 
-The same principle applies to telepathy and micro-app HTTP surfaces: validate admission, origin/proxy assumptions, token/session locality, and body limits at the edge. Privacy is enforced by scoped stores, DB roles, and constrained views, not by prompt text.
 
 ### Connector Workers Share Lifecycle Glue, Not Protocol Behavior
 
@@ -80,6 +78,5 @@ Tests that only mirror private implementation shape should be deleted or rewritt
 
 - Follow-up refactors should shrink seams before adding abstractions.
 - Import-law cleanup can proceed chunk by chunk; the report-only script exists so drift is visible before it becomes a hard gate.
-- Public gateway, telepathy, and micro-app changes need explicit security review.
 - Schema changes need migration/backfill reasoning and focused Postgres tests.
 - Channel changes should prove lifecycle/drain behavior without moving protocol details out of their connector modules.

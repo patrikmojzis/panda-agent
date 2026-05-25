@@ -315,10 +315,6 @@ is_truthy() {
   esac
 }
 
-telepathy_publish_enabled() {
-  [[ -z "$(trim "${TELEPATHY_ENABLED:-}")" ]] || env_truthy "${TELEPATHY_ENABLED:-}"
-}
-
 extract_https_url_host() {
   local value without_scheme host
   value="$(trim "$1")"
@@ -634,20 +630,14 @@ ensure_host_dirs() {
 }
 
 render_generated_compose() {
-  local agent_key telepathy_port gateway_port include_telepathy manager_docker_socket
+  local agent_key gateway_port manager_docker_socket
   mkdir -p "$generated_dir"
-  telepathy_port="$(trim "${TELEPATHY_PORT:-}")"
   gateway_port="$(trim "${GATEWAY_PORT:-8094}")"
   manager_docker_socket=""
   if (( use_managed_environment_manager )); then
     manager_docker_socket="$(docker_socket_path_from_host)"
   fi
-  include_telepathy=0
-  if [[ -n "$telepathy_port" ]] && telepathy_publish_enabled; then
-    include_telepathy=1
-  fi
-
-  if ! agents_declared && (( ! include_telepathy && ! enable_apps_edge && ! enable_gateway_edge && ! enable_disposable_environments )); then
+  if ! agents_declared && (( ! enable_apps_edge && ! enable_gateway_edge && ! enable_disposable_environments )); then
     cat > "$generated_compose" <<'EOF'
 services: {}
 EOF
@@ -656,16 +646,10 @@ EOF
 
   {
     printf 'services:\n'
-    if (( include_telepathy || enable_apps_edge || enable_disposable_environments )); then
+    if (( enable_apps_edge || enable_disposable_environments )); then
       cat <<EOF
   panda-core:
 EOF
-      if (( include_telepathy )); then
-        cat <<EOF
-    ports:
-      - "127.0.0.1:${telepathy_port}:${telepathy_port}"
-EOF
-      fi
       if (( enable_apps_edge || enable_disposable_environments )); then
         cat <<EOF
     environment:
