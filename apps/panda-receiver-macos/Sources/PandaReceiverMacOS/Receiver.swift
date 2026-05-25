@@ -25,7 +25,6 @@ private struct GatewayContextAttachment: Sendable {
 
 actor ReceiverService {
     private static let contextEventType = "mac.context.push"
-    private static let intervalScreenshotEventType = "mac.screenshot.interval"
     private static let connectedHeartbeatIntervalSeconds: UInt64 = 45
 
     private let config: Config
@@ -175,12 +174,12 @@ actor ReceiverService {
             data: jpeg,
             mimeType: "image/jpeg",
             filename: "mac-interval-screenshot.jpg",
-            idempotencyKey: "mac.screenshot.interval:\(requestId):attachment:0"
+            idempotencyKey: "mac.context.push:\(requestId):attachment:0"
         ))
 
         let refs = [GatewayAttachmentRef(id: uploadResponse.attachmentId, sha256: uploadResponse.sha256)]
         _ = try await client.postEvent(
-            type: Self.intervalScreenshotEventType,
+            type: Self.contextEventType,
             delivery: .wake,
             text: intervalScreenshotText(
                 intervalSeconds: intervalSeconds,
@@ -189,7 +188,7 @@ actor ReceiverService {
             ),
             attachments: refs,
             occurredAt: capturedAt,
-            idempotencyKey: "mac.screenshot.interval:\(requestId):event"
+            idempotencyKey: "mac.context.push:\(requestId):event"
         )
 
         await publish(.connected, connectedLabel())
@@ -358,6 +357,7 @@ actor ReceiverService {
 
         var lines = [
             "Mac interval screenshot.",
+            "trigger: interval",
             "interval_seconds: \(intervalSeconds)",
             "captured_at: \(formatter.string(from: capturedAt))",
         ]
