@@ -35,7 +35,7 @@ import type {
   ResolvedExecutionEnvironment
 } from "../../domain/execution-environments/types.js";
 import {buildBackgroundJobPayload, formatBackgroundJobResult} from "./background-job-tools.js";
-import {buildActivePandaRunEnv, isActivePandaRunEnvKey} from "../../app/runtime/active-run-command-client.js";
+import {buildActivePandaRunEnv, isActivePandaRunEnvKey} from "../../domain/threads/requests/active-run-env.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 40_000;

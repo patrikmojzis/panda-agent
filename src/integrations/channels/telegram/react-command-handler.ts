@@ -1,15 +1,19 @@
 import type {JsonObject, JsonValue} from "../../../lib/json.js";
+import type {ChannelActionInput, ChannelActionRecord} from "../../../domain/channels/actions/types.js";
 import type {SessionStore} from "../../../domain/sessions/store.js";
 import type {ThreadRuntimeStore} from "../../../domain/threads/runtime/store.js";
 import type {ThreadMessageRecord} from "../../../domain/threads/runtime/types.js";
 import type {TelegramReactCommandRequestPayload} from "../../../domain/threads/requests/types.js";
-import type {DefaultAgentChannelActionQueue} from "../../../app/runtime/panda-session-context.js";
 import {enqueueTelegramReaction, type TelegramReactContext} from "./telegram-react-tool.js";
+
+interface TelegramReactCommandChannelActionQueue {
+  enqueueAction(input: ChannelActionInput): Promise<ChannelActionRecord>;
+}
 
 interface TelegramReactCommandDependencies {
   sessions: Pick<SessionStore, "getSession">;
   store: Pick<ThreadRuntimeStore, "getRun" | "getThread" | "loadTranscript">;
-  channelActionQueue: DefaultAgentChannelActionQueue;
+  channelActionQueue: TelegramReactCommandChannelActionQueue;
 }
 
 function readCurrentInputFromTranscript(

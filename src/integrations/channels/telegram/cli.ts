@@ -11,8 +11,12 @@ import {parseIdentityHandle} from "../../../domain/identity/cli.js";
 import {ensureSchemas, withPostgresPool} from "../../../lib/postgres-bootstrap.js";
 import {requireTelegramBotToken, TELEGRAM_SOURCE} from "./config.js";
 import {TelegramService} from "./service.js";
-import {readActivePandaRunContext, submitActivePandaRunRuntimeRequest} from "../../../app/runtime/active-run-command-client.js";
-import type {TelegramReactCommandTarget} from "../../../domain/threads/requests/types.js";
+import {readActivePandaRunContext} from "../../../domain/threads/requests/active-run-env.js";
+import type {
+  CreateRuntimeRequestInput,
+  RuntimeRequestKind,
+  TelegramReactCommandTarget,
+} from "../../../domain/threads/requests/types.js";
 
 interface TelegramIdentityCliOptions {
   dbUrl?: string;
@@ -37,10 +41,23 @@ interface TelegramReactCommandResult {
   queued?: boolean;
 }
 
+interface TelegramReactRuntimeRequestOptions {
+  dbUrl?: string;
+  timeoutMs?: number;
+}
+
+type SubmitTelegramRuntimeRequest = <
+  TResult,
+  K extends RuntimeRequestKind = RuntimeRequestKind,
+>(
+  input: CreateRuntimeRequestInput<K>,
+  options?: TelegramReactRuntimeRequestOptions,
+) => Promise<TResult>;
+
 interface TelegramReactCommandDependencies {
   env?: NodeJS.ProcessEnv;
   stdout?: Pick<typeof process.stdout, "write">;
-  submitRuntimeRequest?: typeof submitActivePandaRunRuntimeRequest;
+  submitRuntimeRequest?: SubmitTelegramRuntimeRequest;
 }
 
 interface TelegramPairCliOptions extends TelegramIdentityCliOptions {
@@ -193,7 +210,11 @@ export async function telegramReactCommand(
 
   const messageId = trimToUndefined(options.messageId);
   const target = resolveTelegramReactTarget(options);
-  const submitRuntimeRequest = dependencies.submitRuntimeRequest ?? submitActivePandaRunRuntimeRequest;
+  const submitRuntimeRequest = dependencies.submitRuntimeRequest;
+  if (!submitRuntimeRequest) {
+    throw new Error("panda telegram react runtime request submitter is not configured.");
+  }
+
   const result = await submitRuntimeRequest<TelegramReactCommandResult>({
     kind: "telegram_react_command",
     payload: {
@@ -235,7 +256,10 @@ async function telegramRunCommand(options: TelegramRunCliOptions): Promise<void>
   }
 }
 
-export function registerTelegramCommands(program: Command): void {
+export function registerTelegramCommands(
+  program: Command,
+  dependencies: TelegramReactCommandDependencies = {},
+): void {
   const telegramProgram = program
     .command("telegram")
     .description("Run and manage the Telegram channel");
@@ -276,7 +300,7 @@ export function registerTelegramCommands(program: Command): void {
     .option("--conversation-id <id>", "Telegram conversation id for an explicit target")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((emoji: string | undefined, options: TelegramReactCliOptions) => {
-      return telegramReactCommand(emoji, options);
+      return telegramReactCommand(emoji, options, dependencies);
     });
 
   telegramProgram

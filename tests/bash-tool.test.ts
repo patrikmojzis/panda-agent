@@ -19,7 +19,7 @@ import {
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import type {ThreadToolJobRecord} from "../src/domain/threads/runtime/types.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
-import {ACTIVE_PANDA_RUN_ENV} from "../src/app/runtime/active-run-command-client.js";
+import {ACTIVE_PANDA_RUN_ENV} from "../src/domain/threads/requests/active-run-env.js";
 
 function createAgent() {
   return new Agent({
