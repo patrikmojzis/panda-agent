@@ -60,6 +60,30 @@ describe("WorkerSessionService", () => {
     }
   });
 
+  async function createWorkerSessionTestServices() {
+    const pool = createPool();
+    pools.push(pool);
+    const {sessionStore, threadStore} = await createRuntimeStores(pool);
+    const environmentStore = new PostgresExecutionEnvironmentStore({pool});
+    await environmentStore.ensureSchema();
+    const manager = new FakeEnvironmentManager();
+    const environments = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+    const workers = new WorkerSessionService({
+      pool,
+      sessions: sessionStore,
+      threads: threadStore,
+      environments,
+      fallbackContext: {
+        cwd: "/host/workspace",
+      },
+    });
+
+    return {sessionStore, threadStore, manager, workers};
+  }
+
   it("creates a worker session with an isolated default environment and queued handoff", async () => {
     const pool = createPool();
     pools.push(pool);
@@ -215,6 +239,147 @@ describe("WorkerSessionService", () => {
       credentialAllowlist: ["NPM_TOKEN", "GITHUB_TOKEN"],
       ttlMs: 60_000,
     })).rejects.toThrow("already exists with different input");
+  });
+
+  it("compares explicit runtime config before reusing an existing worker session", async () => {
+    const {workers, sessionStore, threadStore, manager} = await createWorkerSessionTestServices();
+    const identityInput = {
+      sessionId: "runtime-worker-session",
+      threadId: "runtime-worker-thread",
+      agentKey: "panda",
+      role: "runtime",
+      task: "Check runtime reuse.",
+      context: "Keep config stable.",
+    };
+    const runtimeConfig = {
+      model: "openai/gpt-5.1",
+      thinking: "medium" as const,
+      inferenceProjection: {
+        dropMessages: {
+          olderThanMs: 1_000,
+          preserveTailMessages: 4,
+        },
+        dropThinking: {
+          preserveRecentUserTurns: 1,
+        },
+      },
+    };
+
+    const created = await workers.createWorkerSession({
+      ...identityInput,
+      ...runtimeConfig,
+    });
+
+    expect(created.thread.id).toBe("runtime-worker-thread");
+    await expect(sessionStore.getSessionRuntimeConfig("runtime-worker-session"))
+      .resolves.toMatchObject({
+        model: "openai/gpt-5.1",
+        thinking: "medium",
+        thinkingConfigured: true,
+        inferenceProjection: runtimeConfig.inferenceProjection,
+      });
+    expect(manager.requests).toHaveLength(1);
+    await expect(threadStore.listPendingInputs("runtime-worker-thread")).resolves.toHaveLength(1);
+
+    const omittedRuntimeConfig = await workers.createWorkerSession(identityInput);
+    expect(omittedRuntimeConfig.thread.id).toBe("runtime-worker-thread");
+
+    const sameRuntimeConfig = await workers.createWorkerSession({
+      ...identityInput,
+      model: "openai/gpt-5.1",
+      thinking: "medium",
+      inferenceProjection: {
+        dropThinking: {
+          preserveRecentUserTurns: 1,
+        },
+        dropMessages: {
+          preserveTailMessages: 4,
+          olderThanMs: 1_000,
+        },
+      },
+    });
+    expect(sameRuntimeConfig.thread.id).toBe("runtime-worker-thread");
+    expect(manager.requests).toHaveLength(1);
+    await expect(threadStore.listPendingInputs("runtime-worker-thread")).resolves.toHaveLength(1);
+
+    const mismatchError = "Worker session runtime-worker-session already exists with different runtime config.";
+    const mismatchedRuntimeConfigs = [
+      {
+        ...runtimeConfig,
+        model: "openai/gpt-5.2",
+      },
+      {
+        ...runtimeConfig,
+        thinking: "high" as const,
+      },
+      {
+        ...runtimeConfig,
+        inferenceProjection: {
+          dropMessages: {
+            olderThanMs: 2_000,
+            preserveTailMessages: 4,
+          },
+          dropThinking: {
+            preserveRecentUserTurns: 1,
+          },
+        },
+      },
+    ];
+
+    for (const mismatchedRuntimeConfig of mismatchedRuntimeConfigs) {
+      await expect(workers.createWorkerSession({
+        ...identityInput,
+        ...mismatchedRuntimeConfig,
+      })).rejects.toThrow(mismatchError);
+      expect(manager.requests).toHaveLength(1);
+      await expect(threadStore.listPendingInputs("runtime-worker-thread")).resolves.toHaveLength(1);
+    }
+  });
+
+  it("distinguishes explicit thinking off from absent worker thinking", async () => {
+    const {workers, sessionStore, threadStore, manager} = await createWorkerSessionTestServices();
+    const implicitThinkingInput = {
+      sessionId: "implicit-thinking-worker-session",
+      threadId: "implicit-thinking-worker-thread",
+      agentKey: "panda",
+      task: "Use implicit worker thinking.",
+    };
+
+    await workers.createWorkerSession(implicitThinkingInput);
+    await expect(sessionStore.getSessionRuntimeConfig("implicit-thinking-worker-session"))
+      .resolves.toMatchObject({
+        thinkingConfigured: false,
+      });
+    await expect(workers.createWorkerSession({
+      ...implicitThinkingInput,
+      thinking: null,
+    })).rejects.toThrow(
+      "Worker session implicit-thinking-worker-session already exists with different runtime config.",
+    );
+    expect(manager.requests).toHaveLength(1);
+    await expect(threadStore.listPendingInputs("implicit-thinking-worker-thread")).resolves.toHaveLength(1);
+
+    const explicitOffInput = {
+      sessionId: "thinking-off-worker-session",
+      threadId: "thinking-off-worker-thread",
+      agentKey: "panda",
+      task: "Turn worker thinking off.",
+    };
+    await workers.createWorkerSession({
+      ...explicitOffInput,
+      thinking: null,
+    });
+    const explicitOffRuntimeConfig = await sessionStore.getSessionRuntimeConfig("thinking-off-worker-session");
+    expect(explicitOffRuntimeConfig.thinkingConfigured).toBe(true);
+    expect(explicitOffRuntimeConfig.thinking).toBeUndefined();
+
+    const retried = await workers.createWorkerSession({
+      ...explicitOffInput,
+      thinking: null,
+    });
+    expect(retried.thread.id).toBe("thinking-off-worker-thread");
+    expect(manager.requests).toHaveLength(2);
+    await expect(threadStore.listPendingInputs("thinking-off-worker-thread")).resolves.toHaveLength(1);
   });
 
   it("creates worker sessions bound to an existing parent-owned environment", async () => {
