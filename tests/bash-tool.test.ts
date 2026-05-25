@@ -1010,6 +1010,92 @@ describe("BashTool", () => {
     }
   });
 
+  it("redacts source secret prefixes split by the head truncation marker", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-secret-head-boundary-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        maxOutputChars: 80,
+        persistOutputThresholdChars: 80,
+      });
+      const secret = "sk-1234567890abcdef1234567890abcdef";
+
+      const result = await tool.run(
+        {
+          command: "node -e \"process.stdout.write(process.env.CALL_SECRET + 'M'.repeat(200) + 'TAIL')\"",
+          env: {
+            CALL_SECRET: secret,
+          },
+        },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+      const stdout = String(output.stdout);
+
+      expect(output.stdoutTruncated).toBe(true);
+      expect(output.stdoutPersisted).toBe(false);
+      expect(output.stdoutPath).toBeUndefined();
+      expect(stdout).toContain("[redacted]");
+      expect(stdout).toMatch(/\n\n…\d+ chars truncated…\n\n/);
+      expect(stdout.endsWith("TAIL")).toBe(true);
+      expect(stdout).not.toContain(secret);
+      expect(stdout).not.toContain(secret.slice(0, 6));
+      expect(stdout).not.toContain(secret.slice(0, 22));
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts source secret suffixes split by the tail truncation marker", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-secret-tail-boundary-"));
+    try {
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {
+          cwd: workspace,
+          env: {},
+        },
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        maxOutputChars: 80,
+        persistOutputThresholdChars: 80,
+      });
+      const secret = "ABCDEFGHIJKL";
+      const tailPadding = "Z".repeat(27);
+
+      const result = await tool.run(
+        {
+          command: "node -e \"process.stdout.write('HEAD-' + 'M'.repeat(200) + process.env.CALL_SECRET + 'Z'.repeat(27))\"",
+          env: {
+            CALL_SECRET: secret,
+          },
+        },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+      const stdout = String(output.stdout);
+
+      expect(output.stdoutTruncated).toBe(true);
+      expect(output.stdoutPersisted).toBe(false);
+      expect(output.stdoutPath).toBeUndefined();
+      expect(stdout).toContain("[redacted]");
+      expect(stdout).toMatch(/\n\n…\d+ chars truncated…\n\n/);
+      expect(stdout.endsWith(tailPadding)).toBe(true);
+      expect(stdout).not.toContain(secret);
+      expect(stdout).not.toContain(secret.slice(-6));
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("sanitizes NUL bytes in foreground stdout and stderr previews before persistence", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-nul-output-"));
     try {

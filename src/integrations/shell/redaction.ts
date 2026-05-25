@@ -9,21 +9,18 @@ function isWordLikeSecret(value: string): boolean {
 }
 
 const BASH_TRUNCATION_MARKER_PATTERN = "\n\n…\\d+ chars truncated…\n\n";
-
-function minimumTruncatedFragmentLength(secret: string): number {
-  return Math.max(6, Math.ceil(secret.length * 0.75));
-}
+const MINIMUM_TRUNCATED_SECRET_FRAGMENT_LENGTH = 6;
 
 function redactSecretFragmentsAtTruncationMarkers(value: string, secrets: readonly string[]): string {
   // Head/tail previews can cut through a secret before exact-value redaction runs.
-  // Redact only long fragments touching the truncation marker to avoid broad over-redaction.
+  // Redact only 6+ char fragments touching the truncation marker to avoid broad over-redaction.
   if (!value.includes(" chars truncated")) {
     return value;
   }
 
   let redacted = value;
   for (const secret of secrets) {
-    const minimumLength = minimumTruncatedFragmentLength(secret);
+    const minimumLength = MINIMUM_TRUNCATED_SECRET_FRAGMENT_LENGTH;
     if (secret.length <= minimumLength) {
       continue;
     }
