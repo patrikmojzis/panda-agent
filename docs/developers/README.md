@@ -5,6 +5,7 @@ This folder is for contributors changing Panda internals.
 Start here:
 
 - [Architecture](./architecture.md)
+- [Vocabulary](./vocabulary.md)
 - [Architecture Review Chunks](./architecture-review-chunks.md)
 - [Runtime Architecture Guardrails ADR](./adr/0001-runtime-architecture-guardrails.md)
 - [CI](./ci.md)
