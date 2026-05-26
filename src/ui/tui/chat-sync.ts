@@ -1,3 +1,4 @@
+import type {SessionRecord} from "../../domain/sessions/types.js";
 import type {InferenceProjection, ThreadMessageRecord, ThreadRecord, ThreadRunRecord} from "../../domain/threads/runtime/types.js";
 import {loadStoredThreadSnapshot, resolveStoredThreadDisplayConfig} from "../shared/stored-thread.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
@@ -6,6 +7,7 @@ import type {ChatRuntimeThreadStore} from "./runtime.js";
 
 interface ChatSyncServices {
   store: ChatRuntimeThreadStore;
+  getSession(sessionId: string): Promise<SessionRecord>;
   resolveThreadRunConfig?(threadId: string): Promise<{
     model: string;
     thinking?: ThinkingLevel;
@@ -26,6 +28,7 @@ export interface ChatSyncHost {
   setLastStoredSyncAt(value: number): void;
   applyLoadedSnapshot(
     thread: ThreadRecord,
+    session: SessionRecord,
     transcript: readonly ThreadMessageRecord[],
     runs: readonly ThreadRunRecord[],
     displayConfig: {model: string; thinking?: ThinkingLevel},
@@ -95,10 +98,13 @@ export async function syncChatStoredThreadState(
       return;
     }
 
-    const displayConfig = services.resolveThreadRunConfig
-      ? await services.resolveThreadRunConfig(snapshot.thread.id).catch(() => resolveStoredThreadDisplayConfig())
-      : resolveStoredThreadDisplayConfig();
-    host.applyLoadedSnapshot(snapshot.thread, snapshot.transcript, snapshot.runs, displayConfig);
+    const [session, displayConfig] = await Promise.all([
+      services.getSession(snapshot.thread.sessionId),
+      services.resolveThreadRunConfig
+        ? services.resolveThreadRunConfig(snapshot.thread.id).catch(() => resolveStoredThreadDisplayConfig())
+        : Promise.resolve(resolveStoredThreadDisplayConfig()),
+    ]);
+    host.applyLoadedSnapshot(snapshot.thread, session, snapshot.transcript, snapshot.runs, displayConfig);
     host.requestRender();
   } catch {
     // Ignore background sync failures here. Foreground actions surface their own errors.

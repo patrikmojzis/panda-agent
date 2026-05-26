@@ -328,6 +328,8 @@ class BlockedCountingLeaseManager {
   }
 }
 
+const testAgentKeyByThreadId = new Map<string, string>();
+
 class TestThreadDefinitionRegistry {
   private readonly resolvers = new Map<string, ThreadDefinitionResolver>();
 
@@ -337,7 +339,7 @@ class TestThreadDefinitionRegistry {
   }
 
   resolve(thread: ThreadRecord): Promise<ResolvedThreadDefinition> {
-    const agentKey = readAgentKeyFromThreadContext(thread);
+    const agentKey = testAgentKeyByThreadId.get(thread.id) ?? "";
     const resolver = this.resolvers.get(agentKey);
     if (!resolver) {
       throw new Error(`No thread definition registered for agent key ${agentKey}.`);
@@ -347,46 +349,24 @@ class TestThreadDefinitionRegistry {
   }
 }
 
-function readAgentKeyFromThreadContext(thread: ThreadRecord): string {
-  const context = thread.context;
-  if (!context || typeof context !== "object") {
-    throw new Error(`Thread ${thread.id} is missing runtime session context.`);
-  }
-
-  const agentKey = "agentKey" in context && typeof context.agentKey === "string"
-    ? context.agentKey.trim()
-    : "";
-  if (!agentKey) {
-    throw new Error(`Thread ${thread.id} is missing agentKey in runtime session context.`);
-  }
-
-  return agentKey;
-}
-
 async function createRuntimeThread(
   store: TestThreadRuntimeStore,
-  input: Omit<CreateThreadInput, "sessionId" | "context"> & {
+  input: Omit<CreateThreadInput, "sessionId"> & {
     agentKey: string;
     sessionId?: string;
-    context?: Record<string, unknown>;
   },
 ): Promise<ThreadRecord> {
   const {
     id,
     agentKey,
     sessionId = `${id}-session`,
-    context,
     ...threadInput
   } = input;
+  testAgentKeyByThreadId.set(id, agentKey);
 
   return store.createThread({
     id,
     sessionId,
-    context: {
-      sessionId,
-      agentKey,
-      ...(context ?? {}),
-    },
     ...threadInput,
   });
 }
@@ -2757,9 +2737,6 @@ describe("Thread runtime stores", () => {
 
     await expect(store.createThread({
       id: "missing-session-thread",
-      context: {
-        agentKey: "panda",
-      },
     } as CreateThreadInput)).rejects.toThrow("Thread sessionId is required.");
   });
 

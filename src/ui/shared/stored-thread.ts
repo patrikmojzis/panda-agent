@@ -9,20 +9,11 @@ import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
 import {type EntryRole, type RunPhase, type TranscriptEntry,} from "../tui/chat-shared.js";
 import {renderTranscriptEntries} from "../tui/transcript.js";
 
-export function resolveStoredThreadDisplayedCwd(
-  thread: ThreadRecord | null,
+export function resolveRuntimeDisplayedCwd(
+  agentKey: string | undefined,
   fallbackCwd: string,
 ): string {
-  const context = thread?.context;
-  if (!context || typeof context !== "object" || Array.isArray(context)) {
-    return fallbackCwd;
-  }
-
-  const agentKey = typeof (context as {agentKey?: unknown}).agentKey === "string"
-    ? (context as {agentKey: string}).agentKey
-    : undefined;
   return resolveStoredContext(
-    context,
     {cwd: fallbackCwd},
     agentKey,
   ).cwd ?? fallbackCwd;

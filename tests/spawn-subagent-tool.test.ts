@@ -208,11 +208,6 @@ function createThreadRecord(): ThreadRecord {
     sessionId: "session-main",
     model: "openai/gpt-5.1",
     thinking: "high",
-    context: {
-      cwd: "/workspace/panda",
-      agentKey: "panda",
-      sessionId: "session-main",
-    },
     createdAt: 1,
     updatedAt: 1,
   };

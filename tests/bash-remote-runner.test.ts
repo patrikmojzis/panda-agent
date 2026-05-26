@@ -140,10 +140,6 @@ describe("remote bash runner", () => {
     await store.createThread({
       id: "thread-bg-remote",
       sessionId,
-      context: {
-        sessionId,
-        agentKey: "panda",
-      },
     });
     const service = new BackgroundToolJobService({
       store,
@@ -879,10 +875,6 @@ describe("remote bash runner", () => {
     await store.createThread({
       id: "thread-bg-remote",
       sessionId: "session-bg-remote",
-      context: {
-        sessionId: "session-bg-remote",
-        agentKey: "panda",
-      },
     });
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       ok: false,

@@ -237,7 +237,6 @@ function createHarness(options: {
       ? {
         id: thread.id,
         sessionId: thread.sessionId,
-        context: {},
         createdAt: 1,
         updatedAt: 1,
       }
@@ -296,7 +295,6 @@ describe("daemon request processor", () => {
     await store.createThread({
       id: "thread-1",
       sessionId: "session-1",
-      context: {},
     });
     const submitInput = vi.fn(async () => {});
     const saveLastRoute = createSaveLastRouteMock();
@@ -648,10 +646,6 @@ describe("daemon request processor", () => {
       source: "telegram",
       connectorKey: "main",
       externalConversationId: "777",
-      context: {
-        source: "telegram",
-        chatId: "777",
-      },
     });
     expect(harness.submitInput).toHaveBeenCalledWith("thread-1", expect.objectContaining({
       source: "telegram",
@@ -759,10 +753,6 @@ describe("daemon request processor", () => {
       source: "whatsapp",
       connectorKey: "main",
       externalConversationId: "421900000000@s.whatsapp.net",
-      context: {
-        source: "whatsapp",
-        remoteJid: "421900000000@s.whatsapp.net",
-      },
     });
     expect(harness.submitInput).toHaveBeenCalledWith("thread-1", expect.objectContaining({
       source: "whatsapp",

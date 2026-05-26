@@ -16,13 +16,13 @@ import {collectThreadUsageSnapshot, formatThreadUsageSnapshot,} from "../src/ui/
 type AppHarness = {
   closed: boolean;
   currentThreadId: string;
+  currentAgentKey: string;
   currentThread: ({
     id: string;
     sessionId?: string;
     agentKey?: string;
     model?: string;
     thinking?: ThinkingLevel;
-    context?: unknown;
     createdAt?: number;
     updatedAt?: number;
   } & Record<string, unknown>) | null;
@@ -487,11 +487,6 @@ describe("ChatApp fresh-session agent selection", () => {
       id: "thread-new",
       sessionId: "session-branch",
       model: "openai/gpt-5.1",
-      context: {
-        agentKey: "jozef",
-        sessionId: "session-branch",
-        identityId: "test-user",
-      },
       createdAt: 1,
       updatedAt: 2,
     }));
@@ -504,11 +499,6 @@ describe("ChatApp fresh-session agent selection", () => {
       id: "thread-current",
       sessionId: "session-main",
       model: "openai/gpt-5.1",
-      context: {
-        agentKey: "panda",
-        sessionId: "session-main",
-        identityId: "test-user",
-      },
       createdAt: 1,
       updatedAt: 1,
     };
@@ -537,11 +527,6 @@ describe("ChatApp fresh-session agent selection", () => {
       id: "thread-reset",
       sessionId: "session-main",
       model: "openai/gpt-5.1",
-      context: {
-        agentKey: "jozef",
-        sessionId: "session-main",
-        identityId: "test-user",
-      },
       createdAt: 1,
       updatedAt: 2,
     }));
@@ -553,11 +538,6 @@ describe("ChatApp fresh-session agent selection", () => {
       id: "thread-current",
       sessionId: "session-main",
       model: "openai/gpt-5.1",
-      context: {
-        agentKey: "panda",
-        sessionId: "session-main",
-        identityId: "test-user",
-      },
       createdAt: 1,
       updatedAt: 1,
     };
@@ -583,10 +563,6 @@ describe("ChatApp fresh-session agent selection", () => {
       id: "thread-branch-default",
       sessionId: "session-branch",
       model: undefined,
-      context: {
-        agentKey: "panda",
-        sessionId: "session-branch",
-      },
       createdAt: 1,
       updatedAt: 2,
     }));
@@ -594,10 +570,6 @@ describe("ChatApp fresh-session agent selection", () => {
       id: "thread-reset-default",
       sessionId: "session-main",
       model: undefined,
-      context: {
-        agentKey: "panda",
-        sessionId: "session-main",
-      },
       createdAt: 1,
       updatedAt: 2,
     }));
@@ -609,10 +581,6 @@ describe("ChatApp fresh-session agent selection", () => {
         id: "thread-current",
         sessionId: "session-main",
         model: undefined,
-        context: {
-          agentKey: "panda",
-          sessionId: "session-main",
-        },
         createdAt: 1,
         updatedAt: 1,
       };
@@ -700,7 +668,6 @@ describe("ChatApp session picker", () => {
     const selectedThread = {
       id: "thread-c",
       sessionId: "session-c",
-      context: {agentKey: "panda", sessionId: "session-c"},
       createdAt: 3,
       updatedAt: 3,
     };
@@ -708,11 +675,11 @@ describe("ChatApp session picker", () => {
     const openSession = vi.fn(async () => selectedThread);
     const app = createAppHarness();
 
+    app.currentAgentKey = "panda";
     app.currentThreadId = "thread-b";
     app.currentThread = {
       id: "thread-b",
       sessionId: "session-b",
-      context: {agentKey: "panda", sessionId: "session-b"},
       createdAt: 2,
       updatedAt: 2,
     };
@@ -844,7 +811,6 @@ describe("ChatApp session picker", () => {
     app.currentThread = {
       id: "thread-a",
       sessionId: "session-a",
-      context: {agentKey: "panda", sessionId: "session-a"},
       createdAt: 1,
       updatedAt: 1,
     };
@@ -1035,6 +1001,7 @@ describe("thread usage snapshots", () => {
       model: thread.model,
       thinking: thread.thinking,
       isRunning: false,
+      agentKey: "panda",
       now: 10,
     });
     const formatted = formatThreadUsageSnapshot(snapshot);
@@ -1130,6 +1097,7 @@ describe("thread usage snapshots", () => {
       thinking: thread.thinking,
       inferenceProjection: sessionProjection,
       isRunning: false,
+      agentKey: "panda",
       now: 10,
     });
 
@@ -1598,6 +1566,14 @@ describe("ChatApp agent header", () => {
         createdAt: 1,
         updatedAt: 1,
       },
+      getSession: vi.fn(async (sessionId: string) => ({
+        id: sessionId,
+        agentKey: sessionId === "session-ops" ? "ops" : "panda",
+        kind: "main" as const,
+        currentThreadId: sessionId === "session-ops" ? "thread-ops" : "thread-panda",
+        createdAt: 1,
+        updatedAt: 1,
+      })),
     } as ChatRuntimeServices;
     app.refreshToolCatalog = vi.fn();
     app.reloadVisibleTranscript = vi.fn(async () => {});
@@ -1606,30 +1582,18 @@ describe("ChatApp agent header", () => {
     await app.switchThread({
       id: "thread-panda",
       sessionId: "session-panda",
-      context: {
-        cwd: "/tmp/panda",
-        agentKey: "panda",
-        sessionId: "session-panda",
-        identityId: "alice-id",
-      },
       createdAt: 1,
       updatedAt: 1,
     });
-    expect(stripAnsi(app.buildView().headerLine)).toContain("panda · @alice · cwd /tmp/panda");
+    expect(stripAnsi(app.buildView().headerLine)).toContain(`panda · @alice · cwd ${process.cwd()}`);
 
     await app.switchThread({
       id: "thread-ops",
       sessionId: "session-ops",
-      context: {
-        cwd: "/tmp/ops",
-        agentKey: "ops",
-        sessionId: "session-ops",
-        identityId: "alice-id",
-      },
       createdAt: 1,
       updatedAt: 1,
     });
-    expect(stripAnsi(app.buildView().headerLine)).toContain("ops · @alice · cwd /tmp/ops");
+    expect(stripAnsi(app.buildView().headerLine)).toContain(`ops · @alice · cwd ${process.cwd()}`);
   });
 });
 
@@ -1681,10 +1645,6 @@ describe("ChatApp explicit session id", () => {
     const thread = {
       id: "thread-session",
       sessionId: "session-stored",
-      context: {
-        agentKey: "panda",
-        sessionId: "session-stored",
-      },
       createdAt: 1,
       updatedAt: 2,
     };
@@ -1698,6 +1658,14 @@ describe("ChatApp explicit session id", () => {
         updatedAt: 1,
       },
       openSession: vi.fn(async () => thread),
+      getSession: vi.fn(async () => ({
+        id: "session-stored",
+        agentKey: "panda",
+        kind: "main" as const,
+        currentThreadId: "thread-session",
+        createdAt: 1,
+        updatedAt: 1,
+      })),
       store: {
         loadTranscript: vi.fn(async () => []),
         getThread: vi.fn(async () => thread),

@@ -5,7 +5,6 @@ import {Tool} from "../../kernel/agent/tool.js";
 import {buildDefaultAgentTools} from "../../panda/definition.js";
 import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
 import {type ChatRuntimeServices, createChatRuntime,} from "./runtime.js";
-import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
 import {runChatActionsCommandLine, submitChatComposer, submitChatUserMessage,} from "./chat-actions.js";
 import {buildChatScreenFrame, buildChatView} from "./chat-render.js";
 import {
@@ -20,7 +19,7 @@ import {
     createStoredTranscriptEntry,
     observeLatestStoredRun,
     resolveStoredThreadDisplayConfig,
-    resolveStoredThreadDisplayedCwd,
+    resolveRuntimeDisplayedCwd,
 } from "../shared/stored-thread.js";
 import {type SlashCompletionContext,} from "./commands.js";
 import {type ComposerState, createComposerState, setComposerValue,} from "./composer.js";
@@ -119,6 +118,7 @@ export class ChatApp {
   private services: ChatRuntimeServices | null = null;
   private currentThreadId = "";
   private currentThread: ThreadRecord | null = null;
+  private currentAgentKey = "";
   private currentAgentLabel = "Panda";
   private currentTools: readonly Tool[] = [];
   private readonly visibleStoredMessageIds = new Set<string>();
@@ -336,8 +336,9 @@ export class ChatApp {
       setLastStoredSyncAt: (value) => {
         this.lastStoredSyncAt = value;
       },
-      applyLoadedSnapshot: (thread, transcript, runs, displayConfig) => this.applyLoadedSnapshot(
+      applyLoadedSnapshot: (thread, session, transcript, runs, displayConfig) => this.applyLoadedSnapshot(
         thread,
+        session,
         transcript,
         runs,
         displayConfig,
@@ -358,7 +359,7 @@ export class ChatApp {
   }
 
   private resolveDisplayedCwd(): string {
-    return resolveStoredThreadDisplayedCwd(this.currentThread, this.fallbackCwd);
+    return resolveRuntimeDisplayedCwd(this.currentAgentKey, this.fallbackCwd);
   }
 
   private async initializeRuntime(): Promise<void> {
@@ -407,10 +408,14 @@ export class ChatApp {
   }
 
   private async switchThread(thread: ThreadRecord): Promise<void> {
-    const displayConfig = await this.resolveThreadDisplayConfig(thread);
+    const [displayConfig, session] = await Promise.all([
+      this.resolveThreadDisplayConfig(thread),
+      this.requireServices().getSession(thread.sessionId),
+    ]);
     this.currentThread = thread;
     this.currentThreadId = thread.id;
-    this.currentAgentLabel = readThreadAgentKey(thread) ?? "unknown";
+    this.currentAgentKey = session.agentKey;
+    this.currentAgentLabel = session.agentKey;
     this.model = displayConfig.model;
     this.thinking = displayConfig.thinking;
     this.runPhase = "idle";
@@ -523,13 +528,15 @@ export class ChatApp {
 
   private applyLoadedSnapshot(
     thread: ThreadRecord,
+    session: Awaited<ReturnType<ChatRuntimeServices["getSession"]>>,
     transcript: Parameters<typeof appendStoredTranscriptMessages>[0]["records"],
     runs: Parameters<typeof observeLatestStoredRun>[0]["runs"],
     displayConfig: {model: string; thinking?: ThinkingLevel},
   ): void {
     this.currentThread = thread;
     this.currentThreadId = thread.id;
-    this.currentAgentLabel = readThreadAgentKey(thread) ?? "unknown";
+    this.currentAgentKey = session.agentKey;
+    this.currentAgentLabel = session.agentKey;
     this.model = displayConfig.model;
     this.thinking = displayConfig.thinking;
     this.refreshToolCatalog();
@@ -565,7 +572,7 @@ export class ChatApp {
     await refreshChatSessionPicker({
       sessionPicker: this.sessionPicker,
       getCurrentSessionId: () => this.currentThread?.sessionId ?? "",
-      getCurrentAgentKey: () => this.currentThread ? (readThreadAgentKey(this.currentThread) ?? "") : "",
+      getCurrentAgentKey: () => this.currentAgentKey,
       isRunning: () => this.isRunning,
       requireServices: () => this.requireServices(),
       switchThread: (thread) => this.switchThread(thread),
@@ -586,7 +593,7 @@ export class ChatApp {
     await openChatSessionPicker({
       sessionPicker: this.sessionPicker,
       getCurrentSessionId: () => this.currentThread?.sessionId ?? "",
-      getCurrentAgentKey: () => this.currentThread ? (readThreadAgentKey(this.currentThread) ?? "") : "",
+      getCurrentAgentKey: () => this.currentAgentKey,
       isRunning: () => this.isRunning,
       requireServices: () => this.requireServices(),
       switchThread: (thread) => this.switchThread(thread),
@@ -617,7 +624,7 @@ export class ChatApp {
     await selectChatSessionPickerEntry({
       sessionPicker: this.sessionPicker,
       getCurrentSessionId: () => this.currentThread?.sessionId ?? "",
-      getCurrentAgentKey: () => this.currentThread ? (readThreadAgentKey(this.currentThread) ?? "") : "",
+      getCurrentAgentKey: () => this.currentAgentKey,
       isRunning: () => this.isRunning,
       requireServices: () => this.requireServices(),
       switchThread: (thread) => this.switchThread(thread),
@@ -870,7 +877,7 @@ export class ChatApp {
     return await runChatActionsCommandLine(commandLine, {
       getCurrentThreadId: () => this.currentThreadId,
       getCurrentSessionId: () => this.currentThread?.sessionId ?? "",
-      getCurrentAgentKey: () => this.currentThread ? (readThreadAgentKey(this.currentThread) ?? "") : "",
+      getCurrentAgentKey: () => this.currentAgentKey,
       getModel: () => this.model,
       getThinking: () => this.thinking,
       isRunning: () => this.isRunning,

@@ -86,6 +86,7 @@ export interface RuntimeClient {
   openMainSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
   resetSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
   openSession(sessionRef: string, agentKey?: string): Promise<ThreadRecord>;
+  getSession(sessionId: string): Promise<SessionRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
   resolveThreadRunConfig(threadId: string): Promise<{
     model: string;
@@ -414,6 +415,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       openMainSession,
       resetSession,
       openSession,
+      getSession: (sessionId) => sessionStore.getSession(sessionId),
       getThread: (threadId) => store.getThread(threadId),
       resolveThreadRunConfig,
       listAgentSessions,

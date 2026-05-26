@@ -266,10 +266,6 @@ describe("Env value tools", () => {
     await store.createThread({
       id: "thread-credentials-tool-error",
       sessionId: "session-credentials-tool-error",
-      context: {
-        sessionId: "session-credentials-tool-error",
-        agentKey: "panda",
-      },
     });
 
     const coordinator = new ThreadRuntimeCoordinator({
@@ -358,10 +354,6 @@ describe("Env value tools", () => {
     await store.createThread({
       id: "thread-credentials-redaction",
       sessionId: "session-credentials-redaction",
-      context: {
-        sessionId: "session-credentials-redaction",
-        agentKey: "panda",
-      },
     });
 
     const coordinator = new ThreadRuntimeCoordinator({

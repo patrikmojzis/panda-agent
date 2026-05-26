@@ -76,9 +76,6 @@ describe("WorkerSessionService", () => {
       sessions: sessionStore,
       threads: threadStore,
       environments,
-      fallbackContext: {
-        cwd: "/host/workspace",
-      },
     });
 
     return {sessionStore, threadStore, manager, workers};
@@ -100,9 +97,6 @@ describe("WorkerSessionService", () => {
       sessions: sessionStore,
       threads: threadStore,
       environments,
-      fallbackContext: {
-        cwd: "/host/workspace",
-      },
     });
     await createSessionWithInitialThread({
       pool,
@@ -141,16 +135,14 @@ describe("WorkerSessionService", () => {
     expect(created.thread).toMatchObject({
       id: "worker-thread",
       sessionId: "worker-session",
-      context: {
-        cwd: "/host/workspace",
-        agentKey: "panda",
-        sessionId: "worker-session",
-        worker: {
-          role: "research",
-          task: "Inspect the package graph.",
-          context: "Keep it read-only.",
-          parentSessionId: "main-session",
-        },
+    });
+    expect(created.thread).not.toHaveProperty("context");
+    expect(created.session.metadata).toMatchObject({
+      worker: {
+        role: "research",
+        task: "Inspect the package graph.",
+        context: "Keep it read-only.",
+        parentSessionId: "main-session",
       },
     });
     expect(created.environment).toMatchObject({
@@ -398,9 +390,6 @@ describe("WorkerSessionService", () => {
       sessions: sessionStore,
       threads: threadStore,
       environments,
-      fallbackContext: {
-        cwd: "/host/workspace",
-      },
     });
     await createSessionWithInitialThread({
       pool,
@@ -480,9 +469,6 @@ describe("WorkerSessionService", () => {
       sessions: sessionStore,
       threads: threadStore,
       environments,
-      fallbackContext: {
-        cwd: "/host/workspace",
-      },
     });
     await createSessionWithInitialThread({
       pool,
@@ -548,9 +534,6 @@ describe("WorkerSessionService", () => {
       sessions: sessionStore,
       threads: threadStore,
       environments,
-      fallbackContext: {
-        cwd: "/host/workspace",
-      },
     });
 
     await expect(workers.createWorkerSession({
@@ -581,9 +564,6 @@ describe("WorkerSessionService", () => {
       sessions: sessionStore,
       threads: threadStore,
       environments,
-      fallbackContext: {
-        cwd: "/host/workspace",
-      },
     });
 
     await expect(workers.createWorkerSession({

@@ -504,7 +504,6 @@ export class ThreadRuntimeCoordinator {
 
   private buildThreadOptions(
     run: ThreadRunRecord,
-    thread: ThreadRecord,
     definition: ResolvedThreadDefinition,
     messages: readonly ThreadMessageRecord[],
     signal?: AbortSignal,
@@ -517,7 +516,7 @@ export class ThreadRuntimeCoordinator {
       messages: messages.map((entry) => entry.message),
       systemPrompt: definition.systemPrompt,
       maxTurns: definition.maxTurns,
-      context: buildRunContextValue(definition.context ?? thread.context, messages, run.id),
+      context: buildRunContextValue(definition.context, messages, run.id),
       llmContexts: definition.llmContexts,
       hooks: definition.hooks,
       promptCacheKey: definition.promptCacheKey,
@@ -766,7 +765,6 @@ export class ThreadRuntimeCoordinator {
         const executor = new Thread(
           this.buildThreadOptions(
             run,
-            preflight.thread,
             definition,
             finalTranscript,
             controller.signal,

@@ -190,7 +190,10 @@ export function createDaemonRequestProcessor(
   const handleUpdateThread = async (
     payload: UpdateThreadRequestPayload,
   ): Promise<Record<string, unknown>> => {
-    const {model, thinking, inferenceProjection, pendingWakeAt, ...threadUpdate} = payload.update;
+    const {model, thinking, inferenceProjection, pendingWakeAt, runtimeState} = payload.update;
+    const threadUpdate = {
+      ...(runtimeState !== undefined ? {runtimeState} : {}),
+    };
     const existingThread = await context.runtime.store.getThread(payload.threadId);
     if (model !== undefined || thinking !== undefined || inferenceProjection !== undefined || pendingWakeAt !== undefined) {
       await context.runtime.sessionStore.updateSessionRuntimeConfig({

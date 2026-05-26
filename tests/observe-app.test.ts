@@ -51,11 +51,6 @@ function createThread(threadId: string, sessionId = "session-1"): ThreadRecord {
   return {
     id: threadId,
     sessionId,
-    context: {
-      agentKey: "panda",
-      cwd: "/workspace/panda-agent",
-    },
-    model: "openai/gpt-5.4",
     createdAt: 1,
     updatedAt: 2,
   };

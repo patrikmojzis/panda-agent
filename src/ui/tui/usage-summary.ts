@@ -12,7 +12,6 @@ import {
     type ThreadMessageRecord,
     type ThreadRecord,
 } from "../../domain/threads/runtime/types.js";
-import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
 import {resolveModelRuntimeBudget} from "../../kernel/models/model-context-policy.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
 import {isRecord} from "../../lib/records.js";
@@ -264,6 +263,7 @@ export function collectThreadUsageSnapshot(options: {
   thinking?: ThinkingLevel;
   inferenceProjection?: InferenceProjection;
   isRunning: boolean;
+  agentKey: string;
   now?: number;
 }): ThreadUsageSnapshot {
   // Mirror the same default projection Panda uses during live runs so the TUI
@@ -285,7 +285,7 @@ export function collectThreadUsageSnapshot(options: {
 
   return {
     threadId: options.thread.id,
-    agentKey: readThreadAgentKey(options.thread) ?? "unknown",
+    agentKey: options.agentKey,
     model,
     thinking: options.thinking,
     runState: options.isRunning ? "thinking" : "idle",

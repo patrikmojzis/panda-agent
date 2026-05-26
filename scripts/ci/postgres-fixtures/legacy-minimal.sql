@@ -14,6 +14,10 @@ INSERT INTO runtime.agent_sessions (
   '{}'::jsonb
 );
 
+-- Simulate databases created before runtime.threads.context was dropped.
+ALTER TABLE runtime.threads
+ADD COLUMN context JSONB;
+
 INSERT INTO runtime.threads (
   id,
   session_id,

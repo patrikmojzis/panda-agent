@@ -458,7 +458,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     });
   }, 10_000);
 
-  it("preserves readonly threads view when thread runtime schema ensure reruns after scalar cleanup", async () => {
+  it("preserves readonly threads view when thread runtime schema ensure reruns on a clean schema", async () => {
     const scoped = createScopedPool();
     const pool = new PgMemPoolWithDropViewIfExistsSupport(scoped.pool);
     const { setScope } = scoped;
@@ -477,7 +477,6 @@ describe("ensureReadonlySessionQuerySchema", () => {
     await threadStore.createThread({
       id: "schema-rerun-thread",
       sessionId: "schema-rerun-session",
-      context: { durable: true },
     });
 
     setScope({

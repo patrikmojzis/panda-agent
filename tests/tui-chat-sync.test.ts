@@ -11,6 +11,14 @@ describe("syncChatStoredThreadState", () => {
       createdAt: 1,
       updatedAt: 2,
     };
+    const session = {
+      id: "session-sync",
+      agentKey: "panda",
+      kind: "main" as const,
+      currentThreadId: "thread-sync",
+      createdAt: 1,
+      updatedAt: 2,
+    };
     const applyLoadedSnapshot = vi.fn();
     const requestRender = vi.fn();
     const services = {
@@ -19,6 +27,7 @@ describe("syncChatStoredThreadState", () => {
         loadTranscript: vi.fn(async () => []),
         listRuns: vi.fn(async () => []),
       },
+      getSession: vi.fn(async () => session),
     };
     let syncInFlight = false;
     let lastStoredSyncAt = 0;
@@ -47,6 +56,7 @@ describe("syncChatStoredThreadState", () => {
 
     expect(applyLoadedSnapshot).toHaveBeenCalledWith(
       thread,
+      session,
       [],
       [],
       resolveStoredThreadDisplayConfig(),

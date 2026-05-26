@@ -139,22 +139,9 @@ export function parseAgentKey(value: string): string {
   }
 }
 
-function buildMainThreadContext(agentKey: string, sessionId: string, env: NodeJS.ProcessEnv): {
-  agentKey: string;
-  sessionId: string;
-  cwd: string;
-} {
-  return {
-    agentKey,
-    sessionId,
-    cwd: resolveAgentDir(agentKey, env),
-  };
-}
-
 async function createMainSessionThread(
   stores: Pick<AgentCliStores, "sessionStore" | "threadStore"> & {pool?: Pool},
   agentKey: string,
-  env: NodeJS.ProcessEnv,
 ): Promise<{sessionId: string; threadId: string}> {
   const sessionId = randomUUID();
   const threadId = randomUUID();
@@ -172,7 +159,6 @@ async function createMainSessionThread(
       thread: {
         id: threadId,
         sessionId,
-        context: buildMainThreadContext(agentKey, sessionId, env),
       },
     });
   } else {
@@ -185,7 +171,6 @@ async function createMainSessionThread(
     await stores.threadStore.createThread({
       id: threadId,
       sessionId,
-      context: buildMainThreadContext(agentKey, sessionId, env),
     });
   }
   return {sessionId, threadId};
@@ -226,7 +211,7 @@ export async function ensureAgent(
   let threadId: string;
 
   if (!mainSession) {
-    const created = await createMainSessionThread(stores, agent.agentKey, env);
+    const created = await createMainSessionThread(stores, agent.agentKey);
     sessionId = created.sessionId;
     threadId = created.threadId;
     createdMainSession = true;
@@ -251,7 +236,6 @@ export async function ensureAgent(
           thread: {
             id: threadId,
             sessionId,
-            context: buildMainThreadContext(agent.agentKey, sessionId, env),
           },
           session: {
             sessionId,
@@ -262,7 +246,6 @@ export async function ensureAgent(
         await stores.threadStore.createThread({
           id: threadId,
           sessionId,
-          context: buildMainThreadContext(agent.agentKey, sessionId, env),
         });
         await stores.sessionStore.updateCurrentThread({
           sessionId,
@@ -319,7 +302,6 @@ export async function createAgentCommand(agentKey: string, options: CreateAgentC
     const {sessionId, threadId} = await createMainSessionThread(
       {sessionStore, threadStore},
       created.agentKey,
-      process.env,
     );
     await mkdir(agentHome, {recursive: true});
 

@@ -28,13 +28,12 @@ export type {
 export interface CreateThreadInput {
   id: string;
   sessionId: string;
-  context?: JsonValue;
   runtimeState?: ThreadRuntimeState;
 }
 
-export type ThreadUpdate = Partial<Omit<CreateThreadInput, "id" | "sessionId" | "runtimeState">> & {
+export interface ThreadUpdate {
   runtimeState?: ThreadRuntimeState | null;
-};
+}
 
 export interface ThreadRecord extends CreateThreadInput {
   createdAt: number;

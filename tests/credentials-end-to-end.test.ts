@@ -142,10 +142,6 @@ describe("credentials end-to-end", () => {
     await store.createThread({
       id: "thread-credentials-e2e",
       sessionId: "session-credentials-e2e",
-      context: {
-        sessionId: "session-credentials-e2e",
-        agentKey: "panda",
-      },
     });
 
     const coordinator = new ThreadRuntimeCoordinator({
@@ -248,10 +244,6 @@ describe("credentials end-to-end", () => {
     await store.createThread({
       id: "thread-credentials-redacted-bash",
       sessionId: "session-credentials-redacted-bash",
-      context: {
-        sessionId: "session-credentials-redacted-bash",
-        agentKey: "panda",
-      },
     });
 
     const coordinator = new ThreadRuntimeCoordinator({

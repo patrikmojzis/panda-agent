@@ -26,7 +26,6 @@ import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js
 import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {WikiBindingService} from "../../domain/wiki/service.js";
-import {isRecord} from "../../lib/records.js";
 import {resolveSessionPromptCacheKey, resolveThreadPromptCacheKey} from "../../domain/threads/runtime/prompt-cache-key.js";
 import {readWorkerContextValue} from "../../domain/sessions/worker-metadata.js";
 
@@ -59,7 +58,7 @@ export const DEFAULT_INFERENCE_PROJECTION: InferenceProjection = {
 
 export interface CreateThreadDefinitionOptions {
   thread: ThreadRecord;
-  session: Pick<SessionRecord, "id" | "agentKey"> & {kind?: AgentSessionKind};
+  session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind};
   fallbackContext: Pick<DefaultAgentSessionContext, "cwd">;
   agentStore?: AgentProfileStore;
   sessionStore?: Pick<SessionStore, "listAgentSessions" | "readSessionTodo">;
@@ -82,17 +81,12 @@ export interface CreateThreadDefinitionOptions {
   >;
 }
 
-function hasStoredShellCwd(value: Record<string, unknown>): boolean {
-  const shell = value.shell;
-  return isRecord(shell) && typeof shell.cwd === "string" && shell.cwd.trim().length > 0;
-}
-
-function isWorkerSession(session: Pick<SessionRecord, "id" | "agentKey"> & {kind?: AgentSessionKind}): boolean {
+function isWorkerSession(session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind}): boolean {
   return session.kind === "worker";
 }
 
 function resolveLlmContextSections(
-  session: Pick<SessionRecord, "id" | "agentKey"> & {kind?: AgentSessionKind},
+  session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind},
   sections: readonly DefaultAgentLlmContextSection[] | undefined,
 ): readonly DefaultAgentLlmContextSection[] | undefined {
   if (!isWorkerSession(session)) {
@@ -148,29 +142,12 @@ function resolveSessionTools(
 }
 
 export function resolveStoredContext(
-  value: ThreadRecord["context"],
   fallback: Pick<DefaultAgentSessionContext, "cwd">,
   agentKey?: string,
   executionEnvironment?: ResolvedExecutionEnvironment,
 ): Pick<DefaultAgentSessionContext, "cwd"> {
   const remoteInitialCwd = executionEnvironment?.initialCwd ?? (agentKey ? resolveRemoteInitialCwd(agentKey) : null);
-  if (!isRecord(value)) {
-    return {
-      ...fallback,
-      ...(remoteInitialCwd ? {cwd: remoteInitialCwd} : {}),
-    };
-  }
-
-  const context = value;
-  const storedCwd = typeof context.cwd === "string" && context.cwd.trim().length > 0
-    ? context.cwd
-    : null;
-  const useRemoteInitialCwd = Boolean(
-    remoteInitialCwd
-    && !hasStoredShellCwd(context)
-    && (!storedCwd || storedCwd === fallback.cwd),
-  );
-  const selectedCwd = useRemoteInitialCwd && remoteInitialCwd ? remoteInitialCwd : storedCwd ?? fallback.cwd;
+  const selectedCwd = remoteInitialCwd ?? fallback.cwd;
   const shouldMapHostAgentPath = Boolean(
     agentKey
     && (
@@ -188,7 +165,7 @@ export function resolveStoredContext(
 }
 
 function resolveSessionThinking(
-  session: Pick<SessionRecord, "id" | "agentKey"> & {kind?: AgentSessionKind},
+  session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind},
   runtimeConfig: SessionRuntimeConfigRecord | undefined,
 ): SessionRuntimeConfigRecord["thinking"] {
   if (runtimeConfig?.thinkingConfigured) {
@@ -203,10 +180,10 @@ export function createThreadDefinition(
 ): ResolvedThreadDefinition {
   const {session} = options;
   const storedWorker = isWorkerSession(session)
-    ? readWorkerContextValue(options.thread.context)
+    ? readWorkerContextValue(session.metadata)
     : undefined;
   const context: DefaultAgentSessionContext = {
-    ...resolveStoredContext(options.thread.context, options.fallbackContext, session.agentKey, options.executionEnvironment),
+    ...resolveStoredContext(options.fallbackContext, session.agentKey, options.executionEnvironment),
     threadId: options.thread.id,
     sessionId: session.id,
     agentKey: session.agentKey,

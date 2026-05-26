@@ -28,7 +28,6 @@ interface WhatsAppInboundThreadResolver {
     source: string;
     connectorKey: string;
     externalConversationId: string;
-    context?: Record<string, unknown>;
   }): Promise<ThreadRecord | null>;
 }
 
@@ -66,10 +65,6 @@ async function resolveWhatsAppConversationThread(
     source: WHATSAPP_SOURCE,
     connectorKey: payload.connectorKey,
     externalConversationId: payload.externalConversationId,
-    context: {
-      source: WHATSAPP_SOURCE,
-      remoteJid: payload.remoteJid,
-    },
   });
 }
 
