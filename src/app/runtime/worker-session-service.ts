@@ -58,7 +58,6 @@ export interface CreateWorkerSessionInput {
   skillPolicy?: ExecutionSkillPolicy;
   toolPolicy?: ExecutionToolPolicy;
   ttlMs?: number;
-  systemPrompt?: string | readonly string[];
   deliveryMode?: "queue" | "wake";
   metadata?: JsonObject;
   beforeHandoff?: (created: CreateWorkerSessionResult) => Promise<void>;
@@ -265,7 +264,6 @@ export class WorkerSessionService {
         agentKey,
         workerMetadata,
       }),
-      systemPrompt: input.systemPrompt,
     };
     const runtimeConfig = buildWorkerRuntimeConfig(input);
 
@@ -416,7 +414,6 @@ export class WorkerSessionService {
     if (
       !sameJson(existingSession.metadata, session.metadata)
       || !sameJson(existingThread.context, thread.context)
-      || !sameJson(existingThread.systemPrompt as JsonValue | undefined, thread.systemPrompt as JsonValue | undefined)
     ) {
       throw new Error(`Worker session ${session.id} already exists with different input.`);
     }

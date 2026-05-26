@@ -229,10 +229,7 @@ export async function ensureReadonlySessionQuerySchema(
       t.session_id,
       session.agent_key,
       session.kind AS session_kind,
-      t.system_prompt,
-      t.max_turns,
       t.context,
-      t.temperature,
       t.created_at,
       t.updated_at,
       COALESCE((

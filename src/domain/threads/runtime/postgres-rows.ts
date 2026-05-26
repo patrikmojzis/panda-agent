@@ -36,38 +36,6 @@ function parseOptionalString(value: unknown): string | undefined {
   return optionalNonEmptyString(value, "Thread runtime optional string must not be empty.");
 }
 
-function parseRequiredNumber(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error(`Thread runtime ${label} must be a finite number.`);
-  }
-
-  return value;
-}
-
-function parseOptionalNumber(value: unknown, label: string): number | undefined {
-  if (value === null || value === undefined) {
-    return undefined;
-  }
-
-  return parseRequiredNumber(value, label);
-}
-
-function parseRequiredInteger(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
-    throw new Error(`Thread runtime ${label} must be a safe integer.`);
-  }
-
-  return value;
-}
-
-function parseOptionalInteger(value: unknown, label: string): number | undefined {
-  if (value === null || value === undefined) {
-    return undefined;
-  }
-
-  return parseRequiredInteger(value, label);
-}
-
 function parseRequiredBigintNumber(value: unknown, label: string): number {
   if (typeof value === "number" && Number.isSafeInteger(value)) {
     return value;
@@ -121,22 +89,6 @@ function parseOptionalJsonObject(value: unknown, label: string): JsonObject | un
   }
 
   return parseJsonObject(value, label);
-}
-
-function parseSystemPrompt(value: unknown): ThreadRecord["systemPrompt"] {
-  if (value === null || value === undefined) {
-    return undefined;
-  }
-
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
-    return value;
-  }
-
-  throw new Error("Thread runtime system prompt must be a string or string array.");
 }
 
 function isMessageRole(value: unknown): value is Message["role"] {
@@ -218,11 +170,8 @@ export function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
   return {
     id: parseRequiredString(row.id, "thread id"),
     sessionId: parseRequiredString(row.session_id, "session id"),
-    systemPrompt: parseSystemPrompt(row.system_prompt),
-    maxTurns: parseOptionalInteger(row.max_turns, "max_turns"),
     context: parseOptionalJsonValue(row.context, "context"),
     runtimeState: parseOptionalJsonObject(row.runtime_state, "runtime state") as ThreadRecord["runtimeState"],
-    temperature: parseOptionalNumber(row.temperature, "temperature"),
     createdAt: requireTimestampMillis(row.created_at, "Thread runtime created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Thread runtime updated_at must be a valid timestamp."),
   };

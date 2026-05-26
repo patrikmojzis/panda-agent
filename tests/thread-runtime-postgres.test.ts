@@ -10,7 +10,10 @@ import {
   parseThreadRow,
   parseToolJobRow,
 } from "../src/domain/threads/runtime/postgres-rows.js";
-import {migrateSessionRuntimeConfigFromThreadRows} from "../src/domain/threads/runtime/postgres-schema.js";
+import {
+  buildThreadRuntimeSchemaSql,
+  migrateSessionRuntimeConfigFromThreadRows,
+} from "../src/domain/threads/runtime/postgres-schema.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 import {
   THREAD_RUNTIME_JSONB_NUL_PLACEHOLDER,
@@ -216,7 +219,6 @@ describe("PostgresThreadRuntimeStore", () => {
     const created = await store.createThread({
       id: "pg-thread",
       sessionId: "session-alice",
-      systemPrompt: ["You are the default agent."],
       context: {
         source: "telegram",
         agentKey: "panda",
@@ -224,7 +226,6 @@ describe("PostgresThreadRuntimeStore", () => {
         identityId: alice.id,
         identityHandle: alice.handle,
       },
-      maxTurns: 5,
     });
 
     expect(created.sessionId).toBe("session-alice");
@@ -232,7 +233,9 @@ describe("PostgresThreadRuntimeStore", () => {
       agentKey: "panda",
       identityId: alice.id,
     });
-    expect(created.systemPrompt).toEqual(["You are the default agent."]);
+    expect(created).not.toHaveProperty("systemPrompt");
+    expect(created).not.toHaveProperty("maxTurns");
+    expect(created).not.toHaveProperty("temperature");
 
     const runtimeConfig = await sessionStore.updateSessionRuntimeConfig({
       sessionId: "session-alice",
@@ -530,6 +533,61 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(columns.rows).toEqual([]);
   });
 
+  it("drops legacy scalar thread baggage columns during schema ensure", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {threadStore: store} = await createRuntimeStores(pool);
+    await seedSession(pool, {
+      sessionId: "scalar-baggage-session",
+      threadId: "scalar-baggage-thread",
+    });
+    await store.createThread({id: "scalar-baggage-thread", sessionId: "scalar-baggage-session"});
+
+    const threadTable = buildThreadRuntimeTableNames().threads;
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN system_prompt JSONB`);
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN max_turns INTEGER`);
+    await pool.query(`ALTER TABLE ${threadTable} ADD COLUMN temperature DOUBLE PRECISION`);
+    await pool.query(`
+      UPDATE ${threadTable}
+      SET system_prompt = $2::jsonb,
+          max_turns = 5,
+          temperature = 0.7
+      WHERE id = $1
+    `, [
+      "scalar-baggage-thread",
+      JSON.stringify(["legacy persisted prompt"]),
+    ]);
+
+    const schemaSql = buildThreadRuntimeSchemaSql(buildThreadRuntimeTableNames(), '"runtime"."identities"');
+    expect(schemaSql).toContain("DROP COLUMN IF EXISTS system_prompt");
+    expect(schemaSql).toContain("DROP COLUMN IF EXISTS max_turns");
+    expect(schemaSql).toContain("DROP COLUMN IF EXISTS temperature");
+    const cleanupSql = schemaSql.slice(
+      0,
+      schemaSql.indexOf(`CREATE TABLE IF NOT EXISTS ${buildThreadRuntimeTableNames().messages}`),
+    );
+    await pool.query(cleanupSql);
+
+    const columns = await pool.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'runtime'
+        AND table_name = 'threads'
+        AND column_name IN ('system_prompt', 'max_turns', 'temperature')
+    `);
+    expect(columns.rows).toEqual([]);
+    await expect(store.getThread("scalar-baggage-thread")).resolves.not.toHaveProperty("systemPrompt");
+  });
+
   it("merges legacy thread runtime fields into existing partial session runtime config rows", async () => {
     const db = newDb();
     db.public.registerFunction({
@@ -784,14 +842,11 @@ describe("PostgresThreadRuntimeStore", () => {
           rows: [{
             id: "thread-1",
             session_id: "session-1",
-            system_prompt: null,
-            max_turns: null,
             context: null,
             runtime_state: null,
             inference_projection: null,
             prompt_cache_key: null,
             model: null,
-            temperature: null,
             thinking: null,
             created_at: new Date(1),
             updated_at: new Date(1),
@@ -825,14 +880,11 @@ describe("PostgresThreadRuntimeStore", () => {
           rows: [{
             id: "thread-1",
             session_id: "session-1",
-            system_prompt: null,
-            max_turns: null,
             context: null,
             runtime_state: null,
             inference_projection: null,
             prompt_cache_key: null,
             model: null,
-            temperature: null,
             thinking: null,
             created_at: new Date(1),
             updated_at: new Date(1),
@@ -1272,36 +1324,6 @@ describe("PostgresThreadRuntimeStore", () => {
       durationMs: 123,
     });
 
-    expect(() => parseThreadRow({
-      id: "thread-1",
-      session_id: "session-1",
-      system_prompt: null,
-      max_turns: "10",
-      context: null,
-      runtime_state: null,
-      inference_projection: null,
-      prompt_cache_key: null,
-      model: null,
-      temperature: null,
-      thinking: null,
-      created_at: new Date(1),
-      updated_at: new Date(1),
-    })).toThrow("Thread runtime max_turns must be a safe integer.");
-    expect(() => parseThreadRow({
-      id: "thread-1",
-      session_id: "session-1",
-      system_prompt: null,
-      max_turns: null,
-      context: null,
-      runtime_state: null,
-      inference_projection: null,
-      prompt_cache_key: null,
-      model: null,
-      temperature: "0.7",
-      thinking: null,
-      created_at: new Date(1),
-      updated_at: new Date(1),
-    })).toThrow("Thread runtime temperature must be a finite number.");
     expect(() => parseToolJobRow({
       id: "job-1",
       thread_id: "thread-1",
