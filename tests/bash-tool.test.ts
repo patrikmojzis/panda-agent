@@ -74,10 +74,6 @@ async function createBackgroundHarness(workspace: string) {
   await store.createThread({
     id: "thread-bg",
     sessionId,
-    context: {
-      sessionId,
-      agentKey: "panda",
-    },
   });
   const service = new BackgroundToolJobService({
     store,
@@ -1276,10 +1272,6 @@ describe("BashTool", () => {
       await store.createThread({
         id: "thread-bg",
         sessionId: "session-bg",
-        context: {
-          sessionId: "session-bg",
-          agentKey: "panda",
-        },
       });
       const service = new BackgroundToolJobService({store});
       const bash = new BashTool({
@@ -1500,10 +1492,6 @@ describe("BashTool", () => {
       await store.createThread({
         id: "thread-bg",
         sessionId: "session-bg",
-        context: {
-          sessionId: "session-bg",
-          agentKey: "panda",
-        },
       });
       const service = new BackgroundToolJobService({ store });
       const bash = new BashTool({

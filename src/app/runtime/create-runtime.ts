@@ -137,9 +137,6 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     threads: runtime.store,
     coordinator,
     environments: runtime.executionEnvironmentService,
-    fallbackContext: {
-      cwd: options.cwd ?? process.cwd(),
-    },
   });
   let mainTools: readonly Tool[] = [];
   let workerTools: readonly Tool[] = runtime.workerTools;

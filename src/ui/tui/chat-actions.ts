@@ -3,7 +3,6 @@ import {randomUUID} from "node:crypto";
 import {readMissingApiKeyMessageForModel} from "../../integrations/providers/shared/missing-api-key.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {resolveModelSelector} from "../../kernel/models/model-selector.js";
-import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
 import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
 import type {ChatRuntimeServices} from "./runtime.js";
 import {buildChatHelpText, describeUnknownCommand, runChatCommandLine} from "./chat-commands.js";
@@ -182,6 +181,7 @@ async function handleUsageCommand(host: ChatCommandHost): Promise<boolean> {
       thinking: runConfig.thinking,
       inferenceProjection: runConfig.inferenceProjection,
       isRunning: host.isRunning(),
+      agentKey: host.getCurrentAgentKey() ?? "unknown",
     }));
 
     host.pushEntry("meta", "usage", summary);
@@ -249,13 +249,7 @@ async function handleResumeCommand(host: ChatCommandHost, value: string): Promis
   }
 
   try {
-    const currentAgentKey = host.getCurrentAgentKey();
-    const thread = await host.requireServices().openSession(value, currentAgentKey);
-    const nextAgentKey = readThreadAgentKey(thread);
-    if (currentAgentKey && nextAgentKey !== currentAgentKey) {
-      throw new Error(`Session ${value} belongs to agent ${nextAgentKey}, not current agent ${currentAgentKey}.`);
-    }
-
+    const thread = await host.requireServices().openSession(value, host.getCurrentAgentKey());
     await host.switchThread(thread);
     host.pushEntry("meta", "session", `Opened session ${thread.sessionId}.`);
     host.setNotice(`Opened session ${thread.sessionId}.`, "info");

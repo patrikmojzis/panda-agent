@@ -103,10 +103,6 @@ describe("buildDefaultAgentLlmContexts", () => {
     await threadStore.createThread({
       id: "thread-bg-context",
       sessionId: "session-bg-context",
-      context: {
-        sessionId: "session-bg-context",
-        agentKey: "panda",
-      },
     });
     await threadStore.createToolJob({
       id: "job-running",
@@ -201,10 +197,6 @@ describe("buildDefaultAgentLlmContexts", () => {
     await threadStore.createThread({
       id: "thread-no-bg-context",
       sessionId: "session-no-bg-context",
-      context: {
-        sessionId: "session-no-bg-context",
-        agentKey: "panda",
-      },
     });
     await threadStore.createToolJob({
       id: "job-done",

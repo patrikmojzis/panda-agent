@@ -31,7 +31,6 @@ interface TelegramInboundThreadResolver {
     source: string;
     connectorKey: string;
     externalConversationId: string;
-    context?: Record<string, unknown>;
   }): Promise<ThreadRecord | null>;
 }
 
@@ -87,10 +86,6 @@ async function resolveTelegramConversationThread(
     source: TELEGRAM_SOURCE,
     connectorKey: payload.connectorKey,
     externalConversationId: payload.externalConversationId,
-    context: {
-      source: TELEGRAM_SOURCE,
-      chatId: payload.chatId,
-    },
   });
 }
 

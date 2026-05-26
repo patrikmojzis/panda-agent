@@ -10,10 +10,6 @@ function createThread(
   return {
     id: "thread-defaults",
     sessionId: "session-main",
-    context: {
-      agentKey: "panda",
-      sessionId: "session-main",
-    },
     createdAt: now,
     updatedAt: now,
     ...overrides,

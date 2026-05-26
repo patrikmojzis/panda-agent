@@ -316,14 +316,11 @@ describe("Panda feature surface", () => {
     expect(resolveRemoteInitialCwd("jozef")).toBe("/workspace/agents/jozef");
   });
 
-  it("prefers the configured remote initial cwd when stored cwd is still the daemon fallback", () => {
+  it("uses the configured remote initial cwd instead of fallback cwd", () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
     vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
 
     expect(resolveStoredContext(
-      {
-        cwd: "/Users/patrikmojzis/Projects/panda-agent",
-      },
       {
         cwd: "/Users/patrikmojzis/Projects/panda-agent",
       },
@@ -333,39 +330,43 @@ describe("Panda feature surface", () => {
     });
   });
 
-  it("rewrites an explicit host agent-home cwd to the remote runner path", () => {
+  it("rewrites a host agent-home execution cwd to the remote runner path", () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
     vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
     vi.stubEnv("DATA_DIR", "/Users/patrikmojzis/.panda");
 
     expect(resolveStoredContext(
       {
-        cwd: "/Users/patrikmojzis/.panda/agents/jozef",
-      },
-      {
         cwd: "/Users/patrikmojzis/Projects/panda-agent",
       },
       "jozef",
+      {
+        initialCwd: "/Users/patrikmojzis/.panda/agents/jozef",
+        kind: "persistent_agent_runner",
+        source: "fallback",
+      } as never,
     ).cwd).toBe("/root/.panda/agents/jozef");
   });
 
-  it("rewrites nested host agent-home cwd suffixes to the remote runner path", () => {
+  it("rewrites nested host agent-home execution cwd suffixes to the remote runner path", () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
     vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
     vi.stubEnv("DATA_DIR", "/Users/patrikmojzis/.panda");
 
     expect(resolveStoredContext(
       {
-        cwd: "/Users/patrikmojzis/.panda/agents/jozef/projects/demo",
-      },
-      {
         cwd: "/Users/patrikmojzis/Projects/panda-agent",
       },
       "jozef",
+      {
+        initialCwd: "/Users/patrikmojzis/.panda/agents/jozef/projects/demo",
+        kind: "persistent_agent_runner",
+        source: "fallback",
+      } as never,
     ).cwd).toBe("/root/.panda/agents/jozef/projects/demo");
   });
 
-  it("preserves an explicit stored cwd in remote mode", () => {
+  it("hard-cuts arbitrary stored cwd by using the fallback or remote initial cwd", () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
     vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
 
@@ -373,10 +374,7 @@ describe("Panda feature surface", () => {
       {
         cwd: "/workspace/shared/project",
       },
-      {
-        cwd: "/Users/patrikmojzis/Projects/panda-agent",
-      },
       "jozef",
-    ).cwd).toBe("/workspace/shared/project");
+    ).cwd).toBe("/root/.panda/agents/jozef");
   });
 });

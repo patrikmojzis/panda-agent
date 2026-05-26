@@ -111,26 +111,21 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       INSERT INTO ${this.tables.threads} (
         id,
         session_id,
-        context,
         runtime_state
       ) VALUES (
         $1,
         $2,
-        $3::jsonb,
-        $4::jsonb
+        $3::jsonb
       )
       ON CONFLICT (id) DO UPDATE
-      SET context = EXCLUDED.context,
-          runtime_state = EXCLUDED.runtime_state,
+      SET runtime_state = EXCLUDED.runtime_state,
           updated_at = NOW()
       WHERE ${this.tables.threads}.session_id = EXCLUDED.session_id
-        AND ${this.tables.threads}.context IS NULL
         AND ${this.tables.threads}.runtime_state IS NULL
       RETURNING *
     `, [
       input.id,
       sessionId,
-      toJson(input.context),
       toJson(input.runtimeState),
     ]);
     const row = result.rows[0];
@@ -251,10 +246,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
       values.push(value);
       index += 1;
     };
-
-    if (update.context !== undefined) {
-      push("context", toJson(update.context), "::jsonb");
-    }
 
     if (update.runtimeState !== undefined) {
       push("runtime_state", toJson(update.runtimeState ?? null), "::jsonb");

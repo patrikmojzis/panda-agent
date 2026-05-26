@@ -229,7 +229,6 @@ export async function ensureReadonlySessionQuerySchema(
       t.session_id,
       session.agent_key,
       session.kind AS session_kind,
-      t.context,
       t.created_at,
       t.updated_at,
       COALESCE((

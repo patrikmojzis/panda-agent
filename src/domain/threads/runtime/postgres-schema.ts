@@ -16,6 +16,7 @@ const THREAD_RUNTIME_MIGRATIONS_TABLE =
   `${quoteIdentifier(RUNTIME_SCHEMA)}.${quoteIdentifier("thread_runtime_migrations")}`;
 const SET_ENV_VALUE_ARGUMENT_REDACTION_MIGRATION =
   "set_env_value_tool_call_argument_redaction_2026_05_22";
+const LEGACY_THREAD_CONTEXT_COLUMN = "context";
 const LEGACY_THREAD_SCALAR_COLUMNS = ["system_prompt", "max_turns", "temperature"] as const;
 
 function isJsonRecord(value: unknown): value is Record<string, unknown> {
@@ -154,11 +155,11 @@ async function readExistingThreadColumns(
   return existing;
 }
 
-async function dropReadonlyThreadsViewForScalarColumnCleanup(
+async function dropReadonlyThreadsViewForColumnCleanup(
   pool: PgPoolLike,
-  existingLegacyScalarColumns: ReadonlySet<string>,
+  existingCleanupColumns: ReadonlySet<string>,
 ): Promise<void> {
-  if (existingLegacyScalarColumns.size === 0) {
+  if (existingCleanupColumns.size === 0) {
     return;
   }
 
@@ -190,11 +191,33 @@ async function ensureThreadsTable(
     CREATE TABLE ${tables.threads} (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
-      context JSONB,
       runtime_state JSONB,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `);
+}
+
+export async function backfillWorkerMetadataFromLegacyThreadContext(
+  pool: PgPoolLike,
+  tables: ThreadRuntimeTableNames,
+  existingContextColumns: ReadonlySet<string>,
+): Promise<void> {
+  if (!existingContextColumns.has(LEGACY_THREAD_CONTEXT_COLUMN)) {
+    return;
+  }
+
+  const sessionTables = buildSessionTableNames();
+  await pool.query(`
+    UPDATE ${sessionTables.sessions}
+    SET metadata = jsonb_set(COALESCE(${sessionTables.sessions}.metadata, '{}'::jsonb), '{worker}', thread.context->'worker'),
+        updated_at = NOW()
+    FROM ${tables.threads} AS thread
+    WHERE ${sessionTables.sessions}.kind = 'worker'
+      AND ${sessionTables.sessions}.current_thread_id = thread.id
+      AND thread.session_id = ${sessionTables.sessions}.id
+      AND thread.context->'worker' IS NOT NULL
+      AND (${sessionTables.sessions}.metadata IS NULL OR ${sessionTables.sessions}.metadata->'worker' IS NULL)
   `);
 }
 
@@ -316,6 +339,9 @@ export function buildThreadRuntimeSchemaSql(
 
     ALTER TABLE ${tables.threads}
     DROP COLUMN IF EXISTS temperature;
+
+    ALTER TABLE ${tables.threads}
+    DROP COLUMN IF EXISTS context;
 
     CREATE TABLE IF NOT EXISTS ${tables.messages} (
       id UUID PRIMARY KEY,
@@ -472,7 +498,12 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
     tables,
     LEGACY_THREAD_SCALAR_COLUMNS,
   );
-  await dropReadonlyThreadsViewForScalarColumnCleanup(pool, existingLegacyScalarColumns);
+  const existingContextColumns = await readExistingThreadColumns(pool, tables, [LEGACY_THREAD_CONTEXT_COLUMN]);
+  await dropReadonlyThreadsViewForColumnCleanup(
+    pool,
+    new Set([...existingLegacyScalarColumns, ...existingContextColumns]),
+  );
+  await backfillWorkerMetadataFromLegacyThreadContext(pool, tables, existingContextColumns);
   await pool.query(buildThreadRuntimeSchemaSql(tables, identityTableName));
   await migrateSessionRuntimeConfigFromThreadRows(pool, tables);
   await redactLegacySetEnvValueToolCallArguments(pool, tables);

@@ -5,7 +5,6 @@ import {listenThreadRuntimeNotifications} from "../../app/runtime/store-notifica
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import type {SessionRuntimeConfigRecord} from "../../domain/sessions/types.js";
-import {readThreadAgentKey} from "../../domain/threads/runtime/context.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres-notifications.js";
@@ -17,7 +16,7 @@ import {
     loadStoredThreadSnapshot,
     observeLatestStoredRun,
     resolveStoredThreadDisplayConfig,
-    resolveStoredThreadDisplayedCwd,
+    resolveRuntimeDisplayedCwd,
 } from "../shared/stored-thread.js";
 import {formatThinkingLevel, type TranscriptLineCacheEntry,} from "../tui/chat-shared.js";
 import {stripAnsi, theme} from "../tui/theme.js";
@@ -60,6 +59,7 @@ interface ObserveDependencies {
 interface ResolvedObserveTarget {
   sessionId: string;
   threadId: string;
+  agentKey: string;
 }
 
 export async function createObserveServices(dbUrl?: string): Promise<ObserveServices> {
@@ -246,6 +246,7 @@ export class ObserveApp {
       return {
         sessionId: session.id,
         threadId: session.currentThreadId,
+        agentKey: session.agentKey,
       };
     }
 
@@ -254,13 +255,16 @@ export class ObserveApp {
       return {
         sessionId: session.id,
         threadId: session.currentThreadId,
+        agentKey: session.agentKey,
       };
     }
 
     const thread = await services.store.getThread(this.target.threadId);
+    const session = await services.sessionStore.getSession(thread.sessionId);
     return {
       sessionId: thread.sessionId,
       threadId: thread.id,
+      agentKey: session.agentKey,
     };
   }
 
@@ -312,7 +316,7 @@ export class ObserveApp {
     this.currentThread = snapshot.thread;
 
     if (isInitial) {
-      this.renderHeader(snapshot.thread, snapshot.resolved.sessionId, snapshot.runs, snapshot.runtimeConfig);
+      this.renderHeader(snapshot.thread, snapshot.resolved, snapshot.runs, snapshot.runtimeConfig);
       this.renderInitialTranscript(snapshot.transcript);
       this.seedRunState(snapshot.runs);
       return;
@@ -430,7 +434,7 @@ export class ObserveApp {
 
   private renderHeader(
     thread: ThreadRecord,
-    sessionId: string,
+    resolved: ResolvedObserveTarget,
     runs: readonly ThreadRunRecord[],
     runtimeConfig: SessionRuntimeConfigRecord,
   ): void {
@@ -438,12 +442,12 @@ export class ObserveApp {
     const latestRun = runs.at(-1);
     this.writeLines([
       this.renderHeaderLine("target", this.describeTarget()),
-      this.renderHeaderLine("agent", readThreadAgentKey(thread) ?? "unknown"),
-      this.renderHeaderLine("session", sessionId),
+      this.renderHeaderLine("agent", resolved.agentKey),
+      this.renderHeaderLine("session", resolved.sessionId),
       this.renderHeaderLine("thread", thread.id),
       this.renderHeaderLine("model", displayConfig.model),
       this.renderHeaderLine("thinking", formatThinkingLevel(displayConfig.thinking)),
-      this.renderHeaderLine("cwd", resolveStoredThreadDisplayedCwd(thread, this.fallbackCwd)),
+      this.renderHeaderLine("cwd", resolveRuntimeDisplayedCwd(resolved.agentKey, this.fallbackCwd)),
       this.renderHeaderLine("run", latestRun?.status ?? "idle"),
       this.renderHeaderLine("tail", this.formatTailDescription()),
     ], {trailingBlank: true});

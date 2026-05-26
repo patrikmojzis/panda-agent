@@ -5,7 +5,6 @@ import path from "node:path";
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {resolveAgentDir} from "../src/app/runtime/data-dir.js";
 import {ensureAgent, PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
@@ -89,12 +88,8 @@ describe("ensureAgent", () => {
     await expect(threadStore.getThread(result.threadId)).resolves.toMatchObject({
       id: result.threadId,
       sessionId: result.sessionId,
-      context: {
-        agentKey: "luna",
-        sessionId: result.sessionId,
-        cwd: resolveAgentDir("luna", env),
-      },
     });
+    await expect(threadStore.getThread(result.threadId)).resolves.not.toHaveProperty("context");
     expect((await stat(result.homeDir)).isDirectory()).toBe(true);
   });
 

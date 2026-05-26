@@ -26,7 +26,6 @@ function createThread(overrides: Partial<ThreadRecord> = {}): ThreadRecord {
   return {
     id: "thread-worker",
     sessionId: "session-worker",
-    context: {},
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -270,13 +269,64 @@ describe("worker thread definitions", () => {
     ]);
   });
 
+  it("legacy-only: builds runtime context from session metadata instead of stale thread context", () => {
+    const legacyOnlyThreadWithDroppedContext = Object.assign(createThread(), {
+      context: {
+        cwd: "/stale-thread-cwd",
+        worker: {
+          role: "stale",
+        },
+      },
+    }) as ThreadRecord;
+
+    const definition = createThreadDefinition({
+      thread: legacyOnlyThreadWithDroppedContext,
+      session: {
+        id: "session-worker",
+        agentKey: "panda",
+        kind: "worker",
+        metadata: {
+          worker: {
+            role: "fresh",
+            task: "Use session metadata.",
+          },
+        },
+      },
+      fallbackContext: {
+        cwd: "/fresh-fallback-cwd",
+      },
+      executionEnvironment: createEnvironment({
+        initialCwd: undefined,
+      }),
+      tools: [],
+    });
+
+    expect(definition.context).toMatchObject({
+      cwd: "/fresh-fallback-cwd",
+      worker: {
+        role: "fresh",
+        task: "Use session metadata.",
+      },
+    });
+    expect(definition.context).not.toMatchObject({
+      cwd: "/stale-thread-cwd",
+      worker: {
+        role: "stale",
+      },
+    });
+  });
+
   it("renders durable worker runtime context and allowed skill summaries", async () => {
     const readAgentPrompt = vi.fn(async () => {
       throw new Error("worker context should not read agent prompts");
     });
     const definition = createThreadDefinition({
-      thread: createThread({
-        context: {
+      thread: createThread(),
+      session: {
+        id: "session-worker",
+        agentKey: "panda",
+        kind: "worker",
+        metadata: {
           worker: {
             role: "research",
             task: "Inspect the package graph.",
@@ -284,11 +334,6 @@ describe("worker thread definitions", () => {
             parentSessionId: "parent-session",
           },
         },
-      }),
-      session: {
-        id: "session-worker",
-        agentKey: "panda",
-        kind: "worker",
       },
       fallbackContext: {
         cwd: "/tmp/panda",

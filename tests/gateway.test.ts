@@ -80,11 +80,6 @@ describe("Panda gateway", () => {
       thread: {
         id: "thread-1",
         sessionId: "session-1",
-        context: {
-          agentKey: "panda",
-          sessionId: "session-1",
-          cwd: "/tmp",
-        },
       },
     });
     const createdSource = await gatewayStore.createSource({
@@ -911,11 +906,6 @@ describe("Panda gateway", () => {
       await harness.threadStore.createThread({
         id: resetThreadId,
         sessionId: "session-1",
-        context: {
-          agentKey: "panda",
-          sessionId: "session-1",
-          cwd: "/tmp",
-        },
       });
       await harness.sessionStore.updateCurrentThread({
         sessionId: "session-1",
@@ -1022,7 +1012,7 @@ describe("Panda gateway", () => {
       await harness.gatewayStore.suspendSource("work-prod", "manual test suspension");
 
       harness.worker.poke();
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await waitForEventStatus(harness, stored.event.id, "quarantined");
 
       const event = await harness.gatewayStore.getEvent(stored.event.id);
       expect(event.status).toBe("quarantined");

@@ -1,7 +1,6 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {createChatRuntime} from "../src/ui/tui/runtime.js";
-import {resolveStoredThreadDisplayedCwd} from "../src/ui/shared/stored-thread.js";
-import type {ThreadRecord} from "../src/domain/threads/runtime/index.js";
+import {resolveRuntimeDisplayedCwd} from "../src/ui/shared/stored-thread.js";
 
 const tuiRuntimeSessionMocks = vi.hoisted(() => {
   const client = {
@@ -17,32 +16,36 @@ const tuiRuntimeSessionMocks = vi.hoisted(() => {
     createBranchSession: vi.fn(async () => ({
       id: "thread-created",
       sessionId: "session-created",
-      context: {agentKey: "luna", sessionId: "session-created"},
       createdAt: 1,
       updatedAt: 1,
     })),
     openMainSession: vi.fn(async () => ({
       id: "thread-home",
       sessionId: "session-main",
-      context: {agentKey: "luna", sessionId: "session-main"},
       createdAt: 1,
       updatedAt: 1,
     })),
     resetSession: vi.fn(async () => ({
       id: "thread-reset",
       sessionId: "session-main",
-      context: {agentKey: "luna", sessionId: "session-main"},
       createdAt: 1,
       updatedAt: 1,
     })),
     openSession: vi.fn(async () => ({
       id: "thread-session",
       sessionId: "session-main",
-      context: {agentKey: "luna", sessionId: "session-main"},
       createdAt: 1,
       updatedAt: 1,
     })),
     getThread: vi.fn(),
+    getSession: vi.fn(async (sessionId: string) => ({
+      id: sessionId,
+      agentKey: "luna",
+      kind: "main" as const,
+      currentThreadId: "thread-session",
+      createdAt: 1,
+      updatedAt: 1,
+    })),
     listAgentSessions: vi.fn(async () => []),
     submitTextInput: vi.fn(),
     abortThread: vi.fn(async () => false),
@@ -126,22 +129,10 @@ describe("createChatRuntime session wiring", () => {
     expect(tuiRuntimeSessionMocks.createRuntimeClient).not.toHaveBeenCalled();
   });
 
-  it("shows the remote runner cwd for stored agent-home paths", () => {
+  it("shows the remote runner cwd for the current session agent", () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
     vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
-    vi.stubEnv("DATA_DIR", "/Users/tester/.panda");
 
-    const thread: ThreadRecord = {
-      id: "thread-1",
-      sessionId: "session-1",
-      context: {
-        agentKey: "jozef",
-        cwd: "/Users/tester/.panda/agents/jozef",
-      },
-      createdAt: 1,
-      updatedAt: 1,
-    };
-
-    expect(resolveStoredThreadDisplayedCwd(thread, "/Users/tester/Projects/panda-agent")).toBe("/root/.panda/agents/jozef");
+    expect(resolveRuntimeDisplayedCwd("jozef", "/Users/tester/Projects/panda-agent")).toBe("/root/.panda/agents/jozef");
   });
 });

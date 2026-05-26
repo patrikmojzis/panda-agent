@@ -74,7 +74,6 @@ export interface DaemonThreadHelpers {
     model?: string;
     thinking?: CreateBranchSessionRequestPayload["thinking"];
     inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
-    context?: Record<string, unknown>;
   }): Promise<ThreadRecord>;
   createWorkerSession(input: DaemonCreateWorkerSessionInput): Promise<CreateWorkerSessionResult>;
   relocateThreadMedia(
@@ -87,7 +86,6 @@ export interface DaemonThreadHelpers {
     source: string;
     connectorKey: string;
     externalConversationId: string;
-    context?: Record<string, unknown>;
     metadata?: JsonValue;
   }): Promise<ThreadRecord | null>;
   resolveBoundConversationThread(input: {
@@ -148,23 +146,11 @@ export function createDaemonThreadHelpers(
 
   const buildInitialSessionThreadInput = (input: {
     sessionId: string;
-    agentKey?: string;
     id?: string;
-    context?: Record<string, unknown>;
   }) => {
     return {
       id: input.id ?? randomUUID(),
       sessionId: input.sessionId,
-      context: {
-        ...context.fallbackContext,
-        ...(input.agentKey
-          ? {
-            agentKey: input.agentKey,
-            sessionId: input.sessionId,
-          }
-          : {}),
-        ...(input.context ?? {}),
-      },
     };
   };
 
@@ -231,7 +217,6 @@ export function createDaemonThreadHelpers(
         },
         thread: buildInitialSessionThreadInput({
           sessionId,
-          agentKey,
           id: threadId,
         }),
         runtimeConfig: buildRuntimeConfigPatch({
@@ -255,7 +240,6 @@ export function createDaemonThreadHelpers(
     });
     await context.runtime.store.createThread(buildInitialSessionThreadInput({
       sessionId,
-      agentKey,
       id: threadId,
     }));
     await updateSessionRuntimeConfig(sessionId, buildRuntimeConfigPatch({
@@ -281,16 +265,13 @@ export function createDaemonThreadHelpers(
     model?: string;
     thinking?: CreateBranchSessionRequestPayload["thinking"];
     inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
-    context?: Record<string, unknown>;
   }): Promise<ThreadRecord> => {
     const agentKey = await resolveAccessibleAgentKey(input.identity, input.agentKey);
     const sessionId = input.sessionId ?? randomUUID();
     const threadId = randomUUID();
     const threadInput = buildInitialSessionThreadInput({
       sessionId,
-      agentKey,
       id: threadId,
-      context: input.context,
     });
     const runtimeConfig = buildRuntimeConfigPatch(input);
     if (
@@ -369,7 +350,6 @@ export function createDaemonThreadHelpers(
     source: string;
     connectorKey: string;
     externalConversationId: string;
-    context?: Record<string, unknown>;
     metadata?: JsonValue;
   }): Promise<ThreadRecord | null> => {
     const existing = await context.conversationBindings.getConversationBinding({
@@ -447,7 +427,6 @@ export function createDaemonThreadHelpers(
     model?: string;
     thinking?: ResetSessionRequestPayload["thinking"];
     inferenceProjection?: ResetSessionRequestPayload["inferenceProjection"];
-    context?: Record<string, unknown>;
   }): Promise<{thread: ThreadRecord; previousThreadId: string}> => {
     const {session, threadId} = await resolveCurrentSessionThread(context.runtime.sessionStore, input.sessionId);
     const previousThread = await context.runtime.store.getThread(threadId);
@@ -458,8 +437,6 @@ export function createDaemonThreadHelpers(
 
     const nextThread = buildInitialSessionThreadInput({
       sessionId: session.id,
-      agentKey: session.agentKey,
-      context: input.context,
     });
     const runtimeConfig = buildRuntimeConfigPatch(input);
     const thread = (
@@ -524,7 +501,6 @@ export function createDaemonThreadHelpers(
         model: payload.model,
         thinking: payload.thinking,
         inferenceProjection: payload.inferenceProjection,
-        context: {source: payload.source},
       });
 
       await context.conversationBindings.bindConversation({

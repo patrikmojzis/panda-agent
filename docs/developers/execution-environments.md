@@ -74,8 +74,9 @@ worker.
 - queues or wakes the worker handoff input
 
 `createThreadDefinition` prepends `WorkerRuntimeContext` for worker sessions.
-That context is sourced from `thread.context.worker` and environment filesystem
-metadata, not from the transcript. It is the reliable place for
+That context is sourced from `agent_sessions.metadata.worker` and environment
+filesystem metadata, not from durable thread context or the transcript. It is
+the reliable place for
 `parentSessionId`, `message_agent({ sessionId: "..." })`, `/workspace`,
 `/inbox`, `/artifacts`, and `/environments/<envDir>` hints.
 

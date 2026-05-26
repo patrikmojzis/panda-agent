@@ -170,7 +170,6 @@ export function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
   return {
     id: parseRequiredString(row.id, "thread id"),
     sessionId: parseRequiredString(row.session_id, "session id"),
-    context: parseOptionalJsonValue(row.context, "context"),
     runtimeState: parseOptionalJsonObject(row.runtime_state, "runtime state") as ThreadRecord["runtimeState"],
     createdAt: requireTimestampMillis(row.created_at, "Thread runtime created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Thread runtime updated_at must be a valid timestamp."),

@@ -465,10 +465,6 @@ describe("Thread", () => {
       await store.createThread({
         id: "thread-bg",
         sessionId: "session-thread-bg",
-        context: {
-          sessionId: "session-thread-bg",
-          agentKey: "panda",
-        },
       });
       const service = new BackgroundToolJobService({ store });
       let turn = 0;

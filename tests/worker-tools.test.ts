@@ -125,7 +125,6 @@ describe("worker control tools", () => {
       thread: {
         id: "worker-thread",
         sessionId: "worker-session",
-        context: {},
         createdAt: 1_000,
         updatedAt: 1_000,
       },
@@ -241,7 +240,6 @@ describe("worker control tools", () => {
       thread: {
         id: "worker-thread",
         sessionId: "worker-session",
-        context: {},
         createdAt: 1_000,
         updatedAt: 1_000,
       },
@@ -467,7 +465,6 @@ describe("worker control tools", () => {
       thread: {
         id: "worker-thread",
         sessionId: "worker-session",
-        context: {},
         createdAt: 1_000,
         updatedAt: 1_000,
       },

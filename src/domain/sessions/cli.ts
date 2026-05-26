@@ -5,7 +5,6 @@ import {Command, InvalidArgumentError} from "commander";
 import type {Pool} from "pg";
 
 import {DB_URL_OPTION_DESCRIPTION, parsePositiveIntegerOption} from "../../lib/cli.js";
-import {resolveAgentDir} from "../../lib/data-dir.js";
 import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {normalizeAgentKey} from "../agents/types.js";
@@ -303,11 +302,6 @@ async function createSessionCommand(
         thread: {
           id: threadId,
           sessionId,
-          context: {
-            agentKey: agent.agentKey,
-            sessionId,
-            cwd: resolveAgentDir(agent.agentKey),
-          },
         },
       });
     } catch (error) {

@@ -172,7 +172,6 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     const thread: ThreadRecord = {
       id: input.id,
       sessionId: input.sessionId,
-      context: input.context,
       runtimeState: input.runtimeState,
       createdAt: now,
       updatedAt: now,
@@ -230,7 +229,6 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       : update.runtimeState ?? undefined;
     thread.thread = {
       ...thread.thread,
-      ...update,
       runtimeState: nextRuntimeState,
       id: thread.thread.id,
       updatedAt: Date.now(),

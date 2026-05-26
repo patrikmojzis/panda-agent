@@ -850,7 +850,6 @@ interface MainSessionTarget {
 
 async function ensureMainSession(
   agentKey: string,
-  homeDir: string,
   identityId?: string,
   pool?: PgPoolLike,
   sessionStore?: SessionStore,
@@ -886,11 +885,6 @@ async function ensureMainSession(
       thread: {
         id: threadId,
         sessionId,
-        context: {
-          agentKey,
-          sessionId,
-          cwd: homeDir,
-        },
       },
     });
   } else {
@@ -904,11 +898,6 @@ async function ensureMainSession(
     await threadStore.createThread({
       id: threadId,
       sessionId,
-      context: {
-        agentKey,
-        sessionId,
-        cwd: homeDir,
-      },
     });
   }
 
@@ -1042,7 +1031,6 @@ export async function importLegacyAgent(
 
   const mainSession = await ensureMainSession(
     plan.agentKey,
-    homeDir,
     options.identityId,
     options.pool,
     options.sessionStore,

@@ -26,7 +26,7 @@ import type {
 } from "../../domain/execution-environments/types.js";
 import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
 import {normalizeSkillKey} from "../../domain/agents/types.js";
-import {buildWorkerSessionMetadata, readWorkerContextValue} from "../../domain/sessions/worker-metadata.js";
+import {buildWorkerSessionMetadata} from "../../domain/sessions/worker-metadata.js";
 import {renderSubagentHandoff} from "../../prompts/runtime/subagents.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {stableStringify} from "../../lib/json.js";
@@ -83,7 +83,6 @@ interface WorkerSessionServiceOptions {
   threads: WorkerThreadStore;
   coordinator?: Pick<ThreadRuntimeCoordinator, "submitInput">;
   environments: ExecutionEnvironmentLifecycleService;
-  fallbackContext: {cwd: string};
 }
 
 function buildWorkerEnvironmentId(sessionId: string): string {
@@ -105,25 +104,6 @@ function buildSkillPolicy(input: CreateWorkerSessionInput): ExecutionSkillPolicy
   return input.skillPolicy ?? {
     mode: "allowlist",
     skillKeys: normalizeSkillAllowlist(input.skillAllowlist),
-  };
-}
-
-function buildThreadContext(input: {
-  fallbackContext: {cwd: string};
-  sessionId: string;
-  agentKey: string;
-  workerMetadata: JsonObject;
-}): JsonObject {
-  const worker = readWorkerContextValue(input.workerMetadata);
-  if (worker === undefined) {
-    throw new Error("Worker session metadata must include worker context.");
-  }
-
-  return {
-    ...input.fallbackContext,
-    agentKey: input.agentKey,
-    sessionId: input.sessionId,
-    worker,
   };
 }
 
@@ -220,7 +200,6 @@ export class WorkerSessionService {
   private readonly threads: WorkerThreadStore;
   private readonly coordinator?: Pick<ThreadRuntimeCoordinator, "submitInput">;
   private readonly environments: ExecutionEnvironmentLifecycleService;
-  private readonly fallbackContext: {cwd: string};
 
   constructor(options: WorkerSessionServiceOptions) {
     this.pool = options.pool;
@@ -228,7 +207,6 @@ export class WorkerSessionService {
     this.threads = options.threads;
     this.coordinator = options.coordinator;
     this.environments = options.environments;
-    this.fallbackContext = options.fallbackContext;
   }
 
   async createWorkerSession(input: CreateWorkerSessionInput): Promise<CreateWorkerSessionResult> {
@@ -258,12 +236,6 @@ export class WorkerSessionService {
     const threadInput: CreateThreadInput = {
       id: threadId,
       sessionId,
-      context: buildThreadContext({
-        fallbackContext: this.fallbackContext,
-        sessionId,
-        agentKey,
-        workerMetadata,
-      }),
     };
     const runtimeConfig = buildWorkerRuntimeConfig(input);
 
@@ -411,10 +383,7 @@ export class WorkerSessionService {
     ) {
       throw new Error(`Worker session ${session.id} already exists with different state.`);
     }
-    if (
-      !sameJson(existingSession.metadata, session.metadata)
-      || !sameJson(existingThread.context, thread.context)
-    ) {
+    if (!sameJson(existingSession.metadata, session.metadata)) {
       throw new Error(`Worker session ${session.id} already exists with different input.`);
     }
 

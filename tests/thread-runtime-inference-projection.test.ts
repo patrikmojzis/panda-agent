@@ -314,10 +314,6 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
     await store.createThread({
       id: "thread-inference-projection",
       sessionId: "session-inference-projection",
-      context: {
-        sessionId: "session-inference-projection",
-        agentKey: "projection-agent",
-      },
     });
 
     await store.enqueueInput("thread-inference-projection", {
@@ -405,10 +401,6 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
       await store.createThread({
         id: "thread-browser-redaction",
         sessionId: "session-browser-redaction",
-        context: {
-          sessionId: "session-browser-redaction",
-          agentKey: "projection-agent",
-        },
       });
 
       const browserTool = new BrowserTool({
@@ -531,10 +523,6 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
       await store.createThread({
         id: "thread-browser-drop-images",
         sessionId: "session-browser-drop-images",
-        context: {
-          sessionId: "session-browser-drop-images",
-          agentKey: "projection-agent",
-        },
       });
 
       const browserTool = new BrowserTool({
@@ -620,10 +608,6 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
     await store.createThread({
       id: "thread-missing-artifact",
       sessionId: "session-missing-artifact",
-      context: {
-        sessionId: "session-missing-artifact",
-        agentKey: "projection-agent",
-      },
     });
     await store.enqueueInput("thread-missing-artifact", {
       message: stringToUserMessage("previous request"),

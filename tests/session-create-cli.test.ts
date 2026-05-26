@@ -5,7 +5,6 @@ import {DataType, newDb} from "pg-mem";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 import {ConversationRepo} from "../src/domain/sessions/conversations/repo.js";
 import {registerSessionCommands} from "../src/app/sessions/cli.js";
-import {resolveAgentDir} from "../src/lib/data-dir.js";
 
 const sessionCreateCliMocks = vi.hoisted(() => {
   const state: {
@@ -153,12 +152,8 @@ describe("Session create CLI", () => {
     await expect(threadStore.getThread(threadId)).resolves.toMatchObject({
       id: threadId,
       sessionId,
-      context: {
-        agentKey: "panda",
-        sessionId,
-        cwd: resolveAgentDir("panda"),
-      },
     });
+    await expect(threadStore.getThread(threadId)).resolves.not.toHaveProperty("context");
     await expect(sessionStore.getHeartbeat(sessionId)).resolves.toMatchObject({
       sessionId,
       enabled: false,
@@ -198,12 +193,8 @@ describe("Session create CLI", () => {
     await expect(threadStore.getThread(threadId)).resolves.toMatchObject({
       id: threadId,
       sessionId: "panda:ops-inbox",
-      context: {
-        agentKey: "panda",
-        sessionId: "panda:ops-inbox",
-        cwd: resolveAgentDir("panda"),
-      },
     });
+    await expect(threadStore.getThread(threadId)).resolves.not.toHaveProperty("context");
   }, SESSION_CREATE_TEST_TIMEOUT_MS);
 
 

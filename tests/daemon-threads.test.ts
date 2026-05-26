@@ -217,7 +217,6 @@ describe("createDaemonThreadHelpers", () => {
     await store.createThread({
       id: "thread-current",
       sessionId: "session-bound",
-      context: {},
     });
     const {helpers, sessionStore} = createHelpers({
       store,
@@ -242,7 +241,6 @@ describe("createDaemonThreadHelpers", () => {
     await store.createThread({
       id: "thread-after-reset",
       sessionId: "session-bound",
-      context: {},
     });
     const {helpers} = createHelpers({
       store,
@@ -295,7 +293,7 @@ describe("createDaemonThreadHelpers", () => {
     })).rejects.toThrow("Unknown identity missing-identity");
   });
 
-  it("stores canonical host cwd for new main sessions even in remote mode", async () => {
+  it("does not persist synthetic cwd context for new main sessions", async () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
     vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
 
@@ -308,10 +306,7 @@ describe("createDaemonThreadHelpers", () => {
       identityId: identity.id,
     });
 
-    expect(thread.context).toMatchObject({
-      agentKey: "panda",
-      cwd: "/Users/patrikmojzis/Projects/panda-agent",
-    });
+    expect(thread).not.toHaveProperty("context");
   });
 
   it("leaves new main sessions unpinned when no explicit model was requested", async () => {
@@ -356,12 +351,6 @@ describe("createDaemonThreadHelpers", () => {
     await store.createThread({
       id: "thread-old-home",
       sessionId: "session-main",
-      context: {
-        agentKey: "panda",
-        sessionId: "session-main",
-        identityId: TEST_IDENTITY_ID,
-        identityHandle: "home",
-      },
     });
 
     const backgroundJobService = new BackgroundToolJobService({ store });
@@ -406,13 +395,8 @@ describe("createDaemonThreadHelpers", () => {
     });
     expect(onTerminalJob).not.toHaveBeenCalled();
     const thread = await store.getThread(String(result.threadId));
-    expect(thread.context).toMatchObject({
-      agentKey: "panda",
-      sessionId: "session-main",
-      cwd: workspace,
-    });
-    expect((thread.context as Record<string, unknown>).identityId).toBeUndefined();
-    expect((thread.context as Record<string, unknown>).identityHandle).toBeUndefined();
+    expect(thread.sessionId).toBe("session-main");
+    expect(thread).not.toHaveProperty("context");
   });
 
   it("resets channel-bound conversations without adapter-specific daemon logic", async () => {
@@ -420,10 +404,6 @@ describe("createDaemonThreadHelpers", () => {
     await store.createThread({
       id: "thread-old-channel",
       sessionId: "session-main",
-      context: {
-        agentKey: "panda",
-        sessionId: "session-main",
-      },
     });
 
     const {helpers, conversationBindings, sessionRoutes} = createHelpers({
@@ -471,10 +451,8 @@ describe("createDaemonThreadHelpers", () => {
     }));
     await expect(store.getThread(String(result.threadId))).resolves.toMatchObject({
       sessionId: "session-main",
-      context: expect.objectContaining({
-        source: "whatsapp",
-      }),
     });
+    await expect(store.getThread(String(result.threadId))).resolves.not.toHaveProperty("context");
   });
 
   it("allows operator reset for an ownerless session", async () => {
@@ -482,10 +460,6 @@ describe("createDaemonThreadHelpers", () => {
     await store.createThread({
       id: "thread-ownerless",
       sessionId: "session-main",
-      context: {
-        agentKey: "panda",
-        sessionId: "session-main",
-      },
     });
 
     const {helpers} = createHelpers({
