@@ -134,6 +134,20 @@ async function assertRegclasses(pool: ReturnType<typeof createPostgresPool>, nam
   }
 }
 
+async function assertLegacyThreadContextColumnDropped(pool: ReturnType<typeof createPostgresPool>): Promise<void> {
+  const result = await pool.query(`
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'runtime'
+      AND table_name = 'threads'
+      AND column_name = 'context'
+    LIMIT 1
+  `);
+  if (result.rows.length > 0) {
+    throw new Error("Expected legacy runtime.threads.context column to be dropped after startup rehearsal.");
+  }
+}
+
 async function assertCoreRelations(pool: ReturnType<typeof createPostgresPool>): Promise<void> {
   await assertRegclasses(pool, [
     "runtime.agents",
@@ -166,6 +180,7 @@ async function runScenario(name: string, fixturePath?: string): Promise<void> {
     }
     await ensureRuntimeStartupSchemas(pool, stores);
     await assertCoreRelations(pool);
+    await assertLegacyThreadContextColumnDropped(pool);
     process.stdout.write(`Postgres startup rehearsal passed: ${name}\n`);
   } finally {
     await pool.end();
