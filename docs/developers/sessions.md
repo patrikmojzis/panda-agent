@@ -23,6 +23,7 @@ The current shape is:
 - `session_heartbeats`
 - `conversation_sessions`
 - `session_routes`
+- `session_runtime_config` for session-scoped runtime knobs and pending wake state
 - `threads` with `session_id`
 
 Every agent has exactly one `main` session.
@@ -62,7 +63,7 @@ Aliases are a separate operator affordance:
 - unique per `(agent_key, alias)` when non-null
 - normalized lowercase with `[a-z0-9][a-z0-9_-]*`
 - resolved exact canonical id first, then alias scoped by agent key
-- never stored into conversation bindings, routes, thread context, prompts, outbound messages, or A2A payloads by default
+- never stored into conversation bindings, routes, prompts, outbound messages, or A2A payloads by default
 
 `panda session label` updates or clears `alias`/`display_name`; TUI alias editing is intentionally out of scope.
 
@@ -86,6 +87,8 @@ Rules:
 - prompt-cache affinity includes the todo hash/update version so `todo_update` is visible on the next model request
 - rendering caps completed-heavy lists; done items are not auto-deleted
 - no due dates, reminders, priorities, owners, global/project todos, or auto-spawn behavior in V1
+
+Session runtime config is stored per session in `session_runtime_config`. It holds runtime knobs such as `model`, `thinking`, `thinking_configured`, `inference_projection`, and `pending_wake_at`. These values follow the session across `/reset`; thread rows no longer own those scalar runtime settings.
 
 `/reset`:
 
@@ -131,13 +134,17 @@ submitting. Do not check one backing thread and then submit to another.
 
 ## Runtime Context
 
-Durable context is session-first:
+Runtime context is assembled session-first, but not every field is durable session state. The durable anchor is `sessionId`; each wake resolves the current `threadId` from `session.current_thread_id` and reads session-scoped runtime config from `session_runtime_config`.
+
+The default runtime context passed to tools/model includes:
 
 - `agentKey`
 - `sessionId`
-- `threadId`
-- `cwd`
-- `timezone`
+- resolved `threadId`
+- resolved `cwd`
+- turn-level `currentInput` when present
+
+Model, thinking, inference projection, and pending wake state are session runtime config, not thread fields. Timezone comes from the DateTime context/host clock, not a durable session column.
 
 Human identity is turn-level provenance, not durable thread ownership.
 
