@@ -15,7 +15,7 @@ import type {
     EmailRecipientInput,
     EmailStore
 } from "../../../domain/email/types.js";
-import {parseEmailAuthenticationResults} from "../../../domain/email/auth.js";
+import {parseEmailAuthenticationHeaders} from "../../../domain/email/auth.js";
 import {
     DEFAULT_EMAIL_BACKFILL_LIMIT,
     normalizeEmailAddress,
@@ -131,8 +131,8 @@ function headerValueToString(value: unknown): string | undefined {
   return trimToUndefined(String(value));
 }
 
-function authenticationResultsHeader(parsed: ParsedMail): string | undefined {
-  const value = parsed.headers.get("authentication-results");
+function parsedHeader(parsed: ParsedMail, name: string): string | undefined {
+  const value = parsed.headers.get(name);
   return headerValueToString(value);
 }
 
@@ -336,8 +336,12 @@ export class EmailSyncRunner {
         }
 
         const parsed = await simpleParser(message.source);
-        const authResultsHeader = authenticationResultsHeader(parsed);
-        const auth = parseEmailAuthenticationResults(authResultsHeader);
+        const authResultsHeader = parsedHeader(parsed, "authentication-results");
+        const auth = parseEmailAuthenticationHeaders({
+          authenticationResults: authResultsHeader,
+          receivedSpf: parsedHeader(parsed, "received-spf"),
+          xSpamdResult: parsedHeader(parsed, "x-spamd-result"),
+        });
         const from = firstAddress(parsed.from);
         const replyTo = firstAddress(parsed.replyTo);
         const receivedAt = parsed.date instanceof Date

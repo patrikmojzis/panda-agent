@@ -19,6 +19,12 @@ export interface ParsedEmailAuthentication {
   authSummary: EmailAuthSummary;
 }
 
+export interface EmailAuthenticationHeaders {
+  authenticationResults?: string;
+  receivedSpf?: string;
+  xSpamdResult?: string;
+}
+
 function normalizeVerdict(value: string | undefined): EmailAuthVerdict | undefined {
   const normalized = value?.trim().toLowerCase();
   return normalized && KNOWN_VERDICTS.has(normalized as EmailAuthVerdict)
@@ -38,15 +44,110 @@ function pickVerdict(values: readonly EmailAuthVerdict[]): EmailAuthVerdict | un
   return values[0];
 }
 
-function readMechanism(header: string | undefined, mechanism: "spf" | "dkim" | "dmarc"): EmailAuthVerdict | undefined {
+function readAuthenticationResultsMechanism(
+  header: string | undefined,
+  mechanism: "spf" | "dkim" | "dmarc",
+): EmailAuthVerdict[] {
   if (!header) {
-    return undefined;
+    return [];
   }
 
-  const verdicts = Array.from(header.matchAll(new RegExp(`\\b${mechanism}\\s*=\\s*([a-z]+)`, "gi")))
+  return Array.from(header.matchAll(new RegExp(`\\b${mechanism}\\s*=\\s*([a-z]+)`, "gi")))
     .map((match) => normalizeVerdict(match[1]))
     .filter((value): value is EmailAuthVerdict => Boolean(value));
-  return pickVerdict(verdicts);
+}
+
+function readReceivedSpf(header: string | undefined): EmailAuthVerdict[] {
+  if (!header) {
+    return [];
+  }
+
+  return Array.from(header.matchAll(/(?:^|\n)\s*([a-z]+)/gi))
+    .map((match) => normalizeVerdict(match[1]))
+    .filter((value): value is EmailAuthVerdict => Boolean(value));
+}
+
+function hasRspamdSymbol(header: string, symbol: string): boolean {
+  return new RegExp(`\\b${symbol}\\b`, "i").test(header);
+}
+
+function readRspamdSpf(header: string | undefined): EmailAuthVerdict[] {
+  if (!header) {
+    return [];
+  }
+
+  const verdicts: EmailAuthVerdict[] = [];
+  if (hasRspamdSymbol(header, "R_SPF_FAIL")) {
+    verdicts.push("fail");
+  }
+  if (hasRspamdSymbol(header, "R_SPF_SOFTFAIL")) {
+    verdicts.push("softfail");
+  }
+  if (hasRspamdSymbol(header, "R_SPF_DNSFAIL")) {
+    verdicts.push("temperror");
+  }
+  if (hasRspamdSymbol(header, "R_SPF_PERMFAIL")) {
+    verdicts.push("permerror");
+  }
+  if (hasRspamdSymbol(header, "R_SPF_NEUTRAL")) {
+    verdicts.push("neutral");
+  }
+  if (hasRspamdSymbol(header, "R_SPF_ALLOW")) {
+    verdicts.push("pass");
+  }
+
+  return verdicts;
+}
+
+function readRspamdDkim(header: string | undefined): EmailAuthVerdict[] {
+  if (!header) {
+    return [];
+  }
+
+  const verdicts: EmailAuthVerdict[] = [];
+  if (hasRspamdSymbol(header, "R_DKIM_REJECT")) {
+    verdicts.push("fail");
+  }
+  if (hasRspamdSymbol(header, "R_DKIM_TEMPFAIL")) {
+    verdicts.push("temperror");
+  }
+  if (hasRspamdSymbol(header, "R_DKIM_PERMFAIL")) {
+    verdicts.push("permerror");
+  }
+  if (hasRspamdSymbol(header, "R_DKIM_ALLOW")) {
+    verdicts.push("pass");
+  }
+
+  for (const match of header.matchAll(/\bDKIM_TRACE\b[^\[]*\[([^\]]+)\]/gi)) {
+    const trace = match[1] ?? "";
+    if (trace.includes(":-")) {
+      verdicts.push("fail");
+    }
+    if (trace.includes(":+")) {
+      verdicts.push("pass");
+    }
+  }
+
+  return verdicts;
+}
+
+function readRspamdDmarc(header: string | undefined): EmailAuthVerdict[] {
+  if (!header) {
+    return [];
+  }
+
+  const verdicts: EmailAuthVerdict[] = [];
+  if (hasRspamdSymbol(header, "DMARC_POLICY_REJECT") || hasRspamdSymbol(header, "DMARC_POLICY_QUARANTINE")) {
+    verdicts.push("fail");
+  }
+  if (hasRspamdSymbol(header, "DMARC_POLICY_SOFTFAIL")) {
+    verdicts.push("softfail");
+  }
+  if (hasRspamdSymbol(header, "DMARC_POLICY_ALLOW")) {
+    verdicts.push("pass");
+  }
+
+  return verdicts;
 }
 
 export function summarizeEmailAuthentication(input: {
@@ -64,17 +165,31 @@ export function summarizeEmailAuthentication(input: {
 }
 
 /**
- * Parses IMAP-delivered Authentication-Results defensively: failures are
+ * Parses IMAP-delivered authentication evidence defensively: failures are
  * useful warning signals, but passes are not enough to trust raw headers.
  */
-export function parseEmailAuthenticationResults(header: string | undefined): ParsedEmailAuthentication {
-  const authSpf = readMechanism(header, "spf");
-  const authDkim = readMechanism(header, "dkim");
-  const authDmarc = readMechanism(header, "dmarc");
+export function parseEmailAuthenticationHeaders(headers: EmailAuthenticationHeaders): ParsedEmailAuthentication {
+  const authSpf = pickVerdict([
+    ...readAuthenticationResultsMechanism(headers.authenticationResults, "spf"),
+    ...readReceivedSpf(headers.receivedSpf),
+    ...readRspamdSpf(headers.xSpamdResult),
+  ]);
+  const authDkim = pickVerdict([
+    ...readAuthenticationResultsMechanism(headers.authenticationResults, "dkim"),
+    ...readRspamdDkim(headers.xSpamdResult),
+  ]);
+  const authDmarc = pickVerdict([
+    ...readAuthenticationResultsMechanism(headers.authenticationResults, "dmarc"),
+    ...readRspamdDmarc(headers.xSpamdResult),
+  ]);
   return {
     ...(authSpf ? {authSpf} : {}),
     ...(authDkim ? {authDkim} : {}),
     ...(authDmarc ? {authDmarc} : {}),
     authSummary: summarizeEmailAuthentication({authSpf, authDkim, authDmarc}),
   };
+}
+
+export function parseEmailAuthenticationResults(header: string | undefined): ParsedEmailAuthentication {
+  return parseEmailAuthenticationHeaders({authenticationResults: header});
 }
