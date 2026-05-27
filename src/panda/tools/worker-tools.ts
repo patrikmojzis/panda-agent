@@ -1,3 +1,6 @@
+import {constants as fsConstants} from "node:fs";
+import {access, stat} from "node:fs/promises";
+
 import type {ToolResultMessage} from "@mariozechner/pi-ai";
 import {z} from "zod";
 
@@ -14,7 +17,13 @@ import type {
 } from "../../domain/execution-environments/types.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
+import {
+  readExecutionEnvironmentSetupMetadata,
+  SETUP_SCRIPT_INSPECTION_NOTE,
+  type ExecutionEnvironmentSetupScriptInput,
+} from "../../domain/execution-environments/setup.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {resolveReadableContextPath} from "../../app/runtime/panda-path-context.js";
 import type {SessionRecord} from "../../domain/sessions/types.js";
 import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
 import {
@@ -87,6 +96,7 @@ interface ExecutionEnvironmentCreator {
     createdBySessionId: string;
     ttlMs?: number;
     metadata?: JsonObject;
+    setupScript?: ExecutionEnvironmentSetupScriptInput;
   }): Promise<ExecutionEnvironmentRecord>;
 }
 
@@ -137,6 +147,7 @@ function serializeWorkerEnvironment(environment: ExecutionEnvironmentRecord): Js
     rootPath: environment.rootPath,
     expiresAt: environment.expiresAt,
     paths: readParentVisiblePaths(environment),
+    setup: readExecutionEnvironmentSetupMetadata(environment.metadata) ?? undefined,
   });
 }
 
@@ -279,6 +290,42 @@ export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
   }
 }
 
+async function resolveSetupScriptInput(
+  rawPath: string | undefined,
+  context: DefaultAgentSessionContext | undefined,
+): Promise<ExecutionEnvironmentSetupScriptInput | undefined> {
+  if (rawPath === undefined) {
+    return undefined;
+  }
+
+  const requestedPath = rawPath.trim();
+  const resolvedPath = await resolveReadableContextPath(requestedPath, context);
+  const file = await stat(resolvedPath).catch(() => null);
+  if (!file) {
+    throw new ToolError(`No readable setup script found at ${requestedPath}.`);
+  }
+
+  if (!file.isFile()) {
+    throw new ToolError(`setupScript must point to a regular .sh file: ${requestedPath}.`);
+  }
+  if (!requestedPath.endsWith(".sh") || !resolvedPath.endsWith(".sh")) {
+    throw new ToolError(`setupScript must point to a .sh file: ${requestedPath}.`);
+  }
+  if ((file.mode & 0o444) === 0) {
+    throw new ToolError(`Setup script is not readable: ${requestedPath}.`);
+  }
+  try {
+    await access(resolvedPath, fsConstants.R_OK);
+  } catch {
+    throw new ToolError(`Setup script is not readable: ${requestedPath}.`);
+  }
+
+  return {
+    requestedPath,
+    resolvedPath,
+  };
+}
+
 export interface EnvironmentCreateToolOptions {
   lifecycle: ExecutionEnvironmentCreator;
 }
@@ -288,10 +335,13 @@ export class EnvironmentCreateTool<TContext = DefaultAgentSessionContext>
   static schema = z.object({
     label: z.string().trim().min(1).max(80).optional(),
     ttlHours: z.number().positive().max(24 * 30).optional(),
+    setupScript: z.string().trim().min(1).optional().describe(
+      `Path to a readable .sh script to copy into the new environment and run before it is marked ready. ${SETUP_SCRIPT_INSPECTION_NOTE}`,
+    ),
   });
 
   name = "environment_create";
-  description = "Create a disposable execution environment owned by this session. Files are preserved when the environment is stopped.";
+  description = `Create a disposable execution environment owned by this session. Optionally run a readable .sh setupScript before the environment is marked ready. ${SETUP_SCRIPT_INSPECTION_NOTE}`;
   schema = EnvironmentCreateTool.schema;
 
   private readonly lifecycle: ExecutionEnvironmentCreator;
@@ -319,7 +369,9 @@ export class EnvironmentCreateTool<TContext = DefaultAgentSessionContext>
     args: z.output<typeof EnvironmentCreateTool.schema>,
     run: RunContext<TContext>,
   ): Promise<JsonObject> {
-    const scope = readScope(run.context as DefaultAgentSessionContext | undefined);
+    const context = run.context as DefaultAgentSessionContext | undefined;
+    const scope = readScope(context);
+    const setupScript = await resolveSetupScriptInput(args.setupScript, context);
     const environment = await this.lifecycle.createStandaloneDisposableEnvironment({
       agentKey: scope.agentKey,
       createdBySessionId: scope.sessionId,
@@ -330,6 +382,7 @@ export class EnvironmentCreateTool<TContext = DefaultAgentSessionContext>
         ...(args.label ? {label: args.label} : {}),
         createdByTool: "environment_create",
       }),
+      ...(setupScript ? {setupScript} : {}),
     });
 
     return {

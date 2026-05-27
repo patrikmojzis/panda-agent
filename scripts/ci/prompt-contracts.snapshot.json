@@ -31,10 +31,10 @@
       "sha256": "e2c621b8cfb18415c53ff200f6b927710329874564fcc3e32ed61f9fb69c360d"
     },
     {
-      "bytes": 22158,
-      "lines": 674,
+      "bytes": 22451,
+      "lines": 680,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "ff6f5f117b2cf980add55c9344b07f562a1d69bf2ae60754f19c371c7d696470"
+      "sha256": "f1e4fba31a024bc6b744e5c0ec46f95c9fc958756db141abaa47410083621848"
     },
     {
       "bytes": 12833,
@@ -991,7 +991,7 @@
       }
     },
     {
-      "description": "Create a disposable execution environment owned by this session. Files are preserved when the environment is stopped.",
+      "description": "Create a disposable execution environment owned by this session. Optionally run a readable .sh setupScript before the environment is marked ready. Copied setup.sh is intentionally inspectable under /artifacts/setup/setup.sh; do not embed secrets in setup scripts. Use harness-injected credential environment variables instead.",
       "name": "environment_create",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -999,6 +999,11 @@
         "properties": {
           "label": {
             "maxLength": 80,
+            "minLength": 1,
+            "type": "string"
+          },
+          "setupScript": {
+            "description": "Path to a readable .sh script to copy into the new environment and run before it is marked ready. Copied setup.sh is intentionally inspectable under /artifacts/setup/setup.sh; do not embed secrets in setup scripts. Use harness-injected credential environment variables instead.",
             "minLength": 1,
             "type": "string"
           },

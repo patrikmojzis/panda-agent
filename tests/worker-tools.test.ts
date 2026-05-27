@@ -1,3 +1,7 @@
+import {chmod, mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import {describe, expect, it, vi} from "vitest";
 
 import {
@@ -14,6 +18,7 @@ import type {CreateWorkerSessionInput, CreateWorkerSessionResult} from "../src/a
 import type {ExecutionEnvironmentRecord} from "../src/domain/execution-environments/types.js";
 import type {SessionRecord} from "../src/domain/sessions/index.js";
 import {EnvironmentCreateTool, EnvironmentStopTool, WorkerSpawnTool} from "../src/panda/tools/worker-tools.js";
+import {SpawnSubagentTool} from "../src/panda/tools/spawn-subagent-tool.js";
 
 function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
@@ -119,6 +124,12 @@ function createEnvironment(overrides: Partial<ExecutionEnvironmentRecord> = {}):
 }
 
 describe("worker control tools", () => {
+  it("exposes setupScript only on environment_create", () => {
+    expect(EnvironmentCreateTool.schema.shape).toHaveProperty("setupScript");
+    expect(WorkerSpawnTool.schema.shape).not.toHaveProperty("setupScript");
+    expect(SpawnSubagentTool.schema.shape).not.toHaveProperty("setupScript");
+  });
+
   it("spawns workers with scoped allowlists and parent-visible paths", async () => {
     const created: CreateWorkerSessionResult = {
       session: createWorkerSession(),
@@ -575,6 +586,98 @@ describe("worker control tools", () => {
         artifacts: "/environments/worker-session/artifacts",
       },
     });
+  });
+
+
+  it("passes a validated setupScript path to standalone environment creation", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "panda-setup-tool-"));
+    try {
+      await writeFile(path.join(tmp, "setup.sh"), "#!/usr/bin/env bash\necho ready\n", "utf8");
+      const environment = createEnvironment({
+        id: "environment:parent-session:abc",
+        createdForSessionId: undefined,
+        metadata: {
+          ...createFilesystemMetadata(),
+          setup: {
+            status: "succeeded",
+            artifacts: {
+              script: "/artifacts/setup/setup.sh",
+              stdout: "/artifacts/setup/stdout.log",
+              stderr: "/artifacts/setup/stderr.log",
+              result: "/artifacts/setup/setup-result.json",
+              toolchain: "/artifacts/setup/toolchain.json",
+            },
+          },
+        },
+      });
+      const createStandaloneDisposableEnvironment = vi.fn(async () => environment);
+      const tool = new EnvironmentCreateTool({
+        lifecycle: {
+          createStandaloneDisposableEnvironment,
+        },
+      });
+
+      const result = await tool.run({
+        label: "review env",
+        setupScript: "setup.sh",
+      }, createRunContext({
+        cwd: tmp,
+        agentKey: "panda",
+        sessionId: "parent-session",
+        threadId: "parent-thread",
+      }));
+
+      expect(createStandaloneDisposableEnvironment).toHaveBeenCalledWith(expect.objectContaining({
+        agentKey: "panda",
+        createdBySessionId: "parent-session",
+        setupScript: {
+          requestedPath: "setup.sh",
+          resolvedPath: path.join(tmp, "setup.sh"),
+        },
+      }));
+      expect(result).toMatchObject({
+        status: "created",
+        setup: {
+          status: "succeeded",
+          artifacts: {
+            script: "/artifacts/setup/setup.sh",
+          },
+        },
+      });
+    } finally {
+      await rm(tmp, {recursive: true, force: true});
+    }
+  });
+
+  it("rejects invalid setupScript paths before lifecycle creation", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "panda-setup-invalid-"));
+    try {
+      await mkdir(path.join(tmp, "setup-dir"));
+      await writeFile(path.join(tmp, "setup.txt"), "echo no\n", "utf8");
+      await writeFile(path.join(tmp, "unreadable.sh"), "echo no\n", "utf8");
+      await chmod(path.join(tmp, "unreadable.sh"), 0o000);
+      const createStandaloneDisposableEnvironment = vi.fn();
+      const tool = new EnvironmentCreateTool({
+        lifecycle: {
+          createStandaloneDisposableEnvironment,
+        },
+      });
+      const context = createRunContext({
+        cwd: tmp,
+        agentKey: "panda",
+        sessionId: "parent-session",
+        threadId: "parent-thread",
+      });
+
+      await expect(tool.run({setupScript: "missing.sh"}, context)).rejects.toThrow("No readable setup script");
+      await expect(tool.run({setupScript: "setup-dir"}, context)).rejects.toThrow("regular .sh file");
+      await expect(tool.run({setupScript: "setup.txt"}, context)).rejects.toThrow(".sh file");
+      await expect(tool.run({setupScript: "unreadable.sh"}, context)).rejects.toThrow("not readable");
+      expect(createStandaloneDisposableEnvironment).not.toHaveBeenCalled();
+    } finally {
+      await chmod(path.join(tmp, "unreadable.sh"), 0o644).catch(() => {});
+      await rm(tmp, {recursive: true, force: true});
+    }
   });
 
   it("stops an owned environment and preserves file paths", async () => {
