@@ -15,6 +15,7 @@ Start here:
 - [Execution Environments](./execution-environments.md)
 - [Issue #16 PR1 Subagent Foundation](./issue-16-pr1-subagent-foundation.md)
 - [Issue #16 PR2 Policy Plumbing and Hidden Durable Subagent Seam](./issue-16-pr2-policy-plumbing.md)
+- [Issue #16 PR3 Durable `spawn_subagent` Hard Cut](./issue-16-pr3-hard-cut.md)
 - [Browser](./browser.md)
 - [Identity](./identity.md)
 - [Credentials](./credentials.md)

@@ -7,16 +7,16 @@
       "sha256": "5bdd27237cdbea0029962f848523647def7fb81053ec670d6d708d4eb51a8c10"
     },
     {
-      "bytes": 7869,
-      "lines": 199,
+      "bytes": 8230,
+      "lines": 205,
       "path": "src/app/runtime/create-runtime.ts",
-      "sha256": "0f04bd624ecfd1fd42913992f3d24a50e0944ba1169b5914929d7437e29e4026"
+      "sha256": "e8917f8e3900e52b224dd8e827d51761a61aed2a98d811eb45b1199345d66134"
     },
     {
-      "bytes": 13332,
-      "lines": 360,
+      "bytes": 13288,
+      "lines": 357,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "88dad78b0c0b78048a0c175006dd1001a4196f96fbc5319c688df3610fc8c8e9"
+      "sha256": "87f4571604f3119a8a97ffdc7dd01ae02ea93a6b814a248f0ae61c617fdbd328"
     },
     {
       "bytes": 12121,
@@ -31,16 +31,16 @@
       "sha256": "e2c621b8cfb18415c53ff200f6b927710329874564fcc3e32ed61f9fb69c360d"
     },
     {
-      "bytes": 23161,
-      "lines": 704,
+      "bytes": 22158,
+      "lines": 674,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "461246a983f7c60b8e48fc2c7b711a575c0ee429f86e2e0bf9da7177646becee"
+      "sha256": "ff6f5f117b2cf980add55c9344b07f562a1d69bf2ae60754f19c371c7d696470"
     },
     {
-      "bytes": 12800,
+      "bytes": 12833,
       "lines": 322,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "49d21668704ce88af30dfb63b706901625c8e6046bd8a5adf9fdb33fcd5315ad"
+      "sha256": "f000b86d21ca1aa2c88b9e88bf59a81a6cf09ecfeb718f676a5dc0bd4dba2ed2"
     },
     {
       "bytes": 1600,
@@ -49,10 +49,10 @@
       "sha256": "20d20c88a23d65e89752a5a5da5750fc418c39c0177e812cdc8d58fa828c7a84"
     },
     {
-      "bytes": 4936,
-      "lines": 154,
+      "bytes": 4912,
+      "lines": 153,
       "path": "src/domain/subagents/tool-groups.ts",
-      "sha256": "fcd2393ba8215bf4199861b948d2b8d7aaca56eb6274a20af81dff942bd8d040"
+      "sha256": "86d53469e6afcc1c61b6652df99f8894f7712362d904261f327c5edaae8fed9b"
     },
     {
       "bytes": 2612,
@@ -154,7 +154,7 @@
       "bytes": 1546,
       "lines": 70,
       "path": "src/panda/worker-tool-policy.ts",
-      "sha256": "5897738e567aedf446777a8240df0ffbd82e81b5a029ae5f9127a4a2ebeb4bd5"
+      "sha256": "9fce677c7aa49ec138a83599f6523fd7f273f7db52b9682f3375dc983a1a03be"
     },
     {
       "bytes": 2898,
@@ -295,10 +295,10 @@
       "sha256": "cad5b2b991230740617070b6e628d49803d08242741e790ee444d5c9635c5df3"
     },
     {
-      "bytes": 13175,
+      "bytes": 13382,
       "lines": 216,
       "path": "src/prompts/runtime/default-agent.ts",
-      "sha256": "5a95d4ff1b8ef89218d7ce5f6c7fa092f9fb0ae3628a13455a44953175e43d2c"
+      "sha256": "3918bf617a5fa7f3b7cebbe3a9b1d727a5f50280f14cdcf8a2b9f921ba33f953"
     },
     {
       "bytes": 1491,
@@ -331,10 +331,10 @@
       "sha256": "bde7c1c8de078e3fbc398105605e3f3cfcea4432612515bd79aadacb7602471d"
     },
     {
-      "bytes": 9941,
+      "bytes": 10500,
       "lines": 218,
       "path": "src/prompts/runtime/subagents.ts",
-      "sha256": "4e9eab4ccb733b17cf048b3fa2396e3d6395d30ff8bd56c874adee81630f4358"
+      "sha256": "dee399f8a3994fe742b154dbfb77a21c9265b150114f5f29daf1dd569aec78c1"
     },
     {
       "bytes": 917,
@@ -343,10 +343,10 @@
       "sha256": "911a5f980a4c6404230ff8990ecbac633bb4cbf89bded2babc911947cf8d2949"
     },
     {
-      "bytes": 8254,
+      "bytes": 8233,
       "lines": 124,
       "path": "src/prompts/runtime/worker.ts",
-      "sha256": "2a56073bfdf0a9a7825da8c83579db15bde32f47c4ab5ce5a00f09d205283275"
+      "sha256": "b9881cf5fd411bfdd0f5d7ba63ad00a18892b6e29326607681b6ced7a87478eb"
     },
     {
       "bytes": 582,
@@ -1658,41 +1658,71 @@
       }
     },
     {
-      "description": "Start a fresh background subagent and return its job id.\nSubagents do not inherit the parent transcript.\nUse role=\"workspace\" for read-only codebase inspection, role=\"memory\" for Postgres history plus wiki memory work, role=\"browser\" for isolated browser work, and role=\"skill_maintainer\" for skill reflection and maintenance.\nThe subagent result returns later as a background tool event. Use background_job_wait only when the current response truly needs the answer now.",
+      "description": "Create a durable subagent session and hand off work immediately.\nSubagents do not inherit the parent transcript; include all necessary task context in prompt/context.\nProgress and completion come back through A2A message_agent from the subagent, not background-job polling.\nUse environment_create first if isolated_environment needs a disposable environment; spawn_subagent only attaches to an existing ready environment owned by this parent session.",
       "name": "spawn_subagent",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
           "context": {
-            "description": "Optional extra context for the child.",
+            "description": "Optional extra context for the subagent.",
             "minLength": 1,
             "type": "string"
           },
-          "model": {
-            "description": "Optional model override for the child run.",
+          "credentialAllowlist": {
+            "description": "Explicit credential env keys the subagent may receive. Defaults to none.",
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 50,
+            "type": "array"
+          },
+          "environmentId": {
+            "description": "Existing ready parent-owned disposable environment id for isolated_environment only.",
             "minLength": 1,
             "type": "string"
           },
-          "role": {
-            "description": "Subagent role to run. Use \"workspace\" for read-only workspace inspection, \"memory\" for Postgres history plus wiki memory work, \"browser\" for isolated browser automation, and \"skill_maintainer\" for skill reflection and maintenance.",
+          "execution": {
+            "description": "Execution mode. Defaults to agent_workspace. isolated_environment requires environmentId.",
             "enum": [
-              "workspace",
-              "memory",
-              "browser",
-              "skill_maintainer"
+              "agent_workspace",
+              "isolated_environment"
             ],
             "type": "string"
           },
-          "task": {
-            "description": "The concrete task to delegate.",
+          "profile": {
+            "description": "Optional subagent profile slug. Omit when using ad-hoc toolGroups.",
             "minLength": 1,
             "type": "string"
+          },
+          "prompt": {
+            "description": "The concrete handoff prompt for the durable subagent session.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "toolGroups": {
+            "description": "Ad-hoc tool groups to use when profile is omitted.",
+            "items": {
+              "enum": [
+                "core",
+                "workspace_read",
+                "internet",
+                "memory",
+                "execute",
+                "skill_maintenance",
+                "operate",
+                "communicate_human"
+              ],
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "type": "array"
           }
         },
         "required": [
-          "role",
-          "task"
+          "prompt"
         ],
         "type": "object"
       }
@@ -2165,68 +2195,6 @@
         ],
         "type": "object"
       }
-    },
-    {
-      "description": "Spawn a disposable worker session for scoped work. By default it creates a fresh environment; pass environmentId to attach to an existing environment.",
-      "name": "worker_spawn",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "allowReadonlyPostgres": {
-            "type": "boolean"
-          },
-          "context": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "credentialAllowlist": {
-            "items": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 50,
-            "type": "array"
-          },
-          "environmentId": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "model": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "role": {
-            "maxLength": 80,
-            "minLength": 1,
-            "type": "string"
-          },
-          "skillAllowlist": {
-            "items": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 50,
-            "type": "array"
-          },
-          "task": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "toolAllowlist": {
-            "items": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 50,
-            "type": "array"
-          }
-        },
-        "required": [
-          "task"
-        ],
-        "type": "object"
-      }
     }
   ],
   "toolsets": {
@@ -2292,6 +2260,10 @@
       "grep_files",
       "view_media"
     ],
+    "environmentControl": [
+      "environment_create",
+      "environment_stop"
+    ],
     "runtimeMain": [
       "bash",
       "background_job_status",
@@ -2306,7 +2278,6 @@
       "whisper",
       "brave_search",
       "thinking_set",
-      "spawn_subagent",
       "agent_prompt",
       "app_create",
       "app_list",
@@ -2324,7 +2295,10 @@
       "watch_create",
       "watch_schema_get",
       "watch_update",
-      "watch_disable"
+      "watch_disable",
+      "environment_create",
+      "environment_stop",
+      "spawn_subagent"
     ],
     "runtimeWorker": [
       "bash",
@@ -2342,7 +2316,6 @@
       "web_research",
       "whisper",
       "thinking_set",
-      "spawn_subagent",
       "agent_prompt",
       "app_create",
       "app_list",
@@ -2360,11 +2333,6 @@
       "watch_schema_get",
       "watch_update",
       "watch_disable"
-    ],
-    "workerControl": [
-      "environment_create",
-      "environment_stop",
-      "worker_spawn"
     ]
   },
   "version": 1,
@@ -2372,6 +2340,7 @@
     "controlToolNames": [
       "environment_create",
       "environment_stop",
+      "spawn_subagent",
       "worker_spawn",
       "worker_stop"
     ],
@@ -2435,7 +2404,6 @@
       "scheduled_task_create",
       "scheduled_task_update",
       "set_env_value",
-      "spawn_subagent",
       "telegram_react",
       "thinking_set",
       "todo_update",

@@ -25,7 +25,7 @@ import {
 } from "../../src/panda/tools/app-tools.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../src/panda/tools/env-value-tools.js";
 import {EmailSendTool} from "../../src/panda/tools/email-send-tool.js";
-import {EnvironmentCreateTool, EnvironmentStopTool, WorkerSpawnTool} from "../../src/panda/tools/worker-tools.js";
+import {EnvironmentCreateTool, EnvironmentStopTool} from "../../src/panda/tools/worker-tools.js";
 import {MessageAgentTool} from "../../src/panda/tools/message-agent-tool.js";
 import {OutboundTool} from "../../src/panda/tools/outbound-tool.js";
 import {
@@ -231,10 +231,6 @@ function collectTools(): {
       new ThinkingSetTool({
         persistence: service,
       }),
-      new SpawnSubagentTool({
-        service,
-        jobService,
-      }),
       new AgentPromptTool({
         store: service,
       }),
@@ -275,9 +271,9 @@ function collectTools(): {
         store: service,
       }),
     ];
-    const runtimeMain = buildDefaultAgentToolsetsFromRegistry(registry, mainExtras).main;
-    const runtimeWorker = mergeToolsByName([defaultToolsets.worker, runtimeMain]);
-    const workerControl = [
+    const bootstrapMain = buildDefaultAgentToolsetsFromRegistry(registry, mainExtras).main;
+    const runtimeWorker = mergeToolsByName([defaultToolsets.worker, bootstrapMain]);
+    const environmentControl = [
       new EnvironmentCreateTool({
         lifecycle: service,
       }),
@@ -285,9 +281,12 @@ function collectTools(): {
         environments: service,
         lifecycle: service,
       }),
-      new WorkerSpawnTool({
-        workerSessions: service,
-        availableToolNames: () => toolNames(runtimeWorker),
+    ];
+    const runtimeMain = [
+      ...bootstrapMain,
+      ...environmentControl,
+      new SpawnSubagentTool({
+        subagentSessions: service,
       }),
     ];
     const daemonChannelExtras = [
@@ -307,7 +306,7 @@ function collectTools(): {
       defaultToolsets.skill_maintainer,
       runtimeMain,
       runtimeWorker,
-      workerControl,
+      environmentControl,
       daemonChannelExtras,
     ]);
 
@@ -322,7 +321,7 @@ function collectTools(): {
         defaultSkillMaintainer: toolNames(defaultToolsets.skill_maintainer),
         runtimeMain: toolNames(runtimeMain),
         runtimeWorker: toolNames(runtimeWorker),
-        workerControl: toolNames(workerControl),
+        environmentControl: toolNames(environmentControl),
         daemonChannelExtras: toolNames(daemonChannelExtras),
       },
     };

@@ -61,6 +61,7 @@ type SubagentEnvironmentAttacher = {
   attachReadySessionToDisposableEnvironment(input: {
     session: Pick<SessionRecord, "id" | "agentKey">;
     environmentId: string;
+    ownerSessionId: string;
     alias?: string;
     isDefault?: boolean;
     credentialPolicy?: ExecutionCredentialPolicy;
@@ -249,6 +250,7 @@ export class SubagentSessionService {
         ? await this.attachEnvironment({
           session: created.session,
           environmentId: environmentId ?? "",
+          ownerSessionId: parentSessionId,
           credentialPolicy,
           skillPolicy,
           toolPolicy,
@@ -334,6 +336,7 @@ export class SubagentSessionService {
   private async attachEnvironment(input: {
     session: Pick<SessionRecord, "id" | "agentKey">;
     environmentId: string;
+    ownerSessionId: string;
     credentialPolicy: ExecutionCredentialPolicy;
     skillPolicy: ExecutionSkillPolicy;
     toolPolicy: ExecutionToolPolicy;
@@ -344,6 +347,7 @@ export class SubagentSessionService {
     return this.environments.attachReadySessionToDisposableEnvironment({
       session: input.session,
       environmentId: input.environmentId,
+      ownerSessionId: input.ownerSessionId,
       alias: "self",
       isDefault: true,
       credentialPolicy: input.credentialPolicy,

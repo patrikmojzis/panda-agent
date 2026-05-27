@@ -203,6 +203,7 @@ export async function bootstrapDaemonContext(
     },
   });
   runtimeForNotifications = runtime;
+  a2aBindings = runtime.a2aBindings;
 
   try {
     const conversationBindings = new ConversationRepo({
@@ -216,10 +217,6 @@ export async function bootstrapDaemonContext(
     outboundDeliveries = new PostgresOutboundDeliveryStore({
       pool: runtime.pool,
       notificationPool: runtime.notificationPool,
-    });
-
-    a2aBindings = new A2ASessionBindingRepo({
-      pool: runtime.pool,
     });
 
     channelActions = new PostgresChannelActionStore({

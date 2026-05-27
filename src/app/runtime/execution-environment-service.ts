@@ -53,6 +53,7 @@ export interface AttachSessionToDisposableEnvironmentInput {
 export interface AttachReadySessionToDisposableEnvironmentInput {
   session: Pick<SessionRecord, "id" | "agentKey">;
   environmentId: string;
+  ownerSessionId: string;
   alias?: string;
   isDefault?: boolean;
   credentialPolicy?: ExecutionCredentialPolicy;
@@ -378,6 +379,10 @@ export class ExecutionEnvironmentLifecycleService {
     const credentialPolicy = input.credentialPolicy ?? {mode: "allowlist" as const, envKeys: []};
     const skillPolicy = input.skillPolicy ?? {mode: "allowlist" as const, skillKeys: []};
     const toolPolicy = input.toolPolicy ?? {};
+    const ownerSessionId = trimToUndefined(input.ownerSessionId);
+    if (!ownerSessionId) {
+      throw new Error("Disposable environment owner session id must not be empty.");
+    }
 
     const environment = await this.store.getEnvironment(input.environmentId);
     if (environment.kind !== "disposable_container") {
@@ -385,6 +390,9 @@ export class ExecutionEnvironmentLifecycleService {
     }
     if (environment.agentKey !== input.session.agentKey) {
       throw new Error(`Execution environment ${environment.id} does not belong to agent ${input.session.agentKey}.`);
+    }
+    if (environment.createdBySessionId !== ownerSessionId) {
+      throw new Error(`Execution environment ${environment.id} is not owned by session ${ownerSessionId}.`);
     }
     if (environment.state !== "ready") {
       throw new Error(`Execution environment ${environment.id} is ${environment.state}.`);

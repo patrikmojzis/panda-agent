@@ -157,12 +157,11 @@ Do not add pass-through prompt modules under `src/panda`; public Panda exports
 should re-export prompt constants from `src/prompts` directly.
 
 Do not put daemon wiring, DB pool setup, or connector boot code here.
-`DefaultAgentSubagentService` should depend on the narrow
-`DefaultAgentSubagentStore` method slice. Subagent execution needs parent
-thread lookup and optional tool-job listing, not the whole runtime store.
-Subagent role defaults should stay table-driven in `src/panda/defaults.ts`;
-adding a role means extending the role/env mapping, not adding another
-role-specific model resolver wrapper.
+Durable subagent creation is runtime wiring: `SpawnSubagentTool` should depend on
+a narrow `SubagentSessionCreator` seam, and `SubagentSessionService` owns durable
+session/thread/A2A handoff creation. Subagent profiles and tool groups are the
+policy source of truth; do not add model-facing raw tool/skill allowlists or
+role-specific compatibility wrappers.
 Agent profile context should depend on the `AgentProfileStore` read slice,
 because prompt/skill context rendering should not require mutation or pairing
 methods from the agent store.

@@ -61,10 +61,8 @@ import {
     WatchSchemaGetTool,
     WatchUpdateTool,
 } from "../../panda/tools/watch-tools.js";
-import {SpawnSubagentTool} from "../../panda/tools/spawn-subagent-tool.js";
 import {ThinkingSetTool} from "../../panda/tools/thinking-set-tool.js";
 import {TodoUpdateTool} from "../../panda/tools/todo-update-tool.js";
-import {DefaultAgentSubagentService} from "../../panda/subagents/service.js";
 import {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import {
     buildObservedPoolConfig,
@@ -80,6 +78,7 @@ import {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js"
 import {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
 import {createExecutionEnvironmentManagerClientFromEnv} from "../../integrations/shell/execution-environment-manager-client.js";
 import {listenThreadRuntimeNotifications} from "./store-notifications.js";
+import {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
@@ -136,6 +135,7 @@ interface RuntimeBootstrapResult {
   email: EmailStore;
   watches: WatchStore;
   wikiBindingService: WikiBindingService | null;
+  a2aBindings: A2ASessionBindingRepo;
   postgresReadonly: PostgresReadonlyQueryToolOptions;
   mainTools: readonly Tool[];
   workerTools: readonly Tool[];
@@ -303,7 +303,6 @@ export async function bootstrapRuntime(
   };
   let notificationUnsubscribe: (() => Promise<void>) | null = null;
   let browserService: BrowserRunnerClient | null = null;
-  const maxSubagentDepth = options.maxSubagentDepth ?? 1;
   const postgresPoolHandle = createObservedPoolHandle({
     connectionString: options.dbUrl,
     applicationName: CORE_POSTGRES_APPLICATION_NAME,
@@ -394,6 +393,9 @@ export async function bootstrapRuntime(
     const executionEnvironments = new PostgresExecutionEnvironmentStore({
       pool: postgresPool,
     });
+    const a2aBindings = new A2ASessionBindingRepo({
+      pool: postgresPool,
+    });
     const store = new PostgresThreadRuntimeStore({
       pool: postgresPool,
     });
@@ -403,6 +405,7 @@ export async function bootstrapRuntime(
       subagentProfiles,
       sessionStore,
       executionEnvironments,
+      a2aBindings,
       store,
     ]);
     await subagentProfiles.seedBuiltinProfiles();
@@ -540,36 +543,6 @@ export async function bootstrapRuntime(
 
     let mainTools: readonly Tool[] = [];
     let workerTools: readonly Tool[] = defaultToolsets.worker;
-    const subagentService = new DefaultAgentSubagentService({
-      store,
-      resolveDefinition: (thread) => options.resolveDefinition(thread, {
-        agentStore,
-        backgroundJobService,
-        browserService: resolvedBrowserService,
-        credentialResolver,
-        executionEnvironments,
-        executionEnvironmentResolver,
-        executionEnvironmentService,
-        identityStore,
-        sessionStore,
-        subagentProfiles,
-        store,
-        scheduledTasks,
-        email,
-        wikiBindingService,
-        mainTools,
-        workerTools,
-      }),
-      toolsets: {
-        workspace: defaultToolsets.workspace,
-        memory: defaultToolsets.memory,
-        browser: defaultToolsets.browser,
-        skill_maintainer: defaultToolsets.skill_maintainer,
-      },
-      agentStore,
-      wikiBindings: wikiBindingService ?? undefined,
-      maxSubagentDepth,
-    });
 
     mainTools = buildDefaultAgentToolsetsFromRegistry(toolRegistry, [
       new ThinkingSetTool({
@@ -585,10 +558,6 @@ export async function bootstrapRuntime(
             };
           },
         },
-      }),
-      new SpawnSubagentTool({
-        service: subagentService,
-        jobService: backgroundJobService,
       }),
       new AgentPromptTool({
         store: agentStore,
@@ -667,6 +636,7 @@ export async function bootstrapRuntime(
       email,
       watches,
       wikiBindingService,
+      a2aBindings,
       postgresReadonly: postgresReadonlyToolOptions,
       mainTools,
       workerTools,

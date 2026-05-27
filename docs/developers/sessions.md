@@ -177,7 +177,7 @@ So:
 - pairing is global per `identity <-> agent`
 - there are no per-session ACLs
 - branch sessions are visible to all identities paired to that agent
-- subagents are not a session kind
+- subagents are durable `agent_sessions.kind = "subagent"` sessions created by `spawn_subagent`
 - there is no session-scoped memory table
 
 ## Code Map

@@ -104,7 +104,6 @@ describe("subagent tool groups", () => {
             "watch_disable",
             "environment_create",
             "environment_stop",
-            "spawn_subagent",
           ],
         },
         "skill_maintenance": {

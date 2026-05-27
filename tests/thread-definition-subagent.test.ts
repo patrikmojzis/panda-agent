@@ -66,6 +66,7 @@ function createSubagentMetadata(overrides: Partial<Parameters<typeof buildSubage
           "outbound",
           "wiki",
           "worker_spawn",
+          "spawn_subagent",
         ],
         agentSkill: {allowedOperations: ["load"]},
         postgresReadonly: {allowed: true},
@@ -155,7 +156,7 @@ describe("subagent thread definitions", () => {
     expect(dump).not.toContain("[agent]");
   });
 
-  it("filters tools by subagent policy and always denies worker_spawn", () => {
+  it("filters tools by subagent policy and always denies nested spawn tools", () => {
     const definition = createThreadDefinition({
       thread: createThread(),
       session: {
@@ -179,6 +180,7 @@ describe("subagent thread definitions", () => {
             "outbound",
             "wiki",
             "worker_spawn",
+            "spawn_subagent",
           ],
           agentSkill: {allowedOperations: ["load"]},
           postgresReadonly: {allowed: true},
@@ -195,6 +197,7 @@ describe("subagent thread definitions", () => {
         new NamedTool("outbound"),
         new NamedTool("wiki"),
         new NamedTool("worker_spawn"),
+        new NamedTool("spawn_subagent"),
         new NamedTool("environment_create"),
       ],
     });

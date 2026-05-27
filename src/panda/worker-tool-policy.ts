@@ -5,6 +5,7 @@ export const WORKER_CONTROL_TOOL_NAMES = new Set([
   "worker_stop",
   "environment_create",
   "environment_stop",
+  "spawn_subagent",
 ]);
 
 export const DEFAULT_WORKER_ALLOWED_TOOL_NAMES = [
@@ -30,7 +31,6 @@ export const KNOWN_WORKER_TOOL_NAMES = new Set([
   POSTGRES_READONLY_TOOL_NAME,
   "thinking_set",
   "todo_update",
-  "spawn_subagent",
   "agent_prompt",
   "app_create",
   "app_list",
