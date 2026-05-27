@@ -60,6 +60,8 @@ const contractFiles = [
   "src/app/runtime/panda-session-context.ts",
   "src/app/runtime/runtime-bootstrap.ts",
   "src/app/runtime/thread-definition.ts",
+  "src/domain/subagents/builtins.ts",
+  "src/domain/subagents/tool-groups.ts",
   "src/panda/defaults.ts",
   "src/panda/definition.ts",
   "src/panda/subagents/policy.ts",

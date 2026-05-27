@@ -7,10 +7,10 @@
       "sha256": "5bdd27237cdbea0029962f848523647def7fb81053ec670d6d708d4eb51a8c10"
     },
     {
-      "bytes": 7614,
-      "lines": 194,
+      "bytes": 7869,
+      "lines": 199,
       "path": "src/app/runtime/create-runtime.ts",
-      "sha256": "ff9c6961d8d8287e476df6827de37821a45b2299f3c54c9c215c9a46b7091773"
+      "sha256": "0f04bd624ecfd1fd42913992f3d24a50e0944ba1169b5914929d7437e29e4026"
     },
     {
       "bytes": 13332,
@@ -31,16 +31,28 @@
       "sha256": "af68038f516ac4ccf5602715f551192eec53f8263857819eaab203e5dc1167b1"
     },
     {
-      "bytes": 22741,
-      "lines": 694,
+      "bytes": 23161,
+      "lines": 704,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "160304a3ac8776eb9714a94088966ea5253933e973ea584d2f0ddb0dd401d2ae"
+      "sha256": "461246a983f7c60b8e48fc2c7b711a575c0ee429f86e2e0bf9da7177646becee"
     },
     {
       "bytes": 9790,
       "lines": 236,
       "path": "src/app/runtime/thread-definition.ts",
       "sha256": "ed72e292c86e23558ac17a4220e81ab67bca1ff6a352a3baf9d47372dfad01e8"
+    },
+    {
+      "bytes": 1579,
+      "lines": 50,
+      "path": "src/domain/subagents/builtins.ts",
+      "sha256": "c8e5331275793b572efcff7507fd26fa0ab6d63ff5e4a240b532f8f5c25fcbd9"
+    },
+    {
+      "bytes": 3015,
+      "lines": 112,
+      "path": "src/domain/subagents/tool-groups.ts",
+      "sha256": "a6aa085668b92411f55720b78000c3fe6a27b38367adca3c3c4cd84038d54cac"
     },
     {
       "bytes": 2612,

@@ -16,6 +16,8 @@ import {PostgresScheduledTaskStore} from "../../domain/scheduling/tasks/postgres
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
+import {PostgresSubagentProfileStore} from "../../domain/subagents/postgres.js";
+import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 import {PostgresEmailStore} from "../../domain/email/postgres.js";
 import type {EmailStore} from "../../domain/email/types.js";
 import {WatchMutationService} from "../../domain/watches/mutation-service.js";
@@ -128,6 +130,7 @@ interface RuntimeBootstrapResult {
   executionEnvironmentService: ExecutionEnvironmentLifecycleService;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
+  subagentProfiles: SubagentProfileStore;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
@@ -385,6 +388,9 @@ export async function bootstrapRuntime(
     const sessionStore = new PostgresSessionStore({
       pool: postgresPool,
     });
+    const subagentProfiles = new PostgresSubagentProfileStore({
+      pool: postgresPool,
+    });
     const executionEnvironments = new PostgresExecutionEnvironmentStore({
       pool: postgresPool,
     });
@@ -394,10 +400,12 @@ export async function bootstrapRuntime(
     await ensureSchemas([
       identityStore,
       agentStore,
+      subagentProfiles,
       sessionStore,
       executionEnvironments,
       store,
     ]);
+    await subagentProfiles.seedBuiltinProfiles();
     await store.markRunningToolJobsLost();
     const backgroundJobService = new BackgroundToolJobService({
       store,
@@ -544,6 +552,7 @@ export async function bootstrapRuntime(
         executionEnvironmentService,
         identityStore,
         sessionStore,
+        subagentProfiles,
         store,
         scheduledTasks,
         email,
@@ -652,6 +661,7 @@ export async function bootstrapRuntime(
       executionEnvironmentService,
       identityStore,
       sessionStore,
+      subagentProfiles,
       store,
       scheduledTasks,
       email,
