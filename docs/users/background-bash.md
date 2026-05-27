@@ -8,14 +8,13 @@ Current background job kinds:
 
 - `bash` when called with `background: true`
 - `image_generate`
-- `spawn_subagent`
 - `web_research`
 
 ## Mental Model
 
 - foreground `bash` mutates the shared shell session
 - background `bash` is an isolated snapshot
-- `image_generate`, `spawn_subagent`, and `web_research` always start background jobs
+- `image_generate` and `web_research` always start background jobs
 - background jobs never merge cwd or env back into the shared shell session
 - running jobs can appear in Panda's context while they are active
 - completion may arrive as a machine-generated background event, but status/wait/cancel are still the explicit control tools
@@ -115,7 +114,7 @@ The marker is part of the preview budget. `stdoutChars` and `stderrChars` still 
 
 Panda reports tracked env key names only. It does not expose exported env values from background jobs.
 
-Image generation jobs return generated image paths and artifact metadata without inline image data. Subagent jobs return the child role, final message, tool-call count, and duration. Web research jobs return the cited answer and source metadata.
+Image generation jobs return generated image paths and artifact metadata without inline image data. Web research jobs return the cited answer and source metadata. Durable `spawn_subagent` handoffs are not background jobs; they return session/thread metadata and report progress through A2A.
 
 ## Isolation Rules
 

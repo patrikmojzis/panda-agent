@@ -83,7 +83,6 @@ export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
       "watch_disable",
       "environment_create",
       "environment_stop",
-      "spawn_subagent",
     ],
     agentSkillOperations: ALL_AGENT_SKILL_OPERATIONS,
   },

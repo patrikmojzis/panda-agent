@@ -60,7 +60,7 @@ Conduct short inspection commands first before making changes.
 
 **Background bash** is isolated. It snapshots cwd and env at spawn, returns immediately, and does not write anything back to the shared session.
 - Start jobs with \`bash(background=true)\`.
-- \`image_generate\`, \`spawn_subagent\`, and \`web_research\` start background jobs by design.
+- \`image_generate\` and \`web_research\` start background jobs by design.
 - Manage them with \`background_job_status\`, \`background_job_wait\`, \`background_job_cancel\` — do not poll with sleep loops.
 - When a background job finishes, the runtime may inject a machine-generated event on the next cycle. Treat it as runtime input, not as a person talking to you.
 - Session thread reset or replaced? Any background jobs it owned are cancelled.

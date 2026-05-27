@@ -150,7 +150,7 @@ function isWorkerToolAllowed(toolName: string, executionEnvironment?: ResolvedEx
 }
 
 function isSubagentToolAllowed(toolName: string, executionEnvironment?: ResolvedExecutionEnvironment): boolean {
-  if (toolName === "worker_spawn") {
+  if (toolName === "worker_spawn" || toolName === "spawn_subagent") {
     return false;
   }
 

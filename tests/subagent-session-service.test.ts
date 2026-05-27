@@ -131,6 +131,7 @@ describe("SubagentSessionService", () => {
 
     return {
       a2a,
+      agentStore,
       environmentStore,
       events,
       pool,
@@ -348,6 +349,108 @@ describe("SubagentSessionService", () => {
       id: "env-stopped",
       state: "stopped",
     });
+  });
+
+
+
+  it("rejects isolated subagents for environments not owned by the parent session", async () => {
+    const cases = [
+      {
+        id: "env-wrong-owner",
+        environment: {
+          agentKey: "panda",
+          kind: "disposable_container" as const,
+          state: "ready" as const,
+          createdBySessionId: "other-session",
+        },
+        message: "Execution environment env-wrong-owner is not owned by session parent-session.",
+        bootstrapSession: "other-session",
+      },
+      {
+        id: "env-foreign-agent",
+        environment: {
+          agentKey: "other",
+          kind: "disposable_container" as const,
+          state: "ready" as const,
+          createdBySessionId: "parent-session",
+        },
+        message: "Execution environment env-foreign-agent does not belong to agent panda.",
+        bootstrapAgent: "other",
+      },
+      {
+        id: "env-local",
+        environment: {
+          agentKey: "panda",
+          kind: "local" as const,
+          state: "ready" as const,
+          createdBySessionId: "parent-session",
+        },
+        message: "Execution environment env-local is not disposable.",
+      },
+      {
+        id: "env-failed",
+        environment: {
+          agentKey: "panda",
+          kind: "disposable_container" as const,
+          state: "failed" as const,
+          createdBySessionId: "parent-session",
+        },
+        message: "Execution environment env-failed is failed.",
+      },
+      {
+        id: "env-expired",
+        environment: {
+          agentKey: "panda",
+          kind: "disposable_container" as const,
+          state: "ready" as const,
+          createdBySessionId: "parent-session",
+          expiresAt: Date.now() - 1_000,
+        },
+        message: "Execution environment env-expired is expired.",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const {agentStore, environmentStore, events, pool, service, sessionStore} = await createHarness();
+      if (testCase.bootstrapAgent) {
+        await agentStore.bootstrapAgent({
+          agentKey: testCase.bootstrapAgent,
+          displayName: "Other",
+          prompts: {},
+        });
+      }
+      if (testCase.bootstrapSession) {
+        await sessionStore.createSession({
+          id: testCase.bootstrapSession,
+          agentKey: "panda",
+          kind: "worker",
+          currentThreadId: `thread-${testCase.bootstrapSession}`,
+        });
+      }
+      await environmentStore.createEnvironment({
+        id: testCase.id,
+        runnerUrl: "http://worker:8080",
+        runnerCwd: "/workspace",
+        ...testCase.environment,
+      });
+
+      await expect(service.createSubagentSession({
+        agentKey: "panda",
+        parentSessionId: "parent-session",
+        task: `Use ${testCase.id}.`,
+        execution: "isolated_environment",
+        environmentId: testCase.id,
+        sessionId: `failed-${testCase.id}`,
+        threadId: `failed-thread-${testCase.id}`,
+      })).rejects.toThrow(testCase.message);
+
+      const sessionTables = buildSessionTableNames();
+      const threadTables = buildThreadRuntimeTableNames();
+      expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${sessionTables.sessions} WHERE id = 'failed-${testCase.id}'`)).toBe(0);
+      expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${threadTables.threads} WHERE id = 'failed-thread-${testCase.id}'`)).toBe(0);
+      expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."session_environment_bindings" WHERE session_id = 'failed-${testCase.id}'`)).toBe(0);
+      expect(events).toEqual([]);
+    }
   });
 
   it("requires isolated environment id and rejects workspace env ids", async () => {

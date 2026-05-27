@@ -325,6 +325,10 @@ describe("worker control tools", () => {
     }, context)).rejects.toThrow("environment_stop cannot be granted");
     await expect(tool.run({
       task: "Inspect docs.",
+      toolAllowlist: ["spawn_subagent"],
+    }, context)).rejects.toThrow("spawn_subagent cannot be granted");
+    await expect(tool.run({
+      task: "Inspect docs.",
       toolAllowlist: ["postgres_readonly_query"],
     }, context)).rejects.toThrow("postgres_readonly_query requires allowReadonlyPostgres=true");
     await expect(tool.run({

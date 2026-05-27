@@ -1,6 +1,7 @@
 import {Pool} from "pg";
 
 import type {AgentStore} from "../../domain/agents/store.js";
+import type {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
@@ -32,7 +33,9 @@ import {
 import type {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
 import type {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
 import {WorkerSessionService} from "./worker-session-service.js";
-import {EnvironmentCreateTool, EnvironmentStopTool, WorkerSpawnTool} from "../../panda/tools/worker-tools.js";
+import {SubagentSessionService} from "./subagent-session-service.js";
+import {EnvironmentCreateTool, EnvironmentStopTool} from "../../panda/tools/worker-tools.js";
+import {SpawnSubagentTool} from "../../panda/tools/spawn-subagent-tool.js";
 
 export {
   createPostgresPool,
@@ -95,6 +98,7 @@ export interface RuntimeServices {
   email: EmailStore;
   watches: WatchStore;
   workerSessions: WorkerSessionService;
+  a2aBindings: A2ASessionBindingRepo;
   coordinator: ThreadRuntimeCoordinator;
   mainTools: readonly Tool[];
   workerTools: readonly Tool[];
@@ -142,18 +146,17 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     coordinator,
     environments: runtime.executionEnvironmentService,
   });
-  let mainTools: readonly Tool[] = [];
-  let workerTools: readonly Tool[] = runtime.workerTools;
-  const workerSpawnTool = new WorkerSpawnTool({
-    workerSessions,
-    availableToolNames: () => [
-      ...new Set([
-        ...mainTools.map((tool) => tool.name),
-        ...workerTools.map((tool) => tool.name),
-      ]),
-    ],
+  const subagentSessions = new SubagentSessionService({
+    pool: runtime.pool,
+    sessions: runtime.sessionStore,
+    threads: runtime.store,
+    profiles: runtime.subagentProfiles,
+    environments: runtime.executionEnvironmentService,
+    a2aBindings: runtime.a2aBindings,
+    coordinator,
   });
-  mainTools = [
+  const workerTools: readonly Tool[] = runtime.workerTools;
+  const mainTools: readonly Tool[] = [
     ...runtime.mainTools,
     new EnvironmentCreateTool({
       lifecycle: runtime.executionEnvironmentService,
@@ -162,7 +165,9 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
       environments: runtime.executionEnvironments,
       lifecycle: runtime.executionEnvironmentService,
     }),
-    workerSpawnTool,
+    new SpawnSubagentTool({
+      subagentSessions,
+    }),
   ];
   resolverContext.mainTools = mainTools;
   resolverContext.workerTools = workerTools;
@@ -189,6 +194,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     email: runtime.email,
     watches: runtime.watches,
     workerSessions,
+    a2aBindings: runtime.a2aBindings,
     coordinator,
     mainTools,
     workerTools,

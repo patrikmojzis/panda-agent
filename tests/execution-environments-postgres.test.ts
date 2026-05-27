@@ -860,6 +860,60 @@ describe("PostgresExecutionEnvironmentStore", () => {
     expect(manager.requests).toEqual([]);
   });
 
+
+
+  it("attaches ready disposable environments only when the requested owner matches", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    const manager = new FakeEnvironmentManager();
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+    await environmentStore.createEnvironment({
+      id: "env-ready-owned",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      runnerUrl: "http://env-ready-owned:8080",
+      runnerCwd: "/workspace",
+      createdBySessionId: "session-main",
+    });
+    await environmentStore.createEnvironment({
+      id: "env-ready-wrong-owner",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      runnerUrl: "http://env-ready-wrong-owner:8080",
+      runnerCwd: "/workspace",
+      createdBySessionId: "session-worker",
+    });
+
+    await expect(service.attachReadySessionToDisposableEnvironment({
+      session,
+      environmentId: "env-ready-owned",
+      ownerSessionId: "session-main",
+      credentialPolicy: {mode: "allowlist", envKeys: []},
+      skillPolicy: {mode: "all_agent"},
+    })).resolves.toMatchObject({
+      environment: {
+        id: "env-ready-owned",
+        state: "ready",
+      },
+      binding: {
+        sessionId: "session-worker",
+        environmentId: "env-ready-owned",
+      },
+    });
+    await expect(service.attachReadySessionToDisposableEnvironment({
+      session,
+      environmentId: "env-ready-wrong-owner",
+      ownerSessionId: "session-main",
+    })).rejects.toThrow("Execution environment env-ready-wrong-owner is not owned by session session-main.");
+    expect(manager.requests).toEqual([]);
+    expect(manager.stopped).toEqual([]);
+  });
+
   it("restarts stopped disposable environments before attaching workers", async () => {
     const {environmentStore, sessionStore} = await createHarness();
     const session = await sessionStore.getSession("session-worker");

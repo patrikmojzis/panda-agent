@@ -157,37 +157,36 @@ The persistent parent runner for the same agent sees its workers at:
 
 Other agent runners do not mount this namespace.
 
-## Worker A2A Handoff
+## Durable Subagent A2A Handoff
 
-The parent agent can create an environment first with `environment_create`, or
-let `worker_spawn` create one automatically. A worker is a session/task lane; an
-environment is the container/filesystem place where bash runs.
+The parent agent can create a disposable environment first with
+`environment_create`, then hand work to a durable subagent with
+`spawn_subagent`. A subagent is the session/task lane; an environment is the
+container/filesystem place where bash runs.
 
 `environment_create` returns the environment id plus parent-visible
 `workspace`, `inbox`, and `artifacts` paths. The parent can write files into the
-environment before assigning a worker.
+environment before assigning a subagent.
 
-`worker_spawn` creates the worker session, attaches it to the selected
-environment, and wakes the worker with the handoff task. If `environmentId` is
-omitted, `worker_spawn` creates a fresh disposable environment. If the selected
-environment is stopped or expired, Panda restarts the same
-environment/filesystem before binding the worker. Later worker wakes do the same
-for that worker's bound environment.
+`spawn_subagent` creates a durable `subagent` session, binds parent↔subagent A2A,
+and wakes the subagent with the handoff prompt. It does **not** create, restart,
+or stop disposable environments. For `execution: "isolated_environment"`, pass
+an `environmentId` that is already ready, disposable, same-agent, and owned by
+the parent session. Omit `environmentId` for the default `agent_workspace` mode.
 
 Useful arguments:
 
-- `task`: required worker brief
-- `role`: short label, for example `research`, `qa`, or `ops`
+- `prompt`: required subagent brief
+- `profile`: optional profile slug, for example `workspace`, `memory`,
+  `browser`, or `skill_maintainer`
 - `context`: extra handoff context
-- `environmentId`: optional existing environment to attach to
-- `model`: optional override; otherwise `WORKER_MODEL`, then the runtime default
-- `credentialAllowlist`: env keys the worker may receive
-- `skillAllowlist`: skills the worker may read/use
-- `toolAllowlist`: extra tools to grant beyond the default worker tool set
-- `allowReadonlyPostgres`: explicitly grants readonly SQL access
+- `execution`: `agent_workspace` or `isolated_environment`
+- `environmentId`: existing parent-owned disposable env for isolated execution
+- `credentialAllowlist`: env keys the subagent may receive
+- `toolGroups`: ad-hoc tool groups when `profile` is omitted
 
-Worker thinking defaults to `xhigh`. Disposable environments live for 24 hours
-by default. `worker_spawn` does not expose thinking or TTL overrides.
+Progress and completion come back through A2A `message_agent`, not background
+job polling.
 
 The parent stops a container with `environment_stop({ environmentId })`.
 Stopping removes the disposable container but keeps `workspace`, `inbox`, and
@@ -308,9 +307,9 @@ The skill allowlist applies to:
 - readonly `session.agent_skills` queries
 
 Readonly Postgres in a disposable environment requires both
-`toolPolicy.postgresReadonly.allowed=true` and `READONLY_DATABASE_URL`. In
-`worker_spawn`, set `allowReadonlyPostgres=true`; listing
-`postgres_readonly_query` in `toolAllowlist` without that flag is rejected.
+`toolPolicy.postgresReadonly.allowed=true` and `READONLY_DATABASE_URL`. Durable
+subagents receive that grant through their profile/toolGroups policy, for
+example the `memory` tool group.
 
 ## Troubleshooting
 

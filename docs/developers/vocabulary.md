@@ -79,20 +79,17 @@ bash runs and which cwd/root, credentials, and tool policy apply.
 A runner can serve or use an environment, but it is not the environment itself.
 See [Execution Environments](./execution-environments.md).
 
-## Worker vs subagent (provisional)
+## Worker vs subagent
 
 A **subagent** is the product/delegation noun for scoped delegated agent work.
-Issue #16 is still open while implementation naming is unified.
+Model-facing `spawn_subagent` now creates a durable `agent_sessions.kind =
+"subagent"` session and uses A2A `message_agent` for progress/completion.
 
-Today Panda has two mechanisms: `spawn_subagent` starts an in-memory specialist
-child run, while `worker_spawn` creates a durable environment-backed `worker`
-session.
-
-Use **worker** for current implementation mechanics only: `agent_sessions.kind =
-"worker"`, worker tool/API names, filesystem roots, allowlists, and
-execution-environment behavior. Do not use it as the preferred product noun for
-delegated agents. See
-[Execution Environments](./execution-environments.md#worker-controls) and
+Use **worker** for historical/internal implementation mechanics only:
+`agent_sessions.kind = "worker"`, worker purge support, legacy worker metadata,
+and old runtime-client paths. `worker_spawn` is no longer a model-facing tool.
+See [Issue #16 PR3](./issue-16-pr3-hard-cut.md),
+[Execution Environments](./execution-environments.md), and
 [Sessions](./sessions.md).
 
 ## Heartbeat vs watch

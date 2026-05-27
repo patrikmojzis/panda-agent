@@ -16,20 +16,20 @@ tool policy apply to a session.
   with `{agentKey}`.
 - fallback persistent agent runners keep access to all stored credentials for the
   current agent.
-- `worker` sessions exist as a separate session kind for constrained role runs.
-- worker/disposable environments default to explicit credential allowlists.
-- worker sessions use a worker-specific base prompt and do not receive the
-  parent agent prompt context.
-- worker sessions receive a durable `Worker Runtime Context` containing their
-  role, task, parent session id, A2A target, and filesystem paths.
-- worker tools are filtered by `toolPolicy.allowedTools`; default workers get a
-  small execution/reporting tool set.
+- `subagent` sessions are durable delegated sessions created by model-facing
+  `spawn_subagent`.
+- subagent/disposable environments default to explicit credential allowlists and
+  profile/toolGroups policy.
+- subagent sessions use a snapshotted profile prompt and receive `Subagent
+  Runtime Context` with parent A2A target and filesystem paths.
+- subagent tools are filtered by snapshotted `toolPolicy.allowedTools`; nested
+  `spawn_subagent` is denied in PR3 even when `operate` was requested.
 - `environment_create` creates a parent-owned disposable environment without a
-  worker session.
-- `worker_spawn` creates a worker session and either attaches it to an existing
-  environment or creates a fresh one as a convenience path.
+  subagent session.
+- `spawn_subagent` attaches only to an existing ready parent-owned disposable
+  environment for `isolated_environment`; it never creates/restarts/stops envs.
 - `environment_stop` stops the disposable container and leaves files in place.
-- parent LLM context renders environments grouped with their attached workers.
+- parent LLM context renders environments grouped with their attached sessions.
 
 ## Tables
 
@@ -54,42 +54,34 @@ tool policy apply to a session.
   present, they stay first and missing system dirs are appended so wrappers like
   Vite/esbuild can still find core tools.
 
-## Worker Controls
+## Model-facing Environment and Subagent Controls
 
 `environment_create` creates a standalone parent-owned disposable environment.
 The parent can put files in `/environments/<envDir>/inbox` before assigning a
-worker.
+subagent.
 
-`worker_spawn` is intentionally a runtime tool, not a prompt trick. It calls
-`WorkerSessionService.createWorkerSession`, which:
+`spawn_subagent` is the model-facing delegation tool. It calls
+`SubagentSessionService.createSubagentSession`, which:
 
-- creates a `worker` session using the same `agentKey` as the parent
-- stores worker role and parent session id in session metadata
-- creates a disposable environment through `ExecutionEnvironmentLifecycleService`
-  when no `environmentId` is provided
-- binds the worker session to the selected environment as default
-- restarts a stopped or expired selected environment before binding
-- restarts a stopped or expired bound worker environment before later worker
-  wakes resolve runtime context
-- queues or wakes the worker handoff input
+- creates a durable `subagent` session using the same `agentKey` as the parent
+- snapshots profile/toolGroups, credential, skill, and tool policy in metadata
+- optionally attaches an existing ready disposable environment only when it is
+  owned by the parent session and same agent
+- binds parent↔subagent A2A before waking the handoff input
+- never creates, restarts, stops, or purges disposable environments
 
-`createThreadDefinition` prepends `WorkerRuntimeContext` for worker sessions.
-That context is sourced from `agent_sessions.metadata.worker` and environment
-filesystem metadata, not from durable thread context or the transcript. It is
-the reliable place for
+`createThreadDefinition` prepends `SubagentRuntimeContext` for subagent sessions.
+That context is sourced from `agent_sessions.metadata.subagent` and environment
+filesystem metadata, not from the parent transcript. It is the reliable place for
 `parentSessionId`, `message_agent({ sessionId: "..." })`, `/workspace`,
 `/inbox`, `/artifacts`, and `/environments/<envDir>` hints.
 
-The worker model defaults to `WORKER_MODEL` when set. Worker thinking defaults
-to `xhigh`. Worker environment TTL defaults to 24 hours. `worker_spawn` does not
-expose thinking or TTL overrides.
-
 `environment_stop` validates that the target disposable environment belongs to
-the current `agentKey` and parent `sessionId` before calling
+the current `agentKey` and current `sessionId` before calling
 `ExecutionEnvironmentLifecycleService.stopEnvironment`. It does not delete
-environment filesystem roots or worker sessions.
+environment filesystem roots or subagent sessions.
 
-Old worker environments are removed by the operator CLI, not by
+Old disposable environments are removed by the operator CLI, not by
 `environment_stop`:
 
 ```bash
@@ -111,10 +103,12 @@ environment root is report-only in v1. Dry-run is bounded and does not scan
 transcript JSON for those external references, so it prints them as not scanned
 rather than `0`.
 
-Worker sessions do not receive `worker_spawn`, `environment_create`, or
-`environment_stop` in their toolset. `worker_spawn.toolAllowlist` can grant
-additional available tools by name.
-`postgres_readonly_query` also requires `allowReadonlyPostgres=true`.
+Worker sessions do not receive `worker_spawn`, `spawn_subagent`,
+`environment_create`, or `environment_stop` in their toolset. Historical
+`worker_spawn` internals remain for old sessions/runtime clients, but are not
+model-facing.
+`postgres_readonly_query` in subagents is controlled by profile/toolGroups
+policy, for example the `memory` group.
 
 ## Disposable Environment Manager
 
