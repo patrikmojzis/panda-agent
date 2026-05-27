@@ -7,16 +7,16 @@
       "sha256": "5bdd27237cdbea0029962f848523647def7fb81053ec670d6d708d4eb51a8c10"
     },
     {
-      "bytes": 8230,
-      "lines": 205,
+      "bytes": 8378,
+      "lines": 215,
       "path": "src/app/runtime/create-runtime.ts",
-      "sha256": "e8917f8e3900e52b224dd8e827d51761a61aed2a98d811eb45b1199345d66134"
+      "sha256": "0a7cc869c642066bc5bca20bcef4cf122d5c24b4bb5a615e0a2aa100e17d46d3"
     },
     {
-      "bytes": 13288,
-      "lines": 357,
+      "bytes": 12743,
+      "lines": 345,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "87f4571604f3119a8a97ffdc7dd01ae02ea93a6b814a248f0ae61c617fdbd328"
+      "sha256": "9decd2a43d8d08b17f6ee71c4b5647935637c87b66a9963ea233b401b53cc9d1"
     },
     {
       "bytes": 12121,
@@ -25,22 +25,22 @@
       "sha256": "233384ed058d6f7f0f5ac18b019b901fcc639fef7b1f2dfcf3818050efe1be22"
     },
     {
-      "bytes": 2894,
-      "lines": 88,
+      "bytes": 2670,
+      "lines": 79,
       "path": "src/app/runtime/panda-session-context.ts",
-      "sha256": "e2c621b8cfb18415c53ff200f6b927710329874564fcc3e32ed61f9fb69c360d"
+      "sha256": "c22d384b3bebd577e78e6b95dac6e946e81f863251a4428bbb0c174320351bbf"
     },
     {
-      "bytes": 22451,
-      "lines": 680,
+      "bytes": 22504,
+      "lines": 682,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "f1e4fba31a024bc6b744e5c0ec46f95c9fc958756db141abaa47410083621848"
+      "sha256": "7e845e2d6d9362e7540886f8780a4f1dfdd6f0eda5c6441da50dae9fd39f218e"
     },
     {
-      "bytes": 12833,
-      "lines": 322,
+      "bytes": 11039,
+      "lines": 274,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "f000b86d21ca1aa2c88b9e88bf59a81a6cf09ecfeb718f676a5dc0bd4dba2ed2"
+      "sha256": "e4bbf4d46da3fdbf03ebb72e51187c2b57f59f9ad0ad44e9031767ab7365ca9b"
     },
     {
       "bytes": 1600,
@@ -67,10 +67,10 @@
       "sha256": "c9dba92c99c1b215b5d3e5545677395423b39853d8ebe04fabf857aa246ca3d8"
     },
     {
-      "bytes": 6504,
-      "lines": 173,
+      "bytes": 6675,
+      "lines": 175,
       "path": "src/panda/contexts/builder.ts",
-      "sha256": "0cda38a91fc116fcee7d4c0178fd526fff6f1e6e351a18bac3d25800b32cac2a"
+      "sha256": "bca277d062c4aad18550ee871fb526751cec322530ed4fe1ff9c4fbd0747f5a9"
     },
     {
       "bytes": 1541,
@@ -115,22 +115,16 @@
       "sha256": "86648c823a3098b9e55973b0dad0aa52be02920048a4cf959a4e04729d4785e7"
     },
     {
+      "bytes": 9822,
+      "lines": 242,
+      "path": "src/panda/contexts/subagents-context.ts",
+      "sha256": "8bdab90ff271282f418b7c9e1b066fe9fb8587fc9cdccc5e2e9fb54d3927cf75"
+    },
+    {
       "bytes": 8404,
       "lines": 300,
       "path": "src/panda/contexts/wiki-overview-context.ts",
       "sha256": "0287aada70f144eccc8563788290198462def04698e4f38a20c2d8791eb49151"
-    },
-    {
-      "bytes": 1857,
-      "lines": 49,
-      "path": "src/panda/contexts/worker-runtime-context.ts",
-      "sha256": "6bfee7b7a0c9f7891087c08b5704f01a6d5127df82804ab2005af9098fdc5eb6"
-    },
-    {
-      "bytes": 6474,
-      "lines": 176,
-      "path": "src/panda/contexts/workers-context.ts",
-      "sha256": "a29f588888b6977b751d7d65ac4bbde359b57d9e261ab9f204d83aa4c16ae62d"
     },
     {
       "bytes": 1123,
@@ -139,22 +133,16 @@
       "sha256": "274cbf284ffa7b98c2e05de5d97b9bfb07095e6bdbd9dd6def2ea9246a7dce9f"
     },
     {
-      "bytes": 6091,
-      "lines": 197,
+      "bytes": 6266,
+      "lines": 199,
       "path": "src/panda/definition.ts",
-      "sha256": "f74136637ecd50fdfcd8722073462aa8310da40397961a9c4d6cc0ae611da2ce"
+      "sha256": "b42889f1ab4f0808fbddce53c1ad585755797f11e4c7d423897d792767e2bfd2"
     },
     {
-      "bytes": 1924,
-      "lines": 56,
+      "bytes": 2101,
+      "lines": 58,
       "path": "src/panda/subagents/policy.ts",
-      "sha256": "986ffdbbb165d18f672c6326e8399048ca4c5a7581dd0e8a5ff8f3ec757ece6b"
-    },
-    {
-      "bytes": 1546,
-      "lines": 70,
-      "path": "src/panda/worker-tool-policy.ts",
-      "sha256": "9fce677c7aa49ec138a83599f6523fd7f273f7db52b9682f3375dc983a1a03be"
+      "sha256": "e841229d76c2ba43747ffae0803e746fb2b7d1409e27f186a34eac1c5137c9dc"
     },
     {
       "bytes": 2898,
@@ -253,22 +241,16 @@
       "sha256": "565aec3226f5cfa142801408bf6f76f0da01e6dff417212f2b0f0574580c472d"
     },
     {
+      "bytes": 4059,
+      "lines": 117,
+      "path": "src/prompts/contexts/subagents.ts",
+      "sha256": "a69d367efd30bf7190227c2f0aad63e4d518fd43b0a63cb7c35b09e2573f2e50"
+    },
+    {
       "bytes": 1371,
       "lines": 49,
       "path": "src/prompts/contexts/wiki-overview.ts",
       "sha256": "409cca2981e6ef2e7ff3393e3ac6eefbb877a363d5133295bd94c1c9a8a35c81"
-    },
-    {
-      "bytes": 1143,
-      "lines": 31,
-      "path": "src/prompts/contexts/worker-runtime.ts",
-      "sha256": "470fbd0a35ad10204dd724e6f035f6613d073b2ca76dd6cdf5850dbd9b114c16"
-    },
-    {
-      "bytes": 1883,
-      "lines": 53,
-      "path": "src/prompts/contexts/workers.ts",
-      "sha256": "6a39735bdd94fd21b68da929bf2f1af5013773476bb09e83e6957403cfdf3f3c"
     },
     {
       "bytes": 773,
@@ -295,10 +277,10 @@
       "sha256": "cad5b2b991230740617070b6e628d49803d08242741e790ee444d5c9635c5df3"
     },
     {
-      "bytes": 13382,
-      "lines": 216,
+      "bytes": 13674,
+      "lines": 217,
       "path": "src/prompts/runtime/default-agent.ts",
-      "sha256": "3918bf617a5fa7f3b7cebbe3a9b1d727a5f50280f14cdcf8a2b9f921ba33f953"
+      "sha256": "b99c9fbed650bf4cbdb6100ecae430a9789afbf2640f33c770f70b2f88298e13"
     },
     {
       "bytes": 1491,
@@ -343,12 +325,6 @@
       "sha256": "911a5f980a4c6404230ff8990ecbac633bb4cbf89bded2babc911947cf8d2949"
     },
     {
-      "bytes": 8233,
-      "lines": 124,
-      "path": "src/prompts/runtime/worker.ts",
-      "sha256": "b9881cf5fd411bfdd0f5d7ba63ad00a18892b6e29326607681b6ced7a87478eb"
-    },
-    {
       "bytes": 582,
       "lines": 15,
       "path": "src/prompts/templates/agent-prompts.ts",
@@ -356,6 +332,111 @@
     }
   ],
   "generatedBy": "scripts/ci/prompt-contracts.ts",
+  "subagentToolGroups": {
+    "communicate_human": {
+      "description": "Human/channel outbound communication surfaces.",
+      "toolNames": [
+        "outbound",
+        "email_send",
+        "telegram_react"
+      ]
+    },
+    "core": {
+      "agentSkillOperations": [
+        "load"
+      ],
+      "description": "Safe universal basics for ordinary delegated work and parent A2A updates.",
+      "toolNames": [
+        "current_datetime",
+        "message_agent",
+        "agent_skill",
+        "image_generate",
+        "whisper",
+        "view_media",
+        "todo_update"
+      ]
+    },
+    "execute": {
+      "bash": {
+        "allowed": true
+      },
+      "description": "Active runtime execution and background job control.",
+      "toolNames": [
+        "bash",
+        "background_job_status",
+        "background_job_wait",
+        "background_job_cancel"
+      ]
+    },
+    "internet": {
+      "description": "Public web lookup, research, and browser inspection.",
+      "toolNames": [
+        "web_fetch",
+        "brave_search",
+        "browser",
+        "web_research"
+      ]
+    },
+    "memory": {
+      "description": "Read/query durable Panda memory surfaces.",
+      "postgresReadonly": {
+        "allowed": true
+      },
+      "toolNames": [
+        "postgres_readonly_query",
+        "wiki"
+      ]
+    },
+    "operate": {
+      "agentSkillOperations": [
+        "load",
+        "set",
+        "delete"
+      ],
+      "description": "Operational mutation and control surfaces.",
+      "toolNames": [
+        "thinking_set",
+        "agent_skill",
+        "agent_prompt",
+        "set_env_value",
+        "clear_env_value",
+        "app_create",
+        "app_list",
+        "app_link_create",
+        "app_check",
+        "app_view",
+        "app_action",
+        "scheduled_task_create",
+        "scheduled_task_update",
+        "scheduled_task_cancel",
+        "watch_schema_get",
+        "watch_create",
+        "watch_update",
+        "watch_disable",
+        "environment_create",
+        "environment_stop"
+      ]
+    },
+    "skill_maintenance": {
+      "agentSkillOperations": [
+        "load",
+        "set",
+        "delete"
+      ],
+      "description": "Narrow durable skill load/create/delete access without broad operational tools.",
+      "toolNames": [
+        "agent_skill"
+      ]
+    },
+    "workspace_read": {
+      "description": "Read-only workspace and artifact inspection.",
+      "toolNames": [
+        "read_file",
+        "glob_files",
+        "grep_files"
+      ]
+    }
+  },
   "toolCatalog": [
     {
       "description": "Read or update shared agent prompts.\n\nThe tool always uses the current session's agent.\n\nSafe SQL-ish text editing over content.\nAllowed functions: regexp_replace, replace, overlay, trim, ltrim, rtrim, upper, lower, left, right, substring, concat, coalesce, length.\nUseful patterns:\n- append: content || '\\n- new line'\n- prepend: 'header\\n' || content\n- delete exact text: replace(content, 'exact line\\n', '')\n- regex delete/update: regexp_replace(content, 'pattern.*\\n', '', 'g')\n- update in place: replace(content, 'old', 'new')\n- insert after anchor: replace(content, 'anchor line', 'anchor line\\nnew line')\n- trim whitespace: trim(content)\n- extract substring: substring(content from 1 for 50)",
@@ -2245,19 +2326,6 @@
       "view_media",
       "agent_skill"
     ],
-    "defaultWorker": [
-      "bash",
-      "background_job_status",
-      "background_job_wait",
-      "background_job_cancel",
-      "current_datetime",
-      "view_media",
-      "web_fetch",
-      "brave_search",
-      "browser",
-      "image_generate",
-      "agent_skill"
-    ],
     "defaultWorkspace": [
       "current_datetime",
       "read_file",
@@ -2305,21 +2373,19 @@
       "environment_stop",
       "spawn_subagent"
     ],
-    "runtimeWorker": [
+    "runtimeSubagent": [
       "bash",
       "background_job_status",
       "background_job_wait",
       "background_job_cancel",
       "current_datetime",
       "view_media",
-      "web_fetch",
-      "brave_search",
-      "browser",
       "image_generate",
-      "agent_skill",
+      "web_fetch",
       "postgres_readonly_query",
       "web_research",
       "whisper",
+      "brave_search",
       "thinking_set",
       "agent_prompt",
       "app_create",
@@ -2329,6 +2395,7 @@
       "app_view",
       "app_action",
       "wiki",
+      "agent_skill",
       "set_env_value",
       "clear_env_value",
       "scheduled_task_create",
@@ -2337,91 +2404,12 @@
       "watch_create",
       "watch_schema_get",
       "watch_update",
-      "watch_disable"
-    ]
-  },
-  "version": 1,
-  "workerPolicy": {
-    "controlToolNames": [
-      "environment_create",
-      "environment_stop",
-      "spawn_subagent",
-      "worker_spawn",
-      "worker_stop"
-    ],
-    "defaultAllowedToolNames": [
-      "bash",
-      "background_job_status",
-      "background_job_wait",
-      "background_job_cancel",
-      "message_agent",
-      "current_datetime",
-      "view_media",
-      "web_fetch",
-      "brave_search",
-      "browser",
-      "agent_skill",
-      "image_generate",
-      "todo_update"
-    ],
-    "defaultAllowedWithReadonlyPostgres": [
-      "bash",
-      "background_job_status",
-      "background_job_wait",
-      "background_job_cancel",
-      "message_agent",
-      "current_datetime",
-      "view_media",
-      "web_fetch",
-      "brave_search",
-      "browser",
-      "agent_skill",
-      "image_generate",
-      "todo_update",
-      "postgres_readonly_query"
-    ],
-    "knownToolNames": [
-      "agent_prompt",
-      "agent_skill",
-      "app_action",
-      "app_check",
-      "app_create",
-      "app_link_create",
-      "app_list",
-      "app_view",
-      "background_job_cancel",
-      "background_job_status",
-      "background_job_wait",
-      "bash",
-      "brave_search",
-      "browser",
-      "clear_env_value",
-      "current_datetime",
-      "email_send",
+      "watch_disable",
+      "read_file",
       "glob_files",
       "grep_files",
-      "image_generate",
-      "message_agent",
-      "outbound",
-      "postgres_readonly_query",
-      "read_file",
-      "scheduled_task_cancel",
-      "scheduled_task_create",
-      "scheduled_task_update",
-      "set_env_value",
-      "telegram_react",
-      "thinking_set",
-      "todo_update",
-      "view_media",
-      "watch_create",
-      "watch_disable",
-      "watch_schema_get",
-      "watch_update",
-      "web_fetch",
-      "web_research",
-      "whisper",
-      "wiki"
-    ],
-    "postgresReadonlyToolName": "postgres_readonly_query"
-  }
+      "browser"
+    ]
+  },
+  "version": 1
 }

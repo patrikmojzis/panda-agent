@@ -30,7 +30,7 @@ import {
   type ExecutionEnvironmentStopStore,
 } from "./execution-environment-service.js";
 
-export interface WorkerPurgeSelector {
+export interface SubagentPurgeSelector {
   agentKey?: string;
   sessionId?: string;
   environmentId?: string;
@@ -39,15 +39,15 @@ export interface WorkerPurgeSelector {
   olderThanMs?: number;
 }
 
-export interface WorkerPurgeInput {
-  selector: WorkerPurgeSelector;
+export interface SubagentPurgeInput {
+  selector: SubagentPurgeSelector;
   execute?: boolean;
   force?: boolean;
   skipFiles?: boolean;
   now?: number;
 }
 
-export interface WorkerPurgeDbCounts {
+export interface SubagentPurgeDbCounts {
   sessions: number;
   sessionHeartbeats: number;
   threads: number;
@@ -63,22 +63,22 @@ export interface WorkerPurgeDbCounts {
   runtimeRequests: number;
 }
 
-export type WorkerPurgeFilesystemStatus =
+export type SubagentPurgeFilesystemStatus =
   | "safe"
   | "missing"
   | "missing_metadata"
   | "skipped"
   | "unsafe";
 
-export interface WorkerPurgeFilesystemPlan {
-  status: WorkerPurgeFilesystemStatus;
+export interface SubagentPurgeFilesystemPlan {
+  status: SubagentPurgeFilesystemStatus;
   rootPath?: string;
   envDir?: string;
   bytes?: number;
   reason?: string;
 }
 
-export interface WorkerPurgeCandidate {
+export interface SubagentPurgeCandidate {
   sessionId: string;
   sessionIds: readonly string[];
   threadIds: readonly string[];
@@ -88,19 +88,19 @@ export interface WorkerPurgeCandidate {
   sessionUpdatedAt: number;
   environment: ExecutionEnvironmentRecord;
   containerName?: string;
-  filesystem: WorkerPurgeFilesystemPlan;
-  dbCounts: WorkerPurgeDbCounts;
+  filesystem: SubagentPurgeFilesystemPlan;
+  dbCounts: SubagentPurgeDbCounts;
   externalFileReferenceCount: number | null;
   refusedReason?: string;
 }
 
-export interface WorkerPurgePlan {
+export interface SubagentPurgePlan {
   dryRun: boolean;
   now: number;
-  candidates: readonly WorkerPurgeCandidate[];
+  candidates: readonly SubagentPurgeCandidate[];
 }
 
-export interface WorkerPurgeServiceOptions {
+export interface SubagentPurgeServiceOptions {
   pool: PgPoolLike;
   environmentStore: ExecutionEnvironmentStopStore;
   manager?: ExecutionEnvironmentManager | null;
@@ -135,7 +135,7 @@ function requireTrimmed(field: string, value: unknown): string {
   return requireTrimmedString(value, `${field} must be a string.`, `${field} must not be empty.`);
 }
 
-function hasSelector(selector: WorkerPurgeSelector): boolean {
+function hasSelector(selector: SubagentPurgeSelector): boolean {
   return Boolean(
     trimToUndefined(selector.agentKey)
     || trimToUndefined(selector.sessionId)
@@ -169,7 +169,7 @@ function parseEnvironmentState(value: unknown): ExecutionEnvironmentState {
 }
 
 function parseCandidateMetadata(value: unknown): JsonValue | null {
-  return readOptionalJsonValue(value, "Worker purge environment metadata") ?? null;
+  return readOptionalJsonValue(value, "Subagent purge environment metadata") ?? null;
 }
 
 function nullableString(field: string, value: unknown): string | null {
@@ -178,24 +178,24 @@ function nullableString(field: string, value: unknown): string | null {
 
 function parseCandidateRow(row: Record<string, unknown>): CandidateRow {
   return {
-    session_id: nullableString("worker session id", row.session_id),
-    session_agent_key: nullableString("worker session agent key", row.session_agent_key),
-    current_thread_id: nullableString("worker current thread id", row.current_thread_id),
-    session_created_at: nullableTimestampMillis(row.session_created_at, "Worker purge session_created_at must be a valid timestamp."),
-    session_updated_at: nullableTimestampMillis(row.session_updated_at, "Worker purge session_updated_at must be a valid timestamp."),
-    environment_id: requireTrimmed("worker environment id", row.environment_id),
-    environment_agent_key: requireTrimmed("worker environment agent key", row.environment_agent_key),
+    session_id: nullableString("subagent session id", row.session_id),
+    session_agent_key: nullableString("subagent session agent key", row.session_agent_key),
+    current_thread_id: nullableString("subagent current thread id", row.current_thread_id),
+    session_created_at: nullableTimestampMillis(row.session_created_at, "Subagent purge session_created_at must be a valid timestamp."),
+    session_updated_at: nullableTimestampMillis(row.session_updated_at, "Subagent purge session_updated_at must be a valid timestamp."),
+    environment_id: requireTrimmed("subagent environment id", row.environment_id),
+    environment_agent_key: requireTrimmed("subagent environment agent key", row.environment_agent_key),
     kind: parseEnvironmentKind(row.kind),
     state: parseEnvironmentState(row.state),
-    runner_url: nullableString("worker runner url", row.runner_url),
-    runner_cwd: nullableString("worker runner cwd", row.runner_cwd),
-    root_path: nullableString("worker root path", row.root_path),
-    created_by_session_id: nullableString("worker creator session id", row.created_by_session_id),
-    created_for_session_id: nullableString("worker target session id", row.created_for_session_id),
-    expires_at: nullableTimestampMillis(row.expires_at, "Worker purge expires_at must be a valid timestamp."),
+    runner_url: nullableString("subagent runner url", row.runner_url),
+    runner_cwd: nullableString("subagent runner cwd", row.runner_cwd),
+    root_path: nullableString("subagent root path", row.root_path),
+    created_by_session_id: nullableString("subagent creator session id", row.created_by_session_id),
+    created_for_session_id: nullableString("subagent target session id", row.created_for_session_id),
+    expires_at: nullableTimestampMillis(row.expires_at, "Subagent purge expires_at must be a valid timestamp."),
     metadata: parseCandidateMetadata(row.metadata),
-    environment_created_at: requireTimestampMillis(row.environment_created_at, "Worker purge environment_created_at must be a valid timestamp."),
-    environment_updated_at: requireTimestampMillis(row.environment_updated_at, "Worker purge environment_updated_at must be a valid timestamp."),
+    environment_created_at: requireTimestampMillis(row.environment_created_at, "Subagent purge environment_created_at must be a valid timestamp."),
+    environment_updated_at: requireTimestampMillis(row.environment_updated_at, "Subagent purge environment_updated_at must be a valid timestamp."),
   };
 }
 
@@ -389,7 +389,7 @@ function nestedJsonTextEquals(
   return `${column}->'${parentKey}'->>'${key}' = ${addValue(values, value)}`;
 }
 
-function buildOutboundDeliveryWorkerClause(input: {
+function buildOutboundDeliverySubagentClause(input: {
   sessionIds: readonly string[];
   threadIds: readonly string[];
 }, values: unknown[]): string {
@@ -412,7 +412,7 @@ function buildOutboundDeliveryWorkerClause(input: {
   return clauses.length === 0 ? "FALSE" : `(${clauses.join(" OR ")})`;
 }
 
-function buildRuntimeRequestWorkerClause(input: {
+function buildRuntimeRequestSubagentClause(input: {
   sessionIds: readonly string[];
   environmentId: string;
   threadIds: readonly string[];
@@ -436,7 +436,7 @@ function buildRuntimeRequestWorkerClause(input: {
   return `(${clauses.join(" OR ")})`;
 }
 
-function emptyCounts(): WorkerPurgeDbCounts {
+function emptyCounts(): SubagentPurgeDbCounts {
   return {
     sessions: 0,
     sessionHeartbeats: 0,
@@ -454,7 +454,7 @@ function emptyCounts(): WorkerPurgeDbCounts {
   };
 }
 
-function sumCounts(left: WorkerPurgeDbCounts, right: WorkerPurgeDbCounts): WorkerPurgeDbCounts {
+function sumCounts(left: SubagentPurgeDbCounts, right: SubagentPurgeDbCounts): SubagentPurgeDbCounts {
   return {
     sessions: left.sessions + right.sessions,
     sessionHeartbeats: left.sessionHeartbeats + right.sessionHeartbeats,
@@ -472,17 +472,17 @@ function sumCounts(left: WorkerPurgeDbCounts, right: WorkerPurgeDbCounts): Worke
   };
 }
 
-export function summarizeWorkerPurgeCounts(candidates: readonly WorkerPurgeCandidate[]): WorkerPurgeDbCounts {
+export function summarizeSubagentPurgeCounts(candidates: readonly SubagentPurgeCandidate[]): SubagentPurgeDbCounts {
   return candidates.reduce((sum, candidate) => sumCounts(sum, candidate.dbCounts), emptyCounts());
 }
 
-function candidateLabel(candidate: WorkerPurgeCandidate): string {
+function candidateLabel(candidate: SubagentPurgeCandidate): string {
   return candidate.sessionIds.length > 0
-    ? `worker ${candidate.sessionIds.join(",")}`
+    ? `subagent ${candidate.sessionIds.join(",")}`
     : `environment ${candidate.environment.id}`;
 }
 
-export class WorkerPurgeService {
+export class SubagentPurgeService {
   private readonly pool: PgPoolLike;
   private readonly environmentStore: ExecutionEnvironmentStopStore;
   private readonly manager: ExecutionEnvironmentManager | null;
@@ -494,25 +494,25 @@ export class WorkerPurgeService {
   private readonly deliveries = buildOutboundDeliveryTableNames();
   private readonly requests = buildRuntimeRequestTableNames();
 
-  constructor(options: WorkerPurgeServiceOptions) {
+  constructor(options: SubagentPurgeServiceOptions) {
     this.pool = options.pool;
     this.environmentStore = options.environmentStore;
     this.manager = options.manager ?? null;
     this.env = options.env ?? process.env;
   }
 
-  async plan(input: WorkerPurgeInput): Promise<WorkerPurgePlan> {
+  async plan(input: SubagentPurgeInput): Promise<SubagentPurgePlan> {
     if (!hasSelector(input.selector)) {
-      throw new Error("Worker purge requires at least one selector.");
+      throw new Error("Subagent purge requires at least one selector.");
     }
 
     const now = input.now ?? Date.now();
     const rows = await this.findCandidateRows(input.selector, now);
     if ((input.selector.sessionId || input.selector.environmentId) && rows.length === 0) {
-      throw new Error("No disposable worker environment matched the selector.");
+      throw new Error("No disposable subagent environment matched the selector.");
     }
 
-    const candidates: WorkerPurgeCandidate[] = [];
+    const candidates: SubagentPurgeCandidate[] = [];
     const rowsByEnvironment = new Map<string, CandidateRow[]>();
     for (const row of rows) {
       const existing = rowsByEnvironment.get(row.environment_id);
@@ -566,7 +566,7 @@ export class WorkerPurgeService {
         dbCounts,
         externalFileReferenceCount,
         ...(isActiveUnexpiredReady(environment, now) && !input.force
-          ? {refusedReason: "active ready worker is not expired; pass --force to purge it"}
+          ? {refusedReason: "active ready subagent environment is not expired; pass --force to purge it"}
           : {}),
       });
     }
@@ -578,7 +578,7 @@ export class WorkerPurgeService {
     };
   }
 
-  async purge(input: WorkerPurgeInput): Promise<WorkerPurgePlan> {
+  async purge(input: SubagentPurgeInput): Promise<SubagentPurgePlan> {
     if (!input.execute) {
       return this.plan(input);
     }
@@ -624,7 +624,7 @@ export class WorkerPurgeService {
 
   private async stopEnvironment(environmentId: string): Promise<void> {
     if (!this.manager) {
-      throw new Error("Purge needs an execution environment manager to stop active disposable workers.");
+      throw new Error("Purge needs an execution environment manager to stop active disposable subagents.");
     }
     await stopExecutionEnvironment({
       environmentId,
@@ -633,7 +633,7 @@ export class WorkerPurgeService {
     });
   }
 
-  private async findCandidateRows(selector: WorkerPurgeSelector, now: number): Promise<CandidateRow[]> {
+  private async findCandidateRows(selector: SubagentPurgeSelector, now: number): Promise<CandidateRow[]> {
     const values: unknown[] = [];
     const where = [
       "env.kind = 'disposable_container'",
@@ -691,7 +691,7 @@ export class WorkerPurgeService {
         ON binding.environment_id = env.id
       LEFT JOIN ${this.sessions.sessions} AS session
         ON (session.id = env.created_for_session_id OR session.id = binding.session_id)
-       AND session.kind = 'worker'
+       AND session.kind = 'subagent'
       WHERE ${where.join("\n        AND ")}
       ORDER BY env.updated_at ASC, session.id ASC
     `, values);
@@ -717,7 +717,7 @@ export class WorkerPurgeService {
   private async planFilesystem(input: {
     agentKey: string;
     environment: ExecutionEnvironmentRecord;
-  }): Promise<WorkerPurgeFilesystemPlan> {
+  }): Promise<SubagentPurgeFilesystemPlan> {
     const filesystem = readExecutionEnvironmentFilesystemMetadata(input.environment.metadata);
     if (!filesystem) {
       return {
@@ -731,7 +731,7 @@ export class WorkerPurgeService {
       filesystem.root.hostPath,
       filesystem.root.managerPath,
     ].filter((entry): entry is string => Boolean(trimToUndefined(entry)));
-    let unsafe: WorkerPurgeFilesystemPlan | undefined;
+    let unsafe: SubagentPurgeFilesystemPlan | undefined;
     for (const rootPath of rootPaths) {
       if (!await pathExists(rootPath)) {
         continue;
@@ -785,12 +785,12 @@ export class WorkerPurgeService {
     sessionIds: readonly string[];
     environmentId: string;
     threadIds: readonly string[];
-  }): Promise<WorkerPurgeDbCounts> {
+  }): Promise<SubagentPurgeDbCounts> {
     const counts = emptyCounts();
     const sessionValues: unknown[] = [];
     const sessionClause = buildTextInClause("id", input.sessionIds, sessionValues);
     counts.sessions = await this.countSimple(
-      `${this.sessions.sessions} WHERE ${sessionClause} AND kind = 'worker'`,
+      `${this.sessions.sessions} WHERE ${sessionClause} AND kind = 'subagent'`,
       sessionValues,
     );
     const heartbeatValues: unknown[] = [];
@@ -831,7 +831,7 @@ export class WorkerPurgeService {
     const result = await this.pool.query(`SELECT COUNT(*)::INTEGER AS count FROM ${fromAndWhere}`, values);
     return requireNonNegativeInteger(
       (result.rows[0] as {count?: unknown} | undefined)?.count ?? 0,
-      "Worker purge row count",
+      "Subagent purge row count",
     );
   }
 
@@ -841,9 +841,9 @@ export class WorkerPurgeService {
     threadIds: readonly string[];
   }): Promise<number> {
     const values: unknown[] = [];
-    const workerClause = buildOutboundDeliveryWorkerClause(input, values);
+    const subagentClause = buildOutboundDeliverySubagentClause(input, values);
     return this.countSimple(
-      `${this.deliveries.outboundDeliveries} WHERE ${workerClause}`,
+      `${this.deliveries.outboundDeliveries} WHERE ${subagentClause}`,
       values,
     );
   }
@@ -854,9 +854,9 @@ export class WorkerPurgeService {
     threadIds: readonly string[];
   }): Promise<number> {
     const values: unknown[] = [];
-    const workerClause = buildRuntimeRequestWorkerClause(input, values);
+    const subagentClause = buildRuntimeRequestSubagentClause(input, values);
     return this.countSimple(
-      `${this.requests.runtimeRequests} WHERE ${workerClause}`,
+      `${this.requests.runtimeRequests} WHERE ${subagentClause}`,
       values,
     );
   }
@@ -968,7 +968,7 @@ export class WorkerPurgeService {
     }
   }
 
-  private async deleteDbRows(client: PgClientLike, candidate: WorkerPurgeCandidate): Promise<void> {
+  private async deleteDbRows(client: PgClientLike, candidate: SubagentPurgeCandidate): Promise<void> {
     await this.deleteOutboundDeliveries(client, candidate);
     await this.deleteRuntimeRequests(client, candidate);
     await client.query(`DELETE FROM ${this.environments.executionEnvironments} WHERE id = $1`, [
@@ -977,29 +977,29 @@ export class WorkerPurgeService {
     if (candidate.sessionIds.length > 0) {
       const values: unknown[] = [];
       const sessionClause = buildTextInClause("id", candidate.sessionIds, values);
-      await client.query(`DELETE FROM ${this.sessions.sessions} WHERE ${sessionClause} AND kind = 'worker'`, values);
+      await client.query(`DELETE FROM ${this.sessions.sessions} WHERE ${sessionClause} AND kind = 'subagent'`, values);
     }
   }
 
-  private async deleteOutboundDeliveries(client: PgClientLike, candidate: WorkerPurgeCandidate): Promise<void> {
+  private async deleteOutboundDeliveries(client: PgClientLike, candidate: SubagentPurgeCandidate): Promise<void> {
     const values: unknown[] = [];
-    const workerClause = buildOutboundDeliveryWorkerClause(candidate, values);
+    const subagentClause = buildOutboundDeliverySubagentClause(candidate, values);
     await client.query(`
       DELETE FROM ${this.deliveries.outboundDeliveries}
-      WHERE ${workerClause}
+      WHERE ${subagentClause}
     `, values);
   }
 
-  private async deleteRuntimeRequests(client: PgClientLike, candidate: WorkerPurgeCandidate): Promise<void> {
+  private async deleteRuntimeRequests(client: PgClientLike, candidate: SubagentPurgeCandidate): Promise<void> {
     const values: unknown[] = [];
-    const workerClause = buildRuntimeRequestWorkerClause({
+    const subagentClause = buildRuntimeRequestSubagentClause({
       sessionIds: candidate.sessionIds,
       environmentId: candidate.environment.id,
       threadIds: candidate.threadIds,
     }, values);
     await client.query(`
       DELETE FROM ${this.requests.runtimeRequests}
-      WHERE ${workerClause}
+      WHERE ${subagentClause}
     `, values);
   }
 }

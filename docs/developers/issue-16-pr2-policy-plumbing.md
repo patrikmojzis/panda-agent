@@ -1,6 +1,6 @@
 # Issue #16 PR2 — Policy plumbing and hidden durable subagent seam
 
-This note records the second foundation slice for issue #16. It hardens policy and storage, then adds an internal durable subagent path for tests/future wiring. It does **not** change the model-facing `spawn_subagent` behavior and does **not** remove `worker_spawn`.
+This note records the second foundation slice for issue #16. It hardens policy and storage, then adds an internal durable subagent path for tests/future wiring. It does **not** change the model-facing `spawn_subagent` behavior and does **not** remove the legacy worker-spawn tool.
 
 ## Profile store hardening
 
@@ -50,7 +50,7 @@ Subagent thread definitions:
 - Use the snapshotted profile prompt as instructions.
 - Add `Subagent Runtime Context` with task/parent/message-agent guidance.
 - Filter tools by resolved `ExecutionToolPolicy`.
-- Always deny `worker_spawn`.
-- Do not include the default main prompt, worker prompt/context, session briefing/transcript, or Workers Context unless explicitly requested and tested.
+- Always deny the legacy worker-spawn tool.
+- Do not include the default main prompt, legacy worker prompt/context, session briefing/transcript, or Subagents Context unless explicitly requested and tested.
 
 Worker behavior remains a separate legacy path for now.

@@ -160,9 +160,9 @@ describe("createDaemonThreadHelpers", () => {
             getIdentity: vi.fn(async (identityId: string) => await (options.getIdentity?.(identityId) ?? Promise.resolve(identity))),
           },
           sessionStore,
-          workerSessions: {
-            createWorkerSession: vi.fn(async () => {
-              throw new Error("Unexpected worker session creation in daemon thread helper tests.");
+          subagentSessions: {
+            createSubagentSession: vi.fn(async () => {
+              throw new Error("Unexpected subagent session creation in daemon thread helper tests.");
             }),
           },
         },
@@ -170,13 +170,6 @@ describe("createDaemonThreadHelpers", () => {
         sessionRoutes,
         outboundDeliveries: {
           enqueueDelivery: vi.fn(async () => undefined),
-        },
-        a2aBindings: {
-          bindSession: vi.fn(async (input) => ({
-            ...input,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          })),
         },
       };
 

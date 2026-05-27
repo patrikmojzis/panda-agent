@@ -22,6 +22,7 @@ import {
   type GetSubagentProfileInput,
   type ListSubagentProfilesInput,
   type NormalizedSubagentProfileInput,
+  type SetSubagentProfileEnabledInput,
   type SubagentProfileRecord,
   type UpsertSubagentProfileInput,
 } from "./types.js";
@@ -178,6 +179,30 @@ export class PostgresSubagentProfileStore implements SubagentProfileStore {
       `);
 
     return result.rows.map((row) => parseProfileRow(row as Record<string, unknown>));
+  }
+
+  async setProfileEnabled(input: SetSubagentProfileEnabledInput): Promise<SubagentProfileRecord> {
+    const slug = normalizeSubagentProfileSlug(input.slug);
+    const agentKey = normalizeAgentKey(input.agentKey);
+    if (typeof input.enabled !== "boolean") {
+      throw new Error("Subagent profile enabled must be a boolean.");
+    }
+
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.subagentProfiles}
+      SET enabled = $3,
+          updated_at = NOW()
+      WHERE slug = $1
+        AND agent_key = $2
+        AND source = 'custom'
+      RETURNING *
+    `, [slug, agentKey, input.enabled]);
+
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(`Custom subagent profile ${slug} was not found for agent ${agentKey}.`);
+    }
+    return parseProfileRow(row as Record<string, unknown>);
   }
 
   private async assertNoCrossScopeSlugConflict(

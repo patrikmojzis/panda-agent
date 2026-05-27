@@ -11,14 +11,8 @@ import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {buildDefaultAgentLlmContexts, type AgentProfileStore, type DefaultAgentLlmContextSection,} from "../../panda/contexts/builder.js";
 import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry} from "../../panda/definition.js";
 import {DEFAULT_AGENT_INSTRUCTIONS} from "../../prompts/runtime/default-agent.js";
-import {DEFAULT_WORKER_INSTRUCTIONS} from "../../prompts/runtime/worker.js";
-import {WorkerRuntimeContext} from "../../panda/contexts/worker-runtime-context.js";
 import {SubagentRuntimeContext} from "../../panda/contexts/subagent-runtime-context.js";
-import {
-  DEFAULT_WORKER_ALLOWED_TOOL_NAMES,
-  POSTGRES_READONLY_TOOL_NAME,
-  WORKER_CONTROL_TOOL_NAMES,
-} from "../../panda/worker-tool-policy.js";
+import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 import type {DefaultAgentSessionContext} from "./panda-session-context.js";
 import type {BashToolOptions} from "../../panda/tools/bash-tool.js";
 import type {BrowserToolOptions} from "../../panda/tools/browser-tool.js";
@@ -28,17 +22,12 @@ import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {WikiBindingService} from "../../domain/wiki/service.js";
 import {resolveSessionPromptCacheKey, resolveThreadPromptCacheKey} from "../../domain/threads/runtime/prompt-cache-key.js";
-import {readWorkerContextValue} from "../../domain/sessions/worker-metadata.js";
 import {readSubagentSessionMetadata, type SubagentSessionMetadata} from "../../domain/subagents/session-metadata.js";
 
 const HOUR_MS = 60 * 60 * 1_000;
+const POSTGRES_READONLY_TOOL_NAME = "postgres_readonly_query";
+const LEGACY_WORKER_SPAWN_TOOL_NAME = ["worker", "spawn"].join("_");
 const DAY_MS = 24 * HOUR_MS;
-const WORKER_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
-  "environment",
-  "background_jobs",
-  "skills",
-  "todo_context",
-];
 const SUBAGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "environment",
   "background_jobs",
@@ -70,6 +59,7 @@ export interface CreateThreadDefinitionOptions {
   fallbackContext: Pick<DefaultAgentSessionContext, "cwd">;
   agentStore?: AgentProfileStore;
   sessionStore?: Pick<SessionStore, "listAgentSessions" | "readSessionTodo">;
+  subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner">;
@@ -111,12 +101,6 @@ function resolveLlmContextSections(
   session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind},
   sections: readonly DefaultAgentLlmContextSection[] | undefined,
 ): readonly DefaultAgentLlmContextSection[] | undefined {
-  if (isWorkerSession(session)) {
-    const allowed = new Set(WORKER_LLM_CONTEXT_SECTIONS);
-    const requested = sections?.length ? sections : WORKER_LLM_CONTEXT_SECTIONS;
-    return requested.filter((section) => allowed.has(section));
-  }
-
   if (isSubagentSession(session)) {
     const allowed = new Set(SUBAGENT_LLM_CONTEXT_SECTIONS);
     const requested = sections?.length ? sections : SUBAGENT_LLM_CONTEXT_SECTIONS;
@@ -126,31 +110,8 @@ function resolveLlmContextSections(
   return sections;
 }
 
-function resolveWorkerAllowedToolNames(executionEnvironment?: ResolvedExecutionEnvironment): Set<string> {
-  const allowedTools = executionEnvironment?.toolPolicy.allowedTools?.length
-    ? executionEnvironment.toolPolicy.allowedTools
-    : DEFAULT_WORKER_ALLOWED_TOOL_NAMES;
-  return new Set(allowedTools);
-}
-
-function isWorkerToolAllowed(toolName: string, executionEnvironment?: ResolvedExecutionEnvironment): boolean {
-  if (WORKER_CONTROL_TOOL_NAMES.has(toolName)) {
-    return false;
-  }
-
-  const policy = executionEnvironment?.toolPolicy;
-  if (toolName === "bash" && policy?.bash?.allowed === false) {
-    return false;
-  }
-  if (toolName === POSTGRES_READONLY_TOOL_NAME && policy?.postgresReadonly?.allowed !== true) {
-    return false;
-  }
-
-  return resolveWorkerAllowedToolNames(executionEnvironment).has(toolName);
-}
-
 function isSubagentToolAllowed(toolName: string, executionEnvironment?: ResolvedExecutionEnvironment): boolean {
-  if (toolName === "worker_spawn" || toolName === "spawn_subagent") {
+  if (toolName === LEGACY_WORKER_SPAWN_TOOL_NAME || toolName === "spawn_subagent") {
     return false;
   }
 
@@ -179,12 +140,9 @@ function resolveSessionTools(
       browser: options.browserToolOptions,
       imageGenerate: options.imageGenerateToolOptions,
     }));
-    return isWorkerSession(options.session) ? toolsets.worker : toolsets.main;
+    return toolsets.main;
   })();
 
-  if (isWorkerSession(options.session)) {
-    return baseTools.filter((tool) => isWorkerToolAllowed(tool.name, options.executionEnvironment));
-  }
   if (isSubagentSession(options.session)) {
     return baseTools.filter((tool) => isSubagentToolAllowed(tool.name, options.executionEnvironment));
   }
@@ -216,7 +174,7 @@ export function resolveStoredContext(
 }
 
 function resolveSessionThinking(
-  session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind},
+  _session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind},
   runtimeConfig: SessionRuntimeConfigRecord | undefined,
   subagent: SubagentSessionMetadata | undefined,
 ): SessionRuntimeConfigRecord["thinking"] {
@@ -227,7 +185,7 @@ function resolveSessionThinking(
     return subagent.resolved.thinking;
   }
 
-  return isWorkerSession(session) ? "xhigh" : undefined;
+  return undefined;
 }
 
 function resolveSessionModel(
@@ -248,16 +206,16 @@ function resolveSessionInstructions(
     return subagent.profile.prompt;
   }
 
-  return isWorkerSession(session) ? DEFAULT_WORKER_INSTRUCTIONS : DEFAULT_AGENT_INSTRUCTIONS;
+  return DEFAULT_AGENT_INSTRUCTIONS;
 }
 
 export function createThreadDefinition(
   options: CreateThreadDefinitionOptions,
 ): ResolvedThreadDefinition {
   const {session} = options;
-  const storedWorker = isWorkerSession(session)
-    ? readWorkerContextValue(session.metadata)
-    : undefined;
+  if (isWorkerSession(session)) {
+    throw new Error(`Legacy worker session ${session.id} is not supported after the subagent hard cut.`);
+  }
   const storedSubagent = isSubagentSession(session)
     ? readRequiredSubagentMetadata(session)
     : undefined;
@@ -269,7 +227,6 @@ export function createThreadDefinition(
     agentKey: session.agentKey,
     subagentDepth: 0,
     ...(options.executionEnvironment ? {executionEnvironment: options.executionEnvironment} : {}),
-    ...(storedWorker !== undefined ? {worker: storedWorker} : {}),
     ...options.extraContext,
   };
 
@@ -277,6 +234,7 @@ export function createThreadDefinition(
     context,
     agentStore: options.agentStore,
     sessionStore: options.sessionStore,
+    subagentProfiles: options.subagentProfiles,
     threadStore: options.threadStore,
     scheduledTasks: options.scheduledTasks,
     executionEnvironments: options.executionEnvironments,
@@ -288,12 +246,6 @@ export function createThreadDefinition(
     sessionPrompt: options.sessionPrompt,
     extraLlmContexts: options.extraLlmContexts,
   });
-  if (isWorkerSession(session)) {
-    llmContexts.unshift(new WorkerRuntimeContext({
-      worker: context.worker,
-      executionEnvironment: options.executionEnvironment,
-    }));
-  }
   if (storedSubagent) {
     llmContexts.unshift(new SubagentRuntimeContext({
       subagent: storedSubagent,

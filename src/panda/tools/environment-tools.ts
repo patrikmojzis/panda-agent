@@ -6,15 +6,9 @@ import {z} from "zod";
 
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
-import {ConfigurationError, ToolError} from "../../kernel/agent/exceptions.js";
+import {ToolError} from "../../kernel/agent/exceptions.js";
 import {isJsonObject, type JsonObject} from "../../lib/json.js";
-import {uniqueTrimmedStrings} from "../../lib/strings.js";
-import {resolveModelSelector} from "../../kernel/models/model-selector.js";
-import {readWorkerSessionMetadata} from "../../domain/sessions/worker-metadata.js";
-import type {
-  ExecutionEnvironmentRecord,
-  ExecutionToolPolicy,
-} from "../../domain/execution-environments/types.js";
+import type {ExecutionEnvironmentRecord} from "../../domain/execution-environments/types.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
 import {
@@ -24,15 +18,9 @@ import {
 } from "../../domain/execution-environments/setup.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveReadableContextPath} from "../../app/runtime/panda-path-context.js";
-import type {SessionRecord} from "../../domain/sessions/types.js";
-import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
-import {
-  buildDefaultWorkerAllowedTools,
-  KNOWN_WORKER_TOOL_NAMES,
-  POSTGRES_READONLY_TOOL_NAME,
-  WORKER_CONTROL_TOOL_NAMES,
-} from "../worker-tool-policy.js";
 import {readRequiredAgentSessionToolScope, rethrowAsToolError} from "./shared.js";
+
+const DEFAULT_ENVIRONMENT_TTL_MS = 24 * 60 * 60 * 1_000;
 
 function compactObject<T extends Record<string, unknown>>(value: T): JsonObject {
   const compacted = Object.fromEntries(
@@ -42,52 +30,17 @@ function compactObject<T extends Record<string, unknown>>(value: T): JsonObject 
     return compacted;
   }
 
-  throw new ToolError("Worker tool payload must be a JSON object.");
+  throw new ToolError("Environment tool payload must be a JSON object.");
 }
 
 function readScope(context: DefaultAgentSessionContext | undefined): {
   agentKey: string;
   sessionId: string;
-  identityId?: string;
 } {
   return readRequiredAgentSessionToolScope(
     context,
-    "Worker tools require agentKey and sessionId in the runtime session context.",
+    "Environment tools require agentKey and sessionId in the runtime session context.",
   );
-}
-
-function ensureWorkerA2A(context: DefaultAgentSessionContext | undefined): NonNullable<DefaultAgentSessionContext["workerA2A"]> {
-  const service = context?.workerA2A;
-  if (!service) {
-    throw new ToolError("worker_spawn is unavailable because worker A2A binding is not configured.");
-  }
-
-  return service;
-}
-
-const DEFAULT_WORKER_ENVIRONMENT_TTL_MS = 24 * 60 * 60 * 1_000;
-
-interface WorkerSessionCreateResult {
-  session: Pick<SessionRecord, "id" | "metadata">;
-  thread: Pick<ThreadRecord, "id">;
-  environment: ExecutionEnvironmentRecord;
-}
-
-interface WorkerSessionCreator {
-  createWorkerSession(input: {
-    agentKey: string;
-    role?: string;
-    task: string;
-    context?: string;
-    parentSessionId: string;
-    createdByIdentityId?: string;
-    model?: string;
-    environmentId?: string;
-    credentialAllowlist: readonly string[];
-    skillAllowlist: readonly string[];
-    toolPolicy: ExecutionToolPolicy;
-    beforeHandoff?: (created: WorkerSessionCreateResult) => Promise<void>;
-  }): Promise<WorkerSessionCreateResult>;
 }
 
 interface ExecutionEnvironmentCreator {
@@ -104,27 +57,6 @@ interface ExecutionEnvironmentStopper {
   stopEnvironment(environmentId: string): Promise<ExecutionEnvironmentRecord>;
 }
 
-function resolveWorkerModelSelector(value: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
-  const selector = value?.trim() || env.WORKER_MODEL?.trim();
-  if (!selector) {
-    return undefined;
-  }
-
-  try {
-    return resolveModelSelector(selector).canonical;
-  } catch (error) {
-    if (error instanceof ConfigurationError) {
-      throw new ToolError(`Invalid worker model ${JSON.stringify(selector)}: ${error.message}`, {
-        details: {
-          model: selector,
-        },
-      });
-    }
-
-    throw error;
-  }
-}
-
 function readParentVisiblePaths(environment: ExecutionEnvironmentRecord): JsonObject | undefined {
   const filesystem = readExecutionEnvironmentFilesystemMetadata(environment.metadata);
   if (!filesystem) {
@@ -139,7 +71,7 @@ function readParentVisiblePaths(environment: ExecutionEnvironmentRecord): JsonOb
   });
 }
 
-function serializeWorkerEnvironment(environment: ExecutionEnvironmentRecord): JsonObject {
+function serializeEnvironment(environment: ExecutionEnvironmentRecord): JsonObject {
   return compactObject({
     environmentId: environment.id,
     environmentState: environment.state,
@@ -163,130 +95,6 @@ function validateOwnedDisposableEnvironment(input: {
   }
   if (input.environment.createdBySessionId !== input.scope.sessionId) {
     throw new ToolError(`Execution environment ${input.environment.id} is not owned by this session.`);
-  }
-}
-
-export interface WorkerSpawnToolOptions {
-  workerSessions: WorkerSessionCreator;
-  env?: NodeJS.ProcessEnv;
-  availableToolNames?: () => readonly string[];
-}
-
-export class WorkerSpawnTool<TContext = DefaultAgentSessionContext>
-  extends Tool<typeof WorkerSpawnTool.schema, TContext> {
-  static schema = z.object({
-    role: z.string().trim().min(1).max(80).optional(),
-    task: z.string().trim().min(1),
-    context: z.string().trim().min(1).optional(),
-    model: z.string().trim().min(1).optional(),
-    environmentId: z.string().trim().min(1).optional(),
-    credentialAllowlist: z.array(z.string().trim().min(1)).max(50).optional(),
-    skillAllowlist: z.array(z.string().trim().min(1)).max(50).optional(),
-    toolAllowlist: z.array(z.string().trim().min(1)).max(50).optional(),
-    allowReadonlyPostgres: z.boolean().optional(),
-  });
-
-  name = "worker_spawn";
-  description = "Spawn a disposable worker session for scoped work. By default it creates a fresh environment; pass environmentId to attach to an existing environment.";
-  schema = WorkerSpawnTool.schema;
-
-  private readonly workerSessions: WorkerSessionCreator;
-  private readonly env: NodeJS.ProcessEnv;
-  private readonly availableToolNames?: () => readonly string[];
-
-  constructor(options: WorkerSpawnToolOptions) {
-    super();
-    this.workerSessions = options.workerSessions;
-    this.env = options.env ?? process.env;
-    this.availableToolNames = options.availableToolNames;
-  }
-
-  override formatCall(args: Record<string, unknown>): string {
-    const role = typeof args.role === "string" ? args.role : "worker";
-    const task = typeof args.task === "string" ? args.task : "";
-    return `${role}: ${task}`.trim();
-  }
-
-  override formatResult(message: ToolResultMessage): string {
-    const details = message.details;
-    if (!details || typeof details !== "object" || Array.isArray(details)) {
-      return message.isError ? "Worker spawn failed." : "Worker spawned.";
-    }
-
-    const sessionId = typeof details.sessionId === "string" ? details.sessionId : undefined;
-    const environmentId = typeof details.environmentId === "string" ? details.environmentId : undefined;
-    return [
-      "worker spawned",
-      sessionId ? `session ${sessionId}` : "",
-      environmentId ? `environment ${environmentId}` : "",
-    ].filter(Boolean).join("\n");
-  }
-
-  async handle(
-    args: z.output<typeof WorkerSpawnTool.schema>,
-    run: RunContext<TContext>,
-  ): Promise<JsonObject> {
-    const context = run.context as DefaultAgentSessionContext | undefined;
-    const scope = readScope(context);
-    const workerA2A = ensureWorkerA2A(context);
-    const model = resolveWorkerModelSelector(args.model, this.env);
-    const extraTools = this.validateToolAllowlist(args.toolAllowlist ?? [], args.allowReadonlyPostgres === true);
-    const created = await this.workerSessions.createWorkerSession({
-      agentKey: scope.agentKey,
-      role: args.role,
-      task: args.task,
-      context: args.context,
-      parentSessionId: scope.sessionId,
-      createdByIdentityId: scope.identityId,
-      model,
-      environmentId: args.environmentId,
-      credentialAllowlist: args.credentialAllowlist ?? [],
-      skillAllowlist: args.skillAllowlist ?? [],
-      toolPolicy: {
-        allowedTools: buildDefaultWorkerAllowedTools({
-          allowReadonlyPostgres: args.allowReadonlyPostgres === true,
-          extraTools,
-        }),
-        bash: {allowed: true},
-        ...(args.allowReadonlyPostgres ? {postgresReadonly: {allowed: true}} : {}),
-      },
-      beforeHandoff: async (result) => {
-        await workerA2A.bindParentWorker({
-          parentSessionId: scope.sessionId,
-          workerSessionId: result.session.id,
-        });
-      },
-    }).catch((error: unknown) => rethrowAsToolError(error));
-
-    return {
-      status: "spawned",
-      sessionId: created.session.id,
-      threadId: created.thread.id,
-      role: readWorkerSessionMetadata(created.session.metadata)?.role ?? args.role ?? "worker",
-      ...serializeWorkerEnvironment(created.environment),
-    };
-  }
-
-  private validateToolAllowlist(values: readonly string[], allowReadonlyPostgres: boolean): string[] {
-    const requested = uniqueTrimmedStrings(values);
-    const available = this.availableToolNames ? new Set(this.availableToolNames()) : null;
-
-    for (const toolName of requested) {
-      if (WORKER_CONTROL_TOOL_NAMES.has(toolName)) {
-        throw new ToolError(`${toolName} cannot be granted to worker sessions.`);
-      }
-      if (!KNOWN_WORKER_TOOL_NAMES.has(toolName)) {
-        throw new ToolError(`Unknown worker tool: ${toolName}.`);
-      }
-      if (toolName === POSTGRES_READONLY_TOOL_NAME && !allowReadonlyPostgres) {
-        throw new ToolError("postgres_readonly_query requires allowReadonlyPostgres=true.");
-      }
-      if (available && !available.has(toolName)) {
-        throw new ToolError(`Tool ${toolName} is not available in this runtime.`);
-      }
-    }
-
-    return requested;
   }
 }
 
@@ -376,18 +184,18 @@ export class EnvironmentCreateTool<TContext = DefaultAgentSessionContext>
       agentKey: scope.agentKey,
       createdBySessionId: scope.sessionId,
       ttlMs: args.ttlHours === undefined
-        ? DEFAULT_WORKER_ENVIRONMENT_TTL_MS
+        ? DEFAULT_ENVIRONMENT_TTL_MS
         : Math.round(args.ttlHours * 60 * 60 * 1_000),
       metadata: compactObject({
         ...(args.label ? {label: args.label} : {}),
         createdByTool: "environment_create",
       }),
       ...(setupScript ? {setupScript} : {}),
-    });
+    }).catch((error: unknown) => rethrowAsToolError(error));
 
     return {
       status: "created",
-      ...serializeWorkerEnvironment(environment),
+      ...serializeEnvironment(environment),
     };
   }
 }
@@ -439,12 +247,13 @@ export class EnvironmentStopTool<TContext = DefaultAgentSessionContext>
     run: RunContext<TContext>,
   ): Promise<JsonObject> {
     const scope = readScope(run.context as DefaultAgentSessionContext | undefined);
-    const current = await this.environments.getEnvironment(args.environmentId);
+    const current = await this.environments.getEnvironment(args.environmentId)
+      .catch((error: unknown) => rethrowAsToolError(error));
     validateOwnedDisposableEnvironment({environment: current, scope});
     const alreadyTerminal = current.state === "stopped" || current.state === "failed";
     const environment = alreadyTerminal || current.state === "stopping"
       ? current
-      : await this.lifecycle.stopEnvironment(current.id);
+      : await this.lifecycle.stopEnvironment(current.id).catch((error: unknown) => rethrowAsToolError(error));
 
     return {
       status: current.state === "failed"
@@ -452,7 +261,7 @@ export class EnvironmentStopTool<TContext = DefaultAgentSessionContext>
         : alreadyTerminal
           ? "already_stopped"
           : environment.state,
-      ...serializeWorkerEnvironment(environment),
+      ...serializeEnvironment(environment),
     };
   }
 }

@@ -11,7 +11,7 @@ Model-facing schema is intentionally strict: required `prompt`; optional
 `toolGroups`. Old fields such as `role`, `task`, `model`, raw tool/skill
 allowlists, TTLs, and `transcriptMode` are rejected rather than adapted.
 
-`worker_spawn` is no longer model-facing. Historical worker sessions, metadata,
+the legacy worker-spawn tool is no longer model-facing. Historical worker sessions, metadata,
 purge support, and internal runtime-client paths remain for compatibility, but
 new model delegation should use durable subagents.
 

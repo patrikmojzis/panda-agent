@@ -28,11 +28,11 @@ import {trimToUndefined} from "../../lib/strings.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
 import {requireIdentityId} from "./daemon-shared.js";
 import {
-  createDaemonWorkerSessionCreator,
-  type DaemonWorkerSessionContext,
-  type DaemonCreateWorkerSessionInput,
-} from "./daemon-worker-sessions.js";
-import type {CreateWorkerSessionResult} from "./worker-session-service.js";
+  createDaemonSubagentSessionCreator,
+  type DaemonSubagentSessionContext,
+  type DaemonCreateSubagentSessionInput,
+} from "./daemon-subagent-sessions.js";
+import type {CreateSubagentSessionResult} from "./subagent-session-service.js";
 
 export interface DaemonThreadHelperContext {
   fallbackContext: {cwd: string};
@@ -49,9 +49,8 @@ export interface DaemonThreadHelperContext {
     identityStore: Pick<IdentityStore, "getIdentity">;
     sessionStore: Pick<SessionStore, "createSession" | "getMainSession" | "getSession" | "updateCurrentThread" | "updateSessionRuntimeConfig">;
     store: Pick<ThreadRuntimeStore, "createThread" | "discardPendingInputs" | "getThread">;
-    workerSessions: DaemonWorkerSessionContext["workerSessions"];
+    subagentSessions: DaemonSubagentSessionContext["subagentSessions"];
   };
-  a2aBindings: DaemonWorkerSessionContext["a2aBindings"];
   conversationBindings: {
     bindConversation(input: BindConversationInput): Promise<unknown>;
     getConversationBinding(input: ConversationLookup): Promise<ConversationBinding | null>;
@@ -75,7 +74,7 @@ export interface DaemonThreadHelpers {
     thinking?: CreateBranchSessionRequestPayload["thinking"];
     inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
   }): Promise<ThreadRecord>;
-  createWorkerSession(input: DaemonCreateWorkerSessionInput): Promise<CreateWorkerSessionResult>;
+  createSubagentSession(input: DaemonCreateSubagentSessionInput): Promise<CreateSubagentSessionResult>;
   relocateThreadMedia(
     thread: ThreadRecord,
     media: readonly MediaDescriptor[],
@@ -308,11 +307,9 @@ export function createDaemonThreadHelpers(
     return thread;
   };
 
-  const createWorkerSession = createDaemonWorkerSessionCreator({
-    a2aBindings: context.a2aBindings,
+  const createSubagentSession = createDaemonSubagentSessionCreator({
     resolveAccessibleAgentKey,
-    sessions: context.runtime.sessionStore,
-    workerSessions: context.runtime.workerSessions,
+    subagentSessions: context.runtime.subagentSessions,
   });
 
   const relocateThreadMedia = async (
@@ -589,7 +586,7 @@ export function createDaemonThreadHelpers(
   return {
     ensureIdentity,
     createBranchSession,
-    createWorkerSession,
+    createSubagentSession,
     relocateThreadMedia,
     openMainSession,
     resolveOrCreateConversationThread,

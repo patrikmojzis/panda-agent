@@ -2,6 +2,7 @@ import {describe, expect, it, vi} from "vitest";
 
 import {
   createDaemonRequestProcessor,
+  UNSUPPORTED_CREATE_WORKER_SESSION_REQUEST_ERROR,
   type DaemonRequestProcessorContext,
   type DaemonRequestThreadHelpers,
 } from "../src/app/runtime/daemon-requests.js";
@@ -205,7 +206,7 @@ function createThreadHelpers(overrides: Partial<DaemonRequestThreadHelpers> = {}
   };
   return {
     createBranchSession: unexpected,
-    createWorkerSession: unexpected,
+    createSubagentSession: unexpected,
     ensureIdentity: unexpected,
     handleResetSession: unexpected,
     openMainSession: unexpected,
@@ -334,6 +335,89 @@ describe("daemon request processor", () => {
       identityId: "identity-1",
     }));
     expectFirstCallBefore(saveLastRoute, submitInput);
+  });
+
+  it("routes create_subagent_session requests through the durable subagent helper", async () => {
+    const createSubagentSession = vi.fn(async () => ({
+      session: {
+        id: "subagent-session",
+        agentKey: "panda",
+        kind: "subagent" as const,
+        currentThreadId: "subagent-thread",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      thread: {
+        id: "subagent-thread",
+        sessionId: "subagent-session",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    }));
+    const processor = createDaemonRequestProcessor(
+      createRequestContext(),
+      createThreadHelpers({
+        ensureIdentity: vi.fn(async () => createIdentity()),
+        createSubagentSession,
+      }),
+    );
+
+    await expect(processor({
+      id: "request-subagent",
+      kind: "create_subagent_session",
+      status: "pending",
+      createdAt: 1,
+      updatedAt: 1,
+      payload: {
+        identityId: "identity-1",
+        sessionId: "subagent-session",
+        threadId: "subagent-thread",
+        agentKey: "panda",
+        parentSessionId: "parent-session",
+        prompt: "Inspect the repo.",
+        context: "Use read-only tools.",
+        profile: "workspace",
+        execution: "agent_workspace",
+      },
+    })).resolves.toMatchObject({
+      threadId: "subagent-thread",
+      sessionId: "subagent-session",
+      profile: "workspace",
+      execution: "agent_workspace",
+    });
+
+    expect(createSubagentSession).toHaveBeenCalledWith(expect.objectContaining({
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      prompt: "Inspect the repo.",
+      context: "Use read-only tools.",
+      profile: "workspace",
+      execution: "agent_workspace",
+    }));
+  });
+
+  it("fails legacy create_worker_session requests closed instead of parsing-sticking", async () => {
+    const createSubagentSession = vi.fn();
+    const processor = createDaemonRequestProcessor(
+      createRequestContext(),
+      createThreadHelpers({
+        ensureIdentity: vi.fn(async () => createIdentity()),
+        createSubagentSession,
+      }),
+    );
+
+    await expect(processor({
+      id: "request-legacy-worker",
+      kind: "create_worker_session",
+      status: "pending",
+      createdAt: 1,
+      updatedAt: 1,
+      payload: {
+        identityId: "identity-1",
+        sessionId: "stale-worker-session",
+      },
+    })).rejects.toThrow(UNSUPPORTED_CREATE_WORKER_SESSION_REQUEST_ERROR);
+    expect(createSubagentSession).not.toHaveBeenCalled();
   });
 
   it("queues bound A2A messages to the recipient session current thread", async () => {

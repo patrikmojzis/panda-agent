@@ -6,13 +6,7 @@ import {fileURLToPath} from "node:url";
 
 import type {Tool} from "../../src/kernel/agent/tool.js";
 import {createDefaultAgentToolRegistry, buildDefaultAgentToolsetsFromRegistry} from "../../src/panda/definition.js";
-import {
-  DEFAULT_WORKER_ALLOWED_TOOL_NAMES,
-  KNOWN_WORKER_TOOL_NAMES,
-  POSTGRES_READONLY_TOOL_NAME,
-  WORKER_CONTROL_TOOL_NAMES,
-  buildDefaultWorkerAllowedTools,
-} from "../../src/panda/worker-tool-policy.js";
+import {SUBAGENT_TOOL_GROUP_DEFINITIONS} from "../../src/domain/subagents/tool-groups.js";
 import {AgentPromptTool} from "../../src/panda/tools/agent-prompt-tool.js";
 import {AgentSkillTool} from "../../src/panda/tools/agent-skill-tool.js";
 import {
@@ -25,7 +19,7 @@ import {
 } from "../../src/panda/tools/app-tools.js";
 import {ClearEnvValueTool, SetEnvValueTool} from "../../src/panda/tools/env-value-tools.js";
 import {EmailSendTool} from "../../src/panda/tools/email-send-tool.js";
-import {EnvironmentCreateTool, EnvironmentStopTool} from "../../src/panda/tools/worker-tools.js";
+import {EnvironmentCreateTool, EnvironmentStopTool} from "../../src/panda/tools/environment-tools.js";
 import {MessageAgentTool} from "../../src/panda/tools/message-agent-tool.js";
 import {OutboundTool} from "../../src/panda/tools/outbound-tool.js";
 import {
@@ -65,7 +59,6 @@ const contractFiles = [
   "src/panda/defaults.ts",
   "src/panda/definition.ts",
   "src/panda/subagents/policy.ts",
-  "src/panda/worker-tool-policy.ts",
 ];
 
 interface ContractFileRecord {
@@ -87,13 +80,7 @@ interface PromptContractSnapshot {
   files: ContractFileRecord[];
   toolCatalog: ToolContractRecord[];
   toolsets: Record<string, string[]>;
-  workerPolicy: {
-    controlToolNames: string[];
-    defaultAllowedToolNames: string[];
-    defaultAllowedWithReadonlyPostgres: string[];
-    knownToolNames: string[];
-    postgresReadonlyToolName: string;
-  };
+  subagentToolGroups: typeof SUBAGENT_TOOL_GROUP_DEFINITIONS;
 }
 
 function sha256(value: string): string {
@@ -272,7 +259,13 @@ function collectTools(): {
       }),
     ];
     const bootstrapMain = buildDefaultAgentToolsetsFromRegistry(registry, mainExtras).main;
-    const runtimeWorker = mergeToolsByName([defaultToolsets.worker, bootstrapMain]);
+    const runtimeSubagent = mergeToolsByName([
+      bootstrapMain,
+      defaultToolsets.workspace,
+      defaultToolsets.memory,
+      defaultToolsets.browser,
+      defaultToolsets.skill_maintainer,
+    ]);
     const environmentControl = [
       new EnvironmentCreateTool({
         lifecycle: service,
@@ -302,10 +295,9 @@ function collectTools(): {
       defaultToolsets.workspace,
       defaultToolsets.memory,
       defaultToolsets.browser,
-      defaultToolsets.worker,
       defaultToolsets.skill_maintainer,
       runtimeMain,
-      runtimeWorker,
+      runtimeSubagent,
       environmentControl,
       daemonChannelExtras,
     ]);
@@ -317,10 +309,9 @@ function collectTools(): {
         defaultWorkspace: toolNames(defaultToolsets.workspace),
         defaultMemory: toolNames(defaultToolsets.memory),
         defaultBrowser: toolNames(defaultToolsets.browser),
-        defaultWorker: toolNames(defaultToolsets.worker),
         defaultSkillMaintainer: toolNames(defaultToolsets.skill_maintainer),
         runtimeMain: toolNames(runtimeMain),
-        runtimeWorker: toolNames(runtimeWorker),
+        runtimeSubagent: toolNames(runtimeSubagent),
         environmentControl: toolNames(environmentControl),
         daemonChannelExtras: toolNames(daemonChannelExtras),
       },
@@ -362,15 +353,7 @@ async function buildSnapshot(): Promise<PromptContractSnapshot> {
     generatedBy: "scripts/ci/prompt-contracts.ts",
     files,
     ...tools,
-    workerPolicy: {
-      controlToolNames: [...WORKER_CONTROL_TOOL_NAMES].toSorted(),
-      defaultAllowedToolNames: [...DEFAULT_WORKER_ALLOWED_TOOL_NAMES],
-      defaultAllowedWithReadonlyPostgres: buildDefaultWorkerAllowedTools({
-        allowReadonlyPostgres: true,
-      }),
-      knownToolNames: [...KNOWN_WORKER_TOOL_NAMES].toSorted(),
-      postgresReadonlyToolName: POSTGRES_READONLY_TOOL_NAME,
-    },
+    subagentToolGroups: SUBAGENT_TOOL_GROUP_DEFINITIONS,
   };
 }
 

@@ -37,11 +37,11 @@ function resolveExecutionMode(environment: Pick<ExecutionEnvironmentRecord, "kin
 }
 
 function defaultPersistentCredentialPolicy(session: Pick<SessionRecord, "kind">): ExecutionCredentialPolicy {
-  return session.kind === "worker" || session.kind === "subagent" ? {mode: "allowlist", envKeys: []} : {mode: "all_agent"};
+  return session.kind === "subagent" ? {mode: "allowlist", envKeys: []} : {mode: "all_agent"};
 }
 
-function defaultPersistentSkillPolicy(session: Pick<SessionRecord, "kind">): ExecutionSkillPolicy {
-  return session.kind === "worker" ? {mode: "allowlist", skillKeys: []} : {mode: "all_agent"};
+function defaultPersistentSkillPolicy(_session: Pick<SessionRecord, "kind">): ExecutionSkillPolicy {
+  return {mode: "all_agent"};
 }
 
 function resolveFallbackEnvironment(
@@ -94,11 +94,11 @@ export class ExecutionEnvironmentResolver {
   async resolveDefault(
     session: ResolverSession,
   ): Promise<ResolvedExecutionEnvironment> {
+    if (session.kind === "worker") {
+      throw new Error(`Legacy worker session ${session.id} is not supported after the subagent hard cut.`);
+    }
     const binding = await this.store.getDefaultBinding(session.id);
     if (!binding) {
-      if (session.kind === "worker") {
-        throw new Error(`Worker session ${session.id} has no default execution environment binding.`);
-      }
       if (session.kind === "subagent") {
         const subagent = readSubagentSessionMetadata(session.metadata);
         if (!subagent) {
@@ -123,6 +123,10 @@ export class ExecutionEnvironmentResolver {
     session: ResolverSession,
     binding: SessionEnvironmentBindingRecord,
   ): Promise<ResolvedExecutionEnvironment> {
+    if (session.kind === "worker") {
+      throw new Error(`Legacy worker session ${session.id} is not supported after the subagent hard cut.`);
+    }
+
     const subagent = session.kind === "subagent"
       ? readSubagentSessionMetadata(session.metadata)
       : null;

@@ -8,6 +8,8 @@ import {
 import type {DefaultAgentLlmContextSection} from "../contexts/builder.js";
 import type {DefaultAgentToolsetKey} from "../definition.js";
 
+// Legacy in-process role policy for the non-runtime DefaultAgentSubagentService.
+// Active V2 delegation resolves DB-backed profiles and tool groups in SubagentSessionService.
 export const DEFAULT_AGENT_SUBAGENT_ROLES = ["workspace", "memory", "browser", "skill_maintainer"] as const;
 export type DefaultAgentSubagentRole = typeof DEFAULT_AGENT_SUBAGENT_ROLES[number];
 type DefaultAgentSubagentToolsetKey = Exclude<DefaultAgentToolsetKey, "main" | "worker">;

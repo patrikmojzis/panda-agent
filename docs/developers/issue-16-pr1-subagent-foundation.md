@@ -1,11 +1,11 @@
 # Issue #16 PR1 — Subagent foundation decisions
 
-This note records the first safe implementation slice for issue #16. It is a foundation for the later hard cut to durable `spawn_subagent`; it is not a compatibility wrapper and does not preserve `worker_spawn` as product policy.
+This note records the first safe implementation slice for issue #16. It is a foundation for the later hard cut to durable `spawn_subagent`; it is not a compatibility wrapper and does not preserve the legacy worker-spawn tool as product policy.
 
 ## Decision chain
 
 - Patrik approved `subagent` as the canonical product noun.
-- V1 keeps one future model-facing spawn surface: durable `spawn_subagent` with A2A progress/completion. Removing `worker_spawn` is a later hard-cut slice, not part of this PR1.
+- V1 keeps one future model-facing spawn surface: durable `spawn_subagent` with A2A progress/completion. Removing the legacy worker-spawn tool is a later hard-cut slice, not part of this PR1.
 - Profiles are DB-backed from day one. Built-ins may be seeded from code, but runtime lookup should use Postgres as the source of truth.
 - Profiles store tool-group keys only. They do not store raw tool names, credentials, environment ids, execution targets, or `skillAllowlist`.
 - `transcriptMode` is inert/default `none` in V1.
@@ -28,4 +28,4 @@ Approved V1 corrections are pinned there and covered by tests:
 
 `skill_maintainer` is seeded conservatively without broad `operate` because that group also includes env/app/watch/schedule/credential-style mutations. The next slice must either add enforceable operation-level `agent_skill(load|set|delete)` policy or introduce an explicit narrow skill-maintenance capability before using the profile for skill mutation.
 
-This PR deliberately stops before spawn enforcement. The next slice should use these DB-backed profiles and tool groups when implementing durable `spawn_subagent` and removing model-facing `worker_spawn`.
+This PR deliberately stops before spawn enforcement. The next slice should use these DB-backed profiles and tool groups when implementing durable `spawn_subagent` and removing model-facing the legacy worker-spawn tool.

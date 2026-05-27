@@ -61,7 +61,7 @@ That means:
 - `panda-core` keeps DB creds, provider tokens, and connector secrets
 - `panda-runner-<agent>` executes shell commands
 - the runner should not have DB creds or a network path to Postgres
-- disposable/worker environments should use explicit credential allowlists, not inherit every agent credential
+- disposable subagent environments should use explicit credential allowlists, not inherit every agent credential
 
 Background jobs follow the same split:
 

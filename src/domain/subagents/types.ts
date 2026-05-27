@@ -54,6 +54,12 @@ export interface GetSubagentProfileInput extends ListSubagentProfilesInput {
   slug: string;
 }
 
+export interface SetSubagentProfileEnabledInput {
+  slug: string;
+  agentKey: string;
+  enabled: boolean;
+}
+
 export type NormalizedSubagentProfileInput = Omit<SubagentProfileRecord, "createdAt" | "updatedAt">;
 
 const FORBIDDEN_SUBAGENT_PROFILE_FIELDS = new Set([

@@ -77,6 +77,11 @@ function hasToolJobListing(
   return typeof store.listToolJobs === "function";
 }
 
+/**
+ * Legacy in-process role runner retained for non-runtime policy/model tests.
+ * V2 runtime delegation must go through durable `spawn_subagent` / `SubagentSessionService`;
+ * do not wire this service back into active model-facing delegation.
+ */
 export class DefaultAgentSubagentService {
   private readonly store: DefaultAgentSubagentStore;
   private readonly resolveDefinition: ThreadDefinitionResolver;
@@ -125,7 +130,7 @@ export class DefaultAgentSubagentService {
       }),
       messages: childMessages,
       // Subagents get only their role prompt and scoped runtime context.
-      // Reusing the parent's prompt leaks main-agent policy into specialist workers.
+      // Reusing the parent's prompt leaks main-agent policy into specialist subagents.
       systemPrompt: policy.prompt,
       maxTurns: parentDefinition.maxTurns,
       context: childContext,

@@ -13,9 +13,10 @@ import {EnvironmentContext} from "./environment-context.js";
 import {ScheduledRemindersContext} from "./scheduled-reminders-context.js";
 import {SessionBriefingContext} from "./session-briefing-context.js";
 import {SessionTodoContext} from "./session-todo-context.js";
-import {WorkersContext} from "./workers-context.js";
+import {SubagentsContext} from "./subagents-context.js";
 import {WikiOverviewContext} from "./wiki-overview-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 
 export type DefaultAgentLlmContextSection =
   | "datetime"
@@ -23,7 +24,7 @@ export type DefaultAgentLlmContextSection =
   | "scheduled_reminders"
   | "wiki_overview"
   | "background_jobs"
-  | "workers"
+  | "subagents"
   | "session_briefing"
   | "todo_context"
   | AgentProfileContextSection;
@@ -38,7 +39,7 @@ export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContext
   "wiki_overview",
   "scheduled_reminders",
   "background_jobs",
-  "workers",
+  "subagents",
   "prompts",
   "skills",
   "session_briefing",
@@ -49,6 +50,7 @@ export interface BuildDefaultAgentLlmContextsOptions {
   context?: DefaultAgentSessionContext;
   agentStore?: AgentProfileStore;
   sessionStore?: Partial<Pick<SessionStore, "listAgentSessions" | "readSessionPrompt" | "readSessionTodo">>;
+  subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner">;
@@ -71,7 +73,7 @@ export {DateTimeContext, type DateTimeContextOptions} from "./datetime-context.j
 export {SessionBriefingContext, type SessionBriefingContextOptions} from "./session-briefing-context.js";
 export {SessionTodoContext, type SessionTodoContextOptions} from "./session-todo-context.js";
 export {EnvironmentContext, type EnvironmentContextOptions} from "./environment-context.js";
-export {WorkersContext, type WorkersContextOptions} from "./workers-context.js";
+export {SubagentsContext, type SubagentsContextOptions} from "./subagents-context.js";
 
 export function buildDefaultAgentLlmContexts(
   options: BuildDefaultAgentLlmContextsOptions,
@@ -114,15 +116,15 @@ export function buildDefaultAgentLlmContexts(
   }
 
   if (
-    uniqueSections.has("workers")
+    uniqueSections.has("subagents")
     && typeof options.sessionStore?.listAgentSessions === "function"
-    && options.executionEnvironments
     && options.agentKey
     && options.context?.sessionId
   ) {
-    llmContexts.push(new WorkersContext({
+    llmContexts.push(new SubagentsContext({
       sessions: options.sessionStore as Pick<SessionStore, "listAgentSessions">,
       environments: options.executionEnvironments,
+      subagentProfiles: options.subagentProfiles,
       agentKey: options.agentKey,
       parentSessionId: options.context.sessionId,
     }));

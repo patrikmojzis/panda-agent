@@ -139,7 +139,7 @@ interface RuntimeBootstrapResult {
   a2aBindings: A2ASessionBindingRepo;
   postgresReadonly: PostgresReadonlyQueryToolOptions;
   mainTools: readonly Tool[];
-  workerTools: readonly Tool[];
+  subagentTools: readonly Tool[];
   pool: Pool;
   notificationPool: Pool;
   threadLeasePool: Pool;
@@ -548,7 +548,6 @@ export async function bootstrapRuntime(
     );
 
     let mainTools: readonly Tool[] = [];
-    let workerTools: readonly Tool[] = defaultToolsets.worker;
 
     mainTools = buildDefaultAgentToolsetsFromRegistry(toolRegistry, [
       new ThinkingSetTool({
@@ -612,9 +611,12 @@ export async function bootstrapRuntime(
         store: watches,
       }),
     ]).main;
-    workerTools = mergeToolsByName([
-      defaultToolsets.worker,
+    const subagentTools = mergeToolsByName([
       mainTools,
+      defaultToolsets.workspace,
+      defaultToolsets.memory,
+      defaultToolsets.browser,
+      defaultToolsets.skill_maintainer,
     ]);
 
     if (options.onStoreNotification) {
@@ -645,7 +647,7 @@ export async function bootstrapRuntime(
       a2aBindings,
       postgresReadonly: postgresReadonlyToolOptions,
       mainTools,
-      workerTools,
+      subagentTools,
       pool: postgresPool,
       notificationPool,
       threadLeasePool,
