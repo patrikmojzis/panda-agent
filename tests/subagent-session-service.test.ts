@@ -453,6 +453,53 @@ describe("SubagentSessionService", () => {
     }
   });
 
+  it("rejects subagent, legacy worker, and wrong-agent parent sessions before side effects", async () => {
+    const {agentStore, events, pool, service, sessionStore} = await createHarness();
+    await agentStore.bootstrapAgent({agentKey: "luna", displayName: "Luna", prompts: {}});
+    await sessionStore.createSession({
+      id: "subagent-parent",
+      agentKey: "panda",
+      kind: "subagent",
+      currentThreadId: "subagent-parent-thread",
+      metadata: {subagent: {version: 1, role: "workspace", task: "nested", parentSessionId: "parent-session", execution: "agent_workspace", profile: {slug: "workspace", source: "builtin", description: "Workspace reader.", prompt: "prompt", toolGroups: ["core"], transcriptMode: "none"}, resolved: {credentialPolicy: {mode: "allowlist", envKeys: []}, skillPolicy: {mode: "all_agent"}, toolPolicy: {}}}},
+    });
+    await sessionStore.createSession({
+      id: "legacy-worker-parent",
+      agentKey: "panda",
+      kind: "worker",
+      currentThreadId: "legacy-worker-thread",
+      metadata: {worker: {parentSessionId: "parent-session", role: "legacy"}},
+    });
+    await sessionStore.createSession({
+      id: "wrong-agent-parent",
+      agentKey: "luna",
+      kind: "main",
+      currentThreadId: "wrong-agent-thread",
+    });
+
+    const cases = [
+      {parentSessionId: "subagent-parent", message: "Nested subagents are disabled"},
+      {parentSessionId: "legacy-worker-parent", message: "Legacy worker sessions cannot be subagent parents"},
+      {parentSessionId: "wrong-agent-parent", message: "must match parent session agent luna"},
+    ];
+
+    for (const testCase of cases) {
+      await expect(service.createSubagentSession({
+        agentKey: "panda",
+        parentSessionId: testCase.parentSessionId,
+        task: "Bad parent.",
+        sessionId: `bad-parent-${testCase.parentSessionId}`,
+        threadId: `bad-parent-thread-${testCase.parentSessionId}`,
+      })).rejects.toThrow(testCase.message);
+    }
+
+    const sessionTables = buildSessionTableNames();
+    const threadTables = buildThreadRuntimeTableNames();
+    expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${sessionTables.sessions} WHERE id LIKE 'bad-parent-%'`)).toBe(0);
+    expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${threadTables.threads} WHERE id LIKE 'bad-parent-thread-%'`)).toBe(0);
+    expect(events).toEqual([]);
+  });
+
   it("requires isolated environment id and rejects workspace env ids", async () => {
     const {service} = await createHarness();
     await expect(service.createSubagentSession({

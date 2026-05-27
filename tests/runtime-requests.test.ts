@@ -160,12 +160,53 @@ describe("RuntimeRequestRepo", () => {
       payload: row.payload,
     });
     expect(client.query).toHaveBeenCalledWith(expect.stringContaining("status = 'running'"), [
-      123_456,
+      expect.any(Date),
     ]);
-    expect(client.query).toHaveBeenCalledWith(expect.stringContaining("claimed_at < NOW() - ($1 * INTERVAL '1 millisecond')"), [
-      123_456,
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining("claimed_at < $1"), [
+      expect.any(Date),
     ]);
     expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("claims stale legacy create_worker_session rows even when old payloads are incomplete", async () => {
+    const claimedAt = new Date(Date.now() - 10 * 60_000);
+    const row = {
+      id: "7a0b9429-d5bf-41dc-9224-088cff4d2137",
+      kind: "create_worker_session",
+      status: "running",
+      payload: {sessionId: "old-worker-session"},
+      result: null,
+      error: null,
+      claimed_at: claimedAt,
+      finished_at: null,
+      created_at: claimedAt,
+      updated_at: claimedAt,
+    };
+    const client = {
+      query: vi.fn(async (sql: string) => {
+        if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+          return {rows: []};
+        }
+        return {rows: [row]};
+      }),
+      release: vi.fn(),
+    };
+    const repo = new RuntimeRequestRepo({
+      pool: {
+        connect: vi.fn(async () => client),
+        query: vi.fn(async () => ({rows: []})),
+      },
+      staleRunningRequestMs: 1,
+    });
+
+    const claimed = await repo.claimNextPendingRequest();
+
+    expect(claimed).toMatchObject({
+      kind: "create_worker_session",
+      status: "running",
+      payload: {sessionId: "old-worker-session"},
+    });
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining("SET status = 'running'"), [row.id]);
   });
 
   it("normalizes legacy reset command message ids", async () => {

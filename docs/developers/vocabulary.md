@@ -86,8 +86,9 @@ Model-facing `spawn_subagent` now creates a durable `agent_sessions.kind =
 "subagent"` session and uses A2A `message_agent` for progress/completion.
 
 Use **worker** for historical/internal implementation mechanics only:
-`agent_sessions.kind = "worker"`, worker purge support, legacy worker metadata,
-and old runtime-client paths. `worker_spawn` is no longer a model-facing tool.
+`agent_sessions.kind = "worker"`, legacy worker metadata, and persisted
+legacy create-worker runtime requests that must fail closed. The V2 model-facing
+spawn surface is `spawn_subagent(profile=..., prompt=...)`.
 See [Issue #16 PR3](./issue-16-pr3-hard-cut.md),
 [Execution Environments](./execution-environments.md), and
 [Sessions](./sessions.md).

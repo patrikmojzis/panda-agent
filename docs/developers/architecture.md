@@ -73,9 +73,9 @@ For Panda runtime assembly, keep the public facade thin:
   daemon keys
   Keep daemon-state record and table-name details local to that repo unless a
   second module truly needs the same interface.
-- `daemon-worker-sessions.ts` owns daemon worker-session creation and parent/worker
-  A2A handoff binding. `daemon-threads.ts` should coordinate thread/session
-  commands, not inline worker handoff policy.
+- `daemon-subagent-sessions.ts` owns daemon subagent-session request mapping.
+  `daemon-threads.ts` should coordinate thread/session commands, not inline
+  subagent handoff policy.
 - `daemon-threads.ts` exposes a narrow `DaemonThreadHelperContext` method slice.
   Tests and callers should not need to assemble a full daemon context just to
   exercise thread/session command behaviour.
@@ -95,11 +95,11 @@ For Panda runtime assembly, keep the public facade thin:
   It should not depend on schema setup or context-listing methods.
   Execution-environment credential, skill, and tool allowlists are normalized at
   the store seam; callers should not trim or filter policy entries themselves.
-- `worker-purge-service.ts` owns hard deletion planning and DB/file cleanup for
-  disposable workers. It may stop environments through the narrow
+- `subagent-purge-service.ts` owns hard deletion planning and DB/file cleanup for
+  disposable subagents. It may stop environments through the narrow
   `stopExecutionEnvironment` seam, but purge planning must not depend on the
   full execution-environment repository.
-- `worker-session-service.ts` owns worker session/thread creation, environment
+- `subagent-session-service.ts` owns subagent session/thread creation, environment
   binding, and initial handoff enqueueing. Its store seam should require only
   session create/get and thread create/get/enqueue methods; Postgres transaction
   cleanup stays behind the optional pool fast path.
@@ -247,7 +247,7 @@ Keep domain Postgres code split by responsibility:
   durable role invariant without freezing provider-specific message payloads.
 
 Session is the durable wake anchor. Scheduled tasks, watches, channel routing,
-A2A bindings, worker handoff, and gateway delivery must resolve the session's
+A2A bindings, subagent handoff, and gateway delivery must resolve the session's
 current thread at the point where they enqueue or record work. Public ingress
 must reserve/claim durable state before resolving the current thread, so `/reset`
 cannot deliver to a stale backing thread.

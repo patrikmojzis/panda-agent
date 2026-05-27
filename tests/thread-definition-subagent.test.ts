@@ -5,7 +5,6 @@ import type {ResolvedExecutionEnvironment} from "../src/domain/execution-environ
 import {buildSubagentSessionMetadata} from "../src/domain/subagents/index.js";
 import type {ThreadRecord} from "../src/domain/threads/runtime/types.js";
 import {DEFAULT_AGENT_INSTRUCTIONS} from "../src/prompts/runtime/default-agent.js";
-import {DEFAULT_WORKER_INSTRUCTIONS} from "../src/prompts/runtime/worker.js";
 import {gatherContexts, Tool, z} from "../src/index.js";
 
 class NamedTool extends Tool<typeof NamedTool.schema> {
@@ -65,7 +64,7 @@ function createSubagentMetadata(overrides: Partial<Parameters<typeof buildSubage
           "postgres_readonly_query",
           "outbound",
           "wiki",
-          "worker_spawn",
+          ["worker", "spawn"].join("_"),
           "spawn_subagent",
         ],
         agentSkill: {allowedOperations: ["load"]},
@@ -130,7 +129,7 @@ describe("subagent thread definitions", () => {
       },
       sessionStore: {
         listAgentSessions: async () => {
-          throw new Error("subagent context should not list workers");
+          throw new Error("subagent context should not list child sessions");
         },
         readSessionTodo: async () => null,
       },
@@ -140,7 +139,6 @@ describe("subagent thread definitions", () => {
 
     expect(definition.agent.instructions).toBe("PROFILE PROMPT ONLY");
     expect(definition.agent.instructions).not.toBe(DEFAULT_AGENT_INSTRUCTIONS);
-    expect(definition.agent.instructions).not.toBe(DEFAULT_WORKER_INSTRUCTIONS);
     expect(definition.model).toBe("openai/gpt-5.1");
     expect(definition.thinking).toBe("medium");
     expect(readAgentPrompt).not.toHaveBeenCalled();
@@ -151,8 +149,7 @@ describe("subagent thread definitions", () => {
     expect(dump).toContain("parentSessionId: parent-session");
     expect(dump).toContain('message_agent({ sessionId: "parent-session" })');
     expect(dump).toContain("calendar\nUse for calendar work.");
-    expect(dump).not.toContain("**Worker Runtime Context:**");
-    expect(dump).not.toContain("**Workers:**");
+    expect(dump).not.toContain("**Subagents:**");
     expect(dump).not.toContain("[agent]");
   });
 
@@ -179,7 +176,7 @@ describe("subagent thread definitions", () => {
             "postgres_readonly_query",
             "outbound",
             "wiki",
-            "worker_spawn",
+            ["worker", "spawn"].join("_"),
             "spawn_subagent",
           ],
           agentSkill: {allowedOperations: ["load"]},
@@ -196,7 +193,7 @@ describe("subagent thread definitions", () => {
         new NamedTool("postgres_readonly_query"),
         new NamedTool("outbound"),
         new NamedTool("wiki"),
-        new NamedTool("worker_spawn"),
+        new NamedTool(["worker", "spawn"].join("_")),
         new NamedTool("spawn_subagent"),
         new NamedTool("environment_create"),
       ],

@@ -4,7 +4,8 @@ export {
   type RuntimeClientCompactResult,
   type RuntimeClientOptions,
   type RuntimeClientSessionOptions,
-  type RuntimeClientWorkerSessionOptions,
+  type RuntimeClientSubagentSessionOptions,
+  type RuntimeClientSubagentSessionResult,
 } from "./client.js";
 export {
   createDaemon,

@@ -121,12 +121,12 @@ Primary files:
 - `src/app/runtime/daemon-requests.ts`
 - `src/app/runtime/daemon-shared.ts`
 - `src/app/runtime/daemon-threads.ts`
-- `src/app/runtime/daemon-worker-sessions.ts`
+- `src/app/runtime/daemon-subagent-sessions.ts`
 - `src/app/runtime/request-drain.ts`
 - `src/app/runtime/runtime-bootstrap.ts`
 - `src/app/runtime/thread-definition.ts`
-- `src/app/runtime/worker-session-service.ts`
-- `src/app/runtime/worker-purge-service.ts`
+- `src/app/runtime/subagent-session-service.ts`
+- `src/app/runtime/subagent-purge-service.ts`
 - `src/app/runtime/execution-environment-service.ts`
 - `src/app/runtime/execution-environment-resolver.ts`
 - `src/app/runtime/background-tool-thread-input.ts`
@@ -138,7 +138,7 @@ Primary files:
 - `src/lib/health-server.ts`
 - `src/lib/drain-loop.ts`
 - deleted app-runtime leftovers: `src/app/runtime/daemon-copy.ts`, `src/app/runtime/state/postgres-shared.ts`, `src/app/runtime/state/types.ts`
-- tests: `tests/daemon-requests.test.ts`, `tests/daemon-lifecycle.test.ts`, `tests/daemon-threads.test.ts`, `tests/runtime-request-drain.test.ts`, `tests/worker-session-service.test.ts`, `tests/worker-purge-service.test.ts`, `tests/runtime-database.test.ts`, `tests/drain-loop.test.ts`, `tests/daemon-state-repo.test.ts`
+- tests: `tests/daemon-requests.test.ts`, `tests/daemon-lifecycle.test.ts`, `tests/daemon-threads.test.ts`, `tests/runtime-request-drain.test.ts`, `tests/subagent-session-service.test.ts`, `tests/subagent-purge-service.test.ts`, `tests/runtime-database.test.ts`, `tests/drain-loop.test.ts`, `tests/daemon-state-repo.test.ts`
 
 Review for:
 
@@ -154,7 +154,7 @@ Keep out:
 Checks:
 
 ```sh
-pnpm vitest run tests/daemon-requests.test.ts tests/daemon-lifecycle.test.ts tests/daemon-threads.test.ts tests/runtime-request-drain.test.ts tests/worker-session-service.test.ts tests/worker-purge-service.test.ts tests/runtime-database.test.ts tests/drain-loop.test.ts tests/daemon-state-repo.test.ts
+pnpm vitest run tests/daemon-requests.test.ts tests/daemon-lifecycle.test.ts tests/daemon-threads.test.ts tests/runtime-request-drain.test.ts tests/subagent-session-service.test.ts tests/subagent-purge-service.test.ts tests/runtime-database.test.ts tests/drain-loop.test.ts tests/daemon-state-repo.test.ts
 ```
 
 ## 4. Postgres Schema, Store, And Row-Parser Split
@@ -312,15 +312,15 @@ Primary files:
 - `src/kernel/models/model-context-policy.ts`
 - `src/panda/contexts/*`
 - `src/panda/tools/*`
-- `src/panda/worker-tool-policy.ts`
+- `src/domain/subagents/tool-groups.ts`
 - `src/panda/subagents/service.ts`
 - `src/integrations/browser/*`
 - `src/integrations/web/*`
 - `src/integrations/wiki/*`
 - `src/prompts/channels/*`
 - `src/prompts/runtime/*`
-- deleted tool/browser leftovers: `src/panda/prompt.ts`, `src/panda/tools/browser-output.ts`, `src/panda/tools/browser-schema.ts`, `src/panda/tools/browser-service.ts`, `src/panda/tools/browser-snapshot.ts`, `src/panda/tools/browser-types.ts`, `src/panda/tools/http.ts`, `src/panda/tools/safe-web-target.ts`, `src/panda/tools/web-fetch.ts`, `src/panda/tools/web-research.ts`, `src/panda/tools/worker-tool-policy.ts`, `src/kernel/agent/abort.ts`, `src/kernel/transcript/message-preview.ts`
-- tests: `tests/thread.test.ts`, `tests/thread-runtime.test.ts`, `tests/provider-runtime.test.ts`, `tests/browser-tool.test.ts`, `tests/browser-runner.test.ts`, `tests/browser-protocol.test.ts`, `tests/web-fetch-tool.test.ts`, `tests/wiki-tool.test.ts`, `tests/tool-format.test.ts`, `tests/tool-shared.test.ts`, `tests/worker-tools.test.ts`, `tests/spawn-subagent-tool.test.ts`, `tests/media-tool.test.ts`, `tests/workspace-readonly-tools.test.ts`
+- deleted tool/browser leftovers: `src/panda/prompt.ts`, `src/panda/tools/browser-output.ts`, `src/panda/tools/browser-schema.ts`, `src/panda/tools/browser-service.ts`, `src/panda/tools/browser-snapshot.ts`, `src/panda/tools/browser-types.ts`, `src/panda/tools/http.ts`, `src/panda/tools/safe-web-target.ts`, `src/panda/tools/web-fetch.ts`, `src/panda/tools/web-research.ts`, `src/domain/subagents/tool-groups.ts`, `src/kernel/agent/abort.ts`, `src/kernel/transcript/message-preview.ts`
+- tests: `tests/thread.test.ts`, `tests/thread-runtime.test.ts`, `tests/provider-runtime.test.ts`, `tests/browser-tool.test.ts`, `tests/browser-runner.test.ts`, `tests/browser-protocol.test.ts`, `tests/web-fetch-tool.test.ts`, `tests/wiki-tool.test.ts`, `tests/tool-format.test.ts`, `tests/tool-shared.test.ts`, `tests/spawn-subagent-tool.test.ts`, `tests/spawn-subagent-tool.test.ts`, `tests/media-tool.test.ts`, `tests/workspace-readonly-tools.test.ts`
 
 Review for:
 
@@ -337,7 +337,7 @@ Keep out:
 Checks:
 
 ```sh
-pnpm vitest run tests/thread.test.ts tests/thread-runtime.test.ts tests/provider-runtime.test.ts tests/browser-tool.test.ts tests/browser-runner.test.ts tests/browser-protocol.test.ts tests/web-fetch-tool.test.ts tests/wiki-tool.test.ts tests/tool-format.test.ts tests/tool-shared.test.ts tests/worker-tools.test.ts tests/spawn-subagent-tool.test.ts tests/media-tool.test.ts tests/workspace-readonly-tools.test.ts
+pnpm vitest run tests/thread.test.ts tests/thread-runtime.test.ts tests/provider-runtime.test.ts tests/browser-tool.test.ts tests/browser-runner.test.ts tests/browser-protocol.test.ts tests/web-fetch-tool.test.ts tests/wiki-tool.test.ts tests/tool-format.test.ts tests/tool-shared.test.ts tests/spawn-subagent-tool.test.ts tests/spawn-subagent-tool.test.ts tests/media-tool.test.ts tests/workspace-readonly-tools.test.ts
 ```
 
 ## 8. Tests, Import-Law Ratchet, And Stabilization Notes

@@ -27,6 +27,8 @@ export interface BuildDefaultAgentToolsOptions {
   webResearch?: WebResearchToolOptions;
 }
 
+// `worker` remains only as a legacy in-process toolset key for non-runtime policy tests.
+// Durable V2 subagents are profile/tool-group driven and must not use this toolset.
 export type DefaultAgentToolsetKey = "main" | "workspace" | "memory" | "browser" | "worker" | "skill_maintainer";
 
 export interface DefaultAgentToolRegistry {

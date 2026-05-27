@@ -102,9 +102,9 @@ Attachment transfer is receiver-side durable media ingestion:
 
 Raw sender paths do not cross the session boundary as the durable contract.
 
-For disposable workers, `message_agent` also carries a small sender environment
+For isolated subagents, `message_agent` also carries a small sender environment
 snapshot in delivery metadata. It includes safe parent-runner paths such as
-`/environments/<envDir>/artifacts`, plus worker-local paths such as
+`/environments/<envDir>/artifacts`, plus subagent-local paths such as
 `/artifacts`. It does not include host paths or core container paths.
 The sender environment snapshot must stay JSON-safe at the domain service
 boundary; do not cast it into outbound metadata.
@@ -228,7 +228,7 @@ The model sees:
 - attachment descriptions
 - message body
 
-For worker completion messages, the parent can inspect:
+For subagent completion messages, the parent can inspect:
 
 - `parent_workspace_path`
 - `parent_inbox_path`

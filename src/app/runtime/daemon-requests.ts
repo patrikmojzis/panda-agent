@@ -2,7 +2,7 @@ import type {
   AbortThreadRequestPayload,
   CompactThreadRequestPayload,
   CreateBranchSessionRequestPayload,
-  CreateWorkerSessionRequestPayload,
+  CreateSubagentSessionRequestPayload,
   ResolveThreadRunConfigRequestPayload,
   RuntimeRequestRecord,
   TuiInputRequestPayload,
@@ -27,7 +27,10 @@ import {
 } from "../../integrations/channels/whatsapp/request-handler.js";
 import {readMissingApiKeyMessageForModel} from "../../integrations/providers/shared/missing-api-key.js";
 import type {DaemonThreadHelpers} from "./daemon-threads.js";
+import {readSubagentSessionMetadata} from "../../domain/subagents/session-metadata.js";
 import {requireIdentityId} from "./daemon-shared.js";
+
+export const UNSUPPORTED_CREATE_WORKER_SESSION_REQUEST_ERROR = "Unsupported runtime request create_worker_session after subagent hard cut.";
 
 export interface DaemonRequestProcessorContext {
   runtime: {
@@ -51,7 +54,7 @@ type DaemonRequestStore = Pick<
 export type DaemonRequestThreadHelpers = Pick<
   DaemonThreadHelpers,
   | "createBranchSession"
-  | "createWorkerSession"
+  | "createSubagentSession"
   | "ensureIdentity"
   | "handleResetSession"
   | "openMainSession"
@@ -97,38 +100,44 @@ export function createDaemonRequestProcessor(
     return {threadId: thread.id};
   };
 
-  const handleCreateWorkerSession = async (
-    payload: CreateWorkerSessionRequestPayload,
+  const handleCreateSubagentSession = async (
+    payload: CreateSubagentSessionRequestPayload,
   ): Promise<Record<string, unknown>> => {
-    const identity = await threads.ensureIdentity(requireIdentityId(payload.identityId, "create_worker_session"));
-    const created = await threads.createWorkerSession({
+    const identity = await threads.ensureIdentity(requireIdentityId(payload.identityId, "create_subagent_session"));
+    const created = await threads.createSubagentSession({
       identity,
       sessionId: payload.sessionId,
       threadId: payload.threadId,
       agentKey: payload.agentKey,
-      role: payload.role,
-      task: payload.task,
+      parentSessionId: payload.parentSessionId,
+      prompt: payload.prompt,
       context: payload.context,
+      profile: payload.profile,
+      execution: payload.execution,
+      environmentId: payload.environmentId,
+      credentialAllowlist: payload.credentialAllowlist,
+      toolGroups: payload.toolGroups,
       model: payload.model,
       thinking: payload.thinking,
       inferenceProjection: payload.inferenceProjection,
-      credentialAllowlist: payload.credentialAllowlist,
-      environmentId: payload.environmentId,
-      skillAllowlist: payload.skillAllowlist,
-      toolPolicy: payload.toolPolicy,
-      ttlMs: payload.ttlMs,
-      parentSessionId: payload.parentSessionId,
     });
+    const metadata = readSubagentSessionMetadata(created.session.metadata);
     return {
       threadId: created.thread.id,
       sessionId: created.session.id,
-      environmentId: created.environment.id,
-      environment: {
-        id: created.environment.id,
-        runnerCwd: created.environment.runnerCwd,
-        rootPath: created.environment.rootPath,
-        metadata: created.environment.metadata,
-      },
+      profile: metadata?.profile.slug ?? metadata?.role ?? payload.profile ?? "workspace",
+      execution: metadata?.execution ?? payload.execution ?? "agent_workspace",
+      ...(metadata?.environmentId ? {environmentId: metadata.environmentId} : {}),
+      ...(created.environment
+        ? {
+          environment: {
+            id: created.environment.id,
+            runnerCwd: created.environment.runnerCwd,
+            rootPath: created.environment.rootPath,
+            metadata: created.environment.metadata,
+          },
+        }
+        : {}),
     };
   };
 
@@ -263,8 +272,10 @@ export function createDaemonRequestProcessor(
         return handleTuiInput(request.payload);
       case "create_branch_session":
         return handleCreateBranchSession(request.payload);
+      case "create_subagent_session":
+        return handleCreateSubagentSession(request.payload);
       case "create_worker_session":
-        return handleCreateWorkerSession(request.payload);
+        throw new Error(UNSUPPORTED_CREATE_WORKER_SESSION_REQUEST_ERROR);
       case "resolve_main_session_thread": {
         const thread = await threads.openMainSession(
           request.payload,

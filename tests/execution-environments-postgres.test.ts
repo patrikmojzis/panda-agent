@@ -379,7 +379,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     });
   });
 
-  it("rejects worker sessions without a default execution environment binding", async () => {
+  it("rejects legacy worker sessions before environment resolution", async () => {
     const {environmentStore, sessionStore} = await createHarness();
     const session = await sessionStore.getSession("session-worker");
     const resolver = new ExecutionEnvironmentResolver({
@@ -392,7 +392,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     });
 
     await expect(resolver.resolveDefault(session)).rejects.toThrow(
-      "Worker session session-worker has no default execution environment binding.",
+      "Legacy worker session session-worker is not supported after the subagent hard cut.",
     );
   });
 
@@ -686,7 +686,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       runnerCwd: "/workspace",
     });
     await environmentStore.bindSession({
-      sessionId: "session-worker",
+      sessionId: "session-main",
       environmentId: "env-worker",
       alias: "self",
       isDefault: true,
@@ -699,7 +699,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
         skillKeys: [],
       },
     });
-    const session = await sessionStore.getSession("session-worker");
+    const session = await sessionStore.getSession("session-main");
     const resolver = new ExecutionEnvironmentResolver({
       store: environmentStore,
       env: {} as NodeJS.ProcessEnv,
@@ -728,14 +728,14 @@ describe("PostgresExecutionEnvironmentStore", () => {
       expiresAt: Date.now() - 1_000,
     });
     await environmentStore.bindSession({
-      sessionId: "session-worker",
+      sessionId: "session-main",
       environmentId: "env-worker",
       alias: "self",
       isDefault: true,
       credentialPolicy: {mode: "allowlist", envKeys: []},
       skillPolicy: {mode: "allowlist", skillKeys: []},
     });
-    const session = await sessionStore.getSession("session-worker");
+    const session = await sessionStore.getSession("session-main");
     const resolver = new ExecutionEnvironmentResolver({
       store: environmentStore,
       env: {} as NodeJS.ProcessEnv,
@@ -757,14 +757,14 @@ describe("PostgresExecutionEnvironmentStore", () => {
       createdBySessionId: "session-main",
     });
     await environmentStore.bindSession({
-      sessionId: "session-worker",
+      sessionId: "session-main",
       environmentId: "env-worker",
       alias: "self",
       isDefault: true,
       credentialPolicy: {mode: "allowlist", envKeys: []},
       skillPolicy: {mode: "allowlist", skillKeys: []},
     });
-    const session = await sessionStore.getSession("session-worker");
+    const session = await sessionStore.getSession("session-main");
     const manager = new FakeEnvironmentManager();
     const service = new ExecutionEnvironmentLifecycleService({
       store: environmentStore,
@@ -892,7 +892,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
       },
     ]);
   });
-
 
   it("runs standalone setup before marking the environment ready", async () => {
     const {environmentStore} = await createHarness();
@@ -1149,7 +1148,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     await expect(environmentStore.getEnvironment("env-setup-expired")).resolves.toMatchObject({state: "ready"});
   });
 
-  it("attaches worker sessions to existing ready disposable environments", async () => {
+  it("attaches sessions to existing ready disposable environments", async () => {
     const {environmentStore, sessionStore} = await createHarness();
     const session = await sessionStore.getSession("session-worker");
     const manager = new FakeEnvironmentManager();
@@ -1240,7 +1239,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     expect(manager.stopped).toEqual([]);
   });
 
-  it("restarts stopped disposable environments before attaching workers", async () => {
+  it("restarts stopped disposable environments before attaching sessions", async () => {
     const {environmentStore, sessionStore} = await createHarness();
     const session = await sessionStore.getSession("session-worker");
     const manager = new FakeEnvironmentManager();
@@ -1281,7 +1280,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     });
   });
 
-  it("restarts expired disposable environments before attaching workers", async () => {
+  it("restarts expired disposable environments before attaching sessions", async () => {
     const {environmentStore, sessionStore} = await createHarness();
     const session = await sessionStore.getSession("session-worker");
     const manager = new FakeEnvironmentManager();

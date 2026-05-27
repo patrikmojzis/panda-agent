@@ -1,6 +1,6 @@
 import type {JsonObject, JsonValue} from "../../../lib/json.js";
 import type {MediaDescriptor} from "../../channels/types.js";
-import type {ExecutionEnvironmentKind, ExecutionToolPolicy} from "../../execution-environments/types.js";
+import type {ExecutionEnvironmentKind} from "../../execution-environments/types.js";
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import type {InferenceProjection, ThreadUpdate} from "../runtime/types.js";
 import type {UpdateSessionRuntimeConfigInput} from "../../sessions/types.js";
@@ -168,22 +168,28 @@ export interface CreateBranchSessionRequestPayload extends BaseRuntimeRequestPay
   inferenceProjection?: InferenceProjection;
 }
 
-export interface CreateWorkerSessionRequestPayload extends BaseRuntimeRequestPayload {
+export type RuntimeRequestSubagentExecution = "agent_workspace" | "isolated_environment";
+
+export interface CreateSubagentSessionRequestPayload extends BaseRuntimeRequestPayload {
   sessionId?: string;
   threadId?: string;
   agentKey?: string;
-  role?: string;
-  task: string;
+  parentSessionId: string;
+  prompt: string;
   context?: string;
+  profile?: string;
+  execution?: RuntimeRequestSubagentExecution;
+  environmentId?: string;
+  credentialAllowlist?: readonly string[];
+  toolGroups?: readonly string[];
   model?: string;
   thinking?: ThinkingLevel;
   inferenceProjection?: InferenceProjection;
-  credentialAllowlist?: readonly string[];
-  environmentId?: string;
-  skillAllowlist?: readonly string[];
-  toolPolicy?: ExecutionToolPolicy;
-  ttlMs?: number;
-  parentSessionId?: string;
+}
+
+/** Storage compatibility only: stale persisted rows are claimed and failed by the daemon. */
+export interface LegacyCreateWorkerSessionRequestPayload extends BaseRuntimeRequestPayload {
+  [key: string]: JsonValue | undefined;
 }
 
 export interface ResolveMainSessionThreadRequestPayload extends BaseRuntimeRequestPayload {
@@ -245,7 +251,8 @@ export interface RuntimeRequestPayloadByKind {
   discord_message: DiscordMessageRequestPayload;
   tui_input: TuiInputRequestPayload;
   create_branch_session: CreateBranchSessionRequestPayload;
-  create_worker_session: CreateWorkerSessionRequestPayload;
+  create_subagent_session: CreateSubagentSessionRequestPayload;
+  create_worker_session: LegacyCreateWorkerSessionRequestPayload;
   resolve_main_session_thread: ResolveMainSessionThreadRequestPayload;
   resolve_thread_run_config: ResolveThreadRunConfigRequestPayload;
   reset_session: ResetSessionRequestPayload;

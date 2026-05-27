@@ -4,7 +4,6 @@ import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {sleep} from "../../lib/async.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
 import {PostgresAgentStore} from "../../domain/agents/postgres.js";
-import type {ExecutionToolPolicy} from "../../domain/execution-environments/types.js";
 import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
 import {type IdentityRecord, normalizeIdentityHandle} from "../../domain/identity/types.js";
 import type {JsonValue} from "../../lib/json.js";
@@ -46,24 +45,25 @@ export interface RuntimeClientSessionOptions {
   inferenceProjection?: InferenceProjection;
 }
 
-export interface RuntimeClientWorkerSessionOptions extends RuntimeClientSessionOptions {
+export interface RuntimeClientSubagentSessionOptions extends RuntimeClientSessionOptions {
   threadId?: string;
-  role?: string;
-  task: string;
+  parentSessionId: string;
+  prompt: string;
   context?: string;
-  credentialAllowlist?: readonly string[];
+  profile?: string;
+  execution?: "agent_workspace" | "isolated_environment";
   environmentId?: string;
-  skillAllowlist?: readonly string[];
-  toolPolicy?: ExecutionToolPolicy;
-  ttlMs?: number;
-  parentSessionId?: string;
+  credentialAllowlist?: readonly string[];
+  toolGroups?: readonly string[];
 }
 
-export interface RuntimeClientWorkerSessionResult {
+export interface RuntimeClientSubagentSessionResult {
   thread: ThreadRecord;
   sessionId: string;
   threadId: string;
-  environmentId: string;
+  profile: string;
+  execution: "agent_workspace" | "isolated_environment";
+  environmentId?: string;
   environment?: {
     id: string;
     runnerCwd?: string;
@@ -82,7 +82,7 @@ export interface RuntimeClient {
   identity: IdentityRecord;
   store: ThreadRuntimeStore;
   createBranchSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
-  createWorkerSession(options: RuntimeClientWorkerSessionOptions): Promise<RuntimeClientWorkerSessionResult>;
+  createSubagentSession(options: RuntimeClientSubagentSessionOptions): Promise<RuntimeClientSubagentSessionResult>;
   openMainSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
   resetSession(options?: RuntimeClientSessionOptions): Promise<ThreadRecord>;
   openSession(sessionRef: string, agentKey?: string): Promise<ThreadRecord>;
@@ -218,42 +218,45 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       return store.getThread(result.threadId);
     };
 
-    const createWorkerSession = async (
-      sessionOptions: RuntimeClientWorkerSessionOptions,
-    ): Promise<RuntimeClientWorkerSessionResult> => {
+    const createSubagentSession = async (
+      sessionOptions: RuntimeClientSubagentSessionOptions,
+    ): Promise<RuntimeClientSubagentSessionResult> => {
       const sessionId = trimToUndefined(sessionOptions.sessionId) ?? randomUUID();
       const threadId = trimToUndefined(sessionOptions.threadId) ?? randomUUID();
       const result = await enqueueDaemonRequest<{
         threadId: string;
         sessionId: string;
-        environmentId: string;
-        environment?: RuntimeClientWorkerSessionResult["environment"];
+        profile: string;
+        execution: "agent_workspace" | "isolated_environment";
+        environmentId?: string;
+        environment?: RuntimeClientSubagentSessionResult["environment"];
       }>({
-        kind: "create_worker_session",
+        kind: "create_subagent_session",
         payload: {
           identityId: identity.id,
           sessionId,
           threadId,
           agentKey: trimToUndefined(sessionOptions.agentKey),
-          role: trimToUndefined(sessionOptions.role),
-          task: sessionOptions.task,
+          parentSessionId: sessionOptions.parentSessionId,
+          prompt: sessionOptions.prompt,
           context: trimToUndefined(sessionOptions.context),
+          profile: trimToUndefined(sessionOptions.profile),
+          execution: sessionOptions.execution,
           model: sessionOptions.model,
           thinking: sessionOptions.thinking,
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
           ...(sessionOptions.credentialAllowlist ? {credentialAllowlist: sessionOptions.credentialAllowlist} : {}),
+          ...(sessionOptions.toolGroups ? {toolGroups: sessionOptions.toolGroups} : {}),
           ...(sessionOptions.environmentId ? {environmentId: trimToUndefined(sessionOptions.environmentId)} : {}),
-          ...(sessionOptions.skillAllowlist ? {skillAllowlist: sessionOptions.skillAllowlist} : {}),
-          ...(sessionOptions.toolPolicy ? {toolPolicy: sessionOptions.toolPolicy} : {}),
-          ...(sessionOptions.ttlMs === undefined ? {} : {ttlMs: sessionOptions.ttlMs}),
-          parentSessionId: trimToUndefined(sessionOptions.parentSessionId),
         },
       });
       return {
         thread: await store.getThread(result.threadId),
         sessionId: result.sessionId,
         threadId: result.threadId,
-        environmentId: result.environmentId,
+        profile: result.profile,
+        execution: result.execution,
+        ...(result.environmentId ? {environmentId: result.environmentId} : {}),
         ...(result.environment ? {environment: result.environment} : {}),
       };
     };
@@ -411,7 +414,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
       identity,
       store,
       createBranchSession,
-      createWorkerSession,
+      createSubagentSession,
       openMainSession,
       resetSession,
       openSession,

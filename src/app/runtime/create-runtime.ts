@@ -32,9 +32,8 @@ import {
 } from "./thread-definition.js";
 import type {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
 import type {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
-import {WorkerSessionService} from "./worker-session-service.js";
 import {SubagentSessionService} from "./subagent-session-service.js";
-import {EnvironmentCreateTool, EnvironmentStopTool} from "../../panda/tools/worker-tools.js";
+import {EnvironmentCreateTool, EnvironmentStopTool} from "../../panda/tools/environment-tools.js";
 import {SpawnSubagentTool} from "../../panda/tools/spawn-subagent-tool.js";
 
 export {
@@ -47,6 +46,21 @@ export {
 };
 
 export type {CreateThreadDefinitionOptions};
+
+function mergeToolsByName(toolGroups: readonly (readonly Tool[])[]): readonly Tool[] {
+  const seen = new Set<string>();
+  const merged: Tool[] = [];
+  for (const tools of toolGroups) {
+    for (const tool of tools) {
+      if (seen.has(tool.name)) {
+        continue;
+      }
+      seen.add(tool.name);
+      merged.push(tool);
+    }
+  }
+  return merged;
+}
 
 export interface DefinitionResolverContext {
   agentStore: AgentStore;
@@ -64,7 +78,7 @@ export interface DefinitionResolverContext {
   email: EmailStore;
   wikiBindingService: WikiBindingService | null;
   mainTools: readonly Tool[];
-  workerTools: readonly Tool[];
+  subagentTools: readonly Tool[];
 }
 
 export interface RuntimeOptions {
@@ -97,11 +111,11 @@ export interface RuntimeServices {
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
   watches: WatchStore;
-  workerSessions: WorkerSessionService;
+  subagentSessions: SubagentSessionService;
   a2aBindings: A2ASessionBindingRepo;
   coordinator: ThreadRuntimeCoordinator;
   mainTools: readonly Tool[];
-  workerTools: readonly Tool[];
+  subagentTools: readonly Tool[];
   pool: Pool;
   notificationPool: Pool;
   close(): Promise<void>;
@@ -130,7 +144,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     email: runtime.email,
     wikiBindingService: runtime.wikiBindingService,
     mainTools: runtime.mainTools,
-    workerTools: runtime.workerTools,
+    subagentTools: runtime.subagentTools,
   };
 
   const coordinator = new ThreadRuntimeCoordinator({
@@ -138,13 +152,6 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     leaseManager: new PostgresThreadLeaseManager(runtime.threadLeasePool),
     resolveDefinition: (thread) => options.resolveDefinition(thread, resolverContext),
     onEvent: options.onEvent,
-  });
-  const workerSessions = new WorkerSessionService({
-    pool: runtime.pool,
-    sessions: runtime.sessionStore,
-    threads: runtime.store,
-    coordinator,
-    environments: runtime.executionEnvironmentService,
   });
   const subagentSessions = new SubagentSessionService({
     pool: runtime.pool,
@@ -155,7 +162,6 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     a2aBindings: runtime.a2aBindings,
     coordinator,
   });
-  const workerTools: readonly Tool[] = runtime.workerTools;
   const mainTools: readonly Tool[] = [
     ...runtime.mainTools,
     new EnvironmentCreateTool({
@@ -169,8 +175,12 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
       subagentSessions,
     }),
   ];
+  const subagentTools: readonly Tool[] = mergeToolsByName([
+    mainTools,
+    runtime.subagentTools,
+  ]);
   resolverContext.mainTools = mainTools;
-  resolverContext.workerTools = workerTools;
+  resolverContext.subagentTools = subagentTools;
 
   runtime.backgroundJobService.setBackgroundCompletionHandler(async (record) => {
     await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "wake");
@@ -193,11 +203,11 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     scheduledTasks: runtime.scheduledTasks,
     email: runtime.email,
     watches: runtime.watches,
-    workerSessions,
+    subagentSessions,
     a2aBindings: runtime.a2aBindings,
     coordinator,
     mainTools,
-    workerTools,
+    subagentTools,
     pool: runtime.pool,
     notificationPool: runtime.notificationPool,
     close: runtime.close,

@@ -50,9 +50,9 @@ describe("Panda feature surface", () => {
 
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("<channels_vs_inner_monologue>");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("no outbound call = no message delivered.");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`role=\"workspace\"` for read-only workspace inspection, file search");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`role=\"browser\"` for browser automation and website inspection");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`role=\"skill_maintainer\"` to distill reusable learning");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("spawn_subagent(profile=\"workspace\", prompt=\"...\")");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`profile=\"browser\"` for browser automation and website inspection.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`profile=\"skill_maintainer\"` to distill reusable learning");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("you may use `postgres_readonly_query` directly.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain('Load it with `agent_skill(operation="load")`.');
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("a reusable artifact was produced");

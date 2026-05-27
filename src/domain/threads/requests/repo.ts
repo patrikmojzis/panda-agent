@@ -36,6 +36,7 @@ const runtimeRequestKinds = [
   "discord_message",
   "tui_input",
   "create_branch_session",
+  "create_subagent_session",
   "create_worker_session",
   "resolve_main_session_thread",
   "resolve_thread_run_config",
@@ -316,12 +317,14 @@ function parseThinking(value: unknown): RuntimeRequestPayloadByKind["create_bran
     : parseRequiredString(value, "thinking level") as RuntimeRequestPayloadByKind["create_branch_session"]["thinking"];
 }
 
-function parseToolPolicy(value: unknown): RuntimeRequestPayloadByKind["create_worker_session"]["toolPolicy"] {
+function parseSubagentExecution(value: unknown): RuntimeRequestPayloadByKind["create_subagent_session"]["execution"] {
   if (value === undefined || value === null) {
     return undefined;
   }
-
-  return parseJsonObject(value, "tool policy") as RuntimeRequestPayloadByKind["create_worker_session"]["toolPolicy"];
+  if (value === "agent_workspace" || value === "isolated_environment") {
+    return value;
+  }
+  throw new Error(`Unsupported subagent execution ${String(value)}.`);
 }
 
 function parseThreadUpdate(value: unknown): RuntimeRequestPayloadByKind["update_thread"]["update"] {
@@ -462,24 +465,29 @@ function parsePayload<K extends RuntimeRequestKind>(
         inferenceProjection: parseInferenceProjection(payload.inferenceProjection, "branch session inference projection"),
       } as RuntimeRequestPayloadByKind[K];
 
-    case "create_worker_session":
+    case "create_subagent_session":
       return {
         identityId,
         sessionId: parseOptionalString(payload.sessionId),
         threadId: parseOptionalString(payload.threadId),
         agentKey: parseOptionalString(payload.agentKey),
-        role: parseOptionalString(payload.role),
-        task: parseRequiredString(payload.task, "worker task"),
+        parentSessionId: parseRequiredString(payload.parentSessionId, "subagent parent session id"),
+        prompt: parseRequiredString(payload.prompt, "subagent prompt"),
         context: parseOptionalString(payload.context),
+        profile: parseOptionalString(payload.profile),
+        execution: parseSubagentExecution(payload.execution),
+        environmentId: parseOptionalString(payload.environmentId),
+        credentialAllowlist: parseOptionalStringArray(payload.credentialAllowlist, "credential allowlist"),
+        toolGroups: parseOptionalStringArray(payload.toolGroups, "subagent tool groups"),
         model: parseOptionalString(payload.model),
         thinking: parseThinking(payload.thinking),
-        inferenceProjection: parseInferenceProjection(payload.inferenceProjection, "worker session inference projection"),
-        credentialAllowlist: parseOptionalStringArray(payload.credentialAllowlist, "credential allowlist"),
-        environmentId: parseOptionalString(payload.environmentId),
-        skillAllowlist: parseOptionalStringArray(payload.skillAllowlist, "skill allowlist"),
-        toolPolicy: parseToolPolicy(payload.toolPolicy),
-        ttlMs: parseOptionalNumber(payload.ttlMs, "worker TTL"),
-        parentSessionId: parseOptionalString(payload.parentSessionId),
+        inferenceProjection: parseInferenceProjection(payload.inferenceProjection, "subagent session inference projection"),
+      } as RuntimeRequestPayloadByKind[K];
+
+    case "create_worker_session":
+      return {
+        ...payload,
+        identityId,
       } as RuntimeRequestPayloadByKind[K];
 
     case "resolve_main_session_thread":
@@ -564,7 +572,7 @@ function buildClaimNextPendingRequestQuery(tableName: string, useSkipLocked: boo
        OR (
          status = 'running'
          AND claimed_at IS NOT NULL
-         AND claimed_at < NOW() - ($1 * INTERVAL '1 millisecond')
+         AND claimed_at < $1
        )
     ORDER BY created_at ASC, id ASC
     LIMIT 1
@@ -673,7 +681,7 @@ export class RuntimeRequestRepo {
 
           const selected = await client.query(
             buildClaimNextPendingRequestQuery(this.tables.runtimeRequests, useSkipLocked),
-            [this.staleRunningRequestMs],
+            [new Date(Date.now() - this.staleRunningRequestMs)],
           );
           const row = selected.rows[0] as Record<string, unknown> | undefined;
           if (!row) {

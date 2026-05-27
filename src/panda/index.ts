@@ -9,9 +9,11 @@ export {
   type AgentProfileContextSection,
   DateTimeContext,
   EnvironmentContext,
+  SubagentsContext,
   type BuildDefaultAgentLlmContextsOptions,
   type DateTimeContextOptions,
   type EnvironmentContextOptions,
+  type SubagentsContextOptions,
   type DefaultAgentLlmContextSection,
 } from "./contexts/builder.js";
 export {
@@ -86,6 +88,12 @@ export {
   type WatchToolOptions,
 } from "./tools/watch-tools.js";
 export {
+  EnvironmentCreateTool,
+  EnvironmentStopTool,
+  type EnvironmentCreateToolOptions,
+  type EnvironmentStopToolOptions,
+} from "./tools/environment-tools.js";
+export {
   SpawnSubagentTool,
   type SpawnSubagentToolOptions,
 } from "./tools/spawn-subagent-tool.js";
@@ -110,9 +118,6 @@ export {
   WikiTool,
   type WikiToolOptions,
 } from "./tools/wiki-tool.js";
-export {
-  type DefaultAgentSubagentRole,
-} from "./subagents/policy.js";
 export type {
   DefaultAgentChannelActionQueue,
   DefaultAgentIdentityDirectory,

@@ -1,374 +1,77 @@
-# Disposable Execution Environments
+# Disposable execution environments and subagents
 
-Disposable execution environments are throwaway bash-server runners that Panda can
-create for scoped work. Use them when you want parallel shell work without
-sharing the main agent runner's cwd, shell env, or mounted agent home.
+Panda V2 uses durable `spawn_subagent(...)` sessions for delegated work. The old
+model-facing worker spawn path is gone.
 
-They are not a new brain. They are an execution boundary for a session.
+## Main flow
 
-## What You Get
+- Use `spawn_subagent(profile="workspace", prompt="inspect the repo and report findings")` for the normal agent-workspace path.
+- Use `environment_create` first when the child needs an isolated filesystem or long-lived disposable runner.
+- Then call `spawn_subagent(profile="workspace", prompt="...", execution="isolated_environment", environmentId="...")`.
+- Subagents communicate progress and completion through normal A2A `message_agent` calls back to the parent session.
 
-- on-demand `panda-runner` containers running `panda bash-server`
-- no `/root/.panda`, agent home, or Codex home mount by default
-- per-environment shell cwd/env state
-- credential allowlist by default, empty unless explicitly granted
-- skill allowlist by default, empty unless explicitly granted
-- private Docker networks managed by `scripts/docker-stack.sh`
+## Filesystem layout
 
-Normal `main` and `branch` sessions still fall back to the persistent per-agent
-runner. Worker sessions use their own disposable environment by default.
+Disposable isolated environments mount:
 
-## When To Use It
+- `/workspace` for normal working files
+- `/inbox` for parent-provided inputs
+- `/artifacts` for reviewable outputs
 
-Use disposable environments for:
+The parent runner sees the same environment under `/environments/<envDir>/...`.
+Use `/inbox` and `/artifacts` for coordination; do not rely on transcript copying.
 
-- worker sessions
-- risky shell tasks
-- parallel bash work
-- repo or tool experiments that should not touch the main runner state
-- anything that should not touch the main runner's shell state
+## Runtime context
 
-Use the persistent agent runner for normal long-lived agent work where keeping
-cwd, exported env, and agent home access is the point.
+Every durable child receives a **Subagent Runtime Context** with:
 
-## Production Shape
+- parent session id
+- profile and execution mode
+- task/prompt and optional context
+- environment id and mounted paths when isolated
 
-```mermaid
-flowchart LR
-  core["panda-core"] --> manager["panda-environment-manager"]
-  manager --> docker["Docker Engine"]
-  manager --> runner["disposable panda-runner-*"]
-  core --> runner
-  gateway["panda-gateway / caddy"] -. "no access" .- runner
-```
+Subagents do not inherit the parent transcript automatically. Pass the exact
+context the child needs in the `prompt` and `context` fields.
 
-`panda-core` talks to the environment manager over HTTP. The manager owns Docker
-Engine access. Disposable runners live on the private disposable runner network.
-Gateway and Caddy should not be attached to that network.
+## Purge
 
-Do not mount the Docker socket into `panda-core`.
-
-## Minimal Env
-
-For `scripts/docker-stack.sh`, this is the minimal production setup:
+Operators hard-purge old stopped subagent environments with:
 
 ```bash
-BASH_EXECUTION_MODE=remote
-
-PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true
-PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=<long-random-secret>
-
-# Build-time default for panda-runner:latest; Node 22 LTS is the safer
-# disposable/browser validation baseline. Override only deliberately.
-PANDA_RUNNER_NODE_MAJOR=22
-PANDA_DISPOSABLE_RUNNER_IMAGE=panda-runner:latest
-PANDA_DISPOSABLE_RUNNER_CWD=/workspace
-PANDA_ENVIRONMENTS_HOST_ROOT=$HOME/.panda/environments
-PANDA_ENVIRONMENTS_ROOT=/root/.panda/environments
-PANDA_RUNNER_ENVIRONMENTS_ROOT=/environments
-PANDA_DISPOSABLE_CREATE_TIMEOUT_MS=300000
+panda subagents purge --stopped --older-than 7d --dry-run
+panda subagents purge --stopped --older-than 7d --execute
 ```
 
-`scripts/docker-stack.sh` fills these when they are not set:
+`panda subagents purge` refuses to run without a selector. `--execute` stops
+matched active containers when needed, deletes subagent sessions and cascaded
+runtime rows, deletes non-cascading A2A/outbound/runtime request rows, and then
+removes the environment filesystem root when it is safe.
+
+Useful selectors:
 
 ```bash
-PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL=http://panda-environment-manager:8095
-PANDA_EXECUTION_ENVIRONMENT_MANAGER_NETWORK=<project>_execution_manager_net
-PANDA_DISPOSABLE_RUNNER_NETWORK=<project>_disposable_runner_net
+panda subagents purge --session-id <subagentSessionId> --dry-run
+panda subagents purge --environment-id <environmentId> --dry-run
+panda subagents purge --expired --execute
 ```
 
-Set the network names yourself only when you need stable names across compose
-projects.
+## Custom profiles
 
-
-If `BASH_SERVER_SHARED_SECRET` is enabled, wire the same value through `panda-core`, `panda-environment-manager`, and the disposable bash-server containers. It authenticates runner POST endpoints; it does not make runner networks public-safe.
-
-## Start It
+Built-in profiles are seeded by the runtime. Agent-scoped custom profiles are
+managed with:
 
 ```bash
-./scripts/docker-stack.sh up --build
-./scripts/docker-stack.sh ps
-./scripts/docker-stack.sh logs environment-manager
+panda subagents profiles list --agent clawd --json
+panda subagents profiles get workspace --agent clawd --json
+panda subagents profiles upsert code-review \
+  --agent clawd \
+  --description "Review local code changes" \
+  --tool-groups core,workspace_read \
+  --prompt-file ./code-review-profile.md \
+  --json
+panda subagents profiles disable code-review --agent clawd
 ```
 
-The stack should include:
-
-- `panda-core`
-- `panda-environment-manager`
-- the normal persistent `panda-runner-<agent>` services
-- disposable bash-server containers only after a worker/disposable environment is
-  created
-
-## Verify Isolation
-
-Check the generated Docker networks:
-
-```bash
-docker network inspect <project>_execution_manager_net
-docker network inspect <project>_disposable_runner_net
-docker network inspect <project>_gateway_edge_net
-```
-
-Expected:
-
-- `panda-core` can reach `panda-environment-manager`
-- `panda-core` can reach disposable runners
-- `panda-environment-manager` can create disposable runners
-- `panda-gateway` and `caddy` are not on the disposable runner network
-- disposable runners are not on the gateway edge network
-
-Check mounts on a live disposable runner:
-
-```bash
-docker inspect <disposable-runner-container> \
-  --format '{{json .Mounts}}'
-```
-
-Expected:
-
-- no `/root/.panda` mount
-- no Codex home mount
-- no Docker socket mount
-- writable `/workspace`, `/inbox`, and `/artifacts` mounts scoped to that one
-  worker
-
-## File Sharing
-
-Each disposable worker gets an agent-scoped filesystem root:
-
-```text
-${PANDA_ENVIRONMENTS_HOST_ROOT:-$HOME/.panda/environments}/<agentKey>/<envDir>/
-  workspace/
-  inbox/
-  artifacts/
-```
-
-Inside the worker:
-
-- `/workspace` is normal scratch/work space
-- `/inbox` is where the parent can place input files
-- `/artifacts` is where the worker should put reviewable outputs
-
-The persistent parent runner for the same agent sees its workers at:
-
-```text
-/environments/<envDir>/
-```
-
-Other agent runners do not mount this namespace.
-
-## Durable Subagent A2A Handoff
-
-The parent agent can create a disposable environment first with
-`environment_create`, then hand work to a durable subagent with
-`spawn_subagent`. A subagent is the session/task lane; an environment is the
-container/filesystem place where bash runs.
-
-`environment_create` returns the environment id plus parent-visible
-`workspace`, `inbox`, and `artifacts` paths. The parent can write files into the
-environment before assigning a subagent.
-
-`spawn_subagent` creates a durable `subagent` session, binds parent↔subagent A2A,
-and wakes the subagent with the handoff prompt. It does **not** create, restart,
-or stop disposable environments. For `execution: "isolated_environment"`, pass
-an `environmentId` that is already ready, disposable, same-agent, and owned by
-the parent session. Omit `environmentId` for the default `agent_workspace` mode.
-
-Useful arguments:
-
-- `prompt`: required subagent brief
-- `profile`: optional profile slug, for example `workspace`, `memory`,
-  `browser`, or `skill_maintainer`
-- `context`: extra handoff context
-- `execution`: `agent_workspace` or `isolated_environment`
-- `environmentId`: existing parent-owned disposable env for isolated execution
-- `credentialAllowlist`: env keys the subagent may receive
-- `toolGroups`: ad-hoc tool groups when `profile` is omitted
-
-Progress and completion come back through A2A `message_agent`, not background
-job polling.
-
-The parent stops a container with `environment_stop({ environmentId })`.
-Stopping removes the disposable container but keeps `workspace`, `inbox`, and
-`artifacts` on disk for review. Worker sessions remain as history until an
-operator purge.
-
-Operators hard-purge old stopped worker environments with:
-
-```bash
-panda workers purge --stopped --older-than 7d --dry-run
-panda workers purge --stopped --older-than 7d --execute
-```
-
-`panda workers purge` is dry-run by default and refuses to run without an
-explicit selector such as `--stopped`, `--expired`, `--agent`, `--session-id`,
-or `--environment-id`. It deletes the execution environment row, attached
-worker sessions, cascaded runtime rows, non-cascading outbound/runtime request
-rows, and the worker environment filesystem root. It also handles standalone
-environments with no workers. External copied media/artifact files outside the
-environment root are reported during `--execute`, not deleted. Dry-run is
-bounded and does not scan transcript JSON for those external references, so it
-prints them as not scanned rather than `0`. Active unexpired `ready`
-environments require `--force`.
-
-The parent agent context includes a worker-environments section for active
-environments, recently stopped environments, attached workers, and
-parent-visible file paths.
-
-Worker sessions use a dedicated worker base prompt, not the full Panda prompt.
-They use normal `message_agent` A2A. The parent and worker are bound by session
-id when the worker is created. Workers cannot spawn workers or manage
-environments.
-
-Every worker run receives a `Worker Runtime Context` with the durable facts the
-worker needs to operate:
-
-- `role`
-- `task`
-- `context`
-- `parentSessionId`
-- exact `message_agent({ sessionId: "..." })` parent target
-- worker paths: `/workspace`, `/inbox`, `/artifacts`
-- parent-visible root: `/environments/<envDir>`
-
-This is separate from the initial handoff message. It is re-rendered as runtime
-context on later worker wakes, so the parent session id and file paths do not
-depend on old transcript text staying visible.
-
-Worker messages should include:
-
-- `status: done|blocked|question|progress`
-- `summary: ...`
-- `artifacts: ...`
-- `needs: ...`
-
-When a disposable worker sends a message, Panda includes the sender environment
-in the A2A wrapper. The parent sees paths like:
-
-- `/environments/<envDir>/workspace`
-- `/environments/<envDir>/inbox`
-- `/environments/<envDir>/artifacts`
-
-Use those for review and follow-up files. Use attachments for deliberate file
-transfer; use `/inbox` and `/artifacts` for ongoing parent-worker coordination.
-
-## Live Smoke Test
-
-Use this mission as the first end-to-end worker test:
-
-```text
-Mission: Write a Python script that downloads JSON from httpbin.org/get and prints the response headers.
-```
-
-Expected behavior:
-
-- Panda creates a `runtime.execution_environments` row with kind
-  `disposable_container`
-- Panda creates a `runtime.session_environment_bindings` row for the worker
-  session
-- the environment manager creates a disposable runner container
-- bash starts in `/workspace`
-- the command output includes the httpbin response headers
-- the worker environment can be stopped or is swept after its TTL
-
-The important check is that the bash command runs inside the disposable runner,
-not inside the persistent per-agent runner. After review, use
-`panda workers purge --session-id <workerSessionId> --dry-run` and then
-`--execute` when the candidate looks right.
-
-## Policy Defaults
-
-| Environment | Credentials | Skills | Tools | Readonly Postgres |
-| --- | --- | --- | --- | --- |
-| persistent agent runner | all current agent credentials | all current agent skills | normal main-agent tool set | normal tool policy |
-| disposable worker env | allowlist, default empty | allowlist, default empty | worker allowlist | disabled unless explicitly allowed |
-
-Default disposable worker tools:
-
-- `bash`
-- `background_job_status`
-- `background_job_wait`
-- `background_job_cancel`
-- `message_agent`
-- `current_datetime`
-- `view_media`
-- `web_fetch`
-- `brave_search` when available
-- `browser`
-- `agent_skill` for allowed skill reads
-- `image_generate` when available
-
-Credentials are injected per bash request. Runners do not load credentials from
-Postgres, files, or long-lived process env.
-
-The skill allowlist applies to:
-
-- the `agent_skill` tool
-- readonly `session.agent_skills` queries
-
-Readonly Postgres in a disposable environment requires both
-`toolPolicy.postgresReadonly.allowed=true` and `READONLY_DATABASE_URL`. Durable
-subagents receive that grant through their profile/toolGroups policy, for
-example the `memory` tool group.
-
-## Troubleshooting
-
-`PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN is required`
-
-Set a long random token whenever disposable environments are enabled. Core and
-the manager must use the same value.
-
-`panda-core` cannot reach the manager
-
-Check `PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL` inside `panda-core`. In the
-Docker stack it should usually be `http://panda-environment-manager:8095`.
-
-The manager cannot create containers
-
-Check Docker access from the manager container. The manager needs Docker Engine
-access; `panda-core` and runners do not.
-
-The disposable runner image is missing
-
-Run `./scripts/docker-stack.sh up --build` so `panda-runner:latest` is built
-before the manager tries to create disposable runners. The stack builds the
-runner with `PANDA_RUNNER_NODE_MAJOR=${PANDA_RUNNER_NODE_MAJOR:-22}`; supported
-values are `20`, `22`, and `24`.
-
-The runner never becomes healthy
-
-Check:
-
-```bash
-./scripts/docker-stack.sh logs environment-manager
-docker logs <disposable-runner-container>
-```
-
-Core receives a runner URL but cannot connect
-
-The disposable runner is probably on the wrong network. Check
-`PANDA_DISPOSABLE_RUNNER_NETWORK` and make sure `panda-core` is attached to that
-network.
-
-Vite/Tailwind validation still fails after Node 22 and safe PATH
-
-Treat this as `BLOCKED_RESOURCE` unless the app itself produced a clear product
-failure. The runner now starts commands with safe system PATH entries appended
-and the default stack runner build uses Node 22 LTS, but a ~2GiB host can still
-time out or kill installs, typechecks, Vite builds, or dev servers. Browser
-validators must not claim `PASS` without real DOM/screenshot/network evidence.
-
-Gateway or Caddy can see disposable runners
-
-That is a deployment bug. Keep gateway/Caddy only on the public edge network and
-keep disposable runners only on the private disposable runner network.
-
-## Hard Rules
-
-- do not expose the environment manager publicly without a token
-- do not put DB credentials in runner env
-- do not put provider API keys in runner env
-- do not mount the Docker socket into `panda-core`
-- do not mount the Docker socket into disposable runners
-- do not attach disposable runners to the gateway/Caddy network
-- do not mount agent home unless you intentionally want to break isolation
+Profiles store prompt, tool groups, model/thinking defaults, and enabled state.
+They do **not** store credentials, environment ids, or per-spawn execution
+choices; pass those at spawn time.

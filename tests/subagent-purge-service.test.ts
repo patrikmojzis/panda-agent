@@ -16,9 +16,9 @@ import {createSessionWithInitialThread} from "../src/domain/sessions/index.js";
 import {A2ASessionBindingRepo} from "../src/domain/a2a/repo.js";
 import {PostgresOutboundDeliveryStore} from "../src/domain/channels/deliveries/postgres.js";
 import {RuntimeRequestRepo} from "../src/domain/threads/requests/repo.js";
-import {WorkerPurgeService, type WorkerPurgeServiceOptions} from "../src/app/runtime/worker-purge-service.js";
+import {SubagentPurgeService, type SubagentPurgeServiceOptions} from "../src/app/runtime/subagent-purge-service.js";
 import {ensureSchemas} from "../src/app/runtime/postgres-bootstrap.js";
-import {buildPurgeInput, parseDurationOption} from "../src/app/workers/cli.js";
+import {buildPurgeInput, parseDurationOption} from "../src/app/subagents/cli.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 class FakeEnvironmentManager implements ExecutionEnvironmentManager {
@@ -75,14 +75,14 @@ function failUnusedDependency(name: string): never {
   throw new Error(`${name} should not be used by this test`);
 }
 
-function createQueryOnlyPurgePool(query: WorkerPurgeServiceOptions["pool"]["query"]): WorkerPurgeServiceOptions["pool"] {
+function createQueryOnlyPurgePool(query: SubagentPurgeServiceOptions["pool"]["query"]): SubagentPurgeServiceOptions["pool"] {
   return {
     query,
-    connect: async () => failUnusedDependency("worker purge transaction client"),
+    connect: async () => failUnusedDependency("subagent purge transaction client"),
   };
 }
 
-function createUnusedEnvironmentStore(): WorkerPurgeServiceOptions["environmentStore"] {
+function createUnusedEnvironmentStore(): SubagentPurgeServiceOptions["environmentStore"] {
   return {
     createEnvironment: async () => failUnusedDependency("environmentStore.createEnvironment"),
     getEnvironment: async () => failUnusedDependency("environmentStore.getEnvironment"),
@@ -127,7 +127,7 @@ function filesystemMetadata(envRoot: string, envDir: string) {
   };
 }
 
-describe("WorkerPurgeService", () => {
+describe("SubagentPurgeService", () => {
   const pools: Array<{end(): Promise<void>}> = [];
   const tempDirs: string[] = [];
 
@@ -175,46 +175,46 @@ describe("WorkerPurgeService", () => {
       sessionStore,
       threadStore,
       session: {
-        id: "worker-session",
+        id: "subagent-session",
         agentKey: "panda",
-        kind: "worker",
-        currentThreadId: "worker-thread",
+        kind: "subagent",
+        currentThreadId: "subagent-thread",
       },
       thread: {
-        id: "worker-thread",
-        sessionId: "worker-session",
+        id: "subagent-thread",
+        sessionId: "subagent-session",
       },
     });
 
-    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "panda-worker-purge-"));
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "panda-subagent-purge-"));
     tempDirs.push(tempRoot);
     const environmentsRoot = path.join(tempRoot, "environments");
-    const envDir = "worker-session";
+    const envDir = "subagent-session";
     const envRoot = await createEnvRoot(environmentsRoot, "panda", envDir);
     await environmentStore.createEnvironment({
-      id: "worker:worker-session",
+      id: "subagent:subagent-session",
       agentKey: "panda",
       kind: "disposable_container",
       state: "stopped",
-      runnerUrl: "http://worker:8080",
+      runnerUrl: "http://subagent:8080",
       runnerCwd: "/workspace",
       rootPath: "/workspace",
       createdBySessionId: "main-session",
-      createdForSessionId: "worker-session",
+      createdForSessionId: "subagent-session",
       metadata: {
-        containerName: "panda-env-worker-session",
+        containerName: "panda-env-subagent-session",
         filesystem: filesystemMetadata(envRoot, envDir),
       },
     });
     await environmentStore.bindSession({
-      sessionId: "worker-session",
-      environmentId: "worker:worker-session",
+      sessionId: "subagent-session",
+      environmentId: "subagent:subagent-session",
       alias: "self",
       isDefault: true,
     });
 
     const manager = new FakeEnvironmentManager();
-    const service = new WorkerPurgeService({
+    const service = new SubagentPurgeService({
       pool,
       environmentStore,
       manager,
@@ -237,20 +237,20 @@ describe("WorkerPurgeService", () => {
     };
   }
 
-  it("plans stopped worker purge candidates with row and file counts without mutating", async () => {
+  it("plans stopped subagent purge candidates with row and file counts without mutating", async () => {
     const {pool, envRoot, service, threadStore} = await createHarness();
-    await threadStore.enqueueInput("worker-thread", {
+    await threadStore.enqueueInput("subagent-thread", {
       source: "test",
       message: {role: "user", content: "hello"},
     });
-    await threadStore.appendRuntimeMessage("worker-thread", {
+    await threadStore.appendRuntimeMessage("subagent-thread", {
       source: "test",
       message: {role: "assistant", content: "done"},
     });
     await pool.query(`
       UPDATE "runtime"."execution_environments"
       SET updated_at = $1
-      WHERE id = 'worker:worker-session'
+      WHERE id = 'subagent:subagent-session'
     `, [new Date(Date.now() - 8 * 24 * 60 * 60_000)]);
     await pool.query(`
       INSERT INTO "runtime"."runtime_requests" (
@@ -268,7 +268,7 @@ describe("WorkerPurgeService", () => {
       )
     `, [
       randomUUID(),
-      JSON.stringify({sessionId: "worker-session"}),
+      JSON.stringify({sessionId: "subagent-session"}),
       JSON.stringify({media: {localPath: path.join(path.dirname(envRoot), "..", "media", "copied.txt")}}),
     ]);
 
@@ -283,9 +283,9 @@ describe("WorkerPurgeService", () => {
     expect(plan.dryRun).toBe(true);
     expect(plan.candidates).toHaveLength(1);
     expect(plan.candidates[0]).toMatchObject({
-      sessionId: "worker-session",
+      sessionId: "subagent-session",
       environment: {
-        id: "worker:worker-session",
+        id: "subagent:subagent-session",
         state: "stopped",
       },
       filesystem: {
@@ -304,13 +304,13 @@ describe("WorkerPurgeService", () => {
       externalFileReferenceCount: null,
     });
     await expect(service.plan({selector: {sessionId: "main-session"}})).rejects.toThrow(
-      "No disposable worker environment matched",
+      "No disposable subagent environment matched",
     );
   });
 
   it("does not scan transcript JSON references while planning dry-run candidates", async () => {
     const {pool, environmentStore, environmentsRoot, manager} = await createHarness();
-    const service = new WorkerPurgeService({
+    const service = new SubagentPurgeService({
       pool: {
         query: async (queryText: string, values?: readonly unknown[]) => {
           if (typeof queryText === "string" && queryText.includes("::text LIKE")) {
@@ -344,35 +344,35 @@ describe("WorkerPurgeService", () => {
     await pool.query(`
       UPDATE "runtime"."execution_environments"
       SET state = 'limbo'
-      WHERE id = 'worker:worker-session'
+      WHERE id = 'subagent:subagent-session'
     `);
 
     await expect(service.plan({
       selector: {
-        environmentId: "worker:worker-session",
+        environmentId: "subagent:subagent-session",
       },
       skipFiles: true,
     })).rejects.toThrow("Unsupported execution environment state limbo.");
   });
 
   it("rejects corrupted purge candidate keys before planning purge actions", async () => {
-    const service = new WorkerPurgeService({
+    const service = new SubagentPurgeService({
       pool: createQueryOnlyPurgePool(async () => ({
         rows: [{
-          session_id: "worker-session",
+          session_id: "subagent-session",
           session_agent_key: "panda",
-          current_thread_id: "worker-thread",
+          current_thread_id: "subagent-thread",
           session_created_at: new Date(1),
           session_updated_at: new Date(1),
-          environment_id: "worker:worker-session",
+          environment_id: "subagent:subagent-session",
           environment_agent_key: "",
           kind: "disposable_container",
           state: "stopped",
-          runner_url: "http://worker:8080",
+          runner_url: "http://subagent:8080",
           runner_cwd: "/workspace",
           root_path: "/workspace",
           created_by_session_id: "main-session",
-          created_for_session_id: "worker-session",
+          created_for_session_id: "subagent-session",
           expires_at: null,
           metadata: null,
           environment_created_at: new Date(1),
@@ -385,15 +385,15 @@ describe("WorkerPurgeService", () => {
 
     await expect(service.plan({
       selector: {
-        environmentId: "worker:worker-session",
+        environmentId: "subagent:subagent-session",
       },
       skipFiles: true,
-    })).rejects.toThrow("worker environment agent key must not be empty.");
+    })).rejects.toThrow("subagent environment agent key must not be empty.");
   });
 
   it("rejects malformed purge count rows", async () => {
     const {pool, environmentStore, manager} = await createHarness();
-    const service = new WorkerPurgeService({
+    const service = new SubagentPurgeService({
       pool: {
         query: async (queryText: string, values?: readonly unknown[]) => {
           if (typeof queryText === "string" && queryText.includes("COUNT(*)::INTEGER AS count")) {
@@ -410,15 +410,15 @@ describe("WorkerPurgeService", () => {
 
     await expect(service.plan({
       selector: {
-        environmentId: "worker:worker-session",
+        environmentId: "subagent:subagent-session",
       },
       skipFiles: true,
-    })).rejects.toThrow("Worker purge row count must be a non-negative integer.");
+    })).rejects.toThrow("Subagent purge row count must be a non-negative integer.");
   });
 
   it("rejects driver-shaped purge count rows", async () => {
     const {pool, environmentStore, manager} = await createHarness();
-    const service = new WorkerPurgeService({
+    const service = new SubagentPurgeService({
       pool: {
         query: async (queryText: string, values?: readonly unknown[]) => {
           if (typeof queryText === "string" && queryText.includes("COUNT(*)::INTEGER AS count")) {
@@ -435,24 +435,25 @@ describe("WorkerPurgeService", () => {
 
     await expect(service.plan({
       selector: {
-        environmentId: "worker:worker-session",
+        environmentId: "subagent:subagent-session",
       },
       skipFiles: true,
-    })).rejects.toThrow("Worker purge row count must be a non-negative integer.");
+    })).rejects.toThrow("Subagent purge row count must be a non-negative integer.");
   });
 
   it("hard purges non-cascading rows, cascaded session rows, environment row, and env files", async () => {
     const {pool, a2a, environmentStore, envRoot, manager, requests, service, sessionStore} = await createHarness();
     await a2a.bindSession({
       senderSessionId: "main-session",
-      recipientSessionId: "worker-session",
+      recipientSessionId: "subagent-session",
     });
     await requests.enqueueRequest({
-      kind: "create_worker_session",
+      kind: "create_subagent_session",
       payload: {
-        sessionId: "worker-session",
-        threadId: "worker-thread",
-        task: "old work",
+        sessionId: "subagent-session",
+        threadId: "subagent-thread",
+        parentSessionId: "main-session",
+        prompt: "old work",
       },
     });
     await pool.query(`
@@ -471,7 +472,7 @@ describe("WorkerPurgeService", () => {
       )
     `, [
       randomUUID(),
-      JSON.stringify({sessionId: "worker-session"}),
+      JSON.stringify({sessionId: "subagent-session"}),
       JSON.stringify({media: {localPath: path.join(path.dirname(envRoot), "..", "media", "copied.txt")}}),
     ]);
     await pool.query(`
@@ -486,7 +487,7 @@ describe("WorkerPurgeService", () => {
         status
       ) VALUES (
         $1,
-        'worker-thread',
+        'subagent-thread',
         'a2a',
         'local',
         'main-session',
@@ -497,7 +498,7 @@ describe("WorkerPurgeService", () => {
     `, [
       randomUUID(),
       JSON.stringify([{type: "file", path: path.join(envRoot, "artifacts", "report.txt")}]),
-      JSON.stringify({workerSessionId: "worker-session"}),
+      JSON.stringify({subagentSessionId: "subagent-session"}),
     ]);
     const unrelatedDeliveryId = randomUUID();
     await pool.query(`
@@ -522,8 +523,8 @@ describe("WorkerPurgeService", () => {
       )
     `, [
       unrelatedDeliveryId,
-      JSON.stringify([{type: "text", text: "mentions worker-session but is not worker-owned"}]),
-      JSON.stringify({note: "mentions worker:worker-session"}),
+      JSON.stringify([{type: "text", text: "mentions subagent-session but is not subagent-owned"}]),
+      JSON.stringify({note: "mentions subagent:subagent-session"}),
     ]);
     const unrelatedRequestId = randomUUID();
     await pool.query(`
@@ -542,13 +543,13 @@ describe("WorkerPurgeService", () => {
       )
     `, [
       unrelatedRequestId,
-      JSON.stringify({text: "mentions worker-session but has no ownership fields"}),
-      JSON.stringify({text: "mentions worker:worker-session but has no ownership fields"}),
+      JSON.stringify({text: "mentions subagent-session but has no ownership fields"}),
+      JSON.stringify({text: "mentions subagent:subagent-session but has no ownership fields"}),
     ]);
 
     const plan = await service.purge({
       selector: {
-        sessionId: "worker-session",
+        sessionId: "subagent-session",
       },
       execute: true,
     });
@@ -556,8 +557,8 @@ describe("WorkerPurgeService", () => {
     expect(plan.dryRun).toBe(false);
     expect(plan.candidates[0]?.externalFileReferenceCount).toBe(1);
     expect(manager.stopped).toEqual([]);
-    await expect(sessionStore.getSession("worker-session")).rejects.toThrow("Unknown session");
-    await expect(environmentStore.getEnvironment("worker:worker-session")).rejects.toThrow("Unknown execution environment");
+    await expect(sessionStore.getSession("subagent-session")).rejects.toThrow("Unknown session");
+    await expect(environmentStore.getEnvironment("subagent:subagent-session")).rejects.toThrow("Unknown execution environment");
     await expect(lstat(envRoot)).rejects.toThrow();
     await expect(pool.query(`SELECT COUNT(*)::INTEGER AS count FROM "runtime"."outbound_deliveries"`))
       .resolves.toMatchObject({rows: [{count: 1}]});
@@ -569,7 +570,7 @@ describe("WorkerPurgeService", () => {
       .resolves.toMatchObject({rows: [{id: unrelatedRequestId}]});
   });
 
-  it("plans standalone environment purge candidates without attached workers", async () => {
+  it("plans standalone environment purge candidates without attached subagents", async () => {
     const {environmentStore, environmentsRoot, service} = await createHarness();
     const envDir = "standalone-env";
     const envRoot = await createEnvRoot(environmentsRoot, "panda", envDir);
@@ -614,48 +615,48 @@ describe("WorkerPurgeService", () => {
     });
   });
 
-  it("purges a shared environment once and deletes every attached worker", async () => {
+  it("purges a shared environment once and deletes every attached subagent", async () => {
     const {pool, environmentStore, envRoot, service, sessionStore, threadStore} = await createHarness();
     await createSessionWithInitialThread({
       pool,
       sessionStore,
       threadStore,
       session: {
-        id: "worker-two",
+        id: "subagent-two",
         agentKey: "panda",
-        kind: "worker",
-        currentThreadId: "worker-two-thread",
+        kind: "subagent",
+        currentThreadId: "subagent-two-thread",
       },
       thread: {
-        id: "worker-two-thread",
-        sessionId: "worker-two",
+        id: "subagent-two-thread",
+        sessionId: "subagent-two",
       },
     });
     await environmentStore.bindSession({
-      sessionId: "worker-two",
-      environmentId: "worker:worker-session",
+      sessionId: "subagent-two",
+      environmentId: "subagent:subagent-session",
       alias: "self",
       isDefault: true,
     });
 
     const plan = await service.purge({
       selector: {
-        environmentId: "worker:worker-session",
+        environmentId: "subagent:subagent-session",
       },
       execute: true,
     });
 
     expect(plan.candidates).toHaveLength(1);
-    expect(plan.candidates[0]?.sessionIds).toEqual(["worker-session", "worker-two"]);
-    await expect(sessionStore.getSession("worker-session")).rejects.toThrow("Unknown session");
-    await expect(sessionStore.getSession("worker-two")).rejects.toThrow("Unknown session");
-    await expect(environmentStore.getEnvironment("worker:worker-session")).rejects.toThrow("Unknown execution environment");
+    expect(plan.candidates[0]?.sessionIds).toEqual(["subagent-session", "subagent-two"]);
+    await expect(sessionStore.getSession("subagent-session")).rejects.toThrow("Unknown session");
+    await expect(sessionStore.getSession("subagent-two")).rejects.toThrow("Unknown session");
+    await expect(environmentStore.getEnvironment("subagent:subagent-session")).rejects.toThrow("Unknown execution environment");
     await expect(lstat(envRoot)).rejects.toThrow();
   });
 
   it("does not delete files when the DB purge fails", async () => {
     const {pool, environmentStore, envRoot, manager, sessionStore} = await createHarness();
-    const service = new WorkerPurgeService({
+    const service = new SubagentPurgeService({
       pool: createSessionDeleteFailingPool(pool),
       environmentStore,
       manager,
@@ -667,19 +668,19 @@ describe("WorkerPurgeService", () => {
 
     await expect(service.purge({
       selector: {
-        sessionId: "worker-session",
+        sessionId: "subagent-session",
       },
       execute: true,
     })).rejects.toThrow("simulated session delete failure");
 
     expect((await lstat(envRoot)).isDirectory()).toBe(true);
-    await expect(sessionStore.getSession("worker-session")).resolves.toMatchObject({id: "worker-session"});
+    await expect(sessionStore.getSession("subagent-session")).resolves.toMatchObject({id: "subagent-session"});
   });
 
   it("uses the core-visible environment root when host path is unavailable", async () => {
     const {environmentStore, environmentsRoot, envRoot, service} = await createHarness();
-    const existing = await environmentStore.getEnvironment("worker:worker-session");
-    const envDir = "worker-session";
+    const existing = await environmentStore.getEnvironment("subagent:subagent-session");
+    const envDir = "subagent-session";
     const metadata = filesystemMetadata(envRoot, envDir);
     await environmentStore.createEnvironment({
       ...existing,
@@ -698,7 +699,7 @@ describe("WorkerPurgeService", () => {
 
     const plan = await service.plan({
       selector: {
-        sessionId: "worker-session",
+        sessionId: "subagent-session",
       },
     });
 
@@ -708,9 +709,9 @@ describe("WorkerPurgeService", () => {
     });
   });
 
-  it("refuses active unexpired ready workers unless forced and stops them through the manager", async () => {
+  it("refuses active unexpired ready subagents unless forced and stops them through the manager", async () => {
     const {environmentStore, manager, service} = await createHarness();
-    const existing = await environmentStore.getEnvironment("worker:worker-session");
+    const existing = await environmentStore.getEnvironment("subagent:subagent-session");
     await environmentStore.createEnvironment({
       ...existing,
       state: "ready",
@@ -719,22 +720,22 @@ describe("WorkerPurgeService", () => {
 
     await expect(service.purge({
       selector: {
-        sessionId: "worker-session",
+        sessionId: "subagent-session",
       },
       execute: true,
       now: Date.now(),
-    })).rejects.toThrow("Refusing to purge worker worker-session");
+    })).rejects.toThrow("Refusing to purge subagent subagent-session");
 
     await service.purge({
       selector: {
-        sessionId: "worker-session",
+        sessionId: "subagent-session",
       },
       execute: true,
       force: true,
       now: Date.now(),
     });
 
-    expect(manager.stopped).toEqual(["worker:worker-session"]);
+    expect(manager.stopped).toEqual(["subagent:subagent-session"]);
   });
 
   it("fails execute on missing filesystem roots unless skip-files is set", async () => {
@@ -743,26 +744,26 @@ describe("WorkerPurgeService", () => {
 
     const plan = await service.plan({
       selector: {
-        sessionId: "worker-session",
+        sessionId: "subagent-session",
       },
     });
     expect(plan.candidates[0]?.filesystem.status).toBe("missing");
 
     await expect(service.purge({
       selector: {
-        sessionId: "worker-session",
+        sessionId: "subagent-session",
       },
       execute: true,
     })).rejects.toThrow("filesystem root is missing");
 
     await service.purge({
       selector: {
-        sessionId: "worker-session",
+        sessionId: "subagent-session",
       },
       execute: true,
       skipFiles: true,
     });
-    await expect(sessionStore.getSession("worker-session")).rejects.toThrow("Unknown session");
+    await expect(sessionStore.getSession("subagent-session")).rejects.toThrow("Unknown session");
   });
 
   it("parses purge duration options", () => {

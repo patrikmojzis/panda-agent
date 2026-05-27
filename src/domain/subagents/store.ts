@@ -3,6 +3,7 @@ import type {
   ListSubagentProfilesInput,
   SubagentProfileRecord,
   UpsertSubagentProfileInput,
+  SetSubagentProfileEnabledInput,
 } from "./types.js";
 
 export interface SubagentProfileStore {
@@ -11,4 +12,5 @@ export interface SubagentProfileStore {
   upsertProfile(input: UpsertSubagentProfileInput): Promise<SubagentProfileRecord>;
   getProfile(input: GetSubagentProfileInput): Promise<SubagentProfileRecord | null>;
   listProfiles(input?: ListSubagentProfilesInput): Promise<readonly SubagentProfileRecord[]>;
+  setProfileEnabled(input: SetSubagentProfileEnabledInput): Promise<SubagentProfileRecord>;
 }

@@ -32,7 +32,6 @@ import {resolveAgentMediaDir} from "./data-dir.js";
 import {EmailSendTool} from "../../panda/tools/email-send-tool.js";
 import {OutboundTool} from "../../panda/tools/outbound-tool.js";
 import {MessageAgentTool} from "../../panda/tools/message-agent-tool.js";
-import {WORKER_CONTROL_TOOL_NAMES} from "../../panda/worker-tool-policy.js";
 import {readPositiveIntegerEnv} from "./database.js";
 
 interface DaemonContext {
@@ -121,13 +120,13 @@ export async function bootstrapDaemonContext(
           notificationPokesInFlight.delete(notification.threadId);
         });
     },
-    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, sessionStore, store, wikiBindingService, mainTools, workerTools}) => {
+    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, sessionStore, subagentProfiles, store, wikiBindingService, mainTools, subagentTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
       const sessionPrompt = await sessionStore.readSessionPrompt(session.id);
       const runtimeConfig = await sessionStore.getSessionRuntimeConfig(session.id);
       const executionEnvironment = await executionEnvironmentResolver.resolveDefault(session);
-      const sessionMainTools = session.kind === "worker"
-        ? workerTools.filter((tool) => !WORKER_CONTROL_TOOL_NAMES.has(tool.name))
+      const sessionMainTools = session.kind === "subagent"
+        ? subagentTools
         : mainTools;
       return createThreadDefinition({
         thread,
@@ -136,6 +135,7 @@ export async function bootstrapDaemonContext(
         executionEnvironment,
         agentStore,
         sessionStore,
+        subagentProfiles,
         sessionPrompt,
         runtimeConfig,
         threadStore: store,
@@ -185,18 +185,6 @@ export async function bootstrapDaemonContext(
           },
           messageAgent: {
             queueMessage: (input) => a2aMessagingService.queueMessage(input),
-          },
-          workerA2A: {
-            bindParentWorker: async (input) => {
-              await a2aBindings.bindSession({
-                senderSessionId: input.parentSessionId,
-                recipientSessionId: input.workerSessionId,
-              });
-              await a2aBindings.bindSession({
-                senderSessionId: input.workerSessionId,
-                recipientSessionId: input.parentSessionId,
-              });
-            },
           },
         },
       });

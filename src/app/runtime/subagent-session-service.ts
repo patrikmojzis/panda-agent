@@ -52,7 +52,7 @@ type SubagentRuntimeConfig = Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
 
 type SubagentSessionStore = Pick<
   SessionStore,
-  "createSession" | "updateSessionRuntimeConfig"
+  "createSession" | "getSession" | "updateSessionRuntimeConfig"
 >;
 
 type SubagentThreadStore = Pick<ThreadRuntimeStore, "createThread" | "enqueueInput">;
@@ -188,6 +188,7 @@ export class SubagentSessionService {
 
     const agentKey = requireTrimmed("agentKey", input.agentKey);
     const parentSessionId = requireTrimmed("parentSessionId", input.parentSessionId);
+    await this.assertValidParentSession({agentKey, parentSessionId});
     const task = requireTrimmed("task", input.task);
     const execution = input.execution ?? "agent_workspace";
     const environmentId = trimToUndefined(input.environmentId);
@@ -276,6 +277,31 @@ export class SubagentSessionService {
     } catch (error) {
       await this.deleteCreatedSubagentSession(created.session.id, created.thread.id).catch(() => {});
       throw error;
+    }
+  }
+
+  private async assertValidParentSession(input: {agentKey: string; parentSessionId: string}): Promise<void> {
+    let parent: SessionRecord;
+    try {
+      parent = await this.sessions.getSession(input.parentSessionId);
+    } catch {
+      throw new Error(`Subagent parent session ${input.parentSessionId} was not found.`);
+    }
+
+    if (parent.agentKey !== input.agentKey) {
+      throw new Error(`Subagent session agent ${input.agentKey} must match parent session agent ${parent.agentKey}.`);
+    }
+
+    if (parent.kind === "subagent") {
+      throw new Error("Nested subagents are disabled; parent session is a subagent.");
+    }
+
+    if (parent.kind === "worker") {
+      throw new Error("Legacy worker sessions cannot be subagent parents.");
+    }
+
+    if (parent.kind !== "main" && parent.kind !== "branch") {
+      throw new Error(`Subagent parent session ${input.parentSessionId} must be a main or branch session.`);
     }
   }
 
