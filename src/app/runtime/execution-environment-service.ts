@@ -11,9 +11,16 @@ import type {
 } from "../../domain/execution-environments/types.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {SessionRecord} from "../../domain/sessions/types.js";
-import type {JsonValue} from "../../lib/json.js";
+import type {JsonObject, JsonValue} from "../../lib/json.js";
 import {isJsonObject, normalizeToJsonValue, stableStringify} from "../../lib/json.js";
 import {trimToUndefined} from "../../lib/strings.js";
+import {
+  hasExecutionEnvironmentSetup,
+  type ExecutionEnvironmentSetupScriptInput,
+} from "../../domain/execution-environments/setup.js";
+import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
+import type {ExecutionEnvironmentSetupRunner} from "./execution-environment-setup-runner.js";
+import {readExecutionEnvironmentSetupErrorMetadata} from "./execution-environment-setup-runner.js";
 
 const DEFAULT_DISPOSABLE_ALIAS = "self";
 export const DEFAULT_DISPOSABLE_ENVIRONMENT_TTL_MS = 24 * 60 * 60 * 1_000;
@@ -37,6 +44,7 @@ export interface CreateStandaloneDisposableEnvironmentInput {
   environmentId?: string;
   ttlMs?: number;
   metadata?: JsonValue;
+  setupScript?: ExecutionEnvironmentSetupScriptInput;
 }
 
 export interface AttachSessionToDisposableEnvironmentInput {
@@ -81,6 +89,7 @@ export interface SweepExpiredExecutionEnvironmentsResult {
 export interface ExecutionEnvironmentLifecycleServiceOptions {
   store: ExecutionEnvironmentLifecycleStore;
   manager?: ExecutionEnvironmentManager | null;
+  setupRunner?: ExecutionEnvironmentSetupRunner | null;
 }
 
 export type ExecutionEnvironmentStopStore = Pick<
@@ -160,10 +169,12 @@ export async function stopExecutionEnvironment(input: {
 export class ExecutionEnvironmentLifecycleService {
   private readonly store: ExecutionEnvironmentLifecycleStore;
   private readonly manager: ExecutionEnvironmentManager | null;
+  private readonly setupRunner: ExecutionEnvironmentSetupRunner | null;
 
   constructor(options: ExecutionEnvironmentLifecycleServiceOptions) {
     this.store = options.store;
     this.manager = options.manager ?? null;
+    this.setupRunner = options.setupRunner ?? null;
   }
 
   async createDisposableForSession(
@@ -256,7 +267,12 @@ export class ExecutionEnvironmentLifecycleService {
         createdBySessionId: input.createdBySessionId,
         createdForSessionId: input.session.id,
         expiresAt,
-        metadata: mergeMetadata(input.metadata, created?.metadata, errorMetadata(error)),
+        metadata: mergeMetadata(
+          input.metadata,
+          created?.metadata,
+          readExecutionEnvironmentSetupErrorMetadata(error),
+          errorMetadata(error),
+        ),
       });
       throw error;
     }
@@ -276,6 +292,9 @@ export class ExecutionEnvironmentLifecycleService {
     }
     if (!ownerSessionId) {
       throw new Error("Disposable environment owner session id must not be empty.");
+    }
+    if (input.setupScript && !this.setupRunner) {
+      throw new Error("Disposable environment setup runner is not configured.");
     }
 
     const environmentId = trimToUndefined(input.environmentId) ?? buildStandaloneEnvironmentId(ownerSessionId);
@@ -300,6 +319,22 @@ export class ExecutionEnvironmentLifecycleService {
         ...(input.metadata === undefined ? {} : {metadata: input.metadata}),
       });
 
+      let setupMetadata: JsonObject | undefined;
+      if (input.setupScript) {
+        const filesystem = readExecutionEnvironmentFilesystemMetadata(created.metadata);
+        if (!filesystem) {
+          throw new Error("Disposable environment setup requires filesystem metadata from the environment manager.");
+        }
+        setupMetadata = await this.setupRunner!.runSetup({
+          agentKey,
+          environmentId,
+          runnerUrl: created.runnerUrl,
+          runnerCwd: created.runnerCwd,
+          filesystem,
+          setupScript: input.setupScript,
+        });
+      }
+
       return this.store.createEnvironment({
         id: environmentId,
         agentKey,
@@ -310,7 +345,7 @@ export class ExecutionEnvironmentLifecycleService {
         rootPath: created.rootPath,
         createdBySessionId: ownerSessionId,
         expiresAt,
-        metadata: mergeMetadata(input.metadata, created.metadata),
+        metadata: mergeMetadata(input.metadata, created.metadata, setupMetadata),
       });
     } catch (error) {
       if (created) {
@@ -326,7 +361,12 @@ export class ExecutionEnvironmentLifecycleService {
         rootPath: created?.rootPath,
         createdBySessionId: ownerSessionId,
         expiresAt,
-        metadata: mergeMetadata(input.metadata, created?.metadata, errorMetadata(error)),
+        metadata: mergeMetadata(
+          input.metadata,
+          created?.metadata,
+          readExecutionEnvironmentSetupErrorMetadata(error),
+          errorMetadata(error),
+        ),
       });
       throw error;
     }
@@ -451,6 +491,11 @@ export class ExecutionEnvironmentLifecycleService {
     const managerSessionId = environment.createdForSessionId ?? environment.createdBySessionId;
     if (!managerSessionId) {
       throw new Error(`Execution environment ${environment.id} is missing an owning session id.`);
+    }
+    if (hasExecutionEnvironmentSetup(environment.metadata)) {
+      throw new Error(
+        `Execution environment ${environment.id} was created with setupScript and cannot be restarted without rerunning setup.`,
+      );
     }
 
     await this.store.createEnvironment({

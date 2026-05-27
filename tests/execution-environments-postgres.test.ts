@@ -12,11 +12,46 @@ import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {ExecutionEnvironmentResolver} from "../src/app/runtime/execution-environment-resolver.js";
 import {ExecutionEnvironmentLifecycleService} from "../src/app/runtime/execution-environment-service.js";
+import type {
+  ExecutionEnvironmentSetupRunner,
+  ExecutionEnvironmentSetupRunnerInput,
+} from "../src/app/runtime/execution-environment-setup-runner.js";
+import {ExecutionEnvironmentSetupError} from "../src/app/runtime/execution-environment-setup-runner.js";
 import {buildSubagentSessionMetadata} from "../src/domain/subagents/index.js";
+import type {JsonObject, JsonValue} from "../src/lib/json.js";
+
+function createFilesystemMetadata(envDir = "env-worker"): JsonObject {
+  return {
+    filesystem: {
+      envDir,
+      root: {
+        corePath: `/core/environments/panda/${envDir}`,
+        parentRunnerPath: `/environments/${envDir}`,
+      },
+      workspace: {
+        corePath: `/core/environments/panda/${envDir}/workspace`,
+        parentRunnerPath: `/environments/${envDir}/workspace`,
+        workerPath: "/workspace",
+      },
+      inbox: {
+        corePath: `/core/environments/panda/${envDir}/inbox`,
+        parentRunnerPath: `/environments/${envDir}/inbox`,
+        workerPath: "/inbox",
+      },
+      artifacts: {
+        corePath: `/core/environments/panda/${envDir}/artifacts`,
+        parentRunnerPath: `/environments/${envDir}/artifacts`,
+        workerPath: "/artifacts",
+      },
+    },
+  };
+}
 
 class FakeEnvironmentManager implements ExecutionEnvironmentManager {
   readonly requests: DisposableEnvironmentCreateRequest[] = [];
   readonly stopped: string[] = [];
+
+  constructor(private readonly metadataFactory?: (input: DisposableEnvironmentCreateRequest) => JsonValue | undefined) {}
 
   async createDisposableEnvironment(
     input: DisposableEnvironmentCreateRequest,
@@ -26,7 +61,7 @@ class FakeEnvironmentManager implements ExecutionEnvironmentManager {
       runnerUrl: `http://${input.environmentId}:8080`,
       runnerCwd: "/workspace",
       rootPath: "/workspace",
-      metadata: {
+      metadata: this.metadataFactory?.(input) ?? {
         containerName: input.environmentId,
       },
     };
@@ -34,6 +69,41 @@ class FakeEnvironmentManager implements ExecutionEnvironmentManager {
 
   async stopEnvironment(environmentId: string): Promise<void> {
     this.stopped.push(environmentId);
+  }
+}
+
+class FakeSetupRunner implements ExecutionEnvironmentSetupRunner {
+  readonly inputs: ExecutionEnvironmentSetupRunnerInput[] = [];
+  result: JsonObject = {
+    setup: {
+      status: "succeeded",
+      artifacts: {
+        script: "/artifacts/setup/setup.sh",
+        stdout: "/artifacts/setup/stdout.log",
+        stderr: "/artifacts/setup/stderr.log",
+        result: "/artifacts/setup/setup-result.json",
+        toolchain: "/artifacts/setup/toolchain.json",
+      },
+      toolchain: {
+        status: "succeeded",
+        tools: {
+          node: {status: "present", path: "/usr/bin/node", version: "v99.1.0"},
+          pnpm: {status: "present", path: "/usr/bin/pnpm", version: "10.33.0"},
+          corepack: {status: "present", path: "/usr/bin/corepack", version: "0.34.0"},
+        },
+      },
+    },
+  };
+  error?: Error;
+  onRun?: (input: ExecutionEnvironmentSetupRunnerInput) => Promise<void> | void;
+
+  async runSetup(input: ExecutionEnvironmentSetupRunnerInput): Promise<JsonObject> {
+    this.inputs.push(input);
+    await this.onRun?.(input);
+    if (this.error) {
+      throw this.error;
+    }
+    return this.result;
   }
 }
 
@@ -821,6 +891,262 @@ describe("PostgresExecutionEnvironmentStore", () => {
         },
       },
     ]);
+  });
+
+
+  it("runs standalone setup before marking the environment ready", async () => {
+    const {environmentStore} = await createHarness();
+    const manager = new FakeEnvironmentManager((input) => ({
+      containerName: input.environmentId,
+      ...createFilesystemMetadata(`${input.environmentId}-dir`),
+    }));
+    const setupRunner = new FakeSetupRunner();
+    setupRunner.onRun = async (input) => {
+      await expect(environmentStore.getEnvironment(input.environmentId)).resolves.toMatchObject({
+        state: "provisioning",
+      });
+    };
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+      setupRunner,
+    });
+
+    const environment = await service.createStandaloneDisposableEnvironment({
+      agentKey: "panda",
+      createdBySessionId: "session-main",
+      environmentId: "env-setup-success",
+      setupScript: {
+        requestedPath: "setup.sh",
+        resolvedPath: "/agent/setup.sh",
+      },
+    });
+
+    expect(setupRunner.inputs).toHaveLength(1);
+    expect(setupRunner.inputs[0]).toMatchObject({
+      agentKey: "panda",
+      environmentId: "env-setup-success",
+      runnerUrl: "http://env-setup-success:8080",
+      runnerCwd: "/workspace",
+      setupScript: {
+        requestedPath: "setup.sh",
+        resolvedPath: "/agent/setup.sh",
+      },
+      filesystem: {
+        artifacts: {
+          workerPath: "/artifacts",
+        },
+      },
+    });
+    expect(environment).toMatchObject({
+      id: "env-setup-success",
+      state: "ready",
+      metadata: {
+        setup: {
+          status: "succeeded",
+          artifacts: {
+            script: "/artifacts/setup/setup.sh",
+          },
+          toolchain: {
+            tools: {
+              node: {version: "v99.1.0"},
+              pnpm: {version: "10.33.0"},
+              corepack: {version: "0.34.0"},
+            },
+          },
+        },
+      },
+    });
+    expect(manager.requests).toEqual([
+      {
+        agentKey: "panda",
+        sessionId: "session-main",
+        environmentId: "env-setup-success",
+      },
+    ]);
+    expect(JSON.stringify(manager.requests)).not.toContain("setupScript");
+  });
+
+  it("persists failed when standalone setup fails after environment creation", async () => {
+    const {environmentStore} = await createHarness();
+    const manager = new FakeEnvironmentManager((input) => ({
+      containerName: input.environmentId,
+      ...createFilesystemMetadata(`${input.environmentId}-dir`),
+    }));
+    const setupRunner = new FakeSetupRunner();
+    setupRunner.error = new ExecutionEnvironmentSetupError("Setup script exited with code 7.", {
+      setup: {
+        status: "failed",
+        artifacts: {
+          script: "/artifacts/setup/setup.sh",
+          result: "/artifacts/setup/setup-result.json",
+        },
+        error: "Setup script exited with code 7.",
+      },
+    });
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+      setupRunner,
+    });
+
+    await expect(service.createStandaloneDisposableEnvironment({
+      agentKey: "panda",
+      createdBySessionId: "session-main",
+      environmentId: "env-setup-fail",
+      setupScript: {
+        requestedPath: "setup.sh",
+        resolvedPath: "/agent/setup.sh",
+      },
+    })).rejects.toThrow("Setup script exited with code 7.");
+
+    await expect(environmentStore.getEnvironment("env-setup-fail")).resolves.toMatchObject({
+      state: "failed",
+      metadata: {
+        setup: {
+          status: "failed",
+          artifacts: {
+            result: "/artifacts/setup/setup-result.json",
+          },
+        },
+      },
+    });
+    expect(manager.stopped).toEqual(["env-setup-fail"]);
+  });
+
+  it("persists failed for timeout, runner, and probe failures after environment creation", async () => {
+    const {environmentStore} = await createHarness();
+    const manager = new FakeEnvironmentManager((input) => ({
+      containerName: input.environmentId,
+      ...createFilesystemMetadata(`${input.environmentId}-dir`),
+    }));
+
+    const cases = [
+      {id: "env-setup-timeout", message: "Setup script timed out."},
+      {id: "env-setup-runner-error", message: "Setup runner request failed: network down"},
+      {id: "env-setup-probe-fail", message: "Toolchain probe returned unparsable JSON"},
+    ];
+
+    for (const testCase of cases) {
+      const setupRunner = new FakeSetupRunner();
+      setupRunner.error = new ExecutionEnvironmentSetupError(testCase.message, {
+        setup: {
+          status: "failed",
+          artifacts: {
+            result: "/artifacts/setup/setup-result.json",
+          },
+          error: testCase.message,
+        },
+      });
+      const service = new ExecutionEnvironmentLifecycleService({
+        store: environmentStore,
+        manager,
+        setupRunner,
+      });
+
+      await expect(service.createStandaloneDisposableEnvironment({
+        agentKey: "panda",
+        createdBySessionId: "session-main",
+        environmentId: testCase.id,
+        setupScript: {
+          requestedPath: "setup.sh",
+          resolvedPath: "/agent/setup.sh",
+        },
+      })).rejects.toThrow(testCase.message);
+
+      await expect(environmentStore.getEnvironment(testCase.id)).resolves.toMatchObject({
+        state: "failed",
+        metadata: {
+          setup: {
+            status: "failed",
+            error: testCase.message,
+          },
+        },
+      });
+    }
+
+    expect(manager.stopped).toEqual(cases.map((testCase) => testCase.id));
+  });
+
+  it("persists failed when setup cannot trust manager filesystem metadata", async () => {
+    const {environmentStore} = await createHarness();
+    const manager = new FakeEnvironmentManager();
+    const setupRunner = new FakeSetupRunner();
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+      setupRunner,
+    });
+
+    await expect(service.createStandaloneDisposableEnvironment({
+      agentKey: "panda",
+      createdBySessionId: "session-main",
+      environmentId: "env-missing-fs",
+      setupScript: {
+        requestedPath: "setup.sh",
+        resolvedPath: "/agent/setup.sh",
+      },
+    })).rejects.toThrow("requires filesystem metadata");
+
+    expect(setupRunner.inputs).toHaveLength(0);
+    await expect(environmentStore.getEnvironment("env-missing-fs")).resolves.toMatchObject({
+      state: "failed",
+      metadata: {
+        error: "Disposable environment setup requires filesystem metadata from the environment manager.",
+      },
+    });
+    expect(manager.stopped).toEqual(["env-missing-fs"]);
+  });
+
+  it("does not restart stopped or expired setup-created environments without rerunning setup", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    const manager = new FakeEnvironmentManager();
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+    const setupMetadata = {
+      setup: {
+        status: "succeeded",
+        artifacts: {
+          script: "/artifacts/setup/setup.sh",
+        },
+      },
+    };
+    await environmentStore.createEnvironment({
+      id: "env-setup-stopped",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "stopped",
+      runnerUrl: "http://old-env:8080",
+      runnerCwd: "/workspace",
+      createdBySessionId: "session-main",
+      expiresAt: Date.now() + 60_000,
+      metadata: setupMetadata,
+    });
+    await environmentStore.createEnvironment({
+      id: "env-setup-expired",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      runnerUrl: "http://old-env:8080",
+      runnerCwd: "/workspace",
+      createdBySessionId: "session-main",
+      expiresAt: Date.now() - 1_000,
+      metadata: setupMetadata,
+    });
+
+    for (const environmentId of ["env-setup-stopped", "env-setup-expired"]) {
+      await expect(service.attachSessionToDisposableEnvironment({
+        session,
+        environmentId,
+        ownerSessionId: "session-main",
+      })).rejects.toThrow("created with setupScript and cannot be restarted");
+    }
+    expect(manager.requests).toEqual([]);
+    await expect(environmentStore.getEnvironment("env-setup-stopped")).resolves.toMatchObject({state: "stopped"});
+    await expect(environmentStore.getEnvironment("env-setup-expired")).resolves.toMatchObject({state: "ready"});
   });
 
   it("attaches worker sessions to existing ready disposable environments", async () => {

@@ -76,6 +76,7 @@ import {ensureSchemas} from "./postgres-bootstrap.js";
 import type {RuntimeOptions} from "./create-runtime.js";
 import {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
 import {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
+import {RemoteExecutionEnvironmentSetupRunner} from "./execution-environment-setup-runner.js";
 import {createExecutionEnvironmentManagerClientFromEnv} from "../../integrations/shell/execution-environment-manager-client.js";
 import {listenThreadRuntimeNotifications} from "./store-notifications.js";
 import {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
@@ -436,9 +437,14 @@ export async function bootstrapRuntime(
       crypto: credentialCrypto,
     });
     const executionEnvironmentManager = createExecutionEnvironmentManagerClientFromEnv(process.env);
+    const executionEnvironmentSetupRunner = new RemoteExecutionEnvironmentSetupRunner({
+      credentialResolver,
+      env: process.env,
+    });
     const executionEnvironmentService = new ExecutionEnvironmentLifecycleService({
       store: executionEnvironments,
       manager: executionEnvironmentManager,
+      setupRunner: executionEnvironmentSetupRunner,
     });
     const executionEnvironmentResolver = new ExecutionEnvironmentResolver({
       store: executionEnvironments,
