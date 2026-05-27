@@ -12,6 +12,7 @@ import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {ExecutionEnvironmentResolver} from "../src/app/runtime/execution-environment-resolver.js";
 import {ExecutionEnvironmentLifecycleService} from "../src/app/runtime/execution-environment-service.js";
+import {buildSubagentSessionMetadata} from "../src/domain/subagents/index.js";
 
 class FakeEnvironmentManager implements ExecutionEnvironmentManager {
   readonly requests: DisposableEnvironmentCreateRequest[] = [];
@@ -135,6 +136,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       },
       toolPolicy: {
         allowedTools: [" bash ", "message_agent", ""],
+        agentSkill: {allowedOperations: [" load ", "set", "bogus"]},
       },
     });
 
@@ -152,6 +154,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       },
       toolPolicy: {
         allowedTools: ["bash", "message_agent"],
+        agentSkill: {allowedOperations: ["load", "set"]},
       },
     });
   });
@@ -321,6 +324,286 @@ describe("PostgresExecutionEnvironmentStore", () => {
     await expect(resolver.resolveDefault(session)).rejects.toThrow(
       "Worker session session-worker has no default execution environment binding.",
     );
+  });
+
+
+  it("resolves agent-workspace subagent fallback with snapshotted policies", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const metadata = buildSubagentSessionMetadata({
+      role: "workspace",
+      task: "Inspect files.",
+      parentSessionId: "session-main",
+      execution: "agent_workspace",
+      profile: {
+        slug: "workspace",
+        source: "builtin",
+        description: "Workspace reader.",
+        prompt: "Use workspace tools.",
+        toolGroups: ["core", "workspace_read"],
+        transcriptMode: "none",
+      },
+      resolved: {
+        credentialPolicy: {mode: "allowlist", envKeys: ["NPM_TOKEN"]},
+        skillPolicy: {mode: "all_agent"},
+        toolPolicy: {
+          allowedTools: ["message_agent", "agent_skill"],
+          agentSkill: {allowedOperations: ["load"]},
+        },
+      },
+    });
+    await sessionStore.createSession({
+      id: "session-subagent",
+      agentKey: "panda",
+      kind: "subagent",
+      currentThreadId: "thread-subagent",
+      metadata,
+    });
+    const session = await sessionStore.getSession("session-subagent");
+    const resolver = new ExecutionEnvironmentResolver({
+      store: environmentStore,
+      env: {
+        BASH_EXECUTION_MODE: "remote",
+        BASH_SERVER_URL_TEMPLATE: "http://runner-{agentKey}:8080",
+        BASH_SERVER_CWD_TEMPLATE: "/root/.panda/agents/{agentKey}",
+      } as NodeJS.ProcessEnv,
+    });
+
+    await expect(resolver.resolveDefault(session)).resolves.toMatchObject({
+      id: "persistent_agent_runner:panda",
+      source: "fallback",
+      credentialPolicy: {mode: "allowlist", envKeys: ["NPM_TOKEN"]},
+      skillPolicy: {mode: "all_agent"},
+      toolPolicy: {
+        allowedTools: ["message_agent", "agent_skill"],
+        agentSkill: {allowedOperations: ["load"]},
+      },
+    });
+  });
+
+  it("does not restart stopped isolated subagent environments during resolution", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const metadata = buildSubagentSessionMetadata({
+      role: "workspace",
+      task: "Inspect files.",
+      parentSessionId: "session-main",
+      execution: "isolated_environment",
+      environmentId: "env-subagent",
+      profile: {
+        slug: "workspace",
+        source: "builtin",
+        description: "Workspace reader.",
+        prompt: "Use workspace tools.",
+        toolGroups: ["core", "workspace_read"],
+        transcriptMode: "none",
+      },
+      resolved: {
+        credentialPolicy: {mode: "allowlist", envKeys: []},
+        skillPolicy: {mode: "all_agent"},
+        toolPolicy: {
+          allowedTools: ["message_agent", "agent_skill"],
+          agentSkill: {allowedOperations: ["load"]},
+        },
+      },
+    });
+    await sessionStore.createSession({
+      id: "session-subagent",
+      agentKey: "panda",
+      kind: "subagent",
+      currentThreadId: "thread-subagent",
+      metadata,
+    });
+    await environmentStore.createEnvironment({
+      id: "env-subagent",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "stopped",
+      runnerUrl: "http://old-worker:8080",
+      runnerCwd: "/workspace",
+      createdBySessionId: "session-main",
+    });
+    await environmentStore.bindSession({
+      sessionId: "session-subagent",
+      environmentId: "env-subagent",
+      alias: "self",
+      isDefault: true,
+      credentialPolicy: {mode: "allowlist", envKeys: []},
+      skillPolicy: {mode: "all_agent"},
+      toolPolicy: {
+        allowedTools: ["message_agent", "agent_skill"],
+        agentSkill: {allowedOperations: ["load"]},
+      },
+    });
+    const manager = new FakeEnvironmentManager();
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+    const resolver = new ExecutionEnvironmentResolver({
+      store: environmentStore,
+      lifecycle: service,
+      env: {} as NodeJS.ProcessEnv,
+    });
+    const session = await sessionStore.getSession("session-subagent");
+
+    await expect(resolver.resolveDefault(session)).rejects.toThrow("Execution environment env-subagent is stopped.");
+    expect(manager.requests).toEqual([]);
+    expect(manager.stopped).toEqual([]);
+  });
+
+
+  it("rejects non-disposable ready isolated subagent environments without lifecycle calls", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const manager = new FakeEnvironmentManager();
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+    const ensureSpy = vi.spyOn(service, "ensureBoundEnvironmentReady");
+    const resolver = new ExecutionEnvironmentResolver({
+      store: environmentStore,
+      lifecycle: service,
+      env: {} as NodeJS.ProcessEnv,
+    });
+
+    for (const environment of [
+      {id: "env-local-subagent", kind: "local" as const},
+      {id: "env-persistent-subagent", kind: "persistent_agent_runner" as const, runnerUrl: "http://runner:8080"},
+    ]) {
+      const metadata = buildSubagentSessionMetadata({
+        role: "workspace",
+        task: "Inspect files.",
+        parentSessionId: "session-main",
+        execution: "isolated_environment",
+        environmentId: environment.id,
+        profile: {
+          slug: "workspace",
+          source: "builtin",
+          description: "Workspace reader.",
+          prompt: "Use workspace tools.",
+          toolGroups: ["core", "workspace_read"],
+          transcriptMode: "none",
+        },
+        resolved: {
+          credentialPolicy: {mode: "allowlist", envKeys: []},
+          skillPolicy: {mode: "all_agent"},
+          toolPolicy: {
+            allowedTools: ["message_agent", "agent_skill"],
+            agentSkill: {allowedOperations: ["load"]},
+          },
+        },
+      });
+      await sessionStore.createSession({
+        id: `session-${environment.id}`,
+        agentKey: "panda",
+        kind: "subagent",
+        currentThreadId: `thread-${environment.id}`,
+        metadata,
+      });
+      await environmentStore.createEnvironment({
+        id: environment.id,
+        agentKey: "panda",
+        kind: environment.kind,
+        state: "ready",
+        runnerUrl: environment.runnerUrl,
+        runnerCwd: "/workspace",
+        createdBySessionId: "session-main",
+      });
+      await environmentStore.bindSession({
+        sessionId: `session-${environment.id}`,
+        environmentId: environment.id,
+        alias: "self",
+        isDefault: true,
+        credentialPolicy: {mode: "allowlist", envKeys: []},
+        skillPolicy: {mode: "all_agent"},
+        toolPolicy: {
+          allowedTools: ["message_agent", "agent_skill"],
+          agentSkill: {allowedOperations: ["load"]},
+        },
+      });
+      const session = await sessionStore.getSession(`session-${environment.id}`);
+
+      await expect(resolver.resolveDefault(session)).rejects.toThrow(
+        `Isolated subagent session session-${environment.id} requires a disposable execution environment, got ${environment.kind}.`,
+      );
+    }
+
+    expect(ensureSpy).not.toHaveBeenCalled();
+    expect(manager.requests).toEqual([]);
+    expect(manager.stopped).toEqual([]);
+  });
+
+  it("rejects isolated subagent bindings that differ from metadata environment id without lifecycle calls", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const metadata = buildSubagentSessionMetadata({
+      role: "workspace",
+      task: "Inspect files.",
+      parentSessionId: "session-main",
+      execution: "isolated_environment",
+      environmentId: "env-required",
+      profile: {
+        slug: "workspace",
+        source: "builtin",
+        description: "Workspace reader.",
+        prompt: "Use workspace tools.",
+        toolGroups: ["core", "workspace_read"],
+        transcriptMode: "none",
+      },
+      resolved: {
+        credentialPolicy: {mode: "allowlist", envKeys: []},
+        skillPolicy: {mode: "all_agent"},
+        toolPolicy: {
+          allowedTools: ["message_agent", "agent_skill"],
+          agentSkill: {allowedOperations: ["load"]},
+        },
+      },
+    });
+    await sessionStore.createSession({
+      id: "session-subagent-mismatch",
+      agentKey: "panda",
+      kind: "subagent",
+      currentThreadId: "thread-subagent-mismatch",
+      metadata,
+    });
+    await environmentStore.createEnvironment({
+      id: "env-bound",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      runnerUrl: "http://worker:8080",
+      runnerCwd: "/workspace",
+      createdBySessionId: "session-main",
+    });
+    await environmentStore.bindSession({
+      sessionId: "session-subagent-mismatch",
+      environmentId: "env-bound",
+      alias: "self",
+      isDefault: true,
+      credentialPolicy: {mode: "allowlist", envKeys: []},
+      skillPolicy: {mode: "all_agent"},
+      toolPolicy: {
+        allowedTools: ["message_agent", "agent_skill"],
+        agentSkill: {allowedOperations: ["load"]},
+      },
+    });
+    const manager = new FakeEnvironmentManager();
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+    });
+    const ensureSpy = vi.spyOn(service, "ensureBoundEnvironmentReady");
+    const resolver = new ExecutionEnvironmentResolver({
+      store: environmentStore,
+      lifecycle: service,
+      env: {} as NodeJS.ProcessEnv,
+    });
+    const session = await sessionStore.getSession("session-subagent-mismatch");
+
+    await expect(resolver.resolveDefault(session)).rejects.toThrow(
+      "Isolated subagent session session-subagent-mismatch is bound to environment env-bound, but metadata requires env-required.",
+    );
+    expect(ensureSpy).not.toHaveBeenCalled();
+    expect(manager.requests).toEqual([]);
+    expect(manager.stopped).toEqual([]);
   });
 
   it("resolves default bound environments", async () => {

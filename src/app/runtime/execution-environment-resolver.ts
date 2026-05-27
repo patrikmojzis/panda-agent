@@ -4,9 +4,11 @@ import type {
   ExecutionCredentialPolicy,
   ExecutionEnvironmentRecord,
   ExecutionSkillPolicy,
+  ExecutionToolPolicy,
   ResolvedExecutionEnvironment,
   SessionEnvironmentBindingRecord,
 } from "../../domain/execution-environments/types.js";
+import {readSubagentSessionMetadata} from "../../domain/subagents/session-metadata.js";
 import {
   resolveBashExecutionMode,
   resolveRunnerCwd,
@@ -16,6 +18,8 @@ import {
 } from "../../integrations/shell/bash-executor.js";
 
 type ExecutionEnvironmentResolverStore = Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment">;
+
+type ResolverSession = Pick<SessionRecord, "id" | "agentKey" | "kind" | "metadata">;
 
 export interface ExecutionEnvironmentResolverOptions {
   store: ExecutionEnvironmentResolverStore;
@@ -33,7 +37,7 @@ function resolveExecutionMode(environment: Pick<ExecutionEnvironmentRecord, "kin
 }
 
 function defaultPersistentCredentialPolicy(session: Pick<SessionRecord, "kind">): ExecutionCredentialPolicy {
-  return session.kind === "worker" ? {mode: "allowlist", envKeys: []} : {mode: "all_agent"};
+  return session.kind === "worker" || session.kind === "subagent" ? {mode: "allowlist", envKeys: []} : {mode: "all_agent"};
 }
 
 function defaultPersistentSkillPolicy(session: Pick<SessionRecord, "kind">): ExecutionSkillPolicy {
@@ -43,6 +47,11 @@ function defaultPersistentSkillPolicy(session: Pick<SessionRecord, "kind">): Exe
 function resolveFallbackEnvironment(
   session: Pick<SessionRecord, "agentKey" | "kind">,
   env: NodeJS.ProcessEnv,
+  policies: {
+    credentialPolicy?: ExecutionCredentialPolicy;
+    skillPolicy?: ExecutionSkillPolicy;
+    toolPolicy?: ExecutionToolPolicy;
+  } = {},
 ): ResolvedExecutionEnvironment {
   const executionMode = resolveBashExecutionMode(env);
   const runnerUrlTemplate = resolveRunnerUrlTemplate(env);
@@ -64,9 +73,9 @@ function resolveFallbackEnvironment(
     executionMode,
     ...(runnerUrl ? {runnerUrl} : {}),
     ...(initialCwd ? {initialCwd} : {}),
-    credentialPolicy: defaultPersistentCredentialPolicy(session),
-    skillPolicy: defaultPersistentSkillPolicy(session),
-    toolPolicy: {},
+    credentialPolicy: policies.credentialPolicy ?? defaultPersistentCredentialPolicy(session),
+    skillPolicy: policies.skillPolicy ?? defaultPersistentSkillPolicy(session),
+    toolPolicy: policies.toolPolicy ?? {},
     source: "fallback",
   };
 }
@@ -83,12 +92,26 @@ export class ExecutionEnvironmentResolver {
   }
 
   async resolveDefault(
-    session: Pick<SessionRecord, "id" | "agentKey" | "kind">,
+    session: ResolverSession,
   ): Promise<ResolvedExecutionEnvironment> {
     const binding = await this.store.getDefaultBinding(session.id);
     if (!binding) {
       if (session.kind === "worker") {
         throw new Error(`Worker session ${session.id} has no default execution environment binding.`);
+      }
+      if (session.kind === "subagent") {
+        const subagent = readSubagentSessionMetadata(session.metadata);
+        if (!subagent) {
+          throw new Error(`Subagent session ${session.id} is missing subagent metadata.`);
+        }
+        if (subagent.execution === "isolated_environment") {
+          throw new Error(`Isolated subagent session ${session.id} has no default execution environment binding.`);
+        }
+        return resolveFallbackEnvironment(session, this.env, {
+          credentialPolicy: subagent.resolved.credentialPolicy,
+          skillPolicy: subagent.resolved.skillPolicy,
+          toolPolicy: subagent.resolved.toolPolicy,
+        });
       }
       return resolveFallbackEnvironment(session, this.env);
     }
@@ -97,12 +120,33 @@ export class ExecutionEnvironmentResolver {
   }
 
   private async resolveBinding(
-    session: Pick<SessionRecord, "id" | "agentKey" | "kind">,
+    session: ResolverSession,
     binding: SessionEnvironmentBindingRecord,
   ): Promise<ResolvedExecutionEnvironment> {
-    const environment = this.lifecycle
-      ? await this.lifecycle.ensureBoundEnvironmentReady({session, binding})
-      : await this.store.getEnvironment(binding.environmentId);
+    const subagent = session.kind === "subagent"
+      ? readSubagentSessionMetadata(session.metadata)
+      : null;
+    if (session.kind === "subagent" && !subagent) {
+      throw new Error(`Subagent session ${session.id} is missing subagent metadata.`);
+    }
+
+    const isIsolatedSubagent = session.kind === "subagent" && subagent?.execution === "isolated_environment";
+    if (isIsolatedSubagent && binding.environmentId !== subagent.environmentId) {
+      throw new Error(
+        `Isolated subagent session ${session.id} is bound to environment ${binding.environmentId}, but metadata requires ${subagent.environmentId}.`,
+      );
+    }
+
+    const environment = isIsolatedSubagent
+      ? await this.store.getEnvironment(binding.environmentId)
+      : this.lifecycle
+        ? await this.lifecycle.ensureBoundEnvironmentReady({session, binding})
+        : await this.store.getEnvironment(binding.environmentId);
+    if (isIsolatedSubagent && environment.kind !== "disposable_container") {
+      throw new Error(
+        `Isolated subagent session ${session.id} requires a disposable execution environment, got ${environment.kind}.`,
+      );
+    }
     if (environment.agentKey !== session.agentKey) {
       throw new Error(`Execution environment ${environment.id} does not belong to agent ${session.agentKey}.`);
     }

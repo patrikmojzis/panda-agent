@@ -14,6 +14,7 @@ Start here:
 - [Sessions](./sessions.md)
 - [Execution Environments](./execution-environments.md)
 - [Issue #16 PR1 Subagent Foundation](./issue-16-pr1-subagent-foundation.md)
+- [Issue #16 PR2 Policy Plumbing and Hidden Durable Subagent Seam](./issue-16-pr2-policy-plumbing.md)
 - [Browser](./browser.md)
 - [Identity](./identity.md)
 - [Credentials](./credentials.md)

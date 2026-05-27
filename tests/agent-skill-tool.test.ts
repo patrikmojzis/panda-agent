@@ -295,6 +295,135 @@ describe("AgentSkillTool", () => {
     }))).rejects.toThrow("Skill description must be at most 8000 characters.");
   });
 
+
+  it("enforces operation-aware tool policy before skill store access", async () => {
+    const store = await createStore();
+    await store.setAgentSkill("panda", "calendar", "Panda skill.", "# Panda");
+    const tool = new AgentSkillTool({ store });
+    const loadOnlyContext = createRunContext({
+      agentKey: "panda",
+      sessionId: "subagent-session",
+      threadId: "subagent-thread",
+      sessionKind: "subagent",
+      executionEnvironment: {
+        id: "local:panda",
+        agentKey: "panda",
+        kind: "local",
+        state: "ready",
+        executionMode: "local",
+        credentialPolicy: {mode: "allowlist", envKeys: []},
+        skillPolicy: {mode: "all_agent"},
+        toolPolicy: {
+          agentSkill: {allowedOperations: ["load"]},
+        },
+        source: "fallback",
+      },
+    });
+
+    await expect(tool.run({
+      operation: "load",
+      skillKey: "calendar",
+    }, loadOnlyContext)).resolves.toMatchObject({
+      operation: "load",
+      found: true,
+    });
+    await expect(tool.run({
+      operation: "set",
+      skillKey: "calendar",
+      description: "Updated.",
+      content: "# Updated",
+    }, loadOnlyContext)).rejects.toThrow("agent_skill(set) is not allowed in this execution environment.");
+    await expect(tool.run({
+      operation: "delete",
+      skillKey: "calendar",
+    }, loadOnlyContext)).rejects.toThrow("agent_skill(delete) is not allowed in this execution environment.");
+    await expect(store.readAgentSkill("panda", "calendar")).resolves.toMatchObject({
+      content: "# Panda",
+    });
+  });
+
+  it("allows skill maintenance operations under the narrow operation grant", async () => {
+    const store = await createStore();
+    const tool = new AgentSkillTool({ store });
+    const maintenanceContext = createRunContext({
+      agentKey: "panda",
+      sessionId: "subagent-session",
+      threadId: "subagent-thread",
+      sessionKind: "subagent",
+      executionEnvironment: {
+        id: "local:panda",
+        agentKey: "panda",
+        kind: "local",
+        state: "ready",
+        executionMode: "local",
+        credentialPolicy: {mode: "allowlist", envKeys: []},
+        skillPolicy: {mode: "all_agent"},
+        toolPolicy: {
+          agentSkill: {allowedOperations: ["load", "set", "delete"]},
+        },
+        source: "fallback",
+      },
+    });
+
+    await expect(tool.run({
+      operation: "set",
+      skillKey: "calendar",
+      description: "Calendar helper.",
+      content: "# Calendar",
+    }, maintenanceContext)).resolves.toMatchObject({
+      operation: "set",
+      skillKey: "calendar",
+    });
+    await expect(tool.run({
+      operation: "delete",
+      skillKey: "calendar",
+    }, maintenanceContext)).resolves.toMatchObject({
+      operation: "delete",
+      deleted: true,
+    });
+  });
+
+  it("fails closed for subagent mutation when operation policy is absent or malformed", async () => {
+    const store = await createStore();
+    const tool = new AgentSkillTool({ store });
+    const baseContext = {
+      agentKey: "panda",
+      sessionId: "subagent-session",
+      threadId: "subagent-thread",
+      sessionKind: "subagent" as const,
+      executionEnvironment: {
+        id: "local:panda",
+        agentKey: "panda",
+        kind: "local" as const,
+        state: "ready" as const,
+        executionMode: "local" as const,
+        credentialPolicy: {mode: "allowlist" as const, envKeys: []},
+        skillPolicy: {mode: "all_agent" as const},
+        toolPolicy: {},
+        source: "fallback" as const,
+      },
+    };
+
+    await expect(tool.run({
+      operation: "set",
+      skillKey: "calendar",
+      description: "Calendar helper.",
+      content: "# Calendar",
+    }, createRunContext(baseContext))).rejects.toThrow("agent_skill(set) is not allowed in this execution environment.");
+    await expect(tool.run({
+      operation: "delete",
+      skillKey: "calendar",
+    }, createRunContext({
+      ...baseContext,
+      executionEnvironment: {
+        ...baseContext.executionEnvironment,
+        toolPolicy: {
+          agentSkill: {allowedOperations: "set" as never},
+        },
+      },
+    }))).rejects.toThrow("agent_skill(delete) is not allowed in this execution environment.");
+  });
+
   it("requires agentKey in the run context", async () => {
     const store = await createStore();
     const tool = new AgentSkillTool({ store });

@@ -50,6 +50,16 @@ export interface AttachSessionToDisposableEnvironmentInput {
   toolPolicy?: ExecutionToolPolicy;
 }
 
+export interface AttachReadySessionToDisposableEnvironmentInput {
+  session: Pick<SessionRecord, "id" | "agentKey">;
+  environmentId: string;
+  alias?: string;
+  isDefault?: boolean;
+  credentialPolicy?: ExecutionCredentialPolicy;
+  skillPolicy?: ExecutionSkillPolicy;
+  toolPolicy?: ExecutionToolPolicy;
+}
+
 export interface EnsureBoundSessionEnvironmentReadyInput {
   session: Pick<SessionRecord, "id" | "agentKey">;
   binding: SessionEnvironmentBindingRecord;
@@ -348,6 +358,39 @@ export class ExecutionEnvironmentLifecycleService {
       });
     } else if (environment.state !== "ready") {
       throw new Error(`Execution environment ${environment.id} is ${environment.state}.`);
+    }
+
+    const binding = await this.store.bindSession({
+      sessionId: input.session.id,
+      environmentId: environment.id,
+      alias: trimToUndefined(input.alias) ?? DEFAULT_DISPOSABLE_ALIAS,
+      isDefault: input.isDefault ?? true,
+      credentialPolicy,
+      skillPolicy,
+      toolPolicy,
+    });
+    return {environment, binding};
+  }
+
+  async attachReadySessionToDisposableEnvironment(
+    input: AttachReadySessionToDisposableEnvironmentInput,
+  ): Promise<CreateDisposableSessionEnvironmentResult> {
+    const credentialPolicy = input.credentialPolicy ?? {mode: "allowlist" as const, envKeys: []};
+    const skillPolicy = input.skillPolicy ?? {mode: "allowlist" as const, skillKeys: []};
+    const toolPolicy = input.toolPolicy ?? {};
+
+    const environment = await this.store.getEnvironment(input.environmentId);
+    if (environment.kind !== "disposable_container") {
+      throw new Error(`Execution environment ${environment.id} is not disposable.`);
+    }
+    if (environment.agentKey !== input.session.agentKey) {
+      throw new Error(`Execution environment ${environment.id} does not belong to agent ${input.session.agentKey}.`);
+    }
+    if (environment.state !== "ready") {
+      throw new Error(`Execution environment ${environment.id} is ${environment.state}.`);
+    }
+    if (isExpired(environment)) {
+      throw new Error(`Execution environment ${environment.id} is expired.`);
     }
 
     const binding = await this.store.bindSession({

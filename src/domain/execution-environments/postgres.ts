@@ -5,6 +5,7 @@ import type {PgPoolLike} from "../../lib/postgres-query.js";
 import {isRecord} from "../../lib/records.js";
 import {optionalTrimmedString, requireNonEmptyString, uniqueTrimmedStrings} from "../../lib/strings.js";
 import {ensurePostgresExecutionEnvironmentSchema} from "./postgres-schema.js";
+import {normalizeAgentSkillOperations} from "./policy.js";
 import {buildExecutionEnvironmentTableNames, type ExecutionEnvironmentTableNames} from "./postgres-shared.js";
 import type {ExecutionEnvironmentStore} from "./store.js";
 import type {
@@ -86,6 +87,13 @@ function parseToolPolicy(value: unknown): ExecutionToolPolicy {
     if (typeof value.postgresReadonly.allowed === "boolean") {
       policy.postgresReadonly = {allowed: value.postgresReadonly.allowed};
     }
+  }
+  if (isRecord(value.agentSkill)) {
+    policy.agentSkill = {
+      allowedOperations: Array.isArray(value.agentSkill.allowedOperations)
+        ? normalizeAgentSkillOperations(value.agentSkill.allowedOperations)
+        : [],
+    };
   }
   return policy;
 }

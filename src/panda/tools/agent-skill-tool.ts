@@ -12,10 +12,11 @@ import {
     normalizeAgentSkillDescription,
 } from "../../domain/agents/types.js";
 import {
+    isExecutionAgentSkillOperationAllowed,
     isExecutionSkillAllowed,
     readExecutionSkillPolicy,
 } from "../../domain/execution-environments/policy.js";
-import type {ExecutionSkillPolicy} from "../../domain/execution-environments/types.js";
+import type {AgentSkillOperation, ExecutionSkillPolicy} from "../../domain/execution-environments/types.js";
 
 function readAgentSkillScope(context: unknown): { agentKey: string } {
   if (
@@ -45,6 +46,14 @@ function assertSkillMutationAllowed(policy: ExecutionSkillPolicy): void {
   if (policy.mode !== "all_agent") {
     throw new ToolError("Skill mutation is not allowed in this execution environment.");
   }
+}
+
+function assertAgentSkillOperationAllowed(context: unknown, operation: AgentSkillOperation): void {
+  if (isExecutionAgentSkillOperationAllowed(context, operation)) {
+    return;
+  }
+
+  throw new ToolError(`agent_skill(${operation}) is not allowed in this execution environment.`);
 }
 
 export type AgentSkillToolStore = Pick<AgentStore, "deleteAgentSkill" | "loadAgentSkill" | "setAgentSkill">;
@@ -162,6 +171,7 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
     run: RunContext<TContext>,
   ): Promise<AgentSkillToolResult> {
     const scope = readAgentSkillScope(run.context);
+    assertAgentSkillOperationAllowed(run.context, args.operation);
     const skillPolicy = readExecutionSkillPolicy(run.context);
     assertSkillAllowed(skillPolicy, args.skillKey);
 

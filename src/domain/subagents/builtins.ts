@@ -41,7 +41,7 @@ export const BUILTIN_SUBAGENT_PROFILES: readonly UpsertSubagentProfileInput[] = 
     slug: "skill_maintainer",
     description: "Maintain durable agent skills from reusable workflow evidence.",
     prompt: SKILL_MAINTAINER_SUBAGENT_PROMPT,
-    toolGroups: ["core", "workspace_read", "memory"],
+    toolGroups: ["core", "workspace_read", "memory", "skill_maintenance"],
     thinking: "medium",
     transcriptMode: "none",
     source: "builtin",

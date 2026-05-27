@@ -41,3 +41,10 @@ export {
   resolveAgentDir,
   resolveAgentMediaDir,
 } from "./data-dir.js";
+
+export {
+  SubagentSessionService,
+  type CreateSubagentSessionInput,
+  type CreateSubagentSessionResult,
+  type SubagentSessionServiceOptions,
+} from "./subagent-session-service.js";
