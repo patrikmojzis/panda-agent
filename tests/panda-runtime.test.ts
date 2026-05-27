@@ -99,6 +99,18 @@ vi.mock("../src/domain/threads/runtime/postgres.js", () => ({
   },
 }));
 
+vi.mock("../src/domain/subagents/postgres.js", () => ({
+  PostgresSubagentProfileStore: class {
+    async ensureSchema(): Promise<void> {
+      await runtimeMocks.ensureSchema();
+    }
+
+    async seedBuiltinProfiles(): Promise<never[]> {
+      return [];
+    }
+  },
+}));
+
 vi.mock("../src/domain/threads/runtime/coordinator.js", () => ({
   ThreadRuntimeCoordinator: class {},
 }));

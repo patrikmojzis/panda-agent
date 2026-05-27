@@ -2,6 +2,7 @@ import {Pool} from "pg";
 
 import type {AgentStore} from "../../domain/agents/store.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
+import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
 import type {WatchStore} from "../../domain/watches/store.js";
 import type {EmailStore} from "../../domain/email/types.js";
@@ -54,6 +55,7 @@ export interface DefinitionResolverContext {
   executionEnvironmentService: ExecutionEnvironmentLifecycleService;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
+  subagentProfiles: SubagentProfileStore;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
@@ -87,6 +89,7 @@ export interface RuntimeServices {
   executionEnvironmentService: ExecutionEnvironmentLifecycleService;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
+  subagentProfiles: SubagentProfileStore;
   store: ThreadRuntimeStore;
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
@@ -117,6 +120,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     executionEnvironmentService: runtime.executionEnvironmentService,
     identityStore: runtime.identityStore,
     sessionStore: runtime.sessionStore,
+    subagentProfiles: runtime.subagentProfiles,
     store: runtime.store,
     scheduledTasks: runtime.scheduledTasks,
     email: runtime.email,
@@ -179,6 +183,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     executionEnvironmentService: runtime.executionEnvironmentService,
     identityStore: runtime.identityStore,
     sessionStore: runtime.sessionStore,
+    subagentProfiles: runtime.subagentProfiles,
     store: runtime.store,
     scheduledTasks: runtime.scheduledTasks,
     email: runtime.email,

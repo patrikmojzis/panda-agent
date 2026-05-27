@@ -13,6 +13,7 @@ Start here:
 - [Daemon](./daemon.md)
 - [Sessions](./sessions.md)
 - [Execution Environments](./execution-environments.md)
+- [Issue #16 PR1 Subagent Foundation](./issue-16-pr1-subagent-foundation.md)
 - [Browser](./browser.md)
 - [Identity](./identity.md)
 - [Credentials](./credentials.md)
