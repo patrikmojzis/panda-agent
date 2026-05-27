@@ -1,4 +1,8 @@
+import type {AgentSkillOperation, ExecutionToolPolicy} from "../execution-environments/types.js";
+import {normalizeAgentSkillOperations} from "../execution-environments/policy.js";
 import {uniqueTrimmedStrings} from "../../lib/strings.js";
+
+const ALL_AGENT_SKILL_OPERATIONS: readonly AgentSkillOperation[] = ["load", "set", "delete"];
 
 export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
   core: {
@@ -6,11 +10,13 @@ export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
     toolNames: [
       "current_datetime",
       "message_agent",
+      "agent_skill",
       "image_generate",
       "whisper",
       "view_media",
       "todo_update",
     ],
+    agentSkillOperations: ["load"],
   },
   workspace_read: {
     description: "Read-only workspace and artifact inspection.",
@@ -35,6 +41,7 @@ export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
       "postgres_readonly_query",
       "wiki",
     ],
+    postgresReadonly: {allowed: true},
   },
   execute: {
     description: "Active runtime execution and background job control.",
@@ -44,6 +51,14 @@ export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
       "background_job_wait",
       "background_job_cancel",
     ],
+    bash: {allowed: true},
+  },
+  skill_maintenance: {
+    description: "Narrow durable skill load/create/delete access without broad operational tools.",
+    toolNames: [
+      "agent_skill",
+    ],
+    agentSkillOperations: ALL_AGENT_SKILL_OPERATIONS,
   },
   operate: {
     description: "Operational mutation and control surfaces.",
@@ -70,6 +85,7 @@ export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
       "environment_stop",
       "spawn_subagent",
     ],
+    agentSkillOperations: ALL_AGENT_SKILL_OPERATIONS,
   },
   communicate_human: {
     description: "Human/channel outbound communication surfaces.",
@@ -109,4 +125,30 @@ export function expandSubagentToolGroups(groups: readonly SubagentToolGroup[]): 
   return uniqueTrimmedStrings(groups.flatMap((group) => [
     ...SUBAGENT_TOOL_GROUP_DEFINITIONS[group].toolNames,
   ]));
+}
+
+export function resolveSubagentToolPolicy(groups: readonly SubagentToolGroup[]): ExecutionToolPolicy {
+  const normalizedGroups = normalizeSubagentToolGroups(groups);
+  const allowedTools = expandSubagentToolGroups(normalizedGroups);
+  const agentSkillOperations = normalizeAgentSkillOperations(normalizedGroups.flatMap((group) => {
+    const definition = SUBAGENT_TOOL_GROUP_DEFINITIONS[group];
+    return "agentSkillOperations" in definition ? [...definition.agentSkillOperations] : [];
+  }));
+  const grantsBash = normalizedGroups.some((group) => {
+    const definition = SUBAGENT_TOOL_GROUP_DEFINITIONS[group];
+    return "bash" in definition && definition.bash.allowed === true;
+  });
+  const grantsPostgresReadonly = normalizedGroups.some((group) => {
+    const definition = SUBAGENT_TOOL_GROUP_DEFINITIONS[group];
+    return "postgresReadonly" in definition && definition.postgresReadonly.allowed === true;
+  });
+
+  return {
+    ...(allowedTools.length > 0 ? {allowedTools} : {}),
+    ...(grantsBash ? {bash: {allowed: true}} : {}),
+    ...(grantsPostgresReadonly ? {postgresReadonly: {allowed: true}} : {}),
+    ...(agentSkillOperations.length > 0
+      ? {agentSkill: {allowedOperations: agentSkillOperations}}
+      : {}),
+  };
 }

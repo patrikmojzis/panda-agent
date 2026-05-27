@@ -1,7 +1,23 @@
 import {normalizeSkillKey} from "../agents/types.js";
 import {isRecord} from "../../lib/records.js";
 import {uniqueTrimmedStrings} from "../../lib/strings.js";
-import type {ExecutionSkillPolicy} from "./types.js";
+import type {AgentSkillOperation, ExecutionSkillPolicy, ExecutionToolPolicy} from "./types.js";
+
+const AGENT_SKILL_OPERATIONS: readonly AgentSkillOperation[] = ["load", "set", "delete"];
+const AGENT_SKILL_OPERATION_SET = new Set<string>(AGENT_SKILL_OPERATIONS);
+
+export function normalizeAgentSkillOperations(values: readonly unknown[]): AgentSkillOperation[] {
+  return uniqueTrimmedStrings(values.flatMap((value) => {
+    if (typeof value !== "string") {
+      return [];
+    }
+    const normalized = value.trim();
+    if (!AGENT_SKILL_OPERATION_SET.has(normalized)) {
+      return [];
+    }
+    return [normalized];
+  })) as AgentSkillOperation[];
+}
 
 export function readExecutionSkillPolicy(context: unknown): ExecutionSkillPolicy {
   if (isRecord(context) && isRecord(context.executionEnvironment)) {
@@ -40,4 +56,41 @@ export function isExecutionSkillAllowed(policy: ExecutionSkillPolicy, skillKey: 
 
   const normalized = normalizeSkillKey(skillKey);
   return policy.skillKeys.some((key) => normalizeSkillKey(key) === normalized);
+}
+
+function readRuntimeToolPolicy(context: unknown): ExecutionToolPolicy | undefined {
+  if (!isRecord(context) || !isRecord(context.executionEnvironment)) {
+    return undefined;
+  }
+  const policy = context.executionEnvironment.toolPolicy;
+  return isRecord(policy) ? policy as ExecutionToolPolicy : undefined;
+}
+
+function isSubagentRuntimeContext(context: unknown): boolean {
+  return isRecord(context) && context.sessionKind === "subagent";
+}
+
+export function readExecutionAgentSkillAllowedOperations(context: unknown): readonly AgentSkillOperation[] | undefined {
+  const policy = readRuntimeToolPolicy(context);
+  const agentSkill = policy?.agentSkill;
+  if (isRecord(agentSkill)) {
+    const allowedOperations = Array.isArray(agentSkill.allowedOperations)
+      ? normalizeAgentSkillOperations(agentSkill.allowedOperations)
+      : [];
+    return allowedOperations;
+  }
+
+  return isSubagentRuntimeContext(context) ? [] : undefined;
+}
+
+export function isExecutionAgentSkillOperationAllowed(
+  context: unknown,
+  operation: AgentSkillOperation,
+): boolean {
+  const allowedOperations = readExecutionAgentSkillAllowedOperations(context);
+  if (allowedOperations === undefined) {
+    return true;
+  }
+
+  return allowedOperations.includes(operation);
 }

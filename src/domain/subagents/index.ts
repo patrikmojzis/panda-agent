@@ -10,6 +10,7 @@ export {
   expandSubagentToolGroups,
   isSubagentToolGroup,
   normalizeSubagentToolGroups,
+  resolveSubagentToolPolicy,
   SUBAGENT_TOOL_GROUP_DEFINITIONS,
   SUBAGENT_TOOL_GROUP_KEYS,
   type SubagentToolGroup,
@@ -34,3 +35,18 @@ export {
   type SubagentProfileTranscriptMode,
   type UpsertSubagentProfileInput,
 } from "./types.js";
+
+export {
+  buildAdHocSubagentProfileSnapshot,
+  buildSubagentProfileSnapshot,
+  buildSubagentSessionMetadata,
+  readSubagentSessionMetadata,
+  SUBAGENT_SESSION_METADATA_VERSION,
+  type BuildSubagentSessionMetadataInput,
+  type SubagentExecutionMode,
+  type SubagentProfileSnapshot,
+  type SubagentProfileSnapshotSource,
+  type SubagentResolvedModelSource,
+  type SubagentResolvedSnapshot,
+  type SubagentSessionMetadata,
+} from "./session-metadata.js";

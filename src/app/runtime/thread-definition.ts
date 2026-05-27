@@ -13,6 +13,7 @@ import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry} f
 import {DEFAULT_AGENT_INSTRUCTIONS} from "../../prompts/runtime/default-agent.js";
 import {DEFAULT_WORKER_INSTRUCTIONS} from "../../prompts/runtime/worker.js";
 import {WorkerRuntimeContext} from "../../panda/contexts/worker-runtime-context.js";
+import {SubagentRuntimeContext} from "../../panda/contexts/subagent-runtime-context.js";
 import {
   DEFAULT_WORKER_ALLOWED_TOOL_NAMES,
   POSTGRES_READONLY_TOOL_NAME,
@@ -28,10 +29,17 @@ import type {Tool} from "../../kernel/agent/tool.js";
 import type {WikiBindingService} from "../../domain/wiki/service.js";
 import {resolveSessionPromptCacheKey, resolveThreadPromptCacheKey} from "../../domain/threads/runtime/prompt-cache-key.js";
 import {readWorkerContextValue} from "../../domain/sessions/worker-metadata.js";
+import {readSubagentSessionMetadata, type SubagentSessionMetadata} from "../../domain/subagents/session-metadata.js";
 
 const HOUR_MS = 60 * 60 * 1_000;
 const DAY_MS = 24 * HOUR_MS;
 const WORKER_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
+  "environment",
+  "background_jobs",
+  "skills",
+  "todo_context",
+];
+const SUBAGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "environment",
   "background_jobs",
   "skills",
@@ -85,17 +93,37 @@ function isWorkerSession(session: Pick<SessionRecord, "id" | "agentKey" | "metad
   return session.kind === "worker";
 }
 
+function isSubagentSession(session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind}): boolean {
+  return session.kind === "subagent";
+}
+
+function readRequiredSubagentMetadata(
+  session: Pick<SessionRecord, "id" | "metadata">,
+): SubagentSessionMetadata {
+  const subagent = readSubagentSessionMetadata(session.metadata);
+  if (!subagent) {
+    throw new Error(`Subagent session ${session.id} is missing subagent metadata.`);
+  }
+  return subagent;
+}
+
 function resolveLlmContextSections(
   session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind},
   sections: readonly DefaultAgentLlmContextSection[] | undefined,
 ): readonly DefaultAgentLlmContextSection[] | undefined {
-  if (!isWorkerSession(session)) {
-    return sections;
+  if (isWorkerSession(session)) {
+    const allowed = new Set(WORKER_LLM_CONTEXT_SECTIONS);
+    const requested = sections?.length ? sections : WORKER_LLM_CONTEXT_SECTIONS;
+    return requested.filter((section) => allowed.has(section));
   }
 
-  const allowed = new Set(WORKER_LLM_CONTEXT_SECTIONS);
-  const requested = sections?.length ? sections : WORKER_LLM_CONTEXT_SECTIONS;
-  return requested.filter((section) => allowed.has(section));
+  if (isSubagentSession(session)) {
+    const allowed = new Set(SUBAGENT_LLM_CONTEXT_SECTIONS);
+    const requested = sections?.length ? sections : SUBAGENT_LLM_CONTEXT_SECTIONS;
+    return requested.filter((section) => allowed.has(section));
+  }
+
+  return sections;
 }
 
 function resolveWorkerAllowedToolNames(executionEnvironment?: ResolvedExecutionEnvironment): Set<string> {
@@ -121,6 +149,26 @@ function isWorkerToolAllowed(toolName: string, executionEnvironment?: ResolvedEx
   return resolveWorkerAllowedToolNames(executionEnvironment).has(toolName);
 }
 
+function isSubagentToolAllowed(toolName: string, executionEnvironment?: ResolvedExecutionEnvironment): boolean {
+  if (toolName === "worker_spawn") {
+    return false;
+  }
+
+  const policy = executionEnvironment?.toolPolicy;
+  const allowedTools = policy?.allowedTools?.length ? new Set(policy.allowedTools) : null;
+  if (!allowedTools?.has(toolName)) {
+    return false;
+  }
+  if (toolName === "bash" && policy?.bash?.allowed === false) {
+    return false;
+  }
+  if (toolName === POSTGRES_READONLY_TOOL_NAME && policy?.postgresReadonly?.allowed !== true) {
+    return false;
+  }
+
+  return true;
+}
+
 function resolveSessionTools(
   tools: readonly Tool[] | undefined,
   options: Pick<CreateThreadDefinitionOptions, "bashToolOptions" | "browserToolOptions" | "imageGenerateToolOptions" | "executionEnvironment" | "session">,
@@ -134,11 +182,14 @@ function resolveSessionTools(
     return isWorkerSession(options.session) ? toolsets.worker : toolsets.main;
   })();
 
-  if (!isWorkerSession(options.session)) {
-    return baseTools;
+  if (isWorkerSession(options.session)) {
+    return baseTools.filter((tool) => isWorkerToolAllowed(tool.name, options.executionEnvironment));
+  }
+  if (isSubagentSession(options.session)) {
+    return baseTools.filter((tool) => isSubagentToolAllowed(tool.name, options.executionEnvironment));
   }
 
-  return baseTools.filter((tool) => isWorkerToolAllowed(tool.name, options.executionEnvironment));
+  return baseTools;
 }
 
 export function resolveStoredContext(
@@ -167,12 +218,37 @@ export function resolveStoredContext(
 function resolveSessionThinking(
   session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind},
   runtimeConfig: SessionRuntimeConfigRecord | undefined,
+  subagent: SubagentSessionMetadata | undefined,
 ): SessionRuntimeConfigRecord["thinking"] {
   if (runtimeConfig?.thinkingConfigured) {
     return runtimeConfig.thinking;
   }
+  if (subagent?.resolved.thinking) {
+    return subagent.resolved.thinking;
+  }
 
   return isWorkerSession(session) ? "xhigh" : undefined;
+}
+
+function resolveSessionModel(
+  runtimeConfig: SessionRuntimeConfigRecord | undefined,
+  subagent: SubagentSessionMetadata | undefined,
+): string | undefined {
+  return runtimeConfig?.model ?? subagent?.resolved.model;
+}
+
+function resolveSessionInstructions(
+  session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind},
+  subagent: SubagentSessionMetadata | undefined,
+): string {
+  if (isSubagentSession(session)) {
+    if (!subagent) {
+      throw new Error(`Subagent session ${session.id} is missing subagent metadata.`);
+    }
+    return subagent.profile.prompt;
+  }
+
+  return isWorkerSession(session) ? DEFAULT_WORKER_INSTRUCTIONS : DEFAULT_AGENT_INSTRUCTIONS;
 }
 
 export function createThreadDefinition(
@@ -182,10 +258,14 @@ export function createThreadDefinition(
   const storedWorker = isWorkerSession(session)
     ? readWorkerContextValue(session.metadata)
     : undefined;
+  const storedSubagent = isSubagentSession(session)
+    ? readRequiredSubagentMetadata(session)
+    : undefined;
   const context: DefaultAgentSessionContext = {
     ...resolveStoredContext(options.fallbackContext, session.agentKey, options.executionEnvironment),
     threadId: options.thread.id,
     sessionId: session.id,
+    sessionKind: session.kind,
     agentKey: session.agentKey,
     subagentDepth: 0,
     ...(options.executionEnvironment ? {executionEnvironment: options.executionEnvironment} : {}),
@@ -214,20 +294,26 @@ export function createThreadDefinition(
       executionEnvironment: options.executionEnvironment,
     }));
   }
+  if (storedSubagent) {
+    llmContexts.unshift(new SubagentRuntimeContext({
+      subagent: storedSubagent,
+      executionEnvironment: options.executionEnvironment,
+    }));
+  }
   const tools = resolveSessionTools(options.tools, options);
   const threadPromptCacheKey = resolveThreadPromptCacheKey(options.thread.id);
 
   return {
     agent: new Agent({
       name: session.agentKey,
-      instructions: isWorkerSession(session) ? DEFAULT_WORKER_INSTRUCTIONS : DEFAULT_AGENT_INSTRUCTIONS,
+      instructions: resolveSessionInstructions(session, storedSubagent),
       tools,
     }),
     context,
     llmContexts,
     promptCacheKey: resolveSessionPromptCacheKey(threadPromptCacheKey, options.sessionPrompt),
-    model: options.runtimeConfig?.model,
-    thinking: resolveSessionThinking(session, options.runtimeConfig),
+    model: resolveSessionModel(options.runtimeConfig, storedSubagent),
+    thinking: resolveSessionThinking(session, options.runtimeConfig, storedSubagent),
     inferenceProjection: mergeInferenceProjection(
       DEFAULT_INFERENCE_PROJECTION,
       options.runtimeConfig?.inferenceProjection,

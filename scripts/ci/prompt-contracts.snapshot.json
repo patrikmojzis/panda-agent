@@ -25,10 +25,10 @@
       "sha256": "233384ed058d6f7f0f5ac18b019b901fcc639fef7b1f2dfcf3818050efe1be22"
     },
     {
-      "bytes": 2766,
-      "lines": 85,
+      "bytes": 2894,
+      "lines": 88,
       "path": "src/app/runtime/panda-session-context.ts",
-      "sha256": "af68038f516ac4ccf5602715f551192eec53f8263857819eaab203e5dc1167b1"
+      "sha256": "e2c621b8cfb18415c53ff200f6b927710329874564fcc3e32ed61f9fb69c360d"
     },
     {
       "bytes": 23161,
@@ -37,22 +37,22 @@
       "sha256": "461246a983f7c60b8e48fc2c7b711a575c0ee429f86e2e0bf9da7177646becee"
     },
     {
-      "bytes": 9790,
-      "lines": 236,
+      "bytes": 12800,
+      "lines": 322,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "ed72e292c86e23558ac17a4220e81ab67bca1ff6a352a3baf9d47372dfad01e8"
+      "sha256": "49d21668704ce88af30dfb63b706901625c8e6046bd8a5adf9fdb33fcd5315ad"
     },
     {
-      "bytes": 1579,
+      "bytes": 1600,
       "lines": 50,
       "path": "src/domain/subagents/builtins.ts",
-      "sha256": "c8e5331275793b572efcff7507fd26fa0ab6d63ff5e4a240b532f8f5c25fcbd9"
+      "sha256": "20d20c88a23d65e89752a5a5da5750fc418c39c0177e812cdc8d58fa828c7a84"
     },
     {
-      "bytes": 3015,
-      "lines": 112,
+      "bytes": 4936,
+      "lines": 154,
       "path": "src/domain/subagents/tool-groups.ts",
-      "sha256": "a6aa085668b92411f55720b78000c3fe6a27b38367adca3c3c4cd84038d54cac"
+      "sha256": "fcd2393ba8215bf4199861b948d2b8d7aaca56eb6274a20af81dff942bd8d040"
     },
     {
       "bytes": 2612,
@@ -107,6 +107,12 @@
       "lines": 10,
       "path": "src/panda/contexts/shared.ts",
       "sha256": "0442c7856dbc2c588da3727ba65157a929c339f912d89884c53a60684dcb7168"
+    },
+    {
+      "bytes": 1585,
+      "lines": 39,
+      "path": "src/panda/contexts/subagent-runtime-context.ts",
+      "sha256": "86648c823a3098b9e55973b0dad0aa52be02920048a4cf959a4e04729d4785e7"
     },
     {
       "bytes": 8404,
@@ -239,6 +245,12 @@
       "lines": 40,
       "path": "src/prompts/contexts/session-todo.ts",
       "sha256": "5d8f837c7391c253665f98c26d2ae41bca38d593854b29b030cb6c995a2a61e8"
+    },
+    {
+      "bytes": 1372,
+      "lines": 35,
+      "path": "src/prompts/contexts/subagent-runtime.ts",
+      "sha256": "565aec3226f5cfa142801408bf6f76f0da01e6dff417212f2b0f0574580c472d"
     },
     {
       "bytes": 1371,

@@ -1,7 +1,8 @@
 import type {ThinkingLevel} from "@mariozechner/pi-ai";
 
 import {readOptionalJsonValue} from "../../lib/json.js";
-import type {PgPoolLike} from "../../lib/postgres-query.js";
+import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
+import {withTransaction} from "../../lib/postgres-transaction.js";
 import {requireTimestampMillis, toJson} from "../../lib/postgres-values.js";
 import {optionalTrimmedString, requireNonEmptyString} from "../../lib/strings.js";
 import {requireBoolean} from "../../lib/booleans.js";
@@ -86,6 +87,10 @@ function profileParams(profile: NormalizedSubagentProfileInput): unknown[] {
   ];
 }
 
+async function lockSubagentProfileSlug(queryable: PgQueryable, slug: string): Promise<void> {
+  await queryable.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 16))", [slug]);
+}
+
 export class PostgresSubagentProfileStore implements SubagentProfileStore {
   private readonly pool: PgPoolLike;
   private readonly tables: SubagentTableNames;
@@ -111,24 +116,17 @@ export class PostgresSubagentProfileStore implements SubagentProfileStore {
 
   async upsertProfile(input: UpsertSubagentProfileInput): Promise<SubagentProfileRecord> {
     const profile = normalizeSubagentProfileInput(input);
-    await this.assertNoCustomBuiltinSlugConflict(profile);
 
-    const lookup = profile.agentKey === undefined
-      ? await this.pool.query(
-        `SELECT slug FROM ${this.tables.subagentProfiles} WHERE slug = $1 AND agent_key IS NULL LIMIT 1`,
-        [profile.slug],
-      )
-      : await this.pool.query(
-        `SELECT slug FROM ${this.tables.subagentProfiles} WHERE slug = $1 AND agent_key = $2 LIMIT 1`,
-        [profile.slug, profile.agentKey],
-      );
+    return withTransaction(this.pool, async (client) => {
+      await lockSubagentProfileSlug(client, profile.slug);
+      await this.assertNoCrossScopeSlugConflict(profile, client);
 
-    const params = profileParams(profile);
-    const result = lookup.rows.length > 0
-      ? await this.updateProfile(profile, params)
-      : await this.insertProfile(params);
+      const result = profile.agentKey === undefined
+        ? await this.upsertGlobalProfile(client, profileParams(profile))
+        : await this.upsertAgentScopedProfile(client, profileParams(profile));
 
-    return parseProfileRow(result.rows[0] as Record<string, unknown>);
+      return parseProfileRow(result.rows[0] as Record<string, unknown>);
+    });
   }
 
   async getProfile(input: GetSubagentProfileInput): Promise<SubagentProfileRecord | null> {
@@ -143,6 +141,7 @@ export class PostgresSubagentProfileStore implements SubagentProfileStore {
         WHERE slug = $1
           AND (agent_key IS NULL OR agent_key = $2)
           ${enabledSql}
+        ORDER BY CASE WHEN agent_key IS NULL THEN 0 ELSE 1 END, updated_at DESC
         LIMIT 1
       `, [slug, agentKey])
       : await this.pool.query(`
@@ -181,22 +180,37 @@ export class PostgresSubagentProfileStore implements SubagentProfileStore {
     return result.rows.map((row) => parseProfileRow(row as Record<string, unknown>));
   }
 
-  private async assertNoCustomBuiltinSlugConflict(profile: NormalizedSubagentProfileInput): Promise<void> {
-    if (profile.source !== "custom") {
+  private async assertNoCrossScopeSlugConflict(
+    profile: NormalizedSubagentProfileInput,
+    queryable: PgQueryable,
+  ): Promise<void> {
+    if (profile.agentKey !== undefined) {
+      const existingGlobal = await queryable.query(
+        `SELECT slug FROM ${this.tables.subagentProfiles} WHERE slug = $1 AND agent_key IS NULL LIMIT 1`,
+        [profile.slug],
+      );
+      if (existingGlobal.rows.length > 0) {
+        throw new Error(`Custom subagent profile ${profile.slug} conflicts with a reserved global profile slug.`);
+      }
       return;
     }
 
-    const existingBuiltin = await this.pool.query(
-      `SELECT slug FROM ${this.tables.subagentProfiles} WHERE slug = $1 AND agent_key IS NULL LIMIT 1`,
+    const existingCustom = await queryable.query(
+      `SELECT agent_key FROM ${this.tables.subagentProfiles} WHERE slug = $1 AND agent_key IS NOT NULL LIMIT 1`,
       [profile.slug],
     );
-    if (existingBuiltin.rows.length > 0) {
-      throw new Error(`Custom subagent profile ${profile.slug} conflicts with a built-in profile slug.`);
+    if (existingCustom.rows.length > 0) {
+      throw new Error(
+        `Global subagent profile ${profile.slug} conflicts with existing custom profiles; an operator migration is required before this built-in can be seeded.`,
+      );
     }
   }
 
-  private async insertProfile(params: readonly unknown[]): Promise<{ rows: readonly unknown[] }> {
-    return this.pool.query(`
+  private async upsertGlobalProfile(
+    queryable: PgQueryable,
+    params: readonly unknown[],
+  ): Promise<{ rows: readonly unknown[] }> {
+    return queryable.query(`
       INSERT INTO ${this.tables.subagentProfiles} (
         slug,
         agent_key,
@@ -212,31 +226,52 @@ export class PostgresSubagentProfileStore implements SubagentProfileStore {
       ) VALUES (
         $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11
       )
+      ON CONFLICT (slug) WHERE agent_key IS NULL DO UPDATE SET
+        description = EXCLUDED.description,
+        prompt = EXCLUDED.prompt,
+        tool_groups = EXCLUDED.tool_groups,
+        model = EXCLUDED.model,
+        thinking = EXCLUDED.thinking,
+        transcript_mode = EXCLUDED.transcript_mode,
+        source = EXCLUDED.source,
+        created_by_agent_key = EXCLUDED.created_by_agent_key,
+        enabled = EXCLUDED.enabled,
+        updated_at = NOW()
       RETURNING *
     `, params);
   }
 
-  private async updateProfile(
-    profile: NormalizedSubagentProfileInput,
+  private async upsertAgentScopedProfile(
+    queryable: PgQueryable,
     params: readonly unknown[],
   ): Promise<{ rows: readonly unknown[] }> {
-    const whereSql = profile.agentKey === undefined
-      ? "slug = $1 AND agent_key IS NULL"
-      : "slug = $1 AND agent_key = $2";
-    return this.pool.query(`
-      UPDATE ${this.tables.subagentProfiles}
-      SET
-        description = $3,
-        prompt = $4,
-        tool_groups = $5::jsonb,
-        model = $6,
-        thinking = $7,
-        transcript_mode = $8,
-        source = $9,
-        created_by_agent_key = $10,
-        enabled = $11,
+    return queryable.query(`
+      INSERT INTO ${this.tables.subagentProfiles} (
+        slug,
+        agent_key,
+        description,
+        prompt,
+        tool_groups,
+        model,
+        thinking,
+        transcript_mode,
+        source,
+        created_by_agent_key,
+        enabled
+      ) VALUES (
+        $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11
+      )
+      ON CONFLICT (agent_key, slug) WHERE agent_key IS NOT NULL DO UPDATE SET
+        description = EXCLUDED.description,
+        prompt = EXCLUDED.prompt,
+        tool_groups = EXCLUDED.tool_groups,
+        model = EXCLUDED.model,
+        thinking = EXCLUDED.thinking,
+        transcript_mode = EXCLUDED.transcript_mode,
+        source = EXCLUDED.source,
+        created_by_agent_key = EXCLUDED.created_by_agent_key,
+        enabled = EXCLUDED.enabled,
         updated_at = NOW()
-      WHERE ${whereSql}
       RETURNING *
     `, params);
   }

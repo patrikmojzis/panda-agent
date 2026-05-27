@@ -1,4 +1,5 @@
 import type {JsonValue} from "../../lib/json.js";
+import type {AgentSessionKind} from "../../domain/sessions/types.js";
 import type {OutboundDeliveryInput, OutboundDeliveryRecord,} from "../../domain/channels/deliveries/types.js";
 import type {ChannelActionInput, ChannelActionRecord,} from "../../domain/channels/actions/types.js";
 import type {OutboundItem, RememberedRoute} from "../../domain/channels/types.js";
@@ -63,6 +64,7 @@ export interface DefaultAgentSessionContext extends ShellExecutionContext {
   cwd?: string;
   agentKey: string;
   sessionId: string;
+  sessionKind?: AgentSessionKind;
   threadId: string;
   runId?: string;
   currentInput?: {
@@ -81,5 +83,6 @@ export interface DefaultAgentSessionContext extends ShellExecutionContext {
   messageAgent?: DefaultAgentMessageAgentService;
   workerA2A?: DefaultAgentWorkerA2AService;
   worker?: JsonValue;
+  subagent?: JsonValue;
   subagentDepth?: number;
 }

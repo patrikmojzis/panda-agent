@@ -68,7 +68,7 @@ function normalizeOptionalDisplayName(value: string | null | undefined): string 
 }
 
 function parseSessionKind(value: unknown): SessionRecord["kind"] {
-  if (value === "main" || value === "branch" || value === "worker") {
+  if (value === "main" || value === "branch" || value === "worker" || value === "subagent") {
     return value;
   }
 

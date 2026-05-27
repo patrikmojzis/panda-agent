@@ -22,6 +22,12 @@ export type ExecutionSkillPolicy =
   | {mode: "none"}
   | {mode: "allowlist"; skillKeys: readonly string[]};
 
+export type AgentSkillOperation = "load" | "set" | "delete";
+
+export interface ExecutionAgentSkillToolPolicy {
+  allowedOperations?: readonly AgentSkillOperation[];
+}
+
 export interface ExecutionToolPolicy {
   allowedTools?: readonly string[];
   bash?: {
@@ -30,6 +36,7 @@ export interface ExecutionToolPolicy {
   postgresReadonly?: {
     allowed?: boolean;
   };
+  agentSkill?: ExecutionAgentSkillToolPolicy;
 }
 
 export interface ExecutionEnvironmentRecord {
