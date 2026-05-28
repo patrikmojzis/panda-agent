@@ -356,7 +356,7 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
 
     const job = await runnerPost<BashJobSnapshot>(harness, runnerUrl, "jobs/start", {
       jobId: `job-ok-${harness.suffix}`,
-      command: "mkdir -p /workspace/bg && cd /workspace/bg && echo bg-out && echo bg-err >&2 && sleep 1",
+      command: "mkdir -p /workspace/bg && cd /workspace/bg && echo bg-out && echo bg-err >&2 && sleep 5",
       cwd: "/workspace",
       timeoutMs: 60_000,
       trackedEnvKeys: [],
