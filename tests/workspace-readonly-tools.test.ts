@@ -11,6 +11,8 @@ import {
     GrepFilesTool,
     ReadFileTool,
     RunContext,
+    Thread,
+    ToolError,
     type Tool,
 } from "../src/index.js";
 
@@ -86,6 +88,54 @@ describe("workspace readonly tools", () => {
     });
     expect(JSON.stringify(result)).toContain("2 | ");
     expect(JSON.stringify(result)).toContain("3 | export function runPanda(): string {");
+  });
+
+  it("reports a missing read_file path as a recoverable tool error", async () => {
+    const root = await createWorkspace();
+    const tool = new ReadFileTool();
+
+    const promise = tool.run({
+      path: "src/missing.ts",
+    }, createRunContext(tool, root));
+
+    await expect(promise).rejects.toMatchObject({
+      message: "Path does not exist: src/missing.ts",
+      details: {path: "src/missing.ts"},
+    });
+    await expect(promise).rejects.toBeInstanceOf(ToolError);
+  });
+
+  it("converts missing read_file paths into model-visible thread tool errors", async () => {
+    const root = await createWorkspace();
+    const tool = new ReadFileTool();
+    const agent = new Agent({
+      name: "panda",
+      instructions: "Inspect files.",
+      tools: [tool],
+    });
+    const context: DefaultAgentSessionContext = {
+      cwd: root,
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    };
+    const thread = new Thread<DefaultAgentSessionContext>({agent, context});
+
+    const result = await thread.callTool({
+      type: "toolCall",
+      id: "call-read-missing",
+      name: "read_file",
+      arguments: {path: "src/missing.ts"},
+    }, createRunContext(tool, root));
+
+    expect(result).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call-read-missing",
+      toolName: "read_file",
+      isError: true,
+      details: {path: "src/missing.ts"},
+    });
+    expect(JSON.stringify(result.content)).toContain("Path does not exist: src/missing.ts");
   });
 
   it("globs files relative to the workspace root", async () => {
