@@ -46,6 +46,8 @@ const DEFAULT_DOCKER_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CORE_ENVIRONMENTS_ROOT = "/root/.panda/environments";
 const DOCKER_DNS_LABEL_MAX_LENGTH = 63;
 const MAX_ENVIRONMENT_MANAGER_JSON_BODY_BYTES = 8 * 1024 * 1024;
+const DOCKER_EXEC_COMPLETION_WAIT_MS = 2_000;
+const DOCKER_EXEC_COMPLETION_POLL_MS = 25;
 
 interface DockerRequestOptions {
   method: string;
@@ -1011,7 +1013,7 @@ function buildWorkspaceProcessWrapper(pidFilePath: string): string {
     "child=$!",
     `printf '%s' \"$child\" > ${shellQuoteForDocker(pidFilePath)}`,
     "wait \"$child\"",
-  ].join("; ");
+  ].join("\n");
 }
 
 function shellQuoteForDocker(value: string): string {
@@ -1290,7 +1292,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       }, record.request.timeoutMs);
       timeout.unref();
       await demuxDockerStdCopyStream(stream, (chunk) => stdout.append(chunk), (chunk) => stderr.append(chunk));
-      const inspect = await this.docker.inspectExec(created.Id);
+      const inspect = await this.waitForDockerExecCompletion(created.Id);
       const exitCode = inspect.ExitCode ?? null;
       const timedOut = record.snapshot.timedOut;
       const cancelled = record.snapshot.status === "cancelled";
@@ -1320,6 +1322,17 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       if (timeout) clearTimeout(timeout);
       await Promise.all([stdout.close(), stderr.close()]);
     }
+  }
+
+
+  private async waitForDockerExecCompletion(execId: string): Promise<DockerExecInspectResult> {
+    const deadline = Date.now() + DOCKER_EXEC_COMPLETION_WAIT_MS;
+    let inspect = await this.docker.inspectExec(execId);
+    while ((inspect.Running === true || inspect.ExitCode == null) && Date.now() < deadline) {
+      await sleep(DOCKER_EXEC_COMPLETION_POLL_MS);
+      inspect = await this.docker.inspectExec(execId);
+    }
+    return inspect;
   }
 
   private async cancelWorkspaceProcess(record: WorkspaceProcessRecord, timeoutMs: number): Promise<WorkspaceProcessSnapshot> {

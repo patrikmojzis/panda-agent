@@ -271,7 +271,7 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
       trackedEnvKeys: [],
       maxOutputChars: 20_000,
     });
-    expect(execResult.success).toBe(true);
+    expect(execResult.success, `first foreground workspace exec failed: ${JSON.stringify({exitCode: execResult.exitCode, stdout: execResult.stdout, stderr: execResult.stderr, timedOut: execResult.timedOut, aborted: execResult.aborted})}`).toBe(true);
     expect(execResult.stdout).toContain(workspaceHostname);
     expect(execResult.stdout).not.toContain(controlHostname);
     expect(execResult.stdout).toContain("missing:node");

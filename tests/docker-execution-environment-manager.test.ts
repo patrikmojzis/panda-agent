@@ -42,6 +42,7 @@ class FakeDockerClient implements DockerClient {
   readonly removed: string[] = [];
   readonly execs: Array<{container: string; config: import("../src/integrations/shell/docker-execution-environment-manager.js").DockerExecCreateConfig}> = [];
   execExitCode = 0;
+  execInspectResults: Array<{ID?: string; Running?: boolean; ExitCode?: number | null}> = [];
   execStreamChunks: Buffer[] = [stdcopyFrame(1, "workspace-out")];
   createError?: Error;
   startError?: Error;
@@ -126,8 +127,8 @@ class FakeDockerClient implements DockerClient {
     return Readable.from(this.execStreamChunks);
   }
 
-  async inspectExec(): Promise<{ID: string; Running: boolean; ExitCode: number}> {
-    return {ID: "exec", Running: false, ExitCode: this.execExitCode};
+  async inspectExec(): Promise<{ID?: string; Running?: boolean; ExitCode?: number | null}> {
+    return this.execInspectResults.shift() ?? {ID: "exec", Running: false, ExitCode: this.execExitCode};
   }
 }
 
@@ -678,12 +679,49 @@ describe("execution environment manager HTTP boundary", () => {
       expect(dockerClient.execs[0]?.container).toBe(workspace.name);
       expect(dockerClient.execs[0]?.config.Tty).toBe(false);
       expect(dockerClient.execs[0]?.config.Cmd.join(" ")).toContain("setsid bash");
+      expect(dockerClient.execs[0]?.config.Cmd.join(" ")).not.toContain("&;");
     } finally {
       await server.close();
       await rm(environmentsRoot, {recursive: true, force: true});
     }
   });
 
+
+
+  it("waits for Docker exec inspect to report terminal completion before finishing foreground workspace exec", async () => {
+    const dockerClient = new FakeDockerClient();
+    dockerClient.execStreamChunks = [stdcopyFrame(1, "out")];
+    dockerClient.execInspectResults = [
+      {ID: "exec", Running: true, ExitCode: null},
+      {ID: "exec", Running: false, ExitCode: null},
+      {ID: "exec", Running: false, ExitCode: 0},
+    ];
+    const environmentsRoot = await mkdtemp(path.join(os.tmpdir(), "panda-env-root-"));
+    const manager = new DockerExecutionEnvironmentManager({
+      dockerClient,
+      workspaceExecSecret: "workspace-secret",
+      managerUrl: "http://manager:8095",
+      hostEnvironmentsRoot: environmentsRoot,
+      managerEnvironmentsRoot: environmentsRoot,
+      coreEnvironmentsRoot: "/core/environments",
+      parentRunnerEnvironmentsRoot: "/environments",
+      createTimeoutMs: 10,
+    });
+    try {
+      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"});
+
+      const snapshot = await manager.handleWorkspaceExecAction({
+        action: "start",
+        environmentId: "env-a",
+        request: {mode: "foreground", processId: "proc-race", command: "pwd", cwd: "/workspace", timeoutMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000},
+      });
+
+      expect(snapshot).toMatchObject({status: "completed", exitCode: 0, stdout: "out"});
+      expect(dockerClient.execInspectResults).toHaveLength(0);
+    } finally {
+      await rm(environmentsRoot, {recursive: true, force: true});
+    }
+  });
 
   it("fails new workspace starts instead of evicting live process records when the table is full", async () => {
     const manager = new DockerExecutionEnvironmentManager({dockerClient: new FakeDockerClient(), workspaceExecSecret: "workspace-secret"});
