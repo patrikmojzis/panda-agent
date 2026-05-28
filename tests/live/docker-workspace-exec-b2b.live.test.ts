@@ -138,6 +138,7 @@ async function relaxEnvironmentFilesystemPermissions(created: CreatedEnvironment
 }
 
 async function stopEnvironment(env: Harness, created: CreatedEnvironment): Promise<void> {
+  await relaxEnvironmentFilesystemPermissions(created);
   const response = await postJson(`${env.managerUrlForHost}/environments/stop`, {environmentId: created.environmentId}, {authorization: `Bearer ${env.lifecycleSecret}`}).catch(() => null);
   if (!response || response.status !== 200) {
     await env.manager.stopEnvironment(created.environmentId).catch(() => undefined);
