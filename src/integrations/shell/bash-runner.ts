@@ -52,7 +52,7 @@ export interface CommandExecutorJobStartInput {
 }
 
 export interface CommandExecutorJob {
-  snapshot(): BashJobSnapshot;
+  snapshot(): BashJobSnapshot | Promise<BashJobSnapshot>;
   wait(timeoutMs?: number): Promise<BashJobSnapshot>;
   cancel(timeoutMs?: number): Promise<BashJobSnapshot>;
 }
@@ -714,7 +714,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         });
         backgroundJobs.set(parsed.jobId, job);
         watchBackgroundJob(parsed.jobId, job);
-        const snapshot = job.snapshot();
+        const snapshot = await job.snapshot();
         evictTerminalJob(parsed.jobId, snapshot);
 
         writeJsonResponse(response, 200, {
@@ -737,7 +737,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           return;
         }
 
-        const snapshot = job.snapshot();
+        const snapshot = await job.snapshot();
         evictTerminalJob(parsed.jobId, snapshot);
 
         writeJsonResponse(response, 200, {

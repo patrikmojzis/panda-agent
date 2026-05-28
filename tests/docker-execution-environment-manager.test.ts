@@ -1,4 +1,5 @@
 import {mkdtemp, rm, stat} from "node:fs/promises";
+import {PassThrough, Readable} from "node:stream";
 import os from "node:os";
 import path from "node:path";
 
@@ -19,17 +20,29 @@ import {
     resolveDockerExecutionEnvironmentManagerOptions,
     startExecutionEnvironmentManager,
     validateWorkspaceExecCredential,
+    demuxDockerStdCopyStream,
 } from "../src/integrations/shell/index.js";
 import type {
     DockerClient,
     DockerContainerCreateConfig,
 } from "../src/integrations/shell/docker-execution-environment-manager.js";
 
+function stdcopyFrame(streamId: 1 | 2, payload: string): Buffer {
+  const body = Buffer.from(payload, "utf8");
+  const header = Buffer.alloc(8);
+  header[0] = streamId;
+  header.writeUInt32BE(body.length, 4);
+  return Buffer.concat([header, body]);
+}
+
 class FakeDockerClient implements DockerClient {
   readonly created: Array<{name: string; config: DockerContainerCreateConfig}> = [];
   readonly started: string[] = [];
   readonly stopped: string[] = [];
   readonly removed: string[] = [];
+  readonly execs: Array<{container: string; config: import("../src/integrations/shell/docker-execution-environment-manager.js").DockerExecCreateConfig}> = [];
+  execExitCode = 0;
+  execStreamChunks: Buffer[] = [stdcopyFrame(1, "workspace-out")];
   createError?: Error;
   startError?: Error;
   inspectLabels?: Record<string, string>;
@@ -102,6 +115,19 @@ class FakeDockerClient implements DockerClient {
     if (this.removeError) {
       throw this.removeError;
     }
+  }
+
+  async createExec(container: string, config: import("../src/integrations/shell/docker-execution-environment-manager.js").DockerExecCreateConfig): Promise<{Id: string}> {
+    this.execs.push({container, config});
+    return {Id: `exec-${this.execs.length}`};
+  }
+
+  async startExec(): Promise<Readable> {
+    return Readable.from(this.execStreamChunks);
+  }
+
+  async inspectExec(): Promise<{ID: string; Running: boolean; ExitCode: number}> {
+    return {ID: "exec", Running: false, ExitCode: this.execExitCode};
   }
 }
 
@@ -599,15 +625,115 @@ describe("execution environment manager HTTP boundary", () => {
       const sameEnvResponse = await fetch(`${baseUrl}/workspaces/exec`, {
         method: "POST",
         headers: {authorization: `Bearer ${execToken}`, "content-type": "application/json"},
-        body: JSON.stringify({environmentId: "env-a", request: {command: "pwd"}}),
+        body: JSON.stringify({action: "start", environmentId: "env-a", request: {mode: "foreground", command: "pwd", cwd: "/workspace", timeoutMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000}}),
       });
       expect(sameEnvResponse.status).toBe(501);
-      await expect(sameEnvResponse.json()).resolves.toMatchObject({
-        ok: false,
-        error: "Workspace exec streaming is deferred to B2.",
-      });
     } finally {
       await server.close();
+    }
+  });
+
+
+  it("demuxes Docker stdcopy frames split across chunks", async () => {
+    const frame = Buffer.concat([stdcopyFrame(1, "out"), stdcopyFrame(2, "err")]);
+    const chunks = [frame.subarray(0, 3), frame.subarray(3, 10), frame.subarray(10, 15), frame.subarray(15)];
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+
+    await demuxDockerStdCopyStream(Readable.from(chunks),
+      (chunk) => stdout.push(chunk.toString("utf8")),
+      (chunk) => stderr.push(chunk.toString("utf8")),
+    );
+
+    expect(stdout.join("")).toBe("out");
+    expect(stderr.join("")).toBe("err");
+  });
+
+  it("executes same-env workspace action against the workspace container", async () => {
+    const dockerClient = new FakeDockerClient();
+    dockerClient.execStreamChunks = [stdcopyFrame(1, "out"), stdcopyFrame(2, "err")];
+    const environmentsRoot = await mkdtemp(path.join(os.tmpdir(), "panda-env-root-"));
+    const manager = new DockerExecutionEnvironmentManager({
+      dockerClient,
+      workspaceExecSecret: "workspace-secret",
+      managerUrl: "http://manager:8095",
+      hostEnvironmentsRoot: environmentsRoot,
+      managerEnvironmentsRoot: environmentsRoot,
+      coreEnvironmentsRoot: "/core/environments",
+      parentRunnerEnvironmentsRoot: "/environments",
+      createTimeoutMs: 10,
+    });
+    await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"});
+    const server = await startExecutionEnvironmentManager({host: "127.0.0.1", port: 0, sharedSecret: "lifecycle-secret", manager});
+    const execToken = createWorkspaceExecCredential({environmentId: "env-a", secret: "workspace-secret"});
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.port}/workspaces/exec`, {
+        method: "POST",
+        headers: {authorization: `Bearer ${execToken}`, "content-type": "application/json"},
+        body: JSON.stringify({action: "start", environmentId: "env-a", request: {mode: "foreground", processId: "proc-1", command: "pwd", cwd: "/workspace", timeoutMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000}}),
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ok: true, process: {status: "completed", stdout: "out", stderr: "err", exitCode: 0, stdoutPersisted: false, stderrPersisted: false}});
+      const workspace = findCreatedContainer(dockerClient, "workspace");
+      expect(dockerClient.execs[0]?.container).toBe(workspace.name);
+      expect(dockerClient.execs[0]?.config.Tty).toBe(false);
+      expect(dockerClient.execs[0]?.config.Cmd.join(" ")).toContain("setsid bash");
+    } finally {
+      await server.close();
+      await rm(environmentsRoot, {recursive: true, force: true});
+    }
+  });
+
+
+  it("fails new workspace starts instead of evicting live process records when the table is full", async () => {
+    const manager = new DockerExecutionEnvironmentManager({dockerClient: new FakeDockerClient(), workspaceExecSecret: "workspace-secret"});
+    const processTable = (manager as unknown as {
+      workspaceProcesses: Map<string, {snapshot: {status: string}; startedAt: number}>;
+    }).workspaceProcesses;
+    for (let index = 0; index < 128; index += 1) {
+      processTable.set(`env-a\0proc-${index}`, {snapshot: {status: "running"}, startedAt: Date.now()});
+    }
+
+    await expect(manager.handleWorkspaceExecAction({
+      action: "start",
+      environmentId: "env-a",
+      request: {mode: "background", processId: "proc-new", command: "sleep 60", cwd: "/workspace", timeoutMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000},
+    })).rejects.toThrow("Workspace process table is full");
+
+    expect(processTable).toHaveLength(128);
+    expect([...processTable.values()].every((record) => record.snapshot.status === "running")).toBe(true);
+  });
+
+  it("returns a cancelled workspace snapshot promptly even when the original process is still running", async () => {
+    const dockerClient = new FakeDockerClient();
+    dockerClient.execStreamChunks = [];
+    dockerClient.startExec = async () => new PassThrough();
+    const environmentsRoot = await mkdtemp(path.join(os.tmpdir(), "panda-env-root-"));
+    const manager = new DockerExecutionEnvironmentManager({
+      dockerClient,
+      workspaceExecSecret: "workspace-secret",
+      managerUrl: "http://manager:8095",
+      hostEnvironmentsRoot: environmentsRoot,
+      managerEnvironmentsRoot: environmentsRoot,
+      coreEnvironmentsRoot: "/core/environments",
+      parentRunnerEnvironmentsRoot: "/environments",
+      createTimeoutMs: 10,
+    });
+    try {
+      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"});
+      await manager.handleWorkspaceExecAction({
+        action: "start",
+        environmentId: "env-a",
+        request: {mode: "background", processId: "proc-cancel", command: "sleep 60", cwd: "/workspace", timeoutMs: 300000, trackedEnvKeys: [], maxOutputChars: 1000},
+      });
+
+      const started = Date.now();
+      const cancelled = await manager.handleWorkspaceExecAction({action: "cancel", environmentId: "env-a", processId: "proc-cancel", timeoutMs: 0});
+
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(cancelled).toMatchObject({status: "cancelled", aborted: true, abortReason: "Command aborted."});
+    } finally {
+      await rm(environmentsRoot, {recursive: true, force: true});
     }
   });
 
