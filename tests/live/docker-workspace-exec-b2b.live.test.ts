@@ -354,9 +354,10 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
     expect(badCwd.status).toBe(400);
     expect(await dockerExecStatus(workspaceName, "test -f /tmp/should-not-run")).not.toBe(0);
 
+    const bgDir = `/workspace/bg-${harness.suffix}`;
     const job = await runnerPost<BashJobSnapshot>(harness, runnerUrl, "jobs/start", {
       jobId: `job-ok-${harness.suffix}`,
-      command: "mkdir -p /workspace/bg && cd /workspace/bg && echo bg-out && echo bg-err >&2 && sleep 5",
+      command: `mkdir -p ${bgDir} && cd ${bgDir} && echo bg-out && echo bg-err >&2 && while [ ! -f ${bgDir}/release ]; do sleep 0.1; done`,
       cwd: "/workspace",
       timeoutMs: 60_000,
       trackedEnvKeys: [],
@@ -369,6 +370,7 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
     expect(JSON.stringify(job)).not.toContain("runner-job:");
     const status = await runnerPost<BashJobSnapshot>(harness, runnerUrl, "jobs/status", {jobId: job.jobId});
     expect(status.jobId).toBe(job.jobId);
+    expect(await dockerExecStatus(workspaceName, `touch ${JSON.stringify(`${bgDir}/release`)}`)).toBe(0);
     const waited = await runnerPost<BashJobSnapshot>(harness, runnerUrl, "jobs/wait", {jobId: job.jobId, timeoutMs: 10_000});
     expect(waited.status).toBe("completed");
     expect(waited.exitCode).toBe(0);
