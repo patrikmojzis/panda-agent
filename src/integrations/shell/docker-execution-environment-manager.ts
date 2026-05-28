@@ -585,6 +585,7 @@ function buildControlContainerConfig(input: {
       `LANG=${safeEnv.LANG ?? ""}`,
       `BASH_SERVER_AGENT_KEY=${input.request.agentKey}`,
       `BASH_SERVER_PORT=${input.runnerPort}`,
+      `BASH_SERVER_ALLOWED_ROOTS=${input.filesystem.workspace.workerPath}`,
       ...(input.runnerSharedSecret ? [`BASH_SERVER_SHARED_SECRET=${input.runnerSharedSecret}`] : []),
       ...(input.managerUrl ? [`PANDA_WORKSPACE_EXEC_MANAGER_URL=${input.managerUrl}`] : []),
       `PANDA_WORKSPACE_EXEC_ENVIRONMENT_ID=${input.request.environmentId}`,

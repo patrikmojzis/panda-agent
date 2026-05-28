@@ -291,6 +291,7 @@ describe("DockerExecutionEnvironmentManager", () => {
       "LANG=C.UTF-8",
       "BASH_SERVER_AGENT_KEY=panda",
       "BASH_SERVER_PORT=8080",
+      "BASH_SERVER_ALLOWED_ROOTS=/workspace",
       "BASH_SERVER_SHARED_SECRET=runner-secret",
       "PANDA_WORKSPACE_EXEC_MANAGER_URL=http://panda-environment-manager:8095",
       "PANDA_WORKSPACE_EXEC_ENVIRONMENT_ID=env-worker",
