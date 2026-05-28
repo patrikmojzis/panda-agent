@@ -130,6 +130,13 @@ async function createEnvironment(env: Harness, environmentId: string): Promise<C
   return withId;
 }
 
+
+async function relaxEnvironmentFilesystemPermissions(created: CreatedEnvironment): Promise<void> {
+  const chmodMounts = "chmod -R a+rwX /workspace /inbox /artifacts 2>/dev/null || true";
+  await dockerExecStatus(created.metadata.workspaceContainer.name, chmodMounts).catch(() => 1);
+  await dockerExecStatus(created.metadata.controlContainer.name, chmodMounts).catch(() => 1);
+}
+
 async function stopEnvironment(env: Harness, created: CreatedEnvironment): Promise<void> {
   const response = await postJson(`${env.managerUrlForHost}/environments/stop`, {environmentId: created.environmentId}, {authorization: `Bearer ${env.lifecycleSecret}`}).catch(() => null);
   if (!response || response.status !== 200) {
@@ -235,11 +242,13 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
   afterAll(async () => {
     if (!harness) return;
     for (const created of [...harness.environments].reverse()) {
+      await relaxEnvironmentFilesystemPermissions(created);
       await stopEnvironment(harness, created);
     }
     await harness.server.close();
     if (!process.env.PANDA_B2B_RUNNER_IMAGE) await docker(["rmi", "-f", harness.runnerImage], {allowFailure: true});
     if (!process.env.PANDA_B2B_WORKSPACE_IMAGE) await docker(["rmi", "-f", harness.workspaceImage], {allowFailure: true});
+    await execFile("chmod", ["-R", "u+rwX", harness.tempRoot]).catch(() => undefined);
     await rm(harness.tempRoot, {recursive: true, force: true});
   }, 180_000);
 
