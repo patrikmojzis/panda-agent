@@ -33,6 +33,8 @@ import {readJsonHttpBody} from "../http-body.js";
 import {buildSafeCommandEnv, SAFE_SHELL} from "./environment.js";
 
 const DEFAULT_RUNNER_PORT = 8080;
+const BACKGROUND_JOB_WATCH_WAIT_MS = 300_000;
+const BACKGROUND_JOB_WATCH_IDLE_MS = 1_000;
 const DEFAULT_RUNNER_HOST = "0.0.0.0";
 const MAX_BASH_RUNNER_JSON_BODY_BYTES = 8 * 1024 * 1024;
 
@@ -564,15 +566,23 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
   };
 
   const watchBackgroundJob = (jobId: string, job: CommandExecutorJob): void => {
-    void job.wait(2_147_000_000).then((snapshot) => {
-      if (backgroundJobs.get(jobId) === job) {
-        evictTerminalJob(jobId, snapshot);
+    void (async () => {
+      while (backgroundJobs.get(jobId) === job) {
+        let snapshot: BashJobSnapshot;
+        try {
+          snapshot = await job.wait(BACKGROUND_JOB_WATCH_WAIT_MS);
+        } catch {
+          // Keep the job queryable for explicit status/wait/cancel calls if background polling fails.
+          return;
+        }
+        if (backgroundJobs.get(jobId) !== job) return;
+        if (snapshot.status !== "running") {
+          backgroundJobs.delete(jobId);
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, BACKGROUND_JOB_WATCH_IDLE_MS));
       }
-    }).catch(() => {
-      if (backgroundJobs.get(jobId) === job) {
-        backgroundJobs.delete(jobId);
-      }
-    });
+    })();
   };
 
   const consumePendingAbort = (requestId: string): boolean => {

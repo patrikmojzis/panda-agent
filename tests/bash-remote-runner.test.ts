@@ -638,8 +638,8 @@ describe("remote bash runner", () => {
           const job: CommandExecutorJob = {
             snapshot: () => fakeJobSnapshot(input, status),
             wait: async (timeoutMs) => {
-              if (timeoutMs !== undefined && timeoutMs > 1_000_000_000) {
-                return new Promise(() => undefined);
+              if (timeoutMs === 300_000) {
+                return fakeJobSnapshot(input, status);
               }
               status = "completed";
               return fakeJobSnapshot(input, status);
@@ -709,6 +709,61 @@ describe("remote bash runner", () => {
     expect(startCalls).toHaveLength(1);
     expect(startCalls[0]?.cwd).toBe(agentHome);
     expect(startedJobs.has("job-seam-1")).toBe(true);
+  });
+
+
+  it("keeps jobs queryable when the background watcher hits a transient wait error", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const waitTimeouts: Array<number | undefined> = [];
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => {
+          throw new Error("unexpected exec");
+        },
+        startJob: async (input) => {
+          const job: CommandExecutorJob = {
+            snapshot: () => fakeJobSnapshot(input, "running"),
+            wait: async (timeoutMs) => {
+              waitTimeouts.push(timeoutMs);
+              throw new Error("transient watcher wait failure");
+            },
+            cancel: async () => fakeJobSnapshot(input, "cancelled"),
+          };
+          return job;
+        },
+      },
+    });
+
+    const startResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/start`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({
+        jobId: "job-transient-watch",
+        command: "sleep 60",
+        cwd: agentHome,
+        timeoutMs: 60_000,
+        trackedEnvKeys: [],
+        maxOutputChars: 8_000,
+        persistOutputThresholdChars: 8_000,
+      }),
+    });
+    expect(startResponse.status).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(waitTimeouts).toEqual([300_000]);
+    });
+
+    const statusResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/status`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({jobId: "job-transient-watch"}),
+    });
+    expect(statusResponse.status).toBe(200);
+    await expect(statusResponse.json()).resolves.toMatchObject({
+      ok: true,
+      jobId: "job-transient-watch",
+      status: "running",
+    });
   });
 
   it("accepts env payloads at the runner", async () => {
