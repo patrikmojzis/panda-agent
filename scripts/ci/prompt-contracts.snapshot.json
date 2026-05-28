@@ -31,10 +31,10 @@
       "sha256": "c22d384b3bebd577e78e6b95dac6e946e81f863251a4428bbb0c174320351bbf"
     },
     {
-      "bytes": 22504,
-      "lines": 682,
+      "bytes": 22678,
+      "lines": 686,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "7e845e2d6d9362e7540886f8780a4f1dfdd6f0eda5c6441da50dae9fd39f218e"
+      "sha256": "feb7af6a2a05d97aaffab58d60851de832f369e68614ba63be292c51b6b132c0"
     },
     {
       "bytes": 11039,
@@ -49,10 +49,10 @@
       "sha256": "20d20c88a23d65e89752a5a5da5750fc418c39c0177e812cdc8d58fa828c7a84"
     },
     {
-      "bytes": 4912,
-      "lines": 153,
+      "bytes": 4945,
+      "lines": 154,
       "path": "src/domain/subagents/tool-groups.ts",
-      "sha256": "86d53469e6afcc1c61b6652df99f8894f7712362d904261f327c5edaae8fed9b"
+      "sha256": "648bef8ff9b6424d0064150f529465900341717fa5d9a8401a4d5c9c083e961d"
     },
     {
       "bytes": 2612,
@@ -398,6 +398,7 @@
         "thinking_set",
         "agent_skill",
         "agent_prompt",
+        "upsert_subagent_profile",
         "set_env_value",
         "clear_env_value",
         "app_create",

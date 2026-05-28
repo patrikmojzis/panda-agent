@@ -63,6 +63,7 @@ import {
 } from "../../panda/tools/watch-tools.js";
 import {ThinkingSetTool} from "../../panda/tools/thinking-set-tool.js";
 import {TodoUpdateTool} from "../../panda/tools/todo-update-tool.js";
+import {UpsertSubagentProfileTool} from "../../panda/tools/upsert-subagent-profile-tool.js";
 import {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import {
     buildObservedPoolConfig,
@@ -566,6 +567,9 @@ export async function bootstrapRuntime(
       }),
       new AgentPromptTool({
         store: agentStore,
+      }),
+      new UpsertSubagentProfileTool({
+        store: subagentProfiles,
       }),
       appCreateTool,
       appListTool,
