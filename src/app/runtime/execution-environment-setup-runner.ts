@@ -122,6 +122,14 @@ interface SetupArtifactPaths {
     result: string;
     toolchain: string;
   };
+  workerLocal?: {
+    dir: string;
+    script: string;
+    stdout: string;
+    stderr: string;
+    result: string;
+    toolchain: string;
+  };
 }
 
 interface RemoteExecInput {
@@ -174,6 +182,8 @@ function buildArtifactPaths(filesystem: ExecutionEnvironmentFilesystemMetadata):
   const workerArtifactsRoot = filesystem.artifacts.workerPath ?? "/artifacts";
   const workerDir = path.posix.join(workerArtifactsRoot, "setup");
   const coreDir = path.join(filesystem.artifacts.corePath, "setup");
+  const workerLocalRoot = filesystem.artifacts.hostPath ?? filesystem.artifacts.managerPath;
+  const workerLocalDir = workerLocalRoot ? path.join(workerLocalRoot, "setup") : null;
   const buildSet = (dir: string, join: (dir: string, child: string) => string) => ({
     dir,
     script: join(dir, "setup.sh"),
@@ -188,6 +198,9 @@ function buildArtifactPaths(filesystem: ExecutionEnvironmentFilesystemMetadata):
     worker: buildSet(workerDir, path.posix.join),
     ...(filesystem.artifacts.parentRunnerPath
       ? {parent: buildSet(path.posix.join(filesystem.artifacts.parentRunnerPath, "setup"), path.posix.join)}
+      : {}),
+    ...(workerLocalDir && path.resolve(workerLocalDir) !== path.resolve(coreDir)
+      ? {workerLocal: buildSet(workerLocalDir, path.join)}
       : {}),
   };
 }
@@ -211,6 +224,14 @@ function artifactMetadata(paths: SetupArtifactPaths): JsonObject {
       }
       : undefined,
   });
+}
+
+
+function setupFailureOutputExcerpt(result: BashExecutionResult): string {
+  const output = result.stderr.trim() || result.stdout.trim();
+  if (!output) return "";
+  const compact = output.replace(/\s+/g, " ");
+  return ` Output: ${compact.slice(0, 240)}${compact.length > 240 ? "…" : ""}`;
 }
 
 function executionSummary(result: BashExecutionResult | undefined): JsonObject | undefined {
@@ -357,6 +378,11 @@ export class RemoteExecutionEnvironmentSetupRunner implements ExecutionEnvironme
     await mkdir(artifacts.core.dir, {recursive: true});
     await copyFile(input.setupScript.resolvedPath, artifacts.core.script);
     await chmod(artifacts.core.script, 0o755);
+    if (artifacts.workerLocal) {
+      await mkdir(artifacts.workerLocal.dir, {recursive: true});
+      await copyFile(input.setupScript.resolvedPath, artifacts.workerLocal.script);
+      await chmod(artifacts.workerLocal.script, 0o755);
+    }
 
     const startedAt = Date.now();
     let credentials: Record<string, string> = {};
@@ -418,10 +444,10 @@ export class RemoteExecutionEnvironmentSetupRunner implements ExecutionEnvironme
 
     if (!setupResult.success) {
       const reason = setupResult.timedOut
-        ? "Setup script timed out."
+        ? `Setup script timed out.${setupFailureOutputExcerpt(setupResult)}`
         : setupResult.aborted
-          ? "Setup script was aborted."
-          : `Setup script exited with code ${String(setupResult.exitCode)}.`;
+          ? `Setup script was aborted.${setupFailureOutputExcerpt(setupResult)}`
+          : `Setup script exited with code ${String(setupResult.exitCode)}.${setupFailureOutputExcerpt(setupResult)}`;
       return fail(reason, {setupResult});
     }
 

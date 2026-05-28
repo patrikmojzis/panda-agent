@@ -1,0 +1,51 @@
+name: Docker live smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig.json
+      - vitest.live.config.ts
+      - src/app/runtime/**
+      - src/integrations/shell/**
+      - src/domain/execution-environments/**
+      - tests/live/docker-workspace-exec-b2b.live.test.ts
+      - .github/workflows/live-docker-smoke.yml
+
+jobs:
+  b2b-docker-workspace-exec:
+    name: B2b Docker workspace exec
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out pull request head
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Check out repository
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.0 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Docker preflight
+        run: docker info
+      - name: Run B2b Docker live smoke
+        env:
+          PANDA_B2B_DOCKER_SMOKE: "1"
+        run: pnpm vitest run --config vitest.live.config.ts --testTimeout=600000 tests/live/docker-workspace-exec-b2b.live.test.ts

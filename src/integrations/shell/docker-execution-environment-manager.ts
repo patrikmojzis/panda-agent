@@ -46,6 +46,8 @@ const DEFAULT_DOCKER_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CORE_ENVIRONMENTS_ROOT = "/root/.panda/environments";
 const DOCKER_DNS_LABEL_MAX_LENGTH = 63;
 const MAX_ENVIRONMENT_MANAGER_JSON_BODY_BYTES = 8 * 1024 * 1024;
+const DOCKER_EXEC_COMPLETION_WAIT_MS = 2_000;
+const DOCKER_EXEC_COMPLETION_POLL_MS = 25;
 
 interface DockerRequestOptions {
   method: string;
@@ -583,6 +585,7 @@ function buildControlContainerConfig(input: {
       `LANG=${safeEnv.LANG ?? ""}`,
       `BASH_SERVER_AGENT_KEY=${input.request.agentKey}`,
       `BASH_SERVER_PORT=${input.runnerPort}`,
+      `BASH_SERVER_ALLOWED_ROOTS=${input.filesystem.workspace.workerPath}`,
       ...(input.runnerSharedSecret ? [`BASH_SERVER_SHARED_SECRET=${input.runnerSharedSecret}`] : []),
       ...(input.managerUrl ? [`PANDA_WORKSPACE_EXEC_MANAGER_URL=${input.managerUrl}`] : []),
       `PANDA_WORKSPACE_EXEC_ENVIRONMENT_ID=${input.request.environmentId}`,
@@ -1003,6 +1006,18 @@ function workspaceExecEnv(request: WorkspaceExecStartRequest): string[] {
     .map(([key, value]) => `${key}=${value ?? ""}`);
 }
 
+
+function normalizeWorkspaceExecCwd(cwd: string): string {
+  if (!path.posix.isAbsolute(cwd)) {
+    throw new ToolError("Workspace exec cwd must be an absolute path under /workspace.", {details: {statusCode: 400, cwd}});
+  }
+  const normalized = path.posix.normalize(cwd);
+  if (normalized !== DEFAULT_WORKER_WORKSPACE_PATH && !normalized.startsWith(`${DEFAULT_WORKER_WORKSPACE_PATH}/`)) {
+    throw new ToolError("Workspace exec cwd must stay under /workspace.", {details: {statusCode: 400, cwd: normalized}});
+  }
+  return normalized;
+}
+
 function buildWorkspaceProcessWrapper(pidFilePath: string): string {
   return [
     "mkdir -p /tmp/panda-workspace-exec",
@@ -1011,7 +1026,7 @@ function buildWorkspaceProcessWrapper(pidFilePath: string): string {
     "child=$!",
     `printf '%s' \"$child\" > ${shellQuoteForDocker(pidFilePath)}`,
     "wait \"$child\"",
-  ].join("; ");
+  ].join("\n");
 }
 
 function shellQuoteForDocker(value: string): string {
@@ -1229,6 +1244,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
   }
 
   private async startWorkspaceProcess(environmentId: string, request: WorkspaceExecStartRequest): Promise<WorkspaceProcessSnapshot> {
+    request = {...request, cwd: normalizeWorkspaceExecCwd(request.cwd)};
     const processId = request.processId ?? randomBytes(12).toString("base64url");
     const key = scopedProcessKey(environmentId, processId);
     if (this.workspaceProcesses.has(key)) throw new ToolError(`Workspace process ${processId} already exists.`, {details: {statusCode: 409}});
@@ -1290,7 +1306,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       }, record.request.timeoutMs);
       timeout.unref();
       await demuxDockerStdCopyStream(stream, (chunk) => stdout.append(chunk), (chunk) => stderr.append(chunk));
-      const inspect = await this.docker.inspectExec(created.Id);
+      const inspect = await this.waitForDockerExecCompletion(created.Id);
       const exitCode = inspect.ExitCode ?? null;
       const timedOut = record.snapshot.timedOut;
       const cancelled = record.snapshot.status === "cancelled";
@@ -1320,6 +1336,17 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       if (timeout) clearTimeout(timeout);
       await Promise.all([stdout.close(), stderr.close()]);
     }
+  }
+
+
+  private async waitForDockerExecCompletion(execId: string): Promise<DockerExecInspectResult> {
+    const deadline = Date.now() + DOCKER_EXEC_COMPLETION_WAIT_MS;
+    let inspect = await this.docker.inspectExec(execId);
+    while ((inspect.Running === true || inspect.ExitCode == null) && Date.now() < deadline) {
+      await sleep(DOCKER_EXEC_COMPLETION_POLL_MS);
+      inspect = await this.docker.inspectExec(execId);
+    }
+    return inspect;
   }
 
   private async cancelWorkspaceProcess(record: WorkspaceProcessRecord, timeoutMs: number): Promise<WorkspaceProcessSnapshot> {
