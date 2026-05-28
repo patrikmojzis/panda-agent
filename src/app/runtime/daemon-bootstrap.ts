@@ -120,7 +120,7 @@ export async function bootstrapDaemonContext(
           notificationPokesInFlight.delete(notification.threadId);
         });
     },
-    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, sessionStore, subagentProfiles, store, wikiBindingService, mainTools, subagentTools}) => {
+    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, sessionStore, subagentProfiles, store, shellStateStore, wikiBindingService, mainTools, subagentTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
       const sessionPrompt = await sessionStore.readSessionPrompt(session.id);
       const runtimeConfig = await sessionStore.getSessionRuntimeConfig(session.id);
@@ -128,6 +128,10 @@ export async function bootstrapDaemonContext(
       const sessionMainTools = session.kind === "subagent"
         ? subagentTools
         : mainTools;
+      const shellSessions = await shellStateStore.listShellSessions({
+        sessionId: session.id,
+        threadId: thread.id,
+      });
       return createThreadDefinition({
         thread,
         session,
@@ -145,6 +149,7 @@ export async function bootstrapDaemonContext(
         bashToolOptions: {
           jobService: backgroundJobService,
           credentialResolver,
+          shellStateStore,
         },
         imageGenerateToolOptions: {
           jobService: backgroundJobService,
@@ -160,6 +165,7 @@ export async function bootstrapDaemonContext(
           new TelegramReactTool(),
         ],
         extraContext: {
+          ...(Object.keys(shellSessions).length > 0 ? {shellSessions} : {}),
           routeMemory: {
             getLastRoute: (lookup) => sessionRoutes.getLastRoute({
               sessionId: thread.sessionId,

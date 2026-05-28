@@ -8,6 +8,7 @@ export interface ThreadRuntimeTableNames {
   runs: string;
   toolJobs: string;
   bashJobs: string;
+  shellStates: string;
 }
 
 export function buildThreadRuntimeTableNames(): ThreadRuntimeTableNames {
@@ -18,5 +19,6 @@ export function buildThreadRuntimeTableNames(): ThreadRuntimeTableNames {
     runs: "runs",
     toolJobs: "tool_jobs",
     bashJobs: "bash_jobs",
+    shellStates: "shell_states",
   });
 }

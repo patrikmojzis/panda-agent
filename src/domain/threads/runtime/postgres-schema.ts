@@ -482,6 +482,22 @@ export function buildThreadRuntimeSchemaSql(
 
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_bash_jobs_status_idx`)}
     ON ${tables.bashJobs} (status, started_at);
+
+    CREATE TABLE IF NOT EXISTS ${tables.shellStates} (
+      session_id TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      execution_environment_id TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      env JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (session_id, thread_id, execution_environment_id),
+      FOREIGN KEY (session_id, thread_id)
+        REFERENCES ${tables.threads}(session_id, id)
+        ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_shell_states_thread_idx`)}
+    ON ${tables.shellStates} (session_id, thread_id);
   `;
 }
 

@@ -215,7 +215,7 @@ class PgMemPoolWithDropViewIfExistsSupport {
         .filter(Boolean);
 
       for (const statement of statements) {
-        if (/^CREATE TABLE IF NOT EXISTS "runtime"\."(messages|inputs|runs|tool_jobs|bash_jobs)"(?:\s|\()/i.test(statement)) {
+        if (/^CREATE TABLE IF NOT EXISTS "runtime"\."(messages|inputs|runs|tool_jobs|bash_jobs|shell_states)"(?:\s|\()/i.test(statement)) {
           continue;
         }
 
