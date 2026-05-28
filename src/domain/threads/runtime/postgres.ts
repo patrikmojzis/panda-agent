@@ -21,8 +21,7 @@ import {
 } from "./postgres-inputs.js";
 import type {PgPoolLike, PgQueryResult, PgQueryable} from "../../../lib/postgres-query.js";
 import type {ThreadEnqueueResult, ThreadInputApplyScope, ThreadRuntimeStore} from "./store.js";
-import type {ThreadShellStateKey, ThreadShellStateRecord, ThreadShellStateStore} from "./shell-state-store.js";
-import type {ShellSession} from "../../../integrations/shell/types.js";
+import type {DurableShellSession, ThreadShellStateKey, ThreadShellStateRecord, ThreadShellStateStore} from "./shell-state-store.js";
 import {
     type CreateThreadInput,
     type CreateThreadToolJobInput,
@@ -179,7 +178,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
     };
   }
 
-  async listShellSessions(input: Pick<ThreadShellStateKey, "sessionId" | "threadId">): Promise<Record<string, ShellSession>> {
+  async listShellSessions(input: Pick<ThreadShellStateKey, "sessionId" | "threadId">): Promise<Record<string, DurableShellSession>> {
     const result = await this.pool.query(`
       SELECT *
       FROM ${this.tables.shellStates}
@@ -193,7 +192,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
     }));
   }
 
-  async upsertShellSession(input: ThreadShellStateKey & {shellSession: ShellSession}): Promise<ThreadShellStateRecord> {
+  async upsertShellSession(input: ThreadShellStateKey & {shellSession: DurableShellSession}): Promise<ThreadShellStateRecord> {
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.shellStates} (
         session_id,
