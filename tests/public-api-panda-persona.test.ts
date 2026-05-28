@@ -35,6 +35,7 @@ const EXPECTED_PERSONA_EXPORTS = [
   "SpawnSubagentTool",
   "SubagentsContext",
   "ThinkingSetTool",
+  "UpsertSubagentProfileTool",
   "WatchCreateTool",
   "WatchDisableTool",
   "WatchSchemaGetTool",
