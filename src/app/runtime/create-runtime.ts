@@ -10,6 +10,7 @@ import type {EmailStore} from "../../domain/email/types.js";
 import {ThreadRuntimeCoordinator, type ThreadRuntimeEvent} from "../../domain/threads/runtime/coordinator.js";
 import {PostgresThreadLeaseManager} from "../../domain/threads/runtime/postgres-lease.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
+import type {ThreadShellStateStore} from "../../domain/threads/runtime/shell-state-store.js";
 import type {ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres-notifications.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
@@ -74,6 +75,7 @@ export interface DefinitionResolverContext {
   sessionStore: SessionStore;
   subagentProfiles: SubagentProfileStore;
   store: ThreadRuntimeStore;
+  shellStateStore: ThreadShellStateStore;
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
   wikiBindingService: WikiBindingService | null;
@@ -108,6 +110,7 @@ export interface RuntimeServices {
   sessionStore: SessionStore;
   subagentProfiles: SubagentProfileStore;
   store: ThreadRuntimeStore;
+  shellStateStore: ThreadShellStateStore;
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
   watches: WatchStore;
@@ -140,6 +143,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     sessionStore: runtime.sessionStore,
     subagentProfiles: runtime.subagentProfiles,
     store: runtime.store,
+    shellStateStore: runtime.shellStateStore,
     scheduledTasks: runtime.scheduledTasks,
     email: runtime.email,
     wikiBindingService: runtime.wikiBindingService,
@@ -200,6 +204,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     sessionStore: runtime.sessionStore,
     subagentProfiles: runtime.subagentProfiles,
     store: runtime.store,
+    shellStateStore: runtime.shellStateStore,
     scheduledTasks: runtime.scheduledTasks,
     email: runtime.email,
     watches: runtime.watches,

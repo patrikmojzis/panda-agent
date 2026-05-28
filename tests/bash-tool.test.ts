@@ -46,6 +46,39 @@ function asObject(value: unknown): Record<string, unknown> {
   return (value ?? {}) as Record<string, unknown>;
 }
 
+
+class MemoryShellStateStore {
+  readonly sessions = new Map<string, {cwd: string; env: Record<string, string>}>();
+
+  async listShellSessions(input: {sessionId: string; threadId: string}) {
+    const prefix = `${input.sessionId}:${input.threadId}:`;
+    return Object.fromEntries([...this.sessions.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([key, session]) => [key.slice(prefix.length), {cwd: session.cwd, env: {...session.env}}]));
+  }
+
+  async upsertShellSession(input: {sessionId: string; threadId: string; executionEnvironmentId: string; shellSession: {cwd: string; env: Record<string, string>}}) {
+    const key = `${input.sessionId}:${input.threadId}:${input.executionEnvironmentId}`;
+    const shellSession = {
+      cwd: input.shellSession.cwd,
+      env: {...input.shellSession.env},
+    };
+    this.sessions.set(key, shellSession);
+    return {
+      sessionId: input.sessionId,
+      threadId: input.threadId,
+      executionEnvironmentId: input.executionEnvironmentId,
+      shellSession,
+      updatedAt: Date.now(),
+    };
+  }
+
+  read(sessionId: string, threadId: string, executionEnvironmentId = "default") {
+    const session = this.sessions.get(`${sessionId}:${threadId}:${executionEnvironmentId}`);
+    return session ? {cwd: session.cwd, env: {...session.env}} : undefined;
+  }
+}
+
 const NUL_PLACEHOLDER = "␀";
 
 function expectNoJsonNul(value: unknown): void {
@@ -255,6 +288,190 @@ describe("BashTool", () => {
       expect(context.shell?.env.RUNTIME_TEST_VAR).toBeUndefined();
     } finally {
       await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("persists sanitized foreground shell state across fresh run contexts", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-durable-state-"));
+    try {
+      await mkdir(path.join(workspace, "nested"));
+      const expectedNested = await realpath(path.join(workspace, "nested"));
+      const shellStateStore = new MemoryShellStateStore();
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        shellStateStore,
+      });
+      const firstContext: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-shell",
+        threadId: "thread-shell",
+        cwd: workspace,
+      };
+
+      await tool.run(
+        {command: 'cd nested && export RUNTIME_TEST_VAR="kept"'},
+        createRunContext(firstContext),
+      );
+
+      expect(shellStateStore.read("session-shell", "thread-shell")?.cwd).toBe(expectedNested);
+      expect(shellStateStore.read("session-shell", "thread-shell")?.env.RUNTIME_TEST_VAR).toBe("kept");
+
+      const secondContext: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-shell",
+        threadId: "thread-shell",
+        cwd: workspace,
+        shellSessions: await shellStateStore.listShellSessions({
+          sessionId: "session-shell",
+          threadId: "thread-shell",
+        }),
+      };
+      const result = await tool.run(
+        {command: 'printf "%s:%s" "$PWD" "$RUNTIME_TEST_VAR"'},
+        createRunContext(secondContext),
+      );
+
+      expect(asObject(result).stdout).toBe(`${expectedNested}:kept`);
+
+      await tool.run(
+        {command: "unset RUNTIME_TEST_VAR"},
+        createRunContext(secondContext),
+      );
+      expect(shellStateStore.read("session-shell", "thread-shell")?.env.RUNTIME_TEST_VAR).toBeUndefined();
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("keeps durable shell state isolated by execution environment id", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-durable-envs-"));
+    try {
+      await mkdir(path.join(workspace, "one"));
+      await mkdir(path.join(workspace, "two"));
+      const oneCwd = await realpath(path.join(workspace, "one"));
+      const twoCwd = await realpath(path.join(workspace, "two"));
+      const shellStateStore = new MemoryShellStateStore();
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        shellStateStore,
+      });
+      const baseContext: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-shell-envs",
+        threadId: "thread-shell-envs",
+        cwd: workspace,
+        executionEnvironment: {
+          id: "env-one",
+          agentKey: "panda",
+          kind: "local",
+          state: "ready",
+          executionMode: "local",
+          initialCwd: workspace,
+          credentialPolicy: {mode: "all_agent"},
+          toolPolicy: {},
+          source: "binding",
+        },
+      };
+
+      await tool.run({command: 'cd one && export ENV_MARKER="one"'}, createRunContext(baseContext));
+      await tool.run({command: 'cd two && export ENV_MARKER="two"'}, createRunContext({
+        ...baseContext,
+        executionEnvironment: {...baseContext.executionEnvironment!, id: "env-two", initialCwd: workspace},
+        shellSessions: await shellStateStore.listShellSessions({sessionId: "session-shell-envs", threadId: "thread-shell-envs"}),
+      }));
+
+      expect(shellStateStore.read("session-shell-envs", "thread-shell-envs", "env-one")?.cwd).toBe(oneCwd);
+      expect(shellStateStore.read("session-shell-envs", "thread-shell-envs", "env-one")?.env.ENV_MARKER).toBe("one");
+      expect(shellStateStore.read("session-shell-envs", "thread-shell-envs", "env-two")?.cwd).toBe(twoCwd);
+      expect(shellStateStore.read("session-shell-envs", "thread-shell-envs", "env-two")?.env.ENV_MARKER).toBe("two");
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("does not write background bash changes to durable shell state", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-durable-background-"));
+    try {
+      await mkdir(path.join(workspace, "nested"));
+      const shellStateStore = new MemoryShellStateStore();
+      const {service, wait, context} = await createBackgroundHarness(workspace);
+      const bash = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        jobService: service,
+        shellStateStore,
+      });
+      context.sessionId = "session-bg-durable";
+      context.threadId = "thread-bg";
+
+      const jobResult = await bash.run(
+        {command: 'cd nested && export BG_DURABLE="nope" && printf done', background: true},
+        createRunContext(context),
+      );
+      await wait.run({jobId: String(asObject(jobResult).jobId), timeoutMs: 5000}, createRunContext(context));
+
+      expect(shellStateStore.read("session-bg-durable", "thread-bg")).toBeUndefined();
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("filters credentials, per-call env, reserved keys, and session secrets from durable shell state", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-durable-filter-"));
+    try {
+      const shellStateStore = new MemoryShellStateStore();
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-filter",
+        threadId: "thread-filter",
+        cwd: workspace,
+      };
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        shellStateStore,
+        credentialResolver: {
+          resolveEnvironment: async () => ({CREDENTIAL_VALUE: "credential-secret"}),
+        },
+      });
+
+      await tool.run(
+        {
+          command: [
+            'export SAFE_PUBLIC="kept"',
+            'export FROM_CALL="$CALL_VALUE"',
+            'export FROM_CREDENTIAL="$CREDENTIAL_VALUE"',
+            'export API_TOKEN="secret-ish"',
+            'export PANDA_INTERNAL_STATE="runtime"',
+          ].join(" && "),
+          env: {CALL_VALUE: "call-value"},
+        },
+        createRunContext(context),
+      );
+
+      expect(shellStateStore.read("session-filter", "thread-filter")?.env).toEqual({
+        SAFE_PUBLIC: "kept",
+      });
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("does not bleed durable shell state into a replacement thread", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-durable-thread-"));
+    try {
+      const shellStateStore = new MemoryShellStateStore();
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        shellStateStore,
+      });
+
+      await tool.run(
+        {command: 'export OLD_THREAD_ONLY="old"'},
+        createRunContext({agentKey: "panda", sessionId: "session-reset", threadId: "thread-old", cwd: workspace}),
+      );
+
+      expect(await shellStateStore.listShellSessions({sessionId: "session-reset", threadId: "thread-new"})).toEqual({});
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
     }
   });
 

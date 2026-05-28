@@ -176,6 +176,60 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(JSON.stringify(persistedMessage)).not.toContain("sk-legacy-secret");
   });
 
+  it("persists shell sessions by session, thread, and execution environment", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {threadStore: store} = await createRuntimeStores(pool);
+    await seedSession(pool, {
+      sessionId: "session-shell-state",
+      threadId: "thread-shell-state",
+    });
+    await store.createThread({
+      id: "thread-shell-state",
+      sessionId: "session-shell-state",
+    });
+
+    await store.upsertShellSession({
+      sessionId: "session-shell-state",
+      threadId: "thread-shell-state",
+      executionEnvironmentId: "default",
+      shellSession: {
+        cwd: "/workspace/default",
+        env: {FOO: "bar"},
+      },
+    });
+    await store.upsertShellSession({
+      sessionId: "session-shell-state",
+      threadId: "thread-shell-state",
+      executionEnvironmentId: "env-one",
+      shellSession: {
+        cwd: "/workspace/env-one",
+        env: {FOO: "env-one"},
+      },
+    });
+
+    expect(await store.listShellSessions({
+      sessionId: "session-shell-state",
+      threadId: "thread-shell-state",
+    })).toEqual({
+      default: {cwd: "/workspace/default", env: {FOO: "bar"}},
+      "env-one": {cwd: "/workspace/env-one", env: {FOO: "env-one"}},
+    });
+    expect(await store.listShellSessions({
+      sessionId: "session-shell-state",
+      threadId: "replacement-thread",
+    })).toEqual({});
+  });
+
   it("persists threads, pending inputs, transcript messages, and runs", async () => {
     const db = newDb();
     db.public.registerFunction({

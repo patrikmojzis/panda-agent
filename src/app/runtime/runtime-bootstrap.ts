@@ -32,6 +32,7 @@ import {
     readDatabaseUsername,
 } from "../../domain/threads/runtime/postgres-readonly.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
+import type {ThreadShellStateStore} from "../../domain/threads/runtime/shell-state-store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry,} from "../../panda/definition.js";
 import {AgentPromptTool} from "../../panda/tools/agent-prompt-tool.js";
@@ -133,6 +134,7 @@ interface RuntimeBootstrapResult {
   sessionStore: SessionStore;
   subagentProfiles: SubagentProfileStore;
   store: ThreadRuntimeStore;
+  shellStateStore: ThreadShellStateStore;
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
   watches: WatchStore;
@@ -503,6 +505,7 @@ export async function bootstrapRuntime(
       bash: {
         jobService: backgroundJobService,
         credentialResolver,
+        shellStateStore: store,
       },
       imageGenerate: {
         jobService: backgroundJobService,
@@ -644,6 +647,7 @@ export async function bootstrapRuntime(
       sessionStore,
       subagentProfiles,
       store,
+      shellStateStore: store,
       scheduledTasks,
       email,
       watches,

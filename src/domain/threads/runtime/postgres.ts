@@ -21,6 +21,8 @@ import {
 } from "./postgres-inputs.js";
 import type {PgPoolLike, PgQueryResult, PgQueryable} from "../../../lib/postgres-query.js";
 import type {ThreadEnqueueResult, ThreadInputApplyScope, ThreadRuntimeStore} from "./store.js";
+import type {ThreadShellStateKey, ThreadShellStateRecord, ThreadShellStateStore} from "./shell-state-store.js";
+import type {ShellSession} from "../../../integrations/shell/types.js";
 import {
     type CreateThreadInput,
     type CreateThreadToolJobInput,
@@ -71,7 +73,7 @@ function parseThreadSummaryCount(row: Record<string, unknown>, column: string): 
   };
 }
 
-export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
+export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShellStateStore {
   private readonly pool: PgPoolLike;
   private readonly tables: ThreadRuntimeTableNames;
   private readonly sessionTables: SessionTableNames;
@@ -154,6 +156,72 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore {
     }
 
     return parseThreadRow(row as Record<string, unknown>);
+  }
+
+  private parseShellStateRow(row: Record<string, unknown>): ThreadShellStateRecord {
+    const sessionId = typeof row.session_id === "string" ? row.session_id : "";
+    const threadId = typeof row.thread_id === "string" ? row.thread_id : "";
+    const executionEnvironmentId = typeof row.execution_environment_id === "string" ? row.execution_environment_id : "";
+    const cwd = typeof row.cwd === "string" && row.cwd.trim() ? row.cwd : null;
+    const env = row.env && typeof row.env === "object" && !Array.isArray(row.env)
+      ? Object.fromEntries(Object.entries(row.env as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+      : {};
+    if (!sessionId || !threadId || !executionEnvironmentId || !cwd) {
+      throw new Error("Invalid shell state row.");
+    }
+
+    return {
+      sessionId,
+      threadId,
+      executionEnvironmentId,
+      shellSession: {cwd, env},
+      updatedAt: row.updated_at instanceof Date ? row.updated_at.getTime() : Date.parse(String(row.updated_at)),
+    };
+  }
+
+  async listShellSessions(input: Pick<ThreadShellStateKey, "sessionId" | "threadId">): Promise<Record<string, ShellSession>> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.shellStates}
+      WHERE session_id = $1
+        AND thread_id = $2
+    `, [input.sessionId, input.threadId]);
+
+    return Object.fromEntries(result.rows.map((row) => {
+      const record = this.parseShellStateRow(row as Record<string, unknown>);
+      return [record.executionEnvironmentId, record.shellSession];
+    }));
+  }
+
+  async upsertShellSession(input: ThreadShellStateKey & {shellSession: ShellSession}): Promise<ThreadShellStateRecord> {
+    const result = await this.pool.query(`
+      INSERT INTO ${this.tables.shellStates} (
+        session_id,
+        thread_id,
+        execution_environment_id,
+        cwd,
+        env
+      ) VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5::jsonb
+      )
+      ON CONFLICT (session_id, thread_id, execution_environment_id) DO UPDATE
+      SET cwd = EXCLUDED.cwd,
+          env = EXCLUDED.env,
+          updated_at = NOW()
+      RETURNING *
+    `, [
+      input.sessionId,
+      input.threadId,
+      input.executionEnvironmentId,
+      input.shellSession.cwd,
+      toJson(input.shellSession.env),
+    ]);
+
+    return this.parseShellStateRow(result.rows[0] as Record<string, unknown>);
   }
 
   async listThreadSummaries(limit?: number, sessionId?: string): Promise<readonly ThreadSummaryRecord[]> {

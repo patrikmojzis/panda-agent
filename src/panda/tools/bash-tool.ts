@@ -29,6 +29,7 @@ import {
 import {applyPersistedEnv, collectTrackedEnvKeys, resolveCommandCwd,} from "../../integrations/shell/bash-session.js";
 import type {PersistedEnvEntry} from "../../integrations/shell/bash-protocol.js";
 import type {ShellSession} from "../../integrations/shell/types.js";
+import type {ThreadShellStateStore} from "../../domain/threads/runtime/shell-state-store.js";
 import {uniqueTrimmedStrings} from "../../lib/strings.js";
 import type {
   ExecutionCredentialPolicy,
@@ -41,6 +42,48 @@ const DEFAULT_MAX_OUTPUT_CHARS = 40_000;
 const DEFAULT_PROGRESS_INTERVAL_MS = 250;
 const DEFAULT_PROGRESS_TAIL_CHARS = 1_200;
 const DEFAULT_OUTPUT_DIRECTORY = path.join(tmpdir(), "runtime-tool-results");
+const DEFAULT_SHELL_ENVIRONMENT_ID = "default";
+
+
+function readExecutionEnvironmentId(context: DefaultAgentSessionContext | undefined): string {
+  const environmentId = context?.executionEnvironment?.id?.trim();
+  return environmentId || DEFAULT_SHELL_ENVIRONMENT_ID;
+}
+
+function isReservedRuntimeEnvKey(key: string): boolean {
+  const normalized = key.trim().toUpperCase();
+  return normalized.startsWith("PANDA_")
+    || normalized.startsWith("__PANDA")
+    || normalized === "PANDA_WORKSPACE_COMMAND";
+}
+
+function buildDurableShellSession(input: {
+  shellSession: ShellSession;
+  resolvedCredentialEnv: Record<string, string>;
+  callEnv: Record<string, string> | undefined;
+}): ShellSession {
+  const blockedKeys = new Set([
+    ...Object.keys(input.resolvedCredentialEnv),
+    ...Object.keys(input.callEnv ?? {}),
+    ...(input.shellSession.secretEnvKeys ?? []),
+  ]);
+  const blockedValues = new Set([
+    ...Object.values(input.resolvedCredentialEnv),
+    ...Object.values(input.callEnv ?? {}),
+  ]);
+  const env = Object.fromEntries(Object.entries(input.shellSession.env).filter(([key, value]) => {
+    return !blockedKeys.has(key)
+      && !blockedValues.has(value)
+      && !blockedValues.has(value.trim())
+      && !isSecretLikeEnvKey(key)
+      && !isReservedRuntimeEnvKey(key);
+  }));
+
+  return {
+    cwd: input.shellSession.cwd,
+    env,
+  };
+}
 
 function readToolResultText(message: ToolResultMessage<JsonValue>): string {
   return joinMessageTextParts(message.content);
@@ -242,6 +285,7 @@ export interface BashToolOptions {
   fetchImpl?: typeof fetch;
   credentialResolver?: BashCredentialResolver;
   jobService?: BackgroundToolJobService;
+  shellStateStore?: ThreadShellStateStore;
 }
 
 export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof BashTool.schema, TContext> {
@@ -270,6 +314,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
   private readonly executor?: BashExecutor;
   private readonly credentialResolver?: BashCredentialResolver;
   private readonly jobService?: BackgroundToolJobService;
+  private readonly shellStateStore?: ThreadShellStateStore;
 
   constructor(options: BashToolOptions = {}) {
     super();
@@ -286,6 +331,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     this.outputDirectory = path.resolve(options.outputDirectory ?? DEFAULT_OUTPUT_DIRECTORY);
     this.credentialResolver = options.credentialResolver;
     this.jobService = options.jobService;
+    this.shellStateStore = options.shellStateStore;
     this.executor = options.executor;
   }
 
@@ -441,6 +487,19 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
 
       if (run.context && typeof run.context === "object" && !Array.isArray(run.context)) {
         (run.context as Record<string, unknown>).cwd = result.finalCwd;
+      }
+
+      if (this.shellStateStore && context?.sessionId && context.threadId) {
+        await this.shellStateStore.upsertShellSession({
+          sessionId: context.sessionId,
+          threadId: context.threadId,
+          executionEnvironmentId: readExecutionEnvironmentId(context),
+          shellSession: buildDurableShellSession({
+            shellSession,
+            resolvedCredentialEnv,
+            callEnv: args.env,
+          }),
+        });
       }
     }
 
