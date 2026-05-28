@@ -75,13 +75,42 @@ function decodeUtf8File(bytes: Buffer, filePath: string): string {
   }
 }
 
+function isNotFoundFileSystemError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && error.code === "ENOENT";
+}
+
+function throwPathDoesNotExist(displayPath: string): never {
+  throw new ToolError(`Path does not exist: ${displayPath}`, {details: {path: displayPath}});
+}
+
 async function readTextFile(filePath: string, displayPath = filePath): Promise<string> {
-  const fileStats = await stat(filePath);
+  let fileStats;
+  try {
+    fileStats = await stat(filePath);
+  } catch (error) {
+    if (isNotFoundFileSystemError(error)) {
+      throwPathDoesNotExist(displayPath);
+    }
+    throw error;
+  }
+
   if (!fileStats.isFile()) {
     throw new ToolError(`Path is not a file: ${displayPath}`);
   }
 
-  const bytes = await readFile(filePath);
+  let bytes;
+  try {
+    bytes = await readFile(filePath);
+  } catch (error) {
+    if (isNotFoundFileSystemError(error)) {
+      throwPathDoesNotExist(displayPath);
+    }
+    throw error;
+  }
+
   return decodeUtf8File(bytes, displayPath);
 }
 
