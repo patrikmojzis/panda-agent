@@ -282,7 +282,7 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
     expect(await dockerExecStatus(controlName, "test -f /tmp/panda-b2b-workspace-exec-marker")).not.toBe(0);
 
     const setupScript = path.join(harness.tempRoot, "setup.sh");
-    await writeFile(setupScript, "#!/usr/bin/env bash\nset -euo pipefail\nhostname | tee /artifacts/setup-hostname.txt\ntouch /workspace/setup-ran-from-workspace\n", "utf8");
+    await writeFile(setupScript, "#!/usr/bin/env bash\nset -euo pipefail\nsetup_hostname=$(hostname)\nprintf '%s\\n' \"$setup_hostname\"\nprintf '%s\\n' \"$setup_hostname\" > /artifacts/setup-hostname.txt\ntouch /workspace/setup-ran-from-workspace\n", "utf8");
     const setupRunner = new RemoteExecutionEnvironmentSetupRunner({env: {BASH_SERVER_SHARED_SECRET: harness.runnerSecret}});
     await setupRunner.runSetup({
       agentKey,
