@@ -206,6 +206,62 @@ describe("RemoteExecutionEnvironmentSetupRunner", () => {
     }
   });
 
+
+  it("copies the setup script to the local worker mount source when it differs from core artifacts", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "panda-setup-worker-local-"));
+    try {
+      const coreRoot = path.join(tmp, "core");
+      const hostRoot = path.join(tmp, "host");
+      const sourceScript = path.join(tmp, "setup.sh");
+      await writeFile(sourceScript, "#!/usr/bin/env bash\necho setup\n", "utf8");
+      const filesystem = createFilesystem(coreRoot);
+      filesystem.artifacts.hostPath = path.join(hostRoot, "artifacts");
+      const requests: BashRunnerExecRequest[] = [];
+      const responses = [
+        bashResult(),
+        bashResult({
+          timeoutMs: 30_000,
+          stdout: JSON.stringify({
+            tools: {
+              node: {status: "missing"},
+              pnpm: {status: "missing"},
+              corepack: {status: "missing"},
+            },
+          }),
+          noOutput: false,
+        }),
+      ];
+      const fetchImpl: typeof fetch = async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)) as BashRunnerExecRequest);
+        await expect(stat(path.join(hostRoot, "artifacts", "setup", "setup.sh"))).resolves.toMatchObject({});
+        return jsonResponse(responses.shift() ?? bashResult());
+      };
+      const runner = new RemoteExecutionEnvironmentSetupRunner({
+        env: {} as NodeJS.ProcessEnv,
+        fetchImpl,
+      });
+
+      await runner.runSetup({
+        agentKey: "panda",
+        environmentId: "env-setup",
+        runnerUrl: "http://runner:8080",
+        runnerCwd: "/workspace",
+        filesystem,
+        setupScript: {
+          requestedPath: "setup.sh",
+          resolvedPath: sourceScript,
+        },
+      });
+
+      expect(responses).toHaveLength(0);
+      expect(requests[0]?.command).toBe("bash /artifacts/setup/setup.sh");
+      await expect(readFile(path.join(coreRoot, "artifacts", "setup", "setup.sh"), "utf8")).resolves.toBe("#!/usr/bin/env bash\necho setup\n");
+      await expect(readFile(path.join(hostRoot, "artifacts", "setup", "setup.sh"), "utf8")).resolves.toBe("#!/usr/bin/env bash\necho setup\n");
+    } finally {
+      await rm(tmp, {recursive: true, force: true});
+    }
+  });
+
   it("writes failed setup artifacts for non-zero setup exits", async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), "panda-setup-fail-"));
     try {
@@ -247,7 +303,7 @@ describe("RemoteExecutionEnvironmentSetupRunner", () => {
         execution: {
           exitCode: 7,
         },
-        error: "Setup script exited with code 7.",
+        error: "Setup script exited with code 7. Output: [redacted]",
       });
       expect(toolchain).toMatchObject({
         status: "not_run",
