@@ -42,4 +42,31 @@ describe("Dockerfile targets", () => {
     expect(stages.get("bash-runner")?.body).toContain('CMD ["bash-server"]');
     expect(stages.get("runner")?.base).toBe("bash-runner");
   });
+
+  it("keeps legacy workspace tools in bash-runner while workspace exec is deferred", async () => {
+    const stages = parseDockerStages(await readFile(dockerfilePath, "utf8"));
+    const bashRunnerBody = stages.get("bash-runner")?.body ?? "";
+
+    expect(bashRunnerBody).toContain("mongodb-mongosh");
+    expect(bashRunnerBody).toContain("ripgrep");
+    expect(bashRunnerBody).toContain("sqlite3");
+    expect(bashRunnerBody).toContain("python3-venv");
+    expect(bashRunnerBody).toContain("libreoffice-nogui");
+    expect(bashRunnerBody).toContain('CMD ["bash-server"]');
+  });
+
+  it("adds a workspace image target without Node or Panda runtime artifacts", async () => {
+    const stages = parseDockerStages(await readFile(dockerfilePath, "utf8"));
+    const workspace = stages.get("workspace-runner");
+
+    expect(workspace?.base).toBe("ubuntu:24.04");
+    expect(workspace?.body).toContain('WORKDIR /workspace');
+    expect(workspace?.body).toContain('CMD ["sleep", "infinity"]');
+    expect(stages.get("workspace")?.base).toBe("workspace-runner");
+    expect(workspace?.body).not.toMatch(/nodejs/);
+    expect(workspace?.body).not.toContain("corepack");
+    expect(workspace?.body).not.toContain("pnpm");
+    expect(workspace?.body).not.toContain("/app/dist");
+    expect(workspace?.body).not.toContain("/usr/local/bin/panda");
+  });
 });

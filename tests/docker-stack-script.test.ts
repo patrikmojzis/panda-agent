@@ -277,6 +277,14 @@ exit 42
     expect(generatedCompose).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL}");
     expect(generatedCompose).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN}");
     expect(generatedCompose).toContain("BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}");
+    expect(generatedCompose).toContain("PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE: ${PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE:-${PANDA_DISPOSABLE_RUNNER_IMAGE:-panda-runner:latest}}");
+    expect(generatedCompose).toContain("PANDA_DISPOSABLE_WORKSPACE_IMAGE: ${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-panda-workspace:latest}");
+    const managerStart = generatedCompose.indexOf("  panda-environment-manager:");
+    const gatewayStart = generatedCompose.indexOf("  panda-gateway:");
+    const managerSection = generatedCompose.slice(managerStart, gatewayStart >= 0 ? gatewayStart : generatedCompose.indexOf("\nnetworks:"));
+    expect(managerSection).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL}");
+    expect(managerSection).toMatch(/^\s+- execution_manager_net$/m);
+    expect(managerSection).toMatch(/^\s+- disposable_runner_net$/m);
     expect(generatedCompose).toContain("      - execution_manager_net");
     expect(generatedCompose).toContain("      - disposable_runner_net");
     const browserStart = generatedCompose.indexOf("  panda-browser-runner:");
@@ -292,6 +300,7 @@ exit 42
     expect(generatedCompose).not.toContain("gateway_edge_net");
     const logContents = await readFile(logPath, "utf8");
     expect(logContents.match(/build --target bash-runner --build-arg NODE_MAJOR=22 -t panda-runner:latest/g)).toHaveLength(1);
+    expect(logContents.match(/build --target workspace-runner -t panda-workspace:latest/g)).toHaveLength(1);
 
     const logsResult = await runScript(["logs", "environment-manager"], {
       envFile,
@@ -467,6 +476,7 @@ exit 42
     expect(logContents.match(/build --target app -t panda-app:latest/g)).toHaveLength(1);
     expect(logContents.match(/build --target browser-runner -t panda-browser-runner:latest/g)).toHaveLength(1);
     expect(logContents.match(/build --target bash-runner --build-arg NODE_MAJOR=20 -t panda-runner:latest/g)).toHaveLength(1);
+    expect(logContents).not.toContain("build --target workspace-runner");
   });
 
   it("rejects unsupported runner Node majors", async () => {

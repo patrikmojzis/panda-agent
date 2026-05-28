@@ -32,14 +32,17 @@ export {
   type RemoteShellExecutorOptions,
 } from "./bash-executor.js";
 export {
+  createWorkspaceExecCredential,
   DockerApiError,
   DockerExecutionEnvironmentManager,
+  validateWorkspaceExecCredential,
   resolveDockerExecutionEnvironmentManagerOptions,
   resolveExecutionEnvironmentManagerServerOptions,
   startExecutionEnvironmentManager,
   type DockerExecutionEnvironmentManagerOptions,
   type ExecutionEnvironmentManagerServer,
   type ExecutionEnvironmentManagerServerOptions,
+  type WorkspaceExecCredentialValidator,
 } from "./docker-execution-environment-manager.js";
 export {
   createExecutionEnvironmentManagerClientFromEnv,

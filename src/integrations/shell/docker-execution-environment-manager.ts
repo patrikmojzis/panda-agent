@@ -1,4 +1,4 @@
-import {createHash} from "node:crypto";
+import {createHash, createHmac, randomBytes, timingSafeEqual} from "node:crypto";
 import {mkdir} from "node:fs/promises";
 import http, {createServer, type IncomingMessage, type Server} from "node:http";
 import os from "node:os";
@@ -32,7 +32,8 @@ import {assertNoDeprecatedBashServerEnv, DOCKER_MANAGER_BASH_SERVER_ENV_NAMES} f
 const DEFAULT_MANAGER_HOST = "127.0.0.1";
 const DEFAULT_MANAGER_PORT = 8095;
 const DEFAULT_DOCKER_HOST = "unix:///var/run/docker.sock";
-const DEFAULT_RUNNER_IMAGE = "panda-runner:latest";
+const DEFAULT_CONTROL_RUNNER_IMAGE = "panda-runner:latest";
+const DEFAULT_WORKSPACE_IMAGE = "panda-workspace:latest";
 const DEFAULT_RUNNER_PORT = 8080;
 const DEFAULT_RUNNER_CWD = "/workspace";
 const DEFAULT_HOST_BIND_IP = "127.0.0.1";
@@ -79,8 +80,8 @@ export interface DockerContainerCreateConfig {
   Env: string[];
   WorkingDir: string;
   Labels: Record<string, string>;
-  ExposedPorts: Record<string, Record<string, never>>;
-  Healthcheck: {
+  ExposedPorts?: Record<string, Record<string, never>>;
+  Healthcheck?: {
     Test: string[];
     Interval: number;
     Timeout: number;
@@ -243,6 +244,10 @@ export interface DockerExecutionEnvironmentManagerOptions {
   dockerHost?: string;
   dockerClient?: DockerClient;
   image?: string;
+  controlRunnerImage?: string;
+  workspaceImage?: string;
+  workspaceExecSecret?: string;
+  managerUrl?: string;
   network?: string;
   hostBindIp?: string;
   hostRunnerHost?: string;
@@ -310,6 +315,86 @@ function requireAuthorization(request: IncomingMessage, sharedSecret: string | u
   }
 }
 
+
+export interface WorkspaceExecCredentialPayload {
+  readonly capability: "workspace-exec";
+  readonly environmentId: string;
+}
+
+export interface WorkspaceExecCredentialValidator {
+  validateWorkspaceExecCredential(environmentId: string, credential: string): boolean;
+}
+
+function encodeBase64Url(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64url");
+}
+
+function signWorkspaceExecPayload(encodedPayload: string, secret: string): string {
+  return createHmac("sha256", secret).update(encodedPayload).digest("base64url");
+}
+
+export function createWorkspaceExecCredential(input: {
+  environmentId: string;
+  secret: string;
+}): string {
+  const payload: WorkspaceExecCredentialPayload = {
+    capability: "workspace-exec",
+    environmentId: input.environmentId,
+  };
+  const encodedPayload = encodeBase64Url(JSON.stringify(payload));
+  const signature = signWorkspaceExecPayload(encodedPayload, input.secret);
+  return `panda-workspace-exec-v1.${encodedPayload}.${signature}`;
+}
+
+export function validateWorkspaceExecCredential(input: {
+  environmentId: string;
+  credential: string;
+  secret: string;
+}): boolean {
+  const parts = input.credential.split(".");
+  if (parts.length !== 3 || parts[0] !== "panda-workspace-exec-v1") {
+    return false;
+  }
+  const [, encodedPayload, signature] = parts;
+  if (!encodedPayload || !signature) {
+    return false;
+  }
+  const expectedSignature = signWorkspaceExecPayload(encodedPayload, input.secret);
+  const signatureBuffer = Buffer.from(signature, "base64url");
+  const expectedBuffer = Buffer.from(expectedSignature, "base64url");
+  if (signatureBuffer.length !== expectedBuffer.length || !timingSafeEqual(signatureBuffer, expectedBuffer)) {
+    return false;
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+  } catch {
+    return false;
+  }
+  return isRecord(payload)
+    && payload.capability === "workspace-exec"
+    && payload.environmentId === input.environmentId;
+}
+
+function requireWorkspaceExecAuthorization(
+  request: IncomingMessage,
+  environmentId: string,
+  validator: WorkspaceExecCredentialValidator,
+): void {
+  const header = trimToNull(request.headers.authorization ?? null);
+  if (!header) {
+    throw new ToolError("Missing Authorization header.", {details: {statusCode: 401}});
+  }
+  const credential = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+  if (!credential || !validator.validateWorkspaceExecCredential(environmentId, credential)) {
+    throw new ToolError("Invalid workspace exec credential.", {details: {statusCode: 403}});
+  }
+}
+
+function hasWorkspaceExecCredentialValidator(value: ExecutionEnvironmentManager): value is ExecutionEnvironmentManager & WorkspaceExecCredentialValidator {
+  return typeof (value as {validateWorkspaceExecCredential?: unknown}).validateWorkspaceExecCredential === "function";
+}
+
 function normalizeDockerNamePart(value: string): string {
   const cleaned = value
     .toLowerCase()
@@ -355,33 +440,39 @@ function buildEnvironmentDir(environmentId: string): string {
   return `${normalized.slice(0, maxBaseLength)}-${digest}`;
 }
 
-function buildContainerName(prefix: string, environmentId: string): string {
+function buildContainerName(prefix: string, environmentId: string, role?: "control" | "workspace"): string {
   const normalizedPrefix = normalizeDockerDnsLabelPart(prefix);
   const normalized = normalizeDockerDnsLabelPart(environmentId);
   const digest = createHash("sha256").update(environmentId).digest("hex").slice(0, 10);
-  const maxPrefixLength = DOCKER_DNS_LABEL_MAX_LENGTH - digest.length - 3;
+  const rolePart = role ? `-${role}` : "";
+  const maxPrefixLength = DOCKER_DNS_LABEL_MAX_LENGTH - digest.length - rolePart.length - 3;
   const trimmedPrefix = trimDockerDnsPart(normalizedPrefix, maxPrefixLength);
-  const maxBaseLength = DOCKER_DNS_LABEL_MAX_LENGTH - trimmedPrefix.length - digest.length - 2;
+  const maxBaseLength = DOCKER_DNS_LABEL_MAX_LENGTH - trimmedPrefix.length - digest.length - rolePart.length - 2;
   const trimmedBase = trimDockerDnsPart(normalized, maxBaseLength);
-  return `${trimmedPrefix}-${trimmedBase}-${digest}`;
+  return `${trimmedPrefix}-${trimmedBase}${rolePart}-${digest}`;
 }
 
-function buildLabels(input: DisposableEnvironmentCreateRequest): Record<string, string> {
+function buildLabels(input: DisposableEnvironmentCreateRequest, role?: "control" | "workspace", extra: Record<string, string> = {}): Record<string, string> {
   return {
     "panda.managed": "true",
     "panda.environment.id": input.environmentId,
     "panda.agent.key": input.agentKey,
     "panda.session.id": input.sessionId,
+    ...(role ? {"panda.environment.role": role} : {}),
     ...(input.ttlMs === undefined ? {} : {"panda.expires_at": new Date(Date.now() + input.ttlMs).toISOString()}),
+    ...extra,
   };
 }
 
-function buildContainerConfig(input: {
+function buildControlContainerConfig(input: {
   request: DisposableEnvironmentCreateRequest;
   image: string;
   runnerPort: number;
   runnerCwd: string;
   runnerSharedSecret?: string;
+  workspaceExecToken: string;
+  managerUrl?: string;
+  workspaceContainerName: string;
   filesystem: ExecutionEnvironmentFilesystemMetadata;
   network?: string;
   hostBindIp: string;
@@ -400,10 +491,14 @@ function buildContainerConfig(input: {
       `BASH_SERVER_AGENT_KEY=${input.request.agentKey}`,
       `BASH_SERVER_PORT=${input.runnerPort}`,
       ...(input.runnerSharedSecret ? [`BASH_SERVER_SHARED_SECRET=${input.runnerSharedSecret}`] : []),
+      ...(input.managerUrl ? [`PANDA_WORKSPACE_EXEC_MANAGER_URL=${input.managerUrl}`] : []),
+      `PANDA_WORKSPACE_EXEC_ENVIRONMENT_ID=${input.request.environmentId}`,
+      `PANDA_WORKSPACE_EXEC_TOKEN=${input.workspaceExecToken}`,
+      `PANDA_WORKSPACE_CONTAINER_NAME=${input.workspaceContainerName}`,
       `TZ=${safeEnv.TZ ?? "UTC"}`,
     ],
     WorkingDir: input.runnerCwd,
-    Labels: buildLabels(input.request),
+    Labels: buildLabels(input.request, "control", {"panda.environment.workspace_container": input.workspaceContainerName}),
     ExposedPorts: {
       [portKey]: {},
     },
@@ -434,6 +529,41 @@ function buildContainerConfig(input: {
             ],
           },
         }),
+    },
+  };
+}
+
+
+function buildWorkspaceContainerConfig(input: {
+  request: DisposableEnvironmentCreateRequest;
+  image: string;
+  runnerCwd: string;
+  filesystem: ExecutionEnvironmentFilesystemMetadata;
+  network?: string;
+}): DockerContainerCreateConfig {
+  const safeEnv = buildSafeCommandBaseEnv({TZ: process.env.TZ ?? "UTC"});
+  return {
+    Image: input.image,
+    Cmd: ["sleep", "infinity"],
+    Env: [
+      `PATH=${safeEnv.PATH ?? ""}`,
+      `SHELL=${safeEnv.SHELL ?? ""}`,
+      `HOME=${safeEnv.HOME ?? ""}`,
+      `TMPDIR=${safeEnv.TMPDIR ?? ""}`,
+      `LANG=${safeEnv.LANG ?? ""}`,
+      `TZ=${safeEnv.TZ ?? "UTC"}`,
+    ],
+    WorkingDir: input.runnerCwd,
+    Labels: buildLabels(input.request, "workspace"),
+    HostConfig: {
+      AutoRemove: true,
+      Init: true,
+      Binds: [
+        `${input.filesystem.workspace.hostPath}:${input.filesystem.workspace.workerPath}`,
+        `${input.filesystem.inbox.hostPath}:${input.filesystem.inbox.workerPath}`,
+        `${input.filesystem.artifacts.hostPath}:${input.filesystem.artifacts.workerPath}`,
+      ],
+      ...(input.network ? {NetworkMode: input.network} : {}),
     },
   };
 }
@@ -628,7 +758,13 @@ export function resolveDockerExecutionEnvironmentManagerOptions(
   return {
     env,
     dockerHost: trimToUndefined(env.PANDA_DOCKER_HOST) ?? trimToUndefined(env.DOCKER_HOST) ?? DEFAULT_DOCKER_HOST,
-    image: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_IMAGE) ?? DEFAULT_RUNNER_IMAGE,
+    image: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_IMAGE) ?? undefined,
+    controlRunnerImage: trimToUndefined(env.PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE)
+      ?? trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_IMAGE)
+      ?? DEFAULT_CONTROL_RUNNER_IMAGE,
+    workspaceImage: trimToUndefined(env.PANDA_DISPOSABLE_WORKSPACE_IMAGE) ?? DEFAULT_WORKSPACE_IMAGE,
+    workspaceExecSecret: trimToUndefined(env.PANDA_WORKSPACE_EXEC_SECRET),
+    managerUrl: trimToUndefined(env.PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL),
     network: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_NETWORK),
     hostBindIp: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_HOST_BIND_IP) ?? DEFAULT_HOST_BIND_IP,
     hostRunnerHost: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_PUBLIC_HOST) ?? DEFAULT_HOST_BIND_IP,
@@ -677,7 +813,10 @@ export function resolveExecutionEnvironmentManagerServerOptions(
 
 export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentManager {
   private readonly docker: DockerClient;
-  private readonly image: string;
+  private readonly controlRunnerImage: string;
+  private readonly workspaceImage: string;
+  private readonly workspaceExecSecret: string;
+  private readonly managerUrl?: string;
   private readonly network?: string;
   private readonly hostBindIp: string;
   private readonly hostRunnerHost: string;
@@ -697,7 +836,10 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       ...options,
     };
     this.docker = resolved.dockerClient ?? new DockerEngineClient(resolved.dockerHost);
-    this.image = resolved.image ?? DEFAULT_RUNNER_IMAGE;
+    this.controlRunnerImage = resolved.controlRunnerImage ?? resolved.image ?? DEFAULT_CONTROL_RUNNER_IMAGE;
+    this.workspaceImage = resolved.workspaceImage ?? DEFAULT_WORKSPACE_IMAGE;
+    this.workspaceExecSecret = trimToUndefined(resolved.workspaceExecSecret) ?? randomBytes(32).toString("base64url");
+    this.managerUrl = trimToUndefined(resolved.managerUrl);
     this.network = trimToUndefined(resolved.network);
     this.hostBindIp = resolved.hostBindIp ?? DEFAULT_HOST_BIND_IP;
     this.hostRunnerHost = resolved.hostRunnerHost ?? DEFAULT_HOST_BIND_IP;
@@ -735,7 +877,8 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       throw new Error("Disposable environment requests require environmentId and sessionId.");
     }
 
-    const containerName = buildContainerName(this.containerNamePrefix, request.environmentId);
+    const controlContainerName = buildContainerName(this.containerNamePrefix, request.environmentId, "control");
+    const workspaceContainerName = buildContainerName(this.containerNamePrefix, request.environmentId, "workspace");
     const filesystem = buildFilesystemMetadata({
       agentKey: request.agentKey,
       environmentId: request.environmentId,
@@ -745,28 +888,49 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       parentRunnerRoot: this.parentRunnerEnvironmentsRoot,
     });
     await ensureEnvironmentFilesystem(filesystem);
-    const config = buildContainerConfig({
+    const workspaceConfig = buildWorkspaceContainerConfig({
       request,
-      image: this.image,
+      image: this.workspaceImage,
+      runnerCwd: this.runnerCwd,
+      filesystem,
+      network: this.network,
+    });
+    const workspaceExecToken = createWorkspaceExecCredential({
+      environmentId: request.environmentId,
+      secret: this.workspaceExecSecret,
+    });
+    const controlConfig = buildControlContainerConfig({
+      request,
+      image: this.controlRunnerImage,
       runnerPort: this.runnerPort,
       runnerCwd: this.runnerCwd,
       ...(this.runnerSharedSecret ? {runnerSharedSecret: this.runnerSharedSecret} : {}),
+      workspaceExecToken,
+      ...(this.managerUrl ? {managerUrl: this.managerUrl} : {}),
+      workspaceContainerName,
       filesystem,
       network: this.network,
       hostBindIp: this.hostBindIp,
     });
-    const containerId = await this.ensureContainer(containerName, request, config);
+    const createdContainers: string[] = [];
+    let controlContainerId: string | undefined;
+    let workspaceContainerId: string | undefined;
     let inspect: DockerContainerInspectResult;
     try {
-      await this.docker.startContainer(containerId);
-      inspect = await this.waitForReady(containerName);
+      workspaceContainerId = await this.ensureContainer(workspaceContainerName, request, workspaceConfig);
+      createdContainers.push(workspaceContainerName);
+      await this.docker.startContainer(workspaceContainerId);
+      controlContainerId = await this.ensureContainer(controlContainerName, request, controlConfig);
+      createdContainers.push(controlContainerName);
+      await this.docker.startContainer(controlContainerId);
+      inspect = await this.waitForReady(controlContainerName);
     } catch (error) {
-      await this.cleanupFailedCreate(containerName);
+      await this.cleanupFailedCreate(createdContainers.length > 0 ? createdContainers : [controlContainerName, workspaceContainerName]);
       throw error;
     }
 
     const runnerUrl = this.network
-      ? `http://${containerName}:${this.runnerPort}`
+      ? `http://${controlContainerName}:${this.runnerPort}`
       : `http://${this.hostRunnerHost}:${readPublishedPort(inspect, this.runnerPort)}`;
     return {
       runnerUrl,
@@ -774,42 +938,87 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       rootPath: this.runnerCwd,
       metadata: {
         filesystem: validateManagerMetadata(filesystem),
-        containerId: inspect.Id || containerId,
-        containerName,
-        image: this.image,
+        containerId: inspect.Id || controlContainerId,
+        containerName: controlContainerName,
+        image: this.controlRunnerImage,
+        controlContainer: {
+          id: inspect.Id || controlContainerId,
+          name: controlContainerName,
+          image: this.controlRunnerImage,
+        },
+        workspaceContainer: {
+          id: workspaceContainerId,
+          name: workspaceContainerName,
+          image: this.workspaceImage,
+        },
         ...(this.network ? {network: this.network} : {}),
       },
     };
   }
 
   async stopEnvironment(environmentId: string): Promise<void> {
-    const containerName = buildContainerName(this.containerNamePrefix, environmentId);
-    const inspect = await this.inspectManagedContainer(containerName, environmentId);
-    if (!inspect) {
-      return;
-    }
-    await this.docker.stopContainer(containerName);
-    try {
-      await this.docker.removeContainer(containerName);
-    } catch (error) {
-      if (isAutoRemoveInProgress(error)) {
-        return;
+    const containerNames = [
+      buildContainerName(this.containerNamePrefix, environmentId, "control"),
+      buildContainerName(this.containerNamePrefix, environmentId, "workspace"),
+    ];
+    const errors: Error[] = [];
+    for (const containerName of containerNames) {
+      let inspect: DockerContainerInspectResult | null;
+      try {
+        inspect = await this.inspectManagedContainer(containerName, environmentId);
+      } catch (error) {
+        errors.push(error instanceof Error ? error : new Error(String(error)));
+        continue;
       }
-      throw error;
+      if (!inspect) {
+        continue;
+      }
+      try {
+        await this.docker.stopContainer(containerName);
+      } catch (error) {
+        errors.push(error instanceof Error ? error : new Error(String(error)));
+      }
+      try {
+        await this.docker.removeContainer(containerName);
+      } catch (error) {
+        if (!isAutoRemoveInProgress(error)) {
+          errors.push(error instanceof Error ? error : new Error(String(error)));
+        }
+      }
+    }
+    if (errors.length === 1) {
+      throw errors[0]!;
+    }
+    if (errors.length > 1) {
+      throw new AggregateError(
+        errors,
+        `Failed to fully stop disposable environment ${environmentId}: ${errors.map((error) => error.message).join("; ")}`,
+      );
     }
   }
 
-  private async cleanupFailedCreate(container: string): Promise<void> {
-    try {
-      await this.docker.stopContainer(container);
-    } catch {
-      // Best effort. A failed start may leave nothing to stop.
-    }
-    try {
-      await this.docker.removeContainer(container);
-    } catch (error) {
-      if (isAutoRemoveInProgress(error)) {
-        return;
+  validateWorkspaceExecCredential(environmentId: string, credential: string): boolean {
+    return validateWorkspaceExecCredential({
+      environmentId,
+      credential,
+      secret: this.workspaceExecSecret,
+    });
+  }
+
+  private async cleanupFailedCreate(containers: string | readonly string[]): Promise<void> {
+    const containerNames = Array.isArray(containers) ? [...containers].reverse() : [containers];
+    for (const container of containerNames) {
+      try {
+        await this.docker.stopContainer(container);
+      } catch {
+        // Best effort. A failed start may leave nothing to stop.
+      }
+      try {
+        await this.docker.removeContainer(container);
+      } catch (error) {
+        if (isAutoRemoveInProgress(error)) {
+          continue;
+        }
       }
     }
   }
@@ -907,8 +1116,17 @@ export async function startExecutionEnvironmentManager(
         return;
       }
 
-      requireAuthorization(request, sharedSecret);
       const body = await readJsonBody(request);
+      if (requestUrl.pathname === "/workspaces/exec") {
+        if (!hasWorkspaceExecCredentialValidator(manager)) {
+          throw new ToolError("Workspace exec is not supported by this environment manager.", {details: {statusCode: 501}});
+        }
+        const parsed = validateEnvironmentIdRequest(body);
+        requireWorkspaceExecAuthorization(request, parsed.environmentId, manager);
+        throw new ToolError("Workspace exec streaming is deferred to B2.", {details: {statusCode: 501}});
+      }
+
+      requireAuthorization(request, sharedSecret);
       if (requestUrl.pathname === "/environments/disposable") {
         const result = validateCreateResult(await manager.createDisposableEnvironment(validateCreateRequest(body)));
         writeJsonResponse(response, 200, {

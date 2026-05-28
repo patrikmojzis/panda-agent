@@ -158,6 +158,76 @@ EXPOSE 8080
 ENTRYPOINT ["panda"]
 CMD ["bash-server"]
 
+FROM ubuntu:24.04 AS workspace-runner
+ARG UBUNTU_MIRROR
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV SHELL=/bin/bash
+ENV TZ=UTC
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WORKDIR /workspace
+
+RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,id=panda-apt-lists,target=/var/lib/apt/lists,sharing=locked \
+  set -eux; \
+  apt_retry() { \
+    attempts=0; \
+    until "$@"; do \
+      attempts=$((attempts + 1)); \
+      if [ "$attempts" -ge 5 ]; then \
+        return 1; \
+      fi; \
+      echo "apt command failed, retrying in 5s ($attempts/5)..." >&2; \
+      sleep 5; \
+    done; \
+  }; \
+  rm -f /etc/apt/apt.conf.d/docker-clean; \
+  if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+    sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources; \
+  elif [ -f /etc/apt/sources.list ]; then \
+    sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list; \
+  fi; \
+  mkdir -p /etc/apt/keyrings; \
+  apt_retry apt-get update; \
+  apt_retry apt-get install -y --no-install-recommends \
+    bash \
+    bc \
+    build-essential \
+    ca-certificates \
+    curl \
+    dnsutils \
+    ffmpeg \
+    file \
+    git \
+    gnupg \
+    jq \
+    less \
+    libreoffice-nogui \
+    netcat-openbsd \
+    poppler-utils \
+    python3 \
+    python-is-python3 \
+    python3-pip \
+    python3-venv \
+    redis-server \
+    ripgrep \
+    sqlite3 \
+    tree \
+    unzip \
+    wget \
+    whois \
+    zip; \
+  curl -fsSL https://pgp.mongodb.com/server-8.0.asc \
+    | gpg --dearmor -o /etc/apt/keyrings/mongodb-server-8.0.gpg; \
+  echo "deb [ arch=amd64,arm64 signed-by=/etc/apt/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" \
+    > /etc/apt/sources.list.d/mongodb-org-8.0.list; \
+  apt_retry apt-get update; \
+  apt_retry apt-get install -y --no-install-recommends mongodb-mongosh
+
+CMD ["sleep", "infinity"]
+
+FROM workspace-runner AS workspace
+
 FROM bash-runner AS runner
 
 FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble AS browser-runner
