@@ -12,6 +12,7 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import {isJsonObject} from "../../lib/json.js";
 import type {
     BashExecutionResult,
+    BashJobSnapshot,
     BashRunnerAbortRequest,
     BashRunnerExecRequest,
     BashRunnerJobQueryRequest,
@@ -39,6 +40,82 @@ interface ActiveRunnerRequest {
   controller: AbortController;
 }
 
+export interface CommandExecutorExecInput {
+  request: BashRunnerExecRequest;
+  cwd: string;
+  signal: AbortSignal;
+}
+
+export interface CommandExecutorJobStartInput {
+  request: BashRunnerJobStartRequest;
+  cwd: string;
+}
+
+export interface CommandExecutorJob {
+  snapshot(): BashJobSnapshot;
+  wait(timeoutMs?: number): Promise<BashJobSnapshot>;
+  cancel(timeoutMs?: number): Promise<BashJobSnapshot>;
+}
+
+export interface CommandExecutor {
+  execute(input: CommandExecutorExecInput): Promise<{
+    result: BashExecutionResult;
+    spawnErrorMessage?: string;
+    spawnErrorDetails?: Record<string, unknown>;
+  }>;
+  startJob(input: CommandExecutorJobStartInput): Promise<CommandExecutorJob>;
+}
+
+interface LocalCommandExecutorOptions {
+  env: NodeJS.ProcessEnv;
+  shell: string;
+  outputDirectory: string;
+}
+
+class LocalCommandExecutor implements CommandExecutor {
+  constructor(private readonly options: LocalCommandExecutorOptions) {}
+
+  async execute(input: CommandExecutorExecInput): Promise<{
+    result: BashExecutionResult;
+    spawnErrorMessage?: string;
+    spawnErrorDetails?: Record<string, unknown>;
+  }> {
+    const request = input.request;
+    return executeBashCommand({
+      command: request.command,
+      cwd: input.cwd,
+      childEnv: buildSafeCommandEnv({env: request.env, processEnv: this.options.env, home: input.cwd}),
+      shell: this.options.shell,
+      timeoutMs: request.timeoutMs,
+      trackedEnvKeys: request.trackedEnvKeys,
+      maxOutputChars: request.maxOutputChars,
+      persistOutputThresholdChars: request.maxOutputChars,
+      progressIntervalMs: 250,
+      progressTailChars: 1_200,
+      outputDirectory: this.options.outputDirectory,
+      persistOutputFiles: false,
+      signal: input.signal,
+    });
+  }
+
+  async startJob(input: CommandExecutorJobStartInput): Promise<CommandExecutorJob> {
+    const request = input.request;
+    return ManagedBashJob.start({
+      jobId: request.jobId,
+      command: request.command,
+      cwd: input.cwd,
+      childEnv: buildSafeCommandEnv({env: request.env, processEnv: this.options.env, home: input.cwd}),
+      shell: this.options.shell,
+      timeoutMs: request.timeoutMs,
+      trackedEnvKeys: request.trackedEnvKeys,
+      maxOutputChars: request.maxOutputChars,
+      persistOutputThresholdChars: request.persistOutputThresholdChars,
+      persistOutputFiles: request.persistOutputFiles,
+      outputDirectory: this.options.outputDirectory,
+    });
+  }
+}
+
 export interface BashRunnerOptions {
   agentKey: string;
   port?: number;
@@ -48,6 +125,7 @@ export interface BashRunnerOptions {
   outputDirectory?: string;
   sharedSecret?: string | null;
   allowedRoots?: readonly string[];
+  commandExecutor?: CommandExecutor;
 }
 
 export interface BashRunner {
@@ -475,7 +553,8 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
   const sharedSecret = trimToNull(options.sharedSecret ?? null);
   const allowedRoots = await resolveAllowedRoots(options.allowedRoots);
   const activeRequests = new Map<string, ActiveRunnerRequest>();
-  const backgroundJobs = new Map<string, ManagedBashJob>();
+  const commandExecutor = options.commandExecutor ?? new LocalCommandExecutor({env, shell, outputDirectory});
+  const backgroundJobs = new Map<string, CommandExecutorJob>();
   const pendingAborts = new Map<string, NodeJS.Timeout>();
 
   const evictTerminalJob = (jobId: string, snapshot: { status: string }): void => {
@@ -484,7 +563,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
     }
   };
 
-  const watchBackgroundJob = (jobId: string, job: ManagedBashJob): void => {
+  const watchBackgroundJob = (jobId: string, job: CommandExecutorJob): void => {
     void job.wait(2_147_000_000).then((snapshot) => {
       if (backgroundJobs.get(jobId) === job) {
         evictTerminalJob(jobId, snapshot);
@@ -586,21 +665,9 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         });
 
         try {
-          // Remote bash starts from Panda's safe non-secret command env plus
-          // request-scoped env. It must not inherit arbitrary runner process env.
-          const outcome = await executeBashCommand({
-            command: parsed.command,
+          const outcome = await commandExecutor.execute({
+            request: parsed,
             cwd: resolvedCwd,
-            childEnv: buildSafeCommandEnv({env: parsed.env, processEnv: env, home: resolvedCwd}),
-            shell,
-            timeoutMs: parsed.timeoutMs,
-            trackedEnvKeys: parsed.trackedEnvKeys,
-            maxOutputChars: parsed.maxOutputChars,
-            persistOutputThresholdChars: parsed.maxOutputChars,
-            progressIntervalMs: 250,
-            progressTailChars: 1_200,
-            outputDirectory,
-            persistOutputFiles: false,
             signal: controller.signal,
           });
 
@@ -641,18 +708,9 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           throw new ToolError(spawnFailure.message, { details: spawnFailure.details });
         }
 
-        const job = await ManagedBashJob.start({
-          jobId: parsed.jobId,
-          command: parsed.command,
+        const job = await commandExecutor.startJob({
+          request: parsed,
           cwd: resolvedCwd,
-          childEnv: buildSafeCommandEnv({env: parsed.env, processEnv: env, home: resolvedCwd}),
-          shell,
-          timeoutMs: parsed.timeoutMs,
-          trackedEnvKeys: parsed.trackedEnvKeys,
-          maxOutputChars: parsed.maxOutputChars,
-          persistOutputThresholdChars: parsed.persistOutputThresholdChars,
-          persistOutputFiles: parsed.persistOutputFiles,
-          outputDirectory,
         });
         backgroundJobs.set(parsed.jobId, job);
         watchBackgroundJob(parsed.jobId, job);

@@ -50,7 +50,23 @@ probe_tool() {
     printf '"%s":{"status":"missing"}' "$name"
     return 0
   fi
-  version="$($name --version 2>&1 | head -n 1 || true)"
+  stderr_file="$(mktemp)"
+  if ! version_output="$($name --version 2>"$stderr_file")"; then
+    rm -f "$stderr_file"
+    return 1
+  fi
+  version_stderr="$(cat "$stderr_file")"
+  rm -f "$stderr_file"
+  if [ -n "$version_stderr" ]; then
+    return 1
+  fi
+  version="$(printf '%s\n' "$version_output" | awk 'NF { print; exit }')"
+  if [ -z "$version" ]; then
+    return 1
+  fi
+  case "$version" in
+    '!'*|*'Corepack is about to download'*) return 1 ;;
+  esac
   escaped_path="$(json_escape "$resolved_path")"
   escaped_version="$(json_escape "$version")"
   printf '"%s":{"status":"present","path":"%s","version":"%s"}' "$name" "$escaped_path" "$escaped_version"
@@ -271,6 +287,10 @@ function readToolObservation(tools: Record<string, unknown>, name: SetupToolName
   }
   if (!value.path.trim() || !value.version.trim()) {
     throw new ToolError(`Toolchain probe returned empty ${name} details.`);
+  }
+  const version = value.version.trim();
+  if (version.startsWith("!") || version.includes("Corepack is about to download")) {
+    throw new ToolError(`Toolchain probe returned invalid ${name} version output.`);
   }
 
   return {
