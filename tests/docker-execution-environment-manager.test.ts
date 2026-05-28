@@ -689,6 +689,70 @@ describe("execution environment manager HTTP boundary", () => {
 
 
 
+
+  it("rejects workspace exec starts outside /workspace before creating a Docker exec", async () => {
+    const dockerClient = new FakeDockerClient();
+    const environmentsRoot = await mkdtemp(path.join(os.tmpdir(), "panda-env-root-"));
+    const manager = new DockerExecutionEnvironmentManager({
+      dockerClient,
+      workspaceExecSecret: "workspace-secret",
+      managerUrl: "http://manager:8095",
+      hostEnvironmentsRoot: environmentsRoot,
+      managerEnvironmentsRoot: environmentsRoot,
+      coreEnvironmentsRoot: "/core/environments",
+      parentRunnerEnvironmentsRoot: "/environments",
+      createTimeoutMs: 10,
+    });
+    try {
+      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"});
+
+      await expect(manager.handleWorkspaceExecAction({
+        action: "start",
+        environmentId: "env-a",
+        request: {mode: "foreground", processId: "proc-bad-cwd", command: "pwd", cwd: "/workspace/..", timeoutMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000},
+      })).rejects.toMatchObject({details: {statusCode: 400}});
+
+      await expect(manager.handleWorkspaceExecAction({
+        action: "start",
+        environmentId: "env-a",
+        request: {mode: "background", processId: "proc-tmp-cwd", command: "pwd", cwd: "/tmp", timeoutMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000},
+      })).rejects.toMatchObject({details: {statusCode: 400}});
+
+      expect(dockerClient.execs).toHaveLength(0);
+    } finally {
+      await rm(environmentsRoot, {recursive: true, force: true});
+    }
+  });
+
+  it("normalizes accepted workspace exec cwd before passing it to Docker", async () => {
+    const dockerClient = new FakeDockerClient();
+    dockerClient.execStreamChunks = [stdcopyFrame(1, "out")];
+    const environmentsRoot = await mkdtemp(path.join(os.tmpdir(), "panda-env-root-"));
+    const manager = new DockerExecutionEnvironmentManager({
+      dockerClient,
+      workspaceExecSecret: "workspace-secret",
+      managerUrl: "http://manager:8095",
+      hostEnvironmentsRoot: environmentsRoot,
+      managerEnvironmentsRoot: environmentsRoot,
+      coreEnvironmentsRoot: "/core/environments",
+      parentRunnerEnvironmentsRoot: "/environments",
+      createTimeoutMs: 10,
+    });
+    try {
+      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"});
+
+      await expect(manager.handleWorkspaceExecAction({
+        action: "start",
+        environmentId: "env-a",
+        request: {mode: "foreground", processId: "proc-good-cwd", command: "pwd", cwd: "/workspace/child/..", timeoutMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000},
+      })).resolves.toMatchObject({status: "completed", initialCwd: "/workspace"});
+
+      expect(dockerClient.execs.at(-1)?.config.WorkingDir).toBe("/workspace");
+    } finally {
+      await rm(environmentsRoot, {recursive: true, force: true});
+    }
+  });
+
   it("waits for Docker exec inspect to report terminal completion before finishing foreground workspace exec", async () => {
     const dockerClient = new FakeDockerClient();
     dockerClient.execStreamChunks = [stdcopyFrame(1, "out")];

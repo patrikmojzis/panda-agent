@@ -1006,6 +1006,18 @@ function workspaceExecEnv(request: WorkspaceExecStartRequest): string[] {
     .map(([key, value]) => `${key}=${value ?? ""}`);
 }
 
+
+function normalizeWorkspaceExecCwd(cwd: string): string {
+  if (!path.posix.isAbsolute(cwd)) {
+    throw new ToolError("Workspace exec cwd must be an absolute path under /workspace.", {details: {statusCode: 400, cwd}});
+  }
+  const normalized = path.posix.normalize(cwd);
+  if (normalized !== DEFAULT_WORKER_WORKSPACE_PATH && !normalized.startsWith(`${DEFAULT_WORKER_WORKSPACE_PATH}/`)) {
+    throw new ToolError("Workspace exec cwd must stay under /workspace.", {details: {statusCode: 400, cwd: normalized}});
+  }
+  return normalized;
+}
+
 function buildWorkspaceProcessWrapper(pidFilePath: string): string {
   return [
     "mkdir -p /tmp/panda-workspace-exec",
@@ -1232,6 +1244,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
   }
 
   private async startWorkspaceProcess(environmentId: string, request: WorkspaceExecStartRequest): Promise<WorkspaceProcessSnapshot> {
+    request = {...request, cwd: normalizeWorkspaceExecCwd(request.cwd)};
     const processId = request.processId ?? randomBytes(12).toString("base64url");
     const key = scopedProcessKey(environmentId, processId);
     if (this.workspaceProcesses.has(key)) throw new ToolError(`Workspace process ${processId} already exists.`, {details: {statusCode: 409}});
