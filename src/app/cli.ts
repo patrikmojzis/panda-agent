@@ -23,6 +23,7 @@ import {renderResumeHint} from "../ui/tui/exit-hint.js";
 import {registerWhatsAppCommands} from "../integrations/channels/whatsapp/cli.js";
 import {resolveBrowserRunnerOptions, startBrowserRunner} from "../integrations/browser/runner.js";
 import {resolveBashRunnerOptions, startBashRunner} from "../integrations/shell/bash-runner.js";
+import {resolveWorkspaceCommandExecutorFromEnv} from "../integrations/shell/workspace-command-executor.js";
 import {
     resolveExecutionEnvironmentManagerServerOptions,
     startExecutionEnvironmentManager,
@@ -131,12 +132,14 @@ async function runRunnerCommand(options: RunnerCliOptions): Promise<void> {
     ...(options.port !== undefined ? { BASH_SERVER_PORT: String(options.port) } : {}),
     ...(options.host ? { BASH_SERVER_HOST: options.host } : {}),
   });
+  const commandExecutor = resolveWorkspaceCommandExecutorFromEnv(process.env);
   const runner = await startBashRunner({
     ...resolved,
     ...(options.agent ? { agentKey: options.agent } : {}),
     ...(options.port !== undefined ? { port: options.port } : {}),
     ...(options.host ? { host: options.host } : {}),
     ...(options.outputDirectory ? { outputDirectory: path.resolve(options.outputDirectory) } : {}),
+    ...(commandExecutor ? { commandExecutor } : {}),
   });
 
   const shutdown = async () => {

@@ -1,6 +1,7 @@
 import {createHash, createHmac, randomBytes, timingSafeEqual} from "node:crypto";
 import {mkdir} from "node:fs/promises";
 import http, {createServer, type IncomingMessage, type Server} from "node:http";
+import type {Readable} from "node:stream";
 import os from "node:os";
 import path from "node:path";
 
@@ -27,6 +28,8 @@ import {isRecord} from "../../lib/records.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
 import {readJsonHttpBody} from "../http-body.js";
 import {buildSafeCommandBaseEnv} from "./environment.js";
+import {appendOutput, createOutputCapture, finalizeOutputCapture} from "./bash-output.js";
+import type {WorkspaceExecAction, WorkspaceExecStartRequest, WorkspaceProcessSnapshot} from "./workspace-exec-protocol.js";
 import {assertNoDeprecatedBashServerEnv, DOCKER_MANAGER_BASH_SERVER_ENV_NAMES} from "./bash-server-env.js";
 
 const DEFAULT_MANAGER_HOST = "127.0.0.1";
@@ -51,6 +54,10 @@ interface DockerRequestOptions {
   expectedStatuses: readonly number[];
 }
 
+interface DockerStreamRequestOptions extends DockerRequestOptions {
+  expectedStatuses: readonly number[];
+}
+
 interface DockerContainerCreateResult {
   Id: string;
   Warnings?: string[];
@@ -72,6 +79,26 @@ interface DockerContainerInspectResult {
   NetworkSettings?: {
     Ports?: Record<string, Array<{HostIp?: string; HostPort?: string}> | null>;
   };
+}
+
+export interface DockerExecCreateConfig {
+  AttachStdout: true;
+  AttachStderr: true;
+  AttachStdin?: false;
+  Tty: false;
+  Cmd: string[];
+  WorkingDir: string;
+  Env: string[];
+}
+
+interface DockerExecCreateResult {
+  Id: string;
+}
+
+interface DockerExecInspectResult {
+  ID?: string;
+  Running?: boolean;
+  ExitCode?: number | null;
 }
 
 export interface DockerContainerCreateConfig {
@@ -103,6 +130,9 @@ export interface DockerClient {
   inspectContainer(container: string): Promise<DockerContainerInspectResult>;
   stopContainer(container: string): Promise<void>;
   removeContainer(container: string): Promise<void>;
+  createExec(container: string, config: DockerExecCreateConfig): Promise<DockerExecCreateResult>;
+  startExec(execId: string, options: {Detach: false; Tty: false}): Promise<Readable>;
+  inspectExec(execId: string): Promise<DockerExecInspectResult>;
 }
 
 export class DockerApiError extends Error {
@@ -174,6 +204,60 @@ class DockerEngineClient implements DockerClient {
       method: "DELETE",
       path: `/containers/${encodeURIComponent(container)}?force=1`,
       expectedStatuses: [204, 404],
+    });
+  }
+
+  async createExec(container: string, config: DockerExecCreateConfig): Promise<DockerExecCreateResult> {
+    return this.requestJson<DockerExecCreateResult>({
+      method: "POST",
+      path: `/containers/${encodeURIComponent(container)}/exec`,
+      body: config,
+      expectedStatuses: [201],
+    });
+  }
+
+  async startExec(execId: string, options: {Detach: false; Tty: false}): Promise<Readable> {
+    return this.requestStream({
+      method: "POST",
+      path: `/exec/${encodeURIComponent(execId)}/start`,
+      body: options,
+      expectedStatuses: [200],
+    });
+  }
+
+  async inspectExec(execId: string): Promise<DockerExecInspectResult> {
+    return this.requestJson<DockerExecInspectResult>({
+      method: "GET",
+      path: `/exec/${encodeURIComponent(execId)}/json`,
+      expectedStatuses: [200],
+    });
+  }
+
+  private requestStream(options: DockerStreamRequestOptions): Promise<Readable> {
+    return new Promise((resolve, reject) => {
+      const body = options.body === undefined ? undefined : JSON.stringify(options.body);
+      const requestOptions: http.RequestOptions = this.socketPath
+        ? {socketPath: this.socketPath, method: options.method, path: options.path}
+        : {protocol: this.baseUrl?.protocol, hostname: this.baseUrl?.hostname, port: this.baseUrl?.port, method: options.method, path: options.path};
+      const request = http.request({
+        ...requestOptions,
+        headers: {...(body ? {"content-type": "application/json", "content-length": Buffer.byteLength(body)} : {})},
+      }, (response) => {
+        const statusCode = response.statusCode ?? 0;
+        if (!options.expectedStatuses.includes(statusCode)) {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+          response.on("end", () => reject(new DockerApiError(`Docker API stream request failed with status ${statusCode}.`, statusCode, Buffer.concat(chunks).toString("utf8"))));
+          return;
+        }
+        resolve(response);
+      });
+      request.on("error", reject);
+      request.setTimeout(DEFAULT_DOCKER_REQUEST_TIMEOUT_MS, () => {
+        request.destroy(new Error(`Docker API request ${options.method} ${options.path} timed out.`));
+      });
+      if (body) request.write(body);
+      request.end();
     });
   }
 
@@ -325,6 +409,10 @@ export interface WorkspaceExecCredentialValidator {
   validateWorkspaceExecCredential(environmentId: string, credential: string): boolean;
 }
 
+interface WorkspaceExecActionHandler {
+  handleWorkspaceExecAction(action: WorkspaceExecAction): Promise<WorkspaceProcessSnapshot>;
+}
+
 function encodeBase64Url(value: string): string {
   return Buffer.from(value, "utf8").toString("base64url");
 }
@@ -393,6 +481,11 @@ function requireWorkspaceExecAuthorization(
 
 function hasWorkspaceExecCredentialValidator(value: ExecutionEnvironmentManager): value is ExecutionEnvironmentManager & WorkspaceExecCredentialValidator {
   return typeof (value as {validateWorkspaceExecCredential?: unknown}).validateWorkspaceExecCredential === "function";
+}
+
+function hasWorkspaceExecActionHandler(value: ExecutionEnvironmentManager): value is ExecutionEnvironmentManager & WorkspaceExecCredentialValidator & WorkspaceExecActionHandler {
+  return hasWorkspaceExecCredentialValidator(value)
+    && typeof (value as {handleWorkspaceExecAction?: unknown}).handleWorkspaceExecAction === "function";
 }
 
 function normalizeDockerNamePart(value: string): string {
@@ -811,6 +904,120 @@ export function resolveExecutionEnvironmentManagerServerOptions(
   };
 }
 
+const MAX_WORKSPACE_PROCESS_RECORDS = 128;
+const WORKSPACE_PROCESS_TTL_MS = 60_000;
+
+interface WorkspaceProcessRecord {
+  environmentId: string;
+  containerName: string;
+  processId: string;
+  execId?: string;
+  pidFilePath: string;
+  startedAt: number;
+  request: WorkspaceExecStartRequest;
+  snapshot: WorkspaceProcessSnapshot;
+  completion: Promise<WorkspaceProcessSnapshot>;
+}
+
+export function demuxDockerStdCopyStream(stream: NodeJS.ReadableStream, onStdout: (chunk: Buffer) => void, onStderr: (chunk: Buffer) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let buffer = Buffer.alloc(0);
+    const drain = () => {
+      while (buffer.length >= 8) {
+        const streamId = buffer[0];
+        const length = buffer.readUInt32BE(4);
+        if (buffer.length < 8 + length) return;
+        const payload = buffer.subarray(8, 8 + length);
+        buffer = buffer.subarray(8 + length);
+        if (streamId === 1) onStdout(payload);
+        else if (streamId === 2) onStderr(payload);
+      }
+    };
+    stream.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+      drain();
+    });
+    stream.on("end", () => { drain(); resolve(); });
+    stream.on("error", reject);
+  });
+}
+
+function validateWorkspaceExecAction(value: unknown): WorkspaceExecAction {
+  if (!isRecord(value)) throw new ToolError("Workspace exec request body must be an object.");
+  const action = value.action;
+  const environmentId = trimToNull(typeof value.environmentId === "string" ? value.environmentId : null);
+  if (!environmentId) throw new ToolError("environmentId must not be empty.");
+  if (action === "start") {
+    if (!isRecord(value.request)) throw new ToolError("Workspace exec start request must be an object.");
+    const request = value.request;
+    const mode = request.mode;
+    if (mode !== "foreground" && mode !== "background") throw new ToolError("Workspace exec mode must be foreground or background.");
+    const processId = request.processId === undefined ? undefined : validateProcessId(request.processId);
+    const command = trimToNull(typeof request.command === "string" ? request.command : null);
+    const cwd = trimToNull(typeof request.cwd === "string" ? request.cwd : null);
+    const timeoutMs = typeof request.timeoutMs === "number" ? request.timeoutMs : NaN;
+    const maxOutputChars = typeof request.maxOutputChars === "number" ? request.maxOutputChars : NaN;
+    const trackedEnvKeys = Array.isArray(request.trackedEnvKeys) && request.trackedEnvKeys.every((entry) => typeof entry === "string") ? request.trackedEnvKeys : null;
+    const env = request.env === undefined ? undefined : isRecord(request.env) && Object.values(request.env).every((entry) => typeof entry === "string") ? request.env as Record<string, string> : null;
+    if (!command) throw new ToolError("Workspace exec command must not be empty.");
+    if (!cwd || !path.posix.isAbsolute(cwd)) throw new ToolError("Workspace exec cwd must be an absolute path.");
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300_000) throw new ToolError("Workspace exec timeoutMs must be an integer between 100 and 300000.");
+    if (!Number.isInteger(maxOutputChars) || maxOutputChars < 1 || maxOutputChars > 1_000_000) throw new ToolError("Workspace exec maxOutputChars must be an integer between 1 and 1000000.");
+    if (trackedEnvKeys === null) throw new ToolError("Workspace exec trackedEnvKeys must be an array of strings.");
+    if (env === null) throw new ToolError("Workspace exec env must be an object of string values.");
+    return {action: "start", environmentId, request: {mode, ...(processId ? {processId} : {}), command, cwd, timeoutMs, maxOutputChars, trackedEnvKeys, ...(env ? {env} : {})}};
+  }
+  if (action === "status" || action === "wait" || action === "cancel") {
+    const processId = validateProcessId(value.processId);
+    const timeoutMs = value.timeoutMs === undefined ? undefined : typeof value.timeoutMs === "number" ? value.timeoutMs : NaN;
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 300_000)) throw new ToolError("Workspace exec timeoutMs must be an integer between 0 and 300000.");
+    return {action, environmentId, processId, ...(timeoutMs === undefined ? {} : {timeoutMs})} as WorkspaceExecAction;
+  }
+  throw new ToolError("Unknown workspace exec action.");
+}
+
+function validateProcessId(value: unknown): string {
+  const processId = trimToNull(typeof value === "string" ? value : null);
+  if (!processId || processId.length > 160 || !/^[A-Za-z0-9:_.-]+$/.test(processId)) {
+    throw new ToolError("Workspace exec processId is malformed.");
+  }
+  return processId;
+}
+
+function scopedProcessKey(environmentId: string, processId: string): string {
+  return `${environmentId}\0${processId}`;
+}
+
+function makePreviewAppender(maxChars: number) {
+  const capture = createOutputCapture(path.join(os.tmpdir(), `panda-workspace-discard-${randomBytes(8).toString("hex")}`));
+  return {
+    append(chunk: Buffer) { appendOutput(capture, chunk.toString("utf8"), maxChars); },
+    state() { return capture; },
+    async close() { await finalizeOutputCapture({capture, keepFile: false}); },
+  };
+}
+
+function workspaceExecEnv(request: WorkspaceExecStartRequest): string[] {
+  const safe = buildSafeCommandBaseEnv({TZ: process.env.TZ ?? "UTC"});
+  return Object.entries({...safe, ...(request.env ?? {}), PANDA_WORKSPACE_COMMAND: request.command})
+    .map(([key, value]) => `${key}=${value ?? ""}`);
+}
+
+function buildWorkspaceProcessWrapper(pidFilePath: string): string {
+  return [
+    "mkdir -p /tmp/panda-workspace-exec",
+    `rm -f ${shellQuoteForDocker(pidFilePath)}`,
+    "setsid bash -lc \"$PANDA_WORKSPACE_COMMAND\" &",
+    "child=$!",
+    `printf '%s' \"$child\" > ${shellQuoteForDocker(pidFilePath)}`,
+    "wait \"$child\"",
+  ].join("; ");
+}
+
+function shellQuoteForDocker(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentManager {
   private readonly docker: DockerClient;
   private readonly controlRunnerImage: string;
@@ -829,6 +1036,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
   private readonly parentRunnerEnvironmentsRoot: string;
   private readonly containerNamePrefix: string;
   private readonly createTimeoutMs: number;
+  private readonly workspaceProcesses = new Map<string, WorkspaceProcessRecord>();
 
   constructor(options: DockerExecutionEnvironmentManagerOptions = {}) {
     const resolved = {
@@ -986,6 +1194,9 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
         }
       }
     }
+    for (const key of [...this.workspaceProcesses.keys()]) {
+      if (key.startsWith(`${environmentId}\0`)) this.workspaceProcesses.delete(key);
+    }
     if (errors.length === 1) {
       throw errors[0]!;
     }
@@ -1003,6 +1214,146 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       credential,
       secret: this.workspaceExecSecret,
     });
+  }
+
+  async handleWorkspaceExecAction(action: WorkspaceExecAction): Promise<WorkspaceProcessSnapshot> {
+    this.evictWorkspaceProcesses();
+    if (action.action === "start") return this.startWorkspaceProcess(action.environmentId, action.request);
+    const record = this.workspaceProcesses.get(scopedProcessKey(action.environmentId, action.processId));
+    if (!record) throw new ToolError(`Unknown workspace process ${action.processId}.`, {details: {statusCode: 404}});
+    if (action.action === "status") return record.snapshot;
+    if (action.action === "wait") return action.timeoutMs === undefined || action.timeoutMs > 0
+      ? Promise.race([record.completion, sleep(action.timeoutMs ?? 15_000).then(() => record.snapshot)])
+      : record.snapshot;
+    return this.cancelWorkspaceProcess(record, action.timeoutMs ?? 1_000);
+  }
+
+  private async startWorkspaceProcess(environmentId: string, request: WorkspaceExecStartRequest): Promise<WorkspaceProcessSnapshot> {
+    const processId = request.processId ?? randomBytes(12).toString("base64url");
+    const key = scopedProcessKey(environmentId, processId);
+    if (this.workspaceProcesses.has(key)) throw new ToolError(`Workspace process ${processId} already exists.`, {details: {statusCode: 409}});
+    if (this.workspaceProcesses.size >= MAX_WORKSPACE_PROCESS_RECORDS) {
+      this.evictWorkspaceProcesses();
+    }
+    if (this.workspaceProcesses.size >= MAX_WORKSPACE_PROCESS_RECORDS) {
+      throw new ToolError("Workspace process table is full; no terminal process records are available to evict.", {details: {statusCode: 429}});
+    }
+    const containerName = buildContainerName(this.containerNamePrefix, environmentId, "workspace");
+    const inspect = await this.inspectManagedWorkspaceContainer(containerName, environmentId);
+    if (!inspect?.State?.Running) throw new ToolError("Workspace container is not running.", {details: {statusCode: 409}});
+    const now = Date.now();
+    const pidFilePath = `/tmp/panda-workspace-exec/${processId.replace(/[^A-Za-z0-9_.-]/g, "_")}.pid`;
+    const snapshot: WorkspaceProcessSnapshot = {
+      processId,
+      status: "running",
+      command: request.command,
+      initialCwd: request.cwd,
+      startedAt: now,
+      timedOut: false,
+      aborted: false,
+      abortReason: null,
+      stdout: "",
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutChars: 0,
+      stderrChars: 0,
+      stdoutPersisted: false,
+      stderrPersisted: false,
+      trackedEnvKeys: request.trackedEnvKeys,
+    };
+    const record: WorkspaceProcessRecord = {environmentId, containerName, processId, pidFilePath, startedAt: now, request, snapshot, completion: Promise.resolve(snapshot)};
+    this.workspaceProcesses.set(key, record);
+    record.completion = this.runWorkspaceProcess(record);
+    if (request.mode === "foreground") return record.completion;
+    return snapshot;
+  }
+
+  private async runWorkspaceProcess(record: WorkspaceProcessRecord): Promise<WorkspaceProcessSnapshot> {
+    const stdout = makePreviewAppender(record.request.maxOutputChars);
+    const stderr = makePreviewAppender(record.request.maxOutputChars);
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      const created = await this.docker.createExec(record.containerName, {
+        AttachStdout: true,
+        AttachStderr: true,
+        Tty: false,
+        Cmd: ["bash", "-lc", buildWorkspaceProcessWrapper(record.pidFilePath)],
+        WorkingDir: record.request.cwd,
+        Env: workspaceExecEnv(record.request),
+      });
+      record.execId = created.Id;
+      const stream = await this.docker.startExec(created.Id, {Detach: false, Tty: false});
+      timeout = setTimeout(() => {
+        record.snapshot.timedOut = true;
+        void this.cancelWorkspaceProcess(record, 1_000);
+      }, record.request.timeoutMs);
+      timeout.unref();
+      await demuxDockerStdCopyStream(stream, (chunk) => stdout.append(chunk), (chunk) => stderr.append(chunk));
+      const inspect = await this.docker.inspectExec(created.Id);
+      const exitCode = inspect.ExitCode ?? null;
+      const timedOut = record.snapshot.timedOut;
+      const cancelled = record.snapshot.status === "cancelled";
+      record.snapshot = {
+        ...record.snapshot,
+        status: cancelled ? "cancelled" : exitCode === 0 ? "completed" : "failed",
+        finishedAt: Date.now(),
+        durationMs: Date.now() - record.startedAt,
+        exitCode,
+        signal: null,
+        timedOut,
+        aborted: cancelled,
+        abortReason: cancelled ? "Command aborted." : null,
+        stdout: stdout.state().preview,
+        stderr: stderr.state().preview,
+        stdoutTruncated: stdout.state().previewTruncated,
+        stderrTruncated: stderr.state().previewTruncated,
+        stdoutChars: stdout.state().totalChars,
+        stderrChars: stderr.state().totalChars,
+      };
+      return record.snapshot;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      record.snapshot = {...record.snapshot, status: "failed", finishedAt: Date.now(), durationMs: Date.now() - record.startedAt, exitCode: null, signal: null, stderr: message, stderrChars: message.length};
+      return record.snapshot;
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      await Promise.all([stdout.close(), stderr.close()]);
+    }
+  }
+
+  private async cancelWorkspaceProcess(record: WorkspaceProcessRecord, timeoutMs: number): Promise<WorkspaceProcessSnapshot> {
+    const now = Date.now();
+    record.snapshot = {
+      ...record.snapshot,
+      status: "cancelled",
+      aborted: true,
+      abortReason: "Command aborted.",
+      finishedAt: record.snapshot.finishedAt ?? now,
+      durationMs: record.snapshot.durationMs ?? now - record.startedAt,
+    };
+    const script = `pid=$(cat ${shellQuoteForDocker(record.pidFilePath)} 2>/dev/null || true); if [ -n "$pid" ]; then kill -TERM -"$pid" 2>/dev/null || true; sleep ${Math.min(Math.max(timeoutMs, 0), 5000) / 1000}; kill -KILL -"$pid" 2>/dev/null || true; fi`;
+    try {
+      const created = await this.docker.createExec(record.containerName, {AttachStdout: true, AttachStderr: true, Tty: false, Cmd: ["bash", "-lc", script], WorkingDir: "/", Env: []});
+      const stream = await this.docker.startExec(created.Id, {Detach: false, Tty: false});
+      await Promise.race([
+        demuxDockerStdCopyStream(stream, () => undefined, () => undefined),
+        sleep(Math.min(Math.max(timeoutMs, 0), 5_000)),
+      ]);
+    } catch {
+      // Best-effort protocol plumbing; B2b proves process-tree hardening with real Docker.
+    }
+    return record.snapshot;
+  }
+
+  private evictWorkspaceProcesses(): void {
+    const now = Date.now();
+    for (const [key, record] of this.workspaceProcesses) {
+      if (record.snapshot.status !== "running" && now - (record.snapshot.finishedAt ?? record.startedAt) > WORKSPACE_PROCESS_TTL_MS) {
+        this.workspaceProcesses.delete(key);
+      }
+      if (this.workspaceProcesses.size < MAX_WORKSPACE_PROCESS_RECORDS) break;
+    }
   }
 
   private async cleanupFailedCreate(containers: string | readonly string[]): Promise<void> {
@@ -1042,6 +1393,14 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       }
       return existing.Id;
     }
+  }
+
+  private async inspectManagedWorkspaceContainer(containerName: string, environmentId: string): Promise<DockerContainerInspectResult | null> {
+    const inspect = await this.inspectManagedContainer(containerName, environmentId);
+    if (inspect && inspect.Config?.Labels?.["panda.environment.role"] !== "workspace") {
+      throw new Error(`Refusing to exec non-workspace container ${containerName}.`);
+    }
+    return inspect;
   }
 
   private async inspectManagedContainer(
@@ -1121,9 +1480,15 @@ export async function startExecutionEnvironmentManager(
         if (!hasWorkspaceExecCredentialValidator(manager)) {
           throw new ToolError("Workspace exec is not supported by this environment manager.", {details: {statusCode: 501}});
         }
-        const parsed = validateEnvironmentIdRequest(body);
-        requireWorkspaceExecAuthorization(request, parsed.environmentId, manager);
-        throw new ToolError("Workspace exec streaming is deferred to B2.", {details: {statusCode: 501}});
+        const authScope = validateEnvironmentIdRequest(body);
+        requireWorkspaceExecAuthorization(request, authScope.environmentId, manager);
+        if (!hasWorkspaceExecActionHandler(manager)) {
+          throw new ToolError("Workspace exec is not supported by this environment manager.", {details: {statusCode: 501}});
+        }
+        const parsed = validateWorkspaceExecAction(body);
+        const process = await manager.handleWorkspaceExecAction(parsed);
+        writeJsonResponse(response, 200, {ok: true, process});
+        return;
       }
 
       requireAuthorization(request, sharedSecret);
