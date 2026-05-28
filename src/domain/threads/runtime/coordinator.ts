@@ -4,6 +4,7 @@ import {sleep} from "../../../lib/async.js";
 import {runThreadStep, Thread, type ThreadResumeState, type ThreadStepResult} from "../../../kernel/agent/thread.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {resolveModelRuntimeBudget} from "../../../kernel/models/model-context-policy.js";
+import {ContextWindowExceededError} from "../../../kernel/agent/exceptions.js";
 import {resolveRuntimeDefaultModelSelector} from "../../../kernel/models/default-model.js";
 import type {ThreadRunEvent} from "../../../kernel/agent/types.js";
 import {stringifyUnknown} from "../../../kernel/agent/helpers/stringify.js";
@@ -590,6 +591,7 @@ export class ThreadRuntimeCoordinator {
     reason: string;
     now: number;
     diagnostics?: CompactThreadError["diagnostics"];
+    blocked?: boolean;
   }): Promise<ThreadRecord> {
     const currentState = readAutoCompactionRuntimeState(options.thread);
     const consecutiveFailures = currentState.consecutiveFailures + 1;
@@ -614,6 +616,7 @@ export class ThreadRuntimeCoordinator {
       cooldownUntil,
       runId: options.run.id,
       diagnostics: options.diagnostics,
+      blocked: options.blocked,
     });
 
     return updatedThread;
@@ -672,13 +675,19 @@ export class ThreadRuntimeCoordinator {
       return { action: "restart", attemptedAutoCompact: true };
     } catch (error) {
       const reason = stringifyUnknown(error, { preferErrorMessage: true });
+      const exceedsHardWindow = transcriptTokens >= budget.hardWindow;
       const updatedThread = await this.recordAutoCompactionFailure({
         thread,
         run: options.run,
         reason,
         now,
         diagnostics: error instanceof CompactThreadError ? error.diagnostics : undefined,
+        blocked: exceedsHardWindow,
       });
+      if (exceedsHardWindow) {
+        throw new ContextWindowExceededError();
+      }
+
       return { action: "continue", thread: updatedThread, attemptedAutoCompact: true };
     }
   }

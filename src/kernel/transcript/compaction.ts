@@ -630,9 +630,12 @@ export async function appendCompactionFailureNotice(options: {
   cooldownUntil?: number;
   runId?: string;
   diagnostics?: CompactAttemptDiagnostics;
+  blocked?: boolean;
 }): Promise<ThreadMessageRecord> {
   const lines = [
-    "Auto-compaction failed; continuing without compacting.",
+    options.blocked
+      ? "Auto-compaction failed; run blocked to avoid sending an over-window request."
+      : "Auto-compaction failed; continuing without compacting.",
     `Reason: ${options.reason}`,
   ];
 

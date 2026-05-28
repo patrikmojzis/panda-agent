@@ -25,6 +25,12 @@ export class StreamingFailedError extends AgentError {
 
 export class ConfigurationError extends AgentError {}
 
+export class ContextWindowExceededError extends AgentError {
+  constructor(message = "Active transcript exceeds the model context window and auto-compaction could not reduce it. Start a fresh thread, reset or manually compact the conversation, or split the task into a smaller request.") {
+    super(message);
+  }
+}
+
 export type ProviderRuntimeFailureKind =
   | "provider_abort"
   | "provider_timeout"

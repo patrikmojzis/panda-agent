@@ -2,6 +2,7 @@ export { Agent, type AgentOptions } from "./agent.js";
 export {
   AgentError,
   ConfigurationError,
+  ContextWindowExceededError,
   InvalidJSONResponseError,
   InvalidSchemaResponseError,
   MaxTurnsReachedError,

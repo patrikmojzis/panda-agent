@@ -6,6 +6,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {
     Agent,
+    ContextWindowExceededError,
     BackgroundJobStatusTool,
     BackgroundJobWaitTool,
     BashTool,
@@ -35,13 +36,17 @@ import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 const TEST_MODELS = vi.hoisted(() => ({
   window350: "openai/panda-test-window-350",
   window620: "openai/panda-test-window-620",
+  window750: "openai/panda-test-window-750",
   window1000: "openai/panda-test-window-1000",
   window5000: "openai/panda-test-window-5000",
+  window6000: "openai/panda-test-window-6000",
   operatingWindowByModel: new Map<string, number>([
     ["openai/panda-test-window-350", 350],
     ["openai/panda-test-window-620", 620],
+    ["openai/panda-test-window-750", 750],
     ["openai/panda-test-window-1000", 1_000],
     ["openai/panda-test-window-5000", 5_000],
+    ["openai/panda-test-window-6000", 6_000],
   ]),
 }));
 
@@ -81,8 +86,10 @@ vi.mock("../src/kernel/models/model-context-policy.js", async (importOriginal) =
 
 const TEST_MODEL_WINDOW_350 = TEST_MODELS.window350;
 const TEST_MODEL_WINDOW_620 = TEST_MODELS.window620;
+const TEST_MODEL_WINDOW_750 = TEST_MODELS.window750;
 const TEST_MODEL_WINDOW_1000 = TEST_MODELS.window1000;
 const TEST_MODEL_WINDOW_5000 = TEST_MODELS.window5000;
+const TEST_MODEL_WINDOW_6000 = TEST_MODELS.window6000;
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -2054,7 +2061,7 @@ describe("ThreadRuntimeCoordinator", () => {
     });
   });
 
-  it("records failure state and continues when auto-compaction fails", async () => {
+  it("continues after auto-compaction failure when over trigger but under hard window", async () => {
     vi.stubEnv("OPENAI_API_KEY", "test-key");
 
     const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
@@ -2070,7 +2077,7 @@ describe("ThreadRuntimeCoordinator", () => {
         name: "auto-compact-fail-agent",
         instructions: "Reply briefly",
       }),
-      model: TEST_MODEL_WINDOW_620,
+      model: TEST_MODEL_WINDOW_750,
       runtime,
     });
 
@@ -2105,7 +2112,7 @@ describe("ThreadRuntimeCoordinator", () => {
       lastAttempt: expect.objectContaining({
         outcome: "summary_too_large",
         trigger: "auto",
-        model: TEST_MODEL_WINDOW_620,
+        model: TEST_MODEL_WINDOW_750,
         summaryRecordCount: expect.any(Number),
         preservedTailRecordCount: expect.any(Number),
         compactionInputChars: expect.any(Number),
@@ -2139,6 +2146,85 @@ describe("ThreadRuntimeCoordinator", () => {
     });
   });
 
+  it("blocks provider calls when auto-compaction no_split leaves the active transcript over the hard window", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+
+    const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
+      message("<summary>should not run</summary>"),
+    );
+    const runtime = createMockRuntime(message("should not run"));
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("auto-compact-nosplit-agent", {
+      agent: new Agent({
+        name: "auto-compact-nosplit-agent",
+        instructions: "Reply briefly",
+      }),
+      model: TEST_MODEL_WINDOW_620,
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-auto-compact-nosplit",
+      agentKey: "auto-compact-nosplit-agent",
+    });
+    await store.enqueueInput("thread-auto-compact-nosplit", {
+      message: stringToUserMessage("single oversized request " + "x".repeat(3_000)),
+      source: "telegram",
+    });
+    await store.applyPendingInputs("thread-auto-compact-nosplit");
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-auto-compact-nosplit", {
+      message: stringToUserMessage("new request"),
+      source: "tui",
+    });
+    await expect(coordinator.waitForIdle("thread-auto-compact-nosplit")).rejects.toThrow(ContextWindowExceededError);
+
+    expect(compactRuntime).not.toHaveBeenCalled();
+    expect(runtime.complete).not.toHaveBeenCalled();
+
+    const [run] = await store.listRuns("thread-auto-compact-nosplit");
+    expect(run?.status).toBe("failed");
+    expect(run?.error).toContain("Active transcript exceeds the model context window");
+    expect(run?.error).toContain("Start a fresh thread");
+    expect(run?.error).not.toContain("single oversized request");
+
+    const thread = await store.getThread("thread-auto-compact-nosplit");
+    expect(thread.runtimeState?.autoCompaction).toMatchObject({
+      consecutiveFailures: 1,
+      lastAttempt: expect.objectContaining({
+        outcome: "no_split",
+        trigger: "auto",
+        model: TEST_MODEL_WINDOW_620,
+      }),
+    });
+
+    const transcript = await store.loadTranscript("thread-auto-compact-nosplit");
+    const notice = transcript.find((entry) => {
+      return entry.metadata && typeof entry.metadata === "object" && entry.metadata !== null
+        && "kind" in entry.metadata && entry.metadata.kind === "compact_failure_notice";
+    });
+    expect(notice).toMatchObject({
+      source: "compact",
+      metadata: expect.objectContaining({
+        kind: "compact_failure_notice",
+        trigger: "auto",
+        consecutiveFailures: 1,
+        diagnostics: expect.objectContaining({
+          outcome: "no_split",
+        }),
+      }),
+    });
+    expect(notice?.message.content.some((block) => {
+      return block.type === "text" && block.text.includes("run blocked");
+    })).toBe(true);
+  });
+
   it("continues after auto-compaction failure and applies later wakes", async () => {
     vi.stubEnv("OPENAI_API_KEY", "test-key");
 
@@ -2151,7 +2237,7 @@ describe("ThreadRuntimeCoordinator", () => {
       message("Nothing else to do."),
     );
     const store = new TestThreadRuntimeStore();
-    let retryModel = TEST_MODEL_WINDOW_620;
+    let retryModel = TEST_MODEL_WINDOW_750;
     const registry = new TestThreadDefinitionRegistry().register("auto-compact-retry-agent", () => ({
       agent: new Agent({
         name: "auto-compact-retry-agent",
@@ -2208,7 +2294,7 @@ describe("ThreadRuntimeCoordinator", () => {
     vi.stubEnv("OPENAI_API_KEY", "test-key");
 
     const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
-      message(`<summary>\nIntent:\n- ${"x".repeat(8_000)}\n</summary>`),
+      message(`<summary>\nIntent:\n- ${"x".repeat(30_000)}\n</summary>`),
     );
     const runtime = createMockRuntime(
       message("continued one"),
@@ -2222,7 +2308,7 @@ describe("ThreadRuntimeCoordinator", () => {
         name: "auto-compact-breaker-agent",
         instructions: "Reply briefly",
       }),
-      model: TEST_MODEL_WINDOW_350,
+      model: TEST_MODEL_WINDOW_6000,
       runtime,
     });
 
@@ -2231,6 +2317,11 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "auto-compact-breaker-agent",
     });
     await seedAutoCompactionTranscript(store, "thread-auto-compact-breaker");
+    await store.enqueueInput("thread-auto-compact-breaker", {
+      message: stringToUserMessage("extra old context " + "q".repeat(18_000)),
+      source: "telegram",
+    });
+    await store.applyPendingInputs("thread-auto-compact-breaker");
 
     const coordinator = new ThreadRuntimeCoordinator({
       store,
@@ -2238,7 +2329,7 @@ describe("ThreadRuntimeCoordinator", () => {
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
-    const largeInput = (label: string) => stringToUserMessage(`${label} ` + "z".repeat(500));
+    const largeInput = (label: string) => stringToUserMessage(`${label} ` + "z".repeat(100));
 
     await coordinator.submitInput("thread-auto-compact-breaker", {
       message: largeInput("new request one"),
@@ -2728,6 +2819,26 @@ describe("ThreadRuntimeCoordinator", () => {
       "runtime",
       "assistant",
     ]);
+  });
+});
+
+describe("Thread hard context window guard", () => {
+  it("does not call the provider when final assembled request exceeds the hard context window", async () => {
+    const runtime = createMockRuntime(message("should not run"));
+    const thread = new Thread({
+      agent: new Agent({
+        name: "hard-window-agent",
+        instructions: "Reply briefly " + "i".repeat(200),
+      }),
+      messages: [stringToUserMessage("oversized assembled request " + "x".repeat(300))],
+      systemPrompt: "system context " + "s".repeat(200),
+      model: TEST_MODEL_WINDOW_350,
+      runtime,
+      countTokens: (text) => text.length,
+    });
+
+    await expect(thread.runToCompletion()).rejects.toThrow(ContextWindowExceededError);
+    expect(runtime.complete).not.toHaveBeenCalled();
   });
 });
 
