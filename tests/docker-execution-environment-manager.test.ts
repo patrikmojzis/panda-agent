@@ -12,11 +12,13 @@ import type {
 import {readExecutionEnvironmentFilesystemMetadata} from "../src/domain/execution-environments/filesystem.js";
 import {isRecord} from "../src/lib/records.js";
 import {
+    createWorkspaceExecCredential,
     DockerApiError,
     DockerExecutionEnvironmentManager,
     HttpExecutionEnvironmentManagerClient,
     resolveDockerExecutionEnvironmentManagerOptions,
     startExecutionEnvironmentManager,
+    validateWorkspaceExecCredential,
 } from "../src/integrations/shell/index.js";
 import type {
     DockerClient,
@@ -38,6 +40,8 @@ class FakeDockerClient implements DockerClient {
       Status?: string;
     };
   };
+  stopErrors = new Map<string, Error>();
+  removeErrors = new Map<string, Error>();
   removeError?: Error;
 
   async createContainer(name: string, config: DockerContainerCreateConfig): Promise<{Id: string}> {
@@ -83,10 +87,18 @@ class FakeDockerClient implements DockerClient {
 
   async stopContainer(container: string): Promise<void> {
     this.stopped.push(container);
+    const error = this.stopErrors.get(container);
+    if (error) {
+      throw error;
+    }
   }
 
   async removeContainer(container: string): Promise<void> {
     this.removed.push(container);
+    const error = this.removeErrors.get(container);
+    if (error) {
+      throw error;
+    }
     if (this.removeError) {
       throw this.removeError;
     }
@@ -110,6 +122,10 @@ class FakeManager implements ExecutionEnvironmentManager {
   }
 
   async stopEnvironment(): Promise<void> {}
+
+  validateWorkspaceExecCredential(environmentId: string, credential: string): boolean {
+    return validateWorkspaceExecCredential({environmentId, credential, secret: "workspace-secret"});
+  }
 }
 
 class BadMetadataManager implements ExecutionEnvironmentManager {
@@ -141,6 +157,17 @@ function requireContainerName(metadata: DisposableEnvironmentCreateResult["metad
   return metadata.containerName;
 }
 
+function findCreatedContainer(
+  dockerClient: FakeDockerClient,
+  role: "control" | "workspace",
+): {name: string; config: DockerContainerCreateConfig} {
+  const created = dockerClient.created.find((entry) => entry.config.Labels["panda.environment.role"] === role);
+  if (!created) {
+    throw new Error(`Expected created ${role} container.`);
+  }
+  return created;
+}
+
 describe("DockerExecutionEnvironmentManager", () => {
   const directories: string[] = [];
 
@@ -168,7 +195,10 @@ describe("DockerExecutionEnvironmentManager", () => {
     const environmentsRoot = await makeEnvironmentRoot();
     const manager = new DockerExecutionEnvironmentManager({
       dockerClient,
-      image: "panda-runner:test",
+      controlRunnerImage: "panda-runner:test",
+      workspaceImage: "panda-workspace:test",
+      workspaceExecSecret: "workspace-secret",
+      managerUrl: "http://panda-environment-manager:8095",
       hostEnvironmentsRoot: environmentsRoot,
       managerEnvironmentsRoot: environmentsRoot,
       coreEnvironmentsRoot: "/core/environments",
@@ -213,11 +243,19 @@ describe("DockerExecutionEnvironmentManager", () => {
     ]) {
       expect((await stat(hostPath)).isDirectory()).toBe(true);
     }
-    expect(dockerClient.created).toHaveLength(1);
-    const created = dockerClient.created[0]!;
+    expect(dockerClient.created).toHaveLength(2);
+    const created = findCreatedContainer(dockerClient, "control");
+    const workspace = findCreatedContainer(dockerClient, "workspace");
     expect(created.config.Image).toBe("panda-runner:test");
+    expect(workspace.config.Image).toBe("panda-workspace:test");
+    expect(workspace.config.Cmd).toEqual(["sleep", "infinity"]);
+    expect(workspace.config.ExposedPorts).toBeUndefined();
+    expect(workspace.config.Healthcheck).toBeUndefined();
+    expect(workspace.config.WorkingDir).toBe("/workspace");
+    expect(workspace.config.Labels["panda.environment.role"]).toBe("workspace");
     expect(created.config.Cmd).toEqual(["bash-server"]);
     expect(created.config.WorkingDir).toBe("/workspace");
+    expect(created.config.Labels["panda.environment.role"]).toBe("control");
     expect(created.config.Env).toEqual(expect.arrayContaining([
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "SHELL=/bin/bash",
@@ -227,7 +265,17 @@ describe("DockerExecutionEnvironmentManager", () => {
       "BASH_SERVER_AGENT_KEY=panda",
       "BASH_SERVER_PORT=8080",
       "BASH_SERVER_SHARED_SECRET=runner-secret",
+      "PANDA_WORKSPACE_EXEC_MANAGER_URL=http://panda-environment-manager:8095",
+      "PANDA_WORKSPACE_EXEC_ENVIRONMENT_ID=env-worker",
+      `PANDA_WORKSPACE_CONTAINER_NAME=${workspace.name}`,
     ]));
+    const tokenEnv = created.config.Env.find((value) => value.startsWith("PANDA_WORKSPACE_EXEC_TOKEN="));
+    expect(tokenEnv).toBeDefined();
+    expect(validateWorkspaceExecCredential({
+      environmentId: "env-worker",
+      credential: tokenEnv!.slice("PANDA_WORKSPACE_EXEC_TOKEN=".length),
+      secret: "workspace-secret",
+    })).toBe(true);
     expect(created.config.HostConfig.AutoRemove).toBe(true);
     expect(created.config.HostConfig.PortBindings).toEqual({
       "8080/tcp": [
@@ -237,11 +285,14 @@ describe("DockerExecutionEnvironmentManager", () => {
         },
       ],
     });
-    expect(created.config.HostConfig.Binds).toEqual([
+    const expectedBinds = [
       `${filesystem.workspace.hostPath}:/workspace`,
       `${filesystem.inbox.hostPath}:/inbox`,
       `${filesystem.artifacts.hostPath}:/artifacts`,
-    ]);
+    ];
+    expect(created.config.HostConfig.Binds).toEqual(expectedBinds);
+    expect(workspace.config.HostConfig.Binds).toEqual(expectedBinds);
+    expect(dockerClient.started).toEqual([`container-${workspace.name}`, `container-${created.name}`]);
     expect(JSON.stringify(created.config)).not.toContain("/root/.panda");
     expect(JSON.stringify(created.config)).not.toContain("Mounts");
   });
@@ -263,10 +314,13 @@ describe("DockerExecutionEnvironmentManager", () => {
       environmentId: "env-worker",
     });
 
-    const created = dockerClient.created[0]!;
+    const created = findCreatedContainer(dockerClient, "control");
+    const workspace = findCreatedContainer(dockerClient, "workspace");
     expect(created.config.HostConfig.NetworkMode).toBe("panda_runner_net");
+    expect(workspace.config.HostConfig.NetworkMode).toBe("panda_runner_net");
     expect(created.config.HostConfig.PortBindings).toBeUndefined();
-    expect(result.runnerUrl).toMatch(/^http:\/\/panda-env-env-worker-[a-f0-9]{10}:8080$/);
+    expect(workspace.config.HostConfig.PortBindings).toBeUndefined();
+    expect(result.runnerUrl).toMatch(/^http:\/\/panda-env-env-worker-control-[a-f0-9]{10}:8080$/);
   });
 
   it("keeps container-network runner hostnames within Docker DNS label limits", async () => {
@@ -290,9 +344,11 @@ describe("DockerExecutionEnvironmentManager", () => {
     const host = new URL(result.runnerUrl).hostname;
     expect(host.length).toBeLessThanOrEqual(63);
     expect(host).toMatch(/^[a-z0-9-]+$/);
-    expect(host).toBe(dockerClient.created[0]!.name);
+    const created = findCreatedContainer(dockerClient, "control");
+    expect(host).toBe(created.name);
     expect(requireContainerName(result.metadata)).toBe(host);
-    expect(dockerClient.created[0]!.config.Labels["panda.environment.id"]).toBe(environmentId);
+    expect(created.config.Labels["panda.environment.id"]).toBe(environmentId);
+    expect(findCreatedContainer(dockerClient, "workspace").name.length).toBeLessThanOrEqual(63);
   });
 
   it("treats Docker AutoRemove in-progress cleanup as stopped", async () => {
@@ -313,7 +369,34 @@ describe("DockerExecutionEnvironmentManager", () => {
     });
 
     await manager.stopEnvironment("env-worker");
-    expect(dockerClient.stopped[0]).toMatch(/^panda-env-env-worker-[a-f0-9]{10}$/);
+    expect(dockerClient.stopped).toHaveLength(2);
+    expect(dockerClient.stopped[0]).toMatch(/^panda-env-env-worker-control-[a-f0-9]{10}$/);
+    expect(dockerClient.stopped[1]).toMatch(/^panda-env-env-worker-workspace-[a-f0-9]{10}$/);
+    expect(dockerClient.removed).toEqual(dockerClient.stopped);
+  });
+
+  it("attempts workspace cleanup when control container cleanup fails", async () => {
+    const dockerClient = new FakeDockerClient();
+    dockerClient.inspectLabels = {
+      "panda.managed": "true",
+      "panda.environment.id": "env-worker",
+      "panda.agent.key": "panda",
+      "panda.session.id": "session-worker",
+    };
+    dockerClient.removeErrors.set(
+      "panda-env-env-worker-control-55e1bc5d35",
+      new Error("control remove failed"),
+    );
+    const manager = new DockerExecutionEnvironmentManager({
+      dockerClient,
+      createTimeoutMs: 10,
+    });
+
+    await expect(manager.stopEnvironment("env-worker")).rejects.toThrow("control remove failed");
+    expect(dockerClient.stopped).toEqual([
+      "panda-env-env-worker-control-55e1bc5d35",
+      "panda-env-env-worker-workspace-55e1bc5d35",
+    ]);
     expect(dockerClient.removed).toEqual(dockerClient.stopped);
   });
 
@@ -378,7 +461,9 @@ describe("DockerExecutionEnvironmentManager", () => {
       environmentId: "env-worker",
     })).rejects.toThrow("Disposable environment container");
 
-    expect(dockerClient.stopped[0]).toMatch(/^panda-env-env-worker-[a-f0-9]{10}$/);
+    expect(dockerClient.stopped).toHaveLength(2);
+    expect(dockerClient.stopped[0]).toMatch(/^panda-env-env-worker-control-[a-f0-9]{10}$/);
+    expect(dockerClient.stopped[1]).toMatch(/^panda-env-env-worker-workspace-[a-f0-9]{10}$/);
     expect(dockerClient.removed).toEqual(dockerClient.stopped);
   });
 });
@@ -472,6 +557,54 @@ describe("execution environment manager HTTP boundary", () => {
       await expect(response.json()).resolves.toMatchObject({
         ok: false,
         error: "Execution environment manager metadata must be JSON-serializable.",
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+
+  it("does not allow workspace exec credentials to call lifecycle endpoints or cross exec environments", async () => {
+    const fakeManager = new FakeManager();
+    const server = await startExecutionEnvironmentManager({
+      host: "127.0.0.1",
+      port: 0,
+      sharedSecret: "lifecycle-secret",
+      manager: fakeManager,
+    });
+    const execToken = createWorkspaceExecCredential({environmentId: "env-a", secret: "workspace-secret"});
+    try {
+      const baseUrl = `http://127.0.0.1:${server.port}`;
+      const createResponse = await fetch(`${baseUrl}/environments/disposable`, {
+        method: "POST",
+        headers: {authorization: `Bearer ${execToken}`, "content-type": "application/json"},
+        body: JSON.stringify({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"}),
+      });
+      expect(createResponse.status).toBe(403);
+
+      const stopResponse = await fetch(`${baseUrl}/environments/stop`, {
+        method: "POST",
+        headers: {authorization: `Bearer ${execToken}`, "content-type": "application/json"},
+        body: JSON.stringify({environmentId: "env-a"}),
+      });
+      expect(stopResponse.status).toBe(403);
+
+      const crossExecResponse = await fetch(`${baseUrl}/workspaces/exec`, {
+        method: "POST",
+        headers: {authorization: `Bearer ${execToken}`, "content-type": "application/json"},
+        body: JSON.stringify({environmentId: "env-b", request: {command: "pwd"}}),
+      });
+      expect(crossExecResponse.status).toBe(403);
+
+      const sameEnvResponse = await fetch(`${baseUrl}/workspaces/exec`, {
+        method: "POST",
+        headers: {authorization: `Bearer ${execToken}`, "content-type": "application/json"},
+        body: JSON.stringify({environmentId: "env-a", request: {command: "pwd"}}),
+      });
+      expect(sameEnvResponse.status).toBe(501);
+      await expect(sameEnvResponse.json()).resolves.toMatchObject({
+        ok: false,
+        error: "Workspace exec streaming is deferred to B2.",
       });
     } finally {
       await server.close();

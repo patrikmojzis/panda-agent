@@ -603,6 +603,11 @@ build_stack_images() {
     build_pids+=("$!")
   fi
 
+  if (( enable_disposable_environments )); then
+    run_docker_build --target workspace-runner -t panda-workspace:latest "$repo_root" &
+    build_pids+=("$!")
+  fi
+
   for pid in "${build_pids[@]}"; do
     if ! wait "$pid"; then
       failed=1
@@ -715,9 +720,11 @@ EOF
     environment:
       PANDA_EXECUTION_ENVIRONMENT_MANAGER_HOST: 0.0.0.0
       PANDA_EXECUTION_ENVIRONMENT_MANAGER_PORT: \${PANDA_EXECUTION_ENVIRONMENT_MANAGER_PORT:-8095}
+      PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL: \${PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL}
       PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: \${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN}
       PANDA_DOCKER_HOST: \${PANDA_DOCKER_HOST:-unix:///var/run/docker.sock}
-      PANDA_DISPOSABLE_RUNNER_IMAGE: \${PANDA_DISPOSABLE_RUNNER_IMAGE:-panda-runner:latest}
+      PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE: \${PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE:-\${PANDA_DISPOSABLE_RUNNER_IMAGE:-panda-runner:latest}}
+      PANDA_DISPOSABLE_WORKSPACE_IMAGE: \${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-panda-workspace:latest}
       PANDA_DISPOSABLE_RUNNER_NETWORK: \${PANDA_DISPOSABLE_RUNNER_NETWORK}
       PANDA_DISPOSABLE_RUNNER_PORT: \${PANDA_DISPOSABLE_RUNNER_PORT:-8080}
       PANDA_DISPOSABLE_RUNNER_CWD: \${PANDA_DISPOSABLE_RUNNER_CWD:-/workspace}
@@ -740,6 +747,7 @@ EOF
       - "$PANDA_ENVIRONMENTS_HOST_ROOT:\${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}"
     networks:
       - execution_manager_net
+      - disposable_runner_net
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:\${PANDA_EXECUTION_ENVIRONMENT_MANAGER_PORT:-8095}/health"]
       interval: 10s
