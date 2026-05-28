@@ -58,6 +58,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "Thread",
   "Tool",
   "ToolError",
+  "UpsertSubagentProfileTool",
   "WatchCreateTool",
   "WatchDisableTool",
   "WatchSchemaGetTool",

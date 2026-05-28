@@ -98,6 +98,11 @@ export {
   type SpawnSubagentToolOptions,
 } from "./tools/spawn-subagent-tool.js";
 export {
+  UpsertSubagentProfileTool,
+  type UpsertSubagentProfileToolOptions,
+  type UpsertSubagentProfileToolStore,
+} from "./tools/upsert-subagent-profile-tool.js";
+export {
   ThinkingSetTool,
   type ThinkingSetPersistence,
   type ThinkingSetToolOptions,

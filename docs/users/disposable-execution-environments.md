@@ -58,7 +58,11 @@ panda subagents purge --expired --execute
 ## Custom profiles
 
 Built-in profiles are seeded by the runtime. Agent-scoped custom profiles are
-managed with:
+managed with the CLI or, from an agent session, the model-facing
+`upsert_subagent_profile` tool. The tool scopes writes to the current `agentKey`
+and returns profile metadata without echoing the full prompt.
+
+CLI examples:
 
 ```bash
 panda subagents profiles list --agent clawd --json
@@ -73,5 +77,6 @@ panda subagents profiles disable code-review --agent clawd
 ```
 
 Profiles store prompt, tool groups, model/thinking defaults, and enabled state.
-They do **not** store credentials, environment ids, or per-spawn execution
-choices; pass those at spawn time.
+They do **not** store credentials, credential policies, environment ids, raw tool
+allowlists, skill allowlists, or per-spawn execution choices; pass those at spawn
+time.

@@ -66,6 +66,7 @@ export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
       "thinking_set",
       "agent_skill",
       "agent_prompt",
+      "upsert_subagent_profile",
       "set_env_value",
       "clear_env_value",
       "app_create",
