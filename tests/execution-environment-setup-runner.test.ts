@@ -1,5 +1,5 @@
 import {execFile} from "node:child_process";
-import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import {promisify} from "node:util";
 import os from "node:os";
 import path from "node:path";
@@ -301,6 +301,82 @@ describe("RemoteExecutionEnvironmentSetupRunner", () => {
       expect(result).toMatchObject({
         status: "failed",
         error: expect.stringContaining("sed:"),
+      });
+    } finally {
+      await rm(tmp, {recursive: true, force: true});
+    }
+  });
+
+  it("fails closed instead of recording a Corepack notice as a version", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "panda-setup-corepack-notice-"));
+    try {
+      const sourceScript = path.join(tmp, "setup.sh");
+      await writeFile(sourceScript, "#!/usr/bin/env bash\ntrue\n", "utf8");
+      const responses = [
+        bashResult(),
+        bashResult({
+          timeoutMs: 30_000,
+          stdout: JSON.stringify({
+            tools: {
+              node: {status: "present", path: "/usr/bin/node", version: "v99.1.0"},
+              pnpm: {status: "missing"},
+              corepack: {
+                status: "present",
+                path: "/usr/bin/corepack",
+                version: "! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.0.0.tgz",
+              },
+            },
+          }),
+          noOutput: false,
+        }),
+      ];
+      const fetchImpl: typeof fetch = async () => jsonResponse(responses.shift() ?? bashResult());
+      const runner = new RemoteExecutionEnvironmentSetupRunner({
+        env: {} as NodeJS.ProcessEnv,
+        fetchImpl,
+      });
+
+      await expect(runner.runSetup({
+        agentKey: "panda",
+        environmentId: "env-setup",
+        runnerUrl: "http://runner:8080",
+        runnerCwd: "/workspace",
+        filesystem: createFilesystem(tmp),
+        setupScript: {
+          requestedPath: "setup.sh",
+          resolvedPath: sourceScript,
+        },
+      })).rejects.toThrow("Toolchain probe returned invalid corepack version output");
+
+      const toolchain = JSON.parse(await readFile(path.join(tmp, "artifacts", "setup", "toolchain.json"), "utf8"));
+      expect(toolchain).toMatchObject({
+        status: "failed",
+        error: expect.stringContaining("invalid corepack version"),
+      });
+    } finally {
+      await rm(tmp, {recursive: true, force: true});
+    }
+  });
+
+  it("probe command exits non-zero when a tool writes a Corepack notice on stdout", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "panda-setup-probe-bin-"));
+    try {
+      const bin = path.join(tmp, "bin");
+      await writeFile(path.join(tmp, "placeholder"), "", "utf8");
+      await mkdir(bin, {recursive: true});
+      await writeFile(path.join(bin, "node"), "#!/usr/bin/env bash\nprintf 'v99.1.0\n'\n", {mode: 0o755});
+      await writeFile(path.join(bin, "pnpm"), "#!/usr/bin/env bash\nprintf '10.0.0\n'\n", {mode: 0o755});
+      await writeFile(
+        path.join(bin, "corepack"),
+        "#!/usr/bin/env bash\nprintf '! Corepack is about to download pnpm@10.0.0\n'\n",
+        {mode: 0o755},
+      );
+
+      await expect(execFileAsync("bash", ["-lc", TOOLCHAIN_PROBE_COMMAND], {
+        env: {PATH: `${bin}:${process.env.PATH ?? ""}`},
+        timeout: 30_000,
+      })).rejects.toMatchObject({
+        code: 1,
       });
     } finally {
       await rm(tmp, {recursive: true, force: true});

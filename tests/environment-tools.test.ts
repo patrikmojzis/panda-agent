@@ -82,6 +82,27 @@ describe("environment control tools", () => {
     expect(SpawnSubagentTool.schema.shape).not.toHaveProperty("setupScript");
   });
 
+  it("does not auto-discover environment-setup.sh when setupScript is omitted", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "panda-setup-explicit-"));
+    try {
+      await writeFile(path.join(tmp, "environment-setup.sh"), "#!/usr/bin/env bash\necho ignored\n", "utf8");
+      const createStandaloneDisposableEnvironment = vi.fn(async () => createEnvironment());
+      const tool = new EnvironmentCreateTool({
+        lifecycle: {
+          createStandaloneDisposableEnvironment,
+        },
+      });
+
+      await tool.run({}, createRunContext({cwd: tmp}));
+
+      expect(createStandaloneDisposableEnvironment).toHaveBeenCalledWith(expect.not.objectContaining({
+        setupScript: expect.anything(),
+      }));
+    } finally {
+      await rm(tmp, {recursive: true, force: true});
+    }
+  });
+
   it("passes a validated setupScript path to standalone environment creation", async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), "panda-setup-tool-"));
     try {

@@ -16,8 +16,18 @@ import {
 } from "../src/index.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {RemoteShellExecutor, resolveRunnerUrl,} from "../src/integrations/shell/bash-executor.js";
-import {resolveBashRunnerOptions, type BashRunner, startBashRunner,} from "../src/integrations/shell/bash-runner.js";
 import {
+  type CommandExecutor,
+  type CommandExecutorExecInput,
+  type CommandExecutorJob,
+  type CommandExecutorJobStartInput,
+  resolveBashRunnerOptions,
+  type BashRunner,
+  startBashRunner,
+} from "../src/integrations/shell/bash-runner.js";
+import {
+    type BashExecutionResult,
+    type BashJobSnapshot,
     RUNNER_AGENT_KEY_HEADER,
     RUNNER_AUTHORIZATION_HEADER,
     RUNNER_EXPECTED_PATH_HEADER,
@@ -82,7 +92,12 @@ describe("remote bash runner", () => {
 
   async function createRunner(
     agentKey: string,
-    options: { env?: NodeJS.ProcessEnv; sharedSecret?: string; allowedRoots?: readonly string[] } = {},
+    options: {
+      env?: NodeJS.ProcessEnv;
+      sharedSecret?: string;
+      allowedRoots?: readonly string[];
+      commandExecutor?: CommandExecutor;
+    } = {},
   ): Promise<BashRunner> {
     const runner = await startBashRunner({
       agentKey,
@@ -91,6 +106,7 @@ describe("remote bash runner", () => {
       env: options.env,
       sharedSecret: options.sharedSecret,
       allowedRoots: options.allowedRoots,
+      commandExecutor: options.commandExecutor,
     });
     runners.push(runner);
     return runner;
@@ -514,6 +530,185 @@ describe("remote bash runner", () => {
     );
 
     expect(String(asObject(result).stdout)).toBe("ok");
+  });
+
+
+  function fakeExecResult(input: CommandExecutorExecInput): BashExecutionResult {
+    return {
+      shell: "/bin/bash",
+      finalCwd: input.cwd,
+      durationMs: 1,
+      timeoutMs: input.request.timeoutMs,
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      aborted: false,
+      abortReason: null,
+      interrupted: false,
+      success: true,
+      stdout: `fake-exec:${input.request.command}:${input.request.env?.MARKER ?? "missing"}`,
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutChars: `fake-exec:${input.request.command}:${input.request.env?.MARKER ?? "missing"}`.length,
+      stderrChars: 0,
+      stdoutPersisted: false,
+      stderrPersisted: false,
+      noOutput: false,
+      trackedEnvKeys: input.request.trackedEnvKeys,
+      persistedEnvEntries: [],
+    };
+  }
+
+  function fakeJobSnapshot(input: CommandExecutorJobStartInput, status: BashJobSnapshot["status"]): BashJobSnapshot {
+    const finished = status !== "running";
+    return {
+      jobId: input.request.jobId,
+      status,
+      command: input.request.command,
+      initialCwd: input.cwd,
+      startedAt: 123,
+      timedOut: false,
+      stdout: status === "completed" ? "fake-job-done" : "",
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutChars: status === "completed" ? "fake-job-done".length : 0,
+      stderrChars: 0,
+      stdoutPersisted: false,
+      stderrPersisted: false,
+      trackedEnvKeys: input.request.trackedEnvKeys,
+      ...(finished ? {finishedAt: 456, durationMs: 333, exitCode: 0, signal: null, finalCwd: input.cwd} : {}),
+    };
+  }
+
+  it("serves /exec through the command executor seam without changing the runner protocol", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const calls: CommandExecutorExecInput[] = [];
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async (input) => {
+          calls.push(input);
+          return {result: fakeExecResult(input)};
+        },
+        startJob: async () => {
+          throw new Error("unexpected job start");
+        },
+      },
+    });
+
+    const response = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/exec`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({
+        requestId: "request-seam-exec",
+        command: "printf hello",
+        cwd: agentHome,
+        timeoutMs: 1_000,
+        trackedEnvKeys: ["MARKER"],
+        maxOutputChars: 8_000,
+        env: {MARKER: "seam"},
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      finalCwd: agentHome,
+      stdout: "fake-exec:printf hello:seam",
+      trackedEnvKeys: ["MARKER"],
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.cwd).toBe(agentHome);
+    expect(calls[0]?.request.command).toBe("printf hello");
+  });
+
+  it("keeps /jobs state in the runner while job execution goes through the command executor seam", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const startedJobs = new Map<string, CommandExecutorJob>();
+    const startCalls: CommandExecutorJobStartInput[] = [];
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => {
+          throw new Error("unexpected exec");
+        },
+        startJob: async (input) => {
+          startCalls.push(input);
+          let status: BashJobSnapshot["status"] = "running";
+          const job: CommandExecutorJob = {
+            snapshot: () => fakeJobSnapshot(input, status),
+            wait: async (timeoutMs) => {
+              if (timeoutMs !== undefined && timeoutMs > 1_000_000_000) {
+                return new Promise(() => undefined);
+              }
+              status = "completed";
+              return fakeJobSnapshot(input, status);
+            },
+            cancel: async () => {
+              status = "cancelled";
+              return fakeJobSnapshot(input, status);
+            },
+          };
+          startedJobs.set(input.request.jobId, job);
+          return job;
+        },
+      },
+    });
+
+    const startResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/start`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({
+        jobId: "job-seam-1",
+        command: "sleep 1",
+        cwd: agentHome,
+        timeoutMs: 1_000,
+        trackedEnvKeys: [],
+        maxOutputChars: 8_000,
+        persistOutputThresholdChars: 8_000,
+      }),
+    });
+    expect(startResponse.status).toBe(200);
+    await expect(startResponse.json()).resolves.toMatchObject({
+      ok: true,
+      jobId: "job-seam-1",
+      status: "running",
+    });
+
+    const statusResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/status`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({jobId: "job-seam-1"}),
+    });
+    expect(statusResponse.status).toBe(200);
+    await expect(statusResponse.json()).resolves.toMatchObject({
+      ok: true,
+      jobId: "job-seam-1",
+      status: "running",
+    });
+
+    const waitResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/wait`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({jobId: "job-seam-1", timeoutMs: 1_000}),
+    });
+    expect(waitResponse.status).toBe(200);
+    await expect(waitResponse.json()).resolves.toMatchObject({
+      ok: true,
+      jobId: "job-seam-1",
+      status: "completed",
+      stdout: "fake-job-done",
+    });
+
+    const evictedStatusResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/status`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({jobId: "job-seam-1"}),
+    });
+    expect(evictedStatusResponse.status).toBe(404);
+    expect(startCalls).toHaveLength(1);
+    expect(startCalls[0]?.cwd).toBe(agentHome);
+    expect(startedJobs.has("job-seam-1")).toBe(true);
   });
 
   it("accepts env payloads at the runner", async () => {
