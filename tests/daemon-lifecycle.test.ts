@@ -120,7 +120,7 @@ function createDaemonLifecycleContext(overrides: DaemonLifecycleContextOverrides
     emailSyncRunner: createStartStopService(),
     scheduledTaskRunner: createStartStopService(),
     watchRunner: createStartStopService(),
-    relationshipHeartbeatRunner: createStartStopService(),
+    sessionHeartbeatRunner: createStartStopService(),
     runtime,
   };
 
@@ -258,7 +258,7 @@ describe("createDaemonLifecycle", () => {
           order.push("watch-stop");
         }),
       },
-      relationshipHeartbeatRunner: {
+      sessionHeartbeatRunner: {
         start: vi.fn(async () => {
           order.push("heartbeat-start");
           await lifecycle.stop();
@@ -400,7 +400,7 @@ describe("createDaemonLifecycle", () => {
           order.push("watch-stop");
         }),
       },
-      relationshipHeartbeatRunner: {
+      sessionHeartbeatRunner: {
         start: vi.fn(async () => {}),
         stop: vi.fn(async () => {
           order.push("heartbeat-stop");
@@ -495,7 +495,7 @@ describe("createDaemonLifecycle", () => {
       emailSyncRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
       scheduledTaskRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
       watchRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
-      relationshipHeartbeatRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      sessionHeartbeatRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
       runtime: {
         close: vi.fn(async () => {
           order.push("runtime-close");
@@ -627,7 +627,7 @@ describe("createDaemonLifecycle", () => {
           order.push("watch-stop");
         }),
       },
-      relationshipHeartbeatRunner: {
+      sessionHeartbeatRunner: {
         start: vi.fn(async () => {}),
         stop: vi.fn(async () => {
           order.push("heartbeat-stop");
@@ -723,7 +723,7 @@ describe("createDaemonLifecycle", () => {
       emailSyncRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
       scheduledTaskRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
       watchRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
-      relationshipHeartbeatRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
+      sessionHeartbeatRunner: {start: vi.fn(async () => {}), stop: vi.fn(async () => {})},
       runtime: {
         close: vi.fn(async () => {}),
         pool,

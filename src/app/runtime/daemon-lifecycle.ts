@@ -66,7 +66,7 @@ export interface DaemonLifecycleContext {
   emailSyncRunner: StartStopService;
   scheduledTaskRunner: StartStopService;
   watchRunner: StartStopService;
-  relationshipHeartbeatRunner: StartStopService;
+  sessionHeartbeatRunner: StartStopService;
 }
 
 export function createDaemonLifecycle(input: {
@@ -189,9 +189,9 @@ export function createDaemonLifecycle(input: {
           },
         },
         {
-          label: "relationship-heartbeat-runner",
+          label: "session-heartbeat-runner",
           run: async () => {
-            await input.context.relationshipHeartbeatRunner.stop();
+            await input.context.sessionHeartbeatRunner.stop();
           },
         },
         {
@@ -397,7 +397,7 @@ export function createDaemonLifecycle(input: {
         await input.context.emailSyncRunner.start();
         await input.context.scheduledTaskRunner.start();
         await input.context.watchRunner.start();
-        await input.context.relationshipHeartbeatRunner.start();
+        await input.context.sessionHeartbeatRunner.start();
         if (stopped) {
           return;
         }
