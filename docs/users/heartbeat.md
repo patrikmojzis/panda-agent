@@ -24,7 +24,7 @@ Silence is a valid outcome.
 
 Today heartbeat works like this:
 
-- default cadence is every `30` minutes
+- default cadence is every `60` minutes
 - heartbeat belongs to a session
 - main sessions start enabled by default
 - branch sessions start disabled by default
