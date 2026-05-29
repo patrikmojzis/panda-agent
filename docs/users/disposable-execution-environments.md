@@ -21,6 +21,26 @@ Disposable isolated environments mount:
 The parent runner sees the same environment under `/environments/<envDir>/...`.
 Use `/inbox` and `/artifacts` for coordination; do not rely on transcript copying.
 
+## Setup scripts and default toolchain
+
+Disposable workspace containers are intentionally minimal. By default, an
+isolated workspace should not be assumed to have `node`, `pnpm`, `corepack`, or
+`panda` installed.
+
+When a project needs tools, pass an explicit setup script to `environment_create`:
+
+```text
+environment_create(label="panda-agent", setupScript="./setup-worker.sh")
+```
+
+Panda copies the script into the environment as `/artifacts/setup/setup.sh` and
+runs it before marking the environment ready. There is no automatic
+`environment-setup.sh` discovery; setup must be requested explicitly.
+
+Project setup scripts should install and verify their own toolchain. For example,
+a Node project should install the expected Node version, enable Corepack, prepare
+`pnpm`, install dependencies, and fail loudly if any readiness check is missing.
+
 ## Runtime context
 
 Every durable child receives a **Subagent Runtime Context** with:
