@@ -167,11 +167,14 @@ Mobile and desktop contexts are separate. Switching to `mobile` does not resize 
 
 ## Disposable Vite Validation
 
-Disposable runners built by the Docker stack use Node 22 LTS by default and
-remote bash appends safe system PATH dirs, so missing `sed`, `dirname`, `uname`,
-`node`, `pnpm`, or `corepack` should be treated as a Panda runtime bug.
+Isolated/disposable workspaces are intentionally minimal by default. Missing
+basic POSIX tools such as `sed`, `dirname`, or `uname` may be a Panda runtime
+bug, but missing `node`, `pnpm`, or `corepack` is a project setup/toolchain issue
+unless `environment_create(... setupScript=...)` installed them.
 
-If a Vite/Tailwind app still times out or gets killed during install, typecheck,
+For Vite validation, use an explicit setup script to install the expected
+Node/pnpm/corepack toolchain, or report the setup blocker honestly. If a
+Vite/Tailwind app still times out or gets killed during install, typecheck,
 build, or dev-server startup on a tiny host, report `BLOCKED_RESOURCE`. Do not
 call it product failure, and do not claim browser `PASS` unless you captured
 real DOM, screenshot, or network evidence.
