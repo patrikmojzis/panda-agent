@@ -145,10 +145,10 @@
       "sha256": "e841229d76c2ba43747ffae0803e746fb2b7d1409e27f186a34eac1c5137c9dc"
     },
     {
-      "bytes": 2898,
+      "bytes": 2904,
       "lines": 96,
       "path": "src/prompts/channels/a2a.ts",
-      "sha256": "5942903dd7d364d51edd43d0ce277cf1bc07ade617a33c26c446481433ee5992"
+      "sha256": "7ce06cc5e05ee307c4877e8f9299a683f850c831de8001a2bc407c5778eca793"
     },
     {
       "bytes": 2596,
