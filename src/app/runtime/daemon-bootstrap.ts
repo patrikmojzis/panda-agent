@@ -51,7 +51,7 @@ interface DaemonContext {
   daemonState: DaemonStateRepo;
   scheduledTaskRunner: ScheduledTaskRunner;
   watchRunner: WatchRunner;
-  relationshipHeartbeatRunner: HeartbeatRunner;
+  sessionHeartbeatRunner: HeartbeatRunner;
 }
 
 export async function bootstrapDaemonContext(
@@ -311,7 +311,7 @@ export async function bootstrapDaemonContext(
         });
       },
     });
-    const relationshipHeartbeatRunner = new HeartbeatRunner({
+    const sessionHeartbeatRunner = new HeartbeatRunner({
       sessions: runtime.sessionStore,
       coordinator: runtime.coordinator,
       resolveInstructions: async (session) => {
@@ -342,7 +342,7 @@ export async function bootstrapDaemonContext(
       daemonState,
       scheduledTaskRunner,
       watchRunner,
-      relationshipHeartbeatRunner,
+      sessionHeartbeatRunner,
     };
   } catch (error) {
     await runtime.close();
