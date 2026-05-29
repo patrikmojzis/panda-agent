@@ -6,7 +6,6 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import type {AssistantMessage} from "@mariozechner/pi-ai";
 import {
     Agent,
-    ContextWindowExceededError,
     BackgroundJobStatusTool,
     BackgroundJobWaitTool,
     BashTool,
@@ -19,6 +18,7 @@ import {
     Tool,
     z,
 } from "../src/index.js";
+import {ContextWindowExceededError} from "../src/kernel/agent/exceptions.js";
 import {buildBackgroundToolThreadInput} from "../src/app/runtime/background-tool-thread-input.js";
 import {
     AUTO_COMPACT_BREAKER_COOLDOWN_MS,
