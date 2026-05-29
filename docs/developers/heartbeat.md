@@ -10,7 +10,7 @@ It is not a cron clone, not a daemon health ping, and not a protocol waiting for
 
 Today heartbeat works like this:
 
-- default cadence is every `30` minutes
+- default cadence is every `60` minutes
 - the daemon runs a dedicated heartbeat runner
 - the runner scans due `session_heartbeats`
 - main sessions start enabled by default
