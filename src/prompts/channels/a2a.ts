@@ -71,9 +71,9 @@ function renderSenderEnvironment(environment: A2ASenderEnvironmentPrompt | undef
     `- parent_workspace_path: ${formatMaybeValue(parentRunnerPaths?.workspace)}`,
     `- parent_inbox_path: ${formatMaybeValue(parentRunnerPaths?.inbox)}`,
     `- parent_artifacts_path: ${formatMaybeValue(parentRunnerPaths?.artifacts)}`,
-    `- worker_workspace_path: ${formatMaybeValue(workerPaths?.workspace)}`,
-    `- worker_inbox_path: ${formatMaybeValue(workerPaths?.inbox)}`,
-    `- worker_artifacts_path: ${formatMaybeValue(workerPaths?.artifacts)}`,
+    `- subagent_workspace_path: ${formatMaybeValue(workerPaths?.workspace)}`,
+    `- subagent_inbox_path: ${formatMaybeValue(workerPaths?.inbox)}`,
+    `- subagent_artifacts_path: ${formatMaybeValue(workerPaths?.artifacts)}`,
   ].join("\n");
 }
 

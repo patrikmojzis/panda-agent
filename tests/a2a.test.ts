@@ -694,7 +694,7 @@ describe("buildA2AInboundPersistence", () => {
     expect(text).toContain("sender_environment:");
     expect(text).toContain("- parent_workspace_path: /environments/worker-a/workspace");
     expect(text).toContain("- parent_artifacts_path: /environments/worker-a/artifacts");
-    expect(text).toContain("- worker_artifacts_path: /artifacts");
+    expect(text).toContain("- subagent_artifacts_path: /artifacts");
     expect(text).toContain("status: done");
     expect(text).not.toContain("/root/.panda");
   });
