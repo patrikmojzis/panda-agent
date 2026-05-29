@@ -2,6 +2,7 @@ import type {AssistantMessage, Message, ThinkingLevel, ToolCall, ToolResultMessa
 
 import type {Agent} from "./agent.js";
 import {
+  ContextWindowExceededError,
   InvalidJSONResponseError,
   InvalidSchemaResponseError,
   MaxTurnsReachedError,
@@ -113,6 +114,23 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal.aborted) {
     throw signal.reason instanceof Error ? signal.reason : new Error("The operation was aborted.");
   }
+}
+
+function estimateRuntimeRequestTokens(
+  request: LlmRuntimeRequest,
+  estimateTextTokens: TokenCounter,
+): number {
+  const context = request.context;
+  const systemPromptTokens = context.systemPrompt ? estimateTextTokens(context.systemPrompt) : 0;
+  const messageTokens = context.messages.reduce(
+    (total, message) => total + estimateVisibleMessageTokens(message, estimateTextTokens),
+    0,
+  );
+  const toolTokens = context.tools?.length
+    ? estimateTextTokens(JSON.stringify(context.tools))
+    : 0;
+
+  return systemPromptTokens + messageTokens + toolTokens;
 }
 
 function buildRuntimeRequestMetadata(
@@ -926,11 +944,20 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     };
   }
 
+  private assertRuntimeRequestWithinHardWindow(request: LlmRuntimeRequest): void {
+    const hardWindow = resolveModelRuntimeBudget(this.model).hardWindow;
+    const estimatedTokens = estimateRuntimeRequestTokens(request, this.countTokens);
+    if (estimatedTokens >= hardWindow) {
+      throw new ContextWindowExceededError();
+    }
+  }
+
   private async *runStepWithinScope(): AsyncGenerator<ThreadRunEvent, ThreadStepResult> {
     const { runMessages, runContext } = await this.prepareTurn();
 
     throwIfAborted(this.signal);
     const request = await this.buildRuntimeRequest(runMessages);
+    this.assertRuntimeRequestWithinHardWindow(request);
     const startedAt = Date.now();
     let response: AssistantMessage;
     try {
@@ -999,6 +1026,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
 
     throwIfAborted(this.signal);
     const request = await this.buildRuntimeRequest(runMessages);
+    this.assertRuntimeRequestWithinHardWindow(request);
     const startedAt = Date.now();
     let response: AssistantMessage;
     try {
