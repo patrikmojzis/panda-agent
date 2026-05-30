@@ -7,6 +7,7 @@ export type Overview = {agents: number; sessions: number; runningRuns: number; c
 export type AgentSummary = {agentKey: string; displayName: string; status: string; sessionCount: number; paired: boolean};
 export type CredentialSummary = {agentKey: string; envKey: string; present: true; createdAt: string; updatedAt: string};
 export type SessionBriefing = {agentKey: string; sessionId: string; slug: "session"; content: string; wasSet: boolean; createdAt?: string; updatedAt?: string};
+export type SessionHeartbeat = {agentKey: string; sessionId: string; enabled: boolean; everyMinutes: number; nextFireAt: string; lastFireAt?: string};
 
 export class ControlApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -44,4 +45,6 @@ export const controlApi = {
   getSessionBriefing: (agentKey: string, sessionId: string) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`),
   putSessionBriefing: (agentKey: string, sessionId: string, content: string, csrfToken: string | null) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`, {method: "PUT", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify({content})}),
   clearSessionBriefing: (agentKey: string, sessionId: string, csrfToken: string | null) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`, {method: "DELETE", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify({confirm: "clear-session-briefing"})}),
+  getSessionHeartbeat: (agentKey: string, sessionId: string) => requestJson<{heartbeat: SessionHeartbeat}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`),
+  patchSessionHeartbeat: (agentKey: string, sessionId: string, input: {enabled: boolean; everyMinutes: number}, csrfToken: string | null) => requestJson<{heartbeat: SessionHeartbeat}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`, {method: "PATCH", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify({...input, confirm: "update-heartbeat"})}),
 };

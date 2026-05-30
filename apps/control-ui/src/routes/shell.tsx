@@ -1,5 +1,5 @@
 import {Link, Outlet, useNavigate} from "@tanstack/react-router";
-import {Bot, FileText, Gauge, KeyRound, LogOut, Settings} from "lucide-react";
+import {Bot, FileText, Gauge, HeartPulse, KeyRound, LogOut, Settings} from "lucide-react";
 import {Button} from "../components/ui/button";
 import {Badge} from "../components/ui/badge";
 import {useAuth} from "../lib/auth";
@@ -10,6 +10,7 @@ const nav = [
   {to: "/agents", label: "Agents", icon: Bot},
   {to: "/credentials", label: "Credentials", icon: KeyRound},
   {to: "/briefing", label: "Briefing", icon: FileText},
+  {to: "/heartbeat", label: "Heartbeat", icon: HeartPulse},
 ] as const;
 
 export function Shell() {

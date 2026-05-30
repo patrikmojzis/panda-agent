@@ -16,6 +16,7 @@ import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres
 import {PostgresControlAuthService} from "../src/domain/control/auth.js";
 import {ControlReadService} from "../src/domain/control/read-service.js";
 import {ControlBriefingService} from "../src/domain/control/briefing-service.js";
+import {ControlHeartbeatService} from "../src/domain/control/heartbeat-service.js";
 import {CONTROL_SESSION_COOKIE, startControlServer, type ControlHttpServer} from "../src/integrations/control/http-server.js";
 
 const pools: Array<{end(): Promise<void>}> = [];
@@ -43,6 +44,7 @@ async function createHarness() {
   const auth = new PostgresControlAuthService({pool});
   const reads = new ControlReadService({pool});
   const briefings = new ControlBriefingService({pool, sessions});
+  const heartbeats = new ControlHeartbeatService({pool, sessions});
   await identities.ensureSchema();
   await agents.ensureSchema();
   await sessions.ensureSchema();
@@ -59,11 +61,11 @@ async function createHarness() {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, agents, sessions, auth, reads, briefings};
+  return {pool, agents, sessions, auth, reads, briefings, heartbeats};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, briefings: harness.briefings});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, briefings: harness.briefings, heartbeats: harness.heartbeats});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -145,6 +147,7 @@ describe("Control auth HTTP", () => {
         listCredentials: harness.reads.listCredentials.bind(harness.reads),
       } as ControlReadService,
       briefings: harness.briefings,
+      heartbeats: harness.heartbeats,
     });
     servers.push(server);
 
@@ -167,7 +170,7 @@ describe("Control auth HTTP", () => {
     await mkdir(join(staticDir, "assets"));
     await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
     await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
-    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, briefings: harness.briefings, uiStaticDir: staticDir});
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, briefings: harness.briefings, heartbeats: harness.heartbeats, uiStaticDir: staticDir});
     servers.push(server);
     const base = `http://${server.host}:${server.port}`;
 
@@ -254,6 +257,7 @@ describe("Control session briefing HTTP", () => {
     expect(auditText).not.toContain("do not save");
   });
 
+
   it("requires both Control grant visibility and identity-agent pairing, and checks session belongs to path agent", async () => {
     const harness = await createHarness();
     const base = await startHarnessServer(harness);
@@ -272,5 +276,112 @@ describe("Control session briefing HTTP", () => {
     await harness.agents.ensurePairing("luna", "identity-patrik");
     const noScopedGrant = await fetch(`${base}/api/control/agents/luna/sessions/session-luna/briefing`, {headers: {cookie: auth.cookies}});
     expect(noScopedGrant.status).toBe(404);
+  });
+});
+
+
+describe("Control session heartbeat HTTP", () => {
+  async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "scoped") {
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey: "panda"} : {})});
+    const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {csrfToken: string};
+    return {cookies: cookieHeader(response), csrfToken: body.csrfToken};
+  }
+
+  it("reads, updates, rejects unsafe fields, enforces CSRF/min cadence, and audits redacted heartbeat metadata", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+    const path = `${base}/api/control/agents/panda/sessions/session-panda/heartbeat`;
+
+    const initial = await fetch(path, {headers: {cookie: auth.cookies}});
+    expect(initial.status).toBe(200);
+    await expect(initial.json()).resolves.toMatchObject({heartbeat: {agentKey: "panda", sessionId: "session-panda", enabled: true, everyMinutes: 60}});
+
+    const missingCsrf = await fetch(path, {method: "PATCH", headers: {cookie: auth.cookies}, body: JSON.stringify({enabled: true, everyMinutes: 30, confirm: "update-heartbeat"})});
+    expect(missingCsrf.status).toBe(403);
+    expect(await harness.sessions.getHeartbeat("session-panda")).toMatchObject({enabled: true, everyMinutes: 60});
+
+    const tooFast = await fetch(path, {method: "PATCH", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({everyMinutes: 5, confirm: "update-heartbeat"})});
+    expect(tooFast.status).toBe(400);
+    expect(await harness.sessions.getHeartbeat("session-panda")).toMatchObject({enabled: true, everyMinutes: 60});
+
+    const unknown = await fetch(path, {method: "PATCH", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({enabled: true, everyMinutes: 30, confirm: "update-heartbeat", nextFireAt: "2099-01-01T00:00:00.000Z", fireNow: true})});
+    expect(unknown.status).toBe(400);
+    expect(await harness.sessions.getHeartbeat("session-panda")).toMatchObject({enabled: true, everyMinutes: 60});
+
+    const missingConfirm = await fetch(path, {method: "PATCH", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({enabled: true, everyMinutes: 30})});
+    expect(missingConfirm.status).toBe(400);
+    expect(await harness.sessions.getHeartbeat("session-panda")).toMatchObject({enabled: true, everyMinutes: 60});
+
+    const disableWithoutConfirm = await fetch(path, {method: "PATCH", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({enabled: false})});
+    expect(disableWithoutConfirm.status).toBe(400);
+    expect(await harness.sessions.getHeartbeat("session-panda")).toMatchObject({enabled: true, everyMinutes: 60});
+
+    const saved = await fetch(path, {method: "PATCH", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({enabled: true, everyMinutes: 30, confirm: "update-heartbeat"})});
+    expect(saved.status).toBe(200);
+    await expect(saved.json()).resolves.toMatchObject({heartbeat: {enabled: true, everyMinutes: 30}});
+
+    const after = await fetch(path, {headers: {cookie: auth.cookies}});
+    expect(after.status).toBe(200);
+    await expect(after.json()).resolves.toMatchObject({heartbeat: {agentKey: "panda", sessionId: "session-panda", enabled: true, everyMinutes: 30}});
+
+    const audit = await harness.pool.query(`SELECT event_type, metadata::text AS metadata FROM "runtime"."control_audit_events" WHERE event_type = 'session_heartbeat_config_write' ORDER BY created_at ASC`);
+    expect(audit.rows).toHaveLength(1);
+    const auditText = JSON.stringify(audit.rows);
+    expect(auditText).toContain("everyMinutes");
+    expect(auditText).toContain("nextFireAt");
+    expect(auditText).not.toContain("fireNow");
+    expect(auditText).not.toContain("2099-01-01");
+  });
+
+
+  it("rejects enabling a legacy below-minimum cadence unless the patch raises it", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.pool.query(`
+      UPDATE "runtime"."session_heartbeats"
+      SET enabled = FALSE, every_minutes = 1, next_fire_at = NOW() + INTERVAL '1 minute'
+      WHERE session_id = 'session-panda'
+    `);
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+    const path = `${base}/api/control/agents/panda/sessions/session-panda/heartbeat`;
+
+    const unsafeEnable = await fetch(path, {method: "PATCH", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({enabled: true, confirm: "update-heartbeat"})});
+    expect(unsafeEnable.status).toBe(400);
+    expect(await harness.sessions.getHeartbeat("session-panda")).toMatchObject({enabled: false, everyMinutes: 1});
+
+    const auditAfterReject = await harness.pool.query(`SELECT COUNT(*)::int AS count FROM "runtime"."control_audit_events" WHERE event_type = 'session_heartbeat_config_write'`);
+    expect(Number((auditAfterReject.rows[0] as Record<string, unknown>).count)).toBe(0);
+
+    const safeEnable = await fetch(path, {method: "PATCH", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({enabled: true, everyMinutes: 15, confirm: "update-heartbeat"})});
+    expect(safeEnable.status).toBe(200);
+    await expect(safeEnable.json()).resolves.toMatchObject({heartbeat: {enabled: true, everyMinutes: 15}});
+  });
+
+  it("requires both Control grant visibility and identity-agent pairing, and checks session belongs to path agent", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const noPairing = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/heartbeat`, {headers: {cookie: auth.cookies}});
+    expect(noPairing.status).toBe(404);
+
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const visible = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/heartbeat`, {headers: {cookie: auth.cookies}});
+    expect(visible.status).toBe(200);
+
+    const wrongAgent = await fetch(`${base}/api/control/agents/luna/sessions/session-panda/heartbeat`, {headers: {cookie: auth.cookies}});
+    expect(wrongAgent.status).toBe(404);
+
+    await harness.agents.ensurePairing("luna", "identity-patrik");
+    const noScopedGrant = await fetch(`${base}/api/control/agents/luna/sessions/session-luna/heartbeat`, {headers: {cookie: auth.cookies}});
+    expect(noScopedGrant.status).toBe(404);
+
+    const blockedPatch = await fetch(`${base}/api/control/agents/luna/sessions/session-luna/heartbeat`, {method: "PATCH", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({enabled: true, confirm: "update-heartbeat"})});
+    expect(blockedPatch.status).toBe(404);
   });
 });
