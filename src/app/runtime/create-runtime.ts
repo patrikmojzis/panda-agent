@@ -24,6 +24,7 @@ import type {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import type {AgentAppAuthService} from "../../domain/apps/auth.js";
 import type {PostgresControlAuthService} from "../../domain/control/auth.js";
 import type {ControlReadService} from "../../domain/control/read-service.js";
+import type {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundToolThreadInput} from "./background-tool-thread-input.js";
@@ -104,6 +105,7 @@ export interface RuntimeServices {
   appAuth: AgentAppAuthService;
   controlAuth: PostgresControlAuthService;
   controlReads: ControlReadService;
+  controlBriefings: ControlBriefingService;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -200,6 +202,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     appAuth: runtime.appAuth,
     controlAuth: runtime.controlAuth,
     controlReads: runtime.controlReads,
+    controlBriefings: runtime.controlBriefings,
     backgroundJobService: runtime.backgroundJobService,
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,

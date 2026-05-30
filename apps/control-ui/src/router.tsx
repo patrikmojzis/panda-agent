@@ -4,6 +4,7 @@ import {LoginPage} from "./routes/login";
 import {OverviewPage} from "./features/control/overview";
 import {AgentsPage} from "./features/control/agents";
 import {CredentialsPage} from "./features/control/credentials";
+import {SessionBriefingLookupPage, SessionBriefingPage} from "./features/control/session-briefing";
 import {controlApi, ControlApiError} from "./lib/api";
 
 const rootRoute = createRootRoute();
@@ -24,8 +25,10 @@ const appRoute = createRoute({
 const indexRoute = createRoute({getParentRoute: () => appRoute, path: "/", component: OverviewPage});
 const agentsRoute = createRoute({getParentRoute: () => appRoute, path: "/agents", component: AgentsPage});
 const credentialsRoute = createRoute({getParentRoute: () => appRoute, path: "/credentials", component: CredentialsPage});
+const sessionBriefingLookupRoute = createRoute({getParentRoute: () => appRoute, path: "/briefing", component: SessionBriefingLookupPage});
+const sessionBriefingRoute = createRoute({getParentRoute: () => appRoute, path: "/agents/$agentKey/sessions/$sessionId/briefing", component: SessionBriefingPage});
 
-const routeTree = rootRoute.addChildren([loginRoute, appRoute.addChildren([indexRoute, agentsRoute, credentialsRoute])]);
+const routeTree = rootRoute.addChildren([loginRoute, appRoute.addChildren([indexRoute, agentsRoute, credentialsRoute, sessionBriefingLookupRoute, sessionBriefingRoute])]);
 export const router = createRouter({routeTree});
 
 declare module "@tanstack/react-router" {

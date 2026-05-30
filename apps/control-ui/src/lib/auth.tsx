@@ -12,9 +12,14 @@ type AuthContextValue = {
 
 const AuthContext = React.createContext<AuthContextValue | null>(null);
 
+function readCsrfCookie(): string | null {
+  const part = document.cookie.split(";").map((cookie) => cookie.trim()).find((cookie) => cookie.startsWith("panda_control_csrf="));
+  return part ? decodeURIComponent(part.split("=").slice(1).join("=")) : null;
+}
+
 export function AuthProvider({children}: {children: React.ReactNode}) {
   const queryClient = useQueryClient();
-  const [csrfToken, setCsrfToken] = React.useState<string | null>(null);
+  const [csrfToken, setCsrfToken] = React.useState<string | null>(() => readCsrfCookie());
   const me = useQuery({queryKey: ["control", "me"], queryFn: controlApi.me, retry: false});
   const loginMutation = useMutation({
     mutationFn: controlApi.login,
@@ -33,7 +38,7 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
 
   const value: AuthContextValue = {
     session: me.data?.session ?? null,
-    csrfToken,
+    csrfToken: csrfToken ?? readCsrfCookie(),
     isBootstrapping: me.isLoading,
     login: async (token) => { await loginMutation.mutateAsync(token); },
     logout: async () => { await logoutMutation.mutateAsync(); },
