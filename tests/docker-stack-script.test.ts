@@ -52,11 +52,40 @@ set -euo pipefail
 printf '%s\\n' "$*" >> "${logPath}"
 cmd="$*"
 case "$cmd" in
+  image' 'inspect*)
+    exit 1
+    ;;
   compose*' ps -q panda-core')
     printf 'container-panda-core\\n'
     ;;
   inspect*' container-panda-core')
     printf 'healthy\\n'
+    ;;
+  *)
+    ;;
+esac
+`, {mode: 0o755});
+    return stubPath;
+  }
+
+  async function createExistingWorkspaceImageDockerStub(logPath: string): Promise<string> {
+    const stubPath = path.join(await makeTempDir("panda-docker-stub-"), "docker");
+    await writeFile(stubPath, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${logPath}"
+cmd="$*"
+case "$cmd" in
+  image' 'inspect' 'panda-workspace:*)
+    exit 0
+    ;;
+  image' 'inspect*)
+    exit 1
+    ;;
+  compose*' ps -q panda-core')
+    printf 'container-panda-core\n'
+    ;;
+  inspect*' container-panda-core')
+    printf 'healthy\n'
     ;;
   *)
     ;;
@@ -79,6 +108,9 @@ cmd="$*"
 log "START $cmd"
 
 case "$cmd" in
+  image' 'inspect*)
+    exit 1
+    ;;
   build*'--target browser-runner '*)
     touch "${syncDir}/browser-runner.started"
     attempts=0
@@ -142,6 +174,7 @@ exit 42
     dockerBin: string;
     homeDir?: string;
     wikiLocalScript?: string;
+    env?: Record<string, string>;
   }): Promise<ScriptResult> {
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
@@ -155,6 +188,7 @@ exit 42
           PANDA_DOCKER_BIN: options.dockerBin,
           PANDA_STACK_ENV_FILE: options.envFile,
           PANDA_WIKI_LOCAL_SCRIPT: options.wikiLocalScript ?? process.env.PANDA_WIKI_LOCAL_SCRIPT,
+          ...options.env,
         },
       });
 
@@ -173,6 +207,12 @@ exit 42
         });
       });
     });
+  }
+
+  function extractWorkspaceImage(compose: string): string {
+    const match = compose.match(/PANDA_DISPOSABLE_WORKSPACE_IMAGE: \${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-(panda-workspace:[a-f0-9]{16})}/);
+    expect(match).not.toBeNull();
+    return match?.[1] ?? "";
   }
 
   it("fails when PANDA_AGENTS contains duplicates after normalization", async () => {
@@ -278,7 +318,9 @@ exit 42
     expect(generatedCompose).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN}");
     expect(generatedCompose).toContain("BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}");
     expect(generatedCompose).toContain("PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE: ${PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE:-${PANDA_DISPOSABLE_RUNNER_IMAGE:-panda-runner:latest}}");
-    expect(generatedCompose).toContain("PANDA_DISPOSABLE_WORKSPACE_IMAGE: ${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-panda-workspace:latest}");
+    const workspaceDefaultMatch = generatedCompose.match(/PANDA_DISPOSABLE_WORKSPACE_IMAGE: \${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-panda-workspace:([a-f0-9]{16})}/);
+    expect(workspaceDefaultMatch).not.toBeNull();
+    const workspaceImage = `panda-workspace:${workspaceDefaultMatch?.[1]}`;
     const managerStart = generatedCompose.indexOf("  panda-environment-manager:");
     const gatewayStart = generatedCompose.indexOf("  panda-gateway:");
     const managerSection = generatedCompose.slice(managerStart, gatewayStart >= 0 ? gatewayStart : generatedCompose.indexOf("\nnetworks:"));
@@ -300,7 +342,8 @@ exit 42
     expect(generatedCompose).not.toContain("gateway_edge_net");
     const logContents = await readFile(logPath, "utf8");
     expect(logContents.match(/build --target bash-runner --build-arg NODE_MAJOR=22 -t panda-runner:latest/g)).toHaveLength(1);
-    expect(logContents.match(/build --target workspace-runner -t panda-workspace:latest/g)).toHaveLength(1);
+    expect(logContents).toContain(`image inspect ${workspaceImage}`);
+    expect(logContents).toContain(`build --target workspace-runner -t ${workspaceImage}`);
 
     const logsResult = await runScript(["logs", "environment-manager"], {
       envFile,
@@ -309,6 +352,189 @@ exit 42
     });
     expect(logsResult.exitCode).toBe(0);
     expect(await readFile(logPath, "utf8")).toContain("logs -f panda-environment-manager");
+  });
+
+  it("hashes only the workspace-runner Dockerfile stage for default workspace image tags", async () => {
+    const dockerfilePath = path.join(repoRoot, "Dockerfile");
+    const originalDockerfile = await readFile(dockerfilePath, "utf8");
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+    ].join("\n"));
+    const homeDir = await makeTempDir("panda-home-");
+    const runAndReadWorkspaceImage = async (): Promise<string> => {
+      const result = await runScript(["up"], {envFile, dockerBin, homeDir});
+      expect(result.exitCode).toBe(0);
+      return extractWorkspaceImage(await readFile(generatedComposePath, "utf8"));
+    };
+
+    try {
+      const baseImage = await runAndReadWorkspaceImage();
+
+      await writeFile(
+        dockerfilePath,
+        originalDockerfile.replace(
+          "FROM ubuntu:24.04 AS node-base",
+          "# non-workspace hash test\nFROM ubuntu:24.04 AS node-base",
+        ),
+      );
+      await expect(runAndReadWorkspaceImage()).resolves.toBe(baseImage);
+
+      await writeFile(
+        dockerfilePath,
+        originalDockerfile.replace("ENV SHELL=/bin/bash\nENV TZ=UTC\nENV PATH=", "ENV SHELL=/bin/bash\nENV TZ=Etc/UTC\nENV PATH="),
+      );
+      await expect(runAndReadWorkspaceImage()).resolves.not.toBe(baseImage);
+    } finally {
+      await writeFile(dockerfilePath, originalDockerfile);
+    }
+  });
+
+  it("fails loudly when the workspace-runner Dockerfile stage cannot be extracted", async () => {
+    const dockerfilePath = path.join(repoRoot, "Dockerfile");
+    const originalDockerfile = await readFile(dockerfilePath, "utf8");
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+    ].join("\n"));
+
+    try {
+      await writeFile(
+        dockerfilePath,
+        originalDockerfile.replace("FROM ubuntu:24.04 AS workspace-runner", "FROM ubuntu:24.04 AS renamed-workspace-runner"),
+      );
+      const result = await runScript(["up"], {
+        envFile,
+        dockerBin,
+        homeDir: await makeTempDir("panda-home-"),
+      });
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("Could not extract workspace-runner stage from Dockerfile.");
+    } finally {
+      await writeFile(dockerfilePath, originalDockerfile);
+    }
+  });
+
+  it("skips the workspace build when the content-addressed default workspace image already exists", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createExistingWorkspaceImageDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+    ].join("\n"));
+
+    const result = await runScript(["up", "--build"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const generatedCompose = await readFile(generatedComposePath, "utf8");
+    const workspaceDefaultMatch = generatedCompose.match(/panda-workspace:([a-f0-9]{16})/);
+    expect(workspaceDefaultMatch).not.toBeNull();
+    const workspaceImage = `panda-workspace:${workspaceDefaultMatch?.[1]}`;
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents).toContain(`image inspect ${workspaceImage}`);
+    expect(logContents).not.toContain(`build --target workspace-runner -t ${workspaceImage}`);
+  });
+
+  it("forces workspace rebuild when PANDA_REFRESH_WORKSPACE is true", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createExistingWorkspaceImageDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+    ].join("\n"));
+
+    const result = await runScript(["up", "--build"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+      env: {PANDA_REFRESH_WORKSPACE: "true"},
+    });
+
+    expect(result.exitCode).toBe(0);
+    const generatedCompose = await readFile(generatedComposePath, "utf8");
+    const workspaceDefaultMatch = generatedCompose.match(/panda-workspace:([a-f0-9]{16})/);
+    expect(workspaceDefaultMatch).not.toBeNull();
+    const workspaceImage = `panda-workspace:${workspaceDefaultMatch?.[1]}`;
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents).not.toContain(`image inspect ${workspaceImage}`);
+    expect(logContents).toContain(`build --target workspace-runner -t ${workspaceImage}`);
+  });
+
+  it("honors an explicit PANDA_DISPOSABLE_WORKSPACE_IMAGE override", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+      "PANDA_DISPOSABLE_WORKSPACE_IMAGE=registry.example/panda-workspace:custom",
+    ].join("\n"));
+
+    const result = await runScript(["up", "--build"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(generatedComposePath, "utf8")).toMatch(/PANDA_DISPOSABLE_WORKSPACE_IMAGE: \${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-panda-workspace:[a-f0-9]{16}}/);
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents).not.toContain("build --target workspace-runner");
+    expect(result.stderr).toContain("Using explicit PANDA_DISPOSABLE_WORKSPACE_IMAGE=registry.example/panda-workspace:custom");
+  });
+
+  it("rebuilds an explicit workspace image override when PANDA_BUILD_WORKSPACE is true", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+      "PANDA_DISPOSABLE_WORKSPACE_IMAGE=registry.example/panda-workspace:custom",
+    ].join("\n"));
+
+    const result = await runScript(["up", "--build"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+      env: {PANDA_BUILD_WORKSPACE: "true"},
+    });
+
+    expect(result.exitCode).toBe(0);
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents).not.toContain("image inspect registry.example/panda-workspace:custom");
+    expect(logContents).toContain("build --target workspace-runner -t registry.example/panda-workspace:custom");
   });
 
   it("does not mount the Docker socket when PANDA_DOCKER_HOST is not a Unix socket", async () => {

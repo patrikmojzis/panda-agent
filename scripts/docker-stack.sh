@@ -583,6 +583,89 @@ run_docker_build() {
   )
 }
 
+workspace_runner_stage() {
+  local stage
+  if ! stage="$(awk '
+    /^FROM ubuntu:24[.]04 AS workspace-runner$/ {
+      found = 1
+    }
+    found && /^FROM[[:space:]]/ && $0 !~ /^FROM ubuntu:24[.]04 AS workspace-runner$/ {
+      exit
+    }
+    found {
+      print
+    }
+    END {
+      if (!found) {
+        exit 1
+      }
+    }
+  ' "$repo_root/Dockerfile")"; then
+    printf 'error: Could not extract workspace-runner stage from Dockerfile.\n' >&2
+    return 1
+  fi
+
+  if [[ -z "$(trim "$stage")" ]]; then
+    printf 'error: Extracted workspace-runner stage from Dockerfile is empty.\n' >&2
+    return 1
+  fi
+  printf '%s\n' "$stage"
+}
+
+workspace_image_hash() {
+  local stage
+  stage="$(workspace_runner_stage)" || return
+  {
+    printf 'panda-workspace-cache-v1\n'
+    printf 'target=workspace-runner\n'
+    printf '%s\n' "$stage"
+  } | sha256sum | awk '{print substr($1, 1, 16)}'
+}
+
+workspace_default_image() {
+  local hash
+  hash="$(workspace_image_hash)" || die "Could not compute workspace image hash."
+  printf 'panda-workspace:%s\n' "$hash"
+}
+
+workspace_selected_image() {
+  local explicit
+  explicit="$(trim "${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-}")"
+  if [[ -n "$explicit" ]]; then
+    printf '%s\n' "$explicit"
+    return
+  fi
+
+  workspace_default_image
+}
+
+docker_image_exists() {
+  local image=$1
+  "$docker_bin" image inspect "$image" >/dev/null 2>&1
+}
+
+ensure_workspace_image() {
+  local image explicit force=0
+  image="$(workspace_selected_image)" || return
+  explicit="$(trim "${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-}")"
+
+  if is_truthy "${PANDA_BUILD_WORKSPACE:-}" || is_truthy "${PANDA_REFRESH_WORKSPACE:-}"; then
+    force=1
+  fi
+
+  if [[ -n "$explicit" && "$force" -eq 0 ]]; then
+    printf 'Using explicit PANDA_DISPOSABLE_WORKSPACE_IMAGE=%s; skipping workspace image build. Set PANDA_BUILD_WORKSPACE=true or PANDA_REFRESH_WORKSPACE=true to rebuild it.\n' "$image" >&2
+    return 0
+  fi
+
+  if [[ "$force" -eq 0 ]] && docker_image_exists "$image"; then
+    printf 'Workspace image %s already exists; skipping rebuild. Set PANDA_REFRESH_WORKSPACE=true to force refresh.\n' "$image" >&2
+    return 0
+  fi
+
+  run_docker_build --target workspace-runner -t "$image" "$repo_root"
+}
+
 build_stack_images() {
   local failed=0
   local pid
@@ -604,7 +687,7 @@ build_stack_images() {
   fi
 
   if (( enable_disposable_environments )); then
-    run_docker_build --target workspace-runner -t panda-workspace:latest "$repo_root" &
+    ensure_workspace_image &
     build_pids+=("$!")
   fi
 
@@ -635,12 +718,15 @@ ensure_host_dirs() {
 }
 
 render_generated_compose() {
-  local agent_key gateway_port manager_docker_socket
+  local agent_key gateway_port manager_docker_socket workspace_image_default
   mkdir -p "$generated_dir"
   gateway_port="$(trim "${GATEWAY_PORT:-8094}")"
   manager_docker_socket=""
   if (( use_managed_environment_manager )); then
     manager_docker_socket="$(docker_socket_path_from_host)"
+  fi
+  if (( enable_disposable_environments )); then
+    workspace_image_default="$(workspace_default_image)"
   fi
   if ! agents_declared && (( ! enable_apps_edge && ! enable_gateway_edge && ! enable_disposable_environments )); then
     cat > "$generated_compose" <<'EOF'
@@ -724,7 +810,7 @@ EOF
       PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: \${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN}
       PANDA_DOCKER_HOST: \${PANDA_DOCKER_HOST:-unix:///var/run/docker.sock}
       PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE: \${PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE:-\${PANDA_DISPOSABLE_RUNNER_IMAGE:-panda-runner:latest}}
-      PANDA_DISPOSABLE_WORKSPACE_IMAGE: \${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-panda-workspace:latest}
+      PANDA_DISPOSABLE_WORKSPACE_IMAGE: \${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-$workspace_image_default}
       PANDA_DISPOSABLE_RUNNER_NETWORK: \${PANDA_DISPOSABLE_RUNNER_NETWORK}
       PANDA_DISPOSABLE_RUNNER_PORT: \${PANDA_DISPOSABLE_RUNNER_PORT:-8080}
       PANDA_DISPOSABLE_RUNNER_CWD: \${PANDA_DISPOSABLE_RUNNER_CWD:-/workspace}

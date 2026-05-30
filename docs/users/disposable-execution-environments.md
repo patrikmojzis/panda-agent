@@ -41,6 +41,40 @@ Project setup scripts should install and verify their own toolchain. For example
 a Node project should install the expected Node version, enable Corepack, prepare
 `pnpm`, install dependencies, and fail loudly if any readiness check is missing.
 
+
+## Workspace image rebuilds
+
+`./scripts/docker-stack.sh up --build` keeps disposable environments enabled but no
+longer rebuilds the expensive workspace substrate image on every app/runtime
+deploy. When `PANDA_DISPOSABLE_WORKSPACE_IMAGE` is unset, the stack helper
+computes a deterministic default image tag, `panda-workspace:<hash>`, from the
+Dockerfile `workspace-runner` stage and script cache version.
+
+Normal deploy flow:
+
+```bash
+./scripts/docker-stack.sh up --build
+```
+
+If the computed `panda-workspace:<hash>` image already exists locally, the helper
+skips rebuilding it and wires that tag into the generated environment-manager
+compose file. If the Dockerfile workspace substrate changes, the hash changes and
+the next `up --build` builds the new tag once.
+
+To force a rebuild of the selected workspace image without changing the
+substrate, set either refresh flag:
+
+```bash
+PANDA_REFRESH_WORKSPACE=true ./scripts/docker-stack.sh up --build
+PANDA_BUILD_WORKSPACE=true ./scripts/docker-stack.sh up --build
+```
+
+Both flags are treated as force-rebuild requests; if both are set the behavior is
+the same as setting either one. If `PANDA_DISPOSABLE_WORKSPACE_IMAGE` is set
+explicitly, that image still wins for runtime. The stack helper skips building an
+explicit override by default, and force-rebuilds that explicit tag only when
+`PANDA_REFRESH_WORKSPACE=true` or `PANDA_BUILD_WORKSPACE=true` is set.
+
 ## Runtime context
 
 Every durable child receives a **Subagent Runtime Context** with:
