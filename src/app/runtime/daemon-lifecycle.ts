@@ -375,6 +375,7 @@ export function createDaemonLifecycle(input: {
             port: binding.port,
             auth: input.context.runtime.controlAuth,
             reads: input.context.runtime.controlReads,
+            uiStaticDir: binding.uiStaticDir,
           });
         })();
         await heartbeat();
