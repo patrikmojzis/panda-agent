@@ -105,6 +105,54 @@ describe("workspace readonly tools", () => {
     await expect(promise).rejects.toBeInstanceOf(ToolError);
   });
 
+  it("reports a path below a file as a missing read_file path", async () => {
+    const root = await createWorkspace();
+    const tool = new ReadFileTool();
+
+    const promise = tool.run({
+      path: "src/main.ts/child",
+    }, createRunContext(tool, root));
+
+    await expect(promise).rejects.toMatchObject({
+      message: "Path does not exist: src/main.ts/child",
+      details: {path: "src/main.ts/child"},
+    });
+    await expect(promise).rejects.toBeInstanceOf(ToolError);
+  });
+
+  it("converts paths below files into model-visible thread tool errors", async () => {
+    const root = await createWorkspace();
+    const tool = new ReadFileTool();
+    const agent = new Agent({
+      name: "panda",
+      instructions: "Inspect files.",
+      tools: [tool],
+    });
+    const context: DefaultAgentSessionContext = {
+      cwd: root,
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    };
+    const thread = new Thread<DefaultAgentSessionContext>({agent, context});
+
+    const result = await thread.callTool({
+      type: "toolCall",
+      id: "call-read-child-of-file",
+      name: "read_file",
+      arguments: {path: "src/main.ts/child"},
+    }, createRunContext(tool, root));
+
+    expect(result).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call-read-child-of-file",
+      toolName: "read_file",
+      isError: true,
+      details: {path: "src/main.ts/child"},
+    });
+    expect(JSON.stringify(result.content)).toContain("Path does not exist: src/main.ts/child");
+  });
+
   it("converts missing read_file paths into model-visible thread tool errors", async () => {
     const root = await createWorkspace();
     const tool = new ReadFileTool();
