@@ -22,6 +22,8 @@ import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-j
 import type {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import type {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import type {AgentAppAuthService} from "../../domain/apps/auth.js";
+import type {PostgresControlAuthService} from "../../domain/control/auth.js";
+import type {ControlReadService} from "../../domain/control/read-service.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundToolThreadInput} from "./background-tool-thread-input.js";
@@ -100,6 +102,8 @@ export interface RuntimeServices {
   agentStore: AgentStore;
   apps: AgentAppService;
   appAuth: AgentAppAuthService;
+  controlAuth: PostgresControlAuthService;
+  controlReads: ControlReadService;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -194,6 +198,8 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     agentStore: runtime.agentStore,
     apps: runtime.apps,
     appAuth: runtime.appAuth,
+    controlAuth: runtime.controlAuth,
+    controlReads: runtime.controlReads,
     backgroundJobService: runtime.backgroundJobService,
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,
