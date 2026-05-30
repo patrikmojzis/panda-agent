@@ -8,6 +8,7 @@ import {writeJsonResponse} from "../../lib/http.js";
 import type {PostgresControlAuthService} from "../../domain/control/auth.js";
 import type {ControlReadService} from "../../domain/control/read-service.js";
 import type {ControlBriefingService} from "../../domain/control/briefing-service.js";
+import type {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
 import type {ControlSessionRecord} from "../../domain/control/types.js";
 
 export const CONTROL_SESSION_COOKIE = "panda_control_session";
@@ -104,6 +105,7 @@ export interface StartControlServerOptions {
   auth: PostgresControlAuthService;
   reads: ControlReadService;
   briefings: ControlBriefingService;
+  heartbeats: ControlHeartbeatService;
   uiStaticDir?: string;
 }
 
@@ -156,10 +158,25 @@ async function authenticate(request: IncomingMessage, auth: PostgresControlAuthS
 }
 
 
+function matchSessionHeartbeatPath(path: string): {agentKey: string; sessionId: string} | null {
+  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/heartbeat$/.exec(path);
+  if (!match) return null;
+  return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
+}
+
 function matchSessionBriefingPath(path: string): {agentKey: string; sessionId: string} | null {
   const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/briefing$/.exec(path);
   if (!match) return null;
   return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
+}
+
+async function recordHeartbeatAudit(auth: PostgresControlAuthService, session: ControlSessionRecord, metadata: unknown): Promise<void> {
+  await auth.recordAudit({
+    identityId: session.identityId,
+    sessionId: session.id,
+    eventType: "session_heartbeat_config_write",
+    metadata,
+  });
 }
 
 async function recordBriefingAudit(auth: PostgresControlAuthService, session: ControlSessionRecord, metadata: unknown): Promise<void> {
@@ -242,6 +259,54 @@ export async function startControlServer(options: StartControlServerOptions): Pr
       }
       if (request.method === "GET" && path === "/credentials") {
         writeJsonResponse(response, 200, {credentials: await options.reads.listCredentials(session)});
+        return;
+      }
+
+
+      const heartbeatPath = matchSessionHeartbeatPath(path);
+      if (heartbeatPath && request.method === "GET") {
+        try {
+          const heartbeat = await options.heartbeats.getHeartbeat(session, heartbeatPath.agentKey, heartbeatPath.sessionId);
+          writeJsonResponse(response, 200, {heartbeat});
+        } catch {
+          throw new ControlHttpError(404, "Control heartbeat target session was not found or is not visible.");
+        }
+        return;
+      }
+      if (heartbeatPath && request.method === "PATCH") {
+        requireCsrf(request, options.auth, session);
+        const body = await readBody(request);
+        const allowed = new Set(["enabled", "everyMinutes", "confirm"]);
+        const unknown = Object.keys(body).filter((key) => !allowed.has(key));
+        if (unknown.length > 0) {
+          throw new ControlHttpError(400, `Unsupported heartbeat field: ${unknown[0]}.`);
+        }
+        if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
+          throw new ControlHttpError(400, "Control heartbeat enabled must be a boolean.");
+        }
+        if (body.everyMinutes !== undefined && typeof body.everyMinutes !== "number") {
+          throw new ControlHttpError(400, "Control heartbeat cadence must be a number.");
+        }
+        if (body.confirm !== undefined && typeof body.confirm !== "string") {
+          throw new ControlHttpError(400, "Control heartbeat confirm must be a string.");
+        }
+        const input = {
+          ...(body.enabled !== undefined ? {enabled: body.enabled} : {}),
+          ...(body.everyMinutes !== undefined ? {everyMinutes: body.everyMinutes} : {}),
+          ...(body.confirm !== undefined ? {confirm: body.confirm} : {}),
+        };
+        let result;
+        try {
+          result = await options.heartbeats.updateHeartbeat(session, heartbeatPath.agentKey, heartbeatPath.sessionId, input);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Control heartbeat update failed.";
+          if (message.includes("not found") || message.includes("not visible")) {
+            throw new ControlHttpError(404, "Control heartbeat target session was not found or is not visible.");
+          }
+          throw new ControlHttpError(400, message);
+        }
+        await recordHeartbeatAudit(options.auth, session, result.audit);
+        writeJsonResponse(response, 200, {heartbeat: result.heartbeat});
         return;
       }
 
