@@ -84,6 +84,7 @@ import {listenThreadRuntimeNotifications} from "./store-notifications.js";
 import {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
 import {PostgresControlAuthService} from "../../domain/control/auth.js";
 import {ControlReadService} from "../../domain/control/read-service.js";
+import {ControlBriefingService} from "../../domain/control/briefing-service.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
@@ -128,6 +129,7 @@ interface RuntimeBootstrapResult {
   appAuth: AgentAppAuthService;
   controlAuth: PostgresControlAuthService;
   controlReads: ControlReadService;
+  controlBriefings: ControlBriefingService;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -443,6 +445,10 @@ export async function bootstrapRuntime(
     const controlReads = new ControlReadService({
       pool: postgresPool,
     });
+    const controlBriefings = new ControlBriefingService({
+      pool: postgresPool,
+      sessions: sessionStore,
+    });
 
     const credentialCrypto = resolveCredentialCrypto();
     const credentialResolver = new CredentialResolver({
@@ -650,6 +656,7 @@ export async function bootstrapRuntime(
       appAuth,
       controlAuth,
       controlReads,
+      controlBriefings,
       backgroundJobService,
       browserService: resolvedBrowserService,
       credentialResolver,

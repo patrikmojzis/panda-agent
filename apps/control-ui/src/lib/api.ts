@@ -6,6 +6,7 @@ export type MeResponse = {session: ControlSession; csrfToken?: string};
 export type Overview = {agents: number; sessions: number; runningRuns: number; credentialsPresent: number};
 export type AgentSummary = {agentKey: string; displayName: string; status: string; sessionCount: number; paired: boolean};
 export type CredentialSummary = {agentKey: string; envKey: string; present: true; createdAt: string; updatedAt: string};
+export type SessionBriefing = {agentKey: string; sessionId: string; slug: "session"; content: string; wasSet: boolean; createdAt?: string; updatedAt?: string};
 
 export class ControlApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -40,4 +41,7 @@ export const controlApi = {
   overview: () => requestJson<Overview>("/overview"),
   agents: () => requestJson<{agents: AgentSummary[]}>("/agents"),
   credentials: () => requestJson<{credentials: CredentialSummary[]}>("/credentials"),
+  getSessionBriefing: (agentKey: string, sessionId: string) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`),
+  putSessionBriefing: (agentKey: string, sessionId: string, content: string, csrfToken: string | null) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`, {method: "PUT", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify({content})}),
+  clearSessionBriefing: (agentKey: string, sessionId: string, csrfToken: string | null) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`, {method: "DELETE", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify({confirm: "clear-session-briefing"})}),
 };

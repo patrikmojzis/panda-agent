@@ -52,6 +52,7 @@ export interface DaemonLifecycleRuntime {
   sessionStore?: AgentAppServerOptions["sessionStore"];
   controlAuth: RuntimeServices["controlAuth"];
   controlReads: RuntimeServices["controlReads"];
+  controlBriefings: RuntimeServices["controlBriefings"];
   coordinator: Pick<RuntimeServices["coordinator"], "recoverOrphanedRuns" | "submitInput">;
   executionEnvironmentService?: Pick<RuntimeServices["executionEnvironmentService"], "sweepExpiredEnvironments">;
   pool: Pick<RuntimeServices["pool"], "waitingCount">;
@@ -375,6 +376,7 @@ export function createDaemonLifecycle(input: {
             port: binding.port,
             auth: input.context.runtime.controlAuth,
             reads: input.context.runtime.controlReads,
+            briefings: input.context.runtime.controlBriefings,
             uiStaticDir: binding.uiStaticDir,
           });
         })();

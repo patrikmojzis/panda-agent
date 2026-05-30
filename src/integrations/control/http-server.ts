@@ -7,6 +7,7 @@ import {readJsonHttpBody} from "../http-body.js";
 import {writeJsonResponse} from "../../lib/http.js";
 import type {PostgresControlAuthService} from "../../domain/control/auth.js";
 import type {ControlReadService} from "../../domain/control/read-service.js";
+import type {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import type {ControlSessionRecord} from "../../domain/control/types.js";
 
 export const CONTROL_SESSION_COOKIE = "panda_control_session";
@@ -102,6 +103,7 @@ export interface StartControlServerOptions {
   port: number;
   auth: PostgresControlAuthService;
   reads: ControlReadService;
+  briefings: ControlBriefingService;
   uiStaticDir?: string;
 }
 
@@ -151,6 +153,22 @@ async function authenticate(request: IncomingMessage, auth: PostgresControlAuthS
   const session = await auth.getSessionByToken(token);
   if (!session) throw new ControlHttpError(401, "Control authentication required.");
   return session;
+}
+
+
+function matchSessionBriefingPath(path: string): {agentKey: string; sessionId: string} | null {
+  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/briefing$/.exec(path);
+  if (!match) return null;
+  return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
+}
+
+async function recordBriefingAudit(auth: PostgresControlAuthService, session: ControlSessionRecord, metadata: unknown): Promise<void> {
+  await auth.recordAudit({
+    identityId: session.identityId,
+    sessionId: session.id,
+    eventType: "session_briefing_write",
+    metadata,
+  });
 }
 
 function requireCsrf(request: IncomingMessage, auth: PostgresControlAuthService, session: ControlSessionRecord): void {
@@ -224,6 +242,49 @@ export async function startControlServer(options: StartControlServerOptions): Pr
       }
       if (request.method === "GET" && path === "/credentials") {
         writeJsonResponse(response, 200, {credentials: await options.reads.listCredentials(session)});
+        return;
+      }
+
+      const briefingPath = matchSessionBriefingPath(path);
+      if (briefingPath && request.method === "GET") {
+        try {
+          const briefing = await options.briefings.getBriefing(session, briefingPath.agentKey, briefingPath.sessionId);
+          writeJsonResponse(response, 200, {briefing});
+        } catch {
+          throw new ControlHttpError(404, "Control briefing target session was not found or is not visible.");
+        }
+        return;
+      }
+      if (briefingPath && request.method === "PUT") {
+        requireCsrf(request, options.auth, session);
+        const body = await readBody(request);
+        const content = typeof body.content === "string" ? body.content : "";
+        let result;
+        try {
+          result = await options.briefings.setBriefing(session, briefingPath.agentKey, briefingPath.sessionId, content);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Control briefing update failed.";
+          if (message.includes("blank")) throw new ControlHttpError(400, message);
+          throw new ControlHttpError(404, "Control briefing target session was not found or is not visible.");
+        }
+        await recordBriefingAudit(options.auth, session, result.audit);
+        writeJsonResponse(response, 200, {briefing: result.briefing});
+        return;
+      }
+      if (briefingPath && request.method === "DELETE") {
+        requireCsrf(request, options.auth, session);
+        const body = await readBody(request);
+        if (body.confirm !== "clear-session-briefing") {
+          throw new ControlHttpError(400, "DELETE requires confirm: \"clear-session-briefing\".");
+        }
+        let result;
+        try {
+          result = await options.briefings.deleteBriefing(session, briefingPath.agentKey, briefingPath.sessionId);
+        } catch {
+          throw new ControlHttpError(404, "Control briefing target session was not found or is not visible.");
+        }
+        await recordBriefingAudit(options.auth, session, result.audit);
+        writeJsonResponse(response, 200, {briefing: result.briefing});
         return;
       }
       writeJsonResponse(response, 404, {error: "not_found"});

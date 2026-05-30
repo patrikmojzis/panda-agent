@@ -15,6 +15,7 @@ import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
 import {PostgresControlAuthService} from "../src/domain/control/auth.js";
 import {ControlReadService} from "../src/domain/control/read-service.js";
+import {ControlBriefingService} from "../src/domain/control/briefing-service.js";
 import {CONTROL_SESSION_COOKIE, startControlServer, type ControlHttpServer} from "../src/integrations/control/http-server.js";
 
 const pools: Array<{end(): Promise<void>}> = [];
@@ -41,6 +42,7 @@ async function createHarness() {
   const threads = new PostgresThreadRuntimeStore({pool});
   const auth = new PostgresControlAuthService({pool});
   const reads = new ControlReadService({pool});
+  const briefings = new ControlBriefingService({pool, sessions});
   await identities.ensureSchema();
   await agents.ensureSchema();
   await sessions.ensureSchema();
@@ -57,11 +59,11 @@ async function createHarness() {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, agents, auth, reads};
+  return {pool, agents, sessions, auth, reads, briefings};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, briefings: harness.briefings});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -142,6 +144,7 @@ describe("Control auth HTTP", () => {
         listAgents: harness.reads.listAgents.bind(harness.reads),
         listCredentials: harness.reads.listCredentials.bind(harness.reads),
       } as ControlReadService,
+      briefings: harness.briefings,
     });
     servers.push(server);
 
@@ -164,7 +167,7 @@ describe("Control auth HTTP", () => {
     await mkdir(join(staticDir, "assets"));
     await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
     await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
-    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, uiStaticDir: staticDir});
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, briefings: harness.briefings, uiStaticDir: staticDir});
     servers.push(server);
     const base = `http://${server.host}:${server.port}`;
 
@@ -201,5 +204,73 @@ describe("Control auth HTTP", () => {
 
     await harness.agents.ensurePairing("panda", "identity-patrik");
     await expect(harness.reads.listAgents(scopedSession)).resolves.toMatchObject([{agentKey: "panda"}]);
+  });
+});
+
+describe("Control session briefing HTTP", () => {
+  async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "scoped") {
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey: "panda"} : {})});
+    const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {csrfToken: string};
+    return {cookies: cookieHeader(response), csrfToken: body.csrfToken};
+  }
+
+  it("reads, writes, clears, and audits only redacted session briefing summaries", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+    const path = `${base}/api/control/agents/panda/sessions/session-panda/briefing`;
+
+    const empty = await fetch(path, {headers: {cookie: auth.cookies}});
+    expect(empty.status).toBe(200);
+    await expect(empty.json()).resolves.toMatchObject({briefing: {agentKey: "panda", sessionId: "session-panda", slug: "session", content: "", wasSet: false}});
+
+    const missingCsrf = await fetch(path, {method: "PUT", headers: {cookie: auth.cookies}, body: JSON.stringify({content: "do not save"})});
+    expect(missingCsrf.status).toBe(403);
+
+    const blank = await fetch(path, {method: "PUT", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({content: "   "})});
+    expect(blank.status).toBe(400);
+    await expect(blank.json()).resolves.toEqual({error: "Session briefing content must not be blank. Use clear to delete the briefing."});
+
+    const saved = await fetch(path, {method: "PUT", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({content: "  private briefing text  "})});
+    expect(saved.status).toBe(200);
+    await expect(saved.json()).resolves.toMatchObject({briefing: {content: "private briefing text", wasSet: true}});
+
+    const deleteWithoutConfirm = await fetch(path, {method: "DELETE", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({confirm: "wrong"})});
+    expect(deleteWithoutConfirm.status).toBe(400);
+
+    const cleared = await fetch(path, {method: "DELETE", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({confirm: "clear-session-briefing"})});
+    expect(cleared.status).toBe(200);
+    await expect(cleared.json()).resolves.toMatchObject({briefing: {content: "", wasSet: false}});
+
+    const audit = await harness.pool.query(`SELECT event_type, metadata::text AS metadata FROM "runtime"."control_audit_events" WHERE event_type = 'session_briefing_write' ORDER BY created_at ASC`);
+    expect(audit.rows).toHaveLength(2);
+    const auditText = JSON.stringify(audit.rows);
+    expect(auditText).toContain("sha256");
+    expect(auditText).toContain("length");
+    expect(auditText).not.toContain("private briefing text");
+    expect(auditText).not.toContain("do not save");
+  });
+
+  it("requires both Control grant visibility and identity-agent pairing, and checks session belongs to path agent", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const noPairing = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/briefing`, {headers: {cookie: auth.cookies}});
+    expect(noPairing.status).toBe(404);
+
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const visible = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/briefing`, {headers: {cookie: auth.cookies}});
+    expect(visible.status).toBe(200);
+
+    const wrongAgent = await fetch(`${base}/api/control/agents/luna/sessions/session-panda/briefing`, {headers: {cookie: auth.cookies}});
+    expect(wrongAgent.status).toBe(404);
+
+    await harness.agents.ensurePairing("luna", "identity-patrik");
+    const noScopedGrant = await fetch(`${base}/api/control/agents/luna/sessions/session-luna/briefing`, {headers: {cookie: auth.cookies}});
+    expect(noScopedGrant.status).toBe(404);
   });
 });
