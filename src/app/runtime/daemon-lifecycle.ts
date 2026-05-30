@@ -16,6 +16,8 @@ import {
     resolveAgentAppAuthMode,
     resolveOptionalAgentAppServerBinding,
 } from "../../integrations/apps/http-config.js";
+import {resolveOptionalControlServerBinding} from "../../integrations/control/config.js";
+import {type ControlHttpServer, startControlServer} from "../../integrations/control/http-server.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import type {PostgresListenSnapshot} from "../../lib/postgres-listen.js";
 import {readPositiveIntegerEnv} from "./database.js";
@@ -48,6 +50,8 @@ export interface DaemonLifecycleRuntime {
   appAuth?: AgentAppServerOptions["auth"];
   identityStore?: AgentAppServerOptions["identityStore"];
   sessionStore?: AgentAppServerOptions["sessionStore"];
+  controlAuth: RuntimeServices["controlAuth"];
+  controlReads: RuntimeServices["controlReads"];
   coordinator: Pick<RuntimeServices["coordinator"], "recoverOrphanedRuns" | "submitInput">;
   executionEnvironmentService?: Pick<RuntimeServices["executionEnvironmentService"], "sweepExpiredEnvironments">;
   pool: Pick<RuntimeServices["pool"], "waitingCount">;
@@ -77,6 +81,7 @@ export function createDaemonLifecycle(input: {
   let heartbeatTimer: NodeJS.Timeout | null = null;
   let healthServer: HealthServer | null = null;
   let appServer: AgentAppServer | null = null;
+  let controlServer: ControlHttpServer | null = null;
   let lease: ManagedConnectorLease | null = null;
   let lastHeartbeatAt = 0;
   let running = false;
@@ -139,6 +144,8 @@ export function createDaemonLifecycle(input: {
       healthServer = null;
       const resolvedAppServer = appServer;
       appServer = null;
+      const resolvedControlServer = controlServer;
+      controlServer = null;
 
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
@@ -214,6 +221,12 @@ export function createDaemonLifecycle(input: {
           label: "app-server",
           run: async () => {
             await resolvedAppServer?.close();
+          },
+        },
+        {
+          label: "control-server",
+          run: async () => {
+            await resolvedControlServer?.close();
           },
         },
       ], (step, error) => {
@@ -350,6 +363,18 @@ export function createDaemonLifecycle(input: {
             identityStore: input.context.runtime.identityStore,
             sessionStore: input.context.runtime.sessionStore,
             coordinator: input.context.runtime.coordinator,
+          });
+        })();
+        controlServer = await (async () => {
+          const binding = resolveOptionalControlServerBinding(process.env);
+          if (!binding) {
+            return null;
+          }
+          return startControlServer({
+            host: binding.host,
+            port: binding.port,
+            auth: input.context.runtime.controlAuth,
+            reads: input.context.runtime.controlReads,
           });
         })();
         await heartbeat();

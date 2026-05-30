@@ -82,6 +82,8 @@ import {RemoteExecutionEnvironmentSetupRunner} from "./execution-environment-set
 import {createExecutionEnvironmentManagerClientFromEnv} from "../../integrations/shell/execution-environment-manager-client.js";
 import {listenThreadRuntimeNotifications} from "./store-notifications.js";
 import {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
+import {PostgresControlAuthService} from "../../domain/control/auth.js";
+import {ControlReadService} from "../../domain/control/read-service.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
@@ -124,6 +126,8 @@ interface RuntimeBootstrapResult {
   agentStore: AgentStore;
   apps: AgentAppService;
   appAuth: AgentAppAuthService;
+  controlAuth: PostgresControlAuthService;
+  controlReads: ControlReadService;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -433,6 +437,12 @@ export async function bootstrapRuntime(
     const wikiBindingStore = new PostgresWikiBindingStore({
       pool: postgresPool,
     });
+    const controlAuth = new PostgresControlAuthService({
+      pool: postgresPool,
+    });
+    const controlReads = new ControlReadService({
+      pool: postgresPool,
+    });
 
     const credentialCrypto = resolveCredentialCrypto();
     const credentialResolver = new CredentialResolver({
@@ -485,6 +495,7 @@ export async function bootstrapRuntime(
       scheduledTasks,
       watches,
       wikiBindingStore,
+      controlAuth,
     ]);
 
     await ensureReadonlySessionQuerySchema({
@@ -637,6 +648,8 @@ export async function bootstrapRuntime(
       agentStore,
       apps,
       appAuth,
+      controlAuth,
+      controlReads,
       backgroundJobService,
       browserService: resolvedBrowserService,
       credentialResolver,
