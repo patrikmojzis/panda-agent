@@ -1,4 +1,11 @@
+import {mkdtemp, rm, writeFile, mkdir} from "node:fs/promises";
+import {join} from "node:path";
+import {tmpdir} from "node:os";
 import {afterEach, describe, expect, it, vi} from "vitest";
+
+// This file boots several pg-mem-backed integration harnesses and local HTTP servers.
+// Keep the timeout explicit so the default Vitest 5s limit does not make CI/load-dependent runs flaky.
+vi.setConfig({testTimeout: 30_000});
 import {DataType, newDb} from "pg-mem";
 
 import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../src/domain/agents/index.js";
@@ -12,10 +19,12 @@ import {CONTROL_SESSION_COOKIE, startControlServer, type ControlHttpServer} from
 
 const pools: Array<{end(): Promise<void>}> = [];
 const servers: ControlHttpServer[] = [];
+const tempDirs: string[] = [];
 
 afterEach(async () => {
   while (servers.length > 0) await servers.pop()?.close();
   while (pools.length > 0) await pools.pop()?.end();
+  while (tempDirs.length > 0) await rm(tempDirs.pop()!, {recursive: true, force: true});
 });
 
 async function createHarness() {
@@ -145,6 +154,39 @@ describe("Control auth HTTP", () => {
     expect(text).not.toContain("database password");
     expect(errorSpy).toHaveBeenCalledWith("Control HTTP request failed", {error: "internal_error"});
     errorSpy.mockRestore();
+  });
+
+
+  it("serves Control UI static assets for non-API paths without falling API paths through to the SPA", async () => {
+    const harness = await createHarness();
+    const staticDir = await mkdtemp(join(tmpdir(), "panda-control-ui-"));
+    tempDirs.push(staticDir);
+    await mkdir(join(staticDir, "assets"));
+    await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
+    await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, uiStaticDir: staticDir});
+    servers.push(server);
+    const base = `http://${server.host}:${server.port}`;
+
+    const app = await fetch(`${base}/agents`);
+    expect(app.status).toBe(200);
+    expect(app.headers.get("content-type")).toContain("text/html");
+    await expect(app.text()).resolves.toContain("Control UI shell");
+
+    const asset = await fetch(`${base}/assets/app.js`);
+    expect(asset.status).toBe(200);
+    expect(asset.headers.get("content-type")).toContain("text/javascript");
+    await expect(asset.text()).resolves.toContain("control-ui");
+
+    const api = await fetch(`${base}/api/control/health`);
+    expect(api.status).toBe(200);
+    expect(api.headers.get("content-type")).toContain("application/json");
+    await expect(api.json()).resolves.toEqual({ok: true});
+
+    const nonControlApi = await fetch(`${base}/api/not-control`);
+    expect(nonControlApi.status).toBe(404);
+    expect(nonControlApi.headers.get("content-type")).toContain("application/json");
+    await expect(nonControlApi.json()).resolves.toEqual({error: "not_found"});
   });
 
   it("limits scoped visibility to agents with both Control grant and identity pairing", async () => {

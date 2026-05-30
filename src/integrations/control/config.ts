@@ -5,6 +5,7 @@ export interface ControlServerBinding {
   enabled: true;
   host: string;
   port: number;
+  uiStaticDir?: string;
 }
 
 function readControlPort(value: string | undefined): number {
@@ -25,5 +26,6 @@ export function resolveOptionalControlServerBinding(env: NodeJS.ProcessEnv = pro
     enabled: true,
     host: env.PANDA_CONTROL_HOST?.trim() || DEFAULT_CONTROL_HOST,
     port: readControlPort(env.PANDA_CONTROL_PORT),
+    uiStaticDir: env.PANDA_CONTROL_UI_DIR?.trim() || undefined,
   };
 }

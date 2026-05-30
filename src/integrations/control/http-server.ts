@@ -1,4 +1,7 @@
+import {createReadStream} from "node:fs";
+import {access, stat} from "node:fs/promises";
 import {createServer, type IncomingMessage, type Server, type ServerResponse} from "node:http";
+import path from "node:path";
 
 import {readJsonHttpBody} from "../http-body.js";
 import {writeJsonResponse} from "../../lib/http.js";
@@ -8,6 +11,78 @@ import type {ControlSessionRecord} from "../../domain/control/types.js";
 
 export const CONTROL_SESSION_COOKIE = "panda_control_session";
 export const CONTROL_CSRF_COOKIE = "panda_control_csrf";
+
+const DEFAULT_CONTROL_UI_STATIC_DIR = path.resolve(process.cwd(), "apps/control-ui/dist");
+
+const CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+};
+
+async function directoryExists(directory: string): Promise<boolean> {
+  try {
+    return (await stat(directory)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function resolveStaticFile(root: string, requestPath: string): string | null {
+  const decoded = decodeURIComponent(requestPath.split("?")[0] ?? "/");
+  const relative = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "");
+  const resolved = path.resolve(root, relative);
+  const normalizedRoot = path.resolve(root);
+  if (resolved !== normalizedRoot && !resolved.startsWith(`${normalizedRoot}${path.sep}`)) return null;
+  return resolved;
+}
+
+async function serveStaticAsset(request: IncomingMessage, response: ServerResponse, root: string, requestPath: string): Promise<boolean> {
+  if (request.method !== "GET" && request.method !== "HEAD") return false;
+  if (!(await directoryExists(root))) return false;
+
+  const candidate = resolveStaticFile(root, requestPath);
+  if (!candidate) {
+    writeJsonResponse(response, 404, {error: "not_found"});
+    return true;
+  }
+
+  let filePath = candidate;
+  try {
+    const info = await stat(filePath);
+    if (info.isDirectory()) filePath = path.join(filePath, "index.html");
+  } catch {
+    filePath = path.join(root, "index.html");
+  }
+
+  try {
+    await access(filePath);
+  } catch {
+    writeJsonResponse(response, 404, {error: "not_found"});
+    return true;
+  }
+
+  response.statusCode = 200;
+  response.setHeader("content-type", CONTENT_TYPES[path.extname(filePath)] ?? "application/octet-stream");
+  if (request.method === "HEAD") {
+    response.end();
+    return true;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath);
+    stream.once("error", reject);
+    response.once("finish", resolve);
+    stream.pipe(response);
+  });
+  return true;
+}
 
 class ControlHttpError extends Error {
   constructor(readonly statusCode: number, message: string) {
@@ -27,6 +102,7 @@ export interface StartControlServerOptions {
   port: number;
   auth: PostgresControlAuthService;
   reads: ControlReadService;
+  uiStaticDir?: string;
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {
@@ -89,8 +165,14 @@ export async function startControlServer(options: StartControlServerOptions): Pr
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
-      if (!url.pathname.startsWith("/api/control")) {
-        writeJsonResponse(response, 404, {error: "not_found"});
+      const isControlApiPath = url.pathname === "/api/control" || url.pathname.startsWith("/api/control/");
+      if (!isControlApiPath) {
+        if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
+          writeJsonResponse(response, 404, {error: "not_found"});
+          return;
+        }
+        const served = await serveStaticAsset(request, response, options.uiStaticDir ?? DEFAULT_CONTROL_UI_STATIC_DIR, url.pathname);
+        if (!served) writeJsonResponse(response, 404, {error: "not_found"});
         return;
       }
       const path = url.pathname.replace(/^\/api\/control\/?/, "/");
