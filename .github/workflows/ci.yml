@@ -25,6 +25,8 @@ jobs:
             script: ci:architecture
           - name: Prompt contracts
             script: ci:prompt-contracts
+          - name: Control UI
+            script: ci:control-ui
 
     steps:
       - name: Check out repository

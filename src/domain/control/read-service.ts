@@ -161,13 +161,15 @@ export class ControlReadService {
     const agentKeys = agents.map((agent) => agent.agentKey);
     const values: unknown[] = session.role === "admin" ? [] : [agentKeys];
     const agentFilter = session.role === "admin" ? "TRUE" : "agent_key = ANY($1::text[])";
+    const runningRunsFilter = session.role === "admin" ? "TRUE" : "agent_session.agent_key = ANY($1::text[])";
     const [sessions, runningRuns, credentials] = await Promise.all([
       this.pool.query(`SELECT COUNT(*)::int AS count FROM ${this.sessions.sessions} WHERE ${agentFilter}`, values),
       this.pool.query(`
         SELECT COUNT(*)::int AS count
         FROM ${this.threads.runs} AS run
         INNER JOIN ${this.threads.threads} AS thread ON thread.id = run.thread_id
-        WHERE run.status = 'running' AND ${session.role === "admin" ? "TRUE" : "thread.agent_key = ANY($1::text[])"}
+        INNER JOIN ${this.sessions.sessions} AS agent_session ON agent_session.id = thread.session_id
+        WHERE run.status = 'running' AND ${runningRunsFilter}
       `, values),
       this.pool.query(`SELECT COUNT(*)::int AS count FROM ${this.credentials.credentials} WHERE ${agentFilter}`, values),
     ]);

@@ -257,6 +257,83 @@ exit 42
     expect(await readFile(logPath, "utf8")).not.toContain("panda agent ensure");
   });
 
+  it("enables Control through panda-core with a loopback-only publish by default", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_CONTROL_ENABLED=true",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const compose = await readFile(generatedComposePath, "utf8");
+    expect(compose).toContain("panda-core:");
+    expect(compose).toContain('PANDA_CONTROL_ENABLED: "true"');
+    expect(compose).toContain("PANDA_CONTROL_HOST: 0.0.0.0");
+    expect(compose).toContain("PANDA_CONTROL_PORT: ${PANDA_CONTROL_PORT:-4767}");
+    expect(compose).toContain("PANDA_CONTROL_UI_DIR: ${PANDA_CONTROL_UI_DIR:-/app/control-ui}");
+    expect(compose).toContain('"${PANDA_CONTROL_PUBLISH_HOST:-127.0.0.1}:${PANDA_CONTROL_PUBLISH_PORT:-${PANDA_CONTROL_PORT:-4767}}:${PANDA_CONTROL_PORT:-4767}"');
+  });
+
+  it("keeps Control publish disabled unless PANDA_CONTROL_ENABLED is truthy", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const compose = await readFile(generatedComposePath, "utf8");
+    expect(compose).toBe("services: {}\n");
+    expect(compose).not.toContain("PANDA_CONTROL_PUBLISH_HOST");
+  });
+
+  it("preserves explicit Control publish host and port overrides in generated compose", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_CONTROL_ENABLED=true",
+      "PANDA_CONTROL_PUBLISH_HOST=100.64.0.10",
+      "PANDA_CONTROL_PUBLISH_PORT=14767",
+      "PANDA_CONTROL_PORT=4768",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const log = await readFile(logPath, "utf8");
+    expect(log).toContain("--env-file");
+    const compose = await readFile(generatedComposePath, "utf8");
+    expect(compose).toContain('"${PANDA_CONTROL_PUBLISH_HOST:-127.0.0.1}:${PANDA_CONTROL_PUBLISH_PORT:-${PANDA_CONTROL_PORT:-4767}}:${PANDA_CONTROL_PORT:-4767}"');
+    expect(result.stdout).toContain("Control: http://100.64.0.10:14767");
+  });
+
   it("builds only app and browser images when no agents are declared", async () => {
     const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
     const dockerBin = await createDockerStub(logPath);

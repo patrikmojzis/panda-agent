@@ -130,8 +130,8 @@ function setCookie(response: ServerResponse, name: string, value: string, option
   response.setHeader("set-cookie", [...values, next]);
 }
 
-function clearCookie(response: ServerResponse, name: string): void {
-  setCookie(response, name, "", "HttpOnly; SameSite=Strict; Path=/api/control; Max-Age=0");
+function clearCookie(response: ServerResponse, name: string, options = "HttpOnly; SameSite=Strict; Path=/api/control; Max-Age=0"): void {
+  setCookie(response, name, "", options);
 }
 
 function publicSession(session: ControlSessionRecord): Record<string, unknown> {
@@ -260,7 +260,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
           throw new ControlHttpError(401, "Control login token is invalid, expired, or already used.");
         }
         setCookie(response, CONTROL_SESSION_COOKIE, login.sessionToken);
-        setCookie(response, CONTROL_CSRF_COOKIE, login.csrfToken, "SameSite=Strict; Path=/api/control");
+        setCookie(response, CONTROL_CSRF_COOKIE, login.csrfToken, "SameSite=Strict; Path=/");
         writeJsonResponse(response, 200, {session: publicSession(login.session), csrfToken: login.csrfToken});
         return;
       }
@@ -275,7 +275,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         await options.auth.revokeSession(session.id);
         await options.auth.recordAudit({identityId: session.identityId, sessionId: session.id, eventType: "logout"});
         clearCookie(response, CONTROL_SESSION_COOKIE);
-        clearCookie(response, CONTROL_CSRF_COOKIE);
+        clearCookie(response, CONTROL_CSRF_COOKIE, "SameSite=Strict; Path=/; Max-Age=0");
         writeJsonResponse(response, 200, {ok: true});
         return;
       }
