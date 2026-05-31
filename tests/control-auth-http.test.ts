@@ -20,7 +20,7 @@ import {ControlHeartbeatService} from "../src/domain/control/heartbeat-service.j
 import {ControlTodoService} from "../src/domain/control/todo-service.js";
 import {ControlScheduledTasksService} from "../src/domain/control/scheduled-tasks-service.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/postgres.js";
-import {CONTROL_SESSION_COOKIE, startControlServer, type ControlHttpServer} from "../src/integrations/control/http-server.js";
+import {CONTROL_CSRF_COOKIE, CONTROL_SESSION_COOKIE, startControlServer, type ControlHttpServer} from "../src/integrations/control/http-server.js";
 
 const pools: Array<{end(): Promise<void>}> = [];
 const servers: ControlHttpServer[] = [];
@@ -77,10 +77,13 @@ async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarne
   return `http://${server.host}:${server.port}`;
 }
 
-function cookieHeader(response: Response): string {
+function setCookieHeaders(response: Response): string[] {
   const raw = response.headers.getSetCookie?.() ?? [];
-  const cookies = raw.length > 0 ? raw : [response.headers.get("set-cookie") ?? ""];
-  return cookies.map((cookie) => cookie.split(";")[0]).filter(Boolean).join("; ");
+  return raw.length > 0 ? raw : [response.headers.get("set-cookie") ?? ""];
+}
+
+function cookieHeader(response: Response): string {
+  return setCookieHeaders(response).map((cookie) => cookie.split(";")[0]).filter(Boolean).join("; ");
 }
 
 describe("Control auth HTTP", () => {
@@ -120,7 +123,12 @@ describe("Control auth HTTP", () => {
     expect(login.status).toBe(200);
     const loginBody = await login.json() as {csrfToken: string};
     const cookies = cookieHeader(login);
+    const setCookies = setCookieHeaders(login);
     expect(cookies).toContain(CONTROL_SESSION_COOKIE);
+    expect(setCookies.find((cookie) => cookie.startsWith(`${CONTROL_SESSION_COOKIE}=`))).toContain("HttpOnly");
+    expect(setCookies.find((cookie) => cookie.startsWith(`${CONTROL_SESSION_COOKIE}=`))).toContain("Path=/api/control");
+    expect(setCookies.find((cookie) => cookie.startsWith(`${CONTROL_CSRF_COOKIE}=`))).not.toContain("HttpOnly");
+    expect(setCookies.find((cookie) => cookie.startsWith(`${CONTROL_CSRF_COOKIE}=`))).toContain("Path=/");
     const reused = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
     expect(reused.status).toBe(401);
     await expect(reused.json()).resolves.toEqual({error: "Control login token is invalid, expired, or already used."});
@@ -133,7 +141,13 @@ describe("Control auth HTTP", () => {
     expect(text).not.toContain("SECRET_SENTINEL");
     expect(text).not.toContain("5345435245545f53454e54494e454c");
 
-    expect((await fetch(`${base}/api/control/logout`, {method: "POST", headers: {cookie: cookies, "x-control-csrf": loginBody.csrfToken}})).status).toBe(200);
+    const logout = await fetch(`${base}/api/control/logout`, {method: "POST", headers: {cookie: cookies, "x-control-csrf": loginBody.csrfToken}});
+    expect(logout.status).toBe(200);
+    const clearedCookies = setCookieHeaders(logout);
+    expect(clearedCookies.find((cookie) => cookie.startsWith(`${CONTROL_SESSION_COOKIE}=`))).toContain("HttpOnly");
+    expect(clearedCookies.find((cookie) => cookie.startsWith(`${CONTROL_SESSION_COOKIE}=`))).toContain("Path=/api/control");
+    expect(clearedCookies.find((cookie) => cookie.startsWith(`${CONTROL_CSRF_COOKIE}=`))).not.toContain("HttpOnly");
+    expect(clearedCookies.find((cookie) => cookie.startsWith(`${CONTROL_CSRF_COOKIE}=`))).toContain("Path=/");
     expect((await fetch(`${base}/api/control/me`, {headers: {cookie: cookies}})).status).toBe(401);
   });
 
@@ -203,6 +217,25 @@ describe("Control auth HTTP", () => {
     expect(nonControlApi.status).toBe(404);
     expect(nonControlApi.headers.get("content-type")).toContain("application/json");
     await expect(nonControlApi.json()).resolves.toEqual({error: "not_found"});
+  });
+
+  it("counts scoped running runs through agent_sessions instead of a nonexistent thread agent column", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const scopedGrant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const scopedSession = (await harness.auth.loginWithToken(scopedGrant.loginToken)).session;
+    await harness.pool.query(`
+      INSERT INTO "runtime"."threads" (id, session_id) VALUES
+        ('thread-running-panda', 'session-panda'),
+        ('thread-running-luna', 'session-luna')
+    `);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at) VALUES
+        ('00000000-0000-0000-0000-000000000201', 'thread-running-panda', 'running', NOW()),
+        ('00000000-0000-0000-0000-000000000202', 'thread-running-luna', 'running', NOW())
+    `);
+
+    await expect(harness.reads.getOverview(scopedSession)).resolves.toMatchObject({runningRuns: 1});
   });
 
   it("limits scoped visibility to agents with both Control grant and identity pairing", async () => {
@@ -367,6 +400,26 @@ describe("Control session briefing HTTP", () => {
   });
 
 
+  it("allows admin to access an unpaired session while scoped still requires pairing", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+    const scoped = await login(base, harness, "scoped");
+
+    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/briefing`, {headers: {cookie: admin.cookies}})).status).toBe(200);
+    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/briefing`, {headers: {cookie: scoped.cookies}})).status).toBe(404);
+  });
+
+  it("allows admin to access an unpaired heartbeat while scoped still requires pairing", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+    const scoped = await login(base, harness, "scoped");
+
+    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/heartbeat`, {headers: {cookie: admin.cookies}})).status).toBe(200);
+    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/heartbeat`, {headers: {cookie: scoped.cookies}})).status).toBe(404);
+  });
+
   it("requires both Control grant visibility and identity-agent pairing, and checks session belongs to path agent", async () => {
     const harness = await createHarness();
     const base = await startHarnessServer(harness);
@@ -512,6 +565,16 @@ describe("Control session todos HTTP", () => {
     expect(response.status).toBe(401);
   });
 
+  it("allows admin to read an unpaired todo while scoped still requires pairing", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+    const scoped = await login(base, harness, "scoped");
+
+    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/todos`, {headers: {cookie: admin.cookies}})).status).toBe(200);
+    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/todos`, {headers: {cookie: scoped.cookies}})).status).toBe(404);
+  });
+
   it("returns authorized same-agent session todos with item order, status, content, counts, and whitelisted fields", async () => {
     const harness = await createHarness();
     await harness.agents.ensurePairing("panda", "identity-patrik");
@@ -607,6 +670,16 @@ describe("Control scheduled tasks HTTP", () => {
 
     const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks`);
     expect(response.status).toBe(401);
+  });
+
+  it("allows admin to read unpaired scheduled tasks while scoped still requires pairing", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+    const scoped = await login(base, harness, "scoped");
+
+    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks`, {headers: {cookie: admin.cookies}})).status).toBe(200);
+    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks`, {headers: {cookie: scoped.cookies}})).status).toBe(404);
   });
 
   it("returns a stable empty scheduled tasks DTO when the visible session has no tasks", async () => {

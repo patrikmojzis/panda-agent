@@ -482,6 +482,12 @@ enable_gateway_edge=0
 if [[ -n "$(trim "${PANDA_GATEWAY_BASE_URL:-}")" ]] || is_truthy "${PANDA_GATEWAY_ENABLED:-}"; then
   enable_gateway_edge=1
 fi
+
+enable_control=0
+if is_truthy "${PANDA_CONTROL_ENABLED:-}"; then
+  enable_control=1
+fi
+
 enable_public_edge=0
 if (( enable_apps_edge || enable_gateway_edge )); then
   enable_public_edge=1
@@ -728,7 +734,7 @@ render_generated_compose() {
   if (( enable_disposable_environments )); then
     workspace_image_default="$(workspace_default_image)"
   fi
-  if ! agents_declared && (( ! enable_apps_edge && ! enable_gateway_edge && ! enable_disposable_environments )); then
+  if ! agents_declared && (( ! enable_apps_edge && ! enable_gateway_edge && ! enable_disposable_environments && ! enable_control )); then
     cat > "$generated_compose" <<'EOF'
 services: {}
 EOF
@@ -737,11 +743,11 @@ EOF
 
   {
     printf 'services:\n'
-    if (( enable_apps_edge || enable_disposable_environments )); then
+    if (( enable_apps_edge || enable_disposable_environments || enable_control )); then
       cat <<EOF
   panda-core:
 EOF
-      if (( enable_apps_edge || enable_disposable_environments )); then
+      if (( enable_apps_edge || enable_disposable_environments || enable_control )); then
         cat <<EOF
     environment:
 EOF
@@ -752,6 +758,14 @@ EOF
       PANDA_APPS_BASE_URL: \${PANDA_APPS_BASE_URL}
 EOF
       fi
+      if (( enable_control )); then
+        cat <<EOF
+      PANDA_CONTROL_ENABLED: "true"
+      PANDA_CONTROL_HOST: 0.0.0.0
+      PANDA_CONTROL_PORT: \${PANDA_CONTROL_PORT:-4767}
+      PANDA_CONTROL_UI_DIR: \${PANDA_CONTROL_UI_DIR:-/app/control-ui}
+EOF
+      fi
       if (( enable_disposable_environments )); then
         cat <<EOF
       PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL: \${PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL}
@@ -759,6 +773,12 @@ EOF
       PANDA_ENVIRONMENTS_ROOT: \${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}
       PANDA_CORE_ENVIRONMENTS_ROOT: \${PANDA_CORE_ENVIRONMENTS_ROOT:-\${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}}
       PANDA_RUNNER_ENVIRONMENTS_ROOT: \${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}
+EOF
+      fi
+      if (( enable_control )); then
+        cat <<EOF
+    ports:
+      - "\${PANDA_CONTROL_PUBLISH_HOST:-127.0.0.1}:\${PANDA_CONTROL_PUBLISH_PORT:-\${PANDA_CONTROL_PORT:-4767}}:\${PANDA_CONTROL_PORT:-4767}"
 EOF
       fi
       if (( use_managed_environment_manager )); then
@@ -1161,6 +1181,9 @@ print_up_summary() {
   printf '  ./scripts/docker-stack.sh logs wiki\n'
   if (( enable_apps_edge )); then
     printf '  ./scripts/docker-stack.sh logs apps\n'
+  fi
+  if (( enable_control )); then
+    printf '  Control: http://%s:%s (host bind; set PANDA_CONTROL_PUBLISH_HOST to your Tailscale IP when needed)\n' "${PANDA_CONTROL_PUBLISH_HOST:-127.0.0.1}" "${PANDA_CONTROL_PUBLISH_PORT:-${PANDA_CONTROL_PORT:-4767}}"
   fi
   if (( enable_gateway_edge )); then
     printf '  ./scripts/docker-stack.sh logs gateway\n'
