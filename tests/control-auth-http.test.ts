@@ -18,6 +18,8 @@ import {ControlReadService} from "../src/domain/control/read-service.js";
 import {ControlBriefingService} from "../src/domain/control/briefing-service.js";
 import {ControlHeartbeatService} from "../src/domain/control/heartbeat-service.js";
 import {ControlTodoService} from "../src/domain/control/todo-service.js";
+import {ControlScheduledTasksService} from "../src/domain/control/scheduled-tasks-service.js";
+import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/postgres.js";
 import {CONTROL_SESSION_COOKIE, startControlServer, type ControlHttpServer} from "../src/integrations/control/http-server.js";
 
 const pools: Array<{end(): Promise<void>}> = [];
@@ -47,12 +49,15 @@ async function createHarness() {
   const briefings = new ControlBriefingService({pool, sessions});
   const heartbeats = new ControlHeartbeatService({pool, sessions});
   const todos = new ControlTodoService({pool, sessions});
+  const scheduledTaskStore = new PostgresScheduledTaskStore({pool});
+  const controlScheduledTasks = new ControlScheduledTasksService({pool});
   await identities.ensureSchema();
   await agents.ensureSchema();
   await sessions.ensureSchema();
   await threads.ensureSchema();
   await credentials.ensureSchema();
   await auth.ensureSchema();
+  await scheduledTaskStore.ensureSchema();
 
   await identities.createIdentity({id: "identity-patrik", handle: "patrik", displayName: "Patrik"});
   await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda", prompts: DEFAULT_AGENT_PROMPT_TEMPLATES});
@@ -63,11 +68,11 @@ async function createHarness() {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, agents, sessions, auth, reads, briefings, heartbeats, todos};
+  return {pool, agents, sessions, auth, reads, briefings, heartbeats, todos, scheduledTaskStore, controlScheduledTasks};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -152,6 +157,7 @@ describe("Control auth HTTP", () => {
       briefings: harness.briefings,
       heartbeats: harness.heartbeats,
       todos: harness.todos,
+      scheduledTasks: harness.controlScheduledTasks,
     });
     servers.push(server);
 
@@ -174,7 +180,7 @@ describe("Control auth HTTP", () => {
     await mkdir(join(staticDir, "assets"));
     await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
     await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
-    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, uiStaticDir: staticDir});
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, uiStaticDir: staticDir});
     servers.push(server);
     const base = `http://${server.host}:${server.port}`;
 
@@ -584,5 +590,146 @@ describe("Control session todos HTTP", () => {
     expect(response.status).toBe(404);
     const text = JSON.stringify(await response.json());
     expect(text).not.toContain("PATH_AGENT_PRIVATE_TODO");
+  });
+});
+
+describe("Control scheduled tasks HTTP", () => {
+  async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "scoped", agentKey = "panda") {
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey} : {})});
+    const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    expect(response.status).toBe(200);
+    return {cookies: cookieHeader(response)};
+  }
+
+  it("rejects unauthenticated scheduled task reads", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks`);
+    expect(response.status).toBe(401);
+  });
+
+  it("returns a stable empty scheduled tasks DTO when the visible session has no tasks", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({scheduledTasks: {agentKey: "panda", sessionId: "session-panda", tasks: []}});
+  });
+
+  it("returns authorized same-agent scheduled tasks with whitelisted task and recent-run fields", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const once = await harness.scheduledTaskStore.createTask({
+      sessionId: "session-panda",
+      createdByIdentityId: "identity-patrik",
+      title: "Once task with a long but safe visible title",
+      instruction: "PRIVATE_ONCE_INSTRUCTION_MUST_NOT_LEAK",
+      schedule: {kind: "once", runAt: "2040-01-01T10:00:00.000Z"},
+    });
+    const recurring = await harness.scheduledTaskStore.createTask({
+      sessionId: "session-panda",
+      createdByIdentityId: "identity-patrik",
+      title: "Recurring task",
+      instruction: "PRIVATE_RECURRING_INSTRUCTION_MUST_NOT_LEAK",
+      schedule: {kind: "recurring", cron: "5 12 * * *", timezone: "Europe/Bratislava"},
+    });
+    await harness.pool.query(`
+      INSERT INTO "runtime"."scheduled_task_runs" (id, task_id, session_id, scheduled_for, status, error, created_at, started_at, finished_at)
+      VALUES
+        ('00000000-0000-0000-0000-000000000101', $1, 'session-panda', '2039-12-31T10:00:00.000Z', 'failed', 'RAW_ERROR_MUST_NOT_LEAK', '2039-12-31T10:01:00.000Z', '2039-12-31T10:01:00.000Z', '2039-12-31T10:02:00.000Z'),
+        ('00000000-0000-0000-0000-000000000102', $1, 'session-panda', '2039-12-30T10:00:00.000Z', 'succeeded', NULL, '2039-12-30T10:01:00.000Z', '2039-12-30T10:01:00.000Z', '2039-12-30T10:02:00.000Z'),
+        ('00000000-0000-0000-0000-000000000103', $1, 'session-panda', '2039-12-29T10:00:00.000Z', 'cancelled', NULL, '2039-12-29T10:01:00.000Z', NULL, '2039-12-29T10:02:00.000Z'),
+        ('00000000-0000-0000-0000-000000000104', $1, 'session-panda', '2039-12-28T10:00:00.000Z', 'succeeded', NULL, '2039-12-28T10:01:00.000Z', NULL, '2039-12-28T10:02:00.000Z')
+    `, [once.id]);
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks?limit=10`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {scheduledTasks: {tasks: Array<Record<string, unknown>>}};
+    expect(Object.keys(body.scheduledTasks).sort()).toEqual(["agentKey", "sessionId", "tasks"]);
+    expect(body.scheduledTasks.tasks.map((task) => task.id).sort()).toEqual([once.id, recurring.id].sort());
+    const onceTask = body.scheduledTasks.tasks.find((task) => task.id === once.id)!;
+    const recurringTask = body.scheduledTasks.tasks.find((task) => task.id === recurring.id)!;
+    expect(onceTask).toMatchObject({
+      id: once.id,
+      title: "Once task with a long but safe visible title",
+      schedule: {kind: "once", runAt: "2040-01-01T10:00:00.000Z"},
+      enabled: true,
+      lifecycleStatus: "scheduled",
+      nextFireAt: "2040-01-01T10:00:00.000Z",
+      completedAt: null,
+      cancelledAt: null,
+    });
+    expect(recurringTask).toMatchObject({
+      id: recurring.id,
+      title: "Recurring task",
+      schedule: {kind: "recurring", cron: "5 12 * * *", timezone: "Europe/Bratislava"},
+    });
+    expect((onceTask.recentRuns as unknown[])).toHaveLength(3);
+    expect((onceTask.recentRuns as Array<{id: string}>).map((run) => run.id)).toEqual([
+      "00000000-0000-0000-0000-000000000101",
+      "00000000-0000-0000-0000-000000000102",
+      "00000000-0000-0000-0000-000000000103",
+    ]);
+    expect(Object.keys((onceTask.recentRuns as Array<Record<string, unknown>>)[0]!).sort()).toEqual(["finishedAt", "id", "scheduledFor", "startedAt", "status"]);
+    expect(Object.keys(onceTask).sort()).toEqual(["cancelledAt", "completedAt", "createdAt", "enabled", "id", "lifecycleStatus", "nextFireAt", "recentRuns", "schedule", "title", "updatedAt"]);
+    const text = JSON.stringify(body);
+    expect(text).not.toContain("PRIVATE_ONCE_INSTRUCTION_MUST_NOT_LEAK");
+    expect(text).not.toContain("PRIVATE_RECURRING_INSTRUCTION_MUST_NOT_LEAK");
+    expect(text).not.toContain("RAW_ERROR_MUST_NOT_LEAK");
+    expect(text).not.toContain("instruction");
+    expect(text).not.toContain("createdByIdentityId");
+    expect(text).not.toContain("createdFromMessageId");
+    expect(text).not.toContain("claimedBy");
+    expect(text).not.toContain("error");
+  });
+
+  it("does not leak distinctive cross-agent scheduled task title or instruction", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.agents.ensurePairing("luna", "identity-patrik");
+    await harness.scheduledTaskStore.createTask({
+      sessionId: "session-luna",
+      title: "LUNA_DISTINCTIVE_PRIVATE_TASK_TITLE",
+      instruction: "LUNA_DISTINCTIVE_PRIVATE_TASK_INSTRUCTION",
+      schedule: {kind: "once", runAt: "2040-02-01T10:00:00.000Z"},
+    });
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "scoped", "panda");
+
+    const response = await fetch(`${base}/api/control/agents/luna/sessions/session-luna/scheduled-tasks`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(404);
+    const text = JSON.stringify(await response.json());
+    expect(text).not.toContain("LUNA_DISTINCTIVE_PRIVATE_TASK_TITLE");
+    expect(text).not.toContain("LUNA_DISTINCTIVE_PRIVATE_TASK_INSTRUCTION");
+  });
+
+  it("checks the scheduled task session belongs to the path agent and bounds task limit", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const first = await harness.scheduledTaskStore.createTask({sessionId: "session-panda", title: "First by next fire", instruction: "FIRST_INSTRUCTION", schedule: {kind: "once", runAt: "2040-01-01T00:00:00.000Z"}});
+    const second = await harness.scheduledTaskStore.createTask({sessionId: "session-panda", title: "Second by next fire", instruction: "SECOND_INSTRUCTION", schedule: {kind: "once", runAt: "2040-01-02T00:00:00.000Z"}});
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "scoped", "panda");
+
+    const limited = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks?limit=1`, {headers: {cookie: auth.cookies}});
+    expect(limited.status).toBe(200);
+    await expect(limited.json()).resolves.toMatchObject({scheduledTasks: {tasks: [{id: first.id}]}});
+
+    const all = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks?limit=250`, {headers: {cookie: auth.cookies}});
+    expect(all.status).toBe(200);
+    const body = await all.json() as {scheduledTasks: {tasks: Array<{id: string}>}};
+    expect(body.scheduledTasks.tasks.map((task) => task.id)).toEqual([first.id, second.id]);
+
+    const wrongAgent = await fetch(`${base}/api/control/agents/luna/sessions/session-panda/scheduled-tasks`, {headers: {cookie: auth.cookies}});
+    expect(wrongAgent.status).toBe(404);
+    const text = JSON.stringify(await wrongAgent.json());
+    expect(text).not.toContain("First by next fire");
+    expect(text).not.toContain("FIRST_INSTRUCTION");
   });
 });

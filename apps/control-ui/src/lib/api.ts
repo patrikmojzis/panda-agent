@@ -10,6 +10,11 @@ export type SessionBriefing = {agentKey: string; sessionId: string; slug: "sessi
 export type SessionHeartbeat = {agentKey: string; sessionId: string; enabled: boolean; everyMinutes: number; nextFireAt: string; lastFireAt?: string};
 export type SessionTodoStatus = "pending" | "in_progress" | "blocked" | "done";
 export type SessionTodo = {sessionId: string; items: Array<{status: SessionTodoStatus; content: string}>; itemsHash: string | null; createdAt: string | null; updatedAt: string | null; counts: Record<SessionTodoStatus, number>};
+export type ScheduledTaskLifecycleStatus = "scheduled" | "disabled" | "running" | "completed" | "cancelled";
+export type ScheduledTaskSchedule = {kind: "once"; runAt: string} | {kind: "recurring"; cron: string; timezone: string};
+export type ScheduledTaskRun = {id: string; status: string; scheduledFor: string; startedAt: string | null; finishedAt: string | null; resolvedThreadId?: string; threadRunId?: string};
+export type ScheduledTask = {id: string; title: string; schedule: ScheduledTaskSchedule; enabled: boolean; lifecycleStatus: ScheduledTaskLifecycleStatus; nextFireAt: string | null; completedAt: string | null; cancelledAt: string | null; createdAt: string; updatedAt: string; recentRuns: ScheduledTaskRun[]};
+export type ScheduledTasks = {agentKey: string; sessionId: string; tasks: ScheduledTask[]};
 export type AuditEventSummary = {id: string; identityId?: string; sessionId?: string; eventType: string; metadata: Record<string, unknown>; createdAt: string};
 
 export class ControlApiError extends Error {
@@ -58,5 +63,6 @@ export const controlApi = {
   clearSessionBriefing: (agentKey: string, sessionId: string, csrfToken: string | null) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`, {method: "DELETE", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify({confirm: "clear-session-briefing"})}),
   getSessionHeartbeat: (agentKey: string, sessionId: string) => requestJson<{heartbeat: SessionHeartbeat}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`),
   getSessionTodo: (agentKey: string, sessionId: string) => requestJson<{todo: SessionTodo}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/todos`),
+  getScheduledTasks: (agentKey: string, sessionId: string, limit = 50) => requestJson<{scheduledTasks: ScheduledTasks}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/scheduled-tasks?limit=${encodeURIComponent(String(limit))}`),
   patchSessionHeartbeat: (agentKey: string, sessionId: string, input: {enabled: boolean; everyMinutes: number}, csrfToken: string | null) => requestJson<{heartbeat: SessionHeartbeat}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`, {method: "PATCH", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify({...input, confirm: "update-heartbeat"})}),
 };
