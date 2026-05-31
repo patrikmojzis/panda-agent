@@ -54,6 +54,7 @@ export interface DaemonLifecycleRuntime {
   controlReads: RuntimeServices["controlReads"];
   controlBriefings: RuntimeServices["controlBriefings"];
   controlHeartbeats: RuntimeServices["controlHeartbeats"];
+  controlTodos: RuntimeServices["controlTodos"];
   coordinator: Pick<RuntimeServices["coordinator"], "recoverOrphanedRuns" | "submitInput">;
   executionEnvironmentService?: Pick<RuntimeServices["executionEnvironmentService"], "sweepExpiredEnvironments">;
   pool: Pick<RuntimeServices["pool"], "waitingCount">;
@@ -379,6 +380,7 @@ export function createDaemonLifecycle(input: {
             reads: input.context.runtime.controlReads,
             briefings: input.context.runtime.controlBriefings,
             heartbeats: input.context.runtime.controlHeartbeats,
+            todos: input.context.runtime.controlTodos,
             uiStaticDir: binding.uiStaticDir,
           });
         })();

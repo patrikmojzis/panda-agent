@@ -86,6 +86,7 @@ import {PostgresControlAuthService} from "../../domain/control/auth.js";
 import {ControlReadService} from "../../domain/control/read-service.js";
 import {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
+import {ControlTodoService} from "../../domain/control/todo-service.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
@@ -132,6 +133,7 @@ interface RuntimeBootstrapResult {
   controlReads: ControlReadService;
   controlBriefings: ControlBriefingService;
   controlHeartbeats: ControlHeartbeatService;
+  controlTodos: ControlTodoService;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -455,6 +457,10 @@ export async function bootstrapRuntime(
       pool: postgresPool,
       sessions: sessionStore,
     });
+    const controlTodos = new ControlTodoService({
+      pool: postgresPool,
+      sessions: sessionStore,
+    });
 
     const credentialCrypto = resolveCredentialCrypto();
     const credentialResolver = new CredentialResolver({
@@ -664,6 +670,7 @@ export async function bootstrapRuntime(
       controlReads,
       controlBriefings,
       controlHeartbeats,
+      controlTodos,
       backgroundJobService,
       browserService: resolvedBrowserService,
       credentialResolver,

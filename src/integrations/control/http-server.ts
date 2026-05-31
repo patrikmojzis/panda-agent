@@ -9,6 +9,7 @@ import type {PostgresControlAuthService} from "../../domain/control/auth.js";
 import type {ControlReadService} from "../../domain/control/read-service.js";
 import type {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import type {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
+import type {ControlTodoService} from "../../domain/control/todo-service.js";
 import type {ControlSessionRecord} from "../../domain/control/types.js";
 
 export const CONTROL_SESSION_COOKIE = "panda_control_session";
@@ -106,6 +107,7 @@ export interface StartControlServerOptions {
   reads: ControlReadService;
   briefings: ControlBriefingService;
   heartbeats: ControlHeartbeatService;
+  todos: ControlTodoService;
   uiStaticDir?: string;
 }
 
@@ -167,6 +169,12 @@ function parseAuditLimit(value: string | null): number | undefined {
 
 function matchSessionHeartbeatPath(path: string): {agentKey: string; sessionId: string} | null {
   const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/heartbeat$/.exec(path);
+  if (!match) return null;
+  return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
+}
+
+function matchSessionTodoPath(path: string): {agentKey: string; sessionId: string} | null {
+  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/todos$/.exec(path);
   if (!match) return null;
   return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
 }
@@ -277,6 +285,17 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         return;
       }
 
+
+      const todoPath = matchSessionTodoPath(path);
+      if (todoPath && request.method === "GET") {
+        try {
+          const todo = await options.todos.getTodo(session, todoPath.agentKey, todoPath.sessionId);
+          writeJsonResponse(response, 200, {todo});
+        } catch {
+          throw new ControlHttpError(404, "Control todo target session was not found or is not visible.");
+        }
+        return;
+      }
 
       const heartbeatPath = matchSessionHeartbeatPath(path);
       if (heartbeatPath && request.method === "GET") {
