@@ -158,6 +158,13 @@ async function authenticate(request: IncomingMessage, auth: PostgresControlAuthS
 }
 
 
+function parseAuditLimit(value: string | null): number | undefined {
+  if (value === null || value.trim() === "") return undefined;
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1) throw new ControlHttpError(400, "Control audit limit must be a positive integer.");
+  return Math.min(100, limit);
+}
+
 function matchSessionHeartbeatPath(path: string): {agentKey: string; sessionId: string} | null {
   const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/heartbeat$/.exec(path);
   if (!match) return null;
@@ -259,6 +266,14 @@ export async function startControlServer(options: StartControlServerOptions): Pr
       }
       if (request.method === "GET" && path === "/credentials") {
         writeJsonResponse(response, 200, {credentials: await options.reads.listCredentials(session)});
+        return;
+      }
+      if (request.method === "GET" && path === "/audit-events") {
+        writeJsonResponse(response, 200, {auditEvents: await options.reads.listAuditEvents(session, {
+          limit: parseAuditLimit(url.searchParams.get("limit")),
+          eventType: url.searchParams.get("eventType") ?? undefined,
+          before: url.searchParams.get("before") ?? undefined,
+        })});
         return;
       }
 

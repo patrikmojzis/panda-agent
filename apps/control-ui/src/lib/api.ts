@@ -8,6 +8,7 @@ export type AgentSummary = {agentKey: string; displayName: string; status: strin
 export type CredentialSummary = {agentKey: string; envKey: string; present: true; createdAt: string; updatedAt: string};
 export type SessionBriefing = {agentKey: string; sessionId: string; slug: "session"; content: string; wasSet: boolean; createdAt?: string; updatedAt?: string};
 export type SessionHeartbeat = {agentKey: string; sessionId: string; enabled: boolean; everyMinutes: number; nextFireAt: string; lastFireAt?: string};
+export type AuditEventSummary = {id: string; identityId?: string; sessionId?: string; eventType: string; metadata: Record<string, unknown>; createdAt: string};
 
 export class ControlApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -42,6 +43,14 @@ export const controlApi = {
   overview: () => requestJson<Overview>("/overview"),
   agents: () => requestJson<{agents: AgentSummary[]}>("/agents"),
   credentials: () => requestJson<{credentials: CredentialSummary[]}>("/credentials"),
+  auditEvents: (input: {limit?: number; eventType?: string; before?: string} = {}) => {
+    const params = new URLSearchParams();
+    if (input.limit !== undefined) params.set("limit", String(input.limit));
+    if (input.eventType) params.set("eventType", input.eventType);
+    if (input.before) params.set("before", input.before);
+    const suffix = params.toString();
+    return requestJson<{auditEvents: AuditEventSummary[]}>(`/audit-events${suffix ? `?${suffix}` : ""}`);
+  },
   getSessionBriefing: (agentKey: string, sessionId: string) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`),
   putSessionBriefing: (agentKey: string, sessionId: string, content: string, csrfToken: string | null) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`, {method: "PUT", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify({content})}),
   clearSessionBriefing: (agentKey: string, sessionId: string, csrfToken: string | null) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`, {method: "DELETE", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify({confirm: "clear-session-briefing"})}),
