@@ -1,8 +1,8 @@
 # Panda Control PR1B UI
 
-PR1B adds a read-only React operator shell for the PR1A Control API. It does not add broad write endpoints; the only write flow is login/logout through the existing session and CSRF contract.
+PR1B adds a React operator shell for the Control API. Control is still an explicit opt-in operator surface: enable it, grant an existing identity, then open the private URL and paste the one-time login token.
 
-## Run the UI in development
+## Local development quick start
 
 1. Start Panda Control on loopback:
 
@@ -10,21 +10,45 @@ PR1B adds a read-only React operator shell for the PR1A Control API. It does not
 PANDA_CONTROL_ENABLED=true panda run
 ```
 
-2. Create a one-time login token from an existing identity:
+2. Find the identity handle/id to grant:
 
 ```bash
-panda control grant --identity identity-patrik --role admin
-# or scoped to one paired agent
-panda control grant --identity identity-patrik --role scoped --agent panda
+panda identity list
 ```
 
-3. Start the Vite app. It proxies `/api/control/*` to `http://127.0.0.1:4767`:
+3. Create a one-time login token. `--identity` accepts either the exact identity id or the handle shown by `panda identity list`:
+
+```bash
+panda control grant --identity patrik --role admin
+# or scoped to one paired agent
+panda control grant --identity patrik --role scoped --agent clawd
+```
+
+4. Start the Vite app. It proxies `/api/control/*` to `http://127.0.0.1:4767`:
 
 ```bash
 pnpm control:dev
 ```
 
 Open the Vite URL and paste the one-time token at `/login`.
+
+## Operator grants
+
+Control access is separate from identity-agent pairing.
+
+```bash
+# Discover handles/ids
+./scripts/docker-stack.sh panda identity list
+
+# Operator/admin access across Control-visible agents
+./scripts/docker-stack.sh panda control grant --identity patrik --role admin
+
+# Pair Patrik with Clawd, then grant owner-ish scoped Control access
+./scripts/docker-stack.sh panda agent pair clawd patrik
+./scripts/docker-stack.sh panda control grant --identity patrik --role scoped --agent clawd
+```
+
+Scoped grants still require the identity to be paired with the agent. Admin grants can inspect agent sessions without an identity-agent pairing.
 
 ## Build and serve from the Control server
 
@@ -49,14 +73,21 @@ The app Docker image builds the Control UI and serves it from `/app/control-ui` 
 PANDA_CONTROL_ENABLED=true ./scripts/docker-stack.sh up --build
 ```
 
-When Control is enabled, `panda-core` listens inside the container on all interfaces so Docker can publish it safely:
+When Control is enabled, `docker-stack.sh` wires `panda-core` like this:
 
-- `PANDA_CONTROL_HOST=0.0.0.0` inside the container.
+- `PANDA_CONTROL_HOST=0.0.0.0` inside the container so Docker can publish the port.
 - `PANDA_CONTROL_PORT=${PANDA_CONTROL_PORT:-4767}` inside the container.
 - `PANDA_CONTROL_PUBLISH_HOST=${PANDA_CONTROL_PUBLISH_HOST:-127.0.0.1}` on the Docker host.
 - `PANDA_CONTROL_PUBLISH_PORT=${PANDA_CONTROL_PUBLISH_PORT:-${PANDA_CONTROL_PORT:-4767}}` on the Docker host.
 
-For a VPS behind Tailscale, bind the host side to the Tailscale address instead of public internet:
+The safe default publishes Control on host loopback only (`127.0.0.1:4767`). Keep that default when you will expose it through Tailscale Serve on the host:
+
+```bash
+PANDA_CONTROL_ENABLED=true ./scripts/docker-stack.sh up --build
+tailscale serve http://127.0.0.1:4767
+```
+
+If you prefer a direct host bind on the Tailscale interface, bind the host side to the Tailscale IP instead of public internet:
 
 ```bash
 PANDA_CONTROL_ENABLED=true \
@@ -68,18 +99,22 @@ PANDA_CONTROL_PUBLISH_PORT=4767 \
 
 Do not set `PANDA_CONTROL_PUBLISH_HOST=0.0.0.0` unless another protection layer (firewall, VPN-only interface, or equivalent) prevents public access. Control is an operator surface, not a public Caddy edge route in this deployment slice.
 
-After the stack is up, create grants as usual:
+## Quick smokes
+
+After the stack is up, verify the private bind before sending a login token anywhere:
 
 ```bash
-panda control grant --identity identity-patrik --role admin
-panda control grant --identity identity-patrik --role scoped --agent panda
+curl -I http://127.0.0.1:4767/
+curl -fsS http://127.0.0.1:4767/api/control/bootstrap
+./scripts/docker-stack.sh logs core
 ```
 
-Scoped grants still require the identity to be paired with the agent. Admin grants can inspect agent sessions without an identity-agent pairing.
+Expected smoke shape: the UI route returns HTML/static content, `/api/control/bootstrap` returns JSON, and `logs core` has no Control startup errors.
 
 ## Security notes
 
-- Keep the default `PANDA_CONTROL_HOST=127.0.0.1` unless you intentionally place Control behind TLS and an operator-only network boundary.
+- For bare `panda run`, keep the default `PANDA_CONTROL_HOST=127.0.0.1` unless you intentionally place Control behind TLS and an operator-only network boundary.
+- For Docker stack, keep the default host publish on `127.0.0.1` or bind to a Tailscale IP; avoid `0.0.0.0` for this operator UI.
 - Login tokens are one-time bootstrap secrets and expire quickly. Do not paste them into logs or shared chat.
 - The readable CSRF cookie is scoped to `/` so the React app can recover write/logout CSRF state after a refresh. The session cookie remains `HttpOnly` and scoped to `/api/control`.
 - The Credentials page shows metadata/presence only: `agentKey`, `envKey`, timestamps, and `present`. It never renders secret values, ciphertext, IVs, or tags.

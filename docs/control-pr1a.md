@@ -23,11 +23,12 @@ PANDA_CONTROL_ENABLED=true PANDA_CONTROL_HOST=0.0.0.0 PANDA_CONTROL_PORT=4767 pa
 
 ## Grant bootstrap
 
-Existing Panda identities do not automatically have Control access. Create an explicit grant with the CLI:
+Existing Panda identities do not automatically have Control access. List identities first, then create an explicit grant with either the identity handle or exact id:
 
 ```bash
-panda control grant --identity identity-patrik --role admin
-panda control grant --identity identity-patrik --role scoped --agent panda
+panda identity list
+panda control grant --identity patrik --role admin
+panda control grant --identity patrik --role scoped --agent clawd
 ```
 
 The command prints a one-time `loginToken` that expires after 15 minutes. Treat it as a secret operator bootstrap token. The HTTP login endpoint consumes it and exchanges it for a Control session cookie and CSRF token; token reuse fails.
