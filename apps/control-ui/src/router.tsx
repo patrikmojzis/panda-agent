@@ -7,6 +7,7 @@ import {CredentialsPage} from "./features/control/credentials";
 import {AuditEventsPage} from "./features/control/audit";
 import {SessionBriefingLookupPage, SessionBriefingPage} from "./features/control/session-briefing";
 import {SessionHeartbeatLookupPage, SessionHeartbeatPage} from "./features/control/session-heartbeat";
+import {SessionTodoLookupPage, SessionTodoPage} from "./features/control/session-todos";
 import {controlApi, ControlApiError} from "./lib/api";
 
 const rootRoute = createRootRoute();
@@ -32,8 +33,10 @@ const sessionBriefingLookupRoute = createRoute({getParentRoute: () => appRoute, 
 const sessionBriefingRoute = createRoute({getParentRoute: () => appRoute, path: "/agents/$agentKey/sessions/$sessionId/briefing", component: SessionBriefingPage});
 const sessionHeartbeatLookupRoute = createRoute({getParentRoute: () => appRoute, path: "/heartbeat", component: SessionHeartbeatLookupPage});
 const sessionHeartbeatRoute = createRoute({getParentRoute: () => appRoute, path: "/agents/$agentKey/sessions/$sessionId/heartbeat", component: SessionHeartbeatPage});
+const sessionTodoLookupRoute = createRoute({getParentRoute: () => appRoute, path: "/todos", component: SessionTodoLookupPage});
+const sessionTodoRoute = createRoute({getParentRoute: () => appRoute, path: "/agents/$agentKey/sessions/$sessionId/todos", component: SessionTodoPage});
 
-const routeTree = rootRoute.addChildren([loginRoute, appRoute.addChildren([indexRoute, agentsRoute, credentialsRoute, auditEventsRoute, sessionBriefingLookupRoute, sessionBriefingRoute, sessionHeartbeatLookupRoute, sessionHeartbeatRoute])]);
+const routeTree = rootRoute.addChildren([loginRoute, appRoute.addChildren([indexRoute, agentsRoute, credentialsRoute, auditEventsRoute, sessionBriefingLookupRoute, sessionBriefingRoute, sessionHeartbeatLookupRoute, sessionHeartbeatRoute, sessionTodoLookupRoute, sessionTodoRoute])]);
 export const router = createRouter({routeTree});
 
 declare module "@tanstack/react-router" {
