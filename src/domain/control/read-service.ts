@@ -22,6 +22,84 @@ export interface ControlCredentialSummary {
   updatedAt: string;
 }
 
+export interface ControlAuditEventSummary {
+  id: string;
+  identityId?: string;
+  sessionId?: string;
+  eventType: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ListAuditEventsInput {
+  limit?: number;
+  eventType?: string;
+  before?: string;
+}
+
+const CONTROL_AUDIT_DEFAULT_LIMIT = 50;
+const CONTROL_AUDIT_MAX_LIMIT = 100;
+
+function auditLimit(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return CONTROL_AUDIT_DEFAULT_LIMIT;
+  return Math.max(1, Math.min(CONTROL_AUDIT_MAX_LIMIT, Math.trunc(value)));
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return asRecord(parsed);
+    } catch {
+      return {};
+    }
+  }
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function safeContentSummary(value: unknown): Record<string, unknown> {
+  const raw = asRecord(value);
+  return {
+    ...(typeof raw.wasSet === "boolean" ? {wasSet: raw.wasSet} : {}),
+    ...(typeof raw.length === "number" ? {length: raw.length} : {}),
+    ...(typeof raw.sha256 === "string" || raw.sha256 === null ? {sha256: raw.sha256} : {}),
+  };
+}
+
+function safeHeartbeatSummary(value: unknown): Record<string, unknown> {
+  const raw = asRecord(value);
+  return {
+    ...(typeof raw.enabled === "boolean" ? {enabled: raw.enabled} : {}),
+    ...(typeof raw.everyMinutes === "number" ? {everyMinutes: raw.everyMinutes} : {}),
+    ...(typeof raw.nextFireAt === "string" ? {nextFireAt: raw.nextFireAt} : {}),
+    ...(typeof raw.lastFireAt === "string" ? {lastFireAt: raw.lastFireAt} : {}),
+  };
+}
+
+function sanitizedAuditMetadata(eventType: string, value: unknown): Record<string, unknown> {
+  const raw = asRecord(value);
+  if (eventType === "session_briefing_write") {
+    return {
+      ...(raw.action === "put" || raw.action === "delete" ? {action: raw.action} : {}),
+      ...(typeof raw.agentKey === "string" ? {agentKey: raw.agentKey} : {}),
+      ...(typeof raw.targetSessionId === "string" ? {targetSessionId: raw.targetSessionId} : {}),
+      ...(typeof raw.slug === "string" ? {slug: raw.slug} : {}),
+      old: safeContentSummary(raw.old),
+      next: safeContentSummary(raw.next),
+    };
+  }
+  if (eventType === "session_heartbeat_config_write") {
+    return {
+      ...(raw.action === "patch" ? {action: raw.action} : {}),
+      ...(typeof raw.agentKey === "string" ? {agentKey: raw.agentKey} : {}),
+      ...(typeof raw.targetSessionId === "string" ? {targetSessionId: raw.targetSessionId} : {}),
+      old: safeHeartbeatSummary(raw.old),
+      next: safeHeartbeatSummary(raw.next),
+    };
+  }
+  return {};
+}
+
 export class ControlReadService {
   private readonly pool: PgQueryable;
   private readonly agents = buildAgentTableNames();
@@ -99,6 +177,51 @@ export class ControlReadService {
       runningRuns: Number((runningRuns.rows[0] as Record<string, unknown> | undefined)?.count ?? 0),
       credentialsPresent: Number((credentials.rows[0] as Record<string, unknown> | undefined)?.count ?? 0),
     };
+  }
+
+  async listAuditEvents(session: ControlSessionRecord, input: ListAuditEventsInput = {}): Promise<readonly ControlAuditEventSummary[]> {
+    const limit = auditLimit(input.limit);
+    const values: unknown[] = [];
+    const where: string[] = [];
+    if (input.eventType) {
+      values.push(input.eventType);
+      where.push(`event_type = $${values.length}`);
+    }
+    if (input.before) {
+      values.push(new Date(input.before));
+      where.push(`created_at < $${values.length}`);
+    }
+
+    if (session.role === "scoped") {
+      const visibleAgentKeys = (await this.listAgents(session)).map((agent) => agent.agentKey);
+      values.push(session.identityId);
+      const identityParam = `$${values.length}`;
+      values.push(visibleAgentKeys);
+      const agentsParam = `$${values.length}`;
+      where.push(`identity_id = ${identityParam}`);
+      where.push(`((event_type IN ('login', 'logout')) OR (event_type IN ('session_briefing_write', 'session_heartbeat_config_write') AND metadata->>'agentKey' = ANY(${agentsParam}::text[])))`);
+    }
+
+    values.push(limit);
+    const result = await this.pool.query(`
+      SELECT id, identity_id, session_id, event_type, metadata, created_at
+      FROM ${this.control.auditEvents}
+      WHERE ${where.length > 0 ? where.join(" AND ") : "TRUE"}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${values.length}
+    `, values);
+
+    return result.rows.map((raw) => {
+      const row = raw as Record<string, unknown>;
+      return {
+        id: String(row.id),
+        ...(typeof row.identity_id === "string" ? {identityId: row.identity_id} : {}),
+        ...(typeof row.session_id === "string" ? {sessionId: row.session_id} : {}),
+        eventType: String(row.event_type),
+        metadata: sanitizedAuditMetadata(String(row.event_type), row.metadata),
+        createdAt: new Date(row.created_at as Date).toISOString(),
+      };
+    });
   }
 
   async listCredentials(session: ControlSessionRecord): Promise<readonly ControlCredentialSummary[]> {

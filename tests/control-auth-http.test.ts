@@ -145,6 +145,7 @@ describe("Control auth HTTP", () => {
         },
         listAgents: harness.reads.listAgents.bind(harness.reads),
         listCredentials: harness.reads.listCredentials.bind(harness.reads),
+        listAuditEvents: harness.reads.listAuditEvents.bind(harness.reads),
       } as ControlReadService,
       briefings: harness.briefings,
       heartbeats: harness.heartbeats,
@@ -209,6 +210,105 @@ describe("Control auth HTTP", () => {
     await expect(harness.reads.listAgents(scopedSession)).resolves.toMatchObject([{agentKey: "panda"}]);
   });
 });
+
+describe("Control audit events HTTP", () => {
+  async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "admin", agentKey = "panda") {
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey} : {})});
+    const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {csrfToken: string};
+    return {cookies: cookieHeader(response), csrfToken: body.csrfToken};
+  }
+
+  it("allows admin to list login and write audit events with sanitized metadata", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "admin");
+
+    const write = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/briefing`, {
+      method: "PUT",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({content: "private briefing body must not leave audit API"}),
+    });
+    expect(write.status).toBe(200);
+
+    const response = await fetch(`${base}/api/control/audit-events?limit=10`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {auditEvents: Array<{eventType: string; metadata: Record<string, unknown>}>};
+    expect(body.auditEvents.some((event) => event.eventType === "login")).toBe(true);
+    const briefing = body.auditEvents.find((event) => event.eventType === "session_briefing_write");
+    expect(briefing?.metadata).toMatchObject({action: "put", agentKey: "panda", targetSessionId: "session-panda", slug: "session"});
+    expect(JSON.stringify(briefing)).toContain("sha256");
+    expect(JSON.stringify(briefing)).toContain("length");
+    expect(JSON.stringify(body)).not.toContain("private briefing body");
+  });
+
+  it("prevents scoped users from seeing another identity or invisible-agent audit event", async () => {
+    const harness = await createHarness();
+    await harness.pool.query(`INSERT INTO "runtime"."identities" (id, handle, display_name) VALUES ('identity-other', 'other', 'Other')`);
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.agents.ensurePairing("luna", "identity-other");
+    await harness.auth.recordAudit({identityId: "identity-other", eventType: "session_briefing_write", metadata: {action: "put", agentKey: "luna", targetSessionId: "session-luna", secret: "hidden-other"}});
+    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "session_briefing_write", metadata: {action: "put", agentKey: "luna", targetSessionId: "session-luna", secret: "hidden-luna"}});
+    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "unknown_event", metadata: {agentKey: "panda", secret: "hidden-visible-agent-unknown"}});
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "scoped", "panda");
+
+    const response = await fetch(`${base}/api/control/audit-events?limit=20`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    const text = JSON.stringify(await response.json());
+    expect(text).not.toContain("identity-other");
+    expect(text).not.toContain("hidden-other");
+    expect(text).not.toContain("hidden-luna");
+    expect(text).not.toContain("session-luna");
+    expect(text).not.toContain("unknown_event");
+    expect(text).not.toContain("hidden-visible-agent-unknown");
+  });
+
+  it("allows scoped users to see their own visible-agent mutation audit event", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "scoped", "panda");
+
+    const saved = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/heartbeat`, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({enabled: true, everyMinutes: 30, confirm: "update-heartbeat"}),
+    });
+    expect(saved.status).toBe(200);
+
+    const response = await fetch(`${base}/api/control/audit-events?limit=20`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {auditEvents: Array<{eventType: string; metadata: Record<string, unknown>}>};
+    const heartbeat = body.auditEvents.find((event) => event.eventType === "session_heartbeat_config_write");
+    expect(heartbeat?.metadata).toMatchObject({action: "patch", agentKey: "panda", targetSessionId: "session-panda"});
+    expect(JSON.stringify(heartbeat)).toContain("everyMinutes");
+    expect(JSON.stringify(heartbeat)).toContain("nextFireAt");
+  });
+
+  it("does not return arbitrary or unknown audit metadata fields", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "admin");
+    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "session_briefing_write", metadata: {action: "put", agentKey: "panda", targetSessionId: "session-panda", slug: "session", token: "secret-token", prompt: "private prompt", old: {wasSet: false, length: 0, sha256: null, raw: "old"}, next: {wasSet: true, length: 12, sha256: "abc", content: "next"}}});
+    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "unknown_event", metadata: {token: "unknown-secret", arbitrary: {nested: true}}});
+
+    const response = await fetch(`${base}/api/control/audit-events?limit=20`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {auditEvents: Array<{eventType: string; metadata: Record<string, unknown>}>};
+    expect(body.auditEvents.find((event) => event.eventType === "unknown_event")?.metadata).toEqual({});
+    const text = JSON.stringify(body);
+    expect(text).not.toContain("secret-token");
+    expect(text).not.toContain("private prompt");
+    expect(text).not.toContain("unknown-secret");
+    expect(text).not.toContain("arbitrary");
+    expect(text).not.toContain("content");
+    expect(text).not.toContain("raw");
+  });
+});
+
 
 describe("Control session briefing HTTP", () => {
   async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "scoped") {
