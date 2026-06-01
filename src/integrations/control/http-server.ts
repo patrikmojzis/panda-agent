@@ -12,6 +12,7 @@ import type {ControlBriefingService} from "../../domain/control/briefing-service
 import type {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
 import type {ControlTodoService} from "../../domain/control/todo-service.js";
 import type {ControlScheduledTasksService} from "../../domain/control/scheduled-tasks-service.js";
+import type {ControlWatchesService} from "../../domain/control/watches-service.js";
 import type {ControlSessionRecord} from "../../domain/control/types.js";
 
 export const CONTROL_SESSION_COOKIE = "panda_control_session";
@@ -112,6 +113,7 @@ export interface StartControlServerOptions {
   heartbeats: ControlHeartbeatService;
   todos: ControlTodoService;
   scheduledTasks: ControlScheduledTasksService;
+  watches: ControlWatchesService;
   uiStaticDir?: string;
 }
 
@@ -171,6 +173,13 @@ function parseAuditLimit(value: string | null): number | undefined {
   return Math.min(100, limit);
 }
 
+function parseWatchesLimit(value: string | null): number | undefined {
+  if (value === null || value.trim() === "") return undefined;
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1) throw new ControlHttpError(400, "Control watches limit must be a positive integer.");
+  return Math.min(100, limit);
+}
+
 function parseScheduledTasksLimit(value: string | null): number | undefined {
   if (value === null || value.trim() === "") return undefined;
   const limit = Number(value);
@@ -186,6 +195,12 @@ function matchSessionHeartbeatPath(path: string): {agentKey: string; sessionId: 
 
 function matchSessionTodoPath(path: string): {agentKey: string; sessionId: string} | null {
   const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/todos$/.exec(path);
+  if (!match) return null;
+  return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
+}
+
+function matchSessionWatchesPath(path: string): {agentKey: string; sessionId: string} | null {
+  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/watches$/.exec(path);
   if (!match) return null;
   return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
 }
@@ -314,6 +329,21 @@ export async function startControlServer(options: StartControlServerOptions): Pr
           writeJsonResponse(response, 200, {todo});
         } catch {
           throw new ControlHttpError(404, "Control todo target session was not found or is not visible.");
+        }
+        return;
+      }
+
+      const watchesPath = matchSessionWatchesPath(path);
+      if (watchesPath && request.method === "GET") {
+        try {
+          const watches = await options.watches.getWatches(session, watchesPath.agentKey, watchesPath.sessionId, {
+            limit: parseWatchesLimit(url.searchParams.get("limit")),
+          });
+          writeJsonResponse(response, 200, {watches});
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Control watches read failed.";
+          if (message === "Control watches limit must be a positive integer.") throw new ControlHttpError(400, message);
+          throw new ControlHttpError(404, "Control watches target session was not found or is not visible.");
         }
         return;
       }
