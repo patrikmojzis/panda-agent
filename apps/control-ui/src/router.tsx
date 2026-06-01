@@ -10,6 +10,7 @@ import {SessionHeartbeatLookupPage, SessionHeartbeatPage} from "./features/contr
 import {SessionTodoLookupPage, SessionTodoPage} from "./features/control/session-todos";
 import {ScheduledTasksLookupPage, ScheduledTasksPage} from "./features/control/scheduled-tasks";
 import {WatchesLookupPage, WatchesPage} from "./features/control/watches";
+import {RuntimeActivityLookupPage, RuntimeActivityPage} from "./features/control/runtime-activity";
 import {controlApi, ControlApiError} from "./lib/api";
 
 const rootRoute = createRootRoute();
@@ -39,10 +40,12 @@ const sessionTodoLookupRoute = createRoute({getParentRoute: () => appRoute, path
 const sessionTodoRoute = createRoute({getParentRoute: () => appRoute, path: "/agents/$agentKey/sessions/$sessionId/todos", component: SessionTodoPage});
 const watchesLookupRoute = createRoute({getParentRoute: () => appRoute, path: "/watches", component: WatchesLookupPage});
 const watchesRoute = createRoute({getParentRoute: () => appRoute, path: "/agents/$agentKey/sessions/$sessionId/watches", component: WatchesPage});
+const runtimeActivityLookupRoute = createRoute({getParentRoute: () => appRoute, path: "/runtime-activity", component: RuntimeActivityLookupPage});
+const runtimeActivityRoute = createRoute({getParentRoute: () => appRoute, path: "/agents/$agentKey/sessions/$sessionId/runtime-activity", component: RuntimeActivityPage});
 const scheduledTasksLookupRoute = createRoute({getParentRoute: () => appRoute, path: "/scheduled-tasks", component: ScheduledTasksLookupPage});
 const scheduledTasksRoute = createRoute({getParentRoute: () => appRoute, path: "/agents/$agentKey/sessions/$sessionId/scheduled-tasks", component: ScheduledTasksPage});
 
-const routeTree = rootRoute.addChildren([loginRoute, appRoute.addChildren([indexRoute, agentsRoute, credentialsRoute, auditEventsRoute, sessionBriefingLookupRoute, sessionBriefingRoute, sessionHeartbeatLookupRoute, sessionHeartbeatRoute, sessionTodoLookupRoute, sessionTodoRoute, watchesLookupRoute, watchesRoute, scheduledTasksLookupRoute, scheduledTasksRoute])]);
+const routeTree = rootRoute.addChildren([loginRoute, appRoute.addChildren([indexRoute, agentsRoute, credentialsRoute, auditEventsRoute, sessionBriefingLookupRoute, sessionBriefingRoute, sessionHeartbeatLookupRoute, sessionHeartbeatRoute, sessionTodoLookupRoute, sessionTodoRoute, watchesLookupRoute, watchesRoute, runtimeActivityLookupRoute, runtimeActivityRoute, scheduledTasksLookupRoute, scheduledTasksRoute])]);
 export const router = createRouter({routeTree});
 
 declare module "@tanstack/react-router" {

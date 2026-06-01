@@ -1,5 +1,5 @@
 import {Link, Outlet, useNavigate} from "@tanstack/react-router";
-import {AlarmClock, Bot, Eye, FileText, Gauge, HeartPulse, KeyRound, ListTodo, LogOut, ScrollText, Settings} from "lucide-react";
+import {Activity, AlarmClock, Bot, Eye, FileText, Gauge, HeartPulse, KeyRound, ListTodo, LogOut, ScrollText, Settings} from "lucide-react";
 import {Button} from "../components/ui/button";
 import {Badge} from "../components/ui/badge";
 import {useAuth} from "../lib/auth";
@@ -14,6 +14,7 @@ const nav = [
   {to: "/heartbeat", label: "Heartbeat", icon: HeartPulse},
   {to: "/todos", label: "Todos", icon: ListTodo},
   {to: "/watches", label: "Watches", icon: Eye},
+  {to: "/runtime-activity", label: "Runtime", icon: Activity},
   {to: "/scheduled-tasks", label: "Scheduled tasks", icon: AlarmClock},
 ] as const;
 

@@ -21,6 +21,7 @@ import {ControlHeartbeatService} from "../src/domain/control/heartbeat-service.j
 import {ControlTodoService} from "../src/domain/control/todo-service.js";
 import {ControlScheduledTasksService} from "../src/domain/control/scheduled-tasks-service.js";
 import {ControlWatchesService} from "../src/domain/control/watches-service.js";
+import {ControlRuntimeActivityService} from "../src/domain/control/runtime-activity-service.js";
 import {PostgresWatchStore} from "../src/domain/watches/postgres.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/postgres.js";
 import {CONTROL_CSRF_COOKIE, CONTROL_SESSION_COOKIE, startControlServer, type ControlHttpServer} from "../src/integrations/control/http-server.js";
@@ -57,6 +58,7 @@ async function createHarness() {
   const watchStore = new PostgresWatchStore({pool});
   const controlScheduledTasks = new ControlScheduledTasksService({pool});
   const controlWatches = new ControlWatchesService({pool});
+  const controlRuntimeActivity = new ControlRuntimeActivityService({pool});
   await identities.ensureSchema();
   await agents.ensureSchema();
   await sessions.ensureSchema();
@@ -75,11 +77,11 @@ async function createHarness() {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, agents, sessions, auth, reads, home, briefings, heartbeats, todos, scheduledTaskStore, watchStore, controlScheduledTasks, controlWatches};
+  return {pool, agents, sessions, auth, reads, home, briefings, heartbeats, todos, scheduledTaskStore, watchStore, controlScheduledTasks, controlWatches, controlRuntimeActivity};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -1007,6 +1009,163 @@ describe("Control scheduled tasks HTTP", () => {
     expect(text).not.toContain("FIRST_INSTRUCTION");
   });
 });
+
+
+describe("Control Runtime Activity HTTP", () => {
+  async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "scoped", agentKey = "panda") {
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey} : {})});
+    const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    expect(response.status).toBe(200);
+    return {cookies: cookieHeader(response)};
+  }
+
+  async function seedThreads(harness: Awaited<ReturnType<typeof createHarness>>) {
+    await harness.pool.query(`
+      INSERT INTO "runtime"."threads" (id, session_id) VALUES
+        ('thread-panda', 'session-panda'),
+        ('thread-luna', 'session-luna')
+    `);
+  }
+
+  it("rejects unauthenticated runtime activity reads", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity`);
+    expect(response.status).toBe(401);
+  });
+
+  it("allows admin to read unpaired runtime activity while scoped still requires pairing", async () => {
+    const harness = await createHarness();
+    await seedThreads(harness);
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+    const scoped = await login(base, harness, "scoped");
+
+    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity`, {headers: {cookie: admin.cookies}})).status).toBe(200);
+    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity`, {headers: {cookie: scoped.cookies}})).status).toBe(404);
+  });
+
+  it("returns a stable empty runtime activity DTO when the visible session has no runs", async () => {
+    const harness = await createHarness();
+    await seedThreads(harness);
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({runtimeActivity: {agentKey: "panda", sessionId: "session-panda", summary: {running: 0, completed: 0, failed: 0, latestStartedAt: null, latestFinishedAt: null}, runs: []}});
+  });
+
+  it("returns authorized same-session runs with whitelisted fields and hides raw runtime data", async () => {
+    const harness = await createHarness();
+    await seedThreads(harness);
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.pool.query(`
+      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, abort_requested_at, abort_reason, error) VALUES
+        ('00000000-0000-0000-0000-000000000401', 'thread-panda', 'failed', '2040-01-02T10:00:00.000Z', '2040-01-02T10:00:05.000Z', '2040-01-02T10:00:02.000Z', 'PRIVATE_ABORT_REASON_MUST_NOT_LEAK', 'Provider failed failureKind=provider_timeout PRIVATE_RAW_RUN_ERROR_MUST_NOT_LEAK'),
+        ('00000000-0000-0000-0000-000000000402', 'thread-panda', 'completed', '2040-01-01T10:00:00.000Z', '2040-01-01T10:00:01.500Z', NULL, NULL, NULL),
+        ('00000000-0000-0000-0000-000000000403', 'thread-panda', 'running', '2040-01-03T10:00:00.000Z', NULL, NULL, NULL, 'PRIVATE_RUNNING_ERROR_MUST_NOT_LEAK'),
+        ('00000000-0000-0000-0000-000000000404', 'thread-luna', 'failed', '2040-01-04T10:00:00.000Z', '2040-01-04T10:00:01.000Z', NULL, NULL, 'LUNA_PRIVATE_RAW_RUN_ERROR')
+    `);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."messages" (id, thread_id, origin, source, run_id, run_thread_id, created_at, message, metadata)
+      VALUES ('00000000-0000-0000-0000-000000000501', 'thread-panda', 'assistant', 'assistant', '00000000-0000-0000-0000-000000000401', 'thread-panda', '2040-01-02T10:00:03.000Z', '{"role":"assistant","content":"PRIVATE_TRANSCRIPT_MESSAGE_MUST_NOT_LEAK"}'::jsonb, '{"private":"PRIVATE_MESSAGE_METADATA_MUST_NOT_LEAK"}'::jsonb)
+    `);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."inputs" (id, thread_id, source, input_order, applied_at, created_at, message, metadata)
+      VALUES ('00000000-0000-0000-0000-000000000502', 'thread-panda', 'runtime', 1, '2040-01-02T10:00:00.000Z', '2040-01-02T10:00:00.000Z', '{"content":"PRIVATE_INPUT_MESSAGE_MUST_NOT_LEAK"}'::jsonb, '{"private":"PRIVATE_INPUT_METADATA_MUST_NOT_LEAK"}'::jsonb)
+    `);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."tool_jobs" (id, thread_id, run_id, run_thread_id, kind, status, summary, started_at, finished_at, result, error, progress)
+      VALUES ('00000000-0000-0000-0000-000000000503', 'thread-panda', '00000000-0000-0000-0000-000000000401', 'thread-panda', 'bash', 'failed', 'PRIVATE_TOOL_SUMMARY_MUST_NOT_LEAK', '2040-01-02T10:00:00.000Z', '2040-01-02T10:00:01.000Z', '{"stdout":"PRIVATE_TOOL_RESULT_MUST_NOT_LEAK"}'::jsonb, 'PRIVATE_TOOL_ERROR_MUST_NOT_LEAK', '{"tail":"PRIVATE_TOOL_PROGRESS_MUST_NOT_LEAK"}'::jsonb)
+    `);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."bash_jobs" (id, thread_id, run_id, run_thread_id, status, command, mode, initial_cwd, started_at, finished_at, stdout, stderr, tracked_env_keys)
+      VALUES ('00000000-0000-0000-0000-000000000504', 'thread-panda', '00000000-0000-0000-0000-000000000401', 'thread-panda', 'completed', 'echo PRIVATE_BASH_COMMAND_MUST_NOT_LEAK', 'foreground', '/workspace', '2040-01-02T10:00:00.000Z', '2040-01-02T10:00:01.000Z', 'PRIVATE_STDOUT_MUST_NOT_LEAK', 'PRIVATE_STDERR_MUST_NOT_LEAK', '["PRIVATE_ENV_KEY_MUST_NOT_LEAK"]'::jsonb)
+    `);
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?limit=10`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {runtimeActivity: {summary: Record<string, unknown>; runs: Array<Record<string, unknown>>}};
+    expect(Object.keys(body.runtimeActivity).sort()).toEqual(["agentKey", "runs", "sessionId", "summary"]);
+    expect(body.runtimeActivity.summary).toEqual({running: 1, completed: 1, failed: 1, latestStartedAt: "2040-01-03T10:00:00.000Z", latestFinishedAt: "2040-01-02T10:00:05.000Z"});
+    expect(body.runtimeActivity.runs).toHaveLength(3);
+    expect(body.runtimeActivity.runs[0]).toMatchObject({id: "00000000-0000-0000-0000-000000000403", status: "running", startedAt: "2040-01-03T10:00:00.000Z", finishedAt: null, durationMs: null, abortRequestedAt: null, failureCategory: null});
+    expect(body.runtimeActivity.runs[1]).toMatchObject({id: "00000000-0000-0000-0000-000000000401", status: "failed", startedAt: "2040-01-02T10:00:00.000Z", finishedAt: "2040-01-02T10:00:05.000Z", durationMs: 5000, abortRequestedAt: "2040-01-02T10:00:02.000Z", failureCategory: "provider_timeout"});
+    expect(Object.keys(body.runtimeActivity.runs[1]!).sort()).toEqual(["abortRequestedAt", "durationMs", "failureCategory", "finishedAt", "id", "startedAt", "status"]);
+    const text = JSON.stringify(body);
+    for (const sentinel of [
+      "PRIVATE_ABORT_REASON_MUST_NOT_LEAK",
+      "PRIVATE_RAW_RUN_ERROR_MUST_NOT_LEAK",
+      "PRIVATE_RUNNING_ERROR_MUST_NOT_LEAK",
+      "LUNA_PRIVATE_RAW_RUN_ERROR",
+      "PRIVATE_TRANSCRIPT_MESSAGE_MUST_NOT_LEAK",
+      "PRIVATE_MESSAGE_METADATA_MUST_NOT_LEAK",
+      "PRIVATE_INPUT_MESSAGE_MUST_NOT_LEAK",
+      "PRIVATE_INPUT_METADATA_MUST_NOT_LEAK",
+      "PRIVATE_TOOL_SUMMARY_MUST_NOT_LEAK",
+      "PRIVATE_TOOL_RESULT_MUST_NOT_LEAK",
+      "PRIVATE_TOOL_ERROR_MUST_NOT_LEAK",
+      "PRIVATE_TOOL_PROGRESS_MUST_NOT_LEAK",
+      "PRIVATE_BASH_COMMAND_MUST_NOT_LEAK",
+      "PRIVATE_STDOUT_MUST_NOT_LEAK",
+      "PRIVATE_STDERR_MUST_NOT_LEAK",
+      "PRIVATE_ENV_KEY_MUST_NOT_LEAK",
+      "error",
+      "abortReason",
+      "message",
+      "metadata",
+      "stdout",
+      "stderr",
+      "command",
+      "result",
+      "progress",
+    ]) expect(text).not.toContain(sentinel);
+  });
+
+  it("checks path-agent ownership, scoped agent visibility, and runtime activity limits", async () => {
+    const harness = await createHarness();
+    await seedThreads(harness);
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.agents.ensurePairing("luna", "identity-patrik");
+    await harness.pool.query(`
+      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, error) VALUES
+        ('00000000-0000-0000-0000-000000000601', 'thread-panda', 'completed', '2040-01-01T00:00:00.000Z', '2040-01-01T00:00:01.000Z', NULL),
+        ('00000000-0000-0000-0000-000000000602', 'thread-panda', 'completed', '2040-01-02T00:00:00.000Z', '2040-01-02T00:00:01.000Z', NULL),
+        ('00000000-0000-0000-0000-000000000603', 'thread-luna', 'failed', '2040-01-03T00:00:00.000Z', '2040-01-03T00:00:01.000Z', 'LUNA_LIMIT_PRIVATE_ERROR')
+    `);
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "scoped", "panda");
+
+    const limited = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?limit=1`, {headers: {cookie: auth.cookies}});
+    expect(limited.status).toBe(200);
+    await expect(limited.json()).resolves.toMatchObject({runtimeActivity: {runs: [{id: "00000000-0000-0000-0000-000000000602"}]}});
+
+    const clamped = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?limit=250`, {headers: {cookie: auth.cookies}});
+    expect(clamped.status).toBe(200);
+    const clampedBody = await clamped.json() as {runtimeActivity: {runs: unknown[]}};
+    expect(clampedBody.runtimeActivity.runs).toHaveLength(2);
+
+    const invalid = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?limit=0`, {headers: {cookie: auth.cookies}});
+    expect(invalid.status).toBe(400);
+
+    const wrongPath = await fetch(`${base}/api/control/agents/luna/sessions/session-panda/runtime-activity`, {headers: {cookie: auth.cookies}});
+    expect(wrongPath.status).toBe(404);
+    const wrongPathText = JSON.stringify(await wrongPath.json());
+    expect(wrongPathText).not.toContain("00000000-0000-0000-0000-000000000601");
+
+    const crossAgent = await fetch(`${base}/api/control/agents/luna/sessions/session-luna/runtime-activity`, {headers: {cookie: auth.cookies}});
+    expect(crossAgent.status).toBe(404);
+    const crossText = JSON.stringify(await crossAgent.json());
+    expect(crossText).not.toContain("LUNA_LIMIT_PRIVATE_ERROR");
+    expect(crossText).not.toContain("00000000-0000-0000-0000-000000000603");
+  });
+});
+
 
 describe("Control Home HTTP", () => {
   async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "scoped", agentKey = "panda") {
