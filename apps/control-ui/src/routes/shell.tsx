@@ -6,7 +6,7 @@ import {useAuth} from "../lib/auth";
 import {cn} from "../lib/utils";
 
 const nav = [
-  {to: "/", label: "Overview", icon: Gauge},
+  {to: "/", label: "Home", icon: Gauge},
   {to: "/agents", label: "Agents", icon: Bot},
   {to: "/credentials", label: "Credentials", icon: KeyRound},
   {to: "/audit", label: "Audit", icon: ScrollText},

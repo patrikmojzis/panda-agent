@@ -17,6 +17,12 @@ export type ScheduledTask = {id: string; title: string; schedule: ScheduledTaskS
 export type ScheduledTasks = {agentKey: string; sessionId: string; tasks: ScheduledTask[]};
 export type AuditEventSummary = {id: string; identityId?: string; sessionId?: string; eventType: string; metadata: Record<string, unknown>; createdAt: string};
 
+export type HomeStatus = {level: "ok" | "attention"; reasonCodes: string[]};
+export type HomeAttentionItem = {id: string; severity: "info" | "warning" | "critical"; type: "blocked_todos" | "in_progress_todos" | "failed_task" | "overdue_task" | "disabled_heartbeat"; agentKey: string; sessionId: string; sessionLabel: string; summary: string; targetRoute: string; createdAt?: string; dueAt?: string};
+export type HomeSessionSummary = {agentKey: string; sessionId: string; label: string; kind: string; heartbeat: {enabled: boolean; everyMinutes: number; nextFireAt: string | null; lastFireAt?: string}; todoCounts: Record<SessionTodoStatus, number>; nextTaskAt: string | null; lastTaskStatus: string | null; links: {todos: string; scheduledTasks: string; heartbeat: string; briefing: string}};
+export type HomeUpcomingAutomation = {taskId: string; agentKey: string; sessionId: string; title: string; lifecycleStatus: string; nextFireAt: string | null; scheduleKind: string; targetRoute: string};
+export type ControlHome = {generatedAt: string; scope: {identityId: string; role: ControlRole; visibleAgentCount: number; visibleSessionCount: number; agents: Array<{agentKey: string; displayName: string; paired: boolean; sessionCount: number}>}; status: HomeStatus; attentionItems: HomeAttentionItem[]; sessions: HomeSessionSummary[]; upcomingAutomations: HomeUpcomingAutomation[]; recentActivity: AuditEventSummary[]};
+
 export class ControlApiError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
@@ -48,6 +54,7 @@ export const controlApi = {
   login: (token: string) => requestJson<LoginResponse>("/login", {method: "POST", body: JSON.stringify({token})}),
   logout: (csrfToken: string | null) => requestJson<{ok: true}>("/logout", {method: "POST", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}}),
   overview: () => requestJson<Overview>("/overview"),
+  home: () => requestJson<{home: ControlHome}>("/home"),
   agents: () => requestJson<{agents: AgentSummary[]}>("/agents"),
   credentials: () => requestJson<{credentials: CredentialSummary[]}>("/credentials"),
   auditEvents: (input: {limit?: number; eventType?: string; before?: string} = {}) => {

@@ -24,6 +24,7 @@ import type {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import type {AgentAppAuthService} from "../../domain/apps/auth.js";
 import type {PostgresControlAuthService} from "../../domain/control/auth.js";
 import type {ControlReadService} from "../../domain/control/read-service.js";
+import type {ControlHomeService} from "../../domain/control/home-service.js";
 import type {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import type {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
 import type {ControlTodoService} from "../../domain/control/todo-service.js";
@@ -108,6 +109,7 @@ export interface RuntimeServices {
   appAuth: AgentAppAuthService;
   controlAuth: PostgresControlAuthService;
   controlReads: ControlReadService;
+  controlHome: ControlHomeService;
   controlBriefings: ControlBriefingService;
   controlHeartbeats: ControlHeartbeatService;
   controlTodos: ControlTodoService;
@@ -208,6 +210,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     appAuth: runtime.appAuth,
     controlAuth: runtime.controlAuth,
     controlReads: runtime.controlReads,
+    controlHome: runtime.controlHome,
     controlBriefings: runtime.controlBriefings,
     controlHeartbeats: runtime.controlHeartbeats,
     controlTodos: runtime.controlTodos,

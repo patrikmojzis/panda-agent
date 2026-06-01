@@ -15,6 +15,7 @@ import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
 import {PostgresControlAuthService} from "../src/domain/control/auth.js";
 import {ControlReadService} from "../src/domain/control/read-service.js";
+import {ControlHomeService} from "../src/domain/control/home-service.js";
 import {ControlBriefingService} from "../src/domain/control/briefing-service.js";
 import {ControlHeartbeatService} from "../src/domain/control/heartbeat-service.js";
 import {ControlTodoService} from "../src/domain/control/todo-service.js";
@@ -46,6 +47,7 @@ async function createHarness() {
   const threads = new PostgresThreadRuntimeStore({pool});
   const auth = new PostgresControlAuthService({pool});
   const reads = new ControlReadService({pool});
+  const home = new ControlHomeService({pool, reads});
   const briefings = new ControlBriefingService({pool, sessions});
   const heartbeats = new ControlHeartbeatService({pool, sessions});
   const todos = new ControlTodoService({pool, sessions});
@@ -68,11 +70,11 @@ async function createHarness() {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, agents, sessions, auth, reads, briefings, heartbeats, todos, scheduledTaskStore, controlScheduledTasks};
+  return {pool, agents, sessions, auth, reads, home, briefings, heartbeats, todos, scheduledTaskStore, controlScheduledTasks};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -160,6 +162,7 @@ describe("Control auth HTTP", () => {
       host: "127.0.0.1",
       port: 0,
       auth: harness.auth,
+      home: harness.home,
       reads: {
         getOverview: async () => {
           throw new Error("database password leaked in stack");
@@ -194,7 +197,7 @@ describe("Control auth HTTP", () => {
     await mkdir(join(staticDir, "assets"));
     await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
     await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
-    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, uiStaticDir: staticDir});
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, uiStaticDir: staticDir});
     servers.push(server);
     const base = `http://${server.host}:${server.port}`;
 
@@ -804,5 +807,166 @@ describe("Control scheduled tasks HTTP", () => {
     const text = JSON.stringify(await wrongAgent.json());
     expect(text).not.toContain("First by next fire");
     expect(text).not.toContain("FIRST_INSTRUCTION");
+  });
+});
+
+describe("Control Home HTTP", () => {
+  async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "scoped", agentKey = "panda") {
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey} : {})});
+    const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    expect(response.status).toBe(200);
+    return {cookies: cookieHeader(response)};
+  }
+
+  it("authenticates home reads and scoped unpaired grants reveal no private rows", async () => {
+    const harness = await createHarness();
+    await harness.pool.query(`UPDATE "runtime"."agent_sessions" SET display_name = 'LUNA_UNPAIRED_PRIVATE_LABEL' WHERE id = 'session-luna'`);
+    const base = await startHarnessServer(harness);
+
+    expect((await fetch(`${base}/api/control/home`)).status).toBe(401);
+
+    const scoped = await login(base, harness, "scoped", "panda");
+    const response = await fetch(`${base}/api/control/home`, {headers: {cookie: scoped.cookies}});
+    expect(response.status).toBe(200);
+    const text = JSON.stringify(await response.json());
+    expect(text).not.toContain("session-panda");
+    expect(text).not.toContain("session-luna");
+    expect(text).not.toContain("LUNA_UNPAIRED_PRIVATE_LABEL");
+  });
+
+  it("isolates scoped home data across agents and sessions", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.agents.ensurePairing("luna", "identity-patrik");
+    await harness.pool.query(`UPDATE "runtime"."agent_sessions" SET display_name = 'Panda operator room' WHERE id = 'session-panda'`);
+    await harness.pool.query(`UPDATE "runtime"."agent_sessions" SET display_name = 'LUNA_DISTINCTIVE_PRIVATE_LABEL' WHERE id = 'session-luna'`);
+    await harness.sessions.replaceSessionTodo({sessionId: "luna", items: []}).catch(() => undefined);
+    await harness.sessions.replaceSessionTodo({sessionId: "session-luna", items: [{status: "blocked", content: "LUNA_DISTINCTIVE_PRIVATE_TODO"}]});
+    await harness.scheduledTaskStore.createTask({
+      sessionId: "session-luna",
+      title: "LUNA_DISTINCTIVE_PRIVATE_TASK_TITLE",
+      instruction: "LUNA_DISTINCTIVE_PRIVATE_TASK_INSTRUCTION",
+      schedule: {kind: "once", runAt: "2040-02-01T10:00:00.000Z"},
+    });
+    const base = await startHarnessServer(harness);
+    const scoped = await login(base, harness, "scoped", "panda");
+
+    const response = await fetch(`${base}/api/control/home`, {headers: {cookie: scoped.cookies}});
+    expect(response.status).toBe(200);
+    const text = JSON.stringify(await response.json());
+    expect(text).toContain("session-panda");
+    expect(text).toContain("Panda operator room");
+    expect(text).not.toContain("luna");
+    expect(text).not.toContain("session-luna");
+    expect(text).not.toContain("LUNA_DISTINCTIVE_PRIVATE_LABEL");
+    expect(text).not.toContain("LUNA_DISTINCTIVE_PRIVATE_TODO");
+    expect(text).not.toContain("LUNA_DISTINCTIVE_PRIVATE_TASK_TITLE");
+    expect(text).not.toContain("LUNA_DISTINCTIVE_PRIVATE_TASK_INSTRUCTION");
+  });
+
+  it("returns cockpit status, attention, sessions, upcoming automations, and sanitized activity", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.pool.query(`UPDATE "runtime"."agent_sessions" SET display_name = 'Panda mission control' WHERE id = 'session-panda'`);
+    await harness.pool.query(`
+      UPDATE "runtime"."session_heartbeats"
+      SET enabled = FALSE, every_minutes = 60, next_fire_at = '2040-01-01T00:00:00.000Z'
+      WHERE session_id = 'session-panda'
+    `);
+    await harness.sessions.replaceSessionTodo({sessionId: "session-panda", items: [
+      {status: "blocked", content: "BLOCKED_TODO_PRIVATE_CONTENT"},
+      {status: "in_progress", content: "IN_PROGRESS_TODO_PRIVATE_CONTENT"},
+      {status: "done", content: "DONE_TODO_PRIVATE_CONTENT"},
+    ]});
+    const task = await harness.scheduledTaskStore.createTask({
+      sessionId: "session-panda",
+      createdByIdentityId: "identity-patrik",
+      title: "Visible safe wakeup title",
+      instruction: "HOME_PRIVATE_INSTRUCTION_MUST_NOT_LEAK",
+      schedule: {kind: "once", runAt: "2040-01-02T10:00:00.000Z"},
+    });
+    await harness.pool.query(`
+      INSERT INTO "runtime"."scheduled_task_runs" (id, task_id, session_id, scheduled_for, status, error, created_at, started_at, finished_at)
+      VALUES ('00000000-0000-0000-0000-000000000301', $1, 'session-panda', '2039-12-31T10:00:00.000Z', 'failed', 'HOME_RAW_RUN_ERROR_MUST_NOT_LEAK', '2039-12-31T10:01:00.000Z', '2039-12-31T10:01:00.000Z', '2039-12-31T10:02:00.000Z')
+    `, [task.id]);
+    await harness.auth.recordAudit({
+      identityId: "identity-patrik",
+      sessionId: "00000000-0000-0000-0000-000000000399",
+      eventType: "session_heartbeat_config_write",
+      metadata: {action: "patch", agentKey: "panda", targetSessionId: "session-panda", old: {enabled: true, everyMinutes: 60, nextFireAt: "2039-01-01T00:00:00.000Z", secret: "AUDIT_UNKNOWN_METADATA_MUST_NOT_LEAK"}, next: {enabled: false, everyMinutes: 60, nextFireAt: "2040-01-01T00:00:00.000Z"}},
+    });
+    const base = await startHarnessServer(harness);
+    const scoped = await login(base, harness, "scoped", "panda");
+
+    const response = await fetch(`${base}/api/control/home`, {headers: {cookie: scoped.cookies}});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {home: Record<string, any>};
+    expect(typeof body.home.generatedAt).toBe("string");
+    expect(body.home.scope).toMatchObject({identityId: "identity-patrik", role: "scoped", visibleAgentCount: 1, visibleSessionCount: 1});
+    expect(body.home.status.level).toBe("attention");
+    expect(body.home.status.reasonCodes).toEqual(expect.arrayContaining(["blocked_todos", "in_progress_todos", "failed_task", "disabled_heartbeat"]));
+    expect(body.home.attentionItems.map((item: {type: string}) => item.type)).toEqual(expect.arrayContaining(["blocked_todos", "in_progress_todos", "failed_task", "disabled_heartbeat"]));
+    expect(body.home.sessions[0]).toMatchObject({
+      agentKey: "panda",
+      sessionId: "session-panda",
+      label: "Panda mission control",
+      heartbeat: {enabled: false, everyMinutes: 60, nextFireAt: "2040-01-01T00:00:00.000Z"},
+      todoCounts: {pending: 0, in_progress: 1, blocked: 1, done: 1},
+      lastTaskStatus: "failed",
+    });
+    expect(body.home.upcomingAutomations[0]).toMatchObject({taskId: task.id, agentKey: "panda", sessionId: "session-panda", title: "Visible safe wakeup title", scheduleKind: "once"});
+    expect(body.home.recentActivity.length).toBeGreaterThan(0);
+    expect(JSON.stringify(body.home.recentActivity)).toContain("session_heartbeat_config_write");
+  });
+
+  it("redacts todo content, scheduled instructions, raw errors, credential values, and unknown audit metadata", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.sessions.replaceSessionTodo({sessionId: "session-panda", items: [{status: "blocked", content: "HOME_TODO_CONTENT_MUST_NOT_LEAK"}]});
+    const task = await harness.scheduledTaskStore.createTask({
+      sessionId: "session-panda",
+      title: "Safe home title",
+      instruction: "HOME_SCHEDULED_INSTRUCTION_MUST_NOT_LEAK",
+      schedule: {kind: "once", runAt: "2040-03-01T10:00:00.000Z"},
+    });
+    await harness.pool.query(`
+      INSERT INTO "runtime"."scheduled_task_runs" (id, task_id, session_id, scheduled_for, status, error, created_at, started_at, finished_at)
+      VALUES ('00000000-0000-0000-0000-000000000302', $1, 'session-panda', '2040-02-28T10:00:00.000Z', 'failed', 'HOME_RUN_ERROR_MUST_NOT_LEAK', '2040-02-28T10:01:00.000Z', '2040-02-28T10:01:00.000Z', '2040-02-28T10:02:00.000Z')
+    `, [task.id]);
+    await harness.auth.recordAudit({identityId: "identity-patrik", sessionId: "00000000-0000-0000-0000-000000000399", eventType: "unknown_future_event", metadata: {secret: "HOME_AUDIT_METADATA_MUST_NOT_LEAK", agentKey: "panda"}});
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+
+    const response = await fetch(`${base}/api/control/home`, {headers: {cookie: admin.cookies}});
+    expect(response.status).toBe(200);
+    const text = JSON.stringify(await response.json());
+    expect(text).toContain("Safe home title");
+    for (const forbidden of [
+      "HOME_TODO_CONTENT_MUST_NOT_LEAK",
+      "HOME_SCHEDULED_INSTRUCTION_MUST_NOT_LEAK",
+      "HOME_RUN_ERROR_MUST_NOT_LEAK",
+      "HOME_AUDIT_METADATA_MUST_NOT_LEAK",
+      "SECRET_SENTINEL",
+      "5345435245545f53454e54494e454c",
+      "value_ciphertext",
+      "instruction",
+      "error",
+    ]) {
+      expect(text).not.toContain(forbidden);
+    }
+  });
+
+  it("is read-only: no CSRF required and no audit rows are created by GET home", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+    const before = await harness.pool.query(`SELECT COUNT(*)::int AS count FROM "runtime"."control_audit_events"`);
+
+    const response = await fetch(`${base}/api/control/home`, {headers: {cookie: admin.cookies}});
+    expect(response.status).toBe(200);
+
+    const after = await harness.pool.query(`SELECT COUNT(*)::int AS count FROM "runtime"."control_audit_events"`);
+    expect(Number((after.rows[0] as Record<string, unknown>).count)).toBe(Number((before.rows[0] as Record<string, unknown>).count));
   });
 });
