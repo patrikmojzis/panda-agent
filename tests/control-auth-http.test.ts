@@ -22,6 +22,8 @@ import {ControlTodoService} from "../src/domain/control/todo-service.js";
 import {ControlScheduledTasksService} from "../src/domain/control/scheduled-tasks-service.js";
 import {ControlWatchesService} from "../src/domain/control/watches-service.js";
 import {ControlRuntimeActivityService} from "../src/domain/control/runtime-activity-service.js";
+import {ControlConnectorAccountsService} from "../src/domain/control/connector-accounts-service.js";
+import {PostgresConnectorAccountStore} from "../src/domain/connectors/postgres.js";
 import {PostgresWatchStore} from "../src/domain/watches/postgres.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/postgres.js";
 import {CONTROL_CSRF_COOKIE, CONTROL_SESSION_COOKIE, startControlServer, type ControlHttpServer} from "../src/integrations/control/http-server.js";
@@ -37,7 +39,7 @@ afterEach(async () => {
 });
 
 async function createHarness() {
-  const db = newDb();
+  const db = newDb({noAstCoverageCheck: true});
   db.public.registerFunction({name: "pg_notify", args: [DataType.text, DataType.text], returns: DataType.text, implementation: () => ""});
   const adapter = db.adapters.createPg();
   const pool = new adapter.Pool();
@@ -59,6 +61,8 @@ async function createHarness() {
   const controlScheduledTasks = new ControlScheduledTasksService({pool});
   const controlWatches = new ControlWatchesService({pool});
   const controlRuntimeActivity = new ControlRuntimeActivityService({pool});
+  const connectorAccountStore = new PostgresConnectorAccountStore({pool});
+  const controlConnectorAccounts = new ControlConnectorAccountsService({pool});
   await identities.ensureSchema();
   await agents.ensureSchema();
   await sessions.ensureSchema();
@@ -67,6 +71,7 @@ async function createHarness() {
   await auth.ensureSchema();
   await scheduledTaskStore.ensureSchema();
   await watchStore.ensureSchema();
+  await connectorAccountStore.ensureSchema();
 
   await identities.createIdentity({id: "identity-patrik", handle: "patrik", displayName: "Patrik"});
   await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda", prompts: DEFAULT_AGENT_PROMPT_TEMPLATES});
@@ -77,11 +82,11 @@ async function createHarness() {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, agents, sessions, auth, reads, home, briefings, heartbeats, todos, scheduledTaskStore, watchStore, controlScheduledTasks, controlWatches, controlRuntimeActivity};
+  return {pool, agents, sessions, auth, reads, home, briefings, heartbeats, todos, scheduledTaskStore, watchStore, connectorAccountStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -183,6 +188,8 @@ describe("Control auth HTTP", () => {
       todos: harness.todos,
       scheduledTasks: harness.controlScheduledTasks,
       watches: harness.controlWatches,
+      runtimeActivity: harness.controlRuntimeActivity,
+      connectorAccounts: harness.controlConnectorAccounts,
     });
     servers.push(server);
 
@@ -205,7 +212,7 @@ describe("Control auth HTTP", () => {
     await mkdir(join(staticDir, "assets"));
     await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
     await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
-    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, uiStaticDir: staticDir});
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, uiStaticDir: staticDir});
     servers.push(server);
     const base = `http://${server.host}:${server.port}`;
 
@@ -1164,6 +1171,140 @@ describe("Control Runtime Activity HTTP", () => {
     expect(crossText).not.toContain("LUNA_LIMIT_PRIVATE_ERROR");
     expect(crossText).not.toContain("00000000-0000-0000-0000-000000000603");
   });
+
+  async function seedConnectorAccounts(harness: Awaited<ReturnType<typeof createHarness>>) {
+    await harness.pool.query(`
+      INSERT INTO "runtime"."connector_accounts" (
+        id,
+        source,
+        account_key,
+        connector_key,
+        owner_kind,
+        owner_identity_id,
+        owner_agent_key,
+        display_name,
+        external_account_id,
+        external_username,
+        status,
+        config,
+        metadata,
+        created_at,
+        updated_at
+      ) VALUES
+        ('10000000-0000-0000-0000-000000000001', 'discord', 'panda-main', 'discord:panda-main', 'agent', NULL, 'panda', 'Panda Discord', 'PRIVATE_EXTERNAL_ACCOUNT_ID_SAFE_TO_SHOW', 'panda-user', 'enabled', '{"token":"PRIVATE_CONFIG_TOKEN_MUST_NOT_LEAK","webhookUrl":"https://hooks.example/PRIVATE_WEBHOOK_MUST_NOT_LEAK","authHeader":"Bearer PRIVATE_AUTH_HEADER_MUST_NOT_LEAK"}'::jsonb, '{"channel":"PRIVATE_METADATA_CHANNEL_MUST_NOT_LEAK","message":"PRIVATE_METADATA_MESSAGE_MUST_NOT_LEAK"}'::jsonb, '2040-01-01T00:00:00.000Z', '2040-01-01T00:00:01.000Z'),
+        ('10000000-0000-0000-0000-000000000002', 'telegram', 'system-default', 'telegram:system-default', 'system', NULL, NULL, 'System Telegram', 'system-ext', 'system-user', 'enabled', '{"botToken":"PRIVATE_SYSTEM_CONFIG_TOKEN_MUST_NOT_LEAK"}'::jsonb, '{"webhook":"PRIVATE_SYSTEM_METADATA_WEBHOOK_MUST_NOT_LEAK"}'::jsonb, '2040-01-02T00:00:00.000Z', '2040-01-02T00:00:01.000Z'),
+        ('10000000-0000-0000-0000-000000000003', 'discord', 'luna-main', 'discord:luna-main', 'agent', NULL, 'luna', 'Luna Discord PRIVATE_LUNA_DISPLAY_SAFE_TO_EXCLUDE', 'luna-ext', 'luna-user', 'enabled', '{"token":"PRIVATE_LUNA_CONFIG_TOKEN_MUST_NOT_LEAK"}'::jsonb, '{"channel":"PRIVATE_LUNA_METADATA_MUST_NOT_LEAK"}'::jsonb, '2040-01-03T00:00:00.000Z', '2040-01-03T00:00:01.000Z'),
+        ('10000000-0000-0000-0000-000000000004', 'discord', 'identity-main', 'discord:identity-main', 'identity', 'identity-patrik', NULL, 'Identity Discord PRIVATE_IDENTITY_DISPLAY_SAFE_TO_EXCLUDE', 'identity-ext', 'identity-user', 'enabled', '{"token":"PRIVATE_IDENTITY_CONFIG_TOKEN_MUST_NOT_LEAK"}'::jsonb, '{"channel":"PRIVATE_IDENTITY_METADATA_MUST_NOT_LEAK"}'::jsonb, '2040-01-04T00:00:00.000Z', '2040-01-04T00:00:01.000Z')
+    `);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."connector_account_secrets" (account_id, secret_key, value_ciphertext, value_iv, value_tag, key_version, created_at, updated_at) VALUES
+        ('10000000-0000-0000-0000-000000000001', 'bot_token', '\\x505249564154455f434950484552544558545f4d5553545f4e4f545f4c45414b', '\\x505249564154455f49565f4d5553545f4e4f545f4c45414b', '\\x505249564154455f5441475f4d5553545f4e4f545f4c45414b', 7, '2040-01-01T00:00:02.000Z', '2040-01-01T00:00:03.000Z'),
+        ('10000000-0000-0000-0000-000000000002', 'webhook_token', '\\x53595354454d5f434950484552544558545f4d5553545f4e4f545f4c45414b', '\\x53595354454d5f49565f4d5553545f4e4f545f4c45414b', '\\x53595354454d5f5441475f4d5553545f4e4f545f4c45414b', 3, '2040-01-02T00:00:02.000Z', '2040-01-02T00:00:03.000Z')
+    `);
+  }
+
+  it("rejects unauthenticated connector account reads", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+
+    const response = await fetch(`${base}/api/control/agents/panda/connectors`);
+    expect(response.status).toBe(401);
+  });
+
+  it("allows admin to read path-agent and system connector summaries without raw private fields", async () => {
+    const harness = await createHarness();
+    await seedConnectorAccounts(harness);
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "admin");
+
+    const response = await fetch(`${base}/api/control/agents/panda/connectors?limit=10`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {connectors: {agentKey: string; summary: Record<string, number>; accounts: Array<Record<string, unknown>>}};
+    expect(Object.keys(body.connectors).sort()).toEqual(["accounts", "agentKey", "summary"]);
+    expect(body.connectors).toMatchObject({agentKey: "panda", summary: {total: 2, agentOwned: 1, systemOwned: 1}});
+    expect(body.connectors.accounts.map((account) => account.accountKey).sort()).toEqual(["panda-main", "system-default"]);
+    expect(body.connectors.accounts.find((account) => account.accountKey === "panda-main")).toMatchObject({
+      id: "10000000-0000-0000-0000-000000000001",
+      source: "discord",
+      connectorKey: "discord:panda-main",
+      displayName: "Panda Discord",
+      externalAccountId: "PRIVATE_EXTERNAL_ACCOUNT_ID_SAFE_TO_SHOW",
+      externalUsername: "panda-user",
+      status: "enabled",
+      ownerKind: "agent",
+      ownerAgentKey: "panda",
+      createdAt: "2040-01-01T00:00:00.000Z",
+      updatedAt: "2040-01-01T00:00:01.000Z",
+      secretKeys: [{secretKey: "bot_token", createdAt: "2040-01-01T00:00:02.000Z", updatedAt: "2040-01-01T00:00:03.000Z"}],
+    });
+    expect(Object.keys(body.connectors.accounts[0]!).sort()).toEqual(["accountKey", "connectorKey", "createdAt", "displayName", "externalAccountId", "externalUsername", "id", "ownerAgentKey", "ownerKind", "secretKeys", "source", "status", "updatedAt"]);
+    const text = JSON.stringify(body);
+    for (const sentinel of [
+      "PRIVATE_CONFIG_TOKEN_MUST_NOT_LEAK",
+      "PRIVATE_WEBHOOK_MUST_NOT_LEAK",
+      "PRIVATE_AUTH_HEADER_MUST_NOT_LEAK",
+      "PRIVATE_METADATA_CHANNEL_MUST_NOT_LEAK",
+      "PRIVATE_METADATA_MESSAGE_MUST_NOT_LEAK",
+      "PRIVATE_SYSTEM_CONFIG_TOKEN_MUST_NOT_LEAK",
+      "PRIVATE_SYSTEM_METADATA_WEBHOOK_MUST_NOT_LEAK",
+      "PRIVATE_LUNA_CONFIG_TOKEN_MUST_NOT_LEAK",
+      "PRIVATE_LUNA_METADATA_MUST_NOT_LEAK",
+      "PRIVATE_IDENTITY_CONFIG_TOKEN_MUST_NOT_LEAK",
+      "PRIVATE_IDENTITY_METADATA_MUST_NOT_LEAK",
+      "505249564154455f434950484552544558545f4d5553545f4e4f545f4c45414b",
+      "PRIVATE_CIPHERTEXT_MUST_NOT_LEAK",
+      "PRIVATE_IV_MUST_NOT_LEAK",
+      "PRIVATE_TAG_MUST_NOT_LEAK",
+      "valueCiphertext",
+      "valueIv",
+      "valueTag",
+      "keyVersion",
+      "config",
+      "metadata",
+      "authHeader",
+      "webhookUrl",
+    ]) expect(text).not.toContain(sentinel);
+  });
+
+  it("scopes connector accounts to the paired path agent and validates path visibility and limits", async () => {
+    const harness = await createHarness();
+    await seedConnectorAccounts(harness);
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.agents.ensurePairing("luna", "identity-patrik");
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "scoped", "panda");
+
+    const response = await fetch(`${base}/api/control/agents/panda/connectors`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {connectors: {summary: Record<string, number>; accounts: Array<Record<string, unknown>>}};
+    expect(body.connectors.summary).toEqual({total: 1, agentOwned: 1, systemOwned: 0});
+    expect(body.connectors.accounts.map((account) => account.accountKey)).toEqual(["panda-main"]);
+    const text = JSON.stringify(body);
+    expect(text).not.toContain("system-default");
+    expect(text).not.toContain("luna-main");
+    expect(text).not.toContain("identity-main");
+    expect(text).not.toContain("PRIVATE_SYSTEM_CONFIG_TOKEN_MUST_NOT_LEAK");
+    expect(text).not.toContain("PRIVATE_LUNA_CONFIG_TOKEN_MUST_NOT_LEAK");
+    expect(text).not.toContain("PRIVATE_IDENTITY_CONFIG_TOKEN_MUST_NOT_LEAK");
+
+    const wrongPath = await fetch(`${base}/api/control/agents/luna/connectors`, {headers: {cookie: auth.cookies}});
+    expect(wrongPath.status).toBe(404);
+    const wrongText = JSON.stringify(await wrongPath.json());
+    expect(wrongText).not.toContain("luna-main");
+    expect(wrongText).not.toContain("PRIVATE_LUNA_CONFIG_TOKEN_MUST_NOT_LEAK");
+
+    const limited = await fetch(`${base}/api/control/agents/panda/connectors?limit=1`, {headers: {cookie: auth.cookies}});
+    expect(limited.status).toBe(200);
+    const limitedBody = await limited.json() as {connectors: {accounts: unknown[]}};
+    expect(limitedBody.connectors.accounts).toHaveLength(1);
+
+    const clamped = await fetch(`${base}/api/control/agents/panda/connectors?limit=250`, {headers: {cookie: auth.cookies}});
+    expect(clamped.status).toBe(200);
+
+    const invalid = await fetch(`${base}/api/control/agents/panda/connectors?limit=0`, {headers: {cookie: auth.cookies}});
+    expect(invalid.status).toBe(400);
+  });
+
 });
 
 
