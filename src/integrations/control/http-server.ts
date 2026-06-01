@@ -7,6 +7,7 @@ import {readJsonHttpBody} from "../http-body.js";
 import {writeJsonResponse} from "../../lib/http.js";
 import type {PostgresControlAuthService} from "../../domain/control/auth.js";
 import type {ControlReadService} from "../../domain/control/read-service.js";
+import type {ControlHomeService} from "../../domain/control/home-service.js";
 import type {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import type {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
 import type {ControlTodoService} from "../../domain/control/todo-service.js";
@@ -106,6 +107,7 @@ export interface StartControlServerOptions {
   port: number;
   auth: PostgresControlAuthService;
   reads: ControlReadService;
+  home: ControlHomeService;
   briefings: ControlBriefingService;
   heartbeats: ControlHeartbeatService;
   todos: ControlTodoService;
@@ -281,6 +283,10 @@ export async function startControlServer(options: StartControlServerOptions): Pr
       }
       if (request.method === "GET" && path === "/overview") {
         writeJsonResponse(response, 200, await options.reads.getOverview(session));
+        return;
+      }
+      if (request.method === "GET" && path === "/home") {
+        writeJsonResponse(response, 200, {home: await options.home.getHome(session)});
         return;
       }
       if (request.method === "GET" && path === "/agents") {

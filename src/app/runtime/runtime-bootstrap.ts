@@ -84,6 +84,7 @@ import {listenThreadRuntimeNotifications} from "./store-notifications.js";
 import {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
 import {PostgresControlAuthService} from "../../domain/control/auth.js";
 import {ControlReadService} from "../../domain/control/read-service.js";
+import {ControlHomeService} from "../../domain/control/home-service.js";
 import {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
 import {ControlTodoService} from "../../domain/control/todo-service.js";
@@ -132,6 +133,7 @@ interface RuntimeBootstrapResult {
   appAuth: AgentAppAuthService;
   controlAuth: PostgresControlAuthService;
   controlReads: ControlReadService;
+  controlHome: ControlHomeService;
   controlBriefings: ControlBriefingService;
   controlHeartbeats: ControlHeartbeatService;
   controlTodos: ControlTodoService;
@@ -451,6 +453,10 @@ export async function bootstrapRuntime(
     const controlReads = new ControlReadService({
       pool: postgresPool,
     });
+    const controlHome = new ControlHomeService({
+      pool: postgresPool,
+      reads: controlReads,
+    });
     const controlBriefings = new ControlBriefingService({
       pool: postgresPool,
       sessions: sessionStore,
@@ -674,6 +680,7 @@ export async function bootstrapRuntime(
       appAuth,
       controlAuth,
       controlReads,
+      controlHome,
       controlBriefings,
       controlHeartbeats,
       controlTodos,

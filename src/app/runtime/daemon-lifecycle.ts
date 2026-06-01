@@ -52,6 +52,7 @@ export interface DaemonLifecycleRuntime {
   sessionStore?: AgentAppServerOptions["sessionStore"];
   controlAuth: RuntimeServices["controlAuth"];
   controlReads: RuntimeServices["controlReads"];
+  controlHome: RuntimeServices["controlHome"];
   controlBriefings: RuntimeServices["controlBriefings"];
   controlHeartbeats: RuntimeServices["controlHeartbeats"];
   controlTodos: RuntimeServices["controlTodos"];
@@ -379,6 +380,7 @@ export function createDaemonLifecycle(input: {
             port: binding.port,
             auth: input.context.runtime.controlAuth,
             reads: input.context.runtime.controlReads,
+            home: input.context.runtime.controlHome,
             briefings: input.context.runtime.controlBriefings,
             heartbeats: input.context.runtime.controlHeartbeats,
             todos: input.context.runtime.controlTodos,
