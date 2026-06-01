@@ -91,6 +91,8 @@ import {ControlTodoService} from "../../domain/control/todo-service.js";
 import {ControlScheduledTasksService} from "../../domain/control/scheduled-tasks-service.js";
 import {ControlWatchesService} from "../../domain/control/watches-service.js";
 import {ControlRuntimeActivityService} from "../../domain/control/runtime-activity-service.js";
+import {ControlConnectorAccountsService} from "../../domain/control/connector-accounts-service.js";
+import {PostgresConnectorAccountStore} from "../../domain/connectors/postgres.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
@@ -142,6 +144,7 @@ interface RuntimeBootstrapResult {
   controlScheduledTasks: ControlScheduledTasksService;
   controlWatches: ControlWatchesService;
   controlRuntimeActivity: ControlRuntimeActivityService;
+  controlConnectorAccounts: ControlConnectorAccountsService;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -442,6 +445,9 @@ export async function bootstrapRuntime(
     const credentialStore = new PostgresCredentialStore({
       pool: postgresPool,
     });
+    const connectorAccountStore = new PostgresConnectorAccountStore({
+      pool: postgresPool,
+    });
     const apps = new AgentAppService({
       env: process.env,
     });
@@ -481,6 +487,9 @@ export async function bootstrapRuntime(
       pool: postgresPool,
     });
     const controlRuntimeActivity = new ControlRuntimeActivityService({
+      pool: postgresPool,
+    });
+    const controlConnectorAccounts = new ControlConnectorAccountsService({
       pool: postgresPool,
     });
 
@@ -530,6 +539,7 @@ export async function bootstrapRuntime(
     });
     await ensureSchemas([
       credentialStore,
+      connectorAccountStore,
       appAuth,
       email,
       scheduledTasks,
@@ -697,6 +707,7 @@ export async function bootstrapRuntime(
       controlScheduledTasks,
       controlWatches,
       controlRuntimeActivity,
+      controlConnectorAccounts,
       backgroundJobService,
       browserService: resolvedBrowserService,
       credentialResolver,

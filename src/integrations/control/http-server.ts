@@ -14,6 +14,7 @@ import type {ControlTodoService} from "../../domain/control/todo-service.js";
 import type {ControlScheduledTasksService} from "../../domain/control/scheduled-tasks-service.js";
 import type {ControlWatchesService} from "../../domain/control/watches-service.js";
 import type {ControlRuntimeActivityService} from "../../domain/control/runtime-activity-service.js";
+import type {ControlConnectorAccountsService} from "../../domain/control/connector-accounts-service.js";
 import type {ControlSessionRecord} from "../../domain/control/types.js";
 
 export const CONTROL_SESSION_COOKIE = "panda_control_session";
@@ -116,6 +117,7 @@ export interface StartControlServerOptions {
   scheduledTasks: ControlScheduledTasksService;
   watches: ControlWatchesService;
   runtimeActivity: ControlRuntimeActivityService;
+  connectorAccounts: ControlConnectorAccountsService;
   uiStaticDir?: string;
 }
 
@@ -189,6 +191,13 @@ function parseRuntimeActivityLimit(value: string | null): number | undefined {
   return Math.min(100, limit);
 }
 
+function parseConnectorAccountsLimit(value: string | null): number | undefined {
+  if (value === null || value.trim() === "") return undefined;
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1) throw new ControlHttpError(400, "Control connector accounts limit must be a positive integer.");
+  return Math.min(100, limit);
+}
+
 function parseScheduledTasksLimit(value: string | null): number | undefined {
   if (value === null || value.trim() === "") return undefined;
   const limit = Number(value);
@@ -218,6 +227,12 @@ function matchSessionRuntimeActivityPath(path: string): {agentKey: string; sessi
   const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/runtime-activity$/.exec(path);
   if (!match) return null;
   return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
+}
+
+function matchAgentConnectorsPath(path: string): {agentKey: string} | null {
+  const match = /^\/agents\/([^/]+)\/connectors$/.exec(path);
+  if (!match) return null;
+  return {agentKey: decodeURIComponent(match[1]!)};
 }
 
 function matchSessionScheduledTasksPath(path: string): {agentKey: string; sessionId: string} | null {
@@ -333,6 +348,21 @@ export async function startControlServer(options: StartControlServerOptions): Pr
           eventType: url.searchParams.get("eventType") ?? undefined,
           before: url.searchParams.get("before") ?? undefined,
         })});
+        return;
+      }
+
+      const connectorsPath = matchAgentConnectorsPath(path);
+      if (connectorsPath && request.method === "GET") {
+        try {
+          const connectors = await options.connectorAccounts.getConnectorAccounts(session, connectorsPath.agentKey, {
+            limit: parseConnectorAccountsLimit(url.searchParams.get("limit")),
+          });
+          writeJsonResponse(response, 200, {connectors});
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Control connector accounts read failed.";
+          if (message === "Control connector accounts limit must be a positive integer.") throw new ControlHttpError(400, message);
+          throw new ControlHttpError(404, "Control connector accounts target agent was not found or is not visible.");
+        }
         return;
       }
 

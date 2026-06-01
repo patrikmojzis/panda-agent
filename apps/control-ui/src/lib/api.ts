@@ -19,6 +19,9 @@ export type ScheduledTaskSchedule = {kind: "once"; runAt: string} | {kind: "recu
 export type ScheduledTaskRun = {id: string; status: string; scheduledFor: string; startedAt: string | null; finishedAt: string | null; resolvedThreadId?: string; threadRunId?: string};
 export type ScheduledTask = {id: string; title: string; schedule: ScheduledTaskSchedule; enabled: boolean; lifecycleStatus: ScheduledTaskLifecycleStatus; nextFireAt: string | null; completedAt: string | null; cancelledAt: string | null; createdAt: string; updatedAt: string; recentRuns: ScheduledTaskRun[]};
 export type ScheduledTasks = {agentKey: string; sessionId: string; tasks: ScheduledTask[]};
+export type ConnectorAccountSecretKey = {secretKey: string; createdAt: string; updatedAt: string};
+export type ConnectorAccount = {id: string; source: string; accountKey: string; connectorKey: string; displayName?: string; externalAccountId?: string; externalUsername?: string; status: string; ownerKind: "system" | "identity" | "agent"; ownerAgentKey?: string; createdAt: string; updatedAt: string; secretKeys: ConnectorAccountSecretKey[]};
+export type ConnectorAccounts = {agentKey: string; summary: {total: number; agentOwned: number; systemOwned: number}; accounts: ConnectorAccount[]};
 export type RuntimeFailureCategory = "provider_abort" | "provider_timeout" | "provider_server_error" | "provider_transport_terminated" | "provider_transport_network" | "provider_error";
 export type RuntimeActivityRun = {id: string; status: "running" | "completed" | "failed"; startedAt: string; finishedAt: string | null; durationMs: number | null; abortRequestedAt: string | null; failureCategory: RuntimeFailureCategory | null};
 export type RuntimeActivity = {agentKey: string; sessionId: string; summary: {running: number; completed: number; failed: number; latestStartedAt: string | null; latestFinishedAt: string | null}; runs: RuntimeActivityRun[]};
@@ -79,6 +82,7 @@ export const controlApi = {
   getSessionTodo: (agentKey: string, sessionId: string) => requestJson<{todo: SessionTodo}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/todos`),
   getWatches: (agentKey: string, sessionId: string, limit = 50) => requestJson<{watches: Watches}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/watches?limit=${encodeURIComponent(String(limit))}`),
   getScheduledTasks: (agentKey: string, sessionId: string, limit = 50) => requestJson<{scheduledTasks: ScheduledTasks}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/scheduled-tasks?limit=${encodeURIComponent(String(limit))}`),
+  getConnectorAccounts: (agentKey: string, limit = 50) => requestJson<{connectors: ConnectorAccounts}>(`/agents/${encodeURIComponent(agentKey)}/connectors?limit=${encodeURIComponent(String(limit))}`),
   getRuntimeActivity: (agentKey: string, sessionId: string, limit = 25) => requestJson<{runtimeActivity: RuntimeActivity}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/runtime-activity?limit=${encodeURIComponent(String(limit))}`),
   patchSessionHeartbeat: (agentKey: string, sessionId: string, input: {enabled: boolean; everyMinutes: number}, csrfToken: string | null) => requestJson<{heartbeat: SessionHeartbeat}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`, {method: "PATCH", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify({...input, confirm: "update-heartbeat"})}),
 };
