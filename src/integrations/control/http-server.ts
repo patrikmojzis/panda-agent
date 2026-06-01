@@ -15,6 +15,7 @@ import type {ControlScheduledTasksService} from "../../domain/control/scheduled-
 import type {ControlWatchesService} from "../../domain/control/watches-service.js";
 import type {ControlRuntimeActivityService} from "../../domain/control/runtime-activity-service.js";
 import type {ControlConnectorAccountsService} from "../../domain/control/connector-accounts-service.js";
+import type {ControlSessionCreateService, ControlCreateSessionInput, ControlSessionCreateAudit} from "../../domain/control/session-create-service.js";
 import type {ControlSessionRecord} from "../../domain/control/types.js";
 
 export const CONTROL_SESSION_COOKIE = "panda_control_session";
@@ -118,6 +119,7 @@ export interface StartControlServerOptions {
   watches: ControlWatchesService;
   runtimeActivity: ControlRuntimeActivityService;
   connectorAccounts: ControlConnectorAccountsService;
+  sessionCreate: ControlSessionCreateService;
   uiStaticDir?: string;
 }
 
@@ -229,6 +231,12 @@ function matchSessionRuntimeActivityPath(path: string): {agentKey: string; sessi
   return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
 }
 
+function matchAgentSessionsPath(path: string): {agentKey: string} | null {
+  const match = /^\/agents\/([^/]+)\/sessions$/.exec(path);
+  if (!match) return null;
+  return {agentKey: decodeURIComponent(match[1]!)};
+}
+
 function matchAgentConnectorsPath(path: string): {agentKey: string} | null {
   const match = /^\/agents\/([^/]+)\/connectors$/.exec(path);
   if (!match) return null;
@@ -252,6 +260,15 @@ async function recordHeartbeatAudit(auth: PostgresControlAuthService, session: C
     identityId: session.identityId,
     sessionId: session.id,
     eventType: "session_heartbeat_config_write",
+    metadata,
+  });
+}
+
+async function recordSessionCreateAudit(auth: PostgresControlAuthService, session: ControlSessionRecord, metadata: ControlSessionCreateAudit): Promise<void> {
+  await auth.recordAudit({
+    identityId: session.identityId,
+    sessionId: session.id,
+    eventType: "session_create",
     metadata,
   });
 }
@@ -348,6 +365,43 @@ export async function startControlServer(options: StartControlServerOptions): Pr
           eventType: url.searchParams.get("eventType") ?? undefined,
           before: url.searchParams.get("before") ?? undefined,
         })});
+        return;
+      }
+
+
+      const createSessionPath = matchAgentSessionsPath(path);
+      if (createSessionPath && request.method === "POST") {
+        requireCsrf(request, options.auth, session);
+        const body = await readBody(request);
+        const allowed = new Set(["sessionRef", "alias", "displayName"]);
+        const unknown = Object.keys(body).filter((key) => !allowed.has(key));
+        if (unknown.length > 0) {
+          throw new ControlHttpError(400, `Unsupported create-session field: ${unknown[0]}.`);
+        }
+        for (const key of allowed) {
+          if (body[key] !== undefined && typeof body[key] !== "string") {
+            throw new ControlHttpError(400, `Control create-session ${key} must be a string.`);
+          }
+        }
+        const input: ControlCreateSessionInput = {
+          ...(typeof body.sessionRef === "string" ? {sessionRef: body.sessionRef} : {}),
+          ...(typeof body.alias === "string" ? {alias: body.alias} : {}),
+          ...(typeof body.displayName === "string" ? {displayName: body.displayName} : {}),
+        };
+        let result;
+        try {
+          result = await options.sessionCreate.createSession(session, createSessionPath.agentKey, input);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Control session creation failed.";
+          if (message.includes("admin grant")) throw new ControlHttpError(403, message);
+          if (message.includes("Unknown agent")) throw new ControlHttpError(404, "Control create-session target agent was not found.");
+          if (message.toLowerCase().includes("duplicate") || message.includes("already exists") || message.includes("collides")) {
+            throw new ControlHttpError(409, message);
+          }
+          throw new ControlHttpError(400, message);
+        }
+        await recordSessionCreateAudit(options.auth, session, result.audit);
+        writeJsonResponse(response, 201, {session: result.session});
         return;
       }
 

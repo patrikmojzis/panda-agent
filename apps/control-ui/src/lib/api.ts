@@ -7,6 +7,8 @@ export type Overview = {agents: number; sessions: number; runningRuns: number; c
 export type AgentSummary = {agentKey: string; displayName: string; status: string; sessionCount: number; paired: boolean};
 export type CredentialSummary = {agentKey: string; envKey: string; present: true; createdAt: string; updatedAt: string};
 export type SessionBriefing = {agentKey: string; sessionId: string; slug: "session"; content: string; wasSet: boolean; createdAt?: string; updatedAt?: string};
+export type CreatedSession = {agentKey: string; sessionId: string; threadId: string; kind: "branch"; alias?: string; displayName?: string; links?: Record<string, string>};
+export type CreateSessionInput = {sessionRef?: string; alias?: string; displayName?: string};
 export type SessionHeartbeat = {agentKey: string; sessionId: string; enabled: boolean; everyMinutes: number; nextFireAt: string; lastFireAt?: string};
 export type SessionTodoStatus = "pending" | "in_progress" | "blocked" | "done";
 export type SessionTodo = {sessionId: string; items: Array<{status: SessionTodoStatus; content: string}>; itemsHash: string | null; createdAt: string | null; updatedAt: string | null; counts: Record<SessionTodoStatus, number>};
@@ -75,6 +77,7 @@ export const controlApi = {
     const suffix = params.toString();
     return requestJson<{auditEvents: AuditEventSummary[]}>(`/audit-events${suffix ? `?${suffix}` : ""}`);
   },
+  createSession: (agentKey: string, input: CreateSessionInput, csrfToken: string | null) => requestJson<{session: CreatedSession}>(`/agents/${encodeURIComponent(agentKey)}/sessions`, {method: "POST", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify(input)}),
   getSessionBriefing: (agentKey: string, sessionId: string) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`),
   putSessionBriefing: (agentKey: string, sessionId: string, content: string, csrfToken: string | null) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`, {method: "PUT", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify({content})}),
   clearSessionBriefing: (agentKey: string, sessionId: string, csrfToken: string | null) => requestJson<{briefing: SessionBriefing}>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`, {method: "DELETE", headers: csrfToken ? {"x-control-csrf": csrfToken} : {}, body: JSON.stringify({confirm: "clear-session-briefing"})}),

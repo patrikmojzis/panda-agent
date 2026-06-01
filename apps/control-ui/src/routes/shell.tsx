@@ -1,5 +1,5 @@
 import {Link, Outlet, useNavigate} from "@tanstack/react-router";
-import {Activity, AlarmClock, Bot, Cable, Eye, FileText, Gauge, HeartPulse, KeyRound, ListTodo, LogOut, ScrollText, Settings} from "lucide-react";
+import {Activity, AlarmClock, Bot, Cable, Eye, FilePlus, FileText, Gauge, HeartPulse, KeyRound, ListTodo, LogOut, ScrollText, Settings} from "lucide-react";
 import {Button} from "../components/ui/button";
 import {Badge} from "../components/ui/badge";
 import {useAuth} from "../lib/auth";
@@ -8,6 +8,7 @@ import {cn} from "../lib/utils";
 const nav = [
   {to: "/", label: "Home", icon: Gauge},
   {to: "/agents", label: "Agents", icon: Bot},
+  {to: "/sessions/new", label: "Create session", icon: FilePlus},
   {to: "/credentials", label: "Credentials", icon: KeyRound},
   {to: "/audit", label: "Audit", icon: ScrollText},
   {to: "/briefing", label: "Briefing", icon: FileText},

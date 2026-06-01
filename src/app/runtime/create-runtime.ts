@@ -32,6 +32,7 @@ import type {ControlScheduledTasksService} from "../../domain/control/scheduled-
 import type {ControlWatchesService} from "../../domain/control/watches-service.js";
 import type {ControlRuntimeActivityService} from "../../domain/control/runtime-activity-service.js";
 import type {ControlConnectorAccountsService} from "../../domain/control/connector-accounts-service.js";
+import type {ControlSessionCreateService} from "../../domain/control/session-create-service.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundToolThreadInput} from "./background-tool-thread-input.js";
@@ -120,6 +121,7 @@ export interface RuntimeServices {
   controlWatches: ControlWatchesService;
   controlRuntimeActivity: ControlRuntimeActivityService;
   controlConnectorAccounts: ControlConnectorAccountsService;
+  controlSessionCreate: ControlSessionCreateService;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -224,6 +226,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     controlWatches: runtime.controlWatches,
     controlRuntimeActivity: runtime.controlRuntimeActivity,
     controlConnectorAccounts: runtime.controlConnectorAccounts,
+    controlSessionCreate: runtime.controlSessionCreate,
     backgroundJobService: runtime.backgroundJobService,
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,

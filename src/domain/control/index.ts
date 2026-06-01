@@ -9,3 +9,5 @@ export {ControlScheduledTasksService, type ControlScheduledTasksRecord, type Con
 export * from "./home-service.js";
 export {ControlRuntimeActivityService, type ControlRuntimeActivityRecord, type ControlRuntimeActivityRun, type ControlRuntimeActivitySummary, type ControlRuntimeFailureCategory} from "./runtime-activity-service.js";
 export {ControlConnectorAccountsService, type ControlConnectorAccount, type ControlConnectorAccountSecretKey, type ControlConnectorAccountsRecord, type ControlConnectorAccountsSummary} from "./connector-accounts-service.js";
+
+export {ControlSessionCreateService, type ControlCreateSessionInput, type ControlCreateSessionRecord, type ControlSessionCreateAudit} from "./session-create-service.js";

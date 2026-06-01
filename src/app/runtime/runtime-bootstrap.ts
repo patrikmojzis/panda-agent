@@ -92,6 +92,7 @@ import {ControlScheduledTasksService} from "../../domain/control/scheduled-tasks
 import {ControlWatchesService} from "../../domain/control/watches-service.js";
 import {ControlRuntimeActivityService} from "../../domain/control/runtime-activity-service.js";
 import {ControlConnectorAccountsService} from "../../domain/control/connector-accounts-service.js";
+import {ControlSessionCreateService} from "../../domain/control/session-create-service.js";
 import {PostgresConnectorAccountStore} from "../../domain/connectors/postgres.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
@@ -145,6 +146,7 @@ interface RuntimeBootstrapResult {
   controlWatches: ControlWatchesService;
   controlRuntimeActivity: ControlRuntimeActivityService;
   controlConnectorAccounts: ControlConnectorAccountsService;
+  controlSessionCreate: ControlSessionCreateService;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -492,6 +494,12 @@ export async function bootstrapRuntime(
     const controlConnectorAccounts = new ControlConnectorAccountsService({
       pool: postgresPool,
     });
+    const controlSessionCreate = new ControlSessionCreateService({
+      pool: postgresPool,
+      agents: agentStore,
+      sessions: sessionStore,
+      threads: store,
+    });
 
     const credentialCrypto = resolveCredentialCrypto();
     const credentialResolver = new CredentialResolver({
@@ -708,6 +716,7 @@ export async function bootstrapRuntime(
       controlWatches,
       controlRuntimeActivity,
       controlConnectorAccounts,
+      controlSessionCreate,
       backgroundJobService,
       browserService: resolvedBrowserService,
       credentialResolver,

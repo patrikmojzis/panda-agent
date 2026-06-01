@@ -78,6 +78,21 @@ function safeHeartbeatSummary(value: unknown): Record<string, unknown> {
 
 function sanitizedAuditMetadata(eventType: string, value: unknown): Record<string, unknown> {
   const raw = asRecord(value);
+  if (eventType === "session_create") {
+    const displayName = asRecord(raw.displayName);
+    return {
+      ...(typeof raw.agentKey === "string" ? {agentKey: raw.agentKey} : {}),
+      ...(typeof raw.sessionId === "string" ? {sessionId: raw.sessionId} : {}),
+      ...(typeof raw.threadId === "string" ? {threadId: raw.threadId} : {}),
+      ...(raw.kind === "branch" ? {kind: raw.kind} : {}),
+      ...(typeof raw.usedSessionRef === "boolean" ? {usedSessionRef: raw.usedSessionRef} : {}),
+      ...(typeof raw.alias === "string" ? {alias: raw.alias} : {}),
+      ...(Object.keys(displayName).length > 0 ? {displayName: {
+        ...(typeof displayName.length === "number" ? {length: displayName.length} : {}),
+        ...(typeof displayName.sha256 === "string" ? {sha256: displayName.sha256} : {}),
+      }} : {}),
+    };
+  }
   if (eventType === "session_briefing_write") {
     return {
       ...(raw.action === "put" || raw.action === "delete" ? {action: raw.action} : {}),
@@ -201,7 +216,7 @@ export class ControlReadService {
       values.push(visibleAgentKeys);
       const agentsParam = `$${values.length}`;
       where.push(`identity_id = ${identityParam}`);
-      where.push(`((event_type IN ('login', 'logout')) OR (event_type IN ('session_briefing_write', 'session_heartbeat_config_write') AND metadata->>'agentKey' = ANY(${agentsParam}::text[])))`);
+      where.push(`((event_type IN ('login', 'logout')) OR (event_type IN ('session_create', 'session_briefing_write', 'session_heartbeat_config_write') AND metadata->>'agentKey' = ANY(${agentsParam}::text[])))`);
     }
 
     values.push(limit);

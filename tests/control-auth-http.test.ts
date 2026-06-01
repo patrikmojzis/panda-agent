@@ -23,6 +23,7 @@ import {ControlScheduledTasksService} from "../src/domain/control/scheduled-task
 import {ControlWatchesService} from "../src/domain/control/watches-service.js";
 import {ControlRuntimeActivityService} from "../src/domain/control/runtime-activity-service.js";
 import {ControlConnectorAccountsService} from "../src/domain/control/connector-accounts-service.js";
+import {ControlSessionCreateService} from "../src/domain/control/session-create-service.js";
 import {PostgresConnectorAccountStore} from "../src/domain/connectors/postgres.js";
 import {PostgresWatchStore} from "../src/domain/watches/postgres.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/postgres.js";
@@ -63,6 +64,7 @@ async function createHarness() {
   const controlRuntimeActivity = new ControlRuntimeActivityService({pool});
   const connectorAccountStore = new PostgresConnectorAccountStore({pool});
   const controlConnectorAccounts = new ControlConnectorAccountsService({pool});
+  const controlSessionCreate = new ControlSessionCreateService({pool, agents, sessions, threads});
   await identities.ensureSchema();
   await agents.ensureSchema();
   await sessions.ensureSchema();
@@ -82,11 +84,11 @@ async function createHarness() {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, agents, sessions, auth, reads, home, briefings, heartbeats, todos, scheduledTaskStore, watchStore, connectorAccountStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts};
+  return {pool, agents, sessions, threads, auth, reads, home, briefings, heartbeats, todos, scheduledTaskStore, watchStore, connectorAccountStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, controlSessionCreate};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, sessionCreate: harness.controlSessionCreate});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -190,6 +192,7 @@ describe("Control auth HTTP", () => {
       watches: harness.controlWatches,
       runtimeActivity: harness.controlRuntimeActivity,
       connectorAccounts: harness.controlConnectorAccounts,
+      sessionCreate: harness.controlSessionCreate,
     });
     servers.push(server);
 
@@ -212,7 +215,7 @@ describe("Control auth HTTP", () => {
     await mkdir(join(staticDir, "assets"));
     await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
     await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
-    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, uiStaticDir: staticDir});
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, sessionCreate: harness.controlSessionCreate, uiStaticDir: staticDir});
     servers.push(server);
     const base = `http://${server.host}:${server.port}`;
 
@@ -270,6 +273,102 @@ describe("Control auth HTTP", () => {
     await expect(harness.reads.listAgents(scopedSession)).resolves.toMatchObject([{agentKey: "panda"}]);
   });
 });
+
+describe("Control create-session HTTP", () => {
+  async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "admin") {
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey: "panda"} : {})});
+    const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {csrfToken: string};
+    return {cookies: cookieHeader(response), csrfToken: body.csrfToken};
+  }
+
+  it("rejects unauthenticated, missing-CSRF, scoped, unknown, and invalid create requests without creating sessions", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const initial = (await harness.sessions.listAgentSessions("panda")).length;
+
+    expect((await fetch(`${base}/api/control/agents/panda/sessions`, {method: "POST", body: JSON.stringify({})})).status).toBe(401);
+
+    const admin = await login(base, harness, "admin");
+    expect((await fetch(`${base}/api/control/agents/panda/sessions`, {method: "POST", headers: {cookie: admin.cookies}, body: JSON.stringify({})})).status).toBe(403);
+
+    const scoped = await login(base, harness, "scoped");
+    const scopedCreate = await fetch(`${base}/api/control/agents/panda/sessions`, {method: "POST", headers: {cookie: scoped.cookies, "x-control-csrf": scoped.csrfToken}, body: JSON.stringify({sessionRef: "scoped-try"})});
+    expect(scopedCreate.status).toBe(403);
+
+    const unknownField = await fetch(`${base}/api/control/agents/panda/sessions`, {method: "POST", headers: {cookie: admin.cookies, "x-control-csrf": admin.csrfToken}, body: JSON.stringify({prompt: "not allowed"})});
+    expect(unknownField.status).toBe(400);
+
+    const invalidType = await fetch(`${base}/api/control/agents/panda/sessions`, {method: "POST", headers: {cookie: admin.cookies, "x-control-csrf": admin.csrfToken}, body: JSON.stringify({sessionRef: 123})});
+    expect(invalidType.status).toBe(400);
+
+    const invalidRef = await fetch(`${base}/api/control/agents/panda/sessions`, {method: "POST", headers: {cookie: admin.cookies, "x-control-csrf": admin.csrfToken}, body: JSON.stringify({sessionRef: "bad ref"})});
+    expect(invalidRef.status).toBe(400);
+
+    expect((await harness.sessions.listAgentSessions("panda")).length).toBe(initial);
+  });
+
+  it("lets admin create a random branch session and initial thread", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions`, {method: "POST", headers: {cookie: admin.cookies, "x-control-csrf": admin.csrfToken}, body: JSON.stringify({})});
+    expect(response.status).toBe(201);
+    const body = await response.json() as {session: {agentKey: string; sessionId: string; threadId: string; kind: string; links: Record<string, string>}};
+    expect(body.session).toMatchObject({agentKey: "panda", kind: "branch"});
+    expect(body.session.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(body.session.threadId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(body.session.links.todos).toContain(encodeURIComponent(body.session.sessionId));
+    await expect(harness.sessions.getSession(body.session.sessionId)).resolves.toMatchObject({kind: "branch", currentThreadId: body.session.threadId, createdByIdentityId: "identity-patrik"});
+    const thread = await harness.pool.query(`SELECT id, session_id FROM "runtime"."threads" WHERE id = $1`, [body.session.threadId]);
+    expect(thread.rows).toMatchObject([{id: body.session.threadId, session_id: body.session.sessionId}]);
+  });
+
+  it("lets admin create canonical sessionRef with alias/displayName and stores safe audit metadata", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+    const rawDisplayName = "Private Launch Name";
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions`, {method: "POST", headers: {cookie: admin.cookies, "x-control-csrf": admin.csrfToken}, body: JSON.stringify({sessionRef: " Launch_1 ", alias: " Friendly_1 ", displayName: ` ${rawDisplayName} `})});
+    expect(response.status).toBe(201);
+    const body = await response.json() as {session: {sessionId: string; alias?: string; displayName?: string; threadId: string; kind: string}};
+    expect(body.session).toMatchObject({sessionId: "panda:launch_1", alias: "friendly_1", displayName: rawDisplayName, kind: "branch"});
+    await expect(harness.sessions.getSession("panda:launch_1")).resolves.toMatchObject({alias: "friendly_1", displayName: rawDisplayName});
+
+    const audit = await harness.pool.query(`SELECT event_type, metadata::text AS metadata FROM "runtime"."control_audit_events" WHERE event_type = 'session_create'`);
+    expect(audit.rows).toHaveLength(1);
+    const auditText = JSON.stringify(audit.rows);
+    expect(auditText).toContain("panda:launch_1");
+    expect(auditText).toContain("friendly_1");
+    expect(auditText).toContain("sha256");
+    expect(auditText).toContain("length");
+    expect(auditText).not.toContain(rawDisplayName);
+  });
+
+  it("rejects duplicate refs/aliases atomically", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+    const path = `${base}/api/control/agents/panda/sessions`;
+    const create = (body: Record<string, unknown>) => fetch(path, {method: "POST", headers: {cookie: admin.cookies, "x-control-csrf": admin.csrfToken}, body: JSON.stringify(body)});
+
+    expect((await create({sessionRef: "dupe", alias: "taken"})).status).toBe(201);
+    const before = await harness.pool.query(`SELECT COUNT(*)::int AS sessions FROM "runtime"."agent_sessions" WHERE agent_key = 'panda'`);
+    const beforeThreads = await harness.pool.query(`SELECT COUNT(*)::int AS threads FROM "runtime"."threads"`);
+
+    expect((await create({sessionRef: "dupe"})).status).toBe(409);
+    expect((await create({sessionRef: "other", alias: "taken"})).status).toBe(409);
+
+    const after = await harness.pool.query(`SELECT COUNT(*)::int AS sessions FROM "runtime"."agent_sessions" WHERE agent_key = 'panda'`);
+    const afterThreads = await harness.pool.query(`SELECT COUNT(*)::int AS threads FROM "runtime"."threads"`);
+    expect(Number(after.rows[0].sessions)).toBe(Number(before.rows[0].sessions));
+    expect(Number(afterThreads.rows[0].threads)).toBe(Number(beforeThreads.rows[0].threads));
+  });
+});
+
 
 describe("Control audit events HTTP", () => {
   async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "admin", agentKey = "panda") {
