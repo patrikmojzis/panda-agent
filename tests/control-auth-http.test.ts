@@ -20,6 +20,8 @@ import {ControlBriefingService} from "../src/domain/control/briefing-service.js"
 import {ControlHeartbeatService} from "../src/domain/control/heartbeat-service.js";
 import {ControlTodoService} from "../src/domain/control/todo-service.js";
 import {ControlScheduledTasksService} from "../src/domain/control/scheduled-tasks-service.js";
+import {ControlWatchesService} from "../src/domain/control/watches-service.js";
+import {PostgresWatchStore} from "../src/domain/watches/postgres.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/postgres.js";
 import {CONTROL_CSRF_COOKIE, CONTROL_SESSION_COOKIE, startControlServer, type ControlHttpServer} from "../src/integrations/control/http-server.js";
 
@@ -52,7 +54,9 @@ async function createHarness() {
   const heartbeats = new ControlHeartbeatService({pool, sessions});
   const todos = new ControlTodoService({pool, sessions});
   const scheduledTaskStore = new PostgresScheduledTaskStore({pool});
+  const watchStore = new PostgresWatchStore({pool});
   const controlScheduledTasks = new ControlScheduledTasksService({pool});
+  const controlWatches = new ControlWatchesService({pool});
   await identities.ensureSchema();
   await agents.ensureSchema();
   await sessions.ensureSchema();
@@ -60,6 +64,7 @@ async function createHarness() {
   await credentials.ensureSchema();
   await auth.ensureSchema();
   await scheduledTaskStore.ensureSchema();
+  await watchStore.ensureSchema();
 
   await identities.createIdentity({id: "identity-patrik", handle: "patrik", displayName: "Patrik"});
   await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda", prompts: DEFAULT_AGENT_PROMPT_TEMPLATES});
@@ -70,11 +75,11 @@ async function createHarness() {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, agents, sessions, auth, reads, home, briefings, heartbeats, todos, scheduledTaskStore, controlScheduledTasks};
+  return {pool, agents, sessions, auth, reads, home, briefings, heartbeats, todos, scheduledTaskStore, watchStore, controlScheduledTasks, controlWatches};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -175,6 +180,7 @@ describe("Control auth HTTP", () => {
       heartbeats: harness.heartbeats,
       todos: harness.todos,
       scheduledTasks: harness.controlScheduledTasks,
+      watches: harness.controlWatches,
     });
     servers.push(server);
 
@@ -197,7 +203,7 @@ describe("Control auth HTTP", () => {
     await mkdir(join(staticDir, "assets"));
     await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
     await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
-    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, uiStaticDir: staticDir});
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, uiStaticDir: staticDir});
     servers.push(server);
     const base = `http://${server.host}:${server.port}`;
 
@@ -656,6 +662,198 @@ describe("Control session todos HTTP", () => {
     expect(response.status).toBe(404);
     const text = JSON.stringify(await response.json());
     expect(text).not.toContain("PATH_AGENT_PRIVATE_TODO");
+  });
+});
+
+
+describe("Control Watches HTTP", () => {
+  async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "scoped", agentKey = "panda") {
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey} : {})});
+    const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    expect(response.status).toBe(200);
+    return {cookies: cookieHeader(response)};
+  }
+
+  it("rejects unauthenticated watch reads", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches`);
+    expect(response.status).toBe(401);
+  });
+
+  it("allows admin to read unpaired watches while scoped still requires pairing", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+    const scoped = await login(base, harness, "scoped");
+
+    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches`, {headers: {cookie: admin.cookies}})).status).toBe(200);
+    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches`, {headers: {cookie: scoped.cookies}})).status).toBe(404);
+  });
+
+  it("returns a stable empty watches DTO when the visible session has no watches", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({watches: {agentKey: "panda", sessionId: "session-panda", watches: []}});
+  });
+
+  it("returns authorized same-agent watches with a strongly redacted DTO", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const watch = await harness.watchStore.createWatch({
+      sessionId: "session-panda",
+      createdByIdentityId: "identity-patrik",
+      title: "Safe visible watch title",
+      intervalMinutes: 15,
+      source: {
+        kind: "http_json",
+        url: "https://private.example.test/SECRET_PRIVATE_URL",
+        method: "POST",
+        headers: [{name: "X-PRIVATE-HEADER", value: "SECRET_HEADER_VALUE", credentialEnvKey: "SECRET_ENV_KEY"}],
+        auth: {type: "bearer", credentialEnvKey: "SECRET_AUTH_ENV"},
+        body: "SECRET_BODY_VALUE",
+        result: {observation: "collection", itemsPath: "PRIVATE_ITEMS_SELECTOR", itemIdPath: "id", itemCursorPath: "cursor", summaryPath: "SECRET_SUMMARY_PATH"},
+      },
+      detector: {kind: "new_items", maxItems: 5},
+      state: {privateState: "SECRET_STATE_VALUE"},
+      nextPollAt: Date.parse("2040-01-01T00:00:00.000Z"),
+    });
+    await harness.pool.query(`
+      UPDATE "runtime"."watches"
+      SET last_error = 'SECRET_LAST_ERROR_VALUE', cooldown_until = '2040-01-01T00:10:00.000Z'
+      WHERE id = $1
+    `, [watch.id]);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."watch_runs" (id, watch_id, session_id, scheduled_for, status, error, created_at, started_at, finished_at)
+      VALUES
+        ('00000000-0000-0000-0000-000000000201', $1, 'session-panda', '2039-12-31T10:00:00.000Z', 'failed', 'SECRET_RUN_ERROR_VALUE', '2039-12-31T10:01:00.000Z', '2039-12-31T10:01:00.000Z', '2039-12-31T10:02:00.000Z'),
+        ('00000000-0000-0000-0000-000000000202', $1, 'session-panda', '2039-12-30T10:00:00.000Z', 'changed', NULL, '2039-12-30T10:01:00.000Z', '2039-12-30T10:01:00.000Z', '2039-12-30T10:02:00.000Z')
+    `, [watch.id]);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."watch_events" (id, watch_id, session_id, event_kind, summary, dedupe_key, payload, created_at)
+      VALUES ('00000000-0000-0000-0000-000000000301', $1, 'session-panda', 'new_items', 'SECRET_EVENT_SUMMARY_VALUE', 'SECRET_DEDUPE_KEY_VALUE', '{"private":"SECRET_EVENT_PAYLOAD_VALUE"}'::jsonb, '2039-12-31T10:03:00.000Z')
+    `, [watch.id]);
+    await harness.watchStore.createWatch({
+      sessionId: "session-luna",
+      title: "LUNA_PRIVATE_WATCH_TITLE",
+      intervalMinutes: 5,
+      source: {kind: "sql_query", credentialEnvKey: "SECRET_SQL_ENV", dialect: "postgres", query: "SELECT SECRET_SQL_QUERY FROM private_table", result: {observation: "scalar", valueField: "SECRET_SQL_VALUE_FIELD"}},
+      detector: {kind: "percent_change", percent: 10},
+    });
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches?limit=10`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {watches: {watches: Array<Record<string, unknown>>}};
+    expect(Object.keys(body.watches).sort()).toEqual(["agentKey", "sessionId", "watches"]);
+    expect(body.watches.watches).toHaveLength(1);
+    const returned = body.watches.watches[0]!;
+    expect(returned).toMatchObject({
+      id: watch.id,
+      title: "Safe visible watch title",
+      sourceKind: "http_json",
+      detectorKind: "new_items",
+      observationKind: "collection",
+      intervalMinutes: 15,
+      enabled: true,
+      lifecycleStatus: "cooldown",
+      nextPollAt: "2040-01-01T00:00:00.000Z",
+      disabledAt: null,
+      cooldownUntil: "2040-01-01T00:10:00.000Z",
+      recentRunCount: 2,
+      eventCount: 1,
+      latestRun: {
+        id: "00000000-0000-0000-0000-000000000201",
+        status: "failed",
+        scheduledFor: "2039-12-31T10:00:00.000Z",
+        startedAt: "2039-12-31T10:01:00.000Z",
+        finishedAt: "2039-12-31T10:02:00.000Z",
+        createdAt: "2039-12-31T10:01:00.000Z",
+      },
+    });
+    expect(Object.keys(returned).sort()).toEqual(["cooldownUntil", "createdAt", "detectorKind", "disabledAt", "enabled", "eventCount", "id", "intervalMinutes", "latestRun", "lifecycleStatus", "nextPollAt", "observationKind", "recentRunCount", "sourceKind", "title", "updatedAt"]);
+    const text = JSON.stringify(body);
+    for (const sentinel of [
+      "SECRET_PRIVATE_URL",
+      "X-PRIVATE-HEADER",
+      "SECRET_HEADER_VALUE",
+      "SECRET_ENV_KEY",
+      "SECRET_AUTH_ENV",
+      "SECRET_BODY_VALUE",
+      "PRIVATE_ITEMS_SELECTOR",
+      "SECRET_SUMMARY_PATH",
+      "SECRET_STATE_VALUE",
+      "SECRET_LAST_ERROR_VALUE",
+      "SECRET_RUN_ERROR_VALUE",
+      "SECRET_EVENT_SUMMARY_VALUE",
+      "SECRET_DEDUPE_KEY_VALUE",
+      "SECRET_EVENT_PAYLOAD_VALUE",
+      "LUNA_PRIVATE_WATCH_TITLE",
+      "SECRET_SQL_QUERY",
+      "SECRET_SQL_ENV",
+      "source_config",
+      "detector_config",
+      "last_error",
+      "dedupe",
+      "payload",
+      "state",
+      "error",
+      "url",
+      "headers",
+      "body",
+      "selector",
+      "query",
+    ]) expect(text).not.toContain(sentinel);
+  });
+
+  it("does not leak cross-agent Mongo or IMAP watch details and checks path-agent ownership", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.agents.ensurePairing("luna", "identity-patrik");
+    const panda = await harness.watchStore.createWatch({
+      sessionId: "session-panda",
+      title: "PANDA_PATH_WATCH_TITLE",
+      intervalMinutes: 5,
+      source: {kind: "http_html", url: "https://private.example.test/PATH_PRIVATE_URL", result: {observation: "snapshot", mode: "selector_text", selector: "PATH_PRIVATE_SELECTOR"}},
+      detector: {kind: "snapshot_changed"},
+    });
+    await harness.watchStore.createWatch({
+      sessionId: "session-luna",
+      title: "LUNA_PRIVATE_IMAP_WATCH_TITLE",
+      intervalMinutes: 5,
+      source: {kind: "imap_mailbox", host: "imap.private.example", mailbox: "SECRET_IMAP_MAILBOX", username: "SECRET_IMAP_USER", passwordCredentialEnvKey: "SECRET_IMAP_PASSWORD_ENV"},
+      detector: {kind: "new_items"},
+    });
+    await harness.watchStore.createWatch({
+      sessionId: "session-luna",
+      title: "LUNA_PRIVATE_MONGO_WATCH_TITLE",
+      intervalMinutes: 5,
+      source: {kind: "mongodb_query", credentialEnvKey: "SECRET_MONGO_ENV", database: "SECRET_MONGO_DB", collection: "SECRET_MONGO_COLLECTION", operation: "find", filter: {private: "SECRET_MONGO_FILTER"}, result: {observation: "collection", itemIdField: "_id", itemCursorField: "updatedAt"}},
+      detector: {kind: "new_items"},
+    });
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "scoped", "panda");
+
+    const wrongAgent = await fetch(`${base}/api/control/agents/luna/sessions/session-panda/watches`, {headers: {cookie: auth.cookies}});
+    expect(wrongAgent.status).toBe(404);
+    const wrongAgentText = JSON.stringify(await wrongAgent.json());
+    expect(wrongAgentText).not.toContain("PANDA_PATH_WATCH_TITLE");
+    expect(wrongAgentText).not.toContain("PATH_PRIVATE_URL");
+    expect(wrongAgentText).not.toContain("PATH_PRIVATE_SELECTOR");
+
+    const crossAgent = await fetch(`${base}/api/control/agents/luna/sessions/session-luna/watches`, {headers: {cookie: auth.cookies}});
+    expect(crossAgent.status).toBe(404);
+    const text = JSON.stringify(await crossAgent.json());
+    for (const sentinel of ["LUNA_PRIVATE_IMAP_WATCH_TITLE", "SECRET_IMAP_MAILBOX", "SECRET_IMAP_USER", "SECRET_IMAP_PASSWORD_ENV", "LUNA_PRIVATE_MONGO_WATCH_TITLE", "SECRET_MONGO_ENV", "SECRET_MONGO_DB", "SECRET_MONGO_COLLECTION", "SECRET_MONGO_FILTER", panda.id]) {
+      expect(text).not.toContain(sentinel);
+    }
   });
 });
 
