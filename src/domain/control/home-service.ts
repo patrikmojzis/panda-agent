@@ -48,7 +48,7 @@ export interface ControlHomeSessionSummary {
   todoCounts: ControlHomeTodoCounts;
   nextTaskAt: string | null;
   lastTaskStatus: string | null;
-  links: {todos: string; watches: string; scheduledTasks: string; heartbeat: string; briefing: string};
+  links: {todos: string; watches: string; runtimeActivity: string; scheduledTasks: string; heartbeat: string; briefing: string};
 }
 
 export interface ControlHomeUpcomingAutomation {
@@ -357,6 +357,7 @@ export class ControlHomeService {
         links: {
           todos: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/todos`,
           watches: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/watches`,
+          runtimeActivity: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/runtime-activity`,
           scheduledTasks: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/scheduled-tasks`,
           heartbeat: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
           briefing: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`,

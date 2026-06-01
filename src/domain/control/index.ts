@@ -7,3 +7,4 @@ export {ControlHeartbeatService, CONTROL_HEARTBEAT_CONFIRM, CONTROL_HEARTBEAT_MI
 export {ControlTodoService, type ControlTodoRecord, type ControlTodoItem, type ControlTodoCounts} from "./todo-service.js";
 export {ControlScheduledTasksService, type ControlScheduledTasksRecord, type ControlScheduledTask, type ControlScheduledTaskRun, type ControlScheduledTaskLifecycleStatus} from "./scheduled-tasks-service.js";
 export * from "./home-service.js";
+export {ControlRuntimeActivityService, type ControlRuntimeActivityRecord, type ControlRuntimeActivityRun, type ControlRuntimeActivitySummary, type ControlRuntimeFailureCategory} from "./runtime-activity-service.js";

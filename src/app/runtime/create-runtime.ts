@@ -30,6 +30,7 @@ import type {ControlHeartbeatService} from "../../domain/control/heartbeat-servi
 import type {ControlTodoService} from "../../domain/control/todo-service.js";
 import type {ControlScheduledTasksService} from "../../domain/control/scheduled-tasks-service.js";
 import type {ControlWatchesService} from "../../domain/control/watches-service.js";
+import type {ControlRuntimeActivityService} from "../../domain/control/runtime-activity-service.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundToolThreadInput} from "./background-tool-thread-input.js";
@@ -116,6 +117,7 @@ export interface RuntimeServices {
   controlTodos: ControlTodoService;
   controlScheduledTasks: ControlScheduledTasksService;
   controlWatches: ControlWatchesService;
+  controlRuntimeActivity: ControlRuntimeActivityService;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -218,6 +220,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     controlTodos: runtime.controlTodos,
     controlScheduledTasks: runtime.controlScheduledTasks,
     controlWatches: runtime.controlWatches,
+    controlRuntimeActivity: runtime.controlRuntimeActivity,
     backgroundJobService: runtime.backgroundJobService,
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,

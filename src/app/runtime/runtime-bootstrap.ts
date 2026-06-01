@@ -90,6 +90,7 @@ import {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js
 import {ControlTodoService} from "../../domain/control/todo-service.js";
 import {ControlScheduledTasksService} from "../../domain/control/scheduled-tasks-service.js";
 import {ControlWatchesService} from "../../domain/control/watches-service.js";
+import {ControlRuntimeActivityService} from "../../domain/control/runtime-activity-service.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
@@ -140,6 +141,7 @@ interface RuntimeBootstrapResult {
   controlTodos: ControlTodoService;
   controlScheduledTasks: ControlScheduledTasksService;
   controlWatches: ControlWatchesService;
+  controlRuntimeActivity: ControlRuntimeActivityService;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -478,6 +480,9 @@ export async function bootstrapRuntime(
     const controlWatches = new ControlWatchesService({
       pool: postgresPool,
     });
+    const controlRuntimeActivity = new ControlRuntimeActivityService({
+      pool: postgresPool,
+    });
 
     const credentialCrypto = resolveCredentialCrypto();
     const credentialResolver = new CredentialResolver({
@@ -691,6 +696,7 @@ export async function bootstrapRuntime(
       controlTodos,
       controlScheduledTasks,
       controlWatches,
+      controlRuntimeActivity,
       backgroundJobService,
       browserService: resolvedBrowserService,
       credentialResolver,
