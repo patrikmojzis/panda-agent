@@ -6,6 +6,7 @@ import {describe, expect, it} from "vitest";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dockerfilePath = path.join(repoRoot, "Dockerfile");
+const dockerignorePath = path.join(repoRoot, ".dockerignore");
 
 interface DockerStage {
   readonly base: string;
@@ -41,6 +42,47 @@ describe("Dockerfile targets", () => {
     expect(stages.get("final")?.base).toBe("app");
     expect(stages.get("bash-runner")?.body).toContain('CMD ["bash-server"]');
     expect(stages.get("runner")?.base).toBe("bash-runner");
+  });
+
+  it("builds and ships the Control UI static bundle in the app image", async () => {
+    const dockerfile = await readFile(dockerfilePath, "utf8");
+    const stages = parseDockerStages(dockerfile);
+    const buildBody = stages.get("build")?.body ?? "";
+    const appBody = stages.get("app")?.body ?? "";
+
+    expect(dockerfile).toContain("COPY apps/control-ui/package.json ./apps/control-ui/package.json");
+    expect(buildBody).toContain("COPY apps/control-ui ./apps/control-ui");
+    expect(buildBody).toContain("pnpm control:build");
+    expect(appBody).toContain("COPY --from=build /app/apps/control-ui/dist ./control-ui");
+    expect(appBody).toContain("ENV PANDA_CONTROL_UI_DIR=/app/control-ui");
+  });
+
+  it("keeps Control UI build dependencies out of runtime images", async () => {
+    const stages = parseDockerStages(await readFile(dockerfilePath, "utf8"));
+    const prodDepsBody = stages.get("prod-deps")?.body ?? "";
+
+    expect(prodDepsBody).toContain("pnpm install --prod --frozen-lockfile --ignore-scripts --filter panda");
+    for (const stageName of ["app", "bash-runner", "browser-runner"]) {
+      const body = stages.get(stageName)?.body ?? "";
+      expect(body).toContain("COPY --from=prod-deps /app/node_modules ./node_modules");
+      expect(body).not.toContain("COPY --from=build /app/node_modules ./node_modules");
+    }
+  });
+
+  it("keeps scaffold-local Control UI artifacts out of the Docker build context", async () => {
+    const lines = new Set(
+      (await readFile(dockerignorePath, "utf8"))
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && !line.startsWith("#")),
+    );
+
+    expect(lines).toContain("apps/*/.git");
+    expect(lines).toContain("apps/*/dist");
+    expect(lines).toContain("apps/*/node_modules");
+    expect(lines).toContain("apps/*/pnpm-lock.yaml");
+    expect(lines).toContain("apps/*/pnpm-workspace.yaml");
+    expect(lines).toContain("apps/control-ui-backup");
   });
 
   it("keeps legacy workspace tools in bash-runner while workspace exec is deferred", async () => {

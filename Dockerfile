@@ -82,13 +82,18 @@ COPY src ./src
 COPY apps/control-ui ./apps/control-ui
 RUN --mount=type=cache,id=panda-pnpm-store,target=/pnpm/store,sharing=locked \
   pnpm build \
-  && pnpm control:build \
-  && CI=true npm_config_store_dir=/pnpm/store pnpm prune --prod
+  && pnpm control:build
+
+FROM node-base AS prod-deps
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN --mount=type=cache,id=panda-pnpm-store,target=/pnpm/store,sharing=locked \
+  pnpm install --prod --frozen-lockfile --ignore-scripts --filter panda --store-dir /pnpm/store
 
 FROM node-base AS app
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY --from=build /app/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/apps/control-ui/dist ./control-ui
 COPY docs/agents ./docs/agents
@@ -107,7 +112,7 @@ CMD ["--help"]
 FROM node-base AS bash-runner
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY --from=build /app/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 
 RUN ln -sf /app/dist/app/cli.js /usr/local/bin/panda \
@@ -241,7 +246,7 @@ FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble AS browser-runner
 WORKDIR /app
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY --from=build /app/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 
 RUN ln -sf /app/dist/app/cli.js /usr/local/bin/panda \

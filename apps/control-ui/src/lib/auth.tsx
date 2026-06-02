@@ -1,53 +1,76 @@
-import * as React from "react";
-import {useMutation, useQuery, useQueryClient} from "@tanstack/react-query";
-import {controlApi, type ControlSession} from "./api";
+import * as React from "react"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { useLocation } from "react-router-dom"
+
+import { controlKeys } from "@/features/control/api/query-key-factory"
+import { useControlSession } from "@/features/control/api/queries"
+import { controlApi, readCookie, type ControlSession, type DevLoginInput } from "@/lib/api"
 
 type AuthContextValue = {
-  session: ControlSession | null;
-  csrfToken: string | null;
-  isBootstrapping: boolean;
-  login: (token: string) => Promise<void>;
-  logout: () => Promise<void>;
-};
-
-const AuthContext = React.createContext<AuthContextValue | null>(null);
-
-function readCsrfCookie(): string | null {
-  const part = document.cookie.split(";").map((cookie) => cookie.trim()).find((cookie) => cookie.startsWith("panda_control_csrf="));
-  return part ? decodeURIComponent(part.split("=").slice(1).join("=")) : null;
+  session: ControlSession | null
+  csrfToken: string | null
+  isLoading: boolean
+  login: (token: string) => Promise<void>
+  devLogin: (input: DevLoginInput) => Promise<void>
+  logout: () => Promise<void>
 }
 
-export function AuthProvider({children}: {children: React.ReactNode}) {
-  const queryClient = useQueryClient();
-  const [csrfToken, setCsrfToken] = React.useState<string | null>(() => readCsrfCookie());
-  const me = useQuery({queryKey: ["control", "me"], queryFn: controlApi.me, retry: false});
+const AuthContext = React.createContext<AuthContextValue | null>(null)
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient()
+  const location = useLocation()
+  const [csrfToken, setCsrfToken] = React.useState<string | null>(() => readCookie("panda_control_csrf"))
+  const shouldLoadSession = location.pathname !== "/login" || Boolean(csrfToken)
+  const me = useControlSession(shouldLoadSession)
+
   const loginMutation = useMutation({
     mutationFn: controlApi.login,
-    onSuccess: (data) => {
-      setCsrfToken(data.csrfToken);
-      queryClient.setQueryData(["control", "me"], {session: data.session});
+    onSuccess: async (result) => {
+      setCsrfToken(result.csrfToken)
+      await queryClient.invalidateQueries({ queryKey: controlKeys.all })
     },
-  });
+  })
+
+  const devLoginMutation = useMutation({
+    mutationFn: controlApi.devLogin,
+    onSuccess: async (result) => {
+      setCsrfToken(result.csrfToken)
+      await queryClient.invalidateQueries({ queryKey: controlKeys.all })
+    },
+  })
+
   const logoutMutation = useMutation({
     mutationFn: () => controlApi.logout(csrfToken),
-    onSettled: () => {
-      setCsrfToken(null);
-      queryClient.clear();
+    onSuccess: async () => {
+      setCsrfToken(null)
+      await queryClient.clear()
     },
-  });
+  })
 
-  const value: AuthContextValue = {
-    session: me.data?.session ?? null,
-    csrfToken: csrfToken ?? readCsrfCookie(),
-    isBootstrapping: me.isLoading,
-    login: async (token) => { await loginMutation.mutateAsync(token); },
-    logout: async () => { await logoutMutation.mutateAsync(); },
-  };
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  const value = React.useMemo<AuthContextValue>(
+    () => ({
+      session: me.data?.session ?? null,
+      csrfToken,
+      isLoading: shouldLoadSession && me.isLoading,
+      login: async (token) => {
+        await loginMutation.mutateAsync(token)
+      },
+      devLogin: async (input) => {
+        await devLoginMutation.mutateAsync(input)
+      },
+      logout: async () => {
+        await logoutMutation.mutateAsync()
+      },
+    }),
+    [csrfToken, devLoginMutation, loginMutation, logoutMutation, me.data?.session, me.isLoading, shouldLoadSession]
+  )
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
-export function useAuth(): AuthContextValue {
-  const value = React.useContext(AuthContext);
-  if (!value) throw new Error("useAuth must be used inside AuthProvider");
-  return value;
+export function useAuth() {
+  const context = React.useContext(AuthContext)
+  if (!context) throw new Error("useAuth must be used within AuthProvider")
+  return context
 }

@@ -41,6 +41,7 @@ export interface UpdateSessionRuntimeConfigInput {
   sessionId: string;
   model?: string | null;
   thinking?: ThinkingLevel | null;
+  thinkingConfigured?: boolean;
   inferenceProjection?: InferenceProjection | null;
   pendingWakeAt?: number | null;
 }

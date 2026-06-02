@@ -3,7 +3,8 @@ import {requireNonEmptyString} from "../../lib/strings.js";
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {buildWatchTableNames} from "../watches/postgres-shared.js";
-import type {WatchObservationKind, WatchRunStatus, WatchSourceKind} from "../watches/types.js";
+import type {WatchStore} from "../watches/store.js";
+import type {WatchObservationKind, WatchRecord, WatchRunStatus, WatchSourceKind} from "../watches/types.js";
 import {buildControlTableNames} from "./postgres-shared.js";
 import type {ControlSessionRecord} from "./types.js";
 
@@ -12,6 +13,8 @@ const MAX_WATCH_LIMIT = 100;
 
 export type ControlWatchDetectorKind = "new_items" | "snapshot_changed" | "percent_change";
 export type ControlWatchLifecycleStatus = "enabled" | "disabled" | "cooldown" | "running";
+export type ControlWatchSortDirection = "asc" | "desc";
+export type ControlWatchSourceKind = WatchSourceKind;
 
 export interface ControlWatchLatestRun {
   id: string;
@@ -44,14 +47,46 @@ export interface ControlWatch {
 export interface ControlWatchesRecord {
   agentKey: string;
   sessionId: string;
+  data: readonly ControlWatch[];
+  meta: ControlWatchesTableMeta;
   watches: readonly ControlWatch[];
 }
 
 export interface GetWatchesInput {
+  page?: number;
+  perPage?: number;
+  sortBy?: string;
+  sortDirection?: ControlWatchSortDirection;
+  search?: string;
+  lifecycleStatus?: ControlWatchLifecycleStatus;
+  sourceKind?: ControlWatchSourceKind;
   limit?: number;
 }
 
+export interface ControlWatchesTableMeta {
+  current_page: number;
+  last_page: number;
+  total: number;
+  per_page: number;
+}
+
+export interface UpdateControlWatchInput {
+  title?: unknown;
+  intervalMinutes?: unknown;
+  enabled?: unknown;
+}
+
+export interface DisableControlWatchInput {
+  reason?: unknown;
+}
+
+export interface ControlWatchWriteResult {
+  watch: ControlWatch;
+  audit: Record<string, unknown>;
+}
+
 type WatchRow = Record<string, unknown>;
+type ControlWatchStore = Pick<WatchStore, "updateWatch" | "disableWatch">;
 
 function toIso(value: unknown, label: string): string {
   const millis = value instanceof Date ? value.getTime() : typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
@@ -89,10 +124,89 @@ function lifecycleStatus(row: WatchRow): ControlWatchLifecycleStatus {
   return "enabled";
 }
 
-function parseLimit(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_WATCH_LIMIT;
-  if (!Number.isInteger(value) || value < 1) throw new Error("Control watches limit must be a positive integer.");
-  return Math.min(MAX_WATCH_LIMIT, value);
+function pageInput(input: GetWatchesInput): {page: number; perPage: number} {
+  const page = input.page ?? 1;
+  const perPage = input.perPage ?? input.limit ?? DEFAULT_WATCH_LIMIT;
+  if (!Number.isInteger(page) || page < 1) throw new Error("Control watches page must be a positive integer.");
+  if (!Number.isInteger(perPage) || perPage < 1) throw new Error("Control watches per_page must be a positive integer.");
+  return {page, perPage: Math.min(MAX_WATCH_LIMIT, perPage)};
+}
+
+function normalizeSearch(value: string | undefined): string {
+  return value?.trim() ?? "";
+}
+
+function lifecycleStatusExpression(alias = ""): string {
+  const prefix = alias ? `${alias}.` : "";
+  return `
+    CASE
+      WHEN ${prefix}enabled = FALSE OR ${prefix}disabled_at IS NOT NULL THEN 'disabled'
+      WHEN ${prefix}claimed_at IS NOT NULL THEN 'running'
+      WHEN ${prefix}cooldown_until IS NOT NULL THEN 'cooldown'
+      ELSE 'enabled'
+    END
+  `;
+}
+
+function sourceKindExpression(alias = ""): string {
+  const prefix = alias ? `${alias}.` : "";
+  return `${prefix}source_config->>'kind'`;
+}
+
+function detectorKindExpression(alias = ""): string {
+  const prefix = alias ? `${alias}.` : "";
+  return `${prefix}detector_config->>'kind'`;
+}
+
+function activitySortExpression(tables: ReturnType<typeof buildWatchTableNames>): string {
+  return `(
+    (SELECT COUNT(*) FROM ${tables.watchEvents} AS activity_events WHERE activity_events.session_id = watch_row.session_id AND activity_events.watch_id = watch_row.id)
+    +
+    (SELECT COUNT(*) FROM ${tables.watchRuns} AS activity_runs WHERE activity_runs.session_id = watch_row.session_id AND activity_runs.watch_id = watch_row.id AND activity_runs.created_at >= NOW() - INTERVAL '30 days')
+  )`;
+}
+
+function sortExpression(sortBy: string | undefined, tables: ReturnType<typeof buildWatchTableNames>): string {
+  switch (sortBy) {
+    case "title":
+      return "watch_row.title";
+    case "lifecycleStatus":
+      return lifecycleStatusExpression("watch_row");
+    case "source":
+    case "sourceKind":
+      return sourceKindExpression("watch_row");
+    case "detectorKind":
+      return detectorKindExpression("watch_row");
+    case "intervalMinutes":
+      return "watch_row.interval_minutes";
+    case "nextPollAt":
+      return "watch_row.next_poll_at";
+    case "activity":
+      return activitySortExpression(tables);
+    case "createdAt":
+      return "watch_row.created_at";
+    case "updatedAt":
+      return "watch_row.updated_at";
+    case "disabledAt":
+      return "watch_row.disabled_at";
+    case "cooldownUntil":
+      return "watch_row.cooldown_until";
+    default:
+      return "watch_row.next_poll_at";
+  }
+}
+
+function tableMeta(page: number, perPage: number, total: number): ControlWatchesTableMeta {
+  return {
+    current_page: page,
+    last_page: Math.max(1, Math.ceil(total / perPage)),
+    total,
+    per_page: perPage,
+  };
+}
+
+function placeholderList(count: number, startAt: number): string {
+  return Array.from({length: count}, (_, index) => `$${startAt + index}`).join(", ");
 }
 
 function latestRun(row: WatchRow): ControlWatchLatestRun | null {
@@ -135,15 +249,58 @@ function publicWatch(row: WatchRow): ControlWatch {
   };
 }
 
+function publicWatchRecord(record: WatchRecord): ControlWatch {
+  return {
+    id: record.id,
+    title: record.title,
+    sourceKind: record.source.kind,
+    detectorKind: record.detector.kind,
+    observationKind: "result" in record.source ? record.source.result.observation : null,
+    intervalMinutes: record.intervalMinutes,
+    enabled: record.enabled,
+    lifecycleStatus: record.disabledAt || !record.enabled ? "disabled" : record.claimedAt ? "running" : record.cooldownUntil ? "cooldown" : "enabled",
+    nextPollAt: optionalIso(record.nextPollAt, "Watch nextPollAt"),
+    disabledAt: optionalIso(record.disabledAt, "Watch disabledAt"),
+    cooldownUntil: optionalIso(record.cooldownUntil, "Watch cooldownUntil"),
+    createdAt: toIso(record.createdAt, "Watch createdAt"),
+    updatedAt: toIso(record.updatedAt, "Watch updatedAt"),
+    recentRunCount: 0,
+    eventCount: 0,
+    latestRun: null,
+  };
+}
+
+function optionalInputString(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error(`${label} must be a string.`);
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function optionalInputBoolean(value: unknown, label: string): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean.`);
+  return value;
+}
+
+function optionalInputPositiveInteger(value: unknown, label: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${label} must be a positive integer.`);
+  return parsed;
+}
+
 export class ControlWatchesService {
   private readonly pool: PgQueryable;
+  private readonly store: ControlWatchStore;
   private readonly agents = buildAgentTableNames();
   private readonly sessionTables = buildSessionTableNames();
   private readonly control = buildControlTableNames();
   private readonly watches = buildWatchTableNames();
 
-  constructor(options: {pool: PgQueryable}) {
+  constructor(options: {pool: PgQueryable; store: ControlWatchStore}) {
     this.pool = options.pool;
+    this.store = options.store;
   }
 
   private async assertCanAccess(session: ControlSessionRecord, agentKey: string, targetSessionId: string): Promise<void> {
@@ -171,52 +328,94 @@ export class ControlWatchesService {
   }
 
   async getWatches(session: ControlSessionRecord, agentKey: string, targetSessionId: string, input: GetWatchesInput = {}): Promise<ControlWatchesRecord> {
-    const limit = parseLimit(input.limit);
+    const {page, perPage} = pageInput(input);
+    const search = normalizeSearch(input.search);
     await this.assertCanAccess(session, agentKey, targetSessionId);
     const normalizedAgentKey = requireNonEmptyString(agentKey, "Agent key is required.");
     const normalizedSessionId = requireNonEmptyString(targetSessionId, "Session id is required.");
+    const countWhere = ["session_id = $1"];
+    const pageWhere = ["watch_row.session_id = $1"];
+    const values: unknown[] = [normalizedSessionId];
+    if (search) {
+      values.push(`%${search}%`);
+      const searchParam = `$${values.length}`;
+      countWhere.push(`(
+        id::text ILIKE ${searchParam}
+        OR title ILIKE ${searchParam}
+        OR COALESCE(${sourceKindExpression()}, '') ILIKE ${searchParam}
+        OR COALESCE(${detectorKindExpression()}, '') ILIKE ${searchParam}
+      )`);
+      pageWhere.push(`(
+        watch_row.id::text ILIKE ${searchParam}
+        OR watch_row.title ILIKE ${searchParam}
+        OR COALESCE(${sourceKindExpression("watch_row")}, '') ILIKE ${searchParam}
+        OR COALESCE(${detectorKindExpression("watch_row")}, '') ILIKE ${searchParam}
+      )`);
+    }
+    if (input.lifecycleStatus) {
+      values.push(input.lifecycleStatus);
+      countWhere.push(`${lifecycleStatusExpression()} = $${values.length}`);
+      pageWhere.push(`${lifecycleStatusExpression("watch_row")} = $${values.length}`);
+    }
+    if (input.sourceKind) {
+      values.push(input.sourceKind);
+      countWhere.push(`${sourceKindExpression()} = $${values.length}`);
+      pageWhere.push(`${sourceKindExpression("watch_row")} = $${values.length}`);
+    }
+    const countWhereClause = countWhere.join("\n        AND ");
+    const pageWhereClause = pageWhere.join("\n        AND ");
+    const countResult = await this.pool.query(`
+      SELECT COUNT(*)::INTEGER AS count
+      FROM ${this.watches.watches}
+      WHERE ${countWhereClause}
+    `, values);
+    const total = Number((countResult.rows[0] as Record<string, unknown> | undefined)?.count ?? 0);
+    values.push(perPage, (page - 1) * perPage);
+    const direction = input.sortDirection === "desc" ? "DESC" : "ASC";
 
     const result = await this.pool.query(`
       SELECT
-        id,
-        title,
-        source_config,
-        detector_config,
-        interval_minutes,
-        enabled,
-        claimed_at,
-        next_poll_at,
-        disabled_at,
-        cooldown_until,
-        created_at,
-        updated_at
-      FROM ${this.watches.watches}
-      WHERE session_id = $1
-      ORDER BY next_poll_at ASC NULLS LAST, created_at DESC, id ASC
-      LIMIT $2
-    `, [normalizedSessionId, limit]);
+        watch_row.id,
+        watch_row.title,
+        watch_row.source_config,
+        watch_row.detector_config,
+        watch_row.interval_minutes,
+        watch_row.enabled,
+        watch_row.claimed_at,
+        watch_row.next_poll_at,
+        watch_row.disabled_at,
+        watch_row.cooldown_until,
+        watch_row.created_at,
+        watch_row.updated_at
+      FROM ${this.watches.watches} AS watch_row
+      WHERE ${pageWhereClause}
+      ORDER BY ${sortExpression(input.sortBy, this.watches)} ${direction} NULLS LAST, watch_row.id ASC
+      LIMIT $${values.length - 1}
+      OFFSET $${values.length}
+    `, values);
 
     const rows = result.rows as WatchRow[];
-    for (const row of rows) {
-      const watchId = requiredString(row.id, "Watch id");
-      const recentRuns = await this.pool.query(`
-        SELECT COUNT(*)::INTEGER AS count
+    const watchIds = rows.map((row) => requiredString(row.id, "Watch id"));
+    if (watchIds.length > 0) {
+      const idPlaceholders = placeholderList(watchIds.length, 2);
+      const runCounts = await this.pool.query(`
+        SELECT watch_id, COUNT(*)::INTEGER AS count
         FROM ${this.watches.watchRuns}
         WHERE session_id = $1
-          AND watch_id = $2
+          AND watch_id IN (${idPlaceholders})
           AND created_at >= NOW() - INTERVAL '30 days'
-      `, [normalizedSessionId, watchId]);
-      const events = await this.pool.query(`
-        SELECT COUNT(*)::INTEGER AS count
+        GROUP BY watch_id
+      `, [normalizedSessionId, ...watchIds]);
+      const eventCounts = await this.pool.query(`
+        SELECT watch_id, COUNT(*)::INTEGER AS count
         FROM ${this.watches.watchEvents}
         WHERE session_id = $1
-          AND watch_id = $2
-      `, [normalizedSessionId, watchId]);
-      row.recent_run_count = (recentRuns.rows[0] as Record<string, unknown> | undefined)?.count ?? 0;
-      row.event_count = (events.rows[0] as Record<string, unknown> | undefined)?.count ?? 0;
-
-      const latest = await this.pool.query(`
+          AND watch_id IN (${idPlaceholders})
+        GROUP BY watch_id
+      `, [normalizedSessionId, ...watchIds]);
+      const latestRuns = await this.pool.query(`
         SELECT
+          watch_id,
           id AS latest_run_id,
           status AS latest_run_status,
           scheduled_for AS latest_run_scheduled_for,
@@ -225,17 +424,98 @@ export class ControlWatchesService {
           created_at AS latest_run_created_at
         FROM ${this.watches.watchRuns}
         WHERE session_id = $1
-          AND watch_id = $2
-        ORDER BY created_at DESC, id ASC
-        LIMIT 1
-      `, [normalizedSessionId, watchId]);
-      Object.assign(row, latest.rows[0] ?? {});
+          AND watch_id IN (${idPlaceholders})
+        ORDER BY watch_id ASC, created_at DESC, id ASC
+      `, [normalizedSessionId, ...watchIds]);
+      const runCountByWatchId = new Map((runCounts.rows as WatchRow[]).map((row) => [requiredString(row.watch_id, "Watch run count watch id"), row.count]));
+      const eventCountByWatchId = new Map((eventCounts.rows as WatchRow[]).map((row) => [requiredString(row.watch_id, "Watch event count watch id"), row.count]));
+      const latestByWatchId = new Map<string, WatchRow>();
+      for (const row of latestRuns.rows as WatchRow[]) {
+        const watchId = requiredString(row.watch_id, "Watch latest run watch id");
+        if (!latestByWatchId.has(watchId)) latestByWatchId.set(watchId, row);
+      }
+      for (const row of rows) {
+        const watchId = requiredString(row.id, "Watch id");
+        row.recent_run_count = runCountByWatchId.get(watchId) ?? 0;
+        row.event_count = eventCountByWatchId.get(watchId) ?? 0;
+        Object.assign(row, latestByWatchId.get(watchId) ?? {});
+      }
     }
+
+    const data = rows.map(publicWatch);
 
     return {
       agentKey: normalizedAgentKey,
       sessionId: normalizedSessionId,
-      watches: rows.map(publicWatch),
+      data,
+      meta: tableMeta(page, perPage, total),
+      watches: data,
+    };
+  }
+
+  async updateWatch(
+    session: ControlSessionRecord,
+    agentKey: string,
+    targetSessionId: string,
+    watchId: string,
+    input: UpdateControlWatchInput,
+  ): Promise<ControlWatchWriteResult> {
+    await this.assertCanAccess(session, agentKey, targetSessionId);
+    const normalizedAgentKey = requireNonEmptyString(agentKey, "Agent key is required.");
+    const normalizedSessionId = requireNonEmptyString(targetSessionId, "Session id is required.");
+    const normalizedWatchId = requireNonEmptyString(watchId, "Watch id is required.");
+    const title = optionalInputString(input.title, "Watch title");
+    const intervalMinutes = optionalInputPositiveInteger(input.intervalMinutes, "Watch interval minutes");
+    const enabled = optionalInputBoolean(input.enabled, "Watch enabled");
+    const updated = await this.store.updateWatch({
+      watchId: normalizedWatchId,
+      sessionId: normalizedSessionId,
+      ...(title !== undefined ? {title} : {}),
+      ...(intervalMinutes !== undefined ? {intervalMinutes} : {}),
+      ...(enabled !== undefined ? {enabled} : {}),
+    });
+
+    return {
+      watch: publicWatchRecord(updated),
+      audit: {
+        action: "update_watch",
+        agentKey: normalizedAgentKey,
+        targetSessionId: normalizedSessionId,
+        watchId: updated.id,
+        ...(title !== undefined ? {title} : {}),
+        ...(intervalMinutes !== undefined ? {intervalMinutes} : {}),
+        ...(enabled !== undefined ? {enabled} : {}),
+      },
+    };
+  }
+
+  async disableWatch(
+    session: ControlSessionRecord,
+    agentKey: string,
+    targetSessionId: string,
+    watchId: string,
+    input: DisableControlWatchInput = {},
+  ): Promise<ControlWatchWriteResult> {
+    await this.assertCanAccess(session, agentKey, targetSessionId);
+    const normalizedAgentKey = requireNonEmptyString(agentKey, "Agent key is required.");
+    const normalizedSessionId = requireNonEmptyString(targetSessionId, "Session id is required.");
+    const normalizedWatchId = requireNonEmptyString(watchId, "Watch id is required.");
+    const reason = optionalInputString(input.reason, "Watch disable reason");
+    const disabled = await this.store.disableWatch({
+      watchId: normalizedWatchId,
+      sessionId: normalizedSessionId,
+      ...(reason ? {reason} : {}),
+    });
+
+    return {
+      watch: publicWatchRecord(disabled),
+      audit: {
+        action: "disable_watch",
+        agentKey: normalizedAgentKey,
+        targetSessionId: normalizedSessionId,
+        watchId: disabled.id,
+        ...(reason ? {reason: {length: reason.length}} : {}),
+      },
     };
   }
 }

@@ -1,21 +1,20 @@
-import {mkdtemp, rm, writeFile, mkdir} from "node:fs/promises";
+import {mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {afterEach, describe, expect, it, vi} from "vitest";
-
-// This file boots several pg-mem-backed integration harnesses and local HTTP servers.
-// Keep the timeout explicit so the default Vitest 5s limit does not make CI/load-dependent runs flaky.
-vi.setConfig({testTimeout: 30_000});
 import {DataType, newDb} from "pg-mem";
 
 import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
+import {CredentialService} from "../src/domain/credentials/resolver.js";
+import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
 import {PostgresControlAuthService} from "../src/domain/control/auth.js";
 import {ControlReadService} from "../src/domain/control/read-service.js";
 import {ControlHomeService} from "../src/domain/control/home-service.js";
+import {ControlOperatorService} from "../src/domain/control/operator-service.js";
 import {ControlBriefingService} from "../src/domain/control/briefing-service.js";
 import {ControlHeartbeatService} from "../src/domain/control/heartbeat-service.js";
 import {ControlTodoService} from "../src/domain/control/todo-service.js";
@@ -23,10 +22,25 @@ import {ControlScheduledTasksService} from "../src/domain/control/scheduled-task
 import {ControlWatchesService} from "../src/domain/control/watches-service.js";
 import {ControlRuntimeActivityService} from "../src/domain/control/runtime-activity-service.js";
 import {ControlConnectorAccountsService} from "../src/domain/control/connector-accounts-service.js";
+import {A2ASessionBindingRepo} from "../src/domain/a2a/repo.js";
 import {PostgresConnectorAccountStore} from "../src/domain/connectors/postgres.js";
+import {PostgresEmailStore} from "../src/domain/email/postgres.js";
+import {ConversationRepo} from "../src/domain/sessions/conversations/repo.js";
+import {PostgresGatewayStore} from "../src/domain/gateway/postgres.js";
+import {PostgresWikiBindingStore} from "../src/domain/wiki/postgres.js";
+import {WikiBindingService} from "../src/domain/wiki/service.js";
 import {PostgresWatchStore} from "../src/domain/watches/postgres.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/postgres.js";
-import {CONTROL_CSRF_COOKIE, CONTROL_SESSION_COOKIE, startControlServer, type ControlHttpServer} from "../src/integrations/control/http-server.js";
+import {
+    CONTROL_CSRF_COOKIE,
+    CONTROL_SESSION_COOKIE,
+    type ControlHttpServer,
+    startControlServer
+} from "../src/integrations/control/http-server.js";
+
+// This file boots several pg-mem-backed integration harnesses and local HTTP servers.
+// Keep the timeout explicit so the default Vitest 5s limit does not make CI/load-dependent runs flaky.
+vi.setConfig({testTimeout: 30_000});
 
 const pools: Array<{end(): Promise<void>}> = [];
 const servers: ControlHttpServer[] = [];
@@ -58,11 +72,50 @@ async function createHarness() {
   const todos = new ControlTodoService({pool, sessions});
   const scheduledTaskStore = new PostgresScheduledTaskStore({pool});
   const watchStore = new PostgresWatchStore({pool});
-  const controlScheduledTasks = new ControlScheduledTasksService({pool});
-  const controlWatches = new ControlWatchesService({pool});
+  const controlScheduledTasks = new ControlScheduledTasksService({pool, store: scheduledTaskStore});
+  const controlWatches = new ControlWatchesService({pool, store: watchStore});
   const controlRuntimeActivity = new ControlRuntimeActivityService({pool});
   const connectorAccountStore = new PostgresConnectorAccountStore({pool});
   const controlConnectorAccounts = new ControlConnectorAccountsService({pool});
+  const a2aBindings = new A2ASessionBindingRepo({pool});
+  const emailStore = new PostgresEmailStore({pool});
+  const conversations = new ConversationRepo({pool});
+  const gatewayStore = new PostgresGatewayStore({pool});
+  const wikiBindingStore = new PostgresWikiBindingStore({pool});
+  const credentialCrypto = new CredentialCrypto("control-test-master-key");
+  const credentialService = new CredentialService({store: credentials, crypto: credentialCrypto});
+  const wikiBindingService = new WikiBindingService({store: wikiBindingStore, crypto: credentialCrypto});
+  const operator = new ControlOperatorService({
+    pool,
+    reads,
+    a2aBindings,
+    agents,
+    sessions,
+    threads,
+    identities,
+    credentials: credentialService,
+    email: emailStore,
+    connectorAccounts: connectorAccountStore,
+    connectorCrypto: credentialCrypto,
+    conversations,
+    gateway: gatewayStore,
+    subagents: {
+      ensureSchema: async () => {},
+      seedBuiltinProfiles: async () => [],
+      upsertProfile: async () => {
+        throw new Error("not implemented");
+      },
+      getProfile: async () => null,
+      listProfiles: async () => [],
+      setProfileEnabled: async () => {
+        throw new Error("not implemented");
+      },
+    },
+    wikiBindings: {
+      store: wikiBindingStore,
+      service: wikiBindingService,
+    },
+  });
   await identities.ensureSchema();
   await agents.ensureSchema();
   await sessions.ensureSchema();
@@ -72,6 +125,11 @@ async function createHarness() {
   await scheduledTaskStore.ensureSchema();
   await watchStore.ensureSchema();
   await connectorAccountStore.ensureSchema();
+  await a2aBindings.ensureSchema();
+  await emailStore.ensureSchema();
+  await conversations.ensureSchema();
+  await gatewayStore.ensureSchema();
+  await wikiBindingStore.ensureSchema();
 
   await identities.createIdentity({id: "identity-patrik", handle: "patrik", displayName: "Patrik"});
   await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda", prompts: DEFAULT_AGENT_PROMPT_TEMPLATES});
@@ -82,11 +140,11 @@ async function createHarness() {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, agents, sessions, auth, reads, home, briefings, heartbeats, todos, scheduledTaskStore, watchStore, connectorAccountStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts};
+  return {pool, identities, agents, sessions, a2aBindings, auth, reads, home, operator, briefings, heartbeats, todos, scheduledTaskStore, watchStore, connectorAccountStore, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts};
 }
 
-async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts});
+async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>, options: {env?: NodeJS.ProcessEnv} = {}) {
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, identityStore: harness.identities, env: options.env});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -165,6 +223,40 @@ describe("Control auth HTTP", () => {
     expect((await fetch(`${base}/api/control/me`, {headers: {cookie: cookies}})).status).toBe(401);
   });
 
+  it("keeps dev login unavailable unless explicitly enabled", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+
+    const response = await fetch(`${base}/api/control/dev-login`, {method: "POST"});
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({error: "Control dev login is not available in this environment."});
+  });
+
+  it("logs in with the dev bootstrap identity when enabled", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness, {env: {PANDA_CONTROL_DEV_LOGIN_ENABLED: "true"}});
+
+    const response = await fetch(`${base}/api/control/dev-login`, {method: "POST"});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {csrfToken: string};
+    expect(body.csrfToken).toMatch(/^pcc_/);
+    const cookies = cookieHeader(response);
+    expect(cookies).toContain(CONTROL_SESSION_COOKIE);
+
+    const me = await fetch(`${base}/api/control/me`, {headers: {cookie: cookies}});
+    expect(me.status).toBe(200);
+    await expect(me.json()).resolves.toMatchObject({session: {identityId: "identity-patrik", role: "admin"}});
+  });
+
+  it("refuses dev login in production even when the flag is set", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness, {env: {NODE_ENV: "production", PANDA_CONTROL_DEV_LOGIN_ENABLED: "true"}});
+
+    const response = await fetch(`${base}/api/control/dev-login`, {method: "POST", body: JSON.stringify({identity: "patrik"})});
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({error: "Control dev login is not allowed in this environment."});
+  });
+
   it("does not expose unexpected internal error messages over HTTP", async () => {
     const harness = await createHarness();
     const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});
@@ -175,6 +267,7 @@ describe("Control auth HTTP", () => {
       port: 0,
       auth: harness.auth,
       home: harness.home,
+      operator: harness.operator,
       reads: {
         getOverview: async () => {
           throw new Error("database password leaked in stack");
@@ -190,6 +283,7 @@ describe("Control auth HTTP", () => {
       watches: harness.controlWatches,
       runtimeActivity: harness.controlRuntimeActivity,
       connectorAccounts: harness.controlConnectorAccounts,
+      identityStore: harness.identities,
     });
     servers.push(server);
 
@@ -212,7 +306,8 @@ describe("Control auth HTTP", () => {
     await mkdir(join(staticDir, "assets"));
     await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
     await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
-    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, uiStaticDir: staticDir});
+    await writeFile(join(staticDir, "assets", "geist.woff2"), "font");
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, identityStore: harness.identities, uiStaticDir: staticDir});
     servers.push(server);
     const base = `http://${server.host}:${server.port}`;
 
@@ -225,6 +320,10 @@ describe("Control auth HTTP", () => {
     expect(asset.status).toBe(200);
     expect(asset.headers.get("content-type")).toContain("text/javascript");
     await expect(asset.text()).resolves.toContain("control-ui");
+
+    const font = await fetch(`${base}/assets/geist.woff2`);
+    expect(font.status).toBe(200);
+    expect(font.headers.get("content-type")).toContain("font/woff2");
 
     const api = await fetch(`${base}/api/control/health`);
     expect(api.status).toBe(200);
@@ -268,6 +367,1064 @@ describe("Control auth HTTP", () => {
 
     await harness.agents.ensurePairing("panda", "identity-patrik");
     await expect(harness.reads.listAgents(scopedSession)).resolves.toMatchObject([{agentKey: "panda"}]);
+  });
+});
+
+describe("Control operator HTTP", () => {
+  async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>) {
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});
+    const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {csrfToken: string};
+    return {cookies: cookieHeader(response), csrfToken: body.csrfToken};
+  }
+
+  it("returns agents and sessions with the table contract", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const agents = await fetch(`${base}/api/control/agents?page=1&per_page=10&search=pan`, {headers: {cookie: auth.cookies}});
+    expect(agents.status).toBe(200);
+    await expect(agents.json()).resolves.toMatchObject({
+      meta: {current_page: 1, per_page: 10},
+      data: [{agentKey: "panda", sessionCount: 1}],
+    });
+
+    const sessions = await fetch(`${base}/api/control/agents/panda/sessions`, {headers: {cookie: auth.cookies}});
+    expect(sessions.status).toBe(200);
+    await expect(sessions.json()).resolves.toMatchObject({
+      data: [{id: "session-panda", agentKey: "panda", currentThreadId: "thread-panda"}],
+    });
+  });
+
+  it("manages agent identity pairings through the agent access route", async () => {
+    const harness = await createHarness();
+    await harness.identities.createIdentity({id: "identity-ana", handle: "ana", displayName: "Ana"});
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const initial = await fetch(`${base}/api/control/agents/panda/pairings`, {headers: {cookie: auth.cookies}});
+    expect(initial.status).toBe(200);
+    await expect(initial.json()).resolves.toMatchObject({
+      data: [],
+      meta: {total: 0},
+    });
+
+    const missingCsrf = await fetch(`${base}/api/control/agents/panda/pairings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies},
+      body: JSON.stringify({identityId: "identity-ana"}),
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const created = await fetch(`${base}/api/control/agents/panda/pairings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({identityId: "identity-ana"}),
+    });
+    expect(created.status).toBe(200);
+    await expect(created.json()).resolves.toMatchObject({
+      pairing: {
+        agentKey: "panda",
+        identityId: "identity-ana",
+        identityHandle: "ana",
+        identityDisplayName: "Ana",
+      },
+    });
+
+    const agent = await fetch(`${base}/api/control/agents/panda`, {headers: {cookie: auth.cookies}});
+    expect(agent.status).toBe(200);
+    await expect(agent.json()).resolves.toMatchObject({agent: {pairingCount: 1}});
+
+    const filtered = await fetch(`${base}/api/control/agents/panda/pairings?status=active&search=ana`, {headers: {cookie: auth.cookies}});
+    expect(filtered.status).toBe(200);
+    await expect(filtered.json()).resolves.toMatchObject({
+      data: [expect.objectContaining({identityHandle: "ana"})],
+      meta: {total: 1},
+    });
+
+    const invalidFilter = await fetch(`${base}/api/control/agents/panda/pairings?status=suspended`, {headers: {cookie: auth.cookies}});
+    expect(invalidFilter.status).toBe(400);
+    await expect(invalidFilter.json()).resolves.toEqual({error: "Control identity status filter must be active or deleted."});
+
+    const audit = await fetch(`${base}/api/control/audit-events?eventType=control_operator_write&agentKey=panda`, {headers: {cookie: auth.cookies}});
+    expect(audit.status).toBe(200);
+    const auditText = JSON.stringify(await audit.json());
+    expect(auditText).toContain("pair_agent_identity");
+    expect(auditText).toContain("\"identityHandle\":\"ana\"");
+    expect(auditText).not.toContain("identity-ana");
+
+    const deleted = await fetch(`${base}/api/control/agents/panda/pairings/identity-ana`, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+    });
+    expect(deleted.status).toBe(200);
+    await expect(harness.agents.listAgentPairings("panda")).resolves.toEqual([]);
+  });
+
+  it("manages identities through the top-level Control route", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const missingCsrf = await fetch(`${base}/api/control/identities`, {
+      method: "POST",
+      headers: {cookie: auth.cookies},
+      body: JSON.stringify({handle: "nina", displayName: "Nina"}),
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const created = await fetch(`${base}/api/control/identities`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({handle: "NINA", displayName: "Nina Operator"}),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json() as {identity: {id: string; handle: string; displayName: string; status: string}};
+    expect(createdBody.identity).toMatchObject({
+      handle: "nina",
+      displayName: "Nina Operator",
+      status: "active",
+    });
+
+    const updated = await fetch(`${base}/api/control/identities/${encodeURIComponent(createdBody.identity.id)}`, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({displayName: "Nina Updated"}),
+    });
+    expect(updated.status).toBe(200);
+    await expect(updated.json()).resolves.toMatchObject({
+      identity: {
+        handle: "nina",
+        displayName: "Nina Updated",
+        status: "active",
+      },
+    });
+
+    const active = await fetch(`${base}/api/control/identities?status=active&search=nina`, {headers: {cookie: auth.cookies}});
+    expect(active.status).toBe(200);
+    await expect(active.json()).resolves.toMatchObject({
+      data: [expect.objectContaining({handle: "nina"})],
+      meta: {total: 1},
+    });
+
+    const disabled = await fetch(`${base}/api/control/identities/${encodeURIComponent(createdBody.identity.id)}`, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+    });
+    expect(disabled.status).toBe(200);
+    await expect(disabled.json()).resolves.toMatchObject({
+      identity: {handle: "nina", status: "deleted"},
+    });
+
+    const deleted = await fetch(`${base}/api/control/identities?status=deleted&search=nina`, {headers: {cookie: auth.cookies}});
+    expect(deleted.status).toBe(200);
+    await expect(deleted.json()).resolves.toMatchObject({
+      data: [expect.objectContaining({handle: "nina", status: "deleted"})],
+      meta: {total: 1},
+    });
+
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const scopedGrant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const scopedLogin = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: scopedGrant.loginToken})});
+    expect(scopedLogin.status).toBe(200);
+    const scopedBody = await scopedLogin.json() as {csrfToken: string};
+    const scopedCookies = cookieHeader(scopedLogin);
+    const scopedCreate = await fetch(`${base}/api/control/identities`, {
+      method: "POST",
+      headers: {cookie: scopedCookies, "x-control-csrf": scopedBody.csrfToken},
+      body: JSON.stringify({handle: "scoped"}),
+    });
+    expect(scopedCreate.status).toBe(403);
+    await expect(scopedCreate.json()).resolves.toEqual({error: "Control identity management requires admin access."});
+
+    const audit = await fetch(`${base}/api/control/audit-events?eventType=control_operator_write`, {headers: {cookie: auth.cookies}});
+    expect(audit.status).toBe(200);
+    const auditText = JSON.stringify(await audit.json());
+    expect(auditText).toContain("create_identity");
+    expect(auditText).toContain("disable_identity");
+    expect(auditText).toContain("\"identityHandle\":\"nina\"");
+    expect(auditText).not.toContain(createdBody.identity.id);
+  });
+
+  it("updates session runtime defaults through a scoped session route", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+    const path = `${base}/api/control/agents/panda/sessions/session-panda/runtime-config`;
+
+    const missingCsrf = await fetch(path, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies},
+      body: JSON.stringify({model: "openai/gpt-5.1", thinking: "high"}),
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const saved = await fetch(path, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({model: "openai/gpt-5.1", thinking: "high"}),
+    });
+    expect(saved.status).toBe(200);
+    await expect(saved.json()).resolves.toMatchObject({
+      session: {
+        runtime: {
+          model: "openai/gpt-5.1",
+          thinking: "high",
+          thinkingConfigured: true,
+        },
+      },
+    });
+
+    const explicitOff = await fetch(path, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({thinking: "off"}),
+    });
+    expect(explicitOff.status).toBe(200);
+    await expect(explicitOff.json()).resolves.toMatchObject({
+      session: {runtime: {thinkingConfigured: true}},
+    });
+    const explicitOffRuntime = await harness.sessions.getSessionRuntimeConfig("session-panda");
+    expect(explicitOffRuntime.model).toBe("openai/gpt-5.1");
+    expect(explicitOffRuntime.thinking).toBeUndefined();
+    expect(explicitOffRuntime.thinkingConfigured).toBe(true);
+
+    const cleared = await fetch(path, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({model: null, thinking: "default"}),
+    });
+    expect(cleared.status).toBe(200);
+    await expect(cleared.json()).resolves.toMatchObject({
+      session: {runtime: {thinkingConfigured: false}},
+    });
+    const clearedRuntime = await harness.sessions.getSessionRuntimeConfig("session-panda");
+    expect(clearedRuntime.model).toBeUndefined();
+    expect(clearedRuntime.thinking).toBeUndefined();
+    expect(clearedRuntime.thinkingConfigured).toBe(false);
+
+    const invalid = await fetch(path, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({thinking: "worker"}),
+    });
+    expect(invalid.status).toBe(400);
+    await expect(invalid.json()).resolves.toEqual({
+      error: "Session runtime thinking must be default, off, low, medium, high, or xhigh.",
+    });
+  });
+
+  it("manages A2A session bindings through session workspace routes", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+    const path = `${base}/api/control/agents/panda/sessions/session-panda/a2a-bindings`;
+
+    const initial = await fetch(path, {headers: {cookie: auth.cookies}});
+    expect(initial.status).toBe(200);
+    await expect(initial.json()).resolves.toMatchObject({
+      data: [],
+      meta: {total: 0},
+    });
+
+    const missingCsrf = await fetch(path, {
+      method: "POST",
+      headers: {cookie: auth.cookies},
+      body: JSON.stringify({recipientSessionId: "session-luna"}),
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const created = await fetch(path, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({recipientSessionId: "session-luna"}),
+    });
+    expect(created.status).toBe(200);
+    await expect(created.json()).resolves.toMatchObject({
+      bindings: [
+        expect.objectContaining({
+          senderSessionId: "session-panda",
+          recipientSessionId: "session-luna",
+          direction: "outbound",
+        }),
+        expect.objectContaining({
+          senderSessionId: "session-luna",
+          recipientSessionId: "session-panda",
+          direction: "inbound",
+        }),
+      ],
+    });
+
+    const outbound = await fetch(`${path}?direction=outbound&search=luna`, {headers: {cookie: auth.cookies}});
+    expect(outbound.status).toBe(200);
+    await expect(outbound.json()).resolves.toMatchObject({
+      data: [expect.objectContaining({recipientAgentKey: "luna", direction: "outbound"})],
+      meta: {total: 1},
+    });
+
+    const deleted = await fetch(`${path}/session-luna`, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({direction: "outbound"}),
+    });
+    expect(deleted.status).toBe(200);
+    await expect(deleted.json()).resolves.toEqual({deleted: true, reverseDeleted: true});
+    await expect(harness.a2aBindings.listBindings({senderSessionId: "session-panda"})).resolves.toEqual([]);
+    await expect(harness.a2aBindings.listBindings({senderSessionId: "session-luna"})).resolves.toEqual([]);
+
+    const audit = await fetch(`${base}/api/control/audit-events?eventType=control_operator_write&agentKey=panda&targetSessionId=session-panda`, {headers: {cookie: auth.cookies}});
+    expect(audit.status).toBe(200);
+    const auditText = JSON.stringify(await audit.json());
+    expect(auditText).toContain("bind_a2a_session");
+    expect(auditText).toContain("delete_a2a_session_binding");
+    expect(auditText).toContain("\"peerSessionId\":\"session-luna\"");
+  });
+
+  it("filters agent sessions by kind and rejects deprecated kinds", async () => {
+    const harness = await createHarness();
+    const createdBranch = await harness.sessions.createSessionRecord({
+      id: "session-panda-branch",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-panda-branch",
+      createdByIdentityId: "identity-patrik",
+    });
+    const originalListAgentSessions = harness.sessions.listAgentSessions.bind(harness.sessions);
+    // pg-mem can hide non-main rows through the agent_key index; keep this HTTP test focused on Control's filter contract.
+    vi.spyOn(harness.sessions, "listAgentSessions").mockImplementation(async (agentKey) => {
+      const rows = await originalListAgentSessions(agentKey);
+      if (agentKey !== "panda" || rows.some((row) => row.id === createdBranch.id)) return rows;
+      return [...rows, createdBranch];
+    });
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const branch = await fetch(`${base}/api/control/agents/panda/sessions?kind=branch`, {headers: {cookie: auth.cookies}});
+    expect(branch.status).toBe(200);
+    const branchBody = await branch.json() as {data: Array<{id: string; kind: string}>; meta: {total: number}};
+    expect(branchBody.meta.total).toBe(1);
+    expect(branchBody.data).toEqual([expect.objectContaining({id: "session-panda-branch", kind: "branch"})]);
+
+    const invalid = await fetch(`${base}/api/control/agents/panda/sessions?kind=worker`, {headers: {cookie: auth.cookies}});
+    expect(invalid.status).toBe(400);
+    await expect(invalid.json()).resolves.toEqual({error: "Control session kind filter must be main or branch."});
+  });
+
+  it("filters work failures by severity and kind", async () => {
+    const harness = await createHarness();
+    await harness.pool.query(`
+      INSERT INTO "runtime"."threads" (id, session_id)
+      VALUES ('thread-panda', 'session-panda')
+    `);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, error)
+      VALUES ('00000000-0000-0000-0000-000000000901', 'thread-panda', 'failed', '2040-01-01T00:00:00.000Z', '2040-01-01T00:00:01.000Z', 'PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK')
+    `);
+    const task = await harness.scheduledTaskStore.createTask({
+      sessionId: "session-panda",
+      title: "Visible scheduled failure",
+      instruction: "PRIVATE_SCHEDULED_INSTRUCTION_MUST_NOT_LEAK",
+      schedule: {kind: "once", runAt: "2040-01-02T10:00:00.000Z"},
+    });
+    await harness.pool.query(`
+      INSERT INTO "runtime"."scheduled_task_runs" (id, task_id, session_id, scheduled_for, status, error, created_at, started_at, finished_at)
+      VALUES ('00000000-0000-0000-0000-000000000902', $1, 'session-panda', '2040-01-02T10:00:00.000Z', 'failed', 'PRIVATE_TASK_ERROR_MUST_NOT_LEAK', '2040-01-02T10:01:00.000Z', '2040-01-02T10:01:00.000Z', '2040-01-02T10:02:00.000Z')
+    `, [task.id]);
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const critical = await fetch(`${base}/api/control/work-failures?severity=critical`, {headers: {cookie: auth.cookies}});
+    expect(critical.status).toBe(200);
+    const criticalBody = await critical.json() as {data: Array<{kind: string; severity: string}>};
+    expect(criticalBody.data).toEqual([expect.objectContaining({kind: "runtime_run", severity: "critical"})]);
+
+    const scheduled = await fetch(`${base}/api/control/work-failures?kind=scheduled_task_run`, {headers: {cookie: auth.cookies}});
+    expect(scheduled.status).toBe(200);
+    const scheduledBody = await scheduled.json() as {data: Array<{kind: string; severity: string; summary: string}>};
+    expect(scheduledBody.data).toEqual([expect.objectContaining({kind: "scheduled_task_run", severity: "warning", summary: "Scheduled task failed: Visible scheduled failure"})]);
+
+    const invalid = await fetch(`${base}/api/control/work-failures?severity=urgent`, {headers: {cookie: auth.cookies}});
+    expect(invalid.status).toBe(400);
+    await expect(invalid.json()).resolves.toEqual({error: "Control work failure severity filter must be warning or critical."});
+  });
+
+  it("searches visible agents, sessions, and operator resources for direct navigation", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const byAgent = await fetch(`${base}/api/control/search?search=pan&per_page=10`, {headers: {cookie: auth.cookies}});
+    expect(byAgent.status).toBe(200);
+    const byAgentBody = await byAgent.json() as {data: Array<{kind: string; agentKey?: string; targetRoute: string}>};
+    expect(byAgentBody.data).toContainEqual(expect.objectContaining({kind: "agent", agentKey: "panda", targetRoute: "/agents/panda"}));
+
+    const bySession = await fetch(`${base}/api/control/search?search=session-panda&per_page=10`, {headers: {cookie: auth.cookies}});
+    expect(bySession.status).toBe(200);
+    await expect(bySession.json()).resolves.toMatchObject({
+      data: [{kind: "session", agentKey: "panda", sessionId: "session-panda", targetRoute: "/agents/panda/sessions/session-panda"}],
+    });
+
+    await harness.pool.query(`
+      INSERT INTO "runtime"."threads" (id, session_id)
+      VALUES ('thread-panda-search', 'session-panda')
+    `);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, error)
+      VALUES ('00000000-0000-0000-0000-000000000903', 'thread-panda-search', 'failed', '2040-01-03T00:00:00.000Z', '2040-01-03T00:00:01.000Z', 'PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK')
+    `);
+    await expect(fetch(`${base}/api/control/agents/panda/connectors`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({accountKey: "workspace", connectorKey: "discord-main", displayName: "Discord main", botToken: "bot-secret"}),
+    })).resolves.toMatchObject({status: 200});
+    await expect(fetch(`${base}/api/control/agents/panda/bindings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        source: "discord",
+        connectorKey: "discord-main",
+        externalConversationId: "channel-123",
+        sessionId: "session-panda",
+        displayName: "Panda operator room",
+      }),
+    })).resolves.toMatchObject({status: 200});
+    await expect(fetch(`${base}/api/control/agents/panda/skills`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({skillKey: "deploy_watch", description: "Deployment monitor", content: "Watch deploy status."}),
+    })).resolves.toMatchObject({status: 200});
+    await expect(fetch(`${base}/api/control/agents/panda/gateway/sources`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({sourceId: "build-alerts", name: "Build alerts", sessionId: "session-panda"}),
+    })).resolves.toMatchObject({status: 201});
+
+    async function searchFor(term: string) {
+      const response = await fetch(`${base}/api/control/search?search=${encodeURIComponent(term)}&per_page=10`, {headers: {cookie: auth.cookies}});
+      expect(response.status).toBe(200);
+      return (await response.json()) as {data: Array<{kind: string; targetRoute: string; title: string}>};
+    }
+
+    expect((await searchFor("API_TOKEN")).data).toContainEqual(expect.objectContaining({kind: "credential", targetRoute: "/agents/panda?tab=credentials"}));
+    expect((await searchFor("workspace")).data).toContainEqual(expect.objectContaining({kind: "connector", targetRoute: "/agents/panda?tab=connectors"}));
+    expect((await searchFor("channel-123")).data).toContainEqual(expect.objectContaining({kind: "binding", targetRoute: "/agents/panda/sessions/session-panda?tab=bindings"}));
+    expect((await searchFor("deploy_watch")).data).toContainEqual(expect.objectContaining({kind: "skill", targetRoute: "/agents/panda?tab=skills"}));
+    expect((await searchFor("build-alerts")).data).toContainEqual(expect.objectContaining({kind: "gateway_source", targetRoute: "/agents/panda?tab=gateway"}));
+    expect((await searchFor("Agent run failed")).data).toContainEqual(expect.objectContaining({kind: "work_failure", targetRoute: "/agents/panda/sessions/session-panda?tab=runtime"}));
+  });
+
+  it("writes agent credentials without returning secret material and audits only summaries", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const write = await fetch(`${base}/api/control/agents/panda/credentials`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({envKey: "DISCORD_TOKEN", value: "super-secret-token"}),
+    });
+    expect(write.status).toBe(200);
+    const writeText = JSON.stringify(await write.json());
+    expect(writeText).toContain("DISCORD_TOKEN");
+    expect(writeText).not.toContain("super-secret-token");
+
+    const list = await fetch(`${base}/api/control/agents/panda/credentials`, {headers: {cookie: auth.cookies}});
+    const listText = JSON.stringify(await list.json());
+    expect(listText).toContain("DISCORD_TOKEN");
+    expect(listText).not.toContain("super-secret-token");
+
+    const audit = await fetch(`${base}/api/control/audit-events`, {headers: {cookie: auth.cookies}});
+    const auditText = JSON.stringify(await audit.json());
+    expect(auditText).toContain("DISCORD_TOKEN");
+    expect(auditText).toContain("sha256");
+    expect(auditText).not.toContain("super-secret-token");
+  });
+
+  it("issues one-time Control login grants without auditing token material", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const missingCsrf = await fetch(`${base}/api/control/control-grants`, {
+      method: "POST",
+      headers: {cookie: auth.cookies},
+      body: JSON.stringify({identityId: "identity-patrik", role: "scoped", agentKey: "panda"}),
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const missingAgent = await fetch(`${base}/api/control/control-grants`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({identityId: "identity-patrik", role: "scoped"}),
+    });
+    expect(missingAgent.status).toBe(400);
+
+    const issued = await fetch(`${base}/api/control/control-grants`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        identityId: "identity-patrik",
+        label: "Laptop setup",
+        role: "scoped",
+        agentKey: "panda",
+      }),
+    });
+    expect(issued.status).toBe(201);
+    const issuedBody = await issued.json() as {grant: {role: string; agentKey: string; label: string}; loginToken: string};
+    expect(issuedBody.grant).toMatchObject({role: "scoped", agentKey: "panda", label: "Laptop setup"});
+    expect(issuedBody.loginToken).toMatch(/^pct_/);
+
+    const scopedLogin = await fetch(`${base}/api/control/login`, {
+      method: "POST",
+      body: JSON.stringify({token: issuedBody.loginToken}),
+    });
+    expect(scopedLogin.status).toBe(200);
+    await expect(scopedLogin.json()).resolves.toMatchObject({session: {role: "scoped", identityId: "identity-patrik"}});
+
+    const audit = await fetch(`${base}/api/control/audit-events?eventType=control_operator_write`, {headers: {cookie: auth.cookies}});
+    const auditBody = await audit.json() as {data: Array<{metadata: Record<string, unknown>}>};
+    const grantAudit = auditBody.data.find((event) => event.metadata.action === "issue_control_grant");
+    expect(grantAudit?.metadata).toMatchObject({
+      action: "issue_control_grant",
+      agentKey: "panda",
+      identityHandle: "patrik",
+      role: "scoped",
+    });
+    expect(JSON.stringify(grantAudit?.metadata)).not.toContain("identity-patrik");
+    expect(JSON.stringify(auditBody)).not.toContain(issuedBody.loginToken);
+  });
+
+  it("writes agent Wiki bindings without returning API token material", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const empty = await fetch(`${base}/api/control/agents/panda/wiki-binding`, {headers: {cookie: auth.cookies}});
+    expect(empty.status).toBe(200);
+    await expect(empty.json()).resolves.toEqual({binding: null});
+
+    const missingCsrf = await fetch(`${base}/api/control/agents/panda/wiki-binding`, {
+      method: "PUT",
+      headers: {cookie: auth.cookies},
+      body: JSON.stringify({wikiGroupId: 7, namespacePath: "agents/panda", apiToken: "wiki-secret-token"}),
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const write = await fetch(`${base}/api/control/agents/panda/wiki-binding`, {
+      method: "PUT",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({wikiGroupId: 7, namespacePath: "/agents/panda/", apiToken: "wiki-secret-token"}),
+    });
+    expect(write.status).toBe(200);
+    const writeText = JSON.stringify(await write.json());
+    expect(writeText).toContain("agents/panda");
+    expect(writeText).toContain("\"wikiGroupId\":7");
+    expect(writeText).not.toContain("wiki-secret-token");
+
+    const stored = await harness.wikiBindingStore.getBinding("panda");
+    expect(stored).toMatchObject({agentKey: "panda", wikiGroupId: 7, namespacePath: "agents/panda"});
+    expect(JSON.stringify(stored)).not.toContain("wiki-secret-token");
+
+    const get = await fetch(`${base}/api/control/agents/panda/wiki-binding`, {headers: {cookie: auth.cookies}});
+    const getText = JSON.stringify(await get.json());
+    expect(get.status).toBe(200);
+    expect(getText).toContain("agents/panda");
+    expect(getText).not.toContain("wiki-secret-token");
+
+    const audit = await fetch(`${base}/api/control/audit-events?eventType=control_operator_write&agentKey=panda`, {headers: {cookie: auth.cookies}});
+    const auditText = JSON.stringify(await audit.json());
+    expect(auditText).toContain("set_wiki_binding");
+    expect(auditText).toContain("\"namespacePath\":\"agents/panda\"");
+    expect(auditText).toContain("sha256");
+    expect(auditText).not.toContain("wiki-secret-token");
+
+    const deleted = await fetch(`${base}/api/control/agents/panda/wiki-binding`, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+    });
+    expect(deleted.status).toBe(200);
+    await expect(deleted.json()).resolves.toEqual({deleted: true});
+    await expect(harness.wikiBindingStore.getBinding("panda")).resolves.toBeNull();
+  });
+
+  it("creates Discord connectors and manual conversation bindings", async () => {
+    const harness = await createHarness();
+    await harness.sessions.createSessionRecord({id: "session-panda-branch", agentKey: "panda", kind: "branch", currentThreadId: "thread-panda-branch", createdByIdentityId: "identity-patrik"});
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const connector = await fetch(`${base}/api/control/agents/panda/connectors`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({accountKey: "workspace", connectorKey: "discord-main", displayName: "Discord main", botToken: "bot-secret"}),
+    });
+    expect(connector.status).toBe(200);
+    const connectorText = JSON.stringify(await connector.json());
+    expect(connectorText).toContain("bot_token");
+    expect(connectorText).not.toContain("bot-secret");
+
+    const identities = await fetch(`${base}/api/control/identities?search=patrik`, {headers: {cookie: auth.cookies}});
+    expect(identities.status).toBe(200);
+    await expect(identities.json()).resolves.toMatchObject({
+      data: [expect.objectContaining({id: "identity-patrik", handle: "patrik", displayName: "Patrik"})],
+    });
+
+    const pairActor = await fetch(`${base}/api/control/agents/panda/discord/actor-pairings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        accountKey: "workspace",
+        externalActorId: "234567890123456789",
+        identityId: "identity-patrik",
+      }),
+    });
+    expect(pairActor.status).toBe(200);
+    const pairActorText = JSON.stringify(await pairActor.json());
+    expect(pairActorText).toContain("234567890123456789");
+    expect(pairActorText).toContain("patrik");
+    expect(pairActorText).not.toContain("control-ui");
+
+    const actorPairings = await fetch(`${base}/api/control/agents/panda/discord/actor-pairings?accountKey=workspace&search=234567`, {headers: {cookie: auth.cookies}});
+    expect(actorPairings.status).toBe(200);
+    await expect(actorPairings.json()).resolves.toMatchObject({
+      data: [expect.objectContaining({
+        accountKey: "workspace",
+        connectorKey: "discord-main",
+        externalActorId: "234567890123456789",
+        identityHandle: "patrik",
+      })],
+      meta: {total: 1},
+    });
+    await expect(harness.identities.resolveIdentityBinding({
+      source: "discord",
+      connectorKey: "discord-main",
+      externalActorId: "234567890123456789",
+    })).resolves.toMatchObject({identityId: "identity-patrik"});
+
+    const invalidActor = await fetch(`${base}/api/control/agents/panda/discord/actor-pairings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        accountKey: "workspace",
+        externalActorId: "@patrik",
+        identityId: "identity-patrik",
+      }),
+    });
+    expect(invalidActor.status).toBe(400);
+
+    const deleteActor = await fetch(`${base}/api/control/agents/panda/discord/actor-pairings/workspace/234567890123456789`, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+    });
+    expect(deleteActor.status).toBe(200);
+    await expect(harness.identities.resolveIdentityBinding({
+      source: "discord",
+      connectorKey: "discord-main",
+      externalActorId: "234567890123456789",
+    })).resolves.toBeNull();
+
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const pairWhatsAppActor = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        source: "whatsapp",
+        connectorKey: "main",
+        externalActorId: "+421 900 123 456",
+        identityId: "identity-patrik",
+      }),
+    });
+    expect(pairWhatsAppActor.status).toBe(200);
+    await expect(pairWhatsAppActor.json()).resolves.toMatchObject({
+      pairing: {
+        source: "whatsapp",
+        connectorKey: "main",
+        externalActorId: "421900123456@s.whatsapp.net",
+        identityHandle: "patrik",
+      },
+    });
+    await expect(harness.identities.resolveIdentityBinding({
+      source: "whatsapp",
+      connectorKey: "main",
+      externalActorId: "421900123456@s.whatsapp.net",
+    })).resolves.toMatchObject({identityId: "identity-patrik"});
+
+    const pairTelegramActor = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        source: "telegram",
+        connectorKey: "123456789",
+        externalActorId: "987654321",
+        identityId: "identity-patrik",
+      }),
+    });
+    expect(pairTelegramActor.status).toBe(200);
+    const pairTelegramActorText = JSON.stringify(await pairTelegramActor.json());
+    expect(pairTelegramActorText).toContain("987654321");
+    expect(pairTelegramActorText).toContain("patrik");
+    expect(pairTelegramActorText).not.toContain("control-ui");
+
+    const channelActorPairings = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings?source=whatsapp&search=421900`, {headers: {cookie: auth.cookies}});
+    expect(channelActorPairings.status).toBe(200);
+    await expect(channelActorPairings.json()).resolves.toMatchObject({
+      data: [expect.objectContaining({
+        source: "whatsapp",
+        connectorKey: "main",
+        externalActorId: "421900123456@s.whatsapp.net",
+        identityHandle: "patrik",
+      })],
+      meta: {total: 1},
+    });
+
+    const invalidTelegramActor = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        source: "telegram",
+        connectorKey: "123456789",
+        externalActorId: "@patrik",
+        identityId: "identity-patrik",
+      }),
+    });
+    expect(invalidTelegramActor.status).toBe(400);
+
+    const deleteWhatsAppActor = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings/whatsapp/main/${encodeURIComponent("421900123456@s.whatsapp.net")}`, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+    });
+    expect(deleteWhatsAppActor.status).toBe(200);
+    await expect(harness.identities.resolveIdentityBinding({
+      source: "whatsapp",
+      connectorKey: "main",
+      externalActorId: "421900123456@s.whatsapp.net",
+    })).resolves.toBeNull();
+
+    const bind = await fetch(`${base}/api/control/agents/panda/bindings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        source: "discord",
+        connectorKey: "discord-main",
+        externalConversationId: "channel-123",
+        sessionId: "session-panda",
+        displayName: "Panda operator room",
+      }),
+    });
+    expect(bind.status).toBe(200);
+    await expect(bind.json()).resolves.toMatchObject({binding: {externalConversationId: "channel-123", sessionId: "session-panda"}});
+
+    const branchBind = await fetch(`${base}/api/control/agents/panda/bindings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        source: "discord",
+        connectorKey: "discord-main",
+        externalConversationId: "channel-branch",
+        sessionId: "session-panda-branch",
+        displayName: "Panda branch room",
+      }),
+    });
+    expect(branchBind.status).toBe(200);
+
+    const bindings = await fetch(`${base}/api/control/agents/panda/bindings`, {headers: {cookie: auth.cookies}});
+    await expect(bindings.json()).resolves.toMatchObject({data: expect.arrayContaining([expect.objectContaining({externalConversationId: "channel-123", sessionLabel: "session-panda"})])});
+
+    const discordBindings = await fetch(`${base}/api/control/agents/panda/bindings?source=discord`, {headers: {cookie: auth.cookies}});
+    expect(discordBindings.status).toBe(200);
+    await expect(discordBindings.json()).resolves.toMatchObject({data: expect.arrayContaining([expect.objectContaining({source: "discord", externalConversationId: "channel-123"})])});
+
+    const sessionBindings = await fetch(`${base}/api/control/agents/panda/bindings?session_id=session-panda&per_page=1`, {headers: {cookie: auth.cookies}});
+    expect(sessionBindings.status).toBe(200);
+    await expect(sessionBindings.json()).resolves.toMatchObject({
+      data: [{source: "discord", externalConversationId: "channel-123", sessionId: "session-panda"}],
+      meta: {total: 1},
+    });
+
+    const wrongSessionFilter = await fetch(`${base}/api/control/agents/panda/bindings?session_id=session-luna`, {headers: {cookie: auth.cookies}});
+    expect(wrongSessionFilter.status).toBe(404);
+
+    const invalidBindingFilter = await fetch(`${base}/api/control/agents/panda/bindings?source=telegram`, {headers: {cookie: auth.cookies}});
+    expect(invalidBindingFilter.status).toBe(400);
+  });
+
+  it("creates email connectors with write-only credentials", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const create = await fetch(`${base}/api/control/agents/panda/connectors`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        source: "email",
+        accountKey: "work",
+        displayName: "Work email",
+        fromAddress: "panda@example.com",
+        fromName: "Panda",
+        mailboxes: ["INBOX", "Ops"],
+        imapHost: "imap.example.com",
+        imapPort: "993",
+        imapSecure: "secure",
+        imapUsername: "imap-user",
+        imapPassword: "imap-secret",
+        smtpHost: "smtp.example.com",
+        smtpPort: "587",
+        smtpSecure: "starttls",
+        smtpUsername: "smtp-user",
+        smtpPassword: "smtp-secret",
+      }),
+    });
+    expect(create.status).toBe(200);
+    const body = await create.json() as {connector: Record<string, unknown>};
+    expect(body.connector).toMatchObject({
+      source: "email",
+      accountKey: "work",
+      connectorKey: "work",
+      displayName: "Work email",
+      externalUsername: "panda@example.com",
+      status: "enabled",
+      email: {
+        fromAddress: "panda@example.com",
+        fromName: "Panda",
+        mailboxes: ["INBOX", "Ops"],
+        credentialKeys: ["EMAIL_WORK_IMAP_USERNAME", "EMAIL_WORK_IMAP_PASSWORD", "EMAIL_WORK_SMTP_USERNAME", "EMAIL_WORK_SMTP_PASSWORD"],
+        imap: {
+          host: "imap.example.com",
+          port: 993,
+          secure: true,
+        },
+        smtp: {
+          host: "smtp.example.com",
+          port: 587,
+          secure: false,
+        },
+      },
+    });
+    const createText = JSON.stringify(body);
+    expect(createText).not.toContain("imap-secret");
+    expect(createText).not.toContain("smtp-secret");
+
+    const emailConnectors = await fetch(`${base}/api/control/agents/panda/connectors?source=email&status=enabled`, {headers: {cookie: auth.cookies}});
+    expect(emailConnectors.status).toBe(200);
+    await expect(emailConnectors.json()).resolves.toMatchObject({data: [{source: "email", accountKey: "work", status: "enabled"}]});
+
+    const bind = await fetch(`${base}/api/control/agents/panda/bindings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        source: "email",
+        connectorKey: "work",
+        externalConversationId: "ops@example.com",
+        sessionId: "session-panda",
+        displayName: "Ops email",
+      }),
+    });
+    expect(bind.status).toBe(200);
+    await expect(bind.json()).resolves.toMatchObject({
+      binding: {
+        source: "email",
+        connectorKey: "work",
+        externalConversationId: "ops@example.com",
+        sessionId: "session-panda",
+      },
+    });
+
+    const emailBindings = await fetch(`${base}/api/control/agents/panda/bindings?source=email`, {headers: {cookie: auth.cookies}});
+    expect(emailBindings.status).toBe(200);
+    await expect(emailBindings.json()).resolves.toMatchObject({
+      data: [expect.objectContaining({source: "email", connectorKey: "work", externalConversationId: "ops@example.com"})],
+      meta: {total: 1},
+    });
+
+    const discordConnectors = await fetch(`${base}/api/control/agents/panda/connectors?source=discord`, {headers: {cookie: auth.cookies}});
+    expect(discordConnectors.status).toBe(200);
+    await expect(discordConnectors.json()).resolves.toMatchObject({data: []});
+
+    const invalidConnectorFilter = await fetch(`${base}/api/control/agents/panda/connectors?source=telegram`, {headers: {cookie: auth.cookies}});
+    expect(invalidConnectorFilter.status).toBe(400);
+
+    const emailAccount = await harness.emailStore.getAccount("panda", "work");
+    expect(emailAccount).toMatchObject({
+      accountKey: "work",
+      fromAddress: "panda@example.com",
+      imap: {usernameCredentialEnvKey: "EMAIL_WORK_IMAP_USERNAME", passwordCredentialEnvKey: "EMAIL_WORK_IMAP_PASSWORD"},
+      smtp: {usernameCredentialEnvKey: "EMAIL_WORK_SMTP_USERNAME", passwordCredentialEnvKey: "EMAIL_WORK_SMTP_PASSWORD"},
+      enabled: true,
+    });
+
+    const route = await fetch(`${base}/api/control/agents/panda/email/routes`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        accountKey: "work",
+        mailbox: "Ops",
+        sessionId: "session-panda",
+      }),
+    });
+    expect(route.status).toBe(200);
+    await expect(route.json()).resolves.toMatchObject({
+      route: {
+        agentKey: "panda",
+        accountKey: "work",
+        mailbox: "Ops",
+        sessionId: "session-panda",
+        sessionLabel: "session-panda",
+      },
+    });
+    await expect(harness.emailStore.resolveRoute({agentKey: "panda", accountKey: "work", mailbox: "Ops"})).resolves.toMatchObject({
+      sessionId: "session-panda",
+    });
+
+    const routes = await fetch(`${base}/api/control/agents/panda/email/routes?accountKey=work&search=Ops`, {headers: {cookie: auth.cookies}});
+    expect(routes.status).toBe(200);
+    await expect(routes.json()).resolves.toMatchObject({
+      data: [expect.objectContaining({accountKey: "work", mailbox: "Ops", sessionId: "session-panda"})],
+      meta: {total: 1},
+    });
+
+    const allowRecipient = await fetch(`${base}/api/control/agents/panda/email/allowlist`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        accountKey: "work",
+        address: "ops@example.com",
+      }),
+    });
+    expect(allowRecipient.status).toBe(200);
+    await expect(allowRecipient.json()).resolves.toMatchObject({
+      recipient: {
+        agentKey: "panda",
+        accountKey: "work",
+        address: "ops@example.com",
+      },
+    });
+
+    const allowlist = await fetch(`${base}/api/control/agents/panda/email/allowlist?accountKey=work&search=ops`, {headers: {cookie: auth.cookies}});
+    expect(allowlist.status).toBe(200);
+    await expect(allowlist.json()).resolves.toMatchObject({
+      data: [expect.objectContaining({accountKey: "work", address: "ops@example.com"})],
+      meta: {total: 1},
+    });
+    await expect(harness.emailStore.listAllowedRecipients("panda", "work")).resolves.toMatchObject([
+      expect.objectContaining({address: "ops@example.com"}),
+    ]);
+
+    const deleteAllowedRecipient = await fetch(`${base}/api/control/agents/panda/email/allowlist/work/${encodeURIComponent("ops@example.com")}`, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+    });
+    expect(deleteAllowedRecipient.status).toBe(200);
+    await expect(deleteAllowedRecipient.json()).resolves.toEqual({deleted: true});
+    await expect(harness.emailStore.listAllowedRecipients("panda", "work")).resolves.toEqual([]);
+
+    const deleteRoute = await fetch(`${base}/api/control/agents/panda/email/routes/work`, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({mailbox: "Ops"}),
+    });
+    expect(deleteRoute.status).toBe(200);
+    await expect(deleteRoute.json()).resolves.toEqual({deleted: true});
+    await expect(harness.emailStore.resolveRoute({agentKey: "panda", accountKey: "work", mailbox: "Ops"})).resolves.toBeNull();
+
+    const credentials = await fetch(`${base}/api/control/agents/panda/credentials`, {headers: {cookie: auth.cookies}});
+    const credentialsText = JSON.stringify(await credentials.json());
+    expect(credentialsText).toContain("EMAIL_WORK_IMAP_USERNAME");
+    expect(credentialsText).toContain("EMAIL_WORK_SMTP_PASSWORD");
+    expect(credentialsText).not.toContain("imap-secret");
+    expect(credentialsText).not.toContain("smtp-secret");
+
+    const disable = await fetch(`${base}/api/control/agents/panda/connectors/email/work/status`, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({enabled: false}),
+    });
+    expect(disable.status).toBe(200);
+    await expect(harness.emailStore.getAccount("panda", "work")).resolves.toMatchObject({enabled: false});
+
+    const disabledConnectors = await fetch(`${base}/api/control/agents/panda/connectors?status=disabled`, {headers: {cookie: auth.cookies}});
+    expect(disabledConnectors.status).toBe(200);
+    await expect(disabledConnectors.json()).resolves.toMatchObject({data: [{source: "email", accountKey: "work", status: "disabled"}]});
+
+    const enable = await fetch(`${base}/api/control/agents/panda/connectors/email/work/status`, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({enabled: true}),
+    });
+    expect(enable.status).toBe(200);
+    await expect(harness.emailStore.getAccount("panda", "work")).resolves.toMatchObject({enabled: true});
+  });
+
+  it("creates gateway sources and returns client secrets only on write responses", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const create = await fetch(`${base}/api/control/agents/panda/gateway/sources`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({sourceId: "build-alerts", name: "Build alerts", sessionId: "session-panda"}),
+    });
+    expect(create.status).toBe(201);
+    const createBody = await create.json() as {clientSecret: string};
+    expect(createBody.clientSecret).toMatch(/^pgs_/);
+
+    const list = await fetch(`${base}/api/control/agents/panda/gateway/sources`, {headers: {cookie: auth.cookies}});
+    const listText = JSON.stringify(await list.json());
+    expect(listText).toContain("build-alerts");
+    expect(listText).not.toContain(createBody.clientSecret);
+
+    const devicesPath = `${base}/api/control/agents/panda/gateway/sources/build-alerts/devices`;
+    for (const body of [
+      {deviceId: "alpha-terminal", label: "Terminal", capabilities: ["push_context", "upload_attachments"]},
+      {deviceId: "beta-runner", label: "Runner", capabilities: ["claim_commands"]},
+      {deviceId: "gamma-screen", label: "Screen", capabilities: ["claim_commands", "screenshot.capture"]},
+    ]) {
+      const deviceWrite = await fetch(devicesPath, {
+        method: "POST",
+        headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+        body: JSON.stringify(body),
+      });
+      expect(deviceWrite.status).toBe(201);
+      const deviceWriteBody = await deviceWrite.json() as {token: string};
+      expect(deviceWriteBody.token).toMatch(/^pgd_/);
+    }
+
+    const devicePage = await fetch(`${devicesPath}?page=2&per_page=1&sort_by=deviceId&sort_direction=asc`, {headers: {cookie: auth.cookies}});
+    expect(devicePage.status).toBe(200);
+    await expect(devicePage.json()).resolves.toMatchObject({
+      data: [{deviceId: "beta-runner"}],
+      meta: {current_page: 2, last_page: 3, per_page: 1, total: 3},
+    });
+
+    const commandCapable = await fetch(`${devicesPath}?capabilities=claim_commands&sort_by=deviceId&sort_direction=asc`, {headers: {cookie: auth.cookies}});
+    expect(commandCapable.status).toBe(200);
+    await expect(commandCapable.json()).resolves.toMatchObject({
+      data: [{deviceId: "beta-runner"}, {deviceId: "gamma-screen"}],
+      meta: {total: 2},
+    });
+
+    const search = await fetch(`${devicesPath}?search=terminal`, {headers: {cookie: auth.cookies}});
+    expect(search.status).toBe(200);
+    await expect(search.json()).resolves.toMatchObject({data: [{deviceId: "alpha-terminal"}], meta: {total: 1}});
+
+    const disable = await fetch(`${devicesPath}/alpha-terminal`, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({enabled: false}),
+    });
+    expect(disable.status).toBe(200);
+
+    const disabledDevices = await fetch(`${devicesPath}?enabled=false`, {headers: {cookie: auth.cookies}});
+    expect(disabledDevices.status).toBe(200);
+    const disabledBody = await disabledDevices.json();
+    expect(disabledBody).toMatchObject({data: [{deviceId: "alpha-terminal", enabled: false}], meta: {total: 1}});
+    expect(JSON.stringify(disabledBody)).not.toContain("pgd_");
+
+    const invalidEnabled = await fetch(`${devicesPath}?enabled=wat`, {headers: {cookie: auth.cookies}});
+    expect(invalidEnabled.status).toBe(400);
   });
 });
 
@@ -346,6 +1503,22 @@ describe("Control audit events HTTP", () => {
     expect(heartbeat?.metadata).toMatchObject({action: "patch", agentKey: "panda", targetSessionId: "session-panda"});
     expect(JSON.stringify(heartbeat)).toContain("everyMinutes");
     expect(JSON.stringify(heartbeat)).toContain("nextFireAt");
+  });
+
+  it("filters audit events by visible agent and target session", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "admin");
+    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "control_operator_write", metadata: {action: "create_session", agentKey: "panda", targetSessionId: "session-panda"}});
+    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "control_operator_write", metadata: {action: "create_session", agentKey: "panda", targetSessionId: "session-other"}});
+    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "control_operator_write", metadata: {action: "create_session", agentKey: "luna", targetSessionId: "session-luna"}});
+
+    const response = await fetch(`${base}/api/control/audit-events?agentKey=panda&targetSessionId=session-panda`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    const text = JSON.stringify(await response.json());
+    expect(text).toContain("session-panda");
+    expect(text).not.toContain("session-other");
+    expect(text).not.toContain("session-luna");
   });
 
   it("does not return arbitrary or unknown audit metadata fields", async () => {
@@ -680,7 +1853,8 @@ describe("Control Watches HTTP", () => {
     const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey} : {})});
     const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
     expect(response.status).toBe(200);
-    return {cookies: cookieHeader(response)};
+    const body = await response.json() as {csrfToken: string};
+    return {cookies: cookieHeader(response), csrfToken: body.csrfToken};
   }
 
   it("rejects unauthenticated watch reads", async () => {
@@ -709,7 +1883,107 @@ describe("Control Watches HTTP", () => {
 
     const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches`, {headers: {cookie: auth.cookies}});
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({watches: {agentKey: "panda", sessionId: "session-panda", watches: []}});
+    await expect(response.json()).resolves.toEqual({
+      watches: {
+        agentKey: "panda",
+        sessionId: "session-panda",
+        data: [],
+        watches: [],
+        meta: {
+          current_page: 1,
+          last_page: 1,
+          per_page: 50,
+          total: 0,
+        },
+      },
+    });
+  });
+
+  it("updates and disables visible watches without leaking private watch configuration", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const watch = await harness.watchStore.createWatch({
+      sessionId: "session-panda",
+      createdByIdentityId: "identity-patrik",
+      title: "Private source watch",
+      intervalMinutes: 15,
+      source: {
+        kind: "http_json",
+        url: "https://private.example.test/WATCH_WRITE_PRIVATE_URL",
+        headers: [{name: "X-WATCH-PRIVATE", value: "WATCH_WRITE_PRIVATE_HEADER"}],
+        body: "WATCH_WRITE_PRIVATE_BODY",
+        result: {observation: "snapshot", path: "WATCH_WRITE_PRIVATE_PATH"},
+      },
+      detector: {kind: "snapshot_changed"},
+    });
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "scoped", "panda");
+    const path = `${base}/api/control/agents/panda/sessions/session-panda/watches/${watch.id}`;
+
+    const missingCsrf = await fetch(path, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies},
+      body: JSON.stringify({title: "Should not save"}),
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const updated = await fetch(path, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({title: "Public source watch", intervalMinutes: 30, enabled: true}),
+    });
+    expect(updated.status).toBe(200);
+    await expect(updated.json()).resolves.toMatchObject({
+      watch: {
+        id: watch.id,
+        title: "Public source watch",
+        intervalMinutes: 30,
+        enabled: true,
+      },
+    });
+
+    const disabled = await fetch(path, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({reason: "WATCH_WRITE_PRIVATE_DISABLE_REASON"}),
+    });
+    expect(disabled.status).toBe(200);
+    await expect(disabled.json()).resolves.toMatchObject({
+      watch: {
+        id: watch.id,
+        enabled: false,
+        lifecycleStatus: "disabled",
+      },
+    });
+
+    const list = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches`, {headers: {cookie: auth.cookies}});
+    expect(list.status).toBe(200);
+    const listText = JSON.stringify(await list.json());
+    expect(listText).toContain("Public source watch");
+    expect(listText).not.toContain("WATCH_WRITE_PRIVATE_URL");
+    expect(listText).not.toContain("WATCH_WRITE_PRIVATE_HEADER");
+    expect(listText).not.toContain("WATCH_WRITE_PRIVATE_BODY");
+    expect(listText).not.toContain("WATCH_WRITE_PRIVATE_PATH");
+    expect(listText).not.toContain("WATCH_WRITE_PRIVATE_DISABLE_REASON");
+
+    const audit = await harness.pool.query(`SELECT event_type, metadata::text AS metadata FROM "runtime"."control_audit_events" WHERE event_type = 'session_watch_config_write' ORDER BY created_at ASC`);
+    expect(audit.rows).toHaveLength(2);
+    const auditText = JSON.stringify(audit.rows);
+    expect(auditText).toContain("update_watch");
+    expect(auditText).toContain("disable_watch");
+    expect(auditText).toContain("intervalMinutes");
+    expect(auditText).not.toContain("WATCH_WRITE_PRIVATE_URL");
+    expect(auditText).not.toContain("WATCH_WRITE_PRIVATE_HEADER");
+    expect(auditText).not.toContain("WATCH_WRITE_PRIVATE_BODY");
+    expect(auditText).not.toContain("WATCH_WRITE_PRIVATE_DISABLE_REASON");
+
+    const visibleAudit = await fetch(`${base}/api/control/audit-events?eventType=session_watch_config_write&limit=10`, {headers: {cookie: auth.cookies}});
+    expect(visibleAudit.status).toBe(200);
+    const visibleAuditText = JSON.stringify(await visibleAudit.json());
+    expect(visibleAuditText).toContain("session_watch_config_write");
+    expect(visibleAuditText).toContain(watch.id);
+    expect(visibleAuditText).not.toContain("WATCH_WRITE_PRIVATE_URL");
+    expect(visibleAuditText).not.toContain("WATCH_WRITE_PRIVATE_DISABLE_REASON");
   });
 
   it("returns authorized same-agent watches with a strongly redacted DTO", async () => {
@@ -760,9 +2034,16 @@ describe("Control Watches HTTP", () => {
 
     const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches?limit=10`, {headers: {cookie: auth.cookies}});
     expect(response.status).toBe(200);
-    const body = await response.json() as {watches: {watches: Array<Record<string, unknown>>}};
-    expect(Object.keys(body.watches).sort()).toEqual(["agentKey", "sessionId", "watches"]);
+    const body = await response.json() as {watches: {data: Array<Record<string, unknown>>; meta: {current_page: number; last_page: number; per_page: number; total: number}; watches: Array<Record<string, unknown>>}};
+    expect(Object.keys(body.watches).sort()).toEqual(["agentKey", "data", "meta", "sessionId", "watches"]);
+    expect(body.watches.meta).toEqual({
+      current_page: 1,
+      last_page: 1,
+      per_page: 10,
+      total: 1,
+    });
     expect(body.watches.watches).toHaveLength(1);
+    expect(body.watches.data).toHaveLength(1);
     const returned = body.watches.watches[0]!;
     expect(returned).toMatchObject({
       id: watch.id,
@@ -822,6 +2103,83 @@ describe("Control Watches HTTP", () => {
     ]) expect(text).not.toContain(sentinel);
   });
 
+  it("paginates, searches, sorts, and filters watches with the table contract", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const alpha = await harness.watchStore.createWatch({
+      sessionId: "session-panda",
+      title: "Alpha HTTP watch",
+      intervalMinutes: 5,
+      source: {kind: "http_json", url: "https://example.test/alpha", result: {observation: "snapshot"}},
+      detector: {kind: "snapshot_changed"},
+      nextPollAt: Date.parse("2040-01-01T00:00:00.000Z"),
+    });
+    const beta = await harness.watchStore.createWatch({
+      sessionId: "session-panda",
+      title: "Beta SQL watch",
+      intervalMinutes: 10,
+      enabled: false,
+      source: {kind: "sql_query", credentialEnvKey: "SQL_TOKEN", dialect: "postgres", query: "SELECT 1", result: {observation: "scalar", valueField: "count"}},
+      detector: {kind: "percent_change", percent: 10},
+    });
+    const gamma = await harness.watchStore.createWatch({
+      sessionId: "session-panda",
+      title: "Gamma HTML watch",
+      intervalMinutes: 15,
+      source: {kind: "http_html", url: "https://example.test/gamma", result: {observation: "snapshot", mode: "readable_text"}},
+      detector: {kind: "snapshot_changed"},
+      nextPollAt: Date.parse("2040-01-03T00:00:00.000Z"),
+    });
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "scoped", "panda");
+
+    const secondPage = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches?page=2&per_page=1&sort_by=title&sort_direction=asc`, {headers: {cookie: auth.cookies}});
+    expect(secondPage.status).toBe(200);
+    await expect(secondPage.json()).resolves.toMatchObject({
+      watches: {
+        data: [{id: beta.id}],
+        watches: [{id: beta.id}],
+        meta: {current_page: 2, last_page: 3, per_page: 1, total: 3},
+      },
+    });
+
+    const search = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches?search=gamma`, {headers: {cookie: auth.cookies}});
+    expect(search.status).toBe(200);
+    await expect(search.json()).resolves.toMatchObject({
+      watches: {
+        data: [{id: gamma.id}],
+        meta: {current_page: 1, last_page: 1, per_page: 50, total: 1},
+      },
+    });
+
+    const sourceFilter = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches?sourceKind=sql_query`, {headers: {cookie: auth.cookies}});
+    expect(sourceFilter.status).toBe(200);
+    await expect(sourceFilter.json()).resolves.toMatchObject({
+      watches: {
+        data: [{id: beta.id}],
+        meta: {total: 1},
+      },
+    });
+
+    const statusFilter = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches?lifecycleStatus=disabled`, {headers: {cookie: auth.cookies}});
+    expect(statusFilter.status).toBe(200);
+    await expect(statusFilter.json()).resolves.toMatchObject({
+      watches: {
+        data: [{id: beta.id}],
+        meta: {total: 1},
+      },
+    });
+
+    const limited = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches?limit=250`, {headers: {cookie: auth.cookies}});
+    expect(limited.status).toBe(200);
+    const limitedBody = await limited.json() as {watches: {meta: {per_page: number; total: number}; data: Array<{id: string}>}};
+    expect(limitedBody.watches.meta).toMatchObject({per_page: 100, total: 3});
+    expect(limitedBody.watches.data.map((watch) => watch.id).sort()).toEqual([alpha.id, beta.id, gamma.id].sort());
+
+    const invalid = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/watches?sourceKind=telegram`, {headers: {cookie: auth.cookies}});
+    expect(invalid.status).toBe(400);
+  });
+
   it("does not leak cross-agent Mongo or IMAP watch details and checks path-agent ownership", async () => {
     const harness = await createHarness();
     await harness.agents.ensurePairing("panda", "identity-patrik");
@@ -871,7 +2229,8 @@ describe("Control scheduled tasks HTTP", () => {
     const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey} : {})});
     const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
     expect(response.status).toBe(200);
-    return {cookies: cookieHeader(response)};
+    const body = await response.json() as {csrfToken: string};
+    return {cookies: cookieHeader(response), csrfToken: body.csrfToken};
   }
 
   it("rejects unauthenticated scheduled task reads", async () => {
@@ -900,7 +2259,121 @@ describe("Control scheduled tasks HTTP", () => {
 
     const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks`, {headers: {cookie: auth.cookies}});
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({scheduledTasks: {agentKey: "panda", sessionId: "session-panda", tasks: []}});
+    await expect(response.json()).resolves.toEqual({
+      scheduledTasks: {
+        agentKey: "panda",
+        sessionId: "session-panda",
+        data: [],
+        tasks: [],
+        meta: {
+          current_page: 1,
+          last_page: 1,
+          per_page: 25,
+          total: 0,
+        },
+      },
+    });
+  });
+
+  it("creates, updates, cancels, and audits scheduled tasks without leaking instructions", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness, "scoped", "panda");
+    const path = `${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks`;
+
+    const missingCsrf = await fetch(path, {
+      method: "POST",
+      headers: {cookie: auth.cookies},
+      body: JSON.stringify({
+        title: "No CSRF",
+        instruction: "MISSING_CSRF_INSTRUCTION_MUST_NOT_SAVE",
+        schedule: {kind: "once", runAt: "2040-03-01T10:00:00.000Z"},
+      }),
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const created = await fetch(path, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        title: "Check build queue",
+        instruction: "PRIVATE_CREATE_AUTOMATION_INSTRUCTION",
+        enabled: false,
+        schedule: {kind: "once", runAt: "2040-03-01T10:00:00.000Z"},
+      }),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json() as {scheduledTask: {id: string; title: string; enabled: boolean; lifecycleStatus: string; schedule: Record<string, unknown>}};
+    expect(createdBody.scheduledTask).toMatchObject({
+      title: "Check build queue",
+      enabled: false,
+      lifecycleStatus: "disabled",
+      schedule: {kind: "once", runAt: "2040-03-01T10:00:00.000Z"},
+    });
+    expect(JSON.stringify(createdBody)).not.toContain("PRIVATE_CREATE_AUTOMATION_INSTRUCTION");
+
+    const updated = await fetch(`${path}/${createdBody.scheduledTask.id}`, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        title: "Daily build queue check",
+        instruction: "PRIVATE_UPDATE_AUTOMATION_INSTRUCTION",
+        enabled: true,
+        schedule: {kind: "recurring", cron: "0 9 * * *", timezone: "Europe/Bratislava"},
+      }),
+    });
+    expect(updated.status).toBe(200);
+    await expect(updated.json()).resolves.toMatchObject({
+      scheduledTask: {
+        id: createdBody.scheduledTask.id,
+        title: "Daily build queue check",
+        enabled: true,
+        schedule: {kind: "recurring", cron: "0 9 * * *", timezone: "Europe/Bratislava"},
+      },
+    });
+
+    const cancelled = await fetch(`${path}/${createdBody.scheduledTask.id}`, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({reason: "PRIVATE_CANCEL_AUTOMATION_REASON"}),
+    });
+    expect(cancelled.status).toBe(200);
+    await expect(cancelled.json()).resolves.toMatchObject({
+      scheduledTask: {
+        id: createdBody.scheduledTask.id,
+        lifecycleStatus: "cancelled",
+      },
+    });
+
+    const list = await fetch(`${path}?limit=10`, {headers: {cookie: auth.cookies}});
+    expect(list.status).toBe(200);
+    const listText = JSON.stringify(await list.json());
+    expect(listText).toContain("Daily build queue check");
+    expect(listText).not.toContain("PRIVATE_CREATE_AUTOMATION_INSTRUCTION");
+    expect(listText).not.toContain("PRIVATE_UPDATE_AUTOMATION_INSTRUCTION");
+    expect(listText).not.toContain("PRIVATE_CANCEL_AUTOMATION_REASON");
+
+    const audit = await harness.pool.query(`SELECT event_type, metadata::text AS metadata FROM "runtime"."control_audit_events" WHERE event_type = 'session_scheduled_task_write' ORDER BY created_at ASC`);
+    expect(audit.rows).toHaveLength(3);
+    const auditText = JSON.stringify(audit.rows);
+    expect(auditText).toContain("sha256");
+    expect(auditText).toContain("length");
+    expect(auditText).toContain("create_scheduled_task");
+    expect(auditText).toContain("update_scheduled_task");
+    expect(auditText).toContain("cancel_scheduled_task");
+    expect(auditText).not.toContain("PRIVATE_CREATE_AUTOMATION_INSTRUCTION");
+    expect(auditText).not.toContain("PRIVATE_UPDATE_AUTOMATION_INSTRUCTION");
+    expect(auditText).not.toContain("PRIVATE_CANCEL_AUTOMATION_REASON");
+
+    const visibleAudit = await fetch(`${base}/api/control/audit-events?eventType=session_scheduled_task_write&limit=10`, {headers: {cookie: auth.cookies}});
+    expect(visibleAudit.status).toBe(200);
+    const visibleAuditText = JSON.stringify(await visibleAudit.json());
+    expect(visibleAuditText).toContain("session_scheduled_task_write");
+    expect(visibleAuditText).toContain(createdBody.scheduledTask.id);
+    expect(visibleAuditText).not.toContain("PRIVATE_CREATE_AUTOMATION_INSTRUCTION");
+    expect(visibleAuditText).not.toContain("PRIVATE_UPDATE_AUTOMATION_INSTRUCTION");
+    expect(visibleAuditText).not.toContain("PRIVATE_CANCEL_AUTOMATION_REASON");
   });
 
   it("returns authorized same-agent scheduled tasks with whitelisted task and recent-run fields", async () => {
@@ -933,9 +2406,16 @@ describe("Control scheduled tasks HTTP", () => {
 
     const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks?limit=10`, {headers: {cookie: auth.cookies}});
     expect(response.status).toBe(200);
-    const body = await response.json() as {scheduledTasks: {tasks: Array<Record<string, unknown>>}};
-    expect(Object.keys(body.scheduledTasks).sort()).toEqual(["agentKey", "sessionId", "tasks"]);
+    const body = await response.json() as {scheduledTasks: {data: Array<Record<string, unknown>>; meta: {current_page: number; last_page: number; per_page: number; total: number}; tasks: Array<Record<string, unknown>>}};
+    expect(Object.keys(body.scheduledTasks).sort()).toEqual(["agentKey", "data", "meta", "sessionId", "tasks"]);
     expect(body.scheduledTasks.tasks.map((task) => task.id).sort()).toEqual([once.id, recurring.id].sort());
+    expect(body.scheduledTasks.data.map((task) => task.id).sort()).toEqual([once.id, recurring.id].sort());
+    expect(body.scheduledTasks.meta).toEqual({
+      current_page: 1,
+      last_page: 1,
+      per_page: 10,
+      total: 2,
+    });
     const onceTask = body.scheduledTasks.tasks.find((task) => task.id === once.id)!;
     const recurringTask = body.scheduledTasks.tasks.find((task) => task.id === recurring.id)!;
     expect(onceTask).toMatchObject({
@@ -1002,12 +2482,29 @@ describe("Control scheduled tasks HTTP", () => {
 
     const limited = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks?limit=1`, {headers: {cookie: auth.cookies}});
     expect(limited.status).toBe(200);
-    await expect(limited.json()).resolves.toMatchObject({scheduledTasks: {tasks: [{id: first.id}]}});
+    await expect(limited.json()).resolves.toMatchObject({
+      scheduledTasks: {
+        data: [{id: first.id}],
+        tasks: [{id: first.id}],
+        meta: {current_page: 1, last_page: 2, per_page: 1, total: 2},
+      },
+    });
+
+    const secondPage = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks?page=2&per_page=1&sort_by=nextFireAt&sort_direction=asc`, {headers: {cookie: auth.cookies}});
+    expect(secondPage.status).toBe(200);
+    await expect(secondPage.json()).resolves.toMatchObject({
+      scheduledTasks: {
+        data: [{id: second.id}],
+        meta: {current_page: 2, last_page: 2, per_page: 1, total: 2},
+      },
+    });
 
     const all = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks?limit=250`, {headers: {cookie: auth.cookies}});
     expect(all.status).toBe(200);
-    const body = await all.json() as {scheduledTasks: {tasks: Array<{id: string}>}};
+    const body = await all.json() as {scheduledTasks: {data: Array<{id: string}>; meta: {per_page: number; total: number}; tasks: Array<{id: string}>}};
     expect(body.scheduledTasks.tasks.map((task) => task.id)).toEqual([first.id, second.id]);
+    expect(body.scheduledTasks.data.map((task) => task.id)).toEqual([first.id, second.id]);
+    expect(body.scheduledTasks.meta).toMatchObject({per_page: 100, total: 2});
 
     const wrongAgent = await fetch(`${base}/api/control/agents/luna/sessions/session-panda/scheduled-tasks`, {headers: {cookie: auth.cookies}});
     expect(wrongAgent.status).toBe(404);
@@ -1062,7 +2559,25 @@ describe("Control Runtime Activity HTTP", () => {
 
     const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity`, {headers: {cookie: auth.cookies}});
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({runtimeActivity: {agentKey: "panda", sessionId: "session-panda", summary: {running: 0, completed: 0, failed: 0, latestStartedAt: null, latestFinishedAt: null}, runs: []}});
+    await expect(response.json()).resolves.toEqual({
+      runtimeActivity: {
+        agentKey: "panda",
+        sessionId: "session-panda",
+        summary: {
+          total: 0,
+          running: 0,
+          completed: 0,
+          failed: 0,
+          abortRequests: 0,
+          averageDurationMs: null,
+          latestStartedAt: null,
+          latestFinishedAt: null,
+          latestRun: null,
+        },
+        data: [],
+        meta: {current_page: 1, last_page: 1, total: 0, per_page: 25},
+      },
+    });
   });
 
   it("returns authorized same-session runs with whitelisted fields and hides raw runtime data", async () => {
@@ -1095,15 +2610,26 @@ describe("Control Runtime Activity HTTP", () => {
     const base = await startHarnessServer(harness);
     const auth = await login(base, harness);
 
-    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?limit=10`, {headers: {cookie: auth.cookies}});
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?per_page=10`, {headers: {cookie: auth.cookies}});
     expect(response.status).toBe(200);
-    const body = await response.json() as {runtimeActivity: {summary: Record<string, unknown>; runs: Array<Record<string, unknown>>}};
-    expect(Object.keys(body.runtimeActivity).sort()).toEqual(["agentKey", "runs", "sessionId", "summary"]);
-    expect(body.runtimeActivity.summary).toEqual({running: 1, completed: 1, failed: 1, latestStartedAt: "2040-01-03T10:00:00.000Z", latestFinishedAt: "2040-01-02T10:00:05.000Z"});
-    expect(body.runtimeActivity.runs).toHaveLength(3);
-    expect(body.runtimeActivity.runs[0]).toMatchObject({id: "00000000-0000-0000-0000-000000000403", status: "running", startedAt: "2040-01-03T10:00:00.000Z", finishedAt: null, durationMs: null, abortRequestedAt: null, failureCategory: null});
-    expect(body.runtimeActivity.runs[1]).toMatchObject({id: "00000000-0000-0000-0000-000000000401", status: "failed", startedAt: "2040-01-02T10:00:00.000Z", finishedAt: "2040-01-02T10:00:05.000Z", durationMs: 5000, abortRequestedAt: "2040-01-02T10:00:02.000Z", failureCategory: "provider_timeout"});
-    expect(Object.keys(body.runtimeActivity.runs[1]!).sort()).toEqual(["abortRequestedAt", "durationMs", "failureCategory", "finishedAt", "id", "startedAt", "status"]);
+    const body = await response.json() as {runtimeActivity: {summary: Record<string, unknown>; data: Array<Record<string, unknown>>; meta: Record<string, unknown>}};
+    expect(Object.keys(body.runtimeActivity).sort()).toEqual(["agentKey", "data", "meta", "sessionId", "summary"]);
+    expect(body.runtimeActivity.summary).toMatchObject({
+      total: 3,
+      running: 1,
+      completed: 1,
+      failed: 1,
+      abortRequests: 1,
+      averageDurationMs: 3250,
+      latestStartedAt: "2040-01-03T10:00:00.000Z",
+      latestFinishedAt: "2040-01-02T10:00:05.000Z",
+      latestRun: {id: "00000000-0000-0000-0000-000000000403", status: "running"},
+    });
+    expect(body.runtimeActivity.meta).toEqual({current_page: 1, last_page: 1, total: 3, per_page: 10});
+    expect(body.runtimeActivity.data).toHaveLength(3);
+    expect(body.runtimeActivity.data[0]).toMatchObject({id: "00000000-0000-0000-0000-000000000403", status: "running", startedAt: "2040-01-03T10:00:00.000Z", finishedAt: null, durationMs: null, abortRequestedAt: null, failureCategory: null});
+    expect(body.runtimeActivity.data[1]).toMatchObject({id: "00000000-0000-0000-0000-000000000401", status: "failed", startedAt: "2040-01-02T10:00:00.000Z", finishedAt: "2040-01-02T10:00:05.000Z", durationMs: 5000, abortRequestedAt: "2040-01-02T10:00:02.000Z", failureCategory: "provider_timeout"});
+    expect(Object.keys(body.runtimeActivity.data[1]!).sort()).toEqual(["abortRequestedAt", "durationMs", "failureCategory", "finishedAt", "id", "startedAt", "status"]);
     const text = JSON.stringify(body);
     for (const sentinel of [
       "PRIVATE_ABORT_REASON_MUST_NOT_LEAK",
@@ -1148,17 +2674,31 @@ describe("Control Runtime Activity HTTP", () => {
     const base = await startHarnessServer(harness);
     const auth = await login(base, harness, "scoped", "panda");
 
-    const limited = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?limit=1`, {headers: {cookie: auth.cookies}});
+    const limited = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?per_page=1`, {headers: {cookie: auth.cookies}});
     expect(limited.status).toBe(200);
-    await expect(limited.json()).resolves.toMatchObject({runtimeActivity: {runs: [{id: "00000000-0000-0000-0000-000000000602"}]}});
+    await expect(limited.json()).resolves.toMatchObject({
+      runtimeActivity: {
+        summary: {total: 2, completed: 2},
+        data: [{id: "00000000-0000-0000-0000-000000000602"}],
+        meta: {total: 2, per_page: 1, last_page: 2},
+      },
+    });
 
-    const clamped = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?limit=250`, {headers: {cookie: auth.cookies}});
+    const completed = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?status=completed&per_page=1`, {headers: {cookie: auth.cookies}});
+    expect(completed.status).toBe(200);
+    await expect(completed.json()).resolves.toMatchObject({runtimeActivity: {data: [{status: "completed"}], meta: {total: 2}}});
+
+    const clamped = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?per_page=250`, {headers: {cookie: auth.cookies}});
     expect(clamped.status).toBe(200);
-    const clampedBody = await clamped.json() as {runtimeActivity: {runs: unknown[]}};
-    expect(clampedBody.runtimeActivity.runs).toHaveLength(2);
+    const clampedBody = await clamped.json() as {runtimeActivity: {data: unknown[]; meta: {per_page: number}}};
+    expect(clampedBody.runtimeActivity.data).toHaveLength(2);
+    expect(clampedBody.runtimeActivity.meta.per_page).toBe(100);
 
-    const invalid = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?limit=0`, {headers: {cookie: auth.cookies}});
+    const invalid = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?per_page=0`, {headers: {cookie: auth.cookies}});
     expect(invalid.status).toBe(400);
+
+    const invalidFailure = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity?failure_category=made_up`, {headers: {cookie: auth.cookies}});
+    expect(invalidFailure.status).toBe(400);
 
     const wrongPath = await fetch(`${base}/api/control/agents/luna/sessions/session-panda/runtime-activity`, {headers: {cookie: auth.cookies}});
     expect(wrongPath.status).toBe(404);
@@ -1362,7 +2902,7 @@ describe("Control Home HTTP", () => {
     expect(text).not.toContain("LUNA_DISTINCTIVE_PRIVATE_TASK_INSTRUCTION");
   });
 
-  it("returns cockpit status, attention, sessions, upcoming automations, and sanitized activity", async () => {
+  it("returns failure-focused home attention without disabled heartbeat or todo noise", async () => {
     const harness = await createHarness();
     await harness.agents.ensurePairing("panda", "identity-patrik");
     await harness.pool.query(`UPDATE "runtime"."agent_sessions" SET display_name = 'Panda mission control' WHERE id = 'session-panda'`);
@@ -1402,8 +2942,12 @@ describe("Control Home HTTP", () => {
     expect(typeof body.home.generatedAt).toBe("string");
     expect(body.home.scope).toMatchObject({identityId: "identity-patrik", role: "scoped", visibleAgentCount: 1, visibleSessionCount: 1});
     expect(body.home.status.level).toBe("attention");
-    expect(body.home.status.reasonCodes).toEqual(expect.arrayContaining(["blocked_todos", "in_progress_todos", "failed_task", "disabled_heartbeat"]));
-    expect(body.home.attentionItems.map((item: {type: string}) => item.type)).toEqual(expect.arrayContaining(["blocked_todos", "in_progress_todos", "failed_task", "disabled_heartbeat"]));
+    expect(body.home.status.reasonCodes).toEqual(["failed_task"]);
+    const attentionTypes = body.home.attentionItems.map((item: {type: string}) => item.type);
+    expect(attentionTypes).toEqual(["failed_task"]);
+    expect(attentionTypes).not.toContain("blocked_todos");
+    expect(attentionTypes).not.toContain("in_progress_todos");
+    expect(attentionTypes).not.toContain("disabled_heartbeat");
     expect(body.home.sessions[0]).toMatchObject({
       agentKey: "panda",
       sessionId: "session-panda",

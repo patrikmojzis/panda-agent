@@ -2,10 +2,7 @@ import {Pool} from "pg";
 
 import {PostgresAgentStore} from "../../domain/agents/postgres.js";
 import type {AgentStore} from "../../domain/agents/store.js";
-import {
-    CredentialResolver,
-    CredentialService,
-} from "../../domain/credentials/resolver.js";
+import {CredentialResolver, CredentialService,} from "../../domain/credentials/resolver.js";
 import {PostgresCredentialStore} from "../../domain/credentials/postgres.js";
 import {resolveCredentialCrypto} from "../../domain/credentials/crypto.js";
 import {PostgresExecutionEnvironmentStore} from "../../domain/execution-environments/postgres.js";
@@ -79,12 +76,15 @@ import type {RuntimeOptions} from "./create-runtime.js";
 import {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
 import {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
 import {RemoteExecutionEnvironmentSetupRunner} from "./execution-environment-setup-runner.js";
-import {createExecutionEnvironmentManagerClientFromEnv} from "../../integrations/shell/execution-environment-manager-client.js";
+import {
+    createExecutionEnvironmentManagerClientFromEnv
+} from "../../integrations/shell/execution-environment-manager-client.js";
 import {listenThreadRuntimeNotifications} from "./store-notifications.js";
 import {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
 import {PostgresControlAuthService} from "../../domain/control/auth.js";
 import {ControlReadService} from "../../domain/control/read-service.js";
 import {ControlHomeService} from "../../domain/control/home-service.js";
+import {ControlOperatorService} from "../../domain/control/operator-service.js";
 import {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
 import {ControlTodoService} from "../../domain/control/todo-service.js";
@@ -93,6 +93,8 @@ import {ControlWatchesService} from "../../domain/control/watches-service.js";
 import {ControlRuntimeActivityService} from "../../domain/control/runtime-activity-service.js";
 import {ControlConnectorAccountsService} from "../../domain/control/connector-accounts-service.js";
 import {PostgresConnectorAccountStore} from "../../domain/connectors/postgres.js";
+import {ConversationRepo} from "../../domain/sessions/conversations/repo.js";
+import {PostgresGatewayStore} from "../../domain/gateway/postgres.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
@@ -138,6 +140,7 @@ interface RuntimeBootstrapResult {
   controlAuth: PostgresControlAuthService;
   controlReads: ControlReadService;
   controlHome: ControlHomeService;
+  controlOperator: ControlOperatorService;
   controlBriefings: ControlBriefingService;
   controlHeartbeats: ControlHeartbeatService;
   controlTodos: ControlTodoService;
@@ -421,6 +424,12 @@ export async function bootstrapRuntime(
     const a2aBindings = new A2ASessionBindingRepo({
       pool: postgresPool,
     });
+    const conversationBindings = new ConversationRepo({
+      pool: postgresPool,
+    });
+    const gatewayStore = new PostgresGatewayStore({
+      pool: postgresPool,
+    });
     const store = new PostgresThreadRuntimeStore({
       pool: postgresPool,
     });
@@ -431,6 +440,8 @@ export async function bootstrapRuntime(
       sessionStore,
       executionEnvironments,
       a2aBindings,
+      conversationBindings,
+      gatewayStore,
       store,
     ]);
     await subagentProfiles.seedBuiltinProfiles();
@@ -479,12 +490,20 @@ export async function bootstrapRuntime(
       pool: postgresPool,
       sessions: sessionStore,
     });
+    const scheduledTasks = new PostgresScheduledTaskStore({
+      pool: postgresPool,
+    });
+    const watches = new PostgresWatchStore({
+      pool: postgresPool,
+    });
 
     const controlScheduledTasks = new ControlScheduledTasksService({
       pool: postgresPool,
+      store: scheduledTasks,
     });
     const controlWatches = new ControlWatchesService({
       pool: postgresPool,
+      store: watches,
     });
     const controlRuntimeActivity = new ControlRuntimeActivityService({
       pool: postgresPool,
@@ -519,18 +538,36 @@ export async function bootstrapRuntime(
         crypto: credentialCrypto,
       })
       : null;
-
-    const scheduledTasks = new PostgresScheduledTaskStore({
-      pool: postgresPool,
-    });
-
+    const wikiBindingService = credentialCrypto
+      ? new WikiBindingService({
+        store: wikiBindingStore,
+        crypto: credentialCrypto,
+      })
+      : null;
     const email = new PostgresEmailStore({
       pool: postgresPool,
     });
-
-    const watches = new PostgresWatchStore({
+    const controlOperator = new ControlOperatorService({
       pool: postgresPool,
+      reads: controlReads,
+      a2aBindings,
+      agents: agentStore,
+      sessions: sessionStore,
+      threads: store,
+      identities: identityStore,
+      credentials: credentialService,
+      email,
+      connectorAccounts: connectorAccountStore,
+      connectorCrypto: credentialCrypto,
+      conversations: conversationBindings,
+      gateway: gatewayStore,
+      subagents: subagentProfiles,
+      wikiBindings: {
+        store: wikiBindingStore,
+        service: wikiBindingService,
+      },
     });
+
     const watchMutations = new WatchMutationService({
       store: watches,
       evaluateWatch: createWatchEvaluator({
@@ -589,12 +626,6 @@ export async function bootstrapRuntime(
       trimToNull(process.env.WIKI_DB_URL)
       || trimToNull(process.env.WIKI_URL),
     );
-    const wikiBindingService = credentialCrypto
-      ? new WikiBindingService({
-        store: wikiBindingStore,
-        crypto: credentialCrypto,
-      })
-      : null;
     if (wikiEnabled && !wikiBindingService) {
       throw new Error("Wiki bindings require CREDENTIALS_MASTER_KEY when WIKI_URL or WIKI_DB_URL is set.");
     }
@@ -701,6 +732,7 @@ export async function bootstrapRuntime(
       controlAuth,
       controlReads,
       controlHome,
+      controlOperator,
       controlBriefings,
       controlHeartbeats,
       controlTodos,

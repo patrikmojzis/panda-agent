@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Panda Control">
+  <rect width="64" height="64" fill="#0b0d08"/>
+  <path d="M16 18h32v18c0 10-7 17-16 20-9-3-16-10-16-20V18Z" fill="#7de000"/>
+  <path d="M23 29h18v6H23zM23 40h12v5H23z" fill="#0b0d08"/>
+</svg>

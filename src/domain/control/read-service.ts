@@ -34,6 +34,8 @@ export interface ControlAuditEventSummary {
 export interface ListAuditEventsInput {
   limit?: number;
   eventType?: string;
+  agentKey?: string;
+  targetSessionId?: string;
   before?: string;
 }
 
@@ -76,6 +78,73 @@ function safeHeartbeatSummary(value: unknown): Record<string, unknown> {
   };
 }
 
+function safeHashSummary(value: unknown): Record<string, unknown> {
+  const raw = asRecord(value);
+  return {
+    ...(typeof raw.length === "number" ? {length: raw.length} : {}),
+    ...(typeof raw.sha256 === "string" ? {sha256: raw.sha256} : {}),
+  };
+}
+
+function safeScheduleSummary(value: unknown): Record<string, unknown> {
+  const raw = asRecord(value);
+  if (raw.kind === "once") {
+    return {
+      kind: "once",
+      ...(typeof raw.runAt === "string" ? {runAt: raw.runAt} : {}),
+    };
+  }
+  if (raw.kind === "recurring") {
+    return {
+      kind: "recurring",
+      ...(typeof raw.cron === "string" ? {cron: raw.cron} : {}),
+      ...(typeof raw.timezone === "string" ? {timezone: raw.timezone} : {}),
+    };
+  }
+  return {};
+}
+
+function safeOperatorSummary(value: unknown): Record<string, unknown> {
+  const raw = asRecord(value);
+  const secret = asRecord(raw.secret);
+  return {
+    ...(typeof raw.action === "string" ? {action: raw.action} : {}),
+    ...(typeof raw.agentKey === "string" ? {agentKey: raw.agentKey} : {}),
+    ...(typeof raw.targetSessionId === "string" ? {targetSessionId: raw.targetSessionId} : {}),
+    ...(typeof raw.sessionId === "string" ? {sessionId: raw.sessionId} : {}),
+    ...(typeof raw.recipientAgentKey === "string" ? {recipientAgentKey: raw.recipientAgentKey} : {}),
+    ...(typeof raw.recipientSessionId === "string" ? {recipientSessionId: raw.recipientSessionId} : {}),
+    ...(typeof raw.peerAgentKey === "string" ? {peerAgentKey: raw.peerAgentKey} : {}),
+    ...(typeof raw.peerSessionId === "string" ? {peerSessionId: raw.peerSessionId} : {}),
+    ...(raw.direction === "inbound" || raw.direction === "outbound" ? {direction: raw.direction} : {}),
+    ...(typeof raw.oneWay === "boolean" ? {oneWay: raw.oneWay} : {}),
+    ...(typeof raw.source === "string" ? {source: raw.source} : {}),
+    ...(typeof raw.accountKey === "string" ? {accountKey: raw.accountKey} : {}),
+    ...(typeof raw.connectorKey === "string" ? {connectorKey: raw.connectorKey} : {}),
+    ...(typeof raw.externalConversationId === "string" ? {externalConversationId: raw.externalConversationId} : {}),
+    ...(typeof raw.grantId === "string" ? {grantId: raw.grantId} : {}),
+    ...(typeof raw.identityHandle === "string" ? {identityHandle: raw.identityHandle} : {}),
+    ...(raw.role === "admin" || raw.role === "scoped" ? {role: raw.role} : {}),
+    ...(typeof raw.displayName === "string" ? {displayName: raw.displayName} : {}),
+    ...(typeof raw.label === "string" ? {label: raw.label} : {}),
+    ...(raw.status === "active" || raw.status === "deleted" ? {status: raw.status} : {}),
+    ...(typeof raw.loginTokenExpiresAt === "string" ? {loginTokenExpiresAt: raw.loginTokenExpiresAt} : {}),
+    ...(typeof raw.envKey === "string" ? {envKey: raw.envKey} : {}),
+    ...(typeof raw.skillKey === "string" ? {skillKey: raw.skillKey} : {}),
+    ...(typeof raw.slug === "string" ? {slug: raw.slug} : {}),
+    ...(typeof raw.sourceId === "string" ? {sourceId: raw.sourceId} : {}),
+    ...(typeof raw.deviceId === "string" ? {deviceId: raw.deviceId} : {}),
+    ...(typeof raw.type === "string" ? {type: raw.type} : {}),
+    ...(typeof raw.delivery === "string" ? {delivery: raw.delivery} : {}),
+    ...(typeof raw.wikiGroupId === "number" ? {wikiGroupId: raw.wikiGroupId} : {}),
+    ...(typeof raw.namespacePath === "string" ? {namespacePath: raw.namespacePath} : {}),
+    ...(typeof secret.length === "number" || typeof secret.sha256 === "string" ? {secret: {
+      ...(typeof secret.length === "number" ? {length: secret.length} : {}),
+      ...(typeof secret.sha256 === "string" ? {sha256: secret.sha256} : {}),
+    }} : {}),
+  };
+}
+
 function sanitizedAuditMetadata(eventType: string, value: unknown): Record<string, unknown> {
   const raw = asRecord(value);
   if (eventType === "session_briefing_write") {
@@ -95,6 +164,42 @@ function sanitizedAuditMetadata(eventType: string, value: unknown): Record<strin
       ...(typeof raw.targetSessionId === "string" ? {targetSessionId: raw.targetSessionId} : {}),
       old: safeHeartbeatSummary(raw.old),
       next: safeHeartbeatSummary(raw.next),
+    };
+  }
+  if (eventType === "session_scheduled_task_write") {
+    return {
+      ...(raw.action === "create_scheduled_task" || raw.action === "update_scheduled_task" || raw.action === "cancel_scheduled_task" ? {action: raw.action} : {}),
+      ...(typeof raw.agentKey === "string" ? {agentKey: raw.agentKey} : {}),
+      ...(typeof raw.targetSessionId === "string" ? {targetSessionId: raw.targetSessionId} : {}),
+      ...(typeof raw.taskId === "string" ? {taskId: raw.taskId} : {}),
+      ...(typeof raw.title === "string" ? {title: raw.title} : {}),
+      ...(typeof raw.enabled === "boolean" ? {enabled: raw.enabled} : {}),
+      schedule: safeScheduleSummary(raw.schedule),
+      instruction: safeHashSummary(raw.instruction),
+      reason: safeHashSummary(raw.reason),
+    };
+  }
+  if (eventType === "session_watch_config_write") {
+    const reason = asRecord(raw.reason);
+    return {
+      ...(raw.action === "update_watch" || raw.action === "disable_watch" ? {action: raw.action} : {}),
+      ...(typeof raw.agentKey === "string" ? {agentKey: raw.agentKey} : {}),
+      ...(typeof raw.targetSessionId === "string" ? {targetSessionId: raw.targetSessionId} : {}),
+      ...(typeof raw.watchId === "string" ? {watchId: raw.watchId} : {}),
+      ...(typeof raw.title === "string" ? {title: raw.title} : {}),
+      ...(typeof raw.intervalMinutes === "number" ? {intervalMinutes: raw.intervalMinutes} : {}),
+      ...(typeof raw.enabled === "boolean" ? {enabled: raw.enabled} : {}),
+      ...(typeof reason.length === "number" ? {reason: {length: reason.length}} : {}),
+    };
+  }
+  if (eventType === "control_operator_write") {
+    return safeOperatorSummary(raw);
+  }
+  if (eventType === "control_dev_login") {
+    return {
+      ...(raw.role === "admin" || raw.role === "scoped" ? {role: raw.role} : {}),
+      ...(typeof raw.identityHandle === "string" ? {identityHandle: raw.identityHandle} : {}),
+      ...(typeof raw.agentKey === "string" ? {agentKey: raw.agentKey} : {}),
     };
   }
   return {};
@@ -193,6 +298,14 @@ export class ControlReadService {
       values.push(new Date(input.before));
       where.push(`created_at < $${values.length}`);
     }
+    if (input.agentKey) {
+      values.push(input.agentKey);
+      where.push(`metadata->>'agentKey' = $${values.length}`);
+    }
+    if (input.targetSessionId) {
+      values.push(input.targetSessionId);
+      where.push(`(metadata->>'targetSessionId' = $${values.length} OR metadata->>'sessionId' = $${values.length})`);
+    }
 
     if (session.role === "scoped") {
       const visibleAgentKeys = (await this.listAgents(session)).map((agent) => agent.agentKey);
@@ -201,7 +314,7 @@ export class ControlReadService {
       values.push(visibleAgentKeys);
       const agentsParam = `$${values.length}`;
       where.push(`identity_id = ${identityParam}`);
-      where.push(`((event_type IN ('login', 'logout')) OR (event_type IN ('session_briefing_write', 'session_heartbeat_config_write') AND metadata->>'agentKey' = ANY(${agentsParam}::text[])))`);
+      where.push(`((event_type IN ('login', 'logout', 'control_dev_login')) OR (event_type IN ('session_briefing_write', 'session_heartbeat_config_write', 'session_scheduled_task_write', 'session_watch_config_write', 'control_operator_write') AND metadata->>'agentKey' = ANY(${agentsParam}::text[])))`);
     }
 
     values.push(limit);

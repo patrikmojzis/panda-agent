@@ -6,9 +6,9 @@ import {
 } from "../../domain/connector-leases/repo.js";
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../health/server.js";
 import {
+    type AgentAppHttpService,
     type AgentAppServer,
     type AgentAppServerOptions,
-    type AgentAppHttpService,
     startAgentAppServer,
 } from "../../integrations/apps/http-server.js";
 import {
@@ -48,11 +48,12 @@ export interface DaemonLifecycleRuntime {
   close(): Promise<void>;
   apps: AgentAppHttpService;
   appAuth?: AgentAppServerOptions["auth"];
-  identityStore?: AgentAppServerOptions["identityStore"];
+  identityStore?: RuntimeServices["identityStore"];
   sessionStore?: AgentAppServerOptions["sessionStore"];
   controlAuth: RuntimeServices["controlAuth"];
   controlReads: RuntimeServices["controlReads"];
   controlHome: RuntimeServices["controlHome"];
+  controlOperator: RuntimeServices["controlOperator"];
   controlBriefings: RuntimeServices["controlBriefings"];
   controlHeartbeats: RuntimeServices["controlHeartbeats"];
   controlTodos: RuntimeServices["controlTodos"];
@@ -378,12 +379,16 @@ export function createDaemonLifecycle(input: {
           if (!binding) {
             return null;
           }
+          if (!input.context.runtime.identityStore) {
+            throw new Error("Control server requires an identity store.");
+          }
           return startControlServer({
             host: binding.host,
             port: binding.port,
             auth: input.context.runtime.controlAuth,
             reads: input.context.runtime.controlReads,
             home: input.context.runtime.controlHome,
+            operator: input.context.runtime.controlOperator,
             briefings: input.context.runtime.controlBriefings,
             heartbeats: input.context.runtime.controlHeartbeats,
             todos: input.context.runtime.controlTodos,
@@ -391,6 +396,8 @@ export function createDaemonLifecycle(input: {
             watches: input.context.runtime.controlWatches,
             runtimeActivity: input.context.runtime.controlRuntimeActivity,
             connectorAccounts: input.context.runtime.controlConnectorAccounts,
+            identityStore: input.context.runtime.identityStore,
+            env: process.env,
             uiStaticDir: binding.uiStaticDir,
           });
         })();

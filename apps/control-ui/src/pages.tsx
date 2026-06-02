@@ -1,0 +1,6 @@
+export { AgentPage } from "@/features/control/pages/agent-page"
+export { AgentsPage } from "@/features/control/pages/agents-page"
+export { HomePage } from "@/features/control/pages/home-page"
+export { LoginPage } from "@/features/control/pages/login-page"
+export { Protected } from "@/features/control/pages/protected"
+export { SessionPage } from "@/features/control/pages/session-page"

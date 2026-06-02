@@ -4,7 +4,7 @@ import type {ThinkingLevel} from "@mariozechner/pi-ai";
 import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
 import {requireBoolean} from "../../lib/booleans.js";
-import {readOptionalJsonValue, stringifyOptionalJsonValue, type JsonValue} from "../../lib/json.js";
+import {type JsonValue, readOptionalJsonValue, stringifyOptionalJsonValue} from "../../lib/json.js";
 import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
 import {withTransaction} from "../../lib/postgres-transaction.js";
 import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
@@ -12,27 +12,27 @@ import {resolveSessionRef} from "./refs.js";
 import {buildSessionTableNames, type SessionTableNames} from "./postgres-shared.js";
 import {ensurePostgresSessionSchema} from "./postgres-schema.js";
 import type {SessionStore} from "./store.js";
-import {calculateSessionTodoItemsHash, normalizeSessionTodoItems} from "./todos.js";
 import type {ReplaceSessionTodoInput, SessionTodoRecord} from "./todos.js";
-import {SESSION_BRIEFING_PROMPT_SLUG, normalizeSessionAlias, normalizeSessionPromptSlug} from "./types.js";
+import {calculateSessionTodoItemsHash, normalizeSessionTodoItems} from "./todos.js";
 import type {
-  ClaimSessionHeartbeatInput,
-  CreateSessionInput,
-  DeleteSessionPromptInput,
-  ListDueSessionHeartbeatsInput,
-  RecordSessionHeartbeatResultInput,
-  ResolveSessionRefInput,
-  SessionHeartbeatRecord,
-  SessionPromptRecord,
-  SessionPromptSlug,
-  SessionRecord,
-  SessionRuntimeConfigRecord,
-  SetSessionPromptInput,
-  UpdateSessionCurrentThreadInput,
-  UpdateSessionHeartbeatConfigInput,
-  UpdateSessionLabelInput,
-  UpdateSessionRuntimeConfigInput,
+    ClaimSessionHeartbeatInput,
+    CreateSessionInput,
+    DeleteSessionPromptInput,
+    ListDueSessionHeartbeatsInput,
+    RecordSessionHeartbeatResultInput,
+    ResolveSessionRefInput,
+    SessionHeartbeatRecord,
+    SessionPromptRecord,
+    SessionPromptSlug,
+    SessionRecord,
+    SessionRuntimeConfigRecord,
+    SetSessionPromptInput,
+    UpdateSessionCurrentThreadInput,
+    UpdateSessionHeartbeatConfigInput,
+    UpdateSessionLabelInput,
+    UpdateSessionRuntimeConfigInput,
 } from "./types.js";
+import {normalizeSessionAlias, normalizeSessionPromptSlug, SESSION_BRIEFING_PROMPT_SLUG} from "./types.js";
 
 export interface PostgresSessionStoreOptions {
   pool: PgPoolLike;
@@ -408,10 +408,16 @@ export class PostgresSessionStore implements SessionStore {
       SELECT *
       FROM ${this.tables.sessions}
       WHERE agent_key = $1
-      ORDER BY CASE WHEN kind = 'main' THEN 0 ELSE 1 END, created_at ASC
+      ORDER BY created_at ASC, id ASC
     `, [requireSessionString("agent key", agentKey)]);
 
-    return result.rows.map((row) => parseSessionRow(row as Record<string, unknown>));
+    return result.rows
+      .map((row) => parseSessionRow(row as Record<string, unknown>))
+      .sort((left, right) => {
+        const leftRank = left.kind === "main" ? 0 : 1;
+        const rightRank = right.kind === "main" ? 0 : 1;
+        return leftRank - rightRank || left.createdAt - right.createdAt || left.id.localeCompare(right.id);
+      });
   }
 
 
@@ -532,15 +538,26 @@ export class PostgresSessionStore implements SessionStore {
   ): Promise<SessionRuntimeConfigRecord> {
     const updatesModel = input.model !== undefined;
     const updatesThinking = input.thinking !== undefined;
+    const updatesThinkingConfigured = input.thinkingConfigured !== undefined;
+    const updatesThinkingState = updatesThinking || updatesThinkingConfigured;
     const updatesInferenceProjection = input.inferenceProjection !== undefined;
     const updatesPendingWake = input.pendingWakeAt !== undefined;
-    if (!updatesModel && !updatesThinking && !updatesInferenceProjection && !updatesPendingWake) {
+    if (!updatesModel && !updatesThinkingState && !updatesInferenceProjection && !updatesPendingWake) {
       return this.getSessionRuntimeConfigRecord(input.sessionId, queryable);
+    }
+    if (input.thinkingConfigured === false && input.thinking !== undefined && input.thinking !== null) {
+      throw new Error("Session runtime thinking cannot be set while thinking configuration is cleared.");
     }
 
     const sessionId = requireSessionString("id", input.sessionId);
     const model = updatesModel && input.model !== null && input.model !== undefined
       ? resolveModelSelector(input.model).canonical
+      : null;
+    const thinkingConfigured = updatesThinkingState
+      ? input.thinkingConfigured ?? true
+      : false;
+    const thinking = thinkingConfigured && updatesThinking
+      ? input.thinking
       : null;
     const inferenceProjectionValue = updatesInferenceProjection && input.inferenceProjection !== null
       ? input.inferenceProjection as JsonValue
@@ -571,7 +588,7 @@ export class PostgresSessionStore implements SessionStore {
       ON CONFLICT (session_id) DO UPDATE
       SET model = CASE WHEN $7 THEN EXCLUDED.model ELSE ${this.tables.sessionRuntimeConfig}.model END,
           thinking = CASE WHEN $8 THEN EXCLUDED.thinking ELSE ${this.tables.sessionRuntimeConfig}.thinking END,
-          thinking_configured = CASE WHEN $8 THEN TRUE ELSE ${this.tables.sessionRuntimeConfig}.thinking_configured END,
+          thinking_configured = CASE WHEN $8 THEN EXCLUDED.thinking_configured ELSE ${this.tables.sessionRuntimeConfig}.thinking_configured END,
           inference_projection = CASE WHEN $9 THEN EXCLUDED.inference_projection ELSE ${this.tables.sessionRuntimeConfig}.inference_projection END,
           pending_wake_at = CASE WHEN $10 THEN EXCLUDED.pending_wake_at ELSE ${this.tables.sessionRuntimeConfig}.pending_wake_at END,
           updated_at = NOW()
@@ -579,12 +596,12 @@ export class PostgresSessionStore implements SessionStore {
     `, [
       sessionId,
       model,
-      updatesThinking ? input.thinking : null,
-      updatesThinking,
+      thinking,
+      thinkingConfigured,
       inferenceProjection,
       pendingWakeAt,
       updatesModel,
-      updatesThinking,
+      updatesThinkingState,
       updatesInferenceProjection,
       updatesPendingWake,
     ]);

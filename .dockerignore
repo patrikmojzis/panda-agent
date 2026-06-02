@@ -5,6 +5,12 @@
 !.env.example
 .generated/
 .temp
+apps/*/.git
+apps/*/dist
+apps/*/node_modules
+apps/*/pnpm-lock.yaml
+apps/*/pnpm-workspace.yaml
+apps/control-ui-backup
 coverage
 dist
 node_modules

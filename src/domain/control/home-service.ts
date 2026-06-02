@@ -1,7 +1,7 @@
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildScheduledTaskTableNames} from "../scheduling/tasks/postgres-shared.js";
-import {SESSION_TODO_STATUSES, isSessionTodoStatus, type SessionTodoStatus} from "../sessions/todos.js";
+import {isSessionTodoStatus, SESSION_TODO_STATUSES, type SessionTodoStatus} from "../sessions/todos.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {buildControlTableNames} from "./postgres-shared.js";
 import type {ControlSessionRecord} from "./types.js";
@@ -15,7 +15,7 @@ const TASK_ROWS_PER_SESSION_LIMIT = ATTENTION_LIMIT + UPCOMING_LIMIT;
 
 type ControlHomeStatusLevel = "ok" | "attention";
 type ControlHomeAttentionSeverity = "info" | "warning" | "critical";
-type ControlHomeAttentionType = "blocked_todos" | "in_progress_todos" | "failed_task" | "overdue_task" | "disabled_heartbeat";
+type ControlHomeAttentionType = "failed_task" | "overdue_task";
 
 type ControlHomeTodoCounts = Record<SessionTodoStatus, number>;
 
@@ -137,6 +137,11 @@ function severityRank(severity: ControlHomeAttentionSeverity): number {
   if (severity === "critical") return 0;
   if (severity === "warning") return 1;
   return 2;
+}
+
+function sessionWorkspaceRoute(agentKey: string, sessionId: string, tab = "overview"): string {
+  const base = `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}`;
+  return tab === "overview" ? base : `${base}?tab=${encodeURIComponent(tab)}`;
 }
 
 export class ControlHomeService {
@@ -264,43 +269,6 @@ export class ControlHomeService {
         ...(toIso(row.last_fire_at) ? {lastFireAt: toIso(row.last_fire_at)!} : {}),
       };
 
-      if (!heartbeat.enabled) {
-        attentionItems.push({
-          id: `disabled-heartbeat:${sessionId}`,
-          severity: "warning",
-          type: "disabled_heartbeat",
-          agentKey,
-          sessionId,
-          sessionLabel: label,
-          summary: "Heartbeat is disabled for this session.",
-          targetRoute: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
-          dueAt: heartbeat.nextFireAt ?? undefined,
-        });
-      }
-      if (todoCounts.blocked > 0) {
-        attentionItems.push({
-          id: `blocked-todos:${sessionId}`,
-          severity: "critical",
-          type: "blocked_todos",
-          agentKey,
-          sessionId,
-          sessionLabel: label,
-          summary: `${todoCounts.blocked} blocked todo${todoCounts.blocked === 1 ? "" : "s"} need attention.`,
-          targetRoute: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/todos`,
-        });
-      }
-      if (todoCounts.in_progress > 0) {
-        attentionItems.push({
-          id: `in-progress-todos:${sessionId}`,
-          severity: "info",
-          type: "in_progress_todos",
-          agentKey,
-          sessionId,
-          sessionLabel: label,
-          summary: `${todoCounts.in_progress} todo${todoCounts.in_progress === 1 ? "" : "s"} in progress.`,
-          targetRoute: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/todos`,
-        });
-      }
       if (lastRun?.status === "failed") {
         attentionItems.push({
           id: `failed-task:${String(lastRun.id)}`,
@@ -310,7 +278,7 @@ export class ControlHomeService {
           sessionId,
           sessionLabel: label,
           summary: "A scheduled task run failed recently.",
-          targetRoute: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/scheduled-tasks`,
+          targetRoute: sessionWorkspaceRoute(agentKey, sessionId, "automations"),
           createdAt: toIso(lastRun.created_at) ?? undefined,
           dueAt: toIso(lastRun.scheduled_for) ?? undefined,
         });
@@ -327,7 +295,7 @@ export class ControlHomeService {
             lifecycleStatus: status,
             nextFireAt,
             scheduleKind: String(task.schedule_kind),
-            targetRoute: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/scheduled-tasks`,
+            targetRoute: sessionWorkspaceRoute(agentKey, sessionId, "automations"),
           });
           if (Date.parse(nextFireAt) < generatedAt.getTime()) {
             attentionItems.push({
@@ -338,7 +306,7 @@ export class ControlHomeService {
               sessionId,
               sessionLabel: label,
               summary: "A scheduled task is overdue to run.",
-              targetRoute: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/scheduled-tasks`,
+              targetRoute: sessionWorkspaceRoute(agentKey, sessionId, "automations"),
               dueAt: nextFireAt,
             });
           }
@@ -355,12 +323,12 @@ export class ControlHomeService {
         nextTaskAt: toIso(nextTask?.next_fire_at),
         lastTaskStatus: typeof lastRun?.status === "string" ? lastRun.status : null,
         links: {
-          todos: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/todos`,
-          watches: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/watches`,
-          runtimeActivity: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/runtime-activity`,
-          scheduledTasks: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/scheduled-tasks`,
-          heartbeat: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
-          briefing: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`,
+          todos: sessionWorkspaceRoute(agentKey, sessionId),
+          watches: sessionWorkspaceRoute(agentKey, sessionId, "watches"),
+          runtimeActivity: sessionWorkspaceRoute(agentKey, sessionId, "runtime"),
+          scheduledTasks: sessionWorkspaceRoute(agentKey, sessionId, "automations"),
+          heartbeat: sessionWorkspaceRoute(agentKey, sessionId, "runtime"),
+          briefing: sessionWorkspaceRoute(agentKey, sessionId, "briefing"),
         },
       };
     });

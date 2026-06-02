@@ -32,6 +32,15 @@ pnpm control:dev
 
 Open the Vite URL and paste the one-time token at `/login`.
 
+For local-only development, you can skip the one-time token flow with the dev sign-in panel:
+
+```bash
+PANDA_CONTROL_ENABLED=true PANDA_CONTROL_DEV_LOGIN_ENABLED=true panda run
+pnpm control:dev
+```
+
+The dev endpoint is disabled unless `PANDA_CONTROL_DEV_LOGIN_ENABLED` is truthy, refuses `NODE_ENV=production`, and accepts loopback requests only unless `PANDA_CONTROL_DEV_LOGIN_ALLOW_REMOTE=true` is also set. It uses `PANDA_CONTROL_DEV_LOGIN_IDENTITY`, the submitted identity handle/id, or the single active identity if there is exactly one.
+
 ## Operator grants
 
 Control access is separate from identity-agent pairing.

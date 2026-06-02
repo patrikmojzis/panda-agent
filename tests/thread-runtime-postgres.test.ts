@@ -4,21 +4,14 @@ import {DataType, newDb} from "pg-mem";
 import {stringToUserMessage} from "../src/index.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
 import {buildThreadRuntimeTableNames} from "../src/domain/threads/runtime/postgres-shared.js";
+import {parseInputRow, parseMessageRow, parseToolJobRow,} from "../src/domain/threads/runtime/postgres-rows.js";
 import {
-  parseInputRow,
-  parseMessageRow,
-  parseThreadRow,
-  parseToolJobRow,
-} from "../src/domain/threads/runtime/postgres-rows.js";
-import {
-  backfillWorkerMetadataFromLegacyThreadContext,
-  buildThreadRuntimeSchemaSql,
-  migrateSessionRuntimeConfigFromThreadRows,
+    backfillWorkerMetadataFromLegacyThreadContext,
+    buildThreadRuntimeSchemaSql,
+    migrateSessionRuntimeConfigFromThreadRows,
 } from "../src/domain/threads/runtime/postgres-schema.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
-import {
-  THREAD_RUNTIME_JSONB_NUL_PLACEHOLDER,
-} from "../src/domain/threads/runtime/postgres-jsonb-safety.js";
+import {THREAD_RUNTIME_JSONB_NUL_PLACEHOLDER,} from "../src/domain/threads/runtime/postgres-jsonb-safety.js";
 
 const NUL = "\0";
 const NUL_PLACEHOLDER = THREAD_RUNTIME_JSONB_NUL_PLACEHOLDER;
@@ -360,6 +353,13 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(clearedRuntimeConfig.thinking).toBeUndefined();
     expect(clearedRuntimeConfig.thinkingConfigured).toBe(true);
     expect(clearedRuntimeConfig.inferenceProjection).toBeUndefined();
+
+    const defaultThinkingRuntimeConfig = await sessionStore.updateSessionRuntimeConfig({
+      sessionId: "session-alice",
+      thinkingConfigured: false,
+    });
+    expect(defaultThinkingRuntimeConfig.thinking).toBeUndefined();
+    expect(defaultThinkingRuntimeConfig.thinkingConfigured).toBe(false);
 
     const telegramInput = await store.enqueueInput("pg-thread", {
       message: stringToUserMessage("hello from telegram"),

@@ -80,7 +80,8 @@ Current behavior:
 
 - `set_env_value` currently keeps the `value` argument in transcript history so the agent does not replay `[redacted]` as a credential
 - `bash` redacts `env` argument values
-- `bash` also replaces echoed credential or `bash.env` values in stdout/stderr with `[redacted]`
+- `bash` also replaces echoed secret-like credential or `bash.env` values in stdout/stderr with `[redacted]`
+- stored credential metadata such as usernames, owners, or repo names is injected but not used as a global redaction candidate unless the key or value looks secret-shaped
 
 Still true:
 
