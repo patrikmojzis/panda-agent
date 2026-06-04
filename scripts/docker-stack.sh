@@ -21,7 +21,7 @@ Notes:
   - One bash runner container is created per agent in PANDA_AGENTS.
   - Disposable worker runners are enabled only when PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true.
   - The browser runner is shared.
-  - Telegram polling is auto-enabled when TELEGRAM_BOT_TOKEN is set in .env.
+  - Telegram polling is enabled when TELEGRAM_ENABLED=true; it runs TELEGRAM_ACCOUNT_KEY (default: main).
   - Discord all-enabled workers are enabled when DISCORD_ENABLED=true in .env.
   - WhatsApp polling is enabled when WHATSAPP_ENABLED=true in .env.
   - Wiki.js is part of the stack.
@@ -460,7 +460,7 @@ EOF
 }
 
 enable_telegram_profile=0
-if [[ -n "$(trim "${TELEGRAM_BOT_TOKEN:-}")" ]]; then
+if is_truthy "${TELEGRAM_ENABLED:-}"; then
   enable_telegram_profile=1
 fi
 

@@ -790,7 +790,7 @@ describe("daemon request processor", () => {
       externalConversationId: "777",
       externalActorId: "123",
       replyToMessageId: "555",
-      text: expect.stringContaining("panda telegram pair --identity <identity-handle> --actor 123"),
+      text: expect.stringContaining("panda telegram pair --account <account-key> --identity <identity-handle> --actor 123"),
     }));
     expect(harness.submitInput).not.toHaveBeenCalled();
   });

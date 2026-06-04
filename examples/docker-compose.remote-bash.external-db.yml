@@ -80,7 +80,7 @@ services:
 
   panda-telegram:
     image: panda-app:latest
-    command: ["telegram", "run"]
+    command: ["telegram", "run", "${TELEGRAM_ACCOUNT_KEY:-main}"]
     restart: unless-stopped
     stop_grace_period: 30s
     profiles: ["telegram"]
