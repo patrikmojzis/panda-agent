@@ -1180,8 +1180,9 @@ describe("Control operator HTTP", () => {
     const wrongSessionFilter = await fetch(`${base}/api/control/agents/panda/bindings?session_id=session-luna`, {headers: {cookie: auth.cookies}});
     expect(wrongSessionFilter.status).toBe(404);
 
-    const invalidBindingFilter = await fetch(`${base}/api/control/agents/panda/bindings?source=telegram`, {headers: {cookie: auth.cookies}});
-    expect(invalidBindingFilter.status).toBe(400);
+    const telegramBindings = await fetch(`${base}/api/control/agents/panda/bindings?source=telegram`, {headers: {cookie: auth.cookies}});
+    expect(telegramBindings.status).toBe(200);
+    await expect(telegramBindings.json()).resolves.toMatchObject({data: [], meta: {total: 0}});
   });
 
   it("creates email connectors with write-only credentials", async () => {
@@ -1277,8 +1278,9 @@ describe("Control operator HTTP", () => {
     expect(discordConnectors.status).toBe(200);
     await expect(discordConnectors.json()).resolves.toMatchObject({data: []});
 
-    const invalidConnectorFilter = await fetch(`${base}/api/control/agents/panda/connectors?source=telegram`, {headers: {cookie: auth.cookies}});
-    expect(invalidConnectorFilter.status).toBe(400);
+    const telegramConnectors = await fetch(`${base}/api/control/agents/panda/connectors?source=telegram`, {headers: {cookie: auth.cookies}});
+    expect(telegramConnectors.status).toBe(200);
+    await expect(telegramConnectors.json()).resolves.toMatchObject({data: []});
 
     const emailAccount = await harness.emailStore.getAccount("panda", "work");
     expect(emailAccount).toMatchObject({

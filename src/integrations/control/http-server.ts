@@ -356,8 +356,8 @@ function parseSessionTableInput(params: URLSearchParams): ControlSessionTableInp
 
 function parseConnectorSource(value: string | null): ControlConnectorTableInput["source"] | undefined {
   if (value === null || value.trim() === "") return undefined;
-  if (value === "discord" || value === "email") return value;
-  throw new ControlHttpError(400, "Control connector source filter must be discord or email.");
+  if (value === "discord" || value === "email" || value === "telegram") return value;
+  throw new ControlHttpError(400, "Control connector source filter must be discord, email, or telegram.");
 }
 
 function parseConnectorStatus(value: string | null): ControlConnectorTableInput["status"] | undefined {
@@ -376,8 +376,8 @@ function parseConnectorTableInput(params: URLSearchParams): ControlConnectorTabl
 
 function parseBindingSource(value: string | null): ControlBindingTableInput["source"] | undefined {
   if (value === null || value.trim() === "") return undefined;
-  if (value === "discord" || value === "email") return value;
-  throw new ControlHttpError(400, "Control binding source filter must be discord or email.");
+  if (value === "discord" || value === "email" || value === "telegram") return value;
+  throw new ControlHttpError(400, "Control binding source filter must be discord, email, or telegram.");
 }
 
 function parseBindingSessionId(value: string | null): string | undefined {
