@@ -76,6 +76,7 @@ export interface ControlTableInput {
 
 export interface ControlSessionTableInput extends ControlTableInput {
   kind?: Extract<AgentSessionKind, "main" | "branch">;
+  visibility?: "primary" | "subagent" | "all";
 }
 
 export interface ControlConnectorTableInput extends ControlTableInput {
@@ -164,6 +165,7 @@ export interface ControlSessionRow {
   id: string;
   agentKey: string;
   kind: string;
+  isSubagent: boolean;
   currentThreadId: string;
   alias?: string;
   displayName?: string;
@@ -559,6 +561,7 @@ function publicSessionRow(session: SessionRecord, heartbeatEnabled = session.kin
     id: session.id,
     agentKey: session.agentKey,
     kind: session.kind,
+    isSubagent: isSubagentSessionKind(session.kind),
     currentThreadId: session.currentThreadId,
     ...(session.alias ? {alias: session.alias} : {}),
     ...(session.displayName ? {displayName: session.displayName} : {}),
@@ -568,6 +571,10 @@ function publicSessionRow(session: SessionRecord, heartbeatEnabled = session.kin
     createdAt: iso(session.createdAt)!,
     updatedAt: iso(session.updatedAt)!,
   };
+}
+
+function isSubagentSessionKind(kind: AgentSessionKind | string): boolean {
+  return kind === "subagent" || kind === "worker";
 }
 
 function publicEmailEndpointConfig(value: unknown): ControlEmailConnectorEndpointConfig | undefined {
@@ -1572,8 +1579,13 @@ export class ControlOperatorService {
       WHERE session_id = ANY($1::text[])
     `, [sessionRows.map((row) => row.id)]).catch(() => ({rows: []}));
     const heartbeatBySession = new Map((heartbeats.rows as Array<Record<string, unknown>>).map((row) => [String(row.session_id), row.enabled !== false]));
+    const visibility = input.visibility ?? "primary";
     const rows = sessionRows
       .map((row) => publicSessionRow(row, heartbeatBySession.get(row.id) ?? row.kind === "main"))
+      .filter((row) => {
+        if (visibility === "all") return true;
+        return visibility === "subagent" ? row.isSubagent : !row.isSubagent;
+      })
       .filter((row) => !input.kind || row.kind === input.kind)
       .filter((row) => includesSearch(row as unknown as Record<string, unknown>, search));
     return tableResponse(sortRows(rows as unknown as Record<string, unknown>[], input, "updatedAt") as unknown as ControlSessionRow[], input);

@@ -1,6 +1,8 @@
 import * as React from "react"
 import { matchPath, useLocation } from "react-router-dom"
 
+import { DEFAULT_AGENT_TAB, DEFAULT_SESSION_TAB } from "@/app/control-routes"
+
 const APP_NAME = "Panda Control"
 const APP_DESCRIPTION = "Panda Control operator console"
 const THEME_COLOR_LIGHT = "#7de000"
@@ -62,13 +64,13 @@ function resolveRouteTitle(pathname: string, search: string) {
   if (sessionMatch) {
     const agentKey = safeDecode(sessionMatch.params.agentKey ?? "agent")
     const sessionId = safeDecode(sessionMatch.params.sessionId ?? "session")
-    return `${agentKey} / ${shortIdentifier(sessionId)} / ${activeTab(search, "overview")}`
+    return `${agentKey} / ${shortIdentifier(sessionId)} / ${activeTab(search, DEFAULT_SESSION_TAB)}`
   }
 
   const agentMatch = matchPath({ path: "/agents/:agentKey", end: true }, pathname)
   if (agentMatch) {
     const agentKey = safeDecode(agentMatch.params.agentKey ?? "agent")
-    return `${agentKey} / ${activeTab(search, "sessions")}`
+    return `${agentKey} / ${activeTab(search, DEFAULT_AGENT_TAB)}`
   }
 
   return "Control"

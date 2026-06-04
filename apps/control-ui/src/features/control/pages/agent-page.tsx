@@ -1,7 +1,6 @@
 import * as React from "react"
-import { Link, useParams, useSearchParams } from "react-router-dom"
+import { useParams, useSearchParams } from "react-router-dom"
 import {
-  ArrowRightIcon,
   BookOpen,
   GitBranch,
   KeyRound,
@@ -23,7 +22,6 @@ import {
   PageHeader,
   type DetailContentTab,
 } from "@/components/common/shared/page-layout"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -38,7 +36,6 @@ import {
   AGENT_RESOURCE_TABS,
   DEFAULT_AGENT_TAB,
   agentTabCount,
-  agentTabPath,
 } from "@/app/control-routes"
 import { StatusBadge } from "@/features/control/control-display"
 import { useAgent } from "@/features/control/api/queries"
@@ -52,14 +49,6 @@ import {
   SubagentsPanel,
   WikiPanel,
 } from "@/features/control/agent/agent-resource-panels"
-import {
-  DetailField,
-  DetailPanel,
-  DetailSection,
-  DetailSectionLabel,
-  DetailsGrid,
-} from "@/features/control/detail-primitives"
-import { formatNumber } from "@/features/control/formatting"
 import {
   useBindingSheet,
   useAgentPairingSheet,
@@ -115,14 +104,6 @@ function AgentPage() {
       <DetailPageContent
         label="Agent sections"
         onValueChange={setTab}
-        sidebar={
-          <AgentDetailSidebar
-            agent={agentDetail}
-            agentKey={agentKey}
-            loading={agent.isLoading}
-          />
-        }
-        sidebarLabel="Agent details"
         tabs={agentTabs}
         value={tab}
       />
@@ -582,168 +563,6 @@ function agentTabContent(agentKey: string, value: string) {
     default:
       return <SessionsPanel agentKey={agentKey} />
   }
-}
-
-function AgentDetailSidebar({
-  agent,
-  agentKey,
-  loading,
-}: {
-  agent?: AgentDetail
-  agentKey: string
-  loading: boolean
-}) {
-  return (
-    <div className="grid gap-5">
-      <DetailSection>
-        <DetailSectionLabel>Scope</DetailSectionLabel>
-        <DetailsGrid>
-          <DetailField loading={loading} label="Name" value={agent?.displayName} />
-          <DetailField
-            loading={loading}
-            label="Key"
-            value={agent ? <code>{agent.agentKey}</code> : undefined}
-          />
-          <DetailField
-            loading={loading}
-            label="Status"
-            value={agent ? <StatusBadge status={agent.status} /> : undefined}
-          />
-          <DetailField
-            loading={loading}
-            label="Pairing"
-            value={
-              agent ? (
-                agent.paired ? (
-                  <Badge>Paired</Badge>
-                ) : (
-                  <Badge variant="outline">Admin visible</Badge>
-                )
-              ) : undefined
-            }
-          />
-        </DetailsGrid>
-      </DetailSection>
-      <DetailPanel title="Configuration">
-        <div className="grid gap-2">
-          <ConfigurationLink
-            to={agentTabPath(agentKey, "sessions")}
-            label="Sessions"
-            description={countLabel(agent?.sessionCount, "session")}
-            status={configurationStatus(agent?.sessionCount, {
-              empty: "Missing",
-              present: "Active",
-            })}
-          />
-          <ConfigurationLink
-            to={agentTabPath(agentKey, "access")}
-            label="Access"
-            description={countLabel(agent?.pairingCount, "identity")}
-            status={configurationStatus(agent?.pairingCount, {
-              empty: "Unpaired",
-              present: "Paired",
-            })}
-          />
-          <ConfigurationLink
-            to={agentTabPath(agentKey, "credentials")}
-            label="Secrets"
-            description={countLabel(agent?.credentialCount, "credential")}
-            status={configurationStatus(agent?.credentialCount)}
-          />
-          <ConfigurationLink
-            to={agentTabPath(agentKey, "wiki")}
-            label="Wiki"
-            description={agent?.wikiBindingSet ? "Binding configured" : "No binding"}
-            status={{
-              label: agent?.wikiBindingSet ? "Bound" : "Missing",
-              variant: agent?.wikiBindingSet ? "outline" : "secondary",
-            }}
-          />
-          <ConfigurationLink
-            to={agentTabPath(agentKey, "connectors")}
-            label="Channels"
-            description={countLabel(agent?.connectorCount, "account")}
-            status={configurationStatus(agent?.connectorCount, {
-              present: "Connected",
-            })}
-          />
-          <ConfigurationLink
-            to={agentTabPath(agentKey, "skills")}
-            label="Skills"
-            description={countLabel(agent?.skillCount, "skill")}
-            status={configurationStatus(agent?.skillCount)}
-          />
-          <ConfigurationLink
-            to={agentTabPath(agentKey, "subagents")}
-            label="Subagents"
-            description={countLabel(agent?.subagentCount, "profile")}
-            status={configurationStatus(agent?.subagentCount)}
-          />
-          <ConfigurationLink
-            to={agentTabPath(agentKey, "gateway")}
-            label="Gateway"
-            description={countLabel(agent?.gatewaySourceCount, "source")}
-            status={configurationStatus(agent?.gatewaySourceCount, {
-              present: "Enabled",
-            })}
-          />
-        </div>
-      </DetailPanel>
-    </div>
-  )
-}
-
-function ConfigurationLink({
-  description,
-  label,
-  status,
-  to,
-}: {
-  description: string
-  label: string
-  status: ConfigurationStatus
-  to: string
-}) {
-  return (
-    <Link
-      to={to}
-      className="group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border p-2 text-sm transition-colors hover:bg-muted/50"
-    >
-      <span className="min-w-0">
-        <span className="block truncate font-medium">{label}</span>
-        <span className="block truncate text-xs text-muted-foreground">
-          {description}
-        </span>
-      </span>
-      <span className="inline-flex shrink-0 items-center gap-1">
-        <Badge variant={status.variant} className="h-5">
-          {status.label}
-        </Badge>
-        <ArrowRightIcon className="size-3.5 transition-transform group-hover:translate-x-0.5" />
-      </span>
-    </Link>
-  )
-}
-
-type ConfigurationStatus = {
-  label: string
-  variant: React.ComponentProps<typeof Badge>["variant"]
-}
-
-function configurationStatus(
-  count: number | undefined,
-  labels: { empty?: string; present?: string } = {}
-): ConfigurationStatus {
-  const value = count ?? 0
-  if (value > 0) {
-    return { label: labels.present ?? "Active", variant: "outline" }
-  }
-  return { label: labels.empty ?? "None", variant: "secondary" }
-}
-
-function countLabel(count: number | undefined, noun: string) {
-  const value = count ?? 0
-  return `${formatNumber(value)} ${value === 1 ? noun : `${noun}s`}`
 }
 
 export { AgentPage }

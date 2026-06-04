@@ -73,6 +73,7 @@ export type SessionRow = {
   id: string
   agentKey: string
   kind: string
+  isSubagent: boolean
   currentThreadId: string
   alias?: string
   displayName?: string

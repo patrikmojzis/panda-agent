@@ -682,7 +682,7 @@ describe("Control operator HTTP", () => {
     expect(auditText).toContain("\"peerSessionId\":\"session-luna\"");
   });
 
-  it("filters agent sessions by kind and rejects deprecated kinds", async () => {
+  it("filters agent sessions by kind and visibility", async () => {
     const harness = await createHarness();
     const createdBranch = await harness.sessions.createSessionRecord({
       id: "session-panda-branch",
@@ -691,15 +691,34 @@ describe("Control operator HTTP", () => {
       currentThreadId: "thread-panda-branch",
       createdByIdentityId: "identity-patrik",
     });
+    const createdSubagent = await harness.sessions.createSessionRecord({
+      id: "session-panda-subagent",
+      agentKey: "panda",
+      kind: "subagent",
+      currentThreadId: "thread-panda-subagent",
+      createdByIdentityId: "identity-patrik",
+    });
     const originalListAgentSessions = harness.sessions.listAgentSessions.bind(harness.sessions);
     // pg-mem can hide non-main rows through the agent_key index; keep this HTTP test focused on Control's filter contract.
     vi.spyOn(harness.sessions, "listAgentSessions").mockImplementation(async (agentKey) => {
       const rows = await originalListAgentSessions(agentKey);
-      if (agentKey !== "panda" || rows.some((row) => row.id === createdBranch.id)) return rows;
-      return [...rows, createdBranch];
+      if (agentKey !== "panda") return rows;
+      const ids = new Set(rows.map((row) => row.id));
+      return [
+        ...rows,
+        ...(!ids.has(createdBranch.id) ? [createdBranch] : []),
+        ...(!ids.has(createdSubagent.id) ? [createdSubagent] : []),
+      ];
     });
     const base = await startHarnessServer(harness);
     const auth = await login(base, harness);
+
+    const defaults = await fetch(`${base}/api/control/agents/panda/sessions`, {headers: {cookie: auth.cookies}});
+    expect(defaults.status).toBe(200);
+    const defaultsBody = await defaults.json() as {data: Array<{id: string; isSubagent: boolean}>; meta: {total: number}};
+    expect(defaultsBody.meta.total).toBe(2);
+    expect(defaultsBody.data).not.toEqual(expect.arrayContaining([expect.objectContaining({id: "session-panda-subagent"})]));
+    expect(defaultsBody.data.every((row) => row.isSubagent === false)).toBe(true);
 
     const branch = await fetch(`${base}/api/control/agents/panda/sessions?kind=branch`, {headers: {cookie: auth.cookies}});
     expect(branch.status).toBe(200);
@@ -707,9 +726,24 @@ describe("Control operator HTTP", () => {
     expect(branchBody.meta.total).toBe(1);
     expect(branchBody.data).toEqual([expect.objectContaining({id: "session-panda-branch", kind: "branch"})]);
 
+    const subagents = await fetch(`${base}/api/control/agents/panda/sessions?visibility=subagent`, {headers: {cookie: auth.cookies}});
+    expect(subagents.status).toBe(200);
+    const subagentsBody = await subagents.json() as {data: Array<{id: string; kind: string; isSubagent: boolean}>; meta: {total: number}};
+    expect(subagentsBody.meta.total).toBe(1);
+    expect(subagentsBody.data).toEqual([expect.objectContaining({id: "session-panda-subagent", kind: "subagent", isSubagent: true})]);
+
+    const all = await fetch(`${base}/api/control/agents/panda/sessions?visibility=all`, {headers: {cookie: auth.cookies}});
+    expect(all.status).toBe(200);
+    const allBody = await all.json() as {data: Array<{id: string}>; meta: {total: number}};
+    expect(allBody.meta.total).toBe(3);
+
     const invalid = await fetch(`${base}/api/control/agents/panda/sessions?kind=worker`, {headers: {cookie: auth.cookies}});
     expect(invalid.status).toBe(400);
     await expect(invalid.json()).resolves.toEqual({error: "Control session kind filter must be main or branch."});
+
+    const invalidVisibility = await fetch(`${base}/api/control/agents/panda/sessions?visibility=worker`, {headers: {cookie: auth.cookies}});
+    expect(invalidVisibility.status).toBe(400);
+    await expect(invalidVisibility.json()).resolves.toEqual({error: "Control session visibility filter must be primary, subagent, or all."});
   });
 
   it("filters work failures by severity and kind", async () => {

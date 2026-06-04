@@ -10,7 +10,6 @@ import {
   History,
   Home,
   KeyRound,
-  LayoutDashboard,
   Link2,
   Network,
   Plug,
@@ -38,7 +37,7 @@ export type ControlTabDefinition = {
 }
 
 export const DEFAULT_AGENT_TAB = "sessions"
-export const DEFAULT_SESSION_TAB = "overview"
+export const DEFAULT_SESSION_TAB = "briefing"
 
 export const CONSOLE_NAVIGATION: ConsoleNavItem[] = [
   { id: "home", path: "/", label: "Home", icon: Home },
@@ -54,31 +53,6 @@ export const AGENT_RESOURCE_TABS: ControlTabDefinition[] = [
     count: (agent) => agent?.sessionCount,
   },
   {
-    value: "access",
-    label: "Access",
-    icon: UserCheck,
-    count: (agent) => agent?.pairingCount,
-  },
-  {
-    value: "credentials",
-    label: "Credentials",
-    icon: KeyRound,
-    count: (agent) => agent?.credentialCount,
-  },
-  {
-    value: "wiki",
-    label: "Wiki",
-    icon: BookOpen,
-    count: (agent) => (agent?.wikiBindingSet ? 1 : 0),
-  },
-  {
-    value: "connectors",
-    label: "Connectors",
-    icon: Plug,
-    count: (agent) => agent?.connectorCount,
-  },
-  { value: "bindings", label: "Bindings", icon: Link2 },
-  {
     value: "skills",
     label: "Skills",
     icon: Wrench,
@@ -91,30 +65,54 @@ export const AGENT_RESOURCE_TABS: ControlTabDefinition[] = [
     count: (agent) => agent?.subagentCount,
   },
   {
+    value: "connectors",
+    label: "Connectors",
+    icon: Plug,
+    count: (agent) => agent?.connectorCount,
+  },
+  { value: "bindings", label: "Bindings", icon: Link2 },
+  {
+    value: "credentials",
+    label: "Credentials",
+    icon: KeyRound,
+    count: (agent) => agent?.credentialCount,
+  },
+  {
     value: "gateway",
     label: "Gateway",
     icon: RadioTower,
     count: (agent) => agent?.gatewaySourceCount,
+  },
+  {
+    value: "access",
+    label: "Access",
+    icon: UserCheck,
+    count: (agent) => agent?.pairingCount,
+  },
+  {
+    value: "wiki",
+    label: "Wiki",
+    icon: BookOpen,
+    count: (agent) => (agent?.wikiBindingSet ? 1 : 0),
   },
   { value: "audit", label: "Audit", icon: History },
 ]
 
 export const PARENT_AGENT_SHORTCUT_TABS: ControlTabDefinition[] =
   AGENT_RESOURCE_TABS.filter((tab) =>
-    ["sessions", "access", "connectors", "credentials", "wiki", "gateway"].includes(tab.value)
+    ["sessions", "skills", "subagents", "connectors", "bindings"].includes(tab.value)
   ).map((tab) =>
     tab.value === "sessions" ? { ...tab, label: "All sessions" } : tab
   )
 
 export const SESSION_RESOURCE_TABS: ControlTabDefinition[] = [
-  { value: "overview", label: "Overview", icon: LayoutDashboard },
   { value: "briefing", label: "Briefing", icon: FileText },
+  { value: "watches", label: "Watches", icon: Eye },
+  { value: "automations", label: "Automations", icon: CalendarClock },
   { value: "bindings", label: "Channel Bindings", icon: Network },
+  { value: "gateway", label: "Gateway Events", icon: RadioTower },
   { value: "a2a", label: "A2A", icon: Link2 },
   { value: "runtime", label: "Runtime", icon: Activity },
-  { value: "automations", label: "Automations", icon: CalendarClock },
-  { value: "watches", label: "Watches", icon: Eye },
-  { value: "gateway", label: "Gateway Events", icon: RadioTower },
   { value: "audit", label: "Audit", icon: ShieldCheck },
 ]
 

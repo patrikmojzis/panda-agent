@@ -30,6 +30,7 @@ export type DataTableState = StoredDataTableState & {
 type DataTableInitialState = Partial<
   Pick<TableParams, "page" | "per_page" | "search" | "sort_by" | "sort_direction">
 > & {
+  columnFilters?: ColumnFiltersState
   columnVisibility?: VisibilityState
   filterValueSetters?: DataTableFilterValueSetters
 }
@@ -52,7 +53,7 @@ function createDataTableStore(tableKey: string, initial?: DataTableInitialState)
     persist(
       (set) => ({
         sorting: initialSorting(initial),
-        columnFilters: [],
+        columnFilters: initial?.columnFilters ?? [],
         columnVisibility: initial?.columnVisibility ?? {},
         pagination: {
           pageIndex: Math.max((initial?.page ?? 1) - 1, 0),

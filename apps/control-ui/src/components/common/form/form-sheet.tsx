@@ -95,11 +95,11 @@ export function FormSheet({
         requestClose()
       }}
     >
-      <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-md" showCloseButton={false}>
+      <SheetContent className="min-w-0 gap-0 overflow-x-hidden data-[side=right]:w-full data-[side=right]:sm:max-w-md" showCloseButton={false}>
         <form.AppForm>
           <form
             noValidate
-            className="flex min-h-0 flex-1 flex-col overflow-hidden"
+            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
             onSubmit={(event) => {
               event.preventDefault()
               event.stopPropagation()
@@ -125,8 +125,8 @@ export function FormSheet({
                 )}
               </form.Subscribe>
             </SheetHeader>
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4">
-              <div className="grid gap-4">{children}</div>
+            <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4 py-4">
+              <div className="grid min-w-0 gap-4">{children}</div>
             </div>
             <form.Subscribe selector={(state: { canSubmit: boolean; isSubmitting: boolean; isDirty: boolean }): FormUiState => [state.canSubmit, state.isSubmitting, state.isDirty]}>
               {(submitState: FormUiState) => {

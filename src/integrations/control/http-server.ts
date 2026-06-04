@@ -340,10 +340,17 @@ function parseSessionKind(value: string | null): ControlSessionTableInput["kind"
   throw new ControlHttpError(400, "Control session kind filter must be main or branch.");
 }
 
+function parseSessionVisibility(value: string | null): ControlSessionTableInput["visibility"] | undefined {
+  if (value === null || value.trim() === "") return undefined;
+  if (value === "primary" || value === "subagent" || value === "all") return value;
+  throw new ControlHttpError(400, "Control session visibility filter must be primary, subagent, or all.");
+}
+
 function parseSessionTableInput(params: URLSearchParams): ControlSessionTableInput {
   return {
     ...parseTableInput(params),
     kind: parseSessionKind(params.get("kind")),
+    visibility: parseSessionVisibility(params.get("visibility")),
   };
 }
 

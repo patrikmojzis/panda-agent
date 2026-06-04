@@ -147,7 +147,7 @@ export function DetailPageContent({
 }: {
   label: string
   onValueChange: (value: string) => void
-  sidebar: React.ReactNode
+  sidebar?: React.ReactNode
   sidebarLabel?: string
   tabs: DetailContentTab[]
   value: string
@@ -186,13 +186,22 @@ export function DetailPageContent({
     if (nextValue !== sidebarTabValue) onValueChange(nextValue)
   }
 
+  const hasSidebar = Boolean(sidebar)
+
   return (
-    <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(13rem,15rem)]">
+    <div
+      className={
+        hasSidebar
+          ? "grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(13rem,15rem)]"
+          : "grid min-w-0 gap-6"
+      }
+    >
       <Tabs value={activeValue} onValueChange={handleValueChange}>
         <DetailContentTabsList
           label={label}
           onValueChange={handleValueChange}
           sidebarLabel={sidebarLabel}
+          showSidebarTab={hasSidebar}
           showDesktopTabs={hasMultipleTabs}
           tabs={tabs}
           value={activeValue}
@@ -206,16 +215,20 @@ export function DetailPageContent({
             {tab.content}
           </TabsContent>
         ))}
-        <TabsContent
-          value={sidebarTabValue}
-          className="grid flex-none gap-4 lg:hidden"
-        >
-          {sidebar}
-        </TabsContent>
+        {hasSidebar ? (
+          <TabsContent
+            value={sidebarTabValue}
+            className="grid flex-none gap-4 lg:hidden"
+          >
+            {sidebar}
+          </TabsContent>
+        ) : null}
       </Tabs>
-      <aside className="hidden min-w-0 content-start gap-4 lg:grid">
-        {sidebar}
-      </aside>
+      {hasSidebar ? (
+        <aside className="hidden min-w-0 content-start gap-4 lg:grid">
+          {sidebar}
+        </aside>
+      ) : null}
     </div>
   )
 }
@@ -224,6 +237,7 @@ function DetailContentTabsList({
   label,
   onValueChange,
   sidebarLabel,
+  showSidebarTab,
   showDesktopTabs,
   tabs,
   value,
@@ -231,6 +245,7 @@ function DetailContentTabsList({
   label: string
   onValueChange: (value: string) => void
   sidebarLabel: string
+  showSidebarTab: boolean
   showDesktopTabs: boolean
   tabs: DetailContentTab[]
   value: string
@@ -256,7 +271,9 @@ function DetailContentTabsList({
               <DetailTabLabel tab={tab} />
             </SelectItem>
           ))}
-          <SelectItem value={sidebarTabValue}>{sidebarLabel}</SelectItem>
+          {showSidebarTab ? (
+            <SelectItem value={sidebarTabValue}>{sidebarLabel}</SelectItem>
+          ) : null}
         </SelectContent>
       </Select>
       <div

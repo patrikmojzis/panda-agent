@@ -39,6 +39,12 @@ const sessionKindFilterOptions = [
   { label: "Branch", value: "branch" },
 ]
 
+const sessionVisibilityFilterOptions = [
+  { label: "Primary", value: "primary" },
+  { label: "Subagents", value: "subagent" },
+  { label: "Everything", value: "everything" },
+]
+
 const sessionsDefaultColumnVisibility = {
   heartbeatEnabled: false,
 }
@@ -50,7 +56,11 @@ export function SessionsPanel({ agentKey }: { agentKey: string }) {
   const table = useDataTableState(`agent:${agentKey}:sessions`, {
     sort_by: "updatedAt",
     sort_direction: "desc",
+    columnFilters: [{ id: "visibility", value: "primary" }],
     columnVisibility: sessionsDefaultColumnVisibility,
+    filterValueSetters: {
+      visibility: sessionVisibilityFilterValueSetter,
+    },
   })
   const sessions = useAgentSessions(agentKey, table.params)
   const resetSession = useToastMutation({
@@ -156,7 +166,12 @@ export function SessionsPanel({ agentKey }: { agentKey: string }) {
       state={table}
       defaultColumnVisibility={sessionsDefaultColumnVisibility}
       error={sessions.error}
-      filters={<SessionKindFilter state={table} />}
+      filters={
+        <>
+          <SessionVisibilityFilter state={table} />
+          <SessionKindFilter state={table} />
+        </>
+      }
       isFetching={sessions.isFetching}
       isLoading={sessions.isLoading}
       isPlaceholderData={sessions.isPlaceholderData}
@@ -197,6 +212,24 @@ function SessionKindFilter({ state }: { state: DataTableState }) {
       options={sessionKindFilterOptions}
     />
   )
+}
+
+function SessionVisibilityFilter({ state }: { state: DataTableState }) {
+  return (
+    <TableSelectFilter
+      state={state}
+      id="visibility"
+      label="Sessions"
+      allLabel="Primary"
+      options={sessionVisibilityFilterOptions}
+    />
+  )
+}
+
+function sessionVisibilityFilterValueSetter(value: unknown) {
+  if (value === "everything") return "all"
+  if (value === "primary" || value === "subagent") return value
+  return undefined
 }
 
 function SessionNameCell({ session }: { session: SessionRow }) {
