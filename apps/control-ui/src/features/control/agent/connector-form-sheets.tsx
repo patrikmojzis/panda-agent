@@ -176,6 +176,7 @@ const channelActorPairingSchema = z
 const bindingSourceOptions = [
   { label: "Discord", value: "discord" },
   { label: "Email", value: "email" },
+  { label: "Telegram", value: "telegram" },
 ]
 
 const channelActorSourceOptions = [
@@ -834,6 +835,12 @@ export function ChannelActorPairingSheet() {
     if (isOpen) setSource(resetValues.source)
   }, [isOpen, resetValues.source])
   const identityPicker = useIdentityOptions(isOpen, resetValues.identityId)
+  const connectorPicker = useConnectorOptions(
+    context,
+    isOpen && source === "telegram",
+    resetValues.connectorKey,
+    "telegram"
+  )
   const mutation = useMutation({
     mutationFn: (values: ChannelActorPairingFormValues) => {
       const current = requireContext(context)
@@ -866,7 +873,9 @@ export function ChannelActorPairingSheet() {
   const connectorDescription =
     source === "whatsapp"
       ? "Usually main unless WHATSAPP_CONNECTOR_KEY points at another connector."
-      : "Use the bot id returned by panda telegram whoami."
+      : connectorPicker.options.length > 0
+        ? "Choose one of this agent's Telegram connector accounts."
+        : "Use the bot id returned by panda telegram account whoami."
   const actorDescription =
     source === "whatsapp"
       ? "Phone number or WhatsApp JID. Phone numbers are stored as @s.whatsapp.net."
@@ -905,15 +914,28 @@ export function ChannelActorPairingSheet() {
         )}
       </form.AppField>
       <form.AppField name="connectorKey">
-        {(field) => (
-          <field.TextField
-            label="Connector key"
-            autoComplete="off"
-            description={connectorDescription}
-            placeholder={source === "whatsapp" ? "main" : "123456789"}
-            required
-          />
-        )}
+        {(field) =>
+          source === "telegram" && connectorPicker.options.length > 0 ? (
+            <field.ComboboxField
+              label="Telegram connector"
+              description={connectorDescription}
+              disabled={connectorPicker.isLoading}
+              options={connectorPicker.options}
+              placeholder={
+                connectorPicker.isLoading ? "Loading Telegram connectors" : "Select connector"
+              }
+              required
+            />
+          ) : (
+            <field.TextField
+              label="Connector key"
+              autoComplete="off"
+              description={connectorDescription}
+              placeholder={source === "whatsapp" ? "main" : "123456789"}
+              required
+            />
+          )
+        }
       </form.AppField>
       <form.AppField name="externalActorId">
         {(field) => (
@@ -1176,5 +1198,7 @@ export function EmailRouteSheet() {
 }
 
 function sourceAccountLabel(source: string) {
-  return source === "email" ? "an email account" : "a Discord account"
+  if (source === "email") return "an email account"
+  if (source === "telegram") return "a Telegram account"
+  return "a Discord account"
 }

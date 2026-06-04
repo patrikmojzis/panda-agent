@@ -861,7 +861,6 @@ exit 42
       "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "TELEGRAM_ENABLED=true",
-      "TELEGRAM_ACCOUNT_KEY=main",
       "PANDA_AGENTS=claw,Luna",
     ].join("\n"));
 
@@ -889,7 +888,8 @@ exit 42
 
     const baseCompose = await readFile(baseComposePath, "utf8");
     expect(baseCompose).toContain("  panda-telegram:\n    image: panda-app:latest");
-    expect(baseCompose).toContain('command: ["telegram", "run", "${TELEGRAM_ACCOUNT_KEY:-main}"]');
+    expect(baseCompose).toContain('command: ["telegram", "run", "--all-enabled"]');
+    expect(baseCompose).toContain("PANDA_TELEGRAM_DB_POOL_MAX: ${PANDA_TELEGRAM_DB_POOL_MAX:-2}");
     expect(baseCompose).toContain("  panda-discord:\n    image: panda-app:latest");
     expect(baseCompose).toContain('command: ["discord", "run", "--all-enabled"]');
     expect(baseCompose).toContain("PANDA_DISCORD_DB_POOL_MAX: ${PANDA_DISCORD_DB_POOL_MAX:-2}");

@@ -45,7 +45,7 @@ For a small 22-slot Postgres plan like `clankerino`, use this core budget:
 - `panda-core` notification pool: `4`
 - `panda-core` thread lease pool: `4`
 - `panda-core` readonly pool: `2`, lazy
-- `panda-telegram`: `5`
+- `panda-telegram`: `2` in all-enabled Docker stack (`PANDA_TELEGRAM_DB_POOL_MAX`), `5` for a single debug worker
 - `panda-discord`: `2` per enabled Discord account in the Docker stack
 - `panda-whatsapp`: `5`
 

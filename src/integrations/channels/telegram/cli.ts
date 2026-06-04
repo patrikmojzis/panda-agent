@@ -4,12 +4,15 @@ import {Command, InvalidArgumentError} from "commander";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../../lib/cli.js";
 import {resolveMediaDir} from "../../../lib/data-dir.js";
+import {PostgresAgentStore} from "../../../domain/agents/postgres.js";
+import {normalizeAgentKey} from "../../../domain/agents/types.js";
 import {PostgresConnectorAccountStore} from "../../../domain/connectors/postgres.js";
-import {normalizeConnectorAccountKey} from "../../../domain/connectors/types.js";
+import {normalizeConnectorAccountKey, type ConnectorAccountOwnerInput} from "../../../domain/connectors/types.js";
 import {resolveCredentialCrypto} from "../../../domain/credentials/crypto.js";
 import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
 import {parseIdentityHandle} from "../../../domain/identity/cli.js";
 import {trimToUndefined} from "../../../lib/strings.js";
+import {type HealthServer, type HealthSnapshot, resolveOptionalHealthServerBinding, startHealthServer} from "../../../lib/health-server.js";
 import {ensureSchemas, withPostgresPool} from "../../../lib/postgres-bootstrap.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 import {
@@ -21,19 +24,27 @@ import {
 } from "./account.js";
 import {TelegramService} from "./service.js";
 
+const TELEGRAM_ALL_ENABLED_POOL_MAX_FALLBACK = 2;
+
 interface TelegramIdentityCliOptions {
   dbUrl?: string;
 }
 
-interface TelegramRunCliOptions extends TelegramIdentityCliOptions {}
+interface TelegramRunCliOptions extends TelegramIdentityCliOptions {
+  allEnabled?: boolean;
+}
 
 interface TelegramAccountCliOptions extends TelegramIdentityCliOptions {}
 
-interface TelegramAccountSetCliOptions extends TelegramAccountCliOptions {
+interface TelegramAccountOwnerCliOptions extends TelegramAccountCliOptions {
+  agent?: string;
+}
+
+interface TelegramAccountSetCliOptions extends TelegramAccountOwnerCliOptions {
   botTokenStdin?: boolean;
 }
 
-interface TelegramAccountImportEnvCliOptions extends TelegramAccountCliOptions {
+interface TelegramAccountImportEnvCliOptions extends TelegramAccountOwnerCliOptions {
   envKey: string;
 }
 
@@ -52,13 +63,32 @@ export interface TelegramRunServiceOptions {
   accountKey?: string;
   dataDir: string;
   dbUrl?: string;
+  disableHealthServer?: boolean;
   expectedConnectorKey?: string;
+  poolMaxFallback?: number;
   token: string;
 }
 
 export interface TelegramRunService {
   run(): Promise<void>;
+  start?(): Promise<void>;
   stop(): Promise<void>;
+}
+
+interface StartedTelegramRunService {
+  accountKey: string;
+  runPromise: Promise<void>;
+  service: TelegramRunService;
+}
+
+interface TelegramRunServiceRef {
+  accountKey: string;
+  service: TelegramRunService;
+}
+
+interface TelegramAccountStores {
+  agentStore: PostgresAgentStore;
+  connectorStore: PostgresConnectorAccountStore;
 }
 
 export interface TelegramCliDependencies {
@@ -80,6 +110,10 @@ function parseCliValue(value: string, normalize: (raw: string) => string): strin
 
 function parseTelegramAccountKey(value: string): string {
   return parseCliValue(value, normalizeConnectorAccountKey);
+}
+
+function parseTelegramOwnerAgent(value: string): string {
+  return parseCliValue(value, normalizeAgentKey);
 }
 
 function parseEnvKey(value: string): string {
@@ -133,6 +167,32 @@ function createTelegramClient(dependencies: TelegramCliDependencies): TelegramBo
 
 function createTelegramRunService(options: TelegramRunServiceOptions, dependencies: TelegramCliDependencies = {}): TelegramRunService {
   return dependencies.createRunService?.(options) ?? new TelegramService(options);
+}
+
+async function withTelegramAccountStores<T>(
+  options: TelegramAccountCliOptions,
+  fn: (stores: TelegramAccountStores) => Promise<T>,
+): Promise<T> {
+  return withPostgresPool(options.dbUrl, async (pool) => {
+    const stores: TelegramAccountStores = {
+      agentStore: new PostgresAgentStore({pool}),
+      connectorStore: new PostgresConnectorAccountStore({pool}),
+    };
+    await stores.connectorStore.ensureSchema();
+    return fn(stores);
+  });
+}
+
+async function resolveTelegramAccountOwner(
+  options: TelegramAccountOwnerCliOptions,
+  stores: Pick<TelegramAccountStores, "agentStore">,
+): Promise<ConnectorAccountOwnerInput> {
+  if (!options.agent) {
+    return {};
+  }
+
+  const agent = await stores.agentStore.getAgent(options.agent);
+  return {ownerAgentKey: agent.agentKey};
 }
 
 async function resolveTelegramBotIdentity(options: TelegramIdentityCliOptions & {account?: string}, dependencies: TelegramCliDependencies = {}): Promise<{
@@ -243,21 +303,7 @@ export async function telegramUnpairCommand(options: TelegramUnpairCliOptions, d
   });
 }
 
-export async function telegramRunCommand(accountKey: string | undefined, options: TelegramRunCliOptions, dependencies: TelegramCliDependencies = {}): Promise<void> {
-  const identity = await resolveTelegramBotIdentity({dbUrl: options.dbUrl, account: accountKey}, dependencies);
-  requireEnabledStoredTelegramAccount(identity);
-  const service = createTelegramRunService({
-    accountKey: identity.accountKey,
-    dataDir: resolveMediaDir(),
-    dbUrl: options.dbUrl,
-    expectedConnectorKey: identity.connectorKey,
-    token: identity.token!,
-  }, dependencies);
-
-  const shutdown = async () => {
-    await service.stop();
-  };
-
+function registerTelegramRunShutdown(shutdown: () => Promise<void>): () => void {
   const handleSigint = () => {
     void shutdown();
   };
@@ -268,12 +314,231 @@ export async function telegramRunCommand(accountKey: string | undefined, options
   process.once("SIGINT", handleSigint);
   process.once("SIGTERM", handleSigterm);
 
+  return () => {
+    process.off("SIGINT", handleSigint);
+    process.off("SIGTERM", handleSigterm);
+  };
+}
+
+function formatTelegramRunError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function logTelegramRunEvent(event: string, payload: Record<string, unknown>): void {
+  process.stdout.write(`${JSON.stringify({
+    source: TELEGRAM_SOURCE,
+    event,
+    timestamp: new Date().toISOString(),
+    ...payload,
+  })}\n`);
+}
+
+async function listEnabledTelegramAccountKeys(options: TelegramRunCliOptions): Promise<readonly string[]> {
+  return withPostgresPool(options.dbUrl, async (pool) => {
+    const store = new PostgresConnectorAccountStore({pool});
+    await store.ensureSchema();
+    const accounts = await store.listAccounts({
+      source: TELEGRAM_SOURCE,
+      status: "enabled",
+    });
+
+    return accounts.map((account) => account.accountKey);
+  });
+}
+
+async function stopTelegramRunServices(services: readonly TelegramRunServiceRef[]): Promise<void> {
+  await Promise.allSettled(services.map(async ({accountKey, service}) => {
+    try {
+      await service.stop();
+    } catch (error) {
+      logTelegramRunEvent("worker_stop_failed", {
+        accountKey,
+        message: formatTelegramRunError(error),
+      });
+    }
+  }));
+}
+
+function startTelegramRunLoop(accountKey: string, service: TelegramRunService): Promise<void> {
+  return service.run().catch((error) => {
+    logTelegramRunEvent("worker_run_failed", {
+      accountKey,
+      message: formatTelegramRunError(error),
+    });
+  });
+}
+
+async function startTelegramSupervisorHealthServer(getSnapshot: () => HealthSnapshot): Promise<HealthServer | null> {
+  const binding = resolveOptionalHealthServerBinding({
+    hostEnvKey: "PANDA_TELEGRAM_HEALTH_HOST",
+    portEnvKey: "PANDA_TELEGRAM_HEALTH_PORT",
+  });
+  if (!binding) {
+    return null;
+  }
+
+  return startHealthServer({
+    ...binding,
+    getSnapshot: () => getSnapshot(),
+  });
+}
+
+async function telegramRunAllEnabledCommand(
+  options: TelegramRunCliOptions,
+  dependencies: TelegramCliDependencies,
+): Promise<void> {
+  const started: StartedTelegramRunService[] = [];
+  let starting: TelegramRunServiceRef | null = null;
+  let shutdownRequested = false;
+  let shutdownPromise: Promise<void> | null = null;
+  let resolveStopWaiter: (() => void) | null = null;
+  const stopWaiter = new Promise<void>((resolve) => {
+    resolveStopWaiter = resolve;
+  });
+  const healthServer = await startTelegramSupervisorHealthServer(() => ({
+    ok: started.length > 0 && !shutdownRequested,
+    connectorCount: started.length,
+    accountKeys: started.map((service) => service.accountKey),
+    startingAccountKey: starting?.accountKey ?? null,
+    stopping: shutdownRequested,
+  }));
+
+  const shutdown = async () => {
+    shutdownRequested = true;
+    if (!shutdownPromise) {
+      shutdownPromise = (async () => {
+        await stopTelegramRunServices([
+          ...started,
+          ...(starting ? [starting] : []),
+        ]);
+        await healthServer?.close();
+        resolveStopWaiter?.();
+      })();
+    }
+
+    await shutdownPromise;
+  };
+  const unregisterShutdown = registerTelegramRunShutdown(shutdown);
+
+  try {
+    const accountKeys = await listEnabledTelegramAccountKeys(options);
+    if (shutdownRequested) {
+      return;
+    }
+    if (accountKeys.length === 0) {
+      throw new Error("No enabled Telegram accounts found. Configure or enable one, then run `panda telegram run --all-enabled`.");
+    }
+
+    for (const accountKey of accountKeys) {
+      if (shutdownRequested) {
+        break;
+      }
+
+      let service: TelegramRunService | null = null;
+      try {
+        const identity = await resolveTelegramBotIdentity({dbUrl: options.dbUrl, account: accountKey}, dependencies);
+        requireEnabledStoredTelegramAccount(identity);
+        service = createTelegramRunService({
+          accountKey: identity.accountKey,
+          dataDir: resolveMediaDir(),
+          dbUrl: options.dbUrl,
+          disableHealthServer: true,
+          expectedConnectorKey: identity.connectorKey,
+          poolMaxFallback: TELEGRAM_ALL_ENABLED_POOL_MAX_FALLBACK,
+          token: identity.token!,
+        }, dependencies);
+        starting = {accountKey, service};
+        if (!service.start) {
+          throw new Error("Telegram run service does not support supervised startup.");
+        }
+        await service.start();
+        if (shutdownRequested) {
+          await service.stop();
+          break;
+        }
+
+        starting = null;
+        started.push({
+          accountKey,
+          runPromise: startTelegramRunLoop(accountKey, service),
+          service,
+        });
+      } catch (error) {
+        if (!shutdownRequested) {
+          logTelegramRunEvent("worker_start_failed", {
+            accountKey,
+            message: formatTelegramRunError(error),
+          });
+        }
+        await service?.stop().catch((stopError) => {
+          logTelegramRunEvent("worker_stop_failed", {
+            accountKey,
+            message: formatTelegramRunError(stopError),
+          });
+        });
+      } finally {
+        starting = null;
+      }
+    }
+
+    if (started.length === 0) {
+      if (shutdownRequested) {
+        return;
+      }
+      throw new Error("No Telegram workers started. Every enabled Telegram account failed during startup.");
+    }
+
+    logTelegramRunEvent("worker_supervisor_started", {
+      accountCount: started.length,
+      accountKeys: started.map((service) => service.accountKey),
+      poolMaxFallback: TELEGRAM_ALL_ENABLED_POOL_MAX_FALLBACK,
+    });
+
+    await Promise.race([
+      stopWaiter,
+      Promise.all(started.map((service) => service.runPromise)).then(() => undefined),
+    ]);
+  } finally {
+    unregisterShutdown();
+    await shutdown();
+  }
+}
+
+async function telegramRunSingleAccountCommand(accountKey: string, options: TelegramRunCliOptions, dependencies: TelegramCliDependencies): Promise<void> {
+  const identity = await resolveTelegramBotIdentity({dbUrl: options.dbUrl, account: accountKey}, dependencies);
+  requireEnabledStoredTelegramAccount(identity);
+  const service = createTelegramRunService({
+    accountKey: identity.accountKey,
+    dataDir: resolveMediaDir(),
+    dbUrl: options.dbUrl,
+    expectedConnectorKey: identity.connectorKey,
+    token: identity.token!,
+  }, dependencies);
+
+  const unregisterShutdown = registerTelegramRunShutdown(async () => {
+    await service.stop();
+  });
+
   try {
     await service.run();
   } finally {
-    process.off("SIGINT", handleSigint);
-    process.off("SIGTERM", handleSigterm);
+    unregisterShutdown();
   }
+}
+
+export async function telegramRunCommand(accountKey: string | undefined, options: TelegramRunCliOptions, dependencies: TelegramCliDependencies = {}): Promise<void> {
+  if (options.allEnabled && accountKey !== undefined) {
+    throw new Error("Choose either a Telegram account key or --all-enabled, not both.");
+  }
+  if (options.allEnabled) {
+    await telegramRunAllEnabledCommand(options, dependencies);
+    return;
+  }
+  if (accountKey === undefined) {
+    throw new Error("Pass a Telegram account key or --all-enabled.");
+  }
+
+  await telegramRunSingleAccountCommand(accountKey, options, dependencies);
 }
 
 export async function telegramAccountSetCommand(accountKey: string, options: TelegramAccountSetCliOptions, dependencies: TelegramCliDependencies = {}): Promise<void> {
@@ -281,15 +546,15 @@ export async function telegramAccountSetCommand(accountKey: string, options: Tel
     throw new Error("Pass --bot-token-stdin to read the Telegram bot token from stdin.");
   }
   const token = await (dependencies.readBotTokenFromStdin ?? readTelegramBotTokenFromStdin)();
-  await withPostgresPool(options.dbUrl, async (pool) => {
-    const store = new PostgresConnectorAccountStore({pool});
-    await store.ensureSchema();
+  await withTelegramAccountStores(options, async (stores) => {
+    const owner = await resolveTelegramAccountOwner(options, stores);
     const result = await setTelegramBotAccount({
+      ...owner,
       accountKey,
       botToken: token,
       client: createTelegramClient(dependencies),
       crypto: resolveTelegramAccountCrypto(),
-      store,
+      store: stores.connectorStore,
     });
     process.stdout.write([
       `Stored Telegram account ${result.account.accountKey}.`,
@@ -301,15 +566,15 @@ export async function telegramAccountSetCommand(accountKey: string, options: Tel
 
 export async function telegramAccountImportEnvCommand(accountKey: string, options: TelegramAccountImportEnvCliOptions, dependencies: TelegramCliDependencies = {}): Promise<void> {
   const token = readTelegramBotTokenFromEnv(options.envKey, dependencies.env ?? process.env);
-  await withPostgresPool(options.dbUrl, async (pool) => {
-    const store = new PostgresConnectorAccountStore({pool});
-    await store.ensureSchema();
+  await withTelegramAccountStores(options, async (stores) => {
+    const owner = await resolveTelegramAccountOwner(options, stores);
     const result = await setTelegramBotAccount({
+      ...owner,
       accountKey,
       botToken: token,
       client: createTelegramClient(dependencies),
       crypto: resolveTelegramAccountCrypto(),
-      store,
+      store: stores.connectorStore,
     });
     process.stdout.write([
       `Imported Telegram account ${result.account.accountKey}.`,
@@ -379,8 +644,9 @@ export function registerTelegramCommands(program: Command, dependencies: Telegra
 
   telegramProgram
     .command("run")
-    .description("Run the Telegram ingress worker")
-    .argument("<accountKey>", "Telegram connector account key", parseTelegramAccountKey)
+    .description("Run one stored Telegram connector account worker, or all enabled accounts")
+    .argument("[accountKey]", "Telegram connector account key", parseTelegramAccountKey)
+    .option("--all-enabled", "Run every enabled Telegram connector account")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((accountKey: string | undefined, options: TelegramRunCliOptions) => {
       return telegramRunCommand(accountKey, options, dependencies);
@@ -395,6 +661,7 @@ export function registerTelegramCommands(program: Command, dependencies: Telegra
     .description("Store a Telegram bot token from stdin after validation")
     .argument("<accountKey>", "Telegram connector account key", parseTelegramAccountKey)
     .requiredOption("--bot-token-stdin", "Read the Telegram bot token from stdin")
+    .option("--agent <agentKey>", "Panda agent key that owns this account", parseTelegramOwnerAgent)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((accountKey: string, options: TelegramAccountSetCliOptions) => {
       return telegramAccountSetCommand(accountKey, options, dependencies);
@@ -405,6 +672,7 @@ export function registerTelegramCommands(program: Command, dependencies: Telegra
     .description("Import a Telegram bot token from an environment variable after validation")
     .argument("<accountKey>", "Telegram connector account key", parseTelegramAccountKey)
     .requiredOption("--env-key <ENV_VAR_NAME>", "Environment variable containing the Telegram bot token", parseEnvKey)
+    .option("--agent <agentKey>", "Panda agent key that owns this account", parseTelegramOwnerAgent)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((accountKey: string, options: TelegramAccountImportEnvCliOptions) => {
       return telegramAccountImportEnvCommand(accountKey, options, dependencies);

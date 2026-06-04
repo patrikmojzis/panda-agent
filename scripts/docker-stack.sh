@@ -21,7 +21,7 @@ Notes:
   - One bash runner container is created per agent in PANDA_AGENTS.
   - Disposable worker runners are enabled only when PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true.
   - The browser runner is shared.
-  - Telegram polling is enabled when TELEGRAM_ENABLED=true; it runs TELEGRAM_ACCOUNT_KEY (default: main).
+  - Telegram polling is enabled when TELEGRAM_ENABLED=true; it runs all enabled Telegram connector accounts.
   - Discord all-enabled workers are enabled when DISCORD_ENABLED=true in .env.
   - WhatsApp polling is enabled when WHATSAPP_ENABLED=true in .env.
   - Wiki.js is part of the stack.

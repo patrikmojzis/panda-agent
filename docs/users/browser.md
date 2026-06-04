@@ -174,7 +174,7 @@ That stack now includes:
 - `panda-core`
 - `panda-browser-runner` for browser
 - one generated `panda-runner-<agentKey>` service per agent in `PANDA_AGENTS`
-- optional `panda-telegram` when `TELEGRAM_ENABLED=true`; it runs `TELEGRAM_ACCOUNT_KEY` (default `main`)
+- optional `panda-telegram` when `TELEGRAM_ENABLED=true`; it runs all enabled Telegram connector accounts
 
 ## Screenshots And PDFs
 

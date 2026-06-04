@@ -266,13 +266,15 @@ Telegram stored-account example (token writes are CLI-only; Control shows secret
 
 ```bash
 export CREDENTIALS_MASTER_KEY=...
-printenv TELEGRAM_BOT_TOKEN | panda telegram account set main --bot-token-stdin
+printenv TELEGRAM_BOT_TOKEN | panda telegram account set main --bot-token-stdin --agent clawd
 panda telegram account whoami main
 panda telegram pair --account main --identity alice --actor 123456789
 panda telegram run main
+# Or supervise every enabled stored Telegram account:
+panda telegram run --all-enabled
 ```
 
-Telegram connector keys remain the Telegram bot id. The account key (for example `main`) only selects the stored connector account; runtime commands require an explicit stored account key.
+Telegram connector keys remain the Telegram bot id. The account key (for example `main`) only selects the stored connector account; single-account runtime commands require an explicit stored account key; production supervisors can use `--all-enabled`.
 
 WhatsApp example:
 
