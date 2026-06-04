@@ -221,11 +221,11 @@ describe("Telegram CLI", () => {
     vi.restoreAllMocks();
   });
 
-  it("reads bot identity directly for whoami", async () => {
-    vi.stubEnv("TELEGRAM_BOT_TOKEN", "telegram-token");
+  it("reads stored account bot identity for whoami", async () => {
+    vi.stubEnv("CREDENTIALS_MASTER_KEY", "telegram-cli-master-key");
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
-    await telegramWhoamiCommand();
+    await telegramWhoamiCommand({account: "main", dbUrl: "postgres://telegram-db"});
 
     expect(telegramCliMocks.serviceConstructor).not.toHaveBeenCalled();
     expect(write).toHaveBeenCalledWith(
@@ -237,11 +237,28 @@ describe("Telegram CLI", () => {
     );
   });
 
+  it("requires an explicit stored account key for runtime Telegram commands", async () => {
+    await expect(telegramWhoamiCommand()).rejects.toThrow("Telegram connector account key is required.");
+    await expect(telegramPairCommand({
+      identity: "alice",
+      actor: "123",
+      dbUrl: "postgres://telegram-db",
+    })).rejects.toThrow("Telegram connector account key is required.");
+    await expect(telegramUnpairCommand({
+      actor: "123",
+      dbUrl: "postgres://telegram-db",
+    })).rejects.toThrow("Telegram connector account key is required.");
+    await expect(telegramRunCommand(undefined, {dbUrl: "postgres://telegram-db"})).rejects.toThrow("Telegram connector account key is required.");
+    expect(telegramCliMocks.storeInstances).toHaveLength(0);
+    expect(telegramCliMocks.serviceConstructor).not.toHaveBeenCalled();
+  });
+
   it("pairs directly through the identity store without booting the runtime", async () => {
-    vi.stubEnv("TELEGRAM_BOT_TOKEN", "telegram-token");
+    vi.stubEnv("CREDENTIALS_MASTER_KEY", "telegram-cli-master-key");
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     await telegramPairCommand({
+      account: "main",
       identity: "alice",
       actor: "123",
       dbUrl: "postgres://telegram-db",
@@ -265,7 +282,7 @@ describe("Telegram CLI", () => {
         pairedVia: "telegram-cli",
       },
     });
-    expect(telegramCliMocks.pool.end).toHaveBeenCalledTimes(1);
+    expect(telegramCliMocks.pool.end).toHaveBeenCalledTimes(2);
     expect(write).toHaveBeenCalledWith(
       [
         "Paired Telegram actor 123.",
@@ -276,9 +293,10 @@ describe("Telegram CLI", () => {
   });
 
   it("fails cleanly when the requested identity does not exist", async () => {
-    vi.stubEnv("TELEGRAM_BOT_TOKEN", "telegram-token");
+    vi.stubEnv("CREDENTIALS_MASTER_KEY", "telegram-cli-master-key");
 
     await expect(telegramPairCommand({
+      account: "main",
       identity: "missing-user",
       actor: "123",
       dbUrl: "postgres://telegram-db",
@@ -309,10 +327,11 @@ describe("Telegram CLI", () => {
   });
 
   it("unpairs directly through the identity store without booting the runtime", async () => {
-    vi.stubEnv("TELEGRAM_BOT_TOKEN", "telegram-token");
+    vi.stubEnv("CREDENTIALS_MASTER_KEY", "telegram-cli-master-key");
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     await telegramUnpairCommand({
+      account: "main",
       actor: "123",
       dbUrl: "postgres://telegram-db",
     });
@@ -333,11 +352,12 @@ describe("Telegram CLI", () => {
   });
 
   it("reports when a Telegram actor had no pairing", async () => {
-    vi.stubEnv("TELEGRAM_BOT_TOKEN", "telegram-token");
+    vi.stubEnv("CREDENTIALS_MASTER_KEY", "telegram-cli-master-key");
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     telegramCliMocks.setDeleteIdentityBindingResult(false);
 
     await telegramUnpairCommand({
+      account: "main",
       actor: "123",
       dbUrl: "postgres://telegram-db",
     });
@@ -437,23 +457,6 @@ describe("Telegram CLI", () => {
       "status disabled",
       "connector 42",
     ].join("\n") + "\n");
-  });
-
-  it("runs the legacy env Telegram worker when account key is omitted", async () => {
-    vi.stubEnv("TELEGRAM_BOT_TOKEN", "telegram-token");
-    const run = vi.fn(async () => {});
-    const stop = vi.fn(async () => {});
-    const createRunService = vi.fn(() => ({run, stop}));
-
-    await telegramRunCommand(undefined, {dbUrl: "postgres://telegram-db"}, {createRunService});
-
-    expect(createRunService).toHaveBeenCalledWith(expect.objectContaining({
-      accountKey: undefined,
-      dbUrl: "postgres://telegram-db",
-      expectedConnectorKey: "42",
-      token: "telegram-token",
-    }));
-    expect(run).toHaveBeenCalledTimes(1);
   });
 
 });

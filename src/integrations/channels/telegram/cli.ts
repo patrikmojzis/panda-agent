@@ -11,7 +11,7 @@ import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
 import {parseIdentityHandle} from "../../../domain/identity/cli.js";
 import {trimToUndefined} from "../../../lib/strings.js";
 import {ensureSchemas, withPostgresPool} from "../../../lib/postgres-bootstrap.js";
-import {requireTelegramBotToken, TELEGRAM_SOURCE} from "./config.js";
+import {TELEGRAM_SOURCE} from "./config.js";
 import {
   createTelegramBotIdentityClient,
   disableTelegramBotAccount,
@@ -143,35 +143,28 @@ async function resolveTelegramBotIdentity(options: TelegramIdentityCliOptions & 
   accountKey?: string;
   status?: string;
 }> {
-  if (options.account) {
-    return withPostgresPool(options.dbUrl, async (pool) => {
-      const store = new PostgresConnectorAccountStore({pool});
-      await store.ensureSchema();
-      const result = await validateStoredTelegramBotAccount({
-        accountKey: options.account!,
-        client: createTelegramClient(dependencies),
-        crypto: resolveTelegramAccountCrypto(),
-        store,
-      });
-      return {
-        connectorKey: result.account.connectorKey,
-        id: result.bot.id,
-        username: result.bot.username,
-        token: result.botToken,
-        accountKey: result.account.accountKey,
-        status: result.account.status,
-      };
-    });
+  if (!options.account) {
+    throw new Error("Telegram connector account key is required.");
   }
 
-  const token = requireTelegramBotToken(dependencies.env ?? process.env);
-  const me = await createTelegramClient(dependencies).getBotIdentity(token);
-  return {
-    connectorKey: me.id,
-    id: me.id,
-    username: me.username,
-    token,
-  };
+  return withPostgresPool(options.dbUrl, async (pool) => {
+    const store = new PostgresConnectorAccountStore({pool});
+    await store.ensureSchema();
+    const result = await validateStoredTelegramBotAccount({
+      accountKey: options.account!,
+      client: createTelegramClient(dependencies),
+      crypto: resolveTelegramAccountCrypto(),
+      store,
+    });
+    return {
+      connectorKey: result.account.connectorKey,
+      id: result.bot.id,
+      username: result.bot.username,
+      token: result.botToken,
+      accountKey: result.account.accountKey,
+      status: result.account.status,
+    };
+  });
 }
 
 async function withTelegramIdentityStore<T>(
@@ -357,7 +350,7 @@ export function registerTelegramCommands(program: Command, dependencies: Telegra
   telegramProgram
     .command("whoami")
     .description("Show the Telegram bot identity and connector key")
-    .option("--account <accountKey>", "Telegram connector account key", parseTelegramAccountKey)
+    .requiredOption("--account <accountKey>", "Telegram connector account key", parseTelegramAccountKey)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: TelegramIdentityCliOptions & {account?: string}) => {
       return telegramWhoamiCommand(options, dependencies);
@@ -368,7 +361,7 @@ export function registerTelegramCommands(program: Command, dependencies: Telegra
     .description("Pair a Telegram user id to a Panda identity")
     .requiredOption("--identity <handle>", "Identity handle to pair", parseIdentityHandle)
     .requiredOption("--actor <telegramUserId>", "Telegram user id to pair", parseTelegramActorId)
-    .option("--account <accountKey>", "Telegram connector account key", parseTelegramAccountKey)
+    .requiredOption("--account <accountKey>", "Telegram connector account key", parseTelegramAccountKey)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: TelegramPairCliOptions) => {
       return telegramPairCommand(options, dependencies);
@@ -378,7 +371,7 @@ export function registerTelegramCommands(program: Command, dependencies: Telegra
     .command("unpair")
     .description("Remove a Telegram user identity pairing")
     .requiredOption("--actor <telegramUserId>", "Telegram user id to unpair", parseTelegramActorId)
-    .option("--account <accountKey>", "Telegram connector account key", parseTelegramAccountKey)
+    .requiredOption("--account <accountKey>", "Telegram connector account key", parseTelegramAccountKey)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((options: TelegramUnpairCliOptions) => {
       return telegramUnpairCommand(options, dependencies);
@@ -387,7 +380,7 @@ export function registerTelegramCommands(program: Command, dependencies: Telegra
   telegramProgram
     .command("run")
     .description("Run the Telegram ingress worker")
-    .argument("[accountKey]", "Telegram connector account key", parseTelegramAccountKey)
+    .argument("<accountKey>", "Telegram connector account key", parseTelegramAccountKey)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((accountKey: string | undefined, options: TelegramRunCliOptions) => {
       return telegramRunCommand(accountKey, options, dependencies);
