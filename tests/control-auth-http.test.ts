@@ -2766,14 +2766,14 @@ describe("Control Runtime Activity HTTP", () => {
         updated_at
       ) VALUES
         ('10000000-0000-0000-0000-000000000001', 'discord', 'panda-main', 'discord:panda-main', 'agent', NULL, 'panda', 'Panda Discord', 'PRIVATE_EXTERNAL_ACCOUNT_ID_SAFE_TO_SHOW', 'panda-user', 'enabled', '{"token":"PRIVATE_CONFIG_TOKEN_MUST_NOT_LEAK","webhookUrl":"https://hooks.example/PRIVATE_WEBHOOK_MUST_NOT_LEAK","authHeader":"Bearer PRIVATE_AUTH_HEADER_MUST_NOT_LEAK"}'::jsonb, '{"channel":"PRIVATE_METADATA_CHANNEL_MUST_NOT_LEAK","message":"PRIVATE_METADATA_MESSAGE_MUST_NOT_LEAK"}'::jsonb, '2040-01-01T00:00:00.000Z', '2040-01-01T00:00:01.000Z'),
-        ('10000000-0000-0000-0000-000000000002', 'telegram', 'system-default', 'telegram:system-default', 'system', NULL, NULL, 'System Telegram', 'system-ext', 'system-user', 'enabled', '{"botToken":"PRIVATE_SYSTEM_CONFIG_TOKEN_MUST_NOT_LEAK"}'::jsonb, '{"webhook":"PRIVATE_SYSTEM_METADATA_WEBHOOK_MUST_NOT_LEAK"}'::jsonb, '2040-01-02T00:00:00.000Z', '2040-01-02T00:00:01.000Z'),
+        ('10000000-0000-0000-0000-000000000002', 'telegram', 'system-default', '424242', 'system', NULL, NULL, 'System Telegram', 'system-ext', 'system-user', 'enabled', '{"botToken":"PRIVATE_SYSTEM_CONFIG_TOKEN_MUST_NOT_LEAK"}'::jsonb, '{"webhook":"PRIVATE_SYSTEM_METADATA_WEBHOOK_MUST_NOT_LEAK"}'::jsonb, '2040-01-02T00:00:00.000Z', '2040-01-02T00:00:01.000Z'),
         ('10000000-0000-0000-0000-000000000003', 'discord', 'luna-main', 'discord:luna-main', 'agent', NULL, 'luna', 'Luna Discord PRIVATE_LUNA_DISPLAY_SAFE_TO_EXCLUDE', 'luna-ext', 'luna-user', 'enabled', '{"token":"PRIVATE_LUNA_CONFIG_TOKEN_MUST_NOT_LEAK"}'::jsonb, '{"channel":"PRIVATE_LUNA_METADATA_MUST_NOT_LEAK"}'::jsonb, '2040-01-03T00:00:00.000Z', '2040-01-03T00:00:01.000Z'),
         ('10000000-0000-0000-0000-000000000004', 'discord', 'identity-main', 'discord:identity-main', 'identity', 'identity-patrik', NULL, 'Identity Discord PRIVATE_IDENTITY_DISPLAY_SAFE_TO_EXCLUDE', 'identity-ext', 'identity-user', 'enabled', '{"token":"PRIVATE_IDENTITY_CONFIG_TOKEN_MUST_NOT_LEAK"}'::jsonb, '{"channel":"PRIVATE_IDENTITY_METADATA_MUST_NOT_LEAK"}'::jsonb, '2040-01-04T00:00:00.000Z', '2040-01-04T00:00:01.000Z')
     `);
     await harness.pool.query(`
       INSERT INTO "runtime"."connector_account_secrets" (account_id, secret_key, value_ciphertext, value_iv, value_tag, key_version, created_at, updated_at) VALUES
         ('10000000-0000-0000-0000-000000000001', 'bot_token', '\\x505249564154455f434950484552544558545f4d5553545f4e4f545f4c45414b', '\\x505249564154455f49565f4d5553545f4e4f545f4c45414b', '\\x505249564154455f5441475f4d5553545f4e4f545f4c45414b', 7, '2040-01-01T00:00:02.000Z', '2040-01-01T00:00:03.000Z'),
-        ('10000000-0000-0000-0000-000000000002', 'webhook_token', '\\x53595354454d5f434950484552544558545f4d5553545f4e4f545f4c45414b', '\\x53595354454d5f49565f4d5553545f4e4f545f4c45414b', '\\x53595354454d5f5441475f4d5553545f4e4f545f4c45414b', 3, '2040-01-02T00:00:02.000Z', '2040-01-02T00:00:03.000Z')
+        ('10000000-0000-0000-0000-000000000002', 'bot_token', '\\x53595354454d5f434950484552544558545f4d5553545f4e4f545f4c45414b', '\\x53595354454d5f49565f4d5553545f4e4f545f4c45414b', '\\x53595354454d5f5441475f4d5553545f4e4f545f4c45414b', 3, '2040-01-02T00:00:02.000Z', '2040-01-02T00:00:03.000Z')
     `);
   }
 
@@ -2797,6 +2797,11 @@ describe("Control Runtime Activity HTTP", () => {
     expect(Object.keys(body.connectors).sort()).toEqual(["accounts", "agentKey", "summary"]);
     expect(body.connectors).toMatchObject({agentKey: "panda", summary: {total: 2, agentOwned: 1, systemOwned: 1}});
     expect(body.connectors.accounts.map((account) => account.accountKey).sort()).toEqual(["panda-main", "system-default"]);
+    expect(body.connectors.accounts.find((account) => account.accountKey === "system-default")).toMatchObject({
+      source: "telegram",
+      connectorKey: "424242",
+      secretKeys: [{secretKey: "bot_token", createdAt: "2040-01-02T00:00:02.000Z", updatedAt: "2040-01-02T00:00:03.000Z"}],
+    });
     expect(body.connectors.accounts.find((account) => account.accountKey === "panda-main")).toMatchObject({
       id: "10000000-0000-0000-0000-000000000001",
       source: "discord",

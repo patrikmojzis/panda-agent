@@ -59,6 +59,8 @@ export interface TelegramServiceOptions {
   token: string;
   dataDir: string;
   dbUrl?: string;
+  accountKey?: string;
+  expectedConnectorKey?: string;
 }
 
 interface TelegramWorkerStores {
@@ -101,6 +103,8 @@ export class TelegramService {
     this.options = {
       dataDir: options.dataDir,
       dbUrl: options.dbUrl,
+      accountKey: options.accountKey,
+      expectedConnectorKey: options.expectedConnectorKey,
     };
     this.bot = new Bot<TelegramContext>(options.token);
 
@@ -137,6 +141,10 @@ export class TelegramService {
     const me = await this.bot.api.getMe();
     this.bot.botInfo = me;
     const id = String(me.id);
+    if (this.options.expectedConnectorKey && this.options.expectedConnectorKey !== id) {
+      throw new Error("Telegram bot token identity does not match the connector account.");
+    }
+
     this.botId = id;
     this.connectorKey = id;
     this.botUsername = me.username ?? null;
@@ -156,7 +164,7 @@ export class TelegramService {
     if (!this.storesPromise) {
       this.storesPromise = (async () => {
         const poolConfig = buildObservedPoolConfig(
-          `panda/telegram/${connectorKey}`,
+          `panda/telegram/${this.options.accountKey ?? connectorKey}`,
           "PANDA_TELEGRAM_DB_POOL_MAX",
           TELEGRAM_POOL_MAX_FALLBACK,
         );

@@ -262,7 +262,7 @@ You still need both layers:
 1. external actor -> identity
 2. identity -> agent
 
-Telegram example:
+Telegram legacy env-token example (`TELEGRAM_BOT_TOKEN`):
 
 ```bash
 panda telegram whoami
@@ -270,6 +270,18 @@ panda telegram pair --identity alice --actor 123456789
 panda telegram unpair --actor 123456789
 panda telegram run
 ```
+
+Telegram stored-account example (token writes are CLI-only; Control shows secret presence, not raw tokens):
+
+```bash
+export CREDENTIALS_MASTER_KEY=...
+printenv TELEGRAM_BOT_TOKEN | panda telegram account set main --bot-token-stdin
+panda telegram account whoami main
+panda telegram pair --account main --identity alice --actor 123456789
+panda telegram run main
+```
+
+For compatibility, Telegram connector keys remain the Telegram bot id. The account key (for example `main`) only selects the stored connector account.
 
 WhatsApp example:
 
