@@ -121,6 +121,7 @@ describe("subagent thread definitions", () => {
             skillKey: "calendar",
             description: "Use for calendar work.",
             content: "# Calendar",
+            tags: [],
             loadCount: 0,
             createdAt: 1_000,
             updatedAt: 1_000,
@@ -148,7 +149,7 @@ describe("subagent thread definitions", () => {
     expect(dump).toContain("context: Read-only please.");
     expect(dump).toContain("parentSessionId: parent-session");
     expect(dump).toContain('message_agent({ sessionId: "parent-session" })');
-    expect(dump).toContain("calendar\nUse for calendar work.");
+    expect(dump).toContain("calendar: Use for calendar work.");
     expect(dump).not.toContain("**Subagents:**");
     expect(dump).not.toContain("[agent]");
   });

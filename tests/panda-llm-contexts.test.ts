@@ -63,7 +63,7 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).toContain("**Environment Overview:**");
     expect(dump).toContain("**Agent Profile:**");
     expect(dump).toContain("Summaries only. Query `session.agent_skills` for full skill bodies when you need the exact content.");
-    expect(dump).toContain("calendar\nUse this for calendar work.");
+    expect(dump).toContain("calendar: Use this for calendar work.");
     expect(dump).not.toContain("Long skill body.");
     expect(dump).not.toContain("**Current DateTime:**");
     expect(dump).not.toContain("**Heartbeat Guidance**");
