@@ -6,13 +6,17 @@ import {
   DataTableView,
   RowActionsMenu,
   renderColumnHeader,
+  type DataTableGlobalFilter,
+  type DataTableState,
   useDataTableState,
 } from "@/components/common/data-table"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { useToastMutation } from "@/features/control/api/mutations"
 import { controlKeys } from "@/features/control/api/query-key-factory"
 import { useAgentSkills } from "@/features/control/api/queries"
 import {
+  TokenBadges,
   TruncatedText,
   mobileHiddenColumns,
 } from "@/features/control/control-display"
@@ -51,6 +55,15 @@ export function SkillsPanel({ agentKey }: { agentKey: string }) {
           value={row.original.description}
           className="max-w-72"
         />
+      ),
+    },
+    {
+      accessorKey: "tags",
+      meta: { label: "Tags", wrap: true, maxWidthClassName: "max-w-64" },
+      header: renderColumnHeader,
+      enableSorting: false,
+      cell: ({ row }) => (
+        <TokenBadges values={row.original.tags ?? []} className="max-w-64" />
       ),
     },
     {
@@ -106,6 +119,7 @@ export function SkillsPanel({ agentKey }: { agentKey: string }) {
       response={skills.data}
       state={table}
       error={skills.error}
+      filters={<SkillFilters state={table} />}
       isFetching={skills.isFetching}
       isLoading={skills.isLoading}
       isPlaceholderData={skills.isPlaceholderData}
@@ -113,7 +127,7 @@ export function SkillsPanel({ agentKey }: { agentKey: string }) {
       rowKey={(row) => row.skillKey}
       emptyLabel="No skills configured for this agent."
       emptyDescription="Create reusable instructions or reference material that this agent can load when needed."
-      mobileColumnVisibility={mobileHiddenColumns("description")}
+      mobileColumnVisibility={mobileHiddenColumns("description", "tags")}
       toolbarActions={
         <Button
           size="sm"
@@ -123,6 +137,29 @@ export function SkillsPanel({ agentKey }: { agentKey: string }) {
           Create skill
         </Button>
       }
+    />
+  )
+}
+
+function SkillFilters({ state }: { state: DataTableState }) {
+  const tag = String(state.globalFilter.tag ?? "")
+
+  function setTag(value: string) {
+    state.setGlobalFilter((previous: DataTableGlobalFilter) => {
+      const next: DataTableGlobalFilter = { ...previous }
+      if (value.trim()) next.tag = value
+      else delete next.tag
+      return next
+    })
+  }
+
+  return (
+    <Input
+      className="h-8 w-44"
+      value={tag}
+      onChange={(event) => setTag(event.target.value)}
+      placeholder="Filter by tag"
+      aria-label="Filter skills by tag"
     />
   )
 }

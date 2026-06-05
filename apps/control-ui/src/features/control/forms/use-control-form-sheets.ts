@@ -138,6 +138,7 @@ export type ControlGrantFormValues = {
 export type SkillFormValues = {
   skillKey: string
   description: string
+  tags: string
   content: string
 }
 

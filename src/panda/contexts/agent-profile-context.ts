@@ -70,6 +70,7 @@ export class AgentProfileContext extends LlmContext {
       skills = this.filterSkillEntries((await this.options.store.listAgentSkills(this.options.agentKey)).map((record) => ({
         skillKey: record.skillKey,
         description: record.description,
+        tags: record.tags,
       })));
     }
 

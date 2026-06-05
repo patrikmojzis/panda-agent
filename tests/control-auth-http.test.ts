@@ -853,8 +853,28 @@ describe("Control operator HTTP", () => {
     await expect(fetch(`${base}/api/control/agents/panda/skills`, {
       method: "POST",
       headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
-      body: JSON.stringify({skillKey: "deploy_watch", description: "Deployment monitor", content: "Watch deploy status."}),
+      body: JSON.stringify({
+        skillKey: "deploy_watch",
+        description: "Deployment monitor",
+        content: "Watch deploy status.",
+        tags: [" Monitoring ", "repo:PANDA-agent", "monitoring"],
+      }),
     })).resolves.toMatchObject({status: 200});
+    await expect(fetch(`${base}/api/control/agents/panda/skills`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({skillKey: "finance_report", description: "Finance report", content: "Report finances.", tags: ["finance"]}),
+    })).resolves.toMatchObject({status: 200});
+    const taggedSkills = await fetch(`${base}/api/control/agents/panda/skills?tag=MONITORING`, {headers: {cookie: auth.cookies}});
+    expect(taggedSkills.status).toBe(200);
+    await expect(taggedSkills.json()).resolves.toMatchObject({
+      data: [expect.objectContaining({skillKey: "deploy_watch", tags: ["monitoring", "repo:panda-agent"]})],
+    });
+    const skillDetail = await fetch(`${base}/api/control/agents/panda/skills/deploy_watch`, {headers: {cookie: auth.cookies}});
+    expect(skillDetail.status).toBe(200);
+    await expect(skillDetail.json()).resolves.toMatchObject({
+      skill: expect.objectContaining({skillKey: "deploy_watch", tags: ["monitoring", "repo:panda-agent"]}),
+    });
     await expect(fetch(`${base}/api/control/agents/panda/gateway/sources`, {
       method: "POST",
       headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},

@@ -12,7 +12,7 @@ import type {
     ListA2ASessionBindingsInput
 } from "../a2a/types.js";
 import type {AgentStore} from "../agents/store.js";
-import type {AgentPairingRecord, AgentSkillRecord} from "../agents/types.js";
+import {normalizeAgentSkillTag, normalizeAgentSkillTags, type AgentPairingRecord, type AgentSkillRecord} from "../agents/types.js";
 import type {CredentialService} from "../credentials/resolver.js";
 import {PostgresConnectorAccountStore} from "../connectors/postgres.js";
 import type {ConnectorAccountRecord} from "../connectors/types.js";
@@ -82,6 +82,10 @@ export interface ControlSessionTableInput extends ControlTableInput {
 export interface ControlConnectorTableInput extends ControlTableInput {
   source?: string;
   status?: string;
+}
+
+export interface ControlSkillTableInput extends ControlTableInput {
+  tag?: string;
 }
 
 export interface ControlSubagentTableInput extends ControlTableInput {
@@ -321,6 +325,7 @@ export interface ControlSkillRow {
   skillKey: string;
   description: string;
   content?: string;
+  tags: readonly string[];
   lastLoadedAt?: string;
   loadCount: number;
   createdAt: string;
@@ -731,11 +736,18 @@ function publicSkill(skill: AgentSkillRecord, includeContent = false): ControlSk
     skillKey: skill.skillKey,
     description: skill.description,
     ...(includeContent ? {content: skill.content} : {}),
+    tags: skill.tags,
     ...(skill.lastLoadedAt ? {lastLoadedAt: iso(skill.lastLoadedAt)} : {}),
     loadCount: skill.loadCount,
     createdAt: iso(skill.createdAt)!,
     updatedAt: iso(skill.updatedAt)!,
   };
+}
+
+function parseControlSkillTags(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Skill tags must be an array of strings.");
+  return normalizeAgentSkillTags(value);
 }
 
 function publicSubagent(profile: SubagentProfileRecord, includePrompt = false): ControlSubagentRow {
@@ -2492,10 +2504,16 @@ export class ControlOperatorService {
     };
   }
 
-  async listSkills(session: ControlSessionRecord, agentKey: string, input: ControlTableInput = {}): Promise<ControlPaginatedResponse<ControlSkillRow>> {
+  async listSkills(session: ControlSessionRecord, agentKey: string, input: ControlSkillTableInput = {}): Promise<ControlPaginatedResponse<ControlSkillRow>> {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
     const search = normalizeSearch(input.search);
-    const rows = (await this.agents.listAgentSkills(normalizedAgentKey)).map((skill) => publicSkill(skill)).filter((row) => includesSearch(row as unknown as Record<string, unknown>, search));
+    const tag = input.tag ? normalizeAgentSkillTag(input.tag) : undefined;
+    const rows = (await this.agents.listAgentSkills(normalizedAgentKey))
+      .map((skill) => publicSkill(skill))
+      .filter((row) => {
+        if (tag && !row.tags.includes(tag)) return false;
+        return includesSearch(row as unknown as Record<string, unknown>, search);
+      });
     return tableResponse(sortRows(rows as unknown as Record<string, unknown>[], input, "skillKey") as unknown as ControlSkillRow[], input);
   }
 
@@ -2510,12 +2528,14 @@ export class ControlOperatorService {
     skillKey?: unknown;
     description?: unknown;
     content?: unknown;
+    tags?: unknown;
   }): Promise<{skill: ControlSkillRow; audit: Record<string, unknown>}> {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
     const skillKey = requireNonEmptyString(input.skillKey, "Skill key is required.");
     const description = requireNonEmptyString(input.description, "Skill description is required.");
     const content = requireNonEmptyString(input.content, "Skill content is required.");
-    const skill = await this.agents.setAgentSkill(normalizedAgentKey, skillKey, description, content);
+    const tags = parseControlSkillTags(input.tags);
+    const skill = await this.agents.setAgentSkill(normalizedAgentKey, skillKey, description, content, tags);
     return {
       skill: publicSkill(skill, true),
       audit: {
@@ -2523,6 +2543,7 @@ export class ControlOperatorService {
         agentKey: normalizedAgentKey,
         skillKey: skill.skillKey,
         content: secretSummary(content),
+        tags: skill.tags,
       },
     };
   }

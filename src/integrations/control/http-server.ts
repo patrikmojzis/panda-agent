@@ -22,6 +22,7 @@ import type {
     ControlIdentityTableInput,
     ControlOperatorService,
     ControlSessionTableInput,
+    ControlSkillTableInput,
     ControlSortDirection,
     ControlSubagentTableInput,
     ControlTableInput,
@@ -335,6 +336,14 @@ function parseTableInput(params: URLSearchParams): ControlTableInput {
     sortBy: params.get("sort_by") ?? undefined,
     sortDirection: parseSortDirection(params.get("sort_direction")),
     search: params.get("search") ?? undefined,
+  };
+}
+
+function parseSkillTableInput(params: URLSearchParams): ControlSkillTableInput {
+  const tag = params.get("tag")?.trim();
+  return {
+    ...parseTableInput(params),
+    ...(tag ? {tag} : {}),
   };
 }
 
@@ -1533,7 +1542,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
       const skillsPath = matchAgentResourcePath(path, "skills");
       if (skillsPath && request.method === "GET") {
         try {
-          writeJsonResponse(response, 200, await options.operator.listSkills(session, skillsPath.agentKey, parseTableInput(url.searchParams)));
+          writeJsonResponse(response, 200, await options.operator.listSkills(session, skillsPath.agentKey, parseSkillTableInput(url.searchParams)));
         } catch {
           throw new ControlHttpError(404, "Control skill target agent was not found or is not visible.");
         }

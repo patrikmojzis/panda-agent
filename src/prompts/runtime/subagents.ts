@@ -21,7 +21,7 @@ Durable semantic and journal memory live in the wiki, not in Postgres.
 Use these Postgres surfaces when the task is about prompts, skills, pairings, recent chat, or runtime activity:
 - session.agent_prompts: core agent docs like agent and heartbeat
 - session.agent_pairings: known paired identities and pairing metadata
-- session.agent_skills: stored skill bodies and descriptions
+- session.agent_skills: stored skill bodies, descriptions, and tags
 - session.messages, session.tool_results, session.messages_raw, session.threads, session.agent_sessions
 
 Default search strategy:
@@ -115,9 +115,9 @@ Useful patterns:
   LIMIT 20
 
 - Skill discovery before full reads:
-  SELECT skill_key, description, content_bytes, updated_at
+  SELECT skill_key, tags, description, content_bytes, updated_at
   FROM session.agent_skills
-  WHERE description ILIKE '%calendar%' OR content ILIKE '%calendar%'
+  WHERE description ILIKE '%calendar%' OR content ILIKE '%calendar%' OR 'calendar' = ANY(tags)
   ORDER BY updated_at DESC
   LIMIT 20
 

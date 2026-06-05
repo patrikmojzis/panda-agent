@@ -6,6 +6,7 @@ export interface AgentProfilePromptEntry {
 export interface AgentProfileSkillEntry {
   skillKey: string;
   description: string;
+  tags?: readonly string[];
 }
 
 export function renderAgentProfileContext(options: {
@@ -28,9 +29,14 @@ ${prompt.content || "(empty)"}
 Summaries only. Query \`session.agent_skills\` for full skill bodies when you need the exact content.
 ${options.skills.length === 0
     ? "(none)"
-    : options.skills.map((entry) => `${entry.skillKey}\n${entry.description}`).join("\n\n")}
+    : options.skills.map((entry) => renderSkillSummary(entry)).join("\n")}
 `.trim());
   }
 
   return blocks.join("\n\n");
+}
+
+function renderSkillSummary(entry: AgentProfileSkillEntry): string {
+  const tags = entry.tags?.length ? ` [${entry.tags.join(", ")}]` : "";
+  return `${entry.skillKey}${tags}: ${entry.description}`;
 }

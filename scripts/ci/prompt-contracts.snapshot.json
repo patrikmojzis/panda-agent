@@ -55,10 +55,10 @@
       "sha256": "648bef8ff9b6424d0064150f529465900341717fa5d9a8401a4d5c9c083e961d"
     },
     {
-      "bytes": 2612,
-      "lines": 82,
+      "bytes": 2639,
+      "lines": 83,
       "path": "src/panda/contexts/agent-profile-context.ts",
-      "sha256": "a2826f8d19abef27678a53d19cc3c108623876057270a3d97b6924c678306b37"
+      "sha256": "3bacb8bb0e22aa3ae25c5f6a5a213635970e79da39ea6391411a339fbbe30498"
     },
     {
       "bytes": 2203,
@@ -187,10 +187,10 @@
       "sha256": "9c3e2345ecc03bc86b25ff3ce2f239a05efb003101412539a07726ea1ba7eb00"
     },
     {
-      "bytes": 899,
-      "lines": 36,
+      "bytes": 1112,
+      "lines": 42,
       "path": "src/prompts/contexts/agent-profile.ts",
-      "sha256": "8a0ed2d96321fae1e87d41886a32a5cb8c872d5e2f734fdf79fb0117722b3de3"
+      "sha256": "bd05e027b4ba07f2cd6c5004d5897563521d9d6c9fcec0f5a123c50edd63dd9c"
     },
     {
       "bytes": 530,
@@ -313,10 +313,10 @@
       "sha256": "bde7c1c8de078e3fbc398105605e3f3cfcea4432612515bd79aadacb7602471d"
     },
     {
-      "bytes": 10500,
+      "bytes": 10539,
       "lines": 218,
       "path": "src/prompts/runtime/subagents.ts",
-      "sha256": "dee399f8a3994fe742b154dbfb77a21c9265b150114f5f29daf1dd569aec78c1"
+      "sha256": "5b4010404124b46b2ee118df4c12475993e3665362fc9fba9a17b4c4e59469aa"
     },
     {
       "bytes": 917,
@@ -480,7 +480,7 @@
       }
     },
     {
-      "description": "Load, create, replace, or delete agent-scoped skills stored in Postgres. Use load when an injected skill summary looks relevant and you need the full markdown body in context. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal agent runs only inject each skill's key and description. For post-run reflective learning, prefer the skill_maintainer subagent instead of writing reflective skills directly from the main agent.",
+      "description": "Load, create, replace, or delete agent-scoped skills stored in Postgres. Use load when an injected skill summary looks relevant and you need the full markdown body in context. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal agent runs only inject each skill's key, tags, and description. For post-run reflective learning, prefer the skill_maintainer subagent instead of writing reflective skills directly from the main agent.",
       "name": "agent_skill",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -507,6 +507,13 @@
             "description": "Stable slug-style skill key, for example calendar or trip_planner.",
             "minLength": 1,
             "type": "string"
+          },
+          "tags": {
+            "description": "Optional for set. Lightweight lowercase discovery tags. Max 20 tags, 64 chars each. Omitted means no tags.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [

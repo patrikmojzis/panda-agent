@@ -156,6 +156,7 @@ export const skillDefaults: SkillFormValues = {
   content: "",
   description: "",
   skillKey: "",
+  tags: "",
 }
 
 export const subagentDefaults: SubagentFormValues = {
@@ -292,6 +293,7 @@ export function skillToFormValues(skill: SkillRow): SkillFormValues {
     content: skill.content ?? "",
     description: skill.description ?? "",
     skillKey: skill.skillKey,
+    tags: skill.tags?.join(", ") ?? "",
   }
 }
 

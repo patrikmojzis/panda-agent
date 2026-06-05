@@ -190,6 +190,7 @@ describe("PostgresAgentStore", () => {
       "calendar",
       "Use this for calendar work.",
       "# Calendar\nFull skill body.",
+      [" Coding ", "repo:PANDA-agent", "coding", "ui-ux", "project:ortoart"],
     );
     const updated = await agentStore.setAgentSkill(
       "panda",
@@ -205,6 +206,7 @@ describe("PostgresAgentStore", () => {
     );
 
     expect(created.skillKey).toBe("calendar");
+    expect(created.tags).toEqual(["coding", "repo:panda-agent", "ui-ux", "project:ortoart"]);
     expect(created.loadCount).toBe(0);
     expect(created.lastLoadedAt).toBeUndefined();
     expect(updated.updatedAt).toBeGreaterThanOrEqual(created.updatedAt);
@@ -232,6 +234,7 @@ describe("PostgresAgentStore", () => {
       expect.objectContaining({
         skillKey: "calendar",
         description: "Updated description.",
+        tags: [],
         loadCount: 2,
       }),
     ]);
@@ -239,6 +242,7 @@ describe("PostgresAgentStore", () => {
       expect.objectContaining({
         skillKey: "calendar",
         description: "Ops-only description.",
+        tags: [],
         loadCount: 0,
       }),
     ]);
@@ -289,6 +293,34 @@ describe("PostgresAgentStore", () => {
     );
   });
 
+  it("rejects malformed persisted agent skill tags", async () => {
+    const query = vi.fn(async () => ({
+      rows: [{
+        agent_key: "panda",
+        skill_key: "calendar",
+        description: "Calendar skill.",
+        content: "# Calendar\nBody.",
+        tags: ["calendar", 123],
+        last_loaded_at: null,
+        load_count: 0,
+        created_at: new Date(),
+        updated_at: new Date(),
+      }],
+    }));
+    const agentStore = new PostgresAgentStore({
+      pool: {
+        query,
+        connect: async () => {
+          throw new Error("connect should not be used by readAgentSkill");
+        },
+      },
+    });
+
+    await expect(agentStore.readAgentSkill("panda", "calendar")).rejects.toThrow(
+      "Skill tags must be strings.",
+    );
+  });
+
   it("rejects blank content and oversized descriptions when storing agent skills", async () => {
     const { agentStore } = await createStores();
 
@@ -318,5 +350,29 @@ describe("PostgresAgentStore", () => {
       "x".repeat(8_001),
       "# Calendar",
     )).rejects.toThrow("Skill description must be at most 8000 characters.");
+
+    await expect(agentStore.setAgentSkill(
+      "panda",
+      "calendar",
+      "Calendar helper.",
+      "# Calendar",
+      [""],
+    )).rejects.toThrow("Skill tags must not be empty.");
+
+    await expect(agentStore.setAgentSkill(
+      "panda",
+      "calendar",
+      "Calendar helper.",
+      "# Calendar",
+      ["x".repeat(65)],
+    )).rejects.toThrow("Skill tags must be at most 64 characters.");
+
+    await expect(agentStore.setAgentSkill(
+      "panda",
+      "calendar",
+      "Calendar helper.",
+      "# Calendar",
+      ["repo/panda-agent"],
+    )).rejects.toThrow("Skill tags must use lowercase letters, numbers, hyphens, underscores, or colons.");
   });
 });

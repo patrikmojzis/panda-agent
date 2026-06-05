@@ -37,6 +37,7 @@ const skillSchema = z.object({
   content: z.string().min(1, "Skill content is required."),
   description: z.string().trim().min(1, "Description is required."),
   skillKey: z.string().trim().min(1, "Skill key is required."),
+  tags: z.string(),
 })
 
 const subagentSchema = z.object({
@@ -118,6 +119,16 @@ export function SkillSheet() {
             label="Description"
             autoFocus={Boolean(entity)}
             required
+          />
+        )}
+      </form.AppField>
+      <form.AppField name="tags">
+        {(field) => (
+          <field.TextareaField
+            label="Tags"
+            className="min-h-20 font-mono text-xs"
+            description="Optional discovery tags separated by commas or new lines. Example: coding, repo:panda-agent, ui-ux"
+            placeholder="coding, repo:panda-agent"
           />
         )}
       </form.AppField>

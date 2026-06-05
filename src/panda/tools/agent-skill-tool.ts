@@ -8,8 +8,11 @@ import type {AgentStore} from "../../domain/agents/store.js";
 import {
     MAX_AGENT_SKILL_CONTENT_CHARS,
     MAX_AGENT_SKILL_DESCRIPTION_CHARS,
+    MAX_AGENT_SKILL_TAG_CHARS,
+    MAX_AGENT_SKILL_TAGS,
     normalizeAgentSkillContent,
     normalizeAgentSkillDescription,
+    normalizeAgentSkillTags,
 } from "../../domain/agents/types.js";
 import {
     isExecutionAgentSkillOperationAllowed,
@@ -83,6 +86,7 @@ type AgentSkillToolResult =
     contentBytes: number;
     loadCount: number;
     lastLoadedAt?: number;
+    tags: string[];
   }
   | {
     operation: "set";
@@ -90,6 +94,7 @@ type AgentSkillToolResult =
     skillKey: string;
     description: string;
     contentBytes: number;
+    tags: string[];
   }
   | {
     operation: "delete";
@@ -111,6 +116,9 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
     content: z.string().optional().describe(
       `Required for set. Full markdown skill body stored in Postgres. Max ${MAX_AGENT_SKILL_CONTENT_CHARS} characters.`,
     ),
+    tags: z.array(z.string()).optional().describe(
+      `Optional for set. Lightweight lowercase discovery tags. Max ${MAX_AGENT_SKILL_TAGS} tags, ${MAX_AGENT_SKILL_TAG_CHARS} chars each. Omitted means no tags.`,
+    ),
   }).superRefine((value, ctx) => {
     if (value.operation === "set") {
       if (value.description === undefined) {
@@ -131,6 +139,13 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: issueMessage(error) });
         }
       }
+      if (value.tags !== undefined) {
+        try {
+          normalizeAgentSkillTags(value.tags);
+        } catch (error) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: issueMessage(error) });
+        }
+      }
       return;
     }
 
@@ -146,11 +161,17 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
         message: `${value.operation === "load" ? "Load" : "Delete"} does not take content.`,
       });
     }
+    if (value.tags !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${value.operation === "load" ? "Load" : "Delete"} does not take tags.`,
+      });
+    }
   });
 
   name = "agent_skill";
   description =
-    "Load, create, replace, or delete agent-scoped skills stored in Postgres. Use load when an injected skill summary looks relevant and you need the full markdown body in context. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal agent runs only inject each skill's key and description. For post-run reflective learning, prefer the skill_maintainer subagent instead of writing reflective skills directly from the main agent.";
+    "Load, create, replace, or delete agent-scoped skills stored in Postgres. Use load when an injected skill summary looks relevant and you need the full markdown body in context. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal agent runs only inject each skill's key, tags, and description. For post-run reflective learning, prefer the skill_maintainer subagent instead of writing reflective skills directly from the main agent.";
   schema = AgentSkillTool.schema;
 
   private readonly store: AgentSkillToolStore;
@@ -194,6 +215,7 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
         description: record.description,
         content: record.content,
         contentBytes: Buffer.byteLength(record.content, "utf8"),
+        tags: [...record.tags],
         loadCount: record.loadCount,
         lastLoadedAt: record.lastLoadedAt,
       };
@@ -215,6 +237,7 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
       args.skillKey,
       normalizeAgentSkillDescription(args.description ?? ""),
       normalizeAgentSkillContent(args.content ?? ""),
+      args.tags ?? [],
     );
 
     return {
@@ -223,6 +246,7 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
       skillKey: record.skillKey,
       description: record.description,
       contentBytes: Buffer.byteLength(record.content, "utf8"),
+      tags: [...record.tags],
     };
   }
 }
