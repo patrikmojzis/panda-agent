@@ -158,7 +158,8 @@ describe("Credential CLI", () => {
     credentialCliMocks.credentialStoreInstances.length = 0;
     credentialCliMocks.credentialServiceInstances.length = 0;
     credentialCliMocks.pool.end.mockClear();
-    credentialCliMocks.resolveCredentialCrypto.mockClear();
+    credentialCliMocks.resolveCredentialCrypto.mockReset();
+    credentialCliMocks.resolveCredentialCrypto.mockImplementation(() => ({kind: "crypto"}));
     credentialCliMocks.resolveCredentialResult.current = {
       id: "credential-2",
       envKey: "NOTION_API_KEY",

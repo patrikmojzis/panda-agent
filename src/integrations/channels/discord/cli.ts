@@ -733,8 +733,8 @@ export async function discordAccountImportEnvCommand(
   dependencies: DiscordAccountCliDependencies = {},
 ): Promise<void> {
   assertDiscordOwnerFlagsExclusive(options);
-  const crypto = resolveDiscordAccountCrypto();
   const botToken = readDiscordBotTokenFromEnv(options.envKey, dependencies.env ?? process.env);
+  const crypto = resolveDiscordAccountCrypto();
   const client = createDiscordClient(dependencies);
 
   await withDiscordAccountStores(options, async (stores) => {

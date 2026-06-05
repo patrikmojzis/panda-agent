@@ -21,7 +21,7 @@ panda email account set work \
   --imap-username-key WORK_IMAP_USERNAME \
   --imap-password-key WORK_IMAP_PASSWORD \
   --smtp-host smtp.example.com \
-  --smtp-port 465 \
+  --smtp-port 587 \
   --smtp-secure \
   --smtp-username-key WORK_SMTP_USERNAME \
   --smtp-password-key WORK_SMTP_PASSWORD
@@ -32,7 +32,7 @@ panda email allow list work --agent panda
 
 Use `--mailbox <name>` on `panda email account set` to choose mailboxes to sync. Repeat it for multiple mailboxes. If omitted, Panda syncs `INBOX`.
 
-Recipients must be allowlisted before Panda can send fresh mail to them.
+Recipients must be allowlisted before Panda can send fresh mail to them. Use `--smtp-port 587 --smtp-secure` for common STARTTLS-style SMTP providers; if your provider requires another TLS port, use that documented provider value instead.
 
 ## Route Accounts And Mailboxes To Sessions
 
