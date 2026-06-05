@@ -555,7 +555,7 @@ export async function apiWrite<T>(
 export const controlApi = {
   me: () => apiGet<{ session: ControlSession }>("/me"),
   bootstrap: () => apiGet<{ hasGrant: boolean }>("/bootstrap"),
-  login: (token: string) => apiWrite<{ session: ControlSession; csrfToken: string }>("/login", { body: { token } }),
+  login: (input: { token: string; remember?: boolean }) => apiWrite<{ session: ControlSession; csrfToken: string }>("/login", { body: input }),
   devLogin: (body: DevLoginInput) => apiWrite<{ session: ControlSession; csrfToken: string }>("/dev-login", { body }),
   logout: (csrfToken?: string | null) => apiWrite<{ ok: true }>("/logout", { csrfToken }),
   failures: (params: TableParams) => apiGet<PaginatedResponse<WorkFailure>>(`/work-failures${qs(params)}`),

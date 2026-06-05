@@ -5,7 +5,7 @@ import path from "node:path";
 
 import {readJsonHttpBody} from "../http-body.js";
 import {writeJsonResponse} from "../../lib/http.js";
-import type {PostgresControlAuthService} from "../../domain/control/auth.js";
+import {DEFAULT_CONTROL_REMEMBERED_SESSION_TTL_MS, type PostgresControlAuthService} from "../../domain/control/auth.js";
 import type {ControlReadService} from "../../domain/control/read-service.js";
 import type {ControlHomeService} from "../../domain/control/home-service.js";
 import type {
@@ -179,6 +179,10 @@ function setCookie(response: ServerResponse, name: string, value: string, option
 
 function clearCookie(response: ServerResponse, name: string, options = "HttpOnly; SameSite=Strict; Path=/api/control; Max-Age=0"): void {
   setCookie(response, name, "", options);
+}
+
+function rememberCookieMaxAgeSeconds(): number {
+  return Math.floor(DEFAULT_CONTROL_REMEMBERED_SESSION_TTL_MS / 1000);
 }
 
 function publicSession(session: ControlSessionRecord): Record<string, unknown> {
@@ -916,14 +920,16 @@ export async function startControlServer(options: StartControlServerOptions): Pr
       if (request.method === "POST" && path === "/login") {
         const body = await readBody(request);
         const token = typeof body.token === "string" ? body.token : "";
+        const remember = body.remember === true;
         let login;
         try {
-          login = await options.auth.loginWithToken(token);
+          login = await options.auth.loginWithToken(token, {remember});
         } catch {
           throw new ControlHttpError(401, "Control login token is invalid, expired, or already used.");
         }
-        setCookie(response, CONTROL_SESSION_COOKIE, login.sessionToken);
-        setCookie(response, CONTROL_CSRF_COOKIE, login.csrfToken, "SameSite=Strict; Path=/");
+        const maxAge = remember ? `; Max-Age=${rememberCookieMaxAgeSeconds()}` : "";
+        setCookie(response, CONTROL_SESSION_COOKIE, login.sessionToken, `HttpOnly; SameSite=Strict; Path=/api/control${maxAge}`);
+        setCookie(response, CONTROL_CSRF_COOKIE, login.csrfToken, `SameSite=Strict; Path=/${maxAge}`);
         writeJsonResponse(response, 200, {session: publicSession(login.session), csrfToken: login.csrfToken});
         return;
       }

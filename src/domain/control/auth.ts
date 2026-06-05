@@ -10,6 +10,7 @@ import {buildControlTableNames} from "./postgres-shared.js";
 import type {ControlGrantRecord, ControlGrantRole, ControlLoginResult, ControlSessionRecord} from "./types.js";
 
 export const DEFAULT_CONTROL_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+export const DEFAULT_CONTROL_REMEMBERED_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEFAULT_CONTROL_LOGIN_TOKEN_TTL_MS = 15 * 60 * 1000;
 
 function parseRole(value: unknown): ControlGrantRole {
@@ -81,10 +82,11 @@ export class PostgresControlAuthService {
     return result.rows.length > 0;
   }
 
-  async loginWithToken(token: string, options: {sessionTtlMs?: number} = {}): Promise<ControlLoginResult> {
+  async loginWithToken(token: string, options: {sessionTtlMs?: number; remember?: boolean} = {}): Promise<ControlLoginResult> {
     const sessionToken = generateOpaqueToken("pcs");
     const csrfToken = generateOpaqueToken("pcc");
-    const expiresAt = Date.now() + (options.sessionTtlMs ?? DEFAULT_CONTROL_SESSION_TTL_MS);
+    const remember = options.remember === true;
+    const expiresAt = Date.now() + (options.sessionTtlMs ?? (remember ? DEFAULT_CONTROL_REMEMBERED_SESSION_TTL_MS : DEFAULT_CONTROL_SESSION_TTL_MS));
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -111,7 +113,7 @@ export class PostgresControlAuthService {
       await client.query(`
         INSERT INTO ${this.tables.auditEvents} (id, identity_id, session_id, event_type, metadata)
         VALUES ($1, $2, $3, $4, $5::jsonb)
-      `, [randomUUID(), session.identityId, session.id, "login", null]);
+      `, [randomUUID(), session.identityId, session.id, "login", remember ? JSON.stringify({remembered: true}) : null]);
       await client.query("COMMIT");
       return {session, sessionToken, csrfToken};
     } catch (error) {

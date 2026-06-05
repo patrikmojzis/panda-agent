@@ -3,6 +3,7 @@ import { Navigate } from "react-router-dom"
 import { KeyRound } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -44,6 +45,7 @@ function getDevLoginErrorMessage(error: unknown) {
 function LoginPage() {
   const auth = useAuth()
   const [token, setToken] = React.useState("")
+  const [remember, setRemember] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
   const [devIdentity, setDevIdentity] = React.useState(
     import.meta.env.VITE_CONTROL_DEV_LOGIN_IDENTITY ?? ""
@@ -70,7 +72,7 @@ function LoginPage() {
             event.preventDefault()
             setError(null)
             try {
-              await auth.login(token)
+              await auth.login({ token, remember })
             } catch (cause) {
               setError(cause instanceof Error ? cause.message : "Login failed")
             }
@@ -87,6 +89,17 @@ function LoginPage() {
             onChange={(event) => setToken(event.target.value)}
             autoFocus
           />
+          <label className="flex items-start gap-2 text-xs text-muted-foreground">
+            <Checkbox
+              checked={remember}
+              onCheckedChange={(checked) => setRemember(checked === true)}
+              aria-label="Remember this device"
+            />
+            <span>
+              Remember this browser for 30 days. Do not use this on shared
+              machines.
+            </span>
+          </label>
           {error ? <p className="text-xs text-destructive">{error}</p> : null}
           <Button type="submit">
             <KeyRound className="size-4" />
