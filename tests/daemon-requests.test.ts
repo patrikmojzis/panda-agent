@@ -233,7 +233,7 @@ function createHarness(options: {
   const submitInput = vi.fn(async () => {});
   const saveLastRoute = createSaveLastRouteMock();
   const getSession = vi.fn(async (sessionId: string) => createSession(sessionId, currentThreadId));
-  const resolveThread = vi.fn(async (): Promise<ThreadRecord | null> => {
+  const resolveThread = async (): Promise<ThreadRecord | null> => {
     return thread
       ? {
         id: thread.id,
@@ -242,7 +242,7 @@ function createHarness(options: {
         updatedAt: 1,
       }
       : null;
-  });
+  };
   const resolveBoundConversationThread = vi.fn(resolveThread);
   const resolveOrCreateConversationThread = vi.fn(resolveThread);
   const queueSystemReply = vi.fn(async () => {});

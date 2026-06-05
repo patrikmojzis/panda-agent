@@ -441,7 +441,8 @@ describe("Discord account CLI", () => {
     discordCliMocks.identityStoreInstances.length = 0;
     discordCliMocks.sessionStoreInstances.length = 0;
     discordCliMocks.pool.end.mockClear();
-    discordCliMocks.resolveCredentialCrypto.mockClear();
+    discordCliMocks.resolveCredentialCrypto.mockReset();
+    discordCliMocks.resolveCredentialCrypto.mockImplementation(() => discordCliMocks.crypto);
     discordCliMocks.withPostgresPool.mockClear();
     discordCliMocks.resetFixtures();
     vi.restoreAllMocks();
