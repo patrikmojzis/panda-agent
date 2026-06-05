@@ -91,8 +91,9 @@ export function normalizeTelegramCommand(commandText: string | undefined, botUse
 export function buildTelegramPairCommand(
   actorId: string,
   identityHandle = "<identity-handle>",
+  accountKey = "<account-key>",
 ): string {
-  return `panda telegram pair --identity ${identityHandle} --actor ${actorId}`;
+  return `panda telegram pair --account ${accountKey} --identity ${identityHandle} --actor ${actorId}`;
 }
 
 export function buildTelegramInboundPersistence(

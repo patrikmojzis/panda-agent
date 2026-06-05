@@ -59,6 +59,10 @@ export interface TelegramServiceOptions {
   token: string;
   dataDir: string;
   dbUrl?: string;
+  accountKey?: string;
+  disableHealthServer?: boolean;
+  expectedConnectorKey?: string;
+  poolMaxFallback?: number;
 }
 
 interface TelegramWorkerStores {
@@ -101,6 +105,10 @@ export class TelegramService {
     this.options = {
       dataDir: options.dataDir,
       dbUrl: options.dbUrl,
+      accountKey: options.accountKey,
+      disableHealthServer: options.disableHealthServer,
+      expectedConnectorKey: options.expectedConnectorKey,
+      poolMaxFallback: options.poolMaxFallback,
     };
     this.bot = new Bot<TelegramContext>(options.token);
 
@@ -137,6 +145,10 @@ export class TelegramService {
     const me = await this.bot.api.getMe();
     this.bot.botInfo = me;
     const id = String(me.id);
+    if (this.options.expectedConnectorKey && this.options.expectedConnectorKey !== id) {
+      throw new Error("Telegram bot token identity does not match the connector account.");
+    }
+
     this.botId = id;
     this.connectorKey = id;
     this.botUsername = me.username ?? null;
@@ -156,9 +168,9 @@ export class TelegramService {
     if (!this.storesPromise) {
       this.storesPromise = (async () => {
         const poolConfig = buildObservedPoolConfig(
-          `panda/telegram/${connectorKey}`,
+          `panda/telegram/${this.options.accountKey ?? connectorKey}`,
           "PANDA_TELEGRAM_DB_POOL_MAX",
-          TELEGRAM_POOL_MAX_FALLBACK,
+          this.options.poolMaxFallback ?? TELEGRAM_POOL_MAX_FALLBACK,
         );
         const pool = createPostgresPool({
           connectionString: requireDatabaseUrl(this.options.dbUrl),
@@ -353,73 +365,85 @@ export class TelegramService {
     };
   }
 
-  async run(): Promise<void> {
+  async start(): Promise<void> {
+    if (this.workerRuntime) {
+      return;
+    }
+
     this.stopping = false;
     this.stopPromise = null;
     this.healthListenerSnapshot = null;
 
-    try {
-      const {stores, connectorKey, botUsername} = await this.ensureInitialized();
-      this.healthServer = await (async () => {
-        const binding = resolveOptionalHealthServerBinding({
-          hostEnvKey: "PANDA_TELEGRAM_HEALTH_HOST",
-          portEnvKey: "PANDA_TELEGRAM_HEALTH_PORT",
-        });
-        if (!binding) {
-          return null;
-        }
+    const {stores, connectorKey, botUsername} = await this.ensureInitialized();
+    this.healthServer = await (async () => {
+      if (this.options.disableHealthServer) {
+        return null;
+      }
+      const binding = resolveOptionalHealthServerBinding({
+        hostEnvKey: "PANDA_TELEGRAM_HEALTH_HOST",
+        portEnvKey: "PANDA_TELEGRAM_HEALTH_PORT",
+      });
+      if (!binding) {
+        return null;
+      }
 
-        return startHealthServer({
-          ...binding,
-          getSnapshot: () => ({
-            ok: this.healthInitialized
-              && this.healthLockHeld
-              && this.healthListenersActive
-              && !this.stopping
-              && (Date.now() - this.lastPollActivityAt) <= TELEGRAM_HEALTH_POLL_STALE_AFTER_MS,
-            connectorKey,
-            initialized: this.healthInitialized,
-            lockHeld: this.healthLockHeld,
-            listenersActive: this.healthListenersActive,
-            listenerStatus: this.healthListenerSnapshot?.status ?? null,
-            listenerLastErrorAt: this.healthListenerSnapshot?.lastErrorAt ?? null,
-            listenerLastError: this.healthListenerSnapshot?.lastError ?? null,
-            stopping: this.stopping,
-            lastPollActivityAt: this.lastPollActivityAt || null,
-          }),
-        });
-      })();
-      this.healthInitialized = true;
-      const outboundWorker = this.createOutboundWorker(stores, connectorKey);
-      const actionWorker = this.createActionWorker(stores, connectorKey);
-      this.workerRuntime = await startConnectorWorkerRuntime({
-        acquireLease: () => this.acquireConnectorLease(connectorKey, stores),
+      return startHealthServer({
+        ...binding,
+        getSnapshot: () => ({
+          ok: this.healthInitialized
+            && this.healthLockHeld
+            && this.healthListenersActive
+            && !this.stopping
+            && (Date.now() - this.lastPollActivityAt) <= TELEGRAM_HEALTH_POLL_STALE_AFTER_MS,
+          connectorKey,
+          initialized: this.healthInitialized,
+          lockHeld: this.healthLockHeld,
+          listenersActive: this.healthListenersActive,
+          listenerStatus: this.healthListenerSnapshot?.status ?? null,
+          listenerLastErrorAt: this.healthListenerSnapshot?.lastErrorAt ?? null,
+          listenerLastError: this.healthListenerSnapshot?.lastError ?? null,
+          stopping: this.stopping,
+          lastPollActivityAt: this.lastPollActivityAt || null,
+        }),
+      });
+    })();
+    this.healthInitialized = true;
+    const outboundWorker = this.createOutboundWorker(stores, connectorKey);
+    const actionWorker = this.createActionWorker(stores, connectorKey);
+    this.workerRuntime = await startConnectorWorkerRuntime({
+      acquireLease: () => this.acquireConnectorLease(connectorKey, stores),
+      outboundWorker,
+      actionWorker,
+      startNotificationListener: () => this.startWorkerNotificationListener(stores, connectorKey, {
         outboundWorker,
         actionWorker,
-        startNotificationListener: () => this.startWorkerNotificationListener(stores, connectorKey, {
-          outboundWorker,
-          actionWorker,
-        }),
-        onCleanupError: (step, error) => {
-          this.log("shutdown_cleanup_failed", {
-            connectorKey: this.connectorKey ?? connectorKey,
-            step: step.label,
-            message: error instanceof Error ? error.message : String(error),
-          });
-        },
-      });
-      this.healthLockHeld = true;
-      this.healthListenerSnapshot = this.workerRuntime.notificationListener?.getSnapshot?.() ?? this.healthListenerSnapshot;
-      this.healthListenersActive = this.healthListenerSnapshot?.listening ?? true;
-      await this.bot.api.setMyCommands([
-        {command: "start", description: "Pair this Telegram account with Panda"},
-        {command: "reset", description: "Reset Panda to a fresh empty session"},
-      ]);
-      this.log("run_started", {
-        connectorKey,
-        botUsername,
-        dataDir: this.options.dataDir,
-      });
+      }),
+      onCleanupError: (step, error) => {
+        this.log("shutdown_cleanup_failed", {
+          connectorKey: this.connectorKey ?? connectorKey,
+          step: step.label,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+    this.healthLockHeld = true;
+    this.healthListenerSnapshot = this.workerRuntime.notificationListener?.getSnapshot?.() ?? this.healthListenerSnapshot;
+    this.healthListenersActive = this.healthListenerSnapshot?.listening ?? true;
+    await this.bot.api.setMyCommands([
+      {command: "start", description: "Pair this Telegram account with Panda"},
+      {command: "reset", description: "Reset Panda to a fresh empty session"},
+    ]);
+    this.log("run_started", {
+      connectorKey,
+      botUsername,
+      dataDir: this.options.dataDir,
+    });
+  }
+
+  async run(): Promise<void> {
+    try {
+      await this.start();
+      const {stores, connectorKey} = await this.ensureInitialized();
 
       while (!this.stopping) {
         const nextOffset = await this.readNextUpdateOffset(stores, connectorKey);

@@ -80,7 +80,7 @@ services:
 
   panda-telegram:
     image: panda-app:latest
-    command: ["telegram", "run"]
+    command: ["telegram", "run", "--all-enabled"]
     restart: unless-stopped
     stop_grace_period: 30s
     profiles: ["telegram"]
@@ -88,6 +88,8 @@ services:
       - ${PANDA_STACK_SERVICE_ENV_FILE:-../.env}
     environment:
       DATABASE_URL: ${DATABASE_URL}
+      CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
+      PANDA_TELEGRAM_DB_POOL_MAX: ${PANDA_TELEGRAM_DB_POOL_MAX:-2}
       PANDA_TELEGRAM_HEALTH_PORT: ${PANDA_TELEGRAM_HEALTH_PORT:-8091}
       TZ: ${TZ:-UTC}
     volumes:

@@ -37,7 +37,7 @@ describe("telegram helpers", () => {
 
   it("builds pairing bootstrap text", () => {
     expect(buildTelegramPairCommand("123")).toBe(
-      "panda telegram pair --identity <identity-handle> --actor 123",
+      "panda telegram pair --account <account-key> --identity <identity-handle> --actor 123",
     );
   });
 

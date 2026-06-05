@@ -71,6 +71,7 @@ import { useAuth } from "@/lib/auth"
 const connectorSourceFilterOptions = [
   { label: "Discord", value: "discord" },
   { label: "Email", value: "email" },
+  { label: "Telegram", value: "telegram" },
 ]
 
 const connectorStatusFilterOptions = [
@@ -83,6 +84,7 @@ const connectorStatusFilterOptions = [
 const bindingSourceFilterOptions = [
   { label: "Discord", value: "discord" },
   { label: "Email", value: "email" },
+  { label: "Telegram", value: "telegram" },
 ]
 
 const channelActorSourceFilterOptions = [
@@ -240,7 +242,7 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
           onRetry={() => void connectors.refetch()}
           rowKey={(row) => row.id}
           emptyLabel="No connector accounts for this agent."
-          emptyDescription="Add a Discord or email account before creating channel bindings."
+          emptyDescription="Add Discord or email accounts here, or store Telegram accounts with the CLI before creating channel bindings."
           emptyAction={
             <ConnectorPrerequisiteActions
               onAddDiscord={() =>

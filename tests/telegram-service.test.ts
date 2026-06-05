@@ -81,4 +81,15 @@ describe("TelegramService", () => {
       username: "panda_bot",
     });
   });
+
+  it("fails closed when expected connector key does not match the bot token identity", async () => {
+    const service = new TelegramService({
+      token: "telegram-token",
+      dataDir: "/tmp/panda",
+      expectedConnectorKey: "99",
+    });
+
+    await expect(service.whoami()).rejects.toThrow("Telegram bot token identity does not match the connector account.");
+  });
+
 });

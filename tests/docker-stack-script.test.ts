@@ -853,14 +853,14 @@ exit 42
     expect(runnerEnd).toBeLessThan(composeStart);
   });
 
-  it("renders one runner per agent, enables telegram automatically, and maps agent logs to runner services", async () => {
+  it("renders one runner per agent, enables telegram explicitly, and maps agent logs to runner services", async () => {
     const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
     const dockerBin = await createDockerStub(logPath);
     const envFile = await createEnvFile([
       "DATABASE_URL=postgresql://example/panda",
       "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
-      "TELEGRAM_BOT_TOKEN=telegram-token",
+      "TELEGRAM_ENABLED=true",
       "PANDA_AGENTS=claw,Luna",
     ].join("\n"));
 
@@ -888,6 +888,8 @@ exit 42
 
     const baseCompose = await readFile(baseComposePath, "utf8");
     expect(baseCompose).toContain("  panda-telegram:\n    image: panda-app:latest");
+    expect(baseCompose).toContain('command: ["telegram", "run", "--all-enabled"]');
+    expect(baseCompose).toContain("PANDA_TELEGRAM_DB_POOL_MAX: ${PANDA_TELEGRAM_DB_POOL_MAX:-2}");
     expect(baseCompose).toContain("  panda-discord:\n    image: panda-app:latest");
     expect(baseCompose).toContain('command: ["discord", "run", "--all-enabled"]');
     expect(baseCompose).toContain("PANDA_DISCORD_DB_POOL_MAX: ${PANDA_DISCORD_DB_POOL_MAX:-2}");
