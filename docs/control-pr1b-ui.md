@@ -30,7 +30,7 @@ panda control grant --identity patrik --role scoped --agent clawd
 pnpm control:dev
 ```
 
-Open the Vite URL and paste the one-time token at `/login`.
+Open the Vite URL and paste the one-time token at `/login`. On a trusted private device, check **Remember this device** to issue a 30-day Control session cookie; leave it unchecked on shared machines.
 
 For local-only development, you can skip the one-time token flow with the dev sign-in panel:
 
@@ -125,5 +125,6 @@ Expected smoke shape: the UI route returns HTML/static content, `/api/control/bo
 - For bare `panda run`, keep the default `PANDA_CONTROL_HOST=127.0.0.1` unless you intentionally place Control behind TLS and an operator-only network boundary.
 - For Docker stack, keep the default host publish on `127.0.0.1` or bind to a Tailscale IP; avoid `0.0.0.0` for this operator UI.
 - Login tokens are one-time bootstrap secrets and expire quickly. Do not paste them into logs or shared chat.
+- **Remember this device** keeps the same Control role/scope but extends that browser session to 30 days. Use it only on trusted private devices. Logout revokes the stored server-side session.
 - The readable CSRF cookie is scoped to `/` so the React app can recover write/logout CSRF state after a refresh. The session cookie remains `HttpOnly` and scoped to `/api/control`.
 - The Credentials page shows metadata/presence only: `agentKey`, `envKey`, timestamps, and `present`. It never renders secret values, ciphertext, IVs, or tags.

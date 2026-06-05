@@ -31,7 +31,7 @@ panda control grant --identity patrik --role admin
 panda control grant --identity patrik --role scoped --agent clawd
 ```
 
-The command prints a one-time `loginToken` that expires after 15 minutes. Treat it as a secret operator bootstrap token. The HTTP login endpoint consumes it and exchanges it for a Control session cookie and CSRF token; token reuse fails.
+The command prints a one-time `loginToken` that expires after 15 minutes. Treat it as a secret operator bootstrap token. The HTTP login endpoint consumes it and exchanges it for a Control session cookie and CSRF token; token reuse fails. The Control UI can optionally remember a trusted browser for 30 days by extending the resulting session cookie; the same role/scope checks still apply, and logout revokes the stored session.
 
 ## PR1A endpoints
 

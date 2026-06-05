@@ -10,7 +10,7 @@ type AuthContextValue = {
   session: ControlSession | null
   csrfToken: string | null
   isLoading: boolean
-  login: (token: string) => Promise<void>
+  login: (input: { token: string; remember?: boolean }) => Promise<void>
   devLogin: (input: DevLoginInput) => Promise<void>
   logout: () => Promise<void>
 }
@@ -53,8 +53,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       session: me.data?.session ?? null,
       csrfToken,
       isLoading: shouldLoadSession && me.isLoading,
-      login: async (token) => {
-        await loginMutation.mutateAsync(token)
+      login: async (input) => {
+        await loginMutation.mutateAsync(input)
       },
       devLogin: async (input) => {
         await devLoginMutation.mutateAsync(input)

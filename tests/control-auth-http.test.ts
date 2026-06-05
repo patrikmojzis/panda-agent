@@ -223,6 +223,32 @@ describe("Control auth HTTP", () => {
     expect((await fetch(`${base}/api/control/me`, {headers: {cookie: cookies}})).status).toBe(401);
   });
 
+  it("can remember a trusted Control browser session with a longer persistent cookie", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+
+    const login = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken, remember: true})});
+    expect(login.status).toBe(200);
+    const body = await login.json() as {session: {role: string; expiresAt: string}; csrfToken: string};
+    expect(body.session.role).toBe("scoped");
+    expect(Date.parse(body.session.expiresAt)).toBeGreaterThan(Date.now() + 29 * 24 * 60 * 60 * 1000);
+
+    const setCookies = setCookieHeaders(login);
+    expect(setCookies.find((cookie) => cookie.startsWith(`${CONTROL_SESSION_COOKIE}=`))).toContain("Max-Age=2592000");
+    expect(setCookies.find((cookie) => cookie.startsWith(`${CONTROL_SESSION_COOKIE}=`))).toContain("HttpOnly");
+    expect(setCookies.find((cookie) => cookie.startsWith(`${CONTROL_CSRF_COOKIE}=`))).toContain("Max-Age=2592000");
+    expect(setCookies.find((cookie) => cookie.startsWith(`${CONTROL_CSRF_COOKIE}=`))).not.toContain("HttpOnly");
+
+    const cookies = cookieHeader(login);
+    const me = await fetch(`${base}/api/control/me`, {headers: {cookie: cookies}});
+    expect(me.status).toBe(200);
+    await expect(me.json()).resolves.toEqual({session: expect.objectContaining({role: "scoped"})});
+
+    const stored = await harness.pool.query(`SELECT expires_at > NOW() + INTERVAL '29 days' AS long_lived FROM "runtime"."control_sessions"`);
+    expect(stored.rows).toEqual([expect.objectContaining({long_lived: true})]);
+  });
+
   it("keeps dev login unavailable unless explicitly enabled", async () => {
     const harness = await createHarness();
     const base = await startHarnessServer(harness);
