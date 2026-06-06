@@ -66,6 +66,7 @@ describe("AgentSkillTool", () => {
       skillKey: "calendar",
       description: "Use this for calendar work.",
       content: "# Calendar\nLong skill body.",
+      tags: [" Coding ", "repo:PANDA-agent", "coding"],
     }, createRunContext({
       agentKey: "panda",
     }));
@@ -76,6 +77,7 @@ describe("AgentSkillTool", () => {
       skillKey: "calendar",
       description: "Use this for calendar work.",
       contentBytes: expect.any(Number),
+      tags: ["coding", "repo:panda-agent"],
     });
     await expect(store.readAgentSkill("panda", "calendar")).resolves.toMatchObject({
       description: "Use this for calendar work.",
@@ -87,7 +89,7 @@ describe("AgentSkillTool", () => {
 
   it("loads the current session agent's full skill body and updates load metadata", async () => {
     const store = await createStore();
-    await store.setAgentSkill("panda", "calendar", "Panda skill.", "# Panda");
+    await store.setAgentSkill("panda", "calendar", "Panda skill.", "# Panda", ["calendar", "coding"]);
     await store.setAgentSkill("ops", "calendar", "Ops skill.", "# Ops");
     const tool = new AgentSkillTool({ store });
 
@@ -112,6 +114,7 @@ describe("AgentSkillTool", () => {
       description: "Panda skill.",
       content: "# Panda",
       contentBytes: expect.any(Number),
+      tags: ["calendar", "coding"],
       loadCount: 1,
       lastLoadedAt: expect.any(Number),
     });
@@ -122,12 +125,14 @@ describe("AgentSkillTool", () => {
       found: true,
       description: "Panda skill.",
       content: "# Panda",
+      tags: ["calendar", "coding"],
       loadCount: 2,
       lastLoadedAt: expect.any(Number),
     });
     await expect(store.readAgentSkill("panda", "calendar")).resolves.toMatchObject({
       description: "Panda skill.",
       content: "# Panda",
+      tags: ["calendar", "coding"],
       loadCount: 2,
       lastLoadedAt: expect.any(Number),
     });
@@ -258,6 +263,27 @@ describe("AgentSkillTool", () => {
     }))).rejects.toBeInstanceOf(ToolError);
   });
 
+  it("rejects tags for load and delete operations", async () => {
+    const store = await createStore();
+    const tool = new AgentSkillTool({ store });
+
+    await expect(tool.run({
+      operation: "load",
+      skillKey: "calendar",
+      tags: ["coding"],
+    }, createRunContext({
+      agentKey: "panda",
+    }))).rejects.toThrow("Load does not take tags.");
+
+    await expect(tool.run({
+      operation: "delete",
+      skillKey: "calendar",
+      tags: ["coding"],
+    }, createRunContext({
+      agentKey: "panda",
+    }))).rejects.toThrow("Delete does not take tags.");
+  });
+
   it("rejects blank description or content for set", async () => {
     const store = await createStore();
     const tool = new AgentSkillTool({ store });
@@ -281,6 +307,31 @@ describe("AgentSkillTool", () => {
     }))).rejects.toThrow("Skill content must not be empty.");
   });
 
+  it("rejects invalid tags for set", async () => {
+    const store = await createStore();
+    const tool = new AgentSkillTool({ store });
+
+    await expect(tool.run({
+      operation: "set",
+      skillKey: "calendar",
+      description: "Calendar helper.",
+      content: "# Calendar",
+      tags: [""],
+    }, createRunContext({
+      agentKey: "panda",
+    }))).rejects.toThrow("Skill tags must not be empty.");
+
+    await expect(tool.run({
+      operation: "set",
+      skillKey: "calendar",
+      description: "Calendar helper.",
+      content: "# Calendar",
+      tags: ["repo/panda-agent"],
+    }, createRunContext({
+      agentKey: "panda",
+    }))).rejects.toThrow("Skill tags must use lowercase letters, numbers, hyphens, underscores, or colons.");
+  });
+
   it("rejects oversized descriptions for set", async () => {
     const store = await createStore();
     const tool = new AgentSkillTool({ store });
@@ -298,7 +349,7 @@ describe("AgentSkillTool", () => {
 
   it("enforces operation-aware tool policy before skill store access", async () => {
     const store = await createStore();
-    await store.setAgentSkill("panda", "calendar", "Panda skill.", "# Panda");
+    await store.setAgentSkill("panda", "calendar", "Panda skill.", "# Panda", ["calendar", "coding"]);
     const tool = new AgentSkillTool({ store });
     const loadOnlyContext = createRunContext({
       agentKey: "panda",
@@ -326,6 +377,7 @@ describe("AgentSkillTool", () => {
     }, loadOnlyContext)).resolves.toMatchObject({
       operation: "load",
       found: true,
+      tags: ["calendar", "coding"],
     });
     await expect(tool.run({
       operation: "set",

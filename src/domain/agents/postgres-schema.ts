@@ -44,6 +44,7 @@ export async function ensurePostgresAgentSchema(pool: PgQueryable): Promise<void
       skill_key TEXT NOT NULL,
       description TEXT NOT NULL,
       content TEXT NOT NULL,
+      tags TEXT[] NOT NULL DEFAULT '{}',
       last_loaded_at TIMESTAMPTZ,
       load_count INTEGER NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -58,6 +59,10 @@ export async function ensurePostgresAgentSchema(pool: PgQueryable): Promise<void
   await pool.query(`
     ALTER TABLE ${tables.agentSkills}
     ADD COLUMN IF NOT EXISTS load_count INTEGER NOT NULL DEFAULT 0
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.agentSkills}
+    ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.agentPrompts} (

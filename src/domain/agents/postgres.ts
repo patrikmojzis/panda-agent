@@ -21,6 +21,7 @@ import {
   normalizeAgentKey,
   normalizeAgentSkillContent,
   normalizeAgentSkillDescription,
+  normalizeAgentSkillTags,
   normalizeSkillKey,
 } from "./types.js";
 
@@ -77,6 +78,16 @@ function parseAgentPromptRow(row: Record<string, unknown>): AgentPromptRecord {
   };
 }
 
+function parseAgentSkillTags(value: unknown): string[] {
+  if (value === null || value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("Agent skill tags must be an array of strings.");
+  }
+  return normalizeAgentSkillTags(value);
+}
+
 function parseAgentSkillRow(row: Record<string, unknown>): AgentSkillRecord {
   return {
     agentKey: normalizeAgentKey(
@@ -91,6 +102,7 @@ function parseAgentSkillRow(row: Record<string, unknown>): AgentSkillRecord {
     content: normalizeAgentSkillContent(
       requireNonEmptyString(row.content, "Agent skill row is missing content."),
     ),
+    tags: parseAgentSkillTags(row.tags),
     lastLoadedAt: optionalTimestampMillis(row.last_loaded_at, "Agent skill last_loaded_at must be a valid timestamp."),
     loadCount: requireNonNegativeInteger(row.load_count ?? 0, "Agent skill load count"),
     createdAt: requireTimestampMillis(row.created_at, "Agent skill created_at must be a valid timestamp."),
@@ -322,23 +334,27 @@ export class PostgresAgentStore implements AgentStore {
     return row ? parseAgentSkillRow(row as Record<string, unknown>) : null;
   }
 
-  async setAgentSkill(agentKey: string, skillKey: string, description: string, content: string): Promise<AgentSkillRecord> {
+  async setAgentSkill(agentKey: string, skillKey: string, description: string, content: string, tags: readonly unknown[] = []): Promise<AgentSkillRecord> {
+    const normalizedTags = normalizeAgentSkillTags(tags);
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.agentSkills} (
         agent_key,
         skill_key,
         description,
-        content
+        content,
+        tags
       ) VALUES (
         $1,
         $2,
         $3,
-        $4
+        $4,
+        $5::text[]
       )
       ON CONFLICT (agent_key, skill_key)
       DO UPDATE SET
         description = EXCLUDED.description,
         content = EXCLUDED.content,
+        tags = EXCLUDED.tags,
         updated_at = NOW()
       RETURNING *
     `, [
@@ -346,6 +362,7 @@ export class PostgresAgentStore implements AgentStore {
       normalizeSkillKey(skillKey),
       normalizeAgentSkillDescription(description),
       normalizeAgentSkillContent(content),
+      normalizedTags,
     ]);
 
     return parseAgentSkillRow(result.rows[0] as Record<string, unknown>);

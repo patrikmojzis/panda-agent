@@ -214,6 +214,10 @@ export function skillPayload(values: SkillFormValues) {
     content: values.content,
     description: values.description.trim(),
     skillKey: values.skillKey.trim(),
+    tags: values.tags
+      .split(/[\n,]+/)
+      .map((value) => value.trim())
+      .filter(Boolean),
   }
 }
 

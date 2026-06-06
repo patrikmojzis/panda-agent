@@ -40,7 +40,7 @@ describe("AgentProfileContext", () => {
       "agent",
       `${DEFAULT_AGENT_PROMPT_TEMPLATES.agent}\n\nBe kind.`,
     );
-    await agentStore.setAgentSkill("panda", "calendar", "Use this for calendar work.", "# Calendar\nLong skill body.");
+    await agentStore.setAgentSkill("panda", "calendar", "Use this for calendar work.", "# Calendar\nLong skill body.", ["calendar", "coding"]);
 
     const context = new AgentProfileContext({
       store: agentStore,
@@ -53,7 +53,7 @@ describe("AgentProfileContext", () => {
     expect(content).toContain("Be kind.");
     expect(content).not.toContain("[soul]");
     expect(content).toContain("Summaries only. Query `session.agent_skills` for full skill bodies when you need the exact content.");
-    expect(content).toContain("calendar\nUse this for calendar work.");
+    expect(content).toContain("calendar [calendar, coding]: Use this for calendar work.");
     expect(content).not.toContain("Long skill body.");
     expect(content).not.toContain("[memory]");
     expect(content).not.toContain("[recent diary]");
@@ -80,8 +80,8 @@ describe("AgentProfileContext", () => {
       displayName: "Panda",
       prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
-    await agentStore.setAgentSkill("panda", "calendar", "Use this for calendar work.", "# Calendar");
-    await agentStore.setAgentSkill("panda", "finance", "Use this for finance work.", "# Finance");
+    await agentStore.setAgentSkill("panda", "calendar", "Use this for calendar work.", "# Calendar", ["calendar"]);
+    await agentStore.setAgentSkill("panda", "finance", "Use this for finance work.", "# Finance", ["finance"]);
 
     const context = new AgentProfileContext({
       store: agentStore,
@@ -93,7 +93,7 @@ describe("AgentProfileContext", () => {
     });
     const content = await context.getContent();
 
-    expect(content).toContain("calendar\nUse this for calendar work.");
-    expect(content).not.toContain("finance\nUse this for finance work.");
+    expect(content).toContain("calendar [calendar]: Use this for calendar work.");
+    expect(content).not.toContain("finance [finance]: Use this for finance work.");
   });
 });

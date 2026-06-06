@@ -37,6 +37,7 @@ export interface AgentSkillRecord {
   skillKey: string;
   description: string;
   content: string;
+  tags: readonly string[];
   lastLoadedAt?: number;
   loadCount: number;
   createdAt: number;
@@ -49,6 +50,8 @@ export interface BootstrapAgentInput extends CreateAgentInput {
 
 export const MAX_AGENT_SKILL_DESCRIPTION_CHARS = 8_000;
 export const MAX_AGENT_SKILL_CONTENT_CHARS = 1_000_000;
+export const MAX_AGENT_SKILL_TAGS = 20;
+export const MAX_AGENT_SKILL_TAG_CHARS = 64;
 
 export function normalizeAgentKey(value: string): string {
   const normalized = value.trim().toLowerCase();
@@ -99,4 +102,44 @@ export function normalizeAgentSkillContent(value: string): string {
   }
 
   return value;
+}
+
+export function normalizeAgentSkillTag(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error("Skill tags must be strings.");
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    throw new Error("Skill tags must not be empty.");
+  }
+
+  if (normalized.length > MAX_AGENT_SKILL_TAG_CHARS) {
+    throw new Error(`Skill tags must be at most ${MAX_AGENT_SKILL_TAG_CHARS} characters.`);
+  }
+
+  if (!/^[a-z0-9][a-z0-9:_-]*$/.test(normalized)) {
+    throw new Error("Skill tags must use lowercase letters, numbers, hyphens, underscores, or colons.");
+  }
+
+  return normalized;
+}
+
+export function normalizeAgentSkillTags(values: readonly unknown[] = []): string[] {
+  if (values.length > MAX_AGENT_SKILL_TAGS) {
+    throw new Error(`Skills can have at most ${MAX_AGENT_SKILL_TAGS} tags.`);
+  }
+
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const tag = normalizeAgentSkillTag(value);
+    if (seen.has(tag)) {
+      continue;
+    }
+    seen.add(tag);
+    tags.push(tag);
+  }
+
+  return tags;
 }

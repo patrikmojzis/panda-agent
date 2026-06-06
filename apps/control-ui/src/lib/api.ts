@@ -273,6 +273,7 @@ export type SkillRow = {
   skillKey: string
   description: string
   content?: string
+  tags: string[]
   loadCount: number
   createdAt: string
   updatedAt: string
