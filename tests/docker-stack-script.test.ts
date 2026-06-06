@@ -215,6 +215,15 @@ exit 42
     return match?.[1] ?? "";
   }
 
+  function expectTraceLabels(compose: string, service: string, sourceId: string, environment: string): void {
+    expect(compose).toContain(`  ${service}:`);
+    expect(compose).toContain('    labels:');
+    expect(compose).toContain('      panda_trace.enabled: "true"');
+    expect(compose).toContain(`      panda_trace.source_id: "${sourceId}"`);
+    expect(compose).toContain(`      panda_trace.service: "${service}"`);
+    expect(compose).toContain(`      panda_trace.environment: "${environment}"`);
+  }
+
   it("fails when PANDA_AGENTS contains duplicates after normalization", async () => {
     const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
     const dockerBin = await createDockerStub(logPath);
@@ -255,6 +264,111 @@ exit 42
     expect(await readFile(generatedComposePath, "utf8")).toBe("services: {}\n");
     expect(await readFile(generatedWikiComposePath, "utf8")).not.toContain("ports:");
     expect(await readFile(logPath, "utf8")).not.toContain("panda agent ensure");
+  });
+
+
+  it("keeps Panda Trace collector labels disabled by default", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const compose = await readFile(generatedComposePath, "utf8");
+    expect(compose).toBe("services: {}\n");
+    expect(compose).not.toContain("panda_trace.enabled");
+    expect(result.stderr).not.toContain("PANDA_TRACE_SOURCE_");
+  });
+
+  it("labels only selected services for host-level Panda Trace collection", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_TRACE_COLLECTOR_ENABLED=true",
+      "PANDA_TRACE_COLLECTOR_SERVICES=core,discord",
+      "PANDA_TRACE_ENVIRONMENT=staging",
+      "PANDA_TRACE_SOURCE_CORE=src_core_123",
+      "PANDA_TRACE_SOURCE_DISCORD=src_discord_456",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const compose = await readFile(generatedComposePath, "utf8");
+    expect((compose.match(/panda_trace.enabled: "true"/g) ?? [])).toHaveLength(2);
+    expectTraceLabels(compose, "panda-core", "src_core_123", "staging");
+    expectTraceLabels(compose, "panda-discord", "src_discord_456", "staging");
+    expect(compose).not.toContain('panda_trace.service: "panda-browser-runner"');
+    expect(compose).not.toContain('panda_trace.service: "panda-telegram"');
+    expect(compose).not.toContain('panda_trace.service: "panda-whatsapp"');
+    expect(compose).not.toContain("PANDA_TRACE_KEY");
+  });
+
+  it("fails clearly when a selected Panda Trace service source id is missing", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_TRACE_COLLECTOR_ENABLED=true",
+      "PANDA_TRACE_COLLECTOR_SERVICES=core,discord",
+      "PANDA_TRACE_SOURCE_CORE=src_core_123",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain(
+      "PANDA_TRACE_SOURCE_DISCORD is required when PANDA_TRACE_COLLECTOR_SERVICES includes discord.",
+    );
+  });
+
+  it("rejects Panda Trace collector keys in the app stack env", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_TRACE_COLLECTOR_ENABLED=true",
+      "PANDA_TRACE_COLLECTOR_SERVICES=core",
+      "PANDA_TRACE_SOURCE_CORE=src_core_123",
+      "PANDA_TRACE_KEY=secret-collector-key",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("PANDA_TRACE_KEY must not be set in the Panda Agent stack env");
   });
 
   it("enables Control through panda-core with a loopback-only publish by default", async () => {
