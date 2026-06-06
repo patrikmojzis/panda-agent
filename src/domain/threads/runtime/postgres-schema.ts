@@ -139,20 +139,36 @@ async function redactLegacySetEnvValueToolCallArguments(
 
 async function readExistingThreadColumns(
   pool: PgPoolLike,
-  tables: ThreadRuntimeTableNames,
   columns: readonly string[],
 ): Promise<ReadonlySet<string>> {
-  const existing = new Set<string>();
-  for (const column of columns) {
-    try {
-      await pool.query(`SELECT ${quoteIdentifier(column)} FROM ${tables.threads} LIMIT 0`);
-      existing.add(column);
-    } catch {
-      // Missing columns are expected on the post-migration schema.
-    }
+  if (columns.length === 0) {
+    return new Set();
   }
 
-  return existing;
+  const result = await pool.query(`
+    SELECT table_schema, column_name
+    FROM information_schema.columns
+    WHERE table_name = $1
+      AND table_schema IN ($2, 'public')
+  `, ["threads", RUNTIME_SCHEMA]);
+  const requestedColumns = new Set(columns);
+  const rows = result.rows.flatMap((row) => {
+    if (!isJsonRecord(row) || typeof row.table_schema !== "string" || typeof row.column_name !== "string") {
+      return [];
+    }
+
+    return [{
+      tableSchema: row.table_schema,
+      columnName: row.column_name,
+    }];
+  });
+  const runtimeRows = rows.filter((row) => row.tableSchema === RUNTIME_SCHEMA);
+  // pg-mem exposes explicitly schema-qualified tables as public in information_schema.
+  const candidateRows = runtimeRows.length > 0 ? runtimeRows : rows.filter((row) => row.tableSchema === "public");
+
+  return new Set(candidateRows
+    .map((row) => row.columnName)
+    .filter((column) => requestedColumns.has(column)));
 }
 
 async function dropReadonlyThreadsViewForColumnCleanup(
@@ -233,7 +249,7 @@ export async function migrateSessionRuntimeConfigFromThreadRows(
     "prompt_cache_key",
     "inference_projection",
   ] as const;
-  const existingColumns = await readExistingThreadColumns(pool, tables, movedColumns);
+  const existingColumns = await readExistingThreadColumns(pool, movedColumns);
 
   if (existingColumns.has("prompt_cache_key")) {
     const customPromptCacheKeys = await pool.query(`
@@ -511,10 +527,9 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
   await ensureThreadsTable(pool, tables);
   const existingLegacyScalarColumns = await readExistingThreadColumns(
     pool,
-    tables,
     LEGACY_THREAD_SCALAR_COLUMNS,
   );
-  const existingContextColumns = await readExistingThreadColumns(pool, tables, [LEGACY_THREAD_CONTEXT_COLUMN]);
+  const existingContextColumns = await readExistingThreadColumns(pool, [LEGACY_THREAD_CONTEXT_COLUMN]);
   await dropReadonlyThreadsViewForColumnCleanup(
     pool,
     new Set([...existingLegacyScalarColumns, ...existingContextColumns]),

@@ -20,6 +20,7 @@ const DISCORD_OPCODE_DISPATCH = 0;
 const DISCORD_OPCODE_HEARTBEAT = 1;
 const DISCORD_OPCODE_IDENTIFY = 2;
 const DISCORD_OPCODE_HELLO = 10;
+const DISCORD_CLOSE_GOING_AWAY = 1001;
 const GUILD_TEXT_CHANNEL = 0;
 const GUILD_NEWS_CHANNEL = 5;
 const NEWS_THREAD_CHANNEL = 10;
@@ -252,9 +253,16 @@ export class DiscordGatewayClient {
         code,
         reason: compactCloseReason(reason),
       });
-      if (!this.stopped) {
-        void this.reportFatal(new Error(`Discord Gateway closed with code ${code}.`));
+      if (this.stopped) {
+        return;
       }
+
+      if (code === DISCORD_CLOSE_GOING_AWAY) {
+        void this.reconnectAfterRecoverableClose(code);
+        return;
+      }
+
+      void this.reportFatal(new Error(`Discord Gateway closed with code ${code}.`));
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -384,6 +392,21 @@ export class DiscordGatewayClient {
         return;
       default:
         return;
+    }
+  }
+
+  private async reconnectAfterRecoverableClose(code: number): Promise<void> {
+    this.options.log("gateway_reconnecting", {
+      connectorKey: this.options.connectorKey,
+      accountKey: this.options.accountKey,
+      code,
+    });
+
+    try {
+      await this.start();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.reportFatal(new Error(`Discord Gateway reconnect failed after close code ${code}: ${message}`));
     }
   }
 

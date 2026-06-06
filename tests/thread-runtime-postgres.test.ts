@@ -1,7 +1,10 @@
+import {EventEmitter} from "node:events";
+
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {stringToUserMessage} from "../src/index.js";
+import {observePostgresPool} from "../src/app/runtime/database.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
 import {buildThreadRuntimeTableNames} from "../src/domain/threads/runtime/postgres-shared.js";
 import {parseInputRow, parseMessageRow, parseToolJobRow,} from "../src/domain/threads/runtime/postgres-rows.js";
@@ -167,6 +170,66 @@ describe("PostgresThreadRuntimeStore", () => {
       ],
     });
     expect(JSON.stringify(persistedMessage)).not.toContain("sk-legacy-secret");
+  });
+
+  it("does not log expected pool errors when ensuring a clean migrated thread schema", async () => {
+    class CleanMigratedSchemaPool extends EventEmitter {
+      totalCount = 0;
+      idleCount = 0;
+      waitingCount = 0;
+      readonly queryTexts: string[] = [];
+
+      connect(): Promise<never> {
+        return Promise.reject(new Error("connect was not expected for clean schema ensure"));
+      }
+
+      query(text: string): Promise<{rows: Array<Record<string, unknown>>}> {
+        this.queryTexts.push(text);
+        if (/SELECT\s+"(?:system_prompt|max_turns|temperature|context|model|thinking|pending_wake_at|prompt_cache_key|inference_projection)"/.test(text)) {
+          return Promise.reject(new Error("legacy column does not exist"));
+        }
+
+        if (text.includes("information_schema.columns")) {
+          return Promise.resolve({
+            rows: [
+              {table_schema: "runtime", column_name: "id"},
+              {table_schema: "runtime", column_name: "session_id"},
+              {table_schema: "runtime", column_name: "runtime_state"},
+              {table_schema: "runtime", column_name: "created_at"},
+              {table_schema: "runtime", column_name: "updated_at"},
+            ],
+          });
+        }
+
+        if (text.includes("COUNT(*)::INTEGER AS count")) {
+          return Promise.resolve({rows: [{count: 0}]});
+        }
+
+        if (text.includes("FROM") && text.includes("thread_runtime_migrations")) {
+          return Promise.resolve({rows: [{"?column?": 1}]});
+        }
+
+        return Promise.resolve({rows: []});
+      }
+    }
+
+    const pool = new CleanMigratedSchemaPool();
+    const log = vi.fn();
+    const observer = observePostgresPool({
+      pool,
+      applicationName: "thread-runtime-test",
+      log,
+    });
+
+    try {
+      const store = new PostgresThreadRuntimeStore({pool});
+      await store.ensureSchema();
+    } finally {
+      observer.stop();
+    }
+
+    expect(pool.queryTexts.some((text) => text.includes("information_schema.columns"))).toBe(true);
+    expect(log).not.toHaveBeenCalledWith("postgres_pool_error", expect.anything());
   });
 
   it("persists shell sessions by session, thread, and execution environment", async () => {
