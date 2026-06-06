@@ -371,6 +371,35 @@ exit 42
     expect(result.stderr).toContain("PANDA_TRACE_KEY must not be set in the Panda Agent stack env");
   });
 
+  it("rejects Panda Trace collector keys even when Trace labeling is disabled", async () => {
+    const cases = [
+      {name: "unset", lines: []},
+      {name: "false", lines: ["PANDA_TRACE_COLLECTOR_ENABLED=false"]},
+    ];
+
+    for (const traceCase of cases) {
+      const logPath = path.join(await makeTempDir(`panda-docker-log-${traceCase.name}-`), "docker.log");
+      const dockerBin = await createDockerStub(logPath);
+      const envFile = await createEnvFile([
+        "DATABASE_URL=postgresql://example/panda",
+        "WIKI_DB_URL=postgresql://example/wiki",
+        "BROWSER_RUNNER_SHARED_SECRET=secret",
+        "PANDA_AGENTS=",
+        ...traceCase.lines,
+        "PANDA_TRACE_KEY=secret-collector-key",
+      ].join("\n"));
+
+      const result = await runScript(["up"], {
+        envFile,
+        dockerBin,
+        homeDir: await makeTempDir(`panda-home-${traceCase.name}-`),
+      });
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("PANDA_TRACE_KEY must not be set in the Panda Agent stack env");
+    }
+  });
+
   it("enables Control through panda-core with a loopback-only publish by default", async () => {
     const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
     const dockerBin = await createDockerStub(logPath);

@@ -424,12 +424,12 @@ parse_trace_collector_services() {
 
 validate_trace_collector_config() {
   local service
+  [[ -z "$(trim "${PANDA_TRACE_KEY:-}")" ]] \
+    || die "PANDA_TRACE_KEY must not be set in the Panda Agent stack env. Put the collector logs:write key in the host-level panda_trace_collector env instead."
+
   if (( ! enable_trace_collector )); then
     return
   fi
-
-  [[ -z "$(trim "${PANDA_TRACE_KEY:-}")" ]] \
-    || die "PANDA_TRACE_KEY must not be set in the Panda Agent stack env. Put the collector logs:write key in the host-level panda_trace_collector env instead."
 
   for service in "${panda_trace_services[@]}"; do
     if [[ "$service" == "panda-gateway" ]] && (( ! enable_gateway_edge )); then

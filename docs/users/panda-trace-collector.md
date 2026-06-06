@@ -51,7 +51,7 @@ panda_trace.environment: "prod"
 
 ## Collector credentials
 
-Do **not** set `PANDA_TRACE_KEY` in Panda Agent `.env`. The docker stack helper rejects it when Trace labeling is enabled so it cannot be passed into app containers through compose env files.
+Do **not** set `PANDA_TRACE_KEY` in Panda Agent `.env`. The docker stack helper rejects it unconditionally so it cannot be passed into app containers through compose env files.
 
 Set collector credentials only in the host-level collector env, for example:
 
