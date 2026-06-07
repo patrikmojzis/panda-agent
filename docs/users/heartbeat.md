@@ -81,7 +81,8 @@ panda session heartbeat 2c8d0a1e-... --enable --every 45
 - current thread id
 - whether heartbeat is enabled
 - interval in minutes
-- thread model
+- runtime model
+- runtime thinking setting
 
 ## Important Behavior
 
