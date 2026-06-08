@@ -20,3 +20,4 @@ Start here:
 - [Background Jobs](./background-bash.md)
 - [Remote Bash](./remote-bash.md)
 - [Disposable Execution Environments](./disposable-execution-environments.md)
+- [Panda Trace collector labels](./panda-trace-collector.md)

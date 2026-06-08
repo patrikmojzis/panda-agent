@@ -27,6 +27,7 @@ Notes:
   - Wiki.js is part of the stack.
   - Wiki bootstrap follows PANDA_AGENTS.
   - Public Caddy edge is auto-enabled when PANDA_APPS_BASE_URL or PANDA_GATEWAY_BASE_URL is set.
+  - Panda Trace collector integration is labels-only and opt-in via PANDA_TRACE_COLLECTOR_ENABLED=true.
 EOF
 }
 
@@ -185,6 +186,8 @@ normalized_environment_host_root="$(resolve_environment_host_root)" || exit "$?"
 export PANDA_ENVIRONMENTS_HOST_ROOT="$normalized_environment_host_root"
 
 declare -a normalized_agents=()
+declare -a panda_trace_services=()
+declare -a panda_trace_source_ids=()
 
 parse_agents() {
   local raw_list token normalized
@@ -313,6 +316,177 @@ is_truthy() {
       return 1
       ;;
   esac
+}
+
+trace_compose_service_name() {
+  local token
+  token="$(printf '%s' "$(trim "$1")" | tr '[:upper:]' '[:lower:]')"
+  case "$token" in
+    core|panda-core)
+      printf 'panda-core\n'
+      ;;
+    browser|panda-browser-runner)
+      printf 'panda-browser-runner\n'
+      ;;
+    telegram|panda-telegram)
+      printf 'panda-telegram\n'
+      ;;
+    discord|panda-discord)
+      printf 'panda-discord\n'
+      ;;
+    whatsapp|panda-whatsapp)
+      printf 'panda-whatsapp\n'
+      ;;
+    gateway|panda-gateway)
+      printf 'panda-gateway\n'
+      ;;
+    *)
+      die "PANDA_TRACE_COLLECTOR_SERVICES contains unsupported service: $1. Supported services: core, browser, telegram, discord, whatsapp, gateway."
+      ;;
+  esac
+}
+
+trace_source_env_suffix() {
+  case "$1" in
+    panda-core)
+      printf 'CORE\n'
+      ;;
+    panda-browser-runner)
+      printf 'BROWSER\n'
+      ;;
+    panda-telegram)
+      printf 'TELEGRAM\n'
+      ;;
+    panda-discord)
+      printf 'DISCORD\n'
+      ;;
+    panda-whatsapp)
+      printf 'WHATSAPP\n'
+      ;;
+    panda-gateway)
+      printf 'GATEWAY\n'
+      ;;
+    *)
+      die "Unsupported Panda Trace service: $1"
+      ;;
+  esac
+}
+
+trace_service_index() {
+  local compose_service=$1 index
+  for index in "${!panda_trace_services[@]}"; do
+    if [[ "${panda_trace_services[$index]}" == "$compose_service" ]]; then
+      printf '%s\n' "$index"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+trace_service_selected() {
+  trace_service_index "$1" >/dev/null
+}
+
+trace_service_source_id() {
+  local index
+  index="$(trace_service_index "$1")" || return 1
+  printf '%s\n' "${panda_trace_source_ids[$index]}"
+}
+
+parse_trace_collector_services() {
+  local raw_list token compose_service source_suffix source_var source_id
+  raw_list="$(trim "${PANDA_TRACE_COLLECTOR_SERVICES:-}")"
+  [[ -n "$raw_list" ]] \
+    || die "PANDA_TRACE_COLLECTOR_ENABLED=true requires PANDA_TRACE_COLLECTOR_SERVICES (supported: core, browser, telegram, discord, whatsapp, gateway)."
+
+  local IFS=','
+  read -r -a raw_services <<< "$raw_list"
+  for token in "${raw_services[@]}"; do
+    token="$(trim "$token")"
+    [[ -n "$token" ]] || continue
+    compose_service="$(trace_compose_service_name "$token")"
+    if trace_service_selected "$compose_service"; then
+      die "PANDA_TRACE_COLLECTOR_SERVICES contains duplicate service: $token"
+    fi
+    source_suffix="$(trace_source_env_suffix "$compose_service")"
+    source_var="PANDA_TRACE_SOURCE_$source_suffix"
+    source_id="$(trim "${!source_var:-}")"
+    [[ -n "$source_id" ]] \
+      || die "$source_var is required when PANDA_TRACE_COLLECTOR_SERVICES includes $token."
+    panda_trace_services+=("$compose_service")
+    panda_trace_source_ids+=("$source_id")
+  done
+
+  ((${#panda_trace_services[@]} > 0)) \
+    || die "PANDA_TRACE_COLLECTOR_ENABLED=true requires at least one selected service."
+}
+
+validate_trace_collector_config() {
+  local service
+  [[ -z "$(trim "${PANDA_TRACE_KEY:-}")" ]] \
+    || die "PANDA_TRACE_KEY must not be set in the Panda Agent stack env. Put the collector logs:write key in the host-level panda_trace_collector env instead."
+
+  if (( ! enable_trace_collector )); then
+    return
+  fi
+
+  for service in "${panda_trace_services[@]}"; do
+    if [[ "$service" == "panda-gateway" ]] && (( ! enable_gateway_edge )); then
+      die "PANDA_TRACE_COLLECTOR_SERVICES includes gateway, but panda-gateway is generated only when PANDA_GATEWAY_ENABLED=true or PANDA_GATEWAY_BASE_URL is set."
+    fi
+  done
+}
+
+render_trace_labels() {
+  local compose_service=$1 indent source_id environment
+  indent="${2:-    }"
+  if ! trace_service_selected "$compose_service"; then
+    return
+  fi
+
+  source_id="$(trace_service_source_id "$compose_service")"
+  environment="$(trim "${PANDA_TRACE_ENVIRONMENT:-prod}")"
+  [[ -n "$environment" ]] || environment="prod"
+  cat <<EOF
+${indent}labels:
+${indent}  panda_trace.enabled: "true"
+${indent}  panda_trace.source_id: "$source_id"
+${indent}  panda_trace.service: "$compose_service"
+${indent}  panda_trace.environment: "$environment"
+EOF
+}
+
+trace_service_has_generated_section() {
+  case "$1" in
+    panda-core)
+      (( enable_apps_edge || enable_disposable_environments || enable_control ))
+      ;;
+    panda-browser-runner)
+      (( enable_disposable_environments ))
+      ;;
+    panda-gateway)
+      (( enable_gateway_edge ))
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+render_trace_label_only_services() {
+  local service
+  if (( ! enable_trace_collector )); then
+    return
+  fi
+
+  for service in "${panda_trace_services[@]}"; do
+    if trace_service_has_generated_section "$service"; then
+      continue
+    fi
+    printf '  %s:\n' "$service"
+    render_trace_labels "$service" "    "
+  done
 }
 
 extract_https_url_host() {
@@ -488,6 +662,12 @@ if is_truthy "${PANDA_CONTROL_ENABLED:-}"; then
   enable_control=1
 fi
 
+enable_trace_collector=0
+if is_truthy "${PANDA_TRACE_COLLECTOR_ENABLED:-}"; then
+  enable_trace_collector=1
+  parse_trace_collector_services
+fi
+
 enable_public_edge=0
 if (( enable_apps_edge || enable_gateway_edge )); then
   enable_public_edge=1
@@ -550,6 +730,7 @@ configure_disposable_environment_defaults
 validate_apps_edge_config
 validate_gateway_edge_config
 validate_public_edge_config
+validate_trace_collector_config
 render_generated_wiki_compose
 
 compose_args=(
@@ -734,7 +915,7 @@ render_generated_compose() {
   if (( enable_disposable_environments )); then
     workspace_image_default="$(workspace_default_image)"
   fi
-  if ! agents_declared && (( ! enable_apps_edge && ! enable_gateway_edge && ! enable_disposable_environments && ! enable_control )); then
+  if ! agents_declared && (( ! enable_apps_edge && ! enable_gateway_edge && ! enable_disposable_environments && ! enable_control && ! enable_trace_collector )); then
     cat > "$generated_compose" <<'EOF'
 services: {}
 EOF
@@ -747,6 +928,7 @@ EOF
       cat <<EOF
   panda-core:
 EOF
+      render_trace_labels "panda-core" "    "
       if (( enable_apps_edge || enable_disposable_environments || enable_control )); then
         cat <<EOF
     environment:
@@ -866,6 +1048,9 @@ EOF
     if (( enable_gateway_edge )); then
       cat <<EOF
   panda-gateway:
+EOF
+      render_trace_labels "panda-gateway" "    "
+      cat <<EOF
     image: panda-app:latest
     command: ["gateway", "run"]
     restart: unless-stopped
@@ -964,6 +1149,9 @@ EOF
     if (( enable_disposable_environments )); then
       cat <<'EOF'
   panda-browser-runner:
+EOF
+      render_trace_labels "panda-browser-runner" "    "
+      cat <<'EOF'
     networks:
       - runner_net
       - disposable_runner_net
@@ -998,6 +1186,8 @@ EOF
 EOF
       done
     fi
+
+    render_trace_label_only_services
 
     if (( enable_apps_edge || enable_gateway_edge || enable_disposable_environments )); then
       printf '\nnetworks:\n'
