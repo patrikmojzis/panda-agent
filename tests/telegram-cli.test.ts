@@ -413,7 +413,7 @@ describe("Telegram CLI", () => {
     vi.stubEnv("CREDENTIALS_MASTER_KEY", "telegram-cli-master-key");
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
-    await telegramAccountSetCommand("main", {botTokenStdin: true, dbUrl: "postgres://telegram-db"}, {
+    await telegramAccountSetCommand("main", {botTokenStdin: true, replace: true, dbUrl: "postgres://telegram-db"}, {
       readBotTokenFromStdin: async () => "telegram-token",
     });
 
@@ -438,7 +438,7 @@ describe("Telegram CLI", () => {
     vi.stubEnv("CREDENTIALS_MASTER_KEY", "telegram-cli-master-key");
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
-    await telegramAccountSetCommand("main", {agent: "clawd", botTokenStdin: true, dbUrl: "postgres://telegram-db"}, {
+    await telegramAccountSetCommand("main", {agent: "clawd", botTokenStdin: true, replace: true, dbUrl: "postgres://telegram-db"}, {
       readBotTokenFromStdin: async () => "telegram-token",
     });
 
@@ -598,7 +598,7 @@ describe("Telegram CLI", () => {
     vi.stubEnv("CREDENTIALS_MASTER_KEY", "telegram-cli-master-key");
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
-    await telegramAccountImportEnvCommand("main", {envKey: "TELEGRAM_IMPORT_TOKEN", dbUrl: "postgres://telegram-db"}, {
+    await telegramAccountImportEnvCommand("main", {envKey: "TELEGRAM_IMPORT_TOKEN", replace: true, dbUrl: "postgres://telegram-db"}, {
       env: {TELEGRAM_IMPORT_TOKEN: "telegram-token"} as NodeJS.ProcessEnv,
     });
 

@@ -62,22 +62,22 @@ function createGatewayFixture() {
 }
 
 describe("DiscordGatewayClient", () => {
-  it("reconnects without reporting fatal when Discord closes the Gateway with 1001", async () => {
+  it("reconnects without reporting fatal when Discord closes the Gateway with 1001 or 1006", async () => {
     const fixture = createGatewayFixture();
     await fixture.client.start();
 
-    fixture.sockets[0]!.close(1001, "Going away");
+    fixture.sockets[0]!.close(1006, "abnormal closure");
     await flushPromises();
 
     expect(fixture.sockets).toHaveLength(2);
     expect(fixture.onFatal).not.toHaveBeenCalled();
     expect(fixture.log).toHaveBeenCalledWith("gateway_closed", expect.objectContaining({
-      code: 1001,
+      code: 1006,
       accountKey: "ops",
       connectorKey: "connector-1",
     }));
     expect(fixture.log).toHaveBeenCalledWith("gateway_reconnecting", expect.objectContaining({
-      code: 1001,
+      code: 1006,
       accountKey: "ops",
       connectorKey: "connector-1",
     }));

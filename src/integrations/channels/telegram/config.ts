@@ -6,7 +6,7 @@ export function requireTelegramBotToken(env: NodeJS.ProcessEnv = process.env): s
     return token;
   }
 
-  throw new Error("Telegram requires TELEGRAM_BOT_TOKEN in .env.");
+  throw new Error("Telegram bot token is required.");
 }
 
 export const TELEGRAM_SOURCE = "telegram";

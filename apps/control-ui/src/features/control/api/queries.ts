@@ -155,6 +155,15 @@ export function useAgentConnectors(
   })
 }
 
+export function useTelegramSetupStatus(agentKey: string, accountKey: string, options?: QueryFlags) {
+  return useQuery({
+    queryKey: controlKeys.agents.telegramSetup(agentKey, accountKey),
+    queryFn: () => controlApi.telegramSetupStatus(agentKey, accountKey),
+    enabled: options?.enabled ?? Boolean(agentKey && accountKey),
+    staleTime: options?.staleTime,
+  })
+}
+
 export function useAgentBindings(agentKey: string, params: TableParams) {
   return useQuery({
     queryKey: controlKeys.agents.bindings(agentKey, params),

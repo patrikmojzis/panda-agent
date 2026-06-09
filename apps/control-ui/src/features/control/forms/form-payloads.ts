@@ -10,6 +10,7 @@ import type {
   DiscordConnectorFormValues,
   EmailAllowedRecipientFormValues,
   EmailConnectorFormValues,
+  TelegramConnectorFormValues,
   EmailRouteFormValues,
   HeartbeatConfigFormValues,
   IdentityFormValues,
@@ -113,6 +114,15 @@ export function discordConnectorPayload(values: DiscordConnectorFormValues) {
     connectorKey: values.connectorKey.trim(),
     displayName: blankToUndefined(values.displayName),
     source: "discord",
+  }
+}
+
+export function telegramConnectorPayload(values: TelegramConnectorFormValues) {
+  return {
+    accountKey: values.accountKey.trim(),
+    botToken: values.botToken,
+    replace: values.replace,
+    source: "telegram",
   }
 }
 

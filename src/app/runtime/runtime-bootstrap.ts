@@ -85,6 +85,7 @@ import {PostgresControlAuthService} from "../../domain/control/auth.js";
 import {ControlReadService} from "../../domain/control/read-service.js";
 import {ControlHomeService} from "../../domain/control/home-service.js";
 import {ControlOperatorService} from "../../domain/control/operator-service.js";
+import {createTelegramBotIdentityClient} from "../../integrations/channels/telegram/account.js";
 import {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
 import {ControlTodoService} from "../../domain/control/todo-service.js";
@@ -566,6 +567,7 @@ export async function bootstrapRuntime(
         store: wikiBindingStore,
         service: wikiBindingService,
       },
+      telegramBotIdentityClient: createTelegramBotIdentityClient(),
     });
 
     const watchMutations = new WatchMutationService({

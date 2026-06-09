@@ -54,6 +54,8 @@ export const controlKeys = {
       [...controlKeys.agents.detail(agentKey), "wiki-binding"] as const,
     connectors: (agentKey: string, params: TableParams) =>
       [...controlKeys.agents.detail(agentKey), "connectors", params] as const,
+    telegramSetup: (agentKey: string, accountKey: string) =>
+      [...controlKeys.agents.detail(agentKey), "telegram-setup", accountKey] as const,
     bindings: (agentKey: string, params: TableParams) =>
       [...controlKeys.agents.detail(agentKey), "bindings", params] as const,
     emailRoutes: (agentKey: string, params: TableParams) =>

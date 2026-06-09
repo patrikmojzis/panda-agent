@@ -262,19 +262,18 @@ You still need both layers:
 1. external actor -> identity
 2. identity -> agent
 
-Telegram stored-account example (token writes are CLI-only; Control shows secret presence, not raw tokens):
+Telegram stored-account example (Control is the preferred setup path; CLI token writes are for automation and store the token in the database, not runtime `.env`):
 
 ```bash
 export CREDENTIALS_MASTER_KEY=...
-printenv TELEGRAM_BOT_TOKEN | panda telegram account set main --bot-token-stdin --agent clawd
+printf '%s' "$BOT_TOKEN" | panda telegram account set main --bot-token-stdin --agent clawd
 panda telegram account whoami main
 panda telegram pair --account main --identity alice --actor 123456789
-panda telegram run main
-# Or supervise every enabled stored Telegram account:
+# Supervise every enabled stored Telegram account in production:
 panda telegram run --all-enabled
 ```
 
-Telegram connector keys remain the Telegram bot id. The account key (for example `main`) only selects the stored connector account; single-account runtime commands require an explicit stored account key; production supervisors can use `--all-enabled`.
+Telegram connector keys remain the Telegram bot id. The account key (for example `main`) only selects the stored connector account. Use one account key per bot (`main`, `luna`, etc.); replacing an existing key requires `--replace` so another bot cannot silently overwrite it.
 
 WhatsApp example:
 
