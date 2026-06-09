@@ -89,9 +89,10 @@ panda session heartbeat 2c8d0a1e-... --enable --every 45
 - the session must already exist
 - `--every` keeps the current enabled or disabled state unless you also pass `--enable` or `--disable`
 - `--enable` and `--disable` together is an error
-- config updates reschedule the next fire time from now
+- config updates that leave the heartbeat enabled reschedule the next fire time from now
+- disabling a heartbeat preserves the stored next fire time while it is off
 
-That last rule is intentional. If you change the interval, Panda restarts the clock instead of honoring stale due timestamps.
+That reschedule rule is intentional. If you change the interval while the heartbeat remains enabled, Panda restarts the clock instead of honoring stale due timestamps.
 
 ## What Heartbeat Is Good For
 
