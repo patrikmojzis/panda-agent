@@ -186,6 +186,8 @@ Operational notes:
 
 - `mac.context.push` must stay allow-listed before testing; unexpected event
   types are rejected and can strike/suspend the source after repeated failures.
+  Use `panda gateway source disallow-type mac-local mac.context.push` to revoke
+  a type without deleting historical events.
 - Push-to-talk uploads `audio/m4a` plus an optional `image/jpeg` screenshot via
   `/v2/attachments`, then posts `/v2/events` with attachment refs.
 - `Send Clipboard Text` posts text only. `Send Screenshot Now` uploads one
@@ -329,6 +331,7 @@ Attachment defaults:
 panda gateway source create work-prod --agent panda --identity patrik
 panda gateway source allow-type work-prod meeting.transcript --delivery queue
 panda gateway source allow-type work-prod mac.context.push --delivery wake
+panda gateway source disallow-type work-prod old.event.type # idempotent; keeps historical events
 panda gateway run
 ```
 

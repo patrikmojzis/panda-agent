@@ -27,6 +27,7 @@ import type {
 import {buildCredentialTableNames} from "../credentials/postgres-shared.js";
 import {buildConnectorAccountTableNames} from "../connectors/postgres-shared.js";
 import {PostgresGatewayStore} from "../gateway/postgres.js";
+import {normalizeGatewayEventType} from "../gateway/postgres-rows.js";
 import type {
     GatewayDeviceCapability,
     GatewayDeviceRecord,
@@ -3063,6 +3064,18 @@ export class ControlOperatorService {
     return {
       eventType: publicGatewayEventType(eventType),
       audit: {action: "allow_type", agentKey: normalizedAgentKey, sourceId, type: eventType.type, delivery: eventType.delivery},
+    };
+  }
+
+  async deleteGatewayEventType(session: ControlSessionRecord, agentKey: string, sourceId: string, type: string): Promise<{deleted: boolean; audit: Record<string, unknown>}> {
+    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const source = await this.gateway.getSource(sourceId);
+    if (source.agentKey !== normalizedAgentKey) throw new Error("Control gateway source was not found or is not visible.");
+    const normalizedType = normalizeGatewayEventType(type);
+    const deleted = await this.gateway.deleteEventType(source.sourceId, normalizedType);
+    return {
+      deleted,
+      audit: {action: "disallow_type", agentKey: normalizedAgentKey, sourceId: source.sourceId, type: normalizedType, existed: deleted, deleted},
     };
   }
 

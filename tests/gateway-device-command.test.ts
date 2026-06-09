@@ -1,7 +1,7 @@
 import {createHash, randomUUID} from "node:crypto";
 
 import {Command} from "commander";
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../src/domain/agents/index.js";
@@ -13,7 +13,7 @@ import {buildGatewayTableNames} from "../src/domain/gateway/postgres-shared.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
-import {registerGatewayManagementCommands} from "../src/domain/gateway/cli.js";
+import {disallowGatewayEventTypeWithStore, registerGatewayManagementCommands} from "../src/domain/gateway/cli.js";
 import {ensureSchemas} from "../src/app/runtime/postgres-bootstrap.js";
 import {hashOpaqueToken} from "../src/lib/opaque-tokens.js";
 
@@ -40,6 +40,22 @@ describe("gateway device command CLI", () => {
       "list",
       "timeout-sweep",
     ]);
+  });
+
+  it("registers source disallow-type and reports deleted versus already absent event types", async () => {
+    const gateway = new Command("gateway");
+    registerGatewayManagementCommands(gateway);
+    const source = gateway.commands.find((command) => command.name() === "source");
+    expect(source?.commands.map((command) => command.name())).toContain("disallow-type");
+
+    const deleteEventType = vi.fn(async () => true);
+    await expect(disallowGatewayEventTypeWithStore({deleteEventType}, "work-prod", "meeting.transcript"))
+      .resolves.toBe("Disallowed meeting.transcript for work-prod.");
+    expect(deleteEventType).toHaveBeenCalledWith("work-prod", "meeting.transcript");
+
+    deleteEventType.mockResolvedValueOnce(false);
+    await expect(disallowGatewayEventTypeWithStore({deleteEventType}, "work-prod", "meeting.transcript"))
+      .resolves.toBe("Event type meeting.transcript was already absent for work-prod.");
   });
 });
 

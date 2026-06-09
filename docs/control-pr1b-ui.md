@@ -59,6 +59,10 @@ Control access is separate from identity-agent pairing.
 
 Scoped grants still require the identity to be paired with the agent. Admin grants can inspect agent sessions without an identity-agent pairing.
 
+## Gateway event types
+
+The agent Gateway tab lists allowed event types for the focused source. Operators can allow/update delivery or use the row action **Disallow** to remove a type after confirmation. Disallowing a type rejects future inbound events of that type; existing gateway event history remains available for inspection.
+
 ## Build and serve from the Control server
 
 ```bash

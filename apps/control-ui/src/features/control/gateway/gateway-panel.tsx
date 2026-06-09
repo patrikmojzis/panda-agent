@@ -1,6 +1,6 @@
 import * as React from "react"
 import type { ColumnDef } from "@tanstack/react-table"
-import { Eye, Pencil, Plus, RotateCw } from "lucide-react"
+import { Eye, Pencil, Plus, RotateCw, Trash2 } from "lucide-react"
 
 import {
   Cell,
@@ -260,6 +260,12 @@ export function GatewayPanel({
     success: "Gateway device updated",
     invalidate: controlKeys.agents.detail(agentKey),
   })
+  const disallowEventType = useToastMutation({
+    mutationFn: ({ sourceId, type }: { sourceId: string; type: string }) =>
+      controlApi.deleteGatewayEventType(agentKey, sourceId, type, auth.csrfToken),
+    success: "Gateway event type disallowed",
+    invalidate: controlKeys.agents.detail(agentKey),
+  })
   const columns: ColumnDef<GatewaySourceRow>[] = [
     {
       accessorKey: "sourceId",
@@ -412,6 +418,24 @@ export function GatewayPanel({
                   context: { agentKey, sourceId: row.original.sourceId },
                   defaultData: gatewayEventTypeToFormValues(row.original),
                   entity: row.original,
+                }),
+            },
+            {
+              label: "Disallow",
+              icon: <Trash2 className="size-4" />,
+              destructive: true,
+              pending: disallowEventType.isPending,
+              confirm: {
+                title: "Disallow event type",
+                description: `Disallow ${row.original.type} for source ${row.original.sourceId}? Future events of this type will be rejected; historical events are kept.`,
+                confirmLabel: "Disallow event type",
+                entityLabel: "Gateway event type",
+                itemLabel: `${row.original.sourceId}:${row.original.type}`,
+              },
+              onSelect: () =>
+                disallowEventType.mutateAsync({
+                  sourceId: row.original.sourceId,
+                  type: row.original.type,
                 }),
             },
           ]}

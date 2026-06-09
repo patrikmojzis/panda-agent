@@ -1593,6 +1593,68 @@ describe("Control operator HTTP", () => {
     expect(listText).toContain("build-alerts");
     expect(listText).not.toContain(createBody.clientSecret);
 
+    const eventTypesPath = `${base}/api/control/agents/panda/gateway/sources/build-alerts/event-types`;
+    const allowType = await fetch(eventTypesPath, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({type: "build.completed", delivery: "queue"}),
+    });
+    expect(allowType.status).toBe(200);
+    await expect(allowType.json()).resolves.toMatchObject({eventType: {sourceId: "build-alerts", type: "build.completed"}});
+
+    const deleteTypePath = `${eventTypesPath}/${encodeURIComponent("build.completed")}`;
+    const withoutCsrf = await fetch(deleteTypePath, {method: "DELETE", headers: {cookie: auth.cookies}});
+    expect(withoutCsrf.status).toBe(403);
+
+    await expect(fetch(`${base}/api/control/agents/luna/gateway/sources`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({sourceId: "luna-alerts", name: "Luna alerts", sessionId: "session-luna"}),
+    })).resolves.toMatchObject({status: 201});
+    await expect(fetch(`${base}/api/control/agents/luna/gateway/sources/luna-alerts/event-types`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({type: "build.completed", delivery: "queue"}),
+    })).resolves.toMatchObject({status: 200});
+    const wrongAgent = await fetch(`${base}/api/control/agents/panda/gateway/sources/luna-alerts/event-types/${encodeURIComponent("build.completed")}`, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+    });
+    expect(wrongAgent.status).toBe(400);
+
+    const deleteType = await fetch(deleteTypePath, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+    });
+    expect(deleteType.status).toBe(200);
+    await expect(deleteType.json()).resolves.toEqual({deleted: true});
+    await expect((await fetch(eventTypesPath, {headers: {cookie: auth.cookies}})).json()).resolves.toMatchObject({data: []});
+
+    const deleteAgain = await fetch(deleteTypePath, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+    });
+    expect(deleteAgain.status).toBe(200);
+    await expect(deleteAgain.json()).resolves.toEqual({deleted: false});
+    await expect((await fetch(`${base}/api/control/agents/luna/gateway/sources/luna-alerts/event-types`, {headers: {cookie: auth.cookies}})).json())
+      .resolves.toMatchObject({data: [expect.objectContaining({type: "build.completed"})]});
+
+    const auditResponse = await fetch(`${base}/api/control/audit-events?eventType=control_operator_write&limit=20`, {headers: {cookie: auth.cookies}});
+    expect(auditResponse.status).toBe(200);
+    const auditBody = await auditResponse.json() as {auditEvents: Array<{metadata: Record<string, unknown>}>};
+    expect(auditBody.auditEvents.map((event) => event.metadata)).toContainEqual({
+      action: "disallow_type",
+      agentKey: "panda",
+      sourceId: "build-alerts",
+      type: "build.completed",
+      existed: true,
+      deleted: true,
+    });
+    const auditText = JSON.stringify(auditBody.auditEvents.filter((event) => event.metadata.action === "disallow_type"));
+    expect(auditText).not.toContain(createBody.clientSecret);
+    expect(auditText).not.toContain("raw");
+    expect(auditText).not.toContain("payload");
+
     const devicesPath = `${base}/api/control/agents/panda/gateway/sources/build-alerts/devices`;
     for (const body of [
       {deviceId: "alpha-terminal", label: "Terminal", capabilities: ["push_context", "upload_attachments"]},

@@ -757,6 +757,12 @@ function matchGatewayDevicePath(path: string): {agentKey: string; sourceId: stri
   return {agentKey: decodeURIComponent(match[1]!), sourceId: decodeURIComponent(match[2]!), deviceId: decodeURIComponent(match[3]!)};
 }
 
+function matchGatewayEventTypePath(path: string): {agentKey: string; sourceId: string; type: string} | null {
+  const match = /^\/agents\/([^/]+)\/gateway\/sources\/([^/]+)\/event-types\/([^/]+)$/.exec(path);
+  if (!match) return null;
+  return {agentKey: decodeURIComponent(match[1]!), sourceId: decodeURIComponent(match[2]!), type: decodeURIComponent(match[3]!)};
+}
+
 function matchSessionHeartbeatPath(path: string): {agentKey: string; sessionId: string} | null {
   const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/heartbeat$/.exec(path);
   if (!match) return null;
@@ -1750,6 +1756,18 @@ export async function startControlServer(options: StartControlServerOptions): Pr
           writeJsonResponse(response, 200, {eventType: result.eventType});
         } catch (error) {
           throw new ControlHttpError(400, error instanceof Error ? error.message : "Control gateway event type update failed.");
+        }
+        return;
+      }
+      const gatewayEventTypePath = matchGatewayEventTypePath(path);
+      if (gatewayEventTypePath && request.method === "DELETE") {
+        requireCsrf(request, options.auth, session);
+        try {
+          const result = await options.operator.deleteGatewayEventType(session, gatewayEventTypePath.agentKey, gatewayEventTypePath.sourceId, gatewayEventTypePath.type);
+          await recordOperatorAudit(options.auth, session, result.audit);
+          writeJsonResponse(response, 200, {deleted: result.deleted});
+        } catch (error) {
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control gateway event type delete failed.");
         }
         return;
       }
