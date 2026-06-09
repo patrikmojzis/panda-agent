@@ -418,6 +418,54 @@ describe("Panda gateway", () => {
     }
   });
 
+  it("deletes allowed event types without deleting historical events", async () => {
+    const harness = await createHarness();
+    try {
+      await harness.gatewayStore.upsertEventType({
+        sourceId: "work-prod",
+        type: "mac.context.push",
+        delivery: "queue",
+      });
+
+      await expect(harness.gatewayStore.deleteEventType("work-prod", "mac.context.push")).resolves.toBe(true);
+      await expect(harness.gatewayStore.listEventTypes("work-prod")).resolves.not.toEqual(
+        expect.arrayContaining([expect.objectContaining({type: "mac.context.push"})]),
+      );
+      await expect(harness.gatewayStore.deleteEventType("work-prod", "mac.context.push")).resolves.toBe(false);
+    } finally {
+      await closeHarness(harness);
+    }
+  });
+
+  it("rejects incoming events after their event type is disallowed while keeping prior events", async () => {
+    const harness = await createHarness();
+    try {
+      const token = await getToken(harness);
+      const accepted = await postEvent(harness, {token, idempotencyKey: "before-disallow"});
+      expect(accepted.status).toBe(202);
+      const acceptedBody = await accepted.json() as {eventId: string};
+
+      await expect(harness.gatewayStore.deleteEventType("work-prod", "meeting.transcript")).resolves.toBe(true);
+
+      const rejected = await postEvent(harness, {token, idempotencyKey: "after-disallow"});
+      expect(rejected.status).toBe(403);
+      await expect(harness.gatewayStore.getEvent(acceptedBody.eventId)).resolves.toMatchObject({
+        id: acceptedBody.eventId,
+        type: "meeting.transcript",
+      });
+      const strikes = await harness.pool.query(`
+        SELECT kind, reason
+        FROM "runtime"."gateway_strikes"
+        WHERE source_id = 'work-prod'
+      `);
+      expect(strikes.rows).toEqual([
+        expect.objectContaining({kind: "unexpected_type", reason: "unexpected gateway event type"}),
+      ]);
+    } finally {
+      await closeHarness(harness);
+    }
+  });
+
   it("keeps duplicate idempotency keys stable and rejects body changes", async () => {
     const harness = await createHarness();
     try {

@@ -1111,6 +1111,18 @@ export class PostgresGatewayStore {
     return row ? parseGatewayEventTypeRow(row) : null;
   }
 
+  async deleteEventType(sourceId: string, type: string): Promise<boolean> {
+    const result = await this.pool.query(`
+      DELETE FROM ${this.tables.eventTypes}
+      WHERE source_id = $1 AND event_type = $2
+      RETURNING event_type
+    `, [
+      normalizeGatewaySourceId(sourceId),
+      normalizeGatewayEventType(type),
+    ]);
+    return result.rows.length > 0;
+  }
+
   async listEventTypes(sourceId: string): Promise<readonly GatewayEventTypeRecord[]> {
     const result = await this.pool.query(`
       SELECT *

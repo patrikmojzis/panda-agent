@@ -835,6 +835,11 @@ export const controlApi = {
       `/agents/${encodeURIComponent(agentKey)}/gateway/sources/${encodeURIComponent(sourceId)}/event-types`,
       { body, csrfToken }
     ),
+  deleteGatewayEventType: (agentKey: string, sourceId: string, type: string, csrfToken?: string | null) =>
+    apiWrite<{ deleted: boolean }>(
+      `/agents/${encodeURIComponent(agentKey)}/gateway/sources/${encodeURIComponent(sourceId)}/event-types/${encodeURIComponent(type)}`,
+      { method: "DELETE", csrfToken }
+    ),
   gatewayEvents: (agentKey: string, params: TableParams & { sourceId?: string }) =>
     apiGet<PaginatedResponse<GatewayEventRow>>(`/agents/${encodeURIComponent(agentKey)}/gateway/events${qs(params)}`),
   sessionGatewayEvents: (agentKey: string, sessionId: string, params: TableParams) =>

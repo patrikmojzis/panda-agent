@@ -136,6 +136,8 @@ function safeOperatorSummary(value: unknown): Record<string, unknown> {
     ...(typeof raw.deviceId === "string" ? {deviceId: raw.deviceId} : {}),
     ...(typeof raw.type === "string" ? {type: raw.type} : {}),
     ...(typeof raw.delivery === "string" ? {delivery: raw.delivery} : {}),
+    ...(typeof raw.existed === "boolean" ? {existed: raw.existed} : {}),
+    ...(typeof raw.deleted === "boolean" ? {deleted: raw.deleted} : {}),
     ...(typeof raw.wikiGroupId === "number" ? {wikiGroupId: raw.wikiGroupId} : {}),
     ...(typeof raw.namespacePath === "string" ? {namespacePath: raw.namespacePath} : {}),
     ...(typeof secret.length === "number" || typeof secret.sha256 === "string" ? {secret: {

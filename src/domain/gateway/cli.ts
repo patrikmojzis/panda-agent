@@ -16,6 +16,7 @@ import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import {PostgresGatewayStore} from "./postgres.js";
 import {
   normalizeGatewayDeviceId,
+  normalizeGatewayEventType,
   normalizeGatewaySourceId,
   parseGatewayDeviceCommandKind,
   parseGatewayDeviceCommandStatus,
@@ -199,6 +200,25 @@ async function allowType(sourceId: string, type: string, options: GatewayAllowTy
     process.stdout.write(
       `Allowed ${record.type} for ${record.sourceId} with max delivery ${record.delivery}.\n`,
     );
+  });
+}
+
+export async function disallowGatewayEventTypeWithStore(
+  gatewayStore: Pick<PostgresGatewayStore, "deleteEventType">,
+  sourceId: string,
+  type: string,
+): Promise<string> {
+  const normalizedSourceId = normalizeGatewaySourceId(sourceId);
+  const normalizedType = normalizeGatewayEventType(type);
+  const deleted = await gatewayStore.deleteEventType(normalizedSourceId, normalizedType);
+  return deleted
+    ? `Disallowed ${normalizedType} for ${normalizedSourceId}.`
+    : `Event type ${normalizedType} was already absent for ${normalizedSourceId}.`;
+}
+
+async function disallowType(sourceId: string, type: string, options: GatewayCliOptions): Promise<void> {
+  await withGatewayStores(options, async ({gatewayStore}) => {
+    process.stdout.write(`${await disallowGatewayEventTypeWithStore(gatewayStore, sourceId, type)}\n`);
   });
 }
 
@@ -499,6 +519,14 @@ export function registerGatewayManagementCommands(gateway: Command): void {
     .option("--delivery <queue|wake>", "Maximum delivery mode for this event type", parseDelivery, "queue")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sourceId: string, type: string, options: GatewayAllowTypeOptions) => allowType(sourceId, type, options));
+
+  source
+    .command("disallow-type")
+    .description("Disallow an event type for a source")
+    .argument("<sourceId>", "Gateway source id", normalizeGatewaySourceId)
+    .argument("<type>", "Event type")
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sourceId: string, type: string, options: GatewayCliOptions) => disallowType(sourceId, type, options));
 
   source
     .command("list")
