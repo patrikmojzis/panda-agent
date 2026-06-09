@@ -670,6 +670,12 @@ function matchConnectorStatusPath(path: string): {agentKey: string; source: stri
   return {agentKey: decodeURIComponent(match[1]!), source: decodeURIComponent(match[2]!), accountKey: decodeURIComponent(match[3]!)};
 }
 
+function matchTelegramSetupStatusPath(path: string): {agentKey: string} | null {
+  const match = /^\/agents\/([^/]+)\/telegram\/setup-status$/.exec(path);
+  if (!match) return null;
+  return {agentKey: decodeURIComponent(match[1]!)};
+}
+
 function matchBindingPath(path: string): {agentKey: string; source: string; connectorKey: string; externalConversationId: string} | null {
   const match = /^\/agents\/([^/]+)\/bindings\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(path);
   if (!match) return null;
@@ -1315,6 +1321,18 @@ export async function startControlServer(options: StartControlServerOptions): Pr
           writeJsonResponse(response, 200, {deleted: result.deleted});
         } catch (error) {
           throw new ControlHttpError(400, error instanceof Error ? error.message : "Control wiki binding clear failed.");
+        }
+        return;
+      }
+
+      const telegramSetupStatusPath = matchTelegramSetupStatusPath(path);
+      if (telegramSetupStatusPath && request.method === "GET") {
+        try {
+          const accountKey = url.searchParams.get("account_key") ?? url.searchParams.get("accountKey") ?? "main";
+          const status = await options.operator.getTelegramSetupStatus(session, telegramSetupStatusPath.agentKey, {accountKey}, options.env ?? process.env);
+          writeJsonResponse(response, 200, {status});
+        } catch (error) {
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control Telegram setup status read failed.");
         }
         return;
       }

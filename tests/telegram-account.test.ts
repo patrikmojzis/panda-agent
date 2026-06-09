@@ -60,7 +60,7 @@ function makeStoreBase() {
 
 describe("Telegram account adapter", () => {
   it("derives connector account fields and stores the token only through the encrypted secret path", async () => {
-    const store = makeStore();
+    const store = makeStore({getAccountByKey: vi.fn(async () => null)});
     const crypto = new CredentialCrypto("telegram-account-test-master-key");
     const client = {getBotIdentity: vi.fn(async () => bot)};
 
@@ -103,7 +103,7 @@ describe("Telegram account adapter", () => {
   });
 
   it("redacts token material if setup dependencies fail unsafely", async () => {
-    const store = makeStore();
+    const store = makeStore({getAccountByKey: vi.fn(async () => null)});
     const crypto = new CredentialCrypto("telegram-account-test-master-key");
     const client = {
       getBotIdentity: vi.fn(async () => {
@@ -127,4 +127,28 @@ describe("Telegram account adapter", () => {
     })).rejects.not.toThrow(privateToken);
     expect(store.upsertAccount).not.toHaveBeenCalled();
   });
+  it("requires explicit replacement before overwriting an existing account key", async () => {
+    const store = makeStore();
+    const crypto = new CredentialCrypto("telegram-account-test-master-key");
+    const client = {getBotIdentity: vi.fn(async () => bot)};
+
+    await expect(setTelegramBotAccount({
+      accountKey: "ops",
+      botToken: privateToken,
+      client,
+      crypto,
+      store,
+    })).rejects.toThrow("already exists");
+    expect(store.upsertAccount).not.toHaveBeenCalled();
+
+    await expect(setTelegramBotAccount({
+      accountKey: "ops",
+      botToken: privateToken,
+      replace: true,
+      client,
+      crypto,
+      store,
+    })).resolves.toMatchObject({account: expect.objectContaining({accountKey: "ops"})});
+  });
+
 });

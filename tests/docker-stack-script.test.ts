@@ -322,6 +322,42 @@ exit 42
     expect(compose).not.toContain("PANDA_TRACE_KEY");
   });
 
+  it("labels environment manager, agent runners, wiki, and caddy for Panda Trace", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=clawd",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+      "PANDA_APPS_BASE_URL=https://panda.example.com",
+      "PANDA_APPS_PUBLIC_HOST=panda.example.com",
+      "PANDA_TRACE_COLLECTOR_ENABLED=true",
+      "PANDA_TRACE_COLLECTOR_SERVICES=environment-manager,runners,wiki,caddy",
+      "PANDA_TRACE_SOURCE_ENVIRONMENT_MANAGER=src_env",
+      "PANDA_TRACE_SOURCE_RUNNERS=src_runners",
+      "PANDA_TRACE_SOURCE_WIKI=src_wiki",
+      "PANDA_TRACE_SOURCE_CADDY=src_caddy",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    const compose = await readFile(generatedComposePath, "utf8");
+    expectTraceLabels(compose, "panda-environment-manager", "src_env", "prod");
+    expect(compose).toContain("  panda-runner-clawd:");
+    expect(compose).toContain('      panda_trace.source_id: "src_runners"');
+    expect(compose).toContain('      panda_trace.service: "panda-runners"');
+    expectTraceLabels(compose, "wiki", "src_wiki", "prod");
+    expectTraceLabels(compose, "caddy", "src_caddy", "prod");
+  });
+
   it("fails clearly when a selected Panda Trace service source id is missing", async () => {
     const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
     const dockerBin = await createDockerStub(logPath);

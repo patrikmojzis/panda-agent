@@ -13,6 +13,7 @@ Start here:
 - [Identity](./identity.md)
 - [Discord](./discord.md)
 - [Email](./email.md)
+- [Telegram](./telegram.md)
 - [Credentials](./credentials.md)
 - [Skills](./skills.md)
 - [Heartbeat](./heartbeat.md)

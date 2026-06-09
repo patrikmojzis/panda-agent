@@ -27,6 +27,7 @@ import {DISCORD_SOURCE} from "./config.js";
 import {DiscordService} from "./service.js";
 
 const DISCORD_ALL_ENABLED_POOL_MAX_FALLBACK = 2;
+const DISCORD_ALL_ENABLED_RECONCILE_INTERVAL_MS = 30_000;
 
 interface DiscordAccountCliOptions {
   dbUrl?: string;
@@ -878,6 +879,80 @@ async function discordRunAllEnabledCommand(
   };
   const unregisterShutdown = registerDiscordRunShutdown(shutdown);
 
+  async function startAccountWorker(accountKey: string): Promise<boolean> {
+    if (started.some((service) => service.accountKey === accountKey) || shutdownRequested) return false;
+    const service = createDiscordRunService({
+      accountKey,
+      dataDir: resolveMediaDir(),
+      dbUrl: options.dbUrl,
+      poolMaxFallback: DISCORD_ALL_ENABLED_POOL_MAX_FALLBACK,
+    }, dependencies);
+    starting = {accountKey, service};
+    try {
+      if (!service.start) {
+        throw new Error("Discord run service does not support supervised startup.");
+      }
+      await service.start();
+      if (shutdownRequested) {
+        await service.stop();
+        return false;
+      }
+
+      starting = null;
+      started.push({
+        accountKey,
+        runPromise: startDiscordRunLoop(accountKey, service),
+        service,
+      });
+      return true;
+    } catch (error) {
+      if (!shutdownRequested) {
+        logDiscordRunEvent("worker_start_failed", {
+          accountKey,
+          message: formatDiscordRunError(error),
+        });
+      }
+      await service.stop().catch((stopError) => {
+        logDiscordRunEvent("worker_stop_failed", {
+          accountKey,
+          message: formatDiscordRunError(stopError),
+        });
+      });
+      return false;
+    } finally {
+      starting = null;
+    }
+  }
+
+  async function reconcileEnabledAccounts(): Promise<void> {
+    if (shutdownRequested) return;
+    const accountKeys = await listEnabledDiscordAccountKeys(options);
+    const enabled = new Set(accountKeys);
+    for (let index = started.length - 1; index >= 0; index -= 1) {
+      const service = started[index]!;
+      if (enabled.has(service.accountKey)) continue;
+      started.splice(index, 1);
+      await service.service.stop();
+      logDiscordRunEvent("worker_stopped_disabled_account", {accountKey: service.accountKey});
+    }
+    for (const accountKey of accountKeys) {
+      const didStart = await startAccountWorker(accountKey);
+      if (didStart) logDiscordRunEvent("worker_started_reconciled_account", {accountKey});
+    }
+  }
+
+  let reconcileInFlight = false;
+  const reconcileTimer = setInterval(() => {
+    if (reconcileInFlight || shutdownRequested) return;
+    reconcileInFlight = true;
+    reconcileEnabledAccounts().catch((error) => {
+      logDiscordRunEvent("worker_reconcile_failed", {message: formatDiscordRunError(error)});
+    }).finally(() => {
+      reconcileInFlight = false;
+    });
+  }, DISCORD_ALL_ENABLED_RECONCILE_INTERVAL_MS);
+  reconcileTimer.unref?.();
+
   try {
     const accountKeys = await listEnabledDiscordAccountKeys(options);
     if (shutdownRequested) {
@@ -888,49 +963,8 @@ async function discordRunAllEnabledCommand(
     }
 
     for (const accountKey of accountKeys) {
-      if (shutdownRequested) {
-        break;
-      }
-
-      const service = createDiscordRunService({
-        accountKey,
-        dataDir: resolveMediaDir(),
-        dbUrl: options.dbUrl,
-        poolMaxFallback: DISCORD_ALL_ENABLED_POOL_MAX_FALLBACK,
-      }, dependencies);
-      starting = {accountKey, service};
-      try {
-        if (!service.start) {
-          throw new Error("Discord run service does not support supervised startup.");
-        }
-        await service.start();
-        if (shutdownRequested) {
-          await service.stop();
-          break;
-        }
-
-        starting = null;
-        started.push({
-          accountKey,
-          runPromise: startDiscordRunLoop(accountKey, service),
-          service,
-        });
-      } catch (error) {
-        if (!shutdownRequested) {
-          logDiscordRunEvent("worker_start_failed", {
-            accountKey,
-            message: formatDiscordRunError(error),
-          });
-        }
-        await service.stop().catch((stopError) => {
-          logDiscordRunEvent("worker_stop_failed", {
-            accountKey,
-            message: formatDiscordRunError(stopError),
-          });
-        });
-      } finally {
-        starting = null;
-      }
+      if (shutdownRequested) break;
+      await startAccountWorker(accountKey);
     }
 
     if (started.length === 0) {
@@ -951,6 +985,7 @@ async function discordRunAllEnabledCommand(
       Promise.all(started.map((service) => service.runPromise)).then(() => undefined),
     ]);
   } finally {
+    clearInterval(reconcileTimer);
     unregisterShutdown();
     await shutdown();
   }

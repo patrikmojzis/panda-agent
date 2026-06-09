@@ -320,6 +320,59 @@ export interface ControlChannelActorPairingRow {
   updatedAt: string;
 }
 
+export type ControlTelegramSetupChecklistStatus = "done" | "warning" | "blocked" | "info";
+
+export interface ControlTelegramSetupChecklistItem {
+  key: string;
+  label: string;
+  status: ControlTelegramSetupChecklistStatus;
+  detail: string;
+  action?: string;
+}
+
+export interface ControlTelegramSetupStatus {
+  agentKey: string;
+  accountKey: string;
+  account: {
+    exists: boolean;
+    enabled: boolean;
+    status?: string;
+    ownerAgentKey?: string;
+    connectorKey?: string;
+    displayName?: string;
+    externalUsername?: string;
+    tokenStored: boolean;
+    tokenValid: "not_checked" | "valid" | "invalid" | "missing_secret" | "unavailable";
+    validationError?: string;
+  };
+  sessionBindings: {
+    total: number;
+    bindings: ControlBindingRow[];
+  };
+  actorPairings: {
+    total: number;
+    pairings: ControlChannelActorPairingRow[];
+  };
+  agentPairings: {
+    total: number;
+    identities: ControlAgentPairingRow[];
+  };
+  worker: {
+    enabled: boolean;
+    reloadRequired: boolean;
+    detail: string;
+    smokeCommand: string;
+  };
+  trace: {
+    collectorEnabled: boolean;
+    serviceSelected: boolean;
+    sourceEnvKey: string;
+    sourceConfigured: boolean;
+    detail: string;
+  };
+  checklist: ControlTelegramSetupChecklistItem[];
+}
+
 export interface ControlSkillRow {
   agentKey: string;
   skillKey: string;
@@ -476,7 +529,48 @@ export interface ControlOperatorServiceOptions {
   gateway: PostgresGatewayStore;
   subagents: SubagentProfileStore;
   wikiBindings: ControlWikiBindings;
+  telegramBotIdentityClient?: ControlTelegramBotIdentityClient;
 }
+
+const CONTROL_TELEGRAM_SOURCE = "telegram";
+const CONTROL_TELEGRAM_BOT_TOKEN_SECRET_KEY = "bot_token";
+
+function controlSecretRedactionFragments(secret: string): readonly string[] {
+  const exact = secret.trim();
+  if (!exact) return [];
+  const pieces = exact
+    .split(/[^A-Za-z0-9]+/)
+    .map((piece) => piece.trim())
+    .filter((piece) => piece.length >= 8);
+  return [...new Set([exact, ...pieces])];
+}
+
+function controlSanitizeSecretErrorMessage(error: unknown, secret: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  let sanitized = message || "Telegram validation failed.";
+  for (const fragment of controlSecretRedactionFragments(secret)) {
+    sanitized = sanitized.split(fragment).join("[redacted]");
+  }
+  return sanitized || "Telegram validation failed.";
+}
+
+async function controlTelegramGetBotIdentitySafely(client: ControlTelegramBotIdentityClient, token: string): Promise<ControlTelegramBotIdentity> {
+  try {
+    return await client.getBotIdentity(token);
+  } catch (error) {
+    throw new Error(controlSanitizeSecretErrorMessage(error, token));
+  }
+}
+
+export type ControlTelegramBotIdentity = {
+  id: string;
+  username?: string;
+  displayName?: string;
+};
+
+export type ControlTelegramBotIdentityClient = {
+  getBotIdentity(token: string): Promise<ControlTelegramBotIdentity>;
+};
 
 type ControlA2ABindingStore = {
   bindSession(input: BindA2ASessionInput): Promise<A2ASessionBindingRecord>;
@@ -1060,6 +1154,7 @@ export class ControlOperatorService {
   private readonly gateway: PostgresGatewayStore;
   private readonly subagents: SubagentProfileStore;
   private readonly wikiBindings: ControlWikiBindings;
+  private readonly telegramBotIdentityClient: ControlTelegramBotIdentityClient | null;
   private readonly sessionTables = buildSessionTableNames();
   private readonly threadTables = buildThreadRuntimeTableNames();
   private readonly scheduledTables = buildScheduledTaskTableNames();
@@ -1085,6 +1180,7 @@ export class ControlOperatorService {
     this.gateway = options.gateway;
     this.subagents = options.subagents;
     this.wikiBindings = options.wikiBindings;
+    this.telegramBotIdentityClient = options.telegramBotIdentityClient ?? null;
   }
 
   private async assertAgentVisible(session: ControlSessionRecord, agentKey: string): Promise<string> {
@@ -1954,10 +2050,129 @@ export class ControlOperatorService {
     };
   }
 
+  async upsertTelegramConnector(session: ControlSessionRecord, agentKey: string, input: {
+    accountKey?: unknown;
+    botToken?: unknown;
+    replace?: unknown;
+  }): Promise<{connector: ControlConnectorRow; audit: Record<string, unknown>}> {
+    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    if (!this.telegramBotIdentityClient) {
+      throw new Error("Telegram bot validation is not available in this Control runtime.");
+    }
+    if (!this.connectorCrypto) {
+      throw new Error("CREDENTIALS_MASTER_KEY is required to write Telegram connector credentials.");
+    }
+    const accountKey = requireNonEmptyString(input.accountKey, "Telegram account key is required.");
+    const botToken = requireNonEmptyString(input.botToken, "Telegram bot token is required.");
+    const replace = input.replace === true;
+    const existing = await this.connectorAccounts.getAccountByKey(CONTROL_TELEGRAM_SOURCE, accountKey);
+    if (existing && !replace) {
+      throw new Error(`Telegram account ${accountKey} already exists. Check Replace only if you are intentionally rotating that same bot; use a per-bot key such as main for Clawd and luna for Luna.`);
+    }
+    if (existing && existing.ownerKind === "agent" && existing.ownerAgentKey && existing.ownerAgentKey !== normalizedAgentKey) {
+      throw new Error(`Telegram account ${accountKey} is already owned by agent ${existing.ownerAgentKey}. Choose a per-bot key such as ${normalizedAgentKey}, not a shared main.`);
+    }
+    const bot = await controlTelegramGetBotIdentitySafely(this.telegramBotIdentityClient, botToken);
+    const account = await this.connectorAccounts.upsertAccount({
+      source: CONTROL_TELEGRAM_SOURCE,
+      accountKey,
+      connectorKey: bot.id,
+      ownerKind: "agent",
+      ownerAgentKey: normalizedAgentKey,
+      displayName: bot.displayName ?? bot.username,
+      externalAccountId: bot.id,
+      externalUsername: bot.username,
+      status: "enabled",
+    });
+    await this.connectorAccounts.setSecret(account.id, CONTROL_TELEGRAM_BOT_TOKEN_SECRET_KEY, botToken, this.connectorCrypto);
+    return {
+      connector: publicConnector(account, (await this.connectorAccounts.listSecretKeys(account.id)).map((secret) => secret.secretKey)),
+      audit: {
+        action: replace ? "replace_telegram" : "upsert_telegram",
+        agentKey: normalizedAgentKey,
+        accountKey: account.accountKey,
+        connectorKey: account.connectorKey,
+        botUsername: bot.username ?? null,
+        secret: secretSummary(botToken),
+      },
+    };
+  }
+
+  async getTelegramSetupStatus(session: ControlSessionRecord, agentKey: string, input: {accountKey?: unknown}, env: NodeJS.ProcessEnv = process.env): Promise<ControlTelegramSetupStatus> {
+    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const accountKey = requireNonEmptyString(input.accountKey, "Telegram account key is required.");
+    const account = await this.connectorAccounts.getAccountByKey(CONTROL_TELEGRAM_SOURCE, accountKey);
+    const visibleAccount = account?.ownerKind === "agent" && account.ownerAgentKey === normalizedAgentKey ? account : null;
+    const secretKeys = visibleAccount ? (await this.connectorAccounts.listSecretKeys(visibleAccount.id)).map((secret) => secret.secretKey) : [];
+    let tokenValid: ControlTelegramSetupStatus["account"]["tokenValid"] = visibleAccount ? "not_checked" : "not_checked";
+    let validationError: string | undefined;
+    if (visibleAccount) {
+      if (!secretKeys.includes(CONTROL_TELEGRAM_BOT_TOKEN_SECRET_KEY)) {
+        tokenValid = "missing_secret";
+      } else if (!this.connectorCrypto || !this.telegramBotIdentityClient) {
+        tokenValid = "unavailable";
+      } else {
+        try {
+          const token = await this.connectorAccounts.getSecret(visibleAccount.id, CONTROL_TELEGRAM_BOT_TOKEN_SECRET_KEY, this.connectorCrypto);
+          if (!token) {
+            tokenValid = "missing_secret";
+          } else {
+            const bot = await controlTelegramGetBotIdentitySafely(this.telegramBotIdentityClient, token);
+            tokenValid = bot.id === visibleAccount.connectorKey ? "valid" : "invalid";
+            if (tokenValid === "invalid") validationError = "Stored token resolves to a different bot id than this connector account.";
+          }
+        } catch (error) {
+          tokenValid = "invalid";
+          validationError = error instanceof Error ? error.message : "Telegram validation failed.";
+        }
+      }
+    }
+    const [bindings, actorPairings, agentPairings] = await Promise.all([
+      this.listBindings(session, normalizedAgentKey, {source: CONTROL_TELEGRAM_SOURCE, perPage: 100}),
+      this.listChannelActorPairings(session, normalizedAgentKey, {source: "telegram", connectorKey: visibleAccount?.connectorKey, perPage: 100}),
+      this.listAgentPairings(session, normalizedAgentKey, {perPage: 100}),
+    ]);
+    const selectedBindings = visibleAccount ? bindings.data.filter((binding) => binding.connectorKey === visibleAccount.connectorKey) : [];
+    const selectedActors = visibleAccount ? actorPairings.data.filter((pairing) => pairing.connectorKey === visibleAccount.connectorKey) : [];
+    const traceServices = String(env.PANDA_TRACE_COLLECTOR_SERVICES ?? "").split(",").map((part) => part.trim().toLowerCase()).filter(Boolean);
+    const traceCollectorEnabled = env.PANDA_TRACE_COLLECTOR_ENABLED === "true" || env.PANDA_TRACE_COLLECTOR_ENABLED === "1";
+    const traceServiceSelected = traceServices.includes("telegram") || traceServices.includes("panda-telegram");
+    const traceSourceConfigured = typeof env.PANDA_TRACE_SOURCE_TELEGRAM === "string" && env.PANDA_TRACE_SOURCE_TELEGRAM.trim().length > 0;
+    const workerEnabled = env.TELEGRAM_ENABLED === "true" || env.TELEGRAM_ENABLED === "1";
+    const checklist: ControlTelegramSetupChecklistItem[] = [
+      visibleAccount ? {key: "account", label: "Stored Telegram account", status: visibleAccount.status === "enabled" ? "done" : "blocked", detail: `Account ${accountKey} is ${visibleAccount.status}.`} : {key: "account", label: "Stored Telegram account", status: "blocked", detail: "Store this bot token in Control. Do not put TELEGRAM_BOT_TOKEN in .env for runtime."},
+      {key: "token", label: "Bot token validates", status: tokenValid === "valid" ? "done" : tokenValid === "not_checked" ? "info" : "blocked", detail: tokenValid === "valid" ? "Telegram getMe matches the connector bot id." : validationError ?? "Token has not been validated yet."},
+      {key: "session", label: "Session bound", status: selectedBindings.length > 0 ? "done" : "blocked", detail: selectedBindings.length > 0 ? `${selectedBindings.length} Telegram conversation binding(s) target a session.` : "Bind the Telegram chat/conversation id to an agent session before inbound messages can route."},
+      {key: "identity", label: "Identity paired to agent", status: agentPairings.data.length > 0 ? "done" : "blocked", detail: agentPairings.data.length > 0 ? `${agentPairings.data.length} identity pairing(s) available.` : "Pair a Panda identity to this agent before pairing Telegram users."},
+      {key: "actor", label: "Telegram user paired", status: selectedActors.length > 0 ? "done" : "blocked", detail: selectedActors.length > 0 ? `${selectedActors.length} numeric Telegram user id pairing(s) configured.` : "Pair the numeric Telegram user id (not @handle) to an identity paired with this agent."},
+      {key: "worker", label: "Telegram worker", status: workerEnabled ? "done" : "warning", detail: workerEnabled ? "TELEGRAM_ENABLED is set. `telegram run --all-enabled` now reconciles newly enabled accounts periodically." : "Set TELEGRAM_ENABLED=true for the Docker worker, or run the smoke command manually."},
+      {key: "trace", label: "Trace labels", status: !traceCollectorEnabled ? "info" : traceServiceSelected && traceSourceConfigured ? "done" : "warning", detail: !traceCollectorEnabled ? "Panda Trace collector is disabled." : traceServiceSelected && traceSourceConfigured ? "Telegram Trace source is configured." : "Add telegram to PANDA_TRACE_COLLECTOR_SERVICES and set PANDA_TRACE_SOURCE_TELEGRAM."},
+    ];
+    return {
+      agentKey: normalizedAgentKey,
+      accountKey,
+      account: {
+        exists: Boolean(visibleAccount),
+        enabled: visibleAccount?.status === "enabled",
+        ...(visibleAccount ? {status: visibleAccount.status, ownerAgentKey: visibleAccount.ownerAgentKey ?? undefined, connectorKey: visibleAccount.connectorKey, displayName: visibleAccount.displayName, externalUsername: visibleAccount.externalUsername} : {}),
+        tokenStored: secretKeys.includes(CONTROL_TELEGRAM_BOT_TOKEN_SECRET_KEY),
+        tokenValid,
+        ...(validationError ? {validationError} : {}),
+      },
+      sessionBindings: {total: selectedBindings.length, bindings: selectedBindings},
+      actorPairings: {total: selectedActors.length, pairings: selectedActors},
+      agentPairings: {total: agentPairings.data.length, identities: agentPairings.data},
+      worker: {enabled: workerEnabled, reloadRequired: false, detail: "telegram run --all-enabled hot-reconciles enabled account changes periodically; restart only if the process predates this release.", smokeCommand: `panda telegram account whoami ${accountKey}; panda telegram run --all-enabled`},
+      trace: {collectorEnabled: traceCollectorEnabled, serviceSelected: traceServiceSelected, sourceEnvKey: "PANDA_TRACE_SOURCE_TELEGRAM", sourceConfigured: traceSourceConfigured, detail: traceSourceConfigured ? "Telegram Trace source id is present." : "Set PANDA_TRACE_SOURCE_TELEGRAM when Trace collector includes telegram."},
+      checklist,
+    };
+  }
+
   async upsertConnector(session: ControlSessionRecord, agentKey: string, input: Record<string, unknown>): Promise<{connector: ControlConnectorRow; audit: Record<string, unknown>}> {
     const source = typeof input.source === "string" && input.source.trim() ? input.source.trim().toLowerCase() : "discord";
     if (source === "discord") return this.upsertDiscordConnector(session, agentKey, input);
     if (source === "email") return this.upsertEmailConnector(session, agentKey, input);
+    if (source === "telegram") return this.upsertTelegramConnector(session, agentKey, input);
     throw new Error(`Unsupported Control connector source ${source}.`);
   }
 
@@ -2035,6 +2250,7 @@ export class ControlOperatorService {
       identityId: input.identityId,
       identityHandle: input.identityHandle,
     });
+    await this.assertIdentityPairedToAgent(normalizedAgentKey, identity.id);
     const binding = await this.identities.ensureIdentityBinding({
       source: "discord",
       connectorKey: account.connectorKey,
@@ -2117,6 +2333,15 @@ export class ControlOperatorService {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
     const source = controlChannelActorPairingSource(input.source);
     const connectorKey = controlChannelConnectorKey(source, input.connectorKey);
+    if (source === "telegram") {
+      const account = await this.connectorAccounts.getAccountByConnectorKey(CONTROL_TELEGRAM_SOURCE, connectorKey);
+      if (!account || account.ownerKind !== "agent" || account.ownerAgentKey !== normalizedAgentKey) {
+        throw new Error("Control Telegram actor pairing requires an owned Telegram connector account. Store the bot in Control Telegram setup first.");
+      }
+      if (account.status !== "enabled") {
+        throw new Error(`Control Telegram account ${account.accountKey} is ${account.status}; enable it before pairing actors.`);
+      }
+    }
     const externalActorId = controlChannelActorId(source, input.externalActorId ?? input.actorId);
     const identity = await this.resolveIdentity({
       identityId: input.identityId,

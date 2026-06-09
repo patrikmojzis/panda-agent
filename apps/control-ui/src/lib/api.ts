@@ -268,6 +268,29 @@ export type ChannelActorPairingRow = {
   updatedAt: string
 }
 
+export type TelegramSetupStatus = {
+  agentKey: string
+  accountKey: string
+  account: {
+    exists: boolean
+    enabled: boolean
+    status?: string
+    ownerAgentKey?: string
+    connectorKey?: string
+    displayName?: string
+    externalUsername?: string
+    tokenStored: boolean
+    tokenValid: "not_checked" | "valid" | "invalid" | "missing_secret" | "unavailable"
+    validationError?: string
+  }
+  sessionBindings: { total: number; bindings: BindingRow[] }
+  actorPairings: { total: number; pairings: ChannelActorPairingRow[] }
+  agentPairings: { total: number; identities: AgentPairingRow[] }
+  worker: { enabled: boolean; reloadRequired: boolean; detail: string; smokeCommand: string }
+  trace: { collectorEnabled: boolean; serviceSelected: boolean; sourceEnvKey: string; sourceConfigured: boolean; detail: string }
+  checklist: Array<{ key: string; label: string; status: "done" | "warning" | "blocked" | "info"; detail: string; action?: string }>
+}
+
 export type SkillRow = {
   agentKey: string
   skillKey: string
@@ -665,6 +688,8 @@ export const controlApi = {
     }),
   connectors: (agentKey: string, params: TableParams) =>
     apiGet<PaginatedResponse<ConnectorRow>>(`/agents/${encodeURIComponent(agentKey)}/connectors${qs(params)}`),
+  telegramSetupStatus: (agentKey: string, accountKey: string) =>
+    apiGet<{ status: TelegramSetupStatus }>(`/agents/${encodeURIComponent(agentKey)}/telegram/setup-status?account_key=${encodeURIComponent(accountKey)}`),
   upsertConnector: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
     apiWrite<{ connector: ConnectorRow }>(`/agents/${encodeURIComponent(agentKey)}/connectors`, { body, csrfToken }),
   setConnectorEnabled: (agentKey: string, row: Pick<ConnectorRow, "source" | "accountKey">, enabled: boolean, csrfToken?: string | null) =>

@@ -63,6 +63,12 @@ export type DiscordConnectorFormValues = {
   botToken: string
 }
 
+export type TelegramConnectorFormValues = {
+  accountKey: string
+  botToken: string
+  replace: boolean
+}
+
 export type EmailConnectorFormValues = {
   accountKey: string
   displayName: string
@@ -187,6 +193,7 @@ export const useCredentialSheet = createUpdateFormSheetStore<CredentialRow, Cred
 export const useWikiBindingSheet = createUpdateFormSheetStore<WikiBinding, WikiBindingFormValues>()
 export const useDiscordConnectorSheet = createUpdateFormSheetStore<ConnectorRow, DiscordConnectorFormValues>()
 export const useEmailConnectorSheet = createUpdateFormSheetStore<ConnectorRow, EmailConnectorFormValues>()
+export const useTelegramConnectorSheet = createUpdateFormSheetStore<ConnectorRow, TelegramConnectorFormValues>()
 export const useBindingSheet = createUpdateFormSheetStore<BindingRow, BindingFormValues>()
 export const useA2ABindingSheet = createUpdateFormSheetStore<A2ABindingRow, A2ABindingFormValues>()
 export const useEmailRouteSheet = createUpdateFormSheetStore<EmailRouteRow, EmailRouteFormValues>()

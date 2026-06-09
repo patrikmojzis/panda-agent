@@ -52,7 +52,7 @@ afterEach(async () => {
   while (tempDirs.length > 0) await rm(tempDirs.pop()!, {recursive: true, force: true});
 });
 
-async function createHarness() {
+async function createHarness(options: { telegramBotIdentityClient?: { getBotIdentity(token: string): Promise<{id: string; username?: string; displayName?: string}> } } = {}) {
   const db = newDb({noAstCoverageCheck: true});
   db.public.registerFunction({name: "pg_notify", args: [DataType.text, DataType.text], returns: DataType.text, implementation: () => ""});
   const adapter = db.adapters.createPg();
@@ -115,6 +115,9 @@ async function createHarness() {
       store: wikiBindingStore,
       service: wikiBindingService,
     },
+    telegramBotIdentityClient: options.telegramBotIdentityClient ?? {
+      getBotIdentity: async () => ({id: "424242", username: "panda_bot", displayName: "Panda Bot"}),
+    },
   });
   await identities.ensureSchema();
   await agents.ensureSchema();
@@ -140,7 +143,7 @@ async function createHarness() {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, identities, agents, sessions, a2aBindings, auth, reads, home, operator, briefings, heartbeats, todos, scheduledTaskStore, watchStore, connectorAccountStore, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts};
+  return {pool, identities, agents, sessions, a2aBindings, auth, reads, home, operator, briefings, heartbeats, todos, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>, options: {env?: NodeJS.ProcessEnv} = {}) {
@@ -1029,6 +1032,116 @@ describe("Control operator HTTP", () => {
     await expect(harness.wikiBindingStore.getBinding("panda")).resolves.toBeNull();
   });
 
+  it("redacts Telegram bot tokens from Control validation errors", async () => {
+    const privateToken = "123456789:super-secret-token-fragment";
+    const harness = await createHarness({
+      telegramBotIdentityClient: {
+        getBotIdentity: async (token) => {
+          throw new Error(`Telegram rejected token ${token}`);
+        },
+      },
+    });
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const failedCreate = await fetch(`${base}/api/control/agents/panda/connectors`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({source: "telegram", accountKey: "main", botToken: privateToken}),
+    });
+    expect(failedCreate.status).toBe(400);
+    const failedCreateText = JSON.stringify(await failedCreate.json());
+    expect(failedCreateText).toContain("[redacted]");
+    expect(failedCreateText).not.toContain(privateToken);
+    expect(failedCreateText).not.toContain("super-secret-token-fragment");
+
+    const account = await harness.connectorAccountStore.upsertAccount({
+      source: "telegram",
+      accountKey: "main",
+      connectorKey: "424242",
+      ownerKind: "agent",
+      ownerAgentKey: "panda",
+      status: "enabled",
+    });
+    await harness.connectorAccountStore.setSecret(account.id, "bot_token", privateToken, harness.credentialCrypto);
+    const status = await fetch(`${base}/api/control/agents/panda/telegram/setup-status?account_key=main`, {headers: {cookie: auth.cookies}});
+    expect(status.status).toBe(200);
+    const statusText = JSON.stringify(await status.json());
+    expect(statusText).toContain("[redacted]");
+    expect(statusText).not.toContain(privateToken);
+    expect(statusText).not.toContain("super-secret-token-fragment");
+  });
+
+  it("creates Telegram connectors only with explicit replacement and reports setup status", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness, {env: {TELEGRAM_ENABLED: "true", PANDA_TRACE_COLLECTOR_ENABLED: "true", PANDA_TRACE_COLLECTOR_SERVICES: "core,telegram", PANDA_TRACE_SOURCE_TELEGRAM: "src_telegram"} as NodeJS.ProcessEnv});
+    const auth = await login(base, harness);
+
+    const missingCsrf = await fetch(`${base}/api/control/agents/panda/connectors`, {
+      method: "POST",
+      headers: {cookie: auth.cookies},
+      body: JSON.stringify({source: "telegram", accountKey: "main", botToken: "telegram-secret"}),
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const created = await fetch(`${base}/api/control/agents/panda/connectors`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({source: "telegram", accountKey: "main", botToken: "telegram-secret"}),
+    });
+    expect(created.status).toBe(200);
+    const createdText = JSON.stringify(await created.json());
+    expect(createdText).toContain("bot_token");
+    expect(createdText).toContain("panda_bot");
+    expect(createdText).not.toContain("telegram-secret");
+
+    const accidentalReplace = await fetch(`${base}/api/control/agents/panda/connectors`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({source: "telegram", accountKey: "main", botToken: "telegram-secret-2"}),
+    });
+    expect(accidentalReplace.status).toBe(400);
+    await expect(accidentalReplace.json()).resolves.toMatchObject({error: expect.stringContaining("already exists")});
+
+    const replaced = await fetch(`${base}/api/control/agents/panda/connectors`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({source: "telegram", accountKey: "main", botToken: "telegram-secret-2", replace: true}),
+    });
+    expect(replaced.status).toBe(200);
+
+    const actorBeforePairing = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({source: "telegram", connectorKey: "424242", externalActorId: "987654321", identityId: "identity-patrik"}),
+    });
+    expect(actorBeforePairing.status).toBe(400);
+    await expect(actorBeforePairing.json()).resolves.toMatchObject({error: expect.stringContaining("identity must already be paired")});
+
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const paired = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({source: "telegram", connectorKey: "424242", externalActorId: "987654321", identityId: "identity-patrik"}),
+    });
+    expect(paired.status).toBe(200);
+
+    const bound = await fetch(`${base}/api/control/agents/panda/bindings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({source: "telegram", connectorKey: "424242", externalConversationId: "987654321", sessionId: "session-panda", displayName: "Telegram DM"}),
+    });
+    expect(bound.status).toBe(200);
+
+    const status = await fetch(`${base}/api/control/agents/panda/telegram/setup-status?account_key=main`, {headers: {cookie: auth.cookies}});
+    expect(status.status).toBe(200);
+    const statusText = JSON.stringify(await status.json());
+    expect(statusText).toContain("tokenValid");
+    expect(statusText).toContain("valid");
+    expect(statusText).toContain("hot-reconciles");
+    expect(statusText).not.toContain("telegram-secret");
+  });
+
   it("creates Discord connectors and manual conversation bindings", async () => {
     const harness = await createHarness();
     await harness.sessions.createSessionRecord({id: "session-panda-branch", agentKey: "panda", kind: "branch", currentThreadId: "thread-panda-branch", createdByIdentityId: "identity-patrik"});
@@ -1051,6 +1164,21 @@ describe("Control operator HTTP", () => {
       data: [expect.objectContaining({id: "identity-patrik", handle: "patrik", displayName: "Patrik"})],
     });
 
+    const pairActorBeforeAgentPairing = await fetch(`${base}/api/control/agents/panda/discord/actor-pairings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        accountKey: "workspace",
+        externalActorId: "234567890123456789",
+        identityId: "identity-patrik",
+      }),
+    });
+    expect(pairActorBeforeAgentPairing.status).toBe(400);
+    await expect(pairActorBeforeAgentPairing.json()).resolves.toMatchObject({
+      error: expect.stringContaining("identity must already be paired"),
+    });
+
+    await harness.agents.ensurePairing("panda", "identity-patrik");
     const pairActor = await fetch(`${base}/api/control/agents/panda/discord/actor-pairings`, {
       method: "POST",
       headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
@@ -1105,7 +1233,6 @@ describe("Control operator HTTP", () => {
       externalActorId: "234567890123456789",
     })).resolves.toBeNull();
 
-    await harness.agents.ensurePairing("panda", "identity-patrik");
     const pairWhatsAppActor = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings`, {
       method: "POST",
       headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
@@ -1131,6 +1258,14 @@ describe("Control operator HTTP", () => {
       externalActorId: "421900123456@s.whatsapp.net",
     })).resolves.toMatchObject({identityId: "identity-patrik"});
 
+    await harness.connectorAccountStore.upsertAccount({
+      source: "telegram",
+      accountKey: "telegram-main",
+      connectorKey: "123456789",
+      ownerKind: "agent",
+      ownerAgentKey: "panda",
+      status: "enabled",
+    });
     const pairTelegramActor = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings`, {
       method: "POST",
       headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},

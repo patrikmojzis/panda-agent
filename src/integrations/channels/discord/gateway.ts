@@ -21,6 +21,7 @@ const DISCORD_OPCODE_HEARTBEAT = 1;
 const DISCORD_OPCODE_IDENTIFY = 2;
 const DISCORD_OPCODE_HELLO = 10;
 const DISCORD_CLOSE_GOING_AWAY = 1001;
+const DISCORD_CLOSE_ABNORMAL = 1006;
 const GUILD_TEXT_CHANNEL = 0;
 const GUILD_NEWS_CHANNEL = 5;
 const NEWS_THREAD_CHANNEL = 10;
@@ -257,7 +258,7 @@ export class DiscordGatewayClient {
         return;
       }
 
-      if (code === DISCORD_CLOSE_GOING_AWAY) {
+      if (code === DISCORD_CLOSE_GOING_AWAY || code === DISCORD_CLOSE_ABNORMAL) {
         void this.reconnectAfterRecoverableClose(code);
         return;
       }

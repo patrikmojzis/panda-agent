@@ -340,8 +340,20 @@ trace_compose_service_name() {
     gateway|panda-gateway)
       printf 'panda-gateway\n'
       ;;
+    environment-manager|env|panda-environment-manager)
+      printf 'panda-environment-manager\n'
+      ;;
+    runners|runner|panda-runners)
+      printf 'panda-runners\n'
+      ;;
+    wiki)
+      printf 'wiki\n'
+      ;;
+    caddy|edge)
+      printf 'caddy\n'
+      ;;
     *)
-      die "PANDA_TRACE_COLLECTOR_SERVICES contains unsupported service: $1. Supported services: core, browser, telegram, discord, whatsapp, gateway."
+      die "PANDA_TRACE_COLLECTOR_SERVICES contains unsupported service: $1. Supported services: core, telegram, discord, whatsapp, environment-manager, runners, wiki, caddy."
       ;;
   esac
 }
@@ -365,6 +377,18 @@ trace_source_env_suffix() {
       ;;
     panda-gateway)
       printf 'GATEWAY\n'
+      ;;
+    panda-environment-manager)
+      printf 'ENVIRONMENT_MANAGER\n'
+      ;;
+    panda-runners)
+      printf 'RUNNERS\n'
+      ;;
+    wiki)
+      printf 'WIKI\n'
+      ;;
+    caddy)
+      printf 'CADDY\n'
       ;;
     *)
       die "Unsupported Panda Trace service: $1"
@@ -398,7 +422,7 @@ parse_trace_collector_services() {
   local raw_list token compose_service source_suffix source_var source_id
   raw_list="$(trim "${PANDA_TRACE_COLLECTOR_SERVICES:-}")"
   [[ -n "$raw_list" ]] \
-    || die "PANDA_TRACE_COLLECTOR_ENABLED=true requires PANDA_TRACE_COLLECTOR_SERVICES (supported: core, browser, telegram, discord, whatsapp, gateway)."
+    || die "PANDA_TRACE_COLLECTOR_ENABLED=true requires PANDA_TRACE_COLLECTOR_SERVICES (supported: core, telegram, discord, whatsapp, environment-manager, runners, wiki, caddy)."
 
   local IFS=','
   read -r -a raw_services <<< "$raw_list"
@@ -435,6 +459,9 @@ validate_trace_collector_config() {
     if [[ "$service" == "panda-gateway" ]] && (( ! enable_gateway_edge )); then
       die "PANDA_TRACE_COLLECTOR_SERVICES includes gateway, but panda-gateway is generated only when PANDA_GATEWAY_ENABLED=true or PANDA_GATEWAY_BASE_URL is set."
     fi
+    if [[ "$service" == "caddy" ]] && (( ! enable_apps_edge && ! enable_gateway_edge )); then
+      die "PANDA_TRACE_COLLECTOR_SERVICES includes caddy, but caddy is generated only when PANDA_APPS_BASE_URL or PANDA_GATEWAY_BASE_URL is set."
+    fi
   done
 }
 
@@ -467,6 +494,15 @@ trace_service_has_generated_section() {
       ;;
     panda-gateway)
       (( enable_gateway_edge ))
+      ;;
+    panda-environment-manager)
+      (( enable_disposable_environments ))
+      ;;
+    panda-runners)
+      agents_declared
+      ;;
+    caddy)
+      (( enable_public_edge ))
       ;;
     *)
       return 1
@@ -996,6 +1032,9 @@ EOF
       cat <<EOF
   panda-environment-manager:
     image: panda-app:latest
+EOF
+      render_trace_labels "panda-environment-manager" "    "
+      cat <<EOF
     command: ["environment-manager"]
     restart: unless-stopped
     read_only: true
@@ -1117,6 +1156,9 @@ EOF
     if (( enable_public_edge )); then
       cat <<EOF
   caddy:
+EOF
+      render_trace_labels "caddy" "    "
+      cat <<EOF
     depends_on:
 EOF
       if (( enable_apps_edge )); then
@@ -1163,6 +1205,9 @@ EOF
         cat <<EOF
   panda-runner-$agent_key:
     image: panda-runner:latest
+EOF
+        render_trace_labels "panda-runners" "    "
+        cat <<EOF
     command: ["bash-server"]
     restart: unless-stopped
     environment:

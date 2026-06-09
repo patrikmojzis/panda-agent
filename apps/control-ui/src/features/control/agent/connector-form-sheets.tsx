@@ -20,6 +20,7 @@ import {
   discordConnectorDefaults,
   emailAllowedRecipientDefaults,
   emailConnectorDefaults,
+  telegramConnectorDefaults,
   emailRouteDefaults,
   emailRouteToFormValues,
 } from "@/features/control/forms/form-values"
@@ -30,6 +31,7 @@ import {
   discordConnectorPayload,
   emailAllowedRecipientPayload,
   emailConnectorPayload,
+  telegramConnectorPayload,
   emailRoutePayload,
 } from "@/features/control/forms/form-payloads"
 import {
@@ -39,6 +41,7 @@ import {
   useDiscordConnectorSheet,
   useEmailAllowedRecipientSheet,
   useEmailConnectorSheet,
+  useTelegramConnectorSheet,
   useEmailRouteSheet,
   type BindingFormValues,
   type ChannelActorPairingFormValues,
@@ -46,18 +49,53 @@ import {
   type DiscordConnectorFormValues,
   type EmailAllowedRecipientFormValues,
   type EmailConnectorFormValues,
+  type TelegramConnectorFormValues,
   type EmailRouteFormValues,
 } from "@/features/control/forms/use-control-form-sheets"
 import {
   useConnectorOptions,
   useDiscordAccountOptions,
   useEmailAccountOptions,
-  useIdentityOptions,
   useSessionOptions,
 } from "@/features/control/forms/form-options"
+import { useAgentPairings } from "@/features/control/api/queries"
 import { controlApi } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { handleControlFormError } from "@/lib/form-errors"
+
+
+function useAgentPairedIdentityOptions(agentKey: string | undefined, isOpen: boolean, selectedIdentityId?: string) {
+  const pairings = useAgentPairings(
+    agentKey ?? "",
+    { page: 1, per_page: 100, sort_by: "identityHandle", sort_direction: "asc" },
+    { enabled: isOpen && Boolean(agentKey), staleTime: 30_000 }
+  )
+
+  const options = React.useMemo(() => {
+    const baseOptions = (pairings.data?.data ?? []).map((pairing) => ({
+      label: `${pairing.identityHandle}${pairing.identityDisplayName ? ` · ${pairing.identityDisplayName}` : ""}`,
+      value: pairing.identityId,
+    }))
+    if (
+      selectedIdentityId &&
+      !baseOptions.some((option) => option.value === selectedIdentityId)
+    ) {
+      return [
+        {
+          label: `Selected identity · ${selectedIdentityId}`,
+          value: selectedIdentityId,
+        },
+        ...baseOptions,
+      ]
+    }
+    return baseOptions
+  }, [pairings.data?.data, selectedIdentityId])
+
+  return {
+    isLoading: pairings.isLoading,
+    options,
+  }
+}
 
 function discordConnectorSchema(requireBotToken: boolean) {
   return z.object({
@@ -81,6 +119,12 @@ const optionalPortSchema = z
     const parsed = Number(value)
     return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535
   }, "Port must be between 1 and 65535.")
+
+const telegramConnectorSchema = z.object({
+  accountKey: z.string().trim().min(1, "Account key is required."),
+  botToken: z.string().trim().min(1, "Bot token is required."),
+  replace: z.boolean(),
+})
 
 function emailConnectorSchema(requireSecrets: boolean) {
   const secretSchema = requireSecrets
@@ -195,6 +239,12 @@ const discordConnectorErrorFields = {
   "discord connector key": "connectorKey",
   "bot token": "botToken",
   "unsupported control connector source": "accountKey",
+}
+
+const telegramConnectorErrorFields = {
+  "telegram account key": "accountKey",
+  "telegram bot token": "botToken",
+  "bot token": "botToken",
 }
 
 const emailConnectorErrorFields = {
@@ -348,6 +398,84 @@ export function DiscordConnectorSheet() {
             }
             type="password"
             required={!entity}
+          />
+        )}
+      </form.AppField>
+    </FormSheet>
+  )
+}
+
+export function TelegramConnectorSheet() {
+  const auth = useAuth()
+  const { context, defaultData, entity, isOpen, setOpen } = useTelegramConnectorSheet()
+  const invalidate = useInvalidateAgent(context?.agentKey)
+  const resetValues = React.useMemo(() => mergedValues(telegramConnectorDefaults, defaultData), [defaultData])
+  const mutation = useMutation({
+    mutationFn: (values: TelegramConnectorFormValues) => {
+      const current = requireContext(context)
+      return controlApi.upsertConnector(current.agentKey, telegramConnectorPayload(values), auth.csrfToken)
+    },
+    onSuccess: async () => {
+      toast.success("Telegram connector saved")
+      setOpen(false)
+      await invalidate(agentCacheKey(context?.agentKey))
+    },
+  })
+  const form = useControlForm({
+    defaultValues: resetValues,
+    validators: { onSubmit: telegramConnectorSchema },
+    onSubmit: async ({ value, formApi }) => {
+      try {
+        await mutation.mutateAsync(value)
+      } catch (error) {
+        await handleControlFormError(error, formApi, { messageFieldMap: telegramConnectorErrorFields })
+      }
+    },
+  })
+
+  return (
+    <FormSheet
+      confirmSubmit={{
+        title: entity ? "Replace Telegram account" : "Save Telegram account",
+        description: "The bot token is validated with Telegram and stored write-only. Reusing an account key replaces that bot only when Replace is on.",
+        confirmLabel: "Save Telegram account",
+      }}
+      description="Store a Telegram bot token for this agent. Account keys are per bot: use the suggested key from the setup card (main for Clawd, luna for Luna) — not one shared main for every bot."
+      form={form}
+      isOpen={isOpen}
+      resetValues={resetValues}
+      setIsOpen={(open) => setOpen(open)}
+      submitLabel="Save account"
+      title="Telegram setup"
+    >
+      <form.AppField name="accountKey">
+        {(field) => (
+          <field.TextField
+            label="Account key"
+            autoComplete="off"
+            autoFocus
+            description="Per bot key. Use the setup card suggestion for this agent. Example: main for Clawd, luna for Luna. Reusing a key needs Replace."
+            placeholder="agent-specific key"
+            required
+          />
+        )}
+      </form.AppField>
+      <form.AppField name="botToken">
+        {(field) => (
+          <field.TextField
+            label="Bot token"
+            autoComplete="new-password"
+            description="Write-only. Control validates with Telegram getMe and never shows the token again."
+            type="password"
+            required
+          />
+        )}
+      </form.AppField>
+      <form.AppField name="replace">
+        {(field) => (
+          <field.SwitchField
+            label="Replace existing account key"
+            description="Leave off to prevent accidental Luna/Clawd overwrites. Turn on only when rotating this exact bot account."
           />
         )}
       </form.AppField>
@@ -714,7 +842,7 @@ export function DiscordActorPairingSheet() {
     isOpen,
     resetValues.accountKey
   )
-  const identityPicker = useIdentityOptions(isOpen, resetValues.identityId)
+  const identityPicker = useAgentPairedIdentityOptions(context?.agentKey, isOpen, resetValues.identityId)
   const mutation = useMutation({
     mutationFn: (values: DiscordActorPairingFormValues) => {
       const current = requireContext(context)
@@ -834,7 +962,7 @@ export function ChannelActorPairingSheet() {
   React.useEffect(() => {
     if (isOpen) setSource(resetValues.source)
   }, [isOpen, resetValues.source])
-  const identityPicker = useIdentityOptions(isOpen, resetValues.identityId)
+  const identityPicker = useAgentPairedIdentityOptions(context?.agentKey, isOpen, resetValues.identityId)
   const connectorPicker = useConnectorOptions(
     context,
     isOpen && source === "telegram",
