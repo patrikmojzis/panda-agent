@@ -1197,7 +1197,7 @@
       }
     },
     {
-      "description": "Start a background OpenAI gpt-image-2 image generation job and return its job id. Uses recent conversation context by default and accepts local reference image paths. Leave context enabled unless the user explicitly asks otherwise. When iterating on a previous image, pass that image path in images.",
+      "description": "Start a background OpenAI gpt-image-2 image generation job and return its job id. The prompt is the source of truth by default; pass context: true only when a cleaned brief from recent conversation is intentionally needed. Accepts local reference image paths. When iterating on a previous image, pass that image path in images.",
       "name": "image_generate",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1213,7 +1213,7 @@
             "type": "string"
           },
           "context": {
-            "description": "Whether to include a cleaned brief from recent conversation context. Defaults on; omit unless the user explicitly asks to disable context.",
+            "description": "Whether to include a cleaned brief from recent conversation context. Defaults off; pass true only when recent conversation details are intentionally needed.",
             "type": "boolean"
           },
           "count": {

@@ -137,8 +137,8 @@ describe("ImageGenerateTool", () => {
         details: record.result?.details,
       } as ToolResultPayload;
 
-      expect(capturedRequest?.prompt).toContain("Conversation brief:");
-      expect(capturedRequest?.prompt).toContain("red scarf");
+      expect(capturedRequest?.prompt).toBe("Generate a square sticker.");
+      expect(runtime.complete).not.toHaveBeenCalled();
       expect(capturedRequest?.images).toHaveLength(1);
       expect(capturedRequest).toMatchObject({
         model: "gpt-image-2",
@@ -151,6 +151,12 @@ describe("ImageGenerateTool", () => {
       });
 
       const details = result.details as Record<string, any>;
+      expect(details.context).toMatchObject({
+        enabled: false,
+        used: false,
+        messages: 0,
+        briefChars: 0,
+      });
       expect(details.artifact).toMatchObject({
         kind: "image",
         source: "image_generate",
@@ -181,6 +187,70 @@ describe("ImageGenerateTool", () => {
     } finally {
       await rm(dataDir, {recursive: true, force: true});
       await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("includes cleaned conversation context only when explicitly requested", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "panda-image-tool-data-"));
+    try {
+      let capturedRequest: GenerateOpenAIImageRequest | undefined;
+      const client = {
+        generate: vi.fn(async (request: GenerateOpenAIImageRequest) => {
+          capturedRequest = request;
+          return {
+            provider: "openai" as const,
+            authKind: "codex-oauth" as const,
+            model: request.model,
+            images: [{
+              buffer: Buffer.from("generated-image"),
+              mimeType: "image/png",
+              fileName: "image-1.png",
+            }],
+          };
+        }),
+      };
+      const runtime = {
+        complete: vi.fn().mockResolvedValue(assistantText("Mascot: red scarf, bright friendly style.")),
+      };
+      const store = new TestThreadRuntimeStore();
+      await store.createThread({
+        id: "thread-1",
+        sessionId: "session-1",
+      });
+      const jobService = new BackgroundToolJobService({store});
+      const tool = new ImageGenerateTool({
+        env: {
+          ...process.env,
+          DATA_DIR: dataDir,
+          OPENAI_OAUTH_TOKEN: "codex-token",
+        },
+        client,
+        runtime,
+        jobService,
+      });
+
+      const started = await tool.run({
+        prompt: "Generate a square sticker.",
+        context: true,
+      }, createRunContext({
+        cwd: process.cwd(),
+        agentKey: "panda",
+        sessionId: "session-1",
+        threadId: "thread-1",
+      })) as Record<string, unknown>;
+
+      const record = await jobService.wait("thread-1", String(started.jobId), 1_000);
+      expect(record.status).toBe("completed");
+      expect(capturedRequest?.prompt).toContain("Conversation brief:");
+      expect(capturedRequest?.prompt).toContain("red scarf");
+      expect(runtime.complete).toHaveBeenCalledOnce();
+      expect(record.result?.details?.context).toMatchObject({
+        enabled: true,
+        used: true,
+        messages: 2,
+      });
+    } finally {
+      await rm(dataDir, {recursive: true, force: true});
     }
   });
 
