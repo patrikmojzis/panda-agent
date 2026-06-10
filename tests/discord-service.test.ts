@@ -396,7 +396,7 @@ describe("DiscordService", () => {
     const fixture = createFixture();
     await fixture.service.start();
     fixture.order.length = 0;
-    const attachmentUrl = "https://cdn.discordapp.com/attachments/channel/attachment/image.png?secret=1";
+    const proxyUrl = "https://media.discordapp.net/attachments/channel/attachment/image.png?secret=1";
     vi.stubGlobal("fetch", vi.fn(async () => new Response(Buffer.from("media"), {
       status: 200,
       headers: {"content-length": "5"},
@@ -424,7 +424,7 @@ describe("DiscordService", () => {
         filename: "image.png",
         content_type: "image/png",
         size: 5,
-        url: attachmentUrl,
+        proxy_url: proxyUrl,
       }],
     });
 
@@ -439,7 +439,7 @@ describe("DiscordService", () => {
         discordAttachmentId: "attachment-2",
       },
     }));
-    expect(JSON.stringify(fixture.mediaStore.writeMedia.mock.calls[0]?.[0])).not.toContain(attachmentUrl);
+    expect(JSON.stringify(fixture.mediaStore.writeMedia.mock.calls[0]?.[0])).not.toContain(proxyUrl);
     expect(fixture.runtimeRequests.enqueueRequest).toHaveBeenCalledWith({
       kind: "discord_message",
       payload: expect.objectContaining({
@@ -462,7 +462,64 @@ describe("DiscordService", () => {
     const output = collectWrites(write);
     expect(output).toContain("message_queued");
     expect(output).toContain('"mediaCount":1');
-    expect(output).not.toContain(attachmentUrl);
+    expect(output).not.toContain(proxyUrl);
+    expect(output).not.toContain(privateToken);
+  });
+
+  it("logs and queues bound Gateway attachments that have metadata but no downloadable CDN URL", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const fixture = createFixture();
+    await fixture.service.start();
+    fixture.order.length = 0;
+    const fetchImpl = vi.fn();
+    vi.stubGlobal("fetch", fetchImpl);
+
+    fixture.conversationRepo.getConversationBinding.mockResolvedValue({
+      source: "discord",
+      connectorKey,
+      externalConversationId: "channel-1",
+      sessionId: "session-1",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    await fixture.gatewayOptions?.onMessageCreate({
+      id: "message-3",
+      channel_id: "channel-1",
+      guild_id: "guild-1",
+      author: {
+        id: "user-1",
+      },
+      content: "image metadata only",
+      attachments: [{
+        id: "attachment-3",
+        filename: "image.png",
+        content_type: "image/png",
+        size: 5,
+      }],
+    });
+
+    expect(fixture.order).toEqual(["request:enqueue"]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(fixture.mediaStore.writeMedia).not.toHaveBeenCalled();
+    expect(fixture.runtimeRequests.enqueueRequest).toHaveBeenCalledWith({
+      kind: "discord_message",
+      payload: expect.objectContaining({
+        externalMessageId: "message-3",
+        attachmentSummaries: [{
+          id: "attachment-3",
+          filename: "image.png",
+          contentType: "image/png",
+          sizeBytes: 5,
+        }],
+        media: [],
+      }),
+    });
+    const output = collectWrites(write);
+    expect(output).toContain("media_download_skipped");
+    expect(output).toContain("Discord attachment does not include a downloadable CDN URL.");
+    expect(output).toContain('"attachmentId":"attachment-3"');
+    expect(output).toContain("message_queued");
     expect(output).not.toContain(privateToken);
   });
 

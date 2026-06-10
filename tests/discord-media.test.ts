@@ -66,6 +66,45 @@ describe("Discord inbound attachment downloads", () => {
     expect(JSON.stringify(result)).not.toContain(proxyUrl);
   });
 
+  it("downloads proxy-only Discord attachments with normalized metadata aliases", async () => {
+    const mediaStore = createMediaStore();
+    const proxyUrl = "https://media.discordapp.net/attachments/channel/attachment/photo.jpg?ex=secret";
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from("photo"), {
+      status: 200,
+      headers: {"content-length": "5"},
+    }));
+
+    const result = await downloadDiscordSupportedAttachments([{
+      id: "attachment-1",
+      filename: "photo.jpg",
+      contentType: "image/jpeg",
+      sizeBytes: 5,
+      proxy_url: proxyUrl,
+    }], {
+      connectorKey: "bot-1",
+      mediaStore,
+      fetchImpl,
+    });
+
+    expect(result.media).toHaveLength(1);
+    expect(result.unavailable).toEqual([]);
+    expect(fetchImpl).toHaveBeenCalledWith(proxyUrl, expect.objectContaining({
+      signal: expect.any(AbortSignal),
+    }));
+    expect(mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({
+      source: "discord",
+      connectorKey: "bot-1",
+      mimeType: "image/jpeg",
+      sizeBytes: 5,
+      hintFilename: "photo.jpg",
+      metadata: {
+        discordAttachmentId: "attachment-1",
+      },
+    }));
+    expect(JSON.stringify(mediaStore.writeMedia.mock.calls[0]?.[0])).not.toContain(proxyUrl);
+    expect(JSON.stringify(result)).not.toContain(proxyUrl);
+  });
+
   it("skips non-Discord attachment URLs before fetch", async () => {
     const mediaStore = createMediaStore();
     const fetchImpl = vi.fn();
@@ -94,6 +133,39 @@ describe("Discord inbound attachment downloads", () => {
     expect(JSON.stringify(result)).not.toContain("example.invalid");
     expect(onUnavailable).toHaveBeenCalledWith(expect.objectContaining({
       id: "attachment-1",
+    }));
+  });
+
+  it("reports metadata-only attachments without a downloadable CDN URL", async () => {
+    const mediaStore = createMediaStore();
+    const fetchImpl = vi.fn();
+    const onUnavailable = vi.fn();
+
+    const result = await downloadDiscordSupportedAttachments([{
+      id: "attachment-1",
+      filename: "photo.jpg",
+      content_type: "image/jpeg",
+      size: 5,
+    }], {
+      connectorKey: "bot-1",
+      mediaStore,
+      fetchImpl,
+      onUnavailable,
+    });
+
+    expect(result.media).toEqual([]);
+    expect(result.unavailable).toEqual([{
+      id: "attachment-1",
+      filename: "photo.jpg",
+      contentType: "image/jpeg",
+      sizeBytes: 5,
+      reason: "Discord attachment does not include a downloadable CDN URL.",
+    }]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(mediaStore.writeMedia).not.toHaveBeenCalled();
+    expect(onUnavailable).toHaveBeenCalledWith(expect.objectContaining({
+      id: "attachment-1",
+      reason: "Discord attachment does not include a downloadable CDN URL.",
     }));
   });
 

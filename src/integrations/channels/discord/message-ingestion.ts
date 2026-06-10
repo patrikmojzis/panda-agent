@@ -2,7 +2,7 @@ import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import type {DiscordMessageRequestPayload, DiscordAttachmentSummary} from "../../../domain/threads/requests/types.js";
 import type {ConversationBinding, ConversationLookup} from "../../../domain/sessions/conversations/types.js";
 import type {JsonObject} from "../../../lib/json.js";
-import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
+import {firstNonEmptyString, requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import {DISCORD_SOURCE} from "./config.js";
 import type {DiscordAttachmentDownloadResult} from "./media.js";
 
@@ -19,7 +19,12 @@ export interface DiscordMessageAttachmentPayload {
   id?: unknown;
   filename?: unknown;
   content_type?: unknown;
+  contentType?: unknown;
+  mime_type?: unknown;
+  mimeType?: unknown;
   size?: unknown;
+  size_bytes?: unknown;
+  sizeBytes?: unknown;
   [key: string]: unknown;
 }
 
@@ -140,10 +145,14 @@ function readAttachmentSummaries(value: unknown): readonly DiscordAttachmentSumm
     }
 
     const filename = trimToUndefined(attachment.filename);
-    const contentType = trimToUndefined(attachment.content_type);
-    const size = typeof attachment.size === "number" && Number.isFinite(attachment.size) && attachment.size >= 0
-      ? attachment.size
-      : undefined;
+    const contentType = firstNonEmptyString(
+      attachment.content_type,
+      attachment.contentType,
+      attachment.mime_type,
+      attachment.mimeType,
+    );
+    const size = [attachment.size, attachment.size_bytes, attachment.sizeBytes]
+      .find((value) => typeof value === "number" && Number.isFinite(value) && value >= 0) as number | undefined;
     summaries.push({
       id,
       ...(filename !== undefined ? {filename} : {}),

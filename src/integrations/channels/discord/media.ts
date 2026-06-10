@@ -1,6 +1,6 @@
 import type {WriteMediaInput} from "../../../domain/channels/media-store.js";
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
-import {trimToUndefined} from "../../../lib/strings.js";
+import {firstNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import {DISCORD_SOURCE} from "./config.js";
 
 export const DISCORD_ATTACHMENT_DOWNLOAD_LIMIT_BYTES = 25 * 1024 * 1024;
@@ -42,10 +42,35 @@ export interface DownloadDiscordSupportedAttachmentsOptions {
   onUnavailable?: (item: DiscordUnavailableAttachment) => void;
 }
 
-function readAttachmentSizeBytes(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
+function readAttachmentSizeBytes(...values: readonly unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function readAttachmentContentType(attachment: Record<string, unknown>): string | undefined {
+  return firstNonEmptyString(
+    attachment.content_type,
+    attachment.contentType,
+    attachment.mime_type,
+    attachment.mimeType,
+  );
+}
+
+function readAttachmentDownloadUrl(attachment: Record<string, unknown>): string | undefined {
+  return firstNonEmptyString(attachment.url, attachment.proxy_url, attachment.proxyUrl);
+}
+
+function readAttachmentFilename(attachment: Record<string, unknown>): string | undefined {
+  return firstNonEmptyString(attachment.filename, attachment.name);
+}
+
+function readAttachmentDeclaredSizeBytes(attachment: Record<string, unknown>): number | undefined {
+  return readAttachmentSizeBytes(attachment.size, attachment.size_bytes, attachment.sizeBytes);
 }
 
 function normalizeAttachmentUrl(value: string): URL | null {
@@ -141,12 +166,16 @@ async function readCappedResponseBytes(response: Response, maxBytes: number): Pr
   return bytes;
 }
 
-export function collectDiscordAttachmentDownloadParts(value: unknown): readonly DiscordAttachmentDownloadPart[] {
+type DiscordAttachmentDownloadItem =
+  | {kind: "download"; part: DiscordAttachmentDownloadPart}
+  | {kind: "unavailable"; unavailable: DiscordUnavailableAttachment};
+
+function collectDiscordAttachmentDownloadItems(value: unknown): readonly DiscordAttachmentDownloadItem[] {
   if (!Array.isArray(value)) {
     return [];
   }
 
-  const parts: DiscordAttachmentDownloadPart[] = [];
+  const items: DiscordAttachmentDownloadItem[] = [];
   for (const entry of value) {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
       continue;
@@ -154,24 +183,46 @@ export function collectDiscordAttachmentDownloadParts(value: unknown): readonly 
 
     const attachment = entry as Record<string, unknown>;
     const id = trimToUndefined(attachment.id);
-    const url = trimToUndefined(attachment.url);
-    if (!id || !url) {
+    if (!id) {
       continue;
     }
 
-    const mimeType = trimToUndefined(attachment.content_type) ?? "application/octet-stream";
-    const filename = trimToUndefined(attachment.filename);
-    const sizeBytes = readAttachmentSizeBytes(attachment.size);
-    parts.push({
-      id,
-      url,
-      mimeType,
-      ...(sizeBytes !== undefined ? {sizeBytes} : {}),
-      ...(filename !== undefined ? {hintFilename: filename} : {}),
+    const contentType = readAttachmentContentType(attachment);
+    const filename = readAttachmentFilename(attachment);
+    const sizeBytes = readAttachmentDeclaredSizeBytes(attachment);
+    const url = readAttachmentDownloadUrl(attachment);
+    if (!url) {
+      items.push({
+        kind: "unavailable",
+        unavailable: {
+          id,
+          ...(contentType !== undefined ? {contentType} : {}),
+          ...(filename !== undefined ? {filename} : {}),
+          ...(sizeBytes !== undefined ? {sizeBytes} : {}),
+          reason: "Discord attachment does not include a downloadable CDN URL.",
+        },
+      });
+      continue;
+    }
+
+    items.push({
+      kind: "download",
+      part: {
+        id,
+        url,
+        mimeType: contentType ?? "application/octet-stream",
+        ...(sizeBytes !== undefined ? {sizeBytes} : {}),
+        ...(filename !== undefined ? {hintFilename: filename} : {}),
+      },
     });
   }
 
-  return parts;
+  return items;
+}
+
+export function collectDiscordAttachmentDownloadParts(value: unknown): readonly DiscordAttachmentDownloadPart[] {
+  return collectDiscordAttachmentDownloadItems(value)
+    .flatMap((item) => item.kind === "download" ? [item.part] : []);
 }
 
 async function downloadDiscordAttachmentPart(
@@ -255,8 +306,14 @@ export async function downloadDiscordSupportedAttachments(
   const media: MediaDescriptor[] = [];
   const unavailable: DiscordUnavailableAttachment[] = [];
 
-  for (const part of collectDiscordAttachmentDownloadParts(attachments)) {
-    const result = await downloadDiscordAttachmentOrUnavailable(part, options);
+  for (const item of collectDiscordAttachmentDownloadItems(attachments)) {
+    if (item.kind === "unavailable") {
+      options.onUnavailable?.(item.unavailable);
+      unavailable.push(item.unavailable);
+      continue;
+    }
+
+    const result = await downloadDiscordAttachmentOrUnavailable(item.part, options);
     if ("media" in result) {
       media.push(result.media);
       continue;
