@@ -106,14 +106,10 @@ function viewMediaResult(): ToolResultMessage {
 }
 
 describe("image brief composition", () => {
-  it("defaults context on but respects env and per-call overrides", () => {
-    expect(resolveImageContextEnabled({env: {}})).toBe(true);
-    expect(resolveImageContextEnabled({env: {PANDA_IMAGE_CONTEXT_DEFAULT: "off"}})).toBe(false);
-    expect(resolveImageContextEnabled({
-      requested: true,
-      env: {PANDA_IMAGE_CONTEXT_DEFAULT: "off"},
-    })).toBe(true);
-    expect(resolveImageContextEnabled({requested: false, env: {}})).toBe(false);
+  it("only enables context when explicitly requested", () => {
+    expect(resolveImageContextEnabled({})).toBe(false);
+    expect(resolveImageContextEnabled({requested: true})).toBe(true);
+    expect(resolveImageContextEnabled({requested: false})).toBe(false);
   });
 
   it("keeps only the latest visible user and assistant messages", () => {

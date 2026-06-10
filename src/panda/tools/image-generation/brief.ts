@@ -46,19 +46,10 @@ export interface ImageBriefTranscriptMessage {
   text: string;
 }
 
-function envDisablesImageContext(env: NodeJS.ProcessEnv): boolean {
-  return /^(0|false|off|no)$/i.test(env.PANDA_IMAGE_CONTEXT_DEFAULT?.trim() ?? "");
-}
-
 export function resolveImageContextEnabled(params: {
   requested?: boolean;
-  env?: NodeJS.ProcessEnv;
 }): boolean {
-  if (params.requested !== undefined) {
-    return params.requested;
-  }
-
-  return !envDisablesImageContext(params.env ?? process.env);
+  return params.requested === true;
 }
 
 function trimText(value: string, maxChars: number): string {

@@ -195,7 +195,6 @@ async function runImageGeneration(params: {
 
   const contextEnabled = resolveImageContextEnabled({
     requested: params.args.context,
-    env: params.env,
   });
 
   const referencePaths = params.args.images ?? [];
@@ -320,7 +319,7 @@ export class ImageGenerateTool<TContext = DefaultAgentSessionContext>
       .optional()
       .describe("Local reference image paths or Panda artifact paths. Supports png, jpg, jpeg, and webp."),
     context: z.boolean().optional()
-      .describe("Whether to include a cleaned brief from recent conversation context. Defaults on; omit unless the user explicitly asks to disable context."),
+      .describe("Whether to include a cleaned brief from recent conversation context. Defaults off; pass true only when recent conversation details are intentionally needed."),
     model: z.string().trim().min(1).optional().describe("Image model. Defaults to gpt-image-2."),
     size: sizeSchema.optional().describe("Output size, for example auto, 1024x1024, 1536x1024, or 1024x1536."),
     quality: qualitySchema.optional().describe("Image quality."),
@@ -334,7 +333,7 @@ export class ImageGenerateTool<TContext = DefaultAgentSessionContext>
 
   name = "image_generate";
   description =
-    "Start a background OpenAI gpt-image-2 image generation job and return its job id. Uses recent conversation context by default and accepts local reference image paths. Leave context enabled unless the user explicitly asks otherwise. When iterating on a previous image, pass that image path in images.";
+    "Start a background OpenAI gpt-image-2 image generation job and return its job id. The prompt is the source of truth by default; pass context: true only when a cleaned brief from recent conversation is intentionally needed. Accepts local reference image paths. When iterating on a previous image, pass that image path in images.";
   schema = ImageGenerateTool.schema;
 
   private readonly env: NodeJS.ProcessEnv;
