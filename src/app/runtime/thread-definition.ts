@@ -27,7 +27,6 @@ import {readSubagentSessionMetadata, type SubagentSessionMetadata} from "../../d
 const HOUR_MS = 60 * 60 * 1_000;
 const POSTGRES_READONLY_TOOL_NAME = "postgres_readonly_query";
 const LEGACY_WORKER_SPAWN_TOOL_NAME = ["worker", "spawn"].join("_");
-const DAY_MS = 24 * HOUR_MS;
 const SUBAGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "environment",
   "background_jobs",
@@ -47,9 +46,6 @@ export const DEFAULT_INFERENCE_PROJECTION: InferenceProjection = {
   dropImages: {
     olderThanMs: 8 * HOUR_MS,
     preserveRecentUserTurns: 20,
-  },
-  dropMessages: {
-    olderThanMs: 2 * DAY_MS,
   },
 };
 
