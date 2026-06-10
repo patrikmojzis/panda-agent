@@ -8,7 +8,7 @@ In the Discord developer portal:
 
 - create a bot and copy its token
 - enable the Message Content Intent
-- invite the bot with permission to read and send messages in the target channel
+- invite the bot with permission to read, send, and attach files in the target channel
 
 Set `CREDENTIALS_MASTER_KEY` before account commands, then store the token without printing it:
 
@@ -45,6 +45,14 @@ panda discord pair --account discord-main --identity alice --actor <discordUserI
 ```
 
 Use the stable Discord user id/snowflake for `--actor`, not a username or display name.
+
+## Attachments
+
+Inbound Discord attachments are summarized in runtime context. Supported Discord CDN/proxy media is downloaded into `downloaded_media` for tools such as `view_media` or `whisper`.
+
+Discord `url`, `proxy_url`, and `proxyUrl` attachment fields are accepted. Unsupported, oversized, or failed downloads are reported as unavailable without exposing raw CDN/proxy URLs.
+
+Outbound Discord messages can include files and images when the bot has the Attach Files permission.
 
 ## Run workers
 
