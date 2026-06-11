@@ -295,12 +295,6 @@
       "sha256": "6de48107f7a2dc4a1079eea892478cccd66ce38877265b516f999d9e2b9af66e"
     },
     {
-      "bytes": 1737,
-      "lines": 39,
-      "path": "src/prompts/runtime/image-brief.ts",
-      "sha256": "a0e797bd86786437d709473c48ac5b75c5182c3ca1798c6242f2d65974b88fdc"
-    },
-    {
       "bytes": 361,
       "lines": 17,
       "path": "src/prompts/runtime/scheduled-tasks.ts",
@@ -1197,7 +1191,7 @@
       }
     },
     {
-      "description": "Start a background OpenAI gpt-image-2 image generation job and return its job id. The prompt is the source of truth by default; pass context: true only when a cleaned brief from recent conversation is intentionally needed. Accepts local reference image paths. When iterating on a previous image, pass that image path in images.",
+      "description": "Start a background OpenAI gpt-image-2 image generation job and return its job id. The prompt is the source of truth. Accepts local reference image paths. When iterating on a previous image, pass that image path in images.",
       "name": "image_generate",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1211,10 +1205,6 @@
               "auto"
             ],
             "type": "string"
-          },
-          "context": {
-            "description": "Whether to include a cleaned brief from recent conversation context. Defaults off; pass true only when recent conversation details are intentionally needed.",
-            "type": "boolean"
           },
           "count": {
             "description": "Number of images to generate.",

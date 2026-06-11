@@ -20,17 +20,8 @@ import {stripToolArtifactInlineImages, withArtifactDetails} from "../../kernel/a
 import {Tool, type ToolOutput} from "../../kernel/agent/tool.js";
 import type {ToolResultPayload} from "../../kernel/agent/types.js";
 import type {JsonObject, JsonValue} from "../../lib/json.js";
-import type {LlmRuntime} from "../../kernel/agent/runtime.js";
 import {readThreadId} from "../../integrations/shell/runtime-context.js";
 import {trimToNull} from "../../lib/strings.js";
-import {
-    composeImagePrompt,
-    DEFAULT_IMAGE_BRIEF_MAX_CHARS,
-    DEFAULT_IMAGE_CONTEXT_MESSAGES,
-    DEFAULT_IMAGE_FINAL_PROMPT_MAX_CHARS,
-    type ImagePromptComposition,
-    resolveImageContextEnabled,
-} from "./image-generation/brief.js";
 import {
     loadReferenceImages,
     persistedImageDetails,
@@ -49,7 +40,6 @@ export interface ImageGenerateToolOptions {
   env?: NodeJS.ProcessEnv;
   client?: ImageGenerateClient;
   fetchImpl?: typeof fetch;
-  runtime?: Pick<LlmRuntime, "complete">;
   jobService?: BackgroundToolJobService;
 }
 
@@ -111,45 +101,6 @@ function validateImageOptions(args: {
   }
 }
 
-async function composePromptWithFallback(params: {
-  prompt: string;
-  contextEnabled: boolean;
-  messages: RunContext<unknown>["messages"];
-  signal?: AbortSignal;
-  env: NodeJS.ProcessEnv;
-  runtime?: Pick<LlmRuntime, "complete">;
-}): Promise<ImagePromptComposition> {
-  try {
-    return await composeImagePrompt({
-      prompt: params.prompt,
-      messages: params.messages,
-      contextEnabled: params.contextEnabled,
-      env: params.env,
-      runtime: params.runtime,
-      signal: params.signal,
-      maxMessages: DEFAULT_IMAGE_CONTEXT_MESSAGES,
-      maxBriefChars: DEFAULT_IMAGE_BRIEF_MAX_CHARS,
-      maxFinalPromptChars: DEFAULT_IMAGE_FINAL_PROMPT_MAX_CHARS,
-    });
-  } catch (error) {
-    if (params.signal?.aborted) {
-      throw new ToolError("image_generate was aborted while composing image context.");
-    }
-
-    const compiledPrompt = params.prompt.slice(0, DEFAULT_IMAGE_FINAL_PROMPT_MAX_CHARS);
-    return {
-      compiledPrompt,
-      contextEnabled: params.contextEnabled,
-      contextUsed: false,
-      contextMessages: 0,
-      briefChars: 0,
-      promptChars: params.prompt.length,
-      compiledPromptChars: compiledPrompt.length,
-      contextError: readErrorMessage(error),
-    };
-  }
-}
-
 function buildSettingsDetails(params: {
   model: string;
   size: string;
@@ -175,12 +126,10 @@ function buildSettingsDetails(params: {
 async function runImageGeneration(params: {
   args: z.output<typeof ImageGenerateTool.schema>;
   context: unknown;
-  messages: RunContext<unknown>["messages"];
   emitProgress(progress: JsonObject): void;
   signal?: AbortSignal;
   env: NodeJS.ProcessEnv;
   client: ImageGenerateClient;
-  runtime?: Pick<LlmRuntime, "complete">;
 }): Promise<ToolResultPayload> {
   const defaults = defaultImageGenerateArgs();
   const model = trimToNull(params.args.model) ?? defaults.model;
@@ -193,10 +142,6 @@ async function runImageGeneration(params: {
   const outputCompression = params.args.outputCompression;
   validateImageOptions({background, outputFormat, outputCompression});
 
-  const contextEnabled = resolveImageContextEnabled({
-    requested: params.args.context,
-  });
-
   const referencePaths = params.args.images ?? [];
   params.emitProgress({
     status: "loading_reference_images",
@@ -206,19 +151,6 @@ async function runImageGeneration(params: {
     paths: referencePaths,
     context: params.context,
     env: params.env,
-  });
-
-  params.emitProgress({
-    status: "composing_image_prompt",
-    context: contextEnabled,
-  });
-  const promptComposition = await composePromptWithFallback({
-    prompt: params.args.prompt,
-    contextEnabled,
-    messages: params.messages,
-    signal: params.signal,
-    env: params.env,
-    runtime: params.runtime,
   });
 
   params.emitProgress({
@@ -234,7 +166,7 @@ async function runImageGeneration(params: {
   let generated: GenerateOpenAIImageResult;
   try {
     generated = await params.client.generate({
-      prompt: promptComposition.compiledPrompt,
+      prompt: params.args.prompt,
       images: inputImages,
       model,
       size,
@@ -283,17 +215,8 @@ async function runImageGeneration(params: {
     model: generated.model,
     ...(generated.responsesModel ? {responsesModel: generated.responsesModel} : {}),
     settings,
-    promptHash: promptHash(promptComposition.compiledPrompt),
-    promptChars: promptComposition.promptChars,
-    compiledPromptChars: promptComposition.compiledPromptChars,
-    context: {
-      enabled: promptComposition.contextEnabled,
-      used: promptComposition.contextUsed,
-      messages: promptComposition.contextMessages,
-      briefChars: promptComposition.briefChars,
-      ...(promptComposition.briefModel ? {model: promptComposition.briefModel} : {}),
-      ...(promptComposition.contextError ? {error: promptComposition.contextError} : {}),
-    },
+    promptHash: promptHash(params.args.prompt),
+    promptChars: params.args.prompt.length,
     inputImageCount: inputImages.length,
     images: persistedImageDetails(persisted),
   };
@@ -318,8 +241,6 @@ export class ImageGenerateTool<TContext = DefaultAgentSessionContext>
       .max(MAX_REFERENCE_IMAGES)
       .optional()
       .describe("Local reference image paths or Panda artifact paths. Supports png, jpg, jpeg, and webp."),
-    context: z.boolean().optional()
-      .describe("Whether to include a cleaned brief from recent conversation context. Defaults off; pass true only when recent conversation details are intentionally needed."),
     model: z.string().trim().min(1).optional().describe("Image model. Defaults to gpt-image-2."),
     size: sizeSchema.optional().describe("Output size, for example auto, 1024x1024, 1536x1024, or 1024x1536."),
     quality: qualitySchema.optional().describe("Image quality."),
@@ -333,12 +254,11 @@ export class ImageGenerateTool<TContext = DefaultAgentSessionContext>
 
   name = "image_generate";
   description =
-    "Start a background OpenAI gpt-image-2 image generation job and return its job id. The prompt is the source of truth by default; pass context: true only when a cleaned brief from recent conversation is intentionally needed. Accepts local reference image paths. When iterating on a previous image, pass that image path in images.";
+    "Start a background OpenAI gpt-image-2 image generation job and return its job id. The prompt is the source of truth. Accepts local reference image paths. When iterating on a previous image, pass that image path in images.";
   schema = ImageGenerateTool.schema;
 
   private readonly env: NodeJS.ProcessEnv;
   private readonly client: ImageGenerateClient;
-  private readonly runtime?: Pick<LlmRuntime, "complete">;
   private readonly jobService?: BackgroundToolJobService;
 
   constructor(options: ImageGenerateToolOptions = {}) {
@@ -348,7 +268,6 @@ export class ImageGenerateTool<TContext = DefaultAgentSessionContext>
       env: this.env,
       ...(options.fetchImpl ? {fetchImpl: options.fetchImpl} : {}),
     });
-    this.runtime = options.runtime;
     this.jobService = options.jobService;
   }
 
@@ -393,7 +312,6 @@ export class ImageGenerateTool<TContext = DefaultAgentSessionContext>
     });
 
     const context = run.context as DefaultAgentSessionContext | undefined;
-    const messages = [...(run as RunContext<unknown>).messages];
     const job = await this.jobService.start({
       threadId: readThreadId(context),
       runId: context?.runId,
@@ -406,12 +324,10 @@ export class ImageGenerateTool<TContext = DefaultAgentSessionContext>
         done: runImageGeneration({
           args,
           context,
-          messages,
           emitProgress,
           signal,
           env: this.env,
           client: this.client,
-          runtime: this.runtime,
         }).then((payload) => ({
           status: "completed" as const,
           result: serializeToolResultForBackgroundJob(payload),
