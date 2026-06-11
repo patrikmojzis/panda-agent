@@ -13,8 +13,8 @@ services:
     tmpfs:
       - /tmp
     ports:
-      - "80:80"
-      - "443:443"
+      - "${PANDA_PUBLIC_BIND_IP:-0.0.0.0}:80:80"
+      - "${PANDA_PUBLIC_BIND_IP:-0.0.0.0}:443:443"
     volumes:
       - ../.generated/Caddyfile.public-edge:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

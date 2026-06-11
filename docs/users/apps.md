@@ -337,6 +337,7 @@ Set:
 - `PANDA_APPS_BASE_URL=https://your-domain.example`
 - `PANDA_APPS_PUBLIC_HOST=your-domain.example`
 - `PANDA_APPS_AUTH=required`
+- optional `PANDA_PUBLIC_BIND_IP=203.0.113.10` to bind Caddy to one host interface instead of all interfaces
 - optional `PANDA_APPS_RATE_LIMIT_PER_MINUTE=300`
 - optional `PANDA_APPS_SESSION_TTL_HOURS=24`
 - optional `PANDA_APPS_COOKIE_SECURE=false` only for local HTTP debugging
@@ -345,6 +346,7 @@ When `PANDA_APPS_BASE_URL` is set, Panda requires app auth by default unless you
 `PANDA_APPS_BASE_URL` should be a plain origin, like `https://your-domain.example`, with no path, query, fragment, username, or password.
 For non-local hosts, `PANDA_APPS_BASE_URL` must use `https://`.
 For non-local hosts, Panda refuses `PANDA_APPS_COOKIE_SECURE=false`.
+Set `PANDA_PUBLIC_BIND_IP` when the host has another listener on port 80 or 443 on a different interface.
 The generated public edge override also forces `PANDA_APPS_AUTH=required` and refuses to start without `PANDA_APPS_BASE_URL` and `PANDA_APPS_PUBLIC_HOST`.
 When using `scripts/docker-stack.sh`, `PANDA_APPS_PUBLIC_HOST` must match the hostname in `PANDA_APPS_BASE_URL`.
 
