@@ -54,15 +54,12 @@ describe("createThreadDefinition inference projection defaults", () => {
 
     expect(DEFAULT_INFERENCE_PROJECTION).toEqual({
       dropToolCalls: {
-        olderThanMs: 4 * HOUR_MS,
         preserveRecentUserTurns: 20,
       },
       dropThinking: {
-        olderThanMs: 4 * HOUR_MS,
         preserveRecentUserTurns: 10,
       },
       dropImages: {
-        olderThanMs: 8 * HOUR_MS,
         preserveRecentUserTurns: 20,
       },
     });

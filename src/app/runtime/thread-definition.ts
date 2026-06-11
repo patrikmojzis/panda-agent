@@ -24,7 +24,6 @@ import type {WikiBindingService} from "../../domain/wiki/service.js";
 import {resolveSessionPromptCacheKey, resolveThreadPromptCacheKey} from "../../domain/threads/runtime/prompt-cache-key.js";
 import {readSubagentSessionMetadata, type SubagentSessionMetadata} from "../../domain/subagents/session-metadata.js";
 
-const HOUR_MS = 60 * 60 * 1_000;
 const POSTGRES_READONLY_TOOL_NAME = "postgres_readonly_query";
 const LEGACY_WORKER_SPAWN_TOOL_NAME = ["worker", "spawn"].join("_");
 const SUBAGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
@@ -36,15 +35,12 @@ const SUBAGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = 
 
 export const DEFAULT_INFERENCE_PROJECTION: InferenceProjection = {
   dropToolCalls: {
-    olderThanMs: 4 * HOUR_MS,
     preserveRecentUserTurns: 20,
   },
   dropThinking: {
-    olderThanMs: 4 * HOUR_MS,
     preserveRecentUserTurns: 10,
   },
   dropImages: {
-    olderThanMs: 8 * HOUR_MS,
     preserveRecentUserTurns: 20,
   },
 };
