@@ -335,6 +335,10 @@ describe("PostgresSubagentProfileStore", () => {
     })).rejects.toThrow('Unknown subagent tool group "bash".');
     await expect(profileStore.upsertProfile({
       ...base,
+      toolGroups: ["core", "workspace_read", "execute"],
+    })).rejects.toThrow("execute can read workspace files through shell commands, so do not combine them.");
+    await expect(profileStore.upsertProfile({
+      ...base,
       source: "legacy" as never,
     })).rejects.toThrow("Unsupported subagent profile source legacy.");
     await expect(profileStore.upsertProfile({

@@ -168,4 +168,23 @@ describe("UpsertSubagentProfileTool", () => {
       message: "Custom subagent profiles must set agentKey.",
     });
   });
+
+  it("surfaces mutually exclusive tool groups as a recoverable tool error", async () => {
+    const upsertProfile = vi.fn<UpsertSubagentProfileToolStore["upsertProfile"]>(async () => {
+      throw new Error(
+        "Subagent tool groups workspace_read and execute are mutually exclusive. Choose workspace_read for read-only workspace wrapper tools, or execute for shell/background execution; execute can read workspace files through shell commands, so do not combine them.",
+      );
+    });
+    const tool = new UpsertSubagentProfileTool({store: {upsertProfile}});
+
+    await expect(tool.run({
+      slug: "operator",
+      description: "Operate on code.",
+      prompt: "Inspect and modify as needed.",
+      toolGroups: ["core", "workspace_read", "execute"],
+    }, createRunContext())).rejects.toMatchObject({
+      name: "ToolError",
+      message: expect.stringContaining("execute can read workspace files through shell commands"),
+    });
+  });
 });

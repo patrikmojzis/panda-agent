@@ -131,6 +131,9 @@ panda subagents profiles disable code-review --agent clawd
 ```
 
 Profiles store prompt, tool groups, model/thinking defaults, and enabled state.
+`workspace_read` and `execute` are mutually exclusive: use `workspace_read` for
+read-only wrappers, or `execute` for shell/background execution. `execute` can
+read workspace files through shell commands, so do not combine them.
 They do **not** store credentials, credential policies, environment ids, raw tool
 allowlists, skill allowlists, or per-spawn execution choices; pass those at spawn
 time.

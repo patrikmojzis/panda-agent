@@ -168,4 +168,13 @@ describe("subagent tool groups", () => {
       'Unknown subagent tool group "bash".',
     );
   });
+
+  it("rejects read-only workspace and execution groups together", () => {
+    expect(() => normalizeSubagentToolGroups(["core", "workspace_read", "execute"])).toThrow(
+      "Subagent tool groups workspace_read and execute are mutually exclusive.",
+    );
+    expect(() => resolveSubagentToolPolicy(["workspace_read", "execute"])).toThrow(
+      "execute can read workspace files through shell commands, so do not combine them.",
+    );
+  });
 });

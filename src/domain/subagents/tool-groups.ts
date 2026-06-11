@@ -103,6 +103,10 @@ export const SUBAGENT_TOOL_GROUP_KEYS = Object.keys(
   SUBAGENT_TOOL_GROUP_DEFINITIONS,
 ) as SubagentToolGroup[];
 
+const EXCLUSIVE_SUBAGENT_TOOL_GROUP_PAIRS: readonly (readonly [SubagentToolGroup, SubagentToolGroup])[] = [
+  ["workspace_read", "execute"],
+];
+
 const SUBAGENT_TOOL_GROUP_KEY_SET = new Set<string>(SUBAGENT_TOOL_GROUP_KEYS);
 
 export function isSubagentToolGroup(value: unknown): value is SubagentToolGroup {
@@ -116,6 +120,15 @@ export function normalizeSubagentToolGroups(values: readonly string[]): Subagent
     throw new Error(
       `Unknown subagent tool group ${JSON.stringify(unknown[0])}. Expected one of: ${SUBAGENT_TOOL_GROUP_KEYS.join(", ")}.`,
     );
+  }
+
+  const selected = new Set(normalized);
+  for (const [left, right] of EXCLUSIVE_SUBAGENT_TOOL_GROUP_PAIRS) {
+    if (selected.has(left) && selected.has(right)) {
+      throw new Error(
+        `Subagent tool groups ${left} and ${right} are mutually exclusive. Choose ${left} for read-only workspace wrapper tools, or ${right} for shell/background execution; ${right} can read workspace files through shell commands, so do not combine them.`,
+      );
+    }
   }
 
   return normalized as SubagentToolGroup[];

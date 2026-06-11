@@ -30,6 +30,10 @@ Subagent tool access is profile driven:
 - `execute` grants bash/background execution.
 - `operate` grants operational mutation surfaces.
 
+`workspace_read` and `execute` are mutually exclusive. Use `workspace_read` for
+read-only wrapper tools, or `execute` for shell/background execution. `execute`
+can read workspace files through shell commands, so do not combine them.
+
 Nested `spawn_subagent` is denied for subagent sessions. Environment tools are
 normal operational tools, not a delegation API.
 
