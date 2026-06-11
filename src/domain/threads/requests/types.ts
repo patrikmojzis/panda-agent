@@ -1,7 +1,7 @@
 import type {JsonObject, JsonValue} from "../../../lib/json.js";
 import type {MediaDescriptor} from "../../channels/types.js";
 import type {ExecutionEnvironmentKind} from "../../execution-environments/types.js";
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 import type {InferenceProjection, ThreadUpdate} from "../runtime/types.js";
 import type {UpdateSessionRuntimeConfigInput} from "../../sessions/types.js";
 

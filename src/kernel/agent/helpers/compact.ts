@@ -1,4 +1,4 @@
-import type {Message} from "@mariozechner/pi-ai";
+import type {Message} from "@earendil-works/pi-ai";
 import {COMPACT_SUMMARY_PREFIX, renderCompactSummaryMessage,} from "../../../prompts/runtime/compaction.js";
 
 export {COMPACT_SUMMARY_PREFIX} from "../../../prompts/runtime/compaction.js";

@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 import {mkdir, writeFile} from "node:fs/promises";
 import path from "node:path";
 
-import type {Message} from "@mariozechner/pi-ai";
+import type {Message} from "@earendil-works/pi-ai";
 
 import {sleep} from "../../lib/async.js";
 import {trimToUndefined} from "../../lib/strings.js";

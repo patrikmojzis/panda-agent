@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it} from "vitest";
-import type {AssistantMessage} from "@mariozechner/pi-ai";
+import type {AssistantMessage} from "@earendil-works/pi-ai";
 import {DataType, newDb} from "pg-mem";
 
 import {Agent, RunContext, stringToUserMessage} from "../src/index.js";

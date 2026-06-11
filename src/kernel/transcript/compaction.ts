@@ -1,4 +1,4 @@
-import type {Message, ThinkingLevel} from "@mariozechner/pi-ai";
+import type {Message, ThinkingLevel} from "@earendil-works/pi-ai";
 
 import {PiAiRuntime} from "../../integrations/providers/shared/runtime.js";
 import {formatToolCallFallback, formatToolResultFallback} from "../agent/tool.js";

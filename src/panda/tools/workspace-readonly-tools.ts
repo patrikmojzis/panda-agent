@@ -1,7 +1,7 @@
 import {readdir, readFile, stat} from "node:fs/promises";
 import path from "node:path";
 
-import type {ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ToolResultMessage} from "@earendil-works/pi-ai";
 import {z} from "zod";
 
 import {ToolError} from "../../kernel/agent/exceptions.js";

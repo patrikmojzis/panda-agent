@@ -1,4 +1,4 @@
-import type {Message, ThinkingLevel} from "@mariozechner/pi-ai";
+import type {Message, ThinkingLevel} from "@earendil-works/pi-ai";
 
 import type {Agent} from "../../../kernel/agent/agent.js";
 import type {TokenCounter} from "../../../kernel/agent/helpers/token-count.js";

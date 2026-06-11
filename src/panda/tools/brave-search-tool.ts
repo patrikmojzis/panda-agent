@@ -1,6 +1,6 @@
 import {z} from "zod";
 
-import type {ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ToolResultMessage} from "@earendil-works/pi-ai";
 
 import {trimToNull} from "../../lib/strings.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";

@@ -1,7 +1,7 @@
 import {randomUUID} from "node:crypto";
 
 import {readMissingApiKeyMessageForModel} from "../../integrations/providers/shared/missing-api-key.js";
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
 import type {ChatRuntimeServices} from "./runtime.js";

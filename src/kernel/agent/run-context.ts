@@ -1,5 +1,5 @@
 import type {Agent} from "./agent.js";
-import type {Message, ThinkingLevel} from "@mariozechner/pi-ai";
+import type {Message, ThinkingLevel} from "@earendil-works/pi-ai";
 import type {JsonObject} from "./types.js";
 
 export interface RunContextOptions<TContext = unknown> {

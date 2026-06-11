@@ -1,4 +1,4 @@
-import type {AssistantMessage, Message} from "@mariozechner/pi-ai";
+import type {AssistantMessage, Message} from "@earendil-works/pi-ai";
 
 import {Agent} from "../../kernel/agent/agent.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";

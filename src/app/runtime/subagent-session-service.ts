@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
 
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import {stringToUserMessage} from "../../kernel/agent/helpers/input.js";
 import {ConfigurationError} from "../../kernel/agent/exceptions.js";

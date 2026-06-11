@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
-import type {AssistantMessage, ToolResultMessage} from "@mariozechner/pi-ai";
+import type {AssistantMessage, ToolResultMessage} from "@earendil-works/pi-ai";
 import {Agent, buildCompactSummaryMessage, PiAiRuntime, stringToUserMessage, Thread,} from "../src/index.js";
 import {
     compactThread,

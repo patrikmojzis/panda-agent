@@ -1,4 +1,4 @@
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import {createRuntimeClient} from "../../app/runtime/client.js";
 import type {InferenceProjection, ThreadRecord} from "../../domain/threads/runtime/types.js";

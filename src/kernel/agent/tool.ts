@@ -1,4 +1,4 @@
-import type {Tool as PiTool, ToolResultMessage} from "@mariozechner/pi-ai";
+import type {Tool as PiTool, ToolResultMessage} from "@earendil-works/pi-ai";
 import {type output, ZodError, type ZodTypeAny} from "zod";
 
 import {isRecord} from "../../lib/records.js";

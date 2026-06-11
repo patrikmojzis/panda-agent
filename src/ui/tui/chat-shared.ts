@@ -1,4 +1,4 @@
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 import type {TranscriptLine} from "./chat-view.js";
 import type {SessionRecord} from "../../domain/sessions/types.js";
 

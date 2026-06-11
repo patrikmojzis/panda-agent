@@ -1,4 +1,4 @@
-import {type Api, getModels, type Model} from "@mariozechner/pi-ai";
+import {type Api, getModels, type Model} from "@earendil-works/pi-ai";
 
 import {ConfigurationError} from "../../../kernel/agent/exceptions.js";
 import {getProviderConfig, type ProviderName} from "./provider.js";

@@ -1,4 +1,4 @@
-import type {Message} from "@mariozechner/pi-ai";
+import type {Message} from "@earendil-works/pi-ai";
 
 import {isJsonValue, type JsonObject, type JsonValue} from "../../../lib/json.js";
 import {optionalNonEmptyString, requireNonEmptyString} from "../../../lib/strings.js";

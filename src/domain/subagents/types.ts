@@ -1,4 +1,4 @@
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import {normalizeAgentKey} from "../agents/types.js";
 import {requireNonEmptyString, trimToUndefined} from "../../lib/strings.js";

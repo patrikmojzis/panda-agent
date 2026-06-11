@@ -4,7 +4,7 @@ import {createInterface} from "node:readline/promises";
 
 import type {Writable} from "node:stream";
 
-import type {ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ToolResultMessage} from "@earendil-works/pi-ai";
 
 import type {ThreadMessageRecord, ThreadRecord} from "../../domain/threads/runtime/types.js";
 import {joinMessageTextParts} from "../../kernel/agent/helpers/message-text.js";

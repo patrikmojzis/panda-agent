@@ -1,4 +1,4 @@
-import type {AssistantMessage, ToolCall, ToolResultMessage} from "@mariozechner/pi-ai";
+import type {AssistantMessage, ToolCall, ToolResultMessage} from "@earendil-works/pi-ai";
 
 import type {RunContext} from "./run-context.js";
 import type {JsonValue} from "./types.js";

@@ -1,4 +1,4 @@
-import type {UserMessage} from "@mariozechner/pi-ai";
+import type {UserMessage} from "@earendil-works/pi-ai";
 
 export function stringToUserMessage(message: string): UserMessage {
   return {

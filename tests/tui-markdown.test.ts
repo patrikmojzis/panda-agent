@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import type {AssistantMessage} from "@mariozechner/pi-ai";
+import type {AssistantMessage} from "@earendil-works/pi-ai";
 
 import {renderTranscriptEntries} from "../src/ui/tui/transcript.js";
 import {renderMarkdownLines} from "../src/ui/tui/markdown.js";

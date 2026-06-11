@@ -1,4 +1,4 @@
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 import {
     BROWSER_SUBAGENT_PROMPT,
     MEMORY_SUBAGENT_PROMPT,

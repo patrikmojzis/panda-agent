@@ -1,6 +1,6 @@
 import {readFile} from "node:fs/promises";
 
-import type {ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ToolResultMessage} from "@earendil-works/pi-ai";
 
 import {readNonNegativeNumber, readPositiveInteger} from "../../lib/numbers.js";
 import {isRecord} from "../../lib/records.js";

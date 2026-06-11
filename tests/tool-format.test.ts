@@ -1,4 +1,4 @@
-import type {ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ToolResultMessage} from "@earendil-works/pi-ai";
 import {describe, expect, it} from "vitest";
 
 import {formatToolResultFallback} from "../src/kernel/agent/tool.js";

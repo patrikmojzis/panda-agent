@@ -1,4 +1,4 @@
-import type {AssistantMessage, AssistantMessageEvent, ToolResultMessage,} from "@mariozechner/pi-ai";
+import type {AssistantMessage, AssistantMessageEvent, ToolResultMessage,} from "@earendil-works/pi-ai";
 
 import type {JsonObject, JsonValue} from "../../lib/json.js";
 

@@ -1,7 +1,7 @@
 import {mkdir, readFile, writeFile} from "node:fs/promises";
 import path from "node:path";
 
-import type {Tool as PiTool} from "@mariozechner/pi-ai";
+import type {Tool as PiTool} from "@earendil-works/pi-ai";
 import {z} from "zod";
 
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";

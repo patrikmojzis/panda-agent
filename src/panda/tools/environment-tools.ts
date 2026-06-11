@@ -1,7 +1,7 @@
 import {constants as fsConstants} from "node:fs";
 import {access, stat} from "node:fs/promises";
 
-import type {ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ToolResultMessage} from "@earendil-works/pi-ai";
 import {z} from "zod";
 
 import type {RunContext} from "../../kernel/agent/run-context.js";

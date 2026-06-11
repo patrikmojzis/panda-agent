@@ -1,6 +1,6 @@
 import {stdin as input, stdout as output} from "node:process";
 
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 import {Tool} from "../../kernel/agent/tool.js";
 import {buildDefaultAgentTools} from "../../panda/definition.js";
 import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";

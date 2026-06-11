@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
 
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 import {sleep} from "../../lib/async.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
 import {PostgresAgentStore} from "../../domain/agents/postgres.js";

@@ -1,4 +1,4 @@
-import type {AssistantMessage, AssistantMessageEventStream, Context, ThinkingLevel,} from "@mariozechner/pi-ai";
+import type {AssistantMessage, AssistantMessageEventStream, Context, ThinkingLevel,} from "@earendil-works/pi-ai";
 
 import type {ProviderName} from "./types.js";
 

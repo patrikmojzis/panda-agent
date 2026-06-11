@@ -1,4 +1,4 @@
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import type {Tool} from "../../kernel/agent/tool.js";
 import {resolveStoredContext} from "../../app/runtime/create-runtime.js";

@@ -1,6 +1,6 @@
 import {createHash, randomUUID} from "node:crypto";
 
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import type {JsonObject} from "../../lib/json.js";
 import {generateOpaqueToken, hashOpaqueToken} from "../../lib/opaque-tokens.js";

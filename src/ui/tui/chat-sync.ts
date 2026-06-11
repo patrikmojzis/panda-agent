@@ -1,7 +1,7 @@
 import type {SessionRecord} from "../../domain/sessions/types.js";
 import type {InferenceProjection, ThreadMessageRecord, ThreadRecord, ThreadRunRecord} from "../../domain/threads/runtime/types.js";
 import {loadStoredThreadSnapshot, resolveStoredThreadDisplayConfig} from "../shared/stored-thread.js";
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 import {STORED_SYNC_MS} from "./chat-shared.js";
 import type {ChatRuntimeThreadStore} from "./runtime.js";
 

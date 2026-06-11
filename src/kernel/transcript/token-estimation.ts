@@ -1,4 +1,4 @@
-import type {Message, ToolResultMessage} from "@mariozechner/pi-ai";
+import type {Message, ToolResultMessage} from "@earendil-works/pi-ai";
 
 import {estimateTokensFromString, type TokenCounter} from "../agent/helpers/token-count.js";
 import {readToolArtifact} from "../agent/tool-artifacts.js";

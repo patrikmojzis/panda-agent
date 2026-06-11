@@ -1,4 +1,4 @@
-import type {ThinkingLevel, ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ThinkingLevel, ToolResultMessage} from "@earendil-works/pi-ai";
 import {z} from "zod";
 
 import {ToolError} from "../../kernel/agent/exceptions.js";

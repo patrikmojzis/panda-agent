@@ -1,4 +1,4 @@
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import {readOptionalJsonValue} from "../../lib/json.js";
 import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";

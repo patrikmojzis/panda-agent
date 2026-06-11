@@ -1,4 +1,4 @@
-import type {AssistantMessage, Message, ThinkingLevel, ToolCall, ToolResultMessage,} from "@mariozechner/pi-ai";
+import type {AssistantMessage, Message, ThinkingLevel, ToolCall, ToolResultMessage,} from "@earendil-works/pi-ai";
 
 import type {Agent} from "./agent.js";
 import {

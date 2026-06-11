@@ -1,7 +1,7 @@
 import {tmpdir} from "node:os";
 import path from "node:path";
 
-import type {ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ToolResultMessage} from "@earendil-works/pi-ai";
 import {z} from "zod";
 
 import {joinMessageTextParts} from "../../kernel/agent/helpers/message-text.js";

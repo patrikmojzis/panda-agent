@@ -1,4 +1,4 @@
-import {completeSimple, type SimpleStreamOptions, streamSimple} from "@mariozechner/pi-ai";
+import {completeSimple, type SimpleStreamOptions, streamSimple} from "@earendil-works/pi-ai";
 
 import type {LlmRuntime, LlmRuntimeRequest} from "../../../kernel/agent/runtime.js";
 import {resolveProviderApiKey} from "./auth.js";

@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import type {AssistantMessage} from "@mariozechner/pi-ai";
+import type {AssistantMessage} from "@earendil-works/pi-ai";
 
 import {Agent, LlmContext, Thread} from "../src/index.js";
 import type {LlmRuntime, LlmRuntimeRequest} from "../src/kernel/agent/runtime.js";

@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {createAssistantMessageEventStream} from "@mariozechner/pi-ai";
+import {createAssistantMessageEventStream} from "@earendil-works/pi-ai";
 import {PiAiRuntime} from "../src/integrations/providers/shared/runtime.js";
 
 const mocks = vi.hoisted(() => ({
@@ -7,8 +7,8 @@ const mocks = vi.hoisted(() => ({
   streamSimple: vi.fn(),
 }));
 
-vi.mock("@mariozechner/pi-ai", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@mariozechner/pi-ai")>();
+vi.mock("@earendil-works/pi-ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@earendil-works/pi-ai")>();
 
   return {
     ...actual,

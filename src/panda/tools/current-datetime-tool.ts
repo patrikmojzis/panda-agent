@@ -1,4 +1,4 @@
-import type {ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ToolResultMessage} from "@earendil-works/pi-ai";
 import {z} from "zod";
 
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";

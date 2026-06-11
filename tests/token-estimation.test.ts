@@ -1,5 +1,5 @@
 import {describe, expect, it, vi} from "vitest";
-import type {ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ToolResultMessage} from "@earendil-works/pi-ai";
 
 import {estimateReplayMessageTokens, estimateVisibleMessageTokens,} from "../src/kernel/transcript/token-estimation.js";
 import {withArtifactDetails} from "../src/kernel/agent/tool-artifacts.js";

@@ -1,5 +1,5 @@
 import {z} from "zod";
-import type {ThinkingLevel, ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ThinkingLevel, ToolResultMessage} from "@earendil-works/pi-ai";
 
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";

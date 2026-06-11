@@ -1,4 +1,4 @@
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 import {clamp} from "../../lib/numbers.js";
 import {collapseWhitespace} from "../../lib/strings.js";
 import type {ComposerState} from "./composer.js";

@@ -1,4 +1,4 @@
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import type {JsonValue} from "../../lib/json.js";
 import type {InferenceProjection} from "../../kernel/transcript/types.js";

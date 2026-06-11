@@ -1,4 +1,4 @@
-import type {Message, ThinkingLevel} from "@mariozechner/pi-ai";
+import type {Message, ThinkingLevel} from "@earendil-works/pi-ai";
 
 import {sleep} from "../../../lib/async.js";
 import {runThreadStep, Thread, type ThreadResumeState, type ThreadStepResult} from "../../../kernel/agent/thread.js";

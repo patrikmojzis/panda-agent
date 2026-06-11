@@ -3,7 +3,7 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 
 import {describe, expect, it, vi} from "vitest";
-import type {AssistantMessage} from "@mariozechner/pi-ai";
+import type {AssistantMessage} from "@earendil-works/pi-ai";
 
 import {
     Agent,

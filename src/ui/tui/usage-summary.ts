@@ -1,4 +1,4 @@
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import {DEFAULT_INFERENCE_PROJECTION} from "../../app/runtime/thread-definition.js";
 import {

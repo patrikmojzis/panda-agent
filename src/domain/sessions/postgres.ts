@@ -1,5 +1,5 @@
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
-import type {ThinkingLevel} from "@mariozechner/pi-ai";
+import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";

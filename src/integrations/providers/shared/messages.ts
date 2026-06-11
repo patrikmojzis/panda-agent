@@ -5,7 +5,7 @@ import type {
     Tool as PiTool,
     ToolCall,
     ToolResultMessage,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 
 import type {Agent} from "../../../kernel/agent/agent.js";
 import {formatParameters} from "../../../kernel/agent/helpers/schema.js";

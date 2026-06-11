@@ -1,4 +1,4 @@
-import type {ToolResultMessage} from "@mariozechner/pi-ai";
+import type {ToolResultMessage} from "@earendil-works/pi-ai";
 import {z} from "zod";
 
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
