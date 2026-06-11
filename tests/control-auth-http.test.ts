@@ -775,16 +775,20 @@ describe("Control operator HTTP", () => {
     await expect(invalidVisibility.json()).resolves.toEqual({error: "Control session visibility filter must be primary, subagent, or all."});
   });
 
-  it("filters work failures by severity and kind", async () => {
+  it("filters work failures by severity/kind and sanitizes runtime summaries", async () => {
     const harness = await createHarness();
     await harness.pool.query(`
       INSERT INTO "runtime"."threads" (id, session_id)
-      VALUES ('thread-panda', 'session-panda')
+      VALUES ('thread-panda', 'session-panda'), ('thread-luna', 'session-luna')
     `);
+    const visibleRuntimeError = `Provider runtime failed: Unknown model "claude-fable-5". detail=Bad request {"messages":[{"content":"lowercase patient diagnosis should not leak"}],"stdout":"lowercase shell output"} failureKind=provider_error token=sk-1234567890abcdef PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK`;
+    const shortPrefixRuntimeError = `Bad request {"id":"lowercase short prefix diagnosis should not leak","messages":[{"content":"short prefix secret"}]}`;
     await harness.pool.query(`
-      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, error)
-      VALUES ('00000000-0000-0000-0000-000000000901', 'thread-panda', 'failed', '2040-01-01T00:00:00.000Z', '2040-01-01T00:00:01.000Z', 'PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK')
-    `);
+      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, error) VALUES
+        ('00000000-0000-0000-0000-000000000901', 'thread-panda', 'failed', '2040-01-01T00:00:00.000Z', '2040-01-01T00:00:01.000Z', $1),
+        ('00000000-0000-0000-0000-000000000904', 'thread-panda', 'failed', '2040-01-01T00:00:02.000Z', '2040-01-01T00:00:03.000Z', $2),
+        ('00000000-0000-0000-0000-000000000903', 'thread-luna', 'failed', '2040-01-03T00:00:00.000Z', '2040-01-03T00:00:01.000Z', 'LUNA_PRIVATE_WORK_FAILURE_ERROR_MUST_NOT_LEAK')
+    `, [visibleRuntimeError, shortPrefixRuntimeError]);
     const task = await harness.scheduledTaskStore.createTask({
       sessionId: "session-panda",
       title: "Visible scheduled failure",
@@ -800,8 +804,46 @@ describe("Control operator HTTP", () => {
 
     const critical = await fetch(`${base}/api/control/work-failures?severity=critical`, {headers: {cookie: auth.cookies}});
     expect(critical.status).toBe(200);
-    const criticalBody = await critical.json() as {data: Array<{kind: string; severity: string}>};
-    expect(criticalBody.data).toEqual([expect.objectContaining({kind: "runtime_run", severity: "critical"})]);
+    const criticalBody = await critical.json() as {data: Array<{kind: string; severity: string; summary: string; detail?: string; sessionId?: string}>};
+    expect(criticalBody.data).toContainEqual(expect.objectContaining({
+      kind: "runtime_run",
+      severity: "critical",
+      sessionId: "session-panda",
+      summary: `Provider runtime failed: Unknown model "claude-fable-5". detail=Bad request`,
+      detail: `Sanitized runtime error: Provider runtime failed: Unknown model "claude-fable-5". detail=Bad request`,
+    }));
+    expect(criticalBody.data).toContainEqual(expect.objectContaining({
+      kind: "runtime_run",
+      severity: "critical",
+      sessionId: "session-panda",
+      summary: "Bad request",
+      detail: "Sanitized runtime error: Bad request",
+    }));
+    const shortPrefixFailure = criticalBody.data.find((failure) => failure.summary === "Bad request");
+    const shortPrefixFailureText = JSON.stringify({summary: shortPrefixFailure?.summary, detail: shortPrefixFailure?.detail});
+    for (const sentinel of [
+      '"id"',
+      '"messages"',
+      '"content"',
+      "lowercase short prefix diagnosis should not leak",
+      "short prefix secret",
+    ]) expect(shortPrefixFailureText).not.toContain(sentinel);
+    const criticalText = JSON.stringify(criticalBody);
+    expect(criticalText).toContain("Provider runtime failed: Unknown model");
+    for (const sentinel of [
+      "PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK",
+      "PRIVATE_PROMPT_BODY_MUST_NOT_LEAK",
+      "PRIVATE_STDOUT_MUST_NOT_LEAK",
+      "lowercase patient diagnosis should not leak",
+      "lowercase shell output",
+      "lowercase short prefix diagnosis should not leak",
+      "short prefix secret",
+      "LUNA_PRIVATE_WORK_FAILURE_ERROR_MUST_NOT_LEAK",
+      "sk-1234567890abcdef",
+      "response body",
+      "stdout",
+      "/workspace/private.ts",
+    ]) expect(criticalText).not.toContain(sentinel);
 
     const scheduled = await fetch(`${base}/api/control/work-failures?kind=scheduled_task_run`, {headers: {cookie: auth.cookies}});
     expect(scheduled.status).toBe(200);
@@ -2859,17 +2901,49 @@ describe("Control Runtime Activity HTTP", () => {
     });
   });
 
+  it("cuts short-prefix inline JSON payloads from runtime error summaries", async () => {
+    const harness = await createHarness();
+    await seedThreads(harness);
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const shortPrefixRuntimeError = `Bad request {"id":"lowercase runtime short prefix diagnosis should not leak","messages":[{"content":"runtime short prefix secret"}]}`;
+    await harness.pool.query(`
+      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, error)
+      VALUES ('00000000-0000-0000-0000-000000000406', 'thread-panda', 'failed', '2040-01-05T10:00:00.000Z', '2040-01-05T10:00:01.000Z', $1)
+    `, [shortPrefixRuntimeError]);
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/runtime-activity`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {runtimeActivity: {data: Array<Record<string, unknown>>}};
+    const run = body.runtimeActivity.data[0]!;
+    expect(run).toMatchObject({status: "failed", errorSummary: "Bad request"});
+    const summary = String(run.errorSummary);
+    for (const sentinel of [
+      '"id"',
+      '"messages"',
+      '"content"',
+      "lowercase runtime short prefix diagnosis should not leak",
+      "runtime short prefix secret",
+      "secret",
+    ]) expect(summary).not.toContain(sentinel);
+    const text = JSON.stringify(body);
+    expect(text).not.toContain("lowercase runtime short prefix diagnosis should not leak");
+    expect(text).not.toContain("runtime short prefix secret");
+  });
+
   it("returns authorized same-session runs with whitelisted fields and hides raw runtime data", async () => {
     const harness = await createHarness();
     await seedThreads(harness);
     await harness.agents.ensurePairing("panda", "identity-patrik");
+    const failedRuntimeError = `Subagent tool groups workspace_read and execute are mutually exclusive. Choose workspace_read for read-only workspace wrapper tools, or execute for shell/background execution. detail=Bad request {"messages":[{"content":"lowercase patient diagnosis should not leak"}],"stdout":"lowercase shell output"} failureKind=provider_timeout token=sk-abcdefghijklmnopqrstuvwxyz PRIVATE_RAW_RUN_ERROR_MUST_NOT_LEAK`;
     await harness.pool.query(`
       INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, abort_requested_at, abort_reason, error) VALUES
-        ('00000000-0000-0000-0000-000000000401', 'thread-panda', 'failed', '2040-01-02T10:00:00.000Z', '2040-01-02T10:00:05.000Z', '2040-01-02T10:00:02.000Z', 'PRIVATE_ABORT_REASON_MUST_NOT_LEAK', 'Provider failed failureKind=provider_timeout PRIVATE_RAW_RUN_ERROR_MUST_NOT_LEAK'),
+        ('00000000-0000-0000-0000-000000000401', 'thread-panda', 'failed', '2040-01-02T10:00:00.000Z', '2040-01-02T10:00:05.000Z', '2040-01-02T10:00:02.000Z', 'PRIVATE_ABORT_REASON_MUST_NOT_LEAK', $1),
         ('00000000-0000-0000-0000-000000000402', 'thread-panda', 'completed', '2040-01-01T10:00:00.000Z', '2040-01-01T10:00:01.500Z', NULL, NULL, NULL),
         ('00000000-0000-0000-0000-000000000403', 'thread-panda', 'running', '2040-01-03T10:00:00.000Z', NULL, NULL, NULL, 'PRIVATE_RUNNING_ERROR_MUST_NOT_LEAK'),
         ('00000000-0000-0000-0000-000000000404', 'thread-luna', 'failed', '2040-01-04T10:00:00.000Z', '2040-01-04T10:00:01.000Z', NULL, NULL, 'LUNA_PRIVATE_RAW_RUN_ERROR')
-    `);
+    `, [failedRuntimeError]);
     await harness.pool.query(`
       INSERT INTO "runtime"."messages" (id, thread_id, origin, source, run_id, run_thread_id, created_at, message, metadata)
       VALUES ('00000000-0000-0000-0000-000000000501', 'thread-panda', 'assistant', 'assistant', '00000000-0000-0000-0000-000000000401', 'thread-panda', '2040-01-02T10:00:03.000Z', '{"role":"assistant","content":"PRIVATE_TRANSCRIPT_MESSAGE_MUST_NOT_LEAK"}'::jsonb, '{"private":"PRIVATE_MESSAGE_METADATA_MUST_NOT_LEAK"}'::jsonb)
@@ -2906,15 +2980,32 @@ describe("Control Runtime Activity HTTP", () => {
     });
     expect(body.runtimeActivity.meta).toEqual({current_page: 1, last_page: 1, total: 3, per_page: 10});
     expect(body.runtimeActivity.data).toHaveLength(3);
-    expect(body.runtimeActivity.data[0]).toMatchObject({id: "00000000-0000-0000-0000-000000000403", status: "running", startedAt: "2040-01-03T10:00:00.000Z", finishedAt: null, durationMs: null, abortRequestedAt: null, failureCategory: null});
-    expect(body.runtimeActivity.data[1]).toMatchObject({id: "00000000-0000-0000-0000-000000000401", status: "failed", startedAt: "2040-01-02T10:00:00.000Z", finishedAt: "2040-01-02T10:00:05.000Z", durationMs: 5000, abortRequestedAt: "2040-01-02T10:00:02.000Z", failureCategory: "provider_timeout"});
-    expect(Object.keys(body.runtimeActivity.data[1]!).sort()).toEqual(["abortRequestedAt", "durationMs", "failureCategory", "finishedAt", "id", "startedAt", "status"]);
+    expect(body.runtimeActivity.data[0]).toMatchObject({id: "00000000-0000-0000-0000-000000000403", status: "running", startedAt: "2040-01-03T10:00:00.000Z", finishedAt: null, durationMs: null, abortRequestedAt: null, failureCategory: null, errorSummary: null});
+    expect(body.runtimeActivity.data[1]).toMatchObject({
+      id: "00000000-0000-0000-0000-000000000401",
+      status: "failed",
+      startedAt: "2040-01-02T10:00:00.000Z",
+      finishedAt: "2040-01-02T10:00:05.000Z",
+      durationMs: 5000,
+      abortRequestedAt: "2040-01-02T10:00:02.000Z",
+      failureCategory: "provider_timeout",
+      errorSummary: expect.stringContaining("Subagent tool groups workspace_read and execute are mutually exclusive"),
+    });
+    expect(body.runtimeActivity.data[1]!.errorSummary).toContain("detail=Bad request");
+    expect(String(body.runtimeActivity.data[1]!.errorSummary).length).toBeLessThanOrEqual(260);
+    expect(Object.keys(body.runtimeActivity.data[1]!).sort()).toEqual(["abortRequestedAt", "durationMs", "errorSummary", "failureCategory", "finishedAt", "id", "startedAt", "status"]);
     const text = JSON.stringify(body);
     for (const sentinel of [
       "PRIVATE_ABORT_REASON_MUST_NOT_LEAK",
       "PRIVATE_RAW_RUN_ERROR_MUST_NOT_LEAK",
+      "PRIVATE_PROMPT_BODY_MUST_NOT_LEAK",
+      "PRIVATE_ERROR_STDOUT_MUST_NOT_LEAK",
+      "lowercase patient diagnosis should not leak",
+      "lowercase shell output",
       "PRIVATE_RUNNING_ERROR_MUST_NOT_LEAK",
       "LUNA_PRIVATE_RAW_RUN_ERROR",
+      "sk-abcdefghijklmnopqrstuvwxyz",
+      "/workspace/private-runtime.ts",
       "PRIVATE_TRANSCRIPT_MESSAGE_MUST_NOT_LEAK",
       "PRIVATE_MESSAGE_METADATA_MUST_NOT_LEAK",
       "PRIVATE_INPUT_MESSAGE_MUST_NOT_LEAK",
@@ -2927,7 +3018,7 @@ describe("Control Runtime Activity HTTP", () => {
       "PRIVATE_STDOUT_MUST_NOT_LEAK",
       "PRIVATE_STDERR_MUST_NOT_LEAK",
       "PRIVATE_ENV_KEY_MUST_NOT_LEAK",
-      "error",
+      "\"error\":",
       "abortReason",
       "message",
       "metadata",
