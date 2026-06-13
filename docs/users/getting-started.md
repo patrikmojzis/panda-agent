@@ -10,7 +10,9 @@ Do not freestyle the pairing model. That is how you end up confused at 2am.
 You need:
 
 - a working Postgres connection
-- an LLM API key for the provider you want to use
+- provider credentials for the model you want to use
+  - API-key providers use env vars such as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`
+  - `openai-codex` can use Codex OAuth via `codex login`, `CODEX_HOME`, or `OPENAI_OAUTH_TOKEN`
 - Docker only if you want the built-in browser tool
 
 Useful background docs:
