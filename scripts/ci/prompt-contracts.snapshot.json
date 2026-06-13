@@ -49,10 +49,10 @@
       "sha256": "20d20c88a23d65e89752a5a5da5750fc418c39c0177e812cdc8d58fa828c7a84"
     },
     {
-      "bytes": 4945,
-      "lines": 154,
+      "bytes": 5552,
+      "lines": 167,
       "path": "src/domain/subagents/tool-groups.ts",
-      "sha256": "648bef8ff9b6424d0064150f529465900341717fa5d9a8401a4d5c9c083e961d"
+      "sha256": "1f01b111412cf0fd29ab03d08258b9e5932784e66a1520988499b1cdc4b5f0c7"
     },
     {
       "bytes": 2639,
@@ -139,10 +139,10 @@
       "sha256": "b42889f1ab4f0808fbddce53c1ad585755797f11e4c7d423897d792767e2bfd2"
     },
     {
-      "bytes": 2101,
+      "bytes": 2103,
       "lines": 58,
       "path": "src/panda/subagents/policy.ts",
-      "sha256": "e841229d76c2ba43747ffae0803e746fb2b7d1409e27f186a34eac1c5137c9dc"
+      "sha256": "b10eb6242116d58bc773b895b2e2819db44db38da97a312929f1786a009bde03"
     },
     {
       "bytes": 2904,
