@@ -5,6 +5,7 @@ import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
 import type {ThreadRunStatus} from "../threads/runtime/types.js";
 import {buildControlTableNames} from "./postgres-shared.js";
+import {summarizeRuntimeError} from "./runtime-error-summary.js";
 import type {ControlSessionRecord} from "./types.js";
 
 const DEFAULT_RUN_LIMIT = 25;
@@ -29,6 +30,7 @@ export interface ControlRuntimeActivityRun {
   durationMs: number | null;
   abortRequestedAt: string | null;
   failureCategory: ControlRuntimeFailureCategory | null;
+  errorSummary: string | null;
 }
 
 export interface ControlRuntimeActivitySummary {
@@ -109,14 +111,16 @@ function publicRun(row: RunRow): ControlRuntimeActivityRun {
   const startedAt = toIso(row.started_at, "Runtime run started_at");
   const finishedAt = optionalIso(row.finished_at, "Runtime run finished_at");
   const durationMs = finishedAt ? new Date(finishedAt).getTime() - new Date(startedAt).getTime() : null;
+  const status = requiredString(row.status, "Runtime run status") as ThreadRunStatus;
   return {
     id: requiredString(row.id, "Runtime run id"),
-    status: requiredString(row.status, "Runtime run status") as ThreadRunStatus,
+    status,
     startedAt,
     finishedAt,
     durationMs: durationMs !== null && Number.isFinite(durationMs) ? durationMs : null,
     abortRequestedAt: optionalIso(row.abort_requested_at, "Runtime run abort_requested_at"),
     failureCategory: failureCategory(row.error),
+    errorSummary: status === "failed" ? summarizeRuntimeError(row.error) : null,
   };
 }
 
@@ -156,6 +160,7 @@ function runSearchText(run: ControlRuntimeActivityRun): string {
     run.id,
     run.status,
     run.failureCategory ?? "",
+    run.errorSummary ?? "",
     run.startedAt,
     run.finishedAt ?? "",
   ].join(" ").toLowerCase();

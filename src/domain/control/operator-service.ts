@@ -61,6 +61,7 @@ import type {WikiBindingRecord} from "../wiki/types.js";
 import {normalizeWikiGroupId, normalizeWikiNamespacePath} from "../wiki/types.js";
 import type {ControlAuditEventSummary, ControlReadService} from "./read-service.js";
 import type {ControlSessionRecord} from "./types.js";
+import {summarizeRuntimeError} from "./runtime-error-summary.js";
 
 const GATEWAY_DEVICE_TOKEN_PREFIX = "pgd";
 const GATEWAY_DEVICE_TOKEN_BYTES = 24;
@@ -3134,6 +3135,7 @@ export class ControlOperatorService {
     return (result.rows as Array<Record<string, unknown>>).map((row) => {
       const agentKey = String(row.agent_key);
       const sessionId = String(row.session_id);
+      const errorSummary = summarizeRuntimeError(row.error);
       return {
         id: `runtime:${String(row.id)}`,
         kind: "runtime_run",
@@ -3142,8 +3144,8 @@ export class ControlOperatorService {
         sessionId,
         sessionLabel: String(row.display_name ?? row.alias ?? sessionId),
         source: "Runtime",
-        summary: "Agent run failed.",
-        detail: row.error ? "Run failed; inspect the session runtime tab for the sanitized category." : undefined,
+        summary: errorSummary ?? "Agent run failed.",
+        detail: errorSummary ? `Sanitized runtime error: ${errorSummary}` : undefined,
         targetRoute: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}?tab=runtime`,
         createdAt: iso(row.finished_at as Date | undefined) ?? iso(row.started_at as Date | undefined) ?? new Date().toISOString(),
       };

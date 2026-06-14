@@ -400,6 +400,7 @@ export type RuntimeRun = {
     | "provider_transport_network"
     | "provider_error"
     | null
+  errorSummary: string | null
 }
 
 export type RuntimeActivity = {

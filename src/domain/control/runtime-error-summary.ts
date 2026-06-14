@@ -1,0 +1,129 @@
+const DEFAULT_RUNTIME_ERROR_SUMMARY_MAX_CHARS = 260;
+
+const SECRET_ASSIGNMENT_PATTERN = /\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|bearer|cookie|credential|password|secret|session[_-]?token|token)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|`[^`]*`|[^\s,;)]+)/gi;
+const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
+const TOKEN_PREFIX_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|dop_v1_[A-Za-z0-9_]{16,}|xox[baprs]-[A-Za-z0-9-]{12,}|pbr_[A-Za-z0-9_]{16,})\b/g;
+const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
+const LONG_OPAQUE_PATTERN = /\b[A-Za-z0-9+/=_-]{48,}\b/g;
+const PRIVATE_SENTINEL_PATTERN = /\b[A-Z0-9_]*(?:PRIVATE|SECRET|TOKEN|PASSWORD|CREDENTIAL)[A-Z0-9_]{4,}\b/g;
+const FAILURE_KIND_PATTERN = /\s*\bfailureKind=[a-z_]+\b\s*/gi;
+const LOCATION_PATTERN = /\b(?:file:\/\/)?(?:\.?\.?\/|\/)[^\s:]+:\d+:\d+\b/g;
+
+const UNSAFE_MARKERS = [
+  /\b(?:request|response)\s+bod(?:y|ies)\s*[:=]/i,
+  /\b(?:raw\s+)?(?:prompt|prompts|transcript|transcripts|context|messages|metadata|headers|body|payload|tool\s*args?|tool\s*arguments?|tool\s*results?|stdout|stderr|db\s+row)\s*[:=]/i,
+  /\b(?:authorization|cookie)\s+header\s*[:=]/i,
+  /"(?:body|content|context|headers|message|messages|metadata|payload|prompt|prompts|request|response|stderr|stdout|tool[_ -]?args?|tool[_ -]?arguments?|tool[_ -]?results?|transcript|transcripts)"\s*:/i,
+];
+
+function messageFromError(error: unknown): string | null {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  return null;
+}
+
+function stripAnsiAndControls(value: string): string {
+  return value
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ");
+}
+
+function isStackLine(value: string): boolean {
+  return /^at\s+\S+\s+\(?/.test(value) || /^\s*\.\.\.\s+\d+\s+more\s*$/i.test(value);
+}
+
+function startsWithUnsafeMarker(value: string): boolean {
+  for (const pattern of UNSAFE_MARKERS) {
+    pattern.lastIndex = 0;
+    const match = pattern.exec(value);
+    if (match?.index === 0) return true;
+  }
+  return false;
+}
+
+function isPayloadLine(value: string): boolean {
+  return /^[{[]/.test(value) || startsWithUnsafeMarker(value);
+}
+
+function leadingSafeText(value: string): string {
+  const lines = stripAnsiAndControls(value)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (isStackLine(line) || isPayloadLine(line)) break;
+    kept.push(line);
+    if (kept.length >= 2 || kept.join(" ").length >= DEFAULT_RUNTIME_ERROR_SUMMARY_MAX_CHARS * 2) break;
+  }
+  return kept.join(" ");
+}
+
+function hasEnoughLeadingProse(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.length > 0;
+}
+
+function inlineStructuredPayloadStart(value: string): number | null {
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if ((char === "{" || char === "[") && hasEnoughLeadingProse(value.slice(0, index))) return index;
+  }
+  return null;
+}
+
+function truncateAtUnsafeMarker(value: string): string {
+  let end = value.length;
+  const structuredStart = inlineStructuredPayloadStart(value);
+  if (structuredStart !== null && structuredStart < end) end = structuredStart;
+  for (const pattern of UNSAFE_MARKERS) {
+    pattern.lastIndex = 0;
+    const match = pattern.exec(value);
+    if (match && match.index < end) end = match.index;
+  }
+  return value.slice(0, end);
+}
+
+function redactRuntimeErrorSecrets(value: string): string {
+  return value
+    .replace(SECRET_ASSIGNMENT_PATTERN, "[redacted]")
+    .replace(BEARER_PATTERN, "Bearer [redacted]")
+    .replace(TOKEN_PREFIX_PATTERN, "[redacted]")
+    .replace(JWT_PATTERN, "[redacted]")
+    .replace(LONG_OPAQUE_PATTERN, "[redacted]")
+    .replace(PRIVATE_SENTINEL_PATTERN, "[redacted]")
+    .replace(LOCATION_PATTERN, "[redacted location]");
+}
+
+function normalizeWhitespace(value: string): string {
+  return value
+    .replace(/(?:\s*(?:[,;]?\s*)?\[redacted(?: location)?\])+$/gi, "")
+    .replace(/[=:\s]*[{[]\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .trim();
+}
+
+function onlyRedactions(value: string): boolean {
+  return normalizeWhitespace(value.replace(/\[redacted(?: location)?\]/gi, "").replace(/[.,;:!?()\-–—]/g, "")).length === 0;
+}
+
+function truncateSummary(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const slice = value.slice(0, Math.max(1, maxChars - 1)).trimEnd();
+  return `${slice}…`;
+}
+
+export function summarizeRuntimeError(error: unknown, options: {maxChars?: number} = {}): string | null {
+  const message = messageFromError(error);
+  if (!message?.trim()) return null;
+
+  const maxChars = Math.max(40, Math.min(1_000, options.maxChars ?? DEFAULT_RUNTIME_ERROR_SUMMARY_MAX_CHARS));
+  const summary = truncateSummary(normalizeWhitespace(redactRuntimeErrorSecrets(
+    truncateAtUnsafeMarker(leadingSafeText(message))
+      .replace(FAILURE_KIND_PATTERN, " ")
+  )), maxChars);
+
+  if (!summary || onlyRedactions(summary)) return null;
+  return summary;
+}

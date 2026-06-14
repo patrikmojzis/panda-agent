@@ -190,7 +190,7 @@ export function RuntimePanel({
             <DetailField
               loading={runtime.isLoading}
               label="Failure"
-              value={humanize(stats.latestRun?.failureCategory)}
+              value={runtimeFailureLabel(stats.latestRun)}
             />
           </div>
         </DetailPanel>
@@ -257,12 +257,12 @@ function RuntimeRunsTable({
       cell: ({ row }) => <Cell>{formatDate(row.original.finishedAt)}</Cell>,
     },
     {
-      accessorKey: "failureCategory",
-      meta: { label: "Failure", maxWidthClassName: "max-w-64" },
+      accessorKey: "errorSummary",
+      meta: { label: "Failure", maxWidthClassName: "max-w-[28rem]" },
       header: renderColumnHeader,
       enableSorting: true,
       cell: ({ row }) => (
-        <TruncatedText value={humanize(row.original.failureCategory)} />
+        <TruncatedText value={runtimeFailureLabel(row.original)} />
       ),
     },
     {
@@ -343,7 +343,7 @@ function RuntimeRunDetailsSheet({
                     label="Abort requested"
                     value={formatDate(run.abortRequestedAt)}
                   />
-                  <DetailField label="Failure" value={humanize(run.failureCategory)} />
+                  <DetailField label="Failure" value={runtimeFailureLabel(run)} />
                 </div>
               </DetailPanel>
               <DetailPanel title="Identifiers">
@@ -385,6 +385,11 @@ function RuntimeFailureFocus({
               ? ` - latest ${short(latestRun.id)} at ${formatDate(latestRun.startedAt) ?? "-"}`
               : ""}
           </div>
+          {latestRun?.errorSummary ? (
+            <div className="mt-1 min-w-0 truncate text-xs text-foreground" title={latestRun.errorSummary}>
+              {latestRun.errorSummary}
+            </div>
+          ) : null}
         </div>
       </div>
       <Button
@@ -398,6 +403,14 @@ function RuntimeFailureFocus({
       </Button>
     </div>
   )
+}
+
+function runtimeFailureLabel(run?: RuntimeRun | null) {
+  if (!run) return "-"
+  if (run.errorSummary) return run.errorSummary
+  const category = humanize(run.failureCategory)
+  if (category !== "-") return category
+  return run.status === "failed" ? "Failed" : "-"
 }
 
 function RuntimeRunFilters({
@@ -482,6 +495,7 @@ function fallbackRuntimeRows(rows: RuntimeRun[], params?: TableParams) {
       run.id,
       run.status,
       run.failureCategory,
+      run.errorSummary,
       run.startedAt,
       run.finishedAt,
     ]
@@ -505,6 +519,8 @@ function runtimeRunSortValue(run: RuntimeRun, sortBy: string) {
       return run.durationMs
     case "failureCategory":
       return run.failureCategory
+    case "errorSummary":
+      return run.errorSummary
     case "finishedAt":
       return run.finishedAt
     case "id":
