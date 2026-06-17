@@ -42,7 +42,11 @@ afterEach(async () => {
 });
 
 
-function bindTargetFilesystem(context: DefaultAgentSessionContext, targetRoot: string): DefaultAgentSessionContext {
+function bindTargetFilesystem(
+  context: DefaultAgentSessionContext,
+  targetRoot: string,
+  toolPolicy: NonNullable<DefaultAgentSessionContext["executionEnvironment"]>["toolPolicy"] = {},
+): DefaultAgentSessionContext {
   return {
     ...context,
     resolveExecutionTarget: async (target) => {
@@ -67,7 +71,7 @@ function bindTargetFilesystem(context: DefaultAgentSessionContext, targetRoot: s
         },
         credentialPolicy: {mode: "none"},
         skillPolicy: {mode: "none"},
-        toolPolicy: {},
+        toolPolicy,
         source: "binding",
       };
     },
@@ -150,7 +154,9 @@ describe("workspace readonly tools", () => {
       sessionId: "session-1",
       threadId: "thread-1",
     };
-    const context = bindTargetFilesystem(baseContext, targetRoot);
+    const context = bindTargetFilesystem(baseContext, targetRoot, {
+      allowedTools: ["read_file", "glob_files", "grep_files"],
+    });
 
     const read = new ReadFileTool();
     const glob = new GlobFilesTool();
@@ -182,6 +188,31 @@ describe("workspace readonly tools", () => {
       });
   });
 
+  it("denies read-only tools when the selected target has no allowlist", async () => {
+    const root = await createWorkspace();
+    const targetRoot = await mkdtemp(path.join(tmpdir(), "runtime-readonly-target-denied-"));
+    tempDirs.push(targetRoot);
+    await writeFile(path.join(targetRoot, "target.txt"), "hello from target\n");
+    const baseContext: DefaultAgentSessionContext = {
+      cwd: root,
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    };
+    const context = bindTargetFilesystem(baseContext, targetRoot);
+
+    const read = new ReadFileTool();
+    const glob = new GlobFilesTool();
+    const grep = new GrepFilesTool();
+
+    await expect(read.run({path: "/workspace/target.txt", target: "vps"}, createRunContextWithContext(read, context)))
+      .rejects.toThrow("Tool read_file is not allowed in execution target vps.");
+    await expect(glob.run({root: "/workspace", pattern: "**/*.txt", target: "vps"}, createRunContextWithContext(glob, context)))
+      .rejects.toThrow("Tool glob_files is not allowed in execution target vps.");
+    await expect(grep.run({root: "/workspace", pattern: "hello", target: "vps"}, createRunContextWithContext(grep, context)))
+      .rejects.toThrow("Tool grep_files is not allowed in execution target vps.");
+  });
+
   it("requires selected file targets to expose filesystem metadata", async () => {
     const root = await createWorkspace();
     const context: DefaultAgentSessionContext = {
@@ -199,7 +230,7 @@ describe("workspace readonly tools", () => {
         alias: "vps",
         credentialPolicy: {mode: "none"},
         skillPolicy: {mode: "none"},
-        toolPolicy: {},
+        toolPolicy: {allowedTools: ["read_file"]},
         source: "binding",
       }),
     };
@@ -221,7 +252,7 @@ describe("workspace readonly tools", () => {
       agentKey: "panda",
       sessionId: "session-1",
       threadId: "thread-1",
-    }, targetRoot);
+    }, targetRoot, {allowedTools: ["read_file"]});
     const tool = new ReadFileTool();
 
     await expect(tool.run({path: "/workspace/escape.txt", target: "vps"}, createRunContextWithContext(tool, context)))

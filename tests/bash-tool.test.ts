@@ -289,7 +289,7 @@ describe("BashTool", () => {
             alias: "vps",
             credentialPolicy: {mode: "none"},
             skillPolicy: {mode: "none"},
-            toolPolicy: {},
+            toolPolicy: {allowedTools: ["bash"]},
             source: "binding",
           };
         },
@@ -305,6 +305,55 @@ describe("BashTool", () => {
         runnerUrl: "http://vps:8080",
       });
       expect(executor.calls[0]?.run.context?.executionEnvironment?.id).toBe("env-vps");
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("denies bash when the selected target has no allowlist", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-target-denied-"));
+    try {
+      const executor = new RecordingBashExecutor();
+      const tool = new BashTool({executor});
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-target-denied",
+        threadId: "thread-target-denied",
+        cwd: workspace,
+        executionEnvironment: {
+          id: "env-default",
+          agentKey: "panda",
+          kind: "local",
+          state: "ready",
+          executionMode: "local",
+          initialCwd: workspace,
+          credentialPolicy: {mode: "all_agent"},
+          skillPolicy: {mode: "all_agent"},
+          toolPolicy: {},
+          source: "fallback",
+        },
+        resolveExecutionTarget: async (target) => {
+          if (target !== "vps") throw new Error("unknown target");
+          return {
+            id: "env-vps",
+            agentKey: "panda",
+            kind: "persistent_agent_runner",
+            state: "ready",
+            executionMode: "remote",
+            runnerUrl: "http://vps:8080",
+            initialCwd: "/srv/panda",
+            alias: "vps",
+            credentialPolicy: {mode: "none"},
+            skillPolicy: {mode: "none"},
+            toolPolicy: {},
+            source: "binding",
+          };
+        },
+      };
+
+      await expect(tool.run({command: "pwd", target: "vps"}, createRunContext(context)))
+        .rejects.toThrow("Tool bash is not allowed in execution target vps.");
+      expect(executor.calls).toHaveLength(0);
     } finally {
       await rm(workspace, {recursive: true, force: true});
     }
@@ -347,7 +396,7 @@ describe("BashTool", () => {
             alias: "vps",
             credentialPolicy: {mode: "all_agent"},
             skillPolicy: {mode: "all_agent"},
-            toolPolicy: {},
+            toolPolicy: {allowedTools: ["bash"]},
             source: "binding",
           };
         },
@@ -390,7 +439,7 @@ describe("BashTool", () => {
           alias: "vps",
           credentialPolicy: {mode: "all_agent"},
           skillPolicy: {mode: "all_agent"},
-          toolPolicy: {},
+          toolPolicy: {allowedTools: ["bash"]},
           source: "binding",
         };
       };

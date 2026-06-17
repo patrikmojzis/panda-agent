@@ -5,12 +5,36 @@ import {
   type ResolvedExecutionEnvironment,
 } from "../../domain/execution-environments/types.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import {isExecutionToolAllowedByPolicy} from "../../domain/execution-environments/policy.js";
 
 export interface ResolvedExecutionTargetContext {
   context: DefaultAgentSessionContext | undefined;
   executionEnvironment?: ResolvedExecutionEnvironment;
   isDefaultTarget: boolean;
   targetAlias: string;
+}
+
+
+export function assertExecutionTargetToolAllowed(
+  target: ResolvedExecutionTargetContext,
+  toolName: string,
+): void {
+  const executionEnvironment = target.executionEnvironment;
+  if (!executionEnvironment) {
+    return;
+  }
+
+  if (isExecutionToolAllowedByPolicy(executionEnvironment.toolPolicy, toolName, {
+    requireAllowlist: !target.isDefaultTarget,
+  })) {
+    return;
+  }
+
+  if (toolName === "bash" && executionEnvironment.toolPolicy.bash?.allowed === false) {
+    throw new ToolError("Bash is not allowed in this execution environment.");
+  }
+
+  throw new ToolError(`Tool ${toolName} is not allowed in execution target ${target.targetAlias}.`);
 }
 
 export async function resolveExecutionTargetContext(

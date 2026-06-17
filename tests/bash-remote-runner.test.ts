@@ -3,6 +3,7 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
+import {DataType, newDb} from "pg-mem";
 
 import {
     Agent,
@@ -14,6 +15,8 @@ import {
     RunContext,
     ToolError,
 } from "../src/index.js";
+import {ExecutionEnvironmentResolver} from "../src/app/runtime/execution-environment-resolver.js";
+import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {RemoteShellExecutor, resolveRunnerUrl,} from "../src/integrations/shell/bash-executor.js";
 import {
@@ -33,6 +36,7 @@ import {
     RUNNER_EXPECTED_PATH_HEADER,
     RUNNER_PATH_SCOPED_HEADER,
 } from "../src/integrations/shell/bash-protocol.js";
+import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createAgent() {
@@ -79,6 +83,7 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 
 describe("remote bash runner", () => {
   const runners: BashRunner[] = [];
   const directories: string[] = [];
+  const pools: Array<{end(): Promise<void>}> = [];
 
   afterEach(async () => {
     while (runners.length > 0) {
@@ -87,6 +92,10 @@ describe("remote bash runner", () => {
 
     while (directories.length > 0) {
       await rm(directories.pop() ?? "", { recursive: true, force: true });
+    }
+
+    while (pools.length > 0) {
+      await pools.pop()?.end();
     }
   });
 
@@ -117,6 +126,75 @@ describe("remote bash runner", () => {
     directories.push(directory);
     return directory;
   }
+
+  async function createDbPool() {
+    const db = newDb({noAstCoverageCheck: true});
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+    return pool;
+  }
+
+  it("executes bash through a DB-bound runner target alias", async () => {
+    const workspace = await createWorkspace("runtime-db-bound-runner-");
+    const sharedSecret = "db-bound-runner-secret";
+    const runner = await createRunner("panda", {
+      sharedSecret,
+      allowedRoots: [workspace],
+    });
+    const pool = await createDbPool();
+    const stores = await createRuntimeStores(pool);
+    const environmentStore = new PostgresExecutionEnvironmentStore({pool});
+    await environmentStore.ensureSchema();
+    const session = await stores.sessionStore.createSession({
+      id: "session-db-bound-runner",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-db-bound-runner",
+    });
+    await stores.threadStore.createThread({
+      id: "thread-db-bound-runner",
+      sessionId: session.id,
+    });
+    await environmentStore.createEnvironment({
+      id: "env-db-bound-runner",
+      agentKey: "panda",
+      kind: "persistent_agent_runner",
+      runnerUrl: `http://${runner.host}:${runner.port}`,
+      runnerCwd: workspace,
+    });
+    await environmentStore.bindSession({
+      sessionId: session.id,
+      environmentId: "env-db-bound-runner",
+      alias: "vps",
+      toolPolicy: {allowedTools: ["bash"]},
+    });
+    const resolver = new ExecutionEnvironmentResolver({store: environmentStore, env: {}});
+    const tool = new BashTool({
+      env: {BASH_SERVER_SHARED_SECRET: sharedSecret},
+    });
+    const context: DefaultAgentSessionContext = {
+      cwd: workspace,
+      agentKey: "panda",
+      sessionId: session.id,
+      sessionKind: session.kind,
+      threadId: "thread-db-bound-runner",
+      resolveExecutionTarget: (target) => resolver.resolve(session, target),
+    };
+
+    const result = await tool.run({
+      command: 'printf "db-bound:%s" "$PWD"',
+      target: "vps",
+    }, createRunContext(context));
+
+    expect(asObject(result).stdout).toBe(`db-bound:${workspace}`);
+  });
 
   it("rejects deprecated core-side RUNNER_* env even when BASH_SERVER_* is set", () => {
     expect(() => new RemoteShellExecutor({

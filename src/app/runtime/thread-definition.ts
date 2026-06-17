@@ -4,6 +4,7 @@ import {mergeInferenceProjection} from "../../kernel/transcript/inference-projec
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
+import {isExecutionToolAllowedByPolicy} from "../../domain/execution-environments/policy.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import type {AgentSessionKind, SessionPromptRecord, SessionRecord, SessionRuntimeConfigRecord} from "../../domain/sessions/types.js";
 import type {InferenceProjection, ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
@@ -55,7 +56,7 @@ export interface CreateThreadDefinitionOptions {
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
-  executionEnvironments?: Pick<ExecutionEnvironmentStore, "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner" | "listBindingsForSession">;
+  executionEnvironments?: Pick<ExecutionEnvironmentStore, "getEnvironment" | "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner" | "listBindingsForSession">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   bashToolOptions?: BashToolOptions;
   browserToolOptions?: BrowserToolOptions;
@@ -109,11 +110,7 @@ function isSubagentToolAllowed(toolName: string, executionEnvironment?: Resolved
   }
 
   const policy = executionEnvironment?.toolPolicy;
-  const allowedTools = policy?.allowedTools?.length ? new Set(policy.allowedTools) : null;
-  if (!allowedTools?.has(toolName)) {
-    return false;
-  }
-  if (toolName === "bash" && policy?.bash?.allowed === false) {
+  if (!isExecutionToolAllowedByPolicy(policy, toolName, {requireAllowlist: true})) {
     return false;
   }
   if (toolName === POSTGRES_READONLY_TOOL_NAME && policy?.postgresReadonly?.allowed !== true) {

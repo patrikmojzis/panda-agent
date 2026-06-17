@@ -51,7 +51,8 @@ import {buildConversationSessionTableNames} from "../sessions/conversations/post
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {SessionStore} from "../sessions/store.js";
 import type {ExecutionEnvironmentStore} from "../execution-environments/store.js";
-import type {ExecutionEnvironmentKind, ExecutionEnvironmentState} from "../execution-environments/types.js";
+import type {ExecutionEnvironmentKind, ExecutionEnvironmentState, ExecutionToolPolicy} from "../execution-environments/types.js";
+import {normalizeExecutionEnvironmentAlias} from "../execution-environments/types.js";
 import type {AgentSessionKind, SessionRecord} from "../sessions/types.js";
 import {normalizeSessionAlias} from "../sessions/types.js";
 import type {SubagentProfileStore} from "../subagents/store.js";
@@ -201,7 +202,7 @@ export interface ControlSessionDetail extends ControlSessionRow {
   };
 }
 
-export type ControlExecutionTargetHealth = "ok" | "unreachable" | "unknown" | "not_applicable";
+export type ControlExecutionTargetHealth = "reachable" | "unreachable" | "unknown" | "not_applicable";
 
 export interface ControlExecutionTargetRow {
   alias: string;
@@ -209,6 +210,7 @@ export interface ControlExecutionTargetRow {
   state: ExecutionEnvironmentState;
   label: string;
   health: ControlExecutionTargetHealth;
+  isDefaultBinding?: boolean;
 }
 
 export interface ControlCredentialRow {
@@ -529,7 +531,7 @@ export interface ControlOperatorServiceOptions {
   a2aBindings: ControlA2ABindingStore;
   agents: AgentStore;
   sessions: SessionStore;
-  executionEnvironments: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment" | "listBindingsForSession">;
+  executionEnvironments: Pick<ExecutionEnvironmentStore, "bindSession" | "createEnvironment" | "deleteBindingByAlias" | "getBindingByAlias" | "getDefaultBinding" | "getEnvironment" | "listBindingsForSession">;
   threads: Pick<ThreadRuntimeStore, "createThread">;
   identities: Pick<
     IdentityStore,
@@ -1168,7 +1170,7 @@ export class ControlOperatorService {
   private readonly a2aBindings: ControlA2ABindingStore;
   private readonly agents: AgentStore;
   private readonly sessions: SessionStore;
-  private readonly executionEnvironments: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment" | "listBindingsForSession">;
+  private readonly executionEnvironments: Pick<ExecutionEnvironmentStore, "bindSession" | "createEnvironment" | "deleteBindingByAlias" | "getBindingByAlias" | "getDefaultBinding" | "getEnvironment" | "listBindingsForSession">;
   private readonly threads: Pick<ThreadRuntimeStore, "createThread">;
   private readonly identities: ControlOperatorServiceOptions["identities"];
   private readonly credentials: CredentialService | null;
@@ -1271,7 +1273,7 @@ export class ControlOperatorService {
         method: "GET",
         signal: makeNetworkTimeoutSignal(1_500),
       });
-      return response.ok ? "ok" : "unreachable";
+      return response.ok ? "reachable" : "unreachable";
     } catch {
       return "unreachable";
     }
@@ -1284,6 +1286,7 @@ export class ControlOperatorService {
     state: ExecutionEnvironmentState;
     runnerUrl?: string;
     runnerUrlTemplate?: string;
+    isDefaultBinding?: boolean;
   }): Promise<ControlExecutionTargetRow> {
     return {
       alias: input.alias,
@@ -1291,7 +1294,33 @@ export class ControlOperatorService {
       state: input.state,
       label: input.alias === "default" ? "Default" : input.alias,
       health: await this.probeExecutionTargetHealth(input),
+      ...(input.isDefaultBinding === true ? {isDefaultBinding: true} : {}),
     };
+  }
+
+  private parseExecutionTargetToolPolicy(input: unknown): ExecutionToolPolicy {
+    const value = input as {allowTools?: unknown; allowedTools?: unknown};
+    const rawAllowedTools = Array.isArray(value?.allowTools)
+      ? value.allowTools
+      : Array.isArray(value?.allowedTools)
+        ? value.allowedTools
+        : typeof value?.allowTools === "string"
+          ? value.allowTools.split(",")
+          : typeof value?.allowedTools === "string"
+            ? value.allowedTools.split(",")
+            : [];
+    const allowedTools = [...new Set(rawAllowedTools
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean))];
+    if (allowedTools.length === 0) {
+      throw new Error("Control execution target bind requires allowedTools so selected targets fail closed.");
+    }
+    return {allowedTools};
+  }
+
+  private defaultExecutionTargetEnvironmentId(sessionId: string, alias: string): string {
+    return `persistent_agent_runner:${sessionId}:${alias}`;
   }
 
   private async getAgentConnectorAccount(session: ControlSessionRecord, agentKey: string, source: string, accountKey: string, input: {
@@ -1810,6 +1839,7 @@ export class ControlOperatorService {
           kind: environment.kind,
           state: environment.state,
           ...(environment.runnerUrl ? {runnerUrl: environment.runnerUrl, runnerUrlTemplate: environment.runnerUrl} : {}),
+          isDefaultBinding: true,
         });
       }
 
@@ -1835,11 +1865,108 @@ export class ControlOperatorService {
         kind: environment.kind,
         state: environment.state,
         ...(environment.runnerUrl ? {runnerUrl: environment.runnerUrl, runnerUrlTemplate: environment.runnerUrl} : {}),
+        isDefaultBinding: binding.isDefault,
       });
     }));
 
     return {
       targets: [defaultRow, ...aliasRows],
+    };
+  }
+
+  async bindSessionExecutionTarget(
+    session: ControlSessionRecord,
+    agentKey: string,
+    sessionId: string,
+    input: {
+      alias?: unknown;
+      environmentId?: unknown;
+      runnerUrl?: unknown;
+      runnerCwd?: unknown;
+      default?: unknown;
+      allowTools?: unknown;
+      allowedTools?: unknown;
+    },
+  ): Promise<{target: ControlExecutionTargetRow; targets: ControlExecutionTargetRow[]; audit: Record<string, unknown>}> {
+    const target = await this.assertSessionVisible(session, agentKey, sessionId);
+    const alias = normalizeExecutionEnvironmentAlias(requireNonEmptyString(input.alias, "Execution target alias is required."));
+    const runnerUrl = typeof input.runnerUrl === "string" ? trimToUndefined(input.runnerUrl) : undefined;
+    const requestedEnvironmentId = typeof input.environmentId === "string" ? trimToUndefined(input.environmentId) : undefined;
+    const environmentId = requestedEnvironmentId ?? this.defaultExecutionTargetEnvironmentId(target.id, alias);
+    if (!runnerUrl && !requestedEnvironmentId) {
+      throw new Error("Control execution target bind requires runnerUrl unless environmentId is provided.");
+    }
+
+    const environment = runnerUrl
+      ? await this.executionEnvironments.createEnvironment({
+        id: environmentId,
+        agentKey: target.agentKey,
+        kind: "persistent_agent_runner",
+        state: "ready",
+        runnerUrl,
+        runnerCwd: typeof input.runnerCwd === "string" ? trimToUndefined(input.runnerCwd) : undefined,
+      })
+      : await this.executionEnvironments.getEnvironment(environmentId);
+
+    if (environment.agentKey !== target.agentKey) {
+      throw new Error("Control execution target environment was not found or is not visible.");
+    }
+
+    const binding = await this.executionEnvironments.bindSession({
+      sessionId: target.id,
+      environmentId: environment.id,
+      alias,
+      isDefault: input.default === true,
+      toolPolicy: this.parseExecutionTargetToolPolicy(input),
+    });
+    const targetRow = await this.executionTargetRow({
+      agentKey: target.agentKey,
+      alias: binding.alias,
+      kind: environment.kind,
+      state: environment.state,
+      ...(environment.runnerUrl ? {runnerUrl: environment.runnerUrl, runnerUrlTemplate: environment.runnerUrl} : {}),
+      isDefaultBinding: binding.isDefault,
+    });
+    const targets = await this.listSessionExecutionTargets(session, target.agentKey, target.id);
+    return {
+      target: targetRow,
+      targets: targets.targets,
+      audit: {
+        action: "bind_execution_target",
+        agentKey: target.agentKey,
+        targetSessionId: target.id,
+        alias: binding.alias,
+        environmentId: environment.id,
+        default: binding.isDefault,
+        allowedTools: binding.toolPolicy.allowedTools ?? [],
+      },
+    };
+  }
+
+  async deleteSessionExecutionTarget(
+    session: ControlSessionRecord,
+    agentKey: string,
+    sessionId: string,
+    aliasInput: string,
+  ): Promise<{deleted: boolean; targets: ControlExecutionTargetRow[]; audit: Record<string, unknown>}> {
+    const target = await this.assertSessionVisible(session, agentKey, sessionId);
+    const alias = normalizeExecutionEnvironmentAlias(aliasInput);
+    const binding = await this.executionEnvironments.getBindingByAlias(target.id, alias);
+    if (binding?.isDefault) {
+      throw new Error("Control cannot detach a default execution target. Bind another default target first.");
+    }
+    const deleted = binding ? await this.executionEnvironments.deleteBindingByAlias(target.id, alias) : false;
+    const targets = await this.listSessionExecutionTargets(session, target.agentKey, target.id);
+    return {
+      deleted,
+      targets: targets.targets,
+      audit: {
+        action: "delete_execution_target",
+        agentKey: target.agentKey,
+        targetSessionId: target.id,
+        alias,
+        ...(binding ? {environmentId: binding.environmentId} : {}),
+      },
     };
   }
 

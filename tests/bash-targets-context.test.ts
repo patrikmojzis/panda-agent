@@ -25,20 +25,39 @@ describe("BashTargetsContext", () => {
               isDefault: false,
               credentialPolicy: {mode: "none"},
               skillPolicy: {mode: "none"},
-              toolPolicy: {},
+              toolPolicy: {allowedTools: ["bash", "read_file"]},
               createdAt: 1,
               updatedAt: 1,
             },
           ];
+        },
+        getEnvironment: async (environmentId: string) => {
+          expect(environmentId).toBe("env-secret-vps");
+          return {
+            id: environmentId,
+            agentKey: "panda",
+            kind: "persistent_agent_runner",
+            state: "ready",
+            runnerUrl: "http://runner.internal:8080",
+            metadata: {
+              executionTarget: {
+                description: "VPS shell with project checkout",
+                capabilities: ["git", "docker", "secret token should not render"],
+              },
+            },
+            createdAt: 1,
+            updatedAt: 1,
+          };
         },
       } as never,
     });
 
     const content = await contexts[0]!.getContent();
 
-    expect(content).toBe("Available bash targets: default, vps");
+    expect(content).toContain("Available bash targets:\n- default: default session target\n- vps: VPS shell with project checkout; tools: bash, read_file; capabilities: docker, git");
     expect(content).not.toContain("env-secret-vps");
     expect(content).not.toContain("http://");
     expect(content).not.toContain("runnerUrl");
+    expect(content).not.toContain("secret token");
   });
 });

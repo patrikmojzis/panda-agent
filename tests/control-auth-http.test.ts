@@ -258,6 +258,7 @@ describe("Control auth HTTP", () => {
     await harness.agents.ensurePairing("panda", "identity-patrik");
     const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
     const login = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    const loginBody = await login.json() as {csrfToken: string};
     const cookies = cookieHeader(login);
 
     const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/targets`, {headers: {cookie: cookies}});
@@ -266,7 +267,7 @@ describe("Control auth HTTP", () => {
     const body = await response.json() as {targets: Array<Record<string, unknown>>};
     expect(body.targets).toEqual([
       {alias: "default", kind: "local", state: "ready", label: "Default", health: "not_applicable"},
-      {alias: "vps", kind: "persistent_agent_runner", state: "ready", label: "vps", health: "ok"},
+      {alias: "vps", kind: "persistent_agent_runner", state: "ready", label: "vps", health: "reachable"},
     ]);
     expect(Object.keys(body.targets[1]!).sort()).toEqual(["alias", "health", "kind", "label", "state"]);
     const serialized = JSON.stringify(body);
@@ -277,6 +278,37 @@ describe("Control auth HTTP", () => {
     expect(String(healthFetch.mock.calls[0]?.[0])).toContain("/health");
     const healthInit = healthFetch.mock.calls[0]?.[1] as RequestInit | undefined;
     expect(new Headers(healthInit?.headers).has("authorization")).toBe(false);
+
+    const bind = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/targets`, {
+      method: "POST",
+      headers: {cookie: cookies, "x-control-csrf": loginBody.csrfToken},
+      body: JSON.stringify({
+        alias: "do",
+        runnerUrl: "http://runner-do.internal:8080",
+        runnerCwd: "/workspace",
+        allowTools: ["bash", "read_file"],
+      }),
+    });
+    expect(bind.status).toBe(200);
+    const bindBody = await bind.json() as {target: Record<string, unknown>; targets: Array<Record<string, unknown>>};
+    expect(bindBody.target).toMatchObject({
+      alias: "do",
+      kind: "persistent_agent_runner",
+      state: "ready",
+      label: "do",
+      health: "reachable",
+    });
+    expect(JSON.stringify(bindBody)).not.toContain("runner-do");
+    await expect(harness.executionEnvironments.getBindingByAlias("session-panda", "do")).resolves.toMatchObject({
+      toolPolicy: {allowedTools: ["bash", "read_file"]},
+    });
+
+    const detach = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/targets/do`, {
+      method: "DELETE",
+      headers: {cookie: cookies, "x-control-csrf": loginBody.csrfToken},
+    });
+    expect(detach.status).toBe(200);
+    await expect(harness.executionEnvironments.getBindingByAlias("session-panda", "do")).resolves.toBeNull();
 
     const crossSession = await fetch(`${base}/api/control/agents/luna/sessions/session-luna/targets`, {headers: {cookie: cookies}});
     expect(crossSession.status).toBe(404);

@@ -251,6 +251,48 @@ echo "$BASH_EXECUTION_MODE"
 
 If that is not exactly `remote`, Panda falls back to local in-process bash.
 
+## Session execution targets
+
+A session can bind named runner targets so the model can call tools with
+`target: "vps"` instead of relying only on global `BASH_SERVER_*` defaults.
+This is the attach/register/bind/list/status/detach operator flow:
+
+```bash
+# Personal PC/Mac attach: register + bind the runner and print matching core/runner env.
+panda runner attach <sessionRef> mac \
+  --agent panda \
+  --runner-url http://mac-mini.tailnet:8080 \
+  --runner-cwd /Users/patrik/.panda/agents/panda \
+  --allow-tools bash,read_file,glob_files,grep_files
+
+# Existing runner endpoint: bind it directly to one session.
+panda session targets bind <sessionRef> vps \
+  --agent panda \
+  --runner-url http://panda-runner-panda:8080 \
+  --runner-cwd /root/.panda/agents/panda \
+  --allow-tools bash,read_file,glob_files,grep_files
+
+# See default + named targets and runner reachability.
+panda session targets list <sessionRef> --agent panda
+panda session targets status <sessionRef> default --agent panda
+panda session targets status <sessionRef> vps --agent panda
+
+# Remove a non-default alias.
+panda session targets detach <sessionRef> vps --agent panda
+```
+
+`--allow-tools` is required for new named targets and is enforced at call time.
+If a selected target has no allowlist, or omits `bash`, `read_file`,
+`glob_files`, or `grep_files`, that tool fails before it touches the runner or
+target filesystem. Binding another target with `--default` switches the session
+default; after that, the old alias can be detached.
+
+Control also shows session execution targets on the session overview. The health
+badge means **reachable** only: it is an unauthenticated runner `/health` probe,
+not proof that the runner shared secret or target agent header will authorize a
+real tool call. A wrong-secret or wrong-agent runner may be reachable and still
+fail at execution time.
+
 ## Remote Background Jobs
 
 Remote mode supports the same background bash interface as local mode:

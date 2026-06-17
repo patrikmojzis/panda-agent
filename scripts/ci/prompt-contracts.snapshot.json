@@ -37,10 +37,10 @@
       "sha256": "1d233294fab4f9f7c3d12b47a0ab288ada5236d66b960b6d0c93d0972535c1fe"
     },
     {
-      "bytes": 10880,
-      "lines": 267,
+      "bytes": 10863,
+      "lines": 264,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "5411ee3fd427de2b8dedf41f5973e36e8632f08e9a82883062dcd3f9b3f52be9"
+      "sha256": "784f43c68c0b1c17380c1213f8eb327450150dcc467a0586c83029b5b94498fb"
     },
     {
       "bytes": 1600,
@@ -67,16 +67,16 @@
       "sha256": "c9dba92c99c1b215b5d3e5545677395423b39853d8ebe04fabf857aa246ca3d8"
     },
     {
-      "bytes": 1058,
-      "lines": 27,
+      "bytes": 2844,
+      "lines": 74,
       "path": "src/panda/contexts/bash-targets-context.ts",
-      "sha256": "7ee1a5366318f55a7d584342872f7da3d2dd3ce926a85a91b7c73af577aaeeb1"
+      "sha256": "3072f55b56c701de2cc2653f7f2b5437fed8ad19f49a13648cb4d0592bf7f2b8"
     },
     {
-      "bytes": 7157,
+      "bytes": 7176,
       "lines": 186,
       "path": "src/panda/contexts/builder.ts",
-      "sha256": "fdedbb215cb2a9b7d1c35c2dfb41d0216e5469ce28304127c662770cf5b23cb0"
+      "sha256": "ed0150fc93c12c147ddba3caad36cdf62991f103e321180b1c8a9efaa664b5e7"
     },
     {
       "bytes": 1541,
@@ -205,10 +205,10 @@
       "sha256": "96332b1cf9422f96dce73fe7eb25f6c7adc3655e52e9469c65b2ef50d64b8f99"
     },
     {
-      "bytes": 182,
-      "lines": 4,
+      "bytes": 2232,
+      "lines": 68,
       "path": "src/prompts/contexts/bash-targets.ts",
-      "sha256": "30466cc1e9c96fb3872529dd734c59e37be3fb238055e02dc407121a18c113cc"
+      "sha256": "5d0bed3908db5049b9be92689798508a913e481a8f4028a30bb626c99c38d623"
     },
     {
       "bytes": 310,

@@ -11,7 +11,11 @@ import type {ToolResultPayload} from "../../kernel/agent/types.js";
 import {isJsonValue, type JsonObject, type JsonValue} from "../../lib/json.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
-import {resolveExecutionTargetContext, type ResolvedExecutionTargetContext} from "./execution-target-context.js";
+import {
+  assertExecutionTargetToolAllowed,
+  resolveExecutionTargetContext,
+  type ResolvedExecutionTargetContext,
+} from "./execution-target-context.js";
 import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
 
 const DEFAULT_GLOB_LIMIT = 200;
@@ -307,6 +311,7 @@ export class ReadFileTool<TContext = DefaultAgentSessionContext>
       run.context as DefaultAgentSessionContext | undefined,
       args.target,
     );
+    assertExecutionTargetToolAllowed(resolvedTarget, "read_file");
     assertTargetReadableFilesystem(resolvedTarget);
     const targetContext = resolvedTarget.context ?? run.context;
     const resolvedPath = resolveContextPath(args.path, targetContext);
@@ -395,6 +400,7 @@ export class GlobFilesTool<TContext = DefaultAgentSessionContext>
       run.context as DefaultAgentSessionContext | undefined,
       args.target,
     );
+    assertExecutionTargetToolAllowed(resolvedTarget, "glob_files");
     assertTargetReadableFilesystem(resolvedTarget);
     const targetContext = resolvedTarget.context ?? run.context;
     const rootPath = resolveContextPath(args.root ?? ".", targetContext);
@@ -489,6 +495,7 @@ export class GrepFilesTool<TContext = DefaultAgentSessionContext>
       run.context as DefaultAgentSessionContext | undefined,
       args.target,
     );
+    assertExecutionTargetToolAllowed(resolvedTarget, "grep_files");
     assertTargetReadableFilesystem(resolvedTarget);
     const targetContext = resolvedTarget.context ?? run.context;
     const rootPath = resolveContextPath(args.root ?? ".", targetContext);

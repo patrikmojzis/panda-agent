@@ -94,3 +94,41 @@ export function isExecutionAgentSkillOperationAllowed(
 
   return allowedOperations.includes(operation);
 }
+
+function normalizeToolName(value: string): string {
+  return value.trim();
+}
+
+function readAllowedToolSet(policy: ExecutionToolPolicy | undefined): Set<string> | null {
+  const allowedTools = policy?.allowedTools
+    ?.map(normalizeToolName)
+    .filter(Boolean);
+  return allowedTools && allowedTools.length > 0 ? new Set(allowedTools) : null;
+}
+
+export function isExecutionToolAllowedByPolicy(
+  policy: ExecutionToolPolicy | undefined,
+  toolName: string,
+  options: {requireAllowlist?: boolean} = {},
+): boolean {
+  const normalizedToolName = normalizeToolName(toolName);
+  if (!normalizedToolName) {
+    return false;
+  }
+
+  const allowedTools = readAllowedToolSet(policy);
+  if (options.requireAllowlist && !allowedTools) {
+    return false;
+  }
+  if (allowedTools && !allowedTools.has(normalizedToolName)) {
+    return false;
+  }
+  if (normalizedToolName === "bash" && policy?.bash?.allowed === false) {
+    return false;
+  }
+  if (normalizedToolName === "postgres_readonly_query" && policy?.postgresReadonly?.allowed === false) {
+    return false;
+  }
+
+  return true;
+}

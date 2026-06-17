@@ -10,6 +10,14 @@ import {PostgresAgentStore} from "../agents/postgres.js";
 import {normalizeAgentKey} from "../agents/types.js";
 import {ConversationRepo} from "./conversations/repo.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
+import {PostgresExecutionEnvironmentStore} from "../execution-environments/postgres.js";
+import type {
+  ExecutionEnvironmentRecord,
+  ExecutionToolPolicy,
+  SessionEnvironmentBindingRecord,
+} from "../execution-environments/types.js";
+import {normalizeExecutionEnvironmentAlias} from "../execution-environments/types.js";
+import {buildRunnerEndpoint, makeNetworkTimeoutSignal, resolveBashExecutionMode, resolveRunnerUrl, resolveRunnerUrlTemplate} from "../execution-environments/runner-config.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {createSessionWithInitialThread} from "./lifecycle.js";
 import {PostgresSessionStore} from "./postgres.js";
@@ -46,11 +54,28 @@ interface SessionPromptCliOptions extends ScopedSessionRefCliOptions {
   stdin?: boolean;
 }
 
+interface SessionTargetListCliOptions extends ScopedSessionRefCliOptions {
+  alias?: string;
+}
+
+interface SessionTargetBindCliOptions extends ScopedSessionRefCliOptions {
+  environmentId?: string;
+  runnerUrl?: string;
+  runnerCwd?: string;
+  default?: boolean;
+  allowTools?: string;
+}
+
+interface SessionTargetDetachCliOptions extends ScopedSessionRefCliOptions {}
+
+type SessionTargetHealth = "reachable" | "unreachable" | "unknown" | "not_applicable";
+
 interface WithSessionStores {
   pool: Pool;
   agentStore: PostgresAgentStore;
   sessionStore: PostgresSessionStore;
   threadStore: PostgresThreadRuntimeStore;
+  executionEnvironmentStore: PostgresExecutionEnvironmentStore;
   conversations: ConversationRepo;
 }
 
@@ -64,6 +89,7 @@ export function createSessionCliStores(pool: Pool): WithSessionStores & {
     identityStore,
     sessionStore: new PostgresSessionStore({pool}),
     threadStore: new PostgresThreadRuntimeStore({pool}),
+    executionEnvironmentStore: new PostgresExecutionEnvironmentStore({pool}),
     conversations: new ConversationRepo({pool}),
   };
 }
@@ -79,6 +105,7 @@ export async function withSessionStores<T>(
       stores.agentStore,
       stores.sessionStore,
       stores.threadStore,
+      stores.executionEnvironmentStore,
       stores.conversations,
     ]);
     return fn(stores);
@@ -202,6 +229,82 @@ async function resolveSessionCliRef(
     sessionRef,
     agentKey: options.agent,
   });
+}
+
+function parseAllowedToolsOption(value: string | undefined): ExecutionToolPolicy {
+  const allowedTools = (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (allowedTools.length === 0) {
+    throw new Error("Session target bind requires --allow-tools so selected targets fail closed.");
+  }
+  return {allowedTools: [...new Set(allowedTools)]};
+}
+
+function defaultTargetEnvironmentId(sessionId: string, alias: string): string {
+  return `persistent_agent_runner:${sessionId}:${alias}`;
+}
+
+function formatRunnerUrl(value: string | undefined): string {
+  if (!value) {
+    return "-";
+  }
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return value;
+  }
+}
+
+function formatAllowedTools(policy: ExecutionToolPolicy | undefined): string {
+  return policy?.allowedTools?.length ? policy.allowedTools.join(",") : "none";
+}
+
+function normalizeTargetAliasFilter(alias: string | undefined): string | undefined {
+  const normalized = alias?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized === "default" ? "default" : normalizeExecutionEnvironmentAlias(normalized);
+}
+
+async function probeRunnerHealth(runnerUrl: string | undefined, kind: string, state: string): Promise<SessionTargetHealth> {
+  if (kind === "local") {
+    return "not_applicable";
+  }
+  if (state !== "ready" || !runnerUrl) {
+    return "unknown";
+  }
+  try {
+    const response = await fetch(buildRunnerEndpoint(runnerUrl, "health"), {
+      method: "GET",
+      signal: makeNetworkTimeoutSignal(1_500),
+    });
+    return response.ok ? "reachable" : "unreachable";
+  } catch {
+    return "unreachable";
+  }
+}
+
+async function renderTargetLine(input: {
+  alias: string;
+  binding?: SessionEnvironmentBindingRecord;
+  environment: Pick<ExecutionEnvironmentRecord, "id" | "kind" | "state" | "runnerUrl" | "runnerCwd">;
+}): Promise<string> {
+  const health = await probeRunnerHealth(input.environment.runnerUrl, input.environment.kind, input.environment.state);
+  return [
+    `${input.alias}${input.binding?.isDefault ? " (default binding)" : ""}`,
+    `  environment ${input.environment.id}`,
+    `  kind ${input.environment.kind} · state ${input.environment.state} · health ${health}`,
+    `  runner ${formatRunnerUrl(input.environment.runnerUrl)} · cwd ${input.environment.runnerCwd ?? "-"}`,
+    `  allowedTools ${formatAllowedTools(input.binding?.toolPolicy)}`,
+  ].join("\n");
 }
 
 async function readStdinText(): Promise<string> {
@@ -510,6 +613,136 @@ async function bindConversationCommand(
   });
 }
 
+async function listSessionTargetsCommand(
+  sessionRef: string,
+  options: SessionTargetListCliOptions,
+): Promise<void> {
+  await withSessionStores(options, async ({sessionStore, executionEnvironmentStore}) => {
+    const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
+    const aliasFilter = normalizeTargetAliasFilter(options.alias);
+    const bindings = await executionEnvironmentStore.listBindingsForSession(session.id);
+    const lines: string[] = [`Execution targets for ${session.id}.`];
+
+    const defaultBinding = bindings.find((binding) => binding.isDefault);
+    if (!aliasFilter || aliasFilter === "default") {
+      if (defaultBinding) {
+        const environment = await executionEnvironmentStore.getEnvironment(defaultBinding.environmentId);
+        lines.push(await renderTargetLine({
+          alias: "default",
+          binding: defaultBinding,
+          environment,
+        }));
+      } else {
+        const executionMode = resolveBashExecutionMode(process.env);
+        const runnerUrlTemplate = resolveRunnerUrlTemplate(process.env);
+        const runnerUrl = executionMode === "remote" && runnerUrlTemplate
+          ? resolveRunnerUrl(runnerUrlTemplate, session.agentKey)
+          : undefined;
+        lines.push(await renderTargetLine({
+          alias: "default",
+          environment: {
+            id: executionMode === "remote" ? `persistent_agent_runner:${session.agentKey}` : `local:${session.agentKey}`,
+            kind: executionMode === "remote" ? "persistent_agent_runner" : "local",
+            state: "ready",
+            runnerUrl,
+            runnerCwd: undefined,
+          },
+        }));
+      }
+    }
+
+    for (const binding of bindings) {
+      if (aliasFilter && binding.alias !== aliasFilter) {
+        continue;
+      }
+      const environment = await executionEnvironmentStore.getEnvironment(binding.environmentId);
+      lines.push(await renderTargetLine({
+        alias: binding.alias,
+        binding,
+        environment,
+      }));
+    }
+
+    if (lines.length === 1) {
+      lines.push(`No execution target alias ${aliasFilter ?? "-"} is bound to ${session.id}.`);
+    }
+
+    process.stdout.write(lines.join("\n\n") + "\n");
+  });
+}
+
+async function bindSessionTargetCommand(
+  sessionRef: string,
+  aliasInput: string,
+  options: SessionTargetBindCliOptions,
+): Promise<void> {
+  const alias = normalizeExecutionEnvironmentAlias(aliasInput);
+  if (!options.runnerUrl && !options.environmentId?.trim()) {
+    throw new Error("Session target bind requires --runner-url unless --environment-id is provided.");
+  }
+
+  await withSessionStores(options, async ({sessionStore, executionEnvironmentStore}) => {
+    const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
+    const requestedEnvironmentId = options.environmentId?.trim() || undefined;
+    const environmentId = requestedEnvironmentId ?? defaultTargetEnvironmentId(session.id, alias);
+    let environment: ExecutionEnvironmentRecord;
+    if (options.runnerUrl) {
+      environment = await executionEnvironmentStore.createEnvironment({
+        id: environmentId,
+        agentKey: session.agentKey,
+        kind: "persistent_agent_runner",
+        state: "ready",
+        runnerUrl: options.runnerUrl,
+        runnerCwd: options.runnerCwd,
+      });
+    } else {
+      environment = await executionEnvironmentStore.getEnvironment(environmentId);
+      if (environment.agentKey !== session.agentKey) {
+        throw new Error(`Execution environment ${environment.id} belongs to agent ${environment.agentKey}, not ${session.agentKey}.`);
+      }
+    }
+
+    const binding = await executionEnvironmentStore.bindSession({
+      sessionId: session.id,
+      environmentId: environment.id,
+      alias,
+      isDefault: options.default === true,
+      toolPolicy: parseAllowedToolsOption(options.allowTools),
+    });
+
+    process.stdout.write([
+      `Bound execution target ${binding.alias} to session ${session.id}.`,
+      `environment ${binding.environmentId}`,
+      `default ${binding.isDefault ? "yes" : "no"}`,
+      `runner ${formatRunnerUrl(environment.runnerUrl)}`,
+      `allowedTools ${formatAllowedTools(binding.toolPolicy)}`,
+    ].join("\n") + "\n");
+  });
+}
+
+async function detachSessionTargetCommand(
+  sessionRef: string,
+  aliasInput: string,
+  options: SessionTargetDetachCliOptions,
+): Promise<void> {
+  const alias = normalizeExecutionEnvironmentAlias(aliasInput);
+  await withSessionStores(options, async ({sessionStore, executionEnvironmentStore}) => {
+    const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
+    const binding = await executionEnvironmentStore.getBindingByAlias(session.id, alias);
+    if (!binding) {
+      process.stdout.write(`No execution target ${alias} is bound to session ${session.id}.\n`);
+      return;
+    }
+    if (binding.isDefault) {
+      throw new Error(`Refusing to detach default execution target ${alias}. Bind another default target first.`);
+    }
+    const deleted = await executionEnvironmentStore.deleteBindingByAlias(session.id, alias);
+    process.stdout.write(deleted
+      ? `Detached execution target ${alias} from session ${session.id}.\n`
+      : `No execution target ${alias} is bound to session ${session.id}.\n`);
+  });
+}
+
 async function labelSessionCommand(
   sessionRef: string,
   options: LabelCliOptions,
@@ -654,6 +887,59 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sessionRef: string, options: ScopedSessionRefCliOptions) => {
       return clearSessionPromptCommand(sessionRef, options);
+    });
+
+  const targetsProgram = sessionProgram
+    .command("targets")
+    .description("Manage execution targets bound to a session");
+
+  targetsProgram
+    .command("list")
+    .description("List execution targets and runner reachability for a session")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--alias <alias>", "Show one target alias")
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sessionRef: string, options: SessionTargetListCliOptions) => {
+      return listSessionTargetsCommand(sessionRef, options);
+    });
+
+  targetsProgram
+    .command("status")
+    .description("Alias for targets list; shows target status/reachability")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .argument("[alias]", "Optional target alias")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sessionRef: string, alias: string | undefined, options: SessionTargetListCliOptions) => {
+      return listSessionTargetsCommand(sessionRef, {...options, alias});
+    });
+
+  targetsProgram
+    .command("bind")
+    .description("Register a persistent runner endpoint and bind it to a session alias")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .argument("<alias>", "Target alias, for example vps")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--environment-id <id>", "Existing or desired execution environment id")
+    .option("--runner-url <url>", "Runner base URL for this target")
+    .option("--runner-cwd <path>", "Initial cwd inside the runner")
+    .option("--default", "Make this binding the session default target")
+    .option("--allow-tools <csv>", "Restrict this target to comma-separated tool names")
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sessionRef: string, alias: string, options: SessionTargetBindCliOptions) => {
+      return bindSessionTargetCommand(sessionRef, alias, options);
+    });
+
+  targetsProgram
+    .command("detach")
+    .description("Detach a non-default execution target alias from a session")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .argument("<alias>", "Target alias to detach")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sessionRef: string, alias: string, options: SessionTargetDetachCliOptions) => {
+      return detachSessionTargetCommand(sessionRef, alias, options);
     });
 
   sessionProgram

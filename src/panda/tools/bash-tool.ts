@@ -13,7 +13,10 @@ import type {CredentialResolver} from "../../domain/credentials/resolver.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {ensureShellSession, readBaseCwd} from "../../app/runtime/panda-path-context.js";
-import {resolveExecutionTargetContext} from "./execution-target-context.js";
+import {
+  assertExecutionTargetToolAllowed,
+  resolveExecutionTargetContext,
+} from "./execution-target-context.js";
 import {
   type BashExecutor,
   createDefaultBashExecutor,
@@ -252,13 +255,6 @@ function filterCredentialEnv(
   return Object.fromEntries(Object.entries(env).filter(([key]) => allowed.has(key)));
 }
 
-function assertBashAllowed(executionEnvironment: ResolvedExecutionEnvironment | undefined): void {
-  if (executionEnvironment?.toolPolicy.bash?.allowed === false) {
-    throw new ToolError("Bash is not allowed in this execution environment.");
-  }
-}
-
-
 function sanitizeBashPayloadOutputFields(payload: JsonObject): JsonObject {
   const sanitized: JsonObject = {...payload};
   if (typeof payload.stdout === "string") {
@@ -426,10 +422,10 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       run.context as DefaultAgentSessionContext | undefined,
       args.target,
     );
+    assertExecutionTargetToolAllowed(resolvedTarget, "bash");
     const context = resolvedTarget.context;
     const executionEnvironment = resolvedTarget.executionEnvironment;
     const targetRun = this.createRunContextForTarget(run, context);
-    assertBashAllowed(executionEnvironment);
     const shellSession = ensureShellSession(context);
     const baseCwd = shellSession?.cwd ?? readBaseCwd(context);
     const cwd = resolveCommandCwd(args.cwd, baseCwd);

@@ -450,6 +450,46 @@ describe("PostgresExecutionEnvironmentStore", () => {
     );
   });
 
+  it("switches the session default target before inserting the new default", async () => {
+    const {environmentStore} = await createHarness();
+    await environmentStore.createEnvironment({
+      id: "env-vps",
+      agentKey: "panda",
+      kind: "persistent_agent_runner",
+      runnerUrl: "http://vps:8080",
+    });
+    await environmentStore.createEnvironment({
+      id: "env-mac",
+      agentKey: "panda",
+      kind: "persistent_agent_runner",
+      runnerUrl: "http://mac:8080",
+    });
+
+    await expect(environmentStore.bindSession({
+      sessionId: "session-main",
+      environmentId: "env-vps",
+      alias: "vps",
+      isDefault: true,
+    })).resolves.toMatchObject({isDefault: true});
+    await expect(environmentStore.bindSession({
+      sessionId: "session-main",
+      environmentId: "env-mac",
+      alias: "mac",
+      isDefault: true,
+    })).resolves.toMatchObject({isDefault: true});
+
+    await expect(environmentStore.getDefaultBinding("session-main")).resolves.toMatchObject({
+      alias: "mac",
+      environmentId: "env-mac",
+      isDefault: true,
+    });
+    await expect(environmentStore.getBindingByAlias("session-main", "vps")).resolves.toMatchObject({
+      alias: "vps",
+      isDefault: false,
+    });
+    await expect(environmentStore.deleteBindingByAlias("session-main", "vps")).resolves.toBe(true);
+  });
+
   it("defaults binding policies to no credentials and no skills", async () => {
     const {environmentStore} = await createHarness();
 
