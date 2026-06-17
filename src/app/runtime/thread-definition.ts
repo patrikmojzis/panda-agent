@@ -28,6 +28,7 @@ const POSTGRES_READONLY_TOOL_NAME = "postgres_readonly_query";
 const LEGACY_WORKER_SPAWN_TOOL_NAME = ["worker", "spawn"].join("_");
 const SUBAGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "environment",
+  "bash_targets",
   "background_jobs",
   "skills",
   "todo_context",
@@ -54,7 +55,7 @@ export interface CreateThreadDefinitionOptions {
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
-  executionEnvironments?: Pick<ExecutionEnvironmentStore, "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner">;
+  executionEnvironments?: Pick<ExecutionEnvironmentStore, "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner" | "listBindingsForSession">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   bashToolOptions?: BashToolOptions;
   browserToolOptions?: BrowserToolOptions;

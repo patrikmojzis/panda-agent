@@ -1,4 +1,4 @@
-import {mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, rm, symlink, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
@@ -40,6 +40,53 @@ const tempDirs: string[] = [];
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, {recursive: true, force: true})));
 });
+
+
+function bindTargetFilesystem(context: DefaultAgentSessionContext, targetRoot: string): DefaultAgentSessionContext {
+  return {
+    ...context,
+    resolveExecutionTarget: async (target) => {
+      if (target !== "vps") throw new Error("unknown target");
+      return {
+        id: "env-vps",
+        agentKey: "panda",
+        kind: "local",
+        state: "ready",
+        executionMode: "local",
+        initialCwd: "/workspace",
+        alias: "vps",
+        rootPath: "/workspace",
+        metadata: {
+          filesystem: {
+            envDir: "env-vps",
+            root: {corePath: targetRoot, workerPath: "/workspace", parentRunnerPath: "/workspace"},
+            workspace: {corePath: targetRoot, workerPath: "/workspace", parentRunnerPath: "/workspace"},
+            inbox: {corePath: path.join(targetRoot, "inbox"), workerPath: "/inbox", parentRunnerPath: "/inbox"},
+            artifacts: {corePath: path.join(targetRoot, "artifacts"), workerPath: "/artifacts", parentRunnerPath: "/artifacts"},
+          },
+        },
+        credentialPolicy: {mode: "none"},
+        skillPolicy: {mode: "none"},
+        toolPolicy: {},
+        source: "binding",
+      };
+    },
+  };
+}
+
+function createRunContextWithContext(tool: Tool, context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
+  return new RunContext({
+    agent: new Agent({
+      name: "panda",
+      instructions: "Inspect files.",
+      tools: [tool],
+    }),
+    turn: 1,
+    maxTurns: 5,
+    messages: [],
+    context,
+  });
+}
 
 async function createWorkspace(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "runtime-readonly-tools-"));
@@ -88,6 +135,97 @@ describe("workspace readonly tools", () => {
     });
     expect(JSON.stringify(result)).toContain("2 | ");
     expect(JSON.stringify(result)).toContain("3 | export function runPanda(): string {");
+  });
+
+  it("routes read-only file tools through selected target filesystem metadata", async () => {
+    const root = await createWorkspace();
+    const targetRoot = await mkdtemp(path.join(tmpdir(), "runtime-readonly-target-"));
+    tempDirs.push(targetRoot);
+    await mkdir(path.join(targetRoot, "nested"), {recursive: true});
+    await writeFile(path.join(targetRoot, "target.txt"), "hello from target\n");
+    await writeFile(path.join(targetRoot, "nested", "match.ts"), "export const target = true;\n");
+    const baseContext: DefaultAgentSessionContext = {
+      cwd: root,
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    };
+    const context = bindTargetFilesystem(baseContext, targetRoot);
+
+    const read = new ReadFileTool();
+    const glob = new GlobFilesTool();
+    const grep = new GrepFilesTool();
+
+    await expect(read.run({path: "target.txt"}, createRunContextWithContext(read, baseContext)))
+      .rejects.toThrow("Path does not exist: target.txt");
+
+    await expect(read.run({path: "/workspace/target.txt", target: "vps"}, createRunContextWithContext(read, context)))
+      .resolves.toMatchObject({
+        details: {
+          path: "target.txt",
+          totalLines: 2,
+        },
+      });
+    await expect(glob.run({root: "/workspace", pattern: "**/*.ts", target: "vps"}, createRunContextWithContext(glob, context)))
+      .resolves.toMatchObject({
+        details: {
+          root: ".",
+          matches: ["nested/match.ts"],
+        },
+      });
+    await expect(grep.run({root: "/workspace", pattern: "export const", target: "vps"}, createRunContextWithContext(grep, context)))
+      .resolves.toMatchObject({
+        details: {
+          root: ".",
+          matches: [{path: "nested/match.ts", line: 1, text: "export const target = true;"}],
+        },
+      });
+  });
+
+  it("requires selected file targets to expose filesystem metadata", async () => {
+    const root = await createWorkspace();
+    const context: DefaultAgentSessionContext = {
+      cwd: root,
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+      resolveExecutionTarget: async () => ({
+        id: "env-vps",
+        agentKey: "panda",
+        kind: "persistent_agent_runner",
+        state: "ready",
+        executionMode: "remote",
+        runnerUrl: "http://runner:8080",
+        alias: "vps",
+        credentialPolicy: {mode: "none"},
+        skillPolicy: {mode: "none"},
+        toolPolicy: {},
+        source: "binding",
+      }),
+    };
+    const tool = new ReadFileTool();
+
+    await expect(tool.run({path: "/workspace/file.txt", target: "vps"}, createRunContextWithContext(tool, context)))
+      .rejects.toThrow("Execution target vps does not expose readable filesystem metadata.");
+  });
+
+  it("blocks selected target symlinks that escape the execution environment root", async () => {
+    const root = await createWorkspace();
+    const targetRoot = await mkdtemp(path.join(tmpdir(), "runtime-readonly-target-symlink-"));
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), "runtime-readonly-target-outside-"));
+    tempDirs.push(targetRoot, outsideRoot);
+    await writeFile(path.join(outsideRoot, "secret.txt"), "outside\n");
+    await symlink(path.join(outsideRoot, "secret.txt"), path.join(targetRoot, "escape.txt"));
+    const context = bindTargetFilesystem({
+      cwd: root,
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    }, targetRoot);
+    const tool = new ReadFileTool();
+
+    await expect(tool.run({path: "/workspace/escape.txt", target: "vps"}, createRunContextWithContext(tool, context)))
+      .rejects.toThrow("Resolved path escapes the execution environment root: /workspace/escape.txt");
   });
 
   it("reports a missing read_file path as a recoverable tool error", async () => {

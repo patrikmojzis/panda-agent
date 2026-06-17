@@ -8,9 +8,11 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import {formatToolResultFallback, Tool} from "../../kernel/agent/tool.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {ToolResultPayload} from "../../kernel/agent/types.js";
-import type {JsonObject, JsonValue} from "../../lib/json.js";
+import {isJsonValue, type JsonObject, type JsonValue} from "../../lib/json.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
+import {resolveExecutionTargetContext, type ResolvedExecutionTargetContext} from "./execution-target-context.js";
+import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
 
 const DEFAULT_GLOB_LIMIT = 200;
 const DEFAULT_GREP_LIMIT = 100;
@@ -42,6 +44,18 @@ function toPosixPath(value: string): string {
 
 function resolveWorkspaceRoot(context: unknown): string {
   return resolveContextPath(".", context);
+}
+
+function assertTargetReadableFilesystem(target: ResolvedExecutionTargetContext): void {
+  if (target.isDefaultTarget) {
+    return;
+  }
+
+  const metadata = target.executionEnvironment?.metadata;
+  const filesystem = readExecutionEnvironmentFilesystemMetadata(isJsonValue(metadata) ? metadata : undefined);
+  if (!filesystem) {
+    throw new ToolError(`Execution target ${target.targetAlias} does not expose readable filesystem metadata.`);
+  }
 }
 
 function formatDisplayPath(targetPath: string, context: unknown): string {
@@ -255,6 +269,7 @@ export class ReadFileTool<TContext = DefaultAgentSessionContext>
     path: z.string().trim().min(1).describe("Path to the text file to inspect."),
     startLine: z.number().int().min(1).optional().describe("1-based line number to start from."),
     maxLines: z.number().int().min(1).max(500).optional().describe("Maximum number of lines to return."),
+    target: z.string().trim().min(1).optional().describe("Optional bash target alias to read from."),
   });
 
   name = "read_file";
@@ -263,7 +278,12 @@ export class ReadFileTool<TContext = DefaultAgentSessionContext>
   schema = ReadFileTool.schema;
 
   override formatCall(args: Record<string, unknown>): string {
-    return typeof args.path === "string" ? args.path : super.formatCall(args);
+    if (typeof args.path !== "string") {
+      return super.formatCall(args);
+    }
+    return typeof args.target === "string" && args.target.trim()
+      ? `[target ${args.target.trim().toLowerCase()}] ${args.path}`
+      : args.path;
   }
 
   override formatResult(message: ToolResultMessage<JsonValue>): string {
@@ -283,8 +303,14 @@ export class ReadFileTool<TContext = DefaultAgentSessionContext>
     args: z.output<typeof ReadFileTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
-    const resolvedPath = resolveContextPath(args.path, run.context);
-    const displayPath = formatDisplayPath(resolvedPath, run.context);
+    const resolvedTarget = await resolveExecutionTargetContext(
+      run.context as DefaultAgentSessionContext | undefined,
+      args.target,
+    );
+    assertTargetReadableFilesystem(resolvedTarget);
+    const targetContext = resolvedTarget.context ?? run.context;
+    const resolvedPath = resolveContextPath(args.path, targetContext);
+    const displayPath = formatDisplayPath(resolvedPath, targetContext);
     const startLine = args.startLine ?? 1;
     const maxLines = args.maxLines ?? DEFAULT_READ_MAX_LINES;
     const fileText = await readTextFile(resolvedPath, displayPath);
@@ -332,6 +358,7 @@ export class GlobFilesTool<TContext = DefaultAgentSessionContext>
     pattern: z.string().trim().min(1).describe("Glob pattern like src/**/*.ts or **/*.md."),
     root: z.string().trim().min(1).optional().describe("Optional directory or file path to search from."),
     limit: z.number().int().min(1).max(500).optional().describe("Maximum number of matches to return."),
+    target: z.string().trim().min(1).optional().describe("Optional bash target alias to search."),
   });
 
   name = "glob_files";
@@ -343,7 +370,10 @@ export class GlobFilesTool<TContext = DefaultAgentSessionContext>
     if (typeof args.pattern !== "string") {
       return super.formatCall(args);
     }
-    return typeof args.root === "string" ? `${args.pattern} in ${args.root}` : args.pattern;
+    const target = typeof args.target === "string" && args.target.trim()
+      ? `[target ${args.target.trim().toLowerCase()}] `
+      : "";
+    return typeof args.root === "string" ? `${target}${args.pattern} in ${args.root}` : `${target}${args.pattern}`;
   }
 
   override formatResult(message: ToolResultMessage<JsonValue>): string {
@@ -361,7 +391,13 @@ export class GlobFilesTool<TContext = DefaultAgentSessionContext>
     args: z.output<typeof GlobFilesTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
-    const rootPath = resolveContextPath(args.root ?? ".", run.context);
+    const resolvedTarget = await resolveExecutionTargetContext(
+      run.context as DefaultAgentSessionContext | undefined,
+      args.target,
+    );
+    assertTargetReadableFilesystem(resolvedTarget);
+    const targetContext = resolvedTarget.context ?? run.context;
+    const rootPath = resolveContextPath(args.root ?? ".", targetContext);
     const limit = args.limit ?? DEFAULT_GLOB_LIMIT;
     const matches: string[] = [];
     let truncated = false;
@@ -369,12 +405,12 @@ export class GlobFilesTool<TContext = DefaultAgentSessionContext>
     await visitFiles(rootPath, run.signal, async (filePath) => {
       if (!matchesSearchPattern(filePath, args.pattern, {
         rootPath,
-        context: run.context,
+        context: targetContext,
       })) {
         return false;
       }
 
-      const displayPath = formatDisplayPath(filePath, run.context);
+      const displayPath = formatDisplayPath(filePath, targetContext);
       matches.push(displayPath);
       if (matches.length >= limit) {
         truncated = true;
@@ -384,7 +420,7 @@ export class GlobFilesTool<TContext = DefaultAgentSessionContext>
     });
 
     const details = {
-      root: formatDisplayPath(rootPath, run.context),
+      root: formatDisplayPath(rootPath, targetContext),
       pattern: args.pattern,
       matches,
       truncated,
@@ -396,7 +432,7 @@ export class GlobFilesTool<TContext = DefaultAgentSessionContext>
         type: "text",
         text: [
           buildSearchHeader({
-            root: formatDisplayPath(rootPath, run.context),
+            root: formatDisplayPath(rootPath, targetContext),
             pattern: args.pattern,
           }),
           matches.length > 0 ? matches.join("\n") : "No matches.",
@@ -416,6 +452,7 @@ export class GrepFilesTool<TContext = DefaultAgentSessionContext>
     literal: z.boolean().optional().describe("Treat pattern as literal text instead of regex."),
     caseSensitive: z.boolean().optional().describe("Match with case sensitivity."),
     limit: z.number().int().min(1).max(500).optional().describe("Maximum number of matches to return."),
+    target: z.string().trim().min(1).optional().describe("Optional bash target alias to search."),
   });
 
   name = "grep_files";
@@ -427,7 +464,10 @@ export class GrepFilesTool<TContext = DefaultAgentSessionContext>
     if (typeof args.pattern !== "string") {
       return super.formatCall(args);
     }
-    return typeof args.glob === "string" ? `${args.pattern} in ${args.glob}` : args.pattern;
+    const target = typeof args.target === "string" && args.target.trim()
+      ? `[target ${args.target.trim().toLowerCase()}] `
+      : "";
+    return typeof args.glob === "string" ? `${target}${args.pattern} in ${args.glob}` : `${target}${args.pattern}`;
   }
 
   override formatResult(message: ToolResultMessage<JsonValue>): string {
@@ -445,7 +485,13 @@ export class GrepFilesTool<TContext = DefaultAgentSessionContext>
     args: z.output<typeof GrepFilesTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolResultPayload> {
-    const rootPath = resolveContextPath(args.root ?? ".", run.context);
+    const resolvedTarget = await resolveExecutionTargetContext(
+      run.context as DefaultAgentSessionContext | undefined,
+      args.target,
+    );
+    assertTargetReadableFilesystem(resolvedTarget);
+    const targetContext = resolvedTarget.context ?? run.context;
+    const rootPath = resolveContextPath(args.root ?? ".", targetContext);
     const limit = args.limit ?? DEFAULT_GREP_LIMIT;
     const source = args.literal ? args.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : args.pattern;
     const flags = args.caseSensitive ? "" : "i";
@@ -464,10 +510,10 @@ export class GrepFilesTool<TContext = DefaultAgentSessionContext>
     let truncated = false;
 
     await visitFiles(rootPath, run.signal, async (filePath) => {
-      const displayPath = formatDisplayPath(filePath, run.context);
+      const displayPath = formatDisplayPath(filePath, targetContext);
       if (args.glob && !matchesSearchPattern(filePath, args.glob, {
         rootPath,
-        context: run.context,
+        context: targetContext,
       })) {
         return false;
       }
@@ -511,7 +557,7 @@ export class GrepFilesTool<TContext = DefaultAgentSessionContext>
     });
 
     const details = {
-      root: formatDisplayPath(rootPath, run.context),
+      root: formatDisplayPath(rootPath, targetContext),
       pattern: args.pattern,
       matches: matches.map((match) => ({
         path: match.path,
@@ -533,7 +579,7 @@ export class GrepFilesTool<TContext = DefaultAgentSessionContext>
         type: "text",
         text: [
           buildSearchHeader({
-            root: formatDisplayPath(rootPath, run.context),
+            root: formatDisplayPath(rootPath, targetContext),
             pattern: args.pattern,
             glob: args.glob,
             literal: args.literal,

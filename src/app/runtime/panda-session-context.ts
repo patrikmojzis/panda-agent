@@ -6,6 +6,7 @@ import type {OutboundItem, RememberedRoute} from "../../domain/channels/types.js
 import type {A2ASenderEnvironmentSnapshot} from "../../domain/threads/requests/types.js";
 import type {IdentityRecord} from "../../domain/identity/types.js";
 import type {ShellExecutionContext, ShellSession} from "../../integrations/shell/types.js";
+import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 
 export interface DefaultAgentRouteMemoryLookup {
   channel?: string;
@@ -76,4 +77,5 @@ export interface DefaultAgentSessionContext extends ShellExecutionContext {
   messageAgent?: DefaultAgentMessageAgentService;
   subagent?: JsonValue;
   subagentDepth?: number;
+  resolveExecutionTarget?: (target?: string) => Promise<ResolvedExecutionEnvironment>;
 }

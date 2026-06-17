@@ -1165,6 +1165,20 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         }
         return;
       }
+      const sessionTargetsPath = matchSessionActionPath(path, "targets");
+      if (sessionTargetsPath && request.method === "GET") {
+        try {
+          writeJsonResponse(response, 200, await options.operator.listSessionExecutionTargets(
+            session,
+            sessionTargetsPath.agentKey,
+            sessionTargetsPath.sessionId,
+          ));
+          return;
+        } catch {
+          throw new ControlHttpError(404, "Control target session was not found or is not visible.");
+        }
+      }
+
       if (sessionPath && request.method === "PATCH") {
         requireCsrf(request, options.auth, session);
         try {

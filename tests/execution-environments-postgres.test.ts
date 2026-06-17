@@ -334,6 +334,122 @@ describe("PostgresExecutionEnvironmentStore", () => {
     await expect(environmentStore.listBindingsForEnvironments([])).resolves.toEqual([]);
   });
 
+  it("normalizes target aliases and enforces per-session uniqueness", async () => {
+    const {environmentStore} = await createHarness();
+
+    await environmentStore.createEnvironment({
+      id: "env-vps",
+      agentKey: "panda",
+      kind: "persistent_agent_runner",
+      runnerUrl: "http://vps:8080",
+    });
+    await environmentStore.createEnvironment({
+      id: "env-other",
+      agentKey: "panda",
+      kind: "persistent_agent_runner",
+      runnerUrl: "http://other:8080",
+    });
+
+    await expect(environmentStore.bindSession({
+      sessionId: "session-main",
+      environmentId: "env-vps",
+      alias: " VPS ",
+      isDefault: true,
+    })).resolves.toMatchObject({
+      alias: "vps",
+    });
+
+    await expect(environmentStore.getBindingByAlias("session-main", "vPs")).resolves.toMatchObject({
+      sessionId: "session-main",
+      environmentId: "env-vps",
+      alias: "vps",
+    });
+    await expect(environmentStore.listBindingsForSession("session-main")).resolves.toMatchObject([
+      {alias: "vps", environmentId: "env-vps"},
+    ]);
+
+    await expect(environmentStore.bindSession({
+      sessionId: "session-main",
+      environmentId: "env-other",
+      alias: "vps",
+    })).rejects.toThrow();
+    await expect(environmentStore.bindSession({
+      sessionId: "session-worker",
+      environmentId: "env-other",
+      alias: "vps",
+    })).resolves.toMatchObject({
+      sessionId: "session-worker",
+      alias: "vps",
+    });
+    await expect(environmentStore.bindSession({
+      sessionId: "session-main",
+      environmentId: "env-other",
+      alias: "default",
+    })).rejects.toThrow("Execution environment alias 'default' is reserved.");
+    await expect(environmentStore.bindSession({
+      sessionId: "session-main",
+      environmentId: "env-other",
+      alias: "bad.alias",
+    })).rejects.toThrow("Execution environment alias must use only lowercase letters");
+  });
+
+  it("resolves explicit aliases without falling through to other sessions", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    await environmentStore.createEnvironment({
+      id: "env-default",
+      agentKey: "panda",
+      kind: "local",
+    });
+    await environmentStore.createEnvironment({
+      id: "env-vps",
+      agentKey: "panda",
+      kind: "persistent_agent_runner",
+      runnerUrl: "http://vps:8080",
+      runnerCwd: "/srv/panda",
+    });
+    await environmentStore.createEnvironment({
+      id: "env-worker-only",
+      agentKey: "panda",
+      kind: "persistent_agent_runner",
+      runnerUrl: "http://worker-only:8080",
+    });
+    await environmentStore.bindSession({
+      sessionId: "session-main",
+      environmentId: "env-default",
+      alias: "self",
+      isDefault: true,
+    });
+    await environmentStore.bindSession({
+      sessionId: "session-main",
+      environmentId: "env-vps",
+      alias: "VPS",
+    });
+    await environmentStore.bindSession({
+      sessionId: "session-worker",
+      environmentId: "env-worker-only",
+      alias: "worker",
+    });
+
+    const session = await sessionStore.getSession("session-main");
+    const resolver = new ExecutionEnvironmentResolver({store: environmentStore});
+
+    await expect(resolver.resolve(session)).resolves.toMatchObject({id: "env-default", alias: "self"});
+    await expect(resolver.resolve(session, "default")).resolves.toMatchObject({id: "env-default", alias: "self"});
+    await expect(resolver.resolve(session, " vPs ")).resolves.toMatchObject({
+      id: "env-vps",
+      alias: "vps",
+      executionMode: "remote",
+      runnerUrl: "http://vps:8080",
+      initialCwd: "/srv/panda",
+    });
+    await expect(resolver.resolve(session, "worker")).rejects.toThrow(
+      "Execution target worker is not bound to session session-main.",
+    );
+    await expect(resolver.resolve(session, "bad.alias")).rejects.toThrow(
+      "Execution environment alias must use only lowercase letters",
+    );
+  });
+
   it("defaults binding policies to no credentials and no skills", async () => {
     const {environmentStore} = await createHarness();
 

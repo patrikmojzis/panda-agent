@@ -50,6 +50,8 @@ import {ConversationRepo} from "../sessions/conversations/repo.js";
 import {buildConversationSessionTableNames} from "../sessions/conversations/postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {SessionStore} from "../sessions/store.js";
+import type {ExecutionEnvironmentStore} from "../execution-environments/store.js";
+import type {ExecutionEnvironmentKind, ExecutionEnvironmentState} from "../execution-environments/types.js";
 import type {AgentSessionKind, SessionRecord} from "../sessions/types.js";
 import {normalizeSessionAlias} from "../sessions/types.js";
 import type {SubagentProfileStore} from "../subagents/store.js";
@@ -62,6 +64,13 @@ import {normalizeWikiGroupId, normalizeWikiNamespacePath} from "../wiki/types.js
 import type {ControlAuditEventSummary, ControlReadService} from "./read-service.js";
 import type {ControlSessionRecord} from "./types.js";
 import {summarizeRuntimeError} from "./runtime-error-summary.js";
+import {
+  buildRunnerEndpoint,
+  makeNetworkTimeoutSignal,
+  resolveBashExecutionMode,
+  resolveRunnerUrl,
+  resolveRunnerUrlTemplate,
+} from "../execution-environments/runner-config.js";
 
 const GATEWAY_DEVICE_TOKEN_PREFIX = "pgd";
 const GATEWAY_DEVICE_TOKEN_BYTES = 24;
@@ -190,6 +199,16 @@ export interface ControlSessionDetail extends ControlSessionRow {
     thinkingConfigured: boolean;
     pendingWakeAt?: string;
   };
+}
+
+export type ControlExecutionTargetHealth = "ok" | "unreachable" | "unknown" | "not_applicable";
+
+export interface ControlExecutionTargetRow {
+  alias: string;
+  kind: ExecutionEnvironmentKind;
+  state: ExecutionEnvironmentState;
+  label: string;
+  health: ControlExecutionTargetHealth;
 }
 
 export interface ControlCredentialRow {
@@ -510,6 +529,7 @@ export interface ControlOperatorServiceOptions {
   a2aBindings: ControlA2ABindingStore;
   agents: AgentStore;
   sessions: SessionStore;
+  executionEnvironments: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment" | "listBindingsForSession">;
   threads: Pick<ThreadRuntimeStore, "createThread">;
   identities: Pick<
     IdentityStore,
@@ -532,6 +552,8 @@ export interface ControlOperatorServiceOptions {
   subagents: SubagentProfileStore;
   wikiBindings: ControlWikiBindings;
   telegramBotIdentityClient?: ControlTelegramBotIdentityClient;
+  fetchImpl?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
 }
 
 const CONTROL_TELEGRAM_SOURCE = "telegram";
@@ -1146,6 +1168,7 @@ export class ControlOperatorService {
   private readonly a2aBindings: ControlA2ABindingStore;
   private readonly agents: AgentStore;
   private readonly sessions: SessionStore;
+  private readonly executionEnvironments: Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment" | "listBindingsForSession">;
   private readonly threads: Pick<ThreadRuntimeStore, "createThread">;
   private readonly identities: ControlOperatorServiceOptions["identities"];
   private readonly credentials: CredentialService | null;
@@ -1157,6 +1180,8 @@ export class ControlOperatorService {
   private readonly subagents: SubagentProfileStore;
   private readonly wikiBindings: ControlWikiBindings;
   private readonly telegramBotIdentityClient: ControlTelegramBotIdentityClient | null;
+  private readonly fetchImpl: typeof fetch;
+  private readonly env: NodeJS.ProcessEnv;
   private readonly sessionTables = buildSessionTableNames();
   private readonly threadTables = buildThreadRuntimeTableNames();
   private readonly scheduledTables = buildScheduledTaskTableNames();
@@ -1172,6 +1197,7 @@ export class ControlOperatorService {
     this.a2aBindings = options.a2aBindings;
     this.agents = options.agents;
     this.sessions = options.sessions;
+    this.executionEnvironments = options.executionEnvironments;
     this.threads = options.threads;
     this.identities = options.identities;
     this.credentials = options.credentials;
@@ -1183,6 +1209,8 @@ export class ControlOperatorService {
     this.subagents = options.subagents;
     this.wikiBindings = options.wikiBindings;
     this.telegramBotIdentityClient = options.telegramBotIdentityClient ?? null;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.env = options.env ?? process.env;
   }
 
   private async assertAgentVisible(session: ControlSessionRecord, agentKey: string): Promise<string> {
@@ -1222,6 +1250,48 @@ export class ControlOperatorService {
     const target = await this.sessions.getSession(requireNonEmptyString(sessionId, "Session id is required."));
     await this.assertAgentVisible(session, target.agentKey);
     return target;
+  }
+
+  private async probeExecutionTargetHealth(input: {
+    agentKey: string;
+    kind: ExecutionEnvironmentKind;
+    state: ExecutionEnvironmentState;
+    runnerUrl?: string;
+    runnerUrlTemplate?: string;
+  }): Promise<ControlExecutionTargetHealth> {
+    if (input.kind === "local") {
+      return "not_applicable";
+    }
+    if (input.state !== "ready" || !input.runnerUrl) {
+      return "unknown";
+    }
+
+    try {
+      const response = await this.fetchImpl(buildRunnerEndpoint(input.runnerUrl, "health"), {
+        method: "GET",
+        signal: makeNetworkTimeoutSignal(1_500),
+      });
+      return response.ok ? "ok" : "unreachable";
+    } catch {
+      return "unreachable";
+    }
+  }
+
+  private async executionTargetRow(input: {
+    agentKey: string;
+    alias: string;
+    kind: ExecutionEnvironmentKind;
+    state: ExecutionEnvironmentState;
+    runnerUrl?: string;
+    runnerUrlTemplate?: string;
+  }): Promise<ControlExecutionTargetRow> {
+    return {
+      alias: input.alias,
+      kind: input.kind,
+      state: input.state,
+      label: input.alias === "default" ? "Default" : input.alias,
+      health: await this.probeExecutionTargetHealth(input),
+    };
   }
 
   private async getAgentConnectorAccount(session: ControlSessionRecord, agentKey: string, source: string, accountKey: string, input: {
@@ -1717,6 +1787,59 @@ export class ControlOperatorService {
         thinkingConfigured: runtime?.thinkingConfigured ?? false,
         ...(runtime?.pendingWakeAt ? {pendingWakeAt: iso(runtime.pendingWakeAt)} : {}),
       },
+    };
+  }
+
+  async listSessionExecutionTargets(
+    session: ControlSessionRecord,
+    agentKey: string,
+    sessionId: string,
+  ): Promise<{targets: ControlExecutionTargetRow[]}> {
+    const target = await this.assertSessionVisible(session, agentKey, sessionId);
+    const [defaultBinding, bindings] = await Promise.all([
+      this.executionEnvironments.getDefaultBinding(target.id),
+      this.executionEnvironments.listBindingsForSession(target.id),
+    ]);
+
+    const defaultRow = await (async (): Promise<ControlExecutionTargetRow> => {
+      if (defaultBinding) {
+        const environment = await this.executionEnvironments.getEnvironment(defaultBinding.environmentId);
+        return this.executionTargetRow({
+          agentKey: target.agentKey,
+          alias: "default",
+          kind: environment.kind,
+          state: environment.state,
+          ...(environment.runnerUrl ? {runnerUrl: environment.runnerUrl, runnerUrlTemplate: environment.runnerUrl} : {}),
+        });
+      }
+
+      const executionMode = resolveBashExecutionMode(this.env);
+      const runnerUrlTemplate = resolveRunnerUrlTemplate(this.env);
+      const runnerUrl = executionMode === "remote" && runnerUrlTemplate
+        ? resolveRunnerUrl(runnerUrlTemplate, target.agentKey)
+        : undefined;
+      return this.executionTargetRow({
+        agentKey: target.agentKey,
+        alias: "default",
+        kind: executionMode === "remote" ? "persistent_agent_runner" : "local",
+        state: "ready",
+        ...(runnerUrl ? {runnerUrl, runnerUrlTemplate: runnerUrlTemplate ?? runnerUrl} : {}),
+      });
+    })();
+
+    const aliasRows = await Promise.all(bindings.map(async (binding) => {
+      const environment = await this.executionEnvironments.getEnvironment(binding.environmentId);
+      return this.executionTargetRow({
+        agentKey: target.agentKey,
+        alias: binding.alias,
+        kind: environment.kind,
+        state: environment.state,
+        ...(environment.runnerUrl ? {runnerUrl: environment.runnerUrl, runnerUrlTemplate: environment.runnerUrl} : {}),
+      });
+    }));
+
+    return {
+      targets: [defaultRow, ...aliasRows],
     };
   }
 

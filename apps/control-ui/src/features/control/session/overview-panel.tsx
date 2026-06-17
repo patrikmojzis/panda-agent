@@ -19,6 +19,7 @@ import {
   useRuntimeActivity,
   useScheduledTasks,
   useSessionDetail,
+  useSessionTargets,
   useScopedGatewayEvents,
   useWatches,
 } from "@/features/control/api/queries"
@@ -43,6 +44,17 @@ import {
   useHeartbeatConfigSheet,
   useRuntimeConfigSheet,
 } from "@/features/control/forms/use-control-form-sheets"
+
+function targetHealthLabel(health: string) {
+  if (health === "not_applicable") return "Not applicable"
+  return health.replace(/[_-]+/g, " ")
+}
+
+function targetHealthVariant(health: string): "outline" | "destructive" | "secondary" {
+  if (health === "ok") return "outline"
+  if (health === "unreachable") return "destructive"
+  return "secondary"
+}
 
 export function SessionOverviewPanel({
   agentKey,
@@ -92,6 +104,7 @@ export function SessionOverviewPanel({
     sort_by: "createdAt",
     sort_direction: "desc",
   })
+  const targets = useSessionTargets(agentKey, sessionId)
   const detail = session.data?.session
   const briefingRecord = briefing.data?.briefing
   const presence = heartbeat.data?.heartbeat
@@ -124,7 +137,8 @@ export function SessionOverviewPanel({
   return (
     <div className="grid gap-4">
       {heartbeat.error ? <TableError error={heartbeat.error} /> : null}
-      <div className="grid gap-4 xl:grid-cols-2">
+      {targets.error ? <TableError error={targets.error} /> : null}
+      <div className="grid gap-4 xl:grid-cols-3">
         <DetailPanel
           title="Runtime Health"
           action={
@@ -259,6 +273,32 @@ export function SessionOverviewPanel({
               label="Next watch"
               value={formatDate(nextWatchPollAt(watchRows))}
             />
+          </DetailsGrid>
+        </DetailPanel>
+        <DetailPanel title="Execution Targets">
+          <DetailsGrid placement="main" className="xl:grid-cols-1">
+            {targets.isLoading && !targets.data ? (
+              <DetailField loading label="Targets" value="" />
+            ) : null}
+            {(targets.data?.targets ?? []).map((target) => (
+              <DetailField
+                key={target.alias}
+                label={target.label}
+                value={
+                  <div className="flex flex-wrap items-center gap-1">
+                    <Badge variant="outline">{target.alias}</Badge>
+                    <StatusBadge status={target.kind} />
+                    <StatusBadge status={target.state} />
+                    <Badge variant={targetHealthVariant(target.health)}>
+                      {targetHealthLabel(target.health)}
+                    </Badge>
+                  </div>
+                }
+              />
+            ))}
+            {!targets.isLoading && (targets.data?.targets ?? []).length === 0 ? (
+              <DetailField label="Targets" value="-" />
+            ) : null}
           </DetailsGrid>
         </DetailPanel>
       </div>

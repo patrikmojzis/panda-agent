@@ -8,6 +8,7 @@ import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {WikiBindingService} from "../../domain/wiki/service.js";
 import {AgentProfileContext, type AgentProfileContextSection, type AgentProfileStore} from "./agent-profile-context.js";
 import {BackgroundJobsContext} from "./background-jobs-context.js";
+import {BashTargetsContext} from "./bash-targets-context.js";
 import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
 import {ScheduledRemindersContext} from "./scheduled-reminders-context.js";
@@ -21,6 +22,7 @@ import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 export type DefaultAgentLlmContextSection =
   | "datetime"
   | "environment"
+  | "bash_targets"
   | "scheduled_reminders"
   | "wiki_overview"
   | "background_jobs"
@@ -36,6 +38,7 @@ const PROFILE_SECTIONS = new Set<AgentProfileContextSection>([
 
 export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "environment",
+  "bash_targets",
   "wiki_overview",
   "scheduled_reminders",
   "background_jobs",
@@ -53,7 +56,7 @@ export interface BuildDefaultAgentLlmContextsOptions {
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
-  executionEnvironments?: Pick<ExecutionEnvironmentStore, "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner">;
+  executionEnvironments?: Pick<ExecutionEnvironmentStore, "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner" | "listBindingsForSession">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   agentKey?: string;
   threadId?: string;
@@ -70,6 +73,7 @@ export {
   type AgentProfileStore,
 } from "./agent-profile-context.js";
 export {DateTimeContext, type DateTimeContextOptions} from "./datetime-context.js";
+export {BashTargetsContext, type BashTargetsContextOptions} from "./bash-targets-context.js";
 export {SessionBriefingContext, type SessionBriefingContextOptions} from "./session-briefing-context.js";
 export {SessionTodoContext, type SessionTodoContextOptions} from "./session-todo-context.js";
 export {EnvironmentContext, type EnvironmentContextOptions} from "./environment-context.js";
@@ -91,6 +95,13 @@ export function buildDefaultAgentLlmContexts(
   if (uniqueSections.has("environment")) {
     llmContexts.push(new EnvironmentContext({
       cwd: options.context?.cwd,
+    }));
+  }
+
+  if (uniqueSections.has("bash_targets") && options.context?.sessionId && options.executionEnvironments) {
+    llmContexts.push(new BashTargetsContext({
+      environments: options.executionEnvironments,
+      sessionId: options.context.sessionId,
     }));
   }
 

@@ -7,6 +7,7 @@ import {DataType, newDb} from "pg-mem";
 import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
+import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
 import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
 import {CredentialService} from "../src/domain/credentials/resolver.js";
 import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
@@ -52,7 +53,11 @@ afterEach(async () => {
   while (tempDirs.length > 0) await rm(tempDirs.pop()!, {recursive: true, force: true});
 });
 
-async function createHarness(options: { telegramBotIdentityClient?: { getBotIdentity(token: string): Promise<{id: string; username?: string; displayName?: string}> } } = {}) {
+async function createHarness(options: {
+  telegramBotIdentityClient?: { getBotIdentity(token: string): Promise<{id: string; username?: string; displayName?: string}> };
+  fetchImpl?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
+} = {}) {
   const db = newDb({noAstCoverageCheck: true});
   db.public.registerFunction({name: "pg_notify", args: [DataType.text, DataType.text], returns: DataType.text, implementation: () => ""});
   const adapter = db.adapters.createPg();
@@ -62,6 +67,7 @@ async function createHarness(options: { telegramBotIdentityClient?: { getBotIden
   const identities = new PostgresIdentityStore({pool});
   const agents = new PostgresAgentStore({pool});
   const sessions = new PostgresSessionStore({pool});
+  const executionEnvironments = new PostgresExecutionEnvironmentStore({pool});
   const credentials = new PostgresCredentialStore({pool});
   const threads = new PostgresThreadRuntimeStore({pool});
   const auth = new PostgresControlAuthService({pool});
@@ -91,6 +97,7 @@ async function createHarness(options: { telegramBotIdentityClient?: { getBotIden
     a2aBindings,
     agents,
     sessions,
+    executionEnvironments,
     threads,
     identities,
     credentials: credentialService,
@@ -118,10 +125,13 @@ async function createHarness(options: { telegramBotIdentityClient?: { getBotIden
     telegramBotIdentityClient: options.telegramBotIdentityClient ?? {
       getBotIdentity: async () => ({id: "424242", username: "panda_bot", displayName: "Panda Bot"}),
     },
+    fetchImpl: options.fetchImpl,
+    env: options.env,
   });
   await identities.ensureSchema();
   await agents.ensureSchema();
   await sessions.ensureSchema();
+  await executionEnvironments.ensureSchema();
   await threads.ensureSchema();
   await credentials.ensureSchema();
   await auth.ensureSchema();
@@ -143,7 +153,7 @@ async function createHarness(options: { telegramBotIdentityClient?: { getBotIden
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, identities, agents, sessions, a2aBindings, auth, reads, home, operator, briefings, heartbeats, todos, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts};
+  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, briefings, heartbeats, todos, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>, options: {env?: NodeJS.ProcessEnv} = {}) {
@@ -224,6 +234,52 @@ describe("Control auth HTTP", () => {
     expect(clearedCookies.find((cookie) => cookie.startsWith(`${CONTROL_CSRF_COOKIE}=`))).not.toContain("HttpOnly");
     expect(clearedCookies.find((cookie) => cookie.startsWith(`${CONTROL_CSRF_COOKIE}=`))).toContain("Path=/");
     expect((await fetch(`${base}/api/control/me`, {headers: {cookie: cookies}})).status).toBe(401);
+  });
+
+  it("lists session execution targets with scoped private health and no runner secrets", async () => {
+    const healthFetch = vi.fn(async () => new Response(JSON.stringify({ok: true}), {
+      status: 200,
+      headers: {"content-type": "application/json"},
+    }));
+    const harness = await createHarness({fetchImpl: healthFetch as unknown as typeof fetch});
+    await harness.executionEnvironments.createEnvironment({
+      id: "env-vps-secret",
+      agentKey: "panda",
+      kind: "persistent_agent_runner",
+      runnerUrl: "http://runner-vps.internal:8080/agent/panda",
+      metadata: {privateLabel: "do-not-leak"},
+    });
+    await harness.executionEnvironments.bindSession({
+      sessionId: "session-panda",
+      environmentId: "env-vps-secret",
+      alias: "VPS",
+    });
+    const base = await startHarnessServer(harness);
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const login = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    const cookies = cookieHeader(login);
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/targets`, {headers: {cookie: cookies}});
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as {targets: Array<Record<string, unknown>>};
+    expect(body.targets).toEqual([
+      {alias: "default", kind: "local", state: "ready", label: "Default", health: "not_applicable"},
+      {alias: "vps", kind: "persistent_agent_runner", state: "ready", label: "vps", health: "ok"},
+    ]);
+    expect(Object.keys(body.targets[1]!).sort()).toEqual(["alias", "health", "kind", "label", "state"]);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("env-vps-secret");
+    expect(serialized).not.toContain("runner-vps");
+    expect(serialized).not.toContain("do-not-leak");
+    expect(healthFetch).toHaveBeenCalledTimes(1);
+    expect(String(healthFetch.mock.calls[0]?.[0])).toContain("/health");
+    const healthInit = healthFetch.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(new Headers(healthInit?.headers).has("authorization")).toBe(false);
+
+    const crossSession = await fetch(`${base}/api/control/agents/luna/sessions/session-luna/targets`, {headers: {cookie: cookies}});
+    expect(crossSession.status).toBe(404);
   });
 
   it("can remember a trusted Control browser session with a longer persistent cookie", async () => {

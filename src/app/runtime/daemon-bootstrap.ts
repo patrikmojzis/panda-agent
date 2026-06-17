@@ -166,6 +166,7 @@ export async function bootstrapDaemonContext(
         ],
         extraContext: {
           ...(Object.keys(shellSessions).length > 0 ? {shellSessions} : {}),
+          resolveExecutionTarget: (target) => executionEnvironmentResolver.resolve(session, target),
           routeMemory: {
             getLastRoute: (lookup) => sessionRoutes.getLastRoute({
               sessionId: thread.sessionId,

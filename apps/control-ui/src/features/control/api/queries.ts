@@ -357,6 +357,14 @@ export function useHeartbeat(agentKey: string, sessionId: string) {
   })
 }
 
+export function useSessionTargets(agentKey: string, sessionId: string) {
+  return useQuery({
+    queryKey: controlKeys.sessions.targets(agentKey, sessionId),
+    queryFn: () => controlApi.sessionTargets(agentKey, sessionId),
+    enabled: Boolean(agentKey && sessionId),
+  })
+}
+
 export function useScheduledTasks(
   agentKey: string,
   sessionId: string,
