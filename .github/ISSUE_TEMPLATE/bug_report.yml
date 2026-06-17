@@ -1,39 +1,43 @@
 name: Bug report
 description: Report broken or surprising behavior.
-title: "[Bug]: "
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: "Do not include tokens, private payloads, secrets, or user data. Redact logs before attaching them."
   - type: textarea
-    id: summary
+    id: what-broke
     attributes:
-      label: Summary
-      description: What broke, in one or two sentences?
-      placeholder: "The browser tool fails when..."
+      label: What broke
+      description: One paragraph is enough.
+      placeholder: "When ..., Panda ..."
     validations:
       required: true
   - type: textarea
-    id: related
+    id: evidence
     attributes:
-      label: Related issues / PRs / context
-      description: Link related issues, PRs, discussions, or context that is safe to share. Do not include tokens, private payloads, secrets, or user data.
-      placeholder: "#123, PR #456, or safe-to-share context."
+      label: Evidence
+      description: Observed behavior, safe logs, timestamps, code paths, screenshots, or a live-usage report.
+      placeholder: "Observed ..."
+    validations:
+      required: true
   - type: dropdown
     id: area
     attributes:
-      label: Area
-      description: Pick the closest area. Harness/runtime issues belong here too.
+      label: Area, if known
       options:
-        - browser
-        - workers
-        - filesystem
-        - tools
+        - runtime
+        - control
+        - gateway
+        - channels
+        - providers
+        - database
+        - deploy
         - auth
+        - tools
         - apps
-    validations:
-      required: true
+        - docs
+        - unknown
   - type: textarea
     id: expected-behavior
     attributes:
@@ -42,51 +46,33 @@ body:
     validations:
       required: true
   - type: textarea
-    id: actual-behavior
+    id: impact
     attributes:
-      label: Actual behavior
-      placeholder: "What happened instead?"
+      label: Impact
+      description: Who or what is blocked?
+      placeholder: "This affects ..."
     validations:
       required: true
   - type: textarea
-    id: repro-steps
+    id: done-when
     attributes:
-      label: Repro steps
-      description: Keep it short and deterministic if possible.
+      label: Done when
       placeholder: |
-        1. Run ...
-        2. Click/call ...
-        3. See ...
+        - ...
     validations:
       required: true
   - type: textarea
-    id: evidence
+    id: repro
     attributes:
-      label: Evidence / artifacts / logs
-      description: Attach screenshots, logs, links, or artifact paths. Redact private data.
-      placeholder: "Paste the relevant excerpt or link to an artifact."
+      label: Repro, if available
+      description: Leave this rough if it came from production or live usage.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
   - type: textarea
-    id: impact-severity
+    id: notes
     attributes:
-      label: Impact / severity
-      placeholder: "Who is blocked? How bad is it?"
-    validations:
-      required: true
-  - type: textarea
-    id: workaround
-    attributes:
-      label: Workaround
-      placeholder: "Any known workaround, or 'none'."
-  - type: input
-    id: regression
-    attributes:
-      label: Regression? First seen commit/date
-      placeholder: "Yes/no/unknown. First seen at commit/date ..."
-  - type: textarea
-    id: environment
-    attributes:
-      label: Environment / session info
-      description: Include OS, runtime, branch/commit, browser/device if relevant, and session context that is safe to share.
-      placeholder: "OS, Node version, commit, session type, tool/browser details..."
-    validations:
-      required: true
+      label: Notes
+      description: Workaround, suspected regression, environment/version, related issues, or privacy/security concerns if relevant.
+      placeholder: "Workaround, first seen date, env, related issues, security notes..."
