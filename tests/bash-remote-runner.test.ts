@@ -142,11 +142,12 @@ describe("remote bash runner", () => {
   }
 
   it("executes bash through a DB-bound runner target alias", async () => {
-    const workspace = await createWorkspace("runtime-db-bound-runner-");
+    const localWorkspace = await createWorkspace("runtime-db-bound-local-");
+    const runnerWorkspace = await createWorkspace("runtime-db-bound-runner-");
     const sharedSecret = "db-bound-runner-secret";
     const runner = await createRunner("panda", {
       sharedSecret,
-      allowedRoots: [workspace],
+      allowedRoots: [runnerWorkspace],
     });
     const pool = await createDbPool();
     const stores = await createRuntimeStores(pool);
@@ -167,7 +168,7 @@ describe("remote bash runner", () => {
       agentKey: "panda",
       kind: "persistent_agent_runner",
       runnerUrl: `http://${runner.host}:${runner.port}`,
-      runnerCwd: workspace,
+      runnerCwd: runnerWorkspace,
     });
     await environmentStore.bindSession({
       sessionId: session.id,
@@ -180,7 +181,7 @@ describe("remote bash runner", () => {
       env: {BASH_SERVER_SHARED_SECRET: sharedSecret},
     });
     const context: DefaultAgentSessionContext = {
-      cwd: workspace,
+      cwd: localWorkspace,
       agentKey: "panda",
       sessionId: session.id,
       sessionKind: session.kind,
@@ -193,7 +194,8 @@ describe("remote bash runner", () => {
       target: "vps",
     }, createRunContext(context));
 
-    expect(asObject(result).stdout).toBe(`db-bound:${workspace}`);
+    expect(asObject(result).stdout).toBe(`db-bound:${runnerWorkspace}`);
+    expect(asObject(result).stdout).not.toBe(`db-bound:${localWorkspace}`);
   });
 
   it("rejects deprecated core-side RUNNER_* env even when BASH_SERVER_* is set", () => {
