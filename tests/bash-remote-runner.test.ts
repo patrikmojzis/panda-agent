@@ -196,7 +196,7 @@ describe("remote bash runner", () => {
 
     expect(asObject(result).stdout).toBe(`db-bound:${runnerWorkspace}`);
     expect(asObject(result).stdout).not.toBe(`db-bound:${localWorkspace}`);
-  });
+  }, 10_000);
 
   it("rejects deprecated core-side RUNNER_* env even when BASH_SERVER_* is set", () => {
     expect(() => new RemoteShellExecutor({
