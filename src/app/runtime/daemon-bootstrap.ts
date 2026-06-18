@@ -130,7 +130,6 @@ export async function bootstrapDaemonContext(
         : mainTools;
       const shellSessions = await shellStateStore.listShellSessions({
         sessionId: session.id,
-        threadId: thread.id,
       });
       return createThreadDefinition({
         thread,

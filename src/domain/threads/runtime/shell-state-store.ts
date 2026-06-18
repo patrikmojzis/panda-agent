@@ -15,6 +15,6 @@ export interface ThreadShellStateRecord extends ThreadShellStateKey {
 }
 
 export interface ThreadShellStateStore {
-  listShellSessions(input: Pick<ThreadShellStateKey, "sessionId" | "threadId">): Promise<Record<string, DurableShellSession>>;
+  listShellSessions(input: Pick<ThreadShellStateKey, "sessionId">): Promise<Record<string, DurableShellSession>>;
   upsertShellSession(input: ThreadShellStateKey & {shellSession: DurableShellSession}): Promise<ThreadShellStateRecord>;
 }

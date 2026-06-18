@@ -50,13 +50,27 @@ function asObject(value: unknown): Record<string, unknown> {
 
 
 class MemoryShellStateStore {
-  readonly sessions = new Map<string, {cwd: string; env: Record<string, string>}>();
+  readonly sessions = new Map<string, {cwd: string; env: Record<string, string>; updatedAt: number}>();
+  private nextUpdatedAt = 1;
 
-  async listShellSessions(input: {sessionId: string; threadId: string}) {
-    const prefix = `${input.sessionId}:${input.threadId}:`;
-    return Object.fromEntries([...this.sessions.entries()]
-      .filter(([key]) => key.startsWith(prefix))
-      .map(([key, session]) => [key.slice(prefix.length), {cwd: session.cwd, env: {...session.env}}]));
+  async listShellSessions(input: {sessionId: string}) {
+    const prefix = `${input.sessionId}:`;
+    const latestByEnvironment = new Map<string, {cwd: string; env: Record<string, string>; updatedAt: number}>();
+
+    for (const [key, session] of this.sessions.entries()) {
+      if (!key.startsWith(prefix)) {
+        continue;
+      }
+
+      const executionEnvironmentId = key.slice(key.lastIndexOf(":") + 1);
+      const existing = latestByEnvironment.get(executionEnvironmentId);
+      if (!existing || session.updatedAt >= existing.updatedAt) {
+        latestByEnvironment.set(executionEnvironmentId, session);
+      }
+    }
+
+    return Object.fromEntries([...latestByEnvironment.entries()]
+      .map(([executionEnvironmentId, session]) => [executionEnvironmentId, {cwd: session.cwd, env: {...session.env}}]));
   }
 
   async upsertShellSession(input: {sessionId: string; threadId: string; executionEnvironmentId: string; shellSession: {cwd: string; env: Record<string, string>}}) {
@@ -64,14 +78,18 @@ class MemoryShellStateStore {
     const shellSession = {
       cwd: input.shellSession.cwd,
       env: {...input.shellSession.env},
+      updatedAt: this.nextUpdatedAt++,
     };
     this.sessions.set(key, shellSession);
     return {
       sessionId: input.sessionId,
       threadId: input.threadId,
       executionEnvironmentId: input.executionEnvironmentId,
-      shellSession,
-      updatedAt: Date.now(),
+      shellSession: {
+        cwd: shellSession.cwd,
+        env: {...shellSession.env},
+      },
+      updatedAt: shellSession.updatedAt,
     };
   }
 
@@ -596,7 +614,6 @@ describe("BashTool", () => {
         cwd: workspace,
         shellSessions: await shellStateStore.listShellSessions({
           sessionId: "session-shell",
-          threadId: "thread-shell",
         }),
       };
       const result = await tool.run(
@@ -650,7 +667,7 @@ describe("BashTool", () => {
       await tool.run({command: 'cd two && export ENV_MARKER="two"'}, createRunContext({
         ...baseContext,
         executionEnvironment: {...baseContext.executionEnvironment!, id: "env-two", initialCwd: workspace},
-        shellSessions: await shellStateStore.listShellSessions({sessionId: "session-shell-envs", threadId: "thread-shell-envs"}),
+        shellSessions: await shellStateStore.listShellSessions({sessionId: "session-shell-envs"}),
       }));
 
       expect(shellStateStore.read("session-shell-envs", "thread-shell-envs", "env-one")?.cwd).toBe(oneCwd);
@@ -728,9 +745,12 @@ describe("BashTool", () => {
     }
   });
 
-  it("does not bleed durable shell state into a replacement thread", async () => {
+  it("carries durable shell state into a replacement thread without crossing execution environments", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-durable-thread-"));
     try {
+      await mkdir(path.join(workspace, "nested"));
+      const expectedNested = await realpath(path.join(workspace, "nested"));
+      const workspaceCwd = await realpath(workspace);
       const shellStateStore = new MemoryShellStateStore();
       const tool = new BashTool({
         outputDirectory: path.join(workspace, "tool-results"),
@@ -738,11 +758,46 @@ describe("BashTool", () => {
       });
 
       await tool.run(
-        {command: 'export OLD_THREAD_ONLY="old"'},
+        {command: 'cd nested && export OLD_THREAD_ONLY="old"'},
         createRunContext({agentKey: "panda", sessionId: "session-reset", threadId: "thread-old", cwd: workspace}),
       );
 
-      expect(await shellStateStore.listShellSessions({sessionId: "session-reset", threadId: "thread-new"})).toEqual({});
+      const replacementContext: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-reset",
+        threadId: "thread-new",
+        cwd: workspace,
+        shellSessions: await shellStateStore.listShellSessions({sessionId: "session-reset"}),
+      };
+      const replacementResult = await tool.run(
+        {command: 'printf "%s:%s" "$PWD" "$OLD_THREAD_ONLY"'},
+        createRunContext(replacementContext),
+      );
+
+      expect(asObject(replacementResult).stdout).toBe(`${expectedNested}:old`);
+      expect(shellStateStore.read("session-reset", "thread-new")?.cwd).toBe(expectedNested);
+      expect(shellStateStore.read("session-reset", "thread-new")?.env.OLD_THREAD_ONLY).toBe("old");
+
+      const runnerResult = await tool.run(
+        {command: 'printf "%s:%s" "$PWD" "${OLD_THREAD_ONLY:-missing}"'},
+        createRunContext({
+          ...replacementContext,
+          executionEnvironment: {
+            id: "env-runner",
+            agentKey: "panda",
+            kind: "local",
+            state: "ready",
+            executionMode: "local",
+            initialCwd: workspace,
+            credentialPolicy: {mode: "all_agent"},
+            toolPolicy: {},
+            source: "binding",
+          },
+          shellSessions: await shellStateStore.listShellSessions({sessionId: "session-reset"}),
+        }),
+      );
+
+      expect(asObject(runnerResult).stdout).toBe(`${workspaceCwd}:missing`);
     } finally {
       await rm(workspace, {recursive: true, force: true});
     }
