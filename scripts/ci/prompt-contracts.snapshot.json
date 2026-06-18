@@ -498,7 +498,7 @@
             "type": "string"
           },
           "description": {
-            "description": "Required for set. Short summary injected into the standard agent context. Max 8000 characters.",
+            "description": "Required for set. Short summary injected into the standard agent context. Max 255 characters.",
             "type": "string"
           },
           "operation": {
