@@ -5,8 +5,15 @@ export interface LlmContextSnapshot {
   promptCacheKeyPart?: string | null;
 }
 
+export interface LlmContextRuntimeSection {
+  name: string;
+  content: string;
+  dump: string;
+}
+
 export interface LlmContextRuntimeDump {
   dump: string;
+  sections: readonly LlmContextRuntimeSection[];
   promptCacheKeyParts: readonly string[];
 }
 
@@ -38,8 +45,11 @@ export async function gatherContextsForRuntime(contexts: LlmContext[]): Promise<
   const results = await Promise.all(contexts.map(async (context) => {
     const snapshot = await context.getSnapshot();
     const content = snapshot.content;
+    const dump = content.trim().length > 0 ? renderLlmContextDump(context.name, content) : "";
     return {
-      dump: content.trim().length > 0 ? renderLlmContextDump(context.name, content) : "",
+      name: context.name,
+      content,
+      dump,
       promptCacheKeyPart: snapshot.promptCacheKeyPart?.trim() || undefined,
     };
   }));
@@ -48,6 +58,13 @@ export async function gatherContextsForRuntime(contexts: LlmContext[]): Promise<
       .map((result) => result.dump)
       .filter((result) => result.trim().length > 0)
       .join("\n\n"),
+    sections: results
+      .filter((result) => result.dump.trim().length > 0)
+      .map((result) => ({
+        name: result.name,
+        content: result.content,
+        dump: result.dump,
+      })),
     promptCacheKeyParts: results
       .map((result) => result.promptCacheKeyPart)
       .filter((part): part is string => part !== undefined),

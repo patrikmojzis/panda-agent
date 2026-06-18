@@ -49,6 +49,8 @@ import type {
     ControlRuntimeFailureCategory,
 } from "../../domain/control/runtime-activity-service.js";
 import type {ControlConnectorAccountsService} from "../../domain/control/connector-accounts-service.js";
+import type {ControlModelCallTraceService} from "../../domain/control/model-call-trace-service.js";
+import type {ModelCallTraceMode, ModelCallTraceStatus} from "../../domain/model-call-traces/types.js";
 import type {ControlGrantRecord, ControlGrantRole, ControlSessionRecord} from "../../domain/control/types.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 
@@ -156,6 +158,7 @@ export interface StartControlServerOptions {
   watches: ControlWatchesService;
   runtimeActivity: ControlRuntimeActivityService;
   connectorAccounts: ControlConnectorAccountsService;
+  modelCallTraces: ControlModelCallTraceService;
   identityStore: Pick<IdentityStore, "getIdentity" | "getIdentityByHandle" | "listIdentities">;
   env?: NodeJS.ProcessEnv;
   uiStaticDir?: string;
@@ -568,6 +571,29 @@ function parseRuntimeActivityTableInput(params: URLSearchParams): ControlRuntime
   };
 }
 
+function parseModelCallTraceStatus(value: string | null): ModelCallTraceStatus | undefined {
+  if (value === null || value.trim() === "") return undefined;
+  if (value === "completed" || value === "failed") return value;
+  throw new ControlHttpError(400, "Control model call trace status filter is unsupported.");
+}
+
+function parseModelCallTraceMode(value: string | null): ModelCallTraceMode | undefined {
+  if (value === null || value.trim() === "") return undefined;
+  if (value === "complete" || value === "stream") return value;
+  throw new ControlHttpError(400, "Control model call trace mode filter is unsupported.");
+}
+
+function parseModelCallTraceTableInput(params: URLSearchParams) {
+  return {
+    ...parseTableInput(params),
+    status: parseModelCallTraceStatus(params.get("status")),
+    mode: parseModelCallTraceMode(params.get("mode")),
+    runId: params.get("run_id") ?? undefined,
+    sessionId: params.get("session_id") ?? undefined,
+    agentKey: params.get("agent_key") ?? undefined,
+  };
+}
+
 function parseScheduledTaskStatus(value: string | null): ControlScheduledTaskLifecycleStatus | undefined {
   if (value === null || value.trim() === "") return undefined;
   if (value === "scheduled" || value === "disabled" || value === "running" || value === "completed" || value === "cancelled") return value;
@@ -809,6 +835,12 @@ function matchAgentConnectorsPath(path: string): {agentKey: string} | null {
   return {agentKey: decodeURIComponent(match[1]!)};
 }
 
+function matchModelCallTracePath(path: string): {traceId: string} | null {
+  const match = /^\/model-call-traces\/([^/]+)$/.exec(path);
+  if (!match) return null;
+  return {traceId: decodeURIComponent(match[1]!)};
+}
+
 function matchSessionScheduledTasksPath(path: string): {agentKey: string; sessionId: string} | null {
   const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/scheduled-tasks$/.exec(path);
   if (!match) return null;
@@ -989,6 +1021,32 @@ export async function startControlServer(options: StartControlServerOptions): Pr
       }
       if (request.method === "GET" && path === "/work-failures") {
         writeJsonResponse(response, 200, await options.operator.listWorkFailures(session, parseWorkFailureTableInput(url.searchParams)));
+        return;
+      }
+      if (request.method === "GET" && path === "/model-call-traces") {
+        try {
+          const traces = await options.modelCallTraces.listModelCallTraces(session, parseModelCallTraceTableInput(url.searchParams));
+          writeJsonResponse(response, 200, {modelCallTraces: traces});
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Control model call trace read failed.";
+          if (message === "Control model call traces require admin access.") throw new ControlHttpError(403, message);
+          if (message.includes("model call trace") || message.includes("pagination")) throw new ControlHttpError(400, message);
+          throw error;
+        }
+        return;
+      }
+      const modelCallTracePath = matchModelCallTracePath(path);
+      if (modelCallTracePath && request.method === "GET") {
+        try {
+          const trace = await options.modelCallTraces.getModelCallTrace(session, modelCallTracePath.traceId);
+          if (!trace) throw new ControlHttpError(404, "Control model call trace was not found.");
+          writeJsonResponse(response, 200, {modelCallTrace: trace});
+        } catch (error) {
+          if (error instanceof ControlHttpError) throw error;
+          const message = error instanceof Error ? error.message : "Control model call trace read failed.";
+          if (message === "Control model call traces require admin access.") throw new ControlHttpError(403, message);
+          throw new ControlHttpError(400, message);
+        }
         return;
       }
       if (request.method === "GET" && path === "/search") {

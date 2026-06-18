@@ -23,6 +23,8 @@ import {ControlScheduledTasksService} from "../src/domain/control/scheduled-task
 import {ControlWatchesService} from "../src/domain/control/watches-service.js";
 import {ControlRuntimeActivityService} from "../src/domain/control/runtime-activity-service.js";
 import {ControlConnectorAccountsService} from "../src/domain/control/connector-accounts-service.js";
+import {ControlModelCallTraceService} from "../src/domain/control/model-call-trace-service.js";
+import {PostgresModelCallTraceStore} from "../src/domain/model-call-traces/postgres.js";
 import {A2ASessionBindingRepo} from "../src/domain/a2a/repo.js";
 import {PostgresConnectorAccountStore} from "../src/domain/connectors/postgres.js";
 import {PostgresEmailStore} from "../src/domain/email/postgres.js";
@@ -83,6 +85,8 @@ async function createHarness(options: {
   const controlRuntimeActivity = new ControlRuntimeActivityService({pool});
   const connectorAccountStore = new PostgresConnectorAccountStore({pool});
   const controlConnectorAccounts = new ControlConnectorAccountsService({pool});
+  const modelCallTraces = new PostgresModelCallTraceStore({pool});
+  const controlModelCallTraces = new ControlModelCallTraceService({pool});
   const a2aBindings = new A2ASessionBindingRepo({pool});
   const emailStore = new PostgresEmailStore({pool});
   const conversations = new ConversationRepo({pool});
@@ -138,6 +142,7 @@ async function createHarness(options: {
   await scheduledTaskStore.ensureSchema();
   await watchStore.ensureSchema();
   await connectorAccountStore.ensureSchema();
+  await modelCallTraces.ensureSchema();
   await a2aBindings.ensureSchema();
   await emailStore.ensureSchema();
   await conversations.ensureSchema();
@@ -153,11 +158,11 @@ async function createHarness(options: {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, briefings, heartbeats, todos, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts};
+  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, briefings, heartbeats, todos, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, modelCallTraces, controlModelCallTraces};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>, options: {env?: NodeJS.ProcessEnv} = {}) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, identityStore: harness.identities, env: options.env});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, identityStore: harness.identities, env: options.env});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -400,6 +405,7 @@ describe("Control auth HTTP", () => {
       watches: harness.controlWatches,
       runtimeActivity: harness.controlRuntimeActivity,
       connectorAccounts: harness.controlConnectorAccounts,
+      modelCallTraces: harness.controlModelCallTraces,
       identityStore: harness.identities,
     });
     servers.push(server);
@@ -424,7 +430,7 @@ describe("Control auth HTTP", () => {
     await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
     await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
     await writeFile(join(staticDir, "assets", "geist.woff2"), "font");
-    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, identityStore: harness.identities, uiStaticDir: staticDir});
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, identityStore: harness.identities, uiStaticDir: staticDir});
     servers.push(server);
     const base = `http://${server.host}:${server.port}`;
 
@@ -2920,6 +2926,151 @@ describe("Control scheduled tasks HTTP", () => {
     const text = JSON.stringify(await wrongAgent.json());
     expect(text).not.toContain("First by next fire");
     expect(text).not.toContain("FIRST_INSTRUCTION");
+  });
+});
+
+
+describe("Control Model Call Traces HTTP", () => {
+  const CONTROL_PROMPT_CACHE_KEY_SECRET = "controlPromptCacheKeySecret";
+  const PROMPT_CACHE_KEY_REDACTION_PATTERN = /^\[redacted:prompt-cache-key:sha256:[a-f0-9]{16}\]$/;
+
+  async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "admin", agentKey = "panda") {
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey} : {})});
+    const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    expect(response.status).toBe(200);
+    return {cookies: cookieHeader(response)};
+  }
+
+  async function seedTrace(harness: Awaited<ReturnType<typeof createHarness>>) {
+    const base64Blob = Buffer.from("private blob".repeat(30)).toString("base64");
+    await harness.modelCallTraces.recordModelCallTrace({
+      mode: "complete",
+      tools: [],
+      startedAt: Date.parse("2040-02-01T10:00:00.000Z"),
+      finishedAt: Date.parse("2040-02-01T10:00:01.250Z"),
+      request: {
+        providerName: "openai",
+        modelId: "gpt-test",
+        promptCacheKey: `trace-cache:${CONTROL_PROMPT_CACHE_KEY_SECRET}`,
+        metadata: {
+          runId: "00000000-0000-0000-0000-000000000701",
+          threadId: "thread-panda",
+          sessionId: "session-panda",
+          agentKey: "panda",
+          turn: 3,
+        },
+        trace: {
+          llmContextDump: "<context>PRIVATE_TOKEN_CONTEXT token=sk-controlTraceSecret</context>",
+          llmContextSections: [{name: "ControlTraceContext", content: "context content", dump: "dump content"}],
+        },
+        context: {
+          systemPrompt: "system prompt with Bearer controlBearerSecret",
+          messages: [
+            {role: "user", content: "hello api_key=controlApiKeySecret"},
+            {role: "assistant", content: [{type: "toolCall", id: "call-1", name: "unknown_tool", arguments: {token: "tool-token-secret", imageData: base64Blob}}]},
+          ],
+          tools: [{name: "unknown_tool", description: "test tool", parameters: {type: "object"}}],
+        },
+      },
+      response: {
+        role: "assistant",
+        content: [{type: "text", text: "ok"}],
+        api: "openai-responses",
+        model: "openai/gpt-test",
+        usage: {input: 10, output: 4, cacheRead: 2, cacheWrite: 1, totalTokens: 17, cost: {input: 0.01, output: 0.02, cacheRead: 0.001, cacheWrite: 0.002, total: 0.033}},
+        stopReason: "stop",
+        timestamp: Date.parse("2040-02-01T10:00:01.250Z"),
+      },
+    });
+    const result = await harness.pool.query(`SELECT id, prompt_cache_key, request_json, response_json, usage_json FROM "runtime"."model_call_traces" LIMIT 1`);
+    return result.rows[0] as {id: string; prompt_cache_key: string | null; request_json: unknown; response_json: unknown; usage_json: unknown};
+  }
+
+  it("requires admin for list/detail and returns sanitized allowlisted DTOs", async () => {
+    const harness = await createHarness();
+    const row = await seedTrace(harness);
+    expect(row.prompt_cache_key).toEqual(expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN));
+    expect(row.prompt_cache_key).not.toContain(CONTROL_PROMPT_CACHE_KEY_SECRET);
+    expect(JSON.stringify(row.request_json)).not.toContain(CONTROL_PROMPT_CACHE_KEY_SECRET);
+    const rawPromptCacheKey = `trace-cache:${CONTROL_PROMPT_CACHE_KEY_SECRET}`;
+    const persisted = JSON.stringify(row);
+    for (const sentinel of [
+      CONTROL_PROMPT_CACHE_KEY_SECRET,
+      rawPromptCacheKey,
+      "controlBearerSecret",
+      "controlApiKeySecret",
+      "sk-controlTraceSecret",
+      "tool-token-secret",
+    ]) expect(persisted).not.toContain(sentinel);
+    expect(persisted).toContain("unknown_tool_arguments");
+
+    await harness.pool.query(
+      `UPDATE "runtime"."model_call_traces" SET prompt_cache_key = $1, request_json = $2::jsonb WHERE id = $3`,
+      [
+        rawPromptCacheKey,
+        JSON.stringify({...(row.request_json as Record<string, unknown>), promptCacheKey: rawPromptCacheKey}),
+        row.id,
+      ],
+    );
+
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+    const scoped = await login(base, harness, "scoped");
+
+    expect((await fetch(`${base}/api/control/model-call-traces`)).status).toBe(401);
+    expect((await fetch(`${base}/api/control/model-call-traces`, {headers: {cookie: scoped.cookies}})).status).toBe(403);
+    expect((await fetch(`${base}/api/control/model-call-traces/${row.id}`, {headers: {cookie: scoped.cookies}})).status).toBe(403);
+
+    const list = await fetch(`${base}/api/control/model-call-traces`, {headers: {cookie: admin.cookies}});
+    expect(list.status).toBe(200);
+    const listBody = await list.json() as {modelCallTraces: {data: Array<Record<string, unknown>>; meta: Record<string, unknown>}};
+    expect(listBody.modelCallTraces.meta).toMatchObject({total: 1, per_page: 25});
+    expect(listBody.modelCallTraces.data[0]).toMatchObject({
+      id: row.id,
+      runId: "00000000-0000-0000-0000-000000000701",
+      threadId: "thread-panda",
+      sessionId: "session-panda",
+      agentKey: "panda",
+      turn: 3,
+      callIndex: 3,
+      provider: "openai",
+      model: "gpt-test",
+      mode: "complete",
+      status: "completed",
+      durationMs: 1250,
+      promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
+      usage: expect.objectContaining({input: 10, output: 4, totalTokens: 17}),
+      error: null,
+    });
+    expect(Object.keys(listBody.modelCallTraces.data[0]!).sort()).toEqual(["agentKey", "callIndex", "durationMs", "error", "expiresAt", "finishedAt", "id", "mode", "model", "promptCacheKey", "provider", "runId", "sessionId", "startedAt", "status", "threadId", "turn", "usage"]);
+    expect(JSON.stringify(listBody)).not.toContain(CONTROL_PROMPT_CACHE_KEY_SECRET);
+    expect(JSON.stringify(listBody)).not.toContain(rawPromptCacheKey);
+
+    const detail = await fetch(`${base}/api/control/model-call-traces/${row.id}`, {headers: {cookie: admin.cookies}});
+    expect(detail.status).toBe(200);
+    const detailBody = await detail.json() as {modelCallTrace: Record<string, unknown>};
+    expect(detailBody.modelCallTrace).toMatchObject({
+      id: row.id,
+      promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
+      request: expect.objectContaining({
+        promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
+        systemPrompt: expect.stringContaining("system prompt"),
+        messages: expect.any(Array),
+        tools: expect.any(Array),
+        llmContextSections: [expect.objectContaining({name: "ControlTraceContext"})],
+      }),
+      response: expect.objectContaining({role: "assistant"}),
+      usage: expect.objectContaining({totalTokens: 17}),
+    });
+    const apiText = JSON.stringify(detailBody);
+    for (const sentinel of [
+      CONTROL_PROMPT_CACHE_KEY_SECRET,
+      rawPromptCacheKey,
+      "controlBearerSecret",
+      "controlApiKeySecret",
+      "sk-controlTraceSecret",
+      "tool-token-secret",
+    ]) expect(apiText).not.toContain(sentinel);
   });
 });
 

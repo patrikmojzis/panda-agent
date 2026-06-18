@@ -33,6 +33,8 @@ import type {ControlScheduledTasksService} from "../../domain/control/scheduled-
 import type {ControlWatchesService} from "../../domain/control/watches-service.js";
 import type {ControlRuntimeActivityService} from "../../domain/control/runtime-activity-service.js";
 import type {ControlConnectorAccountsService} from "../../domain/control/connector-accounts-service.js";
+import type {ControlModelCallTraceService} from "../../domain/control/model-call-trace-service.js";
+import type {PostgresModelCallTraceStore} from "../../domain/model-call-traces/postgres.js";
 import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundToolThreadInput} from "./background-tool-thread-input.js";
@@ -122,6 +124,8 @@ export interface RuntimeServices {
   controlWatches: ControlWatchesService;
   controlRuntimeActivity: ControlRuntimeActivityService;
   controlConnectorAccounts: ControlConnectorAccountsService;
+  controlModelCallTraces: ControlModelCallTraceService;
+  modelCallTraces: PostgresModelCallTraceStore;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -176,6 +180,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
   const coordinator = new ThreadRuntimeCoordinator({
     store: runtime.store,
     leaseManager: new PostgresThreadLeaseManager(runtime.threadLeasePool),
+    modelCallTracer: runtime.modelCallTraces,
     resolveDefinition: (thread) => options.resolveDefinition(thread, resolverContext),
     onEvent: options.onEvent,
   });
@@ -227,6 +232,8 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     controlWatches: runtime.controlWatches,
     controlRuntimeActivity: runtime.controlRuntimeActivity,
     controlConnectorAccounts: runtime.controlConnectorAccounts,
+    controlModelCallTraces: runtime.controlModelCallTraces,
+    modelCallTraces: runtime.modelCallTraces,
     backgroundJobService: runtime.backgroundJobService,
     browserService: runtime.browserService,
     credentialResolver: runtime.credentialResolver,

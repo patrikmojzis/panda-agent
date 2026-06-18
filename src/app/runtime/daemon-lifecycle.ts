@@ -61,6 +61,7 @@ export interface DaemonLifecycleRuntime {
   controlWatches: RuntimeServices["controlWatches"];
   controlRuntimeActivity: RuntimeServices["controlRuntimeActivity"];
   controlConnectorAccounts: RuntimeServices["controlConnectorAccounts"];
+  controlModelCallTraces: RuntimeServices["controlModelCallTraces"];
   coordinator: Pick<RuntimeServices["coordinator"], "recoverOrphanedRuns" | "submitInput">;
   executionEnvironmentService?: Pick<RuntimeServices["executionEnvironmentService"], "sweepExpiredEnvironments">;
   pool: Pick<RuntimeServices["pool"], "waitingCount">;
@@ -396,6 +397,7 @@ export function createDaemonLifecycle(input: {
             watches: input.context.runtime.controlWatches,
             runtimeActivity: input.context.runtime.controlRuntimeActivity,
             connectorAccounts: input.context.runtime.controlConnectorAccounts,
+            modelCallTraces: input.context.runtime.controlModelCallTraces,
             identityStore: input.context.runtime.identityStore,
             env: process.env,
             uiStaticDir: binding.uiStaticDir,

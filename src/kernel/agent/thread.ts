@@ -27,7 +27,7 @@ import {type ResolvedModelSelector, resolveModelSelector,} from "../models/model
 import {resolveRuntimeDefaultModelSelector} from "../models/default-model.js";
 import {resolveModelRuntimeBudget} from "../models/model-context-policy.js";
 import {RunContext} from "./run-context.js";
-import type {LlmRuntime, LlmRuntimeRequest} from "./runtime.js";
+import type {LlmModelCallTracer, LlmRuntime, LlmRuntimeRequest} from "./runtime.js";
 import type {RunPipeline} from "./run-pipeline.js";
 import type {ThreadCheckpointDecision, ThreadCheckpointHandler} from "./thread-checkpoint.js";
 import {isToolResultPayload} from "./tool.js";
@@ -50,6 +50,7 @@ export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   temperature?: number;
   thinking?: ThinkingLevel;
   runtime?: LlmRuntime;
+  modelCallTracer?: LlmModelCallTracer;
   countTokens?: TokenCounter;
   signal?: AbortSignal;
   checkpoint?: ThreadCheckpointHandler;
@@ -538,6 +539,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
 
   private readonly modelSelection: ResolvedModelSelector;
   private readonly runtime: LlmRuntime;
+  private readonly modelCallTracer?: LlmModelCallTracer;
   private readonly countTokens: TokenCounter;
   private readonly contextWindowTokens: number;
   private readonly history: Message[];
@@ -568,6 +570,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     this.effectiveThinking = options.resumeState?.thinking ?? options.thinking;
     this.preserveThinkingOnNextScopeEntry = options.resumeState !== undefined;
     this.runtime = options.runtime ?? new PiAiRuntime();
+    this.modelCallTracer = options.modelCallTracer;
     this.countTokens = options.countTokens ?? estimateTokensFromString;
     this.signal = options.signal;
     this.checkpoint = options.checkpoint;
@@ -935,6 +938,12 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       ),
       signal: this.signal,
       metadata: buildRuntimeRequestMetadata(this.context, this.turnCount),
+      trace: llmContextRuntimeDump
+        ? {
+            llmContextDump: llmContextRuntimeDump.dump,
+            llmContextSections: llmContextRuntimeDump.sections,
+          }
+        : undefined,
       context: buildConversationContext({
         agent: this.agent,
         messages: runMessages,
@@ -952,6 +961,28 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     }
   }
 
+  private async recordModelCallTrace(input: {
+    mode: "complete" | "stream";
+    request: LlmRuntimeRequest;
+    startedAt: number;
+    response?: AssistantMessage;
+    error?: unknown;
+  }): Promise<void> {
+    if (!this.modelCallTracer) {
+      return;
+    }
+
+    await this.modelCallTracer.recordModelCallTrace({
+      mode: input.mode,
+      request: input.request,
+      tools: this.agent.tools,
+      startedAt: input.startedAt,
+      finishedAt: Date.now(),
+      ...(input.response !== undefined ? {response: input.response} : {}),
+      ...(input.error !== undefined ? {error: input.error} : {}),
+    });
+  }
+
   private async *runStepWithinScope(): AsyncGenerator<ThreadRunEvent, ThreadStepResult> {
     const { runMessages, runContext } = await this.prepareTurn();
 
@@ -963,10 +994,18 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     try {
       response = await this.runtime.complete(request);
     } catch (error) {
-      throw wrapClassifiedProviderFailure(error, request, startedAt) ?? error;
+      const tracedError = wrapClassifiedProviderFailure(error, request, startedAt) ?? error;
+      await this.recordModelCallTrace({mode: "complete", request, startedAt, error: tracedError});
+      throw tracedError;
     }
+    try {
+      throwIfAssistantResponseFailed(response, request, startedAt);
+    } catch (error) {
+      await this.recordModelCallTrace({mode: "complete", request, startedAt, response, error});
+      throw error;
+    }
+    await this.recordModelCallTrace({mode: "complete", request, startedAt, response});
     throwIfAborted(this.signal);
-    throwIfAssistantResponseFailed(response, request, startedAt);
 
     yield response;
 
@@ -1038,9 +1077,17 @@ export class Thread<TContext = unknown, TOutput = unknown> {
 
       response = await stream.result();
     } catch (error) {
-      throw wrapClassifiedProviderFailure(error, request, startedAt) ?? error;
+      const tracedError = wrapClassifiedProviderFailure(error, request, startedAt) ?? error;
+      await this.recordModelCallTrace({mode: "stream", request, startedAt, error: tracedError});
+      throw tracedError;
     }
-    throwIfAssistantResponseFailed(response, request, startedAt);
+    try {
+      throwIfAssistantResponseFailed(response, request, startedAt);
+    } catch (error) {
+      await this.recordModelCallTrace({mode: "stream", request, startedAt, response, error});
+      throw error;
+    }
+    await this.recordModelCallTrace({mode: "stream", request, startedAt, response});
 
     const functionCalls = await this.finalizeAssistantTurn(response, runContext);
     if (functionCalls.length === 0) {

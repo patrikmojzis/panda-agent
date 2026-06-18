@@ -10,3 +10,4 @@ overrides:
   hono: 4.12.25
   basic-ftp: 5.3.1
   fast-xml-builder: 1.1.7
+  nodemailer: 9.0.1

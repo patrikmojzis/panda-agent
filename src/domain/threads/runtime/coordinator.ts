@@ -7,6 +7,7 @@ import {resolveModelRuntimeBudget} from "../../../kernel/models/model-context-po
 import {ContextWindowExceededError} from "../../../kernel/agent/exceptions.js";
 import {resolveRuntimeDefaultModelSelector} from "../../../kernel/models/default-model.js";
 import type {ThreadRunEvent} from "../../../kernel/agent/types.js";
+import type {LlmModelCallTracer} from "../../../kernel/agent/runtime.js";
 import {stringifyUnknown} from "../../../kernel/agent/helpers/stringify.js";
 import type {
   AutoCompactionRuntimeState,
@@ -74,6 +75,7 @@ export interface ThreadRuntimeCoordinatorOptions {
   store: ThreadRuntimeStore;
   resolveDefinition: ThreadDefinitionResolver;
   leaseManager: ThreadLeaseManager;
+  modelCallTracer?: LlmModelCallTracer;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
 }
 
@@ -242,6 +244,7 @@ export class ThreadRuntimeCoordinator {
   private readonly store: ThreadRuntimeStore;
   private readonly resolveDefinition: ThreadDefinitionResolver;
   private readonly leaseManager: ThreadLeaseManager;
+  private readonly modelCallTracer?: LlmModelCallTracer;
   private readonly onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   private readonly activeRuns = new Map<string, Promise<ThreadRunAttemptResult>>();
   private readonly activeSignals = new Map<string, AbortController>();
@@ -250,6 +253,7 @@ export class ThreadRuntimeCoordinator {
     this.store = options.store;
     this.resolveDefinition = options.resolveDefinition;
     this.leaseManager = options.leaseManager;
+    this.modelCallTracer = options.modelCallTracer;
     this.onEvent = options.onEvent;
   }
 
@@ -526,6 +530,7 @@ export class ThreadRuntimeCoordinator {
       temperature: definition.temperature,
       thinking: modelConfig.thinking,
       runtime: definition.runtime,
+      modelCallTracer: this.modelCallTracer,
       countTokens: definition.countTokens,
       signal,
       resumeState,
