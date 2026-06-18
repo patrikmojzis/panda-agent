@@ -15,6 +15,7 @@ export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
       "whisper",
       "view_media",
       "todo_update",
+      "vent",
     ],
     agentSkillOperations: ["load"],
   },
