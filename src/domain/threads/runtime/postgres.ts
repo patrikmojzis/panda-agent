@@ -178,16 +178,24 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
     };
   }
 
-  async listShellSessions(input: Pick<ThreadShellStateKey, "sessionId" | "threadId">): Promise<Record<string, DurableShellSession>> {
+  async listShellSessions(input: Pick<ThreadShellStateKey, "sessionId">): Promise<Record<string, DurableShellSession>> {
     const result = await this.pool.query(`
       SELECT *
       FROM ${this.tables.shellStates}
       WHERE session_id = $1
-        AND thread_id = $2
-    `, [input.sessionId, input.threadId]);
+      ORDER BY execution_environment_id ASC, updated_at ASC, thread_id ASC
+    `, [input.sessionId]);
 
-    return Object.fromEntries(result.rows.map((row) => {
+    const latestByEnvironment = new Map<string, ThreadShellStateRecord>();
+    for (const row of result.rows) {
       const record = this.parseShellStateRow(row as Record<string, unknown>);
+      const existing = latestByEnvironment.get(record.executionEnvironmentId);
+      if (!existing || record.updatedAt >= existing.updatedAt) {
+        latestByEnvironment.set(record.executionEnvironmentId, record);
+      }
+    }
+
+    return Object.fromEntries([...latestByEnvironment.values()].map((record) => {
       return [record.executionEnvironmentId, record.shellSession];
     }));
   }

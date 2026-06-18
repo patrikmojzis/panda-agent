@@ -232,7 +232,7 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(log).not.toHaveBeenCalledWith("postgres_pool_error", expect.anything());
   });
 
-  it("persists shell sessions by session, thread, and execution environment", async () => {
+  it("loads latest shell sessions by session and execution environment", async () => {
     const db = newDb();
     db.public.registerFunction({
       name: "pg_notify",
@@ -244,7 +244,7 @@ describe("PostgresThreadRuntimeStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const {threadStore: store} = await createRuntimeStores(pool);
+    const {sessionStore, threadStore: store} = await createRuntimeStores(pool);
     await seedSession(pool, {
       sessionId: "session-shell-state",
       threadId: "thread-shell-state",
@@ -253,14 +253,28 @@ describe("PostgresThreadRuntimeStore", () => {
       id: "thread-shell-state",
       sessionId: "session-shell-state",
     });
+    await store.createThread({
+      id: "replacement-thread",
+      sessionId: "session-shell-state",
+    });
+    await sessionStore.createSession({
+      id: "other-shell-state",
+      agentKey: "panda",
+      kind: "worker",
+      currentThreadId: "other-thread",
+    });
+    await store.createThread({
+      id: "other-thread",
+      sessionId: "other-shell-state",
+    });
 
     await store.upsertShellSession({
       sessionId: "session-shell-state",
       threadId: "thread-shell-state",
       executionEnvironmentId: "default",
       shellSession: {
-        cwd: "/workspace/default",
-        env: {FOO: "bar"},
+        cwd: "/workspace/default-old",
+        env: {FOO: "old"},
       },
     });
     await store.upsertShellSession({
@@ -272,18 +286,59 @@ describe("PostgresThreadRuntimeStore", () => {
         env: {FOO: "env-one"},
       },
     });
+    await store.upsertShellSession({
+      sessionId: "session-shell-state",
+      threadId: "replacement-thread",
+      executionEnvironmentId: "default",
+      shellSession: {
+        cwd: "/workspace/default-new",
+        env: {FOO: "new"},
+      },
+    });
+    await store.upsertShellSession({
+      sessionId: "other-shell-state",
+      threadId: "other-thread",
+      executionEnvironmentId: "default",
+      shellSession: {
+        cwd: "/workspace/other",
+        env: {FOO: "other"},
+      },
+    });
+
+    const shellStatesTable = buildThreadRuntimeTableNames().shellStates;
+    await pool.query(`
+      UPDATE ${shellStatesTable}
+      SET updated_at = $4
+      WHERE session_id = $1
+        AND thread_id = $2
+        AND execution_environment_id = $3
+    `, ["session-shell-state", "thread-shell-state", "default", new Date("2026-01-01T00:00:00.000Z")]);
+    await pool.query(`
+      UPDATE ${shellStatesTable}
+      SET updated_at = $4
+      WHERE session_id = $1
+        AND thread_id = $2
+        AND execution_environment_id = $3
+    `, ["session-shell-state", "thread-shell-state", "env-one", new Date("2026-01-01T00:01:00.000Z")]);
+    await pool.query(`
+      UPDATE ${shellStatesTable}
+      SET updated_at = $4
+      WHERE session_id = $1
+        AND thread_id = $2
+        AND execution_environment_id = $3
+    `, ["session-shell-state", "replacement-thread", "default", new Date("2026-01-01T00:02:00.000Z")]);
 
     expect(await store.listShellSessions({
       sessionId: "session-shell-state",
-      threadId: "thread-shell-state",
     })).toEqual({
-      default: {cwd: "/workspace/default", env: {FOO: "bar"}},
+      default: {cwd: "/workspace/default-new", env: {FOO: "new"}},
       "env-one": {cwd: "/workspace/env-one", env: {FOO: "env-one"}},
     });
     expect(await store.listShellSessions({
-      sessionId: "session-shell-state",
-      threadId: "replacement-thread",
-    })).toEqual({});
+      sessionId: "other-shell-state",
+    })).toEqual({
+      default: {cwd: "/workspace/other", env: {FOO: "other"}},
+    });
   });
 
   it("persists threads, pending inputs, transcript messages, and runs", async () => {
