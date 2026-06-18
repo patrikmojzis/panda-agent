@@ -22,6 +22,14 @@ type AuditParams = TableParams & {
   targetSessionId?: string
 }
 
+type ModelCallTraceParams = TableParams & {
+  agent_key?: string
+  mode?: string
+  run_id?: string
+  session_id?: string
+  status?: string
+}
+
 export function keepPrevious<T>(previous: T | undefined) {
   return previous
 }
@@ -433,5 +441,27 @@ export function useAuditEvents(params: AuditParams) {
     queryKey: controlKeys.audit.list(params),
     queryFn: () => controlApi.audit(params),
     placeholderData: keepPrevious,
+  })
+}
+
+export function useModelCallTraces(
+  params: ModelCallTraceParams,
+  options?: QueryFlags
+) {
+  return useQuery({
+    queryKey: controlKeys.modelCallTraces.list(params),
+    queryFn: () => controlApi.modelCallTraces(params),
+    enabled: options?.enabled,
+    placeholderData: keepPrevious,
+    staleTime: options?.staleTime,
+  })
+}
+
+export function useModelCallTrace(traceId: string, options?: QueryFlags) {
+  return useQuery({
+    queryKey: controlKeys.modelCallTraces.detail(traceId),
+    queryFn: () => controlApi.modelCallTrace(traceId),
+    enabled: options?.enabled ?? Boolean(traceId),
+    staleTime: options?.staleTime,
   })
 }

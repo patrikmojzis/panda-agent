@@ -431,6 +431,36 @@ export type RuntimeActivity = {
   runs?: RuntimeRun[]
 }
 
+export type ModelCallTraceMode = "complete" | "stream" | string
+
+export type ModelCallTraceStatus = "completed" | "failed" | string
+
+export type ModelCallTraceSummary = {
+  id: string
+  runId: string | null
+  threadId: string | null
+  sessionId: string | null
+  agentKey: string | null
+  turn: number | null
+  callIndex: number | null
+  provider: string
+  model: string
+  mode: ModelCallTraceMode
+  status: ModelCallTraceStatus
+  startedAt: string
+  finishedAt: string
+  durationMs: number
+  promptCacheKey: string | null
+  usage: unknown | null
+  error: Record<string, unknown> | null
+  expiresAt: string
+}
+
+export type ModelCallTraceDetail = ModelCallTraceSummary & {
+  request: Record<string, unknown>
+  response: unknown | null
+}
+
 export type ScheduledTaskRun = {
   id: string
   status: "queued" | "running" | "completed" | "failed" | "cancelled" | string
@@ -893,6 +923,14 @@ export const controlApi = {
   runtime: (agentKey: string, sessionId: string, params: TableParams = {}) =>
     apiGet<{ runtimeActivity: RuntimeActivity }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/runtime-activity${qs(params)}`
+    ),
+  modelCallTraces: (params: TableParams = {}) =>
+    apiGet<{ modelCallTraces: PaginatedResponse<ModelCallTraceSummary> }>(
+      `/model-call-traces${qs(params)}`
+    ),
+  modelCallTrace: (traceId: string) =>
+    apiGet<{ modelCallTrace: ModelCallTraceDetail }>(
+      `/model-call-traces/${encodeURIComponent(traceId)}`
     ),
   scheduledTasks: (agentKey: string, sessionId: string, params: TableParams = {}) =>
     apiGet<{ scheduledTasks: ScheduledTasks }>(

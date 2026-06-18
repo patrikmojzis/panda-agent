@@ -23,11 +23,14 @@ import {
 import type { AgentDetail } from "@/lib/api"
 
 export type ConsoleNavItem = {
+  adminOnly?: boolean
   icon: LucideIcon
-  id: "home" | "agents" | "identities"
+  id: "home" | "agents" | "identities" | "model-calls"
   label: string
   path: string
 }
+
+type ConsoleRole = "admin" | "scoped"
 
 export type ControlTabDefinition = {
   count?: (agent: AgentDetail | undefined) => number | undefined
@@ -43,6 +46,7 @@ export const CONSOLE_NAVIGATION: ConsoleNavItem[] = [
   { id: "home", path: "/", label: "Home", icon: Home },
   { id: "agents", path: "/agents", label: "Agents", icon: Bot },
   { id: "identities", path: "/identities", label: "Identities", icon: UserCheck },
+  { id: "model-calls", path: "/model-calls", label: "Model Calls", icon: Activity, adminOnly: true },
 ]
 
 export const AGENT_RESOURCE_TABS: ControlTabDefinition[] = [
@@ -145,10 +149,15 @@ export function agentTabCount(
   )
 }
 
-export function filterConsoleNavigation(search: string) {
+export function consoleNavigationForRole(role?: ConsoleRole | null) {
+  return CONSOLE_NAVIGATION.filter((item) => !item.adminOnly || role === "admin")
+}
+
+export function filterConsoleNavigation(search: string, role?: ConsoleRole | null) {
+  const items = consoleNavigationForRole(role)
   const normalized = search.trim().toLowerCase()
-  if (!normalized) return CONSOLE_NAVIGATION
-  return CONSOLE_NAVIGATION.filter((item) =>
+  if (!normalized) return items
+  return items.filter((item) =>
     item.label.toLowerCase().includes(normalized)
   )
 }

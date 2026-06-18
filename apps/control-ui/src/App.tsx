@@ -9,11 +9,12 @@ import {
 import { ScreenSkeleton } from "@/components/common/shared/screen-skeleton"
 import { AppHead } from "@/components/layout/app-head"
 import { AppShell } from "@/components/layout/app-shell"
-import { Protected } from "@/features/control/pages/protected"
+import { AdminOnly, Protected } from "@/features/control/pages/protected"
 
 function renderRouteElement(route: ControlPageRoute) {
   const Page = route.component
-  return <Page />
+  const page = <Page />
+  return route.adminOnly ? <AdminOnly>{page}</AdminOnly> : page
 }
 
 function App() {

@@ -10,7 +10,7 @@ import {
 
 import {
   AGENT_RESOURCE_TABS,
-  CONSOLE_NAVIGATION,
+  consoleNavigationForRole,
   DEFAULT_AGENT_TAB,
   DEFAULT_SESSION_TAB,
   PARENT_AGENT_SHORTCUT_TABS,
@@ -85,7 +85,9 @@ function SidebarBrand() {
 }
 
 function ConsoleNavigation() {
+  const auth = useAuth()
   const location = useLocation()
+  const items = consoleNavigationForRole(auth.session?.role)
 
   return (
     <SidebarGroup>
@@ -94,7 +96,7 @@ function ConsoleNavigation() {
       </SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
-          {CONSOLE_NAVIGATION.map((item) => (
+          {items.map((item) => (
             <SidebarMenuItem key={item.id}>
               <SidebarMenuButton
                 asChild

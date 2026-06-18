@@ -11,4 +11,12 @@ function Protected({ children }: { children: ReactNode }) {
   return children
 }
 
-export { Protected }
+function AdminOnly({ children }: { children: ReactNode }) {
+  const auth = useAuth()
+  if (auth.isLoading) return <ScreenSkeleton />
+  if (!auth.session) return <Navigate to="/login" replace />
+  if (auth.session.role !== "admin") return <Navigate to="/" replace />
+  return children
+}
+
+export { AdminOnly, Protected }
