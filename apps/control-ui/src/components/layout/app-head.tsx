@@ -12,6 +12,7 @@ const routeMatchers = [
   { pattern: "/login", title: "Sign in" },
   { pattern: "/", title: "Work Failures" },
   { pattern: "/agents", title: "Agents" },
+  { pattern: "/model-calls", title: "Model Calls" },
 ]
 
 export function AppHead() {

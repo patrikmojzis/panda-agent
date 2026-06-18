@@ -1,6 +1,7 @@
 import * as React from "react"
 import type { ColumnDef } from "@tanstack/react-table"
-import { AlertTriangle, Eye } from "lucide-react"
+import { useNavigate } from "react-router-dom"
+import { AlertTriangle, ExternalLink, Eye } from "lucide-react"
 
 import {
   Cell,
@@ -20,6 +21,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { useRuntimeActivity } from "@/features/control/api/queries"
+import { useAuth } from "@/lib/auth"
 import {
   humanize,
   mobileHiddenColumns,
@@ -78,6 +80,7 @@ export function RuntimePanel({
       sort_direction: "desc",
     }
   )
+  const auth = useAuth()
   const runtime = useRuntimeActivity(agentKey, sessionId, table.params)
   const activity = runtime.data?.runtimeActivity
   const stats = runtimeStats(activity)
@@ -200,6 +203,7 @@ export function RuntimePanel({
         table={table}
         loading={runtime.isLoading}
         fetching={runtime.isFetching}
+        showModelCallLink={auth.session?.role === "admin"}
       />
     </div>
   )
@@ -211,13 +215,16 @@ function RuntimeRunsTable({
   loading,
   fetching,
   error,
+  showModelCallLink = false,
 }: {
   response?: PaginatedResponse<RuntimeRun>
   table: DataTableState
   loading?: boolean
   fetching?: boolean
   error?: unknown
+  showModelCallLink?: boolean
 }) {
+  const navigate = useNavigate()
   const [selectedRun, setSelectedRun] = React.useState<RuntimeRun | null>(null)
   const columns: ColumnDef<RuntimeRun>[] = [
     {
@@ -280,6 +287,16 @@ function RuntimeRunsTable({
               icon: <Eye className="size-4" />,
               onSelect: () => setSelectedRun(row.original),
             },
+            ...(showModelCallLink
+              ? [
+                  {
+                    label: "View model calls",
+                    icon: <ExternalLink className="size-4" />,
+                    onSelect: () =>
+                      navigate(`/model-calls?run_id=${encodeURIComponent(row.original.id)}`),
+                  },
+                ]
+              : []),
           ]}
         />
       ),

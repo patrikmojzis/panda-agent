@@ -44,6 +44,7 @@ import {
 } from "@/features/control/session-labels"
 import { formatDate } from "@/features/control/formatting"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useAuth } from "@/lib/auth"
 import type { GlobalSearchResult } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
@@ -113,6 +114,7 @@ const searchResultGroupDefinitions: SearchResultGroupDefinition[] = [
 ]
 
 function GlobalSearch() {
+  const auth = useAuth()
   const navigate = useNavigate()
   const isMobile = useIsMobile()
   const [query, setQuery] = React.useState("")
@@ -126,8 +128,8 @@ function GlobalSearch() {
     [results]
   )
   const navigationResults = React.useMemo(() => {
-    return filterConsoleNavigation(searchQuery)
-  }, [searchQuery])
+    return filterConsoleNavigation(searchQuery, auth.session?.role)
+  }, [auth.session?.role, searchQuery])
 
   React.useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {

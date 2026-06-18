@@ -14,6 +14,14 @@ type AuditParams = TableParams & {
   targetSessionId?: string
 }
 
+type ModelCallTraceParams = TableParams & {
+  agent_key?: string
+  mode?: string
+  run_id?: string
+  session_id?: string
+  status?: string
+}
+
 type GatewayEventParams = TableParams & {
   sourceId?: string
 }
@@ -108,6 +116,13 @@ export const controlKeys = {
       ] as const,
     gatewayEvents: (agentKey: string, sessionId: string, params: TableParams) =>
       [...controlKeys.agents.session(agentKey, sessionId), "gateway-events", params] as const,
+  },
+  modelCallTraces: {
+    all: () => [...controlKeys.all, "model-call-traces"] as const,
+    list: (params: ModelCallTraceParams) =>
+      [...controlKeys.modelCallTraces.all(), "list", params] as const,
+    detail: (traceId: string) =>
+      [...controlKeys.modelCallTraces.all(), "detail", traceId] as const,
   },
   audit: {
     list: (params: AuditParams) =>
