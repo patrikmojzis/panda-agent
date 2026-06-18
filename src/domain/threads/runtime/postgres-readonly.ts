@@ -411,6 +411,7 @@ export async function ensureReadonlySessionQuerySchema(
       skill.description,
       skill.content,
       skill.tags,
+      skill.agent_editable,
       skill.last_loaded_at,
       COALESCE(skill.load_count, 0) AS load_count,
       octet_length(convert_to(skill.content, 'utf8'))::INTEGER AS content_bytes,

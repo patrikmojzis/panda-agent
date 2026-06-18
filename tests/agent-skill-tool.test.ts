@@ -64,9 +64,9 @@ describe("AgentSkillTool", () => {
   it("describes tags as sparse discovery metadata, not a target", () => {
     const tool = new AgentSkillTool({
       store: {
-        deleteAgentSkill: async () => { throw new Error("not used"); },
+        deleteAgentSkillAsAgent: async () => { throw new Error("not used"); },
         loadAgentSkill: async () => { throw new Error("not used"); },
-        setAgentSkill: async () => { throw new Error("not used"); },
+        setAgentSkillAsAgent: async () => { throw new Error("not used"); },
       },
     });
 
@@ -103,6 +103,7 @@ describe("AgentSkillTool", () => {
     await expect(store.readAgentSkill("panda", "calendar")).resolves.toMatchObject({
       description: "Use this for calendar work.",
       content: "# Calendar\nLong skill body.",
+      agentEditable: true,
       loadCount: 0,
       lastLoadedAt: undefined,
     });
@@ -252,6 +253,76 @@ describe("AgentSkillTool", () => {
       operation: "delete",
       skillKey: "calendar",
     }, context)).rejects.toThrow("Skill mutation is not allowed in this execution environment.");
+  });
+
+  it("loads locked skills but rejects model-facing set and delete without leaking content", async () => {
+    const store = await createStore();
+    await store.setAgentSkill(
+      "panda",
+      "locked",
+      "Locked skill.",
+      "PRIVATE_LOCKED_SKILL_CONTENT",
+      ["ops"],
+      {agentEditable: false},
+    );
+    const tool = new AgentSkillTool({ store });
+    const context = createRunContext({agentKey: "panda"});
+
+    await expect(tool.run({
+      operation: "load",
+      skillKey: "locked",
+    }, context)).resolves.toMatchObject({
+      operation: "load",
+      found: true,
+      skillKey: "locked",
+      content: "PRIVATE_LOCKED_SKILL_CONTENT",
+      loadCount: 1,
+    });
+
+    for (const args of [
+      {operation: "set", skillKey: "locked", description: "Updated.", content: "# Updated"},
+      {operation: "delete", skillKey: "locked"},
+    ] as const) {
+      let thrown: unknown;
+      try {
+        await tool.run(args, context);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ToolError);
+      expect((thrown as Error).message).toBe("Skill is locked from agent edits.");
+      expect((thrown as Error).message).not.toContain("PRIVATE_LOCKED_SKILL_CONTENT");
+    }
+
+    await expect(store.readAgentSkill("panda", "locked")).resolves.toMatchObject({
+      content: "PRIVATE_LOCKED_SKILL_CONTENT",
+      agentEditable: false,
+      loadCount: 1,
+    });
+  });
+
+  it("does not let agent_skill set or clear the lock flag", async () => {
+    const store = await createStore();
+    const tool = new AgentSkillTool({ store });
+
+    await expect(tool.run({
+      operation: "set",
+      skillKey: "calendar",
+      description: "Calendar helper.",
+      content: "# Calendar",
+      agentEditable: false,
+    }, createRunContext({
+      agentKey: "panda",
+    }))).resolves.toMatchObject({
+      operation: "set",
+      skillKey: "calendar",
+    });
+
+    await expect(store.readAgentSkill("panda", "calendar")).resolves.toMatchObject({
+      content: "# Calendar",
+      agentEditable: true,
+    });
   });
 
   it("returns a non-throwing miss for load", async () => {

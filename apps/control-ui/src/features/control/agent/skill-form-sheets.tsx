@@ -38,6 +38,7 @@ const skillSchema = z.object({
   description: z.string().trim().min(1, "Description is required."),
   skillKey: z.string().trim().min(1, "Skill key is required."),
   tags: z.string(),
+  agentEditable: z.boolean(),
 })
 
 const subagentSchema = z.object({
@@ -129,6 +130,14 @@ export function SkillSheet() {
             className="min-h-20 font-mono text-xs"
             description="Optional discovery tags separated by commas or new lines. Example: coding, repo:panda-agent, ui-ux"
             placeholder="coding, repo:panda-agent"
+          />
+        )}
+      </form.AppField>
+      <form.AppField name="agentEditable">
+        {(field) => (
+          <field.SwitchField
+            label="Allow agent edits"
+            description="Turn off to mark the skill Locked from agent edits. Control can still edit or delete locked skills."
           />
         )}
       </form.AppField>

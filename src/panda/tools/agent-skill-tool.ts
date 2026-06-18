@@ -13,6 +13,7 @@ import {
     normalizeAgentSkillContent,
     normalizeAgentSkillDescription,
     normalizeAgentSkillTags,
+    AgentSkillNotEditableError,
 } from "../../domain/agents/types.js";
 import {
     isExecutionAgentSkillOperationAllowed,
@@ -59,7 +60,7 @@ function assertAgentSkillOperationAllowed(context: unknown, operation: AgentSkil
   throw new ToolError(`agent_skill(${operation}) is not allowed in this execution environment.`);
 }
 
-export type AgentSkillToolStore = Pick<AgentStore, "deleteAgentSkill" | "loadAgentSkill" | "setAgentSkill">;
+export type AgentSkillToolStore = Pick<AgentStore, "deleteAgentSkillAsAgent" | "loadAgentSkill" | "setAgentSkillAsAgent">;
 
 export interface AgentSkillToolOptions {
   store: AgentSkillToolStore;
@@ -181,6 +182,18 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
     this.store = options.store;
   }
 
+  private async mutateAgentSkill<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof AgentSkillNotEditableError) {
+        throw new ToolError(error.message);
+      }
+
+      throw error;
+    }
+  }
+
   override formatCall(args: Record<string, unknown>): string {
     const operation = typeof args.operation === "string" ? args.operation : "set";
     const skillKey = typeof args.skillKey === "string" ? args.skillKey : "skill";
@@ -228,17 +241,17 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
         operation: "delete",
         agentKey: scope.agentKey,
         skillKey: args.skillKey,
-        deleted: await this.store.deleteAgentSkill(scope.agentKey, args.skillKey),
+        deleted: await this.mutateAgentSkill(() => this.store.deleteAgentSkillAsAgent(scope.agentKey, args.skillKey)),
       };
     }
 
-    const record = await this.store.setAgentSkill(
+    const record = await this.mutateAgentSkill(() => this.store.setAgentSkillAsAgent(
       scope.agentKey,
       args.skillKey,
       normalizeAgentSkillDescription(args.description ?? ""),
       normalizeAgentSkillContent(args.content ?? ""),
       args.tags ?? [],
-    );
+    ));
 
     return {
       operation: "set",

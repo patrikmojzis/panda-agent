@@ -949,6 +949,88 @@ describe("Control operator HTTP", () => {
     await expect(invalid.json()).resolves.toEqual({error: "Control work failure severity filter must be warning or critical."});
   });
 
+  it("lets Control lock and unlock skills without leaking full skill bodies in audit or errors", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+    const privateContent = "PRIVATE_LOCKED_SKILL_BODY_MUST_NOT_LEAK";
+
+    const locked = await fetch(`${base}/api/control/agents/panda/skills`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        skillKey: "locked_runbook",
+        description: "Locked runbook",
+        content: privateContent,
+        tags: ["ops"],
+        agentEditable: false,
+      }),
+    });
+    expect(locked.status).toBe(200);
+    await expect(locked.json()).resolves.toMatchObject({
+      skill: {skillKey: "locked_runbook", agentEditable: false, content: privateContent},
+    });
+
+    const list = await fetch(`${base}/api/control/agents/panda/skills`, {headers: {cookie: auth.cookies}});
+    expect(list.status).toBe(200);
+    await expect(list.json()).resolves.toMatchObject({
+      data: [expect.objectContaining({skillKey: "locked_runbook", agentEditable: false})],
+    });
+
+    const detail = await fetch(`${base}/api/control/agents/panda/skills/locked_runbook`, {headers: {cookie: auth.cookies}});
+    expect(detail.status).toBe(200);
+    await expect(detail.json()).resolves.toMatchObject({
+      skill: {skillKey: "locked_runbook", agentEditable: false, content: privateContent},
+    });
+
+    const unlocked = await fetch(`${base}/api/control/agents/panda/skills`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        skillKey: "locked_runbook",
+        description: "Unlocked runbook",
+        content: "Updated body",
+        agentEditable: true,
+      }),
+    });
+    expect(unlocked.status).toBe(200);
+    await expect(unlocked.json()).resolves.toMatchObject({
+      skill: {skillKey: "locked_runbook", agentEditable: true, content: "Updated body"},
+    });
+
+    const bad = await fetch(`${base}/api/control/agents/panda/skills`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        skillKey: "bad_lock",
+        description: "Bad lock",
+        content: "PRIVATE_BAD_LOCK_BODY_MUST_NOT_LEAK",
+        agentEditable: "nope",
+      }),
+    });
+    expect(bad.status).toBe(400);
+    const badText = JSON.stringify(await bad.json());
+    expect(badText).toContain("Skill agentEditable must be a boolean.");
+    expect(badText).not.toContain("PRIVATE_BAD_LOCK_BODY_MUST_NOT_LEAK");
+
+    const rawAudit = await harness.pool.query(`
+      SELECT metadata::text AS metadata
+      FROM "runtime"."control_audit_events"
+      WHERE event_type = 'control_operator_write'
+      ORDER BY created_at ASC
+    `);
+    const rawAuditText = JSON.stringify(rawAudit.rows);
+    expect(rawAuditText).toContain("agentEditable");
+    expect(rawAuditText).toContain("sha256");
+    expect(rawAuditText).not.toContain(privateContent);
+
+    const visibleAudit = await fetch(`${base}/api/control/audit-events?eventType=control_operator_write&limit=10`, {headers: {cookie: auth.cookies}});
+    expect(visibleAudit.status).toBe(200);
+    const visibleAuditText = JSON.stringify(await visibleAudit.json());
+    expect(visibleAuditText).toContain("agentEditable");
+    expect(visibleAuditText).not.toContain(privateContent);
+  });
+
   it("searches visible agents, sessions, and operator resources for direct navigation", async () => {
     const harness = await createHarness();
     const base = await startHarnessServer(harness);
