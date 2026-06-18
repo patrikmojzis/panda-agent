@@ -319,10 +319,10 @@
       "sha256": "bde7c1c8de078e3fbc398105605e3f3cfcea4432612515bd79aadacb7602471d"
     },
     {
-      "bytes": 10539,
-      "lines": 218,
+      "bytes": 10825,
+      "lines": 224,
       "path": "src/prompts/runtime/subagents.ts",
-      "sha256": "5b4010404124b46b2ee118df4c12475993e3665362fc9fba9a17b4c4e59469aa"
+      "sha256": "ebd2a1304f2388424b1ac9f3b8825e892f5e25d00f426d8b15c25d28445929c3"
     },
     {
       "bytes": 917,
@@ -516,7 +516,7 @@
             "type": "string"
           },
           "tags": {
-            "description": "Optional for set. Lightweight lowercase discovery tags. Max 20 tags, 64 chars each. Omitted means no tags.",
+            "description": "Optional for set. Prefer omitting tags unless they materially help discovery; when useful, use 0-2 broad lowercase tags. Max 20 tags is a hard cap, not a target; 64 chars each.",
             "items": {
               "type": "string"
             },

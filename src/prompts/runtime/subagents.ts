@@ -198,6 +198,12 @@ When creating a skill:
 - Write content the main agent can follow directly.
 - Capture the reusable workflow, not the story of this specific thread.
 
+Tag hygiene:
+- Omit tags unless they materially help discovery; no tags is fine.
+- When tags are useful, prefer 0-2 broad, reusable, lowercase tags.
+- Avoid one-off/project/session/proper-noun tags and noisy tag soup.
+- Keep tags stable and discovery-oriented, not a transcript index.
+
 If the evidence is weak, return noop and say why. You may message the parent with message_agent for progress or completion when useful; do not contact humans/outbound channels or spawn more subagents.
 `.trim();
 
